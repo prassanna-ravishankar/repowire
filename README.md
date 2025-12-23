@@ -15,7 +15,10 @@ uv tool install git+https://github.com/prassanna-ravishankar/repowire.git
 ## Usage
 
 ```bash
-# Initialize config
+# Scan a directory and generate config from discovered repos
+repowire scan ~/git --output repowire.yaml
+
+# Or initialize with a template config
 repowire init
 
 # Start mesh with TUI
@@ -27,6 +30,31 @@ repowire up --no-tui
 # Check status
 repowire status
 ```
+
+### Scan Command
+
+Auto-discover git repositories and generate config:
+
+```bash
+# Scan ~/git for repos
+repowire scan ~/git
+
+# Preview without writing
+repowire scan ~/git --dry-run
+
+# Custom output path and project name
+repowire scan ~/projects -o myproject.yaml -n "My Stack"
+
+# Scan nested directories (depth 2)
+repowire scan ~/code --depth 2
+```
+
+Detects project types automatically:
+- **frontend**: package.json, tsconfig.json, vite.config.ts, next.config.js
+- **backend**: pyproject.toml, requirements.txt, go.mod, Cargo.toml
+- **infra**: main.tf, pulumi.yaml, serverless.yml
+- **mobile**: Podfile, android/, ios/
+- **docs**: mkdocs.yml, docusaurus.config.js
 
 ## Configuration
 
