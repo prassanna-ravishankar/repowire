@@ -239,7 +239,6 @@ class RepowireDaemon:
 async def run_daemon(config_path: Path | None = None) -> None:
     if config_path:
         config = RepowireConfig.from_yaml(config_path)
-        config._base_path = config_path.parent
     else:
         config = RepowireConfig.find_and_load()
 

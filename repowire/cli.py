@@ -36,7 +36,6 @@ def up(config: Path | None, tui: bool) -> None:
     try:
         if config:
             cfg = RepowireConfig.from_yaml(config)
-            cfg._base_path = config.parent
         else:
             cfg = RepowireConfig.find_and_load()
     except FileNotFoundError as e:
@@ -67,7 +66,6 @@ def status(config: Path | None) -> None:
     try:
         if config:
             cfg = RepowireConfig.from_yaml(config)
-            cfg._base_path = config.parent
         else:
             cfg = RepowireConfig.find_and_load()
     except FileNotFoundError as e:

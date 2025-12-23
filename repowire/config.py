@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class AgentConfig(BaseModel):
@@ -28,11 +28,15 @@ class RepowireConfig(BaseModel):
     agents: dict[str, AgentConfig]
     settings: Settings = Field(default_factory=Settings)
 
+    _base_path: Path = PrivateAttr(default_factory=Path.cwd)
+
     @classmethod
     def from_yaml(cls, path: Path) -> RepowireConfig:
         with open(path) as f:
             data: dict[str, Any] = yaml.safe_load(f)
-        return cls.model_validate(data)
+        config = cls.model_validate(data)
+        config._base_path = path.parent
+        return config
 
     @classmethod
     def find_and_load(cls, start_path: Path | None = None) -> RepowireConfig:
@@ -42,12 +46,9 @@ class RepowireConfig(BaseModel):
             config_path = parent / "repowire.yaml"
             if config_path.exists():
                 config = cls.from_yaml(config_path)
-                config._base_path = parent
                 return config
 
         raise FileNotFoundError(f"No repowire.yaml found in {search_path} or any parent directory")
-
-    _base_path: Path = Field(default=Path.cwd(), exclude=True)
 
     @property
     def base_path(self) -> Path:
