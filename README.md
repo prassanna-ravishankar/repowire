@@ -9,7 +9,7 @@ Repowire spawns multiple OpenCode sessions (one per repository) and links them v
 ## Installation
 
 ```bash
-uv sync
+uv tool install git+https://github.com/prassanna-ravishankar/repowire.git
 ```
 
 ## Usage
