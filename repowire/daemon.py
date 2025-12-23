@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,32 @@ from repowire.blackboard import Blackboard
 from repowire.bus import Message, MessageBus, MessageType
 from repowire.config import RepowireConfig
 from repowire.mcp.server import MCPServerRunner
-from repowire.process import AgentProcess, ProcessManager
+from repowire.process import ProcessManager
+
+
+def get_git_branch(repo_path: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
+
+def check_git_branches(process_manager: ProcessManager) -> dict[str, str | None]:
+    branches = {}
+    for name in process_manager.agent_names:
+        agent = process_manager.get(name)
+        if agent:
+            branches[name] = get_git_branch(agent.path)
+    return branches
 
 
 class RepowireDaemon:
@@ -36,6 +62,10 @@ class RepowireDaemon:
 
         self._setup_signal_handlers()
         await self._register_agents()
+
+        if self.config.settings.git_branch_warnings:
+            self._check_git_branches()
+
         await self._start_opencode_processes()
         await self._wait_for_agents_ready()
         await self._connect_sdk_clients()
@@ -43,6 +73,18 @@ class RepowireDaemon:
         await self._setup_message_handlers()
 
         self.console.print("[bold green]Mesh ready![/]")
+
+    def _check_git_branches(self) -> None:
+        branches = check_git_branches(self.process_manager)
+        unique_branches = set(b for b in branches.values() if b is not None)
+
+        if len(unique_branches) > 1:
+            self.console.print("[bold yellow]Warning: Agents are on different git branches![/]")
+            for name, branch in branches.items():
+                color = "green" if branch else "red"
+                branch_display = branch or "(not a git repo)"
+                self.console.print(f"  [{color}]{name}[/]: {branch_display}")
+            self.console.print("")
 
     def _setup_signal_handlers(self) -> None:
         loop = asyncio.get_event_loop()
