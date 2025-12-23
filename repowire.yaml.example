@@ -1,0 +1,43 @@
+# Repowire Configuration Example
+# Place this file as repowire.yaml in your workspace root
+
+name: "E-commerce Stack"
+
+# Agent definitions - one per repository
+agents:
+  backend:
+    path: "./backend-api"
+    model: "claude-sonnet-4-20250514"
+    color: "blue"
+    capabilities:
+      - "db_access"
+      - "migrations"
+    description: "Backend API service"
+
+  frontend:
+    path: "./web-client"
+    model: "claude-sonnet-4-20250514"
+    color: "green"
+    depends_on:
+      - "backend"
+    description: "Web frontend application"
+
+  infra:
+    path: "./terraform"
+    model: "gpt-4o"
+    color: "yellow"
+    description: "Infrastructure as code"
+
+# Optional: Global settings
+settings:
+  # Port range for OpenCode instances
+  port_range_start: 3001
+  
+  # Blackboard persistence
+  blackboard_file: ".repowire/blackboard.json"
+  
+  # Log directory
+  log_dir: ".repowire/logs"
+  
+  # Auto-sync git branches warning
+  git_branch_warnings: true
