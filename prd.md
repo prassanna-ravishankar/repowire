@@ -4,40 +4,40 @@ overview: Repowire is a pure MCP server that enables peer-to-peer communication 
 todos:
   - id: phase1-mcp
     content: Create core MCP server with FastMCP, peer registry, and state persistence
-    status: pending
+    status: done
   - id: phase1-tools
     content: Implement register, unregister, list_peers, read_state, write_state tools
-    status: pending
+    status: done
   - id: phase1-cli
     content: Add 'repowire mesh' CLI command to start MCP server
-    status: pending
+    status: done
   - id: phase2-opencode
     content: Create OpenCode transport adapter using opencode-ai SDK
-    status: pending
+    status: done
   - id: phase2-ask-peer
     content: Wire ask_peer tool to OpenCode transport, test with two sessions
-    status: pending
+    status: done
   - id: phase3-happy-ws
     content: Create Happy WebSocket transport with encryption
-    status: pending
+    status: done
   - id: phase3-happy-auth
     content: Add 'repowire auth happy' command for authentication
-    status: pending
+    status: done
   - id: phase3-happy-test
-    content: Test ask_peer with Happy sessions
+    content: Test ask_peer with Happy sessions (requires live sessions)
     status: pending
   - id: phase4-cross
-    content: Test and fix cross-agent communication (Happy <-> OpenCode)
+    content: Test and fix cross-agent communication (Happy <-> OpenCode, requires live sessions)
     status: pending
   - id: phase4-files
     content: Implement read_peer_file for both transports
-    status: pending
+    status: done
   - id: phase5-status
     content: Add 'repowire status' command
-    status: pending
+    status: done
   - id: phase5-cleanup
     content: Remove old daemon.py, process.py, config.py, bus.py files
-    status: pending
+    status: done
 ---
 
 # Repowire: Lateral Mesh for Coding Agents
