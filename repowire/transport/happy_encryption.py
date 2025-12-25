@@ -194,19 +194,22 @@ class HappyEncryption:
     def decrypt_encryption_key(self, encrypted_b64: str) -> bytes | None:
         """Decrypt a session encryption key using the content private key.
 
-        The encrypted key format is: version byte (0x00) + Box-encrypted data
+        The encrypted key format is: version byte (0x00) + ephemeral_pubkey (32) + nonce (24) + ciphertext
         """
         try:
             encrypted = base64.b64decode(encrypted_b64)
             if encrypted[0] != 0:
                 return None
 
-            # Decrypt using Box with our content private key
+            # Extract components: ephemeral pubkey (32) + nonce (24) + ciphertext
             encrypted_data = encrypted[1:]
             ephemeral_public = PublicKey(encrypted_data[:32])
-            nonce_and_ciphertext = encrypted_data[32:]
+            nonce = encrypted_data[32:56]  # 24 bytes
+            ciphertext = encrypted_data[56:]
+
+            # Decrypt using Box with explicit nonce
             box = Box(self.content_private_key, ephemeral_public)
-            decrypted = box.decrypt(nonce_and_ciphertext)
+            decrypted = box.decrypt(ciphertext, nonce)
             return bytes(decrypted)
         except Exception:
             return None

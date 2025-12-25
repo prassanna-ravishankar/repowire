@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -20,61 +19,13 @@ def main() -> None:
 
 
 @main.command()
-@click.option(
-    "--port",
-    default=9876,
-    help="Port for HTTP transport (default: 9876)",
-)
-@click.option(
-    "--stdio",
-    is_flag=True,
-    help="Use stdio transport instead of HTTP",
-)
-def mesh(port: int, stdio: bool) -> None:
+def mesh() -> None:
     """Start the Repowire mesh MCP server."""
-    from repowire.mesh.server import run_mesh_server
+    import asyncio
 
-    console.print(f"[bold blue]Repowire Mesh v{__version__}[/]")
+    from repowire.mesh.server import run_mcp_server
 
-    if stdio:
-        console.print("Running in stdio mode...")
-    else:
-        console.print(f"Listening on [cyan]http://localhost:{port}[/]")
-        console.print(f"MCP endpoint: [cyan]http://localhost:{port}/mcp[/]")
-        console.print("\nWaiting for peers to connect...")
-
-    run_mesh_server(port=port, stdio=stdio)
-
-
-@main.command()
-def status() -> None:
-    """Show mesh status, peers, and shared state."""
-    from repowire.mesh.state import SharedState
-
-    state = SharedState()
-
-    console.print("[bold blue]Repowire Mesh Status[/]")
-    console.print("=" * 40)
-
-    console.print(f"\nState file: [dim]{state._persist_path}[/]")
-
-    async def get_state() -> dict:
-        return await state.read()
-
-    state_data = asyncio.run(get_state())
-
-    if state_data:
-        console.print(f"\n[bold]Shared State[/] ({len(state_data)} keys):")
-        for key, value in state_data.items():
-            val_str = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
-            if len(val_str) > 60:
-                val_str = val_str[:60] + "..."
-            console.print(f"  [cyan]{key}[/]: {val_str}")
-    else:
-        console.print("\n[dim]No shared state.[/]")
-
-    console.print("\n[yellow]Note:[/] Peer list is only available when mesh server is running.")
-    console.print("Start the mesh with: [cyan]repowire mesh[/]")
+    asyncio.run(run_mcp_server())
 
 
 @main.group()
@@ -84,22 +35,52 @@ def auth() -> None:
 
 
 @auth.command(name="happy")
-@click.option("--token", help="Import existing Happy token")
-@click.option("--secret", help="Import existing Happy secret (base64url)")
-def auth_happy(token: str | None, secret: str | None) -> None:
-    """Authenticate with Happy Cloud."""
-    from repowire.auth.happy import HappyCredentials, save_credentials
+@click.option("--secret", help="Your Happy backup secret key (XXXXX-XXXXX-... format)")
+def auth_happy(secret: str | None) -> None:
+    """Authenticate with Happy Cloud.
 
-    if token and secret:
-        creds = HappyCredentials(token=token, secret=secret)
-        save_credentials(creds)
-        console.print("[bold green]Happy credentials saved![/]")
-        console.print("Stored in ~/.repowire/credentials.json")
+    Requires your Happy backup secret key (the one Happy asked you to save).
+    This is NOT the machineKey from ~/.happy/access.key.
+    """
+    import asyncio
+
+    from repowire.auth.happy import (
+        HappyCredentials,
+        decode_secret,
+        get_token,
+        normalize_secret_key,
+        save_credentials,
+    )
+
+    if secret:
+        try:
+            # Normalize the secret (handles both base64url and backup format)
+            normalized_secret = normalize_secret_key(secret)
+
+            # Get a token from Happy Cloud
+            console.print("Authenticating with Happy Cloud...")
+            secret_bytes = decode_secret(normalized_secret)
+            token = asyncio.run(get_token(secret_bytes))
+
+            creds = HappyCredentials(token=token, secret=normalized_secret)
+            save_credentials(creds)
+            console.print("[bold green]Happy credentials saved![/]")
+            console.print("Stored in ~/.repowire/credentials.json")
+        except ValueError as e:
+            console.print(f"[red]Error:[/] {e}")
+            console.print("")
+            console.print("[yellow]Make sure you're using your Happy backup secret key.[/]")
+            console.print("This is the key Happy asked you to save when you signed up.")
+            console.print("Format: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-...")
+        except Exception as e:
+            console.print(f"[red]Authentication failed:[/] {e}")
     else:
         console.print("[yellow]To authenticate with Happy:[/]")
-        console.print("1. Find your Happy credentials in ~/.happy/credentials.json")
-        console.print("2. Run: repowire auth happy --token <token> --secret <secret>")
-        console.print("\nAlternatively, copy token and secret from Happy mobile app.")
+        console.print("")
+        console.print("  [cyan]repowire auth happy --secret YOUR-BACKUP-KEY[/]")
+        console.print("")
+        console.print("Your backup key is the secret Happy asked you to save when you signed up.")
+        console.print("Format: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-...")
 
 
 if __name__ == "__main__":

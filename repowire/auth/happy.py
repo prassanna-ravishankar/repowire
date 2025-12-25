@@ -12,7 +12,7 @@ import httpx
 from nacl.signing import SigningKey
 
 CREDENTIALS_PATH = Path.home() / ".repowire" / "credentials.json"
-DEFAULT_HAPPY_URL = "https://api.happycoder.io"
+DEFAULT_HAPPY_URL = "https://api.cluster-fluster.com"
 
 
 @dataclass
@@ -45,6 +45,71 @@ def decode_secret(secret_b64: str) -> bytes:
     if padding != 4:
         secret_b64 += "=" * padding
     return base64.urlsafe_b64decode(secret_b64)
+
+
+# Base32 alphabet (RFC 4648) - same as Happy uses
+BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+
+
+def parse_backup_secret_key(formatted_key: str) -> str:
+    """Parse a user-friendly formatted secret key back to base64url.
+
+    Accepts format like: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
+    Returns base64url encoded secret key.
+    """
+    # Normalize: uppercase, replace common mistakes, remove non-base32 chars
+    normalized = formatted_key.upper()
+    normalized = normalized.replace("0", "O").replace("1", "I").replace("8", "B").replace("9", "G")
+    cleaned = "".join(c for c in normalized if c in BASE32_ALPHABET)
+
+    if not cleaned:
+        raise ValueError("No valid characters found")
+
+    # Decode base32 to bytes
+    bytes_list: list[int] = []
+    buffer = 0
+    buffer_length = 0
+
+    for char in cleaned:
+        value = BASE32_ALPHABET.index(char)
+        buffer = (buffer << 5) | value
+        buffer_length += 5
+
+        if buffer_length >= 8:
+            buffer_length -= 8
+            bytes_list.append((buffer >> buffer_length) & 0xFF)
+
+    secret_bytes = bytes(bytes_list)
+
+    if len(secret_bytes) != 32:
+        raise ValueError(f"Invalid key length: expected 32 bytes, got {len(secret_bytes)}")
+
+    # Encode to base64url (no padding)
+    return base64.urlsafe_b64encode(secret_bytes).rstrip(b"=").decode()
+
+
+def normalize_secret_key(key: str) -> str:
+    """Normalize a secret key to base64url format.
+
+    Accepts either:
+    - Base64url encoded secret (44 chars)
+    - Backup format: XXXXX-XXXXX-XXXXX-... (base32 with dashes)
+    """
+    trimmed = key.strip()
+
+    # If it has dashes/spaces or is long, treat as backup format
+    if "-" in trimmed or " " in trimmed or len(trimmed) > 50:
+        return parse_backup_secret_key(trimmed)
+
+    # Otherwise try as base64url
+    try:
+        secret_bytes = decode_secret(trimmed)
+        if len(secret_bytes) != 32:
+            raise ValueError("Invalid secret key")
+        return trimmed
+    except Exception:
+        # Fall back to parsing as backup format
+        return parse_backup_secret_key(trimmed)
 
 
 async def get_token(secret: bytes, server_url: str = DEFAULT_HAPPY_URL) -> str:

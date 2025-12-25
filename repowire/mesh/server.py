@@ -1,223 +1,91 @@
+"""Repowire MCP Server - Happy++ for Claude session communication."""
+
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from typing import Any
+import subprocess
+from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from repowire.auth.happy import load_credentials
-from repowire.mesh.peers import Peer, PeerRegistry
-from repowire.mesh.state import SharedState
-from repowire.transport.base import Transport
 from repowire.transport.happy import HappyTransport
-from repowire.transport.opencode import OpenCodeTransport
 
-registry = PeerRegistry()
-state = SharedState()
+# Permission mode type
+PermissionMode = Literal["default", "plan", "yolo", "bypassPermissions", "acceptEdits", "read-only", "safe-yolo"]
 
-_opencode_transport: OpenCodeTransport | None = None
-_happy_transport: HappyTransport | None = None
+# Global transport instance
+_transport: HappyTransport | None = None
 
+def get_transport() -> HappyTransport:
+    global _transport
+    if _transport is None:
+        _transport = HappyTransport()
+    return _transport
 
-def get_opencode_transport() -> OpenCodeTransport:
-    global _opencode_transport
-    if _opencode_transport is None:
-        _opencode_transport = OpenCodeTransport()
-    return _opencode_transport
-
-
-def get_happy_transport() -> HappyTransport:
-    global _happy_transport
-    if _happy_transport is None:
-        creds = load_credentials()
-        if not creds:
-            raise ValueError(
-                "Happy credentials not found. Run 'repowire auth happy' first."
-            )
-        _happy_transport = HappyTransport(creds)
-    return _happy_transport
-
-
-def get_transport_for_peer(peer: Peer) -> Transport:
-    if peer.agent_type == "opencode":
-        return get_opencode_transport()
-    elif peer.agent_type == "happy":
-        return get_happy_transport()
-    raise ValueError(f"Unsupported agent type: {peer.agent_type}")
-
-
-def create_mesh_server(port: int = 9876) -> FastMCP:
-    mcp = FastMCP("repowire-mesh", json_response=True, host="127.0.0.1", port=port)
+def create_mcp_server() -> FastMCP:
+    mcp = FastMCP("repowire")
 
     @mcp.tool()
-    async def register(
-        name: str,
-        agent_type: str,
+    async def list_sessions() -> list[dict]:
+        """List all Happy CLI sessions with metadata."""
+        transport = get_transport()
+        return await transport.list_sessions()
+
+    @mcp.tool()
+    async def send_message(
         session_id: str,
-        path: str,
-        capabilities: list[str] | None = None,
-    ) -> dict[str, Any]:
-        """Register this session as a peer in the mesh."""
-        peer = Peer(
-            name=name,
-            agent_type=agent_type,  # type: ignore
-            session_id=session_id,
-            path=path,
-            capabilities=capabilities or [],
+        text: str,
+        permission_mode: PermissionMode = "default"
+    ) -> str:
+        """Send message to a Happy session and wait for response.
+
+        Args:
+            session_id: The session ID to send to
+            text: The message text
+            permission_mode: Permission mode (default, plan, yolo, etc.)
+        """
+        transport = get_transport()
+        return await transport.send_message(session_id, text, permission_mode)
+
+    @mcp.tool()
+    async def create_session(path: str) -> dict:
+        """Spawn a new Happy CLI session at the given path.
+
+        Blocks until the session appears in list_sessions.
+
+        Args:
+            path: Directory path for the new session
+        """
+        transport = get_transport()
+
+        # Get current sessions to compare
+        before = {s["id"] for s in await transport.list_sessions()}
+
+        # Spawn happy process
+        subprocess.Popen(
+            ["happy"],
+            cwd=path,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        peers = registry.register(peer)
-        return {
-            "success": True,
-            "peers": [
-                {"name": p.name, "agent_type": p.agent_type, "path": p.path}
-                for p in peers
-            ],
-        }
 
-    @mcp.tool()
-    async def unregister(name: str) -> dict[str, Any]:
-        """Remove this session from the mesh."""
-        success = registry.unregister(name)
-        return {"success": success}
+        # Poll for new session (max 30 seconds)
+        for _ in range(30):
+            await asyncio.sleep(1)
+            sessions = await transport.list_sessions()
+            for session in sessions:
+                if session["id"] not in before and session.get("path") == path:
+                    return session
 
-    @mcp.tool()
-    async def list_peers() -> dict[str, Any]:
-        """List all registered peers in the mesh."""
-        peers = registry.list_all()
-        return {
-            "peers": [
-                {
-                    "name": p.name,
-                    "agent_type": p.agent_type,
-                    "path": p.path,
-                    "capabilities": p.capabilities,
-                    "is_active": p.is_active,
-                }
-                for p in peers
-            ]
-        }
-
-    @mcp.tool()
-    async def write_state(key: str, value: str) -> dict[str, Any]:
-        """Write a key-value pair to shared state."""
-        await state.write(key, value)
-        return {"success": True, "key": key}
-
-    @mcp.tool()
-    async def read_state(key: str | None = None) -> dict[str, Any]:
-        """Read from shared state. If key is None, returns all state."""
-        value = await state.read(key)
-        return {"value": value}
-
-    @mcp.tool()
-    async def read_peer_file(target: str, file_path: str) -> dict[str, Any]:
-        """Read a file from a peer's working directory."""
-        peer = registry.get(target)
-        if not peer:
-            return {"error": f"Peer '{target}' not found", "success": False}
-
-        full_path = Path(peer.path) / file_path
-
-        try:
-            resolved = full_path.resolve()
-            peer_path = Path(peer.path).resolve()
-            if not str(resolved).startswith(str(peer_path)):
-                return {"error": "Path traversal not allowed", "success": False}
-        except Exception:
-            return {"error": "Invalid path", "success": False}
-
-        if not resolved.exists():
-            return {"error": f"File not found: {file_path}", "success": False}
-
-        try:
-            content = resolved.read_text()
-            if len(content) > 100000:
-                content = content[:100000] + "\n... (truncated)"
-            return {"content": content, "success": True}
-        except Exception as e:
-            return {"error": str(e), "success": False}
-
-    @mcp.tool()
-    async def ask_peer(
-        caller: str,
-        target: str,
-        query: str,
-        timeout: float = 60.0,
-    ) -> dict[str, Any]:
-        """Send a query to another peer and wait for response."""
-        peer = registry.get(target)
-        if not peer:
-            return {"error": f"Peer '{target}' not found", "success": False}
-
-        if target == caller:
-            return {"error": "Cannot query yourself", "success": False}
-
-        formatted_query = f"[PEER QUERY from {caller}]: {query}"
-
-        try:
-            transport = get_transport_for_peer(peer)
-            response = await asyncio.wait_for(
-                transport.send_message(peer.session_id, formatted_query),
-                timeout=timeout,
-            )
-            return {"response": response, "success": True}
-        except asyncio.TimeoutError:
-            return {
-                "error": f"Peer '{target}' did not respond within {timeout}s",
-                "success": False,
-            }
-        except ValueError as e:
-            return {"error": str(e), "success": False}
-        except Exception as e:
-            return {"error": f"Transport error: {e}", "success": False}
-
-    @mcp.tool()
-    async def notify_peer(caller: str, target: str, message: str) -> dict[str, Any]:
-        """Send a notification to a peer (fire-and-forget)."""
-        peer = registry.get(target)
-        if not peer:
-            return {"error": f"Peer '{target}' not found", "success": False}
-
-        formatted = f"[NOTIFICATION from {caller}]: {message}"
-
-        try:
-            transport = get_transport_for_peer(peer)
-            await transport.send_notification(peer.session_id, formatted)
-            return {"success": True}
-        except ValueError as e:
-            return {"error": str(e), "success": False}
-        except Exception as e:
-            return {"error": f"Transport error: {e}", "success": False}
-
-    @mcp.tool()
-    async def broadcast(caller: str, message: str) -> dict[str, Any]:
-        """Send a notification to all peers."""
-        notified: list[str] = []
-        errors: list[str] = []
-
-        formatted = f"[BROADCAST from {caller}]: {message}"
-
-        for peer in registry.list_all():
-            if peer.name == caller:
-                continue
-
-            try:
-                transport = get_transport_for_peer(peer)
-                await transport.send_notification(peer.session_id, formatted)
-                notified.append(peer.name)
-            except Exception as e:
-                errors.append(f"{peer.name}: {e}")
-
-        return {"notified": notified, "errors": errors, "success": len(errors) == 0}
+        raise TimeoutError(f"Session at {path} did not appear within 30 seconds")
 
     return mcp
 
-
-def run_mesh_server(port: int = 9876, stdio: bool = False) -> None:
-    mcp = create_mesh_server(port=port)
-
+async def run_mcp_server(stdio: bool = True) -> None:
+    """Run the MCP server."""
+    mcp = create_mcp_server()
     if stdio:
-        mcp.run(transport="stdio")
+        await mcp.run_stdio_async()
     else:
-        mcp.run(transport="streamable-http")
+        # HTTP mode if needed
+        await mcp.run_async()
