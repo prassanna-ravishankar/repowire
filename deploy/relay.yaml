@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: repowire-relay
+  labels:
+    app: repowire-relay
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: repowire-relay
+  template:
+    metadata:
+      labels:
+        app: repowire-relay
+    spec:
+      containers:
+      - name: relay
+        image: ghcr.io/prassanna-ravishankar/repowire-relay:latest
+        ports:
+        - containerPort: 8000
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: repowire-relay
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8000
+  selector:
+    app: repowire-relay
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: repowire-relay
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/websocket-services: "repowire-relay"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - relay.repowire.io
+    secretName: repowire-relay-tls
+  rules:
+  - host: relay.repowire.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: repowire-relay
+            port:
+              number: 80

@@ -1,43 +1,31 @@
 # Repowire Configuration Example
-# Place this file as repowire.yaml in your workspace root
+# Copy to ~/.repowire/config.yaml
 
-name: "E-commerce Stack"
+# Relay server connection (for multi-machine mesh)
+relay:
+  enabled: false
+  url: "wss://relay.repowire.io"
+  api_key: null  # Get from: repowire relay generate-key
 
-# Agent definitions - one per repository
-agents:
-  backend:
-    path: "./backend-api"
-    model: "claude-sonnet-4-20250514"
-    color: "blue"
-    capabilities:
-      - "db_access"
-      - "migrations"
-    description: "Backend API service"
-
+# Local peers (tmux sessions running Claude Code)
+peers:
   frontend:
-    path: "./web-client"
-    model: "claude-sonnet-4-20250514"
-    color: "green"
-    depends_on:
-      - "backend"
-    description: "Web frontend application"
-
+    tmux_session: "frontend"
+    path: "/Users/you/app/frontend"
+  backend:
+    tmux_session: "backend"
+    path: "/Users/you/app/backend"
   infra:
-    path: "./terraform"
-    model: "gpt-4o"
-    color: "yellow"
-    description: "Infrastructure as code"
+    tmux_session: "infra"
+    path: "/Users/you/app/infra"
 
-# Optional: Global settings
-settings:
-  # Port range for OpenCode instances
-  port_range_start: 3001
-  
-  # Blackboard persistence
-  blackboard_file: ".repowire/blackboard.json"
-  
-  # Log directory
-  log_dir: ".repowire/logs"
-  
-  # Auto-sync git branches warning
-  git_branch_warnings: true
+# Daemon settings
+daemon:
+  auto_reconnect: true
+  heartbeat_interval: 30
+  socket_path: "/tmp/repowire.sock"
+
+# Logging
+logging:
+  level: "info"
+  file: null  # or "~/.repowire/repowire.log"
