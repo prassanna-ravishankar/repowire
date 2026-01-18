@@ -6,8 +6,8 @@ import json
 import os
 import subprocess
 import sys
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 from repowire.config.models import load_config
@@ -58,7 +58,10 @@ def format_peers_context(peers: list[dict], my_name: str) -> str:
     if not other_peers:
         return ""
 
-    lines = ["[Repowire Mesh] You have access to other Claude Code sessions working on related projects:"]
+    lines = [
+        "[Repowire Mesh] You have access to other Claude Code sessions "
+        "working on related projects:"
+    ]
     for p in other_peers:
         branch = p.get("metadata", {}).get("branch", "")
         branch_str = f" on {branch}" if branch else ""
@@ -66,7 +69,10 @@ def format_peers_context(peers: list[dict], my_name: str) -> str:
         lines.append(f"  - {p['name']}{branch_str} ({project_name})")
 
     lines.append("")
-    lines.append("IMPORTANT: When asked about these projects, ask the peer directly via ask_peer() rather than searching locally.")
+    lines.append(
+        "IMPORTANT: When asked about these projects, ask the peer directly "
+        "via ask_peer() rather than searching locally."
+    )
     lines.append("Peer list may be outdated - use list_peers() to refresh.")
 
     return "\n".join(lines)
@@ -95,13 +101,31 @@ def main() -> int:
         if branch:
             metadata["branch"] = branch
 
-        config.add_peer(
-            name=peer_name,
-            path=cwd,
-            tmux_session=tmux_target,
-            session_id=session_id,
-            metadata=metadata,
-        )
+        # Try to register via HTTP daemon first for consistency
+        try:
+            data = {
+                "name": peer_name,
+                "path": cwd,
+                "tmux_session": tmux_target,
+                "session_id": session_id,
+                "metadata": metadata,
+            }
+            req = urllib.request.Request(
+                f"{DAEMON_URL}/peers",
+                data=json.dumps(data).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=2.0)
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+            # Fallback to config write on failure (daemon may not be running)
+            config.add_peer(
+                name=peer_name,
+                path=cwd,
+                tmux_session=tmux_target,
+                session_id=session_id,
+                metadata=metadata,
+            )
 
         # Fetch peers and output context for Claude
         peers = fetch_peers()

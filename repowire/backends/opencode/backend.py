@@ -32,7 +32,7 @@ class OpencodeBackend(Backend):
         """Cleanup clients."""
         self._clients.clear()
 
-    async def send_message(self, peer: "PeerConfig", text: str) -> None:
+    async def send_message(self, peer: PeerConfig, text: str) -> None:
         """Send a fire-and-forget message to a peer via OpenCode SDK."""
         client, session_id = await self._get_client(peer)
         if not client or not session_id:
@@ -45,7 +45,7 @@ class OpencodeBackend(Backend):
             no_reply=True,
         )
 
-    async def send_query(self, peer: "PeerConfig", text: str, timeout: float = 120.0) -> str:
+    async def send_query(self, peer: PeerConfig, text: str, timeout: float = 120.0) -> str:
         """Send a query and get response directly from SDK (no hooks needed)."""
         client, session_id = await self._get_client(peer)
         if not client or not session_id:
@@ -63,7 +63,7 @@ class OpencodeBackend(Backend):
                 return part.text
         return ""
 
-    def get_peer_status(self, peer: "PeerConfig") -> PeerStatus:
+    def get_peer_status(self, peer: PeerConfig) -> PeerStatus:
         """Check if peer's OpenCode instance is reachable."""
         # For OpenCode, we check if the peer has an opencode_url configured
         if not peer.opencode_url:
@@ -84,7 +84,7 @@ class OpencodeBackend(Backend):
         """Check if OpenCode plugin is installed."""
         return check_plugin_installed(global_install=global_install)
 
-    async def _get_client(self, peer: "PeerConfig") -> tuple[object | None, str | None]:
+    async def _get_client(self, peer: PeerConfig) -> tuple[object | None, str | None]:
         """Get or create an OpenCode client for a peer.
 
         Returns:
@@ -108,5 +108,5 @@ class OpencodeBackend(Backend):
         except ImportError:
             # opencode-ai SDK not installed
             return None, None
-        except Exception:
+        except Exception:  # TODO: Catch specific exceptions from opencode-ai SDK
             return None, None

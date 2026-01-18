@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -44,7 +46,7 @@ class ClaudemuxBackend(Backend):
         self._pending_queries.clear()
         self._server = None
 
-    async def send_message(self, peer: "PeerConfig", text: str) -> None:
+    async def send_message(self, peer: PeerConfig, text: str) -> None:
         """Send a fire-and-forget message to a peer's tmux pane."""
         pane = self._get_pane(peer.tmux_session)
         if not pane:
@@ -52,7 +54,7 @@ class ClaudemuxBackend(Backend):
 
         pane.send_keys(text, enter=True)
 
-    async def send_query(self, peer: "PeerConfig", text: str, timeout: float = 120.0) -> str:
+    async def send_query(self, peer: PeerConfig, text: str, timeout: float = 120.0) -> str:
         """Send a query and wait for response via hook callback."""
         pane = self._get_pane(peer.tmux_session)
         if not pane:
@@ -68,9 +70,6 @@ class ClaudemuxBackend(Backend):
         # File is named by tmux session (sanitized) so stop_handler can find it
         pending_filename = self._tmux_to_filename(peer.tmux_session)
         pending_file = self._pending_dir / f"{pending_filename}.json"
-        import json
-        from datetime import datetime
-
         pending_data = {
             "correlation_id": correlation_id,
             "to_peer": peer.name,
@@ -108,7 +107,7 @@ class ClaudemuxBackend(Backend):
             return True
         return False
 
-    def get_peer_status(self, peer: "PeerConfig") -> PeerStatus:
+    def get_peer_status(self, peer: PeerConfig) -> PeerStatus:
         """Check if peer's tmux session is active."""
         if not peer.tmux_session:
             return PeerStatus.OFFLINE
@@ -128,7 +127,7 @@ class ClaudemuxBackend(Backend):
                     return PeerStatus.OFFLINE
 
             return PeerStatus.ONLINE
-        except Exception:
+        except libtmux.exc.LibTmuxException:
             return PeerStatus.OFFLINE
 
     def install(self, dev: bool = False, **kwargs) -> None:
@@ -175,5 +174,5 @@ class ClaudemuxBackend(Backend):
                 return window.active_pane
 
             return session.active_pane
-        except Exception:
+        except libtmux.exc.LibTmuxException:
             return None
