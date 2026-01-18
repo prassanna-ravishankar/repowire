@@ -55,6 +55,33 @@ Alice and Bob can now talk:
 5. **Stop hook** fires at end of turn, captures response from transcript
 6. **Response** routes back to caller via daemon
 
+## Backends
+
+Repowire supports two backends for different AI coding environments:
+
+### claudemux (default)
+For **Claude Code** sessions running in tmux.
+- Peers auto-register via SessionStart hook
+- Responses captured via Stop hook reading transcript
+- Requires: tmux, Claude Code with hooks support
+
+```bash
+repowire setup --backend claudemux
+repowire serve --backend claudemux
+```
+
+### opencode
+For **OpenCode** sessions using the opencode-ai SDK.
+- Responses returned directly from SDK (no hooks needed)
+- Requires: OpenCode server running
+
+```bash
+repowire setup --backend opencode
+repowire serve --backend opencode
+```
+
+Set default backend in config: `daemon.backend: "claudemux"` or `"opencode"`
+
 ## MCP Tools
 
 | Tool | Description |
