@@ -39,7 +39,8 @@ def install_hooks(dev: bool = False) -> bool:
 
     if dev:
         project_dir = Path(__file__).parent.parent.parent
-        base_cmd = f"uvx --from {project_dir} repowire"
+        # Use uv run for dev mode to always run from source (no caching)
+        base_cmd = f"uv run --directory {project_dir} repowire"
     else:
         base_cmd = "uvx repowire"
 

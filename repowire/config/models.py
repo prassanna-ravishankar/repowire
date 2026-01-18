@@ -42,6 +42,9 @@ class PeerConfig(BaseModel):
     opencode_url: str | None = Field(None, description="OpenCode server URL for this peer")
     session_id: str | None = Field(None, description="Session ID (Claude or OpenCode)")
 
+    # metadata
+    metadata: dict = Field(default_factory=dict, description="Additional metadata (e.g., branch)")
+
 
 class DaemonConfig(BaseModel):
     """Configuration for the daemon process."""
@@ -54,7 +57,6 @@ class DaemonConfig(BaseModel):
     # Legacy/additional settings
     auto_reconnect: bool = Field(default=True, description="Auto-reconnect on disconnect")
     heartbeat_interval: int = Field(default=30, description="Heartbeat interval in seconds")
-    socket_path: str = Field(default="/tmp/repowire.sock", description="Unix socket path for IPC")
 
 
 class LoggingConfig(BaseModel):
@@ -101,15 +103,21 @@ class Config(BaseModel):
         tmux_session: str | None = None,
         session_id: str | None = None,
         opencode_url: str | None = None,
+        metadata: dict | None = None,
     ) -> None:
         """Add or update a peer by name."""
         existing = self.peers.get(name)
+        # Merge metadata with existing
+        merged_metadata = (existing.metadata if existing else {}).copy()
+        if metadata:
+            merged_metadata.update(metadata)
         self.peers[name] = PeerConfig(
             name=name,
             path=path or (existing.path if existing else None),
             tmux_session=tmux_session or (existing.tmux_session if existing else None),
             session_id=session_id or (existing.session_id if existing else None),
             opencode_url=opencode_url or (existing.opencode_url if existing else None),
+            metadata=merged_metadata,
         )
         self.save()
 

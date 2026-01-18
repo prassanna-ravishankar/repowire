@@ -453,7 +453,7 @@ def peer_ask(name: str, query: str, timeout: int) -> None:
             resp.raise_for_status()
             data = resp.json()
 
-            if "error" in data:
+            if data.get("error"):
                 console.print(f"[red]Error: {data['error']}[/]")
             else:
                 console.print(f"[cyan]{name}:[/] {data.get('text', '')}")

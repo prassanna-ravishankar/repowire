@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from repowire.daemon.auth import require_auth
-from repowire.daemon.deps import get_peer_manager
+from repowire.daemon.deps import get_backend, get_peer_manager
 from repowire.protocol.peers import PeerStatus
 
 router = APIRouter(tags=["messages"])
@@ -63,6 +63,13 @@ class OkResponse(BaseModel):
     """Simple OK response."""
 
     ok: bool = True
+
+
+class HookResponseRequest(BaseModel):
+    """Request from Stop hook with captured response."""
+
+    correlation_id: str = Field(..., description="Correlation ID of the pending query")
+    response: str = Field(..., description="Captured response text")
 
 
 @router.post("/query", response_model=QueryResponse)
@@ -156,5 +163,17 @@ async def update_session(
     if not updated:
         # Peer might not be registered yet - that's okay for session updates
         pass
+
+    return OkResponse()
+
+
+@router.post("/hook/response", response_model=OkResponse)
+async def hook_response(request: HookResponseRequest) -> OkResponse:
+    """Receive response from Stop hook (no auth - called by local hooks)."""
+    backend = get_backend()
+
+    # Only claudemux backend supports resolve_query
+    if hasattr(backend, "resolve_query"):
+        backend.resolve_query(request.correlation_id, request.response)
 
     return OkResponse()

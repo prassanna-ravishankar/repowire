@@ -8,6 +8,14 @@ from typing import Any
 
 
 def extract_last_assistant_response(transcript_path: Path) -> str | None:
+    """Extract the last assistant response from a Claude Code transcript.
+
+    Args:
+        transcript_path: Path to the JSONL transcript file.
+
+    Returns:
+        The text content of the last assistant message, or None if not found.
+    """
     if not transcript_path.exists():
         return None
 
@@ -24,13 +32,11 @@ def extract_last_assistant_response(transcript_path: Path) -> str | None:
             except json.JSONDecodeError:
                 continue
 
+            # Check entry type (top-level type field)
             if entry.get("type") != "assistant":
                 continue
 
             message = entry.get("message", {})
-            if message.get("role") != "assistant":
-                continue
-
             content = message.get("content", [])
             text = _extract_text_from_content(content)
             if text:

@@ -65,7 +65,9 @@ class ClaudemuxBackend(Backend):
         self._pending_queries[correlation_id] = response_future
 
         # Store correlation_id in pending file for hook to find
-        pending_file = self._pending_dir / f"{peer.session_id or correlation_id}.json"
+        # File is named by tmux session (sanitized) so stop_handler can find it
+        pending_filename = self._tmux_to_filename(peer.tmux_session)
+        pending_file = self._pending_dir / f"{pending_filename}.json"
         import json
         from datetime import datetime
 
@@ -147,6 +149,10 @@ class ClaudemuxBackend(Backend):
             session, window = tmux_target.split(":", 1)
             return session, window
         return tmux_target, None
+
+    def _tmux_to_filename(self, tmux_session: str) -> str:
+        """Convert tmux session:window to safe filename."""
+        return tmux_session.replace(":", "_").replace("/", "_")
 
     def _get_pane(self, tmux_target: str | None) -> libtmux.Pane | None:
         """Get the tmux pane for a target."""

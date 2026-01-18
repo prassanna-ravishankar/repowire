@@ -1,36 +1,19 @@
 #!/usr/bin/env python3
-"""Stop hook handler - captures responses and sends to daemon."""
+"""Stop hook handler - captures responses and sends to daemon via HTTP."""
 from __future__ import annotations
 
 import json
 import os
-import socket
-import subprocess
 import sys
+import urllib.request
+import urllib.error
 from pathlib import Path
 
-SOCKET_PATH = "/tmp/repowire.sock"
+from repowire.hooks._tmux import get_tmux_target
+from repowire.session.transcript import extract_last_assistant_response
+
+DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", "http://127.0.0.1:8377")
 PENDING_DIR = Path.home() / ".repowire" / "pending"
-
-
-def get_tmux_target() -> str | None:
-    """Get current tmux session:window from environment."""
-    pane = os.environ.get("TMUX_PANE")
-    if not pane:
-        return None
-
-    try:
-        result = subprocess.run(
-            ["tmux", "display-message", "-t", pane, "-p", "#{session_name}:#{window_name}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except Exception:
-        pass
-
-    return None
 
 
 def tmux_to_filename(tmux_session: str) -> str:
@@ -38,54 +21,24 @@ def tmux_to_filename(tmux_session: str) -> str:
     return tmux_session.replace(":", "_").replace("/", "_")
 
 
-def extract_last_assistant_response(transcript_path: Path) -> str | None:
-    """Extract the last assistant response from a transcript."""
-    if not transcript_path.exists():
-        return None
-
-    last_response = None
-    with open(transcript_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-                if entry.get("type") == "assistant":
-                    message = entry.get("message", {})
-                    content = message.get("content", [])
-                    if isinstance(content, list):
-                        texts = [
-                            c.get("text", "")
-                            for c in content
-                            if isinstance(c, dict) and c.get("type") == "text"
-                        ]
-                        if texts:
-                            last_response = " ".join(texts)
-                    elif isinstance(content, str):
-                        last_response = content
-            except json.JSONDecodeError:
-                continue
-
-    return last_response
-
-
 def send_to_daemon(correlation_id: str, response: str) -> bool:
-    """Send a response to the daemon."""
+    """Send a response to the daemon via HTTP."""
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(5.0)
-        sock.connect(SOCKET_PATH)
-
-        message = json.dumps({
-            "type": "hook_response",
+        data = json.dumps({
             "correlation_id": correlation_id,
             "response": response,
-        })
-        sock.sendall(message.encode("utf-8") + b"\n")
-        sock.close()
-        return True
-    except (socket.error, OSError):
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            f"{DAEMON_URL}/hook/response",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
         return False
 
 

@@ -1,6 +1,6 @@
 # Repowire
 
-Mesh network for Claude Code sessions - enables AI agents to communicate.
+Mesh network for AI coding agents (Claude Code, OpenCode) - enables sessions to communicate.
 
 ## Quick Start
 
@@ -9,7 +9,7 @@ Mesh network for Claude Code sessions - enables AI agents to communicate.
 repowire setup --dev  # use --dev for local development
 
 # Start daemon
-repowire daemon start
+repowire serve
 
 # Start Claude in tmux windows - peers auto-register via SessionStart hook
 tmux new-window -n alice
@@ -19,7 +19,7 @@ tmux new-window -n bob
 cd ~/projects/backend && claude
 ```
 
-That's it. Alice and Bob can now talk:
+Alice and Bob can now talk:
 ```
 # In Alice's Claude session:
 "Ask bob what API endpoints they have"
@@ -39,20 +39,21 @@ That's it. Alice and Bob can now talk:
         └──────────┐           ┌──────────────┘
                    ▼           ▼
               ┌─────────────────────┐
-              │      Daemon         │
-              │  /tmp/repowire.sock │
+              │   HTTP Daemon       │
+              │  127.0.0.1:8377     │
               │                     │
               │  - routes queries   │
               │  - tracks pending   │
-              │  - cleans stale     │
+              │  - receives hooks   │
               └─────────────────────┘
 ```
 
-1. **SessionStart hook** registers peer (name = folder name, e.g., `frontend`)
-2. **ask_peer** sends query to daemon → daemon injects into target's tmux pane
-3. **Target Claude** responds naturally
-4. **Stop hook** fires at end of turn, captures response from transcript
-5. **Response** routes back to caller via daemon
+1. **SessionStart hook** registers peer with metadata (name = folder name, git branch)
+2. **SessionStart hook** injects peer context into Claude (lists available peers)
+3. **ask_peer** sends query to daemon, daemon injects into target's tmux pane
+4. **Target Claude** responds naturally
+5. **Stop hook** fires at end of turn, captures response from transcript
+6. **Response** routes back to caller via daemon
 
 ## MCP Tools
 
@@ -70,17 +71,22 @@ Note: Peers auto-register via SessionStart hook. Your response to `ask_peer` que
 ```bash
 # Peer management
 repowire peer list                          # List peers and status
-repowire peer register NAME -t TMUX -p PATH # Register a peer
+repowire peer register NAME -t TMUX -p PATH # Register a peer (claudemux)
+repowire peer register NAME -u URL -p PATH  # Register a peer (opencode)
 repowire peer unregister NAME               # Remove a peer
 repowire peer ask NAME "query"              # Test: ask a peer
 
-# Hook management
-repowire hooks install                      # Install Claude Code hooks
-repowire hooks uninstall                    # Remove hooks
-repowire hooks status                       # Check installation
+# Backend-specific hook/plugin management
+repowire claudemux install                  # Install Claude Code hooks
+repowire claudemux uninstall                # Remove hooks
+repowire claudemux status                   # Check installation
+repowire opencode install                   # Install OpenCode plugin
+repowire opencode status                    # Check installation
 
-# Daemon (for relay mode)
-repowire daemon start --relay-url URL       # Start daemon
+# Daemon
+repowire serve                              # Start daemon (default backend)
+repowire serve --backend claudemux          # Start with specific backend
+repowire serve --backend opencode           # Start with OpenCode backend
 
 # Relay server (self-hosted)
 repowire relay start --port 8000            # Start relay server
@@ -114,9 +120,8 @@ repowire relay generate-key --user-id myuser
 ### 3. Start daemon on each machine
 
 ```bash
-repowire daemon start \
-  --relay-url wss://relay.repowire.io \
-  --api-key rw_xxx
+# Configure relay in ~/.repowire/config.yaml, then:
+repowire serve
 ```
 
 ## Configuration
@@ -124,6 +129,13 @@ repowire daemon start \
 Config file: `~/.repowire/config.yaml`
 
 ```yaml
+daemon:
+  host: "127.0.0.1"
+  port: 8377
+  backend: "claudemux"  # or "opencode"
+  auto_reconnect: true
+  heartbeat_interval: 30
+
 relay:
   enabled: false
   url: "wss://relay.repowire.io"
@@ -133,25 +145,25 @@ relay:
 peers:
   frontend:
     name: frontend
-    tmux_session: "0:frontend"
     path: "/Users/you/app/frontend"
-    session_id: "abc123..."  # set by hook
+    tmux_session: "0:frontend"    # claudemux backend
+    session_id: "abc123..."       # set by hook
+    metadata:
+      branch: "feat/new-ui"       # git branch, auto-detected
   backend:
     name: backend
-    tmux_session: "0:backend"
     path: "/Users/you/app/backend"
+    opencode_url: "http://localhost:4096"  # opencode backend
     session_id: "def456..."
-
-daemon:
-  auto_reconnect: true
-  heartbeat_interval: 30
+    metadata:
+      branch: "main"
 ```
 
 ## Testing the Flow
 
 Use tmux MCP to set up test peers:
 
-1. Start daemon: `repowire daemon start &`
+1. Start daemon: `repowire serve &`
 2. Create windows for alice and bob via `tmux-mcp create-window`
 3. In each window, run: `cd ~/development/projects/<some-project> && claude`
 4. Verify with `repowire peer list` - peers show as folder names (e.g., `a2a-chat`)
@@ -163,8 +175,9 @@ Note: Peer name = folder name, not tmux window name.
 ## Requirements
 
 - Python 3.10+
-- tmux
-- Claude Code with hooks support
+- tmux (for claudemux backend)
+- Claude Code with hooks support (for claudemux backend)
+- OpenCode (for opencode backend)
 
 ## License
 

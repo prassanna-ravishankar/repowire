@@ -18,7 +18,7 @@ class TestConfig:
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.object(Config, "get_config_dir", return_value=Path(tmpdir)):
                 config = Config()
-                config.add_peer("backend", "claude-backend", "/app/backend")
+                config.add_peer("backend", path="/app/backend", tmux_session="claude-backend")
 
                 assert "backend" in config.peers
                 assert config.peers["backend"].tmux_session == "claude-backend"
@@ -27,7 +27,7 @@ class TestConfig:
     def test_remove_peer(self):
         config = Config(
             peers={
-                "backend": PeerConfig(tmux_session="test", path="/test"),
+                "backend": PeerConfig(name="backend", tmux_session="test", path="/test"),
             }
         )
 

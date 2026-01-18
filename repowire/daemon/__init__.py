@@ -1,9 +1,4 @@
-"""Repowire daemon module."""
-from repowire.daemon.server import (
-    RepowireDaemon,
-    get_daemon_pid,
-    is_daemon_running,
-    run_daemon,
-)
+"""Repowire daemon module - HTTP-based daemon using FastAPI."""
+from repowire.daemon.app import create_app, create_test_app
 
-__all__ = ["RepowireDaemon", "run_daemon", "is_daemon_running", "get_daemon_pid"]
+__all__ = ["create_app", "create_test_app"]

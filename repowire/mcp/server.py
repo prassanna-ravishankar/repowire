@@ -63,7 +63,7 @@ def create_mcp_server() -> FastMCP:
                 "text": query,
             },
         )
-        if "error" in result:
+        if result.get("error"):
             raise Exception(result["error"])
         return result.get("text", "")
 

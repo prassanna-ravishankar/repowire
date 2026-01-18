@@ -88,6 +88,7 @@ class PeerManager:
                         tmux_session=peer_config.tmux_session,
                         status=status,
                         last_seen=datetime.utcnow() if status != PeerStatus.OFFLINE else None,
+                        metadata=peer_config.metadata,
                     )
                 )
                 seen.add(peer_config.name)
