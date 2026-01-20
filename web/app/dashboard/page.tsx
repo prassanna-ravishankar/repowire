@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
 import {
   Activity,
   Users,
@@ -461,7 +462,9 @@ function ConversationCard({
           <div className="space-y-1">
             <div className="text-[10px] uppercase text-blue-400 font-bold">Query</div>
             <div className="bg-[#050505] border border-zinc-800/50 rounded-lg p-3">
-              <p className="text-sm text-zinc-300 whitespace-pre-wrap">{conversation.query.text}</p>
+              <div className="text-sm text-zinc-300 prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-zinc-900 prose-pre:border prose-pre:border-zinc-700 prose-code:text-blue-300">
+                <ReactMarkdown>{conversation.query.text}</ReactMarkdown>
+              </div>
             </div>
           </div>
 
@@ -470,10 +473,12 @@ function ConversationCard({
             <div className="space-y-1">
               <div className="text-[10px] uppercase text-emerald-400 font-bold">Response</div>
               <div className="bg-[#050505] border border-emerald-500/10 rounded-lg p-3">
-                <p className={cn(
-                  "text-sm whitespace-pre-wrap",
+                <div className={cn(
+                  "text-sm prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-zinc-900 prose-pre:border prose-pre:border-zinc-700 prose-code:text-emerald-300",
                   conversation.status === 'error' ? "text-red-400" : "text-zinc-300"
-                )}>{conversation.response.text}</p>
+                )}>
+                  <ReactMarkdown>{conversation.response.text}</ReactMarkdown>
+                </div>
               </div>
             </div>
           ) : conversation.status === 'pending' && (
