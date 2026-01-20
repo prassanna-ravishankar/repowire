@@ -916,5 +916,15 @@ def hook_session() -> None:
     sys.exit(session_main())
 
 
+@hook.command(name="prompt")
+def hook_prompt() -> None:
+    """Handle UserPromptSubmit hook - mark peer as busy."""
+    import sys
+
+    from repowire.hooks.prompt_handler import main as prompt_main
+
+    sys.exit(prompt_main())
+
+
 if __name__ == "__main__":
     main()

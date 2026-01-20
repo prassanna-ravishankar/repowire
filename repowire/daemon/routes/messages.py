@@ -26,6 +26,7 @@ class QueryResponse(BaseModel):
 
     text: str | None = None
     error: str | None = None
+    status: str | None = None  # "busy" or "offline" if rejected
 
 
 class NotifyRequest(BaseModel):
@@ -79,6 +80,20 @@ async def query_peer(
 ) -> QueryResponse:
     """Send a query to a peer and wait for response."""
     peer_manager = get_peer_manager()
+
+    # Check peer state before attempting query
+    peer = await peer_manager.get_peer(request.to_peer)
+    if peer:
+        if peer.status == PeerStatus.BUSY:
+            return QueryResponse(
+                error=f"Peer '{request.to_peer}' is busy",
+                status="busy",
+            )
+        if peer.status == PeerStatus.OFFLINE:
+            return QueryResponse(
+                error=f"Peer '{request.to_peer}' is offline",
+                status="offline",
+            )
 
     # Use "cli" as default from_peer if not specified
     from_peer = request.from_peer or "cli"

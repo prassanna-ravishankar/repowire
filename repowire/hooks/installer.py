@@ -51,6 +51,7 @@ def install_hooks(dev: bool = False) -> bool:
     settings["hooks"]["Stop"] = [_make_hook_config(f"{base_cmd} hook stop")]
     settings["hooks"]["SessionStart"] = [_make_hook_config(f"{base_cmd} hook session")]
     settings["hooks"]["SessionEnd"] = [_make_hook_config(f"{base_cmd} hook session")]
+    settings["hooks"]["UserPromptSubmit"] = [_make_hook_config(f"{base_cmd} hook prompt")]
 
     _save_claude_settings(settings)
     return True
@@ -62,7 +63,7 @@ def uninstall_hooks() -> bool:
     if "hooks" not in settings:
         return True
 
-    for event in ["Stop", "SessionStart", "SessionEnd"]:
+    for event in ["Stop", "SessionStart", "SessionEnd", "UserPromptSubmit"]:
         if event in settings["hooks"]:
             del settings["hooks"][event]
 
@@ -80,5 +81,5 @@ def check_hooks_installed() -> bool:
 
     return all(
         event in settings["hooks"]
-        for event in ["Stop", "SessionStart", "SessionEnd"]
+        for event in ["Stop", "SessionStart", "SessionEnd", "UserPromptSubmit"]
     )
