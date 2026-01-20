@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from collections import deque
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from repowire.config.models import Config, PeerConfig, load_config
 from repowire.protocol.peers import Peer, PeerStatus
@@ -27,11 +28,27 @@ class PeerManager:
         self._peers: dict[str, Peer] = {}
         self._lock = asyncio.Lock()
         self._machine = socket.gethostname()
+        self._events: deque[dict[str, Any]] = deque(maxlen=100)
 
     @property
     def backend_name(self) -> str:
         """Get the backend name."""
         return self._backend.name
+
+    def _add_event(self, type: str, data: dict[str, Any]) -> None:
+        """Add an event to the history."""
+        self._events.append(
+            {
+                "id": str(datetime.utcnow().timestamp()),
+                "type": type,
+                "timestamp": datetime.utcnow().isoformat(),
+                **data,
+            }
+        )
+
+    def get_events(self) -> list[dict[str, Any]]:
+        """Get the last 100 events."""
+        return list(self._events)
 
     async def start(self) -> None:
         """Start the peer manager and backend."""
@@ -175,7 +192,24 @@ class PeerManager:
             f"your response is automatically captured and returned to {from_peer}."
         )
 
-        return await self._backend.send_query(peer_config, formatted_query, timeout)
+        self._add_event(
+            "query",
+            {"from": from_peer, "to": to_peer, "text": text, "status": "pending"},
+        )
+
+        try:
+            response = await self._backend.send_query(peer_config, formatted_query, timeout)
+            self._add_event(
+                "response",
+                {"from": to_peer, "to": from_peer, "text": response, "status": "success"},
+            )
+            return response
+        except Exception as e:
+            self._add_event(
+                "response",
+                {"from": to_peer, "to": from_peer, "text": str(e), "status": "error"},
+            )
+            raise
 
     async def notify(self, from_peer: str, to_peer: str, text: str) -> bool:
         """Send a notification to a peer (fire-and-forget).
@@ -200,6 +234,8 @@ class PeerManager:
 
         # Format the notification with sender info
         formatted_message = f"[Repowire Notification from @{from_peer}] {text}"
+
+        self._add_event("notification", {"from": from_peer, "to": to_peer, "text": text})
 
         try:
             await self._backend.send_message(peer_config, formatted_message)
@@ -231,6 +267,8 @@ class PeerManager:
         sent_to: list[str] = []
 
         formatted_message = f"[Repowire Broadcast from @{from_peer}] {text}"
+
+        self._add_event("broadcast", {"from": from_peer, "text": text})
 
         for peer_config in self._config.peers.values():
             if peer_config.name in exclude:

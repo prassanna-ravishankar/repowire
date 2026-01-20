@@ -186,9 +186,32 @@ async def update_session(
 async def hook_response(request: HookResponseRequest) -> OkResponse:
     """Receive response from Stop hook (no auth - called by local hooks)."""
     backend = get_backend()
+    peer_manager = get_peer_manager()
+
+    # Log the captured response event
+    # We might not have the full 'from/to' context here easily without tracking it in memory
+    # mapping correlation_id -> message details.
+    # For now, we'll log it as a system event or with the correlation ID.
+    peer_manager._add_event(
+        "response_captured",
+        {
+            "correlation_id": request.correlation_id,
+            "text": request.response,
+            "status": "success",
+        },
+    )
 
     # Only claudemux backend supports resolve_query
     if hasattr(backend, "resolve_query"):
         backend.resolve_query(request.correlation_id, request.response)
 
     return OkResponse()
+
+
+@router.get("/events")
+async def get_events(
+    _: str | None = Depends(require_auth),
+) -> list[dict]:
+    """Get the last 100 communication events."""
+    peer_manager = get_peer_manager()
+    return peer_manager.get_events()
