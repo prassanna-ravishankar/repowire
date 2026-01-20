@@ -188,18 +188,6 @@ async def hook_response(request: HookResponseRequest) -> OkResponse:
     backend = get_backend()
     peer_manager = get_peer_manager()
 
-    # Log the captured response event
-    # We might not have the full 'from/to' context here easily without tracking it in memory
-    # mapping correlation_id -> message details.
-    # For now, we'll log it as a system event or with the correlation ID.
-    peer_manager._add_event(
-        "response_captured",
-        {
-            "correlation_id": request.correlation_id,
-            "text": request.response,
-            "status": "success",
-        },
-    )
 
     # Only claudemux backend supports resolve_query
     if hasattr(backend, "resolve_query"):

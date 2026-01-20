@@ -35,16 +35,26 @@ class PeerManager:
         """Get the backend name."""
         return self._backend.name
 
-    def _add_event(self, type: str, data: dict[str, Any]) -> None:
-        """Add an event to the history."""
+    def _add_event(self, type: str, data: dict[str, Any]) -> str:
+        """Add an event to the history. Returns event ID."""
+        event_id = str(datetime.utcnow().timestamp())
         self._events.append(
             {
-                "id": str(datetime.utcnow().timestamp()),
+                "id": event_id,
                 "type": type,
                 "timestamp": datetime.utcnow().isoformat(),
                 **data,
             }
         )
+        return event_id
+
+    def _update_event(self, event_id: str, updates: dict[str, Any]) -> bool:
+        """Update an existing event by ID."""
+        for event in self._events:
+            if event["id"] == event_id:
+                event.update(updates)
+                return True
+        return False
 
     def get_events(self) -> list[dict[str, Any]]:
         """Get the last 100 events."""
@@ -92,8 +102,13 @@ class PeerManager:
 
         for peer_config in self._config.peers.values():
             if peer_config.name in seen:
-                # Use locally registered peer
-                result.append(local_peers[peer_config.name])
+                # Use locally registered peer, but verify status with backend
+                peer = local_peers[peer_config.name]
+                backend_status = self._backend.get_peer_status(peer_config)
+                # If backend says offline but we think online/busy, trust backend
+                if backend_status == PeerStatus.OFFLINE and peer.status != PeerStatus.OFFLINE:
+                    peer.status = PeerStatus.OFFLINE
+                result.append(peer)
             else:
                 # Build peer from config
                 status = self._backend.get_peer_status(peer_config)
@@ -121,9 +136,35 @@ class PeerManager:
         """Update peer status."""
         async with self._lock:
             if name in self._peers:
+                old_status = self._peers[name].status
                 self._peers[name].status = status
                 self._peers[name].last_seen = datetime.utcnow()
+                # Log status change event if status actually changed
+                if old_status != status:
+                    self._add_event(
+                        "status_change",
+                        {"peer": name, "new_status": status.value, "text": f"{name} is now {status.value}"},
+                    )
                 return True
+            else:
+                # Peer not in memory yet - reload config and create from it
+                self._config = load_config()
+                peer_config = self._config.get_peer(name)
+                if peer_config:
+                    self._peers[name] = Peer(
+                        name=name,
+                        path=peer_config.path,
+                        machine=self._machine,
+                        tmux_session=peer_config.tmux_session,
+                        status=status,
+                        last_seen=datetime.utcnow(),
+                        metadata=peer_config.metadata,
+                    )
+                    self._add_event(
+                        "status_change",
+                        {"peer": name, "new_status": status.value, "text": f"{name} is now {status.value}"},
+                    )
+                    return True
             return False
 
     async def mark_offline(self, name: str) -> int:
@@ -192,19 +233,23 @@ class PeerManager:
             f"your response is automatically captured and returned to {from_peer}."
         )
 
-        self._add_event(
+        query_event_id = self._add_event(
             "query",
             {"from": from_peer, "to": to_peer, "text": text, "status": "pending"},
         )
 
         try:
             response = await self._backend.send_query(peer_config, formatted_query, timeout)
+            # Update query event to success
+            self._update_event(query_event_id, {"status": "success"})
             self._add_event(
                 "response",
                 {"from": to_peer, "to": from_peer, "text": response, "status": "success"},
             )
             return response
         except Exception as e:
+            # Update query event to error
+            self._update_event(query_event_id, {"status": "error"})
             self._add_event(
                 "response",
                 {"from": to_peer, "to": from_peer, "text": str(e), "status": "error"},
