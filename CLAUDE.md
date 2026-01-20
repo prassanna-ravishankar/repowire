@@ -30,6 +30,26 @@ repowire setup --dev          # dev mode (uses local code)
 repowire setup --backend claudemux
 ```
 
+## Dashboard & Observability
+
+Repowire includes a "Cyber-Minimalist Control Plane" dashboard for monitoring inter-agent communication.
+
+- **URL**: `http://localhost:8377/dashboard` (when `repowire serve` is running)
+- **Architecture**: Next.js static export served by the Python FastAPI daemon.
+- **Event Logging**: The `PeerManager` maintains an in-memory circular buffer of the last 100 communication events (queries, responses, broadcasts).
+- **Relay Support**: The UI includes a connection interface for entering secrets for the hosted relay.
+
+### Dashboard Development
+
+```bash
+# Build the UI and export static files to web/out/
+repowire build-ui
+
+# Run frontend in development mode with hot reloading
+cd web
+npm run dev # runs on http://localhost:3000
+```
+
 ## Architecture Overview
 
 Repowire is a mesh network enabling Claude Code sessions to communicate. It has a **pluggable backend architecture** supporting both local (tmux) and remote (OpenCode SDK) message delivery.

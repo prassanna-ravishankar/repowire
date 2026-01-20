@@ -119,6 +119,38 @@ def setup(dev: bool, backend: str | None, no_service: bool) -> None:
         console.print("Daemon is running. Restart your IDE to use Repowire.")
 
 
+@main.command(name="build-ui")
+def build_ui() -> None:
+    """Build the web dashboard."""
+    import subprocess
+    import sys
+
+    web_dir = Path(__file__).parent.parent / "web"
+    if not web_dir.exists():
+        console.print("[red]Error: 'web' directory not found.[/]")
+        sys.exit(1)
+
+    console.print("[cyan]Building web dashboard...[/]")
+
+    # npm install
+    console.print("[dim]Running npm install...[/]")
+    try:
+        subprocess.run(["npm", "install"], cwd=web_dir, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        console.print(f"[red]Failed to run npm install: {e}[/]")
+        sys.exit(1)
+
+    # npm run build
+    console.print("[dim]Running npm run build...[/]")
+    try:
+        subprocess.run(["npm", "run", "build"], cwd=web_dir, check=True)
+        console.print("[green]✓ Web dashboard built successfully![/]")
+        console.print("Run 'repowire serve' to view it at http://localhost:8377/dashboard")
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Failed to build web dashboard: {e}[/]")
+        sys.exit(1)
+
+
 @main.command()
 def uninstall() -> None:
     """Remove all repowire components: hooks, MCP server, and daemon service."""

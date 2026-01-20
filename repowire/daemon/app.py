@@ -7,8 +7,10 @@ import signal
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, AsyncIterator, Callable
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from repowire.backends import get_backend as get_backend_by_name
 from repowire.config.models import Config, load_config
@@ -28,18 +30,7 @@ def create_app(
     backend_override: str | None = None,
     relay_mode: bool = False,
 ) -> FastAPI:
-    """Create and configure the FastAPI application.
-
-    Args:
-        config: Optional configuration. Loaded from disk if not provided.
-        backend_factory: Optional factory function to create the backend.
-                        If not provided, uses config or claudemux by default.
-        backend_override: Override the configured backend (claudemux or opencode).
-        relay_mode: Enable relay mode for remote peer communication.
-
-    Returns:
-        Configured FastAPI application.
-    """
+    """Create and configure the FastAPI application."""
     # Store these for the lifespan closure
     _backend_override = backend_override
     _relay_mode = relay_mode
@@ -103,6 +94,38 @@ def create_app(
     app.include_router(health.router)
     app.include_router(peers.router)
     app.include_router(messages.router)
+
+    # --- Static File Serving (Dashboard) ---
+    # Find the web output directory
+    # 1. Check current directory (dev)
+    # 2. Check parent directory (dev)
+    # 3. Check installed package location (bundled)
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    web_out = os.path.join(base_dir, "web", "out")
+
+    if os.path.exists(web_out):
+        # Mount the _next directory for assets
+        next_static = os.path.join(web_out, "_next")
+        if os.path.exists(next_static):
+            app.mount("/_next", StaticFiles(directory=next_static), name="next_static")
+
+        # Serve specific routes
+        @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+        async def serve_dashboard():
+            dashboard_path = os.path.join(web_out, "dashboard.html")
+            if os.path.exists(dashboard_path):
+                return FileResponse(dashboard_path)
+            return HTMLResponse("Dashboard not found. Please run 'npm run build' in the web directory.")
+
+        @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+        async def serve_landing():
+            index_path = os.path.join(web_out, "index.html")
+            if os.path.exists(index_path):
+                return FileResponse(index_path)
+            return HTMLResponse("Landing page not found. Please run 'npm run build' in the web directory.")
+
+        # Mount the rest of the static files (images, icons, etc.)
+        app.mount("/", StaticFiles(directory=web_out), name="web_static")
 
     # Add shutdown endpoint
     @app.post("/shutdown", include_in_schema=False)
