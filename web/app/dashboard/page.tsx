@@ -54,6 +54,7 @@ interface Event {
   status?: "pending" | "success" | "error";
   peer?: string;
   new_status?: "online" | "busy" | "offline";
+  query_id?: string;
 }
 
 interface Conversation {
@@ -116,11 +117,10 @@ export default function Dashboard() {
     const responseEvents = events.filter(e => e.type === 'response');
 
     for (const query of queryEvents) {
-      // Find matching response (from/to are swapped)
+      // Find matching response by query_id (preferred) or fall back to from/to matching
       const response = responseEvents.find(r =>
-        r.from === query.to &&
-        r.to === query.from &&
-        new Date(r.timestamp) > new Date(query.timestamp)
+        r.query_id === query.id ||
+        (r.from === query.to && r.to === query.from && new Date(r.timestamp) > new Date(query.timestamp))
       );
 
       convos.push({

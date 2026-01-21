@@ -7,6 +7,7 @@ import socket
 from collections import deque
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from repowire.config.models import Config, PeerConfig, load_config
 from repowire.protocol.peers import Peer, PeerStatus
@@ -37,7 +38,7 @@ class PeerManager:
 
     def _add_event(self, type: str, data: dict[str, Any]) -> str:
         """Add an event to the history. Returns event ID."""
-        event_id = str(datetime.utcnow().timestamp())
+        event_id = str(uuid4())
         self._events.append(
             {
                 "id": event_id,
@@ -244,7 +245,7 @@ class PeerManager:
             self._update_event(query_event_id, {"status": "success"})
             self._add_event(
                 "response",
-                {"from": to_peer, "to": from_peer, "text": response, "status": "success"},
+                {"from": to_peer, "to": from_peer, "text": response, "status": "success", "query_id": query_event_id},
             )
             return response
         except Exception as e:
