@@ -67,7 +67,7 @@ interface Conversation {
   status: "pending" | "success" | "error";
 }
 
-const API_BASE = "http://localhost:8377";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8377";
 
 export default function Dashboard() {
   const [peers, setPeers] = useState<Peer[]>([]);
@@ -356,15 +356,19 @@ export default function Dashboard() {
                 <span className="text-xs font-bold uppercase tracking-wider">Relay</span>
               </div>
               <p className="text-xs leading-relaxed text-zinc-500 mb-3">
-                Local mode. Add API key for multi-machine mesh.
+                Local mode. Multi-machine mesh coming soon.
               </p>
               <input
                 type="password"
                 placeholder="API Key..."
-                className="w-full bg-black/40 border border-zinc-800 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-blue-500/50 mb-2"
+                disabled
+                className="w-full bg-black/40 border border-zinc-800 rounded-lg px-3 py-2 text-xs focus:outline-none mb-2 opacity-50 cursor-not-allowed"
               />
-              <button className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition-colors">
-                Connect Relay
+              <button
+                disabled
+                className="w-full py-2 bg-zinc-700 text-zinc-400 text-xs font-bold rounded-lg cursor-not-allowed"
+              >
+                Coming Soon
               </button>
             </div>
           </div>
