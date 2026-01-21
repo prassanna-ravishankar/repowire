@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import os
 import signal
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, AsyncIterator, Callable
+from typing import TYPE_CHECKING
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,11 +27,21 @@ __version__ = "0.1.0"
 
 def create_app(
     config: Config | None = None,
-    backend_factory: Callable[[], "Backend"] | None = None,
+    backend_factory: Callable[[], Backend] | None = None,
     backend_override: str | None = None,
     relay_mode: bool = False,
 ) -> FastAPI:
-    """Create and configure the FastAPI application."""
+    """Create and configure the FastAPI application.
+
+    Args:
+        config: Optional configuration. Loaded from disk if not provided.
+        backend_factory: Optional factory function to create the backend.
+        backend_override: Override the configured backend (claudemux or opencode).
+        relay_mode: Enable relay mode for remote peer communication.
+
+    Returns:
+        Configured FastAPI application.
+    """
     # Store these for the lifespan closure
     _backend_override = backend_override
     _relay_mode = relay_mode
@@ -115,14 +126,14 @@ def create_app(
             dashboard_path = os.path.join(web_out, "dashboard.html")
             if os.path.exists(dashboard_path):
                 return FileResponse(dashboard_path)
-            return HTMLResponse("Dashboard not found. Please run 'npm run build' in the web directory.")
+            return HTMLResponse("Dashboard not found. Please run 'repowire build-ui'.")
 
         @app.get("/", response_class=HTMLResponse, include_in_schema=False)
         async def serve_landing():
             index_path = os.path.join(web_out, "index.html")
             if os.path.exists(index_path):
                 return FileResponse(index_path)
-            return HTMLResponse("Landing page not found. Please run 'npm run build' in the web directory.")
+            return HTMLResponse("Landing page not found. Please run 'repowire build-ui'.")
 
         # Mount the rest of the static files (images, icons, etc.)
         app.mount("/", StaticFiles(directory=web_out), name="web_static")
@@ -142,7 +153,7 @@ def create_app(
 
 def create_test_app(
     config: Config | None = None,
-    backend: "Backend | None" = None,
+    backend: Backend | None = None,
 ) -> FastAPI:
     """Create app for testing with optional mock backend."""
 

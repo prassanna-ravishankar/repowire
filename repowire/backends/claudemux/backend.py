@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -69,14 +69,13 @@ class ClaudemuxBackend(Backend):
 
         # Store correlation_id in pending file for hook to find
         # File is named by tmux session (sanitized) so stop_handler can find it
-        self._pending_dir.mkdir(parents=True, exist_ok=True)
         pending_filename = self._tmux_to_filename(peer.tmux_session)
         pending_file = self._pending_dir / f"{pending_filename}.json"
         pending_data = {
             "correlation_id": correlation_id,
             "to_peer": peer.name,
             "query": text,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         pending_file.write_text(json.dumps(pending_data))
 

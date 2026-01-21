@@ -117,11 +117,8 @@ export default function Dashboard() {
     const responseEvents = events.filter(e => e.type === 'response');
 
     for (const query of queryEvents) {
-      // Find matching response by query_id (preferred) or fall back to from/to matching
-      const response = responseEvents.find(r =>
-        r.query_id === query.id ||
-        (r.from === query.to && r.to === query.from && new Date(r.timestamp) > new Date(query.timestamp))
-      );
+      // Find matching response by query_id (reliable identifier)
+      const response = responseEvents.find(r => r.query_id === query.id);
 
       convos.push({
         id: query.id,

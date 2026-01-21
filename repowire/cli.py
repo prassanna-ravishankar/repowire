@@ -136,7 +136,13 @@ def build_ui() -> None:
     console.print("[dim]Running npm install...[/]")
     try:
         subprocess.run(["npm", "install"], cwd=web_dir, check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+    except FileNotFoundError:
+        console.print(
+            "[red]Failed to run npm install: npm command not found. "
+            "Please ensure Node.js and npm are installed and in your PATH.[/]"
+        )
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
         console.print(f"[red]Failed to run npm install: {e}[/]")
         sys.exit(1)
 
@@ -155,7 +161,7 @@ def build_ui() -> None:
 def uninstall() -> None:
     """Remove all repowire components: hooks, MCP server, and daemon service."""
     from repowire.config.models import load_config
-    from repowire.service.installer import get_platform, get_service_status, uninstall_service
+    from repowire.service.installer import get_service_status, uninstall_service
 
     config = load_config()
     backend = config.daemon.backend or "claudemux"
@@ -773,7 +779,7 @@ def daemon_status() -> None:
             resp = client.get(f"{_get_daemon_url()}/health")
             resp.raise_for_status()
             data = resp.json()
-            console.print(f"[green]Daemon is running[/]")
+            console.print("[green]Daemon is running[/]")
             console.print(f"  Backend: {data.get('backend', 'unknown')}")
             console.print(f"  Relay: {'enabled' if data.get('relay_mode') else 'disabled'}")
     except httpx.ConnectError:
@@ -814,7 +820,7 @@ def relay_generate_key(user_id: str, name: str) -> None:
     from repowire.relay.auth import generate_api_key
 
     api_key = generate_api_key(user_id, name)
-    console.print(f"[green]Generated API key:[/]")
+    console.print("[green]Generated API key:[/]")
     console.print(f"  {api_key.key}")
     console.print("")
     console.print("[yellow]Save this key - it won't be shown again![/]")

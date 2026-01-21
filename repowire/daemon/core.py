@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import socket
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -43,7 +43,7 @@ class PeerManager:
             {
                 "id": event_id,
                 "type": type,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 **data,
             }
         )
@@ -73,7 +73,7 @@ class PeerManager:
         """Register a peer in the mesh."""
         async with self._lock:
             peer.status = PeerStatus.ONLINE
-            peer.last_seen = datetime.utcnow()
+            peer.last_seen = datetime.now(timezone.utc)
             self._peers[peer.name] = peer
 
     async def unregister_peer(self, name: str) -> bool:
@@ -120,7 +120,7 @@ class PeerManager:
                         machine=self._machine,
                         tmux_session=peer_config.tmux_session,
                         status=status,
-                        last_seen=datetime.utcnow() if status != PeerStatus.OFFLINE else None,
+                        last_seen=datetime.now(timezone.utc) if status != PeerStatus.OFFLINE else None,
                         metadata=peer_config.metadata,
                     )
                 )
@@ -139,7 +139,7 @@ class PeerManager:
             if name in self._peers:
                 old_status = self._peers[name].status
                 self._peers[name].status = status
-                self._peers[name].last_seen = datetime.utcnow()
+                self._peers[name].last_seen = datetime.now(timezone.utc)
                 # Log status change event if status actually changed
                 if old_status != status:
                     self._add_event(
@@ -158,7 +158,7 @@ class PeerManager:
                         machine=self._machine,
                         tmux_session=peer_config.tmux_session,
                         status=status,
-                        last_seen=datetime.utcnow(),
+                        last_seen=datetime.now(timezone.utc),
                         metadata=peer_config.metadata,
                     )
                     self._add_event(
@@ -248,12 +248,22 @@ class PeerManager:
                 {"from": to_peer, "to": from_peer, "text": response, "status": "success", "query_id": query_event_id},
             )
             return response
-        except Exception as e:
-            # Update query event to error
-            self._update_event(query_event_id, {"status": "error"})
+        except (ValueError, TimeoutError) as e:
+            # Update query event to error for known error types
+            self._update_event(query_event_id, {"status": "error", "error_message": str(e)})
             self._add_event(
                 "response",
-                {"from": to_peer, "to": from_peer, "text": str(e), "status": "error"},
+                {"from": to_peer, "to": from_peer, "text": str(e), "status": "error", "query_id": query_event_id},
+            )
+            raise
+        except Exception as e:
+            # Log unexpected errors and update events
+            import logging
+            logging.exception(f"Unexpected error during query to {to_peer}")
+            self._update_event(query_event_id, {"status": "error", "error_message": str(e)})
+            self._add_event(
+                "response",
+                {"from": to_peer, "to": from_peer, "text": str(e), "status": "error", "query_id": query_event_id},
             )
             raise
 
