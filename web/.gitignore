@@ -15,7 +15,7 @@
 
 # next.js
 /.next/
-/out/
+# /out/ - included in PyPI package for dashboard
 
 # production
 /build
