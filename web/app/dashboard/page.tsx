@@ -79,36 +79,80 @@ export default function Dashboard() {
   const [selectedPeer, setSelectedPeer] = useState<Peer | null>(null);
   const [expandedConversations, setExpandedConversations] = useState<Set<string>>(new Set());
 
-  const fetchData = useCallback(async () => {
-    setIsRefreshing(true);
+  // Fetch peers via REST (less frequent updates needed)
+  const fetchPeers = useCallback(async () => {
     try {
-      const [peersRes, eventsRes] = await Promise.all([
-        fetch(`${API_BASE}/peers`),
-        fetch(`${API_BASE}/events`)
-      ]);
-
-      if (peersRes.ok && eventsRes.ok) {
-        const peersData = await peersRes.json();
-        const eventsData = await eventsRes.json();
-        setPeers(peersData.peers || peersData);
-        setEvents(eventsData);
+      const res = await fetch(`${API_BASE}/peers`);
+      if (res.ok) {
+        const data = await res.json();
+        setPeers(data.peers || data);
         setIsConnected(true);
-      } else {
-        setIsConnected(false);
       }
     } catch (error) {
-      console.error("Failed to fetch dashboard data:", error);
-      setIsConnected(false);
-    } finally {
-      setIsRefreshing(false);
+      console.error("Failed to fetch peers:", error);
     }
   }, []);
 
+  // Fetch initial events via REST
+  const fetchEvents = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/events`);
+      if (res.ok) {
+        const data = await res.json();
+        setEvents(data);
+      }
+    } catch (error) {
+      console.error("Failed to fetch events:", error);
+    }
+  }, []);
+
+  // Manual refresh
+  const refreshData = useCallback(async () => {
+    setIsRefreshing(true);
+    await Promise.all([fetchPeers(), fetchEvents()]);
+    setIsRefreshing(false);
+  }, [fetchPeers, fetchEvents]);
+
+  // SSE for real-time event streaming
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 3000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
+    fetchPeers();
+    fetchEvents();
+
+    // Set up SSE connection for events
+    const eventSource = new EventSource(`${API_BASE}/events/stream`);
+
+    eventSource.onopen = () => {
+      setIsConnected(true);
+    };
+
+    eventSource.onmessage = (e) => {
+      try {
+        const event = JSON.parse(e.data);
+        setEvents(prev => {
+          // Avoid duplicates by checking ID
+          if (prev.some(existing => existing.id === event.id)) {
+            return prev;
+          }
+          return [...prev, event];
+        });
+      } catch (error) {
+        console.error("Failed to parse SSE event:", error);
+      }
+    };
+
+    eventSource.onerror = () => {
+      setIsConnected(false);
+      // EventSource auto-reconnects, but we mark as disconnected
+    };
+
+    // Poll peers less frequently (every 10s)
+    const peersInterval = setInterval(fetchPeers, 10000);
+
+    return () => {
+      eventSource.close();
+      clearInterval(peersInterval);
+    };
+  }, [fetchPeers, fetchEvents]);
 
   // Group events into conversations (query + response pairs)
   const conversations: Conversation[] = React.useMemo(() => {
@@ -181,7 +225,7 @@ export default function Dashboard() {
               {isConnected ? "Connected" : "Disconnected"}
             </div>
             <button
-              onClick={fetchData}
+              onClick={refreshData}
               className="p-2 hover:bg-zinc-800 rounded-lg transition-colors"
             >
               <RefreshCw className={cn("w-4 h-4", isRefreshing && "animate-spin")} />
