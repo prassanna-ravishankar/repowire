@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 import secrets
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
-
 
 API_KEYS_PATH = Path.home() / ".repowire" / "api_keys.json"
 API_KEY_PREFIX = "rw_"

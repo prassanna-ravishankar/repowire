@@ -74,7 +74,7 @@ def main() -> int:
         return 0
 
     try:
-        with open(pending_file, "r") as f:
+        with open(pending_file) as f:
             pending = json.load(f)
     except (json.JSONDecodeError, OSError):
         return 0

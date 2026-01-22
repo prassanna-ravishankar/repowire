@@ -13,7 +13,7 @@ def _load_claude_settings() -> dict:
     if not CLAUDE_SETTINGS.exists():
         return {}
     try:
-        with open(CLAUDE_SETTINGS, "r") as f:
+        with open(CLAUDE_SETTINGS) as f:
             return json.load(f)
     except json.JSONDecodeError:
         return {}

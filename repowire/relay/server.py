@@ -6,12 +6,12 @@ from datetime import datetime
 from typing import Any
 
 import socketio
-from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-from repowire.protocol.peers import Peer, PeerStatus
 from repowire.protocol.messages import Message, MessageType
-from repowire.relay.auth import validate_api_key, APIKey
+from repowire.protocol.peers import Peer, PeerStatus
+from repowire.relay.auth import APIKey, validate_api_key
 
 
 class PeerInfo(BaseModel):

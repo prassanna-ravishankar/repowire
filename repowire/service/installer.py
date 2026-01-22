@@ -71,7 +71,7 @@ def _generate_launchd_plist(backend: str | None = None) -> str:
 
     program_args += "        <string>serve</string>\n"
     if backend:
-        program_args += f"        <string>--backend</string>\n"
+        program_args += "        <string>--backend</string>\n"
         program_args += f"        <string>{backend}</string>\n"
 
     # Get current PATH so launchd can find tmux and other tools
@@ -154,7 +154,7 @@ def _uninstall_macos_service() -> tuple[bool, str]:
     plist_path.unlink()
 
     if result.returncode != 0:
-        return True, f"Service removed (was not running)"
+        return True, "Service removed (was not running)"
 
     return True, "Service stopped and removed"
 

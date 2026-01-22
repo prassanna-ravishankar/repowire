@@ -9,7 +9,7 @@ from repowire.config.models import Config, load_config
 from repowire.daemon.core import PeerManager
 
 if TYPE_CHECKING:
-    from fastapi import Request
+    pass
 
 
 # Global state - initialized by lifespan

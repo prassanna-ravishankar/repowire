@@ -107,14 +107,26 @@ def create_app(
     app.include_router(messages.router)
 
     # --- Static File Serving (Dashboard) ---
-    # Find the web output directory
-    # 1. Check current directory (dev)
-    # 2. Check parent directory (dev)
-    # 3. Check installed package location (bundled)
-    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    web_out = os.path.join(base_dir, "web", "out")
+    # Find the web output directory - check multiple locations
+    web_out = None
 
-    if os.path.exists(web_out):
+    # 1. Dev mode: relative to repo root (3 dirs up from app.py)
+    dev_base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    dev_web_out = os.path.join(dev_base, "web", "out")
+
+    # 2. Installed mode: web/out is sibling to repowire package in site-packages
+    import sys
+    for path in sys.path:
+        installed_web_out = os.path.join(path, "web", "out")
+        if os.path.exists(installed_web_out) and os.path.isfile(os.path.join(installed_web_out, "dashboard.html")):
+            web_out = installed_web_out
+            break
+
+    # Prefer dev mode if available (for local development)
+    if os.path.exists(dev_web_out) and os.path.isfile(os.path.join(dev_web_out, "dashboard.html")):
+        web_out = dev_web_out
+
+    if web_out and os.path.exists(web_out):
         # Mount the _next directory for assets
         next_static = os.path.join(web_out, "_next")
         if os.path.exists(next_static):

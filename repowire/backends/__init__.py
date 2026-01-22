@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from repowire.backends.base import Backend
 
 
-def get_backend(name: str) -> "Backend":
+def get_backend(name: str) -> Backend:
     """Factory function to get a backend by name.
 
     Args:

@@ -27,17 +27,17 @@ class Backend(ABC):
         pass
 
     @abstractmethod
-    async def send_message(self, peer: "PeerConfig", text: str) -> None:
+    async def send_message(self, peer: PeerConfig, text: str) -> None:
         """Fire-and-forget message to peer."""
         pass
 
     @abstractmethod
-    async def send_query(self, peer: "PeerConfig", text: str, timeout: float = 120.0) -> str:
+    async def send_query(self, peer: PeerConfig, text: str, timeout: float = 120.0) -> str:
         """Send query and wait for response."""
         pass
 
     @abstractmethod
-    def get_peer_status(self, peer: "PeerConfig") -> PeerStatus:
+    def get_peer_status(self, peer: PeerConfig) -> PeerStatus:
         """Check if peer is online."""
         pass
 
