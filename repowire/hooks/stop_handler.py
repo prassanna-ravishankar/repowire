@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Stop hook handler - captures responses and sends to daemon via HTTP."""
+
 from __future__ import annotations
 
 import json
@@ -24,10 +25,12 @@ def tmux_to_filename(tmux_session: str) -> str:
 def send_to_daemon(correlation_id: str, response: str) -> bool:
     """Send a response to the daemon via HTTP."""
     try:
-        data = json.dumps({
-            "correlation_id": correlation_id,
-            "response": response,
-        }).encode("utf-8")
+        data = json.dumps(
+            {
+                "correlation_id": correlation_id,
+                "response": response,
+            }
+        ).encode("utf-8")
 
         req = urllib.request.Request(
             f"{DAEMON_URL}/hook/response",
@@ -38,7 +41,8 @@ def send_to_daemon(correlation_id: str, response: str) -> bool:
 
         with urllib.request.urlopen(req, timeout=5.0) as resp:
             return resp.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+        print(f"repowire: daemon request failed: {e}", file=sys.stderr)
         return False
 
 
@@ -89,7 +93,9 @@ def main() -> int:
     response = extract_last_assistant_response(transcript_path)
 
     if response:
-        send_to_daemon(correlation_id, response)
+        success = send_to_daemon(correlation_id, response)
+        if not success:
+            print(f"repowire: failed to deliver response for {correlation_id}", file=sys.stderr)
 
     # Clean up pending file
     pending_file.unlink(missing_ok=True)

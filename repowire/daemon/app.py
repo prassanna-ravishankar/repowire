@@ -116,9 +116,12 @@ def create_app(
 
     # 2. Installed mode: web/out is sibling to repowire package in site-packages
     import sys
+
     for path in sys.path:
         installed_web_out = os.path.join(path, "web", "out")
-        if os.path.exists(installed_web_out) and os.path.isfile(os.path.join(installed_web_out, "dashboard.html")):
+        if os.path.exists(installed_web_out) and os.path.isfile(
+            os.path.join(installed_web_out, "dashboard.html")
+        ):
             web_out = installed_web_out
             break
 

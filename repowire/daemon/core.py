@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
 from collections import deque
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from repowire.config.models import Config, PeerConfig, load_config
 from repowire.protocol.peers import Peer, PeerStatus
@@ -120,7 +123,9 @@ class PeerManager:
                         machine=self._machine,
                         tmux_session=peer_config.tmux_session,
                         status=status,
-                        last_seen=datetime.now(timezone.utc) if status != PeerStatus.OFFLINE else None,
+                        last_seen=datetime.now(timezone.utc)
+                        if status != PeerStatus.OFFLINE
+                        else None,
                         metadata=peer_config.metadata,
                     )
                 )
@@ -144,7 +149,11 @@ class PeerManager:
                 if old_status != status:
                     self._add_event(
                         "status_change",
-                        {"peer": name, "new_status": status.value, "text": f"{name} is now {status.value}"},
+                        {
+                            "peer": name,
+                            "new_status": status.value,
+                            "text": f"{name} is now {status.value}",
+                        },
                     )
                 return True
             else:
@@ -163,7 +172,11 @@ class PeerManager:
                     )
                     self._add_event(
                         "status_change",
-                        {"peer": name, "new_status": status.value, "text": f"{name} is now {status.value}"},
+                        {
+                            "peer": name,
+                            "new_status": status.value,
+                            "text": f"{name} is now {status.value}",
+                        },
                     )
                     return True
             return False
@@ -245,7 +258,13 @@ class PeerManager:
             self._update_event(query_event_id, {"status": "success"})
             self._add_event(
                 "response",
-                {"from": to_peer, "to": from_peer, "text": response, "status": "success", "query_id": query_event_id},
+                {
+                    "from": to_peer,
+                    "to": from_peer,
+                    "text": response,
+                    "status": "success",
+                    "query_id": query_event_id,
+                },
             )
             return response
         except (ValueError, TimeoutError) as e:
@@ -253,17 +272,28 @@ class PeerManager:
             self._update_event(query_event_id, {"status": "error", "error_message": str(e)})
             self._add_event(
                 "response",
-                {"from": to_peer, "to": from_peer, "text": str(e), "status": "error", "query_id": query_event_id},
+                {
+                    "from": to_peer,
+                    "to": from_peer,
+                    "text": str(e),
+                    "status": "error",
+                    "query_id": query_event_id,
+                },
             )
             raise
         except Exception as e:
             # Log unexpected errors and update events
-            import logging
-            logging.exception(f"Unexpected error during query to {to_peer}")
+            logger.exception(f"Unexpected error during query to {to_peer}")
             self._update_event(query_event_id, {"status": "error", "error_message": str(e)})
             self._add_event(
                 "response",
-                {"from": to_peer, "to": from_peer, "text": str(e), "status": "error", "query_id": query_event_id},
+                {
+                    "from": to_peer,
+                    "to": from_peer,
+                    "text": str(e),
+                    "status": "error",
+                    "query_id": query_event_id,
+                },
             )
             raise
 
@@ -296,7 +326,8 @@ class PeerManager:
         try:
             await self._backend.send_message(peer_config, formatted_message)
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to send notification to {to_peer}: {e}")
             return False
 
     async def broadcast(
@@ -343,8 +374,7 @@ class PeerManager:
             try:
                 await self._backend.send_message(peer_config, formatted_message)
                 sent_to.append(peer_config.name)
-            except Exception:
-                # Log but don't fail the broadcast
-                pass
+            except Exception as e:
+                logger.warning(f"Broadcast to {peer_config.name} failed: {e}")
 
         return sent_to

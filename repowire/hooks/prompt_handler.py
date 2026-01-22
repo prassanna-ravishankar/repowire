@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Handle UserPromptSubmit hook - marks peer as BUSY."""
+
 from __future__ import annotations
 
 import json

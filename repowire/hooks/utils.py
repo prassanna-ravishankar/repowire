@@ -1,4 +1,5 @@
 """Shared utilities for hook handlers."""
+
 from __future__ import annotations
 
 import json
@@ -12,10 +13,12 @@ DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", "http://127.0.0.1:8377")
 def update_status(peer_name: str, status: str) -> bool:
     """Update peer status via daemon HTTP API."""
     try:
-        data = json.dumps({
-            "peer_name": peer_name,
-            "status": status,
-        }).encode("utf-8")
+        data = json.dumps(
+            {
+                "peer_name": peer_name,
+                "status": status,
+            }
+        ).encode("utf-8")
 
         req = urllib.request.Request(
             f"{DAEMON_URL}/session/update",

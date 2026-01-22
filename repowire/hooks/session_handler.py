@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Handle SessionStart and SessionEnd hooks for auto-registration."""
+
 from __future__ import annotations
 
 import json
@@ -58,8 +59,7 @@ def format_peers_context(peers: list[dict], my_name: str) -> str:
         return ""
 
     lines = [
-        "[Repowire Mesh] You have access to other Claude Code sessions "
-        "working on related projects:"
+        "[Repowire Mesh] You have access to other Claude Code sessions working on related projects:"
     ]
     for p in other_peers:
         branch = p.get("metadata", {}).get("branch", "")
@@ -77,7 +77,9 @@ def format_peers_context(peers: list[dict], my_name: str) -> str:
     return "\n".join(lines)
 
 
-def register_peer(peer_name: str, cwd: str, tmux_target: str | None, session_id: str, metadata: dict) -> bool:
+def register_peer(
+    peer_name: str, cwd: str, tmux_target: str | None, session_id: str, metadata: dict
+) -> bool:
     """Register peer with daemon via HTTP."""
     try:
         data = {

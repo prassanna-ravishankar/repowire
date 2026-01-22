@@ -190,8 +190,6 @@ async def update_session(
 async def hook_response(request: HookResponseRequest) -> OkResponse:
     """Receive response from Stop hook (no auth - called by local hooks)."""
     backend = get_backend()
-    peer_manager = get_peer_manager()
-
 
     # Only claudemux backend supports resolve_query
     if hasattr(backend, "resolve_query"):
