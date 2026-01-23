@@ -3,16 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import click
 from rich.console import Console
 from rich.table import Table
 
 from repowire import __version__
-
-if TYPE_CHECKING:
-    pass
 
 console = Console()
 
@@ -265,7 +261,6 @@ def status() -> None:
         with httpx.Client(timeout=2.0) as client:
             resp = client.get(f"{_get_daemon_url()}/health")
             resp.raise_for_status()
-            data = resp.json()
             console.print(f"[green]✓[/] Daemon responding at {_get_daemon_url()}")
     except httpx.ConnectError:
         console.print(f"[yellow]✗[/] Daemon not responding at {_get_daemon_url()}")
@@ -522,9 +517,12 @@ def peer_list() -> None:
 
     for p in peers:
         status = p.get("status", "unknown")
-        status_color = (
-            "green" if status == "online" else ("yellow" if status == "unknown" else "red")
-        )
+        if status == "online":
+            status_color = "green"
+        elif status == "unknown":
+            status_color = "yellow"
+        else:
+            status_color = "red"
         table.add_row(
             p.get("name", "?"),
             f"[{status_color}]{status}[/]",
@@ -962,6 +960,16 @@ def hook_prompt() -> None:
     from repowire.hooks.prompt_handler import main as prompt_main
 
     sys.exit(prompt_main())
+
+
+@hook.command(name="notification")
+def hook_notification() -> None:
+    """Handle Notification hook - mark peer as online on idle."""
+    import sys
+
+    from repowire.hooks.notification_handler import main as notification_main
+
+    sys.exit(notification_main())
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
 
@@ -29,5 +30,6 @@ def update_status(peer_name: str, status: str) -> bool:
 
         with urllib.request.urlopen(req, timeout=2.0) as resp:
             return resp.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+        print(f"repowire: status update failed for {peer_name}: {e}", file=sys.stderr)
         return False
