@@ -113,16 +113,22 @@ All backends implement:
 
 ### Hooks System (claudemux only)
 
-Hooks in `~/.claude/settings.json` auto-register peers and capture responses:
+Hooks in `~/.claude/settings.json` auto-register peers and manage state:
 
-- **SessionStart** → `repowire hook session` → Registers peer (name = folder name, git branch in metadata), outputs `additionalContext` with peer list
-- **SessionEnd** → `repowire hook session` → Clears session_id
-- **Stop** → `repowire hook stop` → Extracts last assistant response from transcript, sends via HTTP POST `/hook/response`
+- **SessionStart** → `repowire hook session` → Registers peer, outputs `additionalContext` with peer list
+- **SessionEnd** → `repowire hook session` → Marks peer offline
+- **UserPromptSubmit** → `repowire hook prompt` → Marks peer as BUSY
+- **Stop** → `repowire hook stop` → Extracts response from transcript, marks peer ONLINE
+- **Notification** (idle_prompt) → `repowire hook notification` → Marks peer ONLINE after 60s idle (handles interrupt)
+
+**Peer State Machine:** `OFFLINE → ONLINE ↔ BUSY` (SessionStart→ONLINE, UserPromptSubmit→BUSY, Stop/Notification→ONLINE, SessionEnd→OFFLINE)
 
 Key files:
 - `hooks/installer.py` - Installs/uninstalls hooks in `~/.claude/settings.json`
-- `hooks/session_handler.py` - Handles both SessionStart and SessionEnd events
-- `hooks/stop_handler.py` - Captures response from transcript JSONL, sends to daemon
+- `hooks/session_handler.py` - Handles SessionStart and SessionEnd events
+- `hooks/prompt_handler.py` - Handles UserPromptSubmit (sets BUSY)
+- `hooks/stop_handler.py` - Captures response from transcript, sends to daemon
+- `hooks/notification_handler.py` - Handles idle_prompt (resets BUSY→ONLINE after interrupt)
 
 ### Configuration
 
@@ -326,6 +332,7 @@ repowire peer unregister project-b
 | Query timeout | Check daemon running: `curl http://127.0.0.1:8377/health` |
 | Wrong peer name | Peer name = folder name, not tmux window name |
 | Hook not firing | Check `~/.claude/settings.json` has repowire hooks |
+| Peer stuck as busy | User interrupted (Escape). Wait 60s for idle_prompt, or send any prompt to trigger Stop |
 
 ### Quick Verification Script (Claudemux)
 

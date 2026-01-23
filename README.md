@@ -84,6 +84,13 @@ Claude uses the `ask_peer` tool, backend responds, and you get the answer back.
 
 **What just happened?** See [How It Works: claudemux](#claudemux-default) for details.
 
+## Dashboard
+
+Monitor peer communication at `http://localhost:8377/dashboard` when the daemon is running.
+
+- Real-time peer status (online/busy/offline)
+- Communication event log (queries, responses, broadcasts)
+
 ## How It Works
 
 ### claudemux (default)
@@ -95,7 +102,7 @@ For Claude Code sessions running in tmux. This is the tested, production-ready b
 | Component | Location | Purpose |
 |-----------|----------|---------|
 | **Daemon** | System service (launchd/systemd) | Routes messages between peers, runs on `127.0.0.1:8377` |
-| **Hooks** | `~/.claude/settings.json` | SessionStart (register peer), SessionEnd (cleanup), Stop (capture responses) |
+| **Hooks** | `~/.claude/settings.json` | SessionStart/End (register/cleanup), UserPromptSubmit (busy), Stop (response), Notification (idle recovery) |
 | **MCP Server** | Registered with Claude | Provides `ask_peer`, `list_peers`, `notify_peer`, `broadcast` tools |
 | **Config** | `~/.repowire/config.yaml` | Peer registry and settings |
 | **Logs** | `~/.repowire/daemon.log` | Daemon output |
@@ -130,8 +137,10 @@ For Claude Code sessions running in tmux. This is the tested, production-ready b
 
 **Why hooks?** Claude Code doesn't have an API. Hooks are the only extension point:
 - **SessionStart**: Registers peer with daemon, injects list of available peers into Claude's context
-- **SessionEnd**: Marks peer offline, cancels pending queries immediately
+- **SessionEnd**: Marks peer offline, cancels pending queries
+- **UserPromptSubmit**: Marks peer as busy while processing
 - **Stop**: Reads transcript, extracts Claude's response, sends to daemon
+- **Notification** (idle_prompt): Resets peer to online after interrupt (Stop doesn't fire on Escape)
 
 **Why a central daemon?** Single source of truth for peer registry. Runs as a system service so it survives reboots and is always available when Claude sessions start.
 
