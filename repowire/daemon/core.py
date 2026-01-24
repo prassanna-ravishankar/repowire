@@ -10,13 +10,13 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-logger = logging.getLogger(__name__)
-
 from repowire.config.models import Config, PeerConfig, load_config
 from repowire.protocol.peers import Peer, PeerStatus
 
 if TYPE_CHECKING:
     from repowire.backends.base import Backend
+
+logger = logging.getLogger(__name__)
 
 
 class PeerManager:

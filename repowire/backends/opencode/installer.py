@@ -21,13 +21,13 @@ async function daemon(path: string, body?: object) {
 
 export const RepowirePlugin: Plugin = async ({ directory }) => {
   const peerName = directory.split("/").pop() || "unknown"
-  
+
   await daemon("/peer/register", {
     name: peerName,
     path: directory,
     opencode_url: `http://127.0.0.1:${process.env.OPENCODE_PORT || 4096}`,
   })
-  
+
   return {
     tool: {
       ask_peer: tool({
