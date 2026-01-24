@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -85,19 +86,21 @@ def create_mcp_server() -> FastMCP:
             message: The notification message
 
         Returns:
-            Confirmation message
+            Correlation ID (format: notif-XXXXXXXX) that the receiving peer can
+            reference in follow-up communications.
         """
         my_name = _detect_my_peer_name()
+        correlation_id = f"notif-{uuid4().hex[:8]}"
         await daemon_request(
             "POST",
             "/notify",
             {
                 "from_peer": my_name,
                 "to_peer": peer_name,
-                "text": message,
+                "text": f"[#{correlation_id}] {message}",
             },
         )
-        return f"Notification sent to {peer_name}"
+        return correlation_id
 
     @mcp.tool()
     async def broadcast(message: str) -> str:

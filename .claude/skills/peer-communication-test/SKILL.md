@@ -138,6 +138,25 @@ curl -s http://127.0.0.1:8377/events | jq '.[] | select(.type == "query" or .typ
 ### 5.3 Verify bidirectional communication (optional)
 Send a query from peer-b to peer-a to confirm two-way messaging.
 
+### 5.4 Send notification with correlation tracking
+Inject a notification from peer-a to peer-b:
+
+```bash
+tmux send-keys -t repowire-test:peer-a "Send a notification to peer '$PEER_B_NAME' saying 'Build completed successfully'. Use the notify_peer MCP tool and note the correlation ID returned." Enter
+```
+
+### 5.5 Verify correlation ID format
+Check events endpoint for notification with embedded correlation ID:
+
+```bash
+curl -s http://127.0.0.1:8377/events | jq '.[] | select(.type == "notification")'
+```
+
+Expected: Message text contains `[#notif-XXXXXXXX]` prefix.
+
+### 5.6 Verify peer-b received the notification
+The notification should appear in peer-b's session with the correlation ID embedded, allowing peer-b to reference it in any follow-up communication.
+
 ## Phase 6: Validation
 
 ### 6.1 Check success criteria
@@ -145,6 +164,8 @@ Send a query from peer-b to peer-a to confirm two-way messaging.
 - [ ] Query event logged with status "pending" then "success"
 - [ ] Response event logged with actual content
 - [ ] No timeout errors
+- [ ] Notification event logged with correlation ID in message
+- [ ] Correlation ID format matches `notif-XXXXXXXX`
 
 ### 6.2 Report results
 Display:
