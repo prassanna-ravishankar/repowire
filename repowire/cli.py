@@ -308,22 +308,10 @@ def _setup_claudemux(dev: bool = False) -> None:
     subprocess.run(["claude", "mcp", "remove", "repowire"], capture_output=True)
 
     if dev:
-        project_dir = str(Path(__file__).parent.parent)
-        cmd = [
-            "claude",
-            "mcp",
-            "add",
-            "-s",
-            "user",
-            "repowire",
-            "--",
-            "uv",
-            "run",
-            "--directory",
-            project_dir,
-            "repowire",
-            "mcp",
-        ]
+        # Use 'repowire mcp' directly - relies on uv tool install -e having been run
+        # IMPORTANT: Do NOT use --directory flag as it would override cwd,
+        # preventing the MCP server from identifying which Claude session called it
+        cmd = ["claude", "mcp", "add", "-s", "user", "repowire", "--", "repowire", "mcp"]
     else:
         cmd = ["claude", "mcp", "add", "-s", "user", "repowire", "--", "uvx", "repowire", "mcp"]
 
@@ -514,6 +502,7 @@ def peer_list() -> None:
     table = Table(title="Repowire Peers")
     table.add_column("Name", style="cyan")
     table.add_column("Status", style="green")
+    table.add_column("Circle", style="magenta")
     table.add_column("Tmux Session")
     table.add_column("Path")
 
@@ -528,6 +517,7 @@ def peer_list() -> None:
         table.add_row(
             p.get("name", "?"),
             f"[{status_color}]{status}[/]",
+            p.get("circle") or "global",
             p.get("tmux_session") or "-",
             p.get("path") or "-",
         )
@@ -539,9 +529,14 @@ def peer_list() -> None:
 @click.argument("name")
 @click.option("--tmux-session", "-t", help="Tmux session:window (e.g., '0:mywindow')")
 @click.option("--opencode-url", "-u", help="OpenCode server URL")
+@click.option("--circle", "-c", help="Circle (logical subnet)")
 @click.option("--path", "-p", help="Working directory (defaults to current)")
 def peer_register(
-    name: str, tmux_session: str | None, opencode_url: str | None, path: str | None
+    name: str,
+    tmux_session: str | None,
+    opencode_url: str | None,
+    circle: str | None,
+    path: str | None,
 ) -> None:
     """Register a peer for mesh communication."""
     import httpx
@@ -560,6 +555,7 @@ def peer_register(
                     "path": actual_path,
                     "tmux_session": tmux_session,
                     "opencode_url": opencode_url,
+                    "circle": circle,
                 },
             )
             resp.raise_for_status()
@@ -572,6 +568,7 @@ def peer_register(
             path=actual_path,
             tmux_session=tmux_session,
             opencode_url=opencode_url,
+            circle=circle,
         )
         console.print(f"[green]Registered peer '{name}' (daemon not running, saved to config)[/]")
     except httpx.HTTPStatusError as e:
@@ -582,6 +579,8 @@ def peer_register(
         console.print(f"  tmux session: {tmux_session}")
     if opencode_url:
         console.print(f"  opencode url: {opencode_url}")
+    if circle:
+        console.print(f"  circle: {circle}")
     console.print(f"  path: {actual_path}")
 
 
@@ -649,6 +648,55 @@ def peer_ask(name: str, query: str, timeout: int) -> None:
         console.print(f"[red]Error: {e}[/]")
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
+
+
+@peer.command(name="prune")
+@click.option("--force", "-f", is_flag=True, help="Skip confirmation")
+@click.option("--dry-run", is_flag=True, help="Show what would be removed")
+def peer_prune(force: bool, dry_run: bool) -> None:
+    """Remove offline peers from configuration."""
+    import httpx
+
+    from repowire.config.models import load_config
+
+    # Get peers (daemon or config fallback)
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{_get_daemon_url()}/peers")
+            resp.raise_for_status()
+            peers = resp.json().get("peers", [])
+    except httpx.ConnectError:
+        config = load_config()
+        peers = [{"name": n, "status": "offline"} for n in config.peers.keys()]
+
+    # Filter offline peers
+    offline = [p for p in peers if p.get("status") == "offline"]
+
+    if not offline:
+        console.print("[green]No offline peers to prune[/]")
+        return
+
+    # Display
+    console.print(f"\n[bold]Offline peers ({len(offline)}):[/]")
+    for p in offline:
+        console.print(f"  [dim]•[/] {p['name']}")
+
+    if dry_run:
+        console.print(f"\n[dim]Dry run - would remove {len(offline)} peer(s)[/]")
+        return
+
+    if not force and not click.confirm(f"\nRemove {len(offline)} peer(s)?"):
+        return
+
+    # Remove
+    config = load_config()
+    removed = 0
+    for p in offline:
+        if config.remove_peer(p["name"]):
+            removed += 1
+            console.print(f"[green]✓[/] Removed {p['name']}")
+
+    console.print(f"\n[bold green]Pruned {removed} peer(s)[/]")
 
 
 # =============================================================================

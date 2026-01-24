@@ -23,6 +23,7 @@ class PeerInfo(BaseModel):
     machine: str | None = None
     tmux_session: str | None = None
     opencode_url: str | None = None
+    circle: str = "global"
     status: str
     last_seen: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -42,6 +43,7 @@ class RegisterPeerRequest(BaseModel):
     machine: str | None = Field(None, description="Machine hostname")
     tmux_session: str | None = Field(None, description="Tmux session:window")
     opencode_url: str | None = Field(None, description="OpenCode server URL")
+    circle: str | None = Field(None, description="Circle (logical subnet)")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -73,12 +75,42 @@ async def list_peers(
                 machine=p.machine,
                 tmux_session=p.tmux_session,
                 opencode_url=getattr(p, "opencode_url", None),
+                circle=p.circle,
                 status=p.status.value,
                 last_seen=p.last_seen.isoformat() if p.last_seen else None,
                 metadata=p.metadata,
             )
             for p in peers
         ]
+    )
+
+
+@router.get("/peers/{name}", response_model=PeerInfo)
+async def get_peer(
+    name: str,
+    _: str | None = Depends(require_auth),
+) -> PeerInfo:
+    """Get information about a specific peer."""
+    peer_manager = get_peer_manager()
+    peers = await peer_manager.get_all_peers()
+
+    for p in peers:
+        if p.name == name:
+            return PeerInfo(
+                name=p.name,
+                path=p.path,
+                machine=p.machine,
+                tmux_session=p.tmux_session,
+                opencode_url=getattr(p, "opencode_url", None),
+                circle=p.circle,
+                status=p.status.value,
+                last_seen=p.last_seen.isoformat() if p.last_seen else None,
+                metadata=p.metadata,
+            )
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Peer not found: {name}",
     )
 
 
@@ -96,15 +128,21 @@ async def create_peer(
         path=request.path,
         tmux_session=request.tmux_session,
         opencode_url=request.opencode_url,
+        circle=request.circle,
     )
 
     # Also register with peer manager for immediate use
     peer_manager = get_peer_manager()
+    # Resolve circle using peer manager's logic
+    peer_config = config.get_peer(request.name)
+    circle = peer_manager.resolve_circle(peer_config) if peer_config else "global"
+
     peer = Peer(
         name=request.name,
         path=request.path or "",
         machine=request.machine or socket.gethostname(),
         tmux_session=request.tmux_session,
+        circle=circle,
         status=PeerStatus.ONLINE,
         metadata=request.metadata,
     )

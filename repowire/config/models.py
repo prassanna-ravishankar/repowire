@@ -42,6 +42,9 @@ class PeerConfig(BaseModel):
     opencode_url: str | None = Field(None, description="OpenCode server URL for this peer")
     session_id: str | None = Field(None, description="Session ID (Claude or OpenCode)")
 
+    # circle (logical subnet)
+    circle: str | None = Field(None, description="Circle (logical subnet)")
+
     # metadata
     metadata: dict = Field(default_factory=dict, description="Additional metadata (e.g., branch)")
 
@@ -103,6 +106,7 @@ class Config(BaseModel):
         tmux_session: str | None = None,
         session_id: str | None = None,
         opencode_url: str | None = None,
+        circle: str | None = None,
         metadata: dict | None = None,
     ) -> None:
         """Add or update a peer by name."""
@@ -117,6 +121,7 @@ class Config(BaseModel):
             tmux_session=tmux_session or (existing.tmux_session if existing else None),
             session_id=session_id or (existing.session_id if existing else None),
             opencode_url=opencode_url or (existing.opencode_url if existing else None),
+            circle=circle or (existing.circle if existing else None),
             metadata=merged_metadata,
         )
         self.save()

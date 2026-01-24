@@ -127,6 +127,30 @@ def create_mcp_server() -> FastMCP:
         sent_to = result.get("sent_to", [])
         return f"Broadcast sent to: {', '.join(sent_to) if sent_to else 'no peers online'}"
 
+    @mcp.tool()
+    async def whoami() -> str:
+        """Return information about yourself (the calling peer).
+
+        Returns your peer name, circle, status, path, and metadata.
+        Useful to understand your identity in the mesh without parsing list_peers.
+        """
+        my_name = _detect_my_peer_name()
+        try:
+            result = await daemon_request("GET", f"/peers/{my_name}")
+            return json.dumps(
+                {
+                    "name": result.get("name"),
+                    "circle": result.get("circle"),
+                    "status": result.get("status"),
+                    "path": result.get("path"),
+                    "machine": result.get("machine"),
+                    "metadata": result.get("metadata", {}),
+                },
+                indent=2,
+            )
+        except httpx.HTTPStatusError:
+            return json.dumps({"name": my_name, "error": "Not registered"})
+
     return mcp
 
 

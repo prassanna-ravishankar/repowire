@@ -34,6 +34,9 @@ class Peer(BaseModel):
     opencode_url: str | None = Field(None, description="OpenCode server URL (for opencode peers)")
     session_id: str | None = Field(None, description="OpenCode session ID")
 
+    # circle (logical subnet)
+    circle: str = Field(default="global", description="Circle (logical subnet)")
+
     status: PeerStatus = Field(default=PeerStatus.OFFLINE, description="Current status")
     last_seen: datetime | None = Field(None, description="Last activity timestamp")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
@@ -61,6 +64,7 @@ class Peer(BaseModel):
             "tmux_session": self.tmux_session,
             "opencode_url": self.opencode_url,
             "session_id": self.session_id,
+            "circle": self.circle,
             "status": self.status.value,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
             "metadata": self.metadata,

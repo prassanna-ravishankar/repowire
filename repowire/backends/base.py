@@ -52,3 +52,14 @@ class Backend(ABC):
     def check_installed(self, **kwargs) -> bool:
         """Check if integrations are installed."""
         return False
+
+    def derive_circle(self, peer: PeerConfig) -> str:
+        """Derive circle from peer config. Override in subclasses.
+
+        Args:
+            peer: The peer configuration
+
+        Returns:
+            Circle name (default: "global")
+        """
+        return "global"

@@ -1,95 +1,91 @@
 ---
 name: peer-communication-test
-description: Integration test for repowire claudemux peer-to-peer messaging. Tests peer registration, inter-agent queries, and mesh network validation end-to-end.
+description: Integration test for repowire claudemux peer-to-peer messaging. Tests peer registration, circle boundaries, inter-agent queries, and mesh network validation end-to-end.
 ---
 
 # Peer Communication Test
 
-Automated integration test for claudemux backend peer-to-peer communication.
+Integration test for claudemux backend peer-to-peer communication with circle boundary enforcement.
 
-## Execution Mode
+## Prerequisites
 
-Ask user preference:
-- **Hands-off**: Execute all steps automatically, report results at end
-- **Hands-on**: Confirm each phase before proceeding, show intermediate state
+Suggest using `claude --dangerously-skip-permissions` for test sessions to avoid permission prompts during automated testing.
 
 ## Phase 1: Environment Discovery
+
+Gather current state before presenting test plan.
 
 ### 1.1 Check existing tmux sessions
 ```bash
 tmux list-sessions 2>/dev/null || echo "No tmux sessions"
 ```
 
-### 1.2 Check running services
+### 1.2 Check daemon and peers
 ```bash
-# Daemon status
 curl -s http://127.0.0.1:8377/health 2>/dev/null | jq . || echo "Daemon not running"
-
-# Check for existing repowire processes
-pgrep -fl repowire || echo "No repowire processes"
+curl -s http://127.0.0.1:8377/peers 2>/dev/null | jq '.peers[] | {name, status, circle}' || echo "No peers"
 ```
 
-### 1.3 Check registered peers
-```bash
-curl -s http://127.0.0.1:8377/peers 2>/dev/null | jq '.peers[] | {name, status}' || echo "Cannot fetch peers"
+## Phase 2: Present Test Plan for Confirmation
+
+**Before executing any test steps**, present the full plan to the user:
+
+### Test Plan Template
+
+```
+=== REPOWIRE PEER COMMUNICATION TEST PLAN ===
+
+TMUX SESSIONS TO CREATE:
+  • circle-a (for same-circle test)
+  • circle-b (for cross-circle test)
+
+TEST PROJECTS (ask user for 4 directories):
+  Circle A:
+    • peer-a1: <PROJECT_A1>
+    • peer-a2: <PROJECT_A2>
+  Circle B:
+    • peer-b1: <PROJECT_B1>
+
+TESTS TO RUN:
+  1. Same-circle communication (peer-a1 → peer-a2)
+     Expected: SUCCESS
+
+  2. Cross-circle communication (peer-b1 → peer-a1)
+     Expected: BLOCKED with circle boundary error
+
+  3. whoami tool (peer-a1)
+     Expected: Returns peer identity JSON
+
+COMMANDS TO EXECUTE:
+  # Create sessions
+  tmux new-session -d -s circle-a -n peer-a1
+  tmux new-window -t circle-a -n peer-a2
+  tmux new-session -d -s circle-b -n peer-b1
+
+  # Start Claude (with --dangerously-skip-permissions)
+  tmux send-keys -t circle-a:peer-a1 "cd <PROJECT_A1> && claude --dangerously-skip-permissions" Enter
+  tmux send-keys -t circle-a:peer-a2 "cd <PROJECT_A2> && claude --dangerously-skip-permissions" Enter
+  tmux send-keys -t circle-b:peer-b1 "cd <PROJECT_B1> && claude --dangerously-skip-permissions" Enter
+
+CLEANUP:
+  tmux kill-session -t circle-a
+  tmux kill-session -t circle-b
+  repowire peer prune --force
+
+Proceed with test? [y/N]
 ```
 
-### 1.4 Fresh start decision
-Ask user: "Found running services. Start fresh (kill existing) or use current state?"
-
-If fresh start:
-```bash
-# Kill daemon if running
-curl -s -X POST http://127.0.0.1:8377/shutdown 2>/dev/null
-sleep 1
-
-# Kill tmux session if exists
-tmux kill-session -t repowire-test 2>/dev/null || true
-```
-
-## Phase 2: Project Selection
-
-### 2.1 Check for previously used test projects
-Look for recent peer registrations or ask user directly.
-
-### 2.2 Get two project directories
-Ask user: "Which two project directories should I use as test peers?"
-
-Requirements:
-- Must be valid directories
-- Should be git repos (for branch metadata)
-- Will run Claude Code sessions in each
-
-Store as `PROJECT_A` and `PROJECT_B`.
+**Wait for user confirmation before proceeding.**
 
 ## Phase 3: Test Environment Setup
 
-### 3.1 Create tmux session with windows
+### 3.1 Ensure daemon is running
 ```bash
-# Create session with first window
-tmux new-session -d -s repowire-test -n peer-a
-
-# Create second window
-tmux new-window -t repowire-test -n peer-b
-```
-
-### 3.2 Navigate to project directories
-```bash
-tmux send-keys -t repowire-test:peer-a "cd $PROJECT_A" Enter
-tmux send-keys -t repowire-test:peer-b "cd $PROJECT_B" Enter
-```
-
-### 3.3 Start the daemon
-```bash
-# Start in background, capture output
-repowire serve &
+curl -s http://127.0.0.1:8377/health | jq . || repowire serve &
 sleep 2
-
-# Verify daemon is running
-curl -s http://127.0.0.1:8377/health | jq .
 ```
 
-### 3.4 Verify hooks are installed
+### 3.2 Verify hooks are installed
 ```bash
 repowire claudemux status
 ```
@@ -99,53 +95,94 @@ If not installed:
 repowire setup --dev --backend claudemux
 ```
 
-## Phase 4: Launch Claude Sessions
-
-### 4.1 Start Claude in each window
+### 3.3 Create tmux sessions (circles)
 ```bash
-tmux send-keys -t repowire-test:peer-a "claude" Enter
-tmux send-keys -t repowire-test:peer-b "claude" Enter
+# Circle A - two peers for same-circle test
+tmux new-session -d -s circle-a -n peer-a1
+tmux new-window -t circle-a -n peer-a2
+
+# Circle B - one peer for cross-circle test
+tmux new-session -d -s circle-b -n peer-b1
 ```
 
-### 4.2 Wait for sessions to initialize
+### 3.4 Navigate to projects
 ```bash
-sleep 5
+tmux send-keys -t circle-a:peer-a1 "cd $PROJECT_A1" Enter
+tmux send-keys -t circle-a:peer-a2 "cd $PROJECT_A2" Enter
+tmux send-keys -t circle-b:peer-b1 "cd $PROJECT_B1" Enter
 ```
 
-### 4.3 Verify peer registration
+### 3.5 Start Claude sessions
 ```bash
-# Both peers should appear with "online" status
-curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, status}'
+tmux send-keys -t circle-a:peer-a1 "claude --dangerously-skip-permissions" Enter
+tmux send-keys -t circle-a:peer-a2 "claude --dangerously-skip-permissions" Enter
+tmux send-keys -t circle-b:peer-b1 "claude --dangerously-skip-permissions" Enter
+sleep 10
 ```
 
-Expected: Two peers with names matching folder names, status "online".
-
-## Phase 5: Communication Test
-
-### 5.1 Send test query
-Inject a query into peer-a that requires information from peer-b:
-
+### 3.6 Verify peer registration
 ```bash
-tmux send-keys -t repowire-test:peer-a "Ask peer '$PEER_B_NAME' what their main purpose or project description is. Use the ask_peer MCP tool." Enter
+curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, circle}'
 ```
 
-### 5.2 Monitor for response
+Expected:
+- `$PEER_A1_NAME` in circle `circle-a`
+- `$PEER_A2_NAME` in circle `circle-a`
+- `$PEER_B1_NAME` in circle `circle-b`
+
+## Phase 4: Same-Circle Communication Test
+
+### 4.1 Send query from peer-a1 to peer-a2
 ```bash
-# Watch events endpoint for query/response
-curl -s http://127.0.0.1:8377/events | jq '.[] | select(.type == "query" or .type == "response")'
+tmux send-keys -t circle-a:peer-a1 "Use the ask_peer MCP tool to ask $PEER_A2_NAME what their project is about" Enter Enter
 ```
 
-### 5.3 Verify bidirectional communication (optional)
-Send a query from peer-b to peer-a to confirm two-way messaging.
-
-### 5.4 Send notification with correlation tracking
-Inject a notification from peer-a to peer-b:
-
+### 4.2 Wait and verify
 ```bash
-tmux send-keys -t repowire-test:peer-a "Send a notification to peer '$PEER_B_NAME' saying 'Build completed successfully'. Use the notify_peer MCP tool and note the correlation ID returned." Enter
+sleep 45
+tmux capture-pane -t circle-a:peer-a1 -p -S -100 | tail -50
 ```
 
-### 5.5 Verify correlation ID format
+**Expected**: Response received successfully (both in same circle).
+
+## Phase 5: Cross-Circle Communication Test
+
+### 5.1 Send query from peer-b1 to peer-a1 (different circles)
+```bash
+tmux send-keys -t circle-b:peer-b1 "Use the ask_peer MCP tool to ask $PEER_A1_NAME what their project is about" Enter Enter
+```
+
+### 5.2 Wait and verify
+```bash
+sleep 45
+tmux capture-pane -t circle-b:peer-b1 -p -S -100 | tail -50
+```
+
+**Expected**: Error message containing "Circle boundary" - communication blocked.
+
+## Phase 6: Whoami Tool Test
+
+### 6.1 Test whoami
+```bash
+tmux send-keys -t circle-a:peer-a1 "Use the whoami MCP tool" Enter Enter
+```
+
+### 6.2 Verify response
+```bash
+sleep 30
+tmux capture-pane -t circle-a:peer-a1 -p -S -50 | tail -30
+```
+
+**Expected**: JSON with name, circle, status, path, machine, metadata.
+
+## Phase 7: Notification with Correlation Tracking
+
+### 7.1 Send notification from peer-a1 to peer-a2
+```bash
+tmux send-keys -t circle-a:peer-a1 "Send a notification to peer '$PEER_A2_NAME' saying 'Build completed successfully'. Use the notify_peer MCP tool and note the correlation ID returned." Enter
+```
+
+### 7.2 Verify correlation ID format
 Check events endpoint for notification with embedded correlation ID:
 
 ```bash
@@ -154,52 +191,38 @@ curl -s http://127.0.0.1:8377/events | jq '.[] | select(.type == "notification")
 
 Expected: Message text contains `[#notif-XXXXXXXX]` prefix.
 
-### 5.6 Verify peer-b received the notification
-The notification should appear in peer-b's session with the correlation ID embedded, allowing peer-b to reference it in any follow-up communication.
+### 7.3 Verify peer-a2 received the notification
+The notification should appear in peer-a2's session with the correlation ID embedded, allowing peer-a2 to reference it in any follow-up communication.
 
-## Phase 6: Validation
+## Phase 8: Validation Summary
 
-### 6.1 Check success criteria
-- [ ] Both peers registered and online
-- [ ] Query event logged with status "pending" then "success"
-- [ ] Response event logged with actual content
+### Success Criteria
+- [ ] All peers registered with correct circles
+- [ ] Same-circle query (peer-a1 → peer-a2): SUCCESS
+- [ ] Cross-circle query (peer-b1 → peer-a1): BLOCKED
+- [ ] Whoami returns correct peer identity
 - [ ] No timeout errors
 - [ ] Notification event logged with correlation ID in message
 - [ ] Correlation ID format matches `notif-XXXXXXXX`
 
-### 6.2 Report results
+### Report Results
 Display:
-- Peer registration status
-- Query/response timeline from events
-- Any errors encountered
+- Peer registration status with circles
+- Same-circle test result
+- Cross-circle test result (should show boundary error)
+- Whoami output
 
-### 6.3 Ask for confirmation
-"Test completed. Results shown above. Confirm success before teardown?"
+## Phase 9: Teardown
 
-## Phase 7: Teardown
-
-Only execute after user confirms test results.
-
-### 7.1 Kill Claude sessions
+### 9.1 Kill tmux sessions
 ```bash
-tmux kill-window -t repowire-test:peer-a
-tmux kill-window -t repowire-test:peer-b
+tmux kill-session -t circle-a
+tmux kill-session -t circle-b
 ```
 
-### 7.2 Stop daemon
+### 9.2 Prune offline peers
 ```bash
-curl -s -X POST http://127.0.0.1:8377/shutdown
-```
-
-### 7.3 Remove tmux session
-```bash
-tmux kill-session -t repowire-test 2>/dev/null || true
-```
-
-### 7.4 Cleanup peers from config (optional)
-```bash
-repowire peer unregister $PEER_A_NAME
-repowire peer unregister $PEER_B_NAME
+repowire peer prune --force
 ```
 
 ## Troubleshooting
@@ -210,3 +233,6 @@ repowire peer unregister $PEER_B_NAME
 | Query timeout | Check daemon logs, verify tmux session names |
 | "No tmux session" error | Claude must run inside tmux window |
 | Wrong peer names | Peer name = folder name, not window name |
+| Wrong circle | Circle = tmux session name |
+| Circle boundary not working | Check MCP config has no `--directory` flag |
+| Enter not working | Press Enter twice, check status goes to "busy" |

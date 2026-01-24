@@ -105,6 +105,9 @@ class PeerManager:
         seen = set(local_peers.keys())
 
         for peer_config in self._config.peers.values():
+            # Resolve circle for this peer
+            circle = self.resolve_circle(peer_config)
+
             if peer_config.name in seen:
                 # Use locally registered peer, but verify status with backend
                 peer = local_peers[peer_config.name]
@@ -112,6 +115,8 @@ class PeerManager:
                 # If backend says offline but we think online/busy, trust backend
                 if backend_status == PeerStatus.OFFLINE and peer.status != PeerStatus.OFFLINE:
                     peer.status = PeerStatus.OFFLINE
+                # Always update circle from config/derivation
+                peer.circle = circle
                 result.append(peer)
             else:
                 # Build peer from config
@@ -122,6 +127,7 @@ class PeerManager:
                         path=peer_config.path,
                         machine=self._machine,
                         tmux_session=peer_config.tmux_session,
+                        circle=circle,
                         status=status,
                         last_seen=datetime.now(timezone.utc)
                         if status != PeerStatus.OFFLINE
@@ -207,12 +213,57 @@ class PeerManager:
         self._config = load_config()
         return self._config.get_peer(name)
 
+    def resolve_circle(self, peer_config: PeerConfig) -> str:
+        """Resolve the circle for a peer.
+
+        Priority: explicit config → backend derivation → global.
+
+        Args:
+            peer_config: The peer configuration
+
+        Returns:
+            Circle name
+        """
+        if peer_config.circle:
+            return peer_config.circle
+        return self._backend.derive_circle(peer_config)
+
+    def _check_circle_access(
+        self, from_peer: str, to_peer: str, bypass: bool = False
+    ) -> None:
+        """Check if from_peer can communicate with to_peer.
+
+        Args:
+            from_peer: Name of the sending peer
+            to_peer: Name of the target peer
+            bypass: If True, skip circle check (CLI mode)
+
+        Raises:
+            ValueError: If peers are in different circles
+        """
+        # CLI always bypasses circle restrictions
+        if bypass or from_peer == "cli":
+            return
+
+        from_cfg = self._get_peer_config(from_peer)
+        to_cfg = self._get_peer_config(to_peer)
+
+        if from_cfg and to_cfg:
+            from_circle = self.resolve_circle(from_cfg)
+            to_circle = self.resolve_circle(to_cfg)
+            if from_circle != to_circle:
+                raise ValueError(
+                    f"Circle boundary: {from_peer} (circle={from_circle}) cannot reach "
+                    f"{to_peer} (circle={to_circle})"
+                )
+
     async def query(
         self,
         from_peer: str,
         to_peer: str,
         text: str,
         timeout: float = 120.0,
+        bypass_circle: bool = False,
     ) -> str:
         """Send a query to a peer and wait for response.
 
@@ -221,17 +272,21 @@ class PeerManager:
             to_peer: Name of the target peer
             text: Query text
             timeout: Timeout in seconds
+            bypass_circle: If True, bypass circle restrictions (CLI mode)
 
         Returns:
             Response text from the peer
 
         Raises:
-            ValueError: If peer not found
+            ValueError: If peer not found or circle boundary violated
             TimeoutError: If no response within timeout
         """
         peer_config = self._get_peer_config(to_peer)
         if not peer_config:
             raise ValueError(f"Unknown peer: {to_peer}")
+
+        # Check circle access
+        self._check_circle_access(from_peer, to_peer, bypass_circle)
 
         # Check backend-specific requirements
         if self._backend.name == "claudemux" and not peer_config.tmux_session:
@@ -297,13 +352,16 @@ class PeerManager:
             )
             raise
 
-    async def notify(self, from_peer: str, to_peer: str, text: str) -> bool:
+    async def notify(
+        self, from_peer: str, to_peer: str, text: str, bypass_circle: bool = False
+    ) -> bool:
         """Send a notification to a peer (fire-and-forget).
 
         Args:
             from_peer: Name of the sending peer
             to_peer: Name of the target peer
             text: Notification text
+            bypass_circle: If True, bypass circle restrictions (CLI mode)
 
         Returns:
             True if message was sent successfully
@@ -311,6 +369,9 @@ class PeerManager:
         peer_config = self._get_peer_config(to_peer)
         if not peer_config:
             raise ValueError(f"Unknown peer: {to_peer}")
+
+        # Check circle access
+        self._check_circle_access(from_peer, to_peer, bypass_circle)
 
         # Check backend-specific requirements
         if self._backend.name == "claudemux" and not peer_config.tmux_session:
@@ -335,6 +396,7 @@ class PeerManager:
         from_peer: str,
         text: str,
         exclude: list[str] | None = None,
+        bypass_circle: bool = False,
     ) -> list[str]:
         """Broadcast a message to all peers.
 
@@ -342,6 +404,7 @@ class PeerManager:
             from_peer: Name of the sending peer
             text: Broadcast text
             exclude: Peer names to exclude
+            bypass_circle: If True, send to all circles (CLI mode)
 
         Returns:
             List of peer names that received the message
@@ -357,6 +420,13 @@ class PeerManager:
 
         self._add_event("broadcast", {"from": from_peer, "text": text})
 
+        # Determine sender's circle for filtering (if not bypassing)
+        sender_circle: str | None = None
+        if not bypass_circle and from_peer != "cli":
+            sender_config = self._get_peer_config(from_peer)
+            if sender_config:
+                sender_circle = self.resolve_circle(sender_config)
+
         for peer_config in self._config.peers.values():
             if peer_config.name in exclude:
                 continue
@@ -366,6 +436,12 @@ class PeerManager:
                 continue
             elif self._backend.name == "opencode" and not peer_config.opencode_url:
                 continue
+
+            # Filter by circle (unless bypassing)
+            if sender_circle is not None:
+                peer_circle = self.resolve_circle(peer_config)
+                if peer_circle != sender_circle:
+                    continue
 
             status = self._backend.get_peer_status(peer_config)
             if status == PeerStatus.OFFLINE:

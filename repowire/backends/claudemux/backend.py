@@ -170,6 +170,23 @@ class ClaudemuxBackend(Backend):
         """Check if Claude Code hooks are installed."""
         return check_hooks_installed()
 
+    def derive_circle(self, peer: PeerConfig) -> str:
+        """Derive circle from tmux session name.
+
+        For claudemux backend, the circle defaults to the tmux session name
+        (the part before the colon in 'session:window').
+
+        Args:
+            peer: The peer configuration
+
+        Returns:
+            Circle name (tmux session name or "global" if no session)
+        """
+        if peer.tmux_session:
+            session_name, _ = self._parse_tmux_target(peer.tmux_session)
+            return session_name
+        return "global"
+
     def _parse_tmux_target(self, tmux_target: str) -> tuple[str, str | None]:
         """Parse 'session:window' or 'session' format."""
         if ":" in tmux_target:

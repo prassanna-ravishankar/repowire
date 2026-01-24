@@ -23,6 +23,7 @@ class QueryRequest(BaseModel):
     to_peer: str = Field(..., description="Name of the target peer")
     text: str = Field(..., description="Query text")
     timeout: float = Field(default=120.0, description="Timeout in seconds")
+    bypass_circle: bool = Field(default=False, description="Bypass circle restrictions (CLI mode)")
 
 
 class QueryResponse(BaseModel):
@@ -39,6 +40,7 @@ class NotifyRequest(BaseModel):
     from_peer: str = Field(..., description="Name of the sending peer")
     to_peer: str = Field(..., description="Name of the target peer")
     text: str = Field(..., description="Notification text")
+    bypass_circle: bool = Field(default=False, description="Bypass circle restrictions (CLI mode)")
 
 
 class BroadcastRequest(BaseModel):
@@ -47,6 +49,7 @@ class BroadcastRequest(BaseModel):
     from_peer: str = Field(..., description="Name of the sending peer")
     text: str = Field(..., description="Broadcast text")
     exclude: list[str] = Field(default_factory=list, description="Peers to exclude")
+    bypass_circle: bool = Field(default=False, description="Bypass circle restrictions (CLI mode)")
 
 
 class BroadcastResponse(BaseModel):
@@ -101,6 +104,8 @@ async def query_peer(
 
     # Use "cli" as default from_peer if not specified
     from_peer = request.from_peer or "cli"
+    # Auto-bypass circles for CLI requests (when from_peer was not specified)
+    bypass = request.bypass_circle or request.from_peer is None
 
     try:
         response_text = await peer_manager.query(
@@ -108,6 +113,7 @@ async def query_peer(
             to_peer=request.to_peer,
             text=request.text,
             timeout=request.timeout,
+            bypass_circle=bypass,
         )
         return QueryResponse(text=response_text)
     except ValueError as e:
@@ -131,6 +137,7 @@ async def notify_peer(
             from_peer=request.from_peer,
             to_peer=request.to_peer,
             text=request.text,
+            bypass_circle=request.bypass_circle,
         )
         return OkResponse()
     except ValueError as e:
@@ -157,6 +164,7 @@ async def broadcast_message(
         from_peer=request.from_peer,
         text=request.text,
         exclude=request.exclude,
+        bypass_circle=request.bypass_circle,
     )
 
     return BroadcastResponse(sent_to=sent_to)
