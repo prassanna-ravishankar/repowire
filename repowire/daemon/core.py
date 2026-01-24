@@ -242,20 +242,25 @@ class PeerManager:
             ValueError: If peers are in different circles
         """
         # CLI always bypasses circle restrictions
+        # CLI is the master - can communicate with any peer
         if bypass or from_peer == "cli":
             return
 
         from_cfg = self._get_peer_config(from_peer)
-        to_cfg = self._get_peer_config(to_peer)
+        if not from_cfg:
+            raise ValueError(f"Sender peer '{from_peer}' is not registered")
 
-        if from_cfg and to_cfg:
-            from_circle = self.resolve_circle(from_cfg)
-            to_circle = self.resolve_circle(to_cfg)
-            if from_circle != to_circle:
-                raise ValueError(
-                    f"Circle boundary: {from_peer} (circle={from_circle}) cannot reach "
-                    f"{to_peer} (circle={to_circle})"
-                )
+        to_cfg = self._get_peer_config(to_peer)
+        if not to_cfg:
+            raise ValueError(f"Target peer '{to_peer}' is not registered")
+
+        from_circle = self.resolve_circle(from_cfg)
+        to_circle = self.resolve_circle(to_cfg)
+        if from_circle != to_circle:
+            raise ValueError(
+                f"Circle boundary: {from_peer} (circle={from_circle}) cannot reach "
+                f"{to_peer} (circle={to_circle})"
+            )
 
     async def query(
         self,

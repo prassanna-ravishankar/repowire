@@ -39,7 +39,7 @@ TMUX SESSIONS TO CREATE:
   • circle-a (for same-circle test)
   • circle-b (for cross-circle test)
 
-TEST PROJECTS (ask user for 4 directories):
+TEST PROJECTS (ask user for 3 directories):
   Circle A:
     • peer-a1: <PROJECT_A1>
     • peer-a2: <PROJECT_A2>

@@ -666,6 +666,7 @@ def peer_prune(force: bool, dry_run: bool) -> None:
             resp.raise_for_status()
             peers = resp.json().get("peers", [])
     except httpx.ConnectError:
+        console.print("[yellow]Daemon not running. Assuming all configured peers are offline.[/]")
         config = load_config()
         peers = [{"name": n, "status": "offline"} for n in config.peers.keys()]
 
