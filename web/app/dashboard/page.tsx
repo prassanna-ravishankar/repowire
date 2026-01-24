@@ -211,16 +211,16 @@ export default function Dashboard() {
         )}
       </section>
 
-      {/* Activity Feed - with subtle background differentiation */}
+      {/* Conversations - with subtle background differentiation */}
       <section className="bg-zinc-900/40 rounded-xl p-4 border border-zinc-800/50">
         <div className="flex items-center justify-between mb-4">
-          <span className="text-xs font-mono text-zinc-500 uppercase tracking-wider">Activity</span>
+          <span className="text-xs font-mono text-zinc-500 uppercase tracking-wider">Conversations</span>
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
             <span className="text-xs text-zinc-600">live</span>
           </div>
         </div>
-        <div className="max-h-[400px] overflow-y-auto">
+        <div className="max-h-[500px] overflow-y-auto">
           <ActivityFeed events={events} conversations={conversations} />
         </div>
       </section>
