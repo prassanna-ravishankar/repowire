@@ -155,7 +155,7 @@ class ClaudemuxBackend(Backend):
                     return PeerStatus.OFFLINE
 
             return PeerStatus.ONLINE
-        except (libtmux.exc.LibTmuxException, libtmux.exc.ObjectDoesNotExist):  # type: ignore[attr-defined]
+        except (libtmux.exc.LibTmuxException, libtmux.exc.ObjectDoesNotExist):
             return PeerStatus.OFFLINE
 
     def install(self, dev: bool = False, **kwargs) -> None:
@@ -219,5 +219,5 @@ class ClaudemuxBackend(Backend):
                 return window.active_pane
 
             return session.active_pane
-        except libtmux.exc.LibTmuxException:  # type: ignore[attr-defined]
+        except libtmux.exc.LibTmuxException:
             return None
