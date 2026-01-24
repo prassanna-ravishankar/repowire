@@ -2,7 +2,7 @@ import pytest
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
-from datetime import datetime
+from datetime import datetime, timezone
 
 from repowire.relay.auth import generate_api_key, validate_api_key, APIKey
 
@@ -43,7 +43,7 @@ class TestRelayAuth:
             key="rw_test123",
             user_id="user1",
             name="test",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
 
         assert key.key == "rw_test123"

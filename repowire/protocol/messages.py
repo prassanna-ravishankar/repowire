@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from uuid import uuid4
@@ -28,7 +28,9 @@ class Message(BaseModel):
     to_peer: str | None = Field(None, description="Target peer name (None for broadcast)")
     payload: dict[str, Any] = Field(..., description="Message payload")
     correlation_id: str | None = Field(None, description="For request/response matching")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Message timestamp")
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc), description="Message timestamp"
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""

@@ -414,8 +414,8 @@ class PeerManager:
         Returns:
             List of peer names that received the message
         """
-        exclude = set(exclude or [])
-        exclude.add(from_peer)  # Don't send to self
+        excluded = set(exclude or [])
+        excluded.add(from_peer)  # Don't send to self
 
         # Reload config
         self._config = load_config()
@@ -433,7 +433,7 @@ class PeerManager:
                 sender_circle = self.resolve_circle(sender_config)
 
         for peer_config in self._config.peers.values():
-            if peer_config.name in exclude:
+            if peer_config.name in excluded:
                 continue
 
             # Check backend-specific requirements

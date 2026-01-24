@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +21,7 @@ class APIKey(BaseModel):
     key: str = Field(..., description="The API key")
     user_id: str = Field(..., description="User identifier")
     name: str = Field(default="default", description="Key name/label")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_used: datetime | None = Field(default=None)
 
 
@@ -61,7 +61,7 @@ def validate_api_key(key: str) -> APIKey | None:
 
     api_key = APIKey(**key_data)
 
-    key_data["last_used"] = datetime.utcnow().isoformat()
+    key_data["last_used"] = datetime.now(timezone.utc).isoformat()
     _save_keys(data)
 
     return api_key

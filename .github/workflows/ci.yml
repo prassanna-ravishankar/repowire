@@ -16,7 +16,7 @@ jobs:
         run: uvx ruff check repowire/
 
       - name: Type check
-        run: uvx mypy repowire/ --ignore-missing-imports
+        run: uvx ty check repowire/
 
       - name: Test
         run: |

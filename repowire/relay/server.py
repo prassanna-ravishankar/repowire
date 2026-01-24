@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import socketio
@@ -107,7 +107,7 @@ async def register(sid: str, data: dict[str, Any]) -> dict[str, Any]:
         path=data["path"],
         machine=data["machine"],
         status=PeerStatus.ONLINE,
-        last_seen=datetime.utcnow(),
+        last_seen=datetime.now(timezone.utc),
         metadata=data.get("metadata", {}),
     )
 
