@@ -94,7 +94,7 @@ def create_app(
 
     # CORS middleware for local development
     app.add_middleware(
-        CORSMiddleware,
+        CORSMiddleware,  # type: ignore[invalid-argument-type]
         allow_origins=["*"],  # Allow all origins for local dev
         allow_credentials=True,
         allow_methods=["*"],

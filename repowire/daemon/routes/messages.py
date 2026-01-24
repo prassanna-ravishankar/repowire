@@ -201,7 +201,7 @@ async def hook_response(request: HookResponseRequest) -> OkResponse:
 
     # Only claudemux backend supports resolve_query
     if hasattr(backend, "resolve_query"):
-        backend.resolve_query(request.correlation_id, request.response)  # type: ignore[attr-defined]
+        backend.resolve_query(request.correlation_id, request.response)  # type: ignore[call-non-callable]
 
     return OkResponse()
 

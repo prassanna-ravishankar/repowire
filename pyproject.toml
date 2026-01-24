@@ -48,7 +48,7 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pytest-httpx>=0.30.0",
     "ruff>=0.1.0",
-    "mypy>=1.0.0",
+    "ty",
 ]
 
 [project.scripts]
@@ -77,9 +77,10 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
 
-[tool.mypy]
-python_version = "3.10"
-strict = true
+[tool.ty.rules]
+# Suppress ty false positives (ty is pre-release)
+possibly-missing-attribute = "ignore"  # libtmux.exc submodule
+unresolved-import = "ignore"  # optional deps (opencode-ai)
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -124,7 +124,7 @@ class PeerManager:
                 result.append(
                     Peer(
                         name=peer_config.name,
-                        path=peer_config.path,
+                        path=peer_config.path or "",
                         machine=self._machine,
                         tmux_session=peer_config.tmux_session,
                         circle=circle,
@@ -169,7 +169,7 @@ class PeerManager:
                 if peer_config:
                     self._peers[name] = Peer(
                         name=name,
-                        path=peer_config.path,
+                        path=peer_config.path or "",
                         machine=self._machine,
                         tmux_session=peer_config.tmux_session,
                         status=status,
@@ -204,7 +204,7 @@ class PeerManager:
         # Cancel pending queries to this peer
         cancelled = 0
         if hasattr(self._backend, "cancel_queries_to_peer"):
-            cancelled = self._backend.cancel_queries_to_peer(name)
+            cancelled = self._backend.cancel_queries_to_peer(name)  # type: ignore[call-non-callable]
 
         return cancelled
 

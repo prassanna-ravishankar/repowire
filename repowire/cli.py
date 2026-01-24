@@ -83,7 +83,7 @@ def setup(dev: bool, backend: str | None, no_service: bool) -> None:
         )
 
     # Save backend choice to config
-    config.daemon.backend = backend
+    config.daemon.backend = backend  # type: ignore[assignment]
     config.save()
     console.print(f"[green]✓[/] Backend set to: {backend}")
 

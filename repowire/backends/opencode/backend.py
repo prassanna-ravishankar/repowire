@@ -39,7 +39,7 @@ class OpencodeBackend(Backend):
             raise ValueError(f"Could not connect to peer {peer.name}")
 
         # Use SDK to send message (no_reply=True for fire-and-forget)
-        await client.session.prompt(
+        await client.session.prompt(  # type: ignore[union-attr]
             id=session_id,
             parts=[{"type": "text", "text": text}],
             no_reply=True,
@@ -52,7 +52,7 @@ class OpencodeBackend(Backend):
             raise ValueError(f"Could not connect to peer {peer.name}")
 
         # SDK returns response directly - no need for hooks!
-        result = await client.session.prompt(
+        result = await client.session.prompt(  # type: ignore[union-attr]
             id=session_id,
             parts=[{"type": "text", "text": text}],
         )
