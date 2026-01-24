@@ -13,7 +13,9 @@ jobs:
       - uses: astral-sh/setup-uv@v5
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: |
+          mkdir -p web/out
+          uv sync --all-extras
 
       - name: Lint
         run: uvx ruff check repowire/
