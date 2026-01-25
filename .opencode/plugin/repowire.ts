@@ -1,5 +1,29 @@
-import type { Plugin } from "@opencode-ai/plugin"
+import type { Plugin, PluginClient } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
+
+// Type definitions for event properties
+interface SessionEventInfo {
+  id?: string
+}
+
+interface MessageEventInfo {
+  role?: string
+  sessionID?: string
+}
+
+interface EventWithProperties {
+  type: string
+  properties?: {
+    info?: SessionEventInfo | MessageEventInfo
+  }
+}
+
+interface PeerInfo {
+  name: string
+  status: string
+  machine?: string
+  path?: string
+}
 
 // Configuration
 const DAEMON_URL = process.env.REPOWIRE_DAEMON_URL || "http://127.0.0.1:8377"
@@ -11,7 +35,7 @@ let peerName: string = "unknown"
 let projectPath: string = ""
 let activeSessionId: string | null = null
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
-let opencodeClient: any = null  // Store the client reference
+let opencodeClient: PluginClient | null = null
 
 // HTTP helpers for daemon
 async function daemon(path: string, body?: object) {
@@ -99,8 +123,7 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
     const fromPeer = data.from_peer as string
     const text = data.text as string
     await handleIncomingQuery(correlationId, fromPeer, text)
-  } else if (msgType === "notify") {
-    const fromPeer = data.from_peer as string
+  } else if (msgType === "notify" || msgType === "broadcast") {
     const text = data.text as string
     // Fire-and-forget - inject if we have a session
     if (activeSessionId && opencodeClient) {
@@ -110,20 +133,7 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
           body: { parts: [{ type: "text", text }] }
         })
       } catch (e) {
-        console.error("[repowire] Failed to inject notification:", e)
-      }
-    }
-  } else if (msgType === "broadcast") {
-    const fromPeer = data.from_peer as string
-    const text = data.text as string
-    if (activeSessionId && opencodeClient) {
-      try {
-        await opencodeClient.session.prompt({
-          path: { id: activeSessionId },
-          body: { parts: [{ type: "text", text }] }
-        })
-      } catch (e) {
-        console.error("[repowire] Failed to inject broadcast:", e)
+        console.error(`[repowire] Failed to inject ${msgType}:`, e)
       }
     }
   }
@@ -269,17 +279,31 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
           }, null, 2)
         },
       }),
+      set_circle: tool({
+        description: "Join a named circle to communicate with peers in that circle. Use this to communicate with peers from different backends (e.g., Claude Code sessions in tmux).",
+        args: {
+          circle: tool.schema.string().describe("Circle name to join (e.g., 'dev', 'frontend')"),
+        },
+        async execute({ circle }) {
+          if (ws?.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "set_circle", circle }))
+            return `Joined circle: ${circle}`
+          }
+          return "Error: Not connected to daemon"
+        },
+      }),
     },
     // Event hook to track session changes
     event: async ({ event }) => {
-      if (event.type === "session.updated") {
-        const info = (event as any).properties?.info
+      const typedEvent = event as EventWithProperties
+      if (typedEvent.type === "session.updated") {
+        const info = typedEvent.properties?.info as SessionEventInfo | undefined
         if (info?.id) {
           activeSessionId = info.id
           sendSession(activeSessionId)
         }
-      } else if (event.type === "message.updated") {
-        const info = (event as any).properties?.info
+      } else if (typedEvent.type === "message.updated") {
+        const info = typedEvent.properties?.info as MessageEventInfo | undefined
         if (info?.role === "assistant" && info?.sessionID) {
           if (info.sessionID !== activeSessionId) {
             activeSessionId = info.sessionID
@@ -287,14 +311,42 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
           }
           sendStatus("busy")
         }
-      } else if (event.type === "session.idle") {
+      } else if (typedEvent.type === "session.idle") {
         sendStatus("idle")
-      } else if (event.type === "session.deleted") {
-        const info = (event as any).properties?.info
+      } else if (typedEvent.type === "session.deleted") {
+        const info = typedEvent.properties?.info as SessionEventInfo | undefined
         if (info?.id === activeSessionId) {
           activeSessionId = null
           sendStatus("idle")
         }
+      }
+    },
+    // Inject mesh network context into system prompt
+    "experimental.chat.system.transform": async (_input, output) => {
+      try {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 2000)
+        const res = await fetch(`${DAEMON_URL}/peers`, { signal: controller.signal })
+        clearTimeout(timeout)
+        if (!res.ok) return
+        const result = await res.json()
+        const peers = (result.peers || []) as PeerInfo[]
+        const otherPeers = peers.filter((p: PeerInfo) => p.name !== peerName && p.status === "online")
+
+        if (otherPeers.length > 0) {
+          const peerList = otherPeers.map((p: PeerInfo) =>
+            `  - ${p.name} on ${p.machine || "unknown"} (${p.path || "unknown path"})`
+          ).join("\n")
+
+          output.system.push(`[Repowire Mesh] You have access to other coding sessions working on related projects:
+${peerList}
+
+IMPORTANT: When asked about these projects, ask the peer directly via ask_peer tool rather than searching locally.
+Use list_peers to see current peer status. Use notify_peer for fire-and-forget messages.
+Peer list may be outdated - use list_peers tool to refresh.`)
+        }
+      } catch {
+        // Daemon not running or timeout - skip context injection
       }
     },
   }

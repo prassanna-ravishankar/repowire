@@ -4,8 +4,32 @@ from __future__ import annotations
 
 from pathlib import Path
 
-PLUGIN_CONTENT = '''import type { Plugin } from "@opencode-ai/plugin"
+PLUGIN_CONTENT = '''import type { Plugin, PluginClient } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
+
+// Type definitions for event properties
+interface SessionEventInfo {
+  id?: string
+}
+
+interface MessageEventInfo {
+  role?: string
+  sessionID?: string
+}
+
+interface EventWithProperties {
+  type: string
+  properties?: {
+    info?: SessionEventInfo | MessageEventInfo
+  }
+}
+
+interface PeerInfo {
+  name: string
+  status: string
+  machine?: string
+  path?: string
+}
 
 // Configuration
 const DAEMON_URL = process.env.REPOWIRE_DAEMON_URL || "http://127.0.0.1:8377"
@@ -17,7 +41,7 @@ let peerName: string = "unknown"
 let projectPath: string = ""
 let activeSessionId: string | null = null
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
-let opencodeClient: any = null  // Store the client reference
+let opencodeClient: PluginClient | null = null
 
 // HTTP helpers for daemon
 async function daemon(path: string, body?: object) {
@@ -277,14 +301,15 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
     },
     // Event hook to track session changes
     event: async ({ event }) => {
-      if (event.type === "session.updated") {
-        const info = (event as any).properties?.info
+      const typedEvent = event as EventWithProperties
+      if (typedEvent.type === "session.updated") {
+        const info = typedEvent.properties?.info as SessionEventInfo | undefined
         if (info?.id) {
           activeSessionId = info.id
           sendSession(activeSessionId)
         }
-      } else if (event.type === "message.updated") {
-        const info = (event as any).properties?.info
+      } else if (typedEvent.type === "message.updated") {
+        const info = typedEvent.properties?.info as MessageEventInfo | undefined
         if (info?.role === "assistant" && info?.sessionID) {
           if (info.sessionID !== activeSessionId) {
             activeSessionId = info.sessionID
@@ -292,10 +317,10 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
           }
           sendStatus("busy")
         }
-      } else if (event.type === "session.idle") {
+      } else if (typedEvent.type === "session.idle") {
         sendStatus("idle")
-      } else if (event.type === "session.deleted") {
-        const info = (event as any).properties?.info
+      } else if (typedEvent.type === "session.deleted") {
+        const info = typedEvent.properties?.info as SessionEventInfo | undefined
         if (info?.id === activeSessionId) {
           activeSessionId = null
           sendStatus("idle")
@@ -311,11 +336,11 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         clearTimeout(timeout)
         if (!res.ok) return
         const result = await res.json()
-        const peers = result.peers || []
-        const otherPeers = peers.filter((p: any) => p.name !== peerName && p.status === "online")
+        const peers = (result.peers || []) as PeerInfo[]
+        const otherPeers = peers.filter((p: PeerInfo) => p.name !== peerName && p.status === "online")
 
         if (otherPeers.length > 0) {
-          const peerList = otherPeers.map((p: any) =>
+          const peerList = otherPeers.map((p: PeerInfo) =>
             `  - ${p.name} on ${p.machine || "unknown"} (${p.path || "unknown path"})`
           ).join("\\n")
 
