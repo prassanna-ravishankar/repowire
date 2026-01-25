@@ -7,7 +7,7 @@ export default function Installation() {
   const [copied, setCopied] = useState(false);
 
   const copyToClipboard = () => {
-    navigator.clipboard.writeText('uv tool install "repowire[claudemux]"');
+    navigator.clipboard.writeText('uv tool install repowire');
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -26,7 +26,7 @@ export default function Installation() {
           <div className="flex items-center justify-between font-mono text-sm sm:text-base text-gray-300">
             <div className="flex items-center">
               <span className="text-green-400 mr-2">$</span>
-              <span>uv tool install "repowire[claudemux]"</span>
+              <span>uv tool install repowire</span>
             </div>
             <button
               onClick={copyToClipboard}
@@ -44,7 +44,7 @@ export default function Installation() {
 
         <div className="mt-8 text-sm text-gray-500">
           <p>
-            Alternatively: <code>pip install "repowire[claudemux]"</code>
+            Alternatively: <code>pip install repowire</code>
           </p>
           <p className="mt-2">
             See the <a href="https://github.com/prassanna-ravishankar/repowire" className="text-blue-500 hover:underline">documentation</a> for full setup instructions.
