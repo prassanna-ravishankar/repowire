@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import socket
 from typing import TYPE_CHECKING, Any
@@ -55,7 +56,7 @@ async def plugin_websocket(websocket: WebSocket) -> None:
             return
 
         peer_name = data.get("peer_name")
-        path = data.get("path", "")
+        path = os.path.normpath(data.get("path", ""))  # Sanitize to prevent path traversal
         metadata = data.get("metadata", {})
 
         if not peer_name or not re.match(r'^[a-zA-Z0-9_-]+$', peer_name):
