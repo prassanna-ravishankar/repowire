@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from repowire.daemon.auth import require_auth
-from repowire.daemon.deps import get_backend, get_peer_manager
+from repowire.daemon.deps import get_peer_manager
 from repowire.protocol.peers import PeerStatus
 
 router = APIRouter(tags=["messages"])
@@ -197,12 +197,8 @@ async def update_session(
 @router.post("/hook/response", response_model=OkResponse)
 async def hook_response(request: HookResponseRequest) -> OkResponse:
     """Receive response from Stop hook (no auth - called by local hooks)."""
-    backend = get_backend()
-
-    # Only claudemux backend supports resolve_query
-    if hasattr(backend, "resolve_query"):
-        backend.resolve_query(request.correlation_id, request.response)  # type: ignore[call-non-callable]
-
+    peer_manager = get_peer_manager()
+    peer_manager.resolve_hook_response(request.correlation_id, request.response)
     return OkResponse()
 
 

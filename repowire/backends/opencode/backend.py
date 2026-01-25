@@ -1,4 +1,4 @@
-"""OpenCode backend - SDK-based message delivery for OpenCode AI."""
+"""OpenCode backend - WebSocket-based message delivery for OpenCode sessions."""
 
 from __future__ import annotations
 
@@ -17,60 +17,78 @@ if TYPE_CHECKING:
 
 
 class OpencodeBackend(Backend):
-    """Backend for OpenCode AI sessions using the opencode-ai SDK."""
+    """Backend for OpenCode sessions using WebSocket plugin connections.
+
+    Unlike claudemux which uses tmux for message delivery, the OpenCode backend
+    relies on a TypeScript plugin that:
+    1. Connects to the daemon via WebSocket on startup
+    2. Receives queries and injects them into the user's session
+    3. Sends responses back via WebSocket
+
+    No opencode-ai SDK is needed - all communication flows through WebSocket.
+    """
 
     name = "opencode"
 
     def __init__(self) -> None:
-        self._clients: dict[str, object] = {}  # peer_name -> AsyncOpencode client
+        pass
 
     async def start(self) -> None:
         """Initialize backend."""
         pass
 
     async def stop(self) -> None:
-        """Cleanup clients."""
-        self._clients.clear()
+        """Cleanup."""
+        pass
 
     async def send_message(self, peer: PeerConfig, text: str) -> None:
-        """Send a fire-and-forget message to a peer via OpenCode SDK."""
-        client, session_id = await self._get_client(peer)
-        if not client or not session_id:
-            raise ValueError(f"Could not connect to peer {peer.name}")
+        """Send a fire-and-forget message to a peer via WebSocket.
 
-        # Use SDK to send message (no_reply=True for fire-and-forget)
-        await client.session.prompt(  # type: ignore[union-attr]
-            id=session_id,
-            parts=[{"type": "text", "text": text}],
-            no_reply=True,
-        )
+        Args:
+            peer: Peer configuration
+            text: Message text
+        """
+        from repowire.daemon.websocket_manager import get_ws_manager
+
+        ws_manager = get_ws_manager()
+        if not ws_manager.is_connected(peer.name):
+            raise ValueError(f"Peer {peer.name} is not connected via WebSocket")
+
+        # Send as notification (fire-and-forget)
+        success = await ws_manager.send_notification("daemon", peer.name, text)
+        if not success:
+            raise ValueError(f"Failed to send notification to {peer.name}")
 
     async def send_query(self, peer: PeerConfig, text: str, timeout: float = 120.0) -> str:
-        """Send a query and get response directly from SDK (no hooks needed)."""
-        client, session_id = await self._get_client(peer)
-        if not client or not session_id:
-            raise ValueError(f"Could not connect to peer {peer.name}")
+        """Send a query and get response via WebSocket.
 
-        # SDK returns response directly - no need for hooks!
-        result = await client.session.prompt(  # type: ignore[union-attr]
-            id=session_id,
-            parts=[{"type": "text", "text": text}],
-        )
+        The plugin receives the query, injects it into the user's session using
+        the OpenCode SDK's session.prompt(), and returns the response via WebSocket.
 
-        # Extract text from response parts
-        for part in result.parts:
-            if hasattr(part, "text"):
-                return part.text
-        return ""
+        Args:
+            peer: Peer configuration
+            text: Query text
+            timeout: Timeout in seconds
+
+        Returns:
+            Response text from the peer
+        """
+        from repowire.daemon.websocket_manager import get_ws_manager
+
+        ws_manager = get_ws_manager()
+        if not ws_manager.is_connected(peer.name):
+            raise ValueError(f"Peer {peer.name} is not connected via WebSocket")
+
+        # Send query and wait for response
+        response = await ws_manager.send_query("daemon", peer.name, text, timeout)
+        return response
 
     def get_peer_status(self, peer: PeerConfig) -> PeerStatus:
-        """Check if peer's OpenCode instance is reachable."""
-        # For OpenCode, we check if the peer has an opencode_url configured
-        if not peer.opencode_url:
-            return PeerStatus.OFFLINE
+        """Check if peer is connected via WebSocket."""
+        from repowire.daemon.websocket_manager import get_ws_manager
 
-        # Could do a health check here, but for now just assume online if URL exists
-        return PeerStatus.ONLINE
+        ws_manager = get_ws_manager()
+        return ws_manager.get_peer_status(peer.name)
 
     def install(self, global_install: bool = True, **kwargs) -> None:
         """Install OpenCode plugin."""
@@ -84,29 +102,16 @@ class OpencodeBackend(Backend):
         """Check if OpenCode plugin is installed."""
         return check_plugin_installed(global_install=global_install)
 
-    async def _get_client(self, peer: PeerConfig) -> tuple[object | None, str | None]:
-        """Get or create an OpenCode client for a peer.
+    def cancel_queries_to_peer(self, peer_name: str) -> int:
+        """Cancel pending queries to a peer.
+
+        Args:
+            peer_name: Name of the peer
 
         Returns:
-            Tuple of (client, session_id) or (None, None) if unable to connect.
+            Number of queries cancelled
         """
-        opencode_url = peer.opencode_url
-        session_id = peer.session_id
+        from repowire.daemon.websocket_manager import get_ws_manager
 
-        if not opencode_url:
-            return None, None
-
-        if peer.name in self._clients:
-            return self._clients[peer.name], session_id
-
-        try:
-            from opencode_ai import AsyncOpencode
-
-            client = AsyncOpencode(base_url=opencode_url)
-            self._clients[peer.name] = client
-            return client, session_id
-        except ImportError:
-            # opencode-ai SDK not installed
-            return None, None
-        except Exception:  # TODO: Catch specific exceptions from opencode-ai SDK
-            return None, None
+        ws_manager = get_ws_manager()
+        return ws_manager.cancel_queries_to_peer(peer_name)

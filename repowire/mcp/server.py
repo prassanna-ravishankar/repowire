@@ -143,6 +143,31 @@ def create_mcp_server() -> FastMCP:
         except httpx.HTTPStatusError:
             return json.dumps({"name": my_name, "error": "Not registered"})
 
+    @mcp.tool()
+    async def set_circle(circle: str) -> str:
+        """Join a named circle to communicate with peers in that circle.
+
+        Use this to communicate with peers from different backends (e.g., OpenCode
+        sessions). By default, claudemux peers are in a circle named after their
+        tmux session, and OpenCode peers are in the "global" circle.
+
+        Args:
+            circle: Circle name to join (e.g., "dev", "global", "frontend")
+
+        Returns:
+            Confirmation message
+        """
+        my_name = _detect_my_peer_name()
+        await daemon_request(
+            "POST",
+            "/peers/circle",
+            {
+                "peer_name": my_name,
+                "circle": circle,
+            },
+        )
+        return f"Joined circle: {circle}"
+
     return mcp
 
 
