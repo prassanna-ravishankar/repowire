@@ -212,9 +212,10 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 
 ## Integration Testing
 
-Use the provided skills for integration testing:
+Use the `/integration-test` skill for end-to-end testing. It supports three modes:
 
-- **Claudemux backend**: `/peer-communication-test` skill
-- **OpenCode backend**: `/opencode-communication-test` skill
+- **claudemux**: Test Claude Code sessions via tmux hooks
+- **opencode**: Test OpenCode sessions via WebSocket plugin
+- **mixed**: Test cross-backend communication (Claude Code ↔ OpenCode)
 
-These skills guide you through environment discovery, test setup, bidirectional query testing, and cleanup.
+The skill guides you through environment discovery, pre-test teardown, test execution, and final cleanup.
