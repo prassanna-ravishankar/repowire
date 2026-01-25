@@ -251,7 +251,7 @@ sleep 10
    From Claude Code peer, query the OpenCode peer:
    ```bash
    tmux send-keys -t mixed-test:claude-peer "Use ask_peer to ask $OPENCODE_PEER_NAME what their project is about" Enter Enter
-   sleep 60
+   sleep 60  # Adjust based on model response time; check daemon /events for completion
    tmux capture-pane -t mixed-test:claude-peer -p -S -50 | tail -30
    ```
    Expected: Response received from OpenCode peer.
@@ -260,7 +260,7 @@ sleep 10
    From OpenCode peer, query the Claude Code peer:
    ```bash
    tmux send-keys -t mixed-test:opencode-peer "Use the ask_peer tool to ask $CLAUDE_PEER_NAME about their architecture" Enter
-   sleep 60
+   sleep 60  # Adjust based on model response time; check daemon /events for completion
    tmux capture-pane -t mixed-test:opencode-peer -p -S -50 | tail -30
    ```
    Expected: Response received from Claude Code peer.

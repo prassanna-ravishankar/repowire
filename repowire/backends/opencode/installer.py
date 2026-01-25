@@ -208,9 +208,14 @@ function cleanup() {
   }
 }
 
+// Sanitize peer name to match daemon validation (alphanumeric, underscore, hyphen)
+function sanitizePeerName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, "_") || "unknown"
+}
+
 // Main plugin export
 export const RepowirePlugin: Plugin = async ({ client, directory }) => {
-  peerName = directory.split("/").pop() || "unknown"
+  peerName = sanitizePeerName(directory.split("/").pop() || "unknown")
   projectPath = directory
   opencodeClient = client  // Store client for later use
 
