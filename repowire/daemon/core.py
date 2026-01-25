@@ -89,11 +89,11 @@ class PeerManager:
             backends.append("opencode")
         return "+".join(backends) if backends else "none"
 
-    def _get_backend_for_peer(self, peer_name: str) -> Backend:
+    def _get_backend_for_peer(self, peer_config: PeerConfig) -> Backend:
         """Get appropriate backend for peer based on connection type.
 
         Args:
-            peer_name: Name of the peer
+            peer_config: Peer configuration
 
         Returns:
             Backend instance to use for this peer
@@ -101,6 +101,8 @@ class PeerManager:
         Raises:
             ValueError: If no backend available for this peer
         """
+        peer_name = peer_config.name
+
         # Per-peer routing mode (preferred)
         if self._shared:
             # Check WebSocket first (OpenCode peers)
@@ -112,8 +114,7 @@ class PeerManager:
                 )
 
             # Check tmux session (claudemux peers)
-            peer_config = self._config.get_peer(peer_name)
-            if peer_config and peer_config.tmux_session:
+            if peer_config.tmux_session:
                 if self._shared.claudemux_backend:
                     return self._shared.claudemux_backend
                 raise ValueError(
@@ -553,7 +554,7 @@ class PeerManager:
         self._check_circle_access(from_peer, to_peer, bypass_circle)
 
         # Get appropriate backend for this peer (validates that peer is reachable)
-        backend = self._get_backend_for_peer(to_peer)
+        backend = self._get_backend_for_peer(peer_config)
 
         # Format the query with sender info and response instructions
         formatted_query = (
@@ -635,7 +636,7 @@ class PeerManager:
         self._check_circle_access(from_peer, to_peer, bypass_circle)
 
         # Get appropriate backend for this peer (validates that peer is reachable)
-        backend = self._get_backend_for_peer(to_peer)
+        backend = self._get_backend_for_peer(peer_config)
 
         # Format the notification with sender info
         formatted_message = (
@@ -695,7 +696,7 @@ class PeerManager:
 
             # Try to get backend for this peer (skips if not reachable)
             try:
-                backend = self._get_backend_for_peer(peer_config.name)
+                backend = self._get_backend_for_peer(peer_config)
             except ValueError:
                 # Peer has no available backend, skip
                 continue

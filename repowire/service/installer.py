@@ -56,7 +56,7 @@ def _get_launchd_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{MACOS_LABEL}.plist"
 
 
-def _generate_launchd_plist(backend: str | None = None) -> str:
+def _generate_launchd_plist() -> str:
     """Generate the launchd plist content."""
     repowire_exec = _get_repowire_executable()
     log_path = _get_log_path()
@@ -70,9 +70,6 @@ def _generate_launchd_plist(backend: str | None = None) -> str:
         program_args = f"        <string>{repowire_exec}</string>\n"
 
     program_args += "        <string>serve</string>\n"
-    if backend:
-        program_args += "        <string>--backend</string>\n"
-        program_args += f"        <string>{backend}</string>\n"
 
     # Get current PATH so launchd can find tmux and other tools
     current_path = os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
@@ -105,7 +102,7 @@ def _generate_launchd_plist(backend: str | None = None) -> str:
 """
 
 
-def _install_macos_service(backend: str | None = None) -> tuple[bool, str]:
+def _install_macos_service() -> tuple[bool, str]:
     """Install launchd service on macOS."""
     plist_path = _get_launchd_plist_path()
 
@@ -120,7 +117,7 @@ def _install_macos_service(backend: str | None = None) -> tuple[bool, str]:
         )
 
     # Write plist file
-    plist_content = _generate_launchd_plist(backend)
+    plist_content = _generate_launchd_plist()
     plist_path.write_text(plist_content)
 
     # Load the service
@@ -202,15 +199,13 @@ def _get_systemd_service_path() -> Path:
     return Path.home() / ".config" / "systemd" / "user" / f"{LINUX_SERVICE_NAME}.service"
 
 
-def _generate_systemd_unit(backend: str | None = None) -> str:
+def _generate_systemd_unit() -> str:
     """Generate the systemd unit file content."""
     repowire_exec = _get_repowire_executable()
     log_path = _get_log_path()
     current_path = os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
 
     exec_start = f"{repowire_exec} serve"
-    if backend:
-        exec_start += f" --backend {backend}"
 
     return f"""[Unit]
 Description=Repowire Daemon
@@ -230,7 +225,7 @@ WantedBy=default.target
 """
 
 
-def _install_linux_service(backend: str | None = None) -> tuple[bool, str]:
+def _install_linux_service() -> tuple[bool, str]:
     """Install systemd user service on Linux."""
     service_path = _get_systemd_service_path()
 
@@ -244,7 +239,7 @@ def _install_linux_service(backend: str | None = None) -> tuple[bool, str]:
     )
 
     # Write service file
-    unit_content = _generate_systemd_unit(backend)
+    unit_content = _generate_systemd_unit()
     service_path.write_text(unit_content)
 
     # Reload systemd
@@ -334,11 +329,8 @@ def _get_linux_service_status() -> dict:
 # =============================================================================
 
 
-def install_service(backend: str | None = None) -> tuple[bool, str]:
+def install_service() -> tuple[bool, str]:
     """Install repowire daemon as a system service.
-
-    Args:
-        backend: Backend override (claudemux or opencode)
 
     Returns:
         Tuple of (success, message)
@@ -346,9 +338,9 @@ def install_service(backend: str | None = None) -> tuple[bool, str]:
     platform = get_platform()
 
     if platform == "macos":
-        return _install_macos_service(backend)
+        return _install_macos_service()
     elif platform == "linux":
-        return _install_linux_service(backend)
+        return _install_linux_service()
     else:
         return False, f"Unsupported platform: {sys.platform}"
 

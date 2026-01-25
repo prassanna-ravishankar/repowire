@@ -33,17 +33,15 @@ def main() -> None:
 @click.option("--host", default=DEFAULT_HOST, help="Bind address")
 @click.option("--port", default=DEFAULT_PORT, type=int, help="Port")
 @click.option("--relay", is_flag=True, help="Enable relay mode")
-@click.option("--backend", type=click.Choice(["claudemux", "opencode"]), help="Backend override")
-def serve(host: str, port: int, relay: bool, backend: str | None) -> None:
+def serve(host: str, port: int, relay: bool) -> None:
     """Start the repowire HTTP daemon."""
     import uvicorn
 
     from repowire.daemon.app import create_app
 
-    app = create_app(backend_override=backend, relay_mode=relay)
+    app = create_app(relay_mode=relay)
     console.print(f"[cyan]Starting Repowire daemon on {host}:{port}...[/]")
-    if backend:
-        console.print(f"[dim]Backend: {backend}[/]")
+    console.print("[dim]Per-peer routing enabled[/]")
     if relay:
         console.print("[dim]Relay mode enabled[/]")
     uvicorn.run(app, host=host, port=port)
@@ -56,41 +54,29 @@ def serve(host: str, port: int, relay: bool, backend: str | None) -> None:
 
 @main.command()
 @click.option("--dev", is_flag=True, help="Use dev mode (uv run from current directory)")
-@click.option(
-    "--backend", type=click.Choice(["claudemux", "opencode"]), help="Backend to configure"
-)
 @click.option("--no-service", is_flag=True, help="Skip daemon service installation")
-def setup(dev: bool, backend: str | None, no_service: bool) -> None:
+def setup(dev: bool, no_service: bool) -> None:
     """One-time setup: install hooks/plugins, MCP server, and daemon service."""
-    from repowire.config.models import load_config
+    import shutil
 
-    config = load_config()
+    backends_setup: list[str] = []
 
-    # Determine backend: explicit > config > detect > prompt
-    if not backend:
-        backend = config.daemon.backend
-
-    if not backend:
-        # Auto-detect based on what's available
-        backend = _detect_backend()
-
-    if not backend:
-        # Prompt user
-        backend = click.prompt(
-            "Which backend would you like to use?",
-            type=click.Choice(["claudemux", "opencode"]),
-            default="claudemux",
-        )
-
-    # Save backend choice to config
-    config.daemon.backend = backend  # type: ignore[assignment]
-    config.save()
-    console.print(f"[green]✓[/] Backend set to: {backend}")
-
-    if backend == "claudemux":
+    # Detect and set up claudemux if claude CLI available
+    if shutil.which("claude"):
         _setup_claudemux(dev=dev)
-    elif backend == "opencode":
+        backends_setup.append("claudemux")
+
+    # Detect and set up opencode if opencode CLI or config exists
+    if shutil.which("opencode") or (Path.home() / ".config" / "opencode").exists():
         _setup_opencode(dev=dev)
+        backends_setup.append("opencode")
+
+    if not backends_setup:
+        console.print("[yellow]No backends detected.[/]")
+        console.print("Install 'claude' (Claude Code) or 'opencode' first.")
+        return
+
+    console.print(f"[green]✓[/] Configured backends: {', '.join(backends_setup)}")
 
     # Install daemon as system service
     if not no_service:
@@ -98,7 +84,7 @@ def setup(dev: bool, backend: str | None, no_service: bool) -> None:
 
         platform = get_platform()
         if platform != "unsupported":
-            success, message = install_service(backend)
+            success, message = install_service()
             if success:
                 console.print(f"[green]✓[/] Daemon service installed ({platform})")
             else:
@@ -156,11 +142,7 @@ def build_ui() -> None:
 @main.command()
 def uninstall() -> None:
     """Remove all repowire components: hooks, MCP server, and daemon service."""
-    from repowire.config.models import load_config
     from repowire.service.installer import get_service_status, uninstall_service
-
-    config = load_config()
-    backend = config.daemon.backend or "claudemux"
 
     console.print("[cyan]Uninstalling repowire...[/]")
 
@@ -175,11 +157,9 @@ def uninstall() -> None:
     else:
         console.print("[dim]Daemon service not installed[/]")
 
-    # Uninstall backend-specific components
-    if backend == "claudemux":
-        _uninstall_claudemux()
-    elif backend == "opencode":
-        _uninstall_opencode()
+    # Uninstall all backend components (try both)
+    _uninstall_claudemux()
+    _uninstall_opencode()
 
     console.print("")
     console.print("[green]Uninstall complete![/]")
@@ -226,25 +206,32 @@ def _uninstall_opencode() -> None:
 @main.command()
 def status() -> None:
     """Show repowire installation and daemon status."""
+    import shutil
+
     import httpx
 
-    from repowire.config.models import load_config
     from repowire.hooks.installer import check_hooks_installed
     from repowire.service.installer import get_platform, get_service_status
 
-    config = load_config()
-    backend = config.daemon.backend or "claudemux"
-
-    console.print(f"[cyan]Backend:[/] {backend}")
+    console.print("[cyan]Mode:[/] per-peer routing")
     console.print(f"[cyan]Platform:[/] {get_platform()}")
     console.print("")
 
-    # Check hooks (claudemux)
-    if backend == "claudemux":
+    # Check available backends
+    console.print("[cyan]Backends:[/]")
+    if shutil.which("claude"):
         if check_hooks_installed():
-            console.print("[green]✓[/] Hooks installed")
+            console.print("  [green]✓[/] claudemux (hooks installed)")
         else:
-            console.print("[yellow]✗[/] Hooks not installed")
+            console.print("  [yellow]✗[/] claudemux (hooks not installed)")
+    else:
+        console.print("  [dim]✗[/] claudemux (claude CLI not found)")
+
+    if shutil.which("opencode") or (Path.home() / ".config" / "opencode").exists():
+        console.print("  [green]✓[/] opencode (available)")
+    else:
+        console.print("  [dim]✗[/] opencode (not detected)")
+    console.print("")
 
     # Check daemon service
     svc_status = get_service_status()
@@ -281,18 +268,6 @@ def status() -> None:
         pass
 
 
-def _detect_backend() -> str | None:
-    """Detect which backend to use based on available tools."""
-    import shutil
-
-    # Check if claude command exists
-    if shutil.which("claude"):
-        return "claudemux"
-    # Check if opencode config exists
-    opencode_config = Path.home() / ".config" / "opencode"
-    if opencode_config.exists():
-        return "opencode"
-    return None
 
 
 def _setup_claudemux(dev: bool = False) -> None:
@@ -887,8 +862,7 @@ def service() -> None:
 
 
 @service.command(name="install")
-@click.option("--backend", type=click.Choice(["claudemux", "opencode"]), help="Backend to use")
-def service_install(backend: str | None) -> None:
+def service_install() -> None:
     """Install repowire daemon as a system service (launchd/systemd)."""
     from repowire.service.installer import get_platform, install_service
 
@@ -900,7 +874,7 @@ def service_install(backend: str | None) -> None:
 
     console.print(f"[cyan]Installing repowire service ({platform})...[/]")
 
-    success, message = install_service(backend)
+    success, message = install_service()
 
     if success:
         console.print(f"[green]{message}[/]")

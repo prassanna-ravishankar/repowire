@@ -26,22 +26,13 @@ dependencies = [
     "rich>=13.7.0",
     "click>=8.1.7",
     "httpx>=0.26.0",
+    "libtmux>=0.37.0",
 ]
 
 [project.optional-dependencies]
-claudemux = [
-    "libtmux>=0.37.0",
-]
-# Uncomment for local dev (PyPI doesn't allow git deps):
-# opencode = [
-#     "opencode-ai @ git+https://github.com/anomalyco/opencode-sdk-python@next",
-# ]
 relay = [
     "redis>=5.0.1",
     "python-socketio>=5.10.0",
-]
-all = [
-    "repowire[claudemux]",
 ]
 dev = [
     "pytest>=7.0.0",

@@ -5,11 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Development Commands
 
 ```bash
-# Install dependencies (use --all for both backends)
-pip install -e ".[all]"       # claudemux + opencode
-pip install -e ".[claudemux]" # tmux backend only
-pip install -e ".[opencode]"  # opencode backend only
-pip install -e ".[dev]"       # dev tools (pytest, ruff, mypy)
+# Install dependencies
+pip install -e "."            # core (includes libtmux)
+pip install -e ".[dev]"       # dev tools (pytest, ruff, ty)
+pip install -e ".[relay]"     # relay server deps
 
 # Run tests
 pytest                        # all tests
@@ -23,13 +22,13 @@ uv run ty check repowire/     # type check
 
 # CI runs: ruff check, ty check, pytest (see .github/workflows/ci.yml)
 
-# Start daemon
+# Start daemon (per-peer routing auto-detects backend)
 repowire serve                # default: 127.0.0.1:8377
-repowire serve --backend opencode --port 8080
+repowire serve --port 8080
 
-# Setup (installs hooks + MCP server)
+# Setup (auto-detects and configures all available backends)
 repowire setup --dev          # dev mode (uses local code)
-repowire setup --backend claudemux
+repowire setup                # production mode
 ```
 
 ## Dashboard & Observability

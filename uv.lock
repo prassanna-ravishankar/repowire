@@ -868,6 +868,7 @@ dependencies = [
     { name = "click" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "libtmux" },
     { name = "mcp" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -877,12 +878,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-all = [
-    { name = "libtmux" },
-]
-claudemux = [
-    { name = "libtmux" },
-]
 dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -900,7 +895,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1.7" },
     { name = "fastapi", specifier = ">=0.109.0" },
     { name = "httpx", specifier = ">=0.26.0" },
-    { name = "libtmux", marker = "extra == 'claudemux'", specifier = ">=0.37.0" },
+    { name = "libtmux", specifier = ">=0.37.0" },
     { name = "mcp", specifier = ">=1.0.0" },
     { name = "pydantic", specifier = ">=2.5.0" },
     { name = "pydantic-settings", specifier = ">=2.1.0" },
@@ -910,13 +905,12 @@ requires-dist = [
     { name = "python-socketio", marker = "extra == 'relay'", specifier = ">=5.10.0" },
     { name = "pyyaml", specifier = ">=6.0.1" },
     { name = "redis", marker = "extra == 'relay'", specifier = ">=5.0.1" },
-    { name = "repowire", extras = ["claudemux"], marker = "extra == 'all'" },
     { name = "rich", specifier = ">=13.7.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "ty", marker = "extra == 'dev'" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0" },
 ]
-provides-extras = ["claudemux", "relay", "all", "dev"]
+provides-extras = ["relay", "dev"]
 
 [[package]]
 name = "rich"

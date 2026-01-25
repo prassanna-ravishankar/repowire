@@ -53,7 +53,6 @@ def _try_create_backend(name: str, **kwargs: Any) -> Backend | None:
 def create_app(
     config: Config | None = None,
     backend_factory: Callable[[], Backend] | None = None,
-    backend_override: str | None = None,
     relay_mode: bool = False,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
@@ -61,14 +60,12 @@ def create_app(
     Args:
         config: Optional configuration. Loaded from disk if not provided.
         backend_factory: Optional factory function to create the backend.
-        backend_override: Override the configured backend (claudemux or opencode).
         relay_mode: Enable relay mode for remote peer communication.
 
     Returns:
         Configured FastAPI application.
     """
     # Store these for the lifespan closure
-    _backend_override = backend_override
     _relay_mode = relay_mode
     _backend_factory = backend_factory
     _config = config
