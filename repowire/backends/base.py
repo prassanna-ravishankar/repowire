@@ -63,3 +63,26 @@ class Backend(ABC):
             Circle name (default: "global")
         """
         return "global"
+
+    async def cancel_queries_to_peer(self, peer_name: str) -> int:
+        """Cancel pending queries to a peer.
+
+        Args:
+            peer_name: Name of the peer
+
+        Returns:
+            Number of queries cancelled
+        """
+        return 0
+
+    def resolve_query(self, correlation_id: str, response: str) -> bool:
+        """Resolve a pending query with a response.
+
+        Args:
+            correlation_id: The correlation ID of the pending query
+            response: The response text
+
+        Returns:
+            True if the query was found and resolved
+        """
+        return False

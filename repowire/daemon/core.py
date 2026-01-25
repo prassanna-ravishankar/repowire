@@ -311,6 +311,62 @@ class PeerManager:
                     return True
             return False
 
+    async def set_peer_circle(self, name: str, circle: str) -> bool:
+        """Set a peer's circle for cross-backend communication.
+
+        Updates both in-memory peer and persistent config.
+
+        Args:
+            name: Name of the peer
+            circle: Circle to join
+
+        Returns:
+            True if peer was found and updated
+        """
+        updated = False
+
+        # Update in-memory peer
+        async with self._lock:
+            if name in self._peers:
+                self._peers[name].circle = circle
+                updated = True
+
+        # Update config (persistent)
+        self._config = load_config()
+        peer_config = self._config.get_peer(name)
+        if peer_config:
+            peer_config.circle = circle
+            self._config.save()
+            updated = True
+
+        if updated:
+            logger.info(f"Peer {name} joined circle: {circle}")
+        else:
+            logger.warning(f"Failed to update circle for {name}: peer not found")
+
+        return updated
+
+    async def update_peer_session_id(self, name: str, session_id: str) -> bool:
+        """Update a peer's session ID.
+
+        Updates persistent config.
+
+        Args:
+            name: Name of the peer
+            session_id: New session ID
+
+        Returns:
+            True if peer was found and updated
+        """
+        self._config = load_config()
+        peer_config = self._config.get_peer(name)
+        if peer_config:
+            peer_config.session_id = session_id
+            self._config.save()
+            return True
+        logger.warning(f"Peer {name} not in config, session_id not persisted")
+        return False
+
     async def mark_offline(self, name: str) -> int:
         """Mark a peer as offline and cancel pending queries to it.
 
@@ -329,36 +385,12 @@ class PeerManager:
         cancelled = 0
 
         if self._shared:
-            # Check claudemux backend
-            if self._shared.claudemux_backend and hasattr(
-                self._shared.claudemux_backend, "cancel_queries_to_peer"
-            ):
-                method = getattr(self._shared.claudemux_backend, "cancel_queries_to_peer")
-                result = method(name)
-                # Handle both sync and async methods
-                if hasattr(result, "__await__"):
-                    cancelled += await result
-                else:
-                    cancelled += result
-            # Check opencode backend (via ws_manager)
-            if self._shared.opencode_backend and hasattr(
-                self._shared.opencode_backend, "cancel_queries_to_peer"
-            ):
-                method = getattr(self._shared.opencode_backend, "cancel_queries_to_peer")
-                result = method(name)
-                # Handle both sync and async methods
-                if hasattr(result, "__await__"):
-                    cancelled += await result
-                else:
-                    cancelled += result
-        elif self._backend and hasattr(self._backend, "cancel_queries_to_peer"):
-            method = getattr(self._backend, "cancel_queries_to_peer")
-            result = method(name)
-            # Handle both sync and async methods
-            if hasattr(result, "__await__"):
-                cancelled = await result
-            else:
-                cancelled = result
+            if self._shared.claudemux_backend:
+                cancelled += await self._shared.claudemux_backend.cancel_queries_to_peer(name)
+            if self._shared.opencode_backend:
+                cancelled += await self._shared.opencode_backend.cancel_queries_to_peer(name)
+        elif self._backend:
+            cancelled = await self._backend.cancel_queries_to_peer(name)
 
         return cancelled
 
@@ -376,11 +408,9 @@ class PeerManager:
         """
         # Try claudemux backend first (the only one that uses hooks)
         if self._shared and self._shared.claudemux_backend:
-            backend = self._shared.claudemux_backend
-            if hasattr(backend, "resolve_query"):
-                return backend.resolve_query(correlation_id, response)  # type: ignore[union-attr]
-        elif self._backend and hasattr(self._backend, "resolve_query"):
-            return self._backend.resolve_query(correlation_id, response)  # type: ignore[union-attr]
+            return self._shared.claudemux_backend.resolve_query(correlation_id, response)
+        elif self._backend:
+            return self._backend.resolve_query(correlation_id, response)
         return False
 
     def _get_peer_config(self, name: str) -> PeerConfig | None:

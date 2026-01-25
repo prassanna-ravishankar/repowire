@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import socket
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -14,6 +14,10 @@ from repowire.config.models import load_config
 from repowire.daemon.deps import get_peer_manager
 from repowire.daemon.websocket_manager import get_ws_manager
 from repowire.protocol.peers import Peer, PeerStatus
+
+if TYPE_CHECKING:
+    from repowire.daemon.core import PeerManager
+    from repowire.daemon.websocket_manager import WebSocketManager
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +114,8 @@ async def plugin_websocket(websocket: WebSocket) -> None:
 async def _handle_plugin_message(
     peer_name: str,
     data: dict[str, Any],
-    ws_manager: Any,
-    peer_manager: Any,
+    ws_manager: WebSocketManager,
+    peer_manager: PeerManager,
 ) -> None:
     """Handle an incoming message from a plugin.
 
@@ -143,14 +147,7 @@ async def _handle_plugin_message(
             logger.warning(f"Empty session_id from {peer_name}")
             return
         await ws_manager.update_session_id(peer_name, session_id)
-        # Also update config
-        config = load_config()
-        peer_config = config.get_peer(peer_name)
-        if peer_config:
-            peer_config.session_id = session_id
-            config.save()
-        else:
-            logger.warning(f"Peer {peer_name} not in config, session_id not persisted")
+        await peer_manager.update_peer_session_id(peer_name, session_id)
 
     elif msg_type == "response":
         # Response to a query
@@ -171,25 +168,7 @@ async def _handle_plugin_message(
     elif msg_type == "set_circle":
         # Update peer's circle
         circle = data.get("circle", "global")
-        updated_memory = False
-        updated_config = False
-        # Update in peer manager
-        peer = await peer_manager.get_peer(peer_name)
-        if peer:
-            peer.circle = circle
-            await peer_manager.register_peer(peer)
-            updated_memory = True
-        # Update in config
-        config = load_config()
-        peer_config = config.get_peer(peer_name)
-        if peer_config:
-            peer_config.circle = circle
-            config.save()
-            updated_config = True
-        if updated_memory or updated_config:
-            logger.info(f"Peer {peer_name} joined circle: {circle}")
-        else:
-            logger.warning(f"Failed to update circle for {peer_name}: peer not found")
+        await peer_manager.set_peer_circle(peer_name, circle)
 
     else:
         logger.warning(f"Unknown message type from {peer_name}: {msg_type}")

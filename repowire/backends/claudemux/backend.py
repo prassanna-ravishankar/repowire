@@ -111,7 +111,7 @@ class ClaudemuxBackend(Backend):
             return True
         return False
 
-    def cancel_queries_to_peer(self, peer_name: str) -> int:
+    async def cancel_queries_to_peer(self, peer_name: str) -> int:
         """Cancel all pending queries to a peer (called when peer disconnects).
 
         Args:

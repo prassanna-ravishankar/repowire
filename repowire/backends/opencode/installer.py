@@ -105,7 +105,7 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
     const fromPeer = data.from_peer as string
     const text = data.text as string
     await handleIncomingQuery(correlationId, fromPeer, text)
-  } else if (msgType === "notify") {
+  } else if (msgType === "notify" || msgType === "broadcast") {
     const text = data.text as string
     // Fire-and-forget - inject if we have a session
     if (activeSessionId && opencodeClient) {
@@ -115,19 +115,7 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
           body: { parts: [{ type: "text", text }] }
         })
       } catch (e) {
-        console.error("[repowire] Failed to inject notification:", e)
-      }
-    }
-  } else if (msgType === "broadcast") {
-    const text = data.text as string
-    if (activeSessionId && opencodeClient) {
-      try {
-        await opencodeClient.session.prompt({
-          path: { id: activeSessionId },
-          body: { parts: [{ type: "text", text }] }
-        })
-      } catch (e) {
-        console.error("[repowire] Failed to inject broadcast:", e)
+        console.error(`[repowire] Failed to inject ${msgType}:`, e)
       }
     }
   }

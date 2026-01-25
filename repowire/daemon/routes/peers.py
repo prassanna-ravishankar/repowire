@@ -204,7 +204,7 @@ class SetCircleRequest(BaseModel):
 
 
 @router.post("/peers/circle", response_model=OkResponse)
-async def set_peer_circle(
+async def set_peer_circle_endpoint(
     request: SetCircleRequest,
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
@@ -213,21 +213,8 @@ async def set_peer_circle(
     Allows peers to join named circles to communicate with peers from
     different backends (e.g., claudemux peer joining OpenCode's circle).
     """
-    config = get_config()
     peer_manager = get_peer_manager()
-
-    # Update in config
-    peer_config = config.get_peer(request.peer_name)
-    if peer_config:
-        peer_config.circle = request.circle
-        config.save()
-
-    # Update in peer manager
-    peer = await peer_manager.get_peer(request.peer_name)
-    if peer:
-        peer.circle = request.circle
-        await peer_manager.register_peer(peer)
-
+    await peer_manager.set_peer_circle(request.peer_name, request.circle)
     return OkResponse()
 
 
