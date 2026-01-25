@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 
 from repowire.protocol.peers import PeerStatus
 
@@ -72,8 +72,8 @@ class WebSocketManager:
                 old_conn = self._connections[peer_name]
                 try:
                     await old_conn.websocket.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Error closing existing connection for {peer_name}: {e}")
 
             connection = PluginConnection(
                 websocket=websocket,
@@ -188,7 +188,7 @@ class WebSocketManager:
             raise ValueError(f"Peer {to_peer} is not connected")
 
         correlation_id = str(uuid4())
-        future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
 
         query = PendingQuery(
             correlation_id=correlation_id,
@@ -304,8 +304,11 @@ class WebSocketManager:
         try:
             await conn.websocket.send_json(message)
             return True
+        except (WebSocketDisconnect, ConnectionError) as e:
+            logger.warning(f"Connection lost sending notification to {to_peer}: {e}")
+            return False
         except Exception as e:
-            logger.warning(f"Failed to send notification to {to_peer}: {e}")
+            logger.error(f"Unexpected error sending notification to {to_peer}: {e}", exc_info=True)
             return False
 
     async def broadcast(
@@ -346,7 +349,7 @@ class WebSocketManager:
 
         return sent_to
 
-    def cancel_queries_to_peer(self, peer_name: str) -> int:
+    async def cancel_queries_to_peer(self, peer_name: str) -> int:
         """Cancel all pending queries to a peer.
 
         Args:
@@ -355,16 +358,17 @@ class WebSocketManager:
         Returns:
             Number of queries cancelled
         """
-        cancelled = 0
-        for cid, query in list(self._pending_queries.items()):
-            if query.to_peer == peer_name:
-                if not query.future.done():
-                    query.future.set_exception(
-                        ConnectionError(f"Peer {peer_name} went offline")
-                    )
-                del self._pending_queries[cid]
-                cancelled += 1
-        return cancelled
+        async with self._lock:
+            cancelled = 0
+            for cid, query in list(self._pending_queries.items()):
+                if query.to_peer == peer_name:
+                    if not query.future.done():
+                        query.future.set_exception(
+                            ConnectionError(f"Peer {peer_name} went offline")
+                        )
+                    del self._pending_queries[cid]
+                    cancelled += 1
+            return cancelled
 
     def get_all_connections(self) -> list[PluginConnection]:
         """Get all active connections."""

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import socket
 from typing import Any
 
@@ -53,8 +55,8 @@ async def plugin_websocket(websocket: WebSocket) -> None:
         path = data.get("path", "")
         metadata = data.get("metadata", {})
 
-        if not peer_name:
-            await websocket.send_json({"type": "error", "error": "peer_name is required"})
+        if not peer_name or not re.match(r'^[a-zA-Z0-9_-]+$', peer_name):
+            await websocket.send_json({"type": "error", "error": "Invalid peer_name format"})
             await websocket.close()
             return
 
@@ -93,8 +95,11 @@ async def plugin_websocket(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         logger.info(f"Plugin WebSocket disconnected: {peer_name or 'unknown'}")
 
+    except json.JSONDecodeError as e:
+        logger.warning(f"Invalid JSON from {peer_name or 'unknown'}: {e}")
+
     except Exception as e:
-        logger.exception(f"WebSocket error for {peer_name or 'unknown'}: {e}")
+        logger.exception(f"Unexpected WebSocket error for {peer_name or 'unknown'}: {e}")
 
     finally:
         if peer_name:
@@ -134,14 +139,18 @@ async def _handle_plugin_message(
     elif msg_type == "session":
         # Session ID update
         session_id = data.get("session_id")
-        if session_id:
-            await ws_manager.update_session_id(peer_name, session_id)
-            # Also update config
-            config = load_config()
-            peer_config = config.get_peer(peer_name)
-            if peer_config:
-                peer_config.session_id = session_id
-                config.save()
+        if not session_id:
+            logger.warning(f"Empty session_id from {peer_name}")
+            return
+        await ws_manager.update_session_id(peer_name, session_id)
+        # Also update config
+        config = load_config()
+        peer_config = config.get_peer(peer_name)
+        if peer_config:
+            peer_config.session_id = session_id
+            config.save()
+        else:
+            logger.warning(f"Peer {peer_name} not in config, session_id not persisted")
 
     elif msg_type == "response":
         # Response to a query
@@ -149,6 +158,8 @@ async def _handle_plugin_message(
         text = data.get("text", "")
         if correlation_id:
             await ws_manager.resolve_query(correlation_id, text)
+        else:
+            logger.warning(f"Response from {peer_name} missing correlation_id, dropping")
 
     elif msg_type == "error":
         # Error response to a query
@@ -160,18 +171,25 @@ async def _handle_plugin_message(
     elif msg_type == "set_circle":
         # Update peer's circle
         circle = data.get("circle", "global")
+        updated_memory = False
+        updated_config = False
         # Update in peer manager
         peer = await peer_manager.get_peer(peer_name)
         if peer:
             peer.circle = circle
             await peer_manager.register_peer(peer)
+            updated_memory = True
         # Update in config
         config = load_config()
         peer_config = config.get_peer(peer_name)
         if peer_config:
             peer_config.circle = circle
             config.save()
-        logger.info(f"Peer {peer_name} joined circle: {circle}")
+            updated_config = True
+        if updated_memory or updated_config:
+            logger.info(f"Peer {peer_name} joined circle: {circle}")
+        else:
+            logger.warning(f"Failed to update circle for {peer_name}: peer not found")
 
     else:
         logger.warning(f"Unknown message type from {peer_name}: {msg_type}")

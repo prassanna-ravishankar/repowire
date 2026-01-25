@@ -33,6 +33,10 @@ class SharedResources:
     claudemux_backend: Backend | None = None
     opencode_backend: Backend | None = None
 
+    def __post_init__(self) -> None:
+        if self.claudemux_backend is None and self.opencode_backend is None:
+            raise ValueError("At least one backend must be configured")
+
 
 class PeerManager:
     """Manages peer registry and message routing.
@@ -329,14 +333,32 @@ class PeerManager:
             if self._shared.claudemux_backend and hasattr(
                 self._shared.claudemux_backend, "cancel_queries_to_peer"
             ):
-                cancelled += self._shared.claudemux_backend.cancel_queries_to_peer(name)  # type: ignore[operator]
+                method = getattr(self._shared.claudemux_backend, "cancel_queries_to_peer")
+                result = method(name)
+                # Handle both sync and async methods
+                if hasattr(result, "__await__"):
+                    cancelled += await result
+                else:
+                    cancelled += result
             # Check opencode backend (via ws_manager)
             if self._shared.opencode_backend and hasattr(
                 self._shared.opencode_backend, "cancel_queries_to_peer"
             ):
-                cancelled += self._shared.opencode_backend.cancel_queries_to_peer(name)  # type: ignore[operator]
+                method = getattr(self._shared.opencode_backend, "cancel_queries_to_peer")
+                result = method(name)
+                # Handle both sync and async methods
+                if hasattr(result, "__await__"):
+                    cancelled += await result
+                else:
+                    cancelled += result
         elif self._backend and hasattr(self._backend, "cancel_queries_to_peer"):
-            cancelled = self._backend.cancel_queries_to_peer(name)  # type: ignore[operator]
+            method = getattr(self._backend, "cancel_queries_to_peer")
+            result = method(name)
+            # Handle both sync and async methods
+            if hasattr(result, "__await__"):
+                cancelled = await result
+            else:
+                cancelled = result
 
         return cancelled
 

@@ -199,8 +199,8 @@ async def mark_peer_offline(
 class SetCircleRequest(BaseModel):
     """Request to set peer's circle."""
 
-    peer_name: str = Field(..., description="Peer name")
-    circle: str = Field(..., description="Circle to join")
+    peer_name: str = Field(..., min_length=1, description="Peer name")
+    circle: str = Field(..., min_length=1, description="Circle to join")
 
 
 @router.post("/peers/circle", response_model=OkResponse)

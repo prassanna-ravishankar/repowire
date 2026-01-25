@@ -102,7 +102,7 @@ class OpencodeBackend(Backend):
         """Check if OpenCode plugin is installed."""
         return check_plugin_installed(global_install=global_install)
 
-    def cancel_queries_to_peer(self, peer_name: str) -> int:
+    async def cancel_queries_to_peer(self, peer_name: str) -> int:
         """Cancel pending queries to a peer.
 
         Args:
@@ -114,4 +114,4 @@ class OpencodeBackend(Backend):
         from repowire.daemon.websocket_manager import get_ws_manager
 
         ws_manager = get_ws_manager()
-        return ws_manager.cancel_queries_to_peer(peer_name)
+        return await ws_manager.cancel_queries_to_peer(peer_name)

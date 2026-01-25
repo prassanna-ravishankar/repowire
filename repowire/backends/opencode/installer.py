@@ -106,7 +106,6 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
     const text = data.text as string
     await handleIncomingQuery(correlationId, fromPeer, text)
   } else if (msgType === "notify") {
-    const fromPeer = data.from_peer as string
     const text = data.text as string
     // Fire-and-forget - inject if we have a session
     if (activeSessionId && opencodeClient) {
@@ -120,7 +119,6 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
       }
     }
   } else if (msgType === "broadcast") {
-    const fromPeer = data.from_peer as string
     const text = data.text as string
     if (activeSessionId && opencodeClient) {
       try {

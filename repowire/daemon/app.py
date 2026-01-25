@@ -40,8 +40,14 @@ def _try_create_backend(name: str) -> Backend | None:
     """
     try:
         return get_backend_by_name(name)
-    except (ImportError, ValueError) as e:
-        logger.debug(f"Backend {name} not available: {e}")
+    except ImportError as e:
+        logger.debug(f"Backend {name} not available (missing dependency): {e}")
+        return None
+    except ValueError as e:
+        logger.warning(f"Backend {name} failed to initialize: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error creating backend {name}: {e}", exc_info=True)
         return None
 
 
