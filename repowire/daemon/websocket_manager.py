@@ -73,7 +73,10 @@ class WebSocketManager:
                 try:
                     await old_conn.websocket.close()
                 except Exception as e:
-                    logger.debug(f"Error closing existing connection for {peer_name}: {e}")
+                    logger.warning(
+                        f"Failed to close existing connection for {peer_name}, "
+                        f"proceeding with new connection: {e}"
+                    )
 
             connection = PluginConnection(
                 websocket=websocket,
@@ -295,10 +298,13 @@ class WebSocketManager:
         Returns:
             True if message was sent
         """
-        conn = self._connections.get(to_peer)
-        if not conn:
-            logger.debug(f"Cannot send notification to {to_peer}: peer not connected")
-            return False
+        # Snapshot connection under lock to avoid race conditions
+        async with self._lock:
+            conn = self._connections.get(to_peer)
+            if not conn:
+                logger.debug(f"Cannot send notification to {to_peer}: peer not connected")
+                return False
+            websocket = conn.websocket
 
         message = {
             "type": "notify",
@@ -307,7 +313,7 @@ class WebSocketManager:
         }
 
         try:
-            await conn.websocket.send_json(message)
+            await websocket.send_json(message)
             return True
         except (WebSocketDisconnect, ConnectionError) as e:
             logger.warning(f"Connection lost sending notification to {to_peer}: {e}")
@@ -341,16 +347,22 @@ class WebSocketManager:
             "text": text,
         }
 
+        # Snapshot connections under lock to avoid race conditions
+        async with self._lock:
+            connections_snapshot = list(self._connections.items())
+
         sent_to: list[str] = []
-        for peer_name, conn in self._connections.items():
+        for peer_name, conn in connections_snapshot:
             if peer_name in excluded:
                 continue
 
             try:
                 await conn.websocket.send_json(message)
                 sent_to.append(peer_name)
+            except (WebSocketDisconnect, ConnectionError) as e:
+                logger.warning(f"Failed to broadcast to {peer_name} (connection issue): {e}")
             except Exception as e:
-                logger.warning(f"Failed to broadcast to {peer_name}: {e}")
+                logger.error(f"Unexpected error broadcasting to {peer_name}: {e}", exc_info=True)
 
         return sent_to
 

@@ -89,7 +89,23 @@ async def plugin_websocket(websocket: WebSocket) -> None:
         # Main message loop
         while True:
             data = await websocket.receive_json()
-            await _handle_plugin_message(peer_name, data, ws_manager, peer_manager)
+            try:
+                await _handle_plugin_message(peer_name, data, ws_manager, peer_manager)
+            except Exception as e:
+                # Log error but don't kill connection for a single bad message
+                logger.error(
+                    f"Error handling message from {peer_name}: {e}. "
+                    f"Message type: {data.get('type', 'unknown')}",
+                    exc_info=True,
+                )
+                # Notify plugin of error (best effort)
+                try:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": f"Error processing message: {e}",
+                    })
+                except Exception:
+                    pass
 
     except WebSocketDisconnect:
         logger.info(f"Plugin WebSocket disconnected: {peer_name or 'unknown'}")
