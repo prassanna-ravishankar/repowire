@@ -26,6 +26,38 @@ curl -s http://127.0.0.1:8377/health 2>/dev/null | jq . || echo "Daemon not runn
 curl -s http://127.0.0.1:8377/peers 2>/dev/null | jq '.peers[] | {name, status, circle}' || echo "No peers"
 ```
 
+### 1.3 Check existing repowire installations
+```bash
+# Check for uv tool installation
+uv tool list 2>/dev/null | grep repowire || echo "No uv tool installation"
+
+# Check for hooks installation
+repowire claudemux status 2>/dev/null || echo "Hooks not installed or repowire not available"
+```
+
+### 1.4 Fresh Install (Ask User First)
+
+**Ask the user**: "Do you want to remove existing repowire installations for a fresh test? This will run:
+- `repowire uninstall` (remove hooks)
+- `uv tool uninstall repowire` (remove global tool)
+- Then reinstall from local dev code"
+
+If user confirms:
+```bash
+# Stop daemon if running
+curl -s -X POST http://127.0.0.1:8377/shutdown 2>/dev/null || true
+sleep 1
+
+# Uninstall hooks
+repowire uninstall 2>/dev/null || true
+
+# Uninstall uv tool
+uv tool uninstall repowire 2>/dev/null || true
+
+# Install fresh from local dev
+repowire setup --dev --backend claudemux
+```
+
 ## Phase 2: Present Test Plan for Confirmation
 
 **Before executing any test steps**, present the full plan to the user:

@@ -182,11 +182,8 @@ class WebSocketManager:
         Raises:
             ValueError: If peer not connected
             TimeoutError: If no response within timeout
+            ConnectionError: If connection lost during send
         """
-        conn = self._connections.get(to_peer)
-        if not conn:
-            raise ValueError(f"Peer {to_peer} is not connected")
-
         correlation_id = str(uuid4())
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
 
@@ -197,7 +194,11 @@ class WebSocketManager:
             future=future,
         )
 
+        # Acquire lock to atomically check connection and register query
         async with self._lock:
+            conn = self._connections.get(to_peer)
+            if not conn:
+                raise ValueError(f"Peer {to_peer} is not connected")
             self._pending_queries[correlation_id] = query
 
         try:
@@ -208,7 +209,10 @@ class WebSocketManager:
                 "from_peer": from_peer,
                 "text": text,
             }
-            await conn.websocket.send_json(message)
+            try:
+                await conn.websocket.send_json(message)
+            except (WebSocketDisconnect, ConnectionError) as e:
+                raise ConnectionError(f"Lost connection to {to_peer}: {e}") from e
             logger.debug(f"Sent query {correlation_id} to {to_peer}")
 
             # Wait for response with timeout
@@ -293,6 +297,7 @@ class WebSocketManager:
         """
         conn = self._connections.get(to_peer)
         if not conn:
+            logger.debug(f"Cannot send notification to {to_peer}: peer not connected")
             return False
 
         message = {

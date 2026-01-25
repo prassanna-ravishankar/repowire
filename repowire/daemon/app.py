@@ -7,7 +7,7 @@ import os
 import signal
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,26 +29,25 @@ logger = logging.getLogger(__name__)
 __version__ = "0.1.0"
 
 
-def _try_create_backend(name: str) -> Backend | None:
+def _try_create_backend(name: str, **kwargs: Any) -> Backend | None:
     """Try to create a backend, returning None if it fails.
 
     Args:
         name: Backend name ("claudemux" or "opencode")
+        **kwargs: Additional arguments passed to backend constructor
 
     Returns:
         Backend instance or None if creation failed
     """
     try:
-        return get_backend_by_name(name)
+        return get_backend_by_name(name, **kwargs)
     except ImportError as e:
         logger.debug(f"Backend {name} not available (missing dependency): {e}")
         return None
     except ValueError as e:
         logger.warning(f"Backend {name} failed to initialize: {e}")
         return None
-    except Exception as e:
-        logger.error(f"Unexpected error creating backend {name}: {e}", exc_info=True)
-        return None
+    # Let other exceptions propagate - they indicate real problems that should fail fast
 
 
 def create_app(
@@ -96,7 +95,7 @@ def create_app(
         else:
             # Per-peer routing mode: create both backends
             claudemux_backend = _try_create_backend("claudemux")
-            opencode_backend = _try_create_backend("opencode")
+            opencode_backend = _try_create_backend("opencode", ws_manager=ws_manager)
 
             # Create shared resources for per-peer routing
             shared = SharedResources(

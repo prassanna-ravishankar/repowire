@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from repowire.config.models import load_config
 from repowire.daemon.deps import get_peer_manager
 from repowire.daemon.websocket_manager import get_ws_manager
 from repowire.protocol.peers import Peer, PeerStatus
@@ -67,16 +66,7 @@ async def plugin_websocket(websocket: WebSocket) -> None:
         # Register the connection
         await ws_manager.connect(websocket, peer_name, path, metadata)
 
-        # Also register with peer manager and config for discovery
-        config = load_config()
-        config.add_peer(
-            name=peer_name,
-            path=path,
-            opencode_url=f"ws://plugin/{peer_name}",  # Marker that this is a WebSocket peer
-            circle=metadata.get("circle"),
-        )
-
-        # Register with peer manager
+        # Register with peer manager and config atomically
         peer = Peer(
             name=peer_name,
             path=path,
@@ -85,7 +75,12 @@ async def plugin_websocket(websocket: WebSocket) -> None:
             status=PeerStatus.ONLINE,
             metadata=metadata,
         )
-        await peer_manager.register_peer(peer)
+        await peer_manager.register_peer_with_config(
+            peer=peer,
+            path=path,
+            opencode_url=f"ws://plugin/{peer_name}",
+            circle=metadata.get("circle"),
+        )
 
         # Send registration confirmation
         await websocket.send_json({"type": "registered", "ok": True})
@@ -162,8 +157,11 @@ async def _handle_plugin_message(
         # Error response to a query
         correlation_id = data.get("correlation_id")
         error = data.get("error", "Unknown error")
+        logger.warning(f"Plugin {peer_name} reported error for query {correlation_id}: {error}")
         if correlation_id:
             await ws_manager.resolve_query_error(correlation_id, error)
+        else:
+            logger.warning(f"Error from {peer_name} missing correlation_id, cannot route")
 
     elif msg_type == "set_circle":
         # Update peer's circle

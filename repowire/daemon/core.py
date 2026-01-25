@@ -57,7 +57,13 @@ class PeerManager:
             backend: Legacy single-backend mode (deprecated, for backward compat)
             config: Configuration instance
             shared: Shared resources for per-peer routing (preferred)
+
+        Raises:
+            ValueError: If neither backend nor shared resources are provided
         """
+        if backend is None and shared is None:
+            raise ValueError("Either backend or shared resources must be provided")
+
         self._config = config or load_config()
         self._peers: dict[str, Peer] = {}
         self._lock = asyncio.Lock()
@@ -314,7 +320,7 @@ class PeerManager:
     async def set_peer_circle(self, name: str, circle: str) -> bool:
         """Set a peer's circle for cross-backend communication.
 
-        Updates both in-memory peer and persistent config.
+        Updates both in-memory peer and persistent config atomically.
 
         Args:
             name: Name of the peer
@@ -323,33 +329,33 @@ class PeerManager:
         Returns:
             True if peer was found and updated
         """
-        updated = False
-
-        # Update in-memory peer
         async with self._lock:
+            updated = False
+
+            # Update in-memory peer
             if name in self._peers:
                 self._peers[name].circle = circle
                 updated = True
 
-        # Update config (persistent)
-        self._config = load_config()
-        peer_config = self._config.get_peer(name)
-        if peer_config:
-            peer_config.circle = circle
-            self._config.save()
-            updated = True
+            # Update config (persistent) - protected by lock to prevent race
+            self._config = load_config()
+            peer_config = self._config.get_peer(name)
+            if peer_config:
+                peer_config.circle = circle
+                self._config.save()
+                updated = True
 
-        if updated:
-            logger.info(f"Peer {name} joined circle: {circle}")
-        else:
-            logger.warning(f"Failed to update circle for {name}: peer not found")
+            if updated:
+                logger.info(f"Peer {name} joined circle: {circle}")
+            else:
+                logger.warning(f"Failed to update circle for {name}: peer not found")
 
-        return updated
+            return updated
 
     async def update_peer_session_id(self, name: str, session_id: str) -> bool:
         """Update a peer's session ID.
 
-        Updates persistent config.
+        Updates persistent config atomically.
 
         Args:
             name: Name of the peer
@@ -358,14 +364,45 @@ class PeerManager:
         Returns:
             True if peer was found and updated
         """
-        self._config = load_config()
-        peer_config = self._config.get_peer(name)
-        if peer_config:
-            peer_config.session_id = session_id
-            self._config.save()
-            return True
-        logger.warning(f"Peer {name} not in config, session_id not persisted")
-        return False
+        async with self._lock:
+            self._config = load_config()
+            peer_config = self._config.get_peer(name)
+            if peer_config:
+                peer_config.session_id = session_id
+                self._config.save()
+                return True
+            logger.warning(f"Peer {name} not in config, session_id not persisted")
+            return False
+
+    async def register_peer_with_config(
+        self,
+        peer: Peer,
+        path: str,
+        opencode_url: str | None = None,
+        circle: str | None = None,
+    ) -> None:
+        """Register a peer in both memory and config atomically.
+
+        Args:
+            peer: The peer to register
+            path: Working directory path
+            opencode_url: Optional OpenCode URL marker
+            circle: Optional circle name
+        """
+        async with self._lock:
+            # Update in-memory
+            peer.status = PeerStatus.ONLINE
+            peer.last_seen = datetime.now(timezone.utc)
+            self._peers[peer.name] = peer
+
+            # Update config (atomic with memory update)
+            self._config = load_config()
+            self._config.add_peer(
+                name=peer.name,
+                path=path,
+                opencode_url=opencode_url,
+                circle=circle,
+            )
 
     async def mark_offline(self, name: str) -> int:
         """Mark a peer as offline and cancel pending queries to it.
@@ -411,6 +448,8 @@ class PeerManager:
             return self._shared.claudemux_backend.resolve_query(correlation_id, response)
         elif self._backend:
             return self._backend.resolve_query(correlation_id, response)
+
+        logger.warning(f"Cannot resolve hook response {correlation_id}: no backend available")
         return False
 
     def _get_peer_config(self, name: str) -> PeerConfig | None:

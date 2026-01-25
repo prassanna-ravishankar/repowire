@@ -14,6 +14,7 @@ from repowire.protocol.peers import PeerStatus
 
 if TYPE_CHECKING:
     from repowire.config.models import PeerConfig
+    from repowire.daemon.websocket_manager import WebSocketManager
 
 
 class OpencodeBackend(Backend):
@@ -30,8 +31,20 @@ class OpencodeBackend(Backend):
 
     name = "opencode"
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, ws_manager: WebSocketManager | None = None) -> None:
+        """Initialize OpenCode backend.
+
+        Args:
+            ws_manager: WebSocket manager instance. If None, will use global singleton.
+        """
+        self._ws_manager = ws_manager
+
+    def _get_ws_manager(self) -> WebSocketManager:
+        """Get the WebSocket manager, using injected instance or global singleton."""
+        if self._ws_manager is not None:
+            return self._ws_manager
+        from repowire.daemon.websocket_manager import get_ws_manager
+        return get_ws_manager()
 
     async def start(self) -> None:
         """Initialize backend."""
@@ -48,9 +61,7 @@ class OpencodeBackend(Backend):
             peer: Peer configuration
             text: Message text
         """
-        from repowire.daemon.websocket_manager import get_ws_manager
-
-        ws_manager = get_ws_manager()
+        ws_manager = self._get_ws_manager()
         if not ws_manager.is_connected(peer.name):
             raise ValueError(f"Peer {peer.name} is not connected via WebSocket")
 
@@ -73,9 +84,7 @@ class OpencodeBackend(Backend):
         Returns:
             Response text from the peer
         """
-        from repowire.daemon.websocket_manager import get_ws_manager
-
-        ws_manager = get_ws_manager()
+        ws_manager = self._get_ws_manager()
         if not ws_manager.is_connected(peer.name):
             raise ValueError(f"Peer {peer.name} is not connected via WebSocket")
 
@@ -85,9 +94,7 @@ class OpencodeBackend(Backend):
 
     def get_peer_status(self, peer: PeerConfig) -> PeerStatus:
         """Check if peer is connected via WebSocket."""
-        from repowire.daemon.websocket_manager import get_ws_manager
-
-        ws_manager = get_ws_manager()
+        ws_manager = self._get_ws_manager()
         return ws_manager.get_peer_status(peer.name)
 
     def install(self, global_install: bool = True, **kwargs) -> None:
@@ -111,7 +118,5 @@ class OpencodeBackend(Backend):
         Returns:
             Number of queries cancelled
         """
-        from repowire.daemon.websocket_manager import get_ws_manager
-
-        ws_manager = get_ws_manager()
+        ws_manager = self._get_ws_manager()
         return await ws_manager.cancel_queries_to_peer(peer_name)
