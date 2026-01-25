@@ -35,6 +35,7 @@ let peerName: string = "unknown"
 let projectPath: string = ""
 let activeSessionId: string | null = null
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
+let reconnectAttempts: number = 0
 let opencodeClient: PluginClient | null = null
 
 // HTTP helpers for daemon
@@ -55,6 +56,7 @@ function connectWebSocket() {
   ws = new WebSocket(DAEMON_WS_URL)
 
   ws.onopen = () => {
+    reconnectAttempts = 0  // Reset on successful connection
     ws?.send(JSON.stringify({
       type: "register",
       peer_name: peerName,
@@ -73,6 +75,7 @@ function connectWebSocket() {
   }
 
   ws.onclose = () => {
+    console.debug(`[repowire] WebSocket disconnected, scheduling reconnect`)
     scheduleReconnect()
   }
 
@@ -83,9 +86,12 @@ function connectWebSocket() {
 
 function scheduleReconnect() {
   if (reconnectTimeout) clearTimeout(reconnectTimeout)
+  reconnectAttempts++
+  // Exponential backoff: 3s, 6s, 12s, 24s, max 60s
+  const delay = Math.min(3000 * Math.pow(2, reconnectAttempts - 1), 60000)
   reconnectTimeout = setTimeout(() => {
     connectWebSocket()
-  }, 3000)
+  }, delay)
 }
 
 function sendStatus(status: "busy" | "idle" | "offline") {
@@ -345,8 +351,9 @@ IMPORTANT: When asked about these projects, ask the peer directly via ask_peer t
 Use list_peers to see current peer status. Use notify_peer for fire-and-forget messages.
 Peer list may be outdated - use list_peers tool to refresh.`)
         }
-      } catch {
+      } catch (e) {
         // Daemon not running or timeout - skip context injection
+        console.debug("[repowire] Failed to fetch peer context:", e)
       }
     },
   }

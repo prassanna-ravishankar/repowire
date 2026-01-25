@@ -105,8 +105,8 @@ async def plugin_websocket(websocket: WebSocket) -> None:
                         "type": "error",
                         "error": f"Error processing message: {e}",
                     })
-                except Exception:
-                    pass
+                except Exception as notify_err:
+                    logger.debug(f"Failed to notify plugin {peer_name} of error: {notify_err}")
 
     except WebSocketDisconnect:
         logger.info(f"Plugin WebSocket disconnected: {peer_name or 'unknown'}")

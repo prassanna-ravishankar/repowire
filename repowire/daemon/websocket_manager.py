@@ -145,6 +145,7 @@ class WebSocketManager:
                 self._connections[peer_name].status = status
                 logger.debug(f"Plugin status update: {peer_name} -> {status.value}")
                 return True
+            logger.debug(f"Status update for {peer_name} skipped: not connected")
             return False
 
     async def update_session_id(self, peer_name: str, session_id: str) -> bool:
@@ -162,6 +163,7 @@ class WebSocketManager:
                 self._connections[peer_name].session_id = session_id
                 logger.debug(f"Plugin session update: {peer_name} -> {session_id}")
                 return True
+            logger.debug(f"Session update for {peer_name} skipped: not connected")
             return False
 
     async def send_query(

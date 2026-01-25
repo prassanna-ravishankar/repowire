@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -134,7 +135,11 @@ class ClaudemuxBackend(Backend):
                             cancelled += 1
                         self._pending_queries.pop(correlation_id, None)
                     pending_file.unlink()
-            except (json.JSONDecodeError, OSError):
+            except json.JSONDecodeError as e:
+                logging.getLogger(__name__).debug(f"Skipping corrupted file {pending_file}: {e}")
+                continue
+            except OSError as e:
+                logging.getLogger(__name__).debug(f"Cannot read file {pending_file}: {e}")
                 continue
         return cancelled
 
