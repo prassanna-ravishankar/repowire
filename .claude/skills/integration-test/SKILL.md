@@ -122,16 +122,8 @@ uv tool uninstall repowire 2>/dev/null || true
 # Remove residual config/state
 rm -rf ~/.repowire/pending/ 2>/dev/null || true
 
-# Install based on mode
-# For claudemux:
-repowire setup --dev --backend claudemux
-
-# For opencode:
-repowire setup --dev --backend opencode
-
-# For mixed (installs both):
-repowire setup --dev --backend claudemux
-repowire setup --dev --backend opencode
+# Install (auto-detects and configures all available backends)
+repowire setup --dev
 
 # Verify installation
 echo "=== Installation Verification ==="

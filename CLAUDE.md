@@ -138,7 +138,7 @@ File: `~/.repowire/config.yaml`
 daemon:
   host: "127.0.0.1"
   port: 8377
-  backend: "claudemux"  # or "opencode"
+  # Per-peer routing auto-detects backend based on peer config
 
 relay:  # Experimental - not usable yet
   enabled: false

@@ -42,9 +42,9 @@ Read more about it in my blog where I describe [the context breakout problem](ht
 
 ```bash
 # Install from PyPI
-uv tool install "repowire[claudemux]"
+uv tool install repowire
 # or
-pip install "repowire[claudemux]"
+pip install repowire
 ```
 
 ## Quick Start
@@ -189,7 +189,7 @@ For OpenCode sessions. Uses a WebSocket plugin that connects to the daemon and i
 
 </details>
 
-To use: `repowire setup --backend opencode`
+OpenCode support is auto-detected during `repowire setup` when the `opencode` CLI is installed.
 
 ## CLI Reference
 
@@ -257,7 +257,7 @@ Config file: `~/.repowire/config.yaml`
 daemon:
   host: "127.0.0.1"
   port: 8377
-  backend: "claudemux"  # or "opencode"
+  # Per-peer routing auto-detects backend based on peer config
 
 relay:
   enabled: false
