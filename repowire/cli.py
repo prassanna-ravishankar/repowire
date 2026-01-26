@@ -509,6 +509,71 @@ def peer_list() -> None:
     console.print(table)
 
 
+@peer.command(name="new")
+@click.argument("path", type=click.Path(exists=True), default=".")
+@click.option("--backend", "-b", type=click.Choice(["claudemux", "opencode"]), default="claudemux")
+@click.option("--command", "-c", "cmd", help="Command to run (default: claude or opencode)")
+@click.option("--circle", help="Circle (defaults to 'default')")
+def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> None:
+    """Spawn a new peer in a tmux window.
+
+    Examples:
+
+        repowire peer new ~/git/myproject
+
+        repowire peer new . --command="claude --dangerously-skip-permissions"
+
+        repowire peer new ~/git/api --backend=opencode --circle=backend
+    """
+    import httpx
+
+    from repowire.tui.services.tmux_ops import SpawnConfig, TmuxOps
+
+    actual_path = str(Path(path).resolve())
+    actual_circle = circle or "default"
+    actual_cmd = cmd or ("claude" if backend == "claudemux" else "opencode")
+
+    config = SpawnConfig(
+        path=actual_path,
+        circle=actual_circle,
+        backend=backend,
+        command=actual_cmd,
+    )
+
+    tmux = TmuxOps()
+
+    try:
+        result = tmux.spawn_peer(config)
+        console.print(
+            f"[green]✓[/] Spawned [cyan]{result.display_name}[/] "
+            f"in circle [magenta]{actual_circle}[/]"
+        )
+        console.print(f"  tmux: {result.tmux_session}")
+        console.print(f"  command: {actual_cmd}")
+
+        # Register with daemon
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                client.post(
+                    f"{_get_daemon_url()}/peers",
+                    json={
+                        "name": result.display_name,
+                        "path": actual_path,
+                        "tmux_session": result.tmux_session,
+                        "circle": actual_circle,
+                        "backend": backend,
+                    },
+                )
+        except httpx.RequestError:
+            console.print("[dim]  (daemon not running - will auto-register)[/]")
+
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/]")
+    except Exception as e:
+        err_msg = str(e) if str(e) else type(e).__name__
+        console.print(f"[red]Failed to spawn: {err_msg}[/]")
+
+
 @peer.command(name="register")
 @click.argument("name")
 @click.option("--tmux-session", "-t", help="Tmux session:window (e.g., '0:mywindow')")
