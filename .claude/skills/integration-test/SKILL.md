@@ -156,14 +156,55 @@ sleep 10
 ```
 
 #### Tests
-1. **Same-circle query** (peer-a1 → peer-a2): Should succeed
-2. **Cross-circle query** (peer-b1 → peer-a1): Should fail with "Circle boundary"
-3. **Whoami tool**: Should return peer identity JSON
-4. **Notification with correlation ID**: Should embed `[#notif-XXXXXXXX]`
+
+Use `repowire peer ask` CLI for reliable query testing (bypasses tmux UI issues).
+
+**Direct query** tests CLI→daemon→peer flow:
+```bash
+uv run repowire peer ask $PEER_NAME "question" -t 120
+```
+
+**Proxy query** tests full peer-to-peer flow (peer-a asks peer-b via MCP tools):
+```bash
+uv run repowire peer ask $PEER_A_NAME "Use ask_peer to ask $PEER_B_NAME: question" -t 180
+```
+
+#### Tests
+
+1. **Direct query to peer-a1**
+   ```bash
+   uv run repowire peer ask $PEER_A1_NAME "What is this project about in one sentence?" -t 120
+   ```
+   Expected: Direct response from peer-a1
+
+2. **Peer-to-peer query via proxy** (peer-a1 → peer-a2)
+   ```bash
+   # Ask peer-a1 to use its ask_peer MCP tool to query peer-a2
+   uv run repowire peer ask $PEER_A1_NAME \
+     "Use the ask_peer tool to ask $PEER_A2_NAME: What is this project about in one sentence? Return their exact response." \
+     -t 180
+   ```
+   Expected: peer-a1 responds with peer-a2's answer (tests full mesh communication)
+
+3. **Verify peers are in same circle**
+   ```bash
+   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.circle == "circle-a") | {name, status, circle, pane_id}'
+   ```
+
+4. **Verify pane_id was captured correctly**
+   ```bash
+   # pane_id should be tmux pane format like "%22", not "legacy:..."
+   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, pane_id}'
+   ```
+
+5. **Check events for query chain**
+   ```bash
+   curl -s http://127.0.0.1:8377/events | jq '.[-10:]'
+   ```
 
 #### Verify
 ```bash
-curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, circle, status}'
+curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, circle, status, pane_id}'
 ```
 
 #### Cleanup
@@ -180,37 +221,71 @@ repowire peer prune --force
 #### Setup
 ```bash
 # Start daemon (per-peer routing handles both backends)
-curl -s -X POST http://127.0.0.1:8377/shutdown 2>/dev/null || true
-sleep 1
-repowire serve &
-sleep 2
+curl -s http://127.0.0.1:8377/health || (uv run repowire serve &; sleep 2)
 
-# Create tmux session for visual management
-tmux new-session -d -s opencode-test -n peer-1
-tmux new-window -t opencode-test -n peer-2
+# Create tmux session for OpenCode peers (OpenCode runs inside tmux for pane_id)
+tmux new-session -d -s opencode-test -n peer-1 -c $PROJECT_1
+tmux new-window -t opencode-test -n peer-2 -c $PROJECT_2
 
-# Navigate and start OpenCode
-tmux send-keys -t opencode-test:peer-1 "cd $PROJECT_1 && opencode" Enter
-tmux send-keys -t opencode-test:peer-2 "cd $PROJECT_2 && opencode" Enter
-sleep 5
+# Start OpenCode in each window
+tmux send-keys -t opencode-test:peer-1 "opencode" Enter
+tmux send-keys -t opencode-test:peer-2 "opencode" Enter
+sleep 10
 ```
 
 #### Tests
-1. **WebSocket connection**: Both peers register via WebSocket
-2. **Peer discovery**: list_peers shows both peers
-3. **Bidirectional query** (peer-1 → peer-2): Query via session.prompt()
-4. **Reverse query** (peer-2 → peer-1): Confirm bidirectional works
-5. **Status tracking**: Peer shows "busy" during processing
+
+Use `repowire peer ask` CLI with proxy pattern for reliable testing.
+
+1. **WebSocket connection & peer discovery**
+   ```bash
+   # Both peers should register via WebSocket with real pane_id
+   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.backend == "opencode") | {name, status, pane_id}'
+   ```
+   Expected: Both peers online with pane_id like "%XX"
+
+2. **Direct query to peer-1**
+   ```bash
+   uv run repowire peer ask $PEER_1_NAME "What is this project about in one sentence?" -t 120
+   ```
+   Expected: Direct response from peer-1
+
+3. **Peer-to-peer query via proxy** (peer-1 → peer-2)
+   ```bash
+   uv run repowire peer ask $PEER_1_NAME \
+     "Use the ask_peer tool to ask $PEER_2_NAME: What is this project about in one sentence? Return their exact response." \
+     -t 180
+   ```
+   Expected: peer-1 responds with peer-2's answer
+
+4. **Reverse peer-to-peer query** (peer-2 → peer-1)
+   ```bash
+   uv run repowire peer ask $PEER_2_NAME \
+     "Use the ask_peer tool to ask $PEER_1_NAME: What is this project about in one sentence? Return their exact response." \
+     -t 180
+   ```
+   Expected: peer-2 responds with peer-1's answer (confirms bidirectional)
+
+5. **Verify pane_id captured correctly**
+   ```bash
+   # Both should have real pane_id, not "legacy:..." or "opencode:..."
+   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, backend, pane_id}'
+   ```
+
+6. **Check events for query chain**
+   ```bash
+   curl -s http://127.0.0.1:8377/events | jq '.[-10:]'
+   ```
 
 #### Verify
 ```bash
-curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online")'
+curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.backend == "opencode") | {name, status, pane_id}'
 ```
 
 #### Cleanup
 ```bash
 tmux kill-session -t opencode-test
-repowire peer prune --force
+uv run repowire peer prune --force
 ```
 
 ---
@@ -241,42 +316,49 @@ sleep 10
 
 #### Tests
 
+Use `repowire peer ask` CLI with proxy pattern for reliable cross-backend testing.
+
 1. **Cross-backend peer discovery**
    Both peers should see each other in list_peers despite different backends.
    ```bash
-   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, status}'
+   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, status, backend, pane_id}'
    ```
 
-2. **Claude → OpenCode query**
-   From Claude Code peer, query the OpenCode peer:
+2. **Claude → OpenCode query (via proxy)**
+   Ask Claude peer to query the OpenCode peer using its MCP tools:
    ```bash
-   tmux send-keys -t mixed-test:claude-peer "Use ask_peer to ask $OPENCODE_PEER_NAME what their project is about" Enter Enter
-   sleep 60  # Adjust based on model response time; check daemon /events for completion
-   tmux capture-pane -t mixed-test:claude-peer -p -S -50 | tail -30
+   # This sends query to claude-peer, which then uses ask_peer to query opencode-peer
+   uv run repowire peer ask $CLAUDE_PEER_NAME \
+     "Use the ask_peer tool to ask $OPENCODE_PEER_NAME: What is this project about in one sentence? Return their response." \
+     -t 180
    ```
-   Expected: Response received from OpenCode peer.
+   Expected: Claude peer responds with OpenCode peer's answer.
 
-3. **OpenCode → Claude query**
-   From OpenCode peer, query the Claude Code peer:
+3. **OpenCode → Claude query (via proxy)**
+   Ask OpenCode peer to query the Claude peer using its MCP tools:
    ```bash
-   tmux send-keys -t mixed-test:opencode-peer "Use the ask_peer tool to ask $CLAUDE_PEER_NAME about their architecture" Enter
-   sleep 60  # Adjust based on model response time; check daemon /events for completion
-   tmux capture-pane -t mixed-test:opencode-peer -p -S -50 | tail -30
+   uv run repowire peer ask $OPENCODE_PEER_NAME \
+     "Use the ask_peer tool to ask $CLAUDE_PEER_NAME: What is this project about in one sentence? Return their response." \
+     -t 180
    ```
-   Expected: Response received from Claude Code peer.
+   Expected: OpenCode peer responds with Claude peer's answer.
 
-4. **Circle join for cross-backend**
-   OpenCode peers default to "global" circle. Use set_circle to join the tmux session's circle:
+4. **Verify both backends registered with pane_id**
    ```bash
-   tmux send-keys -t mixed-test:opencode-peer "Use the set_circle tool to join circle 'mixed-test'" Enter
-   sleep 5
-   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, circle}'
+   # Both should have real pane_id (e.g., "%22"), not "legacy:..."
+   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, backend, pane_id}'
+   ```
+
+5. **Check events for full query chain**
+   ```bash
+   # Should show: CLI→peer-a (query), peer-a→peer-b (query), peer-b→peer-a (response), peer-a→CLI (response)
+   curl -s http://127.0.0.1:8377/events | jq '.[-10:]'
    ```
 
 #### Verify
 ```bash
 echo "=== Cross-Backend Test Results ==="
-curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, status, circle}'
+curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, status, backend, circle, pane_id}'
 curl -s http://127.0.0.1:8377/events | jq '.[-10:]'
 ```
 
@@ -293,23 +375,22 @@ repowire peer prune --force
 ### Success Criteria by Mode
 
 #### claudemux
-- [ ] All peers registered with correct circles
-- [ ] Same-circle query: SUCCESS
-- [ ] Cross-circle query: BLOCKED with error
-- [ ] Whoami returns correct identity
-- [ ] Notifications include correlation ID
+- [ ] All peers registered with real pane_id (e.g., "%22", not "legacy:...")
+- [ ] Peers in correct circles (circle = tmux session name)
+- [ ] Direct query via CLI: SUCCESS
+- [ ] Peer-to-peer query via proxy: SUCCESS (tests full mesh)
 
 #### opencode
-- [ ] Both peers connected via WebSocket
-- [ ] list_peers shows both peers
-- [ ] Bidirectional queries work
-- [ ] Status tracking (busy/idle) works
+- [ ] Both peers connected via WebSocket with real pane_id
+- [ ] list_peers shows both peers as "opencode" backend
+- [ ] Direct query via CLI: SUCCESS
+- [ ] Bidirectional peer-to-peer queries via proxy: SUCCESS
 
 #### mixed
-- [ ] Both backend types register successfully
-- [ ] Claude → OpenCode query: SUCCESS
-- [ ] OpenCode → Claude query: SUCCESS
-- [ ] Circle join works across backends
+- [ ] Both backend types register with real pane_id
+- [ ] Claude → OpenCode query via proxy: SUCCESS
+- [ ] OpenCode → Claude query via proxy: SUCCESS
+- [ ] Events show full query chain across backends
 
 ### Report Template
 

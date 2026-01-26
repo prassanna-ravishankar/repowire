@@ -17,9 +17,7 @@ _backend: Backend | None = None  # May be None in per-peer routing mode
 _peer_manager: PeerManager | None = None
 
 
-def init_deps(
-    config: Config, backend: Backend | None, peer_manager: PeerManager
-) -> None:
+def init_deps(config: Config, backend: Backend | None, peer_manager: PeerManager) -> None:
     """Initialize dependencies. Called by app lifespan.
 
     Args:

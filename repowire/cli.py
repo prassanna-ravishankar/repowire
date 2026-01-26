@@ -268,8 +268,6 @@ def status() -> None:
         pass
 
 
-
-
 def _setup_claudemux(dev: bool = False) -> None:
     """Setup for claudemux backend."""
     import subprocess
@@ -294,7 +292,7 @@ def _setup_claudemux(dev: bool = False) -> None:
     console.print("[green]✓[/] MCP server added to Claude")
 
 
-def _setup_opencode(dev: bool = False, global_install: bool = False) -> None:
+def _setup_opencode(dev: bool = False, global_install: bool = True) -> None:
     """Setup for opencode backend."""
     from repowire.backends import get_backend
 
@@ -312,6 +310,17 @@ def mcp() -> None:
     from repowire.mcp.server import run_mcp_server
 
     asyncio.run(run_mcp_server())
+
+
+@main.command()
+@click.option("--host", default=DEFAULT_HOST, help="Daemon host")
+@click.option("--port", default=DEFAULT_PORT, type=int, help="Daemon port")
+def top(host: str, port: int) -> None:
+    """Launch htop-style TUI for managing peers."""
+    from repowire.tui.app import run_tui
+
+    daemon_url = f"http://{host}:{port}"
+    run_tui(daemon_url=daemon_url)
 
 
 # =============================================================================

@@ -102,8 +102,13 @@ async def register(sid: str, data: dict[str, Any]) -> dict[str, Any]:
     session = await sio.get_session(sid)
     user_id = session["user_id"]
 
+    # Support both old (name) and new (pane_id, display_name) formats
+    display_name = data.get("display_name") or data.get("name", "unknown")
+    pane_id = data.get("pane_id") or f"relay:{display_name}"
+
     peer = Peer(
-        name=data["name"],
+        pane_id=pane_id,
+        display_name=display_name,
         path=data["path"],
         machine=data["machine"],
         status=PeerStatus.ONLINE,
@@ -116,7 +121,7 @@ async def register(sid: str, data: dict[str, Any]) -> dict[str, Any]:
 
     if user_id not in user_peers:
         user_peers[user_id] = {}
-    user_peers[user_id][peer.name] = sid
+    user_peers[user_id][peer.display_name] = sid
 
     await sio.emit(
         "peer_joined",
@@ -125,7 +130,7 @@ async def register(sid: str, data: dict[str, Any]) -> dict[str, Any]:
         skip_sid=sid,
     )
 
-    return {"status": "registered", "name": peer.name}
+    return {"status": "registered", "name": peer.display_name}
 
 
 @sio.event

@@ -44,6 +44,7 @@ class OpencodeBackend(Backend):
         if self._ws_manager is not None:
             return self._ws_manager
         from repowire.daemon.websocket_manager import get_ws_manager
+
         return get_ws_manager()
 
     async def start(self) -> None:

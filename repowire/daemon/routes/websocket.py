@@ -56,22 +56,31 @@ async def plugin_websocket(websocket: WebSocket) -> None:
             return
 
         peer_name = data.get("peer_name")
+        pane_id = data.get("pane_id")
+        display_name = data.get("display_name", peer_name)
         path = os.path.normpath(data.get("path", ""))  # Sanitize to prevent path traversal
         metadata = data.get("metadata", {})
+        backend = data.get("backend", "opencode")
 
-        if not peer_name or not re.match(r'^[a-zA-Z0-9_-]+$', peer_name):
+        if not peer_name or not re.match(r"^[a-zA-Z0-9_-]+$", peer_name):
             await websocket.send_json({"type": "error", "error": "Invalid peer_name format"})
             await websocket.close()
             return
+
+        # Generate pane_id if not provided (for backward compat)
+        if not pane_id:
+            pane_id = f"opencode:{peer_name}"
 
         # Register the connection
         await ws_manager.connect(websocket, peer_name, path, metadata)
 
         # Register with peer manager and config atomically
         peer = Peer(
-            name=peer_name,
+            pane_id=pane_id,
+            display_name=display_name,
             path=path,
             machine=socket.gethostname(),
+            backend=backend,
             circle=metadata.get("circle", "global"),
             status=PeerStatus.ONLINE,
             metadata=metadata,
@@ -101,10 +110,12 @@ async def plugin_websocket(websocket: WebSocket) -> None:
                 )
                 # Notify plugin of error (best effort)
                 try:
-                    await websocket.send_json({
-                        "type": "error",
-                        "error": f"Error processing message: {e}",
-                    })
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "error": f"Error processing message: {e}",
+                        }
+                    )
                 except Exception as notify_err:
                     logger.debug(f"Failed to notify plugin {peer_name} of error: {notify_err}")
 

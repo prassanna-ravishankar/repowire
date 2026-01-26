@@ -27,6 +27,7 @@ dependencies = [
     "click>=8.1.7",
     "httpx>=0.26.0",
     "libtmux>=0.37.0",
+    "textual>=0.47.0",
 ]
 
 [project.optional-dependencies]

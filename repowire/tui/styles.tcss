@@ -1,0 +1,193 @@
+/* Repowire TUI Styles - Two-Pane k9s-Style Layout */
+
+/* Global */
+Screen {
+    background: $background;
+}
+
+/* Main Layout */
+MainScreen {
+    layout: vertical;
+}
+
+#main-content {
+    height: 1fr;
+}
+
+/* Left Pane - Peer List */
+#peer-list {
+    width: 30;
+    border: solid $primary;
+    border-title-color: $primary;
+    border-title-style: bold;
+    padding: 0 1;
+    layout: vertical;
+}
+
+#peer-list:focus {
+    border: solid $secondary;
+}
+
+#peer-content {
+    width: 100%;
+    height: 1fr;
+}
+
+#legend-content {
+    width: 100%;
+    height: auto;
+    border-top: solid $surface;
+    padding-top: 1;
+    color: $text-muted;
+}
+
+/* Right Pane - Activity Log */
+#activity-log {
+    width: 1fr;
+    border: solid $primary;
+    border-title-color: $primary;
+    border-title-style: bold;
+    padding: 0 1;
+}
+
+#activity-content {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+}
+
+/* Status Bar (Footer) */
+StatusBar {
+    dock: bottom;
+    width: 100%;
+    height: 1;
+    background: $panel;
+    color: $foreground;
+    padding: 0 1;
+}
+
+/* Filter Input */
+#filter-input {
+    dock: bottom;
+    width: 100%;
+    height: 3;
+    display: none;
+    background: $panel;
+    border: tall $accent;
+    padding: 0 1;
+}
+
+#filter-input.visible {
+    display: block;
+}
+
+Input:focus {
+    border: tall $secondary;
+}
+
+/* Modal Dialogs */
+#spawn-dialog, #confirm-dialog, #circle-dialog {
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#spawn-title, #circle-title {
+    text-style: bold;
+    color: $primary;
+    margin-bottom: 1;
+}
+
+#confirm-dialog {
+    border: thick $error;
+}
+
+#confirm-message {
+    text-align: center;
+    padding: 1;
+}
+
+/* Form elements */
+.form-row {
+    grid-size: 2;
+    grid-columns: auto 1fr;
+    height: auto;
+    margin-bottom: 1;
+}
+
+.form-row Label {
+    content-align: right middle;
+    padding-right: 1;
+    color: $text-muted;
+}
+
+.form-row Input {
+    border: tall $primary;
+}
+
+.form-row Select {
+    border: tall $primary;
+}
+
+Select:focus {
+    border: tall $secondary;
+}
+
+/* Button styling */
+Button {
+    min-width: 10;
+}
+
+#button-row {
+    align: center middle;
+    height: auto;
+    margin-top: 1;
+}
+
+#button-row Button {
+    margin: 0 1;
+}
+
+/* Event Log Screen (full-page view) */
+#event-table {
+    margin: 0 1;
+}
+
+#help-bar {
+    background: $surface;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+/* DataTable styling (for event log screen) */
+DataTable {
+    scrollbar-gutter: stable;
+}
+
+DataTable > .datatable--header {
+    background: $surface;
+    color: $text;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: $primary 30%;
+}
+
+DataTable > .datatable--hover {
+    background: $surface-lighten-1;
+}
+
+/* Notifications */
+Toast {
+    background: $surface;
+    border: tall $primary;
+}
+
+Toast.-error {
+    border: tall $error;
+}
+
+Toast.-warning {
+    border: tall $warning;
+}

@@ -65,7 +65,10 @@ class PeerManager:
             raise ValueError("Either backend or shared resources must be provided")
 
         self._config = config or load_config()
+        # Primary index: pane_id -> Peer
         self._peers: dict[str, Peer] = {}
+        # Secondary index for backward compat: display_name -> pane_id
+        self._name_index: dict[str, str] = {}
         self._lock = asyncio.Lock()
         self._machine = socket.gethostname()
         self._events: deque[dict[str, Any]] = deque(maxlen=100)
@@ -177,24 +180,67 @@ class PeerManager:
             await self._backend.stop()
 
     async def register_peer(self, peer: Peer) -> None:
-        """Register a peer in the mesh."""
+        """Register a peer in the mesh.
+
+        Indexes by pane_id with a secondary index on display_name for backward compat.
+        """
         async with self._lock:
             peer.status = PeerStatus.ONLINE
             peer.last_seen = datetime.now(timezone.utc)
-            self._peers[peer.name] = peer
+            # Primary index by pane_id
+            self._peers[peer.pane_id] = peer
+            # Secondary index by display_name for backward compat
+            self._name_index[peer.display_name] = peer.pane_id
 
-    async def unregister_peer(self, name: str) -> bool:
-        """Unregister a peer from the mesh."""
+    async def unregister_peer(self, identifier: str) -> bool:
+        """Unregister a peer from the mesh.
+
+        Args:
+            identifier: Either pane_id or display_name
+
+        Returns:
+            True if peer was found and removed
+        """
         async with self._lock:
-            if name in self._peers:
-                del self._peers[name]
+            # Try as pane_id first
+            if identifier in self._peers:
+                peer = self._peers[identifier]
+                del self._peers[identifier]
+                # Remove from name index
+                if peer.display_name in self._name_index:
+                    del self._name_index[peer.display_name]
                 return True
+
+            # Try as display_name via name index
+            if identifier in self._name_index:
+                pane_id = self._name_index[identifier]
+                if pane_id in self._peers:
+                    del self._peers[pane_id]
+                del self._name_index[identifier]
+                return True
+
             return False
 
-    async def get_peer(self, name: str) -> Peer | None:
-        """Get a peer by name."""
+    async def get_peer(self, identifier: str) -> Peer | None:
+        """Get a peer by pane_id or display_name.
+
+        Args:
+            identifier: Either pane_id (e.g., '%42') or display_name
+
+        Returns:
+            Peer if found, None otherwise
+        """
         async with self._lock:
-            return self._peers.get(name)
+            # Try as pane_id first
+            if identifier in self._peers:
+                return self._peers[identifier]
+
+            # Try as display_name via name index
+            if identifier in self._name_index:
+                pane_id = self._name_index[identifier]
+                return self._peers.get(pane_id)
+
+            return None
 
     def _get_peer_status(self, peer_config: PeerConfig) -> PeerStatus:
         """Get status of a peer from the appropriate backend.
@@ -229,11 +275,12 @@ class PeerManager:
         self._config = load_config()
 
         async with self._lock:
-            local_peers = {p.name: p for p in self._peers.values()}
+            # Build lookup by display_name for matching with config
+            local_peers_by_name = {p.display_name: p for p in self._peers.values()}
 
         # Build peers from config with backend status
         result: list[Peer] = []
-        seen = set(local_peers.keys())
+        seen = set(local_peers_by_name.keys())
 
         for peer_config in self._config.peers.values():
             # Resolve circle for this peer
@@ -241,7 +288,7 @@ class PeerManager:
 
             if peer_config.name in seen:
                 # Use locally registered peer, but verify status with backend
-                peer = local_peers[peer_config.name]
+                peer = local_peers_by_name[peer_config.name]
                 backend_status = self._get_peer_status(peer_config)
                 # If backend says offline but we think online/busy, trust backend
                 if backend_status == PeerStatus.OFFLINE and peer.status != PeerStatus.OFFLINE:
@@ -252,9 +299,12 @@ class PeerManager:
             else:
                 # Build peer from config
                 status = self._get_peer_status(peer_config)
+                # Generate legacy pane_id for peers from config
+                pane_id = f"legacy:{peer_config.name}"
                 result.append(
                     Peer(
-                        name=peer_config.name,
+                        pane_id=pane_id,
+                        display_name=peer_config.name,
                         path=peer_config.path or "",
                         machine=self._machine,
                         tmux_session=peer_config.tmux_session,
@@ -269,37 +319,57 @@ class PeerManager:
                 seen.add(peer_config.name)
 
         # Add any locally registered peers not in config
-        for name, peer in local_peers.items():
+        for name, peer in local_peers_by_name.items():
             if name not in seen:
                 result.append(peer)
 
         return result
 
-    async def update_peer_status(self, name: str, status: PeerStatus) -> bool:
-        """Update peer status."""
+    async def update_peer_status(self, identifier: str, status: PeerStatus) -> bool:
+        """Update peer status.
+
+        Args:
+            identifier: Either pane_id or display_name
+            status: New status to set
+
+        Returns:
+            True if peer was found and updated
+        """
         async with self._lock:
-            if name in self._peers:
-                old_status = self._peers[name].status
-                self._peers[name].status = status
-                self._peers[name].last_seen = datetime.now(timezone.utc)
+            # Try as pane_id first
+            peer = self._peers.get(identifier)
+
+            # Try as display_name via name index
+            if peer is None and identifier in self._name_index:
+                pane_id = self._name_index[identifier]
+                peer = self._peers.get(pane_id)
+
+            if peer is not None:
+                old_status = peer.status
+                peer.status = status
+                peer.last_seen = datetime.now(timezone.utc)
                 # Log status change event if status actually changed
                 if old_status != status:
                     self._add_event(
                         "status_change",
                         {
-                            "peer": name,
+                            "peer": peer.display_name,
                             "new_status": status.value,
-                            "text": f"{name} is now {status.value}",
+                            "text": f"{peer.display_name} is now {status.value}",
                         },
                     )
                 return True
             else:
                 # Peer not in memory yet - reload config and create from it
+                # identifier is treated as display_name for config lookup
                 self._config = load_config()
-                peer_config = self._config.get_peer(name)
+                peer_config = self._config.get_peer(identifier)
                 if peer_config:
-                    self._peers[name] = Peer(
-                        name=name,
+                    # Generate a legacy pane_id since we don't have the real one
+                    pane_id = f"legacy:{identifier}"
+                    new_peer = Peer(
+                        pane_id=pane_id,
+                        display_name=identifier,
                         path=peer_config.path or "",
                         machine=self._machine,
                         tmux_session=peer_config.tmux_session,
@@ -307,24 +377,26 @@ class PeerManager:
                         last_seen=datetime.now(timezone.utc),
                         metadata=peer_config.metadata,
                     )
+                    self._peers[pane_id] = new_peer
+                    self._name_index[identifier] = pane_id
                     self._add_event(
                         "status_change",
                         {
-                            "peer": name,
+                            "peer": identifier,
                             "new_status": status.value,
-                            "text": f"{name} is now {status.value}",
+                            "text": f"{identifier} is now {status.value}",
                         },
                     )
                     return True
             return False
 
-    async def set_peer_circle(self, name: str, circle: str) -> bool:
+    async def set_peer_circle(self, identifier: str, circle: str) -> bool:
         """Set a peer's circle for cross-backend communication.
 
         Updates both in-memory peer and persistent config atomically.
 
         Args:
-            name: Name of the peer
+            identifier: Either pane_id or display_name of the peer
             circle: Circle to join
 
         Returns:
@@ -332,24 +404,33 @@ class PeerManager:
         """
         async with self._lock:
             updated = False
+            display_name = identifier  # Default for config lookup
 
-            # Update in-memory peer
-            if name in self._peers:
-                self._peers[name].circle = circle
+            # Try as pane_id first
+            if identifier in self._peers:
+                self._peers[identifier].circle = circle
+                display_name = self._peers[identifier].display_name
                 updated = True
+            # Try as display_name via name index
+            elif identifier in self._name_index:
+                pane_id = self._name_index[identifier]
+                if pane_id in self._peers:
+                    self._peers[pane_id].circle = circle
+                    updated = True
 
             # Update config (persistent) - protected by lock to prevent race
+            # Config uses display_name as key
             self._config = load_config()
-            peer_config = self._config.get_peer(name)
+            peer_config = self._config.get_peer(display_name)
             if peer_config:
                 peer_config.circle = circle
                 self._config.save()
                 updated = True
 
             if updated:
-                logger.info(f"Peer {name} joined circle: {circle}")
+                logger.info(f"Peer {display_name} joined circle: {circle}")
             else:
-                logger.warning(f"Failed to update circle for {name}: peer not found")
+                logger.warning(f"Failed to update circle for {identifier}: peer not found")
 
             return updated
 
@@ -391,44 +472,57 @@ class PeerManager:
             circle: Optional circle name
         """
         async with self._lock:
-            # Update in-memory
+            # Update in-memory - index by pane_id
             peer.status = PeerStatus.ONLINE
             peer.last_seen = datetime.now(timezone.utc)
-            self._peers[peer.name] = peer
+            self._peers[peer.pane_id] = peer
+            self._name_index[peer.display_name] = peer.pane_id
 
-            # Update config (atomic with memory update)
+            # Update config (atomic with memory update) - config uses display_name
             self._config = load_config()
             self._config.add_peer(
-                name=peer.name,
+                name=peer.display_name,
                 path=path,
                 opencode_url=opencode_url,
                 circle=circle,
             )
 
-    async def mark_offline(self, name: str) -> int:
+    async def mark_offline(self, identifier: str) -> int:
         """Mark a peer as offline and cancel pending queries to it.
 
         Args:
-            name: Name of the peer going offline
+            identifier: Either pane_id or display_name of the peer going offline
 
         Returns:
             Number of queries cancelled
         """
+        display_name = identifier  # Default for backend cancellation
+
         # Update status
         async with self._lock:
-            if name in self._peers:
-                self._peers[name].status = PeerStatus.OFFLINE
+            # Try as pane_id first
+            if identifier in self._peers:
+                self._peers[identifier].status = PeerStatus.OFFLINE
+                display_name = self._peers[identifier].display_name
+            # Try as display_name via name index
+            elif identifier in self._name_index:
+                pane_id = self._name_index[identifier]
+                if pane_id in self._peers:
+                    self._peers[pane_id].status = PeerStatus.OFFLINE
 
         # Cancel pending queries to this peer (check all available backends)
+        # Backends use display_name for query tracking
         cancelled = 0
 
         if self._shared:
             if self._shared.claudemux_backend:
-                cancelled += await self._shared.claudemux_backend.cancel_queries_to_peer(name)
+                backend = self._shared.claudemux_backend
+                cancelled += await backend.cancel_queries_to_peer(display_name)
             if self._shared.opencode_backend:
-                cancelled += await self._shared.opencode_backend.cancel_queries_to_peer(name)
+                backend = self._shared.opencode_backend
+                cancelled += await backend.cancel_queries_to_peer(display_name)
         elif self._backend:
-            cancelled = await self._backend.cancel_queries_to_peer(name)
+            cancelled = await self._backend.cancel_queries_to_peer(display_name)
 
         return cancelled
 

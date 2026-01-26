@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-PLUGIN_CONTENT = '''import type { Plugin, PluginClient } from "@opencode-ai/plugin"
+PLUGIN_CONTENT = """import type { Plugin, PluginClient } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 
 // Type definitions for event properties
@@ -44,6 +44,13 @@ let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 let reconnectAttempts: number = 0
 let opencodeClient: PluginClient | null = null
 
+// Pane identity (for tmux integration)
+const paneId = process.env.TMUX_PANE
+if (!paneId) {
+  console.error("[repowire] OpenCode must run inside tmux for pane identity")
+  // Still continue but with fallback identity
+}
+
 // HTTP helpers for daemon
 async function daemon(path: string, body?: object) {
   const res = await fetch(`${DAEMON_URL}${path}`, {
@@ -65,8 +72,11 @@ function connectWebSocket() {
     reconnectAttempts = 0  // Reset on successful connection
     ws?.send(JSON.stringify({
       type: "register",
-      peer_name: peerName,
+      pane_id: paneId || `opencode:${peerName}`,  // fallback if not in tmux
+      peer_name: peerName,  // Keep for backward compat
+      display_name: peerName,
       path: projectPath,
+      backend: "opencode",
       metadata: { branch: process.env.GIT_BRANCH || "unknown" }
     }))
   }
@@ -290,6 +300,7 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         async execute() {
           return JSON.stringify({
             name: peerName,
+            pane_id: paneId || `opencode:${peerName}`,
             path: projectPath,
             activeSession: activeSessionId,
             daemonUrl: DAEMON_URL,
@@ -369,7 +380,7 @@ Peer list may be outdated - use list_peers tool to refresh.`)
     },
   }
 }
-'''
+"""
 
 # Plugin file locations
 GLOBAL_PLUGIN_DIR = Path.home() / ".config" / "opencode" / "plugin"

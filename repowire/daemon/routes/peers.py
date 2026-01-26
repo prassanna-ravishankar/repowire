@@ -18,10 +18,13 @@ router = APIRouter(tags=["peers"])
 class PeerInfo(BaseModel):
     """Peer information for API responses."""
 
-    name: str
+    pane_id: str  # Primary identifier
+    name: str  # Backward compat (= display_name)
+    display_name: str
     path: str | None = None
     machine: str | None = None
     tmux_session: str | None = None
+    backend: str = "claudemux"
     opencode_url: str | None = None
     circle: str = "global"
     status: str
@@ -38,10 +41,13 @@ class PeersResponse(BaseModel):
 class RegisterPeerRequest(BaseModel):
     """Request to register a peer."""
 
-    name: str = Field(..., description="Peer name")
+    pane_id: str | None = Field(None, description="Unique pane ID (e.g., %42)")
+    name: str = Field(..., description="Peer name (for backward compat)")
+    display_name: str | None = Field(None, description="Human-readable name")
     path: str | None = Field(None, description="Working directory path")
     machine: str | None = Field(None, description="Machine hostname")
     tmux_session: str | None = Field(None, description="Tmux session:window")
+    backend: str = Field(default="claudemux", description="Backend type")
     opencode_url: str | None = Field(None, description="OpenCode server URL")
     circle: str | None = Field(None, description="Circle (logical subnet)")
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -70,10 +76,13 @@ async def list_peers(
     return PeersResponse(
         peers=[
             PeerInfo(
-                name=p.name,
+                pane_id=p.pane_id,
+                name=p.display_name,  # Backward compat
+                display_name=p.display_name,
                 path=p.path,
                 machine=p.machine,
                 tmux_session=p.tmux_session,
+                backend=p.backend,
                 opencode_url=getattr(p, "opencode_url", None),
                 circle=p.circle,
                 status=p.status.value,
@@ -85,22 +94,26 @@ async def list_peers(
     )
 
 
-@router.get("/peers/{name}", response_model=PeerInfo)
+@router.get("/peers/{identifier}", response_model=PeerInfo)
 async def get_peer(
-    name: str,
+    identifier: str,
     _: str | None = Depends(require_auth),
 ) -> PeerInfo:
-    """Get information about a specific peer."""
+    """Get information about a specific peer by pane_id or display_name."""
     peer_manager = get_peer_manager()
     peers = await peer_manager.get_all_peers()
 
+    # Try to find by pane_id first, then by display_name
     for p in peers:
-        if p.name == name:
+        if p.pane_id == identifier or p.display_name == identifier:
             return PeerInfo(
-                name=p.name,
+                pane_id=p.pane_id,
+                name=p.display_name,
+                display_name=p.display_name,
                 path=p.path,
                 machine=p.machine,
                 tmux_session=p.tmux_session,
+                backend=p.backend,
                 opencode_url=getattr(p, "opencode_url", None),
                 circle=p.circle,
                 status=p.status.value,
@@ -110,7 +123,7 @@ async def get_peer(
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Peer not found: {name}",
+        detail=f"Peer not found: {identifier}",
     )
 
 
@@ -121,6 +134,10 @@ async def create_peer(
 ) -> OkResponse:
     """Register a new peer (CLI-friendly endpoint)."""
     config = get_config()
+
+    # Generate pane_id if not provided (for backward compat)
+    pane_id = request.pane_id or f"legacy:{request.name}"
+    display_name = request.display_name or request.name
 
     # Add to config (persisted)
     config.add_peer(
@@ -138,10 +155,12 @@ async def create_peer(
     circle = peer_manager.resolve_circle(peer_config) if peer_config else "global"
 
     peer = Peer(
-        name=request.name,
+        pane_id=pane_id,
+        display_name=display_name,
         path=request.path or "",
         machine=request.machine or socket.gethostname(),
         tmux_session=request.tmux_session,
+        backend=request.backend,
         circle=circle,
         status=PeerStatus.ONLINE,
         metadata=request.metadata,
@@ -229,11 +248,17 @@ async def register_peer(
     """Register a new peer in the mesh (legacy endpoint)."""
     peer_manager = get_peer_manager()
 
+    # Generate pane_id if not provided (for backward compat)
+    pane_id = request.pane_id or f"legacy:{request.name}"
+    display_name = request.display_name or request.name
+
     peer = Peer(
-        name=request.name,
+        pane_id=pane_id,
+        display_name=display_name,
         path=request.path or "",
         machine=request.machine or socket.gethostname(),
         tmux_session=request.tmux_session,
+        backend=request.backend,
         status=PeerStatus.ONLINE,
         metadata=request.metadata,
     )

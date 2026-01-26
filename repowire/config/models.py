@@ -30,9 +30,18 @@ class OpencodeConfig(BaseModel):
 
 
 class PeerConfig(BaseModel):
-    """Configuration for a single peer."""
+    """Configuration for a single peer.
 
-    name: str = Field(..., description="Human-readable peer name (folder name)")
+    Identity is based on pane_id (tmux pane ID like "%42") which is unique and stable.
+    The name field is kept for backward compatibility with older configs.
+    """
+
+    # Primary identity - tmux pane ID (e.g., "%42")
+    pane_id: str | None = Field(None, description="Unique tmux pane ID (e.g., '%42')")
+    display_name: str | None = Field(None, description="Human-readable name (folder name)")
+
+    # Legacy field - kept for backward compatibility
+    name: str = Field(..., description="Peer name (legacy, use display_name)")
     path: str | None = Field(None, description="Working directory path")
 
     # claudemux backend fields
@@ -47,6 +56,21 @@ class PeerConfig(BaseModel):
 
     # metadata
     metadata: dict = Field(default_factory=dict, description="Additional metadata (e.g., branch)")
+
+    @property
+    def effective_name(self) -> str:
+        """Get the effective peer name (display_name or fallback to name)."""
+        return self.display_name or self.name
+
+    @property
+    def effective_pane_id(self) -> str:
+        """Get the effective pane_id (or generate legacy placeholder)."""
+        if self.pane_id:
+            return self.pane_id
+        # Generate legacy placeholder for backward compatibility
+        if self.tmux_session:
+            return f"legacy:{self.tmux_session}"
+        return f"legacy:{self.name}"
 
 
 class DaemonConfig(BaseModel):
@@ -108,8 +132,22 @@ class Config(BaseModel):
         opencode_url: str | None = None,
         circle: str | None = None,
         metadata: dict | None = None,
+        pane_id: str | None = None,
+        display_name: str | None = None,
     ) -> None:
-        """Add or update a peer by name."""
+        """Add or update a peer by name.
+
+        Args:
+            name: Peer name (used as config key and legacy identifier)
+            path: Working directory path
+            tmux_session: Tmux session:window (e.g., 'dev:frontend')
+            session_id: Session ID (Claude or OpenCode)
+            opencode_url: OpenCode server URL
+            circle: Circle (logical subnet)
+            metadata: Additional metadata
+            pane_id: Unique tmux pane ID (e.g., '%42') - primary identifier
+            display_name: Human-readable name (folder name)
+        """
         existing = self.peers.get(name)
         # Merge metadata with existing
         merged_metadata = (existing.metadata if existing else {}).copy()
@@ -117,6 +155,8 @@ class Config(BaseModel):
             merged_metadata.update(metadata)
         self.peers[name] = PeerConfig(
             name=name,
+            pane_id=pane_id or (existing.pane_id if existing else None),
+            display_name=display_name or (existing.display_name if existing else None),
             path=path or (existing.path if existing else None),
             tmux_session=tmux_session or (existing.tmux_session if existing else None),
             session_id=session_id or (existing.session_id if existing else None),
@@ -150,6 +190,19 @@ class Config(BaseModel):
         """Get a peer by tmux session:window."""
         for peer in self.peers.values():
             if peer.tmux_session == tmux_session:
+                return peer
+        return None
+
+    def get_peer_by_pane_id(self, pane_id: str) -> PeerConfig | None:
+        """Get a peer by tmux pane ID (e.g., '%42').
+
+        This is the preferred lookup method as pane_id is the primary identifier.
+        """
+        for peer in self.peers.values():
+            if peer.pane_id == pane_id:
+                return peer
+            # Also check effective_pane_id for legacy configs
+            if peer.effective_pane_id == pane_id:
                 return peer
         return None
 
