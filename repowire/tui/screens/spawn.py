@@ -252,7 +252,8 @@ class SpawnScreen(ModalScreen[bool]):
         except ValueError as e:
             self.notify(str(e), severity="error")
         except Exception as e:
-            self.notify(f"Failed to spawn: {e}", severity="error")
+            err_msg = str(e) if str(e) else type(e).__name__
+            self.notify(f"Failed: {err_msg}", severity="error")
 
     def action_cancel(self) -> None:
         """Cancel and close modal."""

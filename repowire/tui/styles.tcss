@@ -1,7 +1,7 @@
 /* Repowire TUI Styles - Pastel Dark Theme (Tokyo Night Inspired) */
 
 /* ============================================================
-   Color Variables (using Textual's built-in $variables)
+   Color Variables
 
    Background:     #1a1b26 (deep charcoal)
    Surface:        #24283b (panels)
@@ -32,9 +32,9 @@ MainScreen {
     height: 1fr;
 }
 
-/* Left Pane - Peer List */
+/* Left Pane - Peer List (bordered) */
 #peer-list {
-    width: 30;
+    width: 28;
     border: solid #414868;
     border-title-color: #7dcfff;
     border-title-style: bold;
@@ -47,112 +47,47 @@ MainScreen {
     border: solid #7dcfff;
 }
 
-#peer-content {
-    width: 100%;
-    height: 1fr;
-}
-
-#legend-content {
-    width: 100%;
-    height: auto;
-    border-top: solid #414868;
-    padding-top: 1;
-    color: #565f89;
-}
-
-/* Right Pane Container */
+/* Right Pane Container (no border, just background) */
 #right-pane {
     width: 1fr;
     layout: vertical;
+    background: #24283b;
+    margin-left: 1;
 }
 
-/* Peer Details Panel */
+/* Peer Details Panel (minimal - just bottom line) */
 #peer-details {
     height: auto;
-    min-height: 8;
-    max-height: 12;
-    border: solid #414868;
-    border-title-color: #bb9af7;
-    border-title-style: bold;
-    padding: 0 1;
+    min-height: 5;
+    max-height: 8;
+    border: none;
+    border-bottom: solid #414868;
+    padding: 1 2;
     background: #24283b;
 }
 
-#peer-details:focus {
-    border: solid #bb9af7;
-}
-
-.details-header {
-    text-style: bold;
-    color: #c0caf5;
-    margin-bottom: 1;
-}
-
-.details-row {
-    height: auto;
-    margin-bottom: 0;
-}
-
-.details-label {
-    color: #565f89;
-    width: auto;
-    min-width: 10;
-}
-
-.details-value {
-    color: #c0caf5;
-}
-
-.status-online {
-    color: #9ece6a;
-}
-
-.status-busy {
-    color: #e0af68;
-}
-
-.status-offline {
-    color: #565f89;
-}
-
-/* Right Pane - Conversation Log */
+/* Conversation Log (no border) */
 #conversation-log {
     height: 1fr;
-    border: solid #414868;
-    border-title-color: #7dcfff;
-    border-title-style: bold;
-    padding: 0 1;
+    border: none;
+    padding: 1 2;
     background: #24283b;
 }
 
 #conversation-log:focus {
-    border: solid #7dcfff;
+    background: #24283b;
 }
 
-#conversation-content {
-    width: 100%;
-    height: 100%;
-    overflow-y: auto;
-}
-
-/* Legacy activity-log ID for backwards compat */
+/* Legacy activity-log ID */
 #activity-log {
-    width: 1fr;
-    border: solid #414868;
-    border-title-color: #7dcfff;
-    border-title-style: bold;
-    padding: 0 1;
+    height: 1fr;
+    border: none;
+    padding: 1 2;
     background: #24283b;
 }
 
 #activity-log:focus {
-    border: solid #7dcfff;
-}
-
-#activity-content {
-    width: 100%;
-    height: 100%;
-    overflow-y: auto;
+    background: #24283b;
 }
 
 /* Status Bar (Footer) */
@@ -160,8 +95,8 @@ StatusBar {
     dock: bottom;
     width: 100%;
     height: 1;
-    background: #24283b;
-    color: #c0caf5;
+    background: #1a1b26;
+    color: #565f89;
     padding: 0 1;
 }
 
@@ -188,10 +123,6 @@ Input {
 
 Input:focus {
     border: tall #7dcfff;
-}
-
-Input.-invalid {
-    border: tall #f7768e;
 }
 
 /* Select Widget */
@@ -257,7 +188,7 @@ ModalScreen {
 }
 
 #spawn-dialog, #confirm-dialog, #circle-dialog, #conversation-dialog {
-    border: thick #7dcfff;
+    border: solid #414868;
     background: #24283b;
     padding: 1 2;
 }
@@ -269,7 +200,7 @@ ModalScreen {
 }
 
 #confirm-dialog {
-    border: thick #f7768e;
+    border: solid #f7768e;
 }
 
 #confirm-message {
@@ -462,5 +393,5 @@ RichLog {
 
 /* Conversation log navigation mode */
 RichLog.nav-mode {
-    border: solid #bb9af7;
+    background: #24283b;
 }

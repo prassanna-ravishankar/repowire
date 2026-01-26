@@ -19,7 +19,6 @@ class PeerDetails(Static):
     def __init__(self, **kwargs: Any) -> None:
         kwargs.setdefault("id", "peer-details")
         super().__init__(**kwargs)
-        self.border_title = "Details"
 
     def watch_peer(self) -> None:
         """React to peer changes."""
@@ -48,44 +47,39 @@ class PeerDetails(Static):
         # Build the details view
         lines = []
 
-        # Header: Peer name (bold)
-        lines.append(f"[bold #c0caf5]{peer.display_name.upper()}[/]")
-
-        # Status line: ● ONLINE | claudemux
+        # Header: Peer name (bold) + status inline
         lines.append(
-            f"[{status_color}]{status_icon} {peer.status.upper()}[/] | [#7dcfff]{peer.backend}[/]"
+            f"[bold #c0caf5]{peer.display_name.upper()}[/]  "
+            f"[{status_color}]{status_icon}[/] [{status_color}]{peer.status.upper()}[/]"
         )
 
-        lines.append("")  # Spacer
+        # Backend + circle on same line
+        lines.append(f"[#7dcfff]{peer.backend}[/] · [#565f89]circle:[/] [#c0caf5]{peer.circle}[/]")
 
-        # Circle
-        lines.append(f"[#565f89]Circle:[/]    [#c0caf5]{peer.circle}[/]")
+        # Path (full, no truncation - widget handles overflow)
+        if peer.path:
+            lines.append(f"[#565f89]{peer.path}[/]")
 
-        # Path (truncate if too long)
-        path = peer.path or "N/A"
-        if len(path) > 35:
-            path = "..." + path[-32:]
-        lines.append(f"[#565f89]Path:[/]      [#c0caf5]{path}[/]")
+        # Branch from metadata (only if present)
+        branch = peer.metadata.get("branch")
+        if branch:
+            lines.append(f"[#bb9af7]⎇ {branch}[/]")
 
-        # Branch from metadata
-        branch = peer.metadata.get("branch", "N/A")
-        lines.append(f"[#565f89]Branch:[/]    [#bb9af7]{branch}[/]")
+        # Last seen (only if present, use top-level field)
+        last_seen = self._format_last_seen(peer.last_seen)
+        if last_seen:
+            lines.append(f"[dim]{last_seen}[/]")
 
-        # Last seen
-        last_seen = self._format_last_seen(peer.metadata.get("last_seen"))
-        lines.append(f"[#565f89]Last seen:[/] [#c0caf5]{last_seen}[/]")
-
-        # Machine (if available)
-        machine = peer.metadata.get("machine")
-        if machine:
-            lines.append(f"[#565f89]Machine:[/]   [#c0caf5]{machine}[/]")
+        # Machine (only if present, use top-level field)
+        if peer.machine:
+            lines.append(f"[dim]@ {peer.machine}[/]")
 
         return "\n".join(lines)
 
     def _format_last_seen(self, timestamp: str | None) -> str:
-        """Format last seen timestamp as relative time."""
+        """Format last seen timestamp as relative time. Returns empty if not available."""
         if not timestamp:
-            return "N/A"
+            return ""
 
         try:
             ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
@@ -93,15 +87,15 @@ class PeerDetails(Static):
             delta = now - ts
 
             if delta.total_seconds() < 60:
-                return "just now"
+                return "seen just now"
             elif delta.total_seconds() < 3600:
                 mins = int(delta.total_seconds() / 60)
-                return f"{mins} min ago"
+                return f"seen {mins}m ago"
             elif delta.total_seconds() < 86400:
                 hours = int(delta.total_seconds() / 3600)
-                return f"{hours} hour{'s' if hours > 1 else ''} ago"
+                return f"seen {hours}h ago"
             else:
                 days = int(delta.total_seconds() / 86400)
-                return f"{days} day{'s' if days > 1 else ''} ago"
+                return f"seen {days}d ago"
         except (ValueError, TypeError):
-            return "N/A"
+            return ""

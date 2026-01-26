@@ -27,7 +27,7 @@ class MainScreen(Screen):
         ("q", "quit", "Quit"),
         ("n", "spawn", "New"),
         ("s", "shell", "Shell"),
-        ("enter", "focus_conversations", "Conversations"),
+        ("tab", "focus_conversations", "Conversations"),
         ("k", "kill", "Kill"),
         ("e", "events", "Events"),
         ("c", "circle", "Circle"),
@@ -62,9 +62,8 @@ class MainScreen(Screen):
     def on_mount(self) -> None:
         """Load initial data when screen mounts."""
         self.load_peers()
-        # Set border titles
+        # Set border title for peer list (only bordered element)
         self.query_one("#peer-list", PeerList).border_title = "Peers"
-        self.query_one("#activity-log", ActivityLog).border_title = "Conversations"
 
     @work
     async def load_peers(self) -> None:

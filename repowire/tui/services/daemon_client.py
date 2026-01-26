@@ -22,6 +22,8 @@ class PeerInfo:
     tmux_session: str | None
     opencode_url: str | None
     metadata: dict[str, Any]
+    last_seen: str | None = None
+    machine: str | None = None
 
 
 @dataclass
@@ -159,6 +161,8 @@ class DaemonClient:
                     tmux_session=p.get("tmux_session"),
                     opencode_url=p.get("opencode_url"),
                     metadata=p.get("metadata", {}),
+                    last_seen=p.get("last_seen"),
+                    machine=p.get("machine"),
                 )
                 for p in data.get("peers", [])
             ]

@@ -15,7 +15,7 @@ class StatusBar(Widget):
     def render(self) -> str:
         """Render the status bar content."""
         keys = (
-            "[bold #7dcfff]↵[/]conv  "
+            "[bold #7dcfff]tab[/]conv  "
             "[bold #7dcfff]n[/]ew  "
             "[bold #7dcfff]s[/]hell  "
             "[bold #7dcfff]k[/]ill  "
