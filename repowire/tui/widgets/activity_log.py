@@ -32,6 +32,8 @@ class ActivityLog(RichLog):
     BINDINGS = [
         ("j", "nav_down", "Down"),
         ("k", "nav_up", "Up"),
+        ("down", "nav_down", "Down"),
+        ("up", "nav_up", "Up"),
         ("enter", "select_conversation", "View"),
     ]
 
