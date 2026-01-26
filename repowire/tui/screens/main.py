@@ -6,12 +6,13 @@ from typing import TYPE_CHECKING
 
 from textual import work
 from textual.app import ComposeResult
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Input
 
 from repowire.tui.services.daemon_client import PeerInfo
-from repowire.tui.widgets.activity_log import ActivityLog
+from repowire.tui.widgets.activity_log import ActivityLog, ConversationSelected
+from repowire.tui.widgets.peer_details import PeerDetails
 from repowire.tui.widgets.peer_list import PeerList, PeerSelected
 from repowire.tui.widgets.status_bar import StatusBar
 
@@ -20,18 +21,19 @@ if TYPE_CHECKING:
 
 
 class MainScreen(Screen):
-    """Main screen with two-pane layout: peers left, activity right."""
+    """Main screen with two-pane layout: peers left, details+conversations right."""
 
     BINDINGS = [
         ("q", "quit", "Quit"),
-        ("s", "spawn", "Spawn"),
-        ("enter", "attach", "Open"),
+        ("n", "spawn", "New"),
+        ("s", "shell", "Shell"),
+        ("enter", "focus_conversations", "Conversations"),
         ("k", "kill", "Kill"),
         ("e", "events", "Events"),
         ("c", "circle", "Circle"),
         ("r", "refresh", "Refresh"),
         ("/", "filter", "Filter"),
-        ("escape", "clear_filter", "Clear"),
+        ("escape", "clear_focus", "Back"),
     ]
 
     def __init__(self, **kwargs) -> None:
@@ -43,7 +45,9 @@ class MainScreen(Screen):
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-content"):
             yield PeerList(id="peer-list")
-            yield ActivityLog(id="activity-log")
+            with Vertical(id="right-pane"):
+                yield PeerDetails(id="peer-details")
+                yield ActivityLog(id="activity-log")
         yield Input(placeholder="Filter peers...", id="filter-input")
         yield StatusBar(id="status-bar")
 
@@ -58,6 +62,9 @@ class MainScreen(Screen):
     def on_mount(self) -> None:
         """Load initial data when screen mounts."""
         self.load_peers()
+        # Set border titles
+        self.query_one("#peer-list", PeerList).border_title = "Peers"
+        self.query_one("#activity-log", ActivityLog).border_title = "Conversations"
 
     @work
     async def load_peers(self) -> None:
@@ -100,6 +107,15 @@ class MainScreen(Screen):
         activity_log = self.query_one("#activity-log", ActivityLog)
         activity_log.filter_peer = message.name  # None = all, str = filter
 
+        # Update peer details panel
+        peer_details = self.query_one("#peer-details", PeerDetails)
+        if message.name:
+            # Find the full peer info
+            peer = next((p for p in self._peers if p.name == message.name), None)
+            peer_details.peer = peer
+        else:
+            peer_details.peer = None
+
     async def _attach_to_peer(self, tmux_session: str) -> None:
         """Attach to peer's tmux session."""
         await self.rw_app.attach_to_peer(tmux_session)
@@ -110,8 +126,8 @@ class MainScreen(Screen):
 
         self.app.push_screen(SpawnScreen())
 
-    async def action_attach(self) -> None:
-        """Attach to selected peer's tmux session."""
+    async def action_shell(self) -> None:
+        """Attach to selected peer's tmux session (shell)."""
         peer_list = self.query_one("#peer-list", PeerList)
         peer = peer_list.get_selected_peer()
 
@@ -124,6 +140,31 @@ class MainScreen(Screen):
             return
 
         await self.rw_app.attach_to_peer(peer.tmux_session)
+
+    def action_focus_conversations(self) -> None:
+        """Focus the conversation log for navigation."""
+        activity_log = self.query_one("#activity-log", ActivityLog)
+        activity_log.focus()
+        activity_log.enter_nav_mode()
+
+    def action_clear_focus(self) -> None:
+        """Clear filter or exit navigation mode."""
+        activity_log = self.query_one("#activity-log", ActivityLog)
+
+        # If activity log is focused and in nav mode, exit nav mode
+        if activity_log.has_focus and activity_log.nav_mode:
+            activity_log.exit_nav_mode()
+            self.query_one("#peer-list", PeerList).focus()
+            return
+
+        # Otherwise handle filter
+        if self._filter_visible:
+            filter_input = self.query_one("#filter-input", Input)
+            filter_input.remove_class("visible")
+            filter_input.value = ""
+            self._filter_text = ""
+            self._filter_visible = False
+            self._update_display()
 
     async def action_kill(self) -> None:
         """Kill selected peer's tmux window."""
@@ -186,15 +227,9 @@ class MainScreen(Screen):
         filter_input.focus()
         self._filter_visible = True
 
-    def action_clear_filter(self) -> None:
-        """Clear and hide filter."""
-        if self._filter_visible:
-            filter_input = self.query_one("#filter-input", Input)
-            filter_input.remove_class("visible")
-            filter_input.value = ""
-            self._filter_text = ""
-            self._filter_visible = False
-            self._update_display()
+    def action_quit(self) -> None:
+        """Quit the application."""
+        self.app.exit()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle filter input submission."""
@@ -204,6 +239,8 @@ class MainScreen(Screen):
             event.input.remove_class("visible")
             self._filter_visible = False
 
-    def action_quit(self) -> None:
-        """Quit the application."""
-        self.app.exit()
+    def on_conversation_selected(self, message: ConversationSelected) -> None:
+        """Handle conversation selection from ActivityLog."""
+        from repowire.tui.screens.conversation import ConversationScreen
+
+        self.app.push_screen(ConversationScreen(message.conversation))

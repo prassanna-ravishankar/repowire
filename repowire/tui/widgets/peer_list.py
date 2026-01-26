@@ -79,9 +79,7 @@ class PeerList(OptionList):
             self._option_to_peer.clear()
 
             peers = self._visible_peers
-            online_count = sum(
-                1 for p in self._all_peers if p.status.lower() in ("online", "busy")
-            )
+            online_count = sum(1 for p in self._all_peers if p.status.lower() in ("online", "busy"))
 
             # "All" option
             self.add_option(Option(f"All ({online_count})", id="__all__"))
@@ -126,9 +124,7 @@ class PeerList(OptionList):
         elif option_id.startswith("peer_"):
             peer = self._option_to_peer.get(option_id)
             if peer:
-                self.post_message(
-                    PeerSelected(name=peer.name, tmux_session=peer.tmux_session)
-                )
+                self.post_message(PeerSelected(name=peer.name, tmux_session=peer.tmux_session))
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         """Handle option highlight (cursor movement)."""
@@ -139,9 +135,7 @@ class PeerList(OptionList):
         elif option_id.startswith("peer_"):
             peer = self._option_to_peer.get(option_id)
             if peer:
-                self.post_message(
-                    PeerSelected(name=peer.name, tmux_session=peer.tmux_session)
-                )
+                self.post_message(PeerSelected(name=peer.name, tmux_session=peer.tmux_session))
 
     def action_toggle_offline(self) -> None:
         """Toggle showing offline peers."""

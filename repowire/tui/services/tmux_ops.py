@@ -16,8 +16,7 @@ class SpawnConfig:
     path: str
     circle: str
     backend: str  # "claudemux" or "opencode"
-    model: str = "sonnet"
-    params: str = ""  # Extra flags
+    command: str = ""  # Full command to run (e.g., "claude --model opus")
 
     @property
     def display_name(self) -> str:
@@ -85,15 +84,13 @@ class TmuxOps:
         if pane is None:
             raise RuntimeError("Failed to get active pane")
 
-        # Launch agent based on backend
-        if config.backend == "claudemux":
-            cmd = f"claude --model {config.model}"
-            if config.params:
-                cmd = f"{cmd} {config.params}"
+        # Determine command to run
+        if config.command:
+            cmd = config.command
+        elif config.backend == "claudemux":
+            cmd = "claude"
         elif config.backend == "opencode":
             cmd = "opencode"
-            if config.params:
-                cmd = f"{cmd} {config.params}"
         else:
             raise ValueError(f"Unknown backend: {config.backend}")
 

@@ -28,14 +28,15 @@ class CircleScreen(ModalScreen[bool]):
     #circle-dialog {
         width: 50;
         height: auto;
-        border: thick $primary;
-        background: $surface;
+        border: thick #7dcfff;
+        background: #24283b;
         padding: 1 2;
     }
 
     #circle-title {
         text-align: center;
         text-style: bold;
+        color: #7dcfff;
         margin-bottom: 1;
     }
 
@@ -49,6 +50,7 @@ class CircleScreen(ModalScreen[bool]):
         height: 1;
         content-align: right middle;
         padding-right: 1;
+        color: #565f89;
     }
 
     .form-row Input {

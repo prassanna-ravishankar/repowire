@@ -15,13 +15,14 @@ class StatusBar(Widget):
     def render(self) -> str:
         """Render the status bar content."""
         keys = (
-            "[bold cyan]↵[/]open  "
-            "[bold cyan]s[/]pawn  "
-            "[bold cyan]k[/]ill  "
-            "[bold cyan]o[/]ffline  "
-            "[bold cyan]/[/]filter  "
-            "[bold cyan]e[/]vents  "
-            "[bold cyan]c[/]ircle  "
-            "[bold cyan]q[/]uit"
+            "[bold #7dcfff]↵[/]conv  "
+            "[bold #7dcfff]n[/]ew  "
+            "[bold #7dcfff]s[/]hell  "
+            "[bold #7dcfff]k[/]ill  "
+            "[bold #7dcfff]o[/]ffline  "
+            "[bold #7dcfff]/[/]filter  "
+            "[bold #7dcfff]e[/]vents  "
+            "[bold #7dcfff]c[/]ircle  "
+            "[bold #7dcfff]q[/]uit"
         )
         return f" {keys}  │  {self.online}/{self.total} online"

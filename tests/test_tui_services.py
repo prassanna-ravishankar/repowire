@@ -162,24 +162,24 @@ class TestTmuxOps:
 class TestSpawnConfig:
     """Tests for SpawnConfig dataclass."""
 
-    def test_default_model(self) -> None:
-        """Test default model is sonnet."""
+    def test_default_command(self) -> None:
+        """Test default command is empty string."""
         config = SpawnConfig(
             path="/tmp/testproject",
             circle="default",
             backend="claudemux",
         )
-        assert config.model == "sonnet"
+        assert config.command == ""
 
-    def test_custom_model(self) -> None:
-        """Test custom model."""
+    def test_custom_command(self) -> None:
+        """Test custom command."""
         config = SpawnConfig(
             path="/tmp/testproject",
             circle="default",
             backend="claudemux",
-            model="opus",
+            command="claude --model opus",
         )
-        assert config.model == "opus"
+        assert config.command == "claude --model opus"
 
     def test_display_name_derived_from_path(self) -> None:
         """Test display_name is derived from path."""
@@ -190,24 +190,24 @@ class TestSpawnConfig:
         )
         assert config.display_name == "myapp"
 
-    def test_params_default_empty(self) -> None:
-        """Test params defaults to empty string."""
+    def test_command_default_empty(self) -> None:
+        """Test command defaults to empty string."""
         config = SpawnConfig(
             path="/tmp/test",
             circle="default",
             backend="claudemux",
         )
-        assert config.params == ""
+        assert config.command == ""
 
-    def test_params_custom(self) -> None:
-        """Test custom params."""
+    def test_command_with_flags(self) -> None:
+        """Test command with custom flags."""
         config = SpawnConfig(
             path="/tmp/test",
             circle="default",
             backend="claudemux",
-            params="--verbose --debug",
+            command="claude --model opus --verbose",
         )
-        assert config.params == "--verbose --debug"
+        assert config.command == "claude --model opus --verbose"
 
 
 class TestSpawnResult:
