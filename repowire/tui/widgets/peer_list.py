@@ -75,6 +75,15 @@ class PeerList(OptionList):
             return
         self._rebuilding = True
         try:
+            # Preserve current selection
+            selected_id: str | None = None
+            if self.highlighted is not None:
+                try:
+                    option = self.get_option_at_index(self.highlighted)
+                    selected_id = str(option.id) if option.id else None
+                except Exception:
+                    pass
+
             self.clear_options()
             self._option_to_peer.clear()
 
@@ -112,6 +121,13 @@ class PeerList(OptionList):
                     option_id = f"peer_{p.name}"
                     self.add_option(Option(label, id=option_id))
                     self._option_to_peer[option_id] = p
+
+            # Restore selection if possible
+            if selected_id:
+                for idx, opt in enumerate(self._options):
+                    if opt.id == selected_id:
+                        self.highlighted = idx
+                        break
         finally:
             self._rebuilding = False
 

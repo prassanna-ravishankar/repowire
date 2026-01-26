@@ -10,6 +10,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Input
 
+from repowire.spawn import kill_peer
 from repowire.tui.services.daemon_client import PeerInfo
 from repowire.tui.widgets.activity_log import ActivityLog, ConversationSelected
 from repowire.tui.widgets.peer_details import PeerDetails
@@ -192,7 +193,7 @@ class MainScreen(Screen):
 
     async def _do_kill(self, tmux_session: str, peer_name: str) -> None:
         """Actually kill the peer."""
-        success = self.rw_app.tmux.kill_window(tmux_session)
+        success = kill_peer(tmux_session)
         if success:
             await self.rw_app.daemon.unregister_peer(peer_name)
             self.notify(f"Killed {peer_name}")

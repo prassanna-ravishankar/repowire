@@ -11,6 +11,8 @@ from textual.containers import Grid, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Select, Static
 
+from repowire.spawn import SpawnConfig, spawn_peer
+
 if TYPE_CHECKING:
     from repowire.tui.app import RepowireApp
 
@@ -197,8 +199,6 @@ class SpawnScreen(ModalScreen[bool]):
 
     async def _do_spawn(self) -> None:
         """Spawn the peer."""
-        from repowire.tui.services.tmux_ops import SpawnConfig
-
         path = self.query_one("#path-input", Input).value.strip()
         backend = self.query_one("#backend-select", Select).value
         command = self.query_one("#command-input", Input).value.strip()
@@ -230,24 +230,18 @@ class SpawnScreen(ModalScreen[bool]):
             command = "claude" if backend == "claudemux" else "opencode"
 
         config = SpawnConfig(
-            path=path,
+            path=str(Path(path).resolve()),
             circle=circle,
             backend=str(backend),
             command=command,
         )
 
         try:
-            result = self.rw_app.tmux.spawn_peer(config)
-
-            # Register with daemon
-            await self.rw_app.daemon.register_peer(
-                name=result.display_name,
-                path=path,
-                tmux_session=result.tmux_session,
-                circle=circle,
-            )
-
-            self.notify(f"Spawned {result.display_name} in {circle}")
+            result = spawn_peer(config)
+            msg = f"Spawned {result.display_name} in {circle}"
+            if not result.registered:
+                msg += " (daemon not running)"
+            self.notify(msg)
             self.dismiss(True)
         except ValueError as e:
             self.notify(str(e), severity="error")

@@ -525,9 +525,7 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
 
         repowire peer new ~/git/api --backend=opencode --circle=backend
     """
-    import httpx
-
-    from repowire.tui.services.tmux_ops import SpawnConfig, TmuxOps
+    from repowire.spawn import SpawnConfig, spawn_peer
 
     actual_path = str(Path(path).resolve())
     actual_circle = circle or "default"
@@ -540,10 +538,8 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
         command=actual_cmd,
     )
 
-    tmux = TmuxOps()
-
     try:
-        result = tmux.spawn_peer(config)
+        result = spawn_peer(config)
         console.print(
             f"[green]✓[/] Spawned [cyan]{result.display_name}[/] "
             f"in circle [magenta]{actual_circle}[/]"
@@ -551,20 +547,7 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
         console.print(f"  tmux: {result.tmux_session}")
         console.print(f"  command: {actual_cmd}")
 
-        # Register with daemon
-        try:
-            with httpx.Client(timeout=5.0) as client:
-                client.post(
-                    f"{_get_daemon_url()}/peers",
-                    json={
-                        "name": result.display_name,
-                        "path": actual_path,
-                        "tmux_session": result.tmux_session,
-                        "circle": actual_circle,
-                        "backend": backend,
-                    },
-                )
-        except httpx.RequestError:
+        if not result.registered:
             console.print("[dim]  (daemon not running - will auto-register)[/]")
 
     except ValueError as e:

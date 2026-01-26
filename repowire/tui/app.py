@@ -6,9 +6,9 @@ import subprocess
 
 from textual.app import App
 
+from repowire.spawn import attach_session
 from repowire.tui.screens.main import MainScreen
 from repowire.tui.services.daemon_client import DaemonClient
-from repowire.tui.services.tmux_ops import TmuxOps
 
 
 class RepowireApp(App):
@@ -21,7 +21,6 @@ class RepowireApp(App):
         super().__init__(**kwargs)
         self._daemon_url = daemon_url
         self._daemon: DaemonClient | None = None
-        self._tmux = TmuxOps()
 
     @property
     def daemon(self) -> DaemonClient:
@@ -29,11 +28,6 @@ class RepowireApp(App):
         if self._daemon is None:
             raise RuntimeError("Daemon client not initialized")
         return self._daemon
-
-    @property
-    def tmux(self) -> TmuxOps:
-        """Get tmux operations."""
-        return self._tmux
 
     async def on_mount(self) -> None:
         """Initialize daemon client and check connection."""
@@ -76,7 +70,7 @@ class RepowireApp(App):
         with self.suspend():
             # Attach to tmux (blocks until detach)
             try:
-                self._tmux.attach_session(tmux_session)
+                attach_session(tmux_session)
             except subprocess.CalledProcessError:
                 pass  # User detached or session ended
 

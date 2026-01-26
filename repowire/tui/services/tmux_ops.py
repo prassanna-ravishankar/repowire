@@ -6,7 +6,7 @@ import subprocess
 from dataclasses import dataclass
 
 import libtmux
-from libtmux.exc import LibTmuxException
+from libtmux.exc import LibTmuxException, ObjectDoesNotExist
 
 
 @dataclass
@@ -53,7 +53,7 @@ class TmuxOps:
             session = self.server.sessions.get(session_name=session_name)
             if session:
                 return session
-        except LibTmuxException:
+        except (LibTmuxException, ObjectDoesNotExist):
             pass
 
         return self.server.new_session(session_name=session_name)
@@ -73,9 +73,12 @@ class TmuxOps:
         session = self.get_or_create_session(config.circle)
 
         # Check if window already exists
-        existing = session.windows.get(window_name=display_name)
-        if existing:
-            raise ValueError(f"Window '{display_name}' already exists in session '{config.circle}'")
+        try:
+            existing = session.windows.get(window_name=display_name)
+            if existing:
+                raise ValueError(f"Window '{display_name}' already exists in session '{config.circle}'")
+        except ObjectDoesNotExist:
+            pass  # Window doesn't exist, which is what we want
 
         # Create window with working directory
         window = session.new_window(window_name=display_name, start_directory=config.path)
