@@ -145,7 +145,7 @@ class DaemonClient:
                 backend=data.get("backend", "unknown"),
                 relay_mode=data.get("relay_mode", False),
             )
-        except httpx.RequestError as e:
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
             logger.warning(f"Health check failed: {e}")
             return None
 
@@ -172,7 +172,7 @@ class DaemonClient:
                 )
                 for p in data.get("peers", [])
             ]
-        except httpx.RequestError as e:
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
             logger.warning(f"Failed to get peers: {e}")
             return []
 
@@ -183,8 +183,9 @@ class DaemonClient:
             resp.raise_for_status()
             data = resp.json()
             return data.get("events", [])
-        except httpx.RequestError as e:
-            logger.debug(f"Failed to get events: {type(e).__name__}")
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            # Use debug level to avoid log spam from frequent polling
+            logger.debug(f"Failed to get events: {e}")
             return []
 
     async def register_peer(
@@ -215,7 +216,7 @@ class DaemonClient:
             )
             resp.raise_for_status()
             return True
-        except httpx.RequestError as e:
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
             logger.warning(f"Failed to register peer: {e}")
             return False
 
@@ -225,7 +226,7 @@ class DaemonClient:
             resp = await self.client.delete(f"/peers/{name}")
             resp.raise_for_status()
             return True
-        except httpx.RequestError as e:
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
             logger.warning(f"Failed to unregister peer: {e}")
             return False
 
@@ -238,6 +239,6 @@ class DaemonClient:
             )
             resp.raise_for_status()
             return True
-        except httpx.RequestError as e:
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
             logger.warning(f"Failed to set peer circle: {e}")
             return False

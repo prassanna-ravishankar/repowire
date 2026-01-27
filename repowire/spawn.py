@@ -133,7 +133,7 @@ def _register_with_daemon(
     path: str,
     tmux_session: str,
     circle: str,
-    backend: str,
+    backend: BackendType,
 ) -> bool:
     """Register peer with daemon. Returns True if successful."""
     import logging

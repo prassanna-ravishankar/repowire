@@ -280,6 +280,7 @@ class SpawnScreen(ModalScreen[bool]):
                     self.notify("Enter a circle name", severity="error")
                     return
             except NoMatches:
+                logger.warning("New circle input not found, falling back to 'default'")
                 circle = "default"
             except Exception as e:
                 logger.warning(f"Unexpected error getting circle: {e}")
