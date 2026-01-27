@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 
 from textual.message import Message
@@ -10,6 +11,10 @@ from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
 from repowire.tui.services.daemon_client import PeerInfo
+
+# Status display constants
+STATUS_SYMBOLS = {"online": "●", "busy": "◉", "offline": "○"}
+STATUS_COLORS = {"online": "green", "busy": "yellow", "offline": "dim"}
 
 
 @dataclass
@@ -94,12 +99,9 @@ class PeerList(OptionList):
             self.add_option(Option(f"All ({online_count})", id="__all__"))
 
             # Group peers by circle
-            circles: dict[str, list[PeerInfo]] = {}
+            circles: dict[str, list[PeerInfo]] = defaultdict(list)
             for p in peers:
-                circle = p.circle or "global"
-                if circle not in circles:
-                    circles[circle] = []
-                circles[circle].append(p)
+                circles[p.circle or "global"].append(p)
 
             # Render each circle group
             for circle_name in sorted(circles.keys()):
@@ -111,12 +113,8 @@ class PeerList(OptionList):
                 self.add_option(circle_opt)
 
                 for p in circle_peers:
-                    status_symbol = {"online": "●", "busy": "◉", "offline": "○"}.get(
-                        p.status.lower(), "?"
-                    )
-                    status_color = {"online": "green", "busy": "yellow", "offline": "dim"}.get(
-                        p.status.lower(), ""
-                    )
+                    status_symbol = STATUS_SYMBOLS.get(p.status.lower(), "?")
+                    status_color = STATUS_COLORS.get(p.status.lower(), "")
                     label = f"{p.name}  [{status_color}]{status_symbol}[/]"
                     option_id = f"peer_{p.name}"
                     self.add_option(Option(label, id=option_id))

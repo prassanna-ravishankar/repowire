@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
 import httpx
 import pytest
 
+from repowire.spawn import SpawnConfig, SpawnResult
 from repowire.tui.services.daemon_client import DaemonClient, PeerInfo
-from repowire.tui.services.tmux_ops import SpawnConfig, SpawnResult, TmuxOps
 
 
 class TestDaemonClient:
@@ -140,23 +138,6 @@ class TestPeerInfo:
         assert peer.status == "busy"
         assert peer.circle == "development"
         assert peer.metadata == {"branch": "main"}
-
-
-class TestTmuxOps:
-    """Tests for TmuxOps."""
-
-    def test_window_exists_no_colon(self) -> None:
-        """Test window_exists returns False for invalid format."""
-        ops = TmuxOps()
-        assert ops.window_exists("invalid") is False
-
-    @patch("libtmux.Server")
-    def test_list_sessions_empty(self, mock_server: MagicMock) -> None:
-        """Test list_sessions with no sessions."""
-        mock_server.return_value.sessions = []
-        ops = TmuxOps()
-        ops._server = mock_server.return_value
-        assert ops.list_sessions() == []
 
 
 class TestSpawnConfig:

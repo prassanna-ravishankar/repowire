@@ -83,7 +83,8 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
 
     # Register with daemon
     registered = _register_with_daemon(
-        name=window_name,
+        pane_id=pane.id or "",
+        display_name=window_name,
         path=config.path,
         tmux_session=tmux_session,
         circle=config.circle,
@@ -125,30 +126,42 @@ def _unique_window_name(session: libtmux.Session, base_name: str) -> str:
 
 
 def _register_with_daemon(
-    name: str,
+    pane_id: str,
+    display_name: str,
     path: str,
     tmux_session: str,
     circle: str,
     backend: str,
 ) -> bool:
     """Register peer with daemon. Returns True if successful."""
+    import logging
+
+    logger = logging.getLogger(__name__)
+
     try:
         cfg = get_config()
         daemon_url = f"http://{cfg.daemon.host}:{cfg.daemon.port}"
 
         with httpx.Client(timeout=5.0) as client:
-            client.post(
+            resp = client.post(
                 f"{daemon_url}/peers",
                 json={
-                    "name": name,
+                    "pane_id": pane_id,
+                    "display_name": display_name,
+                    "name": display_name,  # Backward compatibility
                     "path": path,
                     "tmux_session": tmux_session,
                     "circle": circle,
                     "backend": backend,
                 },
             )
+            resp.raise_for_status()
         return True
-    except (httpx.RequestError, Exception):
+    except httpx.HTTPStatusError as e:
+        logger.warning(f"Daemon registration failed: {e.response.status_code}")
+        return False
+    except httpx.RequestError as e:
+        logger.debug(f"Daemon not reachable: {type(e).__name__}")
         return False
 
 

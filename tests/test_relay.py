@@ -1,10 +1,9 @@
-import pytest
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
-from datetime import datetime, timezone
 
-from repowire.relay.auth import generate_api_key, validate_api_key, APIKey
+from repowire.relay.auth import APIKey, generate_api_key, validate_api_key
 
 
 class TestRelayAuth:

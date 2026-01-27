@@ -183,6 +183,10 @@ class ActivityLog(RichLog):
     @work(exclusive=True)
     async def stream_events(self) -> None:
         """Stream events from SSE in background."""
+        import asyncio
+        import logging
+
+        logger = logging.getLogger(__name__)
         self._sse = SSEStream(self._base_url)
 
         try:
@@ -192,5 +196,7 @@ class ActivityLog(RichLog):
                 if len(self._events) > self.MAX_EVENTS:
                     self._events = self._events[-self.MAX_EVENTS :]
                 self._refresh_content()
-        except Exception:
-            pass  # Stream stopped
+        except asyncio.CancelledError:
+            pass  # Normal shutdown
+        except Exception as e:
+            logger.warning(f"SSE stream stopped unexpectedly: {e}")

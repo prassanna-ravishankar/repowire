@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 
 from textual.app import App
@@ -9,6 +10,8 @@ from textual.app import App
 from repowire.spawn import attach_session
 from repowire.tui.screens.main import MainScreen
 from repowire.tui.services.daemon_client import DaemonClient
+
+logger = logging.getLogger(__name__)
 
 
 class RepowireApp(App):
@@ -71,8 +74,8 @@ class RepowireApp(App):
             # Attach to tmux (blocks until detach)
             try:
                 attach_session(tmux_session)
-            except subprocess.CalledProcessError:
-                pass  # User detached or session ended
+            except subprocess.CalledProcessError as e:
+                logger.debug(f"Attach to {tmux_session} ended: exit code {e.returncode}")
 
         # Refresh after returning
         if hasattr(self.screen, "action_refresh"):

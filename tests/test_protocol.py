@@ -1,15 +1,13 @@
-import pytest
-from datetime import datetime
 
-from repowire.protocol.peers import Peer, PeerStatus
 from repowire.protocol.messages import (
+    BroadcastMessage,
     Message,
     MessageType,
+    NotificationMessage,
     QueryMessage,
     ResponseMessage,
-    NotificationMessage,
-    BroadcastMessage,
 )
+from repowire.protocol.peers import Peer, PeerStatus
 
 
 class TestPeer:

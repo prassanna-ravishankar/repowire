@@ -11,6 +11,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.suggester import Suggester
+from textual.widget import Widget
 from textual.widgets import Button, Input, Label, Select, Static
 
 from repowire.spawn import SpawnConfig, spawn_peer
@@ -216,6 +217,9 @@ class SpawnScreen(ModalScreen[bool]):
         circle_select = self.query_one("#circle-select", Select)
         parent = circle_select.parent
 
+        if parent is None or not isinstance(parent, Widget):
+            return
+
         # Replace select with input
         new_input = Input(placeholder="Enter circle name", id="new-circle-input")
         await circle_select.remove()
@@ -293,5 +297,5 @@ class SpawnScreen(ModalScreen[bool]):
             result = spawn_peer(config)
             self.notify(f"Spawned {result.display_name}")
             self.dismiss(True)
-        except Exception as e:
+        except (ValueError, RuntimeError) as e:
             self.notify(f"Failed: {str(e) or type(e).__name__}", severity="error")

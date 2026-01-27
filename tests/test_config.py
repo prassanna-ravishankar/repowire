@@ -1,9 +1,8 @@
-import pytest
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from repowire.config.models import Config, RelayConfig, PeerConfig, load_config
+from repowire.config.models import Config, PeerConfig, load_config
 
 
 class TestConfig:

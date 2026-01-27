@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -140,7 +143,8 @@ class DaemonClient:
                 backend=data.get("backend", "unknown"),
                 relay_mode=data.get("relay_mode", False),
             )
-        except httpx.RequestError:
+        except httpx.RequestError as e:
+            logger.debug(f"Health check failed: {type(e).__name__}")
             return None
 
     async def get_peers(self) -> list[PeerInfo]:
@@ -166,7 +170,8 @@ class DaemonClient:
                 )
                 for p in data.get("peers", [])
             ]
-        except httpx.RequestError:
+        except httpx.RequestError as e:
+            logger.debug(f"Failed to get peers: {type(e).__name__}")
             return []
 
     async def get_events(self) -> list[dict[str, Any]]:
@@ -176,7 +181,8 @@ class DaemonClient:
             resp.raise_for_status()
             data = resp.json()
             return data.get("events", [])
-        except httpx.RequestError:
+        except httpx.RequestError as e:
+            logger.debug(f"Failed to get events: {type(e).__name__}")
             return []
 
     async def register_peer(
@@ -207,7 +213,8 @@ class DaemonClient:
             )
             resp.raise_for_status()
             return True
-        except httpx.RequestError:
+        except httpx.RequestError as e:
+            logger.debug(f"Failed to register peer: {type(e).__name__}")
             return False
 
     async def unregister_peer(self, name: str) -> bool:
@@ -216,7 +223,8 @@ class DaemonClient:
             resp = await self.client.delete(f"/peers/{name}")
             resp.raise_for_status()
             return True
-        except httpx.RequestError:
+        except httpx.RequestError as e:
+            logger.debug(f"Failed to unregister peer: {type(e).__name__}")
             return False
 
     async def set_peer_circle(self, name: str, circle: str) -> bool:
@@ -228,5 +236,6 @@ class DaemonClient:
             )
             resp.raise_for_status()
             return True
-        except httpx.RequestError:
+        except httpx.RequestError as e:
+            logger.debug(f"Failed to set peer circle: {type(e).__name__}")
             return False
