@@ -66,6 +66,18 @@ class MainScreen(Screen):
         # Set border title for peer list (only bordered element)
         self.query_one("#peer-list", PeerList).border_title = "Peers"
 
+    def on_descendant_focus(self, event) -> None:
+        """Update status bar context when focus changes."""
+        status_bar = self.query_one("#status-bar", StatusBar)
+        widget = event.widget
+
+        if isinstance(widget, Input):
+            status_bar.context = "filter"
+        elif isinstance(widget, ActivityLog) and widget.nav_mode:
+            status_bar.context = "conversations"
+        else:
+            status_bar.context = "peers"
+
     @work
     async def load_peers(self) -> None:
         """Load peers in background."""
@@ -144,17 +156,21 @@ class MainScreen(Screen):
     def action_focus_conversations(self) -> None:
         """Focus the conversation log for navigation."""
         activity_log = self.query_one("#activity-log", ActivityLog)
+        status_bar = self.query_one("#status-bar", StatusBar)
         activity_log.focus()
         activity_log.enter_nav_mode()
+        status_bar.context = "conversations"
 
     def action_clear_focus(self) -> None:
         """Clear filter or exit navigation mode."""
         activity_log = self.query_one("#activity-log", ActivityLog)
+        status_bar = self.query_one("#status-bar", StatusBar)
 
         # If activity log is focused and in nav mode, exit nav mode
         if activity_log.has_focus and activity_log.nav_mode:
             activity_log.exit_nav_mode()
             self.query_one("#peer-list", PeerList).focus()
+            status_bar.context = "peers"
             return
 
         # Otherwise handle filter
@@ -165,6 +181,7 @@ class MainScreen(Screen):
             self._filter_text = ""
             self._filter_visible = False
             self._update_display()
+            status_bar.context = "peers"
 
     async def action_kill(self) -> None:
         """Kill selected peer's tmux window."""
@@ -223,9 +240,11 @@ class MainScreen(Screen):
     def action_filter(self) -> None:
         """Show filter input."""
         filter_input = self.query_one("#filter-input", Input)
+        status_bar = self.query_one("#status-bar", StatusBar)
         filter_input.add_class("visible")
         filter_input.focus()
         self._filter_visible = True
+        status_bar.context = "filter"
 
     def action_quit(self) -> None:
         """Quit the application."""
@@ -238,6 +257,8 @@ class MainScreen(Screen):
             self._update_display()
             event.input.remove_class("visible")
             self._filter_visible = False
+            status_bar = self.query_one("#status-bar", StatusBar)
+            status_bar.context = "peers"
 
     def on_conversation_selected(self, message: ConversationSelected) -> None:
         """Handle conversation selection from ActivityLog."""

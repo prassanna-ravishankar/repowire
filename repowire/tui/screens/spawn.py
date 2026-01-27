@@ -1,4 +1,4 @@
-"""Spawn screen - modal form for spawning new peers."""
+"""Spawn screen - minimal modal for spawning new peers."""
 
 from __future__ import annotations
 
@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
-from textual.containers import Grid, Vertical
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.suggester import Suggester
 from textual.widgets import Button, Input, Label, Select, Static
 
 from repowire.spawn import SpawnConfig, spawn_peer
@@ -16,70 +18,127 @@ from repowire.spawn import SpawnConfig, spawn_peer
 if TYPE_CHECKING:
     from repowire.tui.app import RepowireApp
 
-# Sentinel value for "Create new circle" option
-CREATE_NEW_CIRCLE = "__create_new__"
+
+class PathSuggester(Suggester):
+    """Directory autocomplete suggester."""
+
+    async def get_suggestion(self, value: str) -> str | None:
+        if not value:
+            return None
+
+        path = Path(value).expanduser()
+
+        # Complete directory with trailing slash
+        if path.is_dir() and not value.endswith("/"):
+            return value + "/"
+
+        # Find matching subdirectory
+        if value.endswith("/"):
+            parent = path
+            partial = ""
+        else:
+            parent = path.parent
+            partial = path.name.lower()
+
+        if not parent.exists():
+            return None
+
+        try:
+            for entry in sorted(parent.iterdir()):
+                if entry.is_dir() and entry.name.lower().startswith(partial):
+                    suggestion = str(parent / entry.name) + "/"
+                    if suggestion != value:
+                        return suggestion
+        except PermissionError:
+            pass
+
+        return None
 
 
 class SpawnScreen(ModalScreen[bool]):
-    """Modal screen for spawning a new peer."""
+    """Minimal modal for spawning a new peer."""
 
     BINDINGS = [
-        ("escape", "cancel", "Cancel"),
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("enter", "submit", "Spawn", show=False),
+        Binding("down", "focus_next", "Next field", show=False),
+        Binding("up", "focus_previous", "Previous field", show=False),
+        Binding("tab", "complete_path", "Autocomplete", show=False),
+        Binding("shift+tab", "noop", "", show=False),
     ]
 
     DEFAULT_CSS = """
     SpawnScreen {
         align: center middle;
+        background: rgba(0, 0, 0, 0.6);
     }
 
-    #spawn-dialog {
+    #dialog {
         width: 60;
-        height: auto;
-        border: thick #7dcfff;
-        background: #24283b;
+        height: 23;
+        background: #1a1b26;
+        border: round #414868;
         padding: 1 2;
     }
 
-    #spawn-title {
-        text-align: center;
+    #title {
         text-style: bold;
         color: #7dcfff;
-        margin-bottom: 1;
+        width: 100%;
+        text-align: center;
+        height: 2;
     }
 
-    .form-row {
+    .field-label {
+        color: #565f89;
+        height: 1;
+    }
+
+    #path-input {
         height: 3;
         margin-bottom: 1;
     }
 
-    .form-row Label {
-        width: 12;
-        height: 1;
-        content-align: right middle;
-        padding-right: 1;
-        color: #565f89;
+    #options-row {
+        height: 3;
+        margin-bottom: 2;
     }
 
-    .form-row Input, .form-row Select {
+    #backend-select {
         width: 1fr;
     }
 
-    #new-circle-row {
-        display: none;
+    #circle-select {
+        width: 1fr;
+        margin-left: 2;
     }
 
-    #new-circle-row.visible {
-        display: block;
-    }
-
-    #button-row {
+    #command-input {
         height: 3;
-        align: center middle;
-        margin-top: 1;
     }
 
-    #button-row Button {
-        margin: 0 1;
+    #buttons {
+        dock: bottom;
+        width: 100%;
+        height: 3;
+        align: right middle;
+    }
+
+    #cancel-btn {
+        margin-right: 1;
+    }
+
+    #spawn-btn {
+        background: #9ece6a;
+        color: #1a1b26;
+    }
+
+    #spawn-btn:hover {
+        background: #73daca;
+    }
+
+    #spawn-btn:focus {
+        text-style: bold reverse;
     }
     """
 
@@ -88,167 +147,162 @@ class SpawnScreen(ModalScreen[bool]):
         self._circles: list[str] = []
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="spawn-dialog"):
-            yield Static("Spawn New Peer", id="spawn-title")
+        with Vertical(id="dialog"):
+            yield Static("New Peer", id="title")
 
-            with Grid(classes="form-row"):
-                yield Label("Path:")
-                yield Input(
-                    placeholder=str(Path.home()),
-                    value=os.getcwd(),
-                    id="path-input",
-                )
+            yield Label("Path", classes="field-label")
+            yield Input(
+                value=os.getcwd(),
+                placeholder="~/git/myproject",
+                id="path-input",
+                suggester=PathSuggester(use_cache=False),
+            )
 
-            with Grid(classes="form-row"):
-                yield Label("Backend:")
+            with Horizontal(id="options-row"):
                 yield Select(
-                    [
-                        ("Claude Code (claudemux)", "claudemux"),
-                        ("OpenCode", "opencode"),
-                    ],
+                    [("Claude Code", "claudemux"), ("OpenCode", "opencode")],
                     value="claudemux",
                     id="backend-select",
+                    prompt="Backend",
                 )
-
-            with Grid(classes="form-row"):
-                yield Label("Command:")
-                yield Input(
-                    placeholder="claude (auto-set based on backend)",
-                    value="",
-                    id="command-input",
-                )
-
-            with Grid(classes="form-row"):
-                yield Label("Circle:")
                 yield Select(
-                    [("default", "default")],  # Will be populated on mount
+                    [("default", "default")],
                     value="default",
                     id="circle-select",
+                    prompt="Circle",
                 )
 
-            with Grid(classes="form-row", id="new-circle-row"):
-                yield Label("New circle:")
-                yield Input(
-                    placeholder="Enter circle name",
-                    value="",
-                    id="new-circle-input",
-                )
+            yield Label("Command (optional)", classes="field-label")
+            yield Input(
+                placeholder="claude --dangerously-skip-permissions",
+                id="command-input",
+            )
 
-            with Grid(id="button-row"):
-                yield Button("Spawn", variant="primary", id="spawn-btn")
-                yield Button("Cancel", variant="default", id="cancel-btn")
+            with Horizontal(id="buttons"):
+                yield Button("Cancel", id="cancel-btn", variant="default")
+                yield Button("Spawn", id="spawn-btn", variant="success")
 
     @property
     def rw_app(self) -> RepowireApp:
-        """Get typed app reference."""
         from repowire.tui.app import RepowireApp
-
         assert isinstance(self.app, RepowireApp)
         return self.app
 
     async def on_mount(self) -> None:
-        """Load circles on mount."""
         await self._load_circles()
+        self.query_one("#path-input", Input).focus()
 
     async def _load_circles(self) -> None:
-        """Fetch existing circles from peers."""
         peers = await self.rw_app.daemon.get_peers()
 
-        # Extract unique circles
-        circles = set()
+        circles = {"default"}
         for p in peers:
             if p.circle:
                 circles.add(p.circle)
 
-        # Always include 'default'
-        circles.add("default")
         self._circles = sorted(circles)
 
-        # Build select options
+        # Build options with "new" at the end
         options: list[tuple[str, str]] = [(c, c) for c in self._circles]
-        options.append(("+ Create new...", CREATE_NEW_CIRCLE))
+        options.append(("+ New circle...", "__new__"))
 
-        # Update the select widget
         circle_select = self.query_one("#circle-select", Select)
         circle_select.set_options(options)
+        circle_select.value = "default"
 
-    def on_select_changed(self, event: Select.Changed) -> None:
-        """Handle select changes."""
-        if event.select.id == "circle-select":
-            new_circle_row = self.query_one("#new-circle-row")
-            if event.value == CREATE_NEW_CIRCLE:
-                new_circle_row.add_class("visible")
-                self.query_one("#new-circle-input", Input).focus()
-            else:
-                new_circle_row.remove_class("visible")
-
-        elif event.select.id == "backend-select":
-            # Update command placeholder based on backend
-            command_input = self.query_one("#command-input", Input)
-            if event.value == "claudemux":
-                command_input.placeholder = "claude (auto-set based on backend)"
-            elif event.value == "opencode":
-                command_input.placeholder = "opencode (auto-set based on backend)"
-
-    async def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle button presses."""
+    def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel-btn":
             self.dismiss(False)
         elif event.button.id == "spawn-btn":
-            await self._do_spawn()
+            self._do_spawn()
 
-    async def _do_spawn(self) -> None:
-        """Spawn the peer."""
-        path = self.query_one("#path-input", Input).value.strip()
-        backend = self.query_one("#backend-select", Select).value
-        command = self.query_one("#command-input", Input).value.strip()
-        circle_value = self.query_one("#circle-select", Select).value
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "circle-select" and event.value == "__new__":
+            self.app.call_later(self._prompt_new_circle)
 
-        # Validation
-        if not path:
-            path = os.getcwd()
+    async def _prompt_new_circle(self) -> None:
+        """Replace circle select with input."""
+        circle_select = self.query_one("#circle-select", Select)
+        circle_select.display = False
 
-        if not Path(path).exists():
-            self.notify(f"Path does not exist: {path}", severity="error")
+        # Mount input in its place
+        options_row = self.query_one("#options-row", Horizontal)
+        new_input = Input(placeholder="Circle name", id="new-circle-input")
+        new_input.styles.width = "1fr"
+        await options_row.mount(new_input)
+        new_input.focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    def action_submit(self) -> None:
+        self._do_spawn()
+
+    def action_focus_next(self) -> None:
+        self.focus_next()
+
+    def action_focus_previous(self) -> None:
+        self.focus_previous()
+
+    def action_complete_path(self) -> None:
+        """Accept path autocomplete suggestion or move to next field."""
+        try:
+            path_input = self.query_one("#path-input", Input)
+            if self.focused == path_input:
+                # Check if there's a suggestion to accept
+                suggestion = getattr(path_input, "_suggestion", "")
+                if suggestion and suggestion != path_input.value:
+                    path_input.value = suggestion
+                    path_input.cursor_position = len(suggestion)
+                    return
+        except Exception:
+            pass
+        # No suggestion - move to next field
+        self.focus_next()
+
+    def action_noop(self) -> None:
+        """Do nothing - blocks shift+tab navigation."""
+        pass
+
+    def _do_spawn(self) -> None:
+        path = self.query_one("#path-input", Input).value.strip() or os.getcwd()
+
+        expanded_path = Path(path).expanduser()
+        if not expanded_path.exists():
+            self.notify(f"Path not found: {path}", severity="error")
             return
 
-        if backend is None or backend == Select.BLANK:
-            self.notify("Backend is required", severity="error")
-            return
+        # Get backend
+        backend_select = self.query_one("#backend-select", Select)
+        backend = str(backend_select.value) if backend_select.value else "claudemux"
 
-        # Determine circle
-        if circle_value == CREATE_NEW_CIRCLE:
-            circle = self.query_one("#new-circle-input", Input).value.strip()
+        # Get circle
+        try:
+            new_input = self.query_one("#new-circle-input", Input)
+            circle = new_input.value.strip()
             if not circle:
-                self.notify("Please enter a circle name", severity="error")
+                self.notify("Enter a circle name", severity="error")
                 return
-        else:
-            circle = str(circle_value) if circle_value else "default"
+        except Exception:
+            circle_select = self.query_one("#circle-select", Select)
+            val = circle_select.value
+            circle = str(val) if val and val != "__new__" else "default"
 
-        # Default command based on backend
+        # Get command
+        command = self.query_one("#command-input", Input).value.strip()
         if not command:
             command = "claude" if backend == "claudemux" else "opencode"
 
         config = SpawnConfig(
-            path=str(Path(path).resolve()),
+            path=str(expanded_path.resolve()),
             circle=circle,
-            backend=str(backend),
+            backend=backend,
             command=command,
         )
 
         try:
             result = spawn_peer(config)
-            msg = f"Spawned {result.display_name} in {circle}"
-            if not result.registered:
-                msg += " (daemon not running)"
-            self.notify(msg)
+            self.notify(f"Spawned {result.display_name}")
             self.dismiss(True)
-        except ValueError as e:
-            self.notify(str(e), severity="error")
         except Exception as e:
-            err_msg = str(e) if str(e) else type(e).__name__
-            self.notify(f"Failed: {err_msg}", severity="error")
-
-    def action_cancel(self) -> None:
-        """Cancel and close modal."""
-        self.dismiss(False)
+            self.notify(f"Failed: {str(e) or type(e).__name__}", severity="error")
