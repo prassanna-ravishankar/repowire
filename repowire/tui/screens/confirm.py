@@ -25,19 +25,17 @@ class ConfirmScreen(ModalScreen[bool]):
     #confirm-dialog {
         width: 40;
         height: auto;
-        border: thick #f7768e;
-        background: #24283b;
+        border: solid $error;
         padding: 1 2;
     }
 
     #confirm-message {
         text-align: center;
         margin-bottom: 1;
-        color: #c0caf5;
     }
 
     #button-row {
-        height: 3;
+        height: auto;
         align: center middle;
     }
 

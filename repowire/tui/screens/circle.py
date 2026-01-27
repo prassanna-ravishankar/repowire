@@ -26,39 +26,32 @@ class CircleScreen(ModalScreen[bool]):
     }
 
     #circle-dialog {
-        width: 50;
+        width: 45;
         height: auto;
-        border: thick #7dcfff;
-        background: #24283b;
+        border: solid $primary;
         padding: 1 2;
     }
 
     #circle-title {
         text-align: center;
         text-style: bold;
-        color: #7dcfff;
         margin-bottom: 1;
     }
 
     .form-row {
-        height: 3;
+        grid-size: 2;
+        grid-columns: 8 1fr;
+        height: auto;
         margin-bottom: 1;
     }
 
     .form-row Label {
-        width: 10;
-        height: 1;
+        text-style: dim;
         content-align: right middle;
-        padding-right: 1;
-        color: #565f89;
-    }
-
-    .form-row Input {
-        width: 1fr;
     }
 
     #button-row {
-        height: 3;
+        height: auto;
         align: center middle;
         margin-top: 1;
     }

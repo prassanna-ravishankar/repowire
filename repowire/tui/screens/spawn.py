@@ -64,119 +64,101 @@ class SpawnScreen(ModalScreen[bool]):
         Binding("down", "focus_next", "Next field", show=False),
         Binding("up", "focus_previous", "Previous field", show=False),
         Binding("tab", "complete_path", "Autocomplete", show=False),
-        Binding("shift+tab", "noop", "", show=False),
+        Binding("shift+tab", "focus_previous", "Previous field", show=False),
     ]
 
     DEFAULT_CSS = """
     SpawnScreen {
         align: center middle;
-        background: rgba(0, 0, 0, 0.6);
     }
 
     #dialog {
-        width: 60;
-        height: 23;
-        background: #1a1b26;
-        border: round #414868;
+        width: 55;
+        height: auto;
+        border: solid $primary;
         padding: 1 2;
     }
 
     #title {
         text-style: bold;
-        color: #7dcfff;
         width: 100%;
         text-align: center;
-        height: 2;
+        margin-bottom: 1;
     }
 
-    .field-label {
-        color: #565f89;
-        height: 1;
-    }
-
-    #path-input {
+    .form-row {
         height: 3;
         margin-bottom: 1;
     }
 
-    #options-row {
+    .form-row Label {
+        width: 10;
         height: 3;
-        margin-bottom: 2;
+        content-align: right middle;
+        text-style: dim;
+        padding-right: 1;
     }
 
-    #backend-select {
+    .form-row Input {
         width: 1fr;
     }
 
-    #circle-select {
+    .form-row Select {
         width: 1fr;
-        margin-left: 2;
-    }
-
-    #command-input {
-        height: 3;
     }
 
     #buttons {
-        dock: bottom;
         width: 100%;
-        height: 3;
+        height: auto;
         align: right middle;
+        margin-top: 1;
     }
 
     #cancel-btn {
         margin-right: 1;
-    }
-
-    #spawn-btn {
-        background: #9ece6a;
-        color: #1a1b26;
-    }
-
-    #spawn-btn:hover {
-        background: #73daca;
-    }
-
-    #spawn-btn:focus {
-        text-style: bold reverse;
     }
     """
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._circles: list[str] = []
+        self._new_circle_mode: bool = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Static("New Peer", id="title")
 
-            yield Label("Path", classes="field-label")
-            yield Input(
-                value=os.getcwd(),
-                placeholder="~/git/myproject",
-                id="path-input",
-                suggester=PathSuggester(use_cache=False),
-            )
+            with Horizontal(classes="form-row"):
+                yield Label("Path")
+                yield Input(
+                    value=os.getcwd(),
+                    placeholder="~/git/myproject",
+                    id="path-input",
+                    suggester=PathSuggester(use_cache=False),
+                )
 
-            with Horizontal(id="options-row"):
+            with Horizontal(classes="form-row"):
+                yield Label("Backend")
                 yield Select(
                     [("Claude Code", "claudemux"), ("OpenCode", "opencode")],
                     value="claudemux",
                     id="backend-select",
-                    prompt="Backend",
                 )
+
+            with Horizontal(classes="form-row"):
+                yield Label("Circle")
                 yield Select(
                     [("default", "default")],
                     value="default",
                     id="circle-select",
-                    prompt="Circle",
                 )
 
-            yield Label("Command (optional)", classes="field-label")
-            yield Input(
-                placeholder="claude --dangerously-skip-permissions",
-                id="command-input",
-            )
+            with Horizontal(classes="form-row"):
+                yield Label("Command")
+                yield Input(
+                    placeholder="claude",
+                    id="command-input",
+                )
 
             with Horizontal(id="buttons"):
                 yield Button("Cancel", id="cancel-btn", variant="default")
@@ -185,6 +167,7 @@ class SpawnScreen(ModalScreen[bool]):
     @property
     def rw_app(self) -> RepowireApp:
         from repowire.tui.app import RepowireApp
+
         assert isinstance(self.app, RepowireApp)
         return self.app
 
@@ -219,17 +202,24 @@ class SpawnScreen(ModalScreen[bool]):
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "circle-select" and event.value == "__new__":
             self.app.call_later(self._prompt_new_circle)
+        elif event.select.id == "backend-select":
+            # Update command placeholder based on backend
+            cmd_input = self.query_one("#command-input", Input)
+            if event.value == "opencode":
+                cmd_input.placeholder = "opencode"
+            else:
+                cmd_input.placeholder = "claude"
 
     async def _prompt_new_circle(self) -> None:
-        """Replace circle select with input."""
+        """Replace circle select with input for new circle name."""
+        self._new_circle_mode = True
         circle_select = self.query_one("#circle-select", Select)
-        circle_select.display = False
+        parent = circle_select.parent
 
-        # Mount input in its place
-        options_row = self.query_one("#options-row", Horizontal)
-        new_input = Input(placeholder="Circle name", id="new-circle-input")
-        new_input.styles.width = "1fr"
-        await options_row.mount(new_input)
+        # Replace select with input
+        new_input = Input(placeholder="Enter circle name", id="new-circle-input")
+        await circle_select.remove()
+        await parent.mount(new_input)
         new_input.focus()
 
     def action_cancel(self) -> None:
@@ -260,10 +250,6 @@ class SpawnScreen(ModalScreen[bool]):
         # No suggestion - move to next field
         self.focus_next()
 
-    def action_noop(self) -> None:
-        """Do nothing - blocks shift+tab navigation."""
-        pass
-
     def _do_spawn(self) -> None:
         path = self.query_one("#path-input", Input).value.strip() or os.getcwd()
 
@@ -277,13 +263,16 @@ class SpawnScreen(ModalScreen[bool]):
         backend = str(backend_select.value) if backend_select.value else "claudemux"
 
         # Get circle
-        try:
-            new_input = self.query_one("#new-circle-input", Input)
-            circle = new_input.value.strip()
-            if not circle:
-                self.notify("Enter a circle name", severity="error")
-                return
-        except Exception:
+        if self._new_circle_mode:
+            try:
+                new_input = self.query_one("#new-circle-input", Input)
+                circle = new_input.value.strip()
+                if not circle:
+                    self.notify("Enter a circle name", severity="error")
+                    return
+            except Exception:
+                circle = "default"
+        else:
             circle_select = self.query_one("#circle-select", Select)
             val = circle_select.value
             circle = str(val) if val and val != "__new__" else "default"

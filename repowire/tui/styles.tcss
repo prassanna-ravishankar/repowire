@@ -57,9 +57,7 @@ MainScreen {
 
 /* Peer Details Panel (minimal - just bottom line) */
 #peer-details {
-    height: auto;
-    min-height: 5;
-    max-height: 8;
+    height: 6;
     border: none;
     border-bottom: solid #414868;
     padding: 1 2;

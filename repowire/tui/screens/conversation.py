@@ -27,26 +27,25 @@ class ConversationScreen(ModalScreen[None]):
 
     #conversation-dialog {
         width: 80%;
-        height: 80%;
+        height: auto;
         max-width: 100;
+        min-height: 15;
         max-height: 40;
-        border: thick #7dcfff;
-        background: #24283b;
+        border: solid $primary;
         padding: 1 2;
     }
 
     #conversation-title {
         text-align: center;
         text-style: bold;
-        color: #7dcfff;
         margin-bottom: 1;
     }
 
     #conversation-meta {
-        color: #565f89;
+        text-style: dim;
         margin-bottom: 1;
         padding-bottom: 1;
-        border-bottom: solid #414868;
+        border-bottom: solid $surface;
     }
 
     #conversation-content {
@@ -59,7 +58,6 @@ class ConversationScreen(ModalScreen[None]):
     }
 
     .query-label {
-        color: #7dcfff;
         text-style: bold;
         margin-bottom: 0;
     }
@@ -69,18 +67,16 @@ class ConversationScreen(ModalScreen[None]):
     }
 
     .response-label {
-        color: #9ece6a;
         text-style: bold;
         margin-bottom: 0;
     }
 
     .pending-response {
-        color: #565f89;
-        text-style: italic;
+        text-style: dim italic;
     }
 
     .error-response {
-        color: #f7768e;
+        color: $error;
     }
     """
 
