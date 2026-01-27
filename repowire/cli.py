@@ -514,7 +514,7 @@ def peer_list() -> None:
 @click.option("--backend", "-b", type=click.Choice(["claudemux", "opencode"]), default="claudemux")
 @click.option("--command", "-c", "cmd", help="Command to run (default: claude or opencode)")
 @click.option("--circle", help="Circle (defaults to 'default')")
-def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> None:
+def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> None:  # noqa: ARG001
     """Spawn a new peer in a tmux window.
 
     Examples:
@@ -525,16 +525,20 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
 
         repowire peer new ~/git/api --backend=opencode --circle=backend
     """
+    from typing import cast
+
+    from repowire.config.models import BackendType
     from repowire.spawn import SpawnConfig, spawn_peer
 
     actual_path = str(Path(path).resolve())
     actual_circle = circle or "default"
     actual_cmd = cmd or ("claude" if backend == "claudemux" else "opencode")
+    backend_type = cast(BackendType, backend)
 
     config = SpawnConfig(
         path=actual_path,
         circle=actual_circle,
-        backend=backend,
+        backend=backend_type,
         command=actual_cmd,
     )
 

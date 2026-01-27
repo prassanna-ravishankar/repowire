@@ -179,6 +179,15 @@ class PeerManager:
         elif self._backend:
             await self._backend.stop()
 
+    def _lookup_peer_unlocked(self, identifier: str) -> Peer | None:
+        """Lookup peer by pane_id or display_name. Must be called with lock held."""
+        if identifier in self._peers:
+            return self._peers[identifier]
+        if identifier in self._name_index:
+            pane_id = self._name_index[identifier]
+            return self._peers.get(pane_id)
+        return None
+
     async def register_peer(self, peer: Peer) -> None:
         """Register a peer in the mesh.
 
@@ -231,16 +240,7 @@ class PeerManager:
             Peer if found, None otherwise
         """
         async with self._lock:
-            # Try as pane_id first
-            if identifier in self._peers:
-                return self._peers[identifier]
-
-            # Try as display_name via name index
-            if identifier in self._name_index:
-                pane_id = self._name_index[identifier]
-                return self._peers.get(pane_id)
-
-            return None
+            return self._lookup_peer_unlocked(identifier)
 
     def _get_peer_status(self, peer_config: PeerConfig) -> PeerStatus:
         """Get status of a peer from the appropriate backend.
@@ -336,13 +336,7 @@ class PeerManager:
             True if peer was found and updated
         """
         async with self._lock:
-            # Try as pane_id first
-            peer = self._peers.get(identifier)
-
-            # Try as display_name via name index
-            if peer is None and identifier in self._name_index:
-                pane_id = self._name_index[identifier]
-                peer = self._peers.get(pane_id)
+            peer = self._lookup_peer_unlocked(identifier)
 
             if peer is not None:
                 old_status = peer.status
@@ -406,17 +400,11 @@ class PeerManager:
             updated = False
             display_name = identifier  # Default for config lookup
 
-            # Try as pane_id first
-            if identifier in self._peers:
-                self._peers[identifier].circle = circle
-                display_name = self._peers[identifier].display_name
+            peer = self._lookup_peer_unlocked(identifier)
+            if peer is not None:
+                peer.circle = circle
+                display_name = peer.display_name
                 updated = True
-            # Try as display_name via name index
-            elif identifier in self._name_index:
-                pane_id = self._name_index[identifier]
-                if pane_id in self._peers:
-                    self._peers[pane_id].circle = circle
-                    updated = True
 
             # Update config (persistent) - protected by lock to prevent race
             # Config uses display_name as key
@@ -500,15 +488,10 @@ class PeerManager:
 
         # Update status
         async with self._lock:
-            # Try as pane_id first
-            if identifier in self._peers:
-                self._peers[identifier].status = PeerStatus.OFFLINE
-                display_name = self._peers[identifier].display_name
-            # Try as display_name via name index
-            elif identifier in self._name_index:
-                pane_id = self._name_index[identifier]
-                if pane_id in self._peers:
-                    self._peers[pane_id].status = PeerStatus.OFFLINE
+            peer = self._lookup_peer_unlocked(identifier)
+            if peer is not None:
+                peer.status = PeerStatus.OFFLINE
+                display_name = peer.display_name
 
         # Cancel pending queries to this peer (check all available backends)
         # Backends use display_name for query tracking

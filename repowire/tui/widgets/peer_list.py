@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
 from repowire.tui.services.daemon_client import PeerInfo
+
+logger = logging.getLogger(__name__)
 
 # Status display constants
 STATUS_SYMBOLS = {"online": "●", "busy": "◉", "offline": "○"}
@@ -86,8 +90,10 @@ class PeerList(OptionList):
                 try:
                     option = self.get_option_at_index(self.highlighted)
                     selected_id = str(option.id) if option.id else None
-                except Exception:
+                except (IndexError, NoMatches):
                     pass
+                except Exception as e:
+                    logger.debug(f"Failed to preserve selection: {e}")
 
             self.clear_options()
             self._option_to_peer.clear()
@@ -129,27 +135,24 @@ class PeerList(OptionList):
         finally:
             self._rebuilding = False
 
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        """Handle option selection."""
-        option_id = str(event.option.id) if event.option.id else ""
-
+    def _handle_option_event(self, option_id: str) -> None:
+        """Handle option selection or highlight by posting PeerSelected message."""
         if option_id == "__all__":
             self.post_message(PeerSelected(name=None, tmux_session=None))
         elif option_id.startswith("peer_"):
             peer = self._option_to_peer.get(option_id)
             if peer:
                 self.post_message(PeerSelected(name=peer.name, tmux_session=peer.tmux_session))
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        """Handle option selection."""
+        option_id = str(event.option.id) if event.option.id else ""
+        self._handle_option_event(option_id)
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         """Handle option highlight (cursor movement)."""
         option_id = str(event.option.id) if event.option.id else ""
-
-        if option_id == "__all__":
-            self.post_message(PeerSelected(name=None, tmux_session=None))
-        elif option_id.startswith("peer_"):
-            peer = self._option_to_peer.get(option_id)
-            if peer:
-                self.post_message(PeerSelected(name=peer.name, tmux_session=peer.tmux_session))
+        self._handle_option_event(option_id)
 
     def action_toggle_offline(self) -> None:
         """Toggle showing offline peers."""

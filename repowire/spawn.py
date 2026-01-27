@@ -10,7 +10,11 @@ import httpx
 import libtmux
 from libtmux.exc import LibTmuxException, ObjectDoesNotExist
 
+from repowire.config.models import BackendType
 from repowire.daemon.deps import get_config
+
+# Default commands for each backend
+BACKEND_COMMANDS: dict[BackendType, str] = {"claudemux": "claude", "opencode": "opencode"}
 
 
 @dataclass
@@ -19,7 +23,7 @@ class SpawnConfig:
 
     path: str
     circle: str
-    backend: str  # "claudemux" or "opencode"
+    backend: BackendType  # "claudemux" or "opencode"
     command: str = ""  # Full command to run (e.g., "claude --model opus")
 
     @property
@@ -70,10 +74,8 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
     # Determine command to run
     if config.command:
         cmd = config.command
-    elif config.backend == "claudemux":
-        cmd = "claude"
-    elif config.backend == "opencode":
-        cmd = "opencode"
+    elif config.backend in BACKEND_COMMANDS:
+        cmd = BACKEND_COMMANDS[config.backend]
     else:
         raise ValueError(f"Unknown backend: {config.backend}")
 
@@ -161,7 +163,7 @@ def _register_with_daemon(
         logger.warning(f"Daemon registration failed: {e.response.status_code}")
         return False
     except httpx.RequestError as e:
-        logger.debug(f"Daemon not reachable: {type(e).__name__}")
+        logger.warning(f"Daemon not reachable: {e}")
         return False
 
 

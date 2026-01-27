@@ -105,7 +105,7 @@ class CircleScreen(ModalScreen[bool]):
             self.notify(f"Moved {self._peer_name} to circle '{circle}'")
             self.dismiss(True)
         else:
-            self.notify("Failed to change circle", severity="error")
+            self.notify(f"Failed to change circle for {self._peer_name}", severity="error")
 
     def action_cancel(self) -> None:
         """Cancel and close modal."""

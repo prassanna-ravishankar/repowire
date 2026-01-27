@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import socket
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from repowire.config.models import BackendType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_config, get_peer_manager
 from repowire.protocol.peers import Peer, PeerStatus
@@ -160,7 +161,7 @@ async def create_peer(
         path=request.path or "",
         machine=request.machine or socket.gethostname(),
         tmux_session=request.tmux_session,
-        backend=request.backend,
+        backend=cast(BackendType, request.backend),
         circle=circle,
         status=PeerStatus.ONLINE,
         metadata=request.metadata,
@@ -258,7 +259,7 @@ async def register_peer(
         path=request.path or "",
         machine=request.machine or socket.gethostname(),
         tmux_session=request.tmux_session,
-        backend=request.backend,
+        backend=cast(BackendType, request.backend),
         status=PeerStatus.ONLINE,
         metadata=request.metadata,
     )

@@ -24,10 +24,7 @@ KEYBINDINGS = {
         "[bold #7dcfff]esc[/]back  "
         "[bold #7dcfff]q[/]uit"
     ),
-    "filter": (
-        "[bold #7dcfff]enter[/]apply  "
-        "[bold #7dcfff]esc[/]cancel"
-    ),
+    "filter": ("[bold #7dcfff]enter[/]apply  [bold #7dcfff]esc[/]cancel"),
 }
 
 

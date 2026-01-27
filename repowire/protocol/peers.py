@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from repowire.config.models import BackendType
+
 
 class PeerStatus(str, Enum):
     """Status of a peer in the mesh."""
@@ -34,7 +36,9 @@ class Peer(BaseModel):
     tmux_session: str | None = Field(None, description="Tmux session:window (e.g., 'dev:frontend')")
 
     # Backend type
-    backend: str = Field(default="claudemux", description="Backend type: claudemux or opencode")
+    backend: BackendType = Field(
+        default="claudemux", description="Backend type: claudemux or opencode"
+    )
 
     # Legacy/optional fields
     opencode_url: str | None = Field(None, description="OpenCode server URL (for opencode peers)")

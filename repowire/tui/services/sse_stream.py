@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncGenerator
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class SSEStream:
@@ -38,10 +41,12 @@ class SSEStream:
                                 try:
                                     event = json.loads(data)
                                     yield event
-                                except json.JSONDecodeError:
+                                except json.JSONDecodeError as e:
+                                    logger.warning(f"Malformed SSE event, skipping: {e}")
                                     continue
-            except httpx.RequestError:
+            except httpx.RequestError as e:
                 if self._running:
+                    logger.warning(f"SSE connection lost ({type(e).__name__}), reconnecting...")
                     await asyncio.sleep(2)  # Reconnect delay
             except asyncio.CancelledError:
                 break

@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.suggester import Suggester
 from textual.widget import Widget
 from textual.widgets import Button, Input, Label, Select, Static
 
+from repowire.config.models import BackendType
 from repowire.spawn import SpawnConfig, spawn_peer
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from repowire.tui.app import RepowireApp
@@ -274,7 +279,10 @@ class SpawnScreen(ModalScreen[bool]):
                 if not circle:
                     self.notify("Enter a circle name", severity="error")
                     return
-            except Exception:
+            except NoMatches:
+                circle = "default"
+            except Exception as e:
+                logger.warning(f"Unexpected error getting circle: {e}")
                 circle = "default"
         else:
             circle_select = self.query_one("#circle-select", Select)
@@ -289,7 +297,7 @@ class SpawnScreen(ModalScreen[bool]):
         config = SpawnConfig(
             path=str(expanded_path.resolve()),
             circle=circle,
-            backend=backend,
+            backend=cast(BackendType, backend),
             command=command,
         )
 
