@@ -38,7 +38,7 @@ Read more about it in my blog where I describe [the context breakout problem](ht
 
 ## Installation
 
-**Requirements:** macOS or Linux, Python 3.10+, tmux (for claudemux backend)
+**Requirements:** macOS or Linux, Python 3.10+, tmux
 
 ```bash
 # Install from PyPI
@@ -57,16 +57,15 @@ repowire setup
 repowire status
 ```
 
-Now start two Claude sessions in tmux:
+Spawn two peers:
 
 ```bash
-# Terminal 1
-tmux new-session -s dev -n frontend
-cd ~/projects/frontend && claude
+# Using CLI
+repowire peer new ~/projects/frontend --circle dev
+repowire peer new ~/projects/backend --circle dev
 
-# Terminal 2 (or tmux split)
-tmux new-window -t dev -n backend
-cd ~/projects/backend && claude
+# Or using TUI (press 'n' to spawn)
+repowire top
 ```
 
 The sessions auto-discover each other. In frontend's Claude:
@@ -77,7 +76,7 @@ The sessions auto-discover each other. In frontend's Claude:
 
 Claude uses the `ask_peer` tool, backend responds, and you get the answer back.
 
-**What just happened?** See [How It Works: claudemux](#claudemux-default) for details.
+**What just happened?** See [How It Works](#how-it-works) for details.
 
 ## Dashboard
 
@@ -86,24 +85,55 @@ Monitor peer communication at `http://localhost:8377/dashboard` when the daemon 
 - Real-time peer status (online/busy/offline)
 - Communication event log (queries, responses, broadcasts)
 
+## Terminal UI
+
+Monitor and manage peers from the terminal:
+
+```bash
+repowire top
+```
+
+- Real-time peer status with vim-style navigation
+- Spawn new peers with `n` key
+- Attach to peer sessions with `s` key
+- Event log with `e` key
+
 ## How It Works
 
-### claudemux (default)
+### Workflow
 
-For Claude Code sessions running in tmux. This is the tested, production-ready backend.
+Each coding agent runs in a **tmux window**. Windows are grouped into **tmux sessions** called **circles**. Peers can only communicate within their circle.
 
-#### What's Installed
+```
+tmux session "dev" (circle)
+├── window "frontend"  →  Claude Code session
+├── window "backend"   →  Claude Code session
+└── window "api"       →  OpenCode session
+```
+
+When you spawn a peer with `--circle dev`, repowire creates (or reuses) a tmux session named "dev" and adds a window for your agent.
+
+### Backends
+
+The **backend** determines which agent you're running and how messages are delivered:
+
+| Backend | Agent | Message Delivery |
+|---------|-------|------------------|
+| **claudemux** | Claude Code | libtmux injection + hooks |
+| **opencode** | OpenCode | WebSocket plugin + SDK |
+
+### What's Installed
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| **Daemon** | System service (launchd/systemd) | Routes messages between peers, runs on `127.0.0.1:8377` |
-| **Hooks** | `~/.claude/settings.json` | SessionStart/End (register/cleanup), UserPromptSubmit (busy), Stop (response), Notification (idle recovery) |
-| **MCP Server** | Registered with Claude | Provides `ask_peer`, `list_peers`, `notify_peer`, `broadcast` tools |
+| **Daemon** | System service (launchd/systemd) | Routes messages between peers, `127.0.0.1:8377` |
+| **Hooks** | `~/.claude/settings.json` | Claude Code lifecycle events (claudemux) |
+| **Plugin** | `~/.config/opencode/plugin/repowire.ts` | OpenCode integration (opencode) |
+| **MCP Server** | Registered with Claude | `ask_peer`, `list_peers`, `notify_peer`, `broadcast` tools |
 | **Config** | `~/.repowire/config.yaml` | Peer registry and settings |
-| **Logs** | `~/.repowire/daemon.log` | Daemon output |
 
 <details>
-<summary><strong>Architecture</strong></summary>
+<summary><strong>claudemux architecture</strong></summary>
 
 ```
 ┌─────────────┐                           ┌─────────────┐
@@ -116,80 +146,48 @@ For Claude Code sessions running in tmux. This is the tested, production-ready b
        │                                         │
        │ MCP tool call                           │ Stop hook captures
        ▼                                         ▼ response from transcript
-┌─────────────────────────────────────────────────────┐
-│                      Daemon                          │
-│                   127.0.0.1:8377                     │
-│                                                     │
-│  1. Receives query from frontend                    │
-│  2. Looks up backend's tmux session                 │
-│  3. Injects query into backend's pane (libtmux)    │
-│  4. Waits for Stop hook to send response            │
-│  5. Returns response to frontend                    │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                      Daemon                             │
+│  1. Receives query from frontend                        │
+│  2. Injects query into backend's pane (libtmux)         │
+│  3. Waits for Stop hook to send response                │
+│  4. Returns response to frontend                        │
+└─────────────────────────────────────────────────────────┘
 ```
 
-**Why tmux?** Claude Code runs in a terminal. Tmux gives us programmatic access to inject queries (via `send_keys`) into another session's pane.
-
-**Why hooks?** Claude Code doesn't have an API. Hooks are the only extension point:
-- **SessionStart**: Registers peer with daemon, injects list of available peers into Claude's context
-- **SessionEnd**: Marks peer offline, cancels pending queries
-- **UserPromptSubmit**: Marks peer as busy while processing
-- **Stop**: Reads transcript, extracts Claude's response, sends to daemon
-- **Notification** (idle_prompt): Resets peer to online after interrupt (Stop doesn't fire on Escape)
-
-**Why a central daemon?** Single source of truth for peer registry. Runs as a system service so it survives reboots and is always available when Claude sessions start.
+**Why hooks?** Claude Code doesn't have an API. Hooks handle lifecycle:
+- **SessionStart/End**: Register/unregister peer
+- **UserPromptSubmit**: Mark peer busy
+- **Stop**: Extract response from transcript
+- **Notification** (idle_prompt): Reset after interrupt
 
 </details>
 
----
-
-### opencode
-
-For OpenCode sessions. Uses a WebSocket plugin that connects to the daemon and injects queries via OpenCode's SDK.
-
-#### What's Installed
-
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| **Daemon** | System service | Routes messages via WebSocket, `127.0.0.1:8377` |
-| **Plugin** | `~/.config/opencode/plugin/repowire.ts` | WebSocket client, provides `ask_peer`, `list_peers`, `notify_peer`, `broadcast`, `whoami` tools |
-| **Config** | `~/.repowire/config.yaml` | Peer registry |
-
 <details>
-<summary><strong>Architecture</strong></summary>
+<summary><strong>opencode architecture</strong></summary>
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  OpenCode TUI - User's session                              │
+│  OpenCode TUI                                               │
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │  repowire plugin (TypeScript)                          │ │
 │  │  • WebSocket connection to daemon                      │ │
-│  │  • Tracks activeSessionId via event hooks              │ │
 │  │  • On query: client.session.prompt(sessionId, text)    │ │
-│  │  • Injects mesh context into system prompt             │ │
 │  └────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
                          ↕ WebSocket ws://127.0.0.1:8377/ws/plugin
 ┌─────────────────────────────────────────────────────────────┐
 │                         Daemon                               │
-│  • WebSocket endpoint for plugin connections                │
 │  • Routes queries to target plugin via WebSocket            │
 │  • Correlation ID tracking for request/response matching    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**How it works:**
-1. Plugin connects to daemon via WebSocket on startup
-2. Plugin registers peer (name = folder name) and tracks session ID
-3. When query arrives, plugin calls `session.prompt()` to inject into user's chat
-4. Response extracted and sent back via WebSocket
-5. System prompt automatically includes list of online peers
-
-**Why WebSocket?** OpenCode plugins run inside the TUI process. WebSocket provides persistent bidirectional communication without needing external HTTP servers.
+**Why WebSocket?** OpenCode has a plugin SDK. The plugin maintains a persistent connection for bidirectional communication.
 
 </details>
 
-OpenCode support is auto-detected during `repowire setup` when the `opencode` CLI is installed.
+Backend is auto-detected during `repowire setup` based on installed CLIs.
 
 ## CLI Reference
 
@@ -204,9 +202,15 @@ repowire uninstall                # Remove all components
 repowire serve                    # Run daemon in foreground
 repowire build-ui                 # Build dashboard (for development)
 
+# TUI dashboard
+repowire top                      # Launch terminal UI
+repowire top --port 8080          # Custom daemon port
+
 # Peer commands
 repowire peer list                # List peers and their status
 repowire peer ask NAME "query"    # Test: ask a peer a question
+repowire peer new PATH            # Spawn new peer in tmux
+repowire peer new . --circle dev  # Spawn with custom circle
 ```
 
 <details>

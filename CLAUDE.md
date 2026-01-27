@@ -29,6 +29,12 @@ repowire serve --port 8080
 # Setup (auto-detects and configures all available backends)
 repowire setup --dev          # dev mode (uses local code)
 repowire setup                # production mode
+
+# Launch TUI dashboard
+repowire top
+
+# Spawn a new peer
+repowire peer new ~/git/myproject --circle dev
 ```
 
 ## Dashboard & Observability
@@ -49,6 +55,73 @@ repowire build-ui
 cd web
 npm run dev # runs on http://localhost:3000
 ```
+
+## Terminal UI (TUI)
+
+Repowire includes a Textual-based TUI for managing peers from the terminal.
+
+### Launch
+
+```bash
+repowire top                    # default: http://127.0.0.1:8377
+repowire top --port 8080        # custom port
+```
+
+### Main Screen Layout
+
+- Left pane: Peer list grouped by circle
+- Right pane: Peer details + Activity log
+
+### Keybindings
+
+| Key | Action |
+|-----|--------|
+| `q` | Quit |
+| `n` | Spawn new peer |
+| `s` | Attach to peer's tmux session |
+| `k` | Kill peer (with confirmation) |
+| `c` | Change peer's circle |
+| `e` | View event log |
+| `r` | Refresh |
+| `/` | Filter peers |
+| `tab` | Focus conversation log |
+| `j`/`k` | Navigate (vim-style) |
+| `o` | Toggle offline peers |
+
+### Key Files
+
+- `tui/app.py` - Main application
+- `tui/screens/main.py` - Main screen layout
+- `tui/screens/spawn.py` - Spawn modal with path autocomplete
+- `tui/widgets/peer_list.py` - Peer list with circle grouping
+- `tui/widgets/activity_log.py` - Real-time SSE event stream
+- `tui/services/daemon_client.py` - HTTP client for daemon API
+- `tui/services/sse_stream.py` - SSE stream client
+
+## Spawning Peers
+
+### CLI Command
+
+```bash
+repowire peer new [PATH] [options]
+  --backend, -b    claudemux or opencode (default: claudemux)
+  --command, -c    Custom command (default: claude/opencode)
+  --circle         Circle name (default: "default")
+```
+
+### Core Module (`spawn.py`)
+
+- `SpawnConfig` - Configuration dataclass (path, circle, backend, command)
+- `SpawnResult` - Result dataclass (pane_id, display_name, tmux_session, registered)
+- `spawn_peer(config)` - Creates tmux window, runs command, registers with daemon
+- `kill_peer(tmux_session)` - Kills tmux window
+- `attach_session(tmux_session)` - Attaches to tmux session
+
+### Behavior
+
+- Circle maps to tmux session name
+- Unique window names with numeric suffixes (myproject, myproject-2, ...)
+- Graceful daemon registration (continues if daemon unavailable)
 
 ## Architecture Overview
 
@@ -166,6 +239,21 @@ Message types: `QUERY`, `RESPONSE`, `NOTIFICATION`, `BROADCAST`
 All messages have: `id`, `type`, `from_peer`, `to_peer`, `payload`, `correlation_id`, `timestamp`
 
 Peer status: `ONLINE`, `BUSY`, `OFFLINE`
+
+### Key Types
+
+**BackendType** (`config/models.py`): `Literal["claudemux", "opencode"]`
+
+**PeerStatus** (`protocol/peers.py`): Enum with `ONLINE`, `BUSY`, `OFFLINE`
+
+**Peer Identity:**
+- Primary: `pane_id` (tmux pane ID like `%42`)
+- Secondary: `display_name` (folder name, for backward compat)
+
+**Status Symbols (TUI):**
+- `●` online (green)
+- `◉` busy (yellow)
+- `○` offline (dim)
 
 ### Circles (Peer Isolation)
 
