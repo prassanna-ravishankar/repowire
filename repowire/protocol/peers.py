@@ -23,11 +23,18 @@ class Peer(BaseModel):
     """A peer in the Repowire mesh.
 
     A peer represents a Claude Code or OpenCode session that can send and receive messages.
-    Identity is based on tmux pane ID (e.g., "%42") which is unique and stable.
+
+    Identity is based on a canonical `peer_id` which is unique per backend:
+    - claudemux: `%N` (tmux pane ID, e.g., "%42") - stable across session restarts
+    - opencode: `oc-{uuid12}` (daemon-assigned) - assigned on WebSocket connect
+
+    Message addressing uses `display_name` (human-friendly, may not be unique).
+    Internal routing uses `peer_id` (always unique, never ambiguous).
     """
 
-    # Primary identity - tmux pane ID (e.g., "%42")
-    pane_id: str = Field(..., description="Unique tmux pane ID (e.g., '%42')")
+    # Primary identity - unique per backend
+    # claudemux: "%N" (tmux pane ID), opencode: "oc-{uuid12}"
+    peer_id: str = Field(..., description="Unique peer identifier ('%42' or 'oc-...')")
     display_name: str = Field(..., description="Human-readable name (folder name)")
     path: str = Field(..., description="Working directory path")
     machine: str = Field(..., description="Machine hostname")
@@ -58,20 +65,30 @@ class Peer(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def handle_legacy_name(cls, data: Any) -> Any:
-        """Handle legacy 'name' field for backward compatibility."""
+    def handle_legacy_fields(cls, data: Any) -> Any:
+        """Handle legacy field names for backward compatibility.
+
+        Supports:
+        - 'name' -> 'display_name' mapping
+        - 'pane_id' -> 'peer_id' migration
+        - Auto-generate legacy peer_id if not provided
+        """
         if isinstance(data, dict):
             # If name is provided but display_name is not, use name as display_name
             if "name" in data and "display_name" not in data:
                 data["display_name"] = data["name"]
-            # If pane_id is not provided, generate a placeholder from tmux_session or name
-            if "pane_id" not in data:
+            # Support old 'pane_id' field name -> migrate to 'peer_id'
+            if "pane_id" in data and "peer_id" not in data:
+                data["peer_id"] = data["pane_id"]
+            # If peer_id is not provided, generate a placeholder from tmux_session or name
+            # Use hyphen instead of colon to avoid issues in some contexts
+            if "peer_id" not in data:
                 if data.get("tmux_session"):
-                    data["pane_id"] = f"legacy:{data['tmux_session']}"
+                    data["peer_id"] = f"legacy-{data['tmux_session']}"
                 elif data.get("display_name"):
-                    data["pane_id"] = f"legacy:{data['display_name']}"
+                    data["peer_id"] = f"legacy-{data['display_name']}"
                 elif data.get("name"):
-                    data["pane_id"] = f"legacy:{data['name']}"
+                    data["peer_id"] = f"legacy-{data['name']}"
         return data
 
     def is_local(self) -> bool:
@@ -91,7 +108,8 @@ class Peer(BaseModel):
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
-            "pane_id": self.pane_id,
+            "peer_id": self.peer_id,
+            "pane_id": self.peer_id,  # API backward compat (deprecated)
             "name": self.display_name,  # API backward compat
             "display_name": self.display_name,
             "path": self.path,

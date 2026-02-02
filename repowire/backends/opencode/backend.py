@@ -71,7 +71,15 @@ class OpencodeBackend(Backend):
         if not success:
             raise ValueError(f"Failed to send notification to {peer.name}")
 
-    async def send_query(self, peer: PeerConfig, text: str, timeout: float = 120.0) -> str:
+    async def send_query(
+        self,
+        peer: PeerConfig,
+        text: str,
+        timeout: float = 120.0,
+        *,
+        from_peer: str = "daemon",
+        correlation_id: str | None = None,
+    ) -> str:
         """Send a query and get response via WebSocket.
 
         The plugin receives the query, injects it into the user's session using
@@ -81,6 +89,8 @@ class OpencodeBackend(Backend):
             peer: Peer configuration
             text: Query text
             timeout: Timeout in seconds
+            from_peer: Name of the sending peer (for tracking)
+            correlation_id: Optional correlation ID (for response matching)
 
         Returns:
             Response text from the peer
@@ -90,7 +100,8 @@ class OpencodeBackend(Backend):
             raise ValueError(f"Peer {peer.name} is not connected via WebSocket")
 
         # Send query and wait for response
-        response = await ws_manager.send_query("daemon", peer.name, text, timeout)
+        # Note: from_peer and correlation_id are handled by QueryTracker
+        response = await ws_manager.send_query(from_peer, peer.name, text, timeout)
         return response
 
     def get_peer_status(self, peer: PeerConfig) -> PeerStatus:

@@ -87,7 +87,7 @@ class TestPeerInfo:
     def test_backend_tmux(self) -> None:
         """Test PeerInfo with claudemux backend."""
         peer = PeerInfo(
-            pane_id="%42",
+            peer_id="%42",
             name="test",
             display_name="test",
             status="online",
@@ -104,7 +104,7 @@ class TestPeerInfo:
     def test_backend_opencode(self) -> None:
         """Test PeerInfo with opencode backend."""
         peer = PeerInfo(
-            pane_id="opencode:123",
+            peer_id="opencode:123",
             name="test",
             display_name="test",
             status="online",
@@ -121,7 +121,7 @@ class TestPeerInfo:
     def test_peerinfo_all_fields(self) -> None:
         """Test PeerInfo with all fields set."""
         peer = PeerInfo(
-            pane_id="%99",
+            peer_id="%99",
             name="myapp",
             display_name="My Application",
             status="busy",
@@ -132,7 +132,7 @@ class TestPeerInfo:
             opencode_url=None,
             metadata={"branch": "main"},
         )
-        assert peer.pane_id == "%99"
+        assert peer.peer_id == "%99"
         assert peer.name == "myapp"
         assert peer.display_name == "My Application"
         assert peer.status == "busy"
@@ -197,10 +197,10 @@ class TestSpawnResult:
     def test_spawn_result_fields(self) -> None:
         """Test SpawnResult has expected fields."""
         result = SpawnResult(
-            pane_id="%42",
+            peer_id="%42",
             display_name="myapp",
             tmux_session="default:myapp",
         )
-        assert result.pane_id == "%42"
+        assert result.peer_id == "%42"
         assert result.display_name == "myapp"
         assert result.tmux_session == "default:myapp"

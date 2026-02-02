@@ -18,8 +18,9 @@ from repowire.backends import get_backend as get_backend_by_name
 from repowire.config.models import Config, load_config
 from repowire.daemon.core import PeerManager, SharedResources
 from repowire.daemon.deps import cleanup_deps, init_deps
+from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.routes import health, messages, peers, websocket
-from repowire.daemon.websocket_manager import init_ws_manager
+from repowire.daemon.websocket_manager import WebSocketManager
 
 if TYPE_CHECKING:
     from repowire.backends.base import Backend
@@ -80,18 +81,21 @@ def create_app(
         if _relay_mode:
             cfg.relay.enabled = True
 
-        # Initialize WebSocket manager first (needed for SharedResources)
-        ws_manager = init_ws_manager()
+        # Initialize centralized QueryTracker
+        query_tracker = QueryTracker()
+
+        # Initialize WebSocket manager with QueryTracker (needed for SharedResources)
+        ws_manager = WebSocketManager(query_tracker=query_tracker)
 
         # Create backends and peer manager
         if _backend_factory:
             # Legacy mode: use single backend from factory
             backend = _backend_factory()
-            peer_manager = PeerManager(backend=backend, config=cfg)
+            peer_manager = PeerManager(backend=backend, config=cfg, query_tracker=query_tracker)
             shared = None
         else:
-            # Per-peer routing mode: create both backends
-            claudemux_backend = _try_create_backend("claudemux")
+            # Per-peer routing mode: create both backends with QueryTracker
+            claudemux_backend = _try_create_backend("claudemux", query_tracker=query_tracker)
             opencode_backend = _try_create_backend("opencode", ws_manager=ws_manager)
 
             # Create shared resources for per-peer routing
@@ -101,7 +105,7 @@ def create_app(
                 opencode_backend=opencode_backend,
             )
 
-            peer_manager = PeerManager(config=cfg, shared=shared)
+            peer_manager = PeerManager(config=cfg, shared=shared, query_tracker=query_tracker)
             backend = None  # No single backend in per-peer mode
 
             logger.info(
@@ -115,6 +119,7 @@ def create_app(
         app.state.shared = shared
         app.state.peer_manager = peer_manager
         app.state.ws_manager = ws_manager
+        app.state.query_tracker = query_tracker
         app.state.relay_mode = _relay_mode or cfg.relay.enabled
 
         # Initialize
@@ -225,20 +230,21 @@ def create_test_app(
     @asynccontextmanager
     async def test_lifespan(app: FastAPI) -> AsyncIterator[None]:
         cfg = config or Config()
-        ws_manager = init_ws_manager()
+        query_tracker = QueryTracker()
+        ws_manager = WebSocketManager(query_tracker=query_tracker)
 
         if shared:
             # Per-peer routing mode
-            pm = PeerManager(config=cfg, shared=shared)
+            pm = PeerManager(config=cfg, shared=shared, query_tracker=query_tracker)
             be = None
         elif backend:
             # Legacy single-backend mode
-            pm = PeerManager(backend=backend, config=cfg)
+            pm = PeerManager(backend=backend, config=cfg, query_tracker=query_tracker)
             be = backend
         else:
             # Default: create single backend from config
-            be = get_backend_by_name(cfg.daemon.backend)
-            pm = PeerManager(backend=be, config=cfg)
+            be = get_backend_by_name(cfg.daemon.backend, query_tracker=query_tracker)
+            pm = PeerManager(backend=be, config=cfg, query_tracker=query_tracker)
 
         # Store in app state
         app.state.config = cfg
@@ -246,6 +252,7 @@ def create_test_app(
         app.state.shared = shared
         app.state.peer_manager = pm
         app.state.ws_manager = ws_manager
+        app.state.query_tracker = query_tracker
         app.state.relay_mode = cfg.relay.enabled
 
         await pm.start()

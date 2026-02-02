@@ -84,7 +84,7 @@ def get_machine_name() -> str:
 
 
 def register_peer(
-    pane_id: str,
+    peer_id: str,
     display_name: str,
     cwd: str,
     machine: str,
@@ -95,7 +95,7 @@ def register_peer(
     """Register peer with daemon via HTTP.
 
     Args:
-        pane_id: Unique tmux pane ID (e.g., "%42")
+        peer_id: Unique peer ID (tmux pane ID like "%42" for claudemux)
         display_name: Human-readable name (folder name)
         cwd: Working directory path
         machine: Machine hostname
@@ -108,7 +108,8 @@ def register_peer(
     """
     try:
         data = {
-            "pane_id": pane_id,
+            "peer_id": peer_id,
+            "pane_id": peer_id,  # Backward compat
             "display_name": display_name,
             "name": display_name,  # Backward compat
             "path": cwd,
@@ -158,10 +159,10 @@ def main() -> int:
         if branch:
             metadata["branch"] = branch
 
-        # pane_id is required for registration
+        # pane_id (= peer_id for claudemux) is required for registration
         if pane_id:
             register_peer(
-                pane_id=pane_id,
+                peer_id=pane_id,  # tmux pane ID serves as peer_id for claudemux
                 display_name=display_name,
                 cwd=cwd,
                 machine=machine,

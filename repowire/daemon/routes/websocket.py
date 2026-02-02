@@ -56,7 +56,8 @@ async def plugin_websocket(websocket: WebSocket) -> None:
             return
 
         peer_name = data.get("peer_name")
-        pane_id = data.get("pane_id")
+        # Support both peer_id and legacy pane_id
+        peer_id = data.get("peer_id") or data.get("pane_id")
         display_name = data.get("display_name", peer_name)
         path = os.path.normpath(data.get("path", ""))  # Sanitize to prevent path traversal
         metadata = data.get("metadata", {})
@@ -67,16 +68,17 @@ async def plugin_websocket(websocket: WebSocket) -> None:
             await websocket.close()
             return
 
-        # Generate pane_id if not provided (for backward compat)
-        if not pane_id:
-            pane_id = f"opencode:{peer_name}"
+        # Generate peer_id if not provided - daemon assigns UUID for opencode
+        if not peer_id:
+            import uuid
+            peer_id = f"oc-{uuid.uuid4().hex[:12]}"
 
-        # Register the connection
-        await ws_manager.connect(websocket, peer_name, path, metadata)
+        # Register the connection with peer_id
+        await ws_manager.connect(websocket, peer_name, peer_id, path, metadata)
 
         # Register with peer manager and config atomically
         peer = Peer(
-            pane_id=pane_id,
+            peer_id=peer_id,
             display_name=display_name,
             path=path,
             machine=socket.gethostname(),
@@ -92,9 +94,9 @@ async def plugin_websocket(websocket: WebSocket) -> None:
             circle=metadata.get("circle"),
         )
 
-        # Send registration confirmation
-        await websocket.send_json({"type": "registered", "ok": True})
-        logger.info(f"Plugin registered via WebSocket: {peer_name}")
+        # Send registration confirmation with assigned peer_id
+        await websocket.send_json({"type": "registered", "ok": True, "peer_id": peer_id})
+        logger.info(f"Plugin registered via WebSocket: {peer_name} ({peer_id})")
 
         # Main message loop
         while True:

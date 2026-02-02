@@ -38,18 +38,15 @@ const DAEMON_WS_URL = process.env.REPOWIRE_DAEMON_WS_URL || "ws://127.0.0.1:8377
 // State
 let ws: WebSocket | null = null
 let peerName: string = "unknown"
+let peerId: string | null = null  // Daemon-assigned unique ID
 let projectPath: string = ""
 let activeSessionId: string | null = null
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 let reconnectAttempts: number = 0
 let opencodeClient: PluginClient | null = null
 
-// Pane identity (for tmux integration)
-const paneId = process.env.TMUX_PANE
-if (!paneId) {
-  console.error("[repowire] OpenCode must run inside tmux for pane identity")
-  // Still continue but with fallback identity
-}
+// Note: We no longer rely on TMUX_PANE for identity. The daemon assigns
+// a unique peer_id (oc-{uuid12}) on registration.
 
 // HTTP helpers for daemon
 async function daemon(path: string, body?: object) {
@@ -70,10 +67,10 @@ function connectWebSocket() {
 
   ws.onopen = () => {
     reconnectAttempts = 0  // Reset on successful connection
+    // Note: We don't send peer_id - daemon assigns it and returns in response
     ws?.send(JSON.stringify({
       type: "register",
-      pane_id: paneId || `opencode:${peerName}`,  // fallback if not in tmux
-      peer_name: peerName,  // Keep for backward compat
+      peer_name: peerName,
       display_name: peerName,
       path: projectPath,
       backend: "opencode",
@@ -139,6 +136,11 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
   const msgType = data.type as string
 
   if (msgType === "registered") {
+    // Store daemon-assigned peer_id
+    if (data.peer_id) {
+      peerId = data.peer_id as string
+      console.debug(`[repowire] Registered with peer_id: ${peerId}`)
+    }
     sendStatus("idle")
   } else if (msgType === "query") {
     const correlationId = data.correlation_id as string
@@ -300,7 +302,7 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         async execute() {
           return JSON.stringify({
             name: peerName,
-            pane_id: paneId || `opencode:${peerName}`,
+            peer_id: peerId || "(not yet registered)",
             path: projectPath,
             activeSession: activeSessionId,
             daemonUrl: DAEMON_URL,

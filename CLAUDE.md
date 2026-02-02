@@ -112,7 +112,7 @@ repowire peer new [PATH] [options]
 ### Core Module (`spawn.py`)
 
 - `SpawnConfig` - Configuration dataclass (path, circle, backend, command)
-- `SpawnResult` - Result dataclass (pane_id, display_name, tmux_session, registered)
+- `SpawnResult` - Result dataclass (peer_id, display_name, tmux_session, registered)
 - `spawn_peer(config)` - Creates tmux window, runs command, registers with daemon
 - `kill_peer(tmux_session)` - Kills tmux window
 - `attach_session(tmux_session)` - Attaches to tmux session
@@ -247,8 +247,8 @@ Peer status: `ONLINE`, `BUSY`, `OFFLINE`
 **PeerStatus** (`protocol/peers.py`): Enum with `ONLINE`, `BUSY`, `OFFLINE`
 
 **Peer Identity:**
-- Primary: `pane_id` (tmux pane ID like `%42`)
-- Secondary: `display_name` (folder name, for backward compat)
+- Primary: `peer_id` (unique per backend: `%42` for claudemux, `oc-{uuid12}` for opencode)
+- Secondary: `display_name` (folder name, for human-friendly addressing)
 
 **Status Symbols (TUI):**
 - `●` online (green)

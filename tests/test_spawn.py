@@ -58,11 +58,11 @@ class TestSpawnResult:
     def test_spawn_result_fields(self) -> None:
         """Test SpawnResult has expected fields."""
         result = SpawnResult(
-            pane_id="%42",
+            peer_id="%42",
             display_name="myapp",
             tmux_session="default:myapp",
         )
-        assert result.pane_id == "%42"
+        assert result.peer_id == "%42"
         assert result.display_name == "myapp"
         assert result.tmux_session == "default:myapp"
         assert result.registered is False  # Default
@@ -70,7 +70,7 @@ class TestSpawnResult:
     def test_spawn_result_registered(self) -> None:
         """Test SpawnResult with registered=True."""
         result = SpawnResult(
-            pane_id="%42",
+            peer_id="%42",
             display_name="myapp",
             tmux_session="default:myapp",
             registered=True,
@@ -205,7 +205,7 @@ class TestSpawnPeer:
         config = SpawnConfig(path="/tmp/test", circle="dev", backend="claudemux")
         result = spawn_peer(config)
 
-        assert result.pane_id == "%42"
+        assert result.peer_id == "%42"
         assert result.display_name == "test"
         assert result.tmux_session == "dev:test"
         assert result.registered is True
@@ -462,7 +462,7 @@ class TestRegisterWithDaemon:
             mock_config.return_value = mock_cfg
 
             result = _register_with_daemon(
-                pane_id="%42",
+                peer_id="%42",
                 display_name="test",
                 path="/tmp/test",
                 tmux_session="dev:test",
@@ -489,7 +489,7 @@ class TestRegisterWithDaemon:
             mock_config.return_value = mock_cfg
 
             result = _register_with_daemon(
-                pane_id="%42",
+                peer_id="%42",
                 display_name="test",
                 path="/tmp/test",
                 tmux_session="dev:test",
@@ -518,7 +518,7 @@ class TestRegisterWithDaemon:
                 mock_client.return_value.__exit__.return_value = None
 
                 result = _register_with_daemon(
-                    pane_id="%42",
+                    peer_id="%42",
                     display_name="test",
                     path="/tmp/test",
                     tmux_session="dev:test",

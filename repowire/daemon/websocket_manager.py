@@ -1,4 +1,9 @@
-"""WebSocket connection manager for OpenCode plugins."""
+"""WebSocket connection manager for OpenCode plugins.
+
+Manages WebSocket connections from OpenCode plugins and handles
+query/response routing. Can delegate query tracking to QueryTracker
+if provided.
+"""
 
 from __future__ import annotations
 
@@ -6,12 +11,14 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from repowire.protocol.peers import PeerStatus
+
+if TYPE_CHECKING:
+    from repowire.daemon.query_tracker import QueryTracker
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +29,7 @@ class PluginConnection:
 
     websocket: WebSocket
     peer_name: str
+    peer_id: str  # Daemon-assigned unique ID (oc-{uuid12})
     path: str
     status: PeerStatus = PeerStatus.ONLINE
     session_id: str | None = None
@@ -29,29 +37,30 @@ class PluginConnection:
     connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-@dataclass
-class PendingQuery:
-    """Tracks a pending query waiting for response."""
-
-    correlation_id: str
-    from_peer: str
-    to_peer: str
-    future: asyncio.Future[str]
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-
-
 class WebSocketManager:
-    """Manages WebSocket connections from OpenCode plugins."""
+    """Manages WebSocket connections from OpenCode plugins.
 
-    def __init__(self) -> None:
+    For query tracking, this manager:
+    - Uses QueryTracker if provided (recommended)
+    - Can still resolve queries by correlation_id via resolve_query()
+    """
+
+    def __init__(self, query_tracker: QueryTracker | None = None) -> None:
+        """Initialize the WebSocket manager.
+
+        Args:
+            query_tracker: Optional centralized query tracker for resolution
+        """
         self._connections: dict[str, PluginConnection] = {}  # peer_name -> connection
-        self._pending_queries: dict[str, PendingQuery] = {}  # correlation_id -> query
+        self._peer_id_index: dict[str, str] = {}  # peer_id -> peer_name
+        self._query_tracker = query_tracker
         self._lock = asyncio.Lock()
 
     async def connect(
         self,
         websocket: WebSocket,
         peer_name: str,
+        peer_id: str,
         path: str,
         metadata: dict[str, Any] | None = None,
     ) -> PluginConnection:
@@ -59,7 +68,8 @@ class WebSocketManager:
 
         Args:
             websocket: The WebSocket connection
-            peer_name: Name of the peer
+            peer_name: Display name of the peer
+            peer_id: Unique peer ID (daemon-assigned oc-{uuid12})
             path: Path to the peer's project directory
             metadata: Optional metadata (branch, etc.)
 
@@ -70,6 +80,9 @@ class WebSocketManager:
             # Disconnect existing connection if any
             if peer_name in self._connections:
                 old_conn = self._connections[peer_name]
+                # Remove old peer_id from index
+                if old_conn.peer_id in self._peer_id_index:
+                    del self._peer_id_index[old_conn.peer_id]
                 try:
                     await old_conn.websocket.close()
                 except Exception as e:
@@ -81,11 +94,13 @@ class WebSocketManager:
             connection = PluginConnection(
                 websocket=websocket,
                 peer_name=peer_name,
+                peer_id=peer_id,
                 path=path,
                 metadata=metadata or {},
             )
             self._connections[peer_name] = connection
-            logger.info(f"Plugin connected: {peer_name} from {path}")
+            self._peer_id_index[peer_id] = peer_name
+            logger.info(f"Plugin connected: {peer_name} ({peer_id}) from {path}")
             return connection
 
     async def disconnect(self, peer_name: str) -> None:
@@ -94,26 +109,22 @@ class WebSocketManager:
         Args:
             peer_name: Name of the peer to disconnect
         """
+        peer_id: str | None = None
         async with self._lock:
             if peer_name in self._connections:
+                conn = self._connections[peer_name]
+                peer_id = conn.peer_id
+                # Remove from indexes
+                if peer_id in self._peer_id_index:
+                    del self._peer_id_index[peer_id]
                 del self._connections[peer_name]
-                logger.info(f"Plugin disconnected: {peer_name}")
+                logger.info(f"Plugin disconnected: {peer_name} ({peer_id})")
 
-            # Cancel any pending queries to this peer
-            cancelled = []
-            for cid, query in list(self._pending_queries.items()):
-                if query.to_peer == peer_name:
-                    if not query.future.done():
-                        query.future.set_exception(
-                            ConnectionError(f"Peer {peer_name} disconnected")
-                        )
-                    cancelled.append(cid)
-
-            for cid in cancelled:
-                del self._pending_queries[cid]
-
+        # Cancel pending queries via QueryTracker if available
+        if self._query_tracker and peer_id:
+            cancelled = self._query_tracker.cancel_queries_to_peer(peer_id)
             if cancelled:
-                logger.info(f"Cancelled {len(cancelled)} pending queries to {peer_name}")
+                logger.info(f"Cancelled {cancelled} pending queries to {peer_name}")
 
     def get_connection(self, peer_name: str) -> PluginConnection | None:
         """Get a connection by peer name."""
@@ -172,6 +183,8 @@ class WebSocketManager:
         to_peer: str,
         text: str,
         timeout: float = 120.0,
+        *,
+        correlation_id: str | None = None,
     ) -> str:
         """Send a query to a peer and wait for response.
 
@@ -180,6 +193,7 @@ class WebSocketManager:
             to_peer: Name of the target peer
             text: Query text
             timeout: Timeout in seconds
+            correlation_id: Optional correlation ID (from QueryTracker)
 
         Returns:
             Response text from the peer
@@ -189,37 +203,36 @@ class WebSocketManager:
             TimeoutError: If no response within timeout
             ConnectionError: If connection lost during send
         """
-        correlation_id = str(uuid4())
-        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-
-        query = PendingQuery(
-            correlation_id=correlation_id,
-            from_peer=from_peer,
-            to_peer=to_peer,
-            future=future,
-        )
-
-        # Acquire lock to atomically check connection and register query
+        # Get the connection and peer_id
         async with self._lock:
             conn = self._connections.get(to_peer)
             if not conn:
                 raise ValueError(f"Peer {to_peer} is not connected")
-            self._pending_queries[correlation_id] = query
+
+        # Get future from QueryTracker
+        future: asyncio.Future[str] | None = None
+        if self._query_tracker and correlation_id:
+            future = self._query_tracker.get_future(correlation_id)
+
+        if future is None:
+            # No QueryTracker or no correlation_id - shouldn't happen
+            logger.warning(f"No future found for correlation_id {correlation_id}")
+            raise ValueError(f"Query tracking error for {to_peer}")
+
+        # Send query to plugin via WebSocket
+        message = {
+            "type": "query",
+            "correlation_id": correlation_id,
+            "from_peer": from_peer,
+            "text": text,
+        }
+        try:
+            await conn.websocket.send_json(message)
+        except (WebSocketDisconnect, ConnectionError) as e:
+            raise ConnectionError(f"Lost connection to {to_peer}: {e}") from e
+        logger.debug(f"Sent query {correlation_id} to {to_peer}")
 
         try:
-            # Send query to plugin via WebSocket
-            message = {
-                "type": "query",
-                "correlation_id": correlation_id,
-                "from_peer": from_peer,
-                "text": text,
-            }
-            try:
-                await conn.websocket.send_json(message)
-            except (WebSocketDisconnect, ConnectionError) as e:
-                raise ConnectionError(f"Lost connection to {to_peer}: {e}") from e
-            logger.debug(f"Sent query {correlation_id} to {to_peer}")
-
             # Wait for response with timeout
             response = await asyncio.wait_for(future, timeout=timeout)
             return response
@@ -228,16 +241,14 @@ class WebSocketManager:
             logger.warning(f"Query {correlation_id} to {to_peer} timed out")
             raise TimeoutError(f"Query to {to_peer} timed out after {timeout}s")
 
-        finally:
-            async with self._lock:
-                self._pending_queries.pop(correlation_id, None)
-
     async def resolve_query(
         self,
         correlation_id: str,
         response_text: str,
     ) -> bool:
         """Resolve a pending query with a response.
+
+        Delegates to QueryTracker if available.
 
         Args:
             correlation_id: The query's correlation ID
@@ -246,17 +257,10 @@ class WebSocketManager:
         Returns:
             True if query was found and resolved
         """
-        async with self._lock:
-            query = self._pending_queries.get(correlation_id)
-            if not query:
-                logger.warning(f"No pending query for correlation_id: {correlation_id}")
-                return False
-
-            if not query.future.done():
-                query.future.set_result(response_text)
-                logger.debug(f"Resolved query {correlation_id}")
-                return True
-            return False
+        if self._query_tracker:
+            return self._query_tracker.resolve_query(correlation_id, response_text)
+        logger.warning(f"No QueryTracker available to resolve {correlation_id}")
+        return False
 
     async def resolve_query_error(
         self,
@@ -265,6 +269,8 @@ class WebSocketManager:
     ) -> bool:
         """Resolve a pending query with an error.
 
+        Delegates to QueryTracker if available.
+
         Args:
             correlation_id: The query's correlation ID
             error: The error message
@@ -272,17 +278,10 @@ class WebSocketManager:
         Returns:
             True if query was found and resolved
         """
-        async with self._lock:
-            query = self._pending_queries.get(correlation_id)
-            if not query:
-                logger.warning(f"No pending query for correlation_id: {correlation_id}")
-                return False
-
-            if not query.future.done():
-                query.future.set_exception(ValueError(error))
-                logger.debug(f"Resolved query {correlation_id} with error: {error}")
-                return True
-            return False
+        if self._query_tracker:
+            return self._query_tracker.resolve_query_error(correlation_id, ValueError(error))
+        logger.warning(f"No QueryTracker available to resolve error for {correlation_id}")
+        return False
 
     async def send_notification(
         self,
@@ -371,23 +370,30 @@ class WebSocketManager:
     async def cancel_queries_to_peer(self, peer_name: str) -> int:
         """Cancel all pending queries to a peer.
 
+        Delegates to QueryTracker if available.
+
         Args:
             peer_name: Name of the peer
 
         Returns:
             Number of queries cancelled
         """
-        async with self._lock:
-            cancelled = 0
-            for cid, query in list(self._pending_queries.items()):
-                if query.to_peer == peer_name:
-                    if not query.future.done():
-                        query.future.set_exception(
-                            ConnectionError(f"Peer {peer_name} went offline")
-                        )
-                    del self._pending_queries[cid]
-                    cancelled += 1
-            return cancelled
+        if self._query_tracker:
+            return self._query_tracker.cancel_queries_to_peer_by_name(peer_name)
+        logger.warning(f"No QueryTracker available to cancel queries to {peer_name}")
+        return 0
+
+    def get_peer_id(self, peer_name: str) -> str | None:
+        """Get the peer_id for a connected peer.
+
+        Args:
+            peer_name: Display name of the peer
+
+        Returns:
+            The peer_id or None if not connected
+        """
+        conn = self._connections.get(peer_name)
+        return conn.peer_id if conn else None
 
     def get_all_connections(self) -> list[PluginConnection]:
         """Get all active connections."""

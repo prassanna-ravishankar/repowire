@@ -32,8 +32,27 @@ class Backend(ABC):
         pass
 
     @abstractmethod
-    async def send_query(self, peer: PeerConfig, text: str, timeout: float = 120.0) -> str:
-        """Send query and wait for response."""
+    async def send_query(
+        self,
+        peer: PeerConfig,
+        text: str,
+        timeout: float = 120.0,
+        *,
+        from_peer: str = "daemon",
+        correlation_id: str | None = None,
+    ) -> str:
+        """Send query and wait for response.
+
+        Args:
+            peer: Target peer configuration
+            text: Query text to send
+            timeout: Timeout in seconds
+            from_peer: Name of the sending peer (for tracking)
+            correlation_id: Optional correlation ID (for response matching)
+
+        Returns:
+            Response text from the peer
+        """
         pass
 
     @abstractmethod

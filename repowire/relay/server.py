@@ -102,12 +102,12 @@ async def register(sid: str, data: dict[str, Any]) -> dict[str, Any]:
     session = await sio.get_session(sid)
     user_id = session["user_id"]
 
-    # Support both old (name) and new (pane_id, display_name) formats
+    # Support peer_id, legacy pane_id, and name-based fallback
     display_name = data.get("display_name") or data.get("name", "unknown")
-    pane_id = data.get("pane_id") or f"relay:{display_name}"
+    peer_id = data.get("peer_id") or data.get("pane_id") or f"relay-{display_name}"
 
     peer = Peer(
-        pane_id=pane_id,
+        peer_id=peer_id,
         display_name=display_name,
         path=data["path"],
         machine=data["machine"],

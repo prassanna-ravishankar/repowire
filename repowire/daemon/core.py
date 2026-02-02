@@ -16,6 +16,7 @@ from repowire.protocol.peers import Peer, PeerStatus
 
 if TYPE_CHECKING:
     from repowire.backends.base import Backend
+    from repowire.daemon.query_tracker import QueryTracker
     from repowire.daemon.websocket_manager import WebSocketManager
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class PeerManager:
 
     Thread-safe with asyncio locks. Delegates actual message
     delivery to the appropriate backend based on peer connection type.
+    Uses centralized QueryTracker for query lifecycle management.
     """
 
     def __init__(
@@ -50,6 +52,7 @@ class PeerManager:
         backend: Backend | None = None,
         config: Config | None = None,
         shared: SharedResources | None = None,
+        query_tracker: QueryTracker | None = None,
     ) -> None:
         """Initialize PeerManager.
 
@@ -57,6 +60,7 @@ class PeerManager:
             backend: Legacy single-backend mode (deprecated, for backward compat)
             config: Configuration instance
             shared: Shared resources for per-peer routing (preferred)
+            query_tracker: Centralized query tracking (recommended)
 
         Raises:
             ValueError: If neither backend nor shared resources are provided
@@ -65,13 +69,16 @@ class PeerManager:
             raise ValueError("Either backend or shared resources must be provided")
 
         self._config = config or load_config()
-        # Primary index: pane_id -> Peer
+        # Primary index: peer_id -> Peer
         self._peers: dict[str, Peer] = {}
-        # Secondary index for backward compat: display_name -> pane_id
+        # Secondary index for backward compat: display_name -> peer_id
         self._name_index: dict[str, str] = {}
         self._lock = asyncio.Lock()
         self._machine = socket.gethostname()
         self._events: deque[dict[str, Any]] = deque(maxlen=100)
+
+        # Centralized query tracking
+        self._query_tracker = query_tracker
 
         # Per-peer routing with shared resources (preferred)
         self._shared = shared
@@ -180,38 +187,38 @@ class PeerManager:
             await self._backend.stop()
 
     def _lookup_peer_unlocked(self, identifier: str) -> Peer | None:
-        """Lookup peer by pane_id or display_name. Must be called with lock held."""
+        """Lookup peer by peer_id or display_name. Must be called with lock held."""
         if identifier in self._peers:
             return self._peers[identifier]
         if identifier in self._name_index:
-            pane_id = self._name_index[identifier]
-            return self._peers.get(pane_id)
+            peer_id = self._name_index[identifier]
+            return self._peers.get(peer_id)
         return None
 
     async def register_peer(self, peer: Peer) -> None:
         """Register a peer in the mesh.
 
-        Indexes by pane_id with a secondary index on display_name for backward compat.
+        Indexes by peer_id with a secondary index on display_name for backward compat.
         """
         async with self._lock:
             peer.status = PeerStatus.ONLINE
             peer.last_seen = datetime.now(timezone.utc)
-            # Primary index by pane_id
-            self._peers[peer.pane_id] = peer
+            # Primary index by peer_id
+            self._peers[peer.peer_id] = peer
             # Secondary index by display_name for backward compat
-            self._name_index[peer.display_name] = peer.pane_id
+            self._name_index[peer.display_name] = peer.peer_id
 
     async def unregister_peer(self, identifier: str) -> bool:
         """Unregister a peer from the mesh.
 
         Args:
-            identifier: Either pane_id or display_name
+            identifier: Either peer_id or display_name
 
         Returns:
             True if peer was found and removed
         """
         async with self._lock:
-            # Try as pane_id first
+            # Try as peer_id first
             if identifier in self._peers:
                 peer = self._peers[identifier]
                 del self._peers[identifier]
@@ -222,19 +229,19 @@ class PeerManager:
 
             # Try as display_name via name index
             if identifier in self._name_index:
-                pane_id = self._name_index[identifier]
-                if pane_id in self._peers:
-                    del self._peers[pane_id]
+                peer_id = self._name_index[identifier]
+                if peer_id in self._peers:
+                    del self._peers[peer_id]
                 del self._name_index[identifier]
                 return True
 
             return False
 
     async def get_peer(self, identifier: str) -> Peer | None:
-        """Get a peer by pane_id or display_name.
+        """Get a peer by peer_id or display_name.
 
         Args:
-            identifier: Either pane_id (e.g., '%42') or display_name
+            identifier: Either peer_id (e.g., '%42') or display_name
 
         Returns:
             Peer if found, None otherwise
@@ -299,11 +306,11 @@ class PeerManager:
             else:
                 # Build peer from config
                 status = self._get_peer_status(peer_config)
-                # Generate legacy pane_id for peers from config
-                pane_id = f"legacy:{peer_config.name}"
+                # Generate legacy peer_id for peers from config
+                peer_id = f"legacy:{peer_config.name}"
                 result.append(
                     Peer(
-                        pane_id=pane_id,
+                        peer_id=peer_id,
                         display_name=peer_config.name,
                         path=peer_config.path or "",
                         machine=self._machine,
@@ -329,7 +336,7 @@ class PeerManager:
         """Update peer status.
 
         Args:
-            identifier: Either pane_id or display_name
+            identifier: Either peer_id or display_name
             status: New status to set
 
         Returns:
@@ -359,10 +366,10 @@ class PeerManager:
                 self._config = load_config()
                 peer_config = self._config.get_peer(identifier)
                 if peer_config:
-                    # Generate a legacy pane_id since we don't have the real one
-                    pane_id = f"legacy:{identifier}"
+                    # Generate a legacy peer_id since we don't have the real one
+                    peer_id = f"legacy:{identifier}"
                     new_peer = Peer(
-                        pane_id=pane_id,
+                        peer_id=peer_id,
                         display_name=identifier,
                         path=peer_config.path or "",
                         machine=self._machine,
@@ -371,8 +378,8 @@ class PeerManager:
                         last_seen=datetime.now(timezone.utc),
                         metadata=peer_config.metadata,
                     )
-                    self._peers[pane_id] = new_peer
-                    self._name_index[identifier] = pane_id
+                    self._peers[peer_id] = new_peer
+                    self._name_index[identifier] = peer_id
                     self._add_event(
                         "status_change",
                         {
@@ -390,7 +397,7 @@ class PeerManager:
         Updates both in-memory peer and persistent config atomically.
 
         Args:
-            identifier: Either pane_id or display_name of the peer
+            identifier: Either peer_id or display_name of the peer
             circle: Circle to join
 
         Returns:
@@ -460,11 +467,11 @@ class PeerManager:
             circle: Optional circle name
         """
         async with self._lock:
-            # Update in-memory - index by pane_id
+            # Update in-memory - index by peer_id
             peer.status = PeerStatus.ONLINE
             peer.last_seen = datetime.now(timezone.utc)
-            self._peers[peer.pane_id] = peer
-            self._name_index[peer.display_name] = peer.pane_id
+            self._peers[peer.peer_id] = peer
+            self._name_index[peer.display_name] = peer.peer_id
 
             # Update config (atomic with memory update) - config uses display_name
             self._config = load_config()
@@ -479,12 +486,13 @@ class PeerManager:
         """Mark a peer as offline and cancel pending queries to it.
 
         Args:
-            identifier: Either pane_id or display_name of the peer going offline
+            identifier: Either peer_id or display_name of the peer going offline
 
         Returns:
             Number of queries cancelled
         """
-        display_name = identifier  # Default for backend cancellation
+        display_name = identifier  # Default for cancellation
+        peer_id: str | None = None
 
         # Update status
         async with self._lock:
@@ -492,20 +500,27 @@ class PeerManager:
             if peer is not None:
                 peer.status = PeerStatus.OFFLINE
                 display_name = peer.display_name
+                peer_id = peer.peer_id
 
-        # Cancel pending queries to this peer (check all available backends)
-        # Backends use display_name for query tracking
+        # Cancel pending queries to this peer via QueryTracker (preferred)
         cancelled = 0
-
-        if self._shared:
-            if self._shared.claudemux_backend:
-                backend = self._shared.claudemux_backend
-                cancelled += await backend.cancel_queries_to_peer(display_name)
-            if self._shared.opencode_backend:
-                backend = self._shared.opencode_backend
-                cancelled += await backend.cancel_queries_to_peer(display_name)
-        elif self._backend:
-            cancelled = await self._backend.cancel_queries_to_peer(display_name)
+        if self._query_tracker:
+            if peer_id:
+                cancelled = self._query_tracker.cancel_queries_to_peer(peer_id)
+            else:
+                # Fallback to by-name cancellation
+                cancelled = self._query_tracker.cancel_queries_to_peer_by_name(display_name)
+        else:
+            # Fallback to backend cancellation (for backward compat)
+            if self._shared:
+                if self._shared.claudemux_backend:
+                    backend = self._shared.claudemux_backend
+                    cancelled += await backend.cancel_queries_to_peer(display_name)
+                if self._shared.opencode_backend:
+                    backend = self._shared.opencode_backend
+                    cancelled += await backend.cancel_queries_to_peer(display_name)
+            elif self._backend:
+                cancelled = await self._backend.cancel_queries_to_peer(display_name)
 
         return cancelled
 
@@ -513,6 +528,7 @@ class PeerManager:
         """Resolve a pending query with a response from a hook.
 
         This is called by the Stop hook (claudemux) to send back responses.
+        Uses centralized QueryTracker if available.
 
         Args:
             correlation_id: The correlation ID of the pending query
@@ -521,13 +537,17 @@ class PeerManager:
         Returns:
             True if the query was found and resolved
         """
-        # Try claudemux backend first (the only one that uses hooks)
+        # Use centralized QueryTracker if available (preferred)
+        if self._query_tracker:
+            return self._query_tracker.resolve_query(correlation_id, response)
+
+        # Fallback to backend (for backward compat)
         if self._shared and self._shared.claudemux_backend:
             return self._shared.claudemux_backend.resolve_query(correlation_id, response)
         elif self._backend:
             return self._backend.resolve_query(correlation_id, response)
 
-        logger.warning(f"Cannot resolve hook response {correlation_id}: no backend available")
+        logger.warning(f"Cannot resolve hook response {correlation_id}: no tracker or backend")
         return False
 
     def _get_peer_config(self, name: str) -> PeerConfig | None:
@@ -609,6 +629,13 @@ class PeerManager:
     ) -> str:
         """Send a query to a peer and wait for response.
 
+        Uses centralized QueryTracker for lifecycle management:
+        1. Register query with QueryTracker (creates Future)
+        2. Send to backend with correlation_id
+        3. Backend delivers message, response comes via hook or WebSocket
+        4. QueryTracker resolves Future with response
+        5. Return response to caller
+
         Args:
             from_peer: Name of the sending peer
             to_peer: Name of the target peer
@@ -646,8 +673,28 @@ class PeerManager:
             {"from": from_peer, "to": to_peer, "text": text, "status": "pending"},
         )
 
+        # Get peer_id for QueryTracker
+        to_peer_id = peer_config.effective_peer_id
+
+        # Register query with QueryTracker before sending
+        correlation_id: str | None = None
+        if self._query_tracker:
+            correlation_id = self._query_tracker.register_query(
+                from_peer=from_peer,
+                to_peer_id=to_peer_id,
+                to_peer_name=to_peer,
+                query_text=formatted_query,
+            )
+
         try:
-            response = await backend.send_query(peer_config, formatted_query, timeout)
+            # Pass correlation_id to backend so it can be matched with response
+            response = await backend.send_query(
+                peer_config,
+                formatted_query,
+                timeout,
+                from_peer=from_peer,
+                correlation_id=correlation_id,
+            )
             # Update query event to success
             self._update_event(query_event_id, {"status": "success"})
             self._add_event(
@@ -690,6 +737,10 @@ class PeerManager:
                 },
             )
             raise
+        finally:
+            # Cleanup query from tracker (in case of timeout/error)
+            if self._query_tracker and correlation_id:
+                self._query_tracker.cleanup_query(correlation_id)
 
     async def notify(
         self, from_peer: str, to_peer: str, text: str, bypass_circle: bool = False

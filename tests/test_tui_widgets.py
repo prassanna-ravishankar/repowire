@@ -14,7 +14,7 @@ def make_peer(
 ) -> PeerInfo:
     """Helper to create PeerInfo with default values."""
     return PeerInfo(
-        pane_id=f"pane:{name}",
+        peer_id=f"pane:{name}",
         name=name,
         display_name=name,
         status=status,

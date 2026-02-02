@@ -188,13 +188,13 @@ uv run repowire peer ask $PEER_A_NAME "Use ask_peer to ask $PEER_B_NAME: questio
 
 3. **Verify peers are in same circle**
    ```bash
-   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.circle == "circle-a") | {name, status, circle, pane_id}'
+   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.circle == "circle-a") | {name, status, circle, peer_id}'
    ```
 
-4. **Verify pane_id was captured correctly**
+4. **Verify peer_id was captured correctly**
    ```bash
-   # pane_id should be tmux pane format like "%22", not "legacy:..."
-   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, pane_id}'
+   # peer_id should be tmux pane format like "%22", not "legacy:..."
+   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, peer_id}'
    ```
 
 5. **Check events for query chain**
@@ -204,7 +204,7 @@ uv run repowire peer ask $PEER_A_NAME "Use ask_peer to ask $PEER_B_NAME: questio
 
 #### Verify
 ```bash
-curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, circle, status, pane_id}'
+curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, circle, status, peer_id}'
 ```
 
 #### Cleanup
@@ -223,7 +223,7 @@ repowire peer prune --force
 # Start daemon (per-peer routing handles both backends)
 curl -s http://127.0.0.1:8377/health || (uv run repowire serve &; sleep 2)
 
-# Create tmux session for OpenCode peers (OpenCode runs inside tmux for pane_id)
+# Create tmux session for OpenCode peers (OpenCode runs inside tmux for peer_id)
 tmux new-session -d -s opencode-test -n peer-1 -c $PROJECT_1
 tmux new-window -t opencode-test -n peer-2 -c $PROJECT_2
 
@@ -239,10 +239,10 @@ Use `repowire peer ask` CLI with proxy pattern for reliable testing.
 
 1. **WebSocket connection & peer discovery**
    ```bash
-   # Both peers should register via WebSocket with real pane_id
-   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.backend == "opencode") | {name, status, pane_id}'
+   # Both peers should register via WebSocket with daemon-assigned peer_id
+   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.backend == "opencode") | {name, status, peer_id}'
    ```
-   Expected: Both peers online with pane_id like "%XX"
+   Expected: Both peers online with peer_id like "oc-{uuid}" (e.g., "oc-550e8400e29b")
 
 2. **Direct query to peer-1**
    ```bash
@@ -266,10 +266,10 @@ Use `repowire peer ask` CLI with proxy pattern for reliable testing.
    ```
    Expected: peer-2 responds with peer-1's answer (confirms bidirectional)
 
-5. **Verify pane_id captured correctly**
+5. **Verify peer_id captured correctly**
    ```bash
-   # Both should have real pane_id, not "legacy:..." or "opencode:..."
-   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, backend, pane_id}'
+   # Both should have real peer_id, not "legacy:..." or "opencode:..."
+   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, backend, peer_id}'
    ```
 
 6. **Check events for query chain**
@@ -279,7 +279,7 @@ Use `repowire peer ask` CLI with proxy pattern for reliable testing.
 
 #### Verify
 ```bash
-curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.backend == "opencode") | {name, status, pane_id}'
+curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.backend == "opencode") | {name, status, peer_id}'
 ```
 
 #### Cleanup
@@ -321,7 +321,7 @@ Use `repowire peer ask` CLI with proxy pattern for reliable cross-backend testin
 1. **Cross-backend peer discovery**
    Both peers should see each other in list_peers despite different backends.
    ```bash
-   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, status, backend, pane_id}'
+   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, status, backend, peer_id}'
    ```
 
 2. **Claude → OpenCode query (via proxy)**
@@ -343,10 +343,10 @@ Use `repowire peer ask` CLI with proxy pattern for reliable cross-backend testin
    ```
    Expected: OpenCode peer responds with Claude peer's answer.
 
-4. **Verify both backends registered with pane_id**
+4. **Verify both backends registered with peer_id**
    ```bash
-   # Both should have real pane_id (e.g., "%22"), not "legacy:..."
-   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, backend, pane_id}'
+   # Both should have real peer_id (e.g., "%22"), not "legacy:..."
+   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, backend, peer_id}'
    ```
 
 5. **Check events for full query chain**
@@ -358,7 +358,7 @@ Use `repowire peer ask` CLI with proxy pattern for reliable cross-backend testin
 #### Verify
 ```bash
 echo "=== Cross-Backend Test Results ==="
-curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, status, backend, circle, pane_id}'
+curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, status, backend, circle, peer_id}'
 curl -s http://127.0.0.1:8377/events | jq '.[-10:]'
 ```
 
@@ -375,19 +375,19 @@ repowire peer prune --force
 ### Success Criteria by Mode
 
 #### claudemux
-- [ ] All peers registered with real pane_id (e.g., "%22", not "legacy:...")
+- [ ] All peers registered with real peer_id (e.g., "%22", not "legacy:...")
 - [ ] Peers in correct circles (circle = tmux session name)
 - [ ] Direct query via CLI: SUCCESS
 - [ ] Peer-to-peer query via proxy: SUCCESS (tests full mesh)
 
 #### opencode
-- [ ] Both peers connected via WebSocket with real pane_id
+- [ ] Both peers connected via WebSocket with real peer_id
 - [ ] list_peers shows both peers as "opencode" backend
 - [ ] Direct query via CLI: SUCCESS
 - [ ] Bidirectional peer-to-peer queries via proxy: SUCCESS
 
 #### mixed
-- [ ] Both backend types register with real pane_id
+- [ ] Both backend types register with real peer_id
 - [ ] Claude → OpenCode query via proxy: SUCCESS
 - [ ] OpenCode → Claude query via proxy: SUCCESS
 - [ ] Events show full query chain across backends

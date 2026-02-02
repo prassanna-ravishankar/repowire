@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Stop hook handler - captures responses and sends to daemon via HTTP."""
+"""Stop hook handler - captures responses and sends to daemon via HTTP.
+
+This handler is invoked by Claude Code's Stop hook when processing completes.
+It extracts the assistant's response from the transcript and sends it to the
+daemon to resolve any pending query.
+
+The pending file lookup uses the tmux pane ID (peer_id for claudemux) which
+is available via the TMUX_PANE environment variable.
+"""
 
 from __future__ import annotations
 
@@ -10,16 +18,23 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from repowire.hooks._tmux import get_tmux_target
+from repowire.hooks._tmux import get_pane_id
 from repowire.hooks.utils import DAEMON_URL, update_status
 from repowire.session.transcript import extract_last_assistant_response
 
 PENDING_DIR = Path.home() / ".repowire" / "pending"
 
 
-def tmux_to_filename(tmux_session: str) -> str:
-    """Convert tmux session:window to safe filename."""
-    return tmux_session.replace(":", "_").replace("/", "_")
+def peer_id_to_filename(peer_id: str) -> str:
+    """Convert peer_id to safe filename.
+
+    For claudemux, peer_id is the tmux pane ID (e.g., "%42").
+    The % is replaced with "pane_" for filesystem safety.
+    """
+    if peer_id.startswith("%"):
+        return f"pane_{peer_id[1:]}"
+    # Legacy format or fallback
+    return peer_id.replace(":", "_").replace("/", "_").replace("%", "pane_")
 
 
 def send_to_daemon(correlation_id: str, response: str) -> bool:
@@ -66,13 +81,13 @@ def main() -> int:
     if not transcript_path_str:
         return 0
 
-    # Get tmux target from environment - this is stable across session restarts
-    tmux_target = get_tmux_target()
-    if not tmux_target:
+    # Get pane_id from environment - this is the peer_id for claudemux
+    pane_id = get_pane_id()
+    if not pane_id:
         return 0
 
     # Check if there's a pending query for this tmux pane
-    pending_filename = tmux_to_filename(tmux_target)
+    pending_filename = peer_id_to_filename(pane_id)
     pending_file = PENDING_DIR / f"{pending_filename}.json"
     if not pending_file.exists():
         return 0

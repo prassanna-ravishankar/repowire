@@ -8,9 +8,13 @@ from typing import TypedDict
 
 
 class TmuxInfo(TypedDict):
-    """Tmux environment information."""
+    """Tmux environment information.
 
-    pane_id: str | None
+    The pane_id here is the raw tmux pane ID (e.g., "%42") which is used
+    as the peer_id for claudemux backend peers.
+    """
+
+    pane_id: str | None  # tmux pane ID, used as peer_id for claudemux
     session_name: str | None
     window_name: str | None
 
@@ -18,7 +22,8 @@ class TmuxInfo(TypedDict):
 def get_pane_id() -> str | None:
     """Get the current tmux pane ID from environment.
 
-    Returns the pane ID (e.g., "%42") or None if not in tmux.
+    Returns the tmux pane ID (e.g., "%42") or None if not in tmux.
+    For claudemux backend, this is used as the peer_id.
     """
     return os.environ.get("TMUX_PANE")
 

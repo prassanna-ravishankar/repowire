@@ -32,12 +32,16 @@ class OpencodeConfig(BaseModel):
 class PeerConfig(BaseModel):
     """Configuration for a single peer.
 
-    Identity is based on pane_id (tmux pane ID like "%42") which is unique and stable.
+    Identity is based on a canonical `peer_id` which is unique per backend:
+    - claudemux: `%N` (tmux pane ID, e.g., "%42") - stable across session restarts
+    - opencode: `oc-{uuid12}` (daemon-assigned, e.g., "oc-550e8400e29b")
+
     The name field is kept for backward compatibility with older configs.
     """
 
-    # Primary identity - tmux pane ID (e.g., "%42")
-    pane_id: str | None = Field(None, description="Unique tmux pane ID (e.g., '%42')")
+    # Primary identity - unique per backend
+    # claudemux: "%N" (tmux pane ID), opencode: "oc-{uuid12}"
+    peer_id: str | None = Field(None, description="Unique peer ID ('%42' or 'oc-...')")
     display_name: str | None = Field(None, description="Human-readable name (folder name)")
 
     # Legacy field - kept for backward compatibility
@@ -63,14 +67,15 @@ class PeerConfig(BaseModel):
         return self.display_name or self.name
 
     @property
-    def effective_pane_id(self) -> str:
-        """Get the effective pane_id (or generate legacy placeholder)."""
-        if self.pane_id:
-            return self.pane_id
+    def effective_peer_id(self) -> str:
+        """Get the effective peer_id (or generate legacy placeholder)."""
+        if self.peer_id:
+            return self.peer_id
         # Generate legacy placeholder for backward compatibility
+        # Use hyphen instead of colon to avoid issues
         if self.tmux_session:
-            return f"legacy:{self.tmux_session}"
-        return f"legacy:{self.name}"
+            return f"legacy-{self.tmux_session}"
+        return f"legacy-{self.name}"
 
 
 class DaemonConfig(BaseModel):
@@ -132,7 +137,7 @@ class Config(BaseModel):
         opencode_url: str | None = None,
         circle: str | None = None,
         metadata: dict | None = None,
-        pane_id: str | None = None,
+        peer_id: str | None = None,
         display_name: str | None = None,
     ) -> None:
         """Add or update a peer by name.
@@ -145,7 +150,7 @@ class Config(BaseModel):
             opencode_url: OpenCode server URL
             circle: Circle (logical subnet)
             metadata: Additional metadata
-            pane_id: Unique tmux pane ID (e.g., '%42') - primary identifier
+            peer_id: Unique peer ID (e.g., '%42' or 'oc-550e8400e29b') - primary identifier
             display_name: Human-readable name (folder name)
         """
         existing = self.peers.get(name)
@@ -155,7 +160,7 @@ class Config(BaseModel):
             merged_metadata.update(metadata)
         self.peers[name] = PeerConfig(
             name=name,
-            pane_id=pane_id or (existing.pane_id if existing else None),
+            peer_id=peer_id or (existing.peer_id if existing else None),
             display_name=display_name or (existing.display_name if existing else None),
             path=path or (existing.path if existing else None),
             tmux_session=tmux_session or (existing.tmux_session if existing else None),
@@ -193,16 +198,16 @@ class Config(BaseModel):
                 return peer
         return None
 
-    def get_peer_by_pane_id(self, pane_id: str) -> PeerConfig | None:
-        """Get a peer by tmux pane ID (e.g., '%42').
+    def get_peer_by_peer_id(self, peer_id: str) -> PeerConfig | None:
+        """Get a peer by peer_id (e.g., '%42' for claudemux, 'oc-xxxx' for opencode).
 
-        This is the preferred lookup method as pane_id is the primary identifier.
+        This is the preferred lookup method as peer_id is the primary identifier.
         """
         for peer in self.peers.values():
-            if peer.pane_id == pane_id:
+            if peer.peer_id == peer_id:
                 return peer
-            # Also check effective_pane_id for legacy configs
-            if peer.effective_pane_id == pane_id:
+            # Also check effective_peer_id for legacy configs
+            if peer.effective_peer_id == peer_id:
                 return peer
         return None
 

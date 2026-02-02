@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class PeerInfo:
     """Peer information from daemon."""
 
-    pane_id: str
+    peer_id: str
     name: str  # Backward compat (= display_name)
     display_name: str
     status: str
@@ -157,7 +157,8 @@ class DaemonClient:
             data = resp.json()
             return [
                 PeerInfo(
-                    pane_id=p.get("pane_id", f"legacy:{p.get('name', '?')}"),
+                    # Support both peer_id and legacy pane_id
+                    peer_id=p.get("peer_id") or p.get("pane_id", f"legacy-{p.get('name', '?')}"),
                     name=p.get("name", "?"),
                     display_name=p.get("display_name", p.get("name", "?")),
                     status=p.get("status", "unknown"),
@@ -195,7 +196,7 @@ class DaemonClient:
         tmux_session: str | None = None,
         opencode_url: str | None = None,
         circle: str | None = None,
-        pane_id: str | None = None,
+        peer_id: str | None = None,
         display_name: str | None = None,
         backend: BackendType = "claudemux",
     ) -> bool:
@@ -204,7 +205,8 @@ class DaemonClient:
             resp = await self.client.post(
                 "/peers",
                 json={
-                    "pane_id": pane_id,
+                    "peer_id": peer_id,
+                    "pane_id": peer_id,  # Backward compat
                     "name": name,
                     "display_name": display_name or name,
                     "path": path,

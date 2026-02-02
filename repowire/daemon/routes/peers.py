@@ -19,7 +19,8 @@ router = APIRouter(tags=["peers"])
 class PeerInfo(BaseModel):
     """Peer information for API responses."""
 
-    pane_id: str  # Primary identifier
+    peer_id: str  # Primary identifier
+    pane_id: str  # Backward compat (deprecated, = peer_id)
     name: str  # Backward compat (= display_name)
     display_name: str
     path: str | None = None
@@ -42,7 +43,8 @@ class PeersResponse(BaseModel):
 class RegisterPeerRequest(BaseModel):
     """Request to register a peer."""
 
-    pane_id: str | None = Field(None, description="Unique pane ID (e.g., %42)")
+    peer_id: str | None = Field(None, description="Unique peer ID (e.g., %42 or oc-xxxx)")
+    pane_id: str | None = Field(None, description="Legacy: use peer_id instead")
     name: str = Field(..., description="Peer name (for backward compat)")
     display_name: str | None = Field(None, description="Human-readable name")
     path: str | None = Field(None, description="Working directory path")
@@ -77,7 +79,8 @@ async def list_peers(
     return PeersResponse(
         peers=[
             PeerInfo(
-                pane_id=p.pane_id,
+                peer_id=p.peer_id,
+                pane_id=p.peer_id,  # Backward compat
                 name=p.display_name,  # Backward compat
                 display_name=p.display_name,
                 path=p.path,
@@ -100,15 +103,16 @@ async def get_peer(
     identifier: str,
     _: str | None = Depends(require_auth),
 ) -> PeerInfo:
-    """Get information about a specific peer by pane_id or display_name."""
+    """Get information about a specific peer by peer_id or display_name."""
     peer_manager = get_peer_manager()
     peers = await peer_manager.get_all_peers()
 
-    # Try to find by pane_id first, then by display_name
+    # Try to find by peer_id first, then by display_name
     for p in peers:
-        if p.pane_id == identifier or p.display_name == identifier:
+        if p.peer_id == identifier or p.display_name == identifier:
             return PeerInfo(
-                pane_id=p.pane_id,
+                peer_id=p.peer_id,
+                pane_id=p.peer_id,  # Backward compat
                 name=p.display_name,
                 display_name=p.display_name,
                 path=p.path,
@@ -136,8 +140,8 @@ async def create_peer(
     """Register a new peer (CLI-friendly endpoint)."""
     config = get_config()
 
-    # Generate pane_id if not provided (for backward compat)
-    pane_id = request.pane_id or f"legacy:{request.name}"
+    # Support both peer_id and legacy pane_id
+    peer_id = request.peer_id or request.pane_id or f"legacy-{request.name}"
     display_name = request.display_name or request.name
 
     # Add to config (persisted)
@@ -147,6 +151,8 @@ async def create_peer(
         tmux_session=request.tmux_session,
         opencode_url=request.opencode_url,
         circle=request.circle,
+        peer_id=peer_id,
+        display_name=display_name,
     )
 
     # Also register with peer manager for immediate use
@@ -156,7 +162,7 @@ async def create_peer(
     circle = peer_manager.resolve_circle(peer_config) if peer_config else "global"
 
     peer = Peer(
-        pane_id=pane_id,
+        peer_id=peer_id,
         display_name=display_name,
         path=request.path or "",
         machine=request.machine or socket.gethostname(),
@@ -249,12 +255,12 @@ async def register_peer(
     """Register a new peer in the mesh (legacy endpoint)."""
     peer_manager = get_peer_manager()
 
-    # Generate pane_id if not provided (for backward compat)
-    pane_id = request.pane_id or f"legacy:{request.name}"
+    # Support both peer_id and legacy pane_id
+    peer_id = request.peer_id or request.pane_id or f"legacy-{request.name}"
     display_name = request.display_name or request.name
 
     peer = Peer(
-        pane_id=pane_id,
+        peer_id=peer_id,
         display_name=display_name,
         path=request.path or "",
         machine=request.machine or socket.gethostname(),

@@ -36,7 +36,7 @@ class SpawnConfig:
 class SpawnResult:
     """Result of spawning a peer."""
 
-    pane_id: str  # e.g., "%42"
+    peer_id: str  # e.g., "%42" for claudemux
     display_name: str
     tmux_session: str  # e.g., "circle:name"
     registered: bool = False  # Whether daemon registration succeeded
@@ -49,7 +49,7 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
         config: Spawn configuration
 
     Returns:
-        SpawnResult with pane_id, display_name, tmux_session, and registered status
+        SpawnResult with peer_id, display_name, tmux_session, and registered status
 
     Raises:
         ValueError: If backend is unknown
@@ -85,7 +85,7 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
 
     # Register with daemon
     registered = _register_with_daemon(
-        pane_id=pane.id or "",
+        peer_id=pane.id or "",
         display_name=window_name,
         path=config.path,
         tmux_session=tmux_session,
@@ -94,7 +94,7 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
     )
 
     return SpawnResult(
-        pane_id=pane.id or "",
+        peer_id=pane.id or "",
         display_name=window_name,
         tmux_session=tmux_session,
         registered=registered,
@@ -128,7 +128,7 @@ def _unique_window_name(session: libtmux.Session, base_name: str) -> str:
 
 
 def _register_with_daemon(
-    pane_id: str,
+    peer_id: str,
     display_name: str,
     path: str,
     tmux_session: str,
@@ -148,7 +148,8 @@ def _register_with_daemon(
             resp = client.post(
                 f"{daemon_url}/peers",
                 json={
-                    "pane_id": pane_id,
+                    "peer_id": peer_id,
+                    "pane_id": peer_id,  # Backward compatibility
                     "display_name": display_name,
                     "name": display_name,  # Backward compatibility
                     "path": path,
