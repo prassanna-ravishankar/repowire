@@ -13,14 +13,12 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from repowire.config.models import BackendType
 from repowire.protocol.peers import PeerStatus
 
 if TYPE_CHECKING:
     from repowire.daemon.query_tracker import QueryTracker
     from repowire.daemon.session_mapper import SessionMapper
-    from repowire.daemon.websocket_connection_manager import (
-        WebSocketConnectionManager,
-    )
     from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
@@ -32,13 +30,13 @@ router = APIRouter(tags=["websocket"])
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """Unified WebSocket endpoint for both backends.
 
-    Protocol (Client → Daemon):
+    Protocol (Client -> Daemon):
     - connect: {type, display_name, circle, backend, path?, auth_token?}
     - response: {type, correlation_id, text}
     - status: {type, status: busy|idle|online}
     - error: {type, correlation_id, error}
 
-    Protocol (Daemon → Client):
+    Protocol (Daemon -> Client):
     - connected: {type, session_id}
     - query: {type, correlation_id, from_peer, text}
     - notify: {type, from_peer, text}
@@ -51,7 +49,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     state = get_app_state()
     session_mapper: SessionMapper = state.session_mapper
     transport: WebSocketTransport = state.transport
-    conn_mgr: WebSocketConnectionManager = state.conn_mgr
     query_tracker: QueryTracker = state.query_tracker
 
     session_id: str | None = None
@@ -61,9 +58,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         data = await websocket.receive_json()
 
         if data.get("type") != "connect":
-            await websocket.send_json(
-                {"type": "error", "error": "First message must be connect"}
-            )
+            await websocket.send_json({"type": "error", "error": "First message must be connect"})
             await websocket.close(code=4000, reason="First message must be connect")
             return
 
@@ -72,30 +67,29 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         if config.daemon.auth_token:
             provided_token = data.get("auth_token")
             if not provided_token or provided_token != config.daemon.auth_token:
-                await websocket.send_json(
-                    {"type": "error", "error": "Authentication failed"}
-                )
-                await websocket.close(
-                    code=4001, reason="Authentication failed"
-                )
-                logger.warning(
-                    "WebSocket connection rejected: invalid or missing auth_token"
-                )
+                await websocket.send_json({"type": "error", "error": "Authentication failed"})
+                await websocket.close(code=4001, reason="Authentication failed")
+                logger.warning("WebSocket connection rejected: invalid or missing auth_token")
                 return
 
         # Extract connection parameters
         display_name = data.get("display_name")
         circle = data.get("circle", "default")
-        backend = data.get("backend", "unknown")
+        backend_str = data.get("backend", "claudemux")
         path = data.get("path")
 
         # Validate display_name
         if not display_name or not re.match(r"^[a-zA-Z0-9_-]+$", display_name):
-            await websocket.send_json(
-                {"type": "error", "error": "Invalid display_name format"}
-            )
+            await websocket.send_json({"type": "error", "error": "Invalid display_name format"})
             await websocket.close(code=4002, reason="Invalid display_name")
             return
+
+        # Validate backend
+        if backend_str not in ("claudemux", "opencode"):
+            await websocket.send_json({"type": "error", "error": "Invalid backend: must be 'claudemux' or 'opencode'"})
+            await websocket.close(code=4002, reason="Invalid backend")
+            return
+        backend: BackendType = backend_str  # type: ignore[assignment]
 
         # Validate path if provided
         if path:
@@ -105,9 +99,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 error_msg = "Invalid path: must be within home directory"
                 await websocket.send_json({"type": "error", "error": error_msg})
                 await websocket.close(code=4003, reason="Invalid path")
-                logger.warning(
-                    f"WebSocket registration rejected: invalid path {path}"
-                )
+                logger.warning(f"WebSocket registration rejected: invalid path {path}")
                 return
             path = normalized_path
 
@@ -119,15 +111,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             path=path,
         )
 
-        # Register with transport and connection manager
+        # Register with transport (handles connection + status tracking)
         await transport.connect(session_id, websocket)
-        await conn_mgr.connect(session_id, websocket)
 
         # Send connect response
         await websocket.send_json({"type": "connected", "session_id": session_id})
-        logger.info(
-            f"WebSocket connected: {display_name}@{circle} ({session_id}, {backend})"
-        )
+        logger.info(f"WebSocket connected: {display_name}@{circle} ({session_id}, {backend})")
 
         # Message loop
         while True:
@@ -136,7 +125,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await _handle_message(
                     session_id=session_id,
                     data=data,
-                    conn_mgr=conn_mgr,
+                    transport=transport,
                     query_tracker=query_tracker,
                 )
             except Exception as e:
@@ -145,15 +134,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     f"Message type: {data.get('type', 'unknown')}",
                     exc_info=True,
                 )
-                # Notify client of error (best effort)
                 try:
                     await websocket.send_json(
                         {"type": "error", "error": f"Error processing message: {e}"}
                     )
                 except Exception as notify_err:
-                    logger.debug(
-                        f"Failed to notify {session_id} of error: {notify_err}"
-                    )
+                    logger.debug(f"Failed to notify {session_id} of error: {notify_err}")
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: {session_id or 'unknown'}")
@@ -162,22 +148,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         logger.warning(f"Invalid JSON from {session_id or 'unknown'}: {e}")
 
     except Exception as e:
-        logger.exception(
-            f"Unexpected WebSocket error for {session_id or 'unknown'}: {e}"
-        )
+        logger.exception(f"Unexpected WebSocket error for {session_id or 'unknown'}: {e}")
 
     finally:
         if session_id:
             await transport.disconnect(session_id)
-            await conn_mgr.disconnect(session_id)
-            # Cancel pending queries to this peer
             query_tracker.cancel_queries_to_peer(session_id)
 
 
 async def _handle_message(
     session_id: str,
     data: dict[str, Any],
-    conn_mgr: WebSocketConnectionManager,
+    transport: WebSocketTransport,
     query_tracker: QueryTracker,
 ) -> None:
     """Handle incoming WebSocket message.
@@ -185,24 +167,20 @@ async def _handle_message(
     Args:
         session_id: Session ID
         data: Message data
-        conn_mgr: Connection manager
+        transport: WebSocket transport (for status updates)
         query_tracker: Query tracker
     """
     msg_type = data.get("type")
 
     if msg_type == "response":
-        # Resolve query
         correlation_id = data.get("correlation_id")
         text = data.get("text", "")
         if correlation_id:
             query_tracker.resolve_query(correlation_id, text)
         else:
-            logger.warning(
-                f"Response from {session_id} missing correlation_id, dropping"
-            )
+            logger.warning(f"Response from {session_id} missing correlation_id, dropping")
 
     elif msg_type == "status":
-        # Update status
         status_str = data.get("status", "online")
         status_map = {
             "busy": PeerStatus.BUSY,
@@ -211,21 +189,16 @@ async def _handle_message(
             "offline": PeerStatus.OFFLINE,
         }
         status = status_map.get(status_str, PeerStatus.ONLINE)
-        await conn_mgr.update_status(session_id, status)
+        await transport.update_status(session_id, status)
 
     elif msg_type == "error":
-        # Resolve query with error
         correlation_id = data.get("correlation_id")
         error = data.get("error", "Unknown error")
-        logger.warning(
-            f"Client {session_id} reported error for query {correlation_id}: {error}"
-        )
+        logger.warning(f"Client {session_id} reported error for query {correlation_id}: {error}")
         if correlation_id:
             query_tracker.resolve_query_error(correlation_id, ValueError(error))
         else:
-            logger.warning(
-                f"Error from {session_id} missing correlation_id, cannot route"
-            )
+            logger.warning(f"Error from {session_id} missing correlation_id, cannot route")
 
     else:
         logger.warning(f"Unknown message type from {session_id}: {msg_type}")

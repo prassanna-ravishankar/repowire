@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from repowire.config.models import BackendType
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,7 +23,7 @@ class SessionMapping:
     session_id: str  # "repow-dev-a1b2c3d4"
     display_name: str
     circle: str
-    backend: str  # "claudecode" or "opencode"
+    backend: BackendType
     path: str | None = None
     updated_at: str | None = None
 
@@ -64,7 +66,7 @@ class SessionMapper:
         self,
         display_name: str,
         circle: str,
-        backend: str,
+        backend: BackendType,
         path: str | None = None,
     ) -> str:
         """Register or reuse session_id for a peer.

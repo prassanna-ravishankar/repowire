@@ -8,7 +8,6 @@ import logging
 from typing import Any
 
 from repowire.daemon.query_tracker import QueryTracker
-from repowire.daemon.websocket_connection_manager import WebSocketConnectionManager
 from repowire.daemon.websocket_transport import TransportError, WebSocketTransport
 
 logger = logging.getLogger(__name__)
@@ -20,11 +19,9 @@ class MessageRouter:
     def __init__(
         self,
         transport: WebSocketTransport,
-        connection_manager: WebSocketConnectionManager,
         query_tracker: QueryTracker,
     ):
         self._transport = transport
-        self._conn_mgr = connection_manager
         self._query_tracker = query_tracker
 
     async def send_query(
@@ -52,7 +49,7 @@ class MessageRouter:
             TimeoutError: If no response within timeout
             TransportError: If send fails
         """
-        if not self._conn_mgr.is_connected(to_session_id):
+        if not self._transport.is_connected(to_session_id):
             raise ValueError(f"Peer {to_peer_name} not connected")
 
         # Register query
@@ -77,21 +74,15 @@ class MessageRouter:
 
         try:
             await self._transport.send(to_session_id, message)
-            logger.info(
-                f"Query sent: {from_peer} -> {to_peer_name} ({correlation_id[:8]})"
-            )
+            logger.info(f"Query sent: {from_peer} -> {to_peer_name} ({correlation_id[:8]})")
 
             # Wait for response
             response = await asyncio.wait_for(future, timeout=timeout)
-            logger.info(
-                f"Query resolved: {from_peer} -> {to_peer_name} ({correlation_id[:8]})"
-            )
+            logger.info(f"Query resolved: {from_peer} -> {to_peer_name} ({correlation_id[:8]})")
             return response
 
         except asyncio.TimeoutError:
-            logger.warning(
-                f"Query timeout: {from_peer} -> {to_peer_name} ({correlation_id[:8]})"
-            )
+            logger.warning(f"Query timeout: {from_peer} -> {to_peer_name} ({correlation_id[:8]})")
             raise TimeoutError(f"No response from {to_peer_name} within {timeout}s")
 
         except TransportError as e:
