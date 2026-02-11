@@ -315,8 +315,19 @@ def mcp() -> None:
 @main.command()
 @click.option("--host", default=DEFAULT_HOST, help="Daemon host")
 @click.option("--port", default=DEFAULT_PORT, type=int, help="Daemon port")
+def mesh(host: str, port: int) -> None:
+    """Launch agent mesh viewer TUI."""
+    from repowire.tui.app import run_tui
+
+    daemon_url = f"http://{host}:{port}"
+    run_tui(daemon_url=daemon_url)
+
+
+@main.command()
+@click.option("--host", default=DEFAULT_HOST, help="Daemon host")
+@click.option("--port", default=DEFAULT_PORT, type=int, help="Daemon port")
 def top(host: str, port: int) -> None:
-    """Launch htop-style TUI for managing peers."""
+    """Launch agent mesh viewer TUI (alias for 'mesh')."""
     from repowire.tui.app import run_tui
 
     daemon_url = f"http://{host}:{port}"

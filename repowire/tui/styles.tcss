@@ -23,69 +23,63 @@ Screen {
     background: #1a1b26;
 }
 
-/* Main Layout */
-MainScreen {
-    layout: vertical;
-}
-
-#main-content {
+/* TabbedContent */
+TabbedContent {
     height: 1fr;
 }
 
-/* Left Pane - Peer List (bordered) */
-#peer-list {
-    width: 28;
-    border: solid #414868;
-    border-title-color: #7dcfff;
-    border-title-style: bold;
+TabPane {
+    padding: 0;
+}
+
+/* Tab strip styling */
+Tabs {
+    background: #1a1b26;
+}
+
+Tab {
+    background: #1a1b26;
+    color: #565f89;
+    padding: 0 2;
+}
+
+Tab:hover {
+    color: #c0caf5;
+}
+
+Tab.-active {
+    color: #7dcfff;
+    text-style: bold;
+}
+
+Underline {
+    color: #7dcfff;
+}
+
+/* Agents tab layout */
+#agents-pane {
+    height: 1fr;
+}
+
+#agent-list {
+    height: 1fr;
+    background: #24283b;
     padding: 0 1;
-    layout: vertical;
+}
+
+#agent-detail {
+    height: auto;
+    max-height: 8;
     background: #24283b;
-}
-
-#peer-list:focus {
-    border: solid #7dcfff;
-}
-
-/* Right Pane Container (no border, just background) */
-#right-pane {
-    width: 1fr;
-    layout: vertical;
-    background: #24283b;
-    margin-left: 1;
-}
-
-/* Peer Details Panel (minimal - just bottom line) */
-#peer-details {
-    height: 6;
-    border: none;
-    border-bottom: solid #414868;
+    border-top: solid #414868;
     padding: 1 2;
-    background: #24283b;
 }
 
-/* Conversation Log (no border) */
-#conversation-log {
+/* Communication feed */
+#comm-feed {
     height: 1fr;
-    border: none;
+    background: #24283b;
     padding: 1 2;
-    background: #24283b;
-}
-
-#conversation-log:focus {
-    background: #24283b;
-}
-
-/* Legacy activity-log ID */
-#activity-log {
-    height: 1fr;
-    border: none;
-    padding: 1 2;
-    background: #24283b;
-}
-
-#activity-log:focus {
-    background: #24283b;
 }
 
 /* Status Bar (Footer) */
@@ -96,21 +90,6 @@ StatusBar {
     background: #1a1b26;
     color: #565f89;
     padding: 0 1;
-}
-
-/* Filter Input */
-#filter-input {
-    dock: bottom;
-    width: 100%;
-    height: 3;
-    display: none;
-    background: #24283b;
-    border: tall #7dcfff;
-    padding: 0 1;
-}
-
-#filter-input.visible {
-    display: block;
 }
 
 Input {
@@ -185,57 +164,20 @@ ModalScreen {
     background: #1a1b26 80%;
 }
 
-#spawn-dialog, #confirm-dialog, #circle-dialog, #conversation-dialog {
+#conversation-dialog {
     border: solid #414868;
     background: #24283b;
     padding: 1 2;
+    width: 80%;
+    max-width: 100;
+    max-height: 80%;
+    margin: 2 4;
 }
 
-#spawn-title, #circle-title, #conversation-title {
+#conversation-title {
     text-style: bold;
     color: #7dcfff;
     margin-bottom: 1;
-}
-
-#confirm-dialog {
-    border: solid #f7768e;
-}
-
-#confirm-message {
-    text-align: center;
-    padding: 1;
-    color: #c0caf5;
-}
-
-/* Form elements */
-.form-row {
-    grid-size: 2;
-    grid-columns: auto 1fr;
-    height: auto;
-    margin-bottom: 1;
-}
-
-.form-row Label {
-    content-align: right middle;
-    padding-right: 1;
-    color: #565f89;
-}
-
-.form-row Input {
-    border: tall #414868;
-}
-
-.form-row Select {
-    border: tall #414868;
-}
-
-/* New circle input (hidden by default) */
-#new-circle-input {
-    display: none;
-}
-
-#new-circle-input.visible {
-    display: block;
 }
 
 /* Button styling */
@@ -271,48 +213,6 @@ Button.-error {
 
 Button.-error:hover {
     background: #f7768e 60%;
-}
-
-#button-row {
-    align: center middle;
-    height: auto;
-    margin-top: 1;
-}
-
-#button-row Button {
-    margin: 0 1;
-}
-
-/* Event Log Screen (full-page view) */
-#event-table {
-    margin: 0 1;
-}
-
-#help-bar {
-    background: #24283b;
-    color: #565f89;
-    padding: 0 1;
-}
-
-/* DataTable styling (for event log screen) */
-DataTable {
-    scrollbar-gutter: stable;
-    background: #24283b;
-    color: #c0caf5;
-}
-
-DataTable > .datatable--header {
-    background: #1a1b26;
-    color: #7dcfff;
-    text-style: bold;
-}
-
-DataTable > .datatable--cursor {
-    background: #7dcfff 30%;
-}
-
-DataTable > .datatable--hover {
-    background: #414868 50%;
 }
 
 /* Notifications */
@@ -387,9 +287,4 @@ RichLog {
     scrollbar-color: #414868;
     scrollbar-color-hover: #565f89;
     scrollbar-color-active: #7dcfff;
-}
-
-/* Conversation log navigation mode */
-RichLog.nav-mode {
-    background: #24283b;
 }

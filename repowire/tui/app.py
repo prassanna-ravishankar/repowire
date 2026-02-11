@@ -5,20 +5,32 @@ from __future__ import annotations
 import logging
 import subprocess
 
-from textual.app import App
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Vertical
+from textual.widgets import TabbedContent, TabPane
 
 from repowire.spawn import attach_session
-from repowire.tui.screens.main import MainScreen
 from repowire.tui.services.daemon_client import DaemonClient
+from repowire.tui.widgets.agent_list import AgentList, AgentSelected
+from repowire.tui.widgets.communication_feed import CommunicationFeed, MessageSelected
+from repowire.tui.widgets.create_agent_form import AgentCreated, CreateAgentForm
+from repowire.tui.widgets.status_bar import StatusBar
 
 logger = logging.getLogger(__name__)
 
 
 class RepowireApp(App):
-    """Repowire TUI - htop-style interface for managing Claude Code peers."""
+    """Repowire Agent Mesh Viewer."""
 
-    TITLE = "Repowire Top"
+    TITLE = "Repowire Mesh"
     CSS_PATH = "styles.tcss"
+
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("r", "refresh", "Refresh"),
+        Binding("s", "shell", "Shell"),
+    ]
 
     def __init__(self, daemon_url: str = "http://127.0.0.1:8377", **kwargs) -> None:
         super().__init__(**kwargs)
@@ -27,17 +39,26 @@ class RepowireApp(App):
 
     @property
     def daemon(self) -> DaemonClient:
-        """Get daemon client."""
         if self._daemon is None:
             raise RuntimeError("Daemon client not initialized")
         return self._daemon
 
+    def compose(self) -> ComposeResult:
+        with TabbedContent("Agents", "Communications", "Create", id="tabs"):
+            with TabPane("Agents", id="tab-agents"):
+                with Vertical(id="agents-pane"):
+                    yield AgentList(id="agent-list")
+                    yield Vertical(id="agent-detail")
+            with TabPane("Communications", id="tab-comms"):
+                yield CommunicationFeed(base_url=self._daemon_url, id="comm-feed")
+            with TabPane("Create", id="tab-create"):
+                yield CreateAgentForm(id="create-form")
+        yield StatusBar()
+
     async def on_mount(self) -> None:
-        """Initialize daemon client and check connection."""
         self._daemon = DaemonClient(self._daemon_url)
         await self._daemon.__aenter__()
 
-        # Check daemon health
         health = await self._daemon.health()
         if health is None:
             self.notify(
@@ -45,41 +66,104 @@ class RepowireApp(App):
                 severity="error",
                 timeout=5,
             )
-            # Exit after showing message
             self.set_timer(2, self.exit)
             return
 
-        # Show main screen
-        await self.push_screen(MainScreen())
+        await self._load_peers()
+        self.set_interval(5, self._load_peers)
 
-        # Start periodic refresh
-        self.set_interval(5, self._refresh_peers)
+    async def _load_peers(self) -> None:
+        """Fetch peers from daemon and update widgets."""
+        peers = await self.daemon.get_peers()
+        agent_list = self.query_one("#agent-list", AgentList)
+        agent_list.agents = peers
 
-    async def _refresh_peers(self) -> None:
-        """Periodically refresh peer list."""
-        screen = self.screen
-        if hasattr(screen, "action_refresh"):
-            await screen.action_refresh()  # type: ignore[operator]
+        # Update status bar counts
+        bar = self.query_one(StatusBar)
+        bar.total = len(peers)
+        bar.online = sum(1 for p in peers if p.status.lower() == "online")
+
+        # Update circles in create form
+        circles = sorted({p.circle for p in peers if p.circle}) or ["default"]
+        form = self.query_one("#create-form", CreateAgentForm)
+        form.update_circles(circles)
+
+    # -- Agent detail inline --
+
+    def on_agent_selected(self, event: AgentSelected) -> None:
+        detail = self.query_one("#agent-detail", Vertical)
+        detail.remove_children()
+        if event.peer is None:
+            return
+        p = event.peer
+        from textual.widgets import Static
+
+        status_sym = {"online": "[green]●[/]", "busy": "[yellow]◉[/]", "offline": "[dim]○[/]"}
+        sym = status_sym.get(p.status.lower(), "?")
+        lines = [
+            f"{sym} [bold]{p.display_name}[/]  [dim]{p.peer_id}[/]",
+            f"  circle: [magenta]{p.circle}[/]  backend: {p.backend}",
+        ]
+        if p.path:
+            lines.append(f"  path: [dim]{p.path}[/]")
+        if p.tmux_session:
+            lines.append(f"  tmux: [dim]{p.tmux_session}[/]")
+        detail.mount(Static("\n".join(lines)))
+
+    # -- Message detail modal --
+
+    def on_message_selected(self, event: MessageSelected) -> None:
+        c = event.conversation
+        from textual.screen import ModalScreen
+        from textual.widgets import Markdown, Static
+
+        class ConvoModal(ModalScreen):
+            BINDINGS = [("escape", "dismiss", "Close")]
+
+            def compose(self) -> ComposeResult:
+                with Vertical(id="conversation-dialog"):
+                    yield Static(
+                        f"[bold #7dcfff]{c.from_peer}[/] → [bold #7dcfff]{c.to_peer}[/]",
+                        id="conversation-title",
+                    )
+                    yield Markdown(f"**Q:** {c.query.text}")
+                    if c.response:
+                        yield Markdown(f"**R:** {c.response.text}")
+                    else:
+                        yield Static("[dim]Awaiting response...[/]")
+
+        self.push_screen(ConvoModal())
+
+    # -- Agent created --
+
+    async def on_agent_created(self, event: AgentCreated) -> None:
+        self.notify(f"Agent {event.display_name} created in {event.circle}")
+        tabs = self.query_one(TabbedContent)
+        tabs.active = "tab-agents"
+        await self._load_peers()
+
+    # -- Shell attach --
+
+    async def action_shell(self) -> None:
+        agent_list = self.query_one("#agent-list", AgentList)
+        peer = agent_list.selected_agent
+        if peer is None or not peer.tmux_session:
+            self.notify("Select an agent with a tmux session first", severity="warning")
+            return
+        with self.suspend():
+            try:
+                attach_session(peer.tmux_session)
+            except subprocess.CalledProcessError as e:
+                logger.debug(f"Attach ended: exit code {e.returncode}")
+        await self._load_peers()
+
+    async def action_refresh(self) -> None:
+        await self._load_peers()
 
     async def on_unmount(self) -> None:
-        """Clean up daemon client."""
         if self._daemon:
             await self._daemon.__aexit__(None, None, None)
             self._daemon = None
-
-    async def attach_to_peer(self, tmux_session: str) -> None:
-        """Suspend TUI and attach to tmux session."""
-        # Suspend the TUI
-        with self.suspend():
-            # Attach to tmux (blocks until detach)
-            try:
-                attach_session(tmux_session)
-            except subprocess.CalledProcessError as e:
-                logger.debug(f"Attach to {tmux_session} ended: exit code {e.returncode}")
-
-        # Refresh after returning
-        if hasattr(self.screen, "action_refresh"):
-            await self.screen.action_refresh()  # type: ignore[operator]
 
 
 def run_tui(daemon_url: str = "http://127.0.0.1:8377") -> None:
