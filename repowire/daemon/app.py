@@ -7,53 +7,32 @@ import os
 import signal
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from repowire.backends import get_backend as get_backend_by_name
 from repowire.config.models import Config, load_config
-from repowire.daemon.core import PeerManager, SharedResources
+from repowire.daemon.core import PeerManager
 from repowire.daemon.deps import cleanup_deps, init_deps
+from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.routes import health, messages, peers, websocket
-from repowire.daemon.websocket_manager import WebSocketManager
-
-if TYPE_CHECKING:
-    from repowire.backends.base import Backend
+from repowire.daemon.session_mapper import SessionMapper
+from repowire.daemon.websocket_connection_manager import WebSocketConnectionManager
+from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
 
 __version__ = "0.1.0"
 
 
-def _try_create_backend(name: str, **kwargs: Any) -> Backend | None:
-    """Try to create a backend, returning None if it fails.
-
-    Args:
-        name: Backend name ("claudemux" or "opencode")
-        **kwargs: Additional arguments passed to backend constructor
-
-    Returns:
-        Backend instance or None if creation failed
-    """
-    try:
-        return get_backend_by_name(name, **kwargs)
-    except ImportError as e:
-        logger.debug(f"Backend {name} not available (missing dependency): {e}")
-        return None
-    except ValueError as e:
-        logger.warning(f"Backend {name} failed to initialize: {e}")
-        return None
-    # Let other exceptions propagate - they indicate real problems that should fail fast
-
-
 def create_app(
     config: Config | None = None,
-    backend_factory: Callable[[], Backend] | None = None,
+    backend_factory: Callable[[], Any] | None = None,
     relay_mode: bool = False,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
@@ -81,50 +60,49 @@ def create_app(
         if _relay_mode:
             cfg.relay.enabled = True
 
-        # Initialize centralized QueryTracker
+        # Layer 0: Session Mapping
+        session_mapper = SessionMapper(
+            persistence_path=Path.home() / ".repowire" / "sessions.json"
+        )
+
+        # Layer 1: Transport
+        transport = WebSocketTransport()
+
+        # Layer 2: Connection Manager
+        conn_mgr = WebSocketConnectionManager()
+
+        # Layer 3: Query Tracker
         query_tracker = QueryTracker()
 
-        # Initialize WebSocket manager with QueryTracker (needed for SharedResources)
-        ws_manager = WebSocketManager(query_tracker=query_tracker)
+        # Layer 4: Message Router
+        message_router = MessageRouter(
+            transport=transport,
+            connection_manager=conn_mgr,
+            query_tracker=query_tracker,
+        )
 
-        # Create backends and peer manager
-        if _backend_factory:
-            # Legacy mode: use single backend from factory
-            backend = _backend_factory()
-            peer_manager = PeerManager(backend=backend, config=cfg, query_tracker=query_tracker)
-            shared = None
-        else:
-            # Per-peer routing mode: create both backends with QueryTracker
-            claudemux_backend = _try_create_backend("claudemux", query_tracker=query_tracker)
-            opencode_backend = _try_create_backend("opencode", ws_manager=ws_manager)
-
-            # Create shared resources for per-peer routing
-            shared = SharedResources(
-                ws_manager=ws_manager,
-                claudemux_backend=claudemux_backend,
-                opencode_backend=opencode_backend,
-            )
-
-            peer_manager = PeerManager(config=cfg, shared=shared, query_tracker=query_tracker)
-            backend = None  # No single backend in per-peer mode
-
-            logger.info(
-                f"Per-peer routing enabled: claudemux={claudemux_backend is not None}, "
-                f"opencode={opencode_backend is not None}"
-            )
+        # Simplified PeerManager
+        peer_manager = PeerManager(
+            config=cfg,
+            message_router=message_router,
+            session_mapper=session_mapper,
+        )
 
         # Store in app state for access
         app.state.config = cfg
-        app.state.backend = backend
-        app.state.shared = shared
-        app.state.peer_manager = peer_manager
-        app.state.ws_manager = ws_manager
+        app.state.session_mapper = session_mapper
+        app.state.transport = transport
+        app.state.conn_mgr = conn_mgr
         app.state.query_tracker = query_tracker
+        app.state.message_router = message_router
+        app.state.peer_manager = peer_manager
         app.state.relay_mode = _relay_mode or cfg.relay.enabled
 
         # Initialize
         await peer_manager.start()
-        init_deps(cfg, backend, peer_manager)
+        init_deps(cfg, None, peer_manager, app.state)
+
+        logger.info("Unified WebSocket backend initialized")
 
         yield
 
@@ -140,9 +118,15 @@ def create_app(
     )
 
     # CORS middleware for local development
+    # Restrict to localhost origins to prevent CSRF attacks
     app.add_middleware(
         CORSMiddleware,  # type: ignore[invalid-argument-type]
-        allow_origins=["*"],  # Allow all origins for local dev
+        allow_origins=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:8377",
+            "http://127.0.0.1:8377",
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -216,47 +200,52 @@ def create_app(
 
 def create_test_app(
     config: Config | None = None,
-    backend: Backend | None = None,
-    shared: SharedResources | None = None,
+    session_mapper: SessionMapper | None = None,
+    message_router: MessageRouter | None = None,
 ) -> FastAPI:
-    """Create app for testing with optional mock backend or shared resources.
+    """Create app for testing with optional mock components.
 
     Args:
         config: Optional configuration
-        backend: Legacy single backend for testing (mutually exclusive with shared)
-        shared: SharedResources for per-peer routing tests
+        session_mapper: Optional SessionMapper for testing
+        message_router: Optional MessageRouter for testing
     """
 
     @asynccontextmanager
     async def test_lifespan(app: FastAPI) -> AsyncIterator[None]:
         cfg = config or Config()
-        query_tracker = QueryTracker()
-        ws_manager = WebSocketManager(query_tracker=query_tracker)
 
-        if shared:
-            # Per-peer routing mode
-            pm = PeerManager(config=cfg, shared=shared, query_tracker=query_tracker)
-            be = None
-        elif backend:
-            # Legacy single-backend mode
-            pm = PeerManager(backend=backend, config=cfg, query_tracker=query_tracker)
-            be = backend
-        else:
-            # Default: create single backend from config
-            be = get_backend_by_name(cfg.daemon.backend, query_tracker=query_tracker)
-            pm = PeerManager(backend=be, config=cfg, query_tracker=query_tracker)
+        # Use provided components or create new ones
+        sess_mapper = session_mapper or SessionMapper(
+            persistence_path=Path.home() / ".repowire" / "test-sessions.json"
+        )
+        transport = WebSocketTransport()
+        conn_mgr = WebSocketConnectionManager()
+        query_tracker = QueryTracker()
+        msg_router = message_router or MessageRouter(
+            transport=transport,
+            connection_manager=conn_mgr,
+            query_tracker=query_tracker,
+        )
+
+        pm = PeerManager(
+            config=cfg,
+            message_router=msg_router,
+            session_mapper=sess_mapper,
+        )
 
         # Store in app state
         app.state.config = cfg
-        app.state.backend = be
-        app.state.shared = shared
-        app.state.peer_manager = pm
-        app.state.ws_manager = ws_manager
+        app.state.session_mapper = sess_mapper
+        app.state.transport = transport
+        app.state.conn_mgr = conn_mgr
         app.state.query_tracker = query_tracker
+        app.state.message_router = msg_router
+        app.state.peer_manager = pm
         app.state.relay_mode = cfg.relay.enabled
 
         await pm.start()
-        init_deps(cfg, be, pm)
+        init_deps(cfg, None, pm, app.state)
 
         yield
 

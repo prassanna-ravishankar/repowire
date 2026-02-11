@@ -203,6 +203,28 @@ Key files:
 - `hooks/stop_handler.py` - Captures response from transcript, sends to daemon
 - `hooks/notification_handler.py` - Handles idle_prompt (resets BUSY→ONLINE after interrupt)
 
+### Security
+
+**WebSocket Authentication (Optional)**
+
+To prevent unauthorized WebSocket connections to the daemon, you can enable authentication:
+
+1. Add `auth_token` to your config (`~/.repowire/config.yaml`):
+```yaml
+daemon:
+  auth_token: "your-secret-token-here"
+```
+
+2. For OpenCode peers, set the environment variable before starting OpenCode:
+```bash
+export REPOWIRE_AUTH_TOKEN="your-secret-token-here"
+opencode  # or your preferred launcher
+```
+
+**CORS Protection**
+
+The daemon restricts CORS to localhost origins only (`http://localhost:3000`, `http://127.0.0.1:3000`, `http://localhost:8377`, `http://127.0.0.1:8377`) to prevent CSRF attacks from malicious websites.
+
 ### Configuration
 
 File: `~/.repowire/config.yaml`
@@ -212,6 +234,9 @@ daemon:
   host: "127.0.0.1"
   port: 8377
   # Per-peer routing auto-detects backend based on peer config
+
+  # Security (optional): WebSocket authentication
+  auth_token: "your-secret-token-here"  # Optional: require auth for WebSocket connections
 
 relay:  # Experimental - not usable yet
   enabled: false

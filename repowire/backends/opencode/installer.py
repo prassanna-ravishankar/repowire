@@ -34,6 +34,7 @@ interface PeerInfo {
 // Configuration
 const DAEMON_URL = process.env.REPOWIRE_DAEMON_URL || "http://127.0.0.1:8377"
 const DAEMON_WS_URL = process.env.REPOWIRE_DAEMON_WS_URL || "ws://127.0.0.1:8377/ws/plugin"
+const AUTH_TOKEN = process.env.REPOWIRE_AUTH_TOKEN || ""  // Optional auth token
 
 // State
 let ws: WebSocket | null = null
@@ -68,14 +69,19 @@ function connectWebSocket() {
   ws.onopen = () => {
     reconnectAttempts = 0  // Reset on successful connection
     // Note: We don't send peer_id - daemon assigns it and returns in response
-    ws?.send(JSON.stringify({
+    const registerMsg: Record<string, unknown> = {
       type: "register",
       peer_name: peerName,
       display_name: peerName,
       path: projectPath,
       backend: "opencode",
       metadata: { branch: process.env.GIT_BRANCH || "unknown" }
-    }))
+    }
+    // Include auth token if configured
+    if (AUTH_TOKEN) {
+      registerMsg.auth_token = AUTH_TOKEN
+    }
+    ws?.send(JSON.stringify(registerMsg))
   }
 
   ws.onmessage = async (event) => {

@@ -49,8 +49,9 @@ class PendingQuery:
 class QueryTracker:
     """Centralized tracking for pending queries across all backends.
 
-    Thread-safe with asyncio locks. Provides unified query lifecycle management
-    independent of the backend used for message delivery.
+    Provides unified query lifecycle management independent of the backend
+    used for message delivery. All methods are synchronous and run atomically
+    within the asyncio event loop.
 
     Usage:
         tracker = QueryTracker()
@@ -81,7 +82,6 @@ class QueryTracker:
         self._queries: dict[str, PendingQuery] = {}
         # peer_id -> set of correlation_ids (for cancellation on disconnect)
         self._by_peer_id: dict[str, set[str]] = {}
-        self._lock = asyncio.Lock()
 
     def register_query(
         self,

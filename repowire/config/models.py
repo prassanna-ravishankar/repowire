@@ -86,6 +86,11 @@ class DaemonConfig(BaseModel):
     port: int = Field(default=8377, description="HTTP daemon port")
     backend: BackendType = Field(default="claudemux", description="Backend type to use")
 
+    # Security settings
+    auth_token: str | None = Field(
+        None, description="Authentication token for WebSocket connections"
+    )
+
     # Legacy/additional settings
     auto_reconnect: bool = Field(default=True, description="Auto-reconnect on disconnect")
     heartbeat_interval: int = Field(default=30, description="Heartbeat interval in seconds")

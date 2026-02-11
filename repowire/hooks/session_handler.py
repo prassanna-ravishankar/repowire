@@ -153,25 +153,25 @@ def main() -> int:
     machine = get_machine_name()
 
     if event == "SessionStart":
-        # Register peer with daemon (includes git branch in metadata)
-        metadata = {}
-        branch = get_git_branch(cwd)
-        if branch:
-            metadata["branch"] = branch
-
-        # pane_id (= peer_id for claudemux) is required for registration
-        if pane_id:
-            register_peer(
-                peer_id=pane_id,  # tmux pane ID serves as peer_id for claudemux
-                display_name=display_name,
-                cwd=cwd,
-                machine=machine,
-                tmux_target=tmux_target,
-                session_id=session_id,
-                metadata=metadata,
-            )
+        # Launch async WebSocket hook in background
+        # This maintains persistent WebSocket connection for queries/notifications
+        try:
+            # Find the websocket_hook.py script
+            hook_script = Path(__file__).parent / "websocket_hook.py"
+            if hook_script.exists():
+                # Start async hook as background process
+                # Use nohup to prevent process from dying when parent exits
+                subprocess.Popen(
+                    [sys.executable, str(hook_script)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,  # Detach from parent
+                )
+        except Exception as e:
+            print(f"repowire: failed to start WebSocket hook: {e}", file=sys.stderr)
 
         # Fetch peers and output context for Claude
+        # Note: Registration is now handled by the WebSocket hook's connect message
         peers = fetch_peers()
         if peers:
             context = format_peers_context(peers, display_name)

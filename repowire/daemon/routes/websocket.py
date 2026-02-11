@@ -1,4 +1,7 @@
-"""WebSocket endpoints for OpenCode plugin connections."""
+"""Unified WebSocket endpoint for all backends.
+
+Handles both Claude Code and OpenCode connections via a single WebSocket protocol.
+"""
 
 from __future__ import annotations
 
@@ -6,154 +9,200 @@ import json
 import logging
 import os
 import re
-import socket
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from repowire.daemon.deps import get_peer_manager
-from repowire.daemon.websocket_manager import get_ws_manager
-from repowire.protocol.peers import Peer, PeerStatus
+from repowire.protocol.peers import PeerStatus
 
 if TYPE_CHECKING:
-    from repowire.daemon.core import PeerManager
-    from repowire.daemon.websocket_manager import WebSocketManager
+    from repowire.daemon.query_tracker import QueryTracker
+    from repowire.daemon.session_mapper import SessionMapper
+    from repowire.daemon.websocket_connection_manager import (
+        WebSocketConnectionManager,
+    )
+    from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["websocket"])
 
 
-@router.websocket("/ws/plugin")
-async def plugin_websocket(websocket: WebSocket) -> None:
-    """WebSocket endpoint for OpenCode plugin connections.
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket) -> None:
+    """Unified WebSocket endpoint for both backends.
 
-    Protocol (Plugin → Daemon):
-    - register: {type, peer_name, path, metadata}
-    - status: {type, status: busy|idle|offline}
-    - session: {type, session_id}
+    Protocol (Client → Daemon):
+    - connect: {type, display_name, circle, backend, path?, auth_token?}
     - response: {type, correlation_id, text}
+    - status: {type, status: busy|idle|online}
     - error: {type, correlation_id, error}
 
-    Protocol (Daemon → Plugin):
-    - registered: {type, ok}
+    Protocol (Daemon → Client):
+    - connected: {type, session_id}
     - query: {type, correlation_id, from_peer, text}
     - notify: {type, from_peer, text}
     - broadcast: {type, from_peer, text}
     """
+    from repowire.daemon.deps import get_app_state
+
     await websocket.accept()
-    ws_manager = get_ws_manager()
-    peer_manager = get_peer_manager()
-    peer_name: str | None = None
+
+    state = get_app_state()
+    session_mapper: SessionMapper = state.session_mapper
+    transport: WebSocketTransport = state.transport
+    conn_mgr: WebSocketConnectionManager = state.conn_mgr
+    query_tracker: QueryTracker = state.query_tracker
+
+    session_id: str | None = None
 
     try:
-        # Wait for registration message
+        # First message must be connect
         data = await websocket.receive_json()
 
-        if data.get("type") != "register":
-            await websocket.send_json({"type": "error", "error": "First message must be register"})
-            await websocket.close()
+        if data.get("type") != "connect":
+            await websocket.send_json(
+                {"type": "error", "error": "First message must be connect"}
+            )
+            await websocket.close(code=4000, reason="First message must be connect")
             return
 
-        peer_name = data.get("peer_name")
-        # Support both peer_id and legacy pane_id
-        peer_id = data.get("peer_id") or data.get("pane_id")
-        display_name = data.get("display_name", peer_name)
-        path = os.path.normpath(data.get("path", ""))  # Sanitize to prevent path traversal
-        metadata = data.get("metadata", {})
-        backend = data.get("backend", "opencode")
+        # Authentication check
+        config = state.config
+        if config.daemon.auth_token:
+            provided_token = data.get("auth_token")
+            if not provided_token or provided_token != config.daemon.auth_token:
+                await websocket.send_json(
+                    {"type": "error", "error": "Authentication failed"}
+                )
+                await websocket.close(
+                    code=4001, reason="Authentication failed"
+                )
+                logger.warning(
+                    "WebSocket connection rejected: invalid or missing auth_token"
+                )
+                return
 
-        if not peer_name or not re.match(r"^[a-zA-Z0-9_-]+$", peer_name):
-            await websocket.send_json({"type": "error", "error": "Invalid peer_name format"})
-            await websocket.close()
+        # Extract connection parameters
+        display_name = data.get("display_name")
+        circle = data.get("circle", "default")
+        backend = data.get("backend", "unknown")
+        path = data.get("path")
+
+        # Validate display_name
+        if not display_name or not re.match(r"^[a-zA-Z0-9_-]+$", display_name):
+            await websocket.send_json(
+                {"type": "error", "error": "Invalid display_name format"}
+            )
+            await websocket.close(code=4002, reason="Invalid display_name")
             return
 
-        # Generate peer_id if not provided - daemon assigns UUID for opencode
-        if not peer_id:
-            import uuid
-            peer_id = f"oc-{uuid.uuid4().hex[:12]}"
+        # Validate path if provided
+        if path:
+            normalized_path = os.path.normpath(os.path.abspath(path))
+            home_dir = os.path.expanduser("~")
+            if normalized_path == "/" or not normalized_path.startswith(home_dir):
+                error_msg = "Invalid path: must be within home directory"
+                await websocket.send_json({"type": "error", "error": error_msg})
+                await websocket.close(code=4003, reason="Invalid path")
+                logger.warning(
+                    f"WebSocket registration rejected: invalid path {path}"
+                )
+                return
+            path = normalized_path
 
-        # Register the connection with peer_id
-        await ws_manager.connect(websocket, peer_name, peer_id, path, metadata)
-
-        # Register with peer manager and config atomically
-        peer = Peer(
-            peer_id=peer_id,
+        # Register session (reuse if exists)
+        session_id = session_mapper.register_session(
             display_name=display_name,
-            path=path,
-            machine=socket.gethostname(),
+            circle=circle,
             backend=backend,
-            circle=metadata.get("circle", "global"),
-            status=PeerStatus.ONLINE,
-            metadata=metadata,
-        )
-        await peer_manager.register_peer_with_config(
-            peer=peer,
             path=path,
-            opencode_url=f"ws://plugin/{peer_name}",
-            circle=metadata.get("circle"),
         )
 
-        # Send registration confirmation with assigned peer_id
-        await websocket.send_json({"type": "registered", "ok": True, "peer_id": peer_id})
-        logger.info(f"Plugin registered via WebSocket: {peer_name} ({peer_id})")
+        # Register with transport and connection manager
+        await transport.connect(session_id, websocket)
+        await conn_mgr.connect(session_id, websocket)
 
-        # Main message loop
+        # Send connect response
+        await websocket.send_json({"type": "connected", "session_id": session_id})
+        logger.info(
+            f"WebSocket connected: {display_name}@{circle} ({session_id}, {backend})"
+        )
+
+        # Message loop
         while True:
             data = await websocket.receive_json()
             try:
-                await _handle_plugin_message(peer_name, data, ws_manager, peer_manager)
+                await _handle_message(
+                    session_id=session_id,
+                    data=data,
+                    conn_mgr=conn_mgr,
+                    query_tracker=query_tracker,
+                )
             except Exception as e:
-                # Log error but don't kill connection for a single bad message
                 logger.error(
-                    f"Error handling message from {peer_name}: {e}. "
+                    f"Error handling message from {session_id}: {e}. "
                     f"Message type: {data.get('type', 'unknown')}",
                     exc_info=True,
                 )
-                # Notify plugin of error (best effort)
+                # Notify client of error (best effort)
                 try:
                     await websocket.send_json(
-                        {
-                            "type": "error",
-                            "error": f"Error processing message: {e}",
-                        }
+                        {"type": "error", "error": f"Error processing message: {e}"}
                     )
                 except Exception as notify_err:
-                    logger.debug(f"Failed to notify plugin {peer_name} of error: {notify_err}")
+                    logger.debug(
+                        f"Failed to notify {session_id} of error: {notify_err}"
+                    )
 
     except WebSocketDisconnect:
-        logger.info(f"Plugin WebSocket disconnected: {peer_name or 'unknown'}")
+        logger.info(f"WebSocket disconnected: {session_id or 'unknown'}")
 
     except json.JSONDecodeError as e:
-        logger.warning(f"Invalid JSON from {peer_name or 'unknown'}: {e}")
+        logger.warning(f"Invalid JSON from {session_id or 'unknown'}: {e}")
 
     except Exception as e:
-        logger.exception(f"Unexpected WebSocket error for {peer_name or 'unknown'}: {e}")
+        logger.exception(
+            f"Unexpected WebSocket error for {session_id or 'unknown'}: {e}"
+        )
 
     finally:
-        if peer_name:
-            await ws_manager.disconnect(peer_name)
-            await peer_manager.update_peer_status(peer_name, PeerStatus.OFFLINE)
+        if session_id:
+            await transport.disconnect(session_id)
+            await conn_mgr.disconnect(session_id)
+            # Cancel pending queries to this peer
+            query_tracker.cancel_queries_to_peer(session_id)
 
 
-async def _handle_plugin_message(
-    peer_name: str,
+async def _handle_message(
+    session_id: str,
     data: dict[str, Any],
-    ws_manager: WebSocketManager,
-    peer_manager: PeerManager,
+    conn_mgr: WebSocketConnectionManager,
+    query_tracker: QueryTracker,
 ) -> None:
-    """Handle an incoming message from a plugin.
+    """Handle incoming WebSocket message.
 
     Args:
-        peer_name: Name of the peer
+        session_id: Session ID
         data: Message data
-        ws_manager: WebSocket manager
-        peer_manager: Peer manager
+        conn_mgr: Connection manager
+        query_tracker: Query tracker
     """
     msg_type = data.get("type")
 
-    if msg_type == "status":
-        # Status update from plugin
+    if msg_type == "response":
+        # Resolve query
+        correlation_id = data.get("correlation_id")
+        text = data.get("text", "")
+        if correlation_id:
+            query_tracker.resolve_query(correlation_id, text)
+        else:
+            logger.warning(
+                f"Response from {session_id} missing correlation_id, dropping"
+            )
+
+    elif msg_type == "status":
+        # Update status
         status_str = data.get("status", "online")
         status_map = {
             "busy": PeerStatus.BUSY,
@@ -162,41 +211,21 @@ async def _handle_plugin_message(
             "offline": PeerStatus.OFFLINE,
         }
         status = status_map.get(status_str, PeerStatus.ONLINE)
-        await ws_manager.update_status(peer_name, status)
-        await peer_manager.update_peer_status(peer_name, status)
-
-    elif msg_type == "session":
-        # Session ID update
-        session_id = data.get("session_id")
-        if not session_id:
-            logger.warning(f"Empty session_id from {peer_name}")
-            return
-        await ws_manager.update_session_id(peer_name, session_id)
-        await peer_manager.update_peer_session_id(peer_name, session_id)
-
-    elif msg_type == "response":
-        # Response to a query
-        correlation_id = data.get("correlation_id")
-        text = data.get("text", "")
-        if correlation_id:
-            await ws_manager.resolve_query(correlation_id, text)
-        else:
-            logger.warning(f"Response from {peer_name} missing correlation_id, dropping")
+        await conn_mgr.update_status(session_id, status)
 
     elif msg_type == "error":
-        # Error response to a query
+        # Resolve query with error
         correlation_id = data.get("correlation_id")
         error = data.get("error", "Unknown error")
-        logger.warning(f"Plugin {peer_name} reported error for query {correlation_id}: {error}")
+        logger.warning(
+            f"Client {session_id} reported error for query {correlation_id}: {error}"
+        )
         if correlation_id:
-            await ws_manager.resolve_query_error(correlation_id, error)
+            query_tracker.resolve_query_error(correlation_id, ValueError(error))
         else:
-            logger.warning(f"Error from {peer_name} missing correlation_id, cannot route")
-
-    elif msg_type == "set_circle":
-        # Update peer's circle
-        circle = data.get("circle", "global")
-        await peer_manager.set_peer_circle(peer_name, circle)
+            logger.warning(
+                f"Error from {session_id} missing correlation_id, cannot route"
+            )
 
     else:
-        logger.warning(f"Unknown message type from {peer_name}: {msg_type}")
+        logger.warning(f"Unknown message type from {session_id}: {msg_type}")
