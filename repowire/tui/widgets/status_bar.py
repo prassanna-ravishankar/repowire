@@ -5,11 +5,7 @@ from __future__ import annotations
 from textual.reactive import reactive
 from textual.widget import Widget
 
-KEYS = (
-    "[bold #7dcfff]s[/]hell  "
-    "[bold #7dcfff]r[/]efresh  "
-    "[bold #7dcfff]q[/]uit"
-)
+KEYS = "[bold #7dcfff]s[/]hell  [bold #7dcfff]r[/]efresh  [bold #7dcfff]q[/]uit"
 
 
 class StatusBar(Widget):

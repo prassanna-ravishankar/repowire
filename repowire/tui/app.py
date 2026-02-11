@@ -8,16 +8,40 @@ import subprocess
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.widgets import TabbedContent, TabPane
+from textual.screen import ModalScreen
+from textual.widgets import Markdown, Static, TabbedContent, TabPane
 
 from repowire.spawn import attach_session
-from repowire.tui.services.daemon_client import DaemonClient
-from repowire.tui.widgets.agent_list import AgentList, AgentSelected
+from repowire.tui.services.daemon_client import Conversation, DaemonClient
+from repowire.tui.widgets.agent_list import STATUS_COLORS, STATUS_SYMBOLS, AgentList, AgentSelected
 from repowire.tui.widgets.communication_feed import CommunicationFeed, MessageSelected
 from repowire.tui.widgets.create_agent_form import AgentCreated, CreateAgentForm
 from repowire.tui.widgets.status_bar import StatusBar
 
 logger = logging.getLogger(__name__)
+
+
+class ConvoModal(ModalScreen):
+    """Full-view modal for a query/response conversation."""
+
+    BINDINGS = [("escape", "dismiss", "Close")]
+
+    def __init__(self, conversation: Conversation, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._conversation = conversation
+
+    def compose(self) -> ComposeResult:
+        c = self._conversation
+        with Vertical(id="conversation-dialog"):
+            yield Static(
+                f"[bold #7dcfff]{c.from_peer}[/] \u2192 [bold #7dcfff]{c.to_peer}[/]",
+                id="conversation-title",
+            )
+            yield Markdown(f"**Q:** {c.query.text}")
+            if c.response:
+                yield Markdown(f"**R:** {c.response.text}")
+            else:
+                yield Static("[dim]Awaiting response...[/]")
 
 
 class RepowireApp(App):
@@ -96,12 +120,11 @@ class RepowireApp(App):
         if event.peer is None:
             return
         p = event.peer
-        from textual.widgets import Static
-
-        status_sym = {"online": "[green]●[/]", "busy": "[yellow]◉[/]", "offline": "[dim]○[/]"}
-        sym = status_sym.get(p.status.lower(), "?")
+        status_key = p.status.lower()
+        sym = STATUS_SYMBOLS.get(status_key, "?")
+        color = STATUS_COLORS.get(status_key, "")
         lines = [
-            f"{sym} [bold]{p.display_name}[/]  [dim]{p.peer_id}[/]",
+            f"[{color}]{sym}[/] [bold]{p.display_name}[/]  [dim]{p.peer_id}[/]",
             f"  circle: [magenta]{p.circle}[/]  backend: {p.backend}",
         ]
         if p.path:
@@ -113,26 +136,7 @@ class RepowireApp(App):
     # -- Message detail modal --
 
     def on_message_selected(self, event: MessageSelected) -> None:
-        c = event.conversation
-        from textual.screen import ModalScreen
-        from textual.widgets import Markdown, Static
-
-        class ConvoModal(ModalScreen):
-            BINDINGS = [("escape", "dismiss", "Close")]
-
-            def compose(self) -> ComposeResult:
-                with Vertical(id="conversation-dialog"):
-                    yield Static(
-                        f"[bold #7dcfff]{c.from_peer}[/] → [bold #7dcfff]{c.to_peer}[/]",
-                        id="conversation-title",
-                    )
-                    yield Markdown(f"**Q:** {c.query.text}")
-                    if c.response:
-                        yield Markdown(f"**R:** {c.response.text}")
-                    else:
-                        yield Static("[dim]Awaiting response...[/]")
-
-        self.push_screen(ConvoModal())
+        self.push_screen(ConvoModal(event.conversation))
 
     # -- Agent created --
 

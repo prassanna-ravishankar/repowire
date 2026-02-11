@@ -85,19 +85,19 @@ class AgentList(OptionList):
             return None
         try:
             opt = self.get_option_at_index(self.highlighted)
-            return str(opt.id) if opt.id else None
-        except (IndexError, Exception):
+        except IndexError:
             return None
+        return str(opt.id) if opt.id else None
+
+    def _peer_for_option(self, option: Option) -> PeerInfo | None:
+        oid = str(option.id) if option.id else ""
+        return self._id_to_peer.get(oid)
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
-        oid = str(event.option.id) if event.option.id else ""
-        peer = self._id_to_peer.get(oid)
-        self.post_message(AgentSelected(peer=peer))
+        self.post_message(AgentSelected(peer=self._peer_for_option(event.option)))
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        oid = str(event.option.id) if event.option.id else ""
-        peer = self._id_to_peer.get(oid)
-        self.post_message(AgentSelected(peer=peer))
+        self.post_message(AgentSelected(peer=self._peer_for_option(event.option)))
 
     @property
     def selected_agent(self) -> PeerInfo | None:

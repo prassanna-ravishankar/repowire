@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 MAX_EVENTS = 200
 MAX_DISPLAY = 50
 
+CONVO_STATUS_INDICATORS = {
+    "pending": "[dim]...[/]",
+    "success": "[#9ece6a]\u2713[/]",
+    "error": "[#f7768e]\u2717[/]",
+}
+
 
 @dataclass
 class MessageSelected(Message):
@@ -114,33 +120,27 @@ class CommunicationFeed(RichLog):
         if self.selected_index >= len(self._conversations):
             self.selected_index = max(0, len(self._conversations) - 1)
 
+        # Build index lookup for selected conversation
+        convo_indices: dict[str, int] = {c.id: i for i, c in enumerate(self._conversations)}
+
         # Merge and sort all items by timestamp (newest last for auto-scroll)
-        items: list[tuple[str, Conversation | Event]] = []
-        for c in self._conversations:
-            items.append((c.timestamp, c))
-        for b in self._broadcasts:
-            items.append((b.timestamp, b))
+        items: list[tuple[str, Conversation | Event]] = [
+            (c.timestamp, c) for c in self._conversations
+        ] + [(b.timestamp, b) for b in self._broadcasts]
         items.sort(key=lambda x: x[0])
 
-        convo_idx = 0
         for _, item in items:
             if isinstance(item, Conversation):
-                idx = self._conversations.index(item)
+                idx = convo_indices[item.id]
                 is_selected = self.nav_mode and idx == self.selected_index
                 self._write_conversation(item, selected=is_selected)
-                convo_idx += 1
             else:
                 self._write_broadcast(item)
 
     def _write_conversation(self, c: Conversation, selected: bool = False) -> None:
         ts = _format_time(c.timestamp)
         arrow = "\u2192"  # →
-        status = {
-            "pending": "[dim]...[/]",
-            "success": "[#9ece6a]\u2713[/]",
-            "error": "[#f7768e]\u2717[/]",
-        }
-        indicator = status.get(c.status, "")
+        indicator = CONVO_STATUS_INDICATORS.get(c.status, "")
         sel = "[#bb9af7]\u25b6[/] " if selected else "  "
 
         peers = f"[bold]{c.from_peer}[/] {arrow} [bold]{c.to_peer}[/]"

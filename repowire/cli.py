@@ -312,15 +312,19 @@ def mcp() -> None:
     asyncio.run(run_mcp_server())
 
 
+def _launch_tui(host: str, port: int) -> None:
+    """Launch the TUI mesh viewer."""
+    from repowire.tui.app import run_tui
+
+    run_tui(daemon_url=f"http://{host}:{port}")
+
+
 @main.command()
 @click.option("--host", default=DEFAULT_HOST, help="Daemon host")
 @click.option("--port", default=DEFAULT_PORT, type=int, help="Daemon port")
 def mesh(host: str, port: int) -> None:
     """Launch agent mesh viewer TUI."""
-    from repowire.tui.app import run_tui
-
-    daemon_url = f"http://{host}:{port}"
-    run_tui(daemon_url=daemon_url)
+    _launch_tui(host, port)
 
 
 @main.command()
@@ -328,10 +332,7 @@ def mesh(host: str, port: int) -> None:
 @click.option("--port", default=DEFAULT_PORT, type=int, help="Daemon port")
 def top(host: str, port: int) -> None:
     """Launch agent mesh viewer TUI (alias for 'mesh')."""
-    from repowire.tui.app import run_tui
-
-    daemon_url = f"http://{host}:{port}"
-    run_tui(daemon_url=daemon_url)
+    _launch_tui(host, port)
 
 
 # =============================================================================

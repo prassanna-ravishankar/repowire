@@ -129,14 +129,11 @@ class CreateAgentForm(Widget):
 
     def reset(self) -> None:
         """Clear all form fields."""
-        self.query_one("#name-input", Input).value = ""
-        self.query_one("#path-input", Input).value = ""
-        self.query_one("#new-circle-input", Input).value = ""
+        for input_id in ("#name-input", "#path-input", "#new-circle-input"):
+            self.query_one(input_id, Input).value = ""
         self.query_one("#new-circle-input", Input).styles.display = "none"
-        circle_select = self.query_one("#circle-select", Select)
-        circle_select.value = "default"
-        backend_select = self.query_one("#backend-select", Select)
-        backend_select.value = "claudemux"
+        self.query_one("#circle-select", Select).value = "default"
+        self.query_one("#backend-select", Select).value = "claudemux"
 
     def update_circles(self, circles: list[str]) -> None:
         """Update available circles from daemon."""
