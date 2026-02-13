@@ -191,9 +191,9 @@ uv run repowire peer ask $PEER_A_NAME "Use ask_peer to ask $PEER_B_NAME: questio
    curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.circle == "circle-a") | {name, status, circle, peer_id}'
    ```
 
-4. **Verify peer_id was captured correctly**
+4. **Verify peer_id format**
    ```bash
-   # peer_id should be tmux pane format like "%22", not "legacy:..."
+   # peer_id should be session_id format: "repow-{circle}-{uuid8}" (e.g., "repow-circle-a-a1b2c3d4")
    curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, peer_id}'
    ```
 
@@ -242,7 +242,7 @@ Use `repowire peer ask` CLI with proxy pattern for reliable testing.
    # Both peers should register via WebSocket with daemon-assigned peer_id
    curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.backend == "opencode") | {name, status, peer_id}'
    ```
-   Expected: Both peers online with peer_id like "oc-{uuid}" (e.g., "oc-550e8400e29b")
+   Expected: Both peers online with peer_id format "repow-{circle}-{uuid8}" (e.g., "repow-default-a1b2c3d4")
 
 2. **Direct query to peer-1**
    ```bash
@@ -266,9 +266,9 @@ Use `repowire peer ask` CLI with proxy pattern for reliable testing.
    ```
    Expected: peer-2 responds with peer-1's answer (confirms bidirectional)
 
-5. **Verify peer_id captured correctly**
+5. **Verify peer_id format**
    ```bash
-   # Both should have real peer_id, not "legacy:..." or "opencode:..."
+   # Both should have session_id format: "repow-{circle}-{uuid8}"
    curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, backend, peer_id}'
    ```
 
@@ -345,7 +345,7 @@ Use `repowire peer ask` CLI with proxy pattern for reliable cross-backend testin
 
 4. **Verify both backends registered with peer_id**
    ```bash
-   # Both should have real peer_id (e.g., "%22"), not "legacy:..."
+   # Both should have session_id format: "repow-{circle}-{uuid8}"
    curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, backend, peer_id}'
    ```
 
@@ -375,19 +375,19 @@ repowire peer prune --force
 ### Success Criteria by Mode
 
 #### claudemux
-- [ ] All peers registered with real peer_id (e.g., "%22", not "legacy:...")
+- [ ] All peers registered with session_id format: "repow-{circle}-{uuid8}"
 - [ ] Peers in correct circles (circle = tmux session name)
 - [ ] Direct query via CLI: SUCCESS
 - [ ] Peer-to-peer query via proxy: SUCCESS (tests full mesh)
 
 #### opencode
-- [ ] Both peers connected via WebSocket with real peer_id
+- [ ] Both peers connected via WebSocket with session_id format: "repow-{circle}-{uuid8}"
 - [ ] list_peers shows both peers as "opencode" backend
 - [ ] Direct query via CLI: SUCCESS
 - [ ] Bidirectional peer-to-peer queries via proxy: SUCCESS
 
 #### mixed
-- [ ] Both backend types register with real peer_id
+- [ ] Both backend types register with session_id format: "repow-{circle}-{uuid8}"
 - [ ] Claude → OpenCode query via proxy: SUCCESS
 - [ ] OpenCode → Claude query via proxy: SUCCESS
 - [ ] Events show full query chain across backends
