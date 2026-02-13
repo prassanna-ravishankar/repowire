@@ -1,493 +1,413 @@
 ---
 name: integration-test
-description: Integration test for repowire peer-to-peer messaging. Supports claudemux, opencode, or mixed-backend testing with circle boundaries and cross-backend communication.
+description: Integration test for repowire peer-to-peer messaging. Supports claudemux, opencode, or mixed-backend testing with circle boundaries and cross-backend communication. Can run all modes in parallel via agent teams.
 ---
 
 # Repowire Integration Test
 
 Unified integration test for peer-to-peer communication across backends.
 
-## Test Modes
+## Execution Modes
 
-| Mode | Description | Use Case |
-|------|-------------|----------|
-| `claudemux` | Claude Code sessions via tmux hooks | Testing tmux-based communication |
-| `opencode` | OpenCode sessions via WebSocket plugin | Testing WebSocket-based communication |
-| `mixed` | Both backends together | Testing cross-backend communication |
+| Argument | Behavior |
+|----------|----------|
+| `claudemux` | Test claudemux backend only |
+| `opencode` | Test opencode backend only |
+| `mixed` | Test cross-backend communication |
+| `all` or no argument | Run all three modes in parallel using agent teams |
+
+## Team-Based Parallel Execution
+
+When `all` is specified (or no argument), the lead agent should:
+
+1. Run Phase 1 (environment discovery) and Phase 3 (pre-test teardown) itself
+2. Ask user for project directories and opencode model (Phase 2)
+3. Ensure daemon is running
+4. Create tasks for each mode and spawn background agents in parallel:
+   - Agent `test-claudemux` → runs claudemux tests
+   - Agent `test-opencode` → runs opencode tests
+   - Agent `test-mixed` → runs mixed tests (depends on both backends being available)
+5. Collect results and produce unified report
+
+### Spawning agents
+
+Use the Task tool with `run_in_background: true` to run modes in parallel:
+
+```
+Task(subagent_type="general-purpose", run_in_background=true, prompt="Run the claudemux integration test. [paste mode section]")
+Task(subagent_type="general-purpose", run_in_background=true, prompt="Run the opencode integration test. [paste mode section]")
+```
+
+Each agent gets the full context for its mode and runs independently.
 
 ## Phase 1: Environment Discovery
 
-Run these commands to understand current state before presenting test plan.
+Run these commands to understand current state.
 
-### 1.1 System checks
 ```bash
-# Check tmux
+# System checks
 tmux list-sessions 2>/dev/null || echo "No tmux sessions"
-
-# Check opencode availability
 which opencode 2>/dev/null || echo "opencode not in PATH"
-
-# Check claude availability
 which claude 2>/dev/null || echo "claude not in PATH"
-```
 
-### 1.2 Daemon and peer status
-```bash
+# Daemon and peer status
 curl -s http://127.0.0.1:8377/health 2>/dev/null | jq . || echo "Daemon not running"
 curl -s http://127.0.0.1:8377/peers 2>/dev/null | jq '.peers[] | {name, status, circle}' || echo "No peers"
-```
 
-### 1.3 Installation status
-```bash
-# uv tool
+# Installation status
 uv tool list 2>/dev/null | grep repowire || echo "No uv tool installation"
-
-# Claudemux hooks
-cat ~/.claude/settings.json 2>/dev/null | jq '.hooks' || echo "No Claude hooks"
-
-# OpenCode plugin
-ls -la ~/.config/opencode/plugin/repowire.ts 2>/dev/null || echo "No OpenCode plugin"
+python3 -c "import json; d=json.load(open('$HOME/.claude/settings.json')); print('Hooks:', list(d.get('hooks',{}).keys()))" 2>/dev/null || echo "No Claude hooks"
+ls ~/.opencode/plugin/repowire.ts 2>/dev/null && echo "OpenCode plugin installed" || echo "No OpenCode plugin"
 ```
 
-## Phase 2: Ask User for Test Configuration
+## Phase 2: Ask User for Configuration
 
-**Present options to user:**
-
-```
-=== REPOWIRE INTEGRATION TEST ===
-
-Which test mode do you want to run?
-
-1. claudemux - Test Claude Code sessions (tmux-based)
-   - Requires: tmux, claude CLI
-   - Tests: Same-circle queries, cross-circle blocking, notifications
-
-2. opencode - Test OpenCode sessions (WebSocket-based)
-   - Requires: opencode CLI
-   - Tests: WebSocket connection, bidirectional queries, status tracking
-
-3. mixed - Test cross-backend communication
-   - Requires: Both tmux/claude AND opencode
-   - Tests: Claude Code peer talking to OpenCode peer
-
-Select mode [1/2/3]:
-```
-
-**Then ask for project directories based on mode:**
-
-- **claudemux**: 3 directories (2 for circle-a, 1 for circle-b)
-- **opencode**: 2 directories
-- **mixed**: 2 directories (1 for claude, 1 for opencode)
-
-**Ask about fresh install:**
-"Do you want a fresh install? This removes existing hooks/plugins and reinstalls from local dev code."
+Ask user for:
+1. **Project directories** (2-3 depending on mode, or ask for all if running `all`)
+2. **OpenCode model** (e.g., `anthropic/claude-sonnet-4-5-20250929`) — needed for opencode/mixed modes
+3. **Fresh install?** — removes existing hooks/plugins and reinstalls
 
 ## Phase 3: Pre-Test Teardown (Always Run)
 
-Clean up any stale state before starting tests. This ensures a consistent baseline.
-
 ```bash
-# Kill any existing test tmux sessions (safe - only kills known test session names)
 tmux kill-session -t circle-a 2>/dev/null || true
 tmux kill-session -t circle-b 2>/dev/null || true
 tmux kill-session -t opencode-test 2>/dev/null || true
 tmux kill-session -t mixed-test 2>/dev/null || true
+pkill -f websocket_hook 2>/dev/null || true
 
-# Prune stale/offline peers from daemon
 curl -s http://127.0.0.1:8377/health >/dev/null 2>&1 && {
-  echo "Pruning stale peers..."
   repowire peer prune --force 2>/dev/null || true
 }
 
-# Clear any pending query files (claudemux)
 rm -f ~/.repowire/pending/*.json 2>/dev/null || true
-
-# Verify clean state
-echo "=== Pre-Test State ==="
-tmux list-sessions 2>/dev/null || echo "No tmux sessions"
-curl -s http://127.0.0.1:8377/peers 2>/dev/null | jq '.peers | length' || echo "Daemon not running"
+rm -f ~/.repowire/sessions.json 2>/dev/null || true
 ```
 
 ## Phase 4: Fresh Install (if requested)
 
 ```bash
-# Stop daemon first
-curl -s -X POST http://127.0.0.1:8377/shutdown 2>/dev/null || true
-sleep 1
-
-# Uninstall existing installations
+# Uninstall
 repowire uninstall 2>/dev/null || true
 uv tool uninstall repowire 2>/dev/null || true
 
-# Remove residual config/state
-rm -rf ~/.repowire/pending/ 2>/dev/null || true
+# Install as tool from local source
+uv tool install --force /path/to/repowire
 
-# Install (auto-detects and configures all available backends)
-repowire setup --dev
+# Setup hooks (MCP add will fail inside Claude - add manually)
+repowire setup --no-service
 
-# Verify installation
-echo "=== Installation Verification ==="
+# Verify
 repowire --version
-cat ~/.claude/settings.json 2>/dev/null | jq '.hooks | keys' || echo "No Claude hooks"
-ls ~/.config/opencode/plugin/repowire.ts 2>/dev/null && echo "OpenCode plugin installed" || echo "No OpenCode plugin"
+python3 -c "import json; d=json.load(open('$HOME/.claude/settings.json')); print('Hooks:', list(d.get('hooks',{}).keys()))"
+ls ~/.opencode/plugin/repowire.ts 2>/dev/null && echo "OpenCode plugin: OK"
 ```
 
-## Phase 5: Test Execution by Mode
+## Phase 5: Ensure Daemon Running
+
+```bash
+curl -s http://127.0.0.1:8377/health || {
+  nohup repowire serve > /tmp/repowire-daemon.log 2>&1 &
+  sleep 3
+}
+curl -s http://127.0.0.1:8377/health | jq .
+```
 
 ---
 
-### Mode: claudemux
+## Mode: claudemux
 
-#### Setup
+**Requires:** tmux, claude CLI, Claude hooks installed
+**Tmux sessions used:** `circle-a`, `circle-b`
+**Project directories needed:** 3 (2 for circle-a, 1 for circle-b)
+
+### Setup
+
 ```bash
-# Ensure daemon running
-curl -s http://127.0.0.1:8377/health || (repowire serve &; sleep 2)
-
-# Create tmux sessions (circles)
 tmux new-session -d -s circle-a -n peer-a1
 tmux new-window -t circle-a -n peer-a2
 tmux new-session -d -s circle-b -n peer-b1
 
-# Navigate and start Claude
 tmux send-keys -t circle-a:peer-a1 "cd $PROJECT_A1 && claude --dangerously-skip-permissions" Enter
+sleep 3
 tmux send-keys -t circle-a:peer-a2 "cd $PROJECT_A2 && claude --dangerously-skip-permissions" Enter
+sleep 3
 tmux send-keys -t circle-b:peer-b1 "cd $PROJECT_B1 && claude --dangerously-skip-permissions" Enter
-sleep 10
+sleep 30  # Wait for sessions to initialize and hooks to register
 ```
 
-#### Tests
+### Verify Registration
 
-Use `repowire peer ask` CLI for reliable query testing (bypasses tmux UI issues).
-
-**Direct query** tests CLI→daemon→peer flow:
 ```bash
-uv run repowire peer ask $PEER_NAME "question" -t 120
+# All 3 peers should be online with correct circles and peer_id format
+curl -s http://127.0.0.1:8377/peers | python3 -c "
+import sys, json, re
+peers = json.load(sys.stdin)['peers']
+expected = {'$PEER_A1': 'circle-a', '$PEER_A2': 'circle-a', '$PEER_B1': 'circle-b'}
+for name, circle in expected.items():
+    match = [p for p in peers if p['name'] == name and p['status'] == 'online']
+    ok = match and match[0].get('circle') == circle and re.match(r'^repow-[\w-]+-[a-f0-9]{8}$', match[0].get('peer_id',''))
+    print(f'  {name}: {\"PASS\" if ok else \"FAIL\"} ({match[0] if match else \"not found\"})')
+"
 ```
 
-**Proxy query** tests full peer-to-peer flow (peer-a asks peer-b via MCP tools):
-```bash
-uv run repowire peer ask $PEER_A_NAME "Use ask_peer to ask $PEER_B_NAME: question" -t 180
-```
+If a peer doesn't register, check `.claude/settings.local.json` for `disableAllHooks: true`.
 
-#### Tests
+### Tests
 
 1. **Direct query to peer-a1**
    ```bash
-   uv run repowire peer ask $PEER_A1_NAME "What is this project about in one sentence?" -t 120
+   repowire peer ask $PEER_A1 "What is this project about in one sentence?" -t 120
    ```
-   Expected: Direct response from peer-a1
+   Expected: Direct response describing the project.
 
-2. **Peer-to-peer query via proxy** (peer-a1 → peer-a2)
+2. **Peer-to-peer proxy** (peer-a1 → peer-a2 via MCP ask_peer)
    ```bash
-   # Ask peer-a1 to use its ask_peer MCP tool to query peer-a2
-   uv run repowire peer ask $PEER_A1_NAME \
-     "Use the ask_peer tool to ask $PEER_A2_NAME: What is this project about in one sentence? Return their exact response." \
+   repowire peer ask $PEER_A1 \
+     "Use the ask_peer tool to ask $PEER_A2: What is this project about in one sentence? Return their exact response." \
      -t 180
    ```
-   Expected: peer-a1 responds with peer-a2's answer (tests full mesh communication)
+   Expected: peer-a1 responds with peer-a2's answer.
 
-3. **Verify peers are in same circle**
+3. **Circle verification**
    ```bash
-   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.circle == "circle-a") | {name, status, circle, peer_id}'
+   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.circle == "circle-a") | {name, peer_id}'
    ```
 
-4. **Verify peer_id format**
-   ```bash
-   # peer_id should be session_id format: "repow-{circle}-{uuid8}" (e.g., "repow-circle-a-a1b2c3d4")
-   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, peer_id}'
-   ```
-
-5. **Check events for query chain**
+4. **Event chain**
    ```bash
    curl -s http://127.0.0.1:8377/events | jq '.[-10:]'
    ```
 
-#### Verify
+### Cleanup
+
 ```bash
-curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, circle, status, peer_id}'
+tmux kill-session -t circle-a 2>/dev/null || true
+tmux kill-session -t circle-b 2>/dev/null || true
+pkill -f websocket_hook 2>/dev/null || true
+repowire peer prune --force 2>/dev/null || true
 ```
 
-#### Cleanup
-```bash
-tmux kill-session -t circle-a
-tmux kill-session -t circle-b
-repowire peer prune --force
-```
+### Success Criteria
+
+- [ ] All 3 peers registered with peer_id format `repow-{circle}-{uuid8}`
+- [ ] Peers in correct circles (circle = tmux session name)
+- [ ] Direct query via CLI: PASS
+- [ ] Peer-to-peer proxy query via MCP: PASS
 
 ---
 
-### Mode: opencode
+## Mode: opencode
 
-#### Setup
+**Requires:** opencode CLI, OpenCode plugin installed at `~/.opencode/plugin/repowire.ts`
+**Tmux sessions used:** `opencode-test`
+**Project directories needed:** 2
+**Model flag needed:** e.g., `--model anthropic/claude-sonnet-4-5-20250929`
+
+### Important Notes
+
+- OpenCode does NOT accept tmux send-keys for prompt submission (alternate screen mode). All query injection goes through the SDK plugin via `session.prompt()`.
+- OpenCode sessions need a warmup prompt (via tmux send-keys) to create an active session before repowire queries work.
+- The `--model` flag must specify a working model. LiteLLM proxy models may return 404.
+
+### Setup
+
 ```bash
-# Start daemon (per-peer routing handles both backends)
-curl -s http://127.0.0.1:8377/health || (uv run repowire serve &; sleep 2)
+tmux new-session -d -s opencode-test -n peer-1
+tmux new-window -t opencode-test -n peer-2
 
-# Create tmux session for OpenCode peers (OpenCode runs inside tmux for peer_id)
-tmux new-session -d -s opencode-test -n peer-1 -c $PROJECT_1
-tmux new-window -t opencode-test -n peer-2 -c $PROJECT_2
-
-# Start OpenCode in each window
-tmux send-keys -t opencode-test:peer-1 "opencode" Enter
-tmux send-keys -t opencode-test:peer-2 "opencode" Enter
+tmux send-keys -t opencode-test:peer-1 "cd $PROJECT_1 && opencode --model $OPENCODE_MODEL" Enter
+sleep 3
+tmux send-keys -t opencode-test:peer-2 "cd $PROJECT_2 && opencode --model $OPENCODE_MODEL" Enter
 sleep 10
+
+# Warm up: send initial prompt to create sessions
+tmux send-keys -t opencode-test:peer-1 -l "hi"
+tmux send-keys -t opencode-test:peer-1 Enter
+sleep 2
+tmux send-keys -t opencode-test:peer-2 -l "hi"
+tmux send-keys -t opencode-test:peer-2 Enter
+sleep 30  # Wait for warmup to complete
 ```
 
-#### Tests
+### Verify Registration
 
-Use `repowire peer ask` CLI with proxy pattern for reliable testing.
+```bash
+curl -s http://127.0.0.1:8377/peers | python3 -c "
+import sys, json
+peers = json.load(sys.stdin)['peers']
+oc = [p for p in peers if p.get('backend') == 'opencode' and p['status'] == 'online']
+for p in oc:
+    print(f'  {p[\"name\"]}: peer_id={p.get(\"peer_id\")}, backend={p.get(\"backend\")}')
+print(f'  opencode peers: {len(oc)}')
+"
+```
+
+### Tests
 
 1. **WebSocket connection & peer discovery**
    ```bash
-   # Both peers should register via WebSocket with daemon-assigned peer_id
    curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.backend == "opencode") | {name, status, peer_id}'
    ```
-   Expected: Both peers online with peer_id format "repow-{circle}-{uuid8}" (e.g., "repow-default-a1b2c3d4")
+   Expected: Both peers online with `repow-{circle}-{uuid8}` format.
 
 2. **Direct query to peer-1**
    ```bash
-   uv run repowire peer ask $PEER_1_NAME "What is this project about in one sentence?" -t 120
+   repowire peer ask $PEER_1 "What is this project about in one sentence?" -t 120
    ```
-   Expected: Direct response from peer-1
+   Expected: Response from the model (not "empty response" or "Not Found").
 
-3. **Peer-to-peer query via proxy** (peer-1 → peer-2)
+3. **Peer-to-peer proxy** (peer-1 → peer-2)
    ```bash
-   uv run repowire peer ask $PEER_1_NAME \
-     "Use the ask_peer tool to ask $PEER_2_NAME: What is this project about in one sentence? Return their exact response." \
+   repowire peer ask $PEER_1 \
+     "Use the ask_peer tool to ask $PEER_2: What is this project about in one sentence? Return their exact response." \
      -t 180
    ```
-   Expected: peer-1 responds with peer-2's answer
 
-4. **Reverse peer-to-peer query** (peer-2 → peer-1)
+4. **Reverse proxy** (peer-2 → peer-1)
    ```bash
-   uv run repowire peer ask $PEER_2_NAME \
-     "Use the ask_peer tool to ask $PEER_1_NAME: What is this project about in one sentence? Return their exact response." \
+   repowire peer ask $PEER_2 \
+     "Use the ask_peer tool to ask $PEER_1: What is this project about in one sentence? Return their exact response." \
      -t 180
    ```
-   Expected: peer-2 responds with peer-1's answer (confirms bidirectional)
 
-5. **Verify peer_id format**
-   ```bash
-   # Both should have session_id format: "repow-{circle}-{uuid8}"
-   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, backend, peer_id}'
-   ```
+### Troubleshooting
 
-6. **Check events for query chain**
-   ```bash
-   curl -s http://127.0.0.1:8377/events | jq '.[-10:]'
-   ```
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| "No active session" | Warmup prompt didn't create session | Press Enter manually in opencode pane, or wait longer |
+| "(empty response)" | Model returned 0 parts | Check model config — switch to `anthropic/claude-sonnet-4-5-20250929` |
+| "Not Found" in TUI | LiteLLM model ID not recognized | Use `--model anthropic/<model-id>` directly |
+| Plugin not connecting | Wrong WS URL or old plugin | Reinstall: `uv run python3 -c "from repowire.backends.opencode.installer import install_plugin; install_plugin()"` |
 
-#### Verify
+### Cleanup
+
 ```bash
-curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.backend == "opencode") | {name, status, peer_id}'
+tmux kill-session -t opencode-test 2>/dev/null || true
+repowire peer prune --force 2>/dev/null || true
 ```
 
-#### Cleanup
-```bash
-tmux kill-session -t opencode-test
-uv run repowire peer prune --force
-```
+### Success Criteria
+
+- [ ] Both peers registered via WebSocket with `repow-{circle}-{uuid8}` peer_id
+- [ ] Direct query returns real model response (not empty/error)
+- [ ] Bidirectional peer-to-peer proxy queries: PASS
 
 ---
 
-### Mode: mixed (Cross-Backend)
+## Mode: mixed (Cross-Backend)
 
-This tests communication between a Claude Code session (claudemux) and an OpenCode session (opencode).
+**Requires:** Both claudemux AND opencode setups working
+**Tmux sessions used:** `mixed-test`
+**Project directories needed:** 2 (1 for claude, 1 for opencode)
+**Depends on:** claudemux and opencode modes passing individually first
 
-#### Setup
+### Setup
+
 ```bash
-# Start daemon with per-peer routing (handles both backends automatically)
-curl -s -X POST http://127.0.0.1:8377/shutdown 2>/dev/null || true
-sleep 1
-repowire serve &
-sleep 2
-
-# Create tmux sessions
 tmux new-session -d -s mixed-test -n claude-peer
 tmux new-window -t mixed-test -n opencode-peer
 
-# Start Claude Code peer
 tmux send-keys -t mixed-test:claude-peer "cd $PROJECT_CLAUDE && claude --dangerously-skip-permissions" Enter
-
-# Start OpenCode peer
-tmux send-keys -t mixed-test:opencode-peer "cd $PROJECT_OPENCODE && opencode" Enter
+sleep 3
+tmux send-keys -t mixed-test:opencode-peer "cd $PROJECT_OPENCODE && opencode --model $OPENCODE_MODEL" Enter
 sleep 10
+
+# Warm up opencode peer
+tmux send-keys -t mixed-test:opencode-peer -l "hi"
+tmux send-keys -t mixed-test:opencode-peer Enter
+sleep 30
 ```
 
-#### Tests
+### Tests
 
-Use `repowire peer ask` CLI with proxy pattern for reliable cross-backend testing.
-
-1. **Cross-backend peer discovery**
-   Both peers should see each other in list_peers despite different backends.
+1. **Cross-backend registration**
    ```bash
-   curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, status, backend, peer_id}'
-   ```
-
-2. **Claude → OpenCode query (via proxy)**
-   Ask Claude peer to query the OpenCode peer using its MCP tools:
-   ```bash
-   # This sends query to claude-peer, which then uses ask_peer to query opencode-peer
-   uv run repowire peer ask $CLAUDE_PEER_NAME \
-     "Use the ask_peer tool to ask $OPENCODE_PEER_NAME: What is this project about in one sentence? Return their response." \
-     -t 180
-   ```
-   Expected: Claude peer responds with OpenCode peer's answer.
-
-3. **OpenCode → Claude query (via proxy)**
-   Ask OpenCode peer to query the Claude peer using its MCP tools:
-   ```bash
-   uv run repowire peer ask $OPENCODE_PEER_NAME \
-     "Use the ask_peer tool to ask $CLAUDE_PEER_NAME: What is this project about in one sentence? Return their response." \
-     -t 180
-   ```
-   Expected: OpenCode peer responds with Claude peer's answer.
-
-4. **Verify both backends registered with peer_id**
-   ```bash
-   # Both should have session_id format: "repow-{circle}-{uuid8}"
    curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, backend, peer_id}'
    ```
 
-5. **Check events for full query chain**
+2. **Claude → OpenCode proxy**
    ```bash
-   # Should show: CLI→peer-a (query), peer-a→peer-b (query), peer-b→peer-a (response), peer-a→CLI (response)
+   repowire peer ask $CLAUDE_PEER \
+     "Use ask_peer to ask $OPENCODE_PEER: What is this project about in one sentence? Return their response." \
+     -t 180
+   ```
+
+3. **OpenCode → Claude proxy**
+   ```bash
+   repowire peer ask $OPENCODE_PEER \
+     "Use ask_peer to ask $CLAUDE_PEER: What is this project about in one sentence? Return their response." \
+     -t 180
+   ```
+
+4. **Event chain**
+   ```bash
    curl -s http://127.0.0.1:8377/events | jq '.[-10:]'
    ```
 
-#### Verify
+### Cleanup
+
 ```bash
-echo "=== Cross-Backend Test Results ==="
-curl -s http://127.0.0.1:8377/peers | jq '.peers[] | {name, status, backend, circle, peer_id}'
-curl -s http://127.0.0.1:8377/events | jq '.[-10:]'
+tmux kill-session -t mixed-test 2>/dev/null || true
+repowire peer prune --force 2>/dev/null || true
 ```
 
-#### Cleanup
-```bash
-tmux kill-session -t mixed-test
-repowire peer prune --force
-```
+### Success Criteria
+
+- [ ] Both backends register with `repow-{circle}-{uuid8}` peer_id
+- [ ] Claude → OpenCode proxy: PASS
+- [ ] OpenCode → Claude proxy: PASS
 
 ---
 
-## Phase 6: Validation Summary
+## Phase 6: Unified Report
 
-### Success Criteria by Mode
-
-#### claudemux
-- [ ] All peers registered with session_id format: "repow-{circle}-{uuid8}"
-- [ ] Peers in correct circles (circle = tmux session name)
-- [ ] Direct query via CLI: SUCCESS
-- [ ] Peer-to-peer query via proxy: SUCCESS (tests full mesh)
-
-#### opencode
-- [ ] Both peers connected via WebSocket with session_id format: "repow-{circle}-{uuid8}"
-- [ ] list_peers shows both peers as "opencode" backend
-- [ ] Direct query via CLI: SUCCESS
-- [ ] Bidirectional peer-to-peer queries via proxy: SUCCESS
-
-#### mixed
-- [ ] Both backend types register with session_id format: "repow-{circle}-{uuid8}"
-- [ ] Claude → OpenCode query via proxy: SUCCESS
-- [ ] OpenCode → Claude query via proxy: SUCCESS
-- [ ] Events show full query chain across backends
-
-### Report Template
+Aggregate results from all modes into a single report:
 
 ```
-=== REPOWIRE INTEGRATION TEST RESULTS ===
+==========================================
+  REPOWIRE INTEGRATION TEST RESULTS
+==========================================
 
-Mode: [claudemux/opencode/mixed]
+  MODE: CLAUDEMUX
+  ├ Registration:    PASS/FAIL (X/Y peers)
+  ├ Direct query:    PASS/FAIL
+  ├ Proxy query:     PASS/FAIL
+  └ Status:          PASS/FAIL
 
-Peer Registration:
-  [peer-name]: [PASS/FAIL] (backend: [claudemux/opencode])
+  MODE: OPENCODE
+  ├ Registration:    PASS/FAIL (X/Y peers)
+  ├ Direct query:    PASS/FAIL
+  ├ Proxy query:     PASS/FAIL
+  └ Status:          PASS/FAIL
 
-Communication Tests:
-  [test-name]: [PASS/FAIL]
+  MODE: MIXED
+  ├ Registration:    PASS/FAIL
+  ├ Claude→OC:       PASS/FAIL
+  ├ OC→Claude:       PASS/FAIL
+  └ Status:          PASS/FAIL
 
-Overall: [PASS/FAIL]
+  Overall: PASS/FAIL
+==========================================
 ```
 
 ## Phase 7: Final Teardown
 
-Always run after tests complete (success or failure) to restore clean state.
-
-### 7.1 Kill Test Sessions
 ```bash
-# Kill all test-related tmux sessions
 tmux kill-session -t circle-a 2>/dev/null || true
 tmux kill-session -t circle-b 2>/dev/null || true
 tmux kill-session -t opencode-test 2>/dev/null || true
 tmux kill-session -t mixed-test 2>/dev/null || true
-
-echo "Test sessions terminated"
-```
-
-### 7.2 Clean Up Peers
-```bash
-# Mark all test peers offline and prune
+pkill -f websocket_hook 2>/dev/null || true
 repowire peer prune --force 2>/dev/null || true
-
-# Verify no stale peers remain
-curl -s http://127.0.0.1:8377/peers | jq '.peers | length' || echo "Daemon not running"
 ```
-
-### 7.3 Stop Daemon (Optional)
-Only stop if you don't need it running for other work.
-
-```bash
-# Stop daemon
-curl -s -X POST http://127.0.0.1:8377/shutdown 2>/dev/null && echo "Daemon stopped" || echo "Daemon was not running"
-```
-
-### 7.4 Clean Up State Files (Optional - for full reset)
-Only run if you want to completely reset repowire state.
-
-```bash
-# Remove pending queries
-rm -rf ~/.repowire/pending/ 2>/dev/null || true
-
-# Remove peer config (CAUTION: removes all peer definitions)
-# rm ~/.repowire/config.yaml 2>/dev/null || true
-
-echo "State files cleaned"
-```
-
-### 7.5 Final State Verification
-```bash
-echo "=== Final State ==="
-tmux list-sessions 2>/dev/null || echo "No tmux sessions"
-curl -s http://127.0.0.1:8377/health 2>/dev/null && echo "Daemon: running" || echo "Daemon: stopped"
-curl -s http://127.0.0.1:8377/peers 2>/dev/null | jq '.peers[] | .name' || echo "No peers registered"
-```
-
-## Troubleshooting
-
-| Issue | Check |
-|-------|-------|
-| Daemon not running | `curl http://127.0.0.1:8377/health` |
-| Claudemux peers not registering | `repowire claudemux status` |
-| OpenCode plugin not connecting | `ls ~/.config/opencode/plugin/` |
-| Wrong peer names | Peer name = folder name |
-| Circle mismatch | Claudemux circle = tmux session name |
-| Cross-backend fails | Check both backends installed, use set_circle |
-| Query timeout | Increase sleep time, check daemon logs |
 
 ## Quick Reference
 
 ```bash
-# Start daemon (per-peer routing)
-repowire serve
-
-# Check peers
-curl -s http://127.0.0.1:8377/peers | jq '.peers[]'
-
-# Check events
-curl -s http://127.0.0.1:8377/events | jq '.[-5:]'
-
-# Prune offline peers
-repowire peer prune --force
-
-# Stop daemon
-curl -X POST http://127.0.0.1:8377/shutdown
+repowire serve                    # Start daemon
+repowire peer ask NAME "q" -t 120 # Query a peer
+curl -s localhost:8377/peers | jq  # List peers
+curl -s localhost:8377/events | jq '.[-5:]'  # Recent events
+repowire peer prune --force       # Remove offline peers
 ```
