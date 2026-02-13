@@ -149,9 +149,7 @@ async def watch_responses(
                     )
                 )
                 response_file.unlink()
-                logger.info(
-                    f"Forwarded response: {data['correlation_id'][:8]}"
-                )
+                logger.info(f"Forwarded response: {data['correlation_id'][:8]}")
             except Exception as e:
                 logger.error(f"Error forwarding response: {e}")
                 # Don't delete file if there was an error - try again
@@ -175,9 +173,7 @@ async def main() -> int:
     daemon_port = os.environ.get("REPOWIRE_DAEMON_PORT", "8377")
     uri = f"ws://{daemon_host}:{daemon_port}/ws"
 
-    logger.info(
-        f"Starting WebSocket hook for {display_name}@{circle} (pane={pane_id})"
-    )
+    logger.info(f"Starting WebSocket hook for {display_name}@{circle} (pane={pane_id})")
 
     # Retry connection loop
     while True:
@@ -190,7 +186,7 @@ async def main() -> int:
                             "type": "connect",
                             "display_name": display_name,
                             "circle": circle,
-                            "backend": "claudemux",
+                            "backend": "claude-code",
                             "path": path,
                         }
                     )

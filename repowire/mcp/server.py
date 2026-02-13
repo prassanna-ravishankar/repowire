@@ -148,7 +148,7 @@ def create_mcp_server() -> FastMCP:
         """Join a named circle to communicate with peers in that circle.
 
         Use this to communicate with peers from different backends (e.g., OpenCode
-        sessions). By default, claudemux peers are in a circle named after their
+        sessions). By default, Claude Code peers are in a circle named after their
         tmux session, and OpenCode peers are in the "global" circle.
 
         Args:

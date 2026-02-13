@@ -19,7 +19,7 @@ def make_peer(
         display_name=name,
         status=status,
         circle=circle,
-        backend="claudemux",
+        backend="claude-code",
         path="/tmp",
         tmux_session=tmux_session,
         opencode_url=None,

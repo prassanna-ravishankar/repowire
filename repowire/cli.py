@@ -59,24 +59,24 @@ def setup(dev: bool, no_service: bool) -> None:
     """One-time setup: install hooks/plugins, MCP server, and daemon service."""
     import shutil
 
-    backends_setup: list[str] = []
+    agents_setup: list[str] = []
 
-    # Detect and set up claudemux if claude CLI available
+    # Detect and set up Claude Code if claude CLI available
     if shutil.which("claude"):
-        _setup_claudemux(dev=dev)
-        backends_setup.append("claudemux")
+        _setup_claude_code(dev=dev)
+        agents_setup.append("claude-code")
 
-    # Detect and set up opencode if opencode CLI or config exists
+    # Detect and set up OpenCode if opencode CLI or config exists
     if shutil.which("opencode") or (Path.home() / ".config" / "opencode").exists():
         _setup_opencode(dev=dev)
-        backends_setup.append("opencode")
+        agents_setup.append("opencode")
 
-    if not backends_setup:
-        console.print("[yellow]No backends detected.[/]")
+    if not agents_setup:
+        console.print("[yellow]No agent types detected.[/]")
         console.print("Install 'claude' (Claude Code) or 'opencode' first.")
         return
 
-    console.print(f"[green]✓[/] Configured backends: {', '.join(backends_setup)}")
+    console.print(f"[green]✓[/] Configured agents: {', '.join(agents_setup)}")
 
     # Install daemon as system service
     if not no_service:
@@ -158,18 +158,18 @@ def uninstall() -> None:
         console.print("[dim]Daemon service not installed[/]")
 
     # Uninstall all backend components (try both)
-    _uninstall_claudemux()
+    _uninstall_claude_code()
     _uninstall_opencode()
 
     console.print("")
     console.print("[green]Uninstall complete![/]")
 
 
-def _uninstall_claudemux() -> None:
-    """Uninstall claudemux backend components."""
+def _uninstall_claude_code() -> None:
+    """Uninstall Claude Code components."""
     import subprocess
 
-    from repowire.hooks.installer import uninstall_hooks
+    from repowire.installers.claude_code import uninstall_hooks
 
     # Remove hooks
     try:
@@ -193,11 +193,10 @@ def _uninstall_claudemux() -> None:
 
 def _uninstall_opencode() -> None:
     """Uninstall opencode backend components."""
-    from repowire.backends import get_backend
+    from repowire.installers.opencode import uninstall_plugin
 
     try:
-        backend = get_backend("opencode")
-        backend.uninstall()
+        uninstall_plugin()
         console.print("[green]✓[/] OpenCode plugin removed")
     except Exception as e:
         console.print(f"[yellow]![/] Failed to remove OpenCode plugin: {e}")
@@ -210,22 +209,22 @@ def status() -> None:
 
     import httpx
 
-    from repowire.hooks.installer import check_hooks_installed
+    from repowire.installers.claude_code import check_hooks_installed
     from repowire.service.installer import get_platform, get_service_status
 
     console.print("[cyan]Mode:[/] per-peer routing")
     console.print(f"[cyan]Platform:[/] {get_platform()}")
     console.print("")
 
-    # Check available backends
-    console.print("[cyan]Backends:[/]")
+    # Check available agent types
+    console.print("[cyan]Agent Types:[/]")
     if shutil.which("claude"):
         if check_hooks_installed():
-            console.print("  [green]✓[/] claudemux (hooks installed)")
+            console.print("  [green]✓[/] claude-code (hooks installed)")
         else:
-            console.print("  [yellow]✗[/] claudemux (hooks not installed)")
+            console.print("  [yellow]✗[/] claude-code (hooks not installed)")
     else:
-        console.print("  [dim]✗[/] claudemux (claude CLI not found)")
+        console.print("  [dim]✗[/] claude-code (claude CLI not found)")
 
     if shutil.which("opencode") or (Path.home() / ".config" / "opencode").exists():
         console.print("  [green]✓[/] opencode (available)")
@@ -268,11 +267,11 @@ def status() -> None:
         pass
 
 
-def _setup_claudemux(dev: bool = False) -> None:
-    """Setup for claudemux backend."""
+def _setup_claude_code(dev: bool = False) -> None:
+    """Setup for Claude Code agent type."""
     import subprocess
 
-    from repowire.hooks.installer import install_hooks
+    from repowire.installers.claude_code import install_hooks
 
     install_hooks(dev=dev)
     console.print("[green]✓[/] Claude Code hooks installed")
@@ -294,11 +293,10 @@ def _setup_claudemux(dev: bool = False) -> None:
 
 def _setup_opencode(dev: bool = False, global_install: bool = True) -> None:
     """Setup for opencode backend."""
-    from repowire.backends import get_backend
+    from repowire.installers.opencode import install_plugin
 
     try:
-        backend = get_backend("opencode")
-        backend.install(dev=dev, global_install=global_install)
+        install_plugin(global_install=global_install)
         console.print("[green]✓[/] OpenCode plugin installed")
     except Exception as e:
         console.print(f"[red]Failed to install OpenCode plugin: {e}[/]")
@@ -350,7 +348,7 @@ def claudemux() -> None:
 @click.option("--dev", is_flag=True, help="Use dev mode")
 def claudemux_install(dev: bool) -> None:
     """Install Repowire hooks into Claude Code."""
-    from repowire.hooks.installer import install_hooks
+    from repowire.installers.claude_code import install_hooks
 
     try:
         install_hooks(dev=dev)
@@ -363,7 +361,7 @@ def claudemux_install(dev: bool) -> None:
 @claudemux.command(name="uninstall")
 def claudemux_uninstall() -> None:
     """Remove Repowire hooks from Claude Code."""
-    from repowire.hooks.installer import uninstall_hooks
+    from repowire.installers.claude_code import uninstall_hooks
 
     try:
         uninstall_hooks()
@@ -375,7 +373,7 @@ def claudemux_uninstall() -> None:
 @claudemux.command(name="status")
 def claudemux_status() -> None:
     """Check if hooks are installed."""
-    from repowire.hooks.installer import check_hooks_installed
+    from repowire.installers.claude_code import check_hooks_installed
 
     if check_hooks_installed():
         console.print("[green]Hooks are installed.[/]")
@@ -400,15 +398,12 @@ def opencode() -> None:
 @click.option("--dev", is_flag=True, help="Use dev mode")
 def opencode_install(global_install: bool, dev: bool) -> None:
     """Install Repowire plugin for OpenCode."""
-    from repowire.backends import get_backend
+    from repowire.installers.opencode import install_plugin
 
     try:
-        backend = get_backend("opencode")
-        backend.install(dev=dev, global_install=global_install)
+        install_plugin(global_install=global_install)
         scope = "globally" if global_install else "for current project"
         console.print(f"[green]OpenCode plugin installed {scope}![/]")
-    except NotImplementedError:
-        console.print("[yellow]OpenCode backend installer not yet implemented.[/]")
     except Exception as e:
         console.print(f"[red]Failed to install plugin: {e}[/]")
 
@@ -417,15 +412,12 @@ def opencode_install(global_install: bool, dev: bool) -> None:
 @click.option("--global", "global_install", is_flag=True, help="Uninstall globally")
 def opencode_uninstall(global_install: bool) -> None:
     """Remove Repowire plugin from OpenCode."""
-    from repowire.backends import get_backend
+    from repowire.installers.opencode import uninstall_plugin
 
     try:
-        backend = get_backend("opencode")
-        backend.uninstall(global_install=global_install)
+        uninstall_plugin(global_install=global_install)
         scope = "globally" if global_install else "for current project"
         console.print(f"[green]OpenCode plugin uninstalled {scope}.[/]")
-    except NotImplementedError:
-        console.print("[yellow]OpenCode backend uninstaller not yet implemented.[/]")
     except Exception as e:
         console.print(f"[red]Failed to uninstall plugin: {e}[/]")
 
@@ -433,11 +425,10 @@ def opencode_uninstall(global_install: bool) -> None:
 @opencode.command(name="status")
 def opencode_status() -> None:
     """Check if OpenCode plugin is installed."""
-    from repowire.backends import get_backend
+    from repowire.installers.opencode import check_plugin_installed
 
     try:
-        backend = get_backend("opencode")
-        if backend.check_installed():
+        if check_plugin_installed():
             console.print("[green]OpenCode plugin is installed.[/]")
         else:
             console.print("[yellow]OpenCode plugin is not installed.[/]")
@@ -523,7 +514,9 @@ def peer_list() -> None:
 
 @peer.command(name="new")
 @click.argument("path", type=click.Path(exists=True), default=".")
-@click.option("--backend", "-b", type=click.Choice(["claudemux", "opencode"]), default="claudemux")
+@click.option(
+    "--backend", "-b", type=click.Choice(["claude-code", "opencode"]), default="claude-code"
+)
 @click.option("--command", "-c", "cmd", help="Command to run (default: claude or opencode)")
 @click.option("--circle", help="Circle (defaults to 'default')")
 def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> None:  # noqa: ARG001
@@ -537,15 +530,13 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
 
         repowire peer new ~/git/api --backend=opencode --circle=backend
     """
-    from typing import cast
-
-    from repowire.config.models import BackendType
+    from repowire.config.models import AgentType
     from repowire.spawn import SpawnConfig, spawn_peer
 
     actual_path = str(Path(path).resolve())
     actual_circle = circle or "default"
-    actual_cmd = cmd or ("claude" if backend == "claudemux" else "opencode")
-    backend_type = cast(BackendType, backend)
+    actual_cmd = cmd or ("claude" if backend == "claude-code" else "opencode")
+    backend_type = AgentType(backend)
 
     config = SpawnConfig(
         path=actual_path,
@@ -764,7 +755,7 @@ def hooks() -> None:
 def hooks_install(dev: bool) -> None:
     """Install Repowire hooks into Claude Code."""
     console.print("[dim]Note: 'repowire hooks' is an alias for 'repowire claudemux'[/]")
-    from repowire.hooks.installer import install_hooks
+    from repowire.installers.claude_code import install_hooks
 
     try:
         install_hooks(dev=dev)
@@ -778,7 +769,7 @@ def hooks_install(dev: bool) -> None:
 def hooks_uninstall() -> None:
     """Remove Repowire hooks from Claude Code."""
     console.print("[dim]Note: 'repowire hooks' is an alias for 'repowire claudemux'[/]")
-    from repowire.hooks.installer import uninstall_hooks
+    from repowire.installers.claude_code import uninstall_hooks
 
     try:
         uninstall_hooks()
@@ -791,7 +782,7 @@ def hooks_uninstall() -> None:
 def hooks_status() -> None:
     """Check if hooks are installed."""
     console.print("[dim]Note: 'repowire hooks' is an alias for 'repowire claudemux'[/]")
-    from repowire.hooks.installer import check_hooks_installed
+    from repowire.installers.claude_code import check_hooks_installed
 
     if check_hooks_installed():
         console.print("[green]Hooks are installed.[/]")

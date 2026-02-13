@@ -136,7 +136,7 @@ class RepowireApp(App):
         color = STATUS_COLORS.get(status_key, "")
         lines = [
             f"[{color}]{sym}[/] [bold]{p.display_name}[/]  [dim]{p.peer_id}[/]",
-            f"  circle: [magenta]{p.circle}[/]  backend: {p.backend}",
+            f"  circle: [magenta]{p.circle}[/]  agent: {p.backend}",
         ]
         if p.path:
             lines.append(f"  path: [dim]{p.path}[/]")

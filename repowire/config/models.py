@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import os
+from enum import Enum
 from pathlib import Path
-from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
 
-# Backend type for pluggable backends
-BackendType = Literal["claudemux", "opencode"]
+
+class AgentType(str, Enum):
+    """Type of AI coding agent a peer is running."""
+
+    CLAUDE_CODE = "claude-code"
+    OPENCODE = "opencode"
 
 
 class RelayConfig(BaseModel):
@@ -32,15 +36,15 @@ class OpencodeConfig(BaseModel):
 class PeerConfig(BaseModel):
     """Configuration for a single peer.
 
-    Identity is based on a canonical `peer_id` which is unique per backend:
-    - claudemux: `%N` (tmux pane ID, e.g., "%42") - stable across session restarts
+    Identity is based on a canonical `peer_id` which is unique per agent type:
+    - claude-code: `%N` (tmux pane ID, e.g., "%42") - stable across session restarts
     - opencode: `oc-{uuid12}` (daemon-assigned, e.g., "oc-550e8400e29b")
 
     The name field is kept for backward compatibility with older configs.
     """
 
-    # Primary identity - unique per backend
-    # claudemux: "%N" (tmux pane ID), opencode: "oc-{uuid12}"
+    # Primary identity - unique per agent type
+    # claude-code: "%N" (tmux pane ID), opencode: "oc-{uuid12}"
     peer_id: str | None = Field(None, description="Unique peer ID ('%42' or 'oc-...')")
     display_name: str | None = Field(None, description="Human-readable name (folder name)")
 
@@ -84,7 +88,6 @@ class DaemonConfig(BaseModel):
     # HTTP daemon settings
     host: str = Field(default="127.0.0.1", description="HTTP daemon host")
     port: int = Field(default=8377, description="HTTP daemon port")
-    backend: BackendType = Field(default="claudemux", description="Backend type to use")
 
     # Security settings
     auth_token: str | None = Field(

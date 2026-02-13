@@ -22,23 +22,23 @@ class TestSpawnConfig:
 
     def test_display_name_from_path(self) -> None:
         """Test display_name derives from path."""
-        config = SpawnConfig(path="/home/user/myproject", circle="dev", backend="claudemux")
+        config = SpawnConfig(path="/home/user/myproject", circle="dev", backend="claude-code")
         assert config.display_name == "myproject"
 
     def test_display_name_nested_path(self) -> None:
         """Test display_name from nested path."""
-        config = SpawnConfig(path="/home/user/git/frontend", circle="dev", backend="claudemux")
+        config = SpawnConfig(path="/home/user/git/frontend", circle="dev", backend="claude-code")
         assert config.display_name == "frontend"
 
     def test_display_name_trailing_slash(self) -> None:
         """Test display_name handles trailing slash."""
-        config = SpawnConfig(path="/home/user/myproject/", circle="dev", backend="claudemux")
+        config = SpawnConfig(path="/home/user/myproject/", circle="dev", backend="claude-code")
         # Path.name strips trailing slash
         assert config.display_name == "myproject"
 
     def test_default_command_empty(self) -> None:
         """Test default command is empty string."""
-        config = SpawnConfig(path="/tmp/test", circle="dev", backend="claudemux")
+        config = SpawnConfig(path="/tmp/test", circle="dev", backend="claude-code")
         assert config.command == ""
 
     def test_custom_command(self) -> None:
@@ -46,7 +46,7 @@ class TestSpawnConfig:
         config = SpawnConfig(
             path="/tmp/test",
             circle="dev",
-            backend="claudemux",
+            backend="claude-code",
             command="claude --model opus",
         )
         assert config.command == "claude --model opus"
@@ -202,7 +202,7 @@ class TestSpawnPeer:
         mock_get_session.return_value = mock_session
         mock_register.return_value = True
 
-        config = SpawnConfig(path="/tmp/test", circle="dev", backend="claudemux")
+        config = SpawnConfig(path="/tmp/test", circle="dev", backend="claude-code")
         result = spawn_peer(config)
 
         assert result.peer_id == "%42"
@@ -234,7 +234,7 @@ class TestSpawnPeer:
         config = SpawnConfig(
             path="/tmp/test",
             circle="dev",
-            backend="claudemux",
+            backend="claude-code",
             command="claude --model opus",
         )
         spawn_peer(config)
@@ -286,7 +286,7 @@ class TestSpawnPeer:
         mock_get_session.return_value = mock_session
         mock_register.return_value = False  # Daemon registration fails
 
-        config = SpawnConfig(path="/tmp/test", circle="dev", backend="claudemux")
+        config = SpawnConfig(path="/tmp/test", circle="dev", backend="claude-code")
         result = spawn_peer(config)
 
         assert result.registered is False
@@ -332,7 +332,7 @@ class TestSpawnPeer:
         mock_session.new_window.return_value = mock_window
         mock_get_session.return_value = mock_session
 
-        config = SpawnConfig(path="/tmp/test", circle="dev", backend="claudemux")
+        config = SpawnConfig(path="/tmp/test", circle="dev", backend="claude-code")
 
         with pytest.raises(RuntimeError, match="Failed to get active pane"):
             spawn_peer(config)
@@ -359,7 +359,7 @@ class TestSpawnPeer:
         mock_get_session.return_value = mock_session
         mock_register.return_value = True
 
-        config = SpawnConfig(path="/tmp/test", circle="dev", backend="claudemux")
+        config = SpawnConfig(path="/tmp/test", circle="dev", backend="claude-code")
         result = spawn_peer(config)
 
         assert result.display_name == "test-2"
@@ -467,7 +467,7 @@ class TestRegisterWithDaemon:
                 path="/tmp/test",
                 tmux_session="dev:test",
                 circle="dev",
-                backend="claudemux",
+                backend="claude-code",
             )
 
         assert result is True
@@ -494,7 +494,7 @@ class TestRegisterWithDaemon:
                 path="/tmp/test",
                 tmux_session="dev:test",
                 circle="dev",
-                backend="claudemux",
+                backend="claude-code",
             )
 
         assert result is False
@@ -523,7 +523,7 @@ class TestRegisterWithDaemon:
                     path="/tmp/test",
                     tmux_session="dev:test",
                     circle="dev",
-                    backend="claudemux",
+                    backend="claude-code",
                 )
 
         assert result is False

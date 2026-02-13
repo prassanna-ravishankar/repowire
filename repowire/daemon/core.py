@@ -9,10 +9,10 @@ import asyncio
 import logging
 from collections import deque
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from repowire.config.models import BackendType, Config, PeerConfig, load_config
+from repowire.config.models import Config, PeerConfig, load_config
 from repowire.protocol.peers import Peer, PeerStatus
 
 if TYPE_CHECKING:
@@ -183,7 +183,7 @@ class PeerManager:
                             display_name=mapping.display_name,
                             path=mapping.path or "",
                             machine="unknown",
-                            backend=cast(BackendType, mapping.backend),
+                            backend=mapping.backend,
                             circle=mapping.circle,
                             status=PeerStatus.OFFLINE,
                             metadata={},

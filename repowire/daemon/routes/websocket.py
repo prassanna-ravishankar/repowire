@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from repowire.config.models import BackendType
+from repowire.config.models import AgentType
 from repowire.protocol.peers import Peer, PeerStatus
 
 if TYPE_CHECKING:
@@ -75,7 +75,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # Extract connection parameters
         display_name = data.get("display_name")
         circle = data.get("circle", "default")
-        backend_str = data.get("backend", "claudemux")
+        backend_str = data.get("backend", "claude-code")
         path = data.get("path")
         tmux_session = data.get("tmux_session")
 
@@ -85,15 +85,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await websocket.close(code=4002, reason="Invalid display_name")
             return
 
-        # Validate backend
-        if backend_str not in ("claudemux", "opencode"):
-            await websocket.send_json({
-                "type": "error",
-                "error": "Invalid backend: must be 'claudemux' or 'opencode'",
-            })
+        # Validate against AgentType
+        try:
+            backend = AgentType(backend_str)
+        except ValueError:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "error": "Invalid backend: must be 'claude-code' or 'opencode'",
+                }
+            )
             await websocket.close(code=4002, reason="Invalid backend")
             return
-        backend: BackendType = backend_str  # type: ignore[assignment]
 
         # Validate path if provided
         if path:

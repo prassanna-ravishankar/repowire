@@ -113,27 +113,27 @@ tmux session "dev" (circle)
 
 When you spawn a peer with `--circle dev`, repowire creates (or reuses) a tmux session named "dev" and adds a window for your agent.
 
-### Backends
+### Agent Types
 
-The **backend** determines which agent you're running and how messages are delivered:
+The **agent type** identifies which AI coding tool a peer runs. All message delivery goes through a unified WebSocket protocol.
 
-| Backend | Agent | Message Delivery |
-|---------|-------|------------------|
-| **claudemux** | Claude Code | libtmux injection + hooks |
-| **opencode** | OpenCode | WebSocket plugin + SDK |
+| Agent Type | Tool | Integration |
+|------------|------|-------------|
+| **claude-code** | Claude Code | Hooks + MCP server |
+| **opencode** | OpenCode | WebSocket plugin |
 
 ### What's Installed
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
 | **Daemon** | System service (launchd/systemd) | Routes messages between peers, `127.0.0.1:8377` |
-| **Hooks** | `~/.claude/settings.json` | Claude Code lifecycle events (claudemux) |
-| **Plugin** | `~/.config/opencode/plugin/repowire.ts` | OpenCode integration (opencode) |
+| **Hooks** | `~/.claude/settings.json` | Claude Code lifecycle events |
+| **Plugin** | `~/.config/opencode/plugin/repowire.ts` | OpenCode integration |
 | **MCP Server** | Registered with Claude | `ask_peer`, `list_peers`, `notify_peer`, `broadcast` tools |
 | **Config** | `~/.repowire/config.yaml` | Peer registry and settings |
 
 <details>
-<summary><strong>claudemux architecture</strong></summary>
+<summary><strong>Claude Code architecture</strong></summary>
 
 ```
 ┌─────────────┐                           ┌─────────────┐
@@ -187,7 +187,7 @@ The **backend** determines which agent you're running and how messages are deliv
 
 </details>
 
-Backend is auto-detected during `repowire setup` based on installed CLIs.
+Agent type is auto-detected during `repowire setup` based on installed CLIs.
 
 ## CLI Reference
 
@@ -217,7 +217,7 @@ repowire peer new . --circle dev  # Spawn with custom circle
 <summary>Advanced commands (hidden from <code>--help</code>)</summary>
 
 ```bash
-# Backend-specific
+# Agent-specific
 repowire claudemux status         # Check hooks installation
 repowire opencode status          # Check plugin installation
 
@@ -261,7 +261,7 @@ Config file: `~/.repowire/config.yaml`
 daemon:
   host: "127.0.0.1"
   port: 8377
-  # Per-peer routing auto-detects backend based on peer config
+  # All peers connect via unified WebSocket protocol
 
 relay:
   enabled: false

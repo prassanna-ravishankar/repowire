@@ -5,9 +5,7 @@ The QueryTracker manages pending queries across all backends, providing:
 - Correlation ID based request/response matching
 - Peer-based query cancellation (e.g., when a peer goes offline)
 
-This replaces the per-backend query tracking that was previously in:
-- ClaudemuxBackend._pending_queries
-- WebSocketManager._pending_queries
+Replaces per-component query tracking with a single unified tracker.
 """
 
 from __future__ import annotations

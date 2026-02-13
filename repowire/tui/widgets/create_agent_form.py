@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -13,12 +12,12 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Button, Input, Label, Select
 
-from repowire.config.models import BackendType
+from repowire.config.models import AgentType
 from repowire.spawn import SpawnConfig, spawn_peer
 
 logger = logging.getLogger(__name__)
 
-BACKEND_OPTIONS = [("Claude Code", "claudemux"), ("OpenCode", "opencode")]
+BACKEND_OPTIONS = [("Claude Code", "claude-code"), ("OpenCode", "opencode")]
 
 
 @dataclass
@@ -68,7 +67,7 @@ class CreateAgentForm(Widget):
                 yield Input(placeholder="Enter new circle name", id="new-circle-input")
             with Horizontal(classes="form-field"):
                 yield Label("Backend")
-                yield Select(BACKEND_OPTIONS, value="claudemux", id="backend-select")
+                yield Select(BACKEND_OPTIONS, value="claude-code", id="backend-select")
             with Horizontal(id="form-buttons"):
                 yield Button("Cancel", id="cancel-btn", variant="default")
                 yield Button("Create Agent", id="create-btn", variant="success")
@@ -108,14 +107,14 @@ class CreateAgentForm(Widget):
         else:
             circle = str(circle_select.value) if circle_select.value else "default"
 
-        backend = str(self.query_one("#backend-select", Select).value) or "claudemux"
-        command = "claude" if backend == "claudemux" else "opencode"
+        backend = str(self.query_one("#backend-select", Select).value) or "claude-code"
+        command = "claude" if backend == "claude-code" else "opencode"
 
         # Use agent name as custom command prefix if provided (sets window name)
         config = SpawnConfig(
             path=str(expanded.resolve()),
             circle=circle,
-            backend=cast(BackendType, backend),
+            backend=AgentType(backend),
             command=command,
         )
 
@@ -133,7 +132,7 @@ class CreateAgentForm(Widget):
             self.query_one(input_id, Input).value = ""
         self.query_one("#new-circle-input", Input).styles.display = "none"
         self.query_one("#circle-select", Select).value = "default"
-        self.query_one("#backend-select", Select).value = "claudemux"
+        self.query_one("#backend-select", Select).value = "claude-code"
 
     def update_circles(self, circles: list[str]) -> None:
         """Update available circles from daemon."""

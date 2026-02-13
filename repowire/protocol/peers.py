@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from repowire.config.models import BackendType
+from repowire.config.models import AgentType
 
 
 class PeerStatus(str, Enum):
@@ -24,16 +24,16 @@ class Peer(BaseModel):
 
     A peer represents a Claude Code or OpenCode session that can send and receive messages.
 
-    Identity is based on a canonical `peer_id` which is unique per backend:
-    - claudemux: `%N` (tmux pane ID, e.g., "%42") - stable across session restarts
+    Identity is based on a canonical `peer_id` which is unique per agent type:
+    - claude-code: `%N` (tmux pane ID, e.g., "%42") - stable across session restarts
     - opencode: `oc-{uuid12}` (daemon-assigned) - assigned on WebSocket connect
 
     Message addressing uses `display_name` (human-friendly, may not be unique).
     Internal routing uses `peer_id` (always unique, never ambiguous).
     """
 
-    # Primary identity - unique per backend
-    # claudemux: "%N" (tmux pane ID), opencode: "oc-{uuid12}"
+    # Primary identity - unique per agent type
+    # claude-code: "%N" (tmux pane ID), opencode: "oc-{uuid12}"
     peer_id: str = Field(..., description="Unique peer identifier ('%42' or 'oc-...')")
     display_name: str = Field(..., description="Human-readable name (folder name)")
     path: str = Field(..., description="Working directory path")
@@ -42,9 +42,9 @@ class Peer(BaseModel):
     # tmux session:window for targeting
     tmux_session: str | None = Field(None, description="Tmux session:window (e.g., 'dev:frontend')")
 
-    # Backend type
-    backend: BackendType = Field(
-        default="claudemux", description="Backend type: claudemux or opencode"
+    # Agent type
+    backend: AgentType = Field(
+        default=AgentType.CLAUDE_CODE, description="Agent type: claude-code or opencode"
     )
 
     # Legacy/optional fields
@@ -97,13 +97,13 @@ class Peer(BaseModel):
             self.opencode_url is not None and "localhost" in self.opencode_url
         )
 
-    def is_claudemux(self) -> bool:
-        """Check if this peer uses the claudemux backend."""
-        return self.backend == "claudemux"
+    def is_claude_code(self) -> bool:
+        """Check if this peer runs Claude Code."""
+        return self.backend == AgentType.CLAUDE_CODE
 
     def is_opencode(self) -> bool:
-        """Check if this peer uses the opencode backend."""
-        return self.backend == "opencode"
+        """Check if this peer runs OpenCode."""
+        return self.backend == AgentType.OPENCODE
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""

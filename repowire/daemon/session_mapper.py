@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from repowire.config.models import BackendType
+from repowire.config.models import AgentType
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class SessionMapping:
     session_id: str  # "repow-dev-a1b2c3d4"
     display_name: str
     circle: str
-    backend: BackendType
+    backend: AgentType
     path: str | None = None
     updated_at: str | None = None
 
@@ -56,17 +56,14 @@ class SessionMapper:
     def _save(self) -> None:
         """Save mappings to disk."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            session_id: asdict(mapping)
-            for session_id, mapping in self._mappings.items()
-        }
+        data = {session_id: asdict(mapping) for session_id, mapping in self._mappings.items()}
         self._path.write_text(json.dumps(data, indent=2))
 
     def register_session(
         self,
         display_name: str,
         circle: str,
-        backend: BackendType,
+        backend: AgentType,
         path: str | None = None,
     ) -> str:
         """Register or reuse session_id for a peer.

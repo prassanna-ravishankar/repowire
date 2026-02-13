@@ -5,10 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import signal
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,14 +30,12 @@ __version__ = "0.1.0"
 
 def create_app(
     config: Config | None = None,
-    backend_factory: Callable[[], Any] | None = None,
     relay_mode: bool = False,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Args:
         config: Optional configuration. Loaded from disk if not provided.
-        backend_factory: Optional factory function to create the backend.
         relay_mode: Enable relay mode for remote peer communication.
 
     Returns:

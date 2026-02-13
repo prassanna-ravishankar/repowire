@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import socket
-from typing import Any, cast
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from repowire.config.models import BackendType
+from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_config, get_peer_manager
 from repowire.protocol.peers import Peer, PeerStatus
@@ -26,7 +26,7 @@ class PeerInfo(BaseModel):
     path: str | None = None
     machine: str | None = None
     tmux_session: str | None = None
-    backend: str = "claudemux"
+    backend: str = "claude-code"
     opencode_url: str | None = None
     circle: str = "global"
     status: str
@@ -69,7 +69,7 @@ class RegisterPeerRequest(BaseModel):
     path: str | None = Field(None, description="Working directory path")
     machine: str | None = Field(None, description="Machine hostname")
     tmux_session: str | None = Field(None, description="Tmux session:window")
-    backend: str = Field(default="claudemux", description="Backend type")
+    backend: str = Field(default="claude-code", description="Backend type")
     opencode_url: str | None = Field(None, description="OpenCode server URL")
     circle: str | None = Field(None, description="Circle (logical subnet)")
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -108,7 +108,7 @@ def _build_peer(
         path=request.path or "",
         machine=request.machine or socket.gethostname(),
         tmux_session=request.tmux_session,
-        backend=cast(BackendType, request.backend),
+        backend=AgentType(request.backend),
         circle=circle,
         status=PeerStatus.ONLINE,
         metadata=request.metadata,

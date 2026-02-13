@@ -1,5 +1,3 @@
-"""Claude Code hooks installer for claudemux backend."""
-
 from __future__ import annotations
 
 import json
@@ -7,9 +5,10 @@ from pathlib import Path
 
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 
+HOOK_EVENTS = ["Stop", "SessionStart", "SessionEnd", "UserPromptSubmit", "Notification"]
+
 
 def _load_claude_settings() -> dict:
-    """Load Claude settings file."""
     if not CLAUDE_SETTINGS.exists():
         return {}
     try:
@@ -20,14 +19,12 @@ def _load_claude_settings() -> dict:
 
 
 def _save_claude_settings(settings: dict) -> None:
-    """Save Claude settings file."""
     CLAUDE_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
     with open(CLAUDE_SETTINGS, "w") as f:
         json.dump(settings, f, indent=2)
 
 
 def _make_hook_config(command: str) -> dict:
-    """Create a hook configuration entry."""
     return {
         "hooks": [
             {
@@ -38,21 +35,26 @@ def _make_hook_config(command: str) -> dict:
     }
 
 
+def _make_notification_hook_config(command: str, matcher: str) -> dict:
+    return {
+        "matcher": matcher,
+        "hooks": [
+            {
+                "type": "command",
+                "command": command,
+            }
+        ],
+    }
+
+
 def install_hooks(dev: bool = False) -> bool:
-    """Install Claude Code hooks for repowire.
-
-    Args:
-        dev: If True, use local project path for uvx
-
-    Returns:
-        True if installation successful
-    """
     pending_dir = Path.home() / ".repowire" / "pending"
     pending_dir.mkdir(parents=True, exist_ok=True)
 
     if dev:
-        project_dir = Path(__file__).parent.parent.parent.parent
-        base_cmd = f"uvx --from {project_dir} repowire"
+        project_dir = Path(__file__).parent.parent.parent
+        # Use uv run for dev mode to always run from source (no caching)
+        base_cmd = f"uv run --directory {project_dir} repowire"
     else:
         base_cmd = "uvx repowire"
 
@@ -63,41 +65,39 @@ def install_hooks(dev: bool = False) -> bool:
     settings["hooks"]["Stop"] = [_make_hook_config(f"{base_cmd} hook stop")]
     settings["hooks"]["SessionStart"] = [_make_hook_config(f"{base_cmd} hook session")]
     settings["hooks"]["SessionEnd"] = [_make_hook_config(f"{base_cmd} hook session")]
+    settings["hooks"]["UserPromptSubmit"] = [_make_hook_config(f"{base_cmd} hook prompt")]
+    settings["hooks"]["Notification"] = [
+        _make_notification_hook_config(f"{base_cmd} hook notification", "idle_prompt")
+    ]
 
     _save_claude_settings(settings)
     return True
 
 
 def uninstall_hooks() -> bool:
-    """Uninstall Claude Code hooks for repowire.
-
-    Returns:
-        True if uninstallation successful
-    """
+    """Remove repowire hooks. Returns True if hooks were removed, False if none existed."""
     settings = _load_claude_settings()
 
     if "hooks" not in settings:
-        return True
+        return False
 
-    for event in ["Stop", "SessionStart", "SessionEnd"]:
+    removed_any = False
+    for event in HOOK_EVENTS:
         if event in settings["hooks"]:
             del settings["hooks"][event]
+            removed_any = True
 
     if not settings["hooks"]:
         del settings["hooks"]
 
-    _save_claude_settings(settings)
-    return True
+    if removed_any:
+        _save_claude_settings(settings)
+    return removed_any
 
 
 def check_hooks_installed() -> bool:
-    """Check if Claude Code hooks are installed.
-
-    Returns:
-        True if all required hooks are installed
-    """
     settings = _load_claude_settings()
     if "hooks" not in settings:
         return False
 
-    return all(event in settings["hooks"] for event in ["Stop", "SessionStart", "SessionEnd"])
+    return all(event in settings["hooks"] for event in HOOK_EVENTS)

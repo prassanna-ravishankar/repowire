@@ -10,11 +10,14 @@ import httpx
 import libtmux
 from libtmux.exc import LibTmuxException, ObjectDoesNotExist
 
-from repowire.config.models import BackendType
+from repowire.config.models import AgentType
 from repowire.daemon.deps import get_config
 
 # Default commands for each backend
-BACKEND_COMMANDS: dict[BackendType, str] = {"claudemux": "claude", "opencode": "opencode"}
+BACKEND_COMMANDS: dict[AgentType, str] = {
+    AgentType.CLAUDE_CODE: "claude",
+    AgentType.OPENCODE: "opencode",
+}
 
 
 @dataclass
@@ -23,7 +26,7 @@ class SpawnConfig:
 
     path: str
     circle: str
-    backend: BackendType  # "claudemux" or "opencode"
+    backend: AgentType  # "claude-code" or "opencode"
     command: str = ""  # Full command to run (e.g., "claude --model opus")
 
     @property
@@ -133,7 +136,7 @@ def _register_with_daemon(
     path: str,
     tmux_session: str,
     circle: str,
-    backend: BackendType,
+    backend: AgentType,
 ) -> bool:
     """Register peer with daemon. Returns True if successful."""
     import logging

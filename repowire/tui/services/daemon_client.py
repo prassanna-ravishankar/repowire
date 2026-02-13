@@ -8,8 +8,6 @@ from typing import Any, Literal
 
 import httpx
 
-from repowire.config.models import BackendType
-
 logger = logging.getLogger(__name__)
 
 
@@ -22,7 +20,7 @@ class PeerInfo:
     display_name: str
     status: str
     circle: str
-    backend: BackendType
+    backend: str
     path: str | None
     tmux_session: str | None
     opencode_url: str | None
@@ -163,7 +161,7 @@ class DaemonClient:
                     display_name=p.get("display_name", p.get("name", "?")),
                     status=p.get("status", "unknown"),
                     circle=p.get("circle", "global"),
-                    backend=p.get("backend", "claudemux"),
+                    backend=p.get("backend", "claude-code"),
                     path=p.get("path"),
                     tmux_session=p.get("tmux_session"),
                     opencode_url=p.get("opencode_url"),
@@ -198,7 +196,7 @@ class DaemonClient:
         circle: str | None = None,
         peer_id: str | None = None,
         display_name: str | None = None,
-        backend: BackendType = "claudemux",
+        backend: str = "claude-code",
     ) -> bool:
         """Register a new peer."""
         try:

@@ -1,19 +1,19 @@
 ---
 name: integration-test
-description: Integration test for repowire peer-to-peer messaging. Supports claudemux, opencode, or mixed-backend testing with circle boundaries and cross-backend communication. Can run all modes in parallel via agent teams.
+description: Integration test for repowire peer-to-peer messaging. Supports claude-code, opencode, or mixed-backend testing with circle boundaries and cross-agent-type communication. Can run all modes in parallel via agent teams.
 ---
 
 # Repowire Integration Test
 
-Unified integration test for peer-to-peer communication across backends.
+Unified integration test for peer-to-peer communication across agent types.
 
 ## Execution Modes
 
 | Argument | Behavior |
 |----------|----------|
-| `claudemux` | Test claudemux backend only |
-| `opencode` | Test opencode backend only |
-| `mixed` | Test cross-backend communication |
+| `claude-code` | Test Claude Code agent type only |
+| `opencode` | Test OpenCode agent type only |
+| `mixed` | Test cross-agent-type communication |
 | `all` or no argument | Run all three modes in parallel using agent teams |
 
 ## Team-Based Parallel Execution
@@ -24,9 +24,9 @@ When `all` is specified (or no argument), the lead agent should:
 2. Ask user for project directories and opencode model (Phase 2)
 3. Ensure daemon is running
 4. Create tasks for each mode and spawn background agents in parallel:
-   - Agent `test-claudemux` → runs claudemux tests
+   - Agent `test-claude-code` → runs claude-code tests
    - Agent `test-opencode` → runs opencode tests
-   - Agent `test-mixed` → runs mixed tests (depends on both backends being available)
+   - Agent `test-mixed` → runs mixed tests (depends on both agent types being available)
 5. Collect results and produce unified report
 
 ### Spawning agents
@@ -34,7 +34,7 @@ When `all` is specified (or no argument), the lead agent should:
 Use the Task tool with `run_in_background: true` to run modes in parallel:
 
 ```
-Task(subagent_type="general-purpose", run_in_background=true, prompt="Run the claudemux integration test. [paste mode section]")
+Task(subagent_type="general-purpose", run_in_background=true, prompt="Run the claude-code integration test. [paste mode section]")
 Task(subagent_type="general-purpose", run_in_background=true, prompt="Run the opencode integration test. [paste mode section]")
 ```
 
@@ -115,7 +115,7 @@ curl -s http://127.0.0.1:8377/health | jq .
 
 ---
 
-## Mode: claudemux
+## Mode: claude-code
 
 **Requires:** tmux, claude CLI, Claude hooks installed
 **Tmux sessions used:** `circle-a`, `circle-b`
@@ -278,7 +278,7 @@ print(f'  opencode peers: {len(oc)}')
 | "No active session" | Warmup prompt didn't create session | Press Enter manually in opencode pane, or wait longer |
 | "(empty response)" | Model returned 0 parts | Check model config — switch to `anthropic/claude-sonnet-4-5-20250929` |
 | "Not Found" in TUI | LiteLLM model ID not recognized | Use `--model anthropic/<model-id>` directly |
-| Plugin not connecting | Wrong WS URL or old plugin | Reinstall: `uv run python3 -c "from repowire.backends.opencode.installer import install_plugin; install_plugin()"` |
+| Plugin not connecting | Wrong WS URL or old plugin | Reinstall: `uv run python3 -c "from repowire.installers.opencode import install_plugin; install_plugin()"` |
 
 ### Cleanup
 
@@ -297,10 +297,10 @@ repowire peer prune --force 2>/dev/null || true
 
 ## Mode: mixed (Cross-Backend)
 
-**Requires:** Both claudemux AND opencode setups working
+**Requires:** Both claude-code AND opencode setups working
 **Tmux sessions used:** `mixed-test`
 **Project directories needed:** 2 (1 for claude, 1 for opencode)
-**Depends on:** claudemux and opencode modes passing individually first
+**Depends on:** claude-code and opencode modes passing individually first
 
 ### Setup
 
@@ -321,7 +321,7 @@ sleep 30
 
 ### Tests
 
-1. **Cross-backend registration**
+1. **Cross-agent-type registration**
    ```bash
    curl -s http://127.0.0.1:8377/peers | jq '.peers[] | select(.status == "online") | {name, backend, peer_id}'
    ```
@@ -354,7 +354,7 @@ repowire peer prune --force 2>/dev/null || true
 
 ### Success Criteria
 
-- [ ] Both backends register with `repow-{circle}-{uuid8}` peer_id
+- [ ] Both agent types register with `repow-{circle}-{uuid8}` peer_id
 - [ ] Claude → OpenCode proxy: PASS
 - [ ] OpenCode → Claude proxy: PASS
 
@@ -369,7 +369,7 @@ Aggregate results from all modes into a single report:
   REPOWIRE INTEGRATION TEST RESULTS
 ==========================================
 
-  MODE: CLAUDEMUX
+  MODE: CLAUDE-CODE
   ├ Registration:    PASS/FAIL (X/Y peers)
   ├ Direct query:    PASS/FAIL
   ├ Proxy query:     PASS/FAIL

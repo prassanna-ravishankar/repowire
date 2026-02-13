@@ -20,7 +20,7 @@ class TestDaemonClient:
             json={
                 "status": "ok",
                 "version": "0.1.0",
-                "backend": "claudemux",
+                "backend": "claude-code",
                 "relay_mode": False,
             },
         )
@@ -30,7 +30,7 @@ class TestDaemonClient:
 
         assert health is not None
         assert health.status == "ok"
-        assert health.backend == "claudemux"
+        assert health.backend == "claude-code"
 
     @pytest.mark.asyncio
     async def test_get_peers_empty(self, httpx_mock) -> None:
@@ -85,20 +85,20 @@ class TestPeerInfo:
     """Tests for PeerInfo dataclass."""
 
     def test_backend_tmux(self) -> None:
-        """Test PeerInfo with claudemux backend."""
+        """Test PeerInfo with claude-code backend."""
         peer = PeerInfo(
             peer_id="%42",
             name="test",
             display_name="test",
             status="online",
             circle="global",
-            backend="claudemux",
+            backend="claude-code",
             path="/tmp",
             tmux_session="0:test",
             opencode_url=None,
             metadata={},
         )
-        assert peer.backend == "claudemux"
+        assert peer.backend == "claude-code"
         assert peer.tmux_session == "0:test"
 
     def test_backend_opencode(self) -> None:
@@ -126,7 +126,7 @@ class TestPeerInfo:
             display_name="My Application",
             status="busy",
             circle="development",
-            backend="claudemux",
+            backend="claude-code",
             path="/home/user/myapp",
             tmux_session="dev:myapp",
             opencode_url=None,
@@ -148,7 +148,7 @@ class TestSpawnConfig:
         config = SpawnConfig(
             path="/tmp/testproject",
             circle="default",
-            backend="claudemux",
+            backend="claude-code",
         )
         assert config.command == ""
 
@@ -157,7 +157,7 @@ class TestSpawnConfig:
         config = SpawnConfig(
             path="/tmp/testproject",
             circle="default",
-            backend="claudemux",
+            backend="claude-code",
             command="claude --model opus",
         )
         assert config.command == "claude --model opus"
@@ -167,7 +167,7 @@ class TestSpawnConfig:
         config = SpawnConfig(
             path="/home/user/projects/myapp",
             circle="default",
-            backend="claudemux",
+            backend="claude-code",
         )
         assert config.display_name == "myapp"
 
@@ -176,7 +176,7 @@ class TestSpawnConfig:
         config = SpawnConfig(
             path="/tmp/test",
             circle="default",
-            backend="claudemux",
+            backend="claude-code",
         )
         assert config.command == ""
 
@@ -185,7 +185,7 @@ class TestSpawnConfig:
         config = SpawnConfig(
             path="/tmp/test",
             circle="default",
-            backend="claudemux",
+            backend="claude-code",
             command="claude --model opus --verbose",
         )
         assert config.command == "claude --model opus --verbose"
