@@ -76,6 +76,22 @@ function connectWebSocket() {
       backend: "opencode",
       path: projectPath,
     }
+
+    // Include tmux session info if available (for TUI attach support)
+    // Format: "session_name:window_name"
+    if (process.env.TMUX) {
+      try {
+        const { execSync } = require("child_process")
+        const session = execSync("tmux display-message -p '#S'", { encoding: "utf-8" }).trim()
+        const window = execSync("tmux display-message -p '#W'", { encoding: "utf-8" }).trim()
+        if (session && window) {
+          connectMsg.tmux_session = `${session}:${window}`
+        }
+      } catch (e) {
+        // tmux commands failed, skip session info
+      }
+    }
+
     if (AUTH_TOKEN) {
       connectMsg.auth_token = AUTH_TOKEN
     }

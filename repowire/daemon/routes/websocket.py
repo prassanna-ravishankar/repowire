@@ -77,6 +77,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         circle = data.get("circle", "default")
         backend_str = data.get("backend", "claudemux")
         path = data.get("path")
+        tmux_session = data.get("tmux_session")
 
         # Validate display_name
         if not display_name or not re.match(r"^[a-zA-Z0-9_-]+$", display_name):
@@ -126,6 +127,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             backend=backend,
             circle=circle,
             status=PeerStatus.ONLINE,
+            tmux_session=tmux_session,
             metadata={},
         )
         await state.peer_manager.register_peer(peer)
