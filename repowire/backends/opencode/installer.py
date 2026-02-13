@@ -117,11 +117,7 @@ function sendStatus(status: "busy" | "idle" | "offline") {
   }
 }
 
-function sendSession(sessionId: string) {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "session", session_id: sessionId }))
-  }
-}
+// Session tracking is now handled internally, no need to send to daemon
 
 function sendResponse(correlationId: string, text: string) {
   if (ws?.readyState === WebSocket.OPEN) {
@@ -200,7 +196,7 @@ async function resolveSessionId(): Promise<string | null> {
   return null
 }
 
-// Handle incoming query - inject via SDK with session fallbacks
+// Handle incoming query - use sync prompt then poll for completed response
 async function handleIncomingQuery(correlationId: string, fromPeer: string, text: string) {
   if (!opencodeClient) {
     sendError(correlationId, "OpenCode client not available")
@@ -216,24 +212,76 @@ async function handleIncomingQuery(correlationId: string, fromPeer: string, text
   sendStatus("busy")
 
   try {
+    // session.prompt() fires the query. It returns immediately with the
+    // message skeleton (0 parts), but the model IS processing.
+    // We pass the model from the session status to avoid agent model override.
+    let promptBody: Record<string, unknown> = { parts: [{ type: "text", text }] }
+    try {
+      const statusResult = await opencodeClient.session.status({ path: { id: sessionId } })
+      const modelID = (statusResult?.data as any)?.modelID
+      const providerID = (statusResult?.data as any)?.providerID
+      if (modelID && providerID) {
+        promptBody.model = { providerID, modelID }
+      }
+    } catch { /* use default model */ }
+
     const result = await opencodeClient.session.prompt({
       path: { id: sessionId },
-      body: { parts: [{ type: "text", text }] }
+      body: promptBody as any
     })
 
-    // Extract response text from SDK response
-    let responseText = ""
-    const parts = result?.data?.parts || result?.parts
-    if (Array.isArray(parts)) {
+    // Get the message ID from the response
+    const messageId = result?.data?.info?.id
+    if (!messageId) {
+      sendResponse(correlationId, "(no message ID returned)")
+      sendStatus("idle")
+      return
+    }
+
+    // Poll for completion: check the message until parts are populated
+    const maxWait = 120_000  // 120s
+    const pollInterval = 1_000  // 1s (faster polling)
+    const start = Date.now()
+
+    while (Date.now() - start < maxWait) {
+      await new Promise(r => setTimeout(r, pollInterval))
+
+      const msgResult = await opencodeClient.session.message({
+        path: { id: sessionId, messageID: messageId }
+      })
+      const msg = msgResult?.data
+
+      // Try multiple paths for parts (SDK response structure varies)
+      const parts = (msg as any)?.parts || (msg as any)?.info?.parts || []
+
+      let responseText = ""
       for (const part of parts) {
         if (part.type === "text" && part.text) responseText += part.text
       }
-    }
-    if (!responseText && parts?.length === 0) {
-      console.debug("[repowire] Model returned 0 parts (check model/provider config)")
+
+      // Check completion status
+      const info = (msg as any)?.info || msg
+      const isCompleted = info?.time?.completed || info?.status === "completed"
+      const hasError = info?.error
+
+      // If we got text, return it immediately
+      if (responseText) {
+        sendResponse(correlationId, responseText)
+        sendStatus("idle")
+        return
+      }
+
+      // If completed or errored WITHOUT text, stop polling
+      if (isCompleted || hasError) {
+        const errorMsg = hasError ? `Model error: ${JSON.stringify(info.error)}` : "(empty response - model completed without output)"
+        sendResponse(correlationId, errorMsg)
+        sendStatus("idle")
+        return
+      }
     }
 
-    sendResponse(correlationId, responseText || "(empty response)")
+    // Timeout
+    sendResponse(correlationId, "(timeout waiting for response)")
   } catch (e) {
     const errorMsg = e instanceof Error ? e.message : String(e)
     console.error(`[repowire] Query failed: ${errorMsg}`)
@@ -366,14 +414,12 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         const info = typedEvent.properties?.info as SessionEventInfo | undefined
         if (info?.id) {
           activeSessionId = info.id
-          sendSession(activeSessionId)
         }
       } else if (typedEvent.type === "message.updated") {
         const info = typedEvent.properties?.info as MessageEventInfo | undefined
         if (info?.role === "assistant" && info?.sessionID) {
           if (info.sessionID !== activeSessionId) {
             activeSessionId = info.sessionID
-            sendSession(activeSessionId)
           }
           sendStatus("busy")
         }
