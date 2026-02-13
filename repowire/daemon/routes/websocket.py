@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from repowire.config.models import BackendType
-from repowire.protocol.peers import PeerStatus
+from repowire.protocol.peers import Peer, PeerStatus
 
 if TYPE_CHECKING:
     from repowire.daemon.query_tracker import QueryTracker
@@ -86,7 +86,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
         # Validate backend
         if backend_str not in ("claudemux", "opencode"):
-            await websocket.send_json({"type": "error", "error": "Invalid backend: must be 'claudemux' or 'opencode'"})
+            await websocket.send_json({
+                "type": "error",
+                "error": "Invalid backend: must be 'claudemux' or 'opencode'",
+            })
             await websocket.close(code=4002, reason="Invalid backend")
             return
         backend: BackendType = backend_str  # type: ignore[assignment]
@@ -113,6 +116,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
         # Register with transport (handles connection + status tracking)
         await transport.connect(session_id, websocket)
+
+        # Register with peer manager
+        peer = Peer(
+            peer_id=session_id,
+            display_name=display_name,
+            path=path or "",
+            machine=os.environ.get("HOSTNAME", "unknown"),
+            backend=backend,
+            circle=circle,
+            status=PeerStatus.ONLINE,
+            metadata={},
+        )
+        await state.peer_manager.register_peer(peer)
 
         # Send connect response
         await websocket.send_json({"type": "connected", "session_id": session_id})

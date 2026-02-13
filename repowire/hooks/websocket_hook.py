@@ -180,7 +180,7 @@ async def main() -> int:
                             "type": "connect",
                             "display_name": display_name,
                             "circle": circle,
-                            "backend": "claudecode",
+                            "backend": "claudemux",
                             "path": path,
                         }
                     )

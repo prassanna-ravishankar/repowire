@@ -138,19 +138,14 @@ def main() -> int:
         return 0
 
     event = input_data.get("hook_event_name")
-    session_id = input_data.get("session_id")
     cwd = input_data.get("cwd", os.getcwd())
 
     # Get tmux info (pane_id is the unique identifier)
     tmux_info = get_tmux_info()
     pane_id = tmux_info["pane_id"]
-    tmux_target = None
-    if tmux_info["session_name"] and tmux_info["window_name"]:
-        tmux_target = f"{tmux_info['session_name']}:{tmux_info['window_name']}"
 
     # display_name is the folder name (human-readable)
     display_name = get_peer_name(cwd)
-    machine = get_machine_name()
 
     if event == "SessionStart":
         # Launch async WebSocket hook in background
