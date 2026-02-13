@@ -8,6 +8,7 @@ import subprocess
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.events import Key
 from textual.screen import ModalScreen
 from textual.widgets import Markdown, Static, TabbedContent, TabPane
 
@@ -96,6 +97,16 @@ class RepowireApp(App):
         await self._load_peers()
         self.set_interval(5, self._load_peers)
 
+    def on_key(self, event: Key) -> None:
+        """Handle arrow keys from tabs to move focus to peer list."""
+        # If tabs have focus and user presses up/down, move focus to agent list
+        tabs = self.query_one(TabbedContent)
+        if self.focused == tabs and event.key in ("up", "down"):
+            agent_list = self.query_one("#agent-list", AgentList)
+            agent_list.focus()
+            event.prevent_default()
+            event.stop()
+
     async def _load_peers(self) -> None:
         """Fetch peers from daemon and update widgets."""
         peers = await self.daemon.get_peers()
@@ -151,14 +162,23 @@ class RepowireApp(App):
     async def action_shell(self) -> None:
         agent_list = self.query_one("#agent-list", AgentList)
         peer = agent_list.selected_agent
-        if peer is None or not peer.tmux_session:
-            self.notify("Select an agent with a tmux session first", severity="warning")
+        if peer is None:
+            self.notify("No agent selected", severity="warning")
+            return
+        if not peer.tmux_session:
+            self.notify(
+                f"Agent '{peer.name}' has no tmux session (backend: {peer.backend})",
+                severity="warning",
+                timeout=3,
+            )
             return
         with self.suspend():
             try:
                 attach_session(peer.tmux_session)
             except subprocess.CalledProcessError as e:
                 logger.debug(f"Attach ended: exit code {e.returncode}")
+            except Exception as e:
+                self.notify(f"Failed to attach: {e}", severity="error")
         await self._load_peers()
 
     async def action_refresh(self) -> None:
