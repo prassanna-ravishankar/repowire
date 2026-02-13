@@ -149,11 +149,18 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
     await handleIncomingQuery(correlationId, fromPeer, text)
   } else if (msgType === "notify" || msgType === "broadcast") {
     const text = data.text as string
-    // Fire-and-forget - inject if we have a session
-    if (activeSessionId && opencodeClient) {
+    // Try to resolve session (like we do for queries)
+    const sessionId = await resolveSessionId()
+    if (!sessionId) {
+      console.error(`[repowire] Cannot inject ${msgType}: no active session`)
+      return
+    }
+
+    // Fire-and-forget - inject notification/broadcast
+    if (opencodeClient) {
       try {
         await opencodeClient.session.prompt({
-          path: { id: activeSessionId },
+          path: { id: sessionId },
           body: { parts: [{ type: "text", text }] }
         })
       } catch (e) {
@@ -174,11 +181,10 @@ async function resolveSessionId(): Promise<string | null> {
     const sessions = result?.data
     if (Array.isArray(sessions) && sessions.length > 0) {
       activeSessionId = sessions[sessions.length - 1].id
-      console.debug(`[repowire] Resolved session via list: ${activeSessionId}`)
       return activeSessionId
     }
   } catch (e) {
-    console.debug("[repowire] session.list() failed:", e)
+    // Listing failed, will try to create
   }
 
   // Create a new session as last resort
@@ -186,11 +192,10 @@ async function resolveSessionId(): Promise<string | null> {
     const result = await opencodeClient.session.create({ body: {} })
     if (result?.data?.id) {
       activeSessionId = result.data.id
-      console.debug(`[repowire] Created new session: ${activeSessionId}`)
       return activeSessionId
     }
   } catch (e) {
-    console.debug("[repowire] session.create() failed:", e)
+    // Creation failed
   }
 
   return null
