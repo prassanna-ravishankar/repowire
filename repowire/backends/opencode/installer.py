@@ -214,20 +214,10 @@ async function handleIncomingQuery(correlationId: string, fromPeer: string, text
   try {
     // session.prompt() fires the query. It returns immediately with the
     // message skeleton (0 parts), but the model IS processing.
-    // We pass the model from the session status to avoid agent model override.
-    let promptBody: Record<string, unknown> = { parts: [{ type: "text", text }] }
-    try {
-      const statusResult = await opencodeClient.session.status({ path: { id: sessionId } })
-      const modelID = (statusResult?.data as any)?.modelID
-      const providerID = (statusResult?.data as any)?.providerID
-      if (modelID && providerID) {
-        promptBody.model = { providerID, modelID }
-      }
-    } catch { /* use default model */ }
-
+    // Use session's default model (don't override)
     const result = await opencodeClient.session.prompt({
       path: { id: sessionId },
-      body: promptBody as any
+      body: { parts: [{ type: "text", text }] }
     })
 
     // Get the message ID from the response
