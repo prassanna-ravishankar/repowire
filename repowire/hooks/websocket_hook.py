@@ -43,19 +43,9 @@ def get_circle_from_tmux() -> str:
     return "default"
 
 
-def get_peer_cwd() -> Path:
-    """Get the peer's actual working directory.
-
-    Uses REPOWIRE_PEER_CWD if set (passed by session_handler),
-    falls back to process CWD.
-    """
-    peer_cwd = os.environ.get("REPOWIRE_PEER_CWD")
-    return Path(peer_cwd) if peer_cwd else Path.cwd()
-
-
 def get_display_name_from_cwd() -> str:
-    """Get display name from peer's working directory."""
-    return get_peer_cwd().name
+    """Get display name from current working directory."""
+    return Path.cwd().name
 
 
 def _tmux_send_keys(pane_id: str, text: str) -> bool:
@@ -178,7 +168,7 @@ async def main() -> int:
 
     circle = get_circle_from_tmux()
     display_name = get_display_name_from_cwd()
-    path = str(get_peer_cwd())
+    path = str(Path.cwd())
 
     # Get daemon URL from environment or use default
     daemon_host = os.environ.get("REPOWIRE_DAEMON_HOST", "127.0.0.1")

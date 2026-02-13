@@ -155,15 +155,11 @@ def main() -> int:
             hook_script = Path(__file__).parent / "websocket_hook.py"
             if hook_script.exists():
                 # Start async hook as background process
-                # Pass actual CWD since uv run --directory changes it
-                env = os.environ.copy()
-                env["REPOWIRE_PEER_CWD"] = cwd
                 subprocess.Popen(
                     [sys.executable, str(hook_script)],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
-                    env=env,
                 )
         except Exception as e:
             print(f"repowire: failed to start WebSocket hook: {e}", file=sys.stderr)
