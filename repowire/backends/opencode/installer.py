@@ -33,7 +33,7 @@ interface PeerInfo {
 
 // Configuration
 const DAEMON_URL = process.env.REPOWIRE_DAEMON_URL || "http://127.0.0.1:8377"
-const DAEMON_WS_URL = process.env.REPOWIRE_DAEMON_WS_URL || "ws://127.0.0.1:8377/ws/plugin"
+const DAEMON_WS_URL = process.env.REPOWIRE_DAEMON_WS_URL || "ws://127.0.0.1:8377/ws"
 const AUTH_TOKEN = process.env.REPOWIRE_AUTH_TOKEN || ""  // Optional auth token
 
 // State
@@ -68,20 +68,18 @@ function connectWebSocket() {
 
   ws.onopen = () => {
     reconnectAttempts = 0  // Reset on successful connection
-    // Note: We don't send peer_id - daemon assigns it and returns in response
-    const registerMsg: Record<string, unknown> = {
-      type: "register",
-      peer_name: peerName,
+    // Send connect message - daemon assigns session_id and registers peer
+    const connectMsg: Record<string, unknown> = {
+      type: "connect",
       display_name: peerName,
-      path: projectPath,
+      circle: "default",
       backend: "opencode",
-      metadata: { branch: process.env.GIT_BRANCH || "unknown" }
+      path: projectPath,
     }
-    // Include auth token if configured
     if (AUTH_TOKEN) {
-      registerMsg.auth_token = AUTH_TOKEN
+      connectMsg.auth_token = AUTH_TOKEN
     }
-    ws?.send(JSON.stringify(registerMsg))
+    ws?.send(JSON.stringify(connectMsg))
   }
 
   ws.onmessage = async (event) => {
@@ -141,11 +139,11 @@ function sendError(correlationId: string, error: string) {
 async function handleDaemonMessage(data: Record<string, unknown>) {
   const msgType = data.type as string
 
-  if (msgType === "registered") {
-    // Store daemon-assigned peer_id
-    if (data.peer_id) {
-      peerId = data.peer_id as string
-      console.debug(`[repowire] Registered with peer_id: ${peerId}`)
+  if (msgType === "connected") {
+    // Store daemon-assigned session_id as peer_id
+    if (data.session_id) {
+      peerId = data.session_id as string
+      console.debug(`[repowire] Connected with session_id: ${peerId}`)
     }
     sendStatus("idle")
   } else if (msgType === "query") {
@@ -391,7 +389,7 @@ Peer list may be outdated - use list_peers tool to refresh.`)
 """
 
 # Plugin file locations
-GLOBAL_PLUGIN_DIR = Path.home() / ".config" / "opencode" / "plugin"
+GLOBAL_PLUGIN_DIR = Path.home() / ".opencode" / "plugin"
 LOCAL_PLUGIN_DIR = Path(".opencode") / "plugin"
 PLUGIN_FILENAME = "repowire.ts"
 
