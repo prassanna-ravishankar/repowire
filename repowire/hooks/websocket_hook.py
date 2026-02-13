@@ -8,15 +8,15 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 try:
-    import libtmux
     import websockets
 except ImportError as e:
     print(f"Missing dependency: {e}", file=sys.stderr)
-    print("Install with: pip install libtmux websockets", file=sys.stderr)
+    print("Install with: pip install websockets", file=sys.stderr)
     sys.exit(1)
 
 logging.basicConfig(level=logging.INFO)
@@ -30,20 +30,57 @@ def get_circle_from_tmux() -> str:
         return "default"
 
     try:
-        server = libtmux.Server()
-        pane = server.get_by_id(pane_id)
-        if pane and pane.window and pane.window.session:
-            return pane.window.session.name
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", pane_id, "-p", "#{session_name}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
     except Exception as e:
         logger.warning(f"Failed to get circle from tmux: {e}")
 
     return "default"
 
 
+def get_peer_cwd() -> Path:
+    """Get the peer's actual working directory.
+
+    Uses REPOWIRE_PEER_CWD if set (passed by session_handler),
+    falls back to process CWD.
+    """
+    peer_cwd = os.environ.get("REPOWIRE_PEER_CWD")
+    return Path(peer_cwd) if peer_cwd else Path.cwd()
+
+
 def get_display_name_from_cwd() -> str:
-    """Get display name from current working directory."""
-    cwd = Path.cwd()
-    return cwd.name
+    """Get display name from peer's working directory."""
+    return get_peer_cwd().name
+
+
+def _tmux_send_keys(pane_id: str, text: str) -> bool:
+    """Send keys to a tmux pane via subprocess.
+
+    Sends text literally then Enter separately to ensure
+    Claude Code TUI properly receives the submission.
+    """
+    try:
+        # Send text as literal characters
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "-l", text],
+            capture_output=True,
+            check=True,
+        )
+        # Send Enter separately to submit
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "Enter"],
+            capture_output=True,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        logger.error(f"Failed to send keys to {pane_id}: {e}")
+        return False
 
 
 async def handle_message(data: dict, pane_id: str) -> None:
@@ -56,25 +93,18 @@ async def handle_message(data: dict, pane_id: str) -> None:
     msg_type = data.get("type")
 
     if msg_type == "query":
-        # Inject query via tmux
         try:
-            server = libtmux.Server()
-            pane = server.get_by_id(pane_id)
-            if pane:
-                correlation_id = data.get("correlation_id", "")
-                from_peer = data.get("from_peer", "unknown")
-                text = data.get("text", "")
+            correlation_id = data.get("correlation_id", "")
+            from_peer = data.get("from_peer", "unknown")
+            text = data.get("text", "")
 
-                # Store correlation_id for later response matching
-                response_dir = Path.home() / ".cache" / "repowire" / "correlations"
-                response_dir.mkdir(parents=True, exist_ok=True)
-                corr_file = response_dir / pane_id.replace("%", "")
-                corr_file.write_text(correlation_id)
+            # Store correlation_id for later response matching
+            response_dir = Path.home() / ".cache" / "repowire" / "correlations"
+            response_dir.mkdir(parents=True, exist_ok=True)
+            corr_file = response_dir / pane_id.replace("%", "")
+            corr_file.write_text(correlation_id)
 
-                # Inject query
-                pane.send_keys(text, enter=True)
-                pane.send_keys("", enter=True)  # Extra enter
-
+            if _tmux_send_keys(pane_id, text):
                 logger.info(f"Injected query from {from_peer}: {correlation_id[:8]}")
             else:
                 logger.error(f"Pane {pane_id} not found")
@@ -82,29 +112,19 @@ async def handle_message(data: dict, pane_id: str) -> None:
             logger.error(f"Failed to inject query: {e}")
 
     elif msg_type == "notify":
-        # Inject notification
         try:
-            server = libtmux.Server()
-            pane = server.get_by_id(pane_id)
-            if pane:
-                from_peer = data.get("from_peer", "unknown")
-                text = data.get("text", "")
-                pane.send_keys(f"@{from_peer}: {text}", enter=True)
-                pane.send_keys("", enter=True)  # Extra enter
+            from_peer = data.get("from_peer", "unknown")
+            text = data.get("text", "")
+            if _tmux_send_keys(pane_id, f"@{from_peer}: {text}"):
                 logger.info(f"Injected notification from {from_peer}")
         except Exception as e:
             logger.error(f"Failed to inject notification: {e}")
 
     elif msg_type == "broadcast":
-        # Inject broadcast
         try:
-            server = libtmux.Server()
-            pane = server.get_by_id(pane_id)
-            if pane:
-                from_peer = data.get("from_peer", "unknown")
-                text = data.get("text", "")
-                pane.send_keys(f"@{from_peer} [broadcast]: {text}", enter=True)
-                pane.send_keys("", enter=True)  # Extra enter
+            from_peer = data.get("from_peer", "unknown")
+            text = data.get("text", "")
+            if _tmux_send_keys(pane_id, f"@{from_peer} [broadcast]: {text}"):
                 logger.info(f"Injected broadcast from {from_peer}")
         except Exception as e:
             logger.error(f"Failed to inject broadcast: {e}")
@@ -158,7 +178,7 @@ async def main() -> int:
 
     circle = get_circle_from_tmux()
     display_name = get_display_name_from_cwd()
-    path = str(Path.cwd())
+    path = str(get_peer_cwd())
 
     # Get daemon URL from environment or use default
     daemon_host = os.environ.get("REPOWIRE_DAEMON_HOST", "127.0.0.1")
