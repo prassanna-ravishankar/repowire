@@ -167,38 +167,70 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
   }
 }
 
-// Handle incoming query - inject into session and return response
+// Resolve active session - try tracked ID, then list, then create
+async function resolveSessionId(): Promise<string | null> {
+  if (activeSessionId) return activeSessionId
+  if (!opencodeClient) return null
+
+  // Try listing existing sessions
+  try {
+    const result = await opencodeClient.session.list()
+    const sessions = result?.data
+    if (Array.isArray(sessions) && sessions.length > 0) {
+      activeSessionId = sessions[sessions.length - 1].id
+      console.debug(`[repowire] Resolved session via list: ${activeSessionId}`)
+      return activeSessionId
+    }
+  } catch (e) {
+    console.debug("[repowire] session.list() failed:", e)
+  }
+
+  // Create a new session as last resort
+  try {
+    const result = await opencodeClient.session.create({ body: {} })
+    if (result?.data?.id) {
+      activeSessionId = result.data.id
+      console.debug(`[repowire] Created new session: ${activeSessionId}`)
+      return activeSessionId
+    }
+  } catch (e) {
+    console.debug("[repowire] session.create() failed:", e)
+  }
+
+  return null
+}
+
+// Handle incoming query - inject via SDK with session fallbacks
 async function handleIncomingQuery(correlationId: string, fromPeer: string, text: string) {
-  if (!activeSessionId) {
-    sendError(correlationId, "No active session - please start a conversation in OpenCode first")
+  if (!opencodeClient) {
+    sendError(correlationId, "OpenCode client not available")
     return
   }
 
-  if (!opencodeClient) {
-    sendError(correlationId, "OpenCode client not available")
+  const sessionId = await resolveSessionId()
+  if (!sessionId) {
+    sendError(correlationId, "Could not resolve or create OpenCode session")
     return
   }
 
   sendStatus("busy")
 
   try {
-    // Use the OpenCode SDK client to inject the prompt
     const result = await opencodeClient.session.prompt({
-      path: { id: activeSessionId },
-      body: {
-        parts: [{ type: "text", text }]
-      }
+      path: { id: sessionId },
+      body: { parts: [{ type: "text", text }] }
     })
 
-    // Extract text from response
+    // Extract response text from SDK response
     let responseText = ""
-    const data = result?.data
-    if (data?.parts) {
-      for (const part of data.parts) {
-        if (part.type === "text" && part.text) {
-          responseText += part.text
-        }
+    const parts = result?.data?.parts || result?.parts
+    if (Array.isArray(parts)) {
+      for (const part of parts) {
+        if (part.type === "text" && part.text) responseText += part.text
       }
+    }
+    if (!responseText && parts?.length === 0) {
+      console.debug("[repowire] Model returned 0 parts (check model/provider config)")
     }
 
     sendResponse(correlationId, responseText || "(empty response)")
