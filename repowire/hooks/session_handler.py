@@ -155,11 +155,14 @@ def main() -> int:
             hook_script = Path(__file__).parent / "websocket_hook.py"
             if hook_script.exists():
                 # Start async hook as background process
+                # Pass cwd so the hook registers with the correct project name
+                # (important when running via `uv run --directory` in dev mode)
                 subprocess.Popen(
                     [sys.executable, str(hook_script)],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
+                    cwd=cwd,
                 )
         except Exception as e:
             print(f"repowire: failed to start WebSocket hook: {e}", file=sys.stderr)

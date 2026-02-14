@@ -69,27 +69,35 @@ function connectWebSocket() {
   ws.onopen = () => {
     reconnectAttempts = 0  // Reset on successful connection
     // Send connect message - daemon assigns session_id and registers peer
-    const connectMsg: Record<string, unknown> = {
-      type: "connect",
-      display_name: peerName,
-      circle: "default",
-      backend: "opencode",
-      path: projectPath,
-    }
-
-    // Include tmux session info if available (for TUI attach support)
-    // Format: "session_name:window_name"
+    // Derive circle from tmux session name (like Claude Code hooks do)
+    let circle = "default"
+    let tmuxSession: string | undefined
     if (process.env.TMUX) {
       try {
         const { execSync } = require("child_process")
         const session = execSync("tmux display-message -p '#S'", { encoding: "utf-8" }).trim()
         const window = execSync("tmux display-message -p '#W'", { encoding: "utf-8" }).trim()
-        if (session && window) {
-          connectMsg.tmux_session = `${session}:${window}`
+        if (session) {
+          circle = session
+          if (window) {
+            tmuxSession = `${session}:${window}`
+          }
         }
       } catch (e) {
-        // tmux commands failed, skip session info
+        // tmux commands failed, use default circle
       }
+    }
+
+    const connectMsg: Record<string, unknown> = {
+      type: "connect",
+      display_name: peerName,
+      circle,
+      backend: "opencode",
+      path: projectPath,
+    }
+
+    if (tmuxSession) {
+      connectMsg.tmux_session = tmuxSession
     }
 
     if (AUTH_TOKEN) {

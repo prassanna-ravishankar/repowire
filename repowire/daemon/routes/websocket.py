@@ -173,7 +173,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     finally:
         if session_id:
-            await transport.disconnect(session_id)
+            await transport.disconnect(session_id, websocket)
             query_tracker.cancel_queries_to_peer(session_id)
 
 
@@ -211,6 +211,22 @@ async def _handle_message(
         }
         status = status_map.get(status_str, PeerStatus.ONLINE)
         await transport.update_status(session_id, status)
+
+    elif msg_type == "set_circle":
+        new_circle = data.get("circle")
+        if new_circle:
+            from repowire.daemon.deps import get_app_state
+
+            state = get_app_state()
+            await state.peer_manager.set_peer_circle(session_id, new_circle)
+            # Update session mapping too
+            mapping = state.session_mapper.get_mapping(session_id)
+            if mapping:
+                mapping.circle = new_circle
+                state.session_mapper._save()
+            logger.info(f"Circle updated for {session_id}: {new_circle}")
+        else:
+            logger.warning(f"set_circle from {session_id} missing circle field")
 
     elif msg_type == "error":
         correlation_id = data.get("correlation_id")

@@ -61,10 +61,24 @@ class WebSocketTransport:
             )
             logger.info(f"Registered connection for {session_id}")
 
-    async def disconnect(self, session_id: str) -> None:
-        """Unregister WebSocket connection."""
+    async def disconnect(self, session_id: str, websocket: WebSocket | None = None) -> None:
+        """Unregister WebSocket connection.
+
+        Args:
+            session_id: Session to disconnect
+            websocket: If provided, only disconnect if this is still the registered websocket.
+                       Prevents race where an old handler disconnects a newer connection.
+        """
         async with self._lock:
             if session_id in self._connections:
+                if (
+                    websocket is not None
+                    and self._connections[session_id].websocket is not websocket
+                ):
+                    logger.debug(
+                        f"Skipping disconnect for {session_id}: websocket already replaced"
+                    )
+                    return
                 self._connections.pop(session_id)
                 logger.info(f"Unregistered connection for {session_id}")
 

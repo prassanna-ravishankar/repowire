@@ -201,8 +201,9 @@ async def main() -> int:
                     # Store session_id in environment for other hooks
                     os.environ["REPOWIRE_SESSION_ID"] = session_id
                 else:
-                    logger.error(f"Unexpected response: {response}")
-                    return 1
+                    logger.error(f"Unexpected response: {response}, retrying...")
+                    await asyncio.sleep(2)
+                    continue
 
                 # Start response watcher task
                 response_dir = Path.home() / ".cache" / "repowire" / "responses"
