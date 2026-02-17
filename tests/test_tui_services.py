@@ -20,7 +20,6 @@ class TestDaemonClient:
             json={
                 "status": "ok",
                 "version": "0.1.0",
-                "backend": "claude-code",
                 "relay_mode": False,
             },
         )
@@ -30,7 +29,7 @@ class TestDaemonClient:
 
         assert health is not None
         assert health.status == "ok"
-        assert health.backend == "claude-code"
+        assert health.relay_mode is False
 
     @pytest.mark.asyncio
     async def test_get_peers_empty(self, httpx_mock) -> None:

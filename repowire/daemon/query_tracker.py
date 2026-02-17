@@ -1,11 +1,11 @@
 """Centralized query tracking for the Repowire daemon.
 
-The QueryTracker manages pending queries across all backends, providing:
+The QueryTracker manages pending queries, providing:
 - Unified query lifecycle management (register, resolve, cancel)
 - Correlation ID based request/response matching
 - Peer-based query cancellation (e.g., when a peer goes offline)
 
-Replaces per-component query tracking with a single unified tracker.
+Provides a single unified tracker for all query lifecycle management.
 """
 
 from __future__ import annotations
@@ -45,19 +45,18 @@ class PendingQuery:
 
 
 class QueryTracker:
-    """Centralized tracking for pending queries across all backends.
+    """Centralized tracking for pending queries.
 
-    Provides unified query lifecycle management independent of the backend
-    used for message delivery. All methods are synchronous and run atomically
-    within the asyncio event loop.
+    Provides unified query lifecycle management independent of the agent type.
+    All methods are synchronous and run atomically within the asyncio event loop.
 
     Usage:
         tracker = QueryTracker()
 
-        # Register a query (before sending to backend)
+        # Register a query (before sending to peer)
         correlation_id = tracker.register_query(
             from_peer="frontend",
-            to_peer_id="%42",
+            to_peer_id="repow-dev-a1b2c3d4",
             to_peer_name="backend",
             query_text="What's the API status?"
         )

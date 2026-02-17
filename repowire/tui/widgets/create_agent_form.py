@@ -17,7 +17,7 @@ from repowire.spawn import SpawnConfig, spawn_peer
 
 logger = logging.getLogger(__name__)
 
-BACKEND_OPTIONS = [("Claude Code", "claude-code"), ("OpenCode", "opencode")]
+AGENT_TYPE_OPTIONS = [("Claude Code", "claude-code"), ("OpenCode", "opencode")]
 
 
 @dataclass
@@ -66,8 +66,8 @@ class CreateAgentForm(Widget):
                 yield Label("")
                 yield Input(placeholder="Enter new circle name", id="new-circle-input")
             with Horizontal(classes="form-field"):
-                yield Label("Backend")
-                yield Select(BACKEND_OPTIONS, value="claude-code", id="backend-select")
+                yield Label("Agent Type")
+                yield Select(AGENT_TYPE_OPTIONS, value="claude-code", id="backend-select")
             with Horizontal(id="form-buttons"):
                 yield Button("Cancel", id="cancel-btn", variant="default")
                 yield Button("Create Agent", id="create-btn", variant="success")

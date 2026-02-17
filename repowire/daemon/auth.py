@@ -70,3 +70,13 @@ class RequireAuth:
 
 # Convenience instance
 require_auth = RequireAuth()
+
+
+async def require_localhost(request: Request) -> None:
+    """Require request originates from localhost."""
+    client_host = request.client.host if request.client else None
+    if client_host not in ("127.0.0.1", "::1", "localhost", None):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Restricted to localhost",
+        )

@@ -218,7 +218,7 @@ repowire peer new . --circle dev  # Spawn with custom circle
 
 ```bash
 # Agent-specific
-repowire claudemux status         # Check hooks installation
+repowire claude status            # Check hooks installation
 repowire opencode status          # Check plugin installation
 
 # Service management

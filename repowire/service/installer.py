@@ -30,12 +30,7 @@ def _get_repowire_executable() -> str:
     if repowire_path:
         return repowire_path
 
-    # Fallback to uvx for pip-installed scenarios
-    uvx_path = shutil.which("uvx")
-    if uvx_path:
-        return f"{uvx_path} repowire"
-
-    # Last resort: use python -m
+    # Fallback: use python -m
     return f"{sys.executable} -m repowire.cli"
 
 
@@ -63,7 +58,7 @@ def _generate_launchd_plist() -> str:
 
     # Build program arguments
     if " " in repowire_exec:
-        # Handle cases like "uvx repowire" or "python -m repowire.cli"
+        # Handle cases like "python -m repowire.cli"
         parts = repowire_exec.split()
         program_args = "".join(f"        <string>{p}</string>\n" for p in parts)
     else:

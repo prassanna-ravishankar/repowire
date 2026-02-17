@@ -5,10 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Development Commands
 
 ```bash
-# Install dependencies
-pip install -e "."            # core (includes libtmux)
-pip install -e ".[dev]"       # dev tools (pytest, ruff, ty)
-pip install -e ".[relay]"     # relay server deps
+# Install as global tool from local source (for dev/testing)
+uv tool install --force --reinstall .
+
+# Install dev dependencies (for running tests/linting)
+uv sync --extra dev
 
 # Run tests
 pytest                        # all tests
@@ -27,8 +28,7 @@ repowire serve                # default: 127.0.0.1:8377
 repowire serve --port 8080
 
 # Setup (auto-detects installed agent types)
-repowire setup --dev          # dev mode (uses local code)
-repowire setup                # production mode
+repowire setup
 
 # Launch TUI dashboard
 repowire top
@@ -247,7 +247,7 @@ Peer status: `ONLINE`, `BUSY`, `OFFLINE`
 **PeerStatus** (`protocol/peers.py`): Enum with `ONLINE`, `BUSY`, `OFFLINE`
 
 **Peer Identity:**
-- Primary: `peer_id` (unique per agent type: `%42` for claude-code, `oc-{uuid12}` for opencode)
+- Primary: `peer_id` (daemon-assigned: `repow-{circle}-{uuid8}`, e.g., `repow-dev-a1b2c3d4`)
 - Secondary: `display_name` (folder name, for human-friendly addressing)
 
 **Status Symbols (TUI):**

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
-from repowire.daemon.deps import get_config, get_peer_manager
+from repowire.daemon.deps import get_app_state, get_config, get_peer_manager
 from repowire.protocol.peers import Peer, PeerStatus
 
 router = APIRouter(tags=["peers"])
@@ -45,7 +45,7 @@ def _peer_to_info(p: Peer) -> PeerInfo:
         machine=p.machine,
         tmux_session=p.tmux_session,
         backend=p.backend,
-        opencode_url=getattr(p, "opencode_url", None),
+        opencode_url=p.opencode_url,
         circle=p.circle,
         status=p.status.value,
         last_seen=p.last_seen.isoformat() if p.last_seen else None,
@@ -62,14 +62,14 @@ class PeersResponse(BaseModel):
 class RegisterPeerRequest(BaseModel):
     """Request to register a peer."""
 
-    peer_id: str | None = Field(None, description="Unique peer ID (e.g., %42 or oc-xxxx)")
+    peer_id: str | None = Field(None, description="Unique peer ID (e.g., repow-dev-a1b2c3d4)")
     pane_id: str | None = Field(None, description="Legacy: use peer_id instead")
     name: str = Field(..., description="Peer name (for backward compat)")
     display_name: str | None = Field(None, description="Human-readable name")
     path: str | None = Field(None, description="Working directory path")
     machine: str | None = Field(None, description="Machine hostname")
     tmux_session: str | None = Field(None, description="Tmux session:window")
-    backend: str = Field(default="claude-code", description="Backend type")
+    backend: AgentType = Field(default=AgentType.CLAUDE_CODE, description="Agent type")
     opencode_url: str | None = Field(None, description="OpenCode server URL")
     circle: str | None = Field(None, description="Circle (logical subnet)")
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -102,13 +102,20 @@ def _build_peer(
     request: RegisterPeerRequest, peer_id: str, display_name: str, circle: str = "global"
 ) -> Peer:
     """Build a Peer model from a registration request."""
+    try:
+        backend = AgentType(request.backend)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid agent type: {request.backend}. Must be 'claude-code' or 'opencode'.",
+        )
     return Peer(
         peer_id=peer_id,
         display_name=display_name,
         path=request.path or "",
         machine=request.machine or socket.gethostname(),
         tmux_session=request.tmux_session,
-        backend=AgentType(request.backend),
+        backend=backend,
         circle=circle,
         status=PeerStatus.ONLINE,
         metadata=request.metadata,
@@ -187,6 +194,14 @@ async def delete_peer(
     removed_from_config = config.remove_peer(name)
     removed_from_manager = await peer_manager.unregister_peer(name)
 
+    # Clean up SessionMapper to prevent ghost peers
+    state = get_app_state()
+    session_mapper = state.session_mapper
+    for sid, mapping in session_mapper.get_all_mappings().items():
+        if mapping.display_name == name:
+            session_mapper.unregister_session(sid)
+            break
+
     if not removed_from_config and not removed_from_manager:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -229,7 +244,7 @@ async def set_peer_circle_endpoint(
     request: SetCircleRequest,
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
-    """Set a peer's circle for cross-backend communication."""
+    """Set a peer's circle for cross-circle communication."""
     peer_manager = get_peer_manager()
     await peer_manager.set_peer_circle(request.peer_name, request.circle)
     return OkResponse()

@@ -167,7 +167,7 @@ class RepowireApp(App):
             return
         if not peer.tmux_session:
             self.notify(
-                f"Agent '{peer.name}' has no tmux session (backend: {peer.backend})",
+                f"Agent '{peer.name}' has no tmux session (agent type: {peer.backend})",
                 severity="warning",
                 timeout=3,
             )

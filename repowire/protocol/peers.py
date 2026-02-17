@@ -24,17 +24,16 @@ class Peer(BaseModel):
 
     A peer represents a Claude Code or OpenCode session that can send and receive messages.
 
-    Identity is based on a canonical `peer_id` which is unique per agent type:
-    - claude-code: `%N` (tmux pane ID, e.g., "%42") - stable across session restarts
-    - opencode: `oc-{uuid12}` (daemon-assigned) - assigned on WebSocket connect
+    Identity is based on a canonical `peer_id` assigned by the daemon's
+    SessionMapper on WebSocket connect: `repow-{circle}-{uuid8}`
+    (e.g., "repow-dev-a1b2c3d4"). The format is the same for all agent types.
 
     Message addressing uses `display_name` (human-friendly, may not be unique).
     Internal routing uses `peer_id` (always unique, never ambiguous).
     """
 
-    # Primary identity - unique per agent type
-    # claude-code: "%N" (tmux pane ID), opencode: "oc-{uuid12}"
-    peer_id: str = Field(..., description="Unique peer identifier ('%42' or 'oc-...')")
+    # Primary identity - daemon-assigned, format: repow-{circle}-{uuid8}
+    peer_id: str = Field(..., description="Unique peer identifier (e.g., 'repow-dev-a1b2c3d4')")
     display_name: str = Field(..., description="Human-readable name (folder name)")
     path: str = Field(..., description="Working directory path")
     machine: str = Field(..., description="Machine hostname")

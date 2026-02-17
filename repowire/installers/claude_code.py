@@ -14,8 +14,11 @@ def _load_claude_settings() -> dict:
     try:
         with open(CLAUDE_SETTINGS) as f:
             return json.load(f)
-    except json.JSONDecodeError:
-        return {}
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"Corrupted settings.json at {CLAUDE_SETTINGS}: {e}. "
+            "Please fix or delete the file manually."
+        ) from e
 
 
 def _save_claude_settings(settings: dict) -> None:
@@ -47,27 +50,20 @@ def _make_notification_hook_config(command: str, matcher: str) -> dict:
     }
 
 
-def install_hooks(dev: bool = False) -> bool:
+def install_hooks() -> bool:
     pending_dir = Path.home() / ".repowire" / "pending"
     pending_dir.mkdir(parents=True, exist_ok=True)
-
-    if dev:
-        project_dir = Path(__file__).parent.parent.parent
-        # Use uv run for dev mode to always run from source (no caching)
-        base_cmd = f"uv run --directory {project_dir} repowire"
-    else:
-        base_cmd = "uvx repowire"
 
     settings = _load_claude_settings()
     if "hooks" not in settings:
         settings["hooks"] = {}
 
-    settings["hooks"]["Stop"] = [_make_hook_config(f"{base_cmd} hook stop")]
-    settings["hooks"]["SessionStart"] = [_make_hook_config(f"{base_cmd} hook session")]
-    settings["hooks"]["SessionEnd"] = [_make_hook_config(f"{base_cmd} hook session")]
-    settings["hooks"]["UserPromptSubmit"] = [_make_hook_config(f"{base_cmd} hook prompt")]
+    settings["hooks"]["Stop"] = [_make_hook_config("repowire hook stop")]
+    settings["hooks"]["SessionStart"] = [_make_hook_config("repowire hook session")]
+    settings["hooks"]["SessionEnd"] = [_make_hook_config("repowire hook session")]
+    settings["hooks"]["UserPromptSubmit"] = [_make_hook_config("repowire hook prompt")]
     settings["hooks"]["Notification"] = [
-        _make_notification_hook_config(f"{base_cmd} hook notification", "idle_prompt")
+        _make_notification_hook_config("repowire hook notification", "idle_prompt")
     ]
 
     _save_claude_settings(settings)

@@ -22,7 +22,8 @@ def main() -> int:
     """Main entry point for stop hook."""
     try:
         input_data = json.loads(sys.stdin.read())
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"repowire stop: invalid JSON input: {e}", file=sys.stderr)
         return 0
 
     # Don't process if already in a hook chain
@@ -41,6 +42,7 @@ def main() -> int:
     # Get pane_id from environment
     pane_id = get_pane_id()
     if not pane_id:
+        print("repowire stop: TMUX_PANE not set", file=sys.stderr)
         return 0
 
     # Check if there's a correlation_id stored for this pane
@@ -53,7 +55,8 @@ def main() -> int:
 
     try:
         correlation_id = corr_file.read_text().strip()
-    except OSError:
+    except OSError as e:
+        print(f"repowire stop: error reading correlation file: {e}", file=sys.stderr)
         return 0
 
     # Extract the response from transcript
@@ -66,9 +69,9 @@ def main() -> int:
         response_dir.mkdir(parents=True, exist_ok=True)
 
         response_file = response_dir / f"{pane_file}.json"
-        response_file.write_text(
-            json.dumps({"correlation_id": correlation_id, "response": response})
-        )
+        tmp_file = response_dir / f"{pane_file}.json.tmp"
+        tmp_file.write_text(json.dumps({"correlation_id": correlation_id, "response": response}))
+        os.replace(str(tmp_file), str(response_file))
 
     # Clean up correlation file
     corr_file.unlink(missing_ok=True)

@@ -6,6 +6,7 @@ Survives tmux pane movements and WebSocket reconnects.
 
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,10 +55,12 @@ class SessionMapper:
             logger.error(f"Failed to load session mappings: {e}")
 
     def _save(self) -> None:
-        """Save mappings to disk."""
+        """Save mappings to disk atomically."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         data = {session_id: asdict(mapping) for session_id, mapping in self._mappings.items()}
-        self._path.write_text(json.dumps(data, indent=2))
+        tmp_path = self._path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(data, indent=2))
+        os.replace(str(tmp_path), str(self._path))
 
     def register_session(
         self,
@@ -105,6 +108,19 @@ class SessionMapper:
     def get_all_mappings(self) -> dict[str, SessionMapping]:
         """Get all mappings."""
         return self._mappings.copy()
+
+    def update_circle(self, session_id: str, circle: str) -> bool:
+        """Update circle for an existing session.
+
+        Returns:
+            True if session was found and updated, False otherwise.
+        """
+        mapping = self._mappings.get(session_id)
+        if mapping:
+            mapping.circle = circle
+            self._save()
+            return True
+        return False
 
     def unregister_session(self, session_id: str) -> bool:
         """Unregister session (remove from persistence)."""

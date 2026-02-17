@@ -57,11 +57,6 @@ class PeerManager:
         self._lock = asyncio.Lock()
         self._events: deque[dict[str, Any]] = deque(maxlen=100)
 
-    @property
-    def backend_name(self) -> str:
-        """Get backend name (for health check)."""
-        return "unified-websocket"
-
     def _add_event(self, event_type: str, data: dict[str, Any]) -> str:
         """Add an event to the history. Returns event ID."""
         event_id = str(uuid4())
@@ -339,6 +334,14 @@ class PeerManager:
             {"from": from_peer, "text": text, "exclude": exclude},
         )
 
+        # Determine sender's circle for filtering
+        from_circle: str | None = None
+        if not bypass_circle:
+            async with self._lock:
+                from_peer_obj = self._lookup_peer_unlocked(from_peer)
+                if from_peer_obj:
+                    from_circle = from_peer_obj.circle
+
         # Build exclude set of session IDs
         exclude_names = set(exclude or [])
         exclude_names.add(from_peer)
@@ -349,6 +352,12 @@ class PeerManager:
                 sid = self._name_index.get(name)
                 if sid:
                     exclude_session_ids.add(sid)
+
+            # Circle filtering: exclude peers in different circles
+            if from_circle and not bypass_circle:
+                for sid, peer in self._peers.items():
+                    if peer.circle != from_circle:
+                        exclude_session_ids.add(sid)
 
         sent_session_ids = await self._router.broadcast(
             from_peer=from_peer,
@@ -367,14 +376,6 @@ class PeerManager:
                 peer.status = status
                 peer.last_seen = datetime.now(timezone.utc)
 
-    async def update_peer_session_id(self, identifier: str, session_id: str) -> None:
-        """Update peer's Claude session ID (metadata)."""
-        async with self._lock:
-            peer = self._lookup_peer_unlocked(identifier)
-            if peer:
-                peer.metadata = peer.metadata or {}
-                peer.metadata["session_id"] = session_id
-
     async def set_peer_circle(self, identifier: str, circle: str) -> None:
         """Update peer's circle."""
         async with self._lock:
@@ -383,24 +384,6 @@ class PeerManager:
                 old_circle = peer.circle
                 peer.circle = circle
                 logger.info(f"Peer {peer.display_name} moved from {old_circle} to {circle}")
-
-    async def register_peer_with_config(
-        self,
-        peer: Peer,
-        path: str,
-        opencode_url: str | None = None,
-        circle: str | None = None,
-    ) -> None:
-        """Register peer and update config atomically (for WebSocket connections)."""
-        await self.register_peer(peer)
-
-        self._config.peers[peer.display_name] = PeerConfig(
-            name=peer.display_name,
-            path=path,
-            opencode_url=opencode_url,
-            circle=circle or peer.circle,
-        )
-        self._config.save()
 
     def resolve_hook_response(self, correlation_id: str, response: str) -> None:
         """Resolve a hook response via QueryTracker.

@@ -20,14 +20,21 @@ def _detect_my_peer_name() -> str:
 
 async def daemon_request(method: str, path: str, body: dict | None = None) -> dict:
     """Make an HTTP request to the daemon."""
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        url = f"{DAEMON_URL}{path}"
-        if method == "GET":
-            resp = await client.get(url)
-        else:
-            resp = await client.post(url, json=body or {})
-        resp.raise_for_status()
-        return resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            url = f"{DAEMON_URL}{path}"
+            if method == "GET":
+                resp = await client.get(url)
+            else:
+                resp = await client.post(url, json=body or {})
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise Exception("Repowire daemon is not reachable. Start it with 'repowire serve'.")
+    except httpx.HTTPStatusError as e:
+        raise Exception(f"Daemon error {e.response.status_code}: {e.response.text}")
+    except httpx.TimeoutException:
+        raise Exception("Daemon request timed out.")
 
 
 def create_mcp_server() -> FastMCP:
@@ -147,9 +154,9 @@ def create_mcp_server() -> FastMCP:
     async def set_circle(circle: str) -> str:
         """Join a named circle to communicate with peers in that circle.
 
-        Use this to communicate with peers from different backends (e.g., OpenCode
-        sessions). By default, Claude Code peers are in a circle named after their
-        tmux session, and OpenCode peers are in the "global" circle.
+        Use this to communicate with peers in different circles (e.g., OpenCode
+        peers). By default, both Claude Code and OpenCode peers derive their
+        circle from the tmux session name (falling back to "default").
 
         Args:
             circle: Circle name to join (e.g., "dev", "global", "frontend")

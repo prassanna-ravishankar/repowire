@@ -13,8 +13,8 @@ from libtmux.exc import LibTmuxException, ObjectDoesNotExist
 from repowire.config.models import AgentType
 from repowire.daemon.deps import get_config
 
-# Default commands for each backend
-BACKEND_COMMANDS: dict[AgentType, str] = {
+# Default commands for each agent type
+AGENT_COMMANDS: dict[AgentType, str] = {
     AgentType.CLAUDE_CODE: "claude",
     AgentType.OPENCODE: "opencode",
 }
@@ -26,7 +26,7 @@ class SpawnConfig:
 
     path: str
     circle: str
-    backend: AgentType  # "claude-code" or "opencode"
+    backend: AgentType
     command: str = ""  # Full command to run (e.g., "claude --model opus")
 
     @property
@@ -39,7 +39,7 @@ class SpawnConfig:
 class SpawnResult:
     """Result of spawning a peer."""
 
-    peer_id: str  # e.g., "%42" for claudemux
+    peer_id: str  # e.g., "%42" for claude-code
     display_name: str
     tmux_session: str  # e.g., "circle:name"
     registered: bool = False  # Whether daemon registration succeeded
@@ -55,7 +55,7 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
         SpawnResult with peer_id, display_name, tmux_session, and registered status
 
     Raises:
-        ValueError: If backend is unknown
+        ValueError: If agent type is unknown
         RuntimeError: If tmux operations fail
     """
     server = libtmux.Server()
@@ -77,10 +77,10 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
     # Determine command to run
     if config.command:
         cmd = config.command
-    elif config.backend in BACKEND_COMMANDS:
-        cmd = BACKEND_COMMANDS[config.backend]
+    elif config.backend in AGENT_COMMANDS:
+        cmd = AGENT_COMMANDS[config.backend]
     else:
-        raise ValueError(f"Unknown backend: {config.backend}")
+        raise ValueError(f"Unknown agent type: {config.backend}")
 
     pane.send_keys(cmd, enter=True)
 

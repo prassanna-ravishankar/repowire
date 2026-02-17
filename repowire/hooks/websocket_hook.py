@@ -73,6 +73,25 @@ def _tmux_send_keys(pane_id: str, text: str) -> bool:
         return False
 
 
+def _is_pane_safe(pane_id: str) -> bool:
+    """Check if the tmux pane still has an AI agent process running.
+
+    Prevents injecting text into a bare shell if the agent exited.
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_current_command}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return False
+        cmd = result.stdout.strip().lower()
+        return cmd in {"node", "claude", "opencode", "python", "python3"}
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
 async def handle_message(data: dict, pane_id: str) -> None:
     """Handle incoming WebSocket message.
 
@@ -81,6 +100,11 @@ async def handle_message(data: dict, pane_id: str) -> None:
         pane_id: Tmux pane ID
     """
     msg_type = data.get("type")
+
+    # Safety: verify agent is still running in the pane before injecting text
+    if msg_type in ("query", "notify", "broadcast") and not _is_pane_safe(pane_id):
+        logger.warning(f"Pane {pane_id} not safe for injection, dropping {msg_type}")
+        return
 
     if msg_type == "query":
         try:
@@ -164,6 +188,12 @@ async def main() -> int:
         logger.error("TMUX_PANE not set")
         return 1
 
+    # Write own PID for cleanup by SessionEnd
+    pid_dir = Path.home() / ".cache" / "repowire" / "hooks"
+    pid_dir.mkdir(parents=True, exist_ok=True)
+    pane_file = pane_id.replace("%", "")
+    (pid_dir / f"{pane_file}.pid").write_text(str(os.getpid()))
+
     circle = get_circle_from_tmux()
     display_name = get_display_name_from_cwd()
     path = str(Path.cwd())
@@ -175,22 +205,27 @@ async def main() -> int:
 
     logger.info(f"Starting WebSocket hook for {display_name}@{circle} (pane={pane_id})")
 
-    # Retry connection loop
-    while True:
+    # Retry connection loop with exponential backoff
+    max_attempts = 50
+    attempt = 0
+
+    while attempt < max_attempts:
         try:
             async with websockets.connect(uri) as websocket:
+                attempt = 0  # Reset on successful connection
+
                 # Send connect message
-                await websocket.send(
-                    json.dumps(
-                        {
-                            "type": "connect",
-                            "display_name": display_name,
-                            "circle": circle,
-                            "backend": "claude-code",
-                            "path": path,
-                        }
-                    )
-                )
+                connect_msg: dict[str, str] = {
+                    "type": "connect",
+                    "display_name": display_name,
+                    "circle": circle,
+                    "backend": "claude-code",
+                    "path": path,
+                }
+                auth_token = os.environ.get("REPOWIRE_AUTH_TOKEN")
+                if auth_token:
+                    connect_msg["auth_token"] = auth_token
+                await websocket.send(json.dumps(connect_msg))
 
                 # Receive session_id
                 response = json.loads(await websocket.recv())
@@ -221,14 +256,16 @@ async def main() -> int:
                 finally:
                     watcher_task.cancel()
 
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("Connection closed, reconnecting in 1s...")
-            await asyncio.sleep(1)
-        except Exception as e:
-            logger.error(f"Error: {e}", exc_info=True)
-            await asyncio.sleep(1)
+        except (websockets.exceptions.WebSocketException, OSError) as e:
+            attempt += 1
+            delay = min(1 * 2**attempt, 60)
+            logger.warning(
+                f"Connection error (attempt {attempt}/{max_attempts}): {e}, retrying in {delay}s..."
+            )
+            await asyncio.sleep(delay)
 
-    return 0
+    logger.error(f"Exhausted {max_attempts} reconnect attempts, exiting")
+    return 1
 
 
 if __name__ == "__main__":

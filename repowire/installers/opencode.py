@@ -47,7 +47,7 @@ let reconnectAttempts: number = 0
 let opencodeClient: PluginClient | null = null
 
 // Note: We no longer rely on TMUX_PANE for identity. The daemon assigns
-// a unique peer_id (oc-{uuid12}) on registration.
+// a unique peer_id (repow-{circle}-{uuid8}) on registration.
 
 // HTTP helpers for daemon
 async function daemon(path: string, body?: object) {
@@ -84,7 +84,7 @@ function connectWebSocket() {
           }
         }
       } catch (e) {
-        // tmux commands failed, use default circle
+        console.warn("[repowire] Failed to derive circle from tmux:", e)
       }
     }
 
@@ -146,12 +146,16 @@ function sendStatus(status: "busy" | "idle" | "offline") {
 function sendResponse(correlationId: string, text: string) {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "response", correlation_id: correlationId, text }))
+  } else {
+    console.warn(`[repowire] Cannot send response for ${correlationId}: WebSocket not open`)
   }
 }
 
 function sendError(correlationId: string, error: string) {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "error", correlation_id: correlationId, error }))
+  } else {
+    console.warn(`[repowire] Cannot send error for ${correlationId}: WebSocket not open`)
   }
 }
 
@@ -208,7 +212,7 @@ async function resolveSessionId(): Promise<string | null> {
       return activeSessionId
     }
   } catch (e) {
-    // Listing failed, will try to create
+    console.warn("[repowire] Failed to list sessions:", e)
   }
 
   // Create a new session as last resort
@@ -219,7 +223,7 @@ async function resolveSessionId(): Promise<string | null> {
       return activeSessionId
     }
   } catch (e) {
-    // Creation failed
+    console.warn("[repowire] Failed to create session:", e)
   }
 
   return null
@@ -252,7 +256,7 @@ async function handleIncomingQuery(correlationId: string, fromPeer: string, text
     // Get the message ID from the response
     const messageId = result?.data?.info?.id
     if (!messageId) {
-      sendResponse(correlationId, "(no message ID returned)")
+      sendError(correlationId, "No message ID returned from OpenCode session.prompt()")
       sendStatus("idle")
       return
     }
@@ -300,7 +304,7 @@ async function handleIncomingQuery(correlationId: string, fromPeer: string, text
     }
 
     // Timeout
-    sendResponse(correlationId, "(timeout waiting for response)")
+    sendError(correlationId, "Query timed out waiting for OpenCode response")
   } catch (e) {
     const errorMsg = e instanceof Error ? e.message : String(e)
     console.error(`[repowire] Query failed: ${errorMsg}`)
@@ -413,7 +417,7 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         },
       }),
       set_circle: tool({
-        description: "Join a named circle to communicate with peers in that circle. Use this to communicate with peers from different backends (e.g., Claude Code sessions in tmux).",
+        description: "Join a named circle to communicate with peers in that circle. Use this to communicate with peers in different circles (e.g., Claude Code sessions in tmux).",
         args: {
           circle: tool.schema.string().describe("Circle name to join (e.g., 'dev', 'frontend')"),
         },

@@ -15,7 +15,8 @@ def main() -> int:
     """Main entry point for UserPromptSubmit hook."""
     try:
         input_data = json.loads(sys.stdin.read())
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"repowire prompt: invalid JSON input: {e}", file=sys.stderr)
         return 0
 
     if input_data.get("hook_event_name") != "UserPromptSubmit":

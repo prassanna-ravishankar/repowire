@@ -1,6 +1,6 @@
 ---
 name: integration-test
-description: Integration test for repowire peer-to-peer messaging. Supports claude-code, opencode, or mixed-backend testing with circle boundaries and cross-agent-type communication. Can run all modes in parallel via agent teams.
+description: Integration test for repowire peer-to-peer messaging. Supports claude-code, opencode, or mixed-agent-type testing with circle boundaries and cross-agent-type communication. Can run all modes in parallel via agent teams.
 ---
 
 # Repowire Integration Test
@@ -86,7 +86,11 @@ rm -f ~/.repowire/sessions.json 2>/dev/null || true
 
 ## Phase 4: Fresh Install (if requested)
 
+**IMPORTANT:** `repowire setup` calls `claude mcp add` which fails inside a Claude Code session. Run these commands in a **tmux pane**, not from within Claude Code.
+
 ```bash
+# Run in a tmux pane (e.g. tmux send-keys to a spare window):
+
 # Uninstall
 repowire uninstall 2>/dev/null || true
 uv tool uninstall repowire 2>/dev/null || true
@@ -94,7 +98,7 @@ uv tool uninstall repowire 2>/dev/null || true
 # Install as tool from local source
 uv tool install --force /path/to/repowire
 
-# Setup hooks (MCP add will fail inside Claude - add manually)
+# Setup hooks and MCP server
 repowire setup --no-service
 
 # Verify
@@ -295,7 +299,7 @@ repowire peer prune --force 2>/dev/null || true
 
 ---
 
-## Mode: mixed (Cross-Backend)
+## Mode: mixed (Cross-Agent-Type)
 
 **Requires:** Both claude-code AND opencode setups working
 **Tmux sessions used:** `mixed-test`

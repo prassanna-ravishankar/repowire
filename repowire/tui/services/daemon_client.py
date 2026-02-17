@@ -35,7 +35,6 @@ class HealthInfo:
 
     status: str
     version: str
-    backend: str
     relay_mode: bool
 
 
@@ -140,7 +139,6 @@ class DaemonClient:
             return HealthInfo(
                 status=data.get("status", "unknown"),
                 version=data.get("version", "unknown"),
-                backend=data.get("backend", "unknown"),
                 relay_mode=data.get("relay_mode", False),
             )
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
@@ -181,6 +179,8 @@ class DaemonClient:
             resp = await self.client.get("/events")
             resp.raise_for_status()
             data = resp.json()
+            if isinstance(data, list):
+                return data
             return data.get("events", [])
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
             # Use debug level to avoid log spam from frequent polling

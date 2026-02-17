@@ -14,8 +14,7 @@ from repowire.config.models import Config, PeerConfig
 from repowire.daemon.core import PeerManager
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.session_mapper import SessionMapper
-from repowire.protocol.peers import Peer, PeerStatus
-
+from repowire.protocol.peers import Peer
 
 # ---------------------------------------------------------------------------
 # Shared fixtures

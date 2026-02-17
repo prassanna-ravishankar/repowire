@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -47,7 +48,9 @@ def fetch_peers() -> list[dict] | None:
             if resp.status == 200:
                 data = json.loads(resp.read().decode())
                 return data.get("peers", [])
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError):
+    except json.JSONDecodeError as e:
+        print(f"repowire session: invalid JSON from daemon /peers: {e}", file=sys.stderr)
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
         pass
     return None
 
@@ -95,7 +98,7 @@ def register_peer(
     """Register peer with daemon via HTTP.
 
     Args:
-        peer_id: Unique peer ID (tmux pane ID like "%42" for claudemux)
+        peer_id: Unique peer ID (tmux pane ID like "%42" for Claude Code)
         display_name: Human-readable name (folder name)
         cwd: Working directory path
         machine: Machine hostname
@@ -134,13 +137,14 @@ def main() -> int:
     """Main entry point."""
     try:
         input_data = json.loads(sys.stdin.read())
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"repowire session: invalid JSON input: {e}", file=sys.stderr)
         return 0
 
     event = input_data.get("hook_event_name")
     cwd = input_data.get("cwd", os.getcwd())
 
-    # Get tmux info (pane_id is the unique identifier)
+    # Get tmux info (pane_id used for tmux targeting)
     tmux_info = get_tmux_info()
     pane_id = tmux_info["pane_id"]
 
@@ -156,14 +160,18 @@ def main() -> int:
             if hook_script.exists():
                 # Start async hook as background process
                 # Pass cwd so the hook registers with the correct project name
-                # (important when running via `uv run --directory` in dev mode)
-                subprocess.Popen(
+                proc = subprocess.Popen(
                     [sys.executable, str(hook_script)],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                     cwd=cwd,
                 )
+                # Store PID for cleanup on SessionEnd
+                pid_dir = Path.home() / ".cache" / "repowire" / "hooks"
+                pid_dir.mkdir(parents=True, exist_ok=True)
+                pane_file = (pane_id or "unknown").replace("%", "")
+                (pid_dir / f"{pane_file}.pid").write_text(str(proc.pid))
         except Exception as e:
             print(f"repowire: failed to start WebSocket hook: {e}", file=sys.stderr)
 
@@ -182,17 +190,31 @@ def main() -> int:
                 print(json.dumps(output))
 
     elif event == "SessionEnd":
-        # Notify daemon we're going offline so pending queries get cancelled
-        # Use pane_id if available, fallback to display_name for backward compat
-        peer_identifier = pane_id if pane_id else display_name
+        # Kill the WebSocket hook process
+        if pane_id:
+            pane_file = pane_id.replace("%", "")
+            pid_file = Path.home() / ".cache" / "repowire" / "hooks" / f"{pane_file}.pid"
+            if pid_file.exists():
+                try:
+                    pid = int(pid_file.read_text().strip())
+                    os.kill(pid, signal.SIGTERM)
+                except (ValueError, OSError, ProcessLookupError):
+                    pass
+                finally:
+                    pid_file.unlink(missing_ok=True)
+
+        # Mark peer offline so pending queries get cancelled
+        peer_identifier = display_name
         try:
             req = urllib.request.Request(
                 f"{DAEMON_URL}/peers/{peer_identifier}/offline",
                 method="POST",
             )
             urllib.request.urlopen(req, timeout=2.0)
-        except (urllib.error.URLError, urllib.error.HTTPError, OSError):
-            pass  # Best effort - daemon may not be running
+        except urllib.error.HTTPError as e:
+            print(f"repowire session: daemon error marking offline: {e}", file=sys.stderr)
+        except (urllib.error.URLError, OSError):
+            pass  # Daemon not running - expected
 
     return 0
 

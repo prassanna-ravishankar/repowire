@@ -11,10 +11,10 @@ class TmuxInfo(TypedDict):
     """Tmux environment information.
 
     The pane_id here is the raw tmux pane ID (e.g., "%42") which is used
-    as the peer_id for claudemux backend peers.
+    as the peer_id for Claude Code peers.
     """
 
-    pane_id: str | None  # tmux pane ID, used as peer_id for claudemux
+    pane_id: str | None  # tmux pane ID, used as peer_id for Claude Code
     session_name: str | None
     window_name: str | None
 
@@ -23,7 +23,7 @@ def get_pane_id() -> str | None:
     """Get the current tmux pane ID from environment.
 
     Returns the tmux pane ID (e.g., "%42") or None if not in tmux.
-    For claudemux backend, this is used as the peer_id.
+    For Claude Code, this is used as the peer_id.
     """
     return os.environ.get("TMUX_PANE")
 
@@ -51,20 +51,7 @@ def get_tmux_info() -> TmuxInfo:
             parts = result.stdout.strip().split(":", 1)
             if len(parts) == 2:
                 session_name, window_name = parts
-    except Exception:
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
         pass
 
     return {"pane_id": pane_id, "session_name": session_name, "window_name": window_name}
-
-
-def get_tmux_target() -> str | None:
-    """Get current tmux session:window from environment.
-
-    Returns the tmux target in 'session:window' format, or None if not in tmux.
-
-    Note: Kept for backward compatibility. Prefer get_tmux_info() for new code.
-    """
-    info = get_tmux_info()
-    if info["session_name"] and info["window_name"]:
-        return f"{info['session_name']}:{info['window_name']}"
-    return None

@@ -9,12 +9,13 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from repowire.config.models import Config, load_config
+from repowire.daemon.auth import require_localhost
 from repowire.daemon.core import PeerManager
 from repowire.daemon.deps import cleanup_deps, init_deps
 from repowire.daemon.message_router import MessageRouter
@@ -138,8 +139,8 @@ def create_app(
         app.mount("/", StaticFiles(directory=web_out), name="web_static")
 
     @app.post("/shutdown", include_in_schema=False)
-    async def shutdown():
-        """Shutdown the daemon gracefully."""
+    async def shutdown(_: None = Depends(require_localhost)):
+        """Shutdown the daemon gracefully. Restricted to localhost."""
         import asyncio
 
         loop = asyncio.get_event_loop()

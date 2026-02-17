@@ -61,13 +61,16 @@ class WebSocketTransport:
             )
             logger.info(f"Registered connection for {session_id}")
 
-    async def disconnect(self, session_id: str, websocket: WebSocket | None = None) -> None:
+    async def disconnect(self, session_id: str, websocket: WebSocket | None = None) -> bool:
         """Unregister WebSocket connection.
 
         Args:
             session_id: Session to disconnect
             websocket: If provided, only disconnect if this is still the registered websocket.
                        Prevents race where an old handler disconnects a newer connection.
+
+        Returns:
+            True if the connection was actually removed, False if skipped (already replaced).
         """
         async with self._lock:
             if session_id in self._connections:
@@ -78,9 +81,11 @@ class WebSocketTransport:
                     logger.debug(
                         f"Skipping disconnect for {session_id}: websocket already replaced"
                     )
-                    return
+                    return False
                 self._connections.pop(session_id)
                 logger.info(f"Unregistered connection for {session_id}")
+                return True
+            return False
 
     async def send(self, session_id: str, message: dict[str, Any]) -> None:
         """Send JSON message via WebSocket.

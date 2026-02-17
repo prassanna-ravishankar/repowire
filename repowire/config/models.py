@@ -26,7 +26,7 @@ class RelayConfig(BaseModel):
 
 
 class OpencodeConfig(BaseModel):
-    """OpenCode backend settings."""
+    """OpenCode settings."""
 
     default_url: str = Field(
         default="http://localhost:4096", description="Default OpenCode server URL"
@@ -36,26 +36,25 @@ class OpencodeConfig(BaseModel):
 class PeerConfig(BaseModel):
     """Configuration for a single peer.
 
-    Identity is based on a canonical `peer_id` which is unique per agent type:
-    - claude-code: `%N` (tmux pane ID, e.g., "%42") - stable across session restarts
-    - opencode: `oc-{uuid12}` (daemon-assigned, e.g., "oc-550e8400e29b")
+    Identity is based on a canonical `peer_id` assigned by the daemon's
+    SessionMapper on WebSocket connect: `repow-{circle}-{uuid8}`
+    (e.g., "repow-dev-a1b2c3d4"). The format is the same for all agent types.
 
     The name field is kept for backward compatibility with older configs.
     """
 
-    # Primary identity - unique per agent type
-    # claude-code: "%N" (tmux pane ID), opencode: "oc-{uuid12}"
-    peer_id: str | None = Field(None, description="Unique peer ID ('%42' or 'oc-...')")
+    # Primary identity - daemon-assigned, format: repow-{circle}-{uuid8}
+    peer_id: str | None = Field(None, description="Unique peer ID (e.g., 'repow-dev-a1b2c3d4')")
     display_name: str | None = Field(None, description="Human-readable name (folder name)")
 
     # Legacy field - kept for backward compatibility
     name: str = Field(..., description="Peer name (legacy, use display_name)")
     path: str | None = Field(None, description="Working directory path")
 
-    # claudemux backend fields
+    # Claude Code fields
     tmux_session: str | None = Field(None, description="Tmux session:window")
 
-    # opencode backend fields
+    # OpenCode fields
     opencode_url: str | None = Field(None, description="OpenCode server URL for this peer")
     session_id: str | None = Field(None, description="Session ID (Claude or OpenCode)")
 
@@ -158,7 +157,7 @@ class Config(BaseModel):
             opencode_url: OpenCode server URL
             circle: Circle (logical subnet)
             metadata: Additional metadata
-            peer_id: Unique peer ID (e.g., '%42' or 'oc-550e8400e29b') - primary identifier
+            peer_id: Unique peer ID (e.g., 'repow-dev-a1b2c3d4') - primary identifier
             display_name: Human-readable name (folder name)
         """
         existing = self.peers.get(name)
@@ -207,7 +206,7 @@ class Config(BaseModel):
         return None
 
     def get_peer_by_peer_id(self, peer_id: str) -> PeerConfig | None:
-        """Get a peer by peer_id (e.g., '%42' for claudemux, 'oc-xxxx' for opencode).
+        """Get a peer by peer_id (e.g., 'repow-dev-a1b2c3d4').
 
         This is the preferred lookup method as peer_id is the primary identifier.
         """

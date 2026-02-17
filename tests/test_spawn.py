@@ -312,7 +312,7 @@ class TestSpawnPeer:
 
         config = SpawnConfig(path="/tmp/test", circle="dev", backend="unknown")
 
-        with pytest.raises(ValueError, match="Unknown backend"):
+        with pytest.raises(ValueError, match="Unknown agent type"):
             spawn_peer(config)
 
     @patch("repowire.spawn._register_with_daemon")
