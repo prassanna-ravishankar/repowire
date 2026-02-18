@@ -147,9 +147,7 @@ class TestCircleAccessControl:
         )
         await pm.register_peer(peer)
 
-    async def test_same_circle_query_succeeds(
-        self, mock_message_router, mock_session_mapper
-    ):
+    async def test_same_circle_query_succeeds(self, mock_message_router, mock_session_mapper):
         """Peers in the same circle can query each other."""
         config = Config()
         config.peers = {
@@ -163,9 +161,7 @@ class TestCircleAccessControl:
         result = await pm.query("peer-a", "peer-b", "hello")
         assert result == "mock response"
 
-    async def test_cross_circle_query_blocked(
-        self, mock_message_router, mock_session_mapper
-    ):
+    async def test_cross_circle_query_blocked(self, mock_message_router, mock_session_mapper):
         """Peers in different circles cannot query each other."""
         config = Config()
         config.peers = {
@@ -179,9 +175,7 @@ class TestCircleAccessControl:
         with pytest.raises(ValueError, match="Circle boundary"):
             await pm.query("peer-a", "peer-b", "hello")
 
-    async def test_bypass_circle_query_succeeds(
-        self, mock_message_router, mock_session_mapper
-    ):
+    async def test_bypass_circle_query_succeeds(self, mock_message_router, mock_session_mapper):
         """bypass_circle=True allows cross-circle queries."""
         config = Config()
         config.peers = {

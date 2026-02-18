@@ -91,25 +91,36 @@ class PeerManager:
         logger.info("PeerManager stopped")
 
     def _lookup_peer_unlocked(self, identifier: str) -> Peer | None:
-        """Lookup peer by session_id or display_name. Must be called with lock held."""
+        """Lookup peer by session_id or display_name. Must be called with lock held.
+
+        When multiple peers share a display_name (different circles), prefers online ones.
+        """
         if identifier in self._peers:
             return self._peers[identifier]
-        if identifier in self._name_index:
-            session_id = self._name_index[identifier]
-            return self._peers.get(session_id)
-        return None
+        # Scan all peers matching display_name, prefer online/busy over offline
+        matches = [p for p in self._peers.values() if p.display_name == identifier]
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0]
+        active = [p for p in matches if p.status != PeerStatus.OFFLINE]
+        return active[0] if active else matches[0]
 
     async def register_peer(self, peer: Peer) -> None:
         """Register a peer in the mesh.
 
         Indexed by session_id with secondary index on display_name.
+        Only evicts old peer if same display_name AND same circle (true reconnect).
         """
         async with self._lock:
-            # Handle reconnection: same name, different session ID
+            # Handle reconnection: same name AND same circle = true reconnect
             if peer.display_name in self._name_index:
                 old_session_id = self._name_index[peer.display_name]
                 if old_session_id != peer.peer_id and old_session_id in self._peers:
-                    del self._peers[old_session_id]
+                    old_peer = self._peers[old_session_id]
+                    if old_peer.circle == peer.circle:
+                        del self._peers[old_session_id]
+                    # Different circle: don't evict, they're distinct peers
 
             peer.status = PeerStatus.ONLINE
             peer.last_seen = datetime.now(timezone.utc)

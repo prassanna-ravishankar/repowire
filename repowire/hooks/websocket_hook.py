@@ -76,8 +76,11 @@ def _tmux_send_keys(pane_id: str, text: str) -> bool:
 def _is_pane_safe(pane_id: str) -> bool:
     """Check if the tmux pane still has an AI agent process running.
 
-    Prevents injecting text into a bare shell if the agent exited.
+    Uses a denylist of known shells rather than an allowlist of agent binaries,
+    because agent CLIs may report version strings (e.g. "2.1.45") as
+    pane_current_command instead of their binary name.
     """
+    shell_commands = {"bash", "zsh", "sh", "fish", "tcsh", "csh", "dash", "login"}
     try:
         result = subprocess.run(
             ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_current_command}"],
@@ -87,7 +90,7 @@ def _is_pane_safe(pane_id: str) -> bool:
         if result.returncode != 0:
             return False
         cmd = result.stdout.strip().lower()
-        return cmd in {"node", "claude", "opencode", "python", "python3"}
+        return cmd not in shell_commands
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
 
@@ -211,7 +214,7 @@ async def main() -> int:
 
     while attempt < max_attempts:
         try:
-            async with websockets.connect(uri) as websocket:
+            async with websockets.connect(uri, ping_interval=None) as websocket:
                 attempt = 0  # Reset on successful connection
 
                 # Send connect message

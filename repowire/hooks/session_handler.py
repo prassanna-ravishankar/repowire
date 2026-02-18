@@ -160,10 +160,14 @@ def main() -> int:
             if hook_script.exists():
                 # Start async hook as background process
                 # Pass cwd so the hook registers with the correct project name
+                log_dir = Path.home() / ".cache" / "repowire" / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                pane_log = (pane_id or "unknown").replace("%", "")
+                log_file = open(log_dir / f"ws-hook-{pane_log}.log", "w")  # noqa: SIM115
                 proc = subprocess.Popen(
                     [sys.executable, str(hook_script)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stdout=log_file,
+                    stderr=log_file,
                     start_new_session=True,
                     cwd=cwd,
                 )

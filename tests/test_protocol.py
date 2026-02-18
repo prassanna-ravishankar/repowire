@@ -1,4 +1,3 @@
-
 from repowire.protocol.messages import (
     BroadcastMessage,
     Message,
