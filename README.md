@@ -128,7 +128,7 @@ The **agent type** identifies which AI coding tool a peer runs. All message deli
 |-----------|----------|---------|
 | **Daemon** | System service (launchd/systemd) | Routes messages between peers, `127.0.0.1:8377` |
 | **Hooks** | `~/.claude/settings.json` | Claude Code lifecycle events |
-| **Plugin** | `~/.config/opencode/plugin/repowire.ts` | OpenCode integration |
+| **Plugin** | `~/.opencode/plugin/repowire.ts` | OpenCode integration |
 | **MCP Server** | Registered with Claude | `ask_peer`, `list_peers`, `notify_peer`, `broadcast` tools |
 | **Config** | `~/.repowire/config.yaml` | Peer registry and settings |
 
@@ -149,7 +149,7 @@ The **agent type** identifies which AI coding tool a peer runs. All message deli
 ┌─────────────────────────────────────────────────────────┐
 │                      Daemon                             │
 │  1. Receives query from frontend                        │
-│  2. Injects query into backend's pane (libtmux)         │
+│  2. Sends query via WebSocket to backend's hook          │
 │  3. Waits for Stop hook to send response                │
 │  4. Returns response to frontend                        │
 └─────────────────────────────────────────────────────────┘
@@ -175,7 +175,7 @@ The **agent type** identifies which AI coding tool a peer runs. All message deli
 │  │  • On query: client.session.prompt(sessionId, text)    │ │
 │  └────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
-                         ↕ WebSocket ws://127.0.0.1:8377/ws/plugin
+                         ↕ WebSocket ws://127.0.0.1:8377/ws
 ┌─────────────────────────────────────────────────────────────┐
 │                         Daemon                               │
 │  • Routes queries to target plugin via WebSocket            │
