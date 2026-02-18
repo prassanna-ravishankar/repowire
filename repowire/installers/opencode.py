@@ -522,16 +522,17 @@ def uninstall_plugin(global_install: bool = True) -> bool:
     """Uninstall the OpenCode plugin.
 
     Args:
-        global_install: If True, uninstall from ~/.config/opencode/plugin/
+        global_install: If True, uninstall from ~/.opencode/plugin/
                        If False, uninstall from .opencode/plugin/
 
     Returns:
-        True if uninstallation successful
+        True if plugin was removed, False if it wasn't installed
     """
     plugin_path = _get_plugin_path(global_install)
     if plugin_path.exists():
         plugin_path.unlink()
-    return True
+        return True
+    return False
 
 
 def check_plugin_installed(global_install: bool = True) -> bool:

@@ -194,8 +194,10 @@ def _uninstall_opencode() -> None:
     from repowire.installers.opencode import uninstall_plugin
 
     try:
-        uninstall_plugin()
-        console.print("[green]✓[/] OpenCode plugin removed")
+        if uninstall_plugin():
+            console.print("[green]✓[/] OpenCode plugin removed")
+        else:
+            console.print("[dim]OpenCode plugin not installed[/]")
     except Exception as e:
         console.print(f"[yellow]![/] Failed to remove OpenCode plugin: {e}")
 
