@@ -197,10 +197,9 @@ async def delete_peer(
     # Clean up SessionMapper to prevent ghost peers
     state = get_app_state()
     session_mapper = state.session_mapper
-    for sid, mapping in session_mapper.get_all_mappings().items():
+    for sid, mapping in list(session_mapper.get_all_mappings().items()):
         if mapping.display_name == name:
             session_mapper.unregister_session(sid)
-            break
 
     if not removed_from_config and not removed_from_manager:
         raise HTTPException(

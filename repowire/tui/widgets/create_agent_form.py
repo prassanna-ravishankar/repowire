@@ -76,10 +76,10 @@ class CreateAgentForm(Widget):
         if event.select.id == "circle-select":
             new_input = self.query_one("#new-circle-input", Input)
             if event.value == "__new__":
-                new_input.styles.display = "block"
+                new_input.display = True
                 new_input.focus()
             else:
-                new_input.styles.display = "none"
+                new_input.display = False
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "create-btn":
@@ -130,7 +130,7 @@ class CreateAgentForm(Widget):
         """Clear all form fields."""
         for input_id in ("#name-input", "#path-input", "#new-circle-input"):
             self.query_one(input_id, Input).value = ""
-        self.query_one("#new-circle-input", Input).styles.display = "none"
+        self.query_one("#new-circle-input", Input).display = False
         self.query_one("#circle-select", Select).value = "default"
         self.query_one("#backend-select", Select).value = "claude-code"
 

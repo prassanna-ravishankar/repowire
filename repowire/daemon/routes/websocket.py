@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -113,13 +112,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # Validate path if provided
         if path:
             normalized_path = os.path.normpath(os.path.abspath(path))
-            home_dir = os.path.expanduser("~")
-            try:
-                is_within_home = Path(normalized_path).is_relative_to(Path(home_dir))
-            except (TypeError, ValueError):
-                is_within_home = False
-            if normalized_path == "/" or not is_within_home:
-                error_msg = "Invalid path: must be within home directory"
+            if normalized_path == "/":
+                error_msg = "Invalid path: root directory not allowed"
                 await websocket.send_json({"type": "error", "error": error_msg})
                 await websocket.close(code=4003, reason="Invalid path")
                 logger.warning(f"WebSocket registration rejected: invalid path {path}")
