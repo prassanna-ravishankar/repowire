@@ -236,8 +236,10 @@ async def main() -> int:
                     session_id = response["session_id"]
                     logger.info(f"Connected with session_id: {session_id}")
 
-                    # Store session_id in environment for other hooks
+                    # Store session_id for SessionEnd hook to use
                     os.environ["REPOWIRE_SESSION_ID"] = session_id
+                    sid_file = pid_dir / f"{pane_file}.sid"
+                    sid_file.write_text(session_id)
                 else:
                     logger.error(f"Unexpected response: {response}, retrying...")
                     await asyncio.sleep(2)

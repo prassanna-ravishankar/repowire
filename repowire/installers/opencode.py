@@ -74,9 +74,9 @@ function connectWebSocket() {
     let tmuxSession: string | undefined
     if (process.env.TMUX) {
       try {
-        const { execSync } = require("child_process")
-        const session = execSync("tmux display-message -p '#S'", { encoding: "utf-8" }).trim()
-        const window = execSync("tmux display-message -p '#W'", { encoding: "utf-8" }).trim()
+        const { execFileSync } = require("child_process")
+        const session = execFileSync("tmux", ["display-message", "-p", "#S"], { encoding: "utf-8" }).trim()
+        const window = execFileSync("tmux", ["display-message", "-p", "#W"], { encoding: "utf-8" }).trim()
         if (session) {
           circle = session
           if (window) {

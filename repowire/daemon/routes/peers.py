@@ -5,7 +5,7 @@ from __future__ import annotations
 import socket
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from repowire.config.models import AgentType
@@ -185,6 +185,9 @@ async def create_peer(
 @router.delete("/peers/{name}", response_model=OkResponse)
 async def delete_peer(
     name: str,
+    circle: str | None = Query(
+        None, description="Circle to scope deletion to avoid ambiguity"
+    ),
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
     """Unregister a peer by name (CLI-friendly endpoint)."""
@@ -192,13 +195,15 @@ async def delete_peer(
     peer_manager = get_peer_manager()
 
     removed_from_config = config.remove_peer(name)
-    removed_from_manager = await peer_manager.unregister_peer(name)
+    removed_from_manager = await peer_manager.unregister_peer(name, circle=circle)
 
     # Clean up SessionMapper to prevent ghost peers
     state = get_app_state()
     session_mapper = state.session_mapper
     for sid, mapping in list(session_mapper.get_all_mappings().items()):
         if mapping.display_name == name:
+            if circle and mapping.circle != circle:
+                continue
             session_mapper.unregister_session(sid)
 
     if not removed_from_config and not removed_from_manager:

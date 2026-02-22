@@ -171,6 +171,7 @@ def main() -> int:
                     start_new_session=True,
                     cwd=cwd,
                 )
+                log_file.close()  # subprocess inherits the fd
                 # Store PID for cleanup on SessionEnd
                 pid_dir = Path.home() / ".cache" / "repowire" / "hooks"
                 pid_dir.mkdir(parents=True, exist_ok=True)
@@ -208,7 +209,19 @@ def main() -> int:
                     pid_file.unlink(missing_ok=True)
 
         # Mark peer offline so pending queries get cancelled
+        # Prefer session_id (unambiguous) over display_name
         peer_identifier = display_name
+        if pane_id:
+            pane_clean = pane_id.replace("%", "")
+            sid_file = Path.home() / ".cache" / "repowire" / "hooks" / f"{pane_clean}.sid"
+            if sid_file.exists():
+                try:
+                    peer_identifier = sid_file.read_text().strip()
+                except OSError:
+                    pass
+                finally:
+                    sid_file.unlink(missing_ok=True)
+
         try:
             req = urllib.request.Request(
                 f"{DAEMON_URL}/peers/{peer_identifier}/offline",

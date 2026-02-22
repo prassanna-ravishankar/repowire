@@ -130,24 +130,36 @@ class PeerManager:
 
             logger.info(f"Peer registered: {peer.display_name} ({peer.peer_id})")
 
-    async def unregister_peer(self, identifier: str) -> bool:
+    async def unregister_peer(self, identifier: str, circle: str | None = None) -> bool:
         """Unregister a peer from the mesh.
 
         Args:
             identifier: Either session_id or display_name
+            circle: Optional circle filter to disambiguate same-name peers
 
         Returns:
             True if peer was found and removed
         """
         async with self._lock:
-            # Try as session_id first
+            # Try as session_id first (always unambiguous)
             if identifier in self._peers:
                 peer = self._peers.pop(identifier)
                 self._name_index.pop(peer.display_name, None)
                 logger.info(f"Peer unregistered: {peer.display_name} ({identifier})")
                 return True
 
-            # Try as display_name
+            # Try as display_name — with optional circle filter
+            if circle:
+                # Find the specific peer matching name + circle
+                for sid, peer in list(self._peers.items()):
+                    if peer.display_name == identifier and peer.circle == circle:
+                        self._peers.pop(sid)
+                        if self._name_index.get(identifier) == sid:
+                            self._name_index.pop(identifier, None)
+                        logger.info(f"Peer unregistered: {identifier} in {circle} ({sid})")
+                        return True
+                return False
+
             if identifier in self._name_index:
                 session_id = self._name_index.pop(identifier)
                 self._peers.pop(session_id, None)
