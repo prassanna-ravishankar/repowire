@@ -93,10 +93,11 @@ Monitor and manage peers from the terminal:
 repowire top
 ```
 
-- Real-time peer status with vim-style navigation
-- Spawn new peers with `n` key
+- Tabbed interface: Agents, Communications, Create
+- Peer list grouped by circle with inline details
+- Real-time communication feed (queries, responses, broadcasts)
+- Spawn new peers from the Create tab
 - Attach to peer sessions with `s` key
-- Event log with `e` key
 
 ## How It Works
 
