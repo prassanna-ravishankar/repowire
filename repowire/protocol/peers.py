@@ -46,10 +46,6 @@ class Peer(BaseModel):
         default=AgentType.CLAUDE_CODE, description="Agent type: claude-code or opencode"
     )
 
-    # Legacy/optional fields
-    opencode_url: str | None = Field(None, description="OpenCode server URL (for opencode peers)")
-    session_id: str | None = Field(None, description="Session ID")
-
     # circle (logical subnet)
     circle: str = Field(default="global", description="Circle (logical subnet)")
 
@@ -69,32 +65,22 @@ class Peer(BaseModel):
 
         Supports:
         - 'name' -> 'display_name' mapping
-        - 'pane_id' -> 'peer_id' migration
         - Auto-generate legacy peer_id if not provided
         """
         if isinstance(data, dict):
             # If name is provided but display_name is not, use name as display_name
             if "name" in data and "display_name" not in data:
                 data["display_name"] = data["name"]
-            # Support old 'pane_id' field name -> migrate to 'peer_id'
-            if "pane_id" in data and "peer_id" not in data:
-                data["peer_id"] = data["pane_id"]
-            # If peer_id is not provided, generate a placeholder from tmux_session or name
-            # Use hyphen instead of colon to avoid issues in some contexts
+            # Generate a placeholder peer_id from the best available identifier
             if "peer_id" not in data:
-                if data.get("tmux_session"):
-                    data["peer_id"] = f"legacy-{data['tmux_session']}"
-                elif data.get("display_name"):
-                    data["peer_id"] = f"legacy-{data['display_name']}"
-                elif data.get("name"):
-                    data["peer_id"] = f"legacy-{data['name']}"
+                fallback = data.get("tmux_session") or data.get("display_name") or data.get("name")
+                if fallback:
+                    data["peer_id"] = f"legacy-{fallback}"
         return data
 
     def is_local(self) -> bool:
-        """Check if this is a local peer (tmux-based or local opencode)."""
-        return self.tmux_session is not None or (
-            self.opencode_url is not None and "localhost" in self.opencode_url
-        )
+        """Check if this is a local peer."""
+        return self.tmux_session is not None
 
     def is_claude_code(self) -> bool:
         """Check if this peer runs Claude Code."""
@@ -108,15 +94,12 @@ class Peer(BaseModel):
         """Convert to dictionary for serialization."""
         return {
             "peer_id": self.peer_id,
-            "pane_id": self.peer_id,  # API backward compat (deprecated)
             "name": self.display_name,  # API backward compat
             "display_name": self.display_name,
             "path": self.path,
             "machine": self.machine,
             "tmux_session": self.tmux_session,
             "backend": self.backend,
-            "opencode_url": self.opencode_url,
-            "session_id": self.session_id,
             "circle": self.circle,
             "status": self.status.value,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,

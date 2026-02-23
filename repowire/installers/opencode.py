@@ -72,11 +72,13 @@ function connectWebSocket() {
     // Derive circle from tmux session name (like Claude Code hooks do)
     let circle = "default"
     let tmuxSession: string | undefined
-    if (process.env.TMUX) {
+    const tmuxPane = process.env.TMUX_PANE
+    if (process.env.TMUX && tmuxPane) {
       try {
         const { execFileSync } = require("child_process")
-        const session = execFileSync("tmux", ["display-message", "-p", "#S"], { encoding: "utf-8" }).trim()
-        const window = execFileSync("tmux", ["display-message", "-p", "#W"], { encoding: "utf-8" }).trim()
+        // Use -t to target our specific pane, not the most recently active session
+        const session = execFileSync("tmux", ["display-message", "-t", tmuxPane, "-p", "#S"], { encoding: "utf-8" }).trim()
+        const window = execFileSync("tmux", ["display-message", "-t", tmuxPane, "-p", "#W"], { encoding: "utf-8" }).trim()
         if (session) {
           circle = session
           if (window) {
@@ -125,9 +127,15 @@ function connectWebSocket() {
   }
 }
 
+const MAX_RECONNECT_ATTEMPTS = 50
+
 function scheduleReconnect() {
   if (reconnectTimeout) clearTimeout(reconnectTimeout)
   reconnectAttempts++
+  if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+    console.error(`[repowire] Exhausted ${MAX_RECONNECT_ATTEMPTS} reconnect attempts, giving up`)
+    return
+  }
   // Exponential backoff: 3s, 6s, 12s, 24s, max 60s
   const delay = Math.min(3000 * Math.pow(2, reconnectAttempts - 1), 60000)
   reconnectTimeout = setTimeout(() => {
@@ -138,6 +146,8 @@ function scheduleReconnect() {
 function sendStatus(status: "busy" | "idle" | "offline") {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "status", status }))
+  } else {
+    console.warn(`[repowire] Cannot send status '${status}': WebSocket not open`)
   }
 }
 
@@ -327,9 +337,9 @@ function cleanup() {
   }
 }
 
-// Sanitize peer name to match daemon validation (alphanumeric, underscore, hyphen)
+// Sanitize peer name to match daemon validation (alphanumeric, dots, underscore, hyphen)
 function sanitizePeerName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9_-]/g, "_") || "unknown"
+  return name.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown"
 }
 
 // Main plugin export

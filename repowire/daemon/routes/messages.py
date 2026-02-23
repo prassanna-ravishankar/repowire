@@ -24,6 +24,7 @@ class QueryRequest(BaseModel):
     text: str = Field(..., description="Query text")
     timeout: float = Field(default=120.0, description="Timeout in seconds")
     bypass_circle: bool = Field(default=False, description="Bypass circle restrictions (CLI mode)")
+    circle: str | None = Field(None, description="Circle to scope target peer lookup")
 
 
 class QueryResponse(BaseModel):
@@ -73,13 +74,6 @@ class OkResponse(BaseModel):
     ok: bool = True
 
 
-class HookResponseRequest(BaseModel):
-    """Request from Stop hook with captured response."""
-
-    correlation_id: str = Field(..., description="Correlation ID of the pending query")
-    response: str = Field(..., description="Captured response text")
-
-
 @router.post("/query", response_model=QueryResponse)
 async def query_peer(
     request: QueryRequest,
@@ -89,7 +83,7 @@ async def query_peer(
     peer_manager = get_peer_manager()
 
     # Check peer state before attempting query
-    peer = await peer_manager.get_peer(request.to_peer)
+    peer = await peer_manager.get_peer(request.to_peer, circle=request.circle)
     if peer:
         if peer.status == PeerStatus.BUSY:
             return QueryResponse(
@@ -114,6 +108,7 @@ async def query_peer(
             text=request.text,
             timeout=request.timeout,
             bypass_circle=bypass,
+            circle=request.circle,
         )
         return QueryResponse(text=response_text)
     except ValueError as e:
@@ -187,17 +182,6 @@ async def update_session(
         )
 
     await peer_manager.update_peer_status(request.peer_name, peer_status)
-    return OkResponse()
-
-
-@router.post("/hook/response", response_model=OkResponse)
-async def hook_response(
-    request: HookResponseRequest,
-    _: None = Depends(require_localhost),
-) -> OkResponse:
-    """Receive response from Stop hook. Restricted to localhost."""
-    peer_manager = get_peer_manager()
-    peer_manager.resolve_hook_response(request.correlation_id, request.response)
     return OkResponse()
 
 

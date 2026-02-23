@@ -6,12 +6,10 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
 import libtmux
 from libtmux.exc import LibTmuxException, ObjectDoesNotExist
 
 from repowire.config.models import AgentType
-from repowire.daemon.deps import get_config
 
 # Default commands for each agent type
 AGENT_COMMANDS: dict[AgentType, str] = {
@@ -39,20 +37,20 @@ class SpawnConfig:
 class SpawnResult:
     """Result of spawning a peer."""
 
-    peer_id: str  # e.g., "%42" for claude-code
     display_name: str
     tmux_session: str  # e.g., "circle:name"
-    registered: bool = False  # Whether daemon registration succeeded
 
 
 def spawn_peer(config: SpawnConfig) -> SpawnResult:
-    """Spawn a new peer in a tmux window and register with daemon.
+    """Spawn a new peer in a tmux window.
+
+    Registration happens automatically via WebSocket when the agent starts.
 
     Args:
         config: Spawn configuration
 
     Returns:
-        SpawnResult with peer_id, display_name, tmux_session, and registered status
+        SpawnResult with display_name and tmux_session
 
     Raises:
         ValueError: If agent type is unknown
@@ -86,21 +84,9 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
 
     tmux_session = f"{config.circle}:{window_name}"
 
-    # Register with daemon
-    registered = _register_with_daemon(
-        peer_id=pane.id or "",
-        display_name=window_name,
-        path=config.path,
-        tmux_session=tmux_session,
-        circle=config.circle,
-        backend=config.backend,
-    )
-
     return SpawnResult(
-        peer_id=pane.id or "",
         display_name=window_name,
         tmux_session=tmux_session,
-        registered=registered,
     )
 
 
@@ -128,47 +114,6 @@ def _unique_window_name(session: libtmux.Session, base_name: str) -> str:
     while f"{base_name}-{i}" in existing_names:
         i += 1
     return f"{base_name}-{i}"
-
-
-def _register_with_daemon(
-    peer_id: str,
-    display_name: str,
-    path: str,
-    tmux_session: str,
-    circle: str,
-    backend: AgentType,
-) -> bool:
-    """Register peer with daemon. Returns True if successful."""
-    import logging
-
-    logger = logging.getLogger(__name__)
-
-    try:
-        cfg = get_config()
-        daemon_url = f"http://{cfg.daemon.host}:{cfg.daemon.port}"
-
-        with httpx.Client(timeout=5.0) as client:
-            resp = client.post(
-                f"{daemon_url}/peers",
-                json={
-                    "peer_id": peer_id,
-                    "pane_id": peer_id,  # Backward compatibility
-                    "display_name": display_name,
-                    "name": display_name,  # Backward compatibility
-                    "path": path,
-                    "tmux_session": tmux_session,
-                    "circle": circle,
-                    "backend": backend,
-                },
-            )
-            resp.raise_for_status()
-        return True
-    except httpx.HTTPStatusError as e:
-        logger.warning(f"Daemon registration failed: {e.response.status_code}")
-        return False
-    except httpx.RequestError as e:
-        logger.warning(f"Daemon not reachable: {e}")
-        return False
 
 
 def attach_session(tmux_session: str) -> None:

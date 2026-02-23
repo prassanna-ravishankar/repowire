@@ -22,7 +22,6 @@ def make_peer(
         backend="claude-code",
         path="/tmp",
         tmux_session=tmux_session,
-        opencode_url=None,
         metadata={},
     )
 

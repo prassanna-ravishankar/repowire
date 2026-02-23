@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 from repowire.hooks._tmux import get_pane_id
-from repowire.hooks.utils import update_status
+from repowire.hooks.utils import get_session_id, update_status
 from repowire.session.transcript import extract_last_assistant_response
 
 
@@ -32,8 +32,12 @@ def main() -> int:
 
     # Always mark peer as online when Claude finishes processing
     cwd = input_data.get("cwd", os.getcwd())
-    peer_name = Path(cwd).name
-    update_status(peer_name, "online")
+    peer_identifier = get_session_id() or Path(cwd).name
+    if not update_status(peer_identifier, "online"):
+        print(
+            f"repowire stop: failed to update status for {peer_identifier}",
+            file=sys.stderr,
+        )
 
     transcript_path_str = input_data.get("transcript_path")
     if not transcript_path_str:
@@ -70,8 +74,15 @@ def main() -> int:
 
         response_file = response_dir / f"{pane_file}.json"
         tmp_file = response_dir / f"{pane_file}.json.tmp"
-        tmp_file.write_text(json.dumps({"correlation_id": correlation_id, "response": response}))
-        os.replace(str(tmp_file), str(response_file))
+        try:
+            payload = json.dumps({"correlation_id": correlation_id, "response": response})
+            tmp_file.write_text(payload)
+            os.replace(str(tmp_file), str(response_file))
+        except OSError as e:
+            print(
+                f"repowire stop: failed to write response file for {correlation_id[:8]}: {e}",
+                file=sys.stderr,
+            )
 
     # Clean up correlation file
     corr_file.unlink(missing_ok=True)

@@ -94,7 +94,6 @@ class TestPeerInfo:
             backend="claude-code",
             path="/tmp",
             tmux_session="0:test",
-            opencode_url=None,
             metadata={},
         )
         assert peer.backend == "claude-code"
@@ -111,11 +110,9 @@ class TestPeerInfo:
             backend="opencode",
             path="/tmp",
             tmux_session=None,
-            opencode_url="http://localhost:4096",
             metadata={},
         )
         assert peer.backend == "opencode"
-        assert peer.opencode_url == "http://localhost:4096"
 
     def test_peerinfo_all_fields(self) -> None:
         """Test PeerInfo with all fields set."""
@@ -128,7 +125,6 @@ class TestPeerInfo:
             backend="claude-code",
             path="/home/user/myapp",
             tmux_session="dev:myapp",
-            opencode_url=None,
             metadata={"branch": "main"},
         )
         assert peer.peer_id == "%99"
@@ -196,10 +192,8 @@ class TestSpawnResult:
     def test_spawn_result_fields(self) -> None:
         """Test SpawnResult has expected fields."""
         result = SpawnResult(
-            peer_id="%42",
             display_name="myapp",
             tmux_session="default:myapp",
         )
-        assert result.peer_id == "%42"
         assert result.display_name == "myapp"
         assert result.tmux_session == "default:myapp"

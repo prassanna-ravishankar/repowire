@@ -95,26 +95,40 @@ def _is_pane_safe(pane_id: str) -> bool:
         return False
 
 
-async def handle_message(data: dict, pane_id: str) -> None:
+async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
     """Handle incoming WebSocket message.
 
     Args:
         data: Message data
         pane_id: Tmux pane ID
+        websocket: WebSocket connection (for sending error responses)
     """
     msg_type = data.get("type")
 
     # Safety: verify agent is still running in the pane before injecting text
     if msg_type in ("query", "notify", "broadcast") and not _is_pane_safe(pane_id):
         logger.warning(f"Pane {pane_id} not safe for injection, dropping {msg_type}")
+        if msg_type == "query" and websocket:
+            correlation_id = data.get("correlation_id", "")
+            try:
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "correlation_id": correlation_id,
+                            "error": f"Pane {pane_id} not safe for injection",
+                        }
+                    )
+                )
+            except Exception:
+                pass
         return
 
     if msg_type == "query":
+        correlation_id = data.get("correlation_id", "")
+        from_peer = data.get("from_peer", "unknown")
+        text = data.get("text", "")
         try:
-            correlation_id = data.get("correlation_id", "")
-            from_peer = data.get("from_peer", "unknown")
-            text = data.get("text", "")
-
             # Store correlation_id for later response matching
             response_dir = Path.home() / ".cache" / "repowire" / "correlations"
             response_dir.mkdir(parents=True, exist_ok=True)
@@ -124,9 +138,33 @@ async def handle_message(data: dict, pane_id: str) -> None:
             if _tmux_send_keys(pane_id, text):
                 logger.info(f"Injected query from {from_peer}: {correlation_id[:8]}")
             else:
-                logger.error(f"Pane {pane_id} not found")
+                error_msg = f"Failed to send keys to pane {pane_id}"
+                logger.error(error_msg)
+                if websocket:
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "correlation_id": correlation_id,
+                                "error": error_msg,
+                            }
+                        )
+                    )
         except Exception as e:
             logger.error(f"Failed to inject query: {e}")
+            if websocket:
+                try:
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "correlation_id": correlation_id,
+                                "error": str(e),
+                            }
+                        )
+                    )
+                except Exception:
+                    pass
 
     elif msg_type == "notify":
         try:
@@ -162,6 +200,9 @@ async def watch_responses(
     pane_file = pane_id.replace("%", "")
     response_file = response_dir / f"{pane_file}.json"
 
+    max_retries_per_file = 10
+    retry_count = 0
+
     while True:
         if response_file.exists():
             try:
@@ -176,10 +217,23 @@ async def watch_responses(
                     )
                 )
                 response_file.unlink()
+                retry_count = 0
                 logger.info(f"Forwarded response: {data['correlation_id'][:8]}")
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning("WebSocket closed during response forwarding")
+                return
             except Exception as e:
-                logger.error(f"Error forwarding response: {e}")
-                # Don't delete file if there was an error - try again
+                retry_count += 1
+                if retry_count >= max_retries_per_file:
+                    bad_path = response_file.with_suffix(".json.bad")
+                    response_file.rename(bad_path)
+                    logger.error(
+                        f"Failed to forward response after {max_retries_per_file} retries, "
+                        f"moved to {bad_path}: {e}"
+                    )
+                    retry_count = 0
+                else:
+                    logger.warning(f"Error forwarding response (retry {retry_count}): {e}")
 
         await asyncio.sleep(0.1)  # Poll every 100ms
 
@@ -214,7 +268,7 @@ async def main() -> int:
 
     while attempt < max_attempts:
         try:
-            async with websockets.connect(uri, ping_interval=None) as websocket:
+            async with websockets.connect(uri, ping_interval=None, ping_timeout=None) as websocket:
                 attempt = 0  # Reset on successful connection
 
                 # Send connect message
@@ -257,9 +311,23 @@ async def main() -> int:
                     # Message loop
                     async for message in websocket:
                         data = json.loads(message)
-                        await handle_message(data, pane_id)
+                        await handle_message(data, pane_id, websocket)
                 finally:
                     watcher_task.cancel()
+                    try:
+                        close_code = websocket.close_code
+                        close_reason = websocket.close_reason
+                        logger.info(f"WS closed: code={close_code} reason={close_reason}")
+                    except Exception:
+                        pass
+
+        except websockets.exceptions.ConnectionClosed as e:
+            attempt += 1
+            logger.warning(
+                f"Connection closed (attempt {attempt}/{max_attempts}): code={e.code}, "
+                f"reconnecting in 2s..."
+            )
+            await asyncio.sleep(2)
 
         except (websockets.exceptions.WebSocketException, OSError) as e:
             attempt += 1
@@ -268,6 +336,11 @@ async def main() -> int:
                 f"Connection error (attempt {attempt}/{max_attempts}): {e}, retrying in {delay}s..."
             )
             await asyncio.sleep(delay)
+            continue
+
+        # Clean disconnect (no exception) — wait before reconnecting
+        logger.info("Connection ended, reconnecting in 2s...")
+        await asyncio.sleep(2)
 
     logger.error(f"Exhausted {max_attempts} reconnect attempts, exiting")
     return 1

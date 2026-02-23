@@ -6,11 +6,11 @@ import socket
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
-from repowire.daemon.deps import get_app_state, get_config, get_peer_manager
+from repowire.daemon.deps import get_app_state, get_peer_manager
 from repowire.protocol.peers import Peer, PeerStatus
 
 router = APIRouter(tags=["peers"])
@@ -20,14 +20,12 @@ class PeerInfo(BaseModel):
     """Peer information for API responses."""
 
     peer_id: str
-    pane_id: str  # Backward compat (deprecated, = peer_id)
     name: str  # Backward compat (= display_name)
     display_name: str
     path: str | None = None
     machine: str | None = None
     tmux_session: str | None = None
     backend: str = "claude-code"
-    opencode_url: str | None = None
     circle: str = "global"
     status: str
     last_seen: str | None = None
@@ -38,14 +36,12 @@ def _peer_to_info(p: Peer) -> PeerInfo:
     """Convert a Peer model to a PeerInfo API response."""
     return PeerInfo(
         peer_id=p.peer_id,
-        pane_id=p.peer_id,
         name=p.display_name,
         display_name=p.display_name,
         path=p.path,
         machine=p.machine,
         tmux_session=p.tmux_session,
         backend=p.backend,
-        opencode_url=p.opencode_url,
         circle=p.circle,
         status=p.status.value,
         last_seen=p.last_seen.isoformat() if p.last_seen else None,
@@ -62,17 +58,24 @@ class PeersResponse(BaseModel):
 class RegisterPeerRequest(BaseModel):
     """Request to register a peer."""
 
-    peer_id: str | None = Field(None, description="Unique peer ID (e.g., repow-dev-a1b2c3d4)")
-    pane_id: str | None = Field(None, description="Legacy: use peer_id instead")
-    name: str = Field(..., description="Peer name (for backward compat)")
+    name: str = Field(..., min_length=1, pattern=r"^[a-zA-Z0-9._-]+$", description="Peer name")
     display_name: str | None = Field(None, description="Human-readable name")
     path: str | None = Field(None, description="Working directory path")
     machine: str | None = Field(None, description="Machine hostname")
     tmux_session: str | None = Field(None, description="Tmux session:window")
     backend: AgentType = Field(default=AgentType.CLAUDE_CODE, description="Agent type")
-    opencode_url: str | None = Field(None, description="OpenCode server URL")
     circle: str | None = Field(None, description="Circle (logical subnet)")
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("circle")
+    @classmethod
+    def validate_circle(cls, v: str | None) -> str | None:
+        if v is not None:
+            import re
+
+            if not re.match(r"^[a-zA-Z0-9._-]+$", v) or len(v) > 64:
+                raise ValueError("Circle must match ^[a-zA-Z0-9._-]+$ and be <= 64 chars")
+        return v
 
 
 class UnregisterPeerRequest(BaseModel):
@@ -87,35 +90,17 @@ class OkResponse(BaseModel):
     ok: bool = True
 
 
-def _resolve_peer_identity(request: RegisterPeerRequest) -> tuple[str, str]:
-    """Resolve peer_id and display_name from a registration request.
-
-    Returns:
-        (peer_id, display_name) tuple
-    """
-    peer_id = request.peer_id or request.pane_id or f"legacy-{request.name}"
-    display_name = request.display_name or request.name
-    return peer_id, display_name
-
-
 def _build_peer(
     request: RegisterPeerRequest, peer_id: str, display_name: str, circle: str = "global"
 ) -> Peer:
     """Build a Peer model from a registration request."""
-    try:
-        backend = AgentType(request.backend)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid agent type: {request.backend}. Must be 'claude-code' or 'opencode'.",
-        )
     return Peer(
         peer_id=peer_id,
         display_name=display_name,
         path=request.path or "",
         machine=request.machine or socket.gethostname(),
         tmux_session=request.tmux_session,
-        backend=backend,
+        backend=request.backend,
         circle=circle,
         status=PeerStatus.ONLINE,
         metadata=request.metadata,
@@ -151,51 +136,44 @@ async def get_peer(
     )
 
 
+async def _register_peer_impl(request: RegisterPeerRequest) -> None:
+    """Shared implementation for peer registration endpoints."""
+    display_name = request.display_name or request.name
+    circle = request.circle or "global"
+
+    state = get_app_state()
+    session_id = state.session_mapper.register_session(
+        display_name=display_name,
+        path=request.path or "",
+        circle=circle,
+        backend=request.backend,
+    )
+
+    peer = _build_peer(request, session_id, display_name, circle)
+
+    peer_manager = get_peer_manager()
+    await peer_manager.register_peer(peer)
+
+
 @router.post("/peers", response_model=OkResponse)
 async def create_peer(
     request: RegisterPeerRequest,
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
     """Register a new peer (CLI-friendly endpoint)."""
-    config = get_config()
-    peer_id, display_name = _resolve_peer_identity(request)
-
-    # Persist to config
-    config.add_peer(
-        name=request.name,
-        path=request.path,
-        tmux_session=request.tmux_session,
-        opencode_url=request.opencode_url,
-        circle=request.circle,
-        peer_id=peer_id,
-        display_name=display_name,
-    )
-
-    # Register with peer manager for immediate use
-    peer_manager = get_peer_manager()
-    peer_config = config.get_peer(request.name)
-    circle = peer_manager.resolve_circle(peer_config) if peer_config else "global"
-
-    peer = _build_peer(request, peer_id, display_name, circle)
-    await peer_manager.register_peer(peer)
-
+    await _register_peer_impl(request)
     return OkResponse()
 
 
 @router.delete("/peers/{name}", response_model=OkResponse)
 async def delete_peer(
     name: str,
-    circle: str | None = Query(
-        None, description="Circle to scope deletion to avoid ambiguity"
-    ),
+    circle: str | None = Query(None, description="Circle to scope deletion to avoid ambiguity"),
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
     """Unregister a peer by name (CLI-friendly endpoint)."""
-    config = get_config()
     peer_manager = get_peer_manager()
-
-    removed_from_config = config.remove_peer(name)
-    removed_from_manager = await peer_manager.unregister_peer(name, circle=circle)
+    removed = await peer_manager.unregister_peer(name, circle=circle)
 
     # Clean up SessionMapper to prevent ghost peers
     state = get_app_state()
@@ -205,8 +183,9 @@ async def delete_peer(
             if circle and mapping.circle != circle:
                 continue
             session_mapper.unregister_session(sid)
+            removed = True
 
-    if not removed_from_config and not removed_from_manager:
+    if not removed:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Peer not found: {name}",
@@ -263,10 +242,7 @@ async def register_peer(
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
     """Register a new peer in the mesh (legacy endpoint)."""
-    peer_manager = get_peer_manager()
-    peer_id, display_name = _resolve_peer_identity(request)
-    peer = _build_peer(request, peer_id, display_name)
-    await peer_manager.register_peer(peer)
+    await _register_peer_impl(request)
     return OkResponse()
 
 
@@ -279,6 +255,15 @@ async def unregister_peer(
     peer_manager = get_peer_manager()
 
     removed = await peer_manager.unregister_peer(request.name)
+
+    # Clean up SessionMapper to prevent ghost peers
+    state = get_app_state()
+    session_mapper = state.session_mapper
+    for sid, mapping in list(session_mapper.get_all_mappings().items()):
+        if mapping.display_name == request.name:
+            session_mapper.unregister_session(sid)
+            removed = True
+
     if not removed:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

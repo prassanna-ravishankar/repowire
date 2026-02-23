@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-from repowire.hooks.utils import update_status
+from repowire.hooks.utils import get_session_id, update_status
 
 
 def main() -> int:
@@ -35,10 +35,13 @@ def main() -> int:
     if not cwd:
         return 0
 
-    peer_name = Path(cwd).name
+    peer_identifier = get_session_id() or Path(cwd).name
 
-    if not update_status(peer_name, "online"):
-        print(f"repowire notification: failed to update status for {peer_name}", file=sys.stderr)
+    if not update_status(peer_identifier, "online"):
+        print(
+            f"repowire notification: failed to update status for {peer_identifier}",
+            file=sys.stderr,
+        )
 
     return 0
 

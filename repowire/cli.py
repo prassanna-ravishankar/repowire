@@ -43,7 +43,7 @@ def serve(host: str, port: int, relay: bool) -> None:
     console.print(f"[cyan]Starting Repowire daemon on {host}:{port}...[/]")
     if relay:
         console.print("[dim]Relay mode enabled[/]")
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, ws_ping_interval=None, ws_ping_timeout=None)
 
 
 # =============================================================================
@@ -542,9 +542,7 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
         )
         console.print(f"  tmux: {result.tmux_session}")
         console.print(f"  command: {actual_cmd}")
-
-        if not result.registered:
-            console.print("[dim]  (daemon not running - will auto-register)[/]")
+        console.print("[dim]  (will auto-register via WebSocket)[/]")
 
     except ValueError as e:
         console.print(f"[red]Error: {e}[/]")
@@ -556,24 +554,19 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
 @peer.command(name="register")
 @click.argument("name")
 @click.option("--tmux-session", "-t", help="Tmux session:window (e.g., '0:mywindow')")
-@click.option("--opencode-url", "-u", help="OpenCode server URL")
 @click.option("--circle", "-c", help="Circle (logical subnet)")
 @click.option("--path", "-p", help="Working directory (defaults to current)")
 def peer_register(
     name: str,
     tmux_session: str | None,
-    opencode_url: str | None,
     circle: str | None,
     path: str | None,
 ) -> None:
     """Register a peer for mesh communication."""
     import httpx
 
-    from repowire.config.models import load_config
-
     actual_path = path or str(Path.cwd())
 
-    # Try HTTP API first
     try:
         with httpx.Client(timeout=5.0) as client:
             resp = client.post(
@@ -582,31 +575,20 @@ def peer_register(
                     "name": name,
                     "path": actual_path,
                     "tmux_session": tmux_session,
-                    "opencode_url": opencode_url,
                     "circle": circle,
                 },
             )
             resp.raise_for_status()
             console.print(f"[green]Registered peer '{name}'[/]")
     except httpx.ConnectError:
-        # Fallback to config if daemon not running
-        config = load_config()
-        config.add_peer(
-            name=name,
-            path=actual_path,
-            tmux_session=tmux_session,
-            opencode_url=opencode_url,
-            circle=circle,
-        )
-        console.print(f"[green]Registered peer '{name}' (daemon not running, saved to config)[/]")
+        console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
+        return
     except httpx.HTTPStatusError as e:
         console.print(f"[red]Failed to register peer: {e}[/]")
         return
 
     if tmux_session:
         console.print(f"  tmux session: {tmux_session}")
-    if opencode_url:
-        console.print(f"  opencode url: {opencode_url}")
     if circle:
         console.print(f"  circle: {circle}")
     console.print(f"  path: {actual_path}")
@@ -618,9 +600,6 @@ def peer_unregister(name: str) -> None:
     """Unregister a peer from the mesh."""
     import httpx
 
-    from repowire.config.models import load_config
-
-    # Try HTTP API first
     try:
         with httpx.Client(timeout=5.0) as client:
             resp = client.delete(f"{_get_daemon_url()}/peers/{name}")
@@ -630,14 +609,7 @@ def peer_unregister(name: str) -> None:
             resp.raise_for_status()
             console.print(f"[green]Unregistered peer '{name}'[/]")
     except httpx.ConnectError:
-        # Fallback to config if daemon not running
-        config = load_config()
-        if config.remove_peer(name):
-            console.print(
-                f"[green]Unregistered peer '{name}' (daemon not running, removed from config)[/]"
-            )
-        else:
-            console.print(f"[red]Peer '{name}' not found[/]")
+        console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
     except httpx.HTTPStatusError as e:
         console.print(f"[red]Failed to unregister peer: {e}[/]")
 
@@ -646,19 +618,23 @@ def peer_unregister(name: str) -> None:
 @click.argument("name")
 @click.argument("query")
 @click.option("--timeout", "-t", default=120, help="Timeout in seconds")
-def peer_ask(name: str, query: str, timeout: int) -> None:
+@click.option("--circle", "-c", default=None, help="Circle to scope peer lookup")
+def peer_ask(name: str, query: str, timeout: int, circle: str | None) -> None:
     """Ask a peer a question (CLI testing utility)."""
     import httpx
 
     try:
         with httpx.Client(timeout=float(timeout) + 5.0) as client:
+            body: dict = {
+                "to_peer": name,
+                "text": query,
+                "timeout": timeout,
+            }
+            if circle:
+                body["circle"] = circle
             resp = client.post(
                 f"{_get_daemon_url()}/query",
-                json={
-                    "to_peer": name,
-                    "text": query,
-                    "timeout": timeout,
-                },
+                json=body,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -682,21 +658,17 @@ def peer_ask(name: str, query: str, timeout: int) -> None:
 @click.option("--force", "-f", is_flag=True, help="Skip confirmation")
 @click.option("--dry-run", is_flag=True, help="Show what would be removed")
 def peer_prune(force: bool, dry_run: bool) -> None:
-    """Remove offline peers from configuration."""
+    """Remove offline peers from the daemon."""
     import httpx
 
-    from repowire.config.models import load_config
-
-    # Get peers (daemon or config fallback)
     try:
         with httpx.Client(timeout=5.0) as client:
             resp = client.get(f"{_get_daemon_url()}/peers")
             resp.raise_for_status()
             peers = resp.json().get("peers", [])
     except httpx.RequestError:
-        console.print("[yellow]Daemon not running. Assuming all configured peers are offline.[/]")
-        config = load_config()
-        peers = [{"name": n, "status": "offline"} for n in config.peers.keys()]
+        console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
+        return
 
     # Filter offline peers
     offline = [p for p in peers if p.get("status") == "offline"]
@@ -717,13 +689,17 @@ def peer_prune(force: bool, dry_run: bool) -> None:
     if not force and not click.confirm(f"\nRemove {len(offline)} peer(s)?"):
         return
 
-    # Remove
-    config = load_config()
+    # Remove via daemon API
     removed = 0
-    for p in offline:
-        if config.remove_peer(p["name"]):
-            removed += 1
-            console.print(f"[green]✓[/] Removed {p['name']}")
+    with httpx.Client(timeout=5.0) as client:
+        for p in offline:
+            try:
+                resp = client.delete(f"{_get_daemon_url()}/peers/{p['name']}")
+                if resp.status_code < 400:
+                    removed += 1
+                    console.print(f"[green]✓[/] Removed {p['name']}")
+            except httpx.RequestError:
+                console.print(f"[red]Failed to remove {p['name']}[/]")
 
     console.print(f"\n[bold green]Pruned {removed} peer(s)[/]")
 

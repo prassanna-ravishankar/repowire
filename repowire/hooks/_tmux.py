@@ -10,11 +10,12 @@ from typing import TypedDict
 class TmuxInfo(TypedDict):
     """Tmux environment information.
 
-    The pane_id here is the raw tmux pane ID (e.g., "%42") which is used
-    as the peer_id for Claude Code peers.
+    The pane_id is the raw tmux pane ID (e.g., "%42"). It is used as a
+    filename stem for .sid, .pid, correlation, and response cache files.
+    The canonical peer_id is assigned by SessionMapper at WebSocket connect.
     """
 
-    pane_id: str | None  # tmux pane ID, used as peer_id for Claude Code
+    pane_id: str | None  # tmux pane ID, used as filename stem for hook files
     session_name: str | None
     window_name: str | None
 
@@ -23,7 +24,7 @@ def get_pane_id() -> str | None:
     """Get the current tmux pane ID from environment.
 
     Returns the tmux pane ID (e.g., "%42") or None if not in tmux.
-    For Claude Code, this is used as the peer_id.
+    Used as a filename stem for hook files (.sid, .pid, correlation, response cache).
     """
     return os.environ.get("TMUX_PANE")
 

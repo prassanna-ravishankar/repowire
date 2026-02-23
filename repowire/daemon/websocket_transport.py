@@ -11,8 +11,6 @@ from typing import Any
 
 from fastapi import WebSocket
 
-from repowire.protocol.peers import PeerStatus
-
 logger = logging.getLogger(__name__)
 
 
@@ -26,7 +24,6 @@ class ConnectionInfo:
 
     session_id: str
     websocket: WebSocket
-    status: PeerStatus = PeerStatus.ONLINE
     connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -44,16 +41,12 @@ class WebSocketTransport:
     async def connect(self, session_id: str, websocket: WebSocket) -> None:
         """Register WebSocket connection.
 
-        If a connection already exists for this session_id, close the old one.
+        If a connection already exists for this session_id, replace it
+        (the old handler's finally block will clean itself up).
         """
         async with self._lock:
             if session_id in self._connections:
-                old_ws = self._connections[session_id].websocket
-                try:
-                    await old_ws.close()
-                    logger.info(f"Closed old connection for {session_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to close old connection: {e}")
+                logger.info(f"Replacing old connection for {session_id}")
 
             self._connections[session_id] = ConnectionInfo(
                 session_id=session_id,
@@ -113,25 +106,6 @@ class WebSocketTransport:
     def get_all_sessions(self) -> list[str]:
         """Get all connected session IDs."""
         return list(self._connections.keys())
-
-    def get_status(self, session_id: str) -> PeerStatus:
-        """Get connection status."""
-        conn = self._connections.get(session_id)
-        return conn.status if conn else PeerStatus.OFFLINE
-
-    async def update_status(self, session_id: str, status: PeerStatus) -> bool:
-        """Update connection status.
-
-        Returns:
-            True if updated, False if session not found
-        """
-        async with self._lock:
-            conn = self._connections.get(session_id)
-            if conn:
-                conn.status = status
-                logger.debug(f"Status updated for {session_id}: {status.value}")
-                return True
-            return False
 
     def get_connection_info(self, session_id: str) -> ConnectionInfo | None:
         """Get connection info for session."""

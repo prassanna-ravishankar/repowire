@@ -1,12 +1,12 @@
 """Tests for circles (logical subnet) feature.
 
-Covers: data models (Peer, PeerConfig), circle resolution,
-and access control via the public query() API.
+Covers: data models (Peer, PeerConfig), and access control via the public query() API.
+Circle enforcement now uses the live peer registry (not config.yaml).
 """
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -103,32 +103,10 @@ class TestPeerConfigCircle:
         peer_config = PeerConfig(name="test")
         assert peer_config.circle is None
 
-    def test_config_add_peer_with_circle(self):
-        """Config.add_peer should accept circle parameter."""
-        with patch.object(Config, "save"):
-            config = Config()
-            config.add_peer(name="test", path="/test", circle="my-circle")
-            assert config.peers["test"].circle == "my-circle"
-
-
-# ---------------------------------------------------------------------------
-# Circle resolution (config-only, no backend derivation)
-# ---------------------------------------------------------------------------
-
-
-class TestResolveCircle:
-    """Tests for PeerManager.resolve_circle."""
-
-    def test_resolve_circle_from_config(self, make_peer_manager):
-        """resolve_circle returns explicit circle or 'default'."""
-        pm = make_peer_manager()
-
-        assert pm.resolve_circle(PeerConfig(name="a", circle="dev")) == "dev"
-        assert pm.resolve_circle(PeerConfig(name="b")) == "default"
-
 
 # ---------------------------------------------------------------------------
 # Circle access control (tested through public query() API)
+# Now enforced from live peer registry, not config.yaml
 # ---------------------------------------------------------------------------
 
 
@@ -149,12 +127,7 @@ class TestCircleAccessControl:
 
     async def test_same_circle_query_succeeds(self, mock_message_router, mock_session_mapper):
         """Peers in the same circle can query each other."""
-        config = Config()
-        config.peers = {
-            "peer-a": PeerConfig(name="peer-a", circle="dev"),
-            "peer-b": PeerConfig(name="peer-b", circle="dev"),
-        }
-        pm = PeerManager(config, mock_message_router, mock_session_mapper)
+        pm = PeerManager(Config(), mock_message_router, mock_session_mapper)
         await self._register(pm, "peer-a", "dev")
         await self._register(pm, "peer-b", "dev")
 
@@ -163,12 +136,7 @@ class TestCircleAccessControl:
 
     async def test_cross_circle_query_blocked(self, mock_message_router, mock_session_mapper):
         """Peers in different circles cannot query each other."""
-        config = Config()
-        config.peers = {
-            "peer-a": PeerConfig(name="peer-a", circle="dev"),
-            "peer-b": PeerConfig(name="peer-b", circle="staging"),
-        }
-        pm = PeerManager(config, mock_message_router, mock_session_mapper)
+        pm = PeerManager(Config(), mock_message_router, mock_session_mapper)
         await self._register(pm, "peer-a", "dev")
         await self._register(pm, "peer-b", "staging")
 
@@ -177,14 +145,18 @@ class TestCircleAccessControl:
 
     async def test_bypass_circle_query_succeeds(self, mock_message_router, mock_session_mapper):
         """bypass_circle=True allows cross-circle queries."""
-        config = Config()
-        config.peers = {
-            "peer-a": PeerConfig(name="peer-a", circle="dev"),
-            "peer-b": PeerConfig(name="peer-b", circle="staging"),
-        }
-        pm = PeerManager(config, mock_message_router, mock_session_mapper)
+        pm = PeerManager(Config(), mock_message_router, mock_session_mapper)
         await self._register(pm, "peer-a", "dev")
         await self._register(pm, "peer-b", "staging")
 
         result = await pm.query("peer-a", "peer-b", "hello", bypass_circle=True)
+        assert result == "mock response"
+
+    async def test_unknown_peer_no_enforcement(self, mock_message_router, mock_session_mapper):
+        """Unknown sender peer = no circle enforcement (CLI callers)."""
+        pm = PeerManager(Config(), mock_message_router, mock_session_mapper)
+        await self._register(pm, "peer-b", "staging")
+
+        # "cli" is not registered, so no enforcement
+        result = await pm.query("cli", "peer-b", "hello")
         assert result == "mock response"

@@ -58,24 +58,11 @@ class TestSpawnResult:
     def test_spawn_result_fields(self) -> None:
         """Test SpawnResult has expected fields."""
         result = SpawnResult(
-            peer_id="%42",
             display_name="myapp",
             tmux_session="default:myapp",
         )
-        assert result.peer_id == "%42"
         assert result.display_name == "myapp"
         assert result.tmux_session == "default:myapp"
-        assert result.registered is False  # Default
-
-    def test_spawn_result_registered(self) -> None:
-        """Test SpawnResult with registered=True."""
-        result = SpawnResult(
-            peer_id="%42",
-            display_name="myapp",
-            tmux_session="default:myapp",
-            registered=True,
-        )
-        assert result.registered is True
 
 
 class TestUniqueWindowName:
@@ -182,14 +169,12 @@ class TestGetOrCreateSession:
 class TestSpawnPeer:
     """Tests for spawn_peer function."""
 
-    @patch("repowire.spawn._register_with_daemon")
     @patch("repowire.spawn._get_or_create_session")
     @patch("repowire.spawn.libtmux.Server")
     def test_spawn_peer_creates_tmux_window(
         self,
         mock_server_class: MagicMock,
         mock_get_session: MagicMock,
-        mock_register: MagicMock,
     ) -> None:
         """Test spawn_peer creates a tmux window."""
         mock_session = MagicMock()
@@ -200,25 +185,20 @@ class TestSpawnPeer:
         mock_window.active_pane = mock_pane
         mock_session.new_window.return_value = mock_window
         mock_get_session.return_value = mock_session
-        mock_register.return_value = True
 
         config = SpawnConfig(path="/tmp/test", circle="dev", backend="claude-code")
         result = spawn_peer(config)
 
-        assert result.peer_id == "%42"
         assert result.display_name == "test"
         assert result.tmux_session == "dev:test"
-        assert result.registered is True
         mock_pane.send_keys.assert_called_once_with("claude", enter=True)
 
-    @patch("repowire.spawn._register_with_daemon")
     @patch("repowire.spawn._get_or_create_session")
     @patch("repowire.spawn.libtmux.Server")
     def test_spawn_peer_uses_custom_command(
         self,
         mock_server_class: MagicMock,
         mock_get_session: MagicMock,
-        mock_register: MagicMock,
     ) -> None:
         """Test spawn_peer uses custom command when provided."""
         mock_session = MagicMock()
@@ -229,7 +209,6 @@ class TestSpawnPeer:
         mock_window.active_pane = mock_pane
         mock_session.new_window.return_value = mock_window
         mock_get_session.return_value = mock_session
-        mock_register.return_value = True
 
         config = SpawnConfig(
             path="/tmp/test",
@@ -241,14 +220,12 @@ class TestSpawnPeer:
 
         mock_pane.send_keys.assert_called_once_with("claude --model opus", enter=True)
 
-    @patch("repowire.spawn._register_with_daemon")
     @patch("repowire.spawn._get_or_create_session")
     @patch("repowire.spawn.libtmux.Server")
     def test_spawn_peer_opencode_backend(
         self,
         mock_server_class: MagicMock,
         mock_get_session: MagicMock,
-        mock_register: MagicMock,
     ) -> None:
         """Test spawn_peer uses opencode command for opencode backend."""
         mock_session = MagicMock()
@@ -259,46 +236,18 @@ class TestSpawnPeer:
         mock_window.active_pane = mock_pane
         mock_session.new_window.return_value = mock_window
         mock_get_session.return_value = mock_session
-        mock_register.return_value = True
 
         config = SpawnConfig(path="/tmp/test", circle="dev", backend="opencode")
         spawn_peer(config)
 
         mock_pane.send_keys.assert_called_once_with("opencode", enter=True)
 
-    @patch("repowire.spawn._register_with_daemon")
-    @patch("repowire.spawn._get_or_create_session")
-    @patch("repowire.spawn.libtmux.Server")
-    def test_spawn_peer_handles_daemon_failure(
-        self,
-        mock_server_class: MagicMock,
-        mock_get_session: MagicMock,
-        mock_register: MagicMock,
-    ) -> None:
-        """Test spawn_peer returns registered=False when daemon fails."""
-        mock_session = MagicMock()
-        mock_session.windows = []
-        mock_window = MagicMock()
-        mock_pane = MagicMock()
-        mock_pane.id = "%42"
-        mock_window.active_pane = mock_pane
-        mock_session.new_window.return_value = mock_window
-        mock_get_session.return_value = mock_session
-        mock_register.return_value = False  # Daemon registration fails
-
-        config = SpawnConfig(path="/tmp/test", circle="dev", backend="claude-code")
-        result = spawn_peer(config)
-
-        assert result.registered is False
-
-    @patch("repowire.spawn._register_with_daemon")
     @patch("repowire.spawn._get_or_create_session")
     @patch("repowire.spawn.libtmux.Server")
     def test_spawn_peer_unknown_backend_raises(
         self,
         mock_server_class: MagicMock,
         mock_get_session: MagicMock,
-        mock_register: MagicMock,
     ) -> None:
         """Test spawn_peer raises for unknown backend."""
         mock_session = MagicMock()
@@ -315,14 +264,12 @@ class TestSpawnPeer:
         with pytest.raises(ValueError, match="Unknown agent type"):
             spawn_peer(config)
 
-    @patch("repowire.spawn._register_with_daemon")
     @patch("repowire.spawn._get_or_create_session")
     @patch("repowire.spawn.libtmux.Server")
     def test_spawn_peer_no_active_pane_raises(
         self,
         mock_server_class: MagicMock,
         mock_get_session: MagicMock,
-        mock_register: MagicMock,
     ) -> None:
         """Test spawn_peer raises when no active pane."""
         mock_session = MagicMock()
@@ -337,14 +284,12 @@ class TestSpawnPeer:
         with pytest.raises(RuntimeError, match="Failed to get active pane"):
             spawn_peer(config)
 
-    @patch("repowire.spawn._register_with_daemon")
     @patch("repowire.spawn._get_or_create_session")
     @patch("repowire.spawn.libtmux.Server")
     def test_spawn_peer_unique_window_name(
         self,
         mock_server_class: MagicMock,
         mock_get_session: MagicMock,
-        mock_register: MagicMock,
     ) -> None:
         """Test spawn_peer handles duplicate window names."""
         mock_session = MagicMock()
@@ -357,7 +302,6 @@ class TestSpawnPeer:
         mock_window.active_pane = mock_pane
         mock_session.new_window.return_value = mock_window
         mock_get_session.return_value = mock_session
-        mock_register.return_value = True
 
         config = SpawnConfig(path="/tmp/test", circle="dev", backend="claude-code")
         result = spawn_peer(config)
@@ -440,93 +384,6 @@ class TestAttachSession:
         assert mock_run.call_count == 2
         mock_run.assert_any_call(["tmux", "select-window", "-t", "dev"], check=False)
         mock_run.assert_any_call(["tmux", "attach-session", "-t", "dev"], check=True)
-
-
-class TestRegisterWithDaemon:
-    """Tests for _register_with_daemon helper."""
-
-    def test_register_success(self, httpx_mock) -> None:
-        """Test successful daemon registration."""
-        from repowire.spawn import _register_with_daemon
-
-        httpx_mock.add_response(
-            url="http://127.0.0.1:8377/peers",
-            method="POST",
-            json={"status": "ok"},
-        )
-
-        with patch("repowire.spawn.get_config") as mock_config:
-            mock_cfg = MagicMock()
-            mock_cfg.daemon.host = "127.0.0.1"
-            mock_cfg.daemon.port = 8377
-            mock_config.return_value = mock_cfg
-
-            result = _register_with_daemon(
-                peer_id="%42",
-                display_name="test",
-                path="/tmp/test",
-                tmux_session="dev:test",
-                circle="dev",
-                backend="claude-code",
-            )
-
-        assert result is True
-
-    def test_register_http_error(self, httpx_mock) -> None:
-        """Test daemon registration with HTTP error."""
-        from repowire.spawn import _register_with_daemon
-
-        httpx_mock.add_response(
-            url="http://127.0.0.1:8377/peers",
-            method="POST",
-            status_code=500,
-        )
-
-        with patch("repowire.spawn.get_config") as mock_config:
-            mock_cfg = MagicMock()
-            mock_cfg.daemon.host = "127.0.0.1"
-            mock_cfg.daemon.port = 8377
-            mock_config.return_value = mock_cfg
-
-            result = _register_with_daemon(
-                peer_id="%42",
-                display_name="test",
-                path="/tmp/test",
-                tmux_session="dev:test",
-                circle="dev",
-                backend="claude-code",
-            )
-
-        assert result is False
-
-    def test_register_connection_error(self) -> None:
-        """Test daemon registration with connection error."""
-        import httpx
-
-        from repowire.spawn import _register_with_daemon
-
-        with patch("repowire.spawn.get_config") as mock_config:
-            mock_cfg = MagicMock()
-            mock_cfg.daemon.host = "127.0.0.1"
-            mock_cfg.daemon.port = 9999  # Non-existent port
-            mock_config.return_value = mock_cfg
-
-            with patch("repowire.spawn.httpx.Client") as mock_client:
-                mock_ctx = MagicMock()
-                mock_ctx.post.side_effect = httpx.RequestError("Connection refused")
-                mock_client.return_value.__enter__.return_value = mock_ctx
-                mock_client.return_value.__exit__.return_value = None
-
-                result = _register_with_daemon(
-                    peer_id="%42",
-                    display_name="test",
-                    path="/tmp/test",
-                    tmux_session="dev:test",
-                    circle="dev",
-                    backend="claude-code",
-                )
-
-        assert result is False
 
 
 class TestListTmuxSessions:

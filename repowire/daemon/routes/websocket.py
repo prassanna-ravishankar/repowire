@@ -81,7 +81,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         circle = data.get("circle", "default")
 
         # Validate circle format (same rules as set_circle handler)
-        if not re.match(r"^[a-zA-Z0-9_-]+$", circle) or len(circle) > 64:
+        if not re.match(r"^[a-zA-Z0-9._-]+$", circle) or len(circle) > 64:
             await websocket.send_json({"type": "error", "error": "Invalid circle format"})
             await websocket.close(code=4002, reason="Invalid circle")
             return
@@ -91,7 +91,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         tmux_session = data.get("tmux_session")
 
         # Validate display_name
-        if not display_name or not re.match(r"^[a-zA-Z0-9_-]+$", display_name):
+        if not display_name or not re.match(r"^[a-zA-Z0-9._-]+$", display_name):
             await websocket.send_json({"type": "error", "error": "Invalid display_name format"})
             await websocket.close(code=4002, reason="Invalid display_name")
             return
@@ -156,7 +156,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await _handle_message(
                     session_id=session_id,
                     data=data,
-                    transport=transport,
                     query_tracker=query_tracker,
                     peer_manager=peer_manager,
                     session_mapper=session_mapper,
@@ -174,8 +173,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 except Exception as notify_err:
                     logger.debug(f"Failed to notify {session_id} of error: {notify_err}")
 
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected: {session_id or 'unknown'}")
+    except WebSocketDisconnect as e:
+        logger.info(f"WebSocket disconnected: {session_id or 'unknown'} (code={e.code})")
 
     except json.JSONDecodeError as e:
         logger.warning(f"Invalid JSON from {session_id or 'unknown'}: {e}")
@@ -194,7 +193,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 async def _handle_message(
     session_id: str,
     data: dict[str, Any],
-    transport: WebSocketTransport,
     query_tracker: QueryTracker,
     peer_manager: PeerManager,
     session_mapper: SessionMapper,
@@ -204,7 +202,6 @@ async def _handle_message(
     Args:
         session_id: Session ID
         data: Message data
-        transport: WebSocket transport (for status updates)
         query_tracker: Query tracker
         peer_manager: Peer manager (for status propagation)
         session_mapper: Session mapper (for circle updates)
@@ -231,12 +228,11 @@ async def _handle_message(
             "offline": PeerStatus.OFFLINE,
         }
         status = status_map.get(status_str, PeerStatus.ONLINE)
-        await transport.update_status(session_id, status)
         await peer_manager.update_peer_status(session_id, status)
 
     elif msg_type == "set_circle":
         new_circle = data.get("circle")
-        if new_circle and re.match(r"^[a-zA-Z0-9_-]+$", new_circle) and len(new_circle) <= 64:
+        if new_circle and re.match(r"^[a-zA-Z0-9._-]+$", new_circle) and len(new_circle) <= 64:
             await peer_manager.set_peer_circle(session_id, new_circle)
             session_mapper.update_circle(session_id, new_circle)
             logger.info(f"Circle updated for {session_id}: {new_circle}")

@@ -13,31 +13,29 @@ class TestConfig:
         assert config.relay.url == "wss://relay.repowire.io"
         assert len(config.peers) == 0
 
-    def test_add_peer(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch.object(Config, "get_config_dir", return_value=Path(tmpdir)):
-                config = Config()
-                config.add_peer("backend", path="/app/backend", tmux_session="claude-backend")
-
-                assert "backend" in config.peers
-                assert config.peers["backend"].tmux_session == "claude-backend"
-                assert config.peers["backend"].path == "/app/backend"
-
-    def test_remove_peer(self):
+    def test_get_peer(self):
         config = Config(
             peers={
                 "backend": PeerConfig(name="backend", tmux_session="test", path="/test"),
             }
         )
+        assert config.get_peer("backend") is not None
+        assert config.get_peer("backend").name == "backend"
+        assert config.get_peer("nonexistent") is None
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch.object(Config, "get_config_dir", return_value=Path(tmpdir)):
-                result = config.remove_peer("backend")
-                assert result is True
-                assert "backend" not in config.peers
+    def test_extra_fields_ignored(self):
+        """Config should ignore unknown fields (e.g., removed 'opencode' section)."""
+        config = Config(opencode={"default_url": "http://localhost:4096"})
+        assert not hasattr(config, "opencode")
 
-                result = config.remove_peer("nonexistent")
-                assert result is False
+    def test_peer_config_extra_fields_ignored(self):
+        """PeerConfig should ignore removed fields like opencode_url, session_id."""
+        peer = PeerConfig(
+            name="test",
+            opencode_url="http://localhost:4096",
+            session_id="abc123",
+        )
+        assert peer.name == "test"
 
     def test_load_config_with_env(self):
         with tempfile.TemporaryDirectory() as tmpdir:

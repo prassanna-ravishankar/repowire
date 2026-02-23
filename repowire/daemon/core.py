@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from repowire.config.models import Config, PeerConfig, load_config
+from repowire.config.models import Config
 from repowire.protocol.peers import Peer, PeerStatus
 
 if TYPE_CHECKING:
@@ -49,10 +49,8 @@ class PeerManager:
         self._session_mapper = session_mapper
         self._query_tracker = query_tracker
 
-        # Peer registry: session_id -> Peer
+        # Peer registry: session_id -> Peer (single source of truth)
         self._peers: dict[str, Peer] = {}
-        # Secondary index: display_name -> session_id
-        self._name_index: dict[str, str] = {}
 
         self._lock = asyncio.Lock()
         self._events: deque[dict[str, Any]] = deque(maxlen=100)
@@ -90,17 +88,23 @@ class PeerManager:
         """Stop the peer manager."""
         logger.info("PeerManager stopped")
 
-    def _lookup_peer_unlocked(self, identifier: str) -> Peer | None:
+    def _lookup_peer_unlocked(self, identifier: str, circle: str | None = None) -> Peer | None:
         """Lookup peer by session_id or display_name. Must be called with lock held.
 
-        When multiple peers share a display_name (different circles), prefers online ones.
+        When multiple peers share a display_name (different circles), filters by
+        circle if provided, otherwise prefers online ones.
         """
         if identifier in self._peers:
             return self._peers[identifier]
-        # Scan all peers matching display_name, prefer online/busy over offline
+        # Scan all peers matching display_name
         matches = [p for p in self._peers.values() if p.display_name == identifier]
         if not matches:
             return None
+        # Filter by circle if specified
+        if circle:
+            matches = [p for p in matches if p.circle == circle]
+            if not matches:
+                return None
         if len(matches) == 1:
             return matches[0]
         active = [p for p in matches if p.status != PeerStatus.OFFLINE]
@@ -109,24 +113,25 @@ class PeerManager:
     async def register_peer(self, peer: Peer) -> None:
         """Register a peer in the mesh.
 
-        Indexed by session_id with secondary index on display_name.
-        Only evicts old peer if same display_name AND same circle (true reconnect).
+        Indexed by session_id. Only evicts old peer if same
+        (display_name, circle, backend) — a true reconnect.
         """
         async with self._lock:
-            # Handle reconnection: same name AND same circle = true reconnect
-            if peer.display_name in self._name_index:
-                old_session_id = self._name_index[peer.display_name]
-                if old_session_id != peer.peer_id and old_session_id in self._peers:
-                    old_peer = self._peers[old_session_id]
-                    if old_peer.circle == peer.circle:
-                        del self._peers[old_session_id]
-                    # Different circle: don't evict, they're distinct peers
+            # Handle reconnection: same name+circle+backend = true reconnect
+            for old_sid, old_peer in list(self._peers.items()):
+                if (
+                    old_peer.display_name == peer.display_name
+                    and old_peer.circle == peer.circle
+                    and old_peer.backend == peer.backend
+                    and old_sid != peer.peer_id
+                ):
+                    del self._peers[old_sid]
+                    break
 
             peer.status = PeerStatus.ONLINE
             peer.last_seen = datetime.now(timezone.utc)
 
             self._peers[peer.peer_id] = peer
-            self._name_index[peer.display_name] = peer.peer_id
 
             logger.info(f"Peer registered: {peer.display_name} ({peer.peer_id})")
 
@@ -144,49 +149,38 @@ class PeerManager:
             # Try as session_id first (always unambiguous)
             if identifier in self._peers:
                 peer = self._peers.pop(identifier)
-                self._name_index.pop(peer.display_name, None)
                 logger.info(f"Peer unregistered: {peer.display_name} ({identifier})")
                 return True
 
             # Try as display_name — with optional circle filter
-            if circle:
-                # Find the specific peer matching name + circle
-                for sid, peer in list(self._peers.items()):
-                    if peer.display_name == identifier and peer.circle == circle:
-                        self._peers.pop(sid)
-                        if self._name_index.get(identifier) == sid:
-                            self._name_index.pop(identifier, None)
-                        logger.info(f"Peer unregistered: {identifier} in {circle} ({sid})")
-                        return True
-                return False
-
-            if identifier in self._name_index:
-                session_id = self._name_index.pop(identifier)
-                self._peers.pop(session_id, None)
-                logger.info(f"Peer unregistered: {identifier} ({session_id})")
-                return True
+            for sid, peer in list(self._peers.items()):
+                if peer.display_name == identifier:
+                    if circle and peer.circle != circle:
+                        continue
+                    self._peers.pop(sid)
+                    logger.info(f"Peer unregistered: {identifier} ({sid})")
+                    return True
 
             return False
 
-    async def get_peer(self, identifier: str) -> Peer | None:
+    async def get_peer(self, identifier: str, circle: str | None = None) -> Peer | None:
         """Get a peer by session_id or display_name.
 
         Args:
             identifier: Either session_id (e.g., 'repow-dev-a1b2c3d4') or display_name
+            circle: Optional circle filter to disambiguate same-name peers
 
         Returns:
             Peer if found, None otherwise
         """
         async with self._lock:
-            return self._lookup_peer_unlocked(identifier)
+            return self._lookup_peer_unlocked(identifier, circle=circle)
 
     async def get_all_peers(self) -> list[Peer]:
         """Get all registered peers.
 
         Combines in-memory peers with session mappings.
         """
-        self._config = load_config()
-
         async with self._lock:
             result: list[Peer] = []
             mappings = self._session_mapper.get_all_mappings()
@@ -210,12 +204,8 @@ class PeerManager:
 
             return result
 
-    def _get_peer_config(self, name: str) -> PeerConfig | None:
-        """Get peer config by name."""
-        return self._config.peers.get(name)
-
-    def _check_circle_access(self, from_peer: str, to_peer: str, bypass: bool) -> None:
-        """Check if from_peer can access to_peer based on circles.
+    def _check_circle_access_unlocked(self, from_peer: str, to_peer: str, bypass: bool) -> None:
+        """Check circle access using live peer registry. Must hold lock.
 
         Raises:
             ValueError: If access not allowed
@@ -223,19 +213,16 @@ class PeerManager:
         if bypass:
             return
 
-        from_config = self._get_peer_config(from_peer)
-        to_config = self._get_peer_config(to_peer)
+        from_obj = self._lookup_peer_unlocked(from_peer)
+        to_obj = self._lookup_peer_unlocked(to_peer)
 
-        if not from_config or not to_config:
-            return
+        if not from_obj or not to_obj:
+            return  # Unknown peer = no enforcement (CLI callers, etc.)
 
-        from_circle = from_config.circle or "default"
-        to_circle = to_config.circle or "default"
-
-        if from_circle != to_circle:
+        if from_obj.circle != to_obj.circle:
             raise ValueError(
-                f"Circle boundary: {from_peer} ({from_circle}) "
-                f"cannot access {to_peer} ({to_circle})"
+                f"Circle boundary: {from_peer} ({from_obj.circle}) "
+                f"cannot access {to_peer} ({to_obj.circle})"
             )
 
     async def query(
@@ -245,6 +232,7 @@ class PeerManager:
         text: str,
         timeout: float = 120.0,
         bypass_circle: bool = False,
+        circle: str | None = None,
     ) -> str:
         """Send a query to a peer and wait for response.
 
@@ -254,6 +242,7 @@ class PeerManager:
             text: Query text
             timeout: Timeout in seconds
             bypass_circle: If True, bypass circle restrictions (CLI mode)
+            circle: Optional circle filter to disambiguate same-name peers
 
         Returns:
             Response text from the peer
@@ -262,11 +251,13 @@ class PeerManager:
             ValueError: If peer not found or circle boundary violated
             TimeoutError: If no response within timeout
         """
-        peer = await self.get_peer(to_peer)
-        if not peer:
-            raise ValueError(f"Unknown peer: {to_peer}")
-
-        self._check_circle_access(from_peer, to_peer, bypass_circle)
+        async with self._lock:
+            peer = self._lookup_peer_unlocked(to_peer, circle=circle)
+            if not peer:
+                raise ValueError(f"Unknown peer: {to_peer}")
+            self._check_circle_access_unlocked(from_peer, to_peer, bypass_circle)
+            peer_id = peer.peer_id
+            peer_name = peer.display_name
 
         formatted_query = (
             f"[Repowire Query from @{from_peer}]\n"
@@ -283,8 +274,8 @@ class PeerManager:
         try:
             response = await self._router.send_query(
                 from_peer=from_peer,
-                to_session_id=peer.peer_id,
-                to_peer_name=peer.display_name,
+                to_session_id=peer_id,
+                to_peer_name=peer_name,
                 text=formatted_query,
                 timeout=timeout,
             )
@@ -322,11 +313,13 @@ class PeerManager:
         Raises:
             ValueError: If peer not found or circle boundary violated
         """
-        peer = await self.get_peer(to_peer)
-        if not peer:
-            raise ValueError(f"Unknown peer: {to_peer}")
-
-        self._check_circle_access(from_peer, to_peer, bypass_circle)
+        async with self._lock:
+            peer = self._lookup_peer_unlocked(to_peer)
+            if not peer:
+                raise ValueError(f"Unknown peer: {to_peer}")
+            self._check_circle_access_unlocked(from_peer, to_peer, bypass_circle)
+            peer_id = peer.peer_id
+            peer_name = peer.display_name
 
         self._add_event(
             "notification",
@@ -335,8 +328,8 @@ class PeerManager:
 
         await self._router.send_notification(
             from_peer=from_peer,
-            to_session_id=peer.peer_id,
-            to_peer_name=peer.display_name,
+            to_session_id=peer_id,
+            to_peer_name=peer_name,
             text=text,
         )
 
@@ -357,27 +350,23 @@ class PeerManager:
             {"from": from_peer, "text": text, "exclude": exclude},
         )
 
-        # Determine sender's circle for filtering
-        from_circle: str | None = None
-        if not bypass_circle:
-            async with self._lock:
-                from_peer_obj = self._lookup_peer_unlocked(from_peer)
-                if from_peer_obj:
-                    from_circle = from_peer_obj.circle
-
-        # Build exclude set of session IDs
         exclude_names = set(exclude or [])
         exclude_names.add(from_peer)
 
         exclude_session_ids: set[str] = set()
         async with self._lock:
+            # Resolve exclude names to session IDs; track sender for circle filtering
+            from_peer_obj: Peer | None = None
             for name in exclude_names:
-                sid = self._name_index.get(name)
-                if sid:
-                    exclude_session_ids.add(sid)
+                peer = self._lookup_peer_unlocked(name)
+                if peer:
+                    exclude_session_ids.add(peer.peer_id)
+                    if name == from_peer:
+                        from_peer_obj = peer
 
-            # Circle filtering: exclude peers in different circles
-            if from_circle and not bypass_circle:
+            # Circle filtering: exclude peers outside sender's circle
+            if not bypass_circle and from_peer_obj:
+                from_circle = from_peer_obj.circle
                 for sid, peer in self._peers.items():
                     if peer.circle != from_circle:
                         exclude_session_ids.add(sid)
@@ -398,6 +387,12 @@ class PeerManager:
             if peer:
                 peer.status = status
                 peer.last_seen = datetime.now(timezone.utc)
+            else:
+                logger.warning(
+                    "update_peer_status: peer not found: %s (status=%s not applied)",
+                    identifier,
+                    status.value,
+                )
 
     async def set_peer_circle(self, identifier: str, circle: str) -> None:
         """Update peer's circle."""
@@ -407,27 +402,12 @@ class PeerManager:
                 old_circle = peer.circle
                 peer.circle = circle
                 logger.info(f"Peer {peer.display_name} moved from {old_circle} to {circle}")
-
-    def resolve_hook_response(self, correlation_id: str, response: str) -> None:
-        """Resolve a hook response via QueryTracker.
-
-        In the unified architecture, responses normally arrive via WebSocket.
-        This method handles legacy hooks that POST responses to /hook/response.
-        """
-        if self._query_tracker:
-            resolved = self._query_tracker.resolve_query(correlation_id, response)
-            if resolved:
-                logger.info(f"Hook response resolved: {correlation_id[:8]}...")
-                return
-
-        logger.warning(
-            f"Hook response could not be resolved: {correlation_id[:8]}... "
-            "(no matching pending query)"
-        )
-
-    def resolve_circle(self, peer_config: PeerConfig) -> str:
-        """Resolve circle for a peer. Returns circle from config or "default"."""
-        return peer_config.circle or "default"
+            else:
+                logger.warning(
+                    "set_peer_circle: peer not found: %s (circle=%s not applied)",
+                    identifier,
+                    circle,
+                )
 
     async def mark_offline(self, identifier: str) -> int:
         """Mark peer offline and cancel pending queries.

@@ -51,16 +51,31 @@ class SessionMapper:
             for session_id, mapping_data in data.items():
                 self._mappings[session_id] = SessionMapping(**mapping_data)
             logger.info(f"Loaded {len(self._mappings)} session mappings")
-        except Exception as e:
-            logger.error(f"Failed to load session mappings: {e}")
+        except (json.JSONDecodeError, TypeError, ValueError, KeyError) as e:
+            # Data corruption — backup and start fresh
+            backup = self._path.with_suffix(".json.corrupt")
+            try:
+                self._path.rename(backup)
+                logger.error(f"Corrupt session mappings, backed up to {backup}: {e}")
+            except OSError:
+                logger.error(f"Corrupt session mappings (backup failed): {e}")
+        except OSError as e:
+            logger.error(f"Failed to read session mappings file: {e}")
 
     def _save(self) -> None:
         """Save mappings to disk atomically."""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        data = {session_id: asdict(mapping) for session_id, mapping in self._mappings.items()}
         tmp_path = self._path.with_suffix(".json.tmp")
-        tmp_path.write_text(json.dumps(data, indent=2))
-        os.replace(str(tmp_path), str(self._path))
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            data = {session_id: asdict(mapping) for session_id, mapping in self._mappings.items()}
+            tmp_path.write_text(json.dumps(data, indent=2))
+            os.replace(str(tmp_path), str(self._path))
+        except OSError as e:
+            logger.error(f"Failed to save session mappings: {e}")
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def register_session(
         self,
@@ -71,17 +86,20 @@ class SessionMapper:
     ) -> str:
         """Register or reuse session_id for a peer.
 
-        If a session with the same display_name and circle exists,
+        If a session with the same (display_name, circle, backend) exists,
         reuse its session_id. Otherwise, generate a new one.
 
         Returns:
             session_id (e.g., "repow-dev-a1b2c3d4")
         """
-        # Check for existing session with same name+circle
+        # Check for existing session with same name+circle+backend
         for sid, mapping in self._mappings.items():
-            if mapping.display_name == display_name and mapping.circle == circle:
+            if (
+                mapping.display_name == display_name
+                and mapping.circle == circle
+                and mapping.backend == backend
+            ):
                 # Reuse existing session_id
-                mapping.backend = backend  # Update backend if changed
                 mapping.path = path
                 mapping.updated_at = datetime.now(timezone.utc).isoformat()
                 self._save()

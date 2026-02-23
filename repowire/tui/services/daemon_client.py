@@ -23,7 +23,6 @@ class PeerInfo:
     backend: str
     path: str | None
     tmux_session: str | None
-    opencode_url: str | None
     metadata: dict[str, Any]
     last_seen: str | None = None
     machine: str | None = None
@@ -50,7 +49,7 @@ class Event:
     to_peer: str | None = None
     text: str = ""
     status: str | None = None
-    query_id: str | None = None  # Links response to its query
+    correlation_id: str | None = None  # Links response to its query
     # For status_change events
     peer: str | None = None
     new_status: str | None = None
@@ -66,7 +65,7 @@ class Event:
             to_peer=data.get("to"),
             text=data.get("text", ""),
             status=data.get("status"),
-            query_id=data.get("query_id"),
+            correlation_id=data.get("correlation_id") or data.get("query_id"),
             peer=data.get("peer"),
             new_status=data.get("new_status"),
         )
@@ -88,7 +87,9 @@ class Conversation:
     def from_events(cls, events: list[Event]) -> list[Conversation]:
         """Build conversations from event list."""
         queries = [e for e in events if e.type == "query"]
-        responses = {e.query_id: e for e in events if e.type == "response" and e.query_id}
+        responses = {
+            e.correlation_id: e for e in events if e.type == "response" and e.correlation_id
+        }
 
         convos = []
         for q in queries:
@@ -153,8 +154,7 @@ class DaemonClient:
             data = resp.json()
             return [
                 PeerInfo(
-                    # Support both peer_id and legacy pane_id
-                    peer_id=p.get("peer_id") or p.get("pane_id", f"legacy-{p.get('name', '?')}"),
+                    peer_id=p.get("peer_id", f"legacy-{p.get('name', '?')}"),
                     name=p.get("name", "?"),
                     display_name=p.get("display_name", p.get("name", "?")),
                     status=p.get("status", "unknown"),
@@ -162,7 +162,6 @@ class DaemonClient:
                     backend=p.get("backend", "claude-code"),
                     path=p.get("path"),
                     tmux_session=p.get("tmux_session"),
-                    opencode_url=p.get("opencode_url"),
                     metadata=p.get("metadata", {}),
                     last_seen=p.get("last_seen"),
                     machine=p.get("machine"),
@@ -192,9 +191,7 @@ class DaemonClient:
         name: str,
         path: str,
         tmux_session: str | None = None,
-        opencode_url: str | None = None,
         circle: str | None = None,
-        peer_id: str | None = None,
         display_name: str | None = None,
         backend: str = "claude-code",
     ) -> bool:
@@ -203,13 +200,10 @@ class DaemonClient:
             resp = await self.client.post(
                 "/peers",
                 json={
-                    "peer_id": peer_id,
-                    "pane_id": peer_id,  # Backward compat
                     "name": name,
                     "display_name": display_name or name,
                     "path": path,
                     "tmux_session": tmux_session,
-                    "opencode_url": opencode_url,
                     "backend": backend,
                     "circle": circle,
                 },

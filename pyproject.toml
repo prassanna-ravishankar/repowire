@@ -28,6 +28,7 @@ dependencies = [
     "httpx>=0.26.0",
     "libtmux>=0.37.0",
     "textual>=0.47.0",
+    "websockets>=13.0",
 ]
 
 [project.optional-dependencies]

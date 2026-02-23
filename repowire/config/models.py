@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AgentType(str, Enum):
@@ -25,14 +25,6 @@ class RelayConfig(BaseModel):
     api_key: str | None = Field(None, description="API key for authentication")
 
 
-class OpencodeConfig(BaseModel):
-    """OpenCode settings."""
-
-    default_url: str = Field(
-        default="http://localhost:4096", description="Default OpenCode server URL"
-    )
-
-
 class PeerConfig(BaseModel):
     """Configuration for a single peer.
 
@@ -42,6 +34,8 @@ class PeerConfig(BaseModel):
 
     The name field is kept for backward compatibility with older configs.
     """
+
+    model_config = ConfigDict(extra="ignore")
 
     # Primary identity - daemon-assigned, format: repow-{circle}-{uuid8}
     peer_id: str | None = Field(None, description="Unique peer ID (e.g., 'repow-dev-a1b2c3d4')")
@@ -53,10 +47,6 @@ class PeerConfig(BaseModel):
 
     # Claude Code fields
     tmux_session: str | None = Field(None, description="Tmux session:window")
-
-    # OpenCode fields
-    opencode_url: str | None = Field(None, description="OpenCode server URL for this peer")
-    session_id: str | None = Field(None, description="Session ID (Claude or OpenCode)")
 
     # circle (logical subnet)
     circle: str | None = Field(None, description="Circle (logical subnet)")
@@ -108,10 +98,11 @@ class LoggingConfig(BaseModel):
 class Config(BaseModel):
     """Main Repowire configuration."""
 
+    model_config = ConfigDict(extra="ignore")
+
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
     relay: RelayConfig = Field(default_factory=RelayConfig)
-    opencode: OpencodeConfig = Field(default_factory=OpencodeConfig)
-    peers: dict[str, PeerConfig] = Field(default_factory=dict)  # keyed by peer name
+    peers: dict[str, PeerConfig] = Field(default_factory=dict)  # legacy, kept for compat
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     @classmethod
@@ -135,88 +126,9 @@ class Config(BaseModel):
         with open(config_path, "w") as f:
             yaml.safe_dump(data, f, default_flow_style=False)
 
-    def add_peer(
-        self,
-        name: str,
-        path: str | None = None,
-        tmux_session: str | None = None,
-        session_id: str | None = None,
-        opencode_url: str | None = None,
-        circle: str | None = None,
-        metadata: dict | None = None,
-        peer_id: str | None = None,
-        display_name: str | None = None,
-    ) -> None:
-        """Add or update a peer by name.
-
-        Args:
-            name: Peer name (used as config key and legacy identifier)
-            path: Working directory path
-            tmux_session: Tmux session:window (e.g., 'dev:frontend')
-            session_id: Session ID (Claude or OpenCode)
-            opencode_url: OpenCode server URL
-            circle: Circle (logical subnet)
-            metadata: Additional metadata
-            peer_id: Unique peer ID (e.g., 'repow-dev-a1b2c3d4') - primary identifier
-            display_name: Human-readable name (folder name)
-        """
-        existing = self.peers.get(name)
-        # Merge metadata with existing
-        merged_metadata = (existing.metadata if existing else {}).copy()
-        if metadata:
-            merged_metadata.update(metadata)
-        self.peers[name] = PeerConfig(
-            name=name,
-            peer_id=peer_id or (existing.peer_id if existing else None),
-            display_name=display_name or (existing.display_name if existing else None),
-            path=path or (existing.path if existing else None),
-            tmux_session=tmux_session or (existing.tmux_session if existing else None),
-            session_id=session_id or (existing.session_id if existing else None),
-            opencode_url=opencode_url or (existing.opencode_url if existing else None),
-            circle=circle or (existing.circle if existing else None),
-            metadata=merged_metadata,
-        )
-        self.save()
-
-    def update_peer_session(self, name: str, session_id: str) -> bool:
-        """Update just the session_id for an existing peer."""
-        if name in self.peers:
-            self.peers[name].session_id = session_id
-            self.save()
-            return True
-        return False
-
-    def remove_peer(self, name: str) -> bool:
-        """Remove a peer by name."""
-        if name in self.peers:
-            del self.peers[name]
-            self.save()
-            return True
-        return False
-
     def get_peer(self, name: str) -> PeerConfig | None:
-        """Get a peer by name."""
+        """Get a peer by name (legacy config lookup)."""
         return self.peers.get(name)
-
-    def get_peer_by_tmux(self, tmux_session: str) -> PeerConfig | None:
-        """Get a peer by tmux session:window."""
-        for peer in self.peers.values():
-            if peer.tmux_session == tmux_session:
-                return peer
-        return None
-
-    def get_peer_by_peer_id(self, peer_id: str) -> PeerConfig | None:
-        """Get a peer by peer_id (e.g., 'repow-dev-a1b2c3d4').
-
-        This is the preferred lookup method as peer_id is the primary identifier.
-        """
-        for peer in self.peers.values():
-            if peer.peer_id == peer_id:
-                return peer
-            # Also check effective_peer_id for legacy configs
-            if peer.effective_peer_id == peer_id:
-                return peer
-        return None
 
 
 def load_config() -> Config:

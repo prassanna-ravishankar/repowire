@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import os
 import signal
-import socket
 import subprocess
 import sys
 import urllib.error
@@ -14,6 +13,7 @@ import urllib.request
 from pathlib import Path
 
 from repowire.hooks._tmux import get_tmux_info
+from repowire.hooks.utils import get_session_id
 
 DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", "http://127.0.0.1:8377")
 
@@ -81,58 +81,6 @@ def format_peers_context(peers: list[dict], my_name: str) -> str:
     return "\n".join(lines)
 
 
-def get_machine_name() -> str:
-    """Get the machine hostname."""
-    return socket.gethostname()
-
-
-def register_peer(
-    peer_id: str,
-    display_name: str,
-    cwd: str,
-    machine: str,
-    tmux_target: str | None,
-    session_id: str,
-    metadata: dict,
-) -> bool:
-    """Register peer with daemon via HTTP.
-
-    Args:
-        peer_id: Unique peer ID (tmux pane ID like "%42" for Claude Code)
-        display_name: Human-readable name (folder name)
-        cwd: Working directory path
-        machine: Machine hostname
-        tmux_target: Tmux session:window target
-        session_id: Claude session ID
-        metadata: Additional metadata (e.g., git branch)
-
-    Returns:
-        True if registration succeeded, False otherwise.
-    """
-    try:
-        data = {
-            "peer_id": peer_id,
-            "pane_id": peer_id,  # Backward compat
-            "display_name": display_name,
-            "name": display_name,  # Backward compat
-            "path": cwd,
-            "machine": machine,
-            "tmux_session": tmux_target,
-            "session_id": session_id,
-            "metadata": metadata,
-        }
-        req = urllib.request.Request(
-            f"{DAEMON_URL}/peers",
-            data=json.dumps(data).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=2.0)
-        return True
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
-        return False
-
-
 def main() -> int:
     """Main entry point."""
     try:
@@ -164,14 +112,16 @@ def main() -> int:
                 log_dir.mkdir(parents=True, exist_ok=True)
                 pane_log = (pane_id or "unknown").replace("%", "")
                 log_file = open(log_dir / f"ws-hook-{pane_log}.log", "w")  # noqa: SIM115
-                proc = subprocess.Popen(
-                    [sys.executable, str(hook_script)],
-                    stdout=log_file,
-                    stderr=log_file,
-                    start_new_session=True,
-                    cwd=cwd,
-                )
-                log_file.close()  # subprocess inherits the fd
+                try:
+                    proc = subprocess.Popen(
+                        [sys.executable, str(hook_script)],
+                        stdout=log_file,
+                        stderr=log_file,
+                        start_new_session=True,
+                        cwd=cwd,
+                    )
+                finally:
+                    log_file.close()  # Always close — subprocess inherits the fd
                 # Store PID for cleanup on SessionEnd
                 pid_dir = Path.home() / ".cache" / "repowire" / "hooks"
                 pid_dir.mkdir(parents=True, exist_ok=True)
@@ -203,24 +153,35 @@ def main() -> int:
                 try:
                     pid = int(pid_file.read_text().strip())
                     os.kill(pid, signal.SIGTERM)
-                except (ValueError, OSError, ProcessLookupError):
-                    pass
+                except ProcessLookupError:
+                    pass  # Process already exited
+                except ValueError:
+                    print(
+                        f"repowire session: corrupt PID file {pid_file}",
+                        file=sys.stderr,
+                    )
+                except PermissionError:
+                    print(
+                        "repowire session: PID may have been recycled (permission denied)",
+                        file=sys.stderr,
+                    )
+                except OSError as e:
+                    print(
+                        f"repowire session: failed to kill ws-hook PID: {e}",
+                        file=sys.stderr,
+                    )
                 finally:
                     pid_file.unlink(missing_ok=True)
 
         # Mark peer offline so pending queries get cancelled
         # Prefer session_id (unambiguous) over display_name
-        peer_identifier = display_name
+        peer_identifier = get_session_id() or display_name
+
+        # Clean up .sid file since session is ending
         if pane_id:
             pane_clean = pane_id.replace("%", "")
             sid_file = Path.home() / ".cache" / "repowire" / "hooks" / f"{pane_clean}.sid"
-            if sid_file.exists():
-                try:
-                    peer_identifier = sid_file.read_text().strip()
-                except OSError:
-                    pass
-                finally:
-                    sid_file.unlink(missing_ok=True)
+            sid_file.unlink(missing_ok=True)
 
         try:
             req = urllib.request.Request(
