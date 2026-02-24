@@ -60,12 +60,8 @@ repowire status
 Spawn two peers:
 
 ```bash
-# Using CLI
 repowire peer new ~/projects/frontend --circle dev
 repowire peer new ~/projects/backend --circle dev
-
-# Or using TUI (press 'n' to spawn)
-repowire top
 ```
 
 The sessions auto-discover each other. In frontend's Claude:
@@ -83,11 +79,9 @@ Claude uses the `ask_peer` tool, backend responds, and you get the answer back.
 Monitor peer communication at `http://localhost:8377/dashboard` when the daemon is running.
 
 - Real-time peer status (online/busy/offline)
-- Communication event log (queries, responses, broadcasts)
+- Communication event log with query/response matching
 
 ## Terminal UI
-
-Monitor and manage peers from the terminal:
 
 ```bash
 repowire top
@@ -101,9 +95,25 @@ repowire top
 
 ## How It Works
 
-### Workflow
+### Architecture
 
-Each coding agent runs in a **tmux window**. Windows are grouped into **tmux sessions** called **circles**. Peers can only communicate within their circle.
+All peers connect to a central daemon via **WebSocket**. The daemon routes messages between peers — it doesn't care what agent type a peer runs. Claude Code and OpenCode peers are treated identically.
+
+```
+┌──────────────┐          ┌──────────────┐          ┌──────────────┐
+│   Claude     │    WS    │              │    WS    │   OpenCode   │
+│   frontend   │◄────────►│    Daemon    │◄────────►│   api        │
+└──────────────┘          │  :8377       │          └──────────────┘
+                          │              │
+┌──────────────┐    WS    │              │
+│   Claude     │◄────────►│              │
+│   backend    │          └──────────────┘
+└──────────────┘
+```
+
+### Circles
+
+Peers are grouped into **circles** (tmux sessions). Peers can only communicate within their circle.
 
 ```
 tmux session "dev" (circle)
@@ -116,12 +126,14 @@ When you spawn a peer with `--circle dev`, repowire creates (or reuses) a tmux s
 
 ### Agent Types
 
-The **agent type** identifies which AI coding tool a peer runs. All message delivery goes through a unified WebSocket protocol.
+The **agent type** identifies which AI coding tool a peer runs. The daemon treats all types identically — the difference is only in how the agent integrates with repowire.
 
 | Agent Type | Tool | Integration |
 |------------|------|-------------|
-| **claude-code** | Claude Code | Hooks + MCP server |
-| **opencode** | OpenCode | WebSocket plugin |
+| **claude-code** | Claude Code | Hooks + MCP server + WebSocket hook |
+| **opencode** | OpenCode | TypeScript plugin via SDK |
+
+Agent type is auto-detected during `repowire setup` based on installed CLIs.
 
 ### What's Installed
 
@@ -133,62 +145,37 @@ The **agent type** identifies which AI coding tool a peer runs. All message deli
 | **MCP Server** | Registered with Claude | `ask_peer`, `list_peers`, `notify_peer`, `broadcast` tools |
 | **Config** | `~/.repowire/config.yaml` | Peer registry and settings |
 
+### Message Flow
+
+```
+1. Claude calls ask_peer("backend", "What endpoints exist?")
+2. MCP server → HTTP POST /query → Daemon
+3. Daemon routes query via WebSocket to backend's hook/plugin
+4. Backend agent processes, responds
+5. Response flows back via WebSocket → Daemon → MCP → Claude
+```
+
 <details>
-<summary><strong>Claude Code architecture</strong></summary>
+<summary><strong>Claude Code integration details</strong></summary>
 
-```
-┌─────────────┐                           ┌─────────────┐
-│  frontend   │    ask_peer("backend")    │   backend   │
-│   Claude    │ ─────────────────────────►│   Claude    │
-│             │                           │             │
-│             │ ◄─────────────────────────│             │
-│             │      response text        │             │
-└─────────────┘                           └─────────────┘
-       │                                         │
-       │ MCP tool call                           │ Stop hook captures
-       ▼                                         ▼ response from transcript
-┌─────────────────────────────────────────────────────────┐
-│                      Daemon                             │
-│  1. Receives query from frontend                        │
-│  2. Sends query via WebSocket to backend's hook          │
-│  3. Waits for Stop hook to send response                │
-│  4. Returns response to frontend                        │
-└─────────────────────────────────────────────────────────┘
-```
+Claude Code doesn't have an API. Repowire uses **hooks** for lifecycle management and a **persistent WebSocket process** for message delivery:
 
-**Why hooks?** Claude Code doesn't have an API. Hooks handle lifecycle:
-- **SessionStart/End**: Register/unregister peer
-- **UserPromptSubmit**: Mark peer busy
-- **Stop**: Extract response from transcript
-- **Notification** (idle_prompt): Reset after interrupt
+- **SessionStart** → Spawns a `websocket_hook.py` background process that maintains a WebSocket connection to the daemon. Outputs peer list as context for Claude.
+- **UserPromptSubmit** → Marks peer as BUSY
+- **Stop** → Extracts response from transcript, writes to file. The WebSocket hook picks it up and forwards via WebSocket.
+- **SessionEnd** → Marks peer offline (does not kill the WebSocket hook — it self-terminates via pane liveness checking)
+- **Notification** (idle_prompt) → Resets BUSY→ONLINE after interrupt
+
+**Peer State Machine:** `OFFLINE → ONLINE ↔ BUSY`
 
 </details>
 
 <details>
-<summary><strong>opencode architecture</strong></summary>
+<summary><strong>OpenCode integration details</strong></summary>
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  OpenCode TUI                                               │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │  repowire plugin (TypeScript)                          │ │
-│  │  • WebSocket connection to daemon                      │ │
-│  │  • On query: client.session.prompt(sessionId, text)    │ │
-│  └────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-                         ↕ WebSocket ws://127.0.0.1:8377/ws
-┌─────────────────────────────────────────────────────────────┐
-│                         Daemon                               │
-│  • Routes queries to target plugin via WebSocket            │
-│  • Correlation ID tracking for request/response matching    │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Why WebSocket?** OpenCode has a plugin SDK. The plugin maintains a persistent connection for bidirectional communication.
+OpenCode has a plugin SDK. The repowire plugin (`~/.opencode/plugin/repowire.ts`) maintains a persistent WebSocket connection to the daemon and uses `client.session.prompt()` to inject queries into the active session.
 
 </details>
-
-Agent type is auto-detected during `repowire setup` based on installed CLIs.
 
 ## CLI Reference
 
@@ -199,19 +186,20 @@ repowire setup --no-service       # Skip daemon service (run manually with 'serv
 repowire status                   # Show what's installed and running
 repowire uninstall                # Remove all components
 
-# Manual daemon control
+# Daemon
 repowire serve                    # Run daemon in foreground
-repowire build-ui                 # Build dashboard (for development)
+repowire build-ui                 # Build web dashboard (development)
 
-# TUI dashboard
+# TUI
 repowire top                      # Launch terminal UI
 repowire top --port 8080          # Custom daemon port
 
-# Peer commands
+# Peer management
 repowire peer list                # List peers and their status
-repowire peer ask NAME "query"    # Test: ask a peer a question
 repowire peer new PATH            # Spawn new peer in tmux
 repowire peer new . --circle dev  # Spawn with custom circle
+repowire peer ask NAME "query"    # Send a query (testing utility)
+repowire peer prune               # Remove offline peers
 ```
 
 <details>
@@ -236,11 +224,30 @@ repowire config path              # Show config file path
 
 ## Advanced
 
+### Security
+
+**WebSocket Authentication (Optional)**
+
+To require authentication for WebSocket connections, add `auth_token` to your config:
+
+```yaml
+# ~/.repowire/config.yaml
+daemon:
+  auth_token: "your-secret-token-here"
+```
+
+For OpenCode peers, set the environment variable:
+```bash
+export REPOWIRE_AUTH_TOKEN="your-secret-token-here"
+```
+
+The daemon also restricts CORS to localhost origins only.
+
 ### Multi-Machine Relay
 
-> ⚠️ **Experimental** - Not production ready. `relay.repowire.io` is not yet available.
+> **Experimental** - Not production ready. `relay.repowire.io` is not yet available.
 
-For Claude sessions on different machines:
+For agents on different machines:
 
 ```bash
 # Self-host a relay server
@@ -262,14 +269,14 @@ Config file: `~/.repowire/config.yaml`
 daemon:
   host: "127.0.0.1"
   port: 8377
-  # All peers connect via unified WebSocket protocol
+  auth_token: "optional-secret"  # Optional: require auth for WebSocket connections
 
 relay:
   enabled: false
   url: "wss://relay.repowire.io"
   api_key: null
 
-# Peers auto-populate via SessionStart hook
+# Peers auto-register via WebSocket on session start
 peers:
   frontend:
     name: frontend
