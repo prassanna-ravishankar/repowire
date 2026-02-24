@@ -10,6 +10,10 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 
+DEFAULT_QUERY_TIMEOUT: float = 300.0
+"""Default timeout in seconds for peer-to-peer queries (5 minutes)."""
+
+
 class AgentType(str, Enum):
     """Type of AI coding agent a peer is running."""
 

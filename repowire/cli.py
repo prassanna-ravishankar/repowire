@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.table import Table
 
 from repowire import __version__
+from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 
 console = Console()
 
@@ -617,7 +618,7 @@ def peer_unregister(name: str) -> None:
 @peer.command(name="ask")
 @click.argument("name")
 @click.argument("query")
-@click.option("--timeout", "-t", default=120, help="Timeout in seconds")
+@click.option("--timeout", "-t", default=DEFAULT_QUERY_TIMEOUT, help="Timeout in seconds")
 @click.option("--circle", "-c", default=None, help="Circle to scope peer lookup")
 def peer_ask(name: str, query: str, timeout: int, circle: str | None) -> None:
     """Ask a peer a question (CLI testing utility)."""

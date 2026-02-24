@@ -238,6 +238,24 @@ async def watch_responses(
         await asyncio.sleep(0.1)  # Poll every 100ms
 
 
+async def check_pane_alive(pane_id: str) -> None:
+    """Periodically check if the tmux pane still has an agent running.
+
+    Exits the process when the pane is gone or running a bare shell,
+    so the ws-hook doesn't outlive its Claude session.
+    """
+    consecutive_dead = 0
+    while True:
+        await asyncio.sleep(10)
+        if not _is_pane_safe(pane_id):
+            consecutive_dead += 1
+            if consecutive_dead >= 3:  # 30s of no agent
+                logger.info(f"Pane {pane_id} no longer has an agent, exiting")
+                os._exit(0)
+        else:
+            consecutive_dead = 0
+
+
 async def main() -> int:
     """Async hook that maintains WebSocket connection."""
     pane_id = os.environ.get("TMUX_PANE")
@@ -261,6 +279,9 @@ async def main() -> int:
     uri = f"ws://{daemon_host}:{daemon_port}/ws"
 
     logger.info(f"Starting WebSocket hook for {display_name}@{circle} (pane={pane_id})")
+
+    # Start pane liveness checker (self-terminate when agent exits)
+    asyncio.create_task(check_pane_alive(pane_id))
 
     # Retry connection loop with exponential backoff
     max_attempts = 50

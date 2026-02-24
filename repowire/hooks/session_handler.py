@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import subprocess
 import sys
 import urllib.error
@@ -16,6 +15,20 @@ from repowire.hooks._tmux import get_tmux_info
 from repowire.hooks.utils import get_session_id
 
 DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", "http://127.0.0.1:8377")
+
+
+def _is_ws_hook_alive(pane_file: str) -> bool:
+    """Check if a ws-hook process is already running for this pane."""
+    pid_path = Path.home() / ".cache" / "repowire" / "hooks" / f"{pane_file}.pid"
+    if not pid_path.exists():
+        return False
+    try:
+        old_pid = int(pid_path.read_text().strip())
+        os.kill(old_pid, 0)  # signal 0 = check process exists
+        return True
+    except (ProcessLookupError, ValueError, OSError):
+        pid_path.unlink(missing_ok=True)
+        return False
 
 
 def get_peer_name(cwd: str) -> str:
@@ -100,35 +113,30 @@ def main() -> int:
     display_name = get_peer_name(cwd)
 
     if event == "SessionStart":
-        # Launch async WebSocket hook in background
-        # This maintains persistent WebSocket connection for queries/notifications
-        try:
-            # Find the websocket_hook.py script
-            hook_script = Path(__file__).parent / "websocket_hook.py"
-            if hook_script.exists():
-                # Start async hook as background process
-                # Pass cwd so the hook registers with the correct project name
-                log_dir = Path.home() / ".cache" / "repowire" / "logs"
-                log_dir.mkdir(parents=True, exist_ok=True)
-                pane_log = (pane_id or "unknown").replace("%", "")
-                log_file = open(log_dir / f"ws-hook-{pane_log}.log", "w")  # noqa: SIM115
-                try:
-                    proc = subprocess.Popen(
-                        [sys.executable, str(hook_script)],
-                        stdout=log_file,
-                        stderr=log_file,
-                        start_new_session=True,
-                        cwd=cwd,
-                    )
-                finally:
-                    log_file.close()  # Always close — subprocess inherits the fd
-                # Store PID for cleanup on SessionEnd
-                pid_dir = Path.home() / ".cache" / "repowire" / "hooks"
-                pid_dir.mkdir(parents=True, exist_ok=True)
-                pane_file = (pane_id or "unknown").replace("%", "")
-                (pid_dir / f"{pane_file}.pid").write_text(str(proc.pid))
-        except Exception as e:
-            print(f"repowire: failed to start WebSocket hook: {e}", file=sys.stderr)
+        # Launch async WebSocket hook in background (if not already running)
+        pane_file = (pane_id or "unknown").replace("%", "")
+        if not _is_ws_hook_alive(pane_file):
+            try:
+                hook_script = Path(__file__).parent / "websocket_hook.py"
+                if hook_script.exists():
+                    pid_dir = Path.home() / ".cache" / "repowire" / "hooks"
+                    pid_dir.mkdir(parents=True, exist_ok=True)
+                    log_dir = Path.home() / ".cache" / "repowire" / "logs"
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                    log_file = open(log_dir / f"ws-hook-{pane_file}.log", "w")  # noqa: SIM115
+                    try:
+                        proc = subprocess.Popen(
+                            [sys.executable, str(hook_script)],
+                            stdout=log_file,
+                            stderr=log_file,
+                            start_new_session=True,
+                            cwd=cwd,
+                        )
+                    finally:
+                        log_file.close()  # Always close — subprocess inherits the fd
+                    (pid_dir / f"{pane_file}.pid").write_text(str(proc.pid))
+            except Exception as e:
+                print(f"repowire: failed to start WebSocket hook: {e}", file=sys.stderr)
 
         # Fetch peers and output context for Claude
         # Note: Registration is now handled by the WebSocket hook's connect message
@@ -145,43 +153,10 @@ def main() -> int:
                 print(json.dumps(output))
 
     elif event == "SessionEnd":
-        # Kill the WebSocket hook process
-        if pane_id:
-            pane_file = pane_id.replace("%", "")
-            pid_file = Path.home() / ".cache" / "repowire" / "hooks" / f"{pane_file}.pid"
-            if pid_file.exists():
-                try:
-                    pid = int(pid_file.read_text().strip())
-                    os.kill(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass  # Process already exited
-                except ValueError:
-                    print(
-                        f"repowire session: corrupt PID file {pid_file}",
-                        file=sys.stderr,
-                    )
-                except PermissionError:
-                    print(
-                        "repowire session: PID may have been recycled (permission denied)",
-                        file=sys.stderr,
-                    )
-                except OSError as e:
-                    print(
-                        f"repowire session: failed to kill ws-hook PID: {e}",
-                        file=sys.stderr,
-                    )
-                finally:
-                    pid_file.unlink(missing_ok=True)
-
-        # Mark peer offline so pending queries get cancelled
-        # Prefer session_id (unambiguous) over display_name
+        # Don't kill the ws-hook process here — SessionEnd can fire spuriously
+        # between turns. The ws-hook self-terminates when the pane exits.
+        # Just mark the peer offline for pending query cancellation.
         peer_identifier = get_session_id() or display_name
-
-        # Clean up .sid file since session is ending
-        if pane_id:
-            pane_clean = pane_id.replace("%", "")
-            sid_file = Path.home() / ".cache" / "repowire" / "hooks" / f"{pane_clean}.sid"
-            sid_file.unlink(missing_ok=True)
 
         try:
             req = urllib.request.Request(

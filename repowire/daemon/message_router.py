@@ -7,6 +7,7 @@ import asyncio
 import logging
 from typing import Any
 
+from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.websocket_transport import TransportError, WebSocketTransport
 
@@ -30,7 +31,7 @@ class MessageRouter:
         to_session_id: str,
         to_peer_name: str,
         text: str,
-        timeout: float = 120.0,
+        timeout: float = DEFAULT_QUERY_TIMEOUT,
     ) -> str:
         """Send query and wait for response.
 

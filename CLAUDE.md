@@ -191,6 +191,11 @@ Hooks in `~/.claude/settings.json` auto-register peers and manage state:
 
 **Peer State Machine:** `OFFLINE → ONLINE ↔ BUSY` (SessionStart→ONLINE, UserPromptSubmit→BUSY, Stop/Notification→ONLINE, SessionEnd→OFFLINE)
 
+**WebSocket Hook Lifecycle:**
+- SessionStart spawns a `websocket_hook.py` background process (skips if one is already alive for the pane)
+- SessionEnd marks peer offline but does NOT kill the ws-hook (SessionEnd fires spuriously between turns)
+- The ws-hook self-terminates via a pane liveness checker when the agent exits (~30s after pane goes idle)
+
 Key files:
 - `installers/claude_code.py` - Installs/uninstalls hooks in `~/.claude/settings.json`
 - `hooks/session_handler.py` - Handles SessionStart and SessionEnd events
@@ -253,6 +258,8 @@ Message types: `query`, `response`, `notify`, `broadcast`, `status`, `error`
 WebSocket messages use: `type`, `correlation_id`, `from_peer`, `text`
 
 Peer status: `ONLINE`, `BUSY`, `OFFLINE`
+
+`DEFAULT_QUERY_TIMEOUT` (`config/models.py`): 300s (5 min). Used by CLI, daemon API, and message router. For long-running queries, prefer `notify_peer` (fire-and-forget) over `ask_peer` (blocking).
 
 ### Key Types
 

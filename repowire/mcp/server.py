@@ -54,6 +54,9 @@ def create_mcp_server() -> FastMCP:
     async def ask_peer(peer_name: str, query: str) -> str:
         """Ask a peer a question and wait for their response.
 
+        For complex questions that may take a long time, consider using
+        notify_peer instead — the peer can notify you back when ready.
+
         Args:
             peer_name: Name of the peer to ask (e.g., "backend", "frontend")
             query: The question or request to send

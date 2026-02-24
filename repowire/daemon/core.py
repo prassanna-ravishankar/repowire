@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from repowire.config.models import Config
+from repowire.config.models import DEFAULT_QUERY_TIMEOUT, Config
 from repowire.protocol.peers import Peer, PeerStatus
 
 if TYPE_CHECKING:
@@ -230,7 +230,7 @@ class PeerManager:
         from_peer: str,
         to_peer: str,
         text: str,
-        timeout: float = 120.0,
+        timeout: float = DEFAULT_QUERY_TIMEOUT,
         bypass_circle: bool = False,
         circle: str | None = None,
     ) -> str:

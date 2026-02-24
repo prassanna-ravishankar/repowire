@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.auth import require_auth, require_localhost
 from repowire.daemon.deps import get_peer_manager
 from repowire.protocol.peers import PeerStatus
@@ -22,7 +23,7 @@ class QueryRequest(BaseModel):
     from_peer: str | None = Field(None, description="Name of the sending peer (optional for CLI)")
     to_peer: str = Field(..., description="Name of the target peer")
     text: str = Field(..., description="Query text")
-    timeout: float = Field(default=120.0, description="Timeout in seconds")
+    timeout: float = Field(default=DEFAULT_QUERY_TIMEOUT, description="Timeout in seconds")
     bypass_circle: bool = Field(default=False, description="Bypass circle restrictions (CLI mode)")
     circle: str | None = Field(None, description="Circle to scope target peer lookup")
 
