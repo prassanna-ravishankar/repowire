@@ -36,6 +36,7 @@ interface Event {
   peer?: string;
   new_status?: "online" | "busy" | "offline";
   query_id?: string;
+  correlation_id?: string;
 }
 
 interface Conversation {
@@ -134,7 +135,7 @@ export default function Dashboard() {
     const responseEvents = events.filter((e) => e.type === "response");
 
     for (const query of queryEvents) {
-      const response = responseEvents.find((r) => r.query_id === query.id);
+      const response = responseEvents.find((r) => r.correlation_id === query.id);
 
       convos.push({
         id: query.id,

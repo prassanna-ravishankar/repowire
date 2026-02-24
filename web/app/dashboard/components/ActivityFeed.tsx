@@ -22,6 +22,7 @@ interface Event {
   peer?: string;
   new_status?: "online" | "busy" | "offline";
   query_id?: string;
+  correlation_id?: string;
 }
 
 interface Conversation {
