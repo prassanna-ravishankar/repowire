@@ -74,6 +74,15 @@ class PeerConfig(BaseModel):
         return f"legacy-{self.name}"
 
 
+class SpawnSettings(BaseModel):
+    """Settings controlling which commands agents are allowed to spawn."""
+
+    allowed_commands: list[str] = Field(
+        default_factory=list,
+        description="Allowed spawn commands (empty = spawn disabled)",
+    )
+
+
 class DaemonConfig(BaseModel):
     """Configuration for the daemon process."""
 
@@ -89,6 +98,9 @@ class DaemonConfig(BaseModel):
     # Legacy/additional settings
     auto_reconnect: bool = Field(default=True, description="Auto-reconnect on disconnect")
     heartbeat_interval: int = Field(default=30, description="Heartbeat interval in seconds")
+
+    # Spawn settings
+    spawn: SpawnSettings = Field(default_factory=SpawnSettings)
 
 
 class LoggingConfig(BaseModel):

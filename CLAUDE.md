@@ -209,6 +209,27 @@ export REPOWIRE_AUTH_TOKEN="your-secret-token-here"
 opencode  # or your preferred launcher
 ```
 
+**Spawn Allowlist (MCP spawn_peer / kill_peer)**
+
+By default, spawn via MCP is disabled. To allow agents to spin up new sessions programmatically, add an explicit allowlist to `~/.repowire/config.yaml`:
+
+```yaml
+daemon:
+  spawn:
+    allowed_commands:
+      - claude
+      - claude --dangerously-skip-permissions
+      - opencode
+```
+
+MCP tools `spawn_peer` and `kill_peer` call `POST /spawn` and `POST /kill` on the daemon. The daemon validates the requested command against `allowed_commands` (exact string match) before spawning. Empty list = spawn disabled. `repowire setup` prints a reminder about this config.
+
+Key files:
+- `repowire/daemon/routes/spawn.py` — `/spawn` and `/kill` endpoints
+- `repowire/config/models.py` — `SpawnSettings`, `DaemonConfig.spawn`
+- `repowire/mcp/server.py` — `spawn_peer` and `kill_peer` MCP tools
+- `repowire/spawn.py` — underlying tmux spawn/kill logic (unchanged)
+
 **CORS Protection**
 
 The daemon restricts CORS to localhost origins only (`http://localhost:3000`, `http://127.0.0.1:3000`, `http://localhost:8377`, `http://127.0.0.1:8377`) to prevent CSRF attacks from malicious websites.
@@ -223,6 +244,11 @@ daemon:
   port: 8377
   # Security (optional): WebSocket authentication
   auth_token: "your-secret-token-here"  # Optional: require auth for WebSocket connections
+  # Spawn (optional): allow MCP spawn_peer to create sessions
+  spawn:
+    allowed_commands:          # empty list (default) = spawn disabled
+      - claude
+      - claude --dangerously-skip-permissions
 
 relay:  # Experimental - not usable yet
   enabled: false

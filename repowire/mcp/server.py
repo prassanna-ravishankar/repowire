@@ -154,6 +154,45 @@ def create_mcp_server() -> FastMCP:
             return json.dumps({"name": my_name, "error": "Not registered"})
 
     @mcp.tool()
+    async def spawn_peer(path: str, command: str, circle: str = "default") -> str:
+        """Spawn a new coding session for a project.
+
+        The command must exactly match an entry in daemon.spawn.allowed_commands
+        in ~/.repowire/config.yaml. If no allowed_commands are configured, spawn
+        is disabled and this will return an error.
+
+        The spawned agent self-registers into the mesh via its SessionStart hook
+        once it starts — no manual registration needed.
+
+        Args:
+            path: Absolute path to the project directory
+            command: Command to run (e.g. "claude", "claude --dangerously-skip-permissions")
+            circle: Circle to spawn into (default: "default")
+
+        Returns:
+            tmux_session reference (e.g. "default:myproject") — pass to kill_peer to stop it
+        """
+        result = await daemon_request(
+            "POST",
+            "/spawn",
+            {"path": path, "command": command, "circle": circle},
+        )
+        return f"Spawned {result['display_name']} ({result['tmux_session']})"
+
+    @mcp.tool()
+    async def kill_peer(tmux_session: str) -> str:
+        """Kill a spawned coding session.
+
+        Args:
+            tmux_session: Session reference returned by spawn_peer (e.g. "default:myproject")
+
+        Returns:
+            Confirmation message
+        """
+        await daemon_request("POST", "/kill", {"tmux_session": tmux_session})
+        return f"Killed {tmux_session}"
+
+    @mcp.tool()
     async def set_circle(circle: str) -> str:
         """Join a named circle to communicate with peers in that circle.
 
