@@ -11,11 +11,27 @@ from __future__ import annotations
 import json
 import os
 import sys
+import urllib.request
 from pathlib import Path
 
 from repowire.hooks._tmux import get_pane_id
-from repowire.hooks.utils import get_session_id, update_status
-from repowire.session.transcript import extract_last_assistant_response
+from repowire.hooks.utils import DAEMON_URL, get_session_id, update_status
+from repowire.session.transcript import extract_last_turn_pair
+
+
+def _post_chat_turn(peer_name: str, role: str, text: str) -> None:
+    """Post a chat turn to the daemon for dashboard display. Best-effort."""
+    try:
+        data = json.dumps({"peer": peer_name, "role": role, "text": text}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{DAEMON_URL}/events/chat",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=2.0).close()
+    except Exception:
+        pass
 
 
 def main() -> int:
@@ -32,7 +48,8 @@ def main() -> int:
 
     # Always mark peer as online when Claude finishes processing
     cwd = input_data.get("cwd", os.getcwd())
-    peer_identifier = get_session_id() or Path(cwd).name
+    peer_display = Path(cwd).name
+    peer_identifier = get_session_id() or peer_display
     if not update_status(peer_identifier, "online"):
         print(
             f"repowire stop: failed to update status for {peer_identifier}",
@@ -42,6 +59,14 @@ def main() -> int:
     transcript_path_str = input_data.get("transcript_path")
     if not transcript_path_str:
         return 0
+
+    # Extract and post last turn pair for dashboard (best-effort, before correlation guard)
+    transcript_path = Path(transcript_path_str).expanduser()
+    user_text, assistant_text = extract_last_turn_pair(transcript_path)
+    if user_text:
+        _post_chat_turn(peer_display, "user", user_text)
+    if assistant_text:
+        _post_chat_turn(peer_display, "assistant", assistant_text)
 
     # Get pane_id from environment
     pane_id = get_pane_id()
@@ -63,9 +88,8 @@ def main() -> int:
         print(f"repowire stop: error reading correlation file: {e}", file=sys.stderr)
         return 0
 
-    # Extract the response from transcript
-    transcript_path = Path(transcript_path_str).expanduser()
-    response = extract_last_assistant_response(transcript_path)
+    # Extract the response from transcript (reuse assistant_text already extracted)
+    response = assistant_text
 
     if response:
         # Write response to file for async hook to forward

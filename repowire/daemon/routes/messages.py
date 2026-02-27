@@ -186,6 +186,27 @@ async def update_session(
     return OkResponse()
 
 
+class ChatTurnRequest(BaseModel):
+    """Request to ingest a chat turn."""
+
+    peer: str
+    role: str  # "user" | "assistant"
+    text: str
+
+
+@router.post("/events/chat", response_model=OkResponse)
+async def ingest_chat_turn(
+    request: ChatTurnRequest,
+    _: None = Depends(require_localhost),
+) -> OkResponse:
+    """Ingest a chat turn from the stop hook for dashboard display."""
+    peer_manager = get_peer_manager()
+    peer_manager._add_event(
+        "chat_turn", {"peer": request.peer, "role": request.role, "text": request.text}
+    )
+    return OkResponse()
+
+
 @router.get("/events")
 async def get_events(
     _: str | None = Depends(require_auth),
