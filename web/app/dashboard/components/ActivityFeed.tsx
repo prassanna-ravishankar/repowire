@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Check, AlertCircle, RefreshCw, ChevronRight } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -13,13 +13,14 @@ function cn(...inputs: ClassValue[]) {
 
 interface Event {
   id: string;
-  type: "query" | "response" | "notification" | "broadcast" | "status_change";
+  type: "query" | "response" | "notification" | "broadcast" | "status_change" | "chat_turn";
   timestamp: string;
   from?: string;
   to?: string;
   text: string;
   status?: "pending" | "success" | "error" | "blocked";
   peer?: string;
+  role?: "user" | "assistant";
   new_status?: "online" | "busy" | "offline";
   query_id?: string;
   correlation_id?: string;
@@ -37,7 +38,6 @@ interface Conversation {
 
 interface ActivityFeedProps {
   events: Event[];
-  conversations: Conversation[];
 }
 
 function ConversationCard({
@@ -151,7 +151,30 @@ function ConversationCard({
   );
 }
 
-export function ActivityFeed({ conversations }: ActivityFeedProps) {
+export function ActivityFeed({ events }: ActivityFeedProps) {
+  const conversations: Conversation[] = useMemo(() => {
+    const convos: Conversation[] = [];
+    const queryEvents = events.filter((e) => e.type === "query");
+    const responseEvents = events.filter((e) => e.type === "response");
+
+    for (const query of queryEvents) {
+      const response = responseEvents.find((r) => r.correlation_id === query.id);
+      convos.push({
+        id: query.id,
+        from: query.from || "unknown",
+        to: query.to || "unknown",
+        query,
+        response,
+        timestamp: query.timestamp,
+        status: query.status === "error" ? "error" : response ? "success" : "pending",
+      });
+    }
+
+    return convos.sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    );
+  }, [events]);
+
   const [expandedConversations, setExpandedConversations] = useState<Set<string>>(
     new Set()
   );
