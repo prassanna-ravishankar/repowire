@@ -55,6 +55,10 @@ class PeerManager:
         self._lock = asyncio.Lock()
         self._events: deque[dict[str, Any]] = deque(maxlen=100)
 
+    def add_event(self, event_type: str, data: dict[str, Any]) -> str:
+        """Add an event to the history. Returns event ID."""
+        return self._add_event(event_type, data)
+
     def _add_event(self, event_type: str, data: dict[str, Any]) -> str:
         """Add an event to the history. Returns event ID."""
         event_id = str(uuid4())

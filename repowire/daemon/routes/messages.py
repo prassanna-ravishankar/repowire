@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -190,7 +191,7 @@ class ChatTurnRequest(BaseModel):
     """Request to ingest a chat turn."""
 
     peer: str
-    role: str  # "user" | "assistant"
+    role: Literal["user", "assistant"]
     text: str
 
 
@@ -201,7 +202,7 @@ async def ingest_chat_turn(
 ) -> OkResponse:
     """Ingest a chat turn from the stop hook for dashboard display."""
     peer_manager = get_peer_manager()
-    peer_manager._add_event("chat_turn", request.model_dump())
+    peer_manager.add_event("chat_turn", request.model_dump())
     return OkResponse()
 
 

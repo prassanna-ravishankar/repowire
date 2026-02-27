@@ -61,7 +61,7 @@ def main() -> int:
         return 0
 
     # Extract and post last turn pair for dashboard (best-effort, before correlation guard)
-    transcript_path = Path(transcript_path_str).expanduser()
+    transcript_path = Path(transcript_path_str).expanduser().resolve()
     user_text, assistant_text = extract_last_turn_pair(transcript_path)
     if user_text:
         _post_chat_turn(peer_display, "user", user_text)
