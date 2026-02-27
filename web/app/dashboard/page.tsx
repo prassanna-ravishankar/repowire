@@ -203,7 +203,9 @@ export default function Dashboard() {
             <OverviewGrid
               peers={peers}
               events={events}
+              apiBase={API_BASE}
               onSelectPeer={handleSelectPeer}
+              onRefresh={refreshData}
             />
           )}
         </main>

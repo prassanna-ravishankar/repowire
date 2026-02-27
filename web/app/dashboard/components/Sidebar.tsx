@@ -14,13 +14,11 @@ interface SidebarProps {
 export function Sidebar({ peers, selectedPeerId, onSelectPeer }: SidebarProps) {
   const [offlineExpanded, setOfflineExpanded] = useState(false);
 
-  const { active, offline, duplicateNames } = useMemo(() => {
+  const { active, offline } = useMemo(() => {
     const active: Peer[] = [];
     const offline: Peer[] = [];
-    const nameCount = new Map<string, number>();
 
     for (const p of peers) {
-      nameCount.set(p.name, (nameCount.get(p.name) || 0) + 1);
       if (p.status === "online" || p.status === "busy") {
         active.push(p);
       } else {
@@ -28,22 +26,15 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer }: SidebarProps) {
       }
     }
 
-    // Names that appear more than once need disambiguation
-    const duplicateNames = new Set<string>();
-    for (const [name, count] of nameCount) {
-      if (count > 1) duplicateNames.add(name);
-    }
-
     // Sort: online first, then busy
     active.sort((a, b) => (a.status === "online" ? 0 : 1) - (b.status === "online" ? 0 : 1));
     offline.sort((a, b) => a.name.localeCompare(b.name));
 
-    return { active, offline, duplicateNames };
+    return { active, offline };
   }, [peers]);
 
   const renderPeerRow = (peer: Peer) => {
     const isSelected = peer.peer_id === selectedPeerId;
-    const showCircle = duplicateNames.has(peer.name);
 
     return (
       <li key={peer.peer_id}>
@@ -58,16 +49,9 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer }: SidebarProps) {
         >
           <span className={cn("w-2 h-2 rounded-full shrink-0", statusDot(peer.status))} />
           <span className="text-sm font-medium truncate">{peer.name}</span>
-          {showCircle && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono shrink-0">
-              {peer.circle}
-            </span>
-          )}
-          {peer.metadata?.branch && !showCircle && (
-            <span className="text-[10px] text-zinc-600 font-mono truncate ml-auto">
-              {String(peer.metadata.branch)}
-            </span>
-          )}
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono shrink-0">
+            {peer.circle}
+          </span>
         </button>
       </li>
     );
@@ -112,7 +96,6 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer }: SidebarProps) {
             <ul className="flex flex-col gap-0.5 px-2 pb-2">
               {offline.map((peer) => {
                 const isSelected = peer.peer_id === selectedPeerId;
-                const showCircle = duplicateNames.has(peer.name);
                 return (
                   <li key={peer.peer_id}>
                     <button
@@ -126,11 +109,9 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer }: SidebarProps) {
                     >
                       <span className="w-2 h-2 rounded-full shrink-0 bg-zinc-700" />
                       <span className="text-sm truncate">{peer.name}</span>
-                      {showCircle && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800/50 text-zinc-600 font-mono shrink-0">
-                          {peer.circle}
-                        </span>
-                      )}
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800/50 text-zinc-600 font-mono shrink-0">
+                        {peer.circle}
+                      </span>
                       {peer.last_seen && (
                         <span className="text-[10px] text-zinc-700 font-mono ml-auto shrink-0">
                           {timeAgo(peer.last_seen)}

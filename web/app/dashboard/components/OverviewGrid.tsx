@@ -1,17 +1,21 @@
 "use client";
 
-import { useMemo } from "react";
-import { Activity, Radio, Users } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Activity, Plus, Radio, Users } from "lucide-react";
 import { cn, statusDot, timeAgo } from "../lib/utils";
+import { SpawnDialog } from "./SpawnDialog";
 import type { Peer, Event } from "../types";
 
 interface OverviewGridProps {
   peers: Peer[];
   events: Event[];
+  apiBase: string;
   onSelectPeer: (peer: Peer) => void;
+  onRefresh: () => void;
 }
 
-export function OverviewGrid({ peers, events, onSelectPeer }: OverviewGridProps) {
+export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }: OverviewGridProps) {
+  const [showSpawn, setShowSpawn] = useState(false);
   const activePeers = useMemo(
     () => peers.filter((p) => p.status === "online" || p.status === "busy"),
     [peers]
@@ -43,8 +47,8 @@ export function OverviewGrid({ peers, events, onSelectPeer }: OverviewGridProps)
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      {/* Metrics row */}
-      <div className="flex gap-4 mb-6">
+      {/* Metrics row + spawn button */}
+      <div className="flex gap-4 mb-6 items-center">
         <MetricCard
           icon={<Users className="w-4 h-4" />}
           label="Online"
@@ -63,7 +67,22 @@ export function OverviewGrid({ peers, events, onSelectPeer }: OverviewGridProps)
           value={events.length}
           color="text-zinc-400"
         />
+        <button
+          onClick={() => setShowSpawn(true)}
+          className="ml-auto flex items-center gap-2 px-4 py-2.5 rounded-lg border border-zinc-700 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 text-sm font-medium transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          New Session
+        </button>
       </div>
+
+      {showSpawn && (
+        <SpawnDialog
+          apiBase={apiBase}
+          onClose={() => setShowSpawn(false)}
+          onSpawned={onRefresh}
+        />
+      )}
 
       {/* Active peer cards */}
       {activePeers.length > 0 && (

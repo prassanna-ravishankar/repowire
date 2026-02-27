@@ -19,6 +19,29 @@ router = APIRouter(tags=["spawn"])
 _spawned_sessions: set[str] = set()
 
 
+class SpawnConfigResponse(BaseModel):
+    """Spawn configuration for UI discovery."""
+
+    enabled: bool
+    allowed_commands: list[str] = []
+    allowed_paths: list[str] = []
+
+
+@router.get("/spawn/config", response_model=SpawnConfigResponse)
+async def get_spawn_config(
+    _: str | None = Depends(require_auth),
+) -> SpawnConfigResponse:
+    """Return spawn configuration so the UI can offer spawn controls."""
+    cfg = get_config()
+    cmds = cfg.daemon.spawn.allowed_commands
+    paths = cfg.daemon.spawn.allowed_paths
+    return SpawnConfigResponse(
+        enabled=bool(cmds and paths),
+        allowed_commands=cmds,
+        allowed_paths=paths,
+    )
+
+
 class SpawnRequest(BaseModel):
     """Request to spawn a new agent session."""
 
