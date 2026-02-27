@@ -75,11 +75,19 @@ class PeerConfig(BaseModel):
 
 
 class SpawnSettings(BaseModel):
-    """Settings controlling which commands agents are allowed to spawn."""
+    """Settings controlling which commands and paths agents are allowed to spawn into.
+
+    Both allowed_commands and allowed_paths must be non-empty for spawn to be enabled.
+    A spawn request must match an entry in each list to proceed.
+    """
 
     allowed_commands: list[str] = Field(
         default_factory=list,
         description="Allowed spawn commands (empty = spawn disabled)",
+    )
+    allowed_paths: list[str] = Field(
+        default_factory=list,
+        description="Allowed root directories for spawned sessions (empty = spawn disabled)",
     )
 
 

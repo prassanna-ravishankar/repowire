@@ -211,7 +211,7 @@ opencode  # or your preferred launcher
 
 **Spawn Allowlist (MCP spawn_peer / kill_peer)**
 
-By default, spawn via MCP is disabled. To allow agents to spin up new sessions programmatically, add an explicit allowlist to `~/.repowire/config.yaml`:
+By default, spawn via MCP is disabled. To allow agents to spin up new sessions programmatically, both `allowed_commands` and `allowed_paths` must be non-empty in `~/.repowire/config.yaml`:
 
 ```yaml
 daemon:
@@ -220,9 +220,16 @@ daemon:
       - claude
       - claude --dangerously-skip-permissions
       - opencode
+    allowed_paths:
+      - ~/git
+      - ~/projects
 ```
 
-MCP tools `spawn_peer` and `kill_peer` call `POST /spawn` and `POST /kill` on the daemon. The daemon validates the requested command against `allowed_commands` (exact string match) before spawning. Empty list = spawn disabled. `repowire setup` prints a reminder about this config.
+MCP tools `spawn_peer` and `kill_peer` call `POST /spawn` and `POST /kill` on the daemon. The daemon validates:
+- `command` — exact string match against `allowed_commands`
+- `path` — must exist on disk and be under one of the `allowed_paths` roots
+
+`kill` only works on sessions previously spawned by this daemon instance (tracked in-memory). `repowire setup` prints a reminder about this config.
 
 Key files:
 - `repowire/daemon/routes/spawn.py` — `/spawn` and `/kill` endpoints
@@ -246,9 +253,12 @@ daemon:
   auth_token: "your-secret-token-here"  # Optional: require auth for WebSocket connections
   # Spawn (optional): allow MCP spawn_peer to create sessions
   spawn:
-    allowed_commands:          # empty list (default) = spawn disabled
+    allowed_commands:          # both lists must be non-empty for spawn to be enabled
       - claude
       - claude --dangerously-skip-permissions
+    allowed_paths:
+      - ~/git
+      - ~/projects
 
 relay:  # Experimental - not usable yet
   enabled: false
