@@ -20,7 +20,8 @@ from repowire.daemon.core import PeerManager
 from repowire.daemon.deps import cleanup_deps, init_deps
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.query_tracker import QueryTracker
-from repowire.daemon.routes import health, messages, peers, spawn as spawn_routes, websocket
+from repowire.daemon.routes import health, messages, peers, websocket
+from repowire.daemon.routes import spawn as spawn_routes
 from repowire.daemon.session_mapper import SessionMapper
 from repowire.daemon.websocket_transport import WebSocketTransport
 

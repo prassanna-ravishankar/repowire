@@ -170,14 +170,14 @@ def create_mcp_server() -> FastMCP:
             circle: Circle to spawn into (default: "default")
 
         Returns:
-            tmux_session reference (e.g. "default:myproject") — pass to kill_peer to stop it
+            tmux_session reference (e.g. "default:myproject") — pass this to kill_peer to stop it
         """
         result = await daemon_request(
             "POST",
             "/spawn",
             {"path": path, "command": command, "circle": circle},
         )
-        return f"Spawned {result['display_name']} ({result['tmux_session']})"
+        return result["tmux_session"]
 
     @mcp.tool()
     async def kill_peer(tmux_session: str) -> str:
