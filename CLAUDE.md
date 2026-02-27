@@ -41,9 +41,6 @@ repowire serve --port 8080
 # Setup (auto-detects installed agent types)
 repowire setup
 
-# Launch TUI dashboard
-repowire top
-
 # Spawn a new peer
 repowire peer new ~/git/myproject --circle dev
 ```
@@ -66,44 +63,6 @@ repowire build-ui
 cd web
 npm run dev # runs on http://localhost:3000
 ```
-
-## Terminal UI (TUI)
-
-Repowire includes a Textual-based TUI for managing peers from the terminal.
-
-### Launch
-
-```bash
-repowire top                    # default: http://127.0.0.1:8377
-repowire top --port 8080        # custom port
-```
-
-### Layout
-
-Tabbed interface with three tabs:
-
-- **Agents** - Peer list grouped by circle (left) + inline detail panel (right)
-- **Communications** - Real-time SSE feed of queries, responses, broadcasts
-- **Create** - Form to spawn new peers (name, path, circle, agent type)
-
-### Keybindings
-
-| Key | Action |
-|-----|--------|
-| `q` | Quit |
-| `s` | Attach to selected peer's tmux session |
-| `r` | Refresh peer list |
-| `j`/`k` | Navigate peer list (vim-style) |
-
-### Key Files
-
-- `tui/app.py` - Main application (single-screen tabbed layout)
-- `tui/widgets/agent_list.py` - Peer list with circle grouping
-- `tui/widgets/communication_feed.py` - Real-time SSE communication feed
-- `tui/widgets/create_agent_form.py` - Spawn form with circle selector
-- `tui/widgets/status_bar.py` - Footer with keybinds and peer counts
-- `tui/services/daemon_client.py` - HTTP client for daemon API
-- `tui/services/sse_stream.py` - SSE stream client
 
 ## Spawning Peers
 

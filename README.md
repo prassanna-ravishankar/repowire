@@ -81,18 +81,6 @@ Monitor peer communication at `http://localhost:8377/dashboard` when the daemon 
 - Real-time peer status (online/busy/offline)
 - Communication event log with query/response matching
 
-## Terminal UI
-
-```bash
-repowire top
-```
-
-- Tabbed interface: Agents, Communications, Create
-- Peer list grouped by circle with inline details
-- Real-time communication feed (queries, responses, broadcasts)
-- Spawn new peers from the Create tab
-- Attach to peer sessions with `s` key
-
 ## How It Works
 
 ### Architecture
@@ -189,10 +177,6 @@ repowire uninstall                # Remove all components
 # Daemon
 repowire serve                    # Run daemon in foreground
 repowire build-ui                 # Build web dashboard (development)
-
-# TUI
-repowire top                      # Launch terminal UI
-repowire top --port 8080          # Custom daemon port
 
 # Peer management
 repowire peer list                # List peers and their status
