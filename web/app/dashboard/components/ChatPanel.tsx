@@ -2,35 +2,12 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
-import remarkBreaks from "remark-breaks";
-import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
-
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
-
-interface Peer {
-  name: string;
-  status: "online" | "busy" | "offline";
-  circle: string;
-  metadata?: { branch?: string; [key: string]: unknown };
-}
-
-interface Event {
-  id: string;
-  type: "query" | "response" | "notification" | "broadcast" | "status_change" | "chat_turn";
-  timestamp: string;
-  from?: string;
-  to?: string;
-  text: string;
-  peer?: string;
-  role?: "user" | "assistant";
-  correlation_id?: string;
-}
+import remarkGfm from "remark-gfm";
+import { cn } from "../lib/utils";
+import type { Peer, Event } from "../types";
 
 interface ChatPanelProps {
-  peer: Peer | null;
+  peer: Peer;
   events: Event[];
 }
 
@@ -38,7 +15,6 @@ export function ChatPanel({ peer, events }: ChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(() => {
-    if (!peer) return [];
     return events
       .filter((e) => {
         if (e.type === "chat_turn") return e.peer === peer.name;
@@ -48,19 +24,11 @@ export function ChatPanel({ peer, events }: ChatPanelProps) {
         return false;
       })
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-  }, [peer, events]);
+  }, [peer.name, events]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [filtered.length]);
-
-  if (!peer) {
-    return (
-      <div className="flex items-center justify-center h-full text-zinc-600 text-sm">
-        Select a peer to view conversation
-      </div>
-    );
-  }
 
   if (filtered.length === 0) {
     return (
@@ -91,8 +59,8 @@ export function ChatPanel({ peer, events }: ChatPanelProps) {
                 {isUser ? (
                   <p className="whitespace-pre-wrap">{event.text}</p>
                 ) : (
-                  <div className="prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-zinc-900 prose-pre:border prose-pre:border-zinc-700 prose-code:text-emerald-300 prose-ul:list-disc prose-ul:pl-4 prose-li:my-0.5">
-                    <ReactMarkdown remarkPlugins={[remarkBreaks]}>{event.text}</ReactMarkdown>
+                  <div className="prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-zinc-900 prose-pre:border prose-pre:border-zinc-700 prose-code:text-emerald-300 prose-ul:list-disc prose-ul:pl-4 prose-li:my-0.5 prose-table:border-collapse prose-th:border prose-th:border-zinc-700 prose-th:px-3 prose-th:py-1.5 prose-th:bg-zinc-900 prose-td:border prose-td:border-zinc-700 prose-td:px-3 prose-td:py-1.5">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{event.text}</ReactMarkdown>
                   </div>
                 )}
               </div>

@@ -2,29 +2,10 @@
 
 import { useState, useMemo } from "react";
 import { Check, AlertCircle, RefreshCw, ChevronRight } from "lucide-react";
-import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
+import { cn } from "../lib/utils";
 import ReactMarkdown from "react-markdown";
-import remarkBreaks from "remark-breaks";
-
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
-
-interface Event {
-  id: string;
-  type: "query" | "response" | "notification" | "broadcast" | "status_change" | "chat_turn";
-  timestamp: string;
-  from?: string;
-  to?: string;
-  text: string;
-  status?: "pending" | "success" | "error" | "blocked";
-  peer?: string;
-  role?: "user" | "assistant";
-  new_status?: "online" | "busy" | "offline";
-  query_id?: string;
-  correlation_id?: string;
-}
+import remarkGfm from "remark-gfm";
+import type { Event } from "../types";
 
 interface Conversation {
   id: string;
@@ -38,6 +19,7 @@ interface Conversation {
 
 interface ActivityFeedProps {
   events: Event[];
+  peerFilter?: string; // filter to events involving this peer name
 }
 
 function ConversationCard({
@@ -69,7 +51,6 @@ function ConversationCard({
           : "border-zinc-800/50 bg-zinc-800/10"
       )}
     >
-      {/* Header - Always visible */}
       <button
         onClick={onToggle}
         className="w-full px-4 py-3 flex items-center gap-3 hover:bg-zinc-800/30 transition-colors"
@@ -92,7 +73,6 @@ function ConversationCard({
         </div>
       </button>
 
-      {/* Collapsed preview */}
       {!isExpanded && (
         <div className="px-4 pb-3 pl-11">
           <p className="text-sm text-zinc-500 truncate">
@@ -101,39 +81,30 @@ function ConversationCard({
         </div>
       )}
 
-      {/* Expanded content */}
       {isExpanded && (
         <div className="px-4 pb-4 pl-11 space-y-3">
-          {/* Query */}
           <div className="space-y-1">
-            <div className="text-[10px] uppercase text-blue-400 font-bold">
-              Query
-            </div>
+            <div className="text-[10px] uppercase text-blue-400 font-bold">Query</div>
             <div className="bg-zinc-950 border border-zinc-800/50 rounded-lg p-3">
               <div className="text-sm text-zinc-300 prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-zinc-900 prose-pre:border prose-pre:border-zinc-700 prose-code:text-blue-300 prose-ul:list-disc prose-ul:pl-4 prose-li:my-0.5">
-                <ReactMarkdown remarkPlugins={[remarkBreaks]}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {conversation.query.text}
                 </ReactMarkdown>
               </div>
             </div>
           </div>
 
-          {/* Response */}
           {conversation.response ? (
             <div className="space-y-1">
-              <div className="text-[10px] uppercase text-emerald-400 font-bold">
-                Response
-              </div>
+              <div className="text-[10px] uppercase text-emerald-400 font-bold">Response</div>
               <div className="bg-zinc-950 border border-emerald-500/10 rounded-lg p-3">
                 <div
                   className={cn(
                     "text-sm prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-zinc-900 prose-pre:border prose-pre:border-zinc-700 prose-code:text-emerald-300 prose-ul:list-disc prose-ul:pl-4 prose-li:my-0.5",
-                    conversation.status === "error"
-                      ? "text-red-400"
-                      : "text-zinc-300"
+                    conversation.status === "error" ? "text-red-400" : "text-zinc-300"
                   )}
                 >
-                  <ReactMarkdown remarkPlugins={[remarkBreaks]}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
                     {conversation.response.text}
                   </ReactMarkdown>
                 </div>
@@ -151,14 +122,16 @@ function ConversationCard({
   );
 }
 
-export function ActivityFeed({ events }: ActivityFeedProps) {
+export function ActivityFeed({ events, peerFilter }: ActivityFeedProps) {
   const conversations: Conversation[] = useMemo(() => {
     const responseById = new Map<string, Event>();
     const queryEvents: Event[] = [];
 
     for (const e of events) {
       if (e.type === "query") {
-        queryEvents.push(e);
+        if (!peerFilter || e.from === peerFilter || e.to === peerFilter) {
+          queryEvents.push(e);
+        }
       } else if (e.type === "response" && e.correlation_id) {
         responseById.set(e.correlation_id, e);
       }
@@ -178,20 +151,15 @@ export function ActivityFeed({ events }: ActivityFeedProps) {
         };
       })
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  }, [events]);
+  }, [events, peerFilter]);
 
-  const [expandedConversations, setExpandedConversations] = useState<Set<string>>(
-    new Set()
-  );
+  const [expandedConversations, setExpandedConversations] = useState<Set<string>>(new Set());
 
   const toggleConversation = (id: string) => {
     setExpandedConversations((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   };
@@ -199,7 +167,9 @@ export function ActivityFeed({ events }: ActivityFeedProps) {
   if (conversations.length === 0) {
     return (
       <div className="text-center py-12 text-zinc-600">
-        <p className="text-sm">No conversations yet</p>
+        <p className="text-sm">
+          {peerFilter ? `No queries involving ${peerFilter}` : "No conversations yet"}
+        </p>
         <p className="text-xs mt-1">Ask a peer something to get started</p>
       </div>
     );

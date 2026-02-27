@@ -2,36 +2,21 @@
 
 import { useState, useRef, useEffect, KeyboardEvent } from "react";
 import { RefreshCw, Send } from "lucide-react";
-import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
-
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
-
-interface Peer {
-  name: string;
-  status: "online" | "busy" | "offline";
-}
+import { cn } from "../lib/utils";
+import type { Peer } from "../types";
 
 interface ComposeBarProps {
-  peers: Peer[];
-  selectedPeer: Peer | null;
+  peer: Peer;
   apiBase: string;
 }
 
-export function ComposeBar({ peers, selectedPeer, apiBase }: ComposeBarProps) {
+export function ComposeBar({ peer, apiBase }: ComposeBarProps) {
   const [text, setText] = useState("");
-  const [targetPeer, setTargetPeer] = useState(selectedPeer?.name ?? "");
   const [mode, setMode] = useState<"notify" | "ask">("notify");
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    if (selectedPeer) setTargetPeer(selectedPeer.name);
-  }, [selectedPeer?.name]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -42,7 +27,7 @@ export function ComposeBar({ peers, selectedPeer, apiBase }: ComposeBarProps) {
   }, [text]);
 
   const submit = async () => {
-    if (!text.trim() || !targetPeer || isPending) return;
+    if (!text.trim() || isPending) return;
     setError(null);
     setResponse(null);
     setIsPending(true);
@@ -52,7 +37,7 @@ export function ComposeBar({ peers, selectedPeer, apiBase }: ComposeBarProps) {
         const res = await fetch(`${apiBase}/notify`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ from_peer: "dashboard", to_peer: targetPeer, text: text.trim(), bypass_circle: true }),
+          body: JSON.stringify({ from_peer: "dashboard", to_peer: peer.name, text: text.trim(), bypass_circle: true }),
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
@@ -64,7 +49,7 @@ export function ComposeBar({ peers, selectedPeer, apiBase }: ComposeBarProps) {
         const res = await fetch(`${apiBase}/query`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ from_peer: "dashboard", to_peer: targetPeer, text: text.trim(), bypass_circle: true }),
+          body: JSON.stringify({ from_peer: "dashboard", to_peer: peer.name, text: text.trim(), bypass_circle: true }),
         });
         const data = await res.json();
         if (data.error) {
@@ -92,16 +77,9 @@ export function ComposeBar({ peers, selectedPeer, apiBase }: ComposeBarProps) {
     <div className="border-t border-zinc-800 bg-zinc-950 p-3 flex flex-col gap-2">
       {/* Controls row */}
       <div className="flex items-center gap-2">
-        <select
-          value={targetPeer}
-          onChange={(e) => setTargetPeer(e.target.value)}
-          className="bg-zinc-900 border border-zinc-700 rounded-md text-xs text-zinc-300 px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-zinc-500"
-        >
-          <option value="">Select peer</option>
-          {peers.map((p) => (
-            <option key={p.name} value={p.name}>{p.name}</option>
-          ))}
-        </select>
+        <span className="text-xs text-zinc-500 font-mono">
+          → {peer.name}
+        </span>
 
         <div className="flex rounded-md overflow-hidden border border-zinc-700">
           {(["notify", "ask"] as const).map((m) => (
@@ -134,7 +112,7 @@ export function ComposeBar({ peers, selectedPeer, apiBase }: ComposeBarProps) {
         />
         <button
           onClick={submit}
-          disabled={!text.trim() || !targetPeer || isPending}
+          disabled={!text.trim() || isPending}
           className="p-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           {isPending ? <RefreshCw className="w-4 h-4 text-zinc-300 animate-spin" /> : <Send className="w-4 h-4 text-zinc-300" />}

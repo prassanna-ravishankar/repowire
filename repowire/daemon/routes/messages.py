@@ -198,7 +198,7 @@ class ChatTurnRequest(BaseModel):
 @router.post("/events/chat", response_model=OkResponse)
 async def ingest_chat_turn(
     request: ChatTurnRequest,
-    _: None = Depends(require_localhost),
+    _: str | None = Depends(require_auth),
 ) -> OkResponse:
     """Ingest a chat turn from the stop hook for dashboard display."""
     peer_manager = get_peer_manager()

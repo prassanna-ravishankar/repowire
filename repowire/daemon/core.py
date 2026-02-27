@@ -57,10 +57,6 @@ class PeerManager:
 
     def add_event(self, event_type: str, data: dict[str, Any]) -> str:
         """Add an event to the history. Returns event ID."""
-        return self._add_event(event_type, data)
-
-    def _add_event(self, event_type: str, data: dict[str, Any]) -> str:
-        """Add an event to the history. Returns event ID."""
         event_id = str(uuid4())
         self._events.append(
             {
@@ -270,7 +266,7 @@ class PeerManager:
             f"your response is automatically captured and returned to {from_peer}."
         )
 
-        query_event_id = self._add_event(
+        query_event_id = self.add_event(
             "query",
             {"from": from_peer, "to": to_peer, "text": text, "status": "pending"},
         )
@@ -285,7 +281,7 @@ class PeerManager:
             )
 
             self._update_event(query_event_id, {"status": "success"})
-            self._add_event(
+            self.add_event(
                 "response",
                 {
                     "from": to_peer,
@@ -325,7 +321,7 @@ class PeerManager:
             peer_id = peer.peer_id
             peer_name = peer.display_name
 
-        self._add_event(
+        self.add_event(
             "notification",
             {"from": from_peer, "to": to_peer, "text": text},
         )
@@ -349,7 +345,7 @@ class PeerManager:
         Returns:
             List of peer names that received the broadcast
         """
-        self._add_event(
+        self.add_event(
             "broadcast",
             {"from": from_peer, "text": text, "exclude": exclude},
         )
