@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { RefreshCw, Wifi, WifiOff } from "lucide-react";
 import { ActivityFeed } from "./components/ActivityFeed";
 import { ChatPanel } from "./components/ChatPanel";
@@ -114,16 +114,18 @@ export default function Dashboard() {
     };
   }, [fetchPeers, fetchEvents]);
 
-  const sortedPeers = [...peers].sort(
-    (a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status]
+  const sortedPeers = useMemo(
+    () => [...peers].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status]),
+    [peers]
   );
 
   const onlineCount = peers.filter((p) => p.status === "online" || p.status === "busy").length;
 
   // Keep selectedPeer in sync with updated peer data
-  const currentSelectedPeer = selectedPeer
-    ? (peers.find((p) => p.name === selectedPeer.name) ?? selectedPeer)
-    : null;
+  const currentSelectedPeer = useMemo(
+    () => selectedPeer ? (peers.find((p) => p.name === selectedPeer.name) ?? selectedPeer) : null,
+    [peers, selectedPeer]
+  );
 
   return (
     <div className="h-screen bg-zinc-950 text-zinc-400 font-sans flex flex-col overflow-hidden">

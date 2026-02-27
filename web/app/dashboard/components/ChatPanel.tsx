@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import { clsx, type ClassValue } from "clsx";
@@ -37,17 +37,18 @@ interface ChatPanelProps {
 export function ChatPanel({ peer, events }: ChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const filtered = peer
-    ? events
-        .filter((e) => {
-          if (e.type === "chat_turn") return e.peer === peer.name;
-          if (e.type === "query" || e.type === "response" || e.type === "notification" || e.type === "broadcast") {
-            return e.from === peer.name || e.to === peer.name;
-          }
-          return false;
-        })
-        .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-    : [];
+  const filtered = useMemo(() => {
+    if (!peer) return [];
+    return events
+      .filter((e) => {
+        if (e.type === "chat_turn") return e.peer === peer.name;
+        if (e.type === "query" || e.type === "response" || e.type === "notification" || e.type === "broadcast") {
+          return e.from === peer.name || e.to === peer.name;
+        }
+        return false;
+      })
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  }, [peer, events]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });

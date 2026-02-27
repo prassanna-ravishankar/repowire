@@ -153,26 +153,31 @@ function ConversationCard({
 
 export function ActivityFeed({ events }: ActivityFeedProps) {
   const conversations: Conversation[] = useMemo(() => {
-    const convos: Conversation[] = [];
-    const queryEvents = events.filter((e) => e.type === "query");
-    const responseEvents = events.filter((e) => e.type === "response");
+    const responseById = new Map<string, Event>();
+    const queryEvents: Event[] = [];
 
-    for (const query of queryEvents) {
-      const response = responseEvents.find((r) => r.correlation_id === query.id);
-      convos.push({
-        id: query.id,
-        from: query.from || "unknown",
-        to: query.to || "unknown",
-        query,
-        response,
-        timestamp: query.timestamp,
-        status: query.status === "error" ? "error" : response ? "success" : "pending",
-      });
+    for (const e of events) {
+      if (e.type === "query") {
+        queryEvents.push(e);
+      } else if (e.type === "response" && e.correlation_id) {
+        responseById.set(e.correlation_id, e);
+      }
     }
 
-    return convos.sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    );
+    return queryEvents
+      .map((query) => {
+        const response = responseById.get(query.id);
+        return {
+          id: query.id,
+          from: query.from || "unknown",
+          to: query.to || "unknown",
+          query,
+          response,
+          timestamp: query.timestamp,
+          status: (query.status === "error" ? "error" : response ? "success" : "pending") as Conversation["status"],
+        };
+      })
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   }, [events]);
 
   const [expandedConversations, setExpandedConversations] = useState<Set<string>>(

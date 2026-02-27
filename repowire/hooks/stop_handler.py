@@ -30,8 +30,8 @@ def _post_chat_turn(peer_name: str, role: str, text: str) -> None:
             method="POST",
         )
         urllib.request.urlopen(req, timeout=2.0).close()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"repowire: failed to post chat turn: {e}", file=sys.stderr)
 
 
 def main() -> int:

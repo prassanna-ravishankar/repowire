@@ -201,9 +201,7 @@ async def ingest_chat_turn(
 ) -> OkResponse:
     """Ingest a chat turn from the stop hook for dashboard display."""
     peer_manager = get_peer_manager()
-    peer_manager._add_event(
-        "chat_turn", {"peer": request.peer, "role": request.role, "text": request.text}
-    )
+    peer_manager._add_event("chat_turn", request.model_dump())
     return OkResponse()
 
 
