@@ -26,8 +26,11 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer }: SidebarProps) {
       }
     }
 
-    // Sort: online first, then busy
-    active.sort((a, b) => (a.status === "online" ? 0 : 1) - (b.status === "online" ? 0 : 1));
+    // Sort: online first, then busy; stable tie-break by name
+    active.sort((a, b) => {
+      const s = (a.status === "online" ? 0 : 1) - (b.status === "online" ? 0 : 1);
+      return s !== 0 ? s : a.name.localeCompare(b.name);
+    });
     offline.sort((a, b) => a.name.localeCompare(b.name));
 
     return { active, offline };

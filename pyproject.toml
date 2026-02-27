@@ -1,6 +1,6 @@
 [project]
 name = "repowire"
-version = "0.3.8"
+version = "0.4.0"
 description = "Mesh network for AI coding agents - enables Claude Code and OpenCode sessions to communicate"
 readme = "README.md"
 requires-python = ">=3.10"

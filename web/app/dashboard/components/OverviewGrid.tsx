@@ -30,17 +30,18 @@ export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }
       .slice(0, 8);
   }, [events]);
 
-  // Find last activity time for each peer
+  // Find last activity time for each peer (single-pass, O(N))
   const lastActivity = useMemo(() => {
     const map = new Map<string, Event>();
-    // Iterate oldest first so newest wins
-    const sorted = [...events].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
-    for (const e of sorted) {
-      if (e.from) map.set(e.from, e);
-      if (e.to) map.set(e.to, e);
-      if (e.peer) map.set(e.peer, e);
+    for (const e of events) {
+      const ts = new Date(e.timestamp).getTime();
+      const update = (key: string) => {
+        const prev = map.get(key);
+        if (!prev || new Date(prev.timestamp).getTime() < ts) map.set(key, e);
+      };
+      if (e.from) update(e.from);
+      if (e.to) update(e.to);
+      if (e.peer) update(e.peer);
     }
     return map;
   }, [events]);

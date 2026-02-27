@@ -69,7 +69,10 @@ export default function Dashboard() {
           parsed !== null &&
           "id" in parsed &&
           "type" in parsed &&
-          "timestamp" in parsed
+          "timestamp" in parsed &&
+          typeof (parsed as Record<string, unknown>).id === "string" &&
+          typeof (parsed as Record<string, unknown>).type === "string" &&
+          typeof (parsed as Record<string, unknown>).timestamp === "string"
         ) {
           const event = parsed as Event;
           setEvents((prev) => {

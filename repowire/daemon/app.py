@@ -96,6 +96,7 @@ def create_app(
     )
 
     # CORS middleware - restrict to localhost origins to prevent CSRF attacks
+    # TODO(relay): when going hosted, replace hardcoded origins with config-driven allowlist
     app.add_middleware(
         CORSMiddleware,  # type: ignore[invalid-argument-type]
         allow_origins=[

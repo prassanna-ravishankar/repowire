@@ -1,4 +1,9 @@
-"""Message handling endpoints."""
+"""Message handling endpoints.
+
+TODO(relay): query/notify/broadcast are unauthenticated in local mode.
+When going hosted, enforce auth on all message endpoints and add input
+size limits to prevent abuse. Grep for TODO(relay) to find all sites.
+"""
 
 from __future__ import annotations
 

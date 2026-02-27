@@ -1,4 +1,9 @@
-"""Spawn endpoints — create and kill agent sessions via tmux."""
+"""Spawn endpoints — create and kill agent sessions via tmux.
+
+TODO(relay): spawn currently relies on local tmux and filesystem path validation.
+When going hosted, add rate limiting, auth enforcement (not just allowlist), and
+consider whether remote spawn should be allowed at all vs. local-only.
+"""
 
 from __future__ import annotations
 
