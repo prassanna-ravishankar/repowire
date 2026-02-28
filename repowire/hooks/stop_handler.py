@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path
 
 from repowire.hooks._tmux import get_pane_id
-from repowire.hooks.utils import DAEMON_URL, get_session_id, update_status
+from repowire.hooks.utils import DAEMON_URL, get_pane_file, get_session_id, update_status
 from repowire.session.transcript import extract_last_turn_pair
 
 
@@ -76,7 +76,7 @@ def main() -> int:
 
     # Check if there's a correlation_id stored for this pane
     correlation_dir = Path.home() / ".cache" / "repowire" / "correlations"
-    pane_file = pane_id.replace("%", "")
+    pane_file = get_pane_file(pane_id)
     corr_file = correlation_dir / pane_file
 
     if not corr_file.exists():

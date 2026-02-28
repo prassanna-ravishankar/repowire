@@ -22,7 +22,13 @@ except ImportError as e:
     print("Install with: pip install websockets", file=sys.stderr)
     sys.exit(1)
 
-from repowire.hooks.utils import get_session_id_from_pane
+from repowire.config.models import AgentType
+from repowire.hooks.utils import (
+    HOOKS_CACHE_DIR,
+    get_display_name,
+    get_pane_file,
+    get_session_id_from_pane,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,10 +53,6 @@ def get_circle_from_tmux() -> str:
 
     return "default"
 
-
-def get_display_name_from_cwd() -> str:
-    """Get display name from current working directory."""
-    return Path.cwd().name
 
 
 def _tmux_send_keys(pane_id: str, text: str) -> bool:
@@ -103,6 +105,8 @@ def _is_pane_safe(pane_id: str) -> bool:
         if result.returncode != 0:
             return False
         cmd = result.stdout.strip().lower()
+        if not cmd:
+            return False  # pane doesn't exist; tmux exits 0 with empty stdout
         return cmd not in shell_commands
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
@@ -145,7 +149,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
             # Store correlation_id for later response matching
             response_dir = Path.home() / ".cache" / "repowire" / "correlations"
             response_dir.mkdir(parents=True, exist_ok=True)
-            corr_file = response_dir / pane_id.replace("%", "")
+            corr_file = response_dir / get_pane_file(pane_id)
             corr_file.write_text(correlation_id)
 
             if _tmux_send_keys(pane_id, text):
@@ -210,7 +214,7 @@ async def watch_responses(
         response_dir: Directory to watch for response files
         pane_id: Tmux pane ID (for file naming)
     """
-    pane_file = pane_id.replace("%", "")
+    pane_file = get_pane_file(pane_id)
     response_file = response_dir / f"{pane_file}.json"
 
     max_retries_per_file = 10
@@ -314,13 +318,12 @@ async def main() -> int:
         return 1
 
     # Write own PID for cleanup by SessionEnd
-    pid_dir = Path.home() / ".cache" / "repowire" / "hooks"
-    pid_dir.mkdir(parents=True, exist_ok=True)
-    pane_file = pane_id.replace("%", "")
-    (pid_dir / f"{pane_file}.pid").write_text(str(os.getpid()))
+    HOOKS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    pane_file = get_pane_file(pane_id)
+    (HOOKS_CACHE_DIR / f"{pane_file}.pid").write_text(str(os.getpid()))
 
     circle = get_circle_from_tmux()
-    display_name = get_display_name_from_cwd()
+    display_name = get_display_name(pane_id)
     path = str(Path.cwd())
 
     # Get daemon URL from environment or use default
@@ -348,7 +351,7 @@ async def main() -> int:
                     "type": "connect",
                     "display_name": display_name,
                     "circle": circle,
-                    "backend": "claude-code",
+                    "backend": AgentType.CLAUDE_CODE,
                     "path": path,
                 }
                 auth_token = os.environ.get("REPOWIRE_AUTH_TOKEN")
@@ -364,7 +367,7 @@ async def main() -> int:
 
                     # Store session_id for SessionEnd hook to use
                     os.environ["REPOWIRE_SESSION_ID"] = session_id
-                    sid_file = pid_dir / f"{pane_file}.sid"
+                    sid_file = HOOKS_CACHE_DIR / f"{pane_file}.sid"
                     sid_file.write_text(session_id)
                 else:
                     logger.error(f"Unexpected response: {response}, retrying...")

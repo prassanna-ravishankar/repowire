@@ -120,15 +120,14 @@ async def list_peers(
 @router.get("/peers/{identifier}", response_model=PeerInfo)
 async def get_peer(
     identifier: str,
+    circle: str | None = Query(None),
     _: str | None = Depends(require_auth),
 ) -> PeerInfo:
     """Get information about a specific peer by peer_id or display_name."""
     peer_manager = get_peer_manager()
-    peers = await peer_manager.get_all_peers()
-
-    for p in peers:
-        if p.peer_id == identifier or p.display_name == identifier:
-            return _peer_to_info(p)
+    peer = await peer_manager.get_peer(identifier, circle=circle)
+    if peer:
+        return _peer_to_info(peer)
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,

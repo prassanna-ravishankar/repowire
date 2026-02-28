@@ -183,6 +183,16 @@ time.sleep(0.1)
 subprocess.run(["tmux", "send-keys", "-t", pane_id, "Enter"])
 ```
 
+**Unique Peer Names:**
+
+Each Claude session's `display_name` is the first 8 chars of Claude's `session_id` (e.g. `00893aaf`). The same session always gets the same name across resumes/clears/compacts. A fresh `claude` invocation (new `session_id`) gets a new name. The folder name is stored as `metadata.project` for human context.
+
+File artifacts written per-pane (in `~/.cache/repowire/hooks/`):
+- `{pane}.uname` — unique peer name (written by SessionStart, read by ws-hook and MCP)
+- `{pane}.sid` — repowire session_id written by ws-hook after daemon assigns it
+- `{pane}.pid` — ws-hook PID for liveness checks
+- `{pane}.name` — display_name for stale-hook detection
+
 Key files:
 - `installers/claude_code.py` - Installs/uninstalls hooks in `~/.claude/settings.json`
 - `hooks/session_handler.py` - Handles SessionStart and SessionEnd events
@@ -315,7 +325,8 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 | `/health` | GET | Health check |
 | `/peers` | GET | List all peers |
 | `/peers` | POST | Register peer |
-| `/peers/{name}` | DELETE | Unregister peer |
+| `/peers/{identifier}` | GET | Get peer by session_id or display_name (`?circle=` to disambiguate) |
+| `/peers/{name}` | DELETE | Unregister peer (`?circle=` to disambiguate) |
 | `/peers/{name}/offline` | POST | Mark peer offline, cancel pending queries |
 | `/query` | POST | Send query, wait for response |
 | `/notify` | POST | Send notification (fire-and-forget) |
@@ -326,13 +337,16 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 
 ## Key Design Decisions
 
-1. **Peer name = folder name** - Auto-derived from cwd in SessionStart hook
+1. **Unique peer names** - First 8 chars of Claude's `session_id` (e.g. `00893aaf`). Stable across session resumes; new invocation = new name. OpenCode uses 8 chars after `ses` prefix of `session.id`. Folder name stored as `metadata.project`.
 2. **Correlation IDs** - UUID-based request/response matching via pending files
 3. **In-memory peer registry** - Backed by SessionMapper persistence, no per-request config reload
 4. **Peer validation** - WebSocket connect validates display_name and circle format
 5. **File-based response handoff** - Stop hook writes response files; WebSocket hook forwards them
-6. **Peer metadata** - Includes git branch info, auto-populated by SessionStart hook
+6. **Peer metadata** - Includes `project` (folder name) and git branch, auto-populated by SessionStart hook
 7. **Context injection** - SessionStart hook outputs `additionalContext` with peer list for Claude
+8. **TSV MCP output** - `list_peers` and `whoami` return TSV (more token-efficient than JSON for agents)
+9. **Ghost eviction** - `register_peer` evicts OFFLINE peers with same (display_name, backend) regardless of circle, cleaning up stale registrations from dead ws-hooks
+10. **Circle-preferred `from_peer` lookup** - `from_peer` is resolved preferring the target peer's circle first, preventing false circle boundary errors when sender name appears in multiple circles
 
 ## Testing
 

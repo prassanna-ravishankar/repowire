@@ -10,6 +10,30 @@ import urllib.request
 from pathlib import Path
 
 DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", "http://127.0.0.1:8377")
+HOOKS_CACHE_DIR = Path.home() / ".cache" / "repowire" / "hooks"
+
+
+def get_pane_file(pane_id: str | None) -> str:
+    """Normalize pane_id for use in cache filenames (strips leading %)."""
+    return (pane_id or "unknown").replace("%", "")
+
+
+def get_uname_path(pane_id: str) -> Path:
+    """Get the .uname cache file path for a given pane_id."""
+    return HOOKS_CACHE_DIR / f"{get_pane_file(pane_id)}.uname"
+
+
+def get_display_name(pane_id: str | None = None) -> str:
+    """Get display name from .uname file, fallback to cwd folder name."""
+    pid = pane_id or os.environ.get("TMUX_PANE")
+    if pid:
+        try:
+            name = get_uname_path(pid).read_text().strip()
+            if name:
+                return name
+        except OSError:
+            pass
+    return Path.cwd().name
 
 
 def get_session_id_from_pane(pane_id: str) -> str | None:
@@ -17,8 +41,7 @@ def get_session_id_from_pane(pane_id: str) -> str | None:
 
     Returns the session_id (e.g., 'repow-dev-a1b2c3d4') or None if not available.
     """
-    pane_file = pane_id.replace("%", "")
-    sid_file = Path.home() / ".cache" / "repowire" / "hooks" / f"{pane_file}.sid"
+    sid_file = HOOKS_CACHE_DIR / f"{get_pane_file(pane_id)}.sid"
     try:
         return sid_file.read_text().strip() or None
     except OSError:

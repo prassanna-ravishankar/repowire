@@ -117,16 +117,17 @@ class PeerManager:
         (display_name, circle, backend) — a true reconnect.
         """
         async with self._lock:
-            # Handle reconnection: same name+circle+backend = true reconnect
+            # Evict stale entries for the same (display_name, backend):
+            # - same circle + different sid = true reconnect
+            # - OFFLINE + any circle = ghost from a dead hook with stale circle
             for old_sid, old_peer in list(self._peers.items()):
                 if (
                     old_peer.display_name == peer.display_name
-                    and old_peer.circle == peer.circle
                     and old_peer.backend == peer.backend
                     and old_sid != peer.peer_id
+                    and (old_peer.circle == peer.circle or old_peer.status == PeerStatus.OFFLINE)
                 ):
                     del self._peers[old_sid]
-                    break
 
             peer.status = PeerStatus.ONLINE
             peer.last_seen = datetime.now(timezone.utc)
@@ -254,7 +255,9 @@ class PeerManager:
             peer = self._lookup_peer_unlocked(to_peer, circle=circle)
             if not peer:
                 raise ValueError(f"Unknown peer: {to_peer}")
-            from_peer_obj = self._lookup_peer_unlocked(from_peer)
+            from_peer_obj = self._lookup_peer_unlocked(
+                from_peer, circle=peer.circle
+            ) or self._lookup_peer_unlocked(from_peer)
             self._check_circle_access_by_peers(from_peer_obj, peer, bypass_circle)
             peer_id = peer.peer_id
             peer_name = peer.display_name
@@ -318,7 +321,9 @@ class PeerManager:
             peer = self._lookup_peer_unlocked(to_peer, circle=circle)
             if not peer:
                 raise ValueError(f"Unknown peer: {to_peer}")
-            from_peer_obj = self._lookup_peer_unlocked(from_peer)
+            from_peer_obj = self._lookup_peer_unlocked(
+                from_peer, circle=peer.circle
+            ) or self._lookup_peer_unlocked(from_peer)
             self._check_circle_access_by_peers(from_peer_obj, peer, bypass_circle)
             peer_id = peer.peer_id
             peer_name = peer.display_name

@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import os
-from pathlib import Path
 from uuid import uuid4
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from repowire.hooks.utils import get_display_name, get_session_id
+
 DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", "http://127.0.0.1:8377")
 
-
-def _detect_my_peer_name() -> str:
-    """Detect current peer name from cwd folder name."""
-    return Path.cwd().name
+# Cached: peer identity is stable for the lifetime of this MCP process
+_my_peer_name: str = get_display_name()
 
 
 async def daemon_request(method: str, path: str, body: dict | None = None) -> dict:
@@ -45,10 +43,24 @@ def create_mcp_server() -> FastMCP:
     async def list_peers() -> str:
         """List all registered peers in the mesh.
 
-        Returns a list of peers with their name, path, machine, and status.
+        Returns TSV with columns: peer_id, name, project, circle, status, path
         """
         result = await daemon_request("GET", "/peers")
-        return json.dumps(result.get("peers", []), indent=2)
+        peers = result.get("peers", [])
+        rows = ["peer_id\tname\tproject\tcircle\tstatus\tpath"]
+        for p in peers:
+            project = p.get("metadata", {}).get("project", "") or ""
+            rows.append(
+                "\t".join([
+                    p.get("peer_id", ""),
+                    p.get("display_name") or p.get("name", ""),
+                    project,
+                    p.get("circle", ""),
+                    p.get("status", ""),
+                    p.get("path") or "",
+                ])
+            )
+        return "\n".join(rows)
 
     @mcp.tool()
     async def ask_peer(peer_name: str, query: str, circle: str | None = None) -> str:
@@ -66,9 +78,9 @@ def create_mcp_server() -> FastMCP:
         Returns:
             The peer's response text
         """
-        my_name = _detect_my_peer_name()
+        from_peer = get_session_id() or _my_peer_name
         body: dict = {
-            "from_peer": my_name,
+            "from_peer": from_peer,
             "to_peer": peer_name,
             "text": query,
         }
@@ -94,10 +106,10 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Correlation ID (format: notif-XXXXXXXX) for tracking.
         """
-        my_name = _detect_my_peer_name()
+        from_peer = get_session_id() or _my_peer_name
         correlation_id = f"notif-{uuid4().hex[:8]}"
         body: dict = {
-            "from_peer": my_name,
+            "from_peer": from_peer,
             "to_peer": peer_name,
             "text": f"[#{correlation_id}] {message}",
         }
@@ -119,12 +131,12 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Confirmation message
         """
-        my_name = _detect_my_peer_name()
+        from_peer = get_session_id() or _my_peer_name
         result = await daemon_request(
             "POST",
             "/broadcast",
             {
-                "from_peer": my_name,
+                "from_peer": from_peer,
                 "text": message,
             },
         )
@@ -135,25 +147,28 @@ def create_mcp_server() -> FastMCP:
     async def whoami() -> str:
         """Return information about yourself (the calling peer).
 
-        Returns your peer name, circle, status, path, and metadata.
-        Useful to understand your identity in the mesh without parsing list_peers.
+        Returns TSV with columns: peer_id, name, project, circle, status, path, machine
         """
-        my_name = _detect_my_peer_name()
+        identifier = get_session_id() or _my_peer_name
         try:
-            result = await daemon_request("GET", f"/peers/{my_name}")
-            return json.dumps(
-                {
-                    "name": result.get("name"),
-                    "circle": result.get("circle"),
-                    "status": result.get("status"),
-                    "path": result.get("path"),
-                    "machine": result.get("machine"),
-                    "metadata": result.get("metadata", {}),
-                },
-                indent=2,
+            result = await daemon_request("GET", f"/peers/{identifier}")
+            project = result.get("metadata", {}).get("project", "") or ""
+            header = "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine"
+            row = "\t".join([
+                result.get("peer_id", ""),
+                result.get("display_name") or result.get("name", ""),
+                project,
+                result.get("circle", ""),
+                result.get("status", ""),
+                result.get("path") or "",
+                result.get("machine") or "",
+            ])
+            return f"{header}\n{row}"
+        except Exception:
+            return (
+                "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\n"
+                f"\t{identifier}\t\t\tnot registered\t\t"
             )
-        except httpx.HTTPStatusError:
-            return json.dumps({"name": my_name, "error": "Not registered"})
 
     @mcp.tool()
     async def spawn_peer(path: str, command: str, circle: str = "default") -> str:

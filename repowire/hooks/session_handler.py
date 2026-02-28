@@ -11,7 +11,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from repowire.config.models import AgentType
 from repowire.hooks._tmux import get_tmux_info
+from repowire.hooks.utils import HOOKS_CACHE_DIR, get_pane_file, get_uname_path
 
 DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", "http://127.0.0.1:8377")
 
@@ -23,9 +25,8 @@ def _is_ws_hook_alive(pane_file: str, display_name: str) -> bool:
     different project — e.g. scale-train-gcp hook still alive in a pane that
     now belongs to models-scaletrain-vertexai.
     """
-    hook_dir = Path.home() / ".cache" / "repowire" / "hooks"
-    pid_path = hook_dir / f"{pane_file}.pid"
-    name_path = hook_dir / f"{pane_file}.name"
+    pid_path = HOOKS_CACHE_DIR / f"{pane_file}.pid"
+    name_path = HOOKS_CACHE_DIR / f"{pane_file}.name"
     if not pid_path.exists():
         return False
     try:
@@ -48,22 +49,25 @@ def _is_ws_hook_alive(pane_file: str, display_name: str) -> bool:
     return True
 
 
-def _register_peer_http(display_name: str, path: str, circle: str) -> bool:
+def _register_peer_http(
+    display_name: str, path: str, circle: str, metadata: dict | None = None
+) -> bool:
     """Register peer via HTTP POST /peers (upsert-safe).
 
     Works even on a fresh daemon with empty peer registry, unlike
     update_status which requires the peer to already exist in memory.
     """
     try:
-        data = json.dumps(
-            {
-                "name": display_name,
-                "display_name": display_name,
-                "path": path,
-                "circle": circle,
-                "backend": "claude-code",
-            }
-        ).encode("utf-8")
+        payload: dict = {
+            "name": display_name,
+            "display_name": display_name,
+            "path": path,
+            "circle": circle,
+            "backend": AgentType.CLAUDE_CODE,
+        }
+        if metadata:
+            payload["metadata"] = metadata
+        data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             f"{DAEMON_URL}/peers",
             data=data,
@@ -80,6 +84,12 @@ def _register_peer_http(display_name: str, path: str, circle: str) -> bool:
 def get_peer_name(cwd: str) -> str:
     """Generate a peer name from the working directory (folder name)."""
     return Path(cwd).name
+
+
+def _write_uname(pane_id: str, unique_name: str) -> None:
+    """Write the unique peer name to a file for ws-hook and MCP to read."""
+    HOOKS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    get_uname_path(pane_id).write_text(unique_name)
 
 
 def get_git_branch(cwd: str) -> str | None:
@@ -150,23 +160,30 @@ def main() -> int:
 
     event = input_data.get("hook_event_name")
     cwd = input_data.get("cwd", os.getcwd())
+    claude_session_id = input_data.get("session_id", "")
 
     # Get tmux info (pane_id used for tmux targeting)
     tmux_info = get_tmux_info()
     pane_id = tmux_info["pane_id"]
 
-    # display_name is the folder name (human-readable)
-    display_name = get_peer_name(cwd)
+    # folder_name is used as metadata.project for human context
+    folder_name = get_peer_name(cwd)
 
     if event == "SessionStart":
+        pane_file = get_pane_file(pane_id)
+
+        # Derive stable name from first 8 chars of Claude's session_id
+        display_name = claude_session_id[:8] if claude_session_id else folder_name
+
+        # Persist unique name for ws-hook and MCP to read
+        _write_uname(pane_file, display_name)
+
         # Launch async WebSocket hook in background (if not already running)
-        pane_file = (pane_id or "unknown").replace("%", "")
         if not _is_ws_hook_alive(pane_file, display_name):
             try:
                 hook_script = Path(__file__).parent / "websocket_hook.py"
                 if hook_script.exists():
-                    pid_dir = Path.home() / ".cache" / "repowire" / "hooks"
-                    pid_dir.mkdir(parents=True, exist_ok=True)
+                    HOOKS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
                     log_dir = Path.home() / ".cache" / "repowire" / "logs"
                     log_dir.mkdir(parents=True, exist_ok=True)
                     log_file = open(log_dir / f"ws-hook-{pane_file}.log", "w")  # noqa: SIM115
@@ -180,8 +197,8 @@ def main() -> int:
                         )
                     finally:
                         log_file.close()  # Always close — subprocess inherits the fd
-                    (pid_dir / f"{pane_file}.pid").write_text(str(proc.pid))
-                    (pid_dir / f"{pane_file}.name").write_text(display_name)
+                    (HOOKS_CACHE_DIR / f"{pane_file}.pid").write_text(str(proc.pid))
+                    (HOOKS_CACHE_DIR / f"{pane_file}.name").write_text(display_name)
             except Exception as e:
                 print(f"repowire: failed to start WebSocket hook: {e}", file=sys.stderr)
 
@@ -191,7 +208,7 @@ def main() -> int:
         #   2. Daemon was restarted and has empty peer registry
         # POST /peers is upsert-safe: creates if missing, re-marks ONLINE if exists.
         circle = tmux_info["session_name"] or "default"
-        _register_peer_http(display_name, cwd, circle)
+        _register_peer_http(display_name, cwd, circle, metadata={"project": folder_name})
 
         # Fetch peers and output context for Claude
         peers = fetch_peers()

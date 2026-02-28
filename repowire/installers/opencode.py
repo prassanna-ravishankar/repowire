@@ -45,6 +45,7 @@ let activeSessionId: string | null = null
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 let reconnectAttempts: number = 0
 let opencodeClient: PluginClient | null = null
+let stableNameSet: boolean = false
 
 // Note: We no longer rely on TMUX_PANE for identity. The daemon assigns
 // a unique peer_id (repow-{circle}-{uuid8}) on registration.
@@ -366,7 +367,13 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         args: {},
         async execute() {
           const result = await daemon("/peers")
-          return JSON.stringify(result.peers, null, 2)
+          const peers = result.peers || []
+          const rows = ["peer_id\tname\tproject\tcircle\tstatus\tpath"]
+          for (const p of peers) {
+            const project = p.metadata?.project || ""
+            rows.push([p.peer_id || "", p.display_name || p.name || "", project, p.circle || "", p.status || "", p.path || ""].join("\t"))
+          }
+          return rows.join("\n")
         },
       }),
       ask_peer: tool({
@@ -417,13 +424,16 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         description: "Get information about this peer in the mesh",
         args: {},
         async execute() {
-          return JSON.stringify({
-            name: peerName,
-            peer_id: peerId || "(not yet registered)",
-            path: projectPath,
-            activeSession: activeSessionId,
-            daemonUrl: DAEMON_URL,
-          }, null, 2)
+          const identifier = peerId || peerName
+          try {
+            const result = await daemon(`/peers/${encodeURIComponent(identifier)}`)
+            const project = result.metadata?.project || ""
+            const header = "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine"
+            const row = [result.peer_id || "", result.display_name || result.name || "", project, result.circle || "", result.status || "", result.path || "", result.machine || ""].join("\t")
+            return `${header}\n${row}`
+          } catch {
+            return `peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\n${peerId || ""}\t${peerName}\t\t\tnot registered\t\t`
+          }
         },
       }),
       set_circle: tool({
@@ -447,6 +457,14 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         const info = typedEvent.properties?.info as SessionEventInfo | undefined
         if (info?.id) {
           activeSessionId = info.id
+          if (!stableNameSet) {
+            stableNameSet = true
+            const stableName = sanitizePeerName(info.id.startsWith("ses") ? info.id.slice(3, 11) : info.id.slice(0, 8))
+            if (stableName !== peerName) {
+              peerName = stableName
+              ws?.close()
+            }
+          }
         }
       } else if (typedEvent.type === "message.updated") {
         const info = typedEvent.properties?.info as MessageEventInfo | undefined

@@ -257,3 +257,48 @@ class TestSameNameDifferentCircles:
 
         with pytest.raises(ValueError, match="Circle boundary"):
             await pm.query("sender", "myproject", "hello", circle="teamB")
+
+
+# ---------------------------------------------------------------------------
+# from_peer circle-preferred lookup (Fix 3 regression)
+# ---------------------------------------------------------------------------
+
+
+class TestFromPeerCircleLookup:
+    """Regression tests: from_peer is resolved preferring target's circle first."""
+
+    @staticmethod
+    async def _register(pm: PeerManager, session_id: str, name: str, circle: str) -> None:
+        peer = Peer(
+            peer_id=session_id,
+            display_name=name,
+            path=f"/{name}",
+            machine="localhost",
+            circle=circle,
+        )
+        await pm.register_peer(peer)
+
+    async def test_same_name_sender_in_same_circle_no_false_boundary(
+        self, mock_message_router, mock_session_mapper
+    ):
+        """sender and target share display_name pattern; sender in same circle — no error."""
+        pm = PeerManager(Config(), mock_message_router, mock_session_mapper)
+        # Two senders with same display_name in different circles
+        await self._register(pm, "sid-sender-a", "orchestrator", "teamA")
+        await self._register(pm, "sid-sender-b", "orchestrator", "teamB")
+        await self._register(pm, "sid-target", "worker", "teamA")
+
+        # from_peer="orchestrator" should resolve to teamA (target's circle), not teamB
+        result = await pm.query("orchestrator", "worker", "hello")
+        assert result == "mock response"
+
+    async def test_sender_circle_mismatch_still_blocked(
+        self, mock_message_router, mock_session_mapper
+    ):
+        """If the only matching sender is in a different circle, boundary is enforced."""
+        pm = PeerManager(Config(), mock_message_router, mock_session_mapper)
+        await self._register(pm, "sid-sender", "orchestrator", "teamB")
+        await self._register(pm, "sid-target", "worker", "teamA")
+
+        with pytest.raises(ValueError, match="Circle boundary"):
+            await pm.query("orchestrator", "worker", "hello")
