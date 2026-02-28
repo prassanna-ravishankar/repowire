@@ -164,10 +164,10 @@ def create_mcp_server() -> FastMCP:
                 result.get("machine") or "",
             ])
             return f"{header}\n{row}"
-        except Exception:
+        except Exception as e:
             return (
                 "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\n"
-                f"\t{identifier}\t\t\tnot registered\t\t"
+                f"\t{identifier}\t\t\tERROR: {e}\t\t"
             )
 
     @mcp.tool()

@@ -148,7 +148,7 @@ Agent type is auto-detected during `repowire setup` based on installed CLIs.
 
 Claude Code doesn't have an API. Repowire uses **hooks** for lifecycle management and a **persistent WebSocket process** for message delivery:
 
-- **SessionStart** → Generates a stable unique peer name (via `unique-namer`, keyed by Claude's `session_id` — same name across resumes, new name for fresh invocations). Spawns a `websocket_hook.py` background process that maintains a WebSocket connection to the daemon. Outputs peer list as context for Claude.
+- **SessionStart** → Generates a stable unique peer name from the first 8 characters of Claude's `session_id` (same name across resumes, new name for fresh invocations). Spawns a `websocket_hook.py` background process that maintains a WebSocket connection to the daemon. Outputs peer list as context for Claude.
 - **UserPromptSubmit** → Marks peer as BUSY
 - **Stop** → Extracts response from transcript, writes to file. The WebSocket hook picks it up and forwards via WebSocket.
 - **SessionEnd** → No-op (fires spuriously during agentic loops; the WebSocket hook self-terminates via pane liveness checking ~30s after agent exits)

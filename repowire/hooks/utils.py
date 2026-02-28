@@ -14,8 +14,9 @@ HOOKS_CACHE_DIR = Path.home() / ".cache" / "repowire" / "hooks"
 
 
 def get_pane_file(pane_id: str | None) -> str:
-    """Normalize pane_id for use in cache filenames (strips leading %)."""
-    return (pane_id or "unknown").replace("%", "")
+    """Normalize pane_id for use in cache filenames (strips % and path separators)."""
+    sanitized = (pane_id or "unknown").replace("%", "").replace("/", "").replace("\\", "")
+    return sanitized or "unknown"
 
 
 def get_uname_path(pane_id: str) -> Path:

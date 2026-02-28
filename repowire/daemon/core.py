@@ -217,7 +217,7 @@ class PeerManager:
             return
 
         if not from_obj or not to_obj:
-            return  # Unknown peer = no enforcement (CLI callers, etc.)
+            return  # Unknown peer = no enforcement (CLI callers, bypass already handled)
 
         if from_obj.circle != to_obj.circle:
             raise ValueError(
