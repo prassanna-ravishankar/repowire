@@ -196,6 +196,7 @@ repowire opencode status          # Check plugin installation
 
 # Service management
 repowire service install          # Install daemon as system service
+repowire service restart          # Restart daemon service
 repowire service uninstall        # Remove system service
 repowire service status           # Check service status
 

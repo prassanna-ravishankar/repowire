@@ -910,6 +910,19 @@ def service_uninstall() -> None:
         console.print(f"[yellow]{message}[/]")
 
 
+@service.command(name="restart")
+def service_restart() -> None:
+    """Restart repowire daemon system service."""
+    from repowire.service.installer import restart_service
+
+    success, message = restart_service()
+
+    if success:
+        console.print(f"[green]{message}[/]")
+    else:
+        console.print(f"[yellow]{message}[/]")
+
+
 @service.command(name="status")
 def service_status() -> None:
     """Check if repowire daemon service is installed and running."""

@@ -151,6 +151,33 @@ def _uninstall_macos_service() -> tuple[bool, str]:
     return True, "Service stopped and removed"
 
 
+def _restart_macos_service() -> tuple[bool, str]:
+    """Restart launchd service on macOS."""
+    plist_path = _get_launchd_plist_path()
+
+    if not plist_path.exists():
+        return False, "Service is not installed"
+
+    # Unload first (may fail if service isn't currently running).
+    subprocess.run(
+        ["launchctl", "unload", str(plist_path)],
+        capture_output=True,
+        text=True,
+    )
+
+    # Load again to ensure a fresh daemon process is running.
+    result = subprocess.run(
+        ["launchctl", "load", str(plist_path)],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        return False, f"Failed to restart service: {result.stderr}"
+
+    return True, "Service restarted"
+
+
 def _get_macos_service_status() -> dict:
     """Get launchd service status on macOS."""
     plist_path = _get_launchd_plist_path()
@@ -281,6 +308,25 @@ def _uninstall_linux_service() -> tuple[bool, str]:
     return True, "Service stopped and removed"
 
 
+def _restart_linux_service() -> tuple[bool, str]:
+    """Restart systemd user service on Linux."""
+    service_path = _get_systemd_service_path()
+
+    if not service_path.exists():
+        return False, "Service is not installed"
+
+    result = subprocess.run(
+        ["systemctl", "--user", "restart", LINUX_SERVICE_NAME],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        return False, f"Failed to restart service: {result.stderr}"
+
+    return True, "Service restarted"
+
+
 def _get_linux_service_status() -> dict:
     """Get systemd user service status on Linux."""
     service_path = _get_systemd_service_path()
@@ -352,6 +398,22 @@ def uninstall_service() -> tuple[bool, str]:
         return _uninstall_macos_service()
     elif platform == "linux":
         return _uninstall_linux_service()
+    else:
+        return False, f"Unsupported platform: {sys.platform}"
+
+
+def restart_service() -> tuple[bool, str]:
+    """Restart repowire daemon system service.
+
+    Returns:
+        Tuple of (success, message)
+    """
+    platform = get_platform()
+
+    if platform == "macos":
+        return _restart_macos_service()
+    elif platform == "linux":
+        return _restart_linux_service()
     else:
         return False, f"Unsupported platform: {sys.platform}"
 
