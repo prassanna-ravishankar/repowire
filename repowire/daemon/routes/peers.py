@@ -113,6 +113,7 @@ async def list_peers(
 ) -> PeersResponse:
     """Get list of all registered peers."""
     peer_manager = get_peer_manager()
+    await peer_manager.evict_stale_peers()
     peers = await peer_manager.get_all_peers()
     return PeersResponse(peers=[_peer_to_info(p) for p in peers])
 

@@ -347,6 +347,7 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 8. **TSV MCP output** - `list_peers` and `whoami` return TSV (more token-efficient than JSON for agents)
 9. **Ghost eviction** - `register_peer` evicts OFFLINE peers with same (display_name, backend) regardless of circle, cleaning up stale registrations from dead ws-hooks
 10. **Circle-preferred `from_peer` lookup** - `from_peer` is resolved preferring the target peer's circle first, preventing false circle boundary errors when sender name appears in multiple circles
+11. **ZFC (Zero-Footprint Compliance)** - Peer liveness is derived lazily from tmux at call time. `evict_stale_peers()` calls `tmux list-panes -a` once (O(1) subprocess, all peers), marks stale peers OFFLINE before query/notify/list operations. No background poll in ws-hook. Peers store `tmux_pane_id` (e.g. `%12`) for precise pane matching. BUSY state still tracked explicitly via hooks (no tmux equivalent).
 
 ## Testing
 

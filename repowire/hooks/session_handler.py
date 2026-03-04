@@ -226,8 +226,8 @@ def main() -> int:
     elif event == "SessionEnd":
         # Don't mark peer offline here - SessionEnd fires frequently during
         # agentic loops and tool use cycles, not just at true session end.
-        # The websocket_hook's pane liveness checker will detect true exit
-        # and terminate, which triggers WebSocket disconnect → daemon marks offline.
+        # The daemon lazily evicts via evict_stale_peers() at query/list time,
+        # and WebSocket disconnect marks the peer offline on true exit.
         #
         # This prevents spurious OFFLINE status when Claude is still running.
         pass

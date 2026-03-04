@@ -11,8 +11,6 @@ import os
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 try:
@@ -27,7 +25,6 @@ from repowire.hooks.utils import (
     HOOKS_CACHE_DIR,
     get_display_name,
     get_pane_file,
-    get_session_id_from_pane,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -255,45 +252,6 @@ async def watch_responses(
         await asyncio.sleep(0.1)  # Poll every 100ms
 
 
-def _mark_peer_offline_http(identifier: str, daemon_url: str) -> None:
-    """Best-effort HTTP call to mark peer offline before process exits.
-
-    Called by check_pane_alive so the daemon marks the peer offline even if
-    the WebSocket is in a reconnect backoff loop (no active connection to drop).
-
-    identifier: session_id (preferred) or display_name (fallback)
-    """
-    try:
-        req = urllib.request.Request(
-            f"{daemon_url}/peers/{identifier}/offline",
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=2.0)
-    except Exception:
-        pass  # Best-effort; daemon may be down
-
-
-async def check_pane_alive(pane_id: str, display_name: str, daemon_url: str) -> None:
-    """Periodically check if the tmux pane still has an agent running.
-
-    Exits the process when the pane is gone or running a bare shell,
-    so the ws-hook doesn't outlive its Claude session.
-    """
-    consecutive_dead = 0
-    while True:
-        await asyncio.sleep(10)
-        if not _is_pane_safe(pane_id):
-            consecutive_dead += 1
-            if consecutive_dead >= 3:  # 30s of no agent
-                logger.info(f"Pane {pane_id} no longer has an agent, exiting")
-                # Prefer session_id for unambiguous peer lookup
-                identifier = get_session_id_from_pane(pane_id) or display_name
-                _mark_peer_offline_http(identifier, daemon_url)
-                os._exit(0)
-        else:
-            consecutive_dead = 0
-
-
 async def send_heartbeat(websocket, pane_id: str, interval: int = 30) -> None:
     """Send periodic heartbeat status messages to keep daemon in sync.
 
@@ -334,9 +292,6 @@ async def main() -> int:
 
     logger.info(f"Starting WebSocket hook for {display_name}@{circle} (pane={pane_id})")
 
-    # Start pane liveness checker (self-terminate when agent exits)
-    asyncio.create_task(check_pane_alive(pane_id, display_name, daemon_url))
-
     # Retry connection loop with exponential backoff
     max_attempts = 50
     attempt = 0
@@ -353,6 +308,7 @@ async def main() -> int:
                     "circle": circle,
                     "backend": AgentType.CLAUDE_CODE,
                     "path": path,
+                    "tmux_pane_id": pane_id,
                 }
                 auth_token = os.environ.get("REPOWIRE_AUTH_TOKEN")
                 if auth_token:

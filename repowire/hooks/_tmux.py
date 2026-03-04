@@ -56,3 +56,21 @@ def get_tmux_info() -> TmuxInfo:
         pass
 
     return {"pane_id": pane_id, "session_name": session_name, "window_name": window_name}
+
+
+def get_active_panes() -> set[str]:
+    """Return the set of active tmux pane IDs across all sessions (e.g. {'%12', '%7'}).
+
+    One subprocess call covers all panes. Returns empty set if tmux is unavailable.
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return set()
+        return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return set()

@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, Config
+from repowire.hooks._tmux import get_active_panes
 from repowire.protocol.peers import Peer, PeerStatus
 
 if TYPE_CHECKING:
@@ -54,6 +56,8 @@ class PeerManager:
 
         self._lock = asyncio.Lock()
         self._events: deque[dict[str, Any]] = deque(maxlen=100)
+        self._last_eviction: float = 0.0
+        self._eviction_ttl: float = 2.0
 
     def add_event(self, event_type: str, data: dict[str, Any]) -> str:
         """Add an event to the history. Returns event ID."""
@@ -438,6 +442,35 @@ class PeerManager:
                 del self._peers[old_sid]
             peer.display_name = new_name
             return True
+
+    async def evict_stale_peers(self) -> int:
+        """Batch-check tmux panes, mark ONLINE peers with dead panes as OFFLINE.
+
+        Called lazily at query/notify/list time. Debounced to at most once per
+        `_eviction_ttl` seconds. Returns number evicted.
+        """
+        now = time.monotonic()
+        async with self._lock:
+            if now - self._last_eviction < self._eviction_ttl:
+                return 0
+            self._last_eviction = now
+
+        active = await asyncio.get_running_loop().run_in_executor(None, get_active_panes)
+        if not active:
+            return 0  # tmux unavailable or no panes
+
+        evicted = 0
+        async with self._lock:
+            for peer in self._peers.values():
+                if (
+                    peer.status != PeerStatus.OFFLINE
+                    and peer.tmux_pane_id
+                    and peer.tmux_pane_id not in active
+                ):
+                    peer.status = PeerStatus.OFFLINE
+                    evicted += 1
+                    logger.info(f"ZFC evicted stale peer: {peer.display_name} ({peer.tmux_pane_id})")
+        return evicted
 
     async def mark_offline(self, identifier: str) -> int:
         """Mark peer offline and cancel pending queries.

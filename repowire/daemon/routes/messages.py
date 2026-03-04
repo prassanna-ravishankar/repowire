@@ -90,6 +90,8 @@ async def query_peer(
     """Send a query to a peer and wait for response."""
     peer_manager = get_peer_manager()
 
+    await peer_manager.evict_stale_peers()
+
     # Check peer state before attempting query
     peer = await peer_manager.get_peer(request.to_peer, circle=request.circle)
     if peer:
@@ -134,6 +136,8 @@ async def notify_peer(
 ) -> OkResponse:
     """Send a notification to a peer (fire-and-forget)."""
     peer_manager = get_peer_manager()
+
+    await peer_manager.evict_stale_peers()
 
     try:
         await peer_manager.notify(
