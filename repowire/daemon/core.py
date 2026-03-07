@@ -432,7 +432,11 @@ class PeerManager:
                 return False
             to_evict = []
             for old_sid, old_peer in self._peers.items():
-                if old_peer.display_name != new_name or old_peer.backend != peer.backend or old_sid == session_id:
+                if (
+                    old_peer.display_name != new_name
+                    or old_peer.backend != peer.backend
+                    or old_sid == session_id
+                ):
                     continue
                 if old_peer.status == PeerStatus.OFFLINE:
                     to_evict.append(old_sid)
@@ -469,7 +473,9 @@ class PeerManager:
                 ):
                     peer.status = PeerStatus.OFFLINE
                     evicted += 1
-                    logger.info(f"ZFC evicted stale peer: {peer.display_name} ({peer.tmux_pane_id})")
+                    logger.info(
+                        f"ZFC evicted stale peer: {peer.display_name} ({peer.tmux_pane_id})"
+                    )
         return evicted
 
     async def mark_offline(self, identifier: str) -> int:

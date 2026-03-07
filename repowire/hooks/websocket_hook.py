@@ -287,7 +287,6 @@ async def main() -> int:
     # Get daemon URL from environment or use default
     daemon_host = os.environ.get("REPOWIRE_DAEMON_HOST", "127.0.0.1")
     daemon_port = os.environ.get("REPOWIRE_DAEMON_PORT", "8377")
-    daemon_url = f"http://{daemon_host}:{daemon_port}"
     uri = f"ws://{daemon_host}:{daemon_port}/ws"
 
     logger.info(f"Starting WebSocket hook for {display_name}@{circle} (pane={pane_id})")

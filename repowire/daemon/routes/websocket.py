@@ -251,7 +251,9 @@ async def _handle_message(
                 session_mapper.update_display_name(session_id, new_name)
                 logger.info(f"display_name updated for {session_id}: {new_name}")
             else:
-                logger.warning(f"update_display_name from {session_id} rejected: {new_name!r} conflicts with an online peer")
+                logger.warning(
+                    f"update_display_name from {session_id} rejected: {new_name!r} conflicts"
+                )
         else:
             logger.warning(f"update_display_name from {session_id} invalid name: {new_name!r}")
 
