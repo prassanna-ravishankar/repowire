@@ -58,19 +58,31 @@ def get_tmux_info() -> TmuxInfo:
     return {"pane_id": pane_id, "session_name": session_name, "window_name": window_name}
 
 
-def get_active_panes() -> set[str]:
-    """Return the set of active tmux pane IDs across all sessions (e.g. {'%12', '%7'}).
+SHELL_COMMANDS = frozenset({
+    "bash", "zsh", "sh", "fish", "tcsh", "csh", "dash", "login",
+})
 
-    One subprocess call covers all panes. Returns empty set if tmux is unavailable.
+
+def get_active_panes() -> dict[str, str]:
+    """Return map of tmux pane ID → current command for all panes.
+
+    One subprocess call covers all panes. Returns empty dict if tmux
+    is unavailable. The command value can be checked against
+    SHELL_COMMANDS to detect panes where the agent has exited.
     """
     try:
         result = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}"],
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
-            return set()
-        return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+            return {}
+        panes: dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            parts = line.strip().split("\t", 1)
+            if len(parts) == 2:
+                panes[parts[0]] = parts[1].lower()
+        return panes
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return set()
+        return {}

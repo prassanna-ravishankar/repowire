@@ -21,6 +21,7 @@ except ImportError as e:
     sys.exit(1)
 
 from repowire.config.models import AgentType
+from repowire.hooks._tmux import SHELL_COMMANDS
 from repowire.hooks.utils import (
     HOOKS_CACHE_DIR,
     get_display_name,
@@ -92,7 +93,6 @@ def _is_pane_safe(pane_id: str) -> bool:
     because agent CLIs may report version strings (e.g. "2.1.45") as
     pane_current_command instead of their binary name.
     """
-    shell_commands = {"bash", "zsh", "sh", "fish", "tcsh", "csh", "dash", "login"}
     try:
         result = subprocess.run(
             ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_current_command}"],
@@ -104,7 +104,7 @@ def _is_pane_safe(pane_id: str) -> bool:
         cmd = result.stdout.strip().lower()
         if not cmd:
             return False  # pane doesn't exist; tmux exits 0 with empty stdout
-        return cmd not in shell_commands
+        return cmd not in SHELL_COMMANDS
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
 

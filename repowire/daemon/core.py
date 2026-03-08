@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, Config
-from repowire.hooks._tmux import get_active_panes
+from repowire.hooks._tmux import SHELL_COMMANDS, get_active_panes
 from repowire.protocol.peers import Peer, PeerStatus
 
 if TYPE_CHECKING:
@@ -448,10 +448,11 @@ class PeerManager:
             return True
 
     async def evict_stale_peers(self) -> int:
-        """Batch-check tmux panes, mark ONLINE peers with dead panes as OFFLINE.
+        """Batch-check tmux panes, mark stale peers as OFFLINE.
 
-        Called lazily at query/notify/list time. Debounced to at most once per
-        `_eviction_ttl` seconds. Returns number evicted.
+        A peer is stale if its tmux pane is gone OR running a bare shell
+        (agent exited). Called lazily at query/notify/list time, debounced
+        to at most once per `_eviction_ttl` seconds.
         """
         now = time.monotonic()
         async with self._lock:
@@ -459,18 +460,18 @@ class PeerManager:
                 return 0
             self._last_eviction = now
 
-        active = await asyncio.get_running_loop().run_in_executor(None, get_active_panes)
-        if not active:
+        panes = await asyncio.get_running_loop().run_in_executor(None, get_active_panes)
+        if not panes:
             return 0  # tmux unavailable or no panes
 
         evicted = 0
         async with self._lock:
             for peer in self._peers.values():
-                if (
-                    peer.status != PeerStatus.OFFLINE
-                    and peer.tmux_pane_id
-                    and peer.tmux_pane_id not in active
-                ):
+                if peer.status == PeerStatus.OFFLINE or not peer.tmux_pane_id:
+                    continue
+                cmd = panes.get(peer.tmux_pane_id)
+                # Pane gone, or agent exited to shell
+                if cmd is None or cmd in SHELL_COMMANDS:
                     peer.status = PeerStatus.OFFLINE
                     evicted += 1
                     logger.info(
