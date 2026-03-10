@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
 
-from repowire.hooks.utils import get_session_id, update_status
+from repowire.hooks._tmux import get_pane_id
+from repowire.hooks.utils import update_status
 
 
 def main() -> int:
@@ -30,18 +30,13 @@ def main() -> int:
     if notification_type != "idle_prompt":
         return 0
 
-    # Claude is idle - mark peer as online
-    cwd = input_data.get("cwd")
-    if not cwd:
-        return 0
-
-    peer_identifier = get_session_id() or Path(cwd).name
-
-    if not update_status(peer_identifier, "online"):
-        print(
-            f"repowire notification: failed to update status for {peer_identifier}",
-            file=sys.stderr,
-        )
+    pane_id = get_pane_id()
+    if pane_id:
+        if not update_status(pane_id, "online", use_pane_id=True):
+            print(
+                f"repowire notification: failed to update status for pane {pane_id}",
+                file=sys.stderr,
+            )
 
     return 0
 

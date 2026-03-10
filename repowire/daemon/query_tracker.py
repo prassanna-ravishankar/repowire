@@ -160,6 +160,37 @@ class QueryTracker:
         logger.debug(f"Resolved query {correlation_id}")
         return True
 
+    def resolve_oldest_query(self, peer_id: str, text: str) -> bool:
+        """Resolve the oldest pending query for a peer.
+
+        Used by the HTTP response endpoint when stop hook POSTs a response
+        and there's no correlation_id available (pane-based routing).
+
+        Args:
+            peer_id: The peer_id of the peer that responded
+            text: The response text
+
+        Returns:
+            True if a query was resolved, False if no pending queries
+        """
+        correlation_ids = self._by_peer_id.get(peer_id, set())
+        if not correlation_ids:
+            return False
+
+        # Find oldest by created_at
+        oldest_cid = None
+        oldest_time = None
+        for cid in correlation_ids:
+            query = self._queries.get(cid)
+            if query and not query.future.done():
+                if oldest_time is None or query.created_at < oldest_time:
+                    oldest_time = query.created_at
+                    oldest_cid = cid
+
+        if oldest_cid:
+            return self.resolve_query(oldest_cid, text)
+        return False
+
     def resolve_query_error(self, correlation_id: str, error: Exception) -> bool:
         """Resolve a pending query with an error.
 
@@ -206,27 +237,6 @@ class QueryTracker:
             self._cleanup_query(cid, query)
 
         logger.info(f"Cancelled {cancelled} queries to peer {peer_id}")
-        return cancelled
-
-    def cancel_queries_to_peer_by_name(self, peer_name: str) -> int:
-        """Cancel all pending queries to a peer by display name.
-
-        Provided for backward compatibility with code that uses display_name.
-
-        Args:
-            peer_name: The display name of the peer
-
-        Returns:
-            Number of queries cancelled
-        """
-        cancelled = 0
-        for cid, query in list(self._queries.items()):
-            if query.to_peer_name == peer_name and not query.future.done():
-                query.future.set_exception(PeerDisconnectedError(peer_name))
-                self._cleanup_query(cid, query)
-                cancelled += 1
-
-        logger.info(f"Cancelled {cancelled} queries to peer {peer_name}")
         return cancelled
 
     def cleanup_query(self, correlation_id: str) -> None:

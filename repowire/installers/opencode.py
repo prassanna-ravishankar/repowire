@@ -103,6 +103,10 @@ function connectWebSocket() {
       connectMsg.tmux_session = tmuxSession
     }
 
+    if (tmuxPane) {
+      connectMsg.pane_id = tmuxPane
+    }
+
     if (AUTH_TOKEN) {
       connectMsg.auth_token = AUTH_TOKEN
     }
@@ -186,6 +190,11 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
     const fromPeer = data.from_peer as string
     const text = data.text as string
     await handleIncomingQuery(correlationId, fromPeer, text)
+  } else if (msgType === "ping") {
+    // Respond to daemon liveness check
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "pong", pane_alive: true }))
+    }
   } else if (msgType === "notify" || msgType === "broadcast") {
     const text = data.text as string
     // Try to resolve session (like we do for queries)

@@ -37,6 +37,7 @@ class WebSocketTransport:
     def __init__(self) -> None:
         self._connections: dict[str, ConnectionInfo] = {}
         self._lock = asyncio.Lock()
+        self._pong_futures: dict[str, asyncio.Future[dict]] = {}
 
     async def connect(self, session_id: str, websocket: WebSocket) -> None:
         """Register WebSocket connection.
@@ -107,10 +108,36 @@ class WebSocketTransport:
         """Get all connected session IDs."""
         return list(self._connections.keys())
 
-    def get_connection_info(self, session_id: str) -> ConnectionInfo | None:
-        """Get connection info for session."""
-        return self._connections.get(session_id)
+    async def ping(self, session_id: str, timeout: float = 5.0) -> dict:
+        """Send a ping to a peer and wait for pong.
 
-    def get_all_connections(self) -> list[ConnectionInfo]:
-        """Get all connection info."""
-        return list(self._connections.values())
+        Args:
+            session_id: Target session
+            timeout: Max seconds to wait for pong
+
+        Returns:
+            Pong data dict from the peer
+
+        Raises:
+            TimeoutError: If no pong received within timeout
+            TransportError: If send fails
+        """
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict] = loop.create_future()
+        self._pong_futures[session_id] = future
+        try:
+            await self.send(session_id, {"type": "ping"})
+            return await asyncio.wait_for(future, timeout=timeout)
+        finally:
+            self._pong_futures.pop(session_id, None)
+
+    def resolve_pong(self, session_id: str, data: dict) -> None:
+        """Resolve a pending ping future with pong data.
+
+        Args:
+            session_id: Session that sent the pong
+            data: Pong message data
+        """
+        future = self._pong_futures.pop(session_id, None)
+        if future and not future.done():
+            future.set_result(data)

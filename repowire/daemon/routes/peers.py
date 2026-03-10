@@ -113,8 +113,25 @@ async def list_peers(
 ) -> PeersResponse:
     """Get list of all registered peers."""
     peer_manager = get_peer_manager()
+    await peer_manager.lazy_repair()
     peers = await peer_manager.get_all_peers()
     return PeersResponse(peers=[_peer_to_info(p) for p in peers])
+
+
+@router.get("/peers/by-pane/{pane_id}", response_model=PeerInfo)
+async def get_peer_by_pane(
+    pane_id: str,
+    _: str | None = Depends(require_auth),
+) -> PeerInfo:
+    """Get peer by tmux pane ID."""
+    peer_manager = get_peer_manager()
+    peer = await peer_manager.get_peer_by_pane(pane_id)
+    if peer:
+        return _peer_to_info(peer)
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"No peer for pane: {pane_id}",
+    )
 
 
 @router.get("/peers/{identifier}", response_model=PeerInfo)

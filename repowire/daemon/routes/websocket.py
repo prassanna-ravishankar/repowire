@@ -89,6 +89,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         backend_str = data.get("backend", "claude-code")
         path = data.get("path")
         tmux_session = data.get("tmux_session")
+        pane_id = data.get("pane_id")
 
         # Validate display_name
         if not display_name or not re.match(r"^[a-zA-Z0-9._-]+$", display_name):
@@ -141,6 +142,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             circle=circle,
             status=PeerStatus.ONLINE,
             tmux_session=tmux_session,
+            pane_id=pane_id,
             metadata={},
         )
         await peer_manager.register_peer(peer)
@@ -249,9 +251,16 @@ async def _handle_message(
                 session_mapper.update_display_name(session_id, new_name)
                 logger.info(f"display_name updated for {session_id}: {new_name}")
             else:
-                logger.warning(f"update_display_name from {session_id} rejected: {new_name!r} conflicts with an online peer")
+                logger.warning(
+                    f"update_display_name from {session_id} rejected:"
+                    f" {new_name!r} conflicts with an online peer"
+                )
         else:
             logger.warning(f"update_display_name from {session_id} invalid name: {new_name!r}")
+
+    elif msg_type == "pong":
+        state = get_app_state()
+        state.transport.resolve_pong(session_id, data)
 
     elif msg_type == "error":
         correlation_id = data.get("correlation_id")

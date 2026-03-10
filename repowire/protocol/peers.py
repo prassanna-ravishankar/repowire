@@ -40,6 +40,7 @@ class Peer(BaseModel):
 
     # tmux session:window for targeting
     tmux_session: str | None = Field(None, description="Tmux session:window (e.g., 'dev:frontend')")
+    pane_id: str | None = Field(None, description="Tmux pane ID")
 
     # Agent type
     backend: AgentType = Field(

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
     from repowire.daemon.message_router import MessageRouter
     from repowire.daemon.query_tracker import QueryTracker
     from repowire.daemon.session_mapper import SessionMapper
+    from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,7 @@ class PeerManager:
         message_router: MessageRouter,
         session_mapper: SessionMapper,
         query_tracker: QueryTracker | None = None,
+        transport: WebSocketTransport | None = None,
     ) -> None:
         """Initialize PeerManager.
 
@@ -43,17 +46,21 @@ class PeerManager:
             message_router: Message router for sending queries/notifications
             session_mapper: Session mapper for stable peer IDs
             query_tracker: Query tracker for cancelling pending queries
+            transport: WebSocket transport for ping/pong liveness checks
         """
         self._config = config
         self._router = message_router
         self._session_mapper = session_mapper
         self._query_tracker = query_tracker
+        self._transport = transport
 
         # Peer registry: session_id -> Peer (single source of truth)
         self._peers: dict[str, Peer] = {}
 
         self._lock = asyncio.Lock()
         self._events: deque[dict[str, Any]] = deque(maxlen=100)
+        self._last_repair: float = 0.0
+        self._repair_lock = asyncio.Lock()
 
     def add_event(self, event_type: str, data: dict[str, Any]) -> str:
         """Add an event to the history. Returns event ID."""
@@ -176,6 +183,14 @@ class PeerManager:
         """
         async with self._lock:
             return self._lookup_peer_unlocked(identifier, circle=circle)
+
+    async def get_peer_by_pane(self, pane_id: str) -> Peer | None:
+        """Lookup peer by tmux pane_id."""
+        async with self._lock:
+            for peer in self._peers.values():
+                if peer.pane_id == pane_id:
+                    return peer
+            return None
 
     async def get_all_peers(self) -> list[Peer]:
         """Get all registered peers.
@@ -428,7 +443,11 @@ class PeerManager:
                 return False
             to_evict = []
             for old_sid, old_peer in self._peers.items():
-                if old_peer.display_name != new_name or old_peer.backend != peer.backend or old_sid == session_id:
+                if (
+                    old_peer.display_name != new_name
+                    or old_peer.backend != peer.backend
+                    or old_sid == session_id
+                ):
                     continue
                 if old_peer.status == PeerStatus.OFFLINE:
                     to_evict.append(old_sid)
@@ -462,3 +481,55 @@ class PeerManager:
 
         logger.info(f"Marked {identifier} offline, cancelled {cancelled} queries")
         return cancelled
+
+    async def lazy_repair(self) -> None:
+        """Debounced liveness sweep: ping ONLINE/BUSY peers, mark dead ones OFFLINE.
+
+        Max 1x per 30s. Triggered by MCP-facing endpoints.
+        """
+        now = time.monotonic()
+        if now - self._last_repair < 30.0:
+            return
+        if not self._repair_lock.locked():
+            async with self._repair_lock:
+                self._last_repair = time.monotonic()
+                await self._do_repair()
+
+    async def _do_repair(self) -> None:
+        """Actual repair logic. Must hold _repair_lock."""
+        if not self._transport:
+            return
+
+        async with self._lock:
+            targets = [
+                (p.peer_id, p.backend)
+                for p in self._peers.values()
+                if p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
+            ]
+
+        async def check_peer(peer_id: str, backend) -> str | None:
+            """Returns peer_id if dead, None if alive."""
+            from repowire.config.models import AgentType
+
+            if not self._transport.is_connected(peer_id):
+                return peer_id
+            # OpenCode peers: if WS connected, they're alive (skip ping)
+            if backend == AgentType.OPENCODE:
+                return None
+            try:
+                await self._transport.ping(peer_id, timeout=5.0)
+                return None
+            except Exception:
+                return peer_id
+
+        results = await asyncio.gather(
+            *(check_peer(pid, backend) for pid, backend in targets),
+            return_exceptions=True,
+        )
+
+        dead_peers = [r for r in results if isinstance(r, str)]
+        for peer_id in dead_peers:
+            logger.info(f"lazy_repair: marking {peer_id} OFFLINE (no pong)")
+            await self.update_peer_status(peer_id, PeerStatus.OFFLINE)
+            if self._query_tracker:
+                self._query_tracker.cancel_queries_to_peer(peer_id)

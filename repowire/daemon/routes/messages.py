@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.auth import require_auth, require_localhost
-from repowire.daemon.deps import get_peer_manager
+from repowire.daemon.deps import get_app_state, get_peer_manager
 from repowire.protocol.peers import PeerStatus
 
 router = APIRouter(tags=["messages"])
@@ -71,7 +71,8 @@ class BroadcastResponse(BaseModel):
 class SessionUpdateRequest(BaseModel):
     """Request to update session status."""
 
-    peer_name: str = Field(..., description="Peer name")
+    peer_name: str | None = Field(None, description="Peer name")
+    pane_id: str | None = Field(None, description="Tmux pane ID (alternative to peer_name)")
     status: str = Field(..., description="New status (online, busy, offline)")
     metadata: dict | None = Field(None, description="Optional metadata")
 
@@ -89,6 +90,7 @@ async def query_peer(
 ) -> QueryResponse:
     """Send a query to a peer and wait for response."""
     peer_manager = get_peer_manager()
+    await peer_manager.lazy_repair()
 
     # Check peer state before attempting query
     peer = await peer_manager.get_peer(request.to_peer, circle=request.circle)
@@ -134,6 +136,7 @@ async def notify_peer(
 ) -> OkResponse:
     """Send a notification to a peer (fire-and-forget)."""
     peer_manager = get_peer_manager()
+    await peer_manager.lazy_repair()
 
     try:
         await peer_manager.notify(
@@ -163,6 +166,7 @@ async def broadcast_message(
 ) -> BroadcastResponse:
     """Broadcast a message to all peers."""
     peer_manager = get_peer_manager()
+    await peer_manager.lazy_repair()
 
     sent_to = await peer_manager.broadcast(
         from_peer=request.from_peer,
@@ -190,7 +194,54 @@ async def update_session(
             detail=f"Invalid status: {request.status}. Must be one of: online, busy, offline",
         )
 
-    await peer_manager.update_peer_status(request.peer_name, peer_status)
+    # Resolve peer identifier
+    if request.peer_name:
+        identifier = request.peer_name
+    elif request.pane_id:
+        peer = await peer_manager.get_peer_by_pane(request.pane_id)
+        if not peer:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No peer for pane: {request.pane_id}",
+            )
+        identifier = peer.peer_id
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either peer_name or pane_id required",
+        )
+
+    await peer_manager.update_peer_status(identifier, peer_status)
+    return OkResponse()
+
+
+class ResponseDelivery(BaseModel):
+    """Response delivered by stop hook."""
+
+    pane_id: str = Field(..., description="Tmux pane ID of the responding peer")
+    text: str = Field(..., description="Response text")
+
+
+@router.post("/response", response_model=OkResponse)
+async def deliver_response(
+    request: ResponseDelivery,
+    _: str | None = Depends(require_auth),
+) -> OkResponse:
+    """Receive response from stop hook and resolve pending query."""
+    peer_manager = get_peer_manager()
+    peer = await peer_manager.get_peer_by_pane(request.pane_id)
+    if not peer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No peer for pane: {request.pane_id}",
+        )
+
+    state = get_app_state()
+    query_tracker = state.query_tracker
+    resolved = query_tracker.resolve_oldest_query(peer.peer_id, request.text)
+    if not resolved:
+        # No pending query — not an error, stop hook fires on every turn
+        pass
     return OkResponse()
 
 

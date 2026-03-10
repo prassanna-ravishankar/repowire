@@ -119,14 +119,20 @@ class TestExtractLastTurnPair:
             f.write(json.dumps({"type": "user", "message": {"content": "First question"}}) + "\n")
             f.write(
                 json.dumps(
-                    {"type": "assistant", "message": {"content": [{"type": "text", "text": "First answer"}]}}
+                    {
+                        "type": "assistant",
+                        "message": {"content": [{"type": "text", "text": "First answer"}]},
+                    }
                 )
                 + "\n"
             )
             f.write(json.dumps({"type": "user", "message": {"content": "Second question"}}) + "\n")
             f.write(
                 json.dumps(
-                    {"type": "assistant", "message": {"content": [{"type": "text", "text": "Second answer"}]}}
+                    {
+                        "type": "assistant",
+                        "message": {"content": [{"type": "text", "text": "Second answer"}]},
+                    }
                 )
                 + "\n"
             )
@@ -141,7 +147,10 @@ class TestExtractLastTurnPair:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
             f.write(
                 json.dumps(
-                    {"type": "assistant", "message": {"content": [{"type": "text", "text": "Response"}]}}
+                    {
+                        "type": "assistant",
+                        "message": {"content": [{"type": "text", "text": "Response"}]},
+                    }
                 )
                 + "\n"
             )

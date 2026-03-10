@@ -4,11 +4,10 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
-from pathlib import Path
 
-from repowire.hooks.utils import get_session_id, update_status
+from repowire.hooks._tmux import get_pane_id
+from repowire.hooks.utils import update_status
 
 
 def main() -> int:
@@ -22,14 +21,13 @@ def main() -> int:
     if input_data.get("hook_event_name") != "UserPromptSubmit":
         return 0
 
-    cwd = input_data.get("cwd", os.getcwd())
-    peer_identifier = get_session_id() or Path(cwd).name
-
-    if not update_status(peer_identifier, "busy"):
-        print(
-            f"repowire prompt: failed to update status for {peer_identifier}",
-            file=sys.stderr,
-        )
+    pane_id = get_pane_id()
+    if pane_id:
+        if not update_status(pane_id, "busy", use_pane_id=True):
+            print(
+                f"repowire prompt: failed to update status for pane {pane_id}",
+                file=sys.stderr,
+            )
 
     return 0
 

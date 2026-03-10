@@ -67,6 +67,7 @@ def create_app(
             message_router=message_router,
             session_mapper=session_mapper,
             query_tracker=query_tracker,
+            transport=transport,
         )
 
         # Store in app state for route handlers
@@ -211,6 +212,7 @@ def create_test_app(
             message_router=msg_router,
             session_mapper=sess_mapper,
             query_tracker=query_tracker,
+            transport=transport,
         )
 
         app.state.config = cfg
