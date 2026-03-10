@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from repowire.config.models import AgentType
+from repowire.config.models import CACHE_DIR, AgentType
 from repowire.hooks._tmux import get_tmux_info
 from repowire.hooks.utils import get_pane_file
 
@@ -142,7 +142,7 @@ def main() -> int:
         try:
             hook_script = Path(__file__).parent / "websocket_hook.py"
             if hook_script.exists():
-                log_dir = Path.home() / ".cache" / "repowire" / "logs"
+                log_dir = CACHE_DIR / "logs"
                 log_dir.mkdir(parents=True, exist_ok=True)
                 pane_file = get_pane_file(pane_id)
                 log_file = open(log_dir / f"ws-hook-{pane_file}.log", "w")  # noqa: SIM115

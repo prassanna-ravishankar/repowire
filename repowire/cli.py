@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.table import Table
 
 from repowire import __version__
-from repowire.config.models import DEFAULT_QUERY_TIMEOUT
+from repowire.config.models import CACHE_DIR, DEFAULT_QUERY_TIMEOUT
 
 console = Console()
 
@@ -286,10 +286,8 @@ def _cleanup_legacy_artifacts() -> None:
     """
     import shutil
 
-    cache_dir = Path.home() / ".cache" / "repowire"
-
     # Remove per-pane hook files (.pid, .sid, .name, .uname)
-    hooks_dir = cache_dir / "hooks"
+    hooks_dir = CACHE_DIR / "hooks"
     if hooks_dir.is_dir():
         count = sum(1 for f in hooks_dir.iterdir() if f.is_file())
         if count:
@@ -298,7 +296,7 @@ def _cleanup_legacy_artifacts() -> None:
 
     # Remove correlation and response directories
     for dirname in ("correlations", "responses"):
-        d = cache_dir / dirname
+        d = CACHE_DIR / dirname
         if d.is_dir():
             shutil.rmtree(d)
             console.print(f"[green]\u2713[/] Removed legacy {dirname}/ directory")
