@@ -58,6 +58,8 @@ def setup(no_service: bool) -> None:
     """One-time setup: install hooks/plugins, MCP server, and daemon service."""
     import shutil
 
+    _cleanup_legacy_artifacts()
+
     agents_setup: list[str] = []
 
     # Detect and set up Claude Code if claude CLI available
@@ -273,6 +275,33 @@ def status() -> None:
             console.print(f"[cyan]Peers:[/] {len(online)} online, {len(peers)} total")
     except Exception:
         pass
+
+
+def _cleanup_legacy_artifacts() -> None:
+    """Remove file artifacts from pre-lazy-repair versions.
+
+    Prior versions wrote .pid, .sid, .name, .uname files per tmux pane,
+    plus correlation/ and response/ directories. None of these are used
+    anymore — the daemon tracks all state in-memory via WebSocket.
+    """
+    import shutil
+
+    cache_dir = Path.home() / ".cache" / "repowire"
+
+    # Remove per-pane hook files (.pid, .sid, .name, .uname)
+    hooks_dir = cache_dir / "hooks"
+    if hooks_dir.is_dir():
+        count = sum(1 for f in hooks_dir.iterdir() if f.is_file())
+        if count:
+            shutil.rmtree(hooks_dir)
+            console.print(f"[green]\u2713[/] Cleaned {count} legacy hook files")
+
+    # Remove correlation and response directories
+    for dirname in ("correlations", "responses"):
+        d = cache_dir / dirname
+        if d.is_dir():
+            shutil.rmtree(d)
+            console.print(f"[green]\u2713[/] Removed legacy {dirname}/ directory")
 
 
 def _setup_claude_code() -> None:
