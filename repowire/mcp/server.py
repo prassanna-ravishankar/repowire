@@ -60,7 +60,7 @@ def create_mcp_server() -> FastMCP:
         """
         result = await daemon_request("GET", "/peers")
         peers = result.get("peers", [])
-        rows = ["peer_id\tname\tproject\tcircle\tstatus\tpath"]
+        rows = ["peer_id\tname\tproject\tcircle\tstatus\tpath\tdescription"]
         for p in peers:
             project = p.get("metadata", {}).get("project", "") or ""
             rows.append(
@@ -72,6 +72,7 @@ def create_mcp_server() -> FastMCP:
                         p.get("circle", ""),
                         p.get("status", ""),
                         p.get("path") or "",
+                        p.get("description") or "",
                     ]
                 )
             )
@@ -161,7 +162,7 @@ def create_mcp_server() -> FastMCP:
     def _format_peer_tsv(result: dict) -> str:
         """Format a peer result dict as a TSV row with header."""
         project = result.get("metadata", {}).get("project", "") or ""
-        header = "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine"
+        header = "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\tdescription"
         row = "\t".join(
             [
                 result.get("peer_id", ""),
@@ -171,6 +172,7 @@ def create_mcp_server() -> FastMCP:
                 result.get("status", ""),
                 result.get("path") or "",
                 result.get("machine") or "",
+                result.get("description") or "",
             ]
         )
         return f"{header}\n{row}"
@@ -194,9 +196,34 @@ def create_mcp_server() -> FastMCP:
             return _format_peer_tsv(result)
         except Exception as e:
             return (
-                "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\n"
-                f"\t{_my_peer_name}\t\t\tERROR: {e}\t\t"
+                "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\tdescription\n"
+                f"\t{_my_peer_name}\t\t\tERROR: {e}\t\t\t"
             )
+
+    @mcp.tool()
+    async def set_description(description: str) -> str:
+        """Update your task description, visible to other peers via list_peers.
+
+        Call this at the start of a task so peers know what you're working on.
+
+        Args:
+            description: Short description of your current task (e.g., "fixing auth bug")
+
+        Returns:
+            Confirmation message
+        """
+        pane_id = get_pane_id()
+        name = ""
+        if pane_id:
+            try:
+                result = await daemon_request("GET", f"/peers/by-pane/{pane_id}")
+                name = result.get("display_name") or result.get("name", "")
+            except Exception:
+                pass
+        if not name:
+            name = _my_peer_name
+        await daemon_request("POST", f"/peers/{name}/description", {"description": description})
+        return f"description updated: {description}"
 
     @mcp.tool()
     async def spawn_peer(path: str, command: str, circle: str = "default") -> str:

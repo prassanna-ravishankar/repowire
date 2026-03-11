@@ -377,10 +377,10 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         async execute() {
           const result = await daemon("/peers")
           const peers = result.peers || []
-          const rows = ["peer_id\tname\tproject\tcircle\tstatus\tpath"]
+          const rows = ["peer_id\tname\tproject\tcircle\tstatus\tpath\tdescription"]
           for (const p of peers) {
             const project = p.metadata?.project || ""
-            rows.push([p.peer_id || "", p.display_name || p.name || "", project, p.circle || "", p.status || "", p.path || ""].join("\\t"))
+            rows.push([p.peer_id || "", p.display_name || p.name || "", project, p.circle || "", p.status || "", p.path || "", p.description || ""].join("\\t"))
           }
           return rows.join("\\n")
         },
@@ -437,12 +437,22 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
           try {
             const result = await daemon(`/peers/${encodeURIComponent(identifier)}`)
             const project = result.metadata?.project || ""
-            const header = "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine"
-            const row = [result.peer_id || "", result.display_name || result.name || "", project, result.circle || "", result.status || "", result.path || "", result.machine || ""].join("\t")
+            const header = "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\tdescription"
+            const row = [result.peer_id || "", result.display_name || result.name || "", project, result.circle || "", result.status || "", result.path || "", result.machine || "", result.description || ""].join("\t")
             return `${header}\n${row}`
           } catch {
-            return `peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\n${peerId || ""}\t${peerName}\t\t\tnot registered\t\t`
+            return `peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\tdescription\n${peerId || ""}\t${peerName}\t\t\tnot registered\t\t\t`
           }
+        },
+      }),
+      set_description: tool({
+        description: "Update your task description, visible to other peers via list_peers. Call this at the start of a task.",
+        args: {
+          description: tool.schema.string().describe("Short description of your current task"),
+        },
+        async execute({ description }) {
+          await daemon(`/peers/${encodeURIComponent(peerName)}/description`, { description })
+          return `description updated: ${description}`
         },
       }),
       set_circle: tool({

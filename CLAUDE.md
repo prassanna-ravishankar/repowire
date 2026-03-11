@@ -128,10 +128,10 @@ Repowire is a mesh network enabling AI coding agents to communicate. All message
 
 ### Daemon Modules
 
-- `daemon/core.py` - PeerManager: peer registry, circle access control, event tracking
+- `daemon/core.py` - PeerManager: peer registry, circle access control, event tracking, lazy_repair liveness sweep
 - `daemon/message_router.py` - MessageRouter: routes queries/notifications/broadcasts via WebSocket
 - `daemon/query_tracker.py` - QueryTracker: correlation ID tracking, asyncio Futures for request/response
-- `daemon/websocket_transport.py` - WebSocketTransport: connection lifecycle, reconnection handling
+- `daemon/websocket_transport.py` - WebSocketTransport: connection lifecycle, ping/pong liveness
 - `daemon/session_mapper.py` - SessionMapper: stable peer IDs (`repow-{circle}-{uuid8}`), persists to `~/.repowire/sessions.json`
 - `daemon/auth.py` - Authentication middleware (optional token-based)
 - `daemon/deps.py` - FastAPI dependency injection
@@ -154,18 +154,35 @@ Repowire is a mesh network enabling AI coding agents to communicate. All message
 Hooks in `~/.claude/settings.json` auto-register peers and manage state:
 
 - **SessionStart** → `repowire hook session` → Registers peer, outputs `additionalContext` with peer list
-- **SessionEnd** → `repowire hook session` → Marks peer offline
+- **SessionEnd** → `repowire hook session` → No-op (fires spuriously between turns)
 - **UserPromptSubmit** → `repowire hook prompt` → Marks peer as BUSY
-- **Stop** → `repowire hook stop` → Extracts response from transcript, marks peer ONLINE
+- **Stop** → `repowire hook stop` → Extracts response from transcript, delivers to daemon via `POST /response`, marks peer ONLINE
 - **Notification** (idle_prompt) → `repowire hook notification` → Marks peer ONLINE after 60s idle (handles interrupt)
 
-**Peer State Machine:** `OFFLINE → ONLINE ↔ BUSY` (SessionStart→ONLINE, UserPromptSubmit→BUSY, Stop/Notification→ONLINE, ws-hook exit→OFFLINE)
+**Peer State Machine:** `OFFLINE → ONLINE ↔ BUSY` (SessionStart→ONLINE, UserPromptSubmit→BUSY, Stop/Notification→ONLINE, WS disconnect→OFFLINE)
 
 **WebSocket Hook Lifecycle:**
-- SessionStart spawns a `websocket_hook.py` background process (skips if one is already alive for the pane)
+- SessionStart spawns a `websocket_hook.py` background process (new WS connect replaces old connection atomically in daemon)
 - SessionEnd does nothing — fires spuriously between turns, so marking offline here would cancel valid in-flight queries
-- The ws-hook self-terminates via a pane liveness checker when the agent exits (~30s after pane goes idle)
-- On true exit: ws-hook calls `POST /peers/{name}/offline` (cancels pending queries) then `os._exit(0)` → WebSocket disconnect also marks peer OFFLINE in daemon
+- The ws-hook is fully reactive (no polling). Daemon sends `ping`, ws-hook replies `pong` with pane liveness. If pane is dead on ping, ws-hook exits via `os._exit(0)`
+- On exit: WebSocket disconnect triggers daemon to mark peer OFFLINE
+
+**Lazy Repair (Daemon-Driven Liveness):**
+- `PeerManager.lazy_repair()` runs max 1x per 30s, triggered by MCP-facing endpoints (`/query`, `/notify`, `/broadcast`, `/peers`)
+- Pings all ONLINE/BUSY peers via WebSocket. Dead peers (no pong within 5s) get marked OFFLINE
+- OpenCode peers skip ping — active WS connection is sufficient proof of liveness
+- Replaces the old ws-hook pane liveness checker with daemon-side control
+
+**Pane-Based Routing:**
+- Hooks use `pane_id` (from `$TMUX_PANE`) instead of file-based session_id lookup for status updates
+- `/session/update` accepts either `peer_name` or `pane_id`
+- `/peers/by-pane/{pane_id}` endpoint for MCP `whoami` and `_get_my_peer_name()`
+- Display name passed to ws-hook via `REPOWIRE_DISPLAY_NAME` env var (no file artifacts)
+
+**Zero File Artifacts:**
+- No per-pane files written (`.pid`, `.sid`, `.name`, `.uname` all removed)
+- No correlation or response directories — stop hook delivers responses via `POST /response`
+- `repowire setup` cleans up legacy artifacts from pre-0.4.3 installs
 
 **Tmux Text Injection Pattern (Gastown NudgeSession):**
 
@@ -187,17 +204,11 @@ subprocess.run(["tmux", "send-keys", "-t", pane_id, "Enter"])
 
 Each Claude session's `display_name` is the first 8 chars of Claude's `session_id` (e.g. `00893aaf`). The same session always gets the same name across resumes/clears/compacts. A fresh `claude` invocation (new `session_id`) gets a new name. The folder name is stored as `metadata.project` for human context.
 
-File artifacts written per-pane (in `~/.cache/repowire/hooks/`):
-- `{pane}.uname` — unique peer name (written by SessionStart, read by ws-hook and MCP)
-- `{pane}.sid` — repowire session_id written by ws-hook after daemon assigns it
-- `{pane}.pid` — ws-hook PID for liveness checks
-- `{pane}.name` — display_name for stale-hook detection
-
 Key files:
 - `installers/claude_code.py` - Installs/uninstalls hooks in `~/.claude/settings.json`
 - `hooks/session_handler.py` - Handles SessionStart and SessionEnd events
 - `hooks/prompt_handler.py` - Handles UserPromptSubmit (sets BUSY)
-- `hooks/stop_handler.py` - Captures response from transcript, forwards via file
+- `hooks/stop_handler.py` - Captures response from transcript, delivers via HTTP `POST /response`
 - `hooks/notification_handler.py` - Handles idle_prompt (resets BUSY→ONLINE after interrupt)
 - `hooks/websocket_hook.py` - Persistent WebSocket connection for query/response delivery
 
@@ -286,7 +297,7 @@ peers:
 
 ### Protocol (protocol/)
 
-Message types: `query`, `response`, `notify`, `broadcast`, `status`, `error`
+Message types: `query`, `response`, `notify`, `broadcast`, `status`, `error`, `ping`, `pong`
 
 WebSocket messages use: `type`, `correlation_id`, `from_peer`, `text`
 
@@ -327,21 +338,23 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 | `/peers` | POST | Register peer |
 | `/peers/{identifier}` | GET | Get peer by session_id or display_name (`?circle=` to disambiguate) |
 | `/peers/{name}` | DELETE | Unregister peer (`?circle=` to disambiguate) |
+| `/peers/by-pane/{pane_id}` | GET | Get peer by tmux pane ID |
 | `/peers/{name}/offline` | POST | Mark peer offline, cancel pending queries |
 | `/query` | POST | Send query, wait for response |
 | `/notify` | POST | Send notification (fire-and-forget) |
 | `/broadcast` | POST | Send to all peers |
-| `/session/update` | POST | Update peer session status |
+| `/session/update` | POST | Update peer session status (by `peer_name` or `pane_id`) |
+| `/response` | POST | Deliver response from stop hook (by `pane_id`) |
 | `/events` | GET | Get last 100 communication events |
 | `/events/stream` | GET | SSE stream of real-time events |
 
 ## Key Design Decisions
 
 1. **Unique peer names** - First 8 chars of Claude's `session_id` (e.g. `00893aaf`). Stable across session resumes; new invocation = new name. OpenCode uses 8 chars after `ses` prefix of `session.id`. Folder name stored as `metadata.project`.
-2. **Correlation IDs** - UUID-based request/response matching via pending files
+2. **Correlation IDs** - UUID-based request/response matching via asyncio Futures
 3. **In-memory peer registry** - Backed by SessionMapper persistence, no per-request config reload
 4. **Peer validation** - WebSocket connect validates display_name and circle format
-5. **File-based response handoff** - Stop hook writes response files; WebSocket hook forwards them
+5. **HTTP response delivery** - Stop hook POSTs response to daemon via `/response`; daemon resolves oldest pending query for that peer
 6. **Peer metadata** - Includes `project` (folder name) and git branch, auto-populated by SessionStart hook
 7. **Context injection** - SessionStart hook outputs `additionalContext` with peer list for Claude
 8. **TSV MCP output** - `list_peers` and `whoami` return TSV (more token-efficient than JSON for agents)

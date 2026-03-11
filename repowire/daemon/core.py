@@ -416,6 +416,18 @@ class PeerManager:
                     status.value,
                 )
 
+    async def update_description(
+        self, identifier: str, description: str, circle: str | None = None
+    ) -> bool:
+        """Update peer's task description."""
+        async with self._lock:
+            peer = self._lookup_peer_unlocked(identifier, circle=circle)
+            if not peer:
+                return False
+            peer.description = description
+            peer.last_seen = datetime.now(timezone.utc)
+            return True
+
     async def set_peer_circle(self, identifier: str, circle: str) -> None:
         """Update peer's circle."""
         async with self._lock:

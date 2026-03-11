@@ -53,6 +53,7 @@ class Peer(BaseModel):
     status: PeerStatus = Field(default=PeerStatus.OFFLINE, description="Current status")
     last_seen: datetime | None = Field(None, description="Last activity timestamp")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    description: str = Field(default="", description="Current task description (self-reported)")
 
     @property
     def name(self) -> str:
@@ -105,6 +106,7 @@ class Peer(BaseModel):
             "status": self.status.value,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
             "metadata": self.metadata,
+            "description": self.description,
         }
 
     @classmethod

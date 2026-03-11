@@ -30,6 +30,7 @@ class PeerInfo(BaseModel):
     status: str
     last_seen: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    description: str = ""
 
 
 def _peer_to_info(p: Peer) -> PeerInfo:
@@ -46,6 +47,7 @@ def _peer_to_info(p: Peer) -> PeerInfo:
         status=p.status.value,
         last_seen=p.last_seen.isoformat() if p.last_seen else None,
         metadata=p.metadata,
+        description=p.description,
     )
 
 
@@ -229,6 +231,30 @@ async def mark_peer_offline(
     peer_manager = get_peer_manager()
     cancelled = await peer_manager.mark_offline(name)
     return OfflineResponse(cancelled_queries=cancelled)
+
+
+class SetDescriptionRequest(BaseModel):
+    """Request to set peer's description."""
+
+    description: str = Field(..., description="Current task description")
+
+
+@router.post("/peers/{name}/description", response_model=OkResponse)
+async def set_peer_description(
+    name: str,
+    request: SetDescriptionRequest,
+    circle: str | None = Query(None),
+    _: str | None = Depends(require_auth),
+) -> OkResponse:
+    """Update a peer's task description."""
+    peer_manager = get_peer_manager()
+    found = await peer_manager.update_description(name, request.description, circle=circle)
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Peer not found: {name}",
+        )
+    return OkResponse()
 
 
 class SetCircleRequest(BaseModel):
