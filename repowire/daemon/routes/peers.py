@@ -178,22 +178,20 @@ async def create_peer(
 async def _unregister_peer_impl(name: str, circle: str | None = None) -> None:
     """Shared unregister logic: remove from PeerManager + SessionMapper."""
     peer_manager = get_peer_manager()
-    removed = await peer_manager.unregister_peer(name, circle=circle)
 
-    state = get_app_state()
-    session_mapper = state.session_mapper
-    for sid, mapping in list(session_mapper.get_all_mappings().items()):
-        if mapping.display_name == name:
-            if circle and mapping.circle != circle:
-                continue
-            session_mapper.unregister_session(sid)
-            removed = True
-
-    if not removed:
+    # Look up first to get the exact peer_id for targeted SessionMapper cleanup
+    peer = await peer_manager.get_peer(name, circle=circle)
+    if not peer:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Peer not found: {name}",
         )
+
+    peer_id = peer.peer_id
+    await peer_manager.unregister_peer(name, circle=circle)
+
+    state = get_app_state()
+    state.session_mapper.unregister_session(peer_id)
 
 
 @router.delete("/peers/{name}", response_model=OkResponse)
