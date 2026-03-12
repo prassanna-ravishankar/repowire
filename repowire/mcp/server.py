@@ -64,7 +64,7 @@ async def _get_my_peer_name() -> str:
     if pane_id:
         try:
             result = await daemon_request("GET", f"/peers/by-pane/{pane_id}")
-            name = result.get("peer_id") or result.get("display_name") or _my_peer_name
+            name = result.get("display_name") or result.get("peer_id") or _my_peer_name
             _cached_peer_name = name
             return name
         except Exception:
