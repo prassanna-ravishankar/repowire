@@ -340,6 +340,7 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 | `/peers/{name}` | DELETE | Unregister peer (`?circle=` to disambiguate) |
 | `/peers/by-pane/{pane_id}` | GET | Get peer by tmux pane ID |
 | `/peers/{name}/offline` | POST | Mark peer offline, cancel pending queries |
+| `/peers/{name}/description` | POST | Set peer's task description |
 | `/query` | POST | Send query, wait for response |
 | `/notify` | POST | Send notification (fire-and-forget) |
 | `/broadcast` | POST | Send to all peers |

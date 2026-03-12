@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from uuid import uuid4
@@ -10,6 +11,8 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 from repowire.hooks._tmux import get_pane_id
+
+logger = logging.getLogger(__name__)
 
 DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", "http://127.0.0.1:8377")
 
@@ -218,8 +221,8 @@ def create_mcp_server() -> FastMCP:
             try:
                 result = await daemon_request("GET", f"/peers/by-pane/{pane_id}")
                 name = result.get("display_name") or result.get("name", "")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Could not get peer name by pane_id '%s': %s", pane_id, e)
         if not name:
             name = _my_peer_name
         await daemon_request("POST", f"/peers/{name}/description", {"description": description})
