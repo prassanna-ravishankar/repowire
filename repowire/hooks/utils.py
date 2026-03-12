@@ -28,6 +28,19 @@ def get_display_name() -> str:
     return Path.cwd().name
 
 
+def _log_daemon_error(method: str, path: str, exc: Exception) -> None:
+    """Log daemon request failure, including HTTP response body when available."""
+    msg = f"repowire: daemon {method} {path} failed: {exc}"
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            body = exc.read().decode(errors="ignore")
+            if body:
+                msg += f" - Body: {body}"
+        except Exception:
+            pass
+    print(msg, file=sys.stderr)
+
+
 def daemon_post(path: str, payload: dict, *, timeout: float = 2.0) -> dict | None:
     """POST JSON to daemon. Returns parsed response or None on failure."""
     try:
@@ -40,8 +53,8 @@ def daemon_post(path: str, payload: dict, *, timeout: float = 2.0) -> dict | Non
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError) as e:
-        print(f"repowire: daemon POST {path} failed: {e}", file=sys.stderr)
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        _log_daemon_error("POST", path, e)
         return None
 
 
@@ -51,8 +64,8 @@ def daemon_get(path: str, *, timeout: float = 2.0) -> dict | None:
         req = urllib.request.Request(f"{DAEMON_URL}{path}", method="GET")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError) as e:
-        print(f"repowire: daemon GET {path} failed: {e}", file=sys.stderr)
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        _log_daemon_error("GET", path, e)
         return None
 
 
