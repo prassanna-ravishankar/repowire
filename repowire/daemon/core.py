@@ -220,6 +220,15 @@ class PeerManager:
 
             return result
 
+    def _resolve_from_peer_unlocked(
+        self, from_peer: str, target_peer: Peer, bypass_circle: bool
+    ) -> None:
+        """Resolve from_peer and check circle access. Must hold lock."""
+        from_peer_obj = self._lookup_peer_unlocked(
+            from_peer, circle=target_peer.circle
+        ) or self._lookup_peer_unlocked(from_peer)
+        self._check_circle_access_by_peers(from_peer_obj, target_peer, bypass_circle)
+
     def _check_circle_access_by_peers(
         self, from_obj: Peer | None, to_obj: Peer | None, bypass: bool
     ) -> None:
@@ -270,10 +279,7 @@ class PeerManager:
             peer = self._lookup_peer_unlocked(to_peer, circle=circle)
             if not peer:
                 raise ValueError(f"Unknown peer: {to_peer}")
-            from_peer_obj = self._lookup_peer_unlocked(
-                from_peer, circle=peer.circle
-            ) or self._lookup_peer_unlocked(from_peer)
-            self._check_circle_access_by_peers(from_peer_obj, peer, bypass_circle)
+            self._resolve_from_peer_unlocked(from_peer, peer, bypass_circle)
             peer_id = peer.peer_id
             peer_name = peer.display_name
 
@@ -336,10 +342,7 @@ class PeerManager:
             peer = self._lookup_peer_unlocked(to_peer, circle=circle)
             if not peer:
                 raise ValueError(f"Unknown peer: {to_peer}")
-            from_peer_obj = self._lookup_peer_unlocked(
-                from_peer, circle=peer.circle
-            ) or self._lookup_peer_unlocked(from_peer)
-            self._check_circle_access_by_peers(from_peer_obj, peer, bypass_circle)
+            self._resolve_from_peer_unlocked(from_peer, peer, bypass_circle)
             peer_id = peer.peer_id
             peer_name = peer.display_name
 
@@ -479,12 +482,12 @@ class PeerManager:
         Returns:
             Number of cancelled queries
         """
-        await self.update_peer_status(identifier, PeerStatus.OFFLINE)
-
         async with self._lock:
             peer = self._lookup_peer_unlocked(identifier)
             if not peer:
                 return 0
+            peer.status = PeerStatus.OFFLINE
+            peer.last_seen = datetime.now(timezone.utc)
             session_id = peer.peer_id
 
         cancelled = 0
@@ -499,13 +502,13 @@ class PeerManager:
 
         Max 1x per 30s. Triggered by MCP-facing endpoints.
         """
-        now = time.monotonic()
-        if now - self._last_repair < 30.0:
+        if time.monotonic() - self._last_repair < 30.0:
             return
-        if not self._repair_lock.locked():
-            async with self._repair_lock:
-                self._last_repair = time.monotonic()
-                await self._do_repair()
+        async with self._repair_lock:
+            if time.monotonic() - self._last_repair < 30.0:
+                return  # Another coroutine already repaired
+            self._last_repair = time.monotonic()
+            await self._do_repair()
 
     async def _do_repair(self) -> None:
         """Actual repair logic. Must hold _repair_lock."""

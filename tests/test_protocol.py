@@ -39,15 +39,13 @@ class TestPeer:
         assert data["status"] == "online"
         assert data["tmux_session"] is None
 
-    def test_peer_from_dict(self):
-        data = {
-            "name": "api",
-            "path": "/app/api",
-            "machine": "server",
-            "status": "busy",
-        }
-
-        peer = Peer.from_dict(data)
+    def test_peer_from_constructor_with_legacy_fields(self):
+        peer = Peer(
+            name="api",
+            path="/app/api",
+            machine="server",
+            status=PeerStatus.BUSY,
+        )
 
         assert peer.name == "api"
         assert peer.status == PeerStatus.BUSY

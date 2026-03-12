@@ -108,12 +108,3 @@ class Peer(BaseModel):
             "metadata": self.metadata,
             "description": self.description,
         }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Peer:
-        """Create from dictionary."""
-        if data.get("last_seen"):
-            data["last_seen"] = datetime.fromisoformat(data["last_seen"])
-        if data.get("status"):
-            data["status"] = PeerStatus(data["status"])
-        return cls(**data)

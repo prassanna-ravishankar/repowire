@@ -9,7 +9,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", "http://127.0.0.1:8377")
+from repowire.config.models import DEFAULT_DAEMON_URL
+
+DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", DEFAULT_DAEMON_URL)
 
 
 def get_pane_file(pane_id: str | None) -> str:
@@ -26,28 +28,39 @@ def get_display_name() -> str:
     return Path.cwd().name
 
 
-def update_status(peer_identifier: str, status_value: str, *, use_pane_id: bool = False) -> bool:
-    """Update peer status via daemon HTTP API.
-
-    Args:
-        peer_identifier: session_id, display_name, or pane_id
-        status_value: New status (online, busy, offline)
-        use_pane_id: If True, send as pane_id instead of peer_name
-    """
+def daemon_post(path: str, payload: dict, *, timeout: float = 2.0) -> dict | None:
+    """POST JSON to daemon. Returns parsed response or None on failure."""
     try:
-        if use_pane_id:
-            payload = {"pane_id": peer_identifier, "status": status_value}
-        else:
-            payload = {"peer_name": peer_identifier, "status": status_value}
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            f"{DAEMON_URL}/session/update",
+            f"{DAEMON_URL}{path}",
             data=data,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=2.0) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
-        print(f"repowire: status update failed for {peer_identifier}: {e}", file=sys.stderr)
-        return False
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError) as e:
+        print(f"repowire: daemon POST {path} failed: {e}", file=sys.stderr)
+        return None
+
+
+def daemon_get(path: str, *, timeout: float = 2.0) -> dict | None:
+    """GET from daemon. Returns parsed response or None on failure."""
+    try:
+        req = urllib.request.Request(f"{DAEMON_URL}{path}", method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError) as e:
+        print(f"repowire: daemon GET {path} failed: {e}", file=sys.stderr)
+        return None
+
+
+def update_status(peer_identifier: str, status_value: str, *, use_pane_id: bool = False) -> bool:
+    """Update peer status via daemon HTTP API."""
+    if use_pane_id:
+        payload = {"pane_id": peer_identifier, "status": status_value}
+    else:
+        payload = {"peer_name": peer_identifier, "status": status_value}
+    result = daemon_post("/session/update", payload)
+    return result is not None

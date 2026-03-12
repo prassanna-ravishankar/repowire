@@ -10,28 +10,44 @@ from uuid import uuid4
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from repowire.config.models import DEFAULT_DAEMON_URL
 from repowire.hooks._tmux import get_pane_id
 
 logger = logging.getLogger(__name__)
 
-DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", "http://127.0.0.1:8377")
+DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", DEFAULT_DAEMON_URL)
 
 # Cached: peer identity is stable for the lifetime of this MCP process
 _my_peer_name: str = Path.cwd().name
 
+# Lazy singleton HTTP client — reused across all daemon requests
+_http_client: httpx.AsyncClient | None = None
+
+# Cached peer name from pane-based lookup (stable for MCP process lifetime)
+_cached_peer_name: str | None = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(timeout=300.0)
+    return _http_client
+
 
 async def daemon_request(method: str, path: str, body: dict | None = None) -> dict:
     """Make an HTTP request to the daemon."""
+    global _http_client
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            url = f"{DAEMON_URL}{path}"
-            if method == "GET":
-                resp = await client.get(url)
-            else:
-                resp = await client.post(url, json=body or {})
-            resp.raise_for_status()
-            return resp.json()
+        client = _get_http_client()
+        url = f"{DAEMON_URL}{path}"
+        if method == "GET":
+            resp = await client.get(url)
+        else:
+            resp = await client.post(url, json=body or {})
+        resp.raise_for_status()
+        return resp.json()
     except httpx.ConnectError:
+        _http_client = None  # Reset stale client so next call reconnects
         raise Exception("Repowire daemon is not reachable. Start it with 'repowire serve'.")
     except httpx.HTTPStatusError as e:
         raise Exception(f"Daemon error {e.response.status_code}: {e.response.text}")
@@ -40,14 +56,20 @@ async def daemon_request(method: str, path: str, body: dict | None = None) -> di
 
 
 async def _get_my_peer_name() -> str:
-    """Get own peer name, preferring pane-based lookup."""
+    """Get own peer name, preferring pane-based lookup. Cached after first resolution."""
+    global _cached_peer_name
+    if _cached_peer_name is not None:
+        return _cached_peer_name
     pane_id = get_pane_id()
     if pane_id:
         try:
             result = await daemon_request("GET", f"/peers/by-pane/{pane_id}")
-            return result.get("peer_id") or result.get("display_name") or _my_peer_name
+            name = result.get("peer_id") or result.get("display_name") or _my_peer_name
+            _cached_peer_name = name
+            return name
         except Exception:
             pass
+    _cached_peer_name = _my_peer_name
     return _my_peer_name
 
 
@@ -55,30 +77,35 @@ def create_mcp_server() -> FastMCP:
     """Create the MCP server."""
     mcp = FastMCP("repowire")
 
+    tsv_header = "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\tdescription"
+
+    def _peer_to_tsv_row(p: dict) -> str:
+        """Format a single peer dict as a TSV row (8 columns)."""
+        project = p.get("metadata", {}).get("project", "") or ""
+        return "\t".join(
+            [
+                p.get("peer_id", ""),
+                p.get("display_name") or p.get("name", ""),
+                project,
+                p.get("circle", ""),
+                p.get("status", ""),
+                p.get("path") or "",
+                p.get("machine") or "",
+                p.get("description") or "",
+            ]
+        )
+
     @mcp.tool()
     async def list_peers() -> str:
         """List all registered peers in the mesh.
 
-        Returns TSV with columns: peer_id, name, project, circle, status, path
+        Returns TSV with columns: peer_id, name, project, circle, status, path, machine, description
         """
         result = await daemon_request("GET", "/peers")
         peers = result.get("peers", [])
-        rows = ["peer_id\tname\tproject\tcircle\tstatus\tpath\tdescription"]
+        rows = [tsv_header]
         for p in peers:
-            project = p.get("metadata", {}).get("project", "") or ""
-            rows.append(
-                "\t".join(
-                    [
-                        p.get("peer_id", ""),
-                        p.get("display_name") or p.get("name", ""),
-                        project,
-                        p.get("circle", ""),
-                        p.get("status", ""),
-                        p.get("path") or "",
-                        p.get("description") or "",
-                    ]
-                )
-            )
+            rows.append(_peer_to_tsv_row(p))
         return "\n".join(rows)
 
     @mcp.tool()
@@ -164,27 +191,13 @@ def create_mcp_server() -> FastMCP:
 
     def _format_peer_tsv(result: dict) -> str:
         """Format a peer result dict as a TSV row with header."""
-        project = result.get("metadata", {}).get("project", "") or ""
-        header = "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\tdescription"
-        row = "\t".join(
-            [
-                result.get("peer_id", ""),
-                result.get("display_name") or result.get("name", ""),
-                project,
-                result.get("circle", ""),
-                result.get("status", ""),
-                result.get("path") or "",
-                result.get("machine") or "",
-                result.get("description") or "",
-            ]
-        )
-        return f"{header}\n{row}"
+        return f"{tsv_header}\n{_peer_to_tsv_row(result)}"
 
     @mcp.tool()
     async def whoami() -> str:
         """Return information about yourself (the calling peer).
 
-        Returns TSV with columns: peer_id, name, project, circle, status, path, machine
+        Returns TSV with columns: peer_id, name, project, circle, status, path, machine, description
         """
         pane_id = get_pane_id()
         if pane_id:
@@ -198,10 +211,7 @@ def create_mcp_server() -> FastMCP:
             result = await daemon_request("GET", f"/peers/{_my_peer_name}")
             return _format_peer_tsv(result)
         except Exception as e:
-            return (
-                "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\tdescription\n"
-                f"\t{_my_peer_name}\t\t\tERROR: {e}\t\t\t"
-            )
+            return f"{tsv_header}\n\t{_my_peer_name}\t\t\tERROR: {e}\t\t\t"
 
     @mcp.tool()
     async def set_description(description: str) -> str:

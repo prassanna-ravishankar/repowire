@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.auth import require_auth, require_localhost
 from repowire.daemon.deps import get_app_state, get_peer_manager
+from repowire.daemon.routes._shared import OkResponse
 from repowire.protocol.peers import PeerStatus
 
 router = APIRouter(tags=["messages"])
@@ -75,12 +76,6 @@ class SessionUpdateRequest(BaseModel):
     pane_id: str | None = Field(None, description="Tmux pane ID (alternative to peer_name)")
     status: str = Field(..., description="New status (online, busy, offline)")
     metadata: dict | None = Field(None, description="Optional metadata")
-
-
-class OkResponse(BaseModel):
-    """Simple OK response."""
-
-    ok: bool = True
 
 
 @router.post("/query", response_model=QueryResponse)

@@ -20,30 +20,11 @@ except ImportError as e:
     sys.exit(1)
 
 from repowire.config.models import AgentType
+from repowire.hooks._tmux import get_tmux_info
 from repowire.hooks.utils import get_display_name
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-def get_circle_from_tmux() -> str:
-    """Get circle name from tmux session."""
-    pane_id = os.environ.get("TMUX_PANE")
-    if not pane_id:
-        return "default"
-
-    try:
-        result = subprocess.run(
-            ["tmux", "display-message", "-t", pane_id, "-p", "#{session_name}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except Exception as e:
-        logger.warning(f"Failed to get circle from tmux: {e}")
-
-    return "default"
 
 
 def _tmux_send_keys(pane_id: str, text: str) -> bool:
@@ -114,7 +95,8 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
     msg_type = data.get("type")
 
     # Safety: verify agent is still running in the pane before injecting text
-    if msg_type in ("query", "notify", "broadcast") and not _is_pane_safe(pane_id):
+    needs_safety = msg_type in ("query", "notify", "broadcast")
+    if needs_safety and not await asyncio.to_thread(_is_pane_safe, pane_id):
         logger.warning(f"Pane {pane_id} not safe for injection, dropping {msg_type}")
         if msg_type == "query" and websocket:
             correlation_id = data.get("correlation_id", "")
@@ -137,7 +119,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         from_peer = data.get("from_peer", "unknown")
         text = data.get("text", "")
         try:
-            if _tmux_send_keys(pane_id, text):
+            if await asyncio.to_thread(_tmux_send_keys, pane_id, text):
                 logger.info(f"Injected query from {from_peer}: {correlation_id[:8]}")
             else:
                 error_msg = f"Failed to send keys to pane {pane_id}"
@@ -172,7 +154,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         try:
             from_peer = data.get("from_peer", "unknown")
             text = data.get("text", "")
-            if _tmux_send_keys(pane_id, f"@{from_peer}: {text}"):
+            if await asyncio.to_thread(_tmux_send_keys, pane_id, f"@{from_peer}: {text}"):
                 logger.info(f"Injected notification from {from_peer}")
         except Exception as e:
             logger.error(f"Failed to inject notification: {e}")
@@ -181,13 +163,14 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         try:
             from_peer = data.get("from_peer", "unknown")
             text = data.get("text", "")
-            if _tmux_send_keys(pane_id, f"@{from_peer} [broadcast]: {text}"):
+            msg = f"@{from_peer} [broadcast]: {text}"
+            if await asyncio.to_thread(_tmux_send_keys, pane_id, msg):
                 logger.info(f"Injected broadcast from {from_peer}")
         except Exception as e:
             logger.error(f"Failed to inject broadcast: {e}")
 
     elif msg_type == "ping":
-        pane_alive = _is_pane_safe(pane_id)
+        pane_alive = await asyncio.to_thread(_is_pane_safe, pane_id)
         if websocket:
             try:
                 await websocket.send(
@@ -212,7 +195,7 @@ async def main() -> int:
         logger.error("TMUX_PANE not set")
         return 1
 
-    circle = get_circle_from_tmux()
+    circle = get_tmux_info()["session_name"] or "default"
     display_name = get_display_name()
     path = str(os.getcwd())
 

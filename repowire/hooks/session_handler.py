@@ -7,47 +7,27 @@ import json
 import os
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from repowire.config.models import CACHE_DIR, AgentType
 from repowire.hooks._tmux import get_tmux_info
-from repowire.hooks.utils import get_pane_file
-
-DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", "http://127.0.0.1:8377")
+from repowire.hooks.utils import daemon_get, daemon_post, get_pane_file
 
 
 def _register_peer_http(
     display_name: str, path: str, circle: str, metadata: dict | None = None
 ) -> bool:
-    """Register peer via HTTP POST /peers (upsert-safe).
-
-    Works even on a fresh daemon with empty peer registry, unlike
-    update_status which requires the peer to already exist in memory.
-    """
-    try:
-        payload: dict = {
-            "name": display_name,
-            "display_name": display_name,
-            "path": path,
-            "circle": circle,
-            "backend": AgentType.CLAUDE_CODE,
-        }
-        if metadata:
-            payload["metadata"] = metadata
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            f"{DAEMON_URL}/peers",
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=2.0) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
-        print(f"repowire session: peer registration failed: {e}", file=sys.stderr)
-        return False
+    """Register peer via HTTP POST /peers (upsert-safe)."""
+    payload: dict = {
+        "name": display_name,
+        "display_name": display_name,
+        "path": path,
+        "circle": circle,
+        "backend": AgentType.CLAUDE_CODE,
+    }
+    if metadata:
+        payload["metadata"] = metadata
+    return daemon_post("/peers", payload) is not None
 
 
 def get_peer_name(cwd: str) -> str:
@@ -74,16 +54,9 @@ def get_git_branch(cwd: str) -> str | None:
 
 def fetch_peers() -> list[dict] | None:
     """Fetch current peers from the daemon."""
-    try:
-        req = urllib.request.Request(f"{DAEMON_URL}/peers", method="GET")
-        with urllib.request.urlopen(req, timeout=2.0) as resp:
-            if resp.status == 200:
-                data = json.loads(resp.read().decode())
-                return data.get("peers", [])
-    except json.JSONDecodeError as e:
-        print(f"repowire session: invalid JSON from daemon /peers: {e}", file=sys.stderr)
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
-        pass
+    result = daemon_get("/peers")
+    if result:
+        return result.get("peers", [])
     return None
 
 
@@ -163,10 +136,6 @@ def main() -> int:
             print(f"repowire: failed to start WebSocket hook: {e}", file=sys.stderr)
 
         # Register peer via HTTP on every SessionStart.
-        # This handles two cases:
-        #   1. SessionEnd fired between turns and marked peer OFFLINE
-        #   2. Daemon was restarted and has empty peer registry
-        # POST /peers is upsert-safe: creates if missing, re-marks ONLINE if exists.
         circle = tmux_info["session_name"] or "default"
         _register_peer_http(display_name, cwd, circle, metadata={"project": folder_name})
 
@@ -186,10 +155,6 @@ def main() -> int:
     elif event == "SessionEnd":
         # Don't mark peer offline here - SessionEnd fires frequently during
         # agentic loops and tool use cycles, not just at true session end.
-        # The daemon's ping/pong liveness checker will detect true exit
-        # and clean up, which triggers WebSocket disconnect -> daemon marks offline.
-        #
-        # This prevents spurious OFFLINE status when Claude is still running.
         pass
 
     return 0

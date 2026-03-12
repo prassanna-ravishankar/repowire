@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_manager
+from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
 from repowire.protocol.peers import Peer, PeerStatus
 
 router = APIRouter(tags=["peers"])
@@ -72,11 +73,8 @@ class RegisterPeerRequest(BaseModel):
     @field_validator("circle")
     @classmethod
     def validate_circle(cls, v: str | None) -> str | None:
-        if v is not None:
-            import re
-
-            if not re.match(r"^[a-zA-Z0-9._-]+$", v) or len(v) > 64:
-                raise ValueError("Circle must match ^[a-zA-Z0-9._-]+$ and be <= 64 chars")
+        if v is not None and not is_valid_identifier(v):
+            raise ValueError("Circle must match ^[a-zA-Z0-9._-]+$ and be <= 64 chars")
         return v
 
 
@@ -84,12 +82,6 @@ class UnregisterPeerRequest(BaseModel):
     """Request to unregister a peer."""
 
     name: str = Field(..., description="Peer name to unregister")
-
-
-class OkResponse(BaseModel):
-    """Simple OK response."""
-
-    ok: bool = True
 
 
 def _build_peer(
@@ -183,17 +175,11 @@ async def create_peer(
     return OkResponse()
 
 
-@router.delete("/peers/{name}", response_model=OkResponse)
-async def delete_peer(
-    name: str,
-    circle: str | None = Query(None, description="Circle to scope deletion to avoid ambiguity"),
-    _: str | None = Depends(require_auth),
-) -> OkResponse:
-    """Unregister a peer by name (CLI-friendly endpoint)."""
+async def _unregister_peer_impl(name: str, circle: str | None = None) -> None:
+    """Shared unregister logic: remove from PeerManager + SessionMapper."""
     peer_manager = get_peer_manager()
     removed = await peer_manager.unregister_peer(name, circle=circle)
 
-    # Clean up SessionMapper to prevent ghost peers
     state = get_app_state()
     session_mapper = state.session_mapper
     for sid, mapping in list(session_mapper.get_all_mappings().items()):
@@ -209,6 +195,15 @@ async def delete_peer(
             detail=f"Peer not found: {name}",
         )
 
+
+@router.delete("/peers/{name}", response_model=OkResponse)
+async def delete_peer(
+    name: str,
+    circle: str | None = Query(None, description="Circle to scope deletion to avoid ambiguity"),
+    _: str | None = Depends(require_auth),
+) -> OkResponse:
+    """Unregister a peer by name (CLI-friendly endpoint)."""
+    await _unregister_peer_impl(name, circle=circle)
     return OkResponse()
 
 
@@ -294,22 +289,5 @@ async def unregister_peer(
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
     """Unregister a peer from the mesh (legacy endpoint)."""
-    peer_manager = get_peer_manager()
-
-    removed = await peer_manager.unregister_peer(request.name)
-
-    # Clean up SessionMapper to prevent ghost peers
-    state = get_app_state()
-    session_mapper = state.session_mapper
-    for sid, mapping in list(session_mapper.get_all_mappings().items()):
-        if mapping.display_name == request.name:
-            session_mapper.unregister_session(sid)
-            removed = True
-
-    if not removed:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Peer not found: {request.name}",
-        )
-
+    await _unregister_peer_impl(request.name)
     return OkResponse()

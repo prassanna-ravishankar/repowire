@@ -9,13 +9,13 @@ import hmac
 import json
 import logging
 import os
-import re
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from repowire.config.models import AgentType
 from repowire.daemon.deps import get_app_state
+from repowire.daemon.routes._shared import is_valid_identifier
 from repowire.protocol.peers import Peer, PeerStatus
 
 if TYPE_CHECKING:
@@ -81,7 +81,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         circle = data.get("circle", "default")
 
         # Validate circle format (same rules as set_circle handler)
-        if not re.match(r"^[a-zA-Z0-9._-]+$", circle) or len(circle) > 64:
+        if not is_valid_identifier(circle):
             await websocket.send_json({"type": "error", "error": "Invalid circle format"})
             await websocket.close(code=4002, reason="Invalid circle")
             return
@@ -92,7 +92,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         pane_id = data.get("pane_id")
 
         # Validate display_name
-        if not display_name or not re.match(r"^[a-zA-Z0-9._-]+$", display_name):
+        if not display_name or not is_valid_identifier(display_name):
             await websocket.send_json({"type": "error", "error": "Invalid display_name format"})
             await websocket.close(code=4002, reason="Invalid display_name")
             return
@@ -234,7 +234,7 @@ async def _handle_message(
 
     elif msg_type == "set_circle":
         new_circle = data.get("circle")
-        if new_circle and re.match(r"^[a-zA-Z0-9._-]+$", new_circle) and len(new_circle) <= 64:
+        if new_circle and is_valid_identifier(new_circle):
             await peer_manager.set_peer_circle(session_id, new_circle)
             session_mapper.update_circle(session_id, new_circle)
             logger.info(f"Circle updated for {session_id}: {new_circle}")
@@ -245,7 +245,7 @@ async def _handle_message(
 
     elif msg_type == "update_display_name":
         new_name = data.get("display_name", "")
-        if new_name and re.match(r"^[a-zA-Z0-9._-]+$", new_name) and len(new_name) <= 64:
+        if new_name and is_valid_identifier(new_name):
             ok = await peer_manager.update_peer_display_name(session_id, new_name)
             if ok:
                 session_mapper.update_display_name(session_id, new_name)

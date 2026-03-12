@@ -51,9 +51,6 @@ def _make_notification_hook_config(command: str, matcher: str) -> dict:
 
 
 def install_hooks() -> bool:
-    pending_dir = Path.home() / ".repowire" / "pending"
-    pending_dir.mkdir(parents=True, exist_ok=True)
-
     settings = _load_claude_settings()
     if "hooks" not in settings:
         settings["hooks"] = {}

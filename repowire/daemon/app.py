@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from repowire import __version__
 from repowire.config.models import Config, load_config
 from repowire.daemon.auth import require_localhost
 from repowire.daemon.core import PeerManager
@@ -26,8 +27,6 @@ from repowire.daemon.session_mapper import SessionMapper
 from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
-
-__version__ = "0.1.0"
 
 
 def create_app(

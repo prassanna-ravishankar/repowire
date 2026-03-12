@@ -15,6 +15,11 @@ DEFAULT_QUERY_TIMEOUT: float = 300.0
 CACHE_DIR: Path = Path.home() / ".cache" / "repowire"
 """Runtime cache directory for logs and transient state."""
 
+DEFAULT_HOST: str = "127.0.0.1"
+DEFAULT_PORT: int = 8377
+DEFAULT_DAEMON_URL: str = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
+"""Default daemon URL used by hooks and MCP server."""
+
 
 class AgentType(str, Enum):
     """Type of AI coding agent a peer is running."""

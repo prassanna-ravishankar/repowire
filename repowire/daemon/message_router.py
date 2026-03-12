@@ -143,16 +143,18 @@ class MessageRouter:
             "text": text,
         }
 
-        sent_to: list[str] = []
-        for session_id in self._transport.get_all_sessions():
-            if session_id in excluded:
-                continue
-
+        async def _send_one(session_id: str) -> str | None:
             try:
                 await self._transport.send(session_id, message)
-                sent_to.append(session_id)
+                return session_id
             except TransportError as e:
                 logger.warning(f"Broadcast to {session_id} failed: {e}")
+                return None
+
+        results = await asyncio.gather(
+            *(_send_one(sid) for sid in self._transport.get_all_sessions() if sid not in excluded),
+        )
+        sent_to = [r for r in results if r is not None]
 
         logger.info(f"Broadcast from {from_peer}: sent to {len(sent_to)} peers")
         return sent_to

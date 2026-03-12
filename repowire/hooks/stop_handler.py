@@ -6,27 +6,16 @@ from __future__ import annotations
 import json
 import os
 import sys
-import urllib.request
 from pathlib import Path
 
 from repowire.hooks._tmux import get_pane_id
-from repowire.hooks.utils import DAEMON_URL, update_status
+from repowire.hooks.utils import daemon_post, update_status
 from repowire.session.transcript import extract_last_turn_pair
 
 
 def _post_chat_turn(peer_name: str, role: str, text: str) -> None:
     """Post a chat turn to the daemon for dashboard display. Best-effort."""
-    try:
-        data = json.dumps({"peer": peer_name, "role": role, "text": text}).encode("utf-8")
-        req = urllib.request.Request(
-            f"{DAEMON_URL}/events/chat",
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=2.0).close()
-    except Exception as e:
-        print(f"repowire: failed to post chat turn: {e}", file=sys.stderr)
+    daemon_post("/events/chat", {"peer": peer_name, "role": role, "text": text})
 
 
 def main() -> int:
@@ -71,17 +60,7 @@ def main() -> int:
 
     # Deliver response to daemon for query resolution
     if pane_id and assistant_text:
-        try:
-            data = json.dumps({"pane_id": pane_id, "text": assistant_text}).encode("utf-8")
-            req = urllib.request.Request(
-                f"{DAEMON_URL}/response",
-                data=data,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=2.0).close()
-        except Exception as e:
-            print(f"repowire stop: failed to deliver response: {e}", file=sys.stderr)
+        daemon_post("/response", {"pane_id": pane_id, "text": assistant_text})
 
     return 0
 

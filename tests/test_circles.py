@@ -14,7 +14,7 @@ from repowire.config.models import Config, PeerConfig
 from repowire.daemon.core import PeerManager
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.session_mapper import SessionMapper
-from repowire.protocol.peers import Peer
+from repowire.protocol.peers import Peer, PeerStatus
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -72,16 +72,15 @@ class TestPeerCircleField:
         data = peer.to_dict()
         assert data["circle"] == "my-circle"
 
-    def test_peer_circle_from_dict(self):
-        """Peer.from_dict() should preserve circle."""
-        data = {
-            "name": "test",
-            "path": "/test",
-            "machine": "localhost",
-            "circle": "my-circle",
-            "status": "online",
-        }
-        peer = Peer.from_dict(data)
+    def test_peer_circle_from_constructor(self):
+        """Peer constructor should preserve circle."""
+        peer = Peer(
+            name="test",
+            path="/test",
+            machine="localhost",
+            circle="my-circle",
+            status=PeerStatus.ONLINE,
+        )
         assert peer.circle == "my-circle"
 
 

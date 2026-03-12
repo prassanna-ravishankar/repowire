@@ -149,12 +149,3 @@ def kill_peer(tmux_session: str) -> bool:
         return True
     except (LibTmuxException, ObjectDoesNotExist):
         return False
-
-
-def list_tmux_sessions() -> list[str]:
-    """List all tmux session names."""
-    try:
-        server = libtmux.Server()
-        return [s.name for s in server.sessions if s.name]
-    except LibTmuxException:
-        return []
