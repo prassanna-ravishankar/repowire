@@ -86,6 +86,46 @@ def test_restart_linux_service_returns_not_installed() -> None:
     assert message == "Service is not installed"
 
 
+def test_restart_macos_service_load_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        plist_path = Path(tmpdir) / "io.repowire.daemon.plist"
+        plist_path.write_text("dummy")
+
+        unload_result = MagicMock(returncode=0, stderr="")
+        load_result = MagicMock(returncode=1, stderr="Could not load plist")
+
+        with patch("repowire.service.installer._get_launchd_plist_path", return_value=plist_path):
+            with patch(
+                "repowire.service.installer.subprocess.run",
+                side_effect=[unload_result, load_result],
+            ):
+                success, message = installer._restart_macos_service()
+
+    assert success is False
+    assert "Failed to restart service" in message
+    assert "Could not load plist" in message
+
+
+def test_restart_linux_service_systemctl_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        service_path = Path(tmpdir) / "repowire.service"
+        service_path.write_text("dummy")
+
+        run_result = MagicMock(returncode=1, stderr="Unit not found")
+
+        with patch(
+            "repowire.service.installer._get_systemd_service_path", return_value=service_path
+        ):
+            with patch(
+                "repowire.service.installer.subprocess.run", return_value=run_result
+            ):
+                success, message = installer._restart_linux_service()
+
+    assert success is False
+    assert "Failed to restart service" in message
+    assert "Unit not found" in message
+
+
 def test_restart_linux_service_runs_systemctl_restart() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         service_path = Path(tmpdir) / "repowire.service"
