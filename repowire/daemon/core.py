@@ -517,33 +517,45 @@ class PeerManager:
 
         async with self._lock:
             targets = [
-                (p.peer_id, p.backend)
+                (p.peer_id, p.backend, p.circle)
                 for p in self._peers.values()
                 if p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
             ]
 
-        async def check_peer(peer_id: str, backend) -> str | None:
-            """Returns peer_id if dead, None if alive."""
+        async def check_peer(
+            peer_id: str, backend, circle: str,
+        ) -> tuple[str, str | None] | None:
+            """Returns (peer_id, circle) if alive, None if dead."""
             from repowire.config.models import AgentType
 
             if not self._transport.is_connected(peer_id):
-                return peer_id
+                return None  # dead
             # OpenCode peers: if WS connected, they're alive (skip ping)
             if backend == AgentType.OPENCODE:
-                return None
+                return (peer_id, circle)  # alive, circle unchanged (no pong data)
             try:
-                await self._transport.ping(peer_id, timeout=5.0)
-                return None
+                pong = await self._transport.ping(peer_id, timeout=5.0)
+                pong_circle = pong.get("circle")
+                return (peer_id, pong_circle or circle)
             except Exception:
-                return peer_id
+                return None  # dead
 
         results = await asyncio.gather(
-            *(check_peer(pid, backend) for pid, backend in targets),
+            *(check_peer(pid, backend, circle) for pid, backend, circle in targets),
             return_exceptions=True,
         )
 
-        dead_peers = [r for r in results if isinstance(r, str)]
-        for peer_id in dead_peers:
+        alive_peers = [r for r in results if isinstance(r, tuple)]
+        dead_peer_ids = {t[0] for t in targets} - {r[0] for r in alive_peers}
+
+        # Circle recovery: update peers whose tmux session moved
+        for peer_id, new_circle in alive_peers:
+            current = next((c for pid, _, c in targets if pid == peer_id), None)
+            if current and new_circle and new_circle != current:
+                logger.info(f"lazy_repair: circle recovery {peer_id}: {current} → {new_circle}")
+                await self.set_peer_circle(peer_id, new_circle)
+
+        for peer_id in dead_peer_ids:
             logger.info(f"lazy_repair: marking {peer_id} OFFLINE (no pong)")
             await self.update_peer_status(peer_id, PeerStatus.OFFLINE)
             if self._query_tracker:

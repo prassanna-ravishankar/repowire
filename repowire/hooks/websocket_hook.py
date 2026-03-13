@@ -173,11 +173,13 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         pane_alive = await asyncio.to_thread(_is_pane_safe, pane_id)
         if websocket:
             try:
+                tmux_info = await asyncio.to_thread(get_tmux_info)
                 await websocket.send(
                     json.dumps(
                         {
                             "type": "pong",
                             "pane_alive": pane_alive,
+                            "circle": tmux_info["session_name"],
                         }
                     )
                 )
