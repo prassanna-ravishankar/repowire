@@ -549,8 +549,9 @@ class PeerManager:
         dead_peer_ids = {t[0] for t in targets} - {r[0] for r in alive_peers}
 
         # Circle recovery: update peers whose tmux session moved
+        current_circles = {pid: c for pid, _, c in targets}
         for peer_id, new_circle in alive_peers:
-            current = next((c for pid, _, c in targets if pid == peer_id), None)
+            current = current_circles.get(peer_id)
             if current and new_circle and new_circle != current:
                 logger.info(f"lazy_repair: circle recovery {peer_id}: {current} → {new_circle}")
                 await self.set_peer_circle(peer_id, new_circle)
