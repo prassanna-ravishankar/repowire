@@ -40,8 +40,8 @@ class RelayConfig(BaseModel):
         """Dashboard URL via the relay, or None if not configured."""
         if not self.api_key:
             return None
-        base = self.url.replace("wss://", "https://").replace("/ws/relay", "")
-        return f"{base}/d/{self.api_key}/dashboard"
+        base = self.url.replace("wss://", "https://")
+        return f"{base}/dashboard"
 
     def ensure_api_key(self) -> str:
         """Register with relay and set API key if missing. Returns the key."""

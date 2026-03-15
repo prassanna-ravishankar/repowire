@@ -27,12 +27,17 @@ class TestRelayAuth:
         assert validated.user_id == "user1"
         assert validated.key == registered.key
 
-    def test_validate_unknown_key(self):
-        result = validate_api_key("rw_doesnotexist")
-        assert result is None
+    def test_validate_unknown_key_auto_registers(self):
+        result = validate_api_key("rw_someunknownbutwellformedtoken")
+        assert result is not None
+        assert result.key == "rw_someunknownbutwellformedtoken"
 
     def test_validate_wrong_prefix(self):
         result = validate_api_key("bad_prefix_key")
+        assert result is None
+
+    def test_validate_too_short(self):
+        result = validate_api_key("rw_short")
         assert result is None
 
     def test_api_key_model(self):
