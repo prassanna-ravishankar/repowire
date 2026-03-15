@@ -10,7 +10,7 @@ class TestConfig:
         config = Config()
 
         assert config.relay.enabled is False
-        assert config.relay.url == "wss://relay.repowire.io"
+        assert config.relay.url == "wss://repowire.io"
         assert len(config.peers) == 0
 
     def test_get_peer(self):
