@@ -76,7 +76,7 @@ Claude uses the `ask_peer` tool, backend responds, and you get the answer back.
 
 ## Dashboard
 
-Monitor peer communication at `http://localhost:8377/dashboard` when the daemon is running.
+Monitor peer communication at `http://localhost:8377/dashboard` when the daemon is running. For remote access, use `repowire serve --relay` to get a public URL via [repowire.io](https://repowire.io).
 
 - Real-time peer status (online/busy/offline)
 - Communication event log with query/response matching
@@ -176,6 +176,7 @@ repowire uninstall                # Remove all components
 
 # Daemon
 repowire serve                    # Run daemon in foreground
+repowire serve --relay            # Run with relay (remote dashboard + cross-machine mesh)
 repowire build-ui                 # Build web dashboard (development)
 
 # Peer management
@@ -228,22 +229,31 @@ export REPOWIRE_AUTH_TOKEN="your-secret-token-here"
 
 The daemon also restricts CORS to localhost origins only.
 
-### Multi-Machine Relay
+### Remote Dashboard & Multi-Machine Relay
 
-> **Experimental** - Not production ready. `relay.repowire.io` is not yet available.
-
-For agents on different machines:
+Access your dashboard from anywhere and connect agents across machines via [repowire.io](https://repowire.io).
 
 ```bash
-# Self-host a relay server
+# Start daemon with relay enabled
+repowire serve --relay
+# => Generated relay key: rw_prass_33e7233b0c4cf148
+# => Dashboard: https://repowire.io/d/rw_prass_33e7233b0c4cf148/dashboard
+```
+
+Open the dashboard URL from any browser — your local daemon is tunneled through the relay. No port forwarding, no VPN.
+
+**How it works:** Your daemon opens an outbound WebSocket to `relay.repowire.io`. The relay bridges messages between daemons on different machines and proxies HTTP requests (dashboard, API) back through the tunnel.
+
+```
+Browser → repowire.io → enter key → relay proxies via WSS → local daemon → dashboard
+Daemon A ←WSS→ relay.repowire.io ←WSS→ Daemon B (cross-machine mesh)
+```
+
+You can also self-host the relay:
+
+```bash
 repowire relay start --port 8000
 repowire relay generate-key --user-id myuser
-
-# On each machine, configure relay in ~/.repowire/config.yaml:
-# relay:
-#   enabled: true
-#   url: "wss://your-relay-server:8000"
-#   api_key: "your-key"
 ```
 
 ### Configuration Reference
@@ -257,9 +267,9 @@ daemon:
   auth_token: "optional-secret"  # Optional: require auth for WebSocket connections
 
 relay:
-  enabled: false
-  url: "wss://relay.repowire.io"
-  api_key: null
+  enabled: true                     # Enable remote relay
+  url: "wss://relay.repowire.io"    # Hosted relay (or self-hosted URL)
+  api_key: "rw_..."                 # Auto-generated on first `repowire serve --relay`
 
 # Peers auto-register via WebSocket on session start
 peers:
