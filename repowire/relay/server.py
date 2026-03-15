@@ -18,8 +18,9 @@ from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
+from pydantic import BaseModel
 
-from repowire.relay.auth import APIKey, validate_api_key
+from repowire.relay.auth import APIKey, register_token, validate_api_key
 
 log = logging.getLogger(__name__)
 
@@ -253,6 +254,16 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, Any]:
         return {"status": "ok", "connected_daemons": len(_connections)}
+
+    # -- Registration --
+
+    class RegisterRequest(BaseModel):
+        user_id: str
+
+    @app.post("/api/v1/register")
+    async def register(req: RegisterRequest) -> dict[str, str]:
+        api_key = register_token(req.user_id)
+        return {"api_key": api_key.key, "user_id": api_key.user_id}
 
     # -- Connected daemons (authenticated) --
 

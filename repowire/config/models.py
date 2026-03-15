@@ -44,16 +44,19 @@ class RelayConfig(BaseModel):
         return f"{base}/d/{self.api_key}/dashboard"
 
     def ensure_api_key(self) -> str:
-        """Generate and set API key if missing. Returns the key."""
+        """Register with relay and set API key if missing. Returns the key."""
         if self.api_key:
             return self.api_key
         import getpass
 
-        from repowire.relay.auth import generate_api_key
+        import httpx
 
-        key = generate_api_key(getpass.getuser())
-        self.api_key = key.key
-        return key.key
+        relay_http = self.url.replace("wss://", "https://")
+        user_id = getpass.getuser()
+        resp = httpx.post(f"{relay_http}/api/v1/register", json={"user_id": user_id})
+        resp.raise_for_status()
+        self.api_key = resp.json()["api_key"]
+        return self.api_key
 
 
 class PeerConfig(BaseModel):

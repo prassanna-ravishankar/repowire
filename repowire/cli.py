@@ -893,12 +893,11 @@ def relay_start(host: str, port: int) -> None:
 
 @relay.command(name="generate-key")
 @click.option("--user-id", default="default", help="User ID for the key")
-@click.option("--name", default="default", help="Key name/description")
-def relay_generate_key(user_id: str, name: str) -> None:
+def relay_generate_key(user_id: str) -> None:
     """Generate an API key for relay authentication."""
-    from repowire.relay.auth import generate_api_key
+    from repowire.relay.auth import register_token
 
-    api_key = generate_api_key(user_id, name)
+    api_key = register_token(user_id)
     console.print("[green]Generated API key:[/]")
     console.print(f"  {api_key.key}")
     console.print("")
