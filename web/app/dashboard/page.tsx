@@ -11,7 +11,7 @@ import { ComposeBar } from "./components/ComposeBar";
 import { ActivityFeed } from "./components/ActivityFeed";
 import type { Peer, Event } from "./types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8377";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8377";
 
 export default function Dashboard() {
   const [peers, setPeers] = useState<Peer[]>([]);

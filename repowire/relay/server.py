@@ -3,6 +3,7 @@
 Provides:
 - WebSocket bridge: daemons connect via /ws/relay, messages forwarded within user scope
 - HTTP tunnel: authenticated browser sessions are proxied to a connected daemon via cookie
+- Dashboard: serves Next.js static export directly, tunnels only API calls to daemon
 - Landing page: minimal UI at / for entering an API key
 """
 
@@ -11,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -26,7 +28,8 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from repowire.relay.auth import APIKey, register_token, validate_api_key
@@ -45,8 +48,14 @@ class RegisterRequest(BaseModel):
 HTTP_TUNNEL_TIMEOUT = 30  # seconds
 
 # Paths that the relay handles directly (not tunneled)
-_RELAY_PATHS = frozenset({"/", "/health", "/auth", "/ws/relay"})
-_RELAY_PREFIXES = ("/api/v1/", "/d/")
+_RELAY_PATHS = frozenset({"/", "/health", "/auth", "/ws/relay", "/dashboard"})
+_RELAY_PREFIXES = ("/api/v1/", "/d/", "/_next/")
+
+# API paths tunneled to the daemon (everything else is static or relay-owned)
+_TUNNEL_PREFIXES = (
+    "/peers", "/events", "/query", "/notify", "/broadcast",
+    "/session", "/response", "/spawn", "/ws",
+)
 
 
 @dataclass
@@ -324,9 +333,39 @@ _MSG_HANDLERS: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 
+def _find_web_output_dir() -> str | None:
+    """Find the web/out directory for dashboard static files."""
+    import sys
+
+    # Check relative to this file (works in Docker where web/out is at /app/web/out)
+    relay_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(os.path.dirname(relay_dir))
+    dev_web_out = os.path.join(repo_root, "web", "out")
+    if os.path.isfile(os.path.join(dev_web_out, "dashboard.html")):
+        return dev_web_out
+
+    # Installed mode: web/out is sibling to repowire package in site-packages
+    for path in sys.path:
+        installed = os.path.join(path, "web", "out")
+        if os.path.isfile(os.path.join(installed, "dashboard.html")):
+            return installed
+
+    return None
+
+
 def create_app() -> FastAPI:
     """Create the FastAPI relay application."""
     app = FastAPI(title="Repowire Relay", version="0.3.0")
+
+    # -- Dashboard static files --
+    web_out = _find_web_output_dir()
+    if web_out:
+        next_static = os.path.join(web_out, "_next")
+        if os.path.exists(next_static):
+            app.mount("/_next", StaticFiles(directory=next_static), name="next_static")
+        log.info("Serving dashboard from %s", web_out)
+    else:
+        log.warning("web/out not found — dashboard will not be available")
 
     # -- Landing page --
 
@@ -364,6 +403,19 @@ def create_app() -> FastAPI:
             max_age=30 * 24 * 3600,  # 30 days
         )
         return response
+
+    # -- Dashboard (served from static files, auth-gated) --
+
+    @app.get("/dashboard", response_class=HTMLResponse)
+    async def dashboard(rw_token: str | None = Cookie(default=None)) -> Response:
+        if not rw_token or not validate_api_key(rw_token):
+            return RedirectResponse(url="/", status_code=302)
+        if not web_out:
+            return HTMLResponse("Dashboard not built. Rebuild relay image.", status_code=503)
+        dashboard_path = os.path.join(web_out, "dashboard.html")
+        if not os.path.exists(dashboard_path):
+            return HTMLResponse("dashboard.html not found", status_code=404)
+        return FileResponse(dashboard_path)
 
     # -- Health --
 
@@ -462,7 +514,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=502, detail="No daemon connected")
         return await _tunnel_request(conn, request.method, f"/{path}", request)
 
-    # -- Cookie-based tunnel (catch-all for dashboard, assets, API) --
+    # -- Cookie-based tunnel (only API paths are proxied to daemon) --
 
     @app.api_route(
         "/{path:path}",
@@ -471,9 +523,10 @@ def create_app() -> FastAPI:
     async def cookie_tunnel(
         path: str, request: Request, rw_token: str | None = Cookie(default=None)
     ) -> Response:
-        # Skip relay-owned paths (already handled by explicit routes above)
         full_path = f"/{path}"
-        if full_path in _RELAY_PATHS or any(full_path.startswith(p) for p in _RELAY_PREFIXES):
+
+        # Only tunnel daemon API paths
+        if not any(full_path.startswith(p) for p in _TUNNEL_PREFIXES):
             raise HTTPException(status_code=404)
 
         if not rw_token:

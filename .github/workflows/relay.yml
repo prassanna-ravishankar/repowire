@@ -8,6 +8,7 @@ on:
       - "repowire/protocol/**"
       - "repowire/config/**"
       - "repowire/daemon/relay_client.py"
+      - "web/**"
       - "Dockerfile"
       - "charts/repowire-relay/**"
       - ".github/workflows/relay.yml"
