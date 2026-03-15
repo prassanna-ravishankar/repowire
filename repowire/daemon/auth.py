@@ -22,15 +22,11 @@ async def verify_api_key(
     """
     config = get_config()
 
-    # Skip auth if relay mode is disabled
-    if not config.relay.enabled:
+    # Only enforce auth if daemon.auth_token is set (local daemon auth)
+    # relay.api_key is for connecting TO the relay, not for local endpoints
+    if not config.daemon.auth_token:
         return None
 
-    # Skip auth if no API key is configured
-    if not config.relay.api_key:
-        return None
-
-    # Auth is required - check credentials
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -38,23 +34,14 @@ async def verify_api_key(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Verify the token format and value
-    token = credentials.credentials
-    if not token.startswith("rw_"):
+    if credentials.credentials != config.daemon.auth_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token format. Expected: Bearer rw_xxx",
+            detail="Invalid auth token",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if token != config.relay.api_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    return token
+    return credentials.credentials
 
 
 class RequireAuth:
