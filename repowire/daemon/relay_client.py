@@ -39,6 +39,7 @@ class RelayClient:
         self._local_base_url = local_base_url
         self._ws: ClientConnection | None = None
         self._task: asyncio.Task[None] | None = None
+        self._http: httpx.AsyncClient | None = None
         self._stopping = False
 
     @property
@@ -52,12 +53,16 @@ class RelayClient:
             logger.info("Relay disabled or no API key — skipping relay client")
             return
         self._stopping = False
+        self._http = httpx.AsyncClient()
         self._task = asyncio.create_task(self._run_loop())
         logger.info("Relay client started (daemon_id=%s)", self._daemon_id)
 
     async def stop(self) -> None:
         """Gracefully disconnect."""
         self._stopping = True
+        if self._http:
+            await self._http.aclose()
+            self._http = None
         if self._ws:
             await self._ws.close()
             self._ws = None
@@ -171,8 +176,8 @@ class RelayClient:
         endpoint = endpoint_map[msg_type]
         payload = msg.get("payload", {})
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(f"{self._local_base_url}{endpoint}", json=payload)
+        assert self._http is not None
+        resp = await self._http.post(f"{self._local_base_url}{endpoint}", json=payload)
 
         response_body = (
             resp.json()
@@ -205,8 +210,8 @@ class RelayClient:
 
         content = base64.b64decode(body_b64) if body_b64 else None
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.request(method, url, headers=headers, content=content)
+        assert self._http is not None
+        resp = await self._http.request(method, url, headers=headers, content=content)
 
         resp_headers = dict(resp.headers)
         resp_body_b64 = base64.b64encode(resp.content).decode("ascii")

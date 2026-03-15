@@ -35,6 +35,26 @@ class RelayConfig(BaseModel):
     url: str = Field(default="wss://relay.repowire.io", description="Relay server URL")
     api_key: str | None = Field(None, description="API key for authentication")
 
+    @property
+    def dashboard_url(self) -> str | None:
+        """Dashboard URL via the relay, or None if not configured."""
+        if not self.api_key:
+            return None
+        base = self.url.replace("wss://", "https://").replace("/ws/relay", "")
+        return f"{base}/d/{self.api_key}/dashboard"
+
+    def ensure_api_key(self) -> str:
+        """Generate and set API key if missing. Returns the key."""
+        if self.api_key:
+            return self.api_key
+        import getpass
+
+        from repowire.relay.auth import generate_api_key
+
+        key = generate_api_key(getpass.getuser())
+        self.api_key = key.key
+        return key.key
+
 
 class PeerConfig(BaseModel):
     """Configuration for a single peer.

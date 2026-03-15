@@ -23,13 +23,23 @@ class APIKey(BaseModel):
     name: str = Field(default="default", description="Key name/label")
 
 
+_cached_secret: str | None = None
+_cached_env_value: str | None = None
+
+
 def _get_secret() -> str:
-    """Return the HMAC signing secret from env, falling back to dev secret."""
-    secret = os.environ.get("REPOWIRE_RELAY_SECRET")
-    if not secret:
+    """Return the HMAC signing secret from env, falling back to dev secret. Cached."""
+    global _cached_secret, _cached_env_value
+    env_value = os.environ.get("REPOWIRE_RELAY_SECRET")
+    if _cached_secret is not None and env_value == _cached_env_value:
+        return _cached_secret
+    _cached_env_value = env_value
+    if not env_value:
         log.warning("REPOWIRE_RELAY_SECRET not set — using insecure dev secret")
-        return _DEV_SECRET
-    return secret
+        _cached_secret = _DEV_SECRET
+    else:
+        _cached_secret = env_value
+    return _cached_secret
 
 
 def _compute_signature(secret: str, user_id: str) -> str:

@@ -32,27 +32,21 @@ logger = logging.getLogger(__name__)
 
 def create_app(
     config: Config | None = None,
-    relay_mode: bool = False,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Args:
         config: Optional configuration. Loaded from disk if not provided.
-        relay_mode: Enable relay mode for remote peer communication.
 
     Returns:
         Configured FastAPI application.
     """
-    _relay_mode = relay_mode
     _config = config
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """Manage application startup and shutdown."""
         cfg = _config or load_config()
-
-        if _relay_mode:
-            cfg.relay.enabled = True
 
         # Build the component stack
         session_mapper = SessionMapper(persistence_path=Path.home() / ".repowire" / "sessions.json")
@@ -77,7 +71,7 @@ def create_app(
         app.state.query_tracker = query_tracker
         app.state.message_router = message_router
         app.state.peer_manager = peer_manager
-        app.state.relay_mode = _relay_mode or cfg.relay.enabled
+        app.state.relay_mode = cfg.relay.enabled
 
         await peer_manager.start()
         init_deps(cfg, peer_manager, app.state)
@@ -114,7 +108,7 @@ def create_app(
         "http://localhost:8377",
         "http://127.0.0.1:8377",
     ]
-    if _relay_mode or (_config and _config.relay.enabled):
+    if _config and _config.relay.enabled:
         cors_origins.extend(
             [
                 "https://repowire.io",

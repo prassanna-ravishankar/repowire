@@ -67,6 +67,14 @@ def _unregister(conn: DaemonConnection) -> None:
         keys.discard(key)
         if not keys:
             del _user_daemons[conn.user_id]
+    # Fail-fast any pending HTTP tunnel requests for this daemon
+    cancelled = 0
+    for req_id, future in list(_http_futures.items()):
+        if not future.done():
+            future.set_exception(ConnectionError("Daemon disconnected"))
+            cancelled += 1
+    if cancelled:
+        log.info("Cancelled %d pending tunnel requests for %s", cancelled, conn.daemon_id)
     log.info("Daemon disconnected: %s (user=%s)", conn.daemon_id, conn.user_id)
 
 
@@ -187,27 +195,16 @@ function go(e) {
 # ---------------------------------------------------------------------------
 
 
-async def _handle_relay_query(conn: DaemonConnection, msg: dict[str, Any]) -> None:
+async def _handle_targeted_forward(conn: DaemonConnection, msg: dict[str, Any]) -> None:
+    """Forward a message to a specific daemon by target_daemon_id."""
+    msg_type = msg.get("type", "?")
     target_id = msg.get("target_daemon_id")
     if not target_id:
-        log.warning("relay_query missing target_daemon_id from %s", conn.daemon_id)
+        log.warning("%s missing target_daemon_id from %s", msg_type, conn.daemon_id)
         return
     target = _get_daemon(conn.user_id, target_id)
     if not target:
-        log.warning("relay_query target %s not connected (user=%s)", target_id, conn.user_id)
-        return
-    msg["source_daemon_id"] = conn.daemon_id
-    await _forward_to_daemon(target, msg)
-
-
-async def _handle_relay_notify(conn: DaemonConnection, msg: dict[str, Any]) -> None:
-    target_id = msg.get("target_daemon_id")
-    if not target_id:
-        log.warning("relay_notify missing target_daemon_id from %s", conn.daemon_id)
-        return
-    target = _get_daemon(conn.user_id, target_id)
-    if not target:
-        log.warning("relay_notify target %s not connected (user=%s)", target_id, conn.user_id)
+        log.warning("%s target %s not connected (user=%s)", msg_type, target_id, conn.user_id)
         return
     msg["source_daemon_id"] = conn.daemon_id
     await _forward_to_daemon(target, msg)
@@ -220,19 +217,6 @@ async def _handle_relay_broadcast(conn: DaemonConnection, msg: dict[str, Any]) -
             await _forward_to_daemon(target, msg)
 
 
-async def _handle_relay_response(conn: DaemonConnection, msg: dict[str, Any]) -> None:
-    target_id = msg.get("target_daemon_id")
-    if not target_id:
-        log.warning("relay_response missing target_daemon_id from %s", conn.daemon_id)
-        return
-    target = _get_daemon(conn.user_id, target_id)
-    if not target:
-        log.warning("relay_response target %s not connected (user=%s)", target_id, conn.user_id)
-        return
-    msg["source_daemon_id"] = conn.daemon_id
-    await _forward_to_daemon(target, msg)
-
-
 async def _handle_http_response(msg: dict[str, Any]) -> None:
     request_id = msg.get("request_id")
     if not request_id:
@@ -243,10 +227,10 @@ async def _handle_http_response(msg: dict[str, Any]) -> None:
 
 
 _MSG_HANDLERS: dict[str, Any] = {
-    "relay_query": _handle_relay_query,
-    "relay_notify": _handle_relay_notify,
+    "relay_query": _handle_targeted_forward,
+    "relay_notify": _handle_targeted_forward,
     "relay_broadcast": _handle_relay_broadcast,
-    "relay_response": _handle_relay_response,
+    "relay_response": _handle_targeted_forward,
 }
 
 # ---------------------------------------------------------------------------

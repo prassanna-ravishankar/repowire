@@ -36,8 +36,6 @@ def main() -> None:
 @click.option("--relay", is_flag=True, help="Enable relay mode")
 def serve(host: str, port: int, relay: bool) -> None:
     """Start the repowire HTTP daemon."""
-    import getpass
-
     import uvicorn
 
     from repowire.config.models import load_config
@@ -47,22 +45,14 @@ def serve(host: str, port: int, relay: bool) -> None:
     if relay:
         config.relay.enabled = True
 
-    # Auto-generate relay key on first connect
-    if config.relay.enabled and not config.relay.api_key:
-        from repowire.relay.auth import generate_api_key
-
-        user_id = getpass.getuser()
-        api_key = generate_api_key(user_id)
-        config.relay.api_key = api_key.key
+    if config.relay.enabled:
+        config.relay.ensure_api_key()
         config.save()
-        console.print(f"[green]Generated relay key:[/] {api_key.key}")
 
     app = create_app(config=config)
     console.print(f"[cyan]Starting Repowire daemon on {host}:{port}...[/]")
-    if config.relay.enabled and config.relay.api_key:
-        relay_url = config.relay.url.replace("wss://", "https://").replace("/ws/relay", "")
-        dashboard_url = f"{relay_url}/d/{config.relay.api_key}/dashboard"
-        console.print(f"[green]Dashboard:[/] {dashboard_url}")
+    if config.relay.dashboard_url:
+        console.print(f"[green]Dashboard:[/] {config.relay.dashboard_url}")
     uvicorn.run(app, host=host, port=port, ws_ping_interval=None, ws_ping_timeout=None)
 
 
@@ -76,7 +66,6 @@ def serve(host: str, port: int, relay: bool) -> None:
 @click.option("--relay", is_flag=True, help="Enable hosted relay via repowire.io")
 def setup(no_service: bool, relay: bool) -> None:
     """One-time setup: install hooks/plugins, MCP server, and daemon service."""
-    import getpass
     import shutil
 
     _cleanup_legacy_artifacts()
@@ -103,18 +92,13 @@ def setup(no_service: bool, relay: bool) -> None:
     # Enable relay if requested
     if relay:
         from repowire.config.models import load_config
-        from repowire.relay.auth import generate_api_key
 
         config = load_config()
         config.relay.enabled = True
-        if not config.relay.api_key:
-            api_key = generate_api_key(getpass.getuser())
-            config.relay.api_key = api_key.key
+        config.relay.ensure_api_key()
         config.save()
-        relay_url = config.relay.url.replace("wss://", "https://")
-        dashboard_url = f"{relay_url}/d/{config.relay.api_key}/dashboard"
         console.print("[green]✓[/] Relay enabled")
-        console.print(f"  Dashboard: {dashboard_url}")
+        console.print(f"  Dashboard: {config.relay.dashboard_url}")
 
     # Install daemon as system service
     if not no_service:
