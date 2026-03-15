@@ -134,7 +134,7 @@ _LANDING_HTML = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Repowire Relay</title>
+<title>Repowire — Mesh Network for AI Coding Agents</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -146,9 +146,15 @@ _LANDING_HTML = """\
     justify-content: center;
     min-height: 100vh;
   }
-  .container { text-align: center; max-width: 400px; padding: 2rem; }
-  h1 { color: #e0e0e8; font-size: 1.6rem; margin-bottom: 0.3rem; }
-  .subtitle { color: #6a6a7a; font-size: 0.85rem; margin-bottom: 2rem; }
+  .container { text-align: center; max-width: 480px; padding: 2rem; }
+  h1 { color: #e0e0e8; font-size: 1.8rem; margin-bottom: 0.4rem; }
+  .tagline { color: #8a8a9a; font-size: 0.9rem; margin-bottom: 0.6rem; }
+  .desc { color: #5a5a6a; font-size: 0.8rem; line-height: 1.5; margin-bottom: 2rem; }
+  .desc a { color: #7a7aaa; text-decoration: none; }
+  .desc a:hover { text-decoration: underline; }
+  .divider { border: none; border-top: 1px solid #1a1a2a; margin: 1.5rem 0; }
+  .access-label { color: #6a6a7a; font-size: 0.75rem; text-transform: uppercase;
+    letter-spacing: 0.1em; margin-bottom: 0.6rem; }
   form { display: flex; gap: 0.5rem; }
   input {
     flex: 1;
@@ -173,16 +179,34 @@ _LANDING_HTML = """\
     font-size: 0.9rem;
   }
   button:hover { background: #22223a; border-color: #4a4a6a; }
+  .setup { color: #4a4a5a; font-size: 0.75rem; margin-top: 1rem; }
+  .setup code { color: #7a7a8a; background: #14141f; padding: 0.15rem 0.4rem;
+    border-radius: 3px; }
+  .links { margin-top: 2rem; display: flex; gap: 1.5rem; justify-content: center;
+    font-size: 0.8rem; }
+  .links a { color: #5a5a7a; text-decoration: none; }
+  .links a:hover { color: #8a8aaa; }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>repowire relay</h1>
-  <p class="subtitle">Enter your API key to access your dashboard</p>
+  <h1>repowire</h1>
+  <p class="tagline">Mesh network for AI coding agents</p>
+  <p class="desc">
+    Let Claude Code and OpenCode sessions talk to each other across repos and machines.
+  </p>
+  <hr class="divider">
+  <p class="access-label">Access your dashboard</p>
   <form onsubmit="go(event)">
     <input id="key" type="text" placeholder="rw_..." autocomplete="off" spellcheck="false">
     <button type="submit">Go</button>
   </form>
+  <p class="setup">Run <code>repowire setup --relay</code> to get your key</p>
+  <div class="links">
+    <a href="https://github.com/prassanna-ravishankar/repowire">GitHub</a>
+    <a href="https://pypi.org/project/repowire/">PyPI</a>
+    <a href="https://prassanna.io/blog/repowire/">Blog</a>
+  </div>
 </div>
 <script>
 function go(e) {
