@@ -32,7 +32,7 @@ class RelayConfig(BaseModel):
     """Configuration for relay server connection."""
 
     enabled: bool = Field(default=False, description="Whether to connect to relay")
-    url: str = Field(default="wss://relay.repowire.io", description="Relay server URL")
+    url: str = Field(default="wss://repowire.io", description="Relay server URL")
     api_key: str | None = Field(None, description="API key for authentication")
 
     @property
@@ -40,8 +40,7 @@ class RelayConfig(BaseModel):
         """Dashboard URL via the relay, or None if not configured."""
         if not self.api_key:
             return None
-        base = self.url.replace("wss://", "https://").replace("/ws/relay", "")
-        return f"{base}/d/{self.api_key}/dashboard"
+        return f"https://repowire.io/d/{self.api_key}/dashboard"
 
     def ensure_api_key(self) -> str:
         """Register with relay and set API key if missing. Returns the key."""
