@@ -75,7 +75,7 @@ def _get_pane_command(pane_id: str) -> str | None:
             return None
         cmd = result.stdout.strip().lower()
         return cmd if cmd else None
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except FileNotFoundError:
         return None
 
 

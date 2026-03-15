@@ -78,6 +78,21 @@ def test_prune_persists_to_disk(tmp_path):
     assert mapper2.get_mapping("repow-dev-stale") is None
 
 
+def test_prune_removes_entries_with_bad_timestamp(tmp_path):
+    mappings = {
+        "repow-dev-badtimestamp": {
+            "session_id": "repow-dev-badtimestamp",
+            "display_name": "badtimestamp",
+            "circle": "dev",
+            "backend": AgentType.CLAUDE_CODE,
+            "updated_at": "not-a-valid-iso-timestamp",
+        },
+    }
+    mapper = _make_mapper(tmp_path, mappings)
+    assert mapper.prune_offline() == 1
+    assert mapper.get_mapping("repow-dev-badtimestamp") is None
+
+
 def test_prune_noop_when_nothing_stale(tmp_path):
     mappings = {
         "repow-dev-fresh": {
