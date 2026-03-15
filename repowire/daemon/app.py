@@ -55,7 +55,7 @@ def create_app(
 
         # Build the component stack
         session_mapper = SessionMapper(persistence_path=Path.home() / ".repowire" / "sessions.json")
-        session_mapper.prune_offline()
+        session_mapper.prune_offline(max_age_hours=cfg.daemon.prune_max_age_hours)
         transport = WebSocketTransport()
         query_tracker = QueryTracker()
         message_router = MessageRouter(

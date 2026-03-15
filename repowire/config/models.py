@@ -115,6 +115,11 @@ class DaemonConfig(BaseModel):
     auto_reconnect: bool = Field(default=True, description="Auto-reconnect on disconnect")
     heartbeat_interval: int = Field(default=30, description="Heartbeat interval in seconds")
 
+    # Session cleanup
+    prune_max_age_hours: float = Field(
+        default=72, description="Remove session mappings older than this on startup",
+    )
+
     # Spawn settings
     spawn: SpawnSettings = Field(default_factory=SpawnSettings)
 
