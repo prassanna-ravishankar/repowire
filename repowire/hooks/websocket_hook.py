@@ -26,6 +26,9 @@ from repowire.hooks.utils import get_display_name
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Set once at startup in main() — guards against pane reuse by a different agent
+_expected_command: str | None = None
+
 
 def _tmux_send_keys(pane_id: str, text: str) -> bool:
     """Send keys to a tmux pane via subprocess.
@@ -60,14 +63,8 @@ def _tmux_send_keys(pane_id: str, text: str) -> bool:
         return False
 
 
-def _is_pane_safe(pane_id: str) -> bool:
-    """Check if the tmux pane still has an AI agent process running.
-
-    Uses a denylist of known shells rather than an allowlist of agent binaries,
-    because agent CLIs may report version strings (e.g. "2.1.45") as
-    pane_current_command instead of their binary name.
-    """
-    shell_commands = {"bash", "zsh", "sh", "fish", "tcsh", "csh", "dash", "login"}
+def _get_pane_command(pane_id: str) -> str | None:
+    """Get the current command running in a tmux pane."""
     try:
         result = subprocess.run(
             ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_current_command}"],
@@ -75,13 +72,27 @@ def _is_pane_safe(pane_id: str) -> bool:
             text=True,
         )
         if result.returncode != 0:
-            return False
+            return None
         cmd = result.stdout.strip().lower()
-        if not cmd:
-            return False  # pane doesn't exist; tmux exits 0 with empty stdout
-        return cmd not in shell_commands
+        return cmd if cmd else None
     except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
+def _is_pane_safe(pane_id: str) -> bool:
+    """Check if the tmux pane still has the expected agent process running.
+
+    If _expected_command is set (module-level, captured at startup), the pane
+    is only safe when the same command is still running. Falls back to a shell
+    denylist otherwise.
+    """
+    shell_commands = {"bash", "zsh", "sh", "fish", "tcsh", "csh", "dash", "login"}
+    cmd = _get_pane_command(pane_id)
+    if not cmd:
         return False
+    if _expected_command:
+        return cmd == _expected_command
+    return cmd not in shell_commands
 
 
 async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
@@ -200,6 +211,10 @@ async def main() -> int:
     circle = get_tmux_info()["session_name"] or "default"
     display_name = get_display_name()
     path = str(os.getcwd())
+
+    # Snapshot pane command at startup to detect pane reuse
+    global _expected_command
+    _expected_command = _get_pane_command(pane_id)
 
     daemon_host = os.environ.get("REPOWIRE_DAEMON_HOST", "127.0.0.1")
     daemon_port = os.environ.get("REPOWIRE_DAEMON_PORT", "8377")
