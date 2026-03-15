@@ -170,13 +170,13 @@ OpenCode has a plugin SDK. The repowire plugin (`~/.opencode/plugin/repowire.ts`
 ```bash
 # Main commands
 repowire setup                    # Install hooks, MCP server, daemon service
+repowire setup --relay            # Same + enable remote dashboard via repowire.io
 repowire setup --no-service       # Skip daemon service (run manually with 'serve')
 repowire status                   # Show what's installed and running
 repowire uninstall                # Remove all components
 
 # Daemon
 repowire serve                    # Run daemon in foreground
-repowire serve --relay            # Run with relay (remote dashboard + cross-machine mesh)
 repowire build-ui                 # Build web dashboard (development)
 
 # Peer management
@@ -233,21 +233,15 @@ The daemon also restricts CORS to localhost origins only.
 
 Access your dashboard from anywhere and connect agents across machines via [repowire.io](https://repowire.io).
 
-Enable relay in your config:
-
-```yaml
-# ~/.repowire/config.yaml
-relay:
-  enabled: true
+```bash
+repowire setup --relay
+# ✓ Configured agents: claude-code
+# ✓ Relay enabled
+#   Dashboard: https://relay.repowire.io/d/rw_prass_33e7233b0c4cf148/dashboard
+# ✓ Daemon service installed (launchd)
 ```
 
-Then restart the daemon (`repowire service restart`). On first start, an API key is auto-generated and saved. Your dashboard URL is printed in the logs:
-
-```
-Dashboard: https://repowire.io/d/rw_prass_33e7233b0c4cf148/dashboard
-```
-
-Open it from any browser — your local daemon is tunneled through the relay. No port forwarding, no VPN.
+Open the dashboard URL from any browser — your local daemon is tunneled through the relay. No port forwarding, no VPN.
 
 **How it works:** Your daemon opens an outbound WebSocket to `relay.repowire.io`. The relay bridges messages between daemons on different machines and proxies HTTP requests (dashboard, API) back through the tunnel.
 

@@ -73,8 +73,10 @@ def serve(host: str, port: int, relay: bool) -> None:
 
 @main.command()
 @click.option("--no-service", is_flag=True, help="Skip daemon service installation")
-def setup(no_service: bool) -> None:
+@click.option("--relay", is_flag=True, help="Enable hosted relay via repowire.io")
+def setup(no_service: bool, relay: bool) -> None:
     """One-time setup: install hooks/plugins, MCP server, and daemon service."""
+    import getpass
     import shutil
 
     _cleanup_legacy_artifacts()
@@ -97,6 +99,22 @@ def setup(no_service: bool) -> None:
         return
 
     console.print(f"[green]✓[/] Configured agents: {', '.join(agents_setup)}")
+
+    # Enable relay if requested
+    if relay:
+        from repowire.config.models import load_config
+        from repowire.relay.auth import generate_api_key
+
+        config = load_config()
+        config.relay.enabled = True
+        if not config.relay.api_key:
+            api_key = generate_api_key(getpass.getuser())
+            config.relay.api_key = api_key.key
+        config.save()
+        relay_url = config.relay.url.replace("wss://", "https://")
+        dashboard_url = f"{relay_url}/d/{config.relay.api_key}/dashboard"
+        console.print("[green]✓[/] Relay enabled")
+        console.print(f"  Dashboard: {dashboard_url}")
 
     # Install daemon as system service
     if not no_service:
