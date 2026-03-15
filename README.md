@@ -233,14 +233,21 @@ The daemon also restricts CORS to localhost origins only.
 
 Access your dashboard from anywhere and connect agents across machines via [repowire.io](https://repowire.io).
 
-```bash
-# Start daemon with relay enabled
-repowire serve --relay
-# => Generated relay key: rw_prass_33e7233b0c4cf148
-# => Dashboard: https://repowire.io/d/rw_prass_33e7233b0c4cf148/dashboard
+Enable relay in your config:
+
+```yaml
+# ~/.repowire/config.yaml
+relay:
+  enabled: true
 ```
 
-Open the dashboard URL from any browser — your local daemon is tunneled through the relay. No port forwarding, no VPN.
+Then restart the daemon (`repowire service restart`). On first start, an API key is auto-generated and saved. Your dashboard URL is printed in the logs:
+
+```
+Dashboard: https://repowire.io/d/rw_prass_33e7233b0c4cf148/dashboard
+```
+
+Open it from any browser — your local daemon is tunneled through the relay. No port forwarding, no VPN.
 
 **How it works:** Your daemon opens an outbound WebSocket to `relay.repowire.io`. The relay bridges messages between daemons on different machines and proxies HTTP requests (dashboard, API) back through the tunnel.
 
