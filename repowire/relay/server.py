@@ -24,6 +24,10 @@ from repowire.relay.auth import APIKey, register_token, validate_api_key
 
 log = logging.getLogger(__name__)
 
+
+class RegisterRequest(BaseModel):
+    user_id: str
+
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
@@ -256,9 +260,6 @@ def create_app() -> FastAPI:
         return {"status": "ok", "connected_daemons": len(_connections)}
 
     # -- Registration --
-
-    class RegisterRequest(BaseModel):
-        user_id: str
 
     @app.post("/api/v1/register")
     async def register(req: RegisterRequest) -> dict[str, str]:
