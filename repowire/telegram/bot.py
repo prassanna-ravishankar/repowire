@@ -63,7 +63,7 @@ class TelegramPeer:
         self._display_name = display_name
         self._circle = circle
         self._bot_path = f"/bot{bot_token}"
-        self._http = httpx.AsyncClient(base_url="https://api.telegram.org")
+        self._http = httpx.AsyncClient(base_url="https://api.telegram.org", timeout=10.0)
         self._ws: ClientConnection | None = None
         self._stopping = False
         self._tg_offset = 0
@@ -299,4 +299,6 @@ def main() -> None:
     try:
         asyncio.run(bot.start())
     except KeyboardInterrupt:
+        pass
+    finally:
         asyncio.run(bot.stop())
