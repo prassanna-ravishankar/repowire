@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -61,8 +62,8 @@ class TelegramPeer:
         self._daemon_url = daemon_url.rstrip("/")
         self._display_name = display_name
         self._circle = circle
-        self._tg = f"https://api.telegram.org/bot{bot_token}"
-        self._http = httpx.AsyncClient()
+        self._bot_path = f"/bot{bot_token}"
+        self._http = httpx.AsyncClient(base_url="https://api.telegram.org")
         self._ws: ClientConnection | None = None
         self._stopping = False
         self._tg_offset = 0
@@ -139,7 +140,7 @@ class TelegramPeer:
         while not self._stopping:
             try:
                 r = await self._http.get(
-                    f"{self._tg}/getUpdates",
+                    f"{self._bot_path}/getUpdates",
                     params={"offset": self._tg_offset, "timeout": 30},
                     timeout=35,
                 )
@@ -168,7 +169,7 @@ class TelegramPeer:
     async def _on_callback(self, cb: dict) -> None:
         data = cb.get("data", "")
         await self._http.post(
-            f"{self._tg}/answerCallbackQuery",
+            f"{self._bot_path}/answerCallbackQuery",
             json={"callback_query_id": cb.get("id")},
         )
 
@@ -228,7 +229,7 @@ class TelegramPeer:
             for p in active:
                 name = p.get("display_name", p.get("name", "?"))
                 path = p.get("path", "")
-                folder = path.rstrip("/").split("/")[-1] if path else name
+                folder = Path(path).name or name
                 desc = p.get("description", "")
                 branch = p.get("metadata", {}).get("branch", "")
                 icon = "🟢" if p.get("status") == "online" else "🟡"
@@ -278,7 +279,7 @@ class TelegramPeer:
             }
             if markup:
                 payload["reply_markup"] = markup
-            await self._http.post(f"{self._tg}/sendMessage", json=payload)
+            await self._http.post(f"{self._bot_path}/sendMessage", json=payload)
         except Exception:
             logger.warning("Telegram send failed", exc_info=True)
 
