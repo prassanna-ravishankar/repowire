@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sys
@@ -14,17 +15,26 @@ from repowire.session.transcript import extract_last_turn_pair, extract_last_tur
 
 
 def _pop_pending_cid(pane_id: str) -> str | None:
-    """Pop the oldest pending correlation_id for a pane, if any."""
+    """Pop the oldest pending correlation_id for a pane, if any.
+
+    Uses flock to prevent race with websocket_hook's _push_pending_cid.
+    """
     path = pending_cid_path(pane_id)
+    lock_path = path.with_suffix(path.suffix + ".lock")
     try:
-        if not path.exists():
-            return None
-        pending = json.loads(path.read_text())
-        if not pending:
-            return None
-        cid = pending.pop(0)
-        path.write_text(json.dumps(pending))
-        return cid
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                if not path.exists():
+                    return None
+                pending = json.loads(path.read_text())
+                if not pending:
+                    return None
+                cid = pending.pop(0)
+                path.write_text(json.dumps(pending))
+                return cid
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
     except (json.JSONDecodeError, OSError, IndexError):
         return None
 

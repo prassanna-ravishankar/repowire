@@ -42,8 +42,8 @@ def _cleanup_stale_artifacts(max_age_hours: float = 72) -> None:
         try:
             if f.suffix in (".pid", ".log", ".lock") and f.stat().st_mtime < cutoff:
                 f.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.warning("Error cleaning up stale artifact %s: %s", f, e)
 
 
 def create_app(

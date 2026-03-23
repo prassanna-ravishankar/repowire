@@ -5,6 +5,7 @@ and forwards responses via WebSocket. Fully reactive — no polling.
 """
 
 import asyncio
+import fcntl
 import json
 import logging
 import os
@@ -31,15 +32,24 @@ _expected_command: str | None = None
 
 
 def _push_pending_cid(pane_id: str, correlation_id: str) -> None:
-    """Append a correlation_id to the pending file for a pane."""
+    """Append a correlation_id to the pending file for a pane.
+
+    Uses flock to prevent race with stop_handler's _pop_pending_cid.
+    """
     path = pending_cid_path(pane_id)
-    try:
-        pending = json.loads(path.read_text()) if path.exists() else []
-    except (json.JSONDecodeError, OSError):
-        pending = []
-    pending.append(correlation_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(pending))
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with open(lock_path, "w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            try:
+                pending = json.loads(path.read_text()) if path.exists() else []
+            except (json.JSONDecodeError, OSError):
+                pending = []
+            pending.append(correlation_id)
+            path.write_text(json.dumps(pending))
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def _tmux_send_keys(pane_id: str, text: str) -> bool:
