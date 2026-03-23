@@ -10,9 +10,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
-from repowire.daemon.deps import get_app_state, get_peer_manager
+from repowire.daemon.deps import get_peer_registry
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
-from repowire.protocol.peers import Peer, PeerStatus
+from repowire.protocol.peers import Peer
 
 router = APIRouter(tags=["peers"])
 
@@ -84,31 +84,15 @@ class UnregisterPeerRequest(BaseModel):
     name: str = Field(..., description="Peer name to unregister")
 
 
-def _build_peer(
-    request: RegisterPeerRequest, peer_id: str, display_name: str, circle: str = "global"
-) -> Peer:
-    """Build a Peer model from a registration request."""
-    return Peer(
-        peer_id=peer_id,
-        display_name=display_name,
-        path=request.path or "",
-        machine=request.machine or socket.gethostname(),
-        tmux_session=request.tmux_session,
-        backend=request.backend,
-        circle=circle,
-        status=PeerStatus.ONLINE,
-        metadata=request.metadata,
-    )
-
 
 @router.get("/peers", response_model=PeersResponse)
 async def list_peers(
     _: str | None = Depends(require_auth),
 ) -> PeersResponse:
     """Get list of all registered peers."""
-    peer_manager = get_peer_manager()
-    await peer_manager.lazy_repair()
-    peers = await peer_manager.get_all_peers()
+    peer_registry = get_peer_registry()
+    await peer_registry.lazy_repair()
+    peers = await peer_registry.get_all_peers()
     return PeersResponse(peers=[_peer_to_info(p) for p in peers])
 
 
@@ -118,8 +102,8 @@ async def get_peer_by_pane(
     _: str | None = Depends(require_auth),
 ) -> PeerInfo:
     """Get peer by tmux pane ID."""
-    peer_manager = get_peer_manager()
-    peer = await peer_manager.get_peer_by_pane(pane_id)
+    peer_registry = get_peer_registry()
+    peer = await peer_registry.get_peer_by_pane(pane_id)
     if peer:
         return _peer_to_info(peer)
     raise HTTPException(
@@ -135,8 +119,8 @@ async def get_peer(
     _: str | None = Depends(require_auth),
 ) -> PeerInfo:
     """Get information about a specific peer by peer_id or display_name."""
-    peer_manager = get_peer_manager()
-    peer = await peer_manager.get_peer(identifier, circle=circle)
+    peer_registry = get_peer_registry()
+    peer = await peer_registry.get_peer(identifier, circle=circle)
     if peer:
         return _peer_to_info(peer)
 
@@ -151,18 +135,16 @@ async def _register_peer_impl(request: RegisterPeerRequest) -> None:
     display_name = request.display_name or request.name
     circle = request.circle or "global"
 
-    state = get_app_state()
-    session_id = state.session_mapper.register_session(
+    peer_registry = get_peer_registry()
+    await peer_registry.allocate_and_register(
         display_name=display_name,
-        path=request.path or "",
         circle=circle,
         backend=request.backend,
+        path=request.path or "",
+        tmux_session=request.tmux_session,
+        metadata=request.metadata,
+        machine=request.machine or socket.gethostname(),
     )
-
-    peer = _build_peer(request, session_id, display_name, circle)
-
-    peer_manager = get_peer_manager()
-    await peer_manager.register_peer(peer)
 
 
 @router.post("/peers", response_model=OkResponse)
@@ -176,22 +158,17 @@ async def create_peer(
 
 
 async def _unregister_peer_impl(name: str, circle: str | None = None) -> None:
-    """Shared unregister logic: remove from PeerManager + SessionMapper."""
-    peer_manager = get_peer_manager()
+    """Shared unregister logic: remove from PeerRegistry."""
+    peer_registry = get_peer_registry()
 
-    # Look up first to get the exact peer_id for targeted SessionMapper cleanup
-    peer = await peer_manager.get_peer(name, circle=circle)
+    peer = await peer_registry.get_peer(name, circle=circle)
     if not peer:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Peer not found: {name}",
         )
 
-    peer_id = peer.peer_id
-    await peer_manager.unregister_peer(name, circle=circle)
-
-    state = get_app_state()
-    state.session_mapper.unregister_session(peer_id)
+    await peer_registry.unregister_peer(name, circle=circle)
 
 
 @router.delete("/peers/{name}", response_model=OkResponse)
@@ -221,8 +198,8 @@ async def mark_peer_offline(
 
     Called by SessionEnd hook when a Claude session closes.
     """
-    peer_manager = get_peer_manager()
-    cancelled = await peer_manager.mark_offline(name)
+    peer_registry = get_peer_registry()
+    cancelled = await peer_registry.mark_offline(name)
     return OfflineResponse(cancelled_queries=cancelled)
 
 
@@ -240,8 +217,8 @@ async def set_peer_description(
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
     """Update a peer's task description."""
-    peer_manager = get_peer_manager()
-    found = await peer_manager.update_description(name, request.description, circle=circle)
+    peer_registry = get_peer_registry()
+    found = await peer_registry.update_description(name, request.description, circle=circle)
     if not found:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -263,8 +240,8 @@ async def set_peer_circle_endpoint(
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
     """Set a peer's circle for cross-circle communication."""
-    peer_manager = get_peer_manager()
-    await peer_manager.set_peer_circle(request.peer_name, request.circle)
+    peer_registry = get_peer_registry()
+    await peer_registry.set_peer_circle(request.peer_name, request.circle)
     return OkResponse()
 
 

@@ -1,6 +1,9 @@
-"""Core logic for the Repowire daemon.
+"""Unified peer registry: merges PeerManager + SessionMapper into one class.
 
-Uses unified WebSocket architecture with MessageRouter for all message delivery.
+Holds both the in-memory peer registry (_peers) and the persistent session
+mappings (_mappings). Mutations that touch both stores happen under a single
+lock, fixing the stale-mapping bug where set_peer_circle / update_peer_display_name
+only updated the Peer but not the SessionMapping.
 """
 
 from __future__ import annotations
@@ -8,26 +11,56 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from collections import deque
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from repowire.config.models import DEFAULT_QUERY_TIMEOUT, Config
+from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
 from repowire.protocol.peers import Peer, PeerStatus
 
 if TYPE_CHECKING:
     from repowire.daemon.message_router import MessageRouter
     from repowire.daemon.query_tracker import QueryTracker
-    from repowire.daemon.session_mapper import SessionMapper
     from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
 
 
-class PeerManager:
-    """Manages peer registry and delegates message routing to MessageRouter.
+# ---------------------------------------------------------------------------
+# SessionMapping dataclass (previously in session_mapper.py)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SessionMapping:
+    """Persistent mapping of session to peer identity."""
+
+    session_id: str  # "repow-dev-a1b2c3d4"
+    display_name: str
+    circle: str
+    backend: AgentType
+    path: str | None = None
+    updated_at: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.updated_at is None:
+            self.updated_at = datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# PeerRegistry
+# ---------------------------------------------------------------------------
+
+class PeerRegistry:
+    """Unified peer registry with integrated session mapping.
+
+    Combines the responsibilities of PeerManager (in-memory peer state,
+    message routing delegation, event tracking) and SessionMapper (stable
+    peer-ID allocation, disk persistence).
 
     Thread-safe with asyncio locks.
     """
@@ -36,27 +69,25 @@ class PeerManager:
         self,
         config: Config,
         message_router: MessageRouter,
-        session_mapper: SessionMapper,
         query_tracker: QueryTracker | None = None,
         transport: WebSocketTransport | None = None,
+        persistence_path: Path | None = None,
     ) -> None:
-        """Initialize PeerManager.
-
-        Args:
-            config: Configuration instance
-            message_router: Message router for sending queries/notifications
-            session_mapper: Session mapper for stable peer IDs
-            query_tracker: Query tracker for cancelling pending queries
-            transport: WebSocket transport for ping/pong liveness checks
-        """
         self._config = config
         self._router = message_router
-        self._session_mapper = session_mapper
         self._query_tracker = query_tracker
         self._transport = transport
 
-        # Peer registry: session_id -> Peer (single source of truth)
+        # Peer registry: peer_id -> Peer (single source of truth)
         self._peers: dict[str, Peer] = {}
+
+        # Session mappings: peer_id -> SessionMapping (persistent)
+        self._mappings: dict[str, SessionMapping] = {}
+        self._mappings_path = persistence_path or (
+            Config.get_config_dir() / "sessions.json"
+        )
+        self._mappings_dirty = False
+        self._load_mappings()
 
         self._lock = asyncio.Lock()
         self._events: deque[dict[str, Any]] = deque(maxlen=500)
@@ -65,6 +96,57 @@ class PeerManager:
         self._load_events()
         self._last_repair: float = 0.0
         self._repair_lock = asyncio.Lock()
+
+    # ------------------------------------------------------------------
+    # Mapping persistence
+    # ------------------------------------------------------------------
+
+    def _load_mappings(self) -> None:
+        """Load session mappings from disk."""
+        if not self._mappings_path.exists():
+            return
+        try:
+            data = json.loads(self._mappings_path.read_text())
+            for session_id, mapping_data in data.items():
+                self._mappings[session_id] = SessionMapping(**mapping_data)
+            logger.info(f"Loaded {len(self._mappings)} session mappings")
+        except (json.JSONDecodeError, TypeError, ValueError, KeyError) as e:
+            backup = self._mappings_path.with_suffix(".json.corrupt")
+            try:
+                self._mappings_path.rename(backup)
+                logger.error(f"Corrupt session mappings, backed up to {backup}: {e}")
+            except OSError:
+                logger.error(f"Corrupt session mappings (backup failed): {e}")
+        except OSError as e:
+            logger.error(f"Failed to read session mappings file: {e}")
+
+    def _persist_mappings(self) -> None:
+        """Save session mappings to disk atomically (debounced via dirty flag).
+
+        Called from lazy_repair and shutdown, not on every mutation.
+        """
+        if not self._mappings_dirty:
+            return
+        tmp_path = self._mappings_path.with_suffix(".json.tmp")
+        try:
+            self._mappings_path.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                session_id: asdict(mapping)
+                for session_id, mapping in self._mappings.items()
+            }
+            tmp_path.write_text(json.dumps(data, indent=2))
+            os.replace(str(tmp_path), str(self._mappings_path))
+            self._mappings_dirty = False
+        except OSError as e:
+            logger.error(f"Failed to save session mappings: {e}")
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    # ------------------------------------------------------------------
+    # Event tracking
+    # ------------------------------------------------------------------
 
     def _load_events(self) -> None:
         """Load persisted events from disk."""
@@ -113,13 +195,21 @@ class PeerManager:
         """Get the last 100 events."""
         return list(self._events)
 
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     async def start(self) -> None:
-        """Start the peer manager."""
-        logger.info("PeerManager started with unified WebSocket backend")
+        """Start the peer registry."""
+        logger.info("PeerRegistry started with unified WebSocket backend")
 
     async def stop(self) -> None:
-        """Stop the peer manager."""
-        logger.info("PeerManager stopped")
+        """Stop the peer registry."""
+        logger.info("PeerRegistry stopped")
+
+    # ------------------------------------------------------------------
+    # Peer lookup (internal, must hold _lock)
+    # ------------------------------------------------------------------
 
     def _lookup_peer_unlocked(self, identifier: str, circle: str | None = None) -> Peer | None:
         """Lookup peer by session_id or display_name. Must be called with lock held.
@@ -143,34 +233,122 @@ class PeerManager:
         active = [p for p in matches if p.status != PeerStatus.OFFLINE]
         return active[0] if active else matches[0]
 
-    async def register_peer(self, peer: Peer) -> None:
-        """Register a peer in the mesh.
+    def _find_or_allocate_mapping(
+        self,
+        display_name: str,
+        circle: str,
+        backend: AgentType,
+        path: str | None = None,
+    ) -> str:
+        """Find existing mapping or allocate a new session_id. Must hold lock.
 
-        Indexed by session_id. Only evicts old peer if same
-        (display_name, circle, backend) — a true reconnect.
+        Returns the session_id (existing or new).
+        """
+        for sid, mapping in self._mappings.items():
+            if (
+                mapping.display_name == display_name
+                and mapping.circle == circle
+                and mapping.backend == backend
+            ):
+                mapping.path = path
+                mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                logger.info(f"Reusing session {sid} for {display_name}@{circle}")
+                self._mappings_dirty = True
+                return sid
+
+        session_id = f"repow-{circle}-{uuid4().hex[:8]}"
+        self._mappings[session_id] = SessionMapping(
+            session_id=session_id,
+            display_name=display_name,
+            circle=circle,
+            backend=backend,
+            path=path,
+        )
+        logger.info(f"Created session {session_id} for {display_name}@{circle}")
+        self._mappings_dirty = True
+        return session_id
+
+    def _evict_ghosts(
+        self, display_name: str, backend: AgentType, new_peer_id: str, circle: str,
+    ) -> None:
+        """Evict stale peers with same (display_name, backend). Must hold lock."""
+        for old_sid, old_peer in list(self._peers.items()):
+            if (
+                old_peer.display_name == display_name
+                and old_peer.backend == backend
+                and old_sid != new_peer_id
+                and (old_peer.circle == circle or old_peer.status == PeerStatus.OFFLINE)
+            ):
+                del self._peers[old_sid]
+
+    # ------------------------------------------------------------------
+    # Allocate + register (atomic, the preferred public API)
+    # ------------------------------------------------------------------
+
+    async def allocate_and_register(
+        self,
+        display_name: str,
+        circle: str,
+        backend: AgentType,
+        path: str | None = None,
+        pane_id: str | None = None,
+        tmux_session: str | None = None,
+        metadata: dict | None = None,
+        machine: str = "unknown",
+    ) -> str:
+        """Allocate a peer_id and register the peer atomically. Returns peer_id.
+
+        If a mapping with the same (display_name, circle, backend) exists,
+        its peer_id is reused. Otherwise a new ``repow-{circle}-{uuid8}``
+        is generated. Ghost eviction runs under the same lock.
         """
         async with self._lock:
-            # Evict stale entries for the same (display_name, backend):
-            # - same circle + different sid = true reconnect
-            # - OFFLINE + any circle = ghost from a dead hook with stale circle
-            for old_sid, old_peer in list(self._peers.items()):
-                if (
-                    old_peer.display_name == peer.display_name
-                    and old_peer.backend == peer.backend
-                    and old_sid != peer.peer_id
-                    and (old_peer.circle == peer.circle or old_peer.status == PeerStatus.OFFLINE)
-                ):
-                    del self._peers[old_sid]
+            peer_id = self._find_or_allocate_mapping(display_name, circle, backend, path)
+            self._evict_ghosts(display_name, backend, peer_id, circle)
 
+            # --- create and insert Peer ---
+            peer = Peer(
+                peer_id=peer_id,
+                display_name=display_name,
+                circle=circle,
+                backend=backend,
+                status=PeerStatus.ONLINE,
+                last_seen=datetime.now(timezone.utc),
+                pane_id=pane_id,
+                tmux_session=tmux_session,
+                path=path or "",
+                machine=machine,
+                metadata=metadata or {},
+            )
+            self._peers[peer_id] = peer
+            logger.info(f"Peer registered: {display_name} ({peer_id})")
+
+            return peer_id
+
+    # ------------------------------------------------------------------
+    # register_peer (backward-compat for tests that build Peer objects)
+    # ------------------------------------------------------------------
+
+    async def register_peer(self, peer: Peer) -> None:
+        """Register a pre-built Peer in the mesh.
+
+        Indexed by peer_id. Performs ghost eviction but does NOT create or
+        update session mappings — use ``allocate_and_register`` for the full
+        atomic path.
+        """
+        async with self._lock:
+            self._evict_ghosts(peer.display_name, peer.backend, peer.peer_id, peer.circle)
             peer.status = PeerStatus.ONLINE
             peer.last_seen = datetime.now(timezone.utc)
-
             self._peers[peer.peer_id] = peer
-
             logger.info(f"Peer registered: {peer.display_name} ({peer.peer_id})")
 
+    # ------------------------------------------------------------------
+    # Unregister
+    # ------------------------------------------------------------------
+
     async def unregister_peer(self, identifier: str, circle: str | None = None) -> bool:
-        """Unregister a peer from the mesh.
+        """Unregister a peer from the mesh (removes from both _peers and _mappings).
 
         Args:
             identifier: Either session_id or display_name
@@ -183,6 +361,8 @@ class PeerManager:
             # Try as session_id first (always unambiguous)
             if identifier in self._peers:
                 peer = self._peers.pop(identifier)
+                self._mappings.pop(identifier, None)
+                self._mappings_dirty = True
                 logger.info(f"Peer unregistered: {peer.display_name} ({identifier})")
                 return True
 
@@ -192,21 +372,19 @@ class PeerManager:
                     if circle and peer.circle != circle:
                         continue
                     self._peers.pop(sid)
+                    self._mappings.pop(sid, None)
+                    self._mappings_dirty = True
                     logger.info(f"Peer unregistered: {identifier} ({sid})")
                     return True
 
             return False
 
+    # ------------------------------------------------------------------
+    # Peer accessors
+    # ------------------------------------------------------------------
+
     async def get_peer(self, identifier: str, circle: str | None = None) -> Peer | None:
-        """Get a peer by session_id or display_name.
-
-        Args:
-            identifier: Either session_id (e.g., 'repow-dev-a1b2c3d4') or display_name
-            circle: Optional circle filter to disambiguate same-name peers
-
-        Returns:
-            Peer if found, None otherwise
-        """
+        """Get a peer by session_id or display_name."""
         async with self._lock:
             return self._lookup_peer_unlocked(identifier, circle=circle)
 
@@ -223,6 +401,10 @@ class PeerManager:
         async with self._lock:
             return list(self._peers.values())
 
+    # ------------------------------------------------------------------
+    # Circle access control (internal)
+    # ------------------------------------------------------------------
+
     def _resolve_from_peer_unlocked(
         self, from_peer: str, target_peer: Peer, bypass_circle: bool
     ) -> None:
@@ -235,22 +417,20 @@ class PeerManager:
     def _check_circle_access_by_peers(
         self, from_obj: Peer | None, to_obj: Peer | None, bypass: bool
     ) -> None:
-        """Check circle access given already-resolved Peer objects. Must hold lock.
-
-        Raises:
-            ValueError: If access not allowed
-        """
+        """Check circle access given already-resolved Peer objects. Must hold lock."""
         if bypass:
             return
-
         if not from_obj or not to_obj:
-            return  # Unknown peer = no enforcement (CLI callers, bypass already handled)
-
+            return
         if from_obj.circle != to_obj.circle:
             raise ValueError(
                 f"Circle boundary: {from_obj.display_name} ({from_obj.circle}) "
                 f"cannot access {to_obj.display_name} ({to_obj.circle})"
             )
+
+    # ------------------------------------------------------------------
+    # Message routing (query / notify / broadcast)
+    # ------------------------------------------------------------------
 
     async def query(
         self,
@@ -262,17 +442,6 @@ class PeerManager:
         circle: str | None = None,
     ) -> str:
         """Send a query to a peer and wait for response.
-
-        Args:
-            from_peer: Name of the sending peer
-            to_peer: Name of the target peer
-            text: Query text
-            timeout: Timeout in seconds
-            bypass_circle: If True, bypass circle restrictions (CLI mode)
-            circle: Optional circle filter to disambiguate same-name peers
-
-        Returns:
-            Response text from the peer
 
         Raises:
             ValueError: If peer not found or circle boundary violated
@@ -322,11 +491,24 @@ class PeerManager:
 
         except TimeoutError:
             self._update_event(query_event_id, {"status": "timeout"})
+            # Fire-and-forget liveness check — don't block the error path
+            asyncio.ensure_future(self._check_peer_after_timeout(peer_id))
             raise
 
         except Exception as e:
             self._update_event(query_event_id, {"status": "error", "error": str(e)})
             raise
+
+    async def _check_peer_after_timeout(self, peer_id: str) -> None:
+        """Targeted liveness check after a query timeout. Runs in background."""
+        if not self._transport or not self._transport.is_connected(peer_id):
+            return
+        try:
+            await self._transport.ping(peer_id, timeout=5.0)
+        except Exception:
+            await self.update_peer_status(peer_id, PeerStatus.OFFLINE)
+            if self._query_tracker:
+                await self._query_tracker.cancel_queries_to_peer(peer_id)
 
     async def notify(
         self,
@@ -383,7 +565,6 @@ class PeerManager:
 
         exclude_session_ids: set[str] = set()
         async with self._lock:
-            # Resolve exclude names to session IDs; track sender for circle filtering
             from_peer_obj: Peer | None = None
             for name in exclude_names:
                 peer = self._lookup_peer_unlocked(name)
@@ -392,7 +573,7 @@ class PeerManager:
                     if name == from_peer:
                         from_peer_obj = peer
 
-            # Circle filtering: exclude peers outside sender's circle
+            # Circle filtering
             if not bypass_circle and from_peer_obj:
                 from_circle = from_peer_obj.circle
                 for sid, peer in self._peers.items():
@@ -407,6 +588,10 @@ class PeerManager:
 
         async with self._lock:
             return [self._peers[sid].display_name for sid in sent_session_ids if sid in self._peers]
+
+    # ------------------------------------------------------------------
+    # Status / metadata mutations
+    # ------------------------------------------------------------------
 
     async def update_peer_status(self, identifier: str, status: PeerStatus) -> None:
         """Update peer status."""
@@ -435,12 +620,17 @@ class PeerManager:
             return True
 
     async def set_peer_circle(self, identifier: str, circle: str) -> None:
-        """Update peer's circle."""
+        """Update peer's circle (both in-memory Peer AND persistent mapping)."""
         async with self._lock:
             peer = self._lookup_peer_unlocked(identifier)
             if peer:
                 old_circle = peer.circle
                 peer.circle = circle
+                # Keep mapping in sync
+                mapping = self._mappings.get(peer.peer_id)
+                if mapping:
+                    mapping.circle = circle
+                    self._mappings_dirty = True
                 logger.info(f"Peer {peer.display_name} moved from {old_circle} to {circle}")
             else:
                 logger.warning(
@@ -454,6 +644,8 @@ class PeerManager:
 
         Evicts OFFLINE ghosts with the same (display_name, backend). Returns False
         if a conflicting ONLINE/BUSY peer exists with that name.
+
+        Also updates the persistent mapping atomically.
         """
         async with self._lock:
             peer = self._peers.get(session_id)
@@ -474,13 +666,16 @@ class PeerManager:
             for old_sid in to_evict:
                 del self._peers[old_sid]
             peer.display_name = new_name
+            # Keep mapping in sync
+            mapping = self._mappings.get(session_id)
+            if mapping:
+                mapping.display_name = new_name
+                mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                self._mappings_dirty = True
             return True
 
     async def mark_offline(self, identifier: str) -> int:
         """Mark peer offline and cancel pending queries.
-
-        Args:
-            identifier: Peer session_id or display_name
 
         Returns:
             Number of cancelled queries
@@ -495,10 +690,108 @@ class PeerManager:
 
         cancelled = 0
         if self._query_tracker:
-            cancelled = self._query_tracker.cancel_queries_to_peer(session_id)
+            cancelled = await self._query_tracker.cancel_queries_to_peer(session_id)
 
         logger.info(f"Marked {identifier} offline, cancelled {cancelled} queries")
         return cancelled
+
+    # ------------------------------------------------------------------
+    # Session mapping helpers (public, formerly on SessionMapper)
+    # ------------------------------------------------------------------
+
+    def get_mapping(self, session_id: str) -> SessionMapping | None:
+        """Get mapping for session_id."""
+        return self._mappings.get(session_id)
+
+    def get_all_mappings(self) -> dict[str, SessionMapping]:
+        """Get all mappings."""
+        return self._mappings.copy()
+
+    def _register_session(
+        self,
+        display_name: str,
+        circle: str,
+        backend: AgentType,
+        path: str | None = None,
+    ) -> str:
+        """Register or reuse session_id (synchronous, mapping-only, internal)."""
+        return self._find_or_allocate_mapping(display_name, circle, backend, path)
+
+    def _update_mapping_circle(self, session_id: str, circle: str) -> bool:
+        """Update circle for an existing mapping (internal)."""
+        mapping = self._mappings.get(session_id)
+        if mapping:
+            mapping.circle = circle
+            self._mappings_dirty = True
+            return True
+        return False
+
+    def _update_mapping_display_name(self, session_id: str, new_name: str) -> bool:
+        """Update display_name for an existing mapping (internal)."""
+        mapping = self._mappings.get(session_id)
+        if mapping:
+            mapping.display_name = new_name
+            mapping.updated_at = datetime.now(timezone.utc).isoformat()
+            self._mappings_dirty = True
+            return True
+        return False
+
+    def _unregister_session(self, session_id: str) -> bool:
+        """Unregister a single session mapping (internal)."""
+        if session_id in self._mappings:
+            del self._mappings[session_id]
+            self._mappings_dirty = True
+            logger.info(f"Unregistered session {session_id}")
+            return True
+        return False
+
+    def _unregister_sessions(self, session_ids: list[str]) -> int:
+        """Batch unregister session mappings (internal). Returns count removed."""
+        removed = 0
+        for sid in session_ids:
+            if sid in self._mappings:
+                del self._mappings[sid]
+                removed += 1
+        if removed:
+            self._mappings_dirty = True
+            logger.info(f"Batch unregistered {removed} sessions")
+        return removed
+
+    @staticmethod
+    def _is_stale(mapping: SessionMapping, cutoff: datetime) -> bool:
+        if not mapping.updated_at:
+            return True
+        try:
+            return datetime.fromisoformat(mapping.updated_at) < cutoff
+        except ValueError:
+            return True
+
+    def prune_offline(self, max_age_hours: float = 72) -> int:
+        """Remove stale mappings older than max_age_hours.
+
+        Returns:
+            Number of pruned mappings.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+        initial_count = len(self._mappings)
+        self._mappings = {
+            sid: mapping
+            for sid, mapping in self._mappings.items()
+            if not self._is_stale(mapping, cutoff)
+        }
+        pruned_count = initial_count - len(self._mappings)
+
+        if pruned_count > 0:
+            self._mappings_dirty = True
+            logger.info(
+                f"Pruned {pruned_count} stale session mappings (>{max_age_hours}h old)"
+            )
+
+        return pruned_count
+
+    # ------------------------------------------------------------------
+    # Liveness repair
+    # ------------------------------------------------------------------
 
     async def lazy_repair(self) -> None:
         """Debounced liveness sweep: ping ONLINE/BUSY peers, mark dead ones OFFLINE.
@@ -509,10 +802,11 @@ class PeerManager:
             return
         async with self._repair_lock:
             if time.monotonic() - self._last_repair < 30.0:
-                return  # Another coroutine already repaired
+                return
             self._last_repair = time.monotonic()
             await self._do_repair()
             self._save_events()
+            self._persist_mappings()
 
     async def _do_repair(self) -> None:
         """Actual repair logic. Must hold _repair_lock."""
@@ -531,19 +825,16 @@ class PeerManager:
             peer_id: str, backend, circle: str,
         ) -> tuple[str, str | None] | None:
             """Returns (peer_id, circle) if alive, None if dead."""
-            from repowire.config.models import AgentType
-
             if not transport.is_connected(peer_id):
-                return None  # dead
-            # OpenCode peers: if WS connected, they're alive (skip ping)
+                return None
             if backend == AgentType.OPENCODE:
-                return (peer_id, circle)  # alive, circle unchanged (no pong data)
+                return (peer_id, circle)
             try:
                 pong = await transport.ping(peer_id, timeout=5.0)
                 pong_circle = pong.get("circle")
                 return (peer_id, pong_circle or circle)
             except Exception:
-                return None  # dead
+                return None
 
         results = await asyncio.gather(
             *(check_peer(pid, backend, circle) for pid, backend, circle in targets),
@@ -565,9 +856,9 @@ class PeerManager:
             logger.info(f"lazy_repair: marking {peer_id} OFFLINE (no pong)")
             await self.update_peer_status(peer_id, PeerStatus.OFFLINE)
             if self._query_tracker:
-                self._query_tracker.cancel_queries_to_peer(peer_id)
+                await self._query_tracker.cancel_queries_to_peer(peer_id)
 
-        # Evict long-offline peers to prevent registry bloat
+        # Evict long-offline peers from BOTH _peers and _mappings
         max_age = self._config.daemon.prune_max_age_hours * 3600
         now = time.time()
         async with self._lock:
@@ -579,6 +870,7 @@ class PeerManager:
             ]
             for pid in stale:
                 del self._peers[pid]
+                self._mappings.pop(pid, None)
             if stale:
-                self._session_mapper.unregister_sessions(stale)
+                self._mappings_dirty = True
                 logger.info(f"lazy_repair: evicted {len(stale)} stale offline peers")

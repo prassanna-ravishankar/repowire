@@ -54,7 +54,7 @@ class MessageRouter:
             raise ValueError(f"Peer {to_peer_name} not connected")
 
         # Register query
-        correlation_id = self._query_tracker.register_query(
+        correlation_id = await self._query_tracker.register_query(
             from_peer=from_peer,
             to_peer_id=to_session_id,
             to_peer_name=to_peer_name,
@@ -91,7 +91,7 @@ class MessageRouter:
             raise
 
         finally:
-            self._query_tracker.cleanup_query(correlation_id)
+            await self._query_tracker.cleanup_query(correlation_id)
 
     async def send_notification(
         self,

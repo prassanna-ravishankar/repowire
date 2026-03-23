@@ -5,45 +5,40 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 from repowire.config.models import Config, load_config
-from repowire.daemon.core import PeerManager
+from repowire.daemon.peer_registry import PeerRegistry
 
 
 @runtime_checkable
 class AppState(Protocol):
     """Protocol for FastAPI app.state with known attributes."""
 
-    session_mapper: Any
     transport: Any
     query_tracker: Any
-    peer_manager: PeerManager
+    peer_registry: PeerRegistry
     config: Config
 
 
 # Global state - initialized by lifespan
 _config: Config | None = None
-_peer_manager: PeerManager | None = None
+_peer_registry: PeerRegistry | None = None
 _app_state: AppState | None = None
 
 
-def init_deps(config: Config, peer_manager: PeerManager, app_state: AppState | None = None) -> None:
-    """Initialize dependencies. Called by app lifespan.
-
-    Args:
-        config: Configuration instance
-        peer_manager: PeerManager instance
-        app_state: FastAPI app.state instance
-    """
-    global _config, _peer_manager, _app_state
+def init_deps(
+    config: Config, peer_registry: PeerRegistry, app_state: AppState | None = None
+) -> None:
+    """Initialize dependencies. Called by app lifespan."""
+    global _config, _peer_registry, _app_state
     _config = config
-    _peer_manager = peer_manager
+    _peer_registry = peer_registry
     _app_state = app_state
 
 
 def cleanup_deps() -> None:
     """Cleanup dependencies. Called by app lifespan."""
-    global _config, _peer_manager, _app_state
+    global _config, _peer_registry, _app_state
     _config = None
-    _peer_manager = None
+    _peer_registry = None
     _app_state = None
 
 
@@ -54,11 +49,15 @@ def get_config() -> Config:
     return _config
 
 
-def get_peer_manager() -> PeerManager:
-    """Get the peer manager instance."""
-    if _peer_manager is None:
-        raise RuntimeError("PeerManager not initialized. Is the daemon running?")
-    return _peer_manager
+def get_peer_registry() -> PeerRegistry:
+    """Get the peer registry instance."""
+    if _peer_registry is None:
+        raise RuntimeError("PeerRegistry not initialized. Is the daemon running?")
+    return _peer_registry
+
+
+# Backward compatibility alias
+get_peer_manager = get_peer_registry
 
 
 def get_app_state() -> AppState:

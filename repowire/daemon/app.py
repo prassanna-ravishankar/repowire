@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,17 +18,32 @@ from fastapi.staticfiles import StaticFiles
 from repowire import __version__
 from repowire.config.models import Config, load_config
 from repowire.daemon.auth import require_localhost
-from repowire.daemon.core import PeerManager
 from repowire.daemon.deps import cleanup_deps, init_deps
 from repowire.daemon.message_router import MessageRouter
+from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.relay_client import RelayClient
 from repowire.daemon.routes import health, messages, peers, websocket
 from repowire.daemon.routes import spawn as spawn_routes
-from repowire.daemon.session_mapper import SessionMapper
 from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
+
+
+def _cleanup_stale_artifacts(max_age_hours: float = 72) -> None:
+    """Remove stale PID, log, and lock files from cache directory."""
+    from repowire.config.models import CACHE_DIR
+
+    log_dir = CACHE_DIR / "logs"
+    if not log_dir.exists():
+        return
+    cutoff = time.time() - (max_age_hours * 3600)
+    for f in log_dir.iterdir():
+        try:
+            if f.suffix in (".pid", ".log", ".lock") and f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def create_app(
@@ -49,33 +65,32 @@ def create_app(
         cfg = _config or load_config()
 
         # Build the component stack
-        session_mapper = SessionMapper(persistence_path=Path.home() / ".repowire" / "sessions.json")
-        session_mapper.prune_offline(max_age_hours=cfg.daemon.prune_max_age_hours)
+        _cleanup_stale_artifacts(max_age_hours=cfg.daemon.prune_max_age_hours)
         transport = WebSocketTransport()
         query_tracker = QueryTracker()
         message_router = MessageRouter(
             transport=transport,
             query_tracker=query_tracker,
         )
-        peer_manager = PeerManager(
+        peer_registry = PeerRegistry(
             config=cfg,
             message_router=message_router,
-            session_mapper=session_mapper,
             query_tracker=query_tracker,
             transport=transport,
+            persistence_path=Path.home() / ".repowire" / "sessions.json",
         )
+        peer_registry.prune_offline(max_age_hours=cfg.daemon.prune_max_age_hours)
 
         # Store in app state for route handlers
         app.state.config = cfg
-        app.state.session_mapper = session_mapper
         app.state.transport = transport
         app.state.query_tracker = query_tracker
         app.state.message_router = message_router
-        app.state.peer_manager = peer_manager
+        app.state.peer_registry = peer_registry
         app.state.relay_mode = cfg.relay.enabled
 
-        await peer_manager.start()
-        init_deps(cfg, peer_manager, app.state)
+        await peer_registry.start()
+        init_deps(cfg, peer_registry, app.state)
 
         # Start relay client if enabled
         relay_client: RelayClient | None = None
@@ -92,8 +107,9 @@ def create_app(
 
         if relay_client:
             await relay_client.stop()
-        peer_manager._save_events()  # flush events to disk on shutdown
-        await peer_manager.stop()
+        peer_registry._save_events()
+        peer_registry._persist_mappings()
+        await peer_registry.stop()
         cleanup_deps()
 
     app = FastAPI(
@@ -196,24 +212,21 @@ def _find_web_output_dir() -> str | None:
 
 def create_test_app(
     config: Config | None = None,
-    session_mapper: SessionMapper | None = None,
     message_router: MessageRouter | None = None,
+    persistence_path: Path | None = None,
 ) -> FastAPI:
     """Create app for testing with optional mock components.
 
     Args:
         config: Optional configuration
-        session_mapper: Optional SessionMapper for testing
         message_router: Optional MessageRouter for testing
+        persistence_path: Optional path for session persistence
     """
 
     @asynccontextmanager
     async def test_lifespan(app: FastAPI) -> AsyncIterator[None]:
         cfg = config or Config()
 
-        sess_mapper = session_mapper or SessionMapper(
-            persistence_path=Path.home() / ".repowire" / "test-sessions.json"
-        )
         transport = WebSocketTransport()
         query_tracker = QueryTracker()
         msg_router = message_router or MessageRouter(
@@ -221,28 +234,27 @@ def create_test_app(
             query_tracker=query_tracker,
         )
 
-        pm = PeerManager(
+        registry = PeerRegistry(
             config=cfg,
             message_router=msg_router,
-            session_mapper=sess_mapper,
             query_tracker=query_tracker,
             transport=transport,
+            persistence_path=persistence_path,
         )
 
         app.state.config = cfg
-        app.state.session_mapper = sess_mapper
         app.state.transport = transport
         app.state.query_tracker = query_tracker
         app.state.message_router = msg_router
-        app.state.peer_manager = pm
+        app.state.peer_registry = registry
         app.state.relay_mode = cfg.relay.enabled
 
-        await pm.start()
-        init_deps(cfg, pm, app.state)
+        await registry.start()
+        init_deps(cfg, registry, app.state)
 
         yield
 
-        await pm.stop()
+        await registry.stop()
         cleanup_deps()
 
     app = FastAPI(

@@ -9,34 +9,33 @@ from httpx import ASGITransport, AsyncClient
 
 from repowire.config.models import Config, DaemonConfig
 from repowire.daemon.auth import require_auth, require_localhost
-from repowire.daemon.core import PeerManager
 from repowire.daemon.deps import cleanup_deps, init_deps
 from repowire.daemon.message_router import MessageRouter
+from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
-from repowire.daemon.session_mapper import SessionMapper
 from repowire.daemon.websocket_transport import WebSocketTransport
 
 
 def _make_app(tmp_path: Path, auth_token: str | None = None):
     """Build a minimal app with auth-protected endpoints."""
     cfg = Config(daemon=DaemonConfig(auth_token=auth_token))
-    mapper = SessionMapper(persistence_path=tmp_path / "sessions.json")
     transport = WebSocketTransport()
     tracker = QueryTracker()
     router = MessageRouter(transport=transport, query_tracker=tracker)
-    pm = PeerManager(
-        config=cfg, message_router=router, session_mapper=mapper,
+    registry = PeerRegistry(
+        config=cfg, message_router=router,
         query_tracker=tracker, transport=transport,
+        persistence_path=tmp_path / "sessions.json",
     )
-    pm._events_path = tmp_path / "events.json"
-    pm._events.clear()
+    registry._events_path = tmp_path / "events.json"
+    registry._events.clear()
 
     app_state = SimpleNamespace(
-        config=cfg, session_mapper=mapper, transport=transport,
-        query_tracker=tracker, message_router=router, peer_manager=pm,
-        relay_mode=False,
+        config=cfg, transport=transport,
+        query_tracker=tracker, message_router=router,
+        peer_registry=registry, relay_mode=False,
     )
-    init_deps(cfg, pm, app_state)
+    init_deps(cfg, registry, app_state)
 
     app = FastAPI()
 

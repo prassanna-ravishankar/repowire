@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.auth import require_auth
-from repowire.daemon.deps import get_app_state, get_peer_manager
+from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.routes._shared import OkResponse
 from repowire.protocol.peers import PeerStatus
 
@@ -84,11 +84,11 @@ async def query_peer(
     _: str | None = Depends(require_auth),
 ) -> QueryResponse:
     """Send a query to a peer and wait for response."""
-    peer_manager = get_peer_manager()
-    await peer_manager.lazy_repair()
+    peer_registry = get_peer_registry()
+    await peer_registry.lazy_repair()
 
     # Check peer state before attempting query
-    peer = await peer_manager.get_peer(request.to_peer, circle=request.circle)
+    peer = await peer_registry.get_peer(request.to_peer, circle=request.circle)
     if peer:
         if peer.status == PeerStatus.BUSY:
             return QueryResponse(
@@ -107,7 +107,7 @@ async def query_peer(
     bypass = request.bypass_circle or request.from_peer is None
 
     try:
-        response_text = await peer_manager.query(
+        response_text = await peer_registry.query(
             from_peer=from_peer,
             to_peer=request.to_peer,
             text=request.text,
@@ -130,11 +130,11 @@ async def notify_peer(
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
     """Send a notification to a peer (fire-and-forget)."""
-    peer_manager = get_peer_manager()
-    await peer_manager.lazy_repair()
+    peer_registry = get_peer_registry()
+    await peer_registry.lazy_repair()
 
     try:
-        await peer_manager.notify(
+        await peer_registry.notify(
             from_peer=request.from_peer,
             to_peer=request.to_peer,
             text=request.text,
@@ -160,10 +160,10 @@ async def broadcast_message(
     _: str | None = Depends(require_auth),
 ) -> BroadcastResponse:
     """Broadcast a message to all peers."""
-    peer_manager = get_peer_manager()
-    await peer_manager.lazy_repair()
+    peer_registry = get_peer_registry()
+    await peer_registry.lazy_repair()
 
-    sent_to = await peer_manager.broadcast(
+    sent_to = await peer_registry.broadcast(
         from_peer=request.from_peer,
         text=request.text,
         exclude=request.exclude,
@@ -179,7 +179,7 @@ async def update_session(
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
     """Update session status for a peer."""
-    peer_manager = get_peer_manager()
+    peer_registry = get_peer_registry()
 
     try:
         peer_status = PeerStatus(request.status)
@@ -193,7 +193,7 @@ async def update_session(
     if request.peer_name:
         identifier = request.peer_name
     elif request.pane_id:
-        peer = await peer_manager.get_peer_by_pane(request.pane_id)
+        peer = await peer_registry.get_peer_by_pane(request.pane_id)
         if not peer:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -206,7 +206,7 @@ async def update_session(
             detail="Either peer_name or pane_id required",
         )
 
-    await peer_manager.update_peer_status(identifier, peer_status)
+    await peer_registry.update_peer_status(identifier, peer_status)
     return OkResponse()
 
 
@@ -215,6 +215,7 @@ class ResponseDelivery(BaseModel):
 
     pane_id: str = Field(..., description="Tmux pane ID of the responding peer")
     text: str = Field(..., description="Response text")
+    correlation_id: str | None = Field(None, description="Correlation ID from pending query")
 
 
 @router.post("/response", response_model=OkResponse)
@@ -223,8 +224,8 @@ async def deliver_response(
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
     """Receive response from stop hook and resolve pending query."""
-    peer_manager = get_peer_manager()
-    peer = await peer_manager.get_peer_by_pane(request.pane_id)
+    peer_registry = get_peer_registry()
+    peer = await peer_registry.get_peer_by_pane(request.pane_id)
     if not peer:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -233,7 +234,10 @@ async def deliver_response(
 
     state = get_app_state()
     query_tracker = state.query_tracker
-    resolved = query_tracker.resolve_oldest_query(peer.peer_id, request.text)
+    if request.correlation_id:
+        resolved = await query_tracker.resolve_query(request.correlation_id, request.text)
+    else:
+        resolved = await query_tracker.resolve_oldest_query(peer.peer_id, request.text)
     if not resolved:
         # No pending query — not an error, stop hook fires on every turn
         pass
@@ -262,8 +266,8 @@ async def ingest_chat_turn(
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
     """Ingest a chat turn from the stop hook for dashboard display."""
-    peer_manager = get_peer_manager()
-    peer_manager.add_event("chat_turn", request.model_dump())
+    peer_registry = get_peer_registry()
+    peer_registry.add_event("chat_turn", request.model_dump())
     return OkResponse()
 
 
@@ -272,8 +276,8 @@ async def get_events(
     _: str | None = Depends(require_auth),
 ) -> list[dict]:
     """Get the last 100 communication events."""
-    peer_manager = get_peer_manager()
-    return peer_manager.get_events()
+    peer_registry = get_peer_registry()
+    return peer_registry.get_events()
 
 
 @router.get("/events/stream")
@@ -284,12 +288,12 @@ async def stream_events(
 
     Clients connect once and receive events as they occur.
     """
-    peer_manager = get_peer_manager()
+    peer_registry = get_peer_registry()
 
     async def event_generator():
         last_event_id: str | None = None
         while True:
-            events = peer_manager.get_events()
+            events = peer_registry.get_events()
 
             # Find new events since last seen ID
             if not events:

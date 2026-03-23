@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import subprocess
@@ -11,7 +12,7 @@ from pathlib import Path
 
 from repowire.config.models import CACHE_DIR, AgentType
 from repowire.hooks._tmux import get_tmux_info
-from repowire.hooks.utils import daemon_get, daemon_post, get_pane_file
+from repowire.hooks.utils import daemon_get, daemon_post, derive_display_name, get_pane_file
 
 
 def _register_peer_http(
@@ -118,18 +119,19 @@ def main() -> int:
     if event == "SessionStart":
         # Ephemeral tool sub-sessions (Haiku-proxied) fire SessionStart too.
         # Skip entirely if a ws-hook is already running for this pane.
+        # Uses flock instead of PID probe to avoid TOCTOU races.
         pane_file = get_pane_file(pane_id)
-        pid_path = CACHE_DIR / "logs" / f"ws-hook-{pane_file}.pid"
-
+        lock_path = CACHE_DIR / "logs" / f"ws-hook-{pane_file}.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = open(lock_path, "w")  # noqa: SIM115
         try:
-            old_pid = int(pid_path.read_text().strip())
-            os.kill(old_pid, 0)  # probe — doesn't kill
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            lock_fd.close()
             return 0  # ws-hook alive → ephemeral sub-session, skip entirely
-        except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
-            pass  # Missing, dead, or invalid → continue with full registration
 
         # Derive stable name from first 8 chars of Claude's session_id
-        display_name = claude_session_id[:8] if claude_session_id else folder_name
+        display_name = derive_display_name(claude_session_id, cwd)
 
         # Launch async WebSocket hook in background — one per pane.
         try:
@@ -141,6 +143,7 @@ def main() -> int:
                 try:
                     env = os.environ.copy()
                     env["REPOWIRE_DISPLAY_NAME"] = display_name
+                    pid_path = CACHE_DIR / "logs" / f"ws-hook-{pane_file}.pid"
                     proc = subprocess.Popen(
                         [sys.executable, str(hook_script)],
                         stdout=log_file,
@@ -148,10 +151,13 @@ def main() -> int:
                         start_new_session=True,
                         cwd=cwd,
                         env=env,
+                        pass_fds=(lock_fd.fileno(),),
                     )
                     pid_path.write_text(str(proc.pid))
+                    lock_fd.close()  # child inherits flock; parent releases fd
                 finally:
-                    log_file.close()  # Always close — subprocess inherits the fd
+                    log_file.close()
+                    lock_fd.close()
         except Exception as e:
             print(f"repowire: failed to start WebSocket hook: {e}", file=sys.stderr)
 

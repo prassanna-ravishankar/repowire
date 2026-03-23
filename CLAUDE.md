@@ -89,6 +89,18 @@ repowire peer new [PATH] [options]
 - Unique window names with numeric suffixes (myproject, myproject-2, ...)
 - Graceful daemon registration (continues if daemon unavailable)
 
+## Design Philosophy: Lazy Repair, Not Eager Polling
+
+Repowire follows a "lazy repair" model throughout. Nothing polls on a timer. Work is deferred until someone actually needs the result, then piggy-backed on that request.
+
+**Liveness:** Peers are not health-checked on a loop. Instead, `lazy_repair()` runs at most once per 30s, triggered only when an MCP-facing endpoint is hit (`/peers`, `/query`, `/notify`, `/broadcast`). If no one is asking, no one is checking. Dead peers are discovered when someone tries to talk to them.
+
+**Persistence:** In-memory state (peer registry, event history, session mappings) is the source of truth at runtime. Disk writes are debounced via dirty flags and flushed during the lazy_repair cycle or at shutdown — never on every mutation. If the daemon crashes mid-cycle, at most 30s of state is lost, which is acceptable since peers re-register on reconnect.
+
+**Hook lifecycle:** The WebSocket hook (`ws-hook`) is fully reactive — no polling loops. The daemon sends pings, the hook replies with pong + pane liveness. If the pane dies, the hook exits, the WebSocket disconnects, and the daemon marks the peer offline. No heartbeat timers, no file watchers.
+
+**Implication for new code:** Never add polling loops, periodic timers, or eager disk writes. If you need something checked, piggy-back it on lazy_repair or on the specific request that needs the data. If you need something persisted, set a dirty flag and let the existing flush cycle handle it.
+
 ## Architecture Overview
 
 Repowire is a mesh network enabling AI coding agents to communicate. All message delivery goes through a unified WebSocket protocol — the daemon treats all peers identically regardless of agent type.
@@ -106,35 +118,32 @@ Repowire is a mesh network enabling AI coding agents to communicate. All message
 ┌─────────────────────────────────────────────────────────────┐
 │                  HTTP Daemon (daemon/app.py)                 │
 │  FastAPI server with /query, /notify, /broadcast, /peers    │
-│  endpoints. Uses PeerManager for routing via WebSocket.     │
+│  endpoints. Uses PeerRegistry for routing via WebSocket.    │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                  PeerManager (daemon/core.py)                │
-│  Central routing. All peers connect via WebSocket.          │
-│  AgentType tracks what tool a peer runs (informational).    │
+│              PeerRegistry (daemon/peer_registry.py)          │
+│  Single source of truth: peer state + identity persistence. │
+│  Merges former PeerManager + SessionMapper. Atomic updates  │
+│  to circle/display_name across both in-memory and disk.     │
 └─────────────────────────────────────────────────────────────┘
          │              │                │
          ▼              ▼                ▼
-  MessageRouter    QueryTracker    SessionMapper
-  (routes msgs)    (correlation    (peer identity
-                    ID tracking)    persistence)
-         │
-         ▼
-  WebSocketTransport
-  (connection mgmt)
+  MessageRouter    QueryTracker    WebSocketTransport
+  (routes msgs)    (correlation    (connection mgmt)
+                    ID tracking,
+                    async locked)
 ```
 
 ### Daemon Modules
 
-- `daemon/core.py` - PeerManager: peer registry, circle access control, event tracking, lazy_repair liveness sweep
+- `daemon/peer_registry.py` - PeerRegistry: unified peer registry + identity persistence, circle access control, event tracking, lazy_repair liveness sweep, ghost eviction. Single source of truth for peer state — replaces former PeerManager + SessionMapper split.
 - `daemon/message_router.py` - MessageRouter: routes queries/notifications/broadcasts via WebSocket
-- `daemon/query_tracker.py` - QueryTracker: correlation ID tracking, asyncio Futures for request/response
+- `daemon/query_tracker.py` - QueryTracker: correlation ID tracking, asyncio Futures for request/response. Protected by asyncio.Lock.
 - `daemon/websocket_transport.py` - WebSocketTransport: connection lifecycle, ping/pong liveness
-- `daemon/session_mapper.py` - SessionMapper: stable peer IDs (`repow-{circle}-{uuid8}`), persists to `~/.repowire/sessions.json`
 - `daemon/auth.py` - Authentication middleware (optional token-based)
-- `daemon/deps.py` - FastAPI dependency injection
+- `daemon/deps.py` - FastAPI dependency injection (`get_peer_registry()`)
 - `daemon/routes/websocket.py` - Unified `/ws` endpoint for all agent types
 - `daemon/routes/peers.py` - Peer CRUD endpoints
 - `daemon/routes/messages.py` - Query/notify/broadcast endpoints
@@ -153,10 +162,10 @@ Repowire is a mesh network enabling AI coding agents to communicate. All message
 
 Hooks in `~/.claude/settings.json` auto-register peers and manage state:
 
-- **SessionStart** → `repowire hook session` → Registers peer, spawns ws-hook (with PID dedup to skip ephemeral sub-sessions), outputs `additionalContext` with peer list
+- **SessionStart** → `repowire hook session` → Registers peer, spawns ws-hook (with flock dedup to skip ephemeral sub-sessions), outputs `additionalContext` with peer list
 - **SessionEnd** → `repowire hook session` → No-op (fires spuriously between turns)
 - **UserPromptSubmit** → `repowire hook prompt` → Marks peer as BUSY
-- **Stop** → `repowire hook stop` → Extracts response from transcript, delivers to daemon via `POST /response`, marks peer ONLINE
+- **Stop** → `repowire hook stop` → Extracts response from transcript, pops pending `correlation_id` from `pending-{pane}.json`, delivers to daemon via `POST /response` (with correlation_id if available), marks peer ONLINE
 - **Notification** (idle_prompt) → `repowire hook notification` → Marks peer ONLINE after 60s idle (handles interrupt)
 
 **Peer State Machine:** `OFFLINE → ONLINE ↔ BUSY` (SessionStart→ONLINE, UserPromptSubmit→BUSY, Stop/Notification→ONLINE, WS disconnect→OFFLINE)
@@ -206,11 +215,12 @@ Each Claude session's `display_name` is the first 8 chars of Claude's `session_i
 
 Key files:
 - `installers/claude_code.py` - Installs/uninstalls hooks in `~/.claude/settings.json`
-- `hooks/session_handler.py` - Handles SessionStart and SessionEnd events
+- `hooks/session_handler.py` - Handles SessionStart and SessionEnd events. Uses flock for ws-hook dedup.
 - `hooks/prompt_handler.py` - Handles UserPromptSubmit (sets BUSY)
-- `hooks/stop_handler.py` - Captures response + tool calls from transcript, posts chat turns via `POST /events/chat`, delivers query response via `POST /response`
+- `hooks/stop_handler.py` - Captures response + tool calls from transcript, posts chat turns via `POST /events/chat`, delivers query response via `POST /response` (with correlation_id from pending file)
 - `hooks/notification_handler.py` - Handles idle_prompt (resets BUSY→ONLINE after interrupt)
-- `hooks/websocket_hook.py` - Persistent WebSocket connection for query/response delivery
+- `hooks/websocket_hook.py` - Persistent WebSocket connection for query/response delivery. Writes pending correlation_ids to `pending-{pane}.json` for stop hook.
+- `hooks/utils.py` - Shared utilities including `derive_display_name()` (single source of truth for display name derivation)
 
 ### Security
 
@@ -384,15 +394,15 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 
 1. **Unique peer names** - First 8 chars of Claude's `session_id` (e.g. `00893aaf`). Stable across session resumes; new invocation = new name. OpenCode uses 8 chars after `ses` prefix of `session.id`. Folder name stored as `metadata.project`.
 2. **Correlation IDs** - UUID-based request/response matching via asyncio Futures
-3. **In-memory peer registry** - Backed by SessionMapper persistence, no per-request config reload
+3. **In-memory peer registry** - PeerRegistry is the single source of truth at runtime. Disk persistence is debounced (see Design Philosophy above).
 4. **Peer validation** - WebSocket connect validates display_name and circle format
-5. **HTTP response delivery** - Stop hook POSTs response to daemon via `/response`; daemon resolves oldest pending query for that peer
+5. **HTTP response delivery** - Stop hook POSTs response to daemon via `/response` with `correlation_id` (from pending file) when available; falls back to oldest pending query for that peer
 6. **Peer metadata** - Includes `project` (folder name) and git branch, auto-populated by SessionStart hook
 7. **Context injection** - SessionStart hook outputs `additionalContext` with peer list for Claude
 8. **TSV MCP output** - `list_peers` and `whoami` return TSV (more token-efficient than JSON for agents)
 9. **Ghost eviction** - `register_peer` evicts OFFLINE peers with same (display_name, backend) regardless of circle, cleaning up stale registrations from dead ws-hooks
 10. **Circle-preferred `from_peer` lookup** - `from_peer` is resolved preferring the target peer's circle first, preventing false circle boundary errors when sender name appears in multiple circles
-11. **Event persistence** - Events persisted to `~/.repowire/events.json`, loaded on startup. Writes debounced via `lazy_repair` cycle (not per-event). Deque maxlen=500 caps memory.
+11. **Event persistence** - Events persisted to `~/.repowire/events.json`, loaded on startup. Writes debounced via lazy_repair (see Design Philosophy). Deque maxlen=500 caps memory.
 12. **Tool call extraction** - Stop hook extracts `tool_use` entries from Claude's transcript JSONL and includes them as `tool_calls` in `chat_turn` events. Dashboard renders them as collapsible lists per assistant turn.
 13. **SSE bridge** - Relay serves `/events/stream` SSE endpoint. Shared poller fans out to all connected browser clients. Dashboard shows "Connected"/"Disconnected" based on SSE state.
 14. **Dashboard identity** - Messages from `@dashboard` are from a human at the web control plane. Context injection tells agents to treat them as direct user instructions.
@@ -404,7 +414,7 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 - Route tests use `httpx.AsyncClient` with `ASGITransport` and manually initialized deps (no lifespan)
 - WebSocket tests use `httpx-ws` with `ASGIWebSocketTransport`
 - Important: `uv tool install --force --reinstall .` is required after code changes for hooks to pick up new code (hooks run from installed package, not source)
-- 222 tests covering: routes, WebSocket, auth, query tracker, message router, hooks, config, transcript, spawn
+- 222 tests covering: routes, WebSocket, auth, query tracker, message router, peer registry, hooks, config, transcript, spawn
 
 ## Integration Testing
 

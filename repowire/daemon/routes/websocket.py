@@ -16,12 +16,11 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from repowire.config.models import AgentType
 from repowire.daemon.deps import get_app_state
 from repowire.daemon.routes._shared import is_valid_identifier
-from repowire.protocol.peers import Peer, PeerStatus
+from repowire.protocol.peers import PeerStatus
 
 if TYPE_CHECKING:
-    from repowire.daemon.core import PeerManager
+    from repowire.daemon.peer_registry import PeerRegistry
     from repowire.daemon.query_tracker import QueryTracker
-    from repowire.daemon.session_mapper import SessionMapper
     from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
@@ -48,10 +47,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
 
     state = get_app_state()
-    session_mapper: SessionMapper = state.session_mapper
     transport: WebSocketTransport = state.transport
     query_tracker: QueryTracker = state.query_tracker
-    peer_manager: PeerManager = state.peer_manager
+    peer_registry: PeerRegistry = state.peer_registry
 
     session_id: str | None = None
 
@@ -121,31 +119,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 return
             path = normalized_path
 
-        # Register session (reuse if exists)
-        session_id = session_mapper.register_session(
+        # Allocate peer_id and register atomically
+        peer_id = await peer_registry.allocate_and_register(
             display_name=display_name,
             circle=circle,
             backend=backend,
             path=path,
+            pane_id=pane_id,
+            tmux_session=tmux_session,
+            machine=os.environ.get("HOSTNAME", "unknown"),
         )
+        session_id = peer_id
 
         # Register with transport (handles connection + status tracking)
         await transport.connect(session_id, websocket)
-
-        # Register with peer manager
-        peer = Peer(
-            peer_id=session_id,
-            display_name=display_name,
-            path=path or "",
-            machine=os.environ.get("HOSTNAME", "unknown"),
-            backend=backend,
-            circle=circle,
-            status=PeerStatus.ONLINE,
-            tmux_session=tmux_session,
-            pane_id=pane_id,
-            metadata={},
-        )
-        await peer_manager.register_peer(peer)
 
         # Send connect response
         await websocket.send_json({"type": "connected", "session_id": session_id})
@@ -159,8 +146,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     session_id=session_id,
                     data=data,
                     query_tracker=query_tracker,
-                    peer_manager=peer_manager,
-                    session_mapper=session_mapper,
+                    peer_registry=peer_registry,
                 )
             except Exception as e:
                 logger.error(
@@ -188,16 +174,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         if session_id:
             removed = await transport.disconnect(session_id, websocket)
             if removed:
-                query_tracker.cancel_queries_to_peer(session_id)
-                await peer_manager.update_peer_status(session_id, PeerStatus.OFFLINE)
+                await query_tracker.cancel_queries_to_peer(session_id)
+                await peer_registry.update_peer_status(session_id, PeerStatus.OFFLINE)
 
 
 async def _handle_message(
     session_id: str,
     data: dict[str, Any],
     query_tracker: QueryTracker,
-    peer_manager: PeerManager,
-    session_mapper: SessionMapper,
+    peer_registry: PeerRegistry,
 ) -> None:
     """Handle incoming WebSocket message.
 
@@ -205,8 +190,7 @@ async def _handle_message(
         session_id: Session ID
         data: Message data
         query_tracker: Query tracker
-        peer_manager: Peer manager (for status propagation)
-        session_mapper: Session mapper (for circle updates)
+        peer_registry: Peer registry (for status/circle/name propagation)
     """
     msg_type = data.get("type")
 
@@ -217,7 +201,7 @@ async def _handle_message(
             logger.warning(f"Response from {session_id} has non-string text, dropping")
             return
         if correlation_id:
-            query_tracker.resolve_query(correlation_id, text)
+            await query_tracker.resolve_query(correlation_id, text)
         else:
             logger.warning(f"Response from {session_id} missing correlation_id, dropping")
 
@@ -230,13 +214,12 @@ async def _handle_message(
             "offline": PeerStatus.OFFLINE,
         }
         status = status_map.get(status_str, PeerStatus.ONLINE)
-        await peer_manager.update_peer_status(session_id, status)
+        await peer_registry.update_peer_status(session_id, status)
 
     elif msg_type == "set_circle":
         new_circle = data.get("circle")
         if new_circle and is_valid_identifier(new_circle):
-            await peer_manager.set_peer_circle(session_id, new_circle)
-            session_mapper.update_circle(session_id, new_circle)
+            await peer_registry.set_peer_circle(session_id, new_circle)
             logger.info(f"Circle updated for {session_id}: {new_circle}")
         elif not new_circle:
             logger.warning(f"set_circle from {session_id} missing circle field")
@@ -246,9 +229,8 @@ async def _handle_message(
     elif msg_type == "update_display_name":
         new_name = data.get("display_name", "")
         if new_name and is_valid_identifier(new_name):
-            ok = await peer_manager.update_peer_display_name(session_id, new_name)
+            ok = await peer_registry.update_peer_display_name(session_id, new_name)
             if ok:
-                session_mapper.update_display_name(session_id, new_name)
                 logger.info(f"display_name updated for {session_id}: {new_name}")
             else:
                 logger.warning(
@@ -267,7 +249,7 @@ async def _handle_message(
         error = data.get("error", "Unknown error")
         logger.warning(f"Client {session_id} reported error for query {correlation_id}: {error}")
         if correlation_id:
-            query_tracker.resolve_query_error(correlation_id, ValueError(error))
+            await query_tracker.resolve_query_error(correlation_id, ValueError(error))
         else:
             logger.warning(f"Error from {session_id} missing correlation_id, cannot route")
 

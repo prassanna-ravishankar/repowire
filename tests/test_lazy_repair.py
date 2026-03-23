@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from repowire.config.models import AgentType, Config
-from repowire.daemon.core import PeerManager
+from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.websocket_transport import WebSocketTransport
 from repowire.protocol.peers import Peer, PeerStatus
 
@@ -38,14 +38,12 @@ def _make_peer(
 def _make_manager(
     transport: WebSocketTransport | None = None,
     query_tracker: MagicMock | None = None,
-) -> PeerManager:
+) -> PeerRegistry:
     config = Config()
     router = MagicMock()
-    session_mapper = MagicMock()
-    return PeerManager(
+    return PeerRegistry(
         config=config,
         message_router=router,
-        session_mapper=session_mapper,
         query_tracker=query_tracker,
         transport=transport,
     )
@@ -132,7 +130,7 @@ class TestLazyRepairLiveness:
         transport = MagicMock(spec=WebSocketTransport)
         transport.is_connected = MagicMock(return_value=False)
         qt = MagicMock()
-        qt.cancel_queries_to_peer = MagicMock(return_value=0)
+        qt.cancel_queries_to_peer = AsyncMock(return_value=0)
         manager = _make_manager(transport=transport, query_tracker=qt)
 
         peer = _make_peer(status=PeerStatus.ONLINE)
@@ -164,7 +162,7 @@ class TestLazyRepairLiveness:
         transport.is_connected = MagicMock(return_value=True)
         transport.ping = AsyncMock(side_effect=TimeoutError("no pong"))
         qt = MagicMock()
-        qt.cancel_queries_to_peer = MagicMock(return_value=0)
+        qt.cancel_queries_to_peer = AsyncMock(return_value=0)
         manager = _make_manager(transport=transport, query_tracker=qt)
 
         peer = _make_peer(status=PeerStatus.ONLINE)
@@ -219,12 +217,12 @@ class TestLazyRepairLiveness:
         # Should not raise
         await manager.lazy_repair()
 
-    async def test_stale_offline_evicted_from_session_mapper(self):
-        """Stale OFFLINE peers are removed from both _peers and session_mapper."""
+    async def test_stale_offline_evicted_from_registry(self):
+        """Stale OFFLINE peers are removed from both _peers and _mappings."""
         transport = MagicMock(spec=WebSocketTransport)
         transport.is_connected = MagicMock(return_value=False)
         qt = MagicMock()
-        qt.cancel_queries_to_peer = MagicMock(return_value=0)
+        qt.cancel_queries_to_peer = AsyncMock(return_value=0)
         manager = _make_manager(transport=transport, query_tracker=qt)
 
         peer = _make_peer(status=PeerStatus.ONLINE)
@@ -246,7 +244,6 @@ class TestLazyRepairLiveness:
         await manager.lazy_repair()
 
         assert await manager.get_peer(peer.peer_id) is None
-        manager._session_mapper.unregister_sessions.assert_called_with([peer.peer_id])
 
 
 # -- concurrent lock --

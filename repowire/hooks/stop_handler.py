@@ -9,8 +9,24 @@ import sys
 from pathlib import Path
 
 from repowire.hooks._tmux import get_pane_id
-from repowire.hooks.utils import daemon_post, update_status
+from repowire.hooks.utils import daemon_post, derive_display_name, pending_cid_path, update_status
 from repowire.session.transcript import extract_last_turn_pair, extract_last_turn_tool_calls
+
+
+def _pop_pending_cid(pane_id: str) -> str | None:
+    """Pop the oldest pending correlation_id for a pane, if any."""
+    path = pending_cid_path(pane_id)
+    try:
+        if not path.exists():
+            return None
+        pending = json.loads(path.read_text())
+        if not pending:
+            return None
+        cid = pending.pop(0)
+        path.write_text(json.dumps(pending))
+        return cid
+    except (json.JSONDecodeError, OSError, IndexError):
+        return None
 
 
 def _post_chat_turn(
@@ -37,7 +53,7 @@ def main() -> int:
     # Always mark peer as online when Claude finishes processing
     cwd = input_data.get("cwd", os.getcwd())
     claude_session_id = input_data.get("session_id", "")
-    peer_display = claude_session_id[:8] if claude_session_id else Path(cwd).name
+    peer_display = derive_display_name(claude_session_id, cwd)
     pane_id = get_pane_id()
     if pane_id:
         if not update_status(pane_id, "online", use_pane_id=True):
@@ -72,7 +88,11 @@ def main() -> int:
 
     # Deliver response to daemon for query resolution
     if pane_id and assistant_text:
-        daemon_post("/response", {"pane_id": pane_id, "text": assistant_text})
+        payload: dict = {"pane_id": pane_id, "text": assistant_text}
+        cid = _pop_pending_cid(pane_id)
+        if cid:
+            payload["correlation_id"] = cid
+        daemon_post("/response", payload)
 
     return 0
 

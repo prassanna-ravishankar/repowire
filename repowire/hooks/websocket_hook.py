@@ -21,13 +21,25 @@ except ImportError as e:
 
 from repowire.config.models import AgentType
 from repowire.hooks._tmux import get_tmux_info
-from repowire.hooks.utils import get_display_name
+from repowire.hooks.utils import get_display_name, pending_cid_path
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Set once at startup in main() — guards against pane reuse by a different agent
 _expected_command: str | None = None
+
+
+def _push_pending_cid(pane_id: str, correlation_id: str) -> None:
+    """Append a correlation_id to the pending file for a pane."""
+    path = pending_cid_path(pane_id)
+    try:
+        pending = json.loads(path.read_text()) if path.exists() else []
+    except (json.JSONDecodeError, OSError):
+        pending = []
+    pending.append(correlation_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(pending))
 
 
 def _tmux_send_keys(pane_id: str, text: str) -> bool:
@@ -131,6 +143,8 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         text = data.get("text", "")
         try:
             if await asyncio.to_thread(_tmux_send_keys, pane_id, text):
+                # Track pending correlation_id for stop hook response delivery
+                _push_pending_cid(pane_id, correlation_id)
                 logger.info(f"Injected query from {from_peer}: {correlation_id[:8]}")
             else:
                 error_msg = f"Failed to send keys to pane {pane_id}"

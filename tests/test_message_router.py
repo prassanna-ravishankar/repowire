@@ -53,7 +53,7 @@ class TestSendQuery:
         async def resolve_after_send(*args, **kwargs):
             # Simulate response arriving after send
             for cid in list(tracker._queries):
-                tracker.resolve_query(cid, "response!")
+                await tracker.resolve_query(cid, "response!")
 
         transport.send.side_effect = resolve_after_send
 

@@ -1,18 +1,22 @@
-"""Tests for SessionMapper, focused on prune_offline."""
+"""Tests for PeerRegistry session mapping persistence and pruning."""
 
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from repowire.config.models import AgentType
-from repowire.daemon.session_mapper import SessionMapper
+from repowire.daemon.peer_registry import PeerRegistry
 
 
-def _make_mapper(tmp_path: Path, mappings: dict | None = None) -> SessionMapper:
+def _make_registry(tmp_path: Path, mappings: dict | None = None) -> PeerRegistry:
     path = tmp_path / "sessions.json"
     if mappings:
         path.write_text(json.dumps(mappings, indent=2))
-    return SessionMapper(persistence_path=path)
+    return PeerRegistry(
+        config=__import__("repowire.config.models", fromlist=["Config"]).Config(),
+        message_router=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(),
+        persistence_path=path,
+    )
 
 
 def _ts(hours_ago: float) -> str:
@@ -36,11 +40,11 @@ def test_prune_removes_old_mappings(tmp_path):
             "updated_at": _ts(1),
         },
     }
-    mapper = _make_mapper(tmp_path, mappings)
-    pruned = mapper.prune_offline(max_age_hours=72)
+    registry = _make_registry(tmp_path, mappings)
+    pruned = registry.prune_offline(max_age_hours=72)
     assert pruned == 1
-    assert mapper.get_mapping("repow-dev-old1") is None
-    assert mapper.get_mapping("repow-dev-recent") is not None
+    assert registry.get_mapping("repow-dev-old1") is None
+    assert registry.get_mapping("repow-dev-recent") is not None
 
 
 def test_prune_removes_entries_with_no_timestamp(tmp_path):
@@ -53,12 +57,15 @@ def test_prune_removes_entries_with_no_timestamp(tmp_path):
             "updated_at": None,
         },
     }
-    # Write raw JSON to bypass __post_init__ auto-timestamp
     path = tmp_path / "sessions.json"
     path.write_text(json.dumps(mappings, indent=2))
-    mapper = SessionMapper(persistence_path=path)
+    registry = PeerRegistry(
+        config=__import__("repowire.config.models", fromlist=["Config"]).Config(),
+        message_router=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(),
+        persistence_path=path,
+    )
     # __post_init__ sets updated_at, so this entry is fresh — won't be pruned
-    assert mapper.prune_offline() == 0
+    assert registry.prune_offline() == 0
 
 
 def test_prune_persists_to_disk(tmp_path):
@@ -71,11 +78,14 @@ def test_prune_persists_to_disk(tmp_path):
             "updated_at": _ts(200),
         },
     }
-    mapper = _make_mapper(tmp_path, mappings)
-    mapper.prune_offline()
+    registry = _make_registry(tmp_path, mappings)
+    registry.prune_offline()
+    # Force flush to disk
+    registry._mappings_dirty = True
+    registry._persist_mappings()
     # Reload from disk
-    mapper2 = SessionMapper(persistence_path=tmp_path / "sessions.json")
-    assert mapper2.get_mapping("repow-dev-stale") is None
+    registry2 = _make_registry(tmp_path)
+    assert registry2.get_mapping("repow-dev-stale") is None
 
 
 def test_prune_removes_entries_with_bad_timestamp(tmp_path):
@@ -88,9 +98,9 @@ def test_prune_removes_entries_with_bad_timestamp(tmp_path):
             "updated_at": "not-a-valid-iso-timestamp",
         },
     }
-    mapper = _make_mapper(tmp_path, mappings)
-    assert mapper.prune_offline() == 1
-    assert mapper.get_mapping("repow-dev-badtimestamp") is None
+    registry = _make_registry(tmp_path, mappings)
+    assert registry.prune_offline() == 1
+    assert registry.get_mapping("repow-dev-badtimestamp") is None
 
 
 def test_prune_noop_when_nothing_stale(tmp_path):
@@ -103,5 +113,5 @@ def test_prune_noop_when_nothing_stale(tmp_path):
             "updated_at": _ts(1),
         },
     }
-    mapper = _make_mapper(tmp_path, mappings)
-    assert mapper.prune_offline() == 0
+    registry = _make_registry(tmp_path, mappings)
+    assert registry.prune_offline() == 0

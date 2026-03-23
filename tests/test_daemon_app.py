@@ -8,43 +8,40 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from repowire.config.models import Config, DaemonConfig
-from repowire.daemon.core import PeerManager
 from repowire.daemon.deps import cleanup_deps, init_deps
 from repowire.daemon.message_router import MessageRouter
+from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.routes import health, messages, peers
 from repowire.daemon.routes import spawn as spawn_routes
-from repowire.daemon.session_mapper import SessionMapper
 from repowire.daemon.websocket_transport import WebSocketTransport
 
 
 def _make_app(tmp_path: Path, config: Config | None = None):
     """Build app with given config."""
     cfg = config or Config()
-    mapper = SessionMapper(persistence_path=tmp_path / "sessions.json")
     transport = WebSocketTransport()
     tracker = QueryTracker()
     router = MessageRouter(transport=transport, query_tracker=tracker)
-    pm = PeerManager(
+    registry = PeerRegistry(
         config=cfg,
         message_router=router,
-        session_mapper=mapper,
         query_tracker=tracker,
         transport=transport,
+        persistence_path=tmp_path / "sessions.json",
     )
-    pm._events_path = tmp_path / "events.json"
-    pm._events.clear()
+    registry._events_path = tmp_path / "events.json"
+    registry._events.clear()
 
     app_state = SimpleNamespace(
         config=cfg,
-        session_mapper=mapper,
         transport=transport,
         query_tracker=tracker,
         message_router=router,
-        peer_manager=pm,
+        peer_registry=registry,
         relay_mode=cfg.relay.enabled,
     )
-    init_deps(cfg, pm, app_state)
+    init_deps(cfg, registry, app_state)
 
     app = FastAPI()
     app.include_router(health.router)

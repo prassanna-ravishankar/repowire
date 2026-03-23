@@ -103,29 +103,20 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.get_tmux_info",
            return_value={"pane_id": "%1", "session_name": "default", "window_name": "test"})
     def test_second_session_start_skips_ws_hook(self, mock_tmux, mock_register, mock_fetch, tmp_path):
-        """Second SessionStart for same pane skips ws-hook spawn (PID dedup)."""
+        """Second SessionStart for same pane skips ws-hook spawn (flock dedup)."""
         with patch("repowire.hooks.session_handler.CACHE_DIR", tmp_path):
-            # First call — spawns ws-hook, writes PID file
-            _run_with_input({
-                "hook_event_name": "SessionStart",
-                "cwd": str(tmp_path),
-                "session_id": "abc12345-rest",
-            })
+            # Simulate a held flock — fcntl.flock raises OSError when lock is held
+            with patch("repowire.hooks.session_handler.fcntl") as mock_fcntl:
+                mock_fcntl.LOCK_EX = 2
+                mock_fcntl.LOCK_NB = 4
+                mock_fcntl.flock.side_effect = OSError("Resource temporarily unavailable")
 
-            # Verify PID file was written
-            pid_path = tmp_path / "logs" / "ws-hook-1.pid"
-            assert pid_path.exists()
-            first_pid = int(pid_path.read_text().strip())
+                result = _run_with_input({
+                    "hook_event_name": "SessionStart",
+                    "cwd": str(tmp_path),
+                    "session_id": "eph99999-rest",
+                })
 
-            # Second call with different session_id (ephemeral tool sub-session)
-            # Should still register peer via HTTP but skip ws-hook spawn
-            _run_with_input({
-                "hook_event_name": "SessionStart",
-                "cwd": str(tmp_path),
-                "session_id": "eph99999-rest",
-            })
-
-            # PID file should still contain the first PID (not overwritten)
-            assert int(pid_path.read_text().strip()) == first_pid
-            # Only first call registered via HTTP (second was skipped entirely)
-            assert mock_register.call_count == 1
+                # Should return 0 immediately — ws-hook alive, skip entirely
+                assert result == 0
+                mock_register.assert_not_called()

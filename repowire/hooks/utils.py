@@ -28,6 +28,20 @@ def get_display_name() -> str:
     return Path.cwd().name
 
 
+def derive_display_name(session_id: str | None, cwd: str) -> str:
+    """Derive display name from Claude session_id (first 8 chars) or cwd folder name."""
+    if session_id:
+        return session_id[:8]
+    return Path(cwd).name
+
+
+def pending_cid_path(pane_id: str) -> Path:
+    """Path to the pending correlation_id file for a pane."""
+    from repowire.config.models import CACHE_DIR
+
+    return CACHE_DIR / "logs" / f"pending-{get_pane_file(pane_id)}.json"
+
+
 def _log_daemon_error(method: str, path: str, exc: Exception) -> None:
     """Log daemon request failure, including HTTP response body when available."""
     msg = f"repowire: daemon {method} {path} failed: {exc}"
