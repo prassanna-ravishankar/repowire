@@ -905,6 +905,25 @@ def relay_generate_key(user_id: str) -> None:
 
 
 # =============================================================================
+# telegram command group
+# =============================================================================
+
+
+@main.group(hidden=True)
+def telegram() -> None:
+    """Manage the Telegram bot peer."""
+    pass
+
+
+@telegram.command(name="start")
+def telegram_start() -> None:
+    """Start the Telegram bot as a repowire peer."""
+    from repowire.telegram.bot import main as bot_main
+
+    bot_main()
+
+
+# =============================================================================
 # service command group - system service management
 # =============================================================================
 
