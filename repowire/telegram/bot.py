@@ -1,9 +1,7 @@
-"""Telegram bot that acts as a repowire peer.
+"""Telegram bot peer for the repowire mesh.
 
-Bridges Telegram <> repowire mesh:
-- Telegram messages -> notify/ask peers
-- Peer notifications -> Telegram messages
-- Inline buttons for quick actions
+Bridges Telegram <> repowire: notifications become Telegram messages,
+Telegram messages become peer notifications. Inline buttons for quick actions.
 
 Usage:
     TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... repowire telegram start
@@ -27,32 +25,25 @@ from repowire.config.models import DEFAULT_DAEMON_URL
 
 logger = logging.getLogger(__name__)
 
-# Callback data prefixes
-CB_NOTIFY = "notify:"
-CB_PEER_NOTIFY = "peer_notify:"
-
-# Message routing: @peername message
-PEER_MSG_RE = re.compile(r"^@(\S+)\s+(.+)", re.DOTALL)
-
-# Pre-compiled MarkdownV2 escape regex
 _MD_ESCAPE_RE = re.compile(r"([_*\[\]()~`>#+=|{}.!\-])")
 
 
-def _escape_md(text: str) -> str:
-    """Escape special characters for Telegram MarkdownV2."""
+def _esc(text: str) -> str:
+    """Escape for Telegram MarkdownV2."""
     return _MD_ESCAPE_RE.sub(r"\\\1", text)
 
 
-def _inline_kb(buttons: list[list[dict]]) -> dict:
-    """Build Telegram InlineKeyboardMarkup."""
-    return {"inline_keyboard": buttons}
+def _kb(rows: list[list[tuple[str, str]]]) -> dict:
+    """Build InlineKeyboardMarkup from [(text, callback_data), ...] rows."""
+    return {"inline_keyboard": [
+        [{"text": t, "callback_data": d} for t, d in row] for row in rows
+    ]}
 
 
-def _http_to_ws(url: str) -> str:
-    """Convert http(s) URL to ws(s) URL."""
-    parsed = urlparse(url)
-    scheme = "wss" if parsed.scheme == "https" else "ws"
-    return urlunparse(parsed._replace(scheme=scheme))
+def _ws_url(http_url: str) -> str:
+    """Convert http(s) URL to ws(s)."""
+    p = urlparse(http_url)
+    return urlunparse(p._replace(scheme="wss" if p.scheme == "https" else "ws"))
 
 
 class TelegramPeer:
@@ -63,24 +54,19 @@ class TelegramPeer:
         bot_token: str,
         chat_id: str,
         daemon_url: str = DEFAULT_DAEMON_URL,
-        display_name: str = "telegram",
-        circle: str = "default",
     ):
-        self._token = bot_token
         self._chat_id = chat_id
         self._daemon_url = daemon_url.rstrip("/")
-        self._display_name = display_name
-        self._circle = circle
+        self._tg = f"https://api.telegram.org/bot{bot_token}"
         self._http = httpx.AsyncClient()
         self._ws: ClientConnection | None = None
         self._stopping = False
         self._tg_offset = 0
-        self._tg_api = f"https://api.telegram.org/bot{bot_token}"
+        self._reply_target: str | None = None  # peer to send next message to
 
     async def start(self) -> None:
-        """Start the bot — connects to daemon and polls Telegram."""
-        logger.info("Starting Telegram peer: %s", self._display_name)
-        await asyncio.gather(self._ws_loop(), self._telegram_poll_loop())
+        logger.info("Starting Telegram peer")
+        await asyncio.gather(self._ws_loop(), self._poll_loop())
 
     async def stop(self) -> None:
         self._stopping = True
@@ -91,19 +77,17 @@ class TelegramPeer:
     # -- Daemon WebSocket --
 
     async def _ws_loop(self) -> None:
-        """Maintain WebSocket connection to daemon."""
-        ws_url = f"{_http_to_ws(self._daemon_url)}/ws"
+        url = f"{_ws_url(self._daemon_url)}/ws"
         backoff = 1.0
-
         while not self._stopping:
             try:
-                async with websockets.connect(ws_url) as ws:
+                async with websockets.connect(url) as ws:
                     self._ws = ws
                     backoff = 1.0
                     await ws.send(json.dumps({
                         "type": "connect",
-                        "display_name": self._display_name,
-                        "circle": self._circle,
+                        "display_name": "telegram",
+                        "circle": "default",
                         "backend": "claude-code",
                         "path": "/telegram",
                     }))
@@ -112,9 +96,9 @@ class TelegramPeer:
                         logger.error("Connect failed: %s", resp)
                         await asyncio.sleep(backoff)
                         continue
-                    logger.info("Connected as %s", resp.get("session_id"))
+                    logger.info("Connected: %s", resp.get("session_id"))
                     async for raw in ws:
-                        await self._handle_ws_message(json.loads(raw))
+                        await self._on_ws(json.loads(raw))
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -125,192 +109,196 @@ class TelegramPeer:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
-    async def _handle_ws_message(self, msg: dict[str, Any]) -> None:
-        msg_type = msg.get("type", "")
-        from_peer = msg.get("from_peer", "?")
+    async def _on_ws(self, msg: dict[str, Any]) -> None:
+        t = msg.get("type", "")
+        who = msg.get("from_peer", "?")
         text = msg.get("text", "")
 
-        if msg_type == "notify":
-            await self._send_telegram(
-                f"*@{_escape_md(from_peer)}*\n{_escape_md(text)}",
-                reply_markup=_inline_kb([[
-                    {"text": "Reply", "callback_data": f"{CB_NOTIFY}{from_peer}"},
-                ]]),
+        if t == "notify":
+            await self._tg_send(
+                f"*@{_esc(who)}*\n{_esc(text)}",
+                _kb([[("💬 Reply", f"target:{who}")]]),
             )
-        elif msg_type == "query":
-            await self._send_telegram(
-                f"*@{_escape_md(from_peer)}* \\(query\\)\n{_escape_md(text)}",
-                reply_markup=_inline_kb([[
-                    {"text": "Reply", "callback_data": f"{CB_NOTIFY}{from_peer}"},
-                ]]),
+        elif t == "query":
+            await self._tg_send(
+                f"❓ *@{_esc(who)}*\n{_esc(text)}",
+                _kb([[("💬 Reply", f"target:{who}")]]),
             )
-        elif msg_type == "broadcast":
-            await self._send_telegram(
-                f"*@{_escape_md(from_peer)}* \\(broadcast\\)\n"
-                f"{_escape_md(text)}"
-            )
-        elif msg_type == "ping" and self._ws:
+        elif t == "broadcast":
+            await self._tg_send(f"📢 *@{_esc(who)}*\n{_esc(text)}")
+        elif t == "ping" and self._ws:
             await self._ws.send(json.dumps({"type": "pong"}))
 
     # -- Telegram polling --
 
-    async def _telegram_poll_loop(self) -> None:
+    async def _poll_loop(self) -> None:
         while not self._stopping:
             try:
-                resp = await self._http.get(
-                    f"{self._tg_api}/getUpdates",
+                r = await self._http.get(
+                    f"{self._tg}/getUpdates",
                     params={"offset": self._tg_offset, "timeout": 30},
                     timeout=35,
                 )
-                for update in resp.json().get("result", []):
-                    self._tg_offset = update["update_id"] + 1
-                    await self._handle_update(update)
+                for u in r.json().get("result", []):
+                    self._tg_offset = u["update_id"] + 1
+                    await self._on_update(u)
             except asyncio.CancelledError:
                 break
             except Exception:
-                logger.warning("Telegram poll error", exc_info=True)
+                logger.warning("Poll error", exc_info=True)
                 await asyncio.sleep(5)
 
-    async def _handle_update(self, update: dict) -> None:
-        """Handle a Telegram update (message or callback)."""
-        cb = update.get("callback_query")
+    async def _on_update(self, u: dict) -> None:
+        # Button callback
+        cb = u.get("callback_query")
         if cb:
-            chat_id = str(cb.get("message", {}).get("chat", {}).get("id", ""))
-            if chat_id == self._chat_id:
-                await self._handle_callback(cb)
+            if str(cb.get("message", {}).get("chat", {}).get("id")) == self._chat_id:
+                await self._on_callback(cb)
             return
+        # Text message
+        m = u.get("message", {})
+        text = m.get("text", "")
+        if str(m.get("chat", {}).get("id")) == self._chat_id and text:
+            await self._on_text(text.strip())
 
-        message = update.get("message", {})
-        text = message.get("text", "")
-        chat_id = str(message.get("chat", {}).get("id", ""))
-        if chat_id == self._chat_id and text:
-            await self._handle_telegram_message(text.strip())
-
-    async def _handle_callback(self, cb: dict) -> None:
-        """Handle inline button press."""
+    async def _on_callback(self, cb: dict) -> None:
         data = cb.get("data", "")
-
         await self._http.post(
-            f"{self._tg_api}/answerCallbackQuery",
-            json={"callback_query_id": cb.get("id", "")},
+            f"{self._tg}/answerCallbackQuery",
+            json={"callback_query_id": cb.get("id")},
         )
 
-        if data.startswith(CB_NOTIFY):
-            peer_name = data.removeprefix(CB_NOTIFY)
-            await self._send_telegram(
-                f"_Type_ `@{_escape_md(peer_name)} your message`"
+        if data.startswith("target:"):
+            peer = data.removeprefix("target:")
+            self._reply_target = peer
+            await self._tg_send(
+                f"Talking to *@{_esc(peer)}*\\. Send your message\\.",
+                _kb([[("❌ Cancel", "cancel")]]),
             )
-        elif data.startswith(CB_PEER_NOTIFY):
-            peer_name = data.removeprefix(CB_PEER_NOTIFY)
-            await self._send_telegram(
-                f"_Type_ `@{_escape_md(peer_name)} your message`"
+        elif data.startswith("notify:"):
+            peer = data.removeprefix("notify:")
+            self._reply_target = peer
+            await self._tg_send(
+                f"Talking to *@{_esc(peer)}*\\. Send your message\\.",
+                _kb([[("❌ Cancel", "cancel")]]),
             )
-
-    async def _handle_telegram_message(self, text: str) -> None:
-        if text in ("/peers", "/start"):
+        elif data == "cancel":
+            self._reply_target = None
+            await self._tg_send("Cancelled\\.")
+        elif data == "peers":
             await self._cmd_peers()
-        elif match := PEER_MSG_RE.match(text):
-            await self._cmd_notify(match.group(1), match.group(2))
-        else:
-            await self._send_telegram(
-                "`/peers` — list online peers\n"
-                "`@name msg` — notify a peer"
-            )
+
+    async def _on_text(self, text: str) -> None:
+        # Commands
+        if text in ("/start", "/peers"):
+            await self._cmd_peers()
+            return
+
+        # @peer message — explicit target
+        m = re.match(r"^@(\S+)\s+(.+)", text, re.DOTALL)
+        if m:
+            await self._notify(m.group(1), m.group(2))
+            return
+
+        # Reply target set — send to that peer
+        if self._reply_target:
+            peer = self._reply_target
+            self._reply_target = None
+            await self._notify(peer, text)
+            return
+
+        # Help
+        await self._tg_send(
+            "`/peers` — list peers\n"
+            "`@name msg` — notify a peer\n\n"
+            "_Or tap a button to select a peer, then type your message\\._"
+        )
 
     # -- Commands --
 
     async def _cmd_peers(self) -> None:
         try:
-            resp = await self._http.get(f"{self._daemon_url}/peers")
-            data = resp.json()
+            r = await self._http.get(f"{self._daemon_url}/peers")
+            data = r.json()
             peers = data.get("peers", data) if isinstance(data, dict) else data
             active = [p for p in peers if p.get("status") in ("online", "busy")]
 
             if not active:
-                await self._send_telegram("No peers online\\.")
+                await self._tg_send("No peers online\\.")
                 return
 
             lines = []
             buttons = []
             for p in active:
                 name = p.get("display_name", p.get("name", "?"))
-                status = p.get("status", "?")
-                desc = p.get("description", "")
                 path = p.get("path", "")
-                folder = path.rstrip("/").split("/")[-1] if path else ""
+                folder = path.rstrip("/").split("/")[-1] if path else name
+                desc = p.get("description", "")
                 branch = p.get("metadata", {}).get("branch", "")
-                icon = "🟢" if status == "online" else "🟡"
+                icon = "🟢" if p.get("status") == "online" else "🟡"
 
-                line = f"{icon} `{_escape_md(name)}` — {_escape_md(folder)}"
+                line = f"{icon} *{_esc(folder)}* `{_esc(name)}`"
                 if branch:
-                    line += f" \\(`{_escape_md(branch)}`\\)"
+                    line += f" `{_esc(branch)}`"
                 if desc:
-                    line += f"\n    _{_escape_md(desc)}_"
+                    line += f"\n  _{_esc(desc)}_"
                 lines.append(line)
-                buttons.append([{
-                    "text": f"📨 {folder or name}",
-                    "callback_data": f"{CB_PEER_NOTIFY}{name}",
-                }])
+                buttons.append([("📨 " + folder, f"target:{name}")])
 
-            await self._send_telegram(
-                "\n".join(lines),
-                reply_markup=_inline_kb(buttons),
-            )
+            await self._tg_send("\n".join(lines), _kb(buttons))
         except Exception as e:
-            await self._send_telegram(f"Error: {_escape_md(str(e))}")
+            await self._tg_send(f"Error: {_esc(str(e))}")
 
-    async def _cmd_notify(self, peer_name: str, message: str) -> None:
+    async def _notify(self, peer: str, message: str) -> None:
         try:
-            resp = await self._http.post(
+            r = await self._http.post(
                 f"{self._daemon_url}/notify",
                 json={
-                    "from_peer": self._display_name,
-                    "to_peer": peer_name,
+                    "from_peer": "telegram",
+                    "to_peer": peer,
                     "text": message,
                     "bypass_circle": True,
                 },
             )
-            if resp.status_code == 200:
-                await self._send_telegram(f"✓ Sent to @{_escape_md(peer_name)}")
+            if r.status_code == 200:
+                await self._tg_send(
+                    f"✓ → *@{_esc(peer)}*",
+                    _kb([[("📨 Send another", f"target:{peer}"), ("📋 Peers", "peers")]]),
+                )
             else:
-                detail = resp.json().get("detail", resp.text)
-                await self._send_telegram(f"✗ {_escape_md(str(detail))}")
+                detail = r.json().get("detail", r.text)
+                await self._tg_send(f"✗ {_esc(str(detail))}")
         except Exception as e:
-            await self._send_telegram(f"Error: {_escape_md(str(e))}")
+            await self._tg_send(f"Error: {_esc(str(e))}")
 
     # -- Telegram API --
 
-    async def _send_telegram(
-        self, text: str, reply_markup: dict | None = None,
-    ) -> None:
+    async def _tg_send(self, text: str, markup: dict | None = None) -> None:
         try:
             payload: dict[str, Any] = {
                 "chat_id": self._chat_id,
                 "text": text,
                 "parse_mode": "MarkdownV2",
             }
-            if reply_markup:
-                payload["reply_markup"] = reply_markup
-            await self._http.post(f"{self._tg_api}/sendMessage", json=payload)
+            if markup:
+                payload["reply_markup"] = markup
+            await self._http.post(f"{self._tg}/sendMessage", json=payload)
         except Exception:
-            logger.warning("Failed to send Telegram message", exc_info=True)
+            logger.warning("Telegram send failed", exc_info=True)
 
 
 def main() -> None:
-    """Entry point for `repowire telegram start`."""
-    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    daemon_url = os.environ.get("REPOWIRE_DAEMON_URL", DEFAULT_DAEMON_URL)
+    """Entry point: repowire telegram start"""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat = os.environ.get("TELEGRAM_CHAT_ID")
+    daemon = os.environ.get("REPOWIRE_DAEMON_URL", DEFAULT_DAEMON_URL)
 
-    if not bot_token or not chat_id:
+    if not token or not chat:
         print("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars.")
-        print("Get token from @BotFather, chat ID from @userinfobot.")
         raise SystemExit(1)
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s",
-    )
-    bot = TelegramPeer(bot_token=bot_token, chat_id=chat_id, daemon_url=daemon_url)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    bot = TelegramPeer(bot_token=token, chat_id=chat, daemon_url=daemon)
     try:
         asyncio.run(bot.start())
     except KeyboardInterrupt:
