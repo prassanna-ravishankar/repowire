@@ -54,9 +54,13 @@ class TelegramPeer:
         bot_token: str,
         chat_id: str,
         daemon_url: str = DEFAULT_DAEMON_URL,
+        display_name: str = "telegram",
+        circle: str = "default",
     ):
         self._chat_id = chat_id
         self._daemon_url = daemon_url.rstrip("/")
+        self._display_name = display_name
+        self._circle = circle
         self._tg = f"https://api.telegram.org/bot{bot_token}"
         self._http = httpx.AsyncClient()
         self._ws: ClientConnection | None = None
@@ -86,8 +90,8 @@ class TelegramPeer:
                     backoff = 1.0
                     await ws.send(json.dumps({
                         "type": "connect",
-                        "display_name": "telegram",
-                        "circle": "default",
+                        "display_name": self._display_name,
+                        "circle": self._circle,
                         "backend": "claude-code",
                         "path": "/telegram",
                     }))
@@ -168,15 +172,8 @@ class TelegramPeer:
             json={"callback_query_id": cb.get("id")},
         )
 
-        if data.startswith("target:"):
-            peer = data.removeprefix("target:")
-            self._reply_target = peer
-            await self._tg_send(
-                f"Talking to *@{_esc(peer)}*\\. Send your message\\.",
-                _kb([[("❌ Cancel", "cancel")]]),
-            )
-        elif data.startswith("notify:"):
-            peer = data.removeprefix("notify:")
+        if data.startswith(("target:", "notify:")):
+            peer = data.split(":", 1)[1]
             self._reply_target = peer
             await self._tg_send(
                 f"Talking to *@{_esc(peer)}*\\. Send your message\\.",
@@ -219,8 +216,7 @@ class TelegramPeer:
     async def _cmd_peers(self) -> None:
         try:
             r = await self._http.get(f"{self._daemon_url}/peers")
-            data = r.json()
-            peers = data.get("peers", data) if isinstance(data, dict) else data
+            peers = r.json().get("peers", [])
             active = [p for p in peers if p.get("status") in ("online", "busy")]
 
             if not active:
@@ -254,7 +250,7 @@ class TelegramPeer:
             r = await self._http.post(
                 f"{self._daemon_url}/notify",
                 json={
-                    "from_peer": "telegram",
+                    "from_peer": self._display_name,
                     "to_peer": peer,
                     "text": message,
                     "bypass_circle": True,
