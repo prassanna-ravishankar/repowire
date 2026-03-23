@@ -224,10 +224,13 @@ class TelegramPeer:
                 desc = p.get("description", "")
                 path = p.get("path", "")
                 folder = path.rstrip("/").split("/")[-1] if path else ""
+                branch = p.get("metadata", {}).get("branch", "")
                 icon = "🟢" if status == "online" else "🟡"
-                line = f"{icon} `{name}` — {folder}"
+                line = f"{icon} `{name}` — {_escape_md(folder)}"
+                if branch:
+                    line += f" \\(`{_escape_md(branch)}`\\)"
                 if desc:
-                    line += f" _{_escape_md(desc)}_"
+                    line += f"\n    _{_escape_md(desc)}_"
                 lines.append(line)
 
             await self._send_telegram("\n".join(lines))
