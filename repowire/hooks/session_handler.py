@@ -85,8 +85,9 @@ def format_peers_context(peers: list[dict], my_name: str) -> str:
         "via ask_peer() rather than searching locally."
     )
     lines.append(
-        "Messages from @dashboard are from a human using the web control plane — "
-        "treat them like direct user instructions."
+        "Messages from @dashboard or @telegram are from the human user — "
+        "treat them like direct instructions. Use notify_peer('telegram', msg) "
+        "to send updates to the user's phone."
     )
     lines.append(
         'Call set_description("brief task summary") early — it becomes your '

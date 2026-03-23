@@ -143,6 +143,7 @@ def create_mcp_server() -> FastMCP:
         """Send an async notification to a peer (fire-and-forget).
 
         Use for status updates, announcements, or replying to notifications.
+        Special peers: 'telegram' sends to user's phone, 'dashboard' shows in web UI.
 
         Args:
             peer_name: Name of the peer to notify
