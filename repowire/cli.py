@@ -327,10 +327,17 @@ def _setup_claude_code() -> None:
     """Setup for Claude Code agent type."""
     import subprocess
 
-    from repowire.installers.claude_code import install_hooks
+    from repowire.installers.claude_code import install_channel, install_hooks
 
-    install_hooks()
-    console.print("[green]✓[/] Claude Code hooks installed")
+    # Try channel transport first (Claude Code v2.1.80+ with bun)
+    channel_ok, channel_msg = install_channel()
+    if channel_ok:
+        install_hooks(channel_mode=True)  # minimal Stop hook for dashboard
+        console.print(f"[green]✓[/] {channel_msg}")
+    else:
+        install_hooks()  # full hooks for legacy transport
+        console.print(f"[yellow]![/] {channel_msg}")
+        console.print("[green]✓[/] Claude Code hooks installed (legacy transport)")
 
     # Remove existing repowire MCP server if present
     subprocess.run(["claude", "mcp", "remove", "repowire"], capture_output=True)

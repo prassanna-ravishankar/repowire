@@ -116,6 +116,8 @@ def get_claude_version() -> tuple[int, ...] | None:
         result = subprocess.run(
             ["claude", "--version"], capture_output=True, text=True, timeout=5,
         )
+        if result.returncode != 0:
+            return None
         # Output like "2.1.81 (Claude Code)"
         version_str = result.stdout.strip().split()[0]
         return tuple(int(x) for x in version_str.split("."))
@@ -175,10 +177,12 @@ def install_channel() -> tuple[bool, str]:
 
     # Install deps (bun install is idempotent — fast no-op if already installed)
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["bun", "install"], cwd=str(server_path.parent),
             capture_output=True, timeout=30,
         )
+        if result.returncode != 0:
+            return False, f"bun install failed: {result.stderr.decode()[:200]}"
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False, "Failed to install channel dependencies."
 

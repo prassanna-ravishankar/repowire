@@ -25,7 +25,6 @@ const DISPLAY_NAME =
   (process.env.CLAUDE_SESSION_ID ?? "").slice(0, 8) || "channel";
 const CIRCLE = process.env.REPOWIRE_CIRCLE ?? "default";
 const PROJECT_PATH = process.cwd();
-const FOLDER_NAME = PROJECT_PATH.split("/").pop() ?? "unknown";
 
 // -- Daemon WebSocket --
 
@@ -52,7 +51,13 @@ function connectDaemon(mcp: Server): void {
   });
 
   ws.on("message", async (data: WebSocket.Data) => {
-    const msg = JSON.parse(data.toString());
+    let msg: Record<string, any>;
+    try {
+      msg = JSON.parse(data.toString());
+    } catch {
+      console.error("repowire: invalid JSON from daemon");
+      return;
+    }
 
     if (msg.type === "connected") {
       sessionId = msg.session_id;
@@ -200,12 +205,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
+const ReplyArgs = z.object({
+  correlation_id: z.string(),
+  text: z.string(),
+});
+
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (req.params.name === "reply") {
-    const { correlation_id, text } = req.params.arguments as {
-      correlation_id: string;
-      text: string;
-    };
+    const { correlation_id, text } = ReplyArgs.parse(req.params.arguments);
 
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(

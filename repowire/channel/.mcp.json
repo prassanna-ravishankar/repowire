@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "repowire": {
+    "repowire-channel": {
       "command": "bun",
       "args": ["./repowire/channel/server.ts"]
     }
