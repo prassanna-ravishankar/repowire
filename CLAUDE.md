@@ -12,6 +12,8 @@ uv run ty check repowire/              # type check
 
 CI runs: ruff check, ty check, pytest (`.github/workflows/ci.yml`).
 
+Channel server deps: `cd repowire/channel && bun install`
+
 ## Releasing
 
 Update `version` in `pyproject.toml`, commit, tag, push:
@@ -23,55 +25,91 @@ CI triggers PyPI publish from tags.
 ## Architecture
 
 ```
-MCP Server (mcp/server.py)          — thin HTTP client, delegates to daemon
-    │
-HTTP Daemon (daemon/app.py)         — FastAPI, :8377
-    │
-PeerRegistry (daemon/peer_registry.py) — single source of truth for peers + persistence
-    │         │              │
-MessageRouter  QueryTracker   WebSocketTransport
-(routes msgs)  (correlation   (connection mgmt)
-               IDs, locked)
+                    ┌─────────────────────────────┐
+                    │   HTTP Daemon (daemon/app.py)│
+                    │   FastAPI, :8377              │
+                    │                              │
+                    │   PeerRegistry               │
+                    │   MessageRouter              │
+                    │   QueryTracker               │
+                    │   WebSocketTransport          │
+                    └──────────┬───────────────────┘
+                               │ WebSocket /ws
+            ┌──────────────────┼──────────────────┐
+            │                  │                  │
+   Channel transport    Legacy transport     Other peers
+   (Claude Code 2.1.80+)  (older Claude)    (OpenCode, Telegram)
+            │                  │                  │
+   channel/server.ts    hooks/ws-hook.py    telegram/bot.py
+   (MCP stdio)          (tmux injection)    opencode plugin
 ```
 
-**Key modules:**
+The daemon is the single routing hub. It doesn't care how a peer connects — all peers speak the same WebSocket protocol. The transport layer is client-side only.
+
+### Key modules
+
+- `channel/server.ts` — **primary Claude Code transport**: MCP channel with reply tool, permission relay
 - `daemon/peer_registry.py` — peer state, circle access, events, lazy_repair, ghost eviction
 - `daemon/message_router.py` — routes queries/notifications/broadcasts via WebSocket
 - `daemon/query_tracker.py` — correlation ID tracking, asyncio Futures (async-locked)
 - `daemon/routes/` — HTTP endpoints (peers, messages, websocket, spawn, health)
-- `hooks/` — Claude Code lifecycle (session, stop, prompt, notification, websocket_hook)
-- `relay/server.py` — hosted relay at repowire.io (WebSocket bridge + HTTP tunnel)
-- `mcp/server.py` — MCP tools (list_peers, ask_peer, notify_peer, broadcast, whoami, set_description, spawn_peer, kill_peer)
-- `telegram/bot.py` — Telegram bot peer (mobile mesh control via inline buttons)
+- `mcp/server.py` — MCP tools (list_peers, ask_peer, notify_peer, etc.)
+- `relay/server.py` — hosted relay at repowire.io (WS bridge + HTTP tunnel)
+- `telegram/bot.py` — mobile mesh control via Telegram inline buttons
+- `hooks/` — **legacy** Claude Code transport (session, stop, prompt, notification, websocket_hook)
+
+## Transports
+
+### Channel (primary — Claude Code v2.1.80+)
+
+```
+Claude Code ←stdio→ channel/server.ts ←WebSocket→ Daemon
+```
+
+- Messages arrive as `<channel source="repowire" from_peer="..." msg_type="...">` tags
+- Queries include `correlation_id` — Claude calls the `reply` tool to respond
+- Permission relay: forwards tool approval prompts to Telegram/dashboard
+- Requires claude.ai login (not API/Console key)
+- `repowire setup` auto-detects version and installs channel or hooks
+
+How it works:
+1. Claude Code spawns `server.ts` as MCP subprocess (stdio)
+2. `server.ts` connects to daemon via WebSocket, registers as peer
+3. Incoming messages → `notifications/claude/channel` → Claude sees `<channel>` tags
+4. Claude replies via `reply` MCP tool → `server.ts` sends WS response → daemon resolves query
+
+### Hooks (legacy — older Claude Code or API/Console auth)
+
+```
+Claude Code → hooks → websocket_hook.py ←WebSocket→ Daemon
+             → stop hook → transcript parse → HTTP /response
+```
+
+- **SessionStart** → registers peer, spawns ws-hook (flock dedup), injects peer context
+- **Stop** → extracts response + tool calls from transcript, posts chat turns, delivers responses
+- **UserPromptSubmit** → marks BUSY
+- **Notification** (idle_prompt) → resets ONLINE
+
+In channel mode, only the Stop hook is kept (for dashboard chat_turn events).
+
+Key files: `session_handler.py`, `stop_handler.py`, `prompt_handler.py`, `notification_handler.py`, `websocket_hook.py`, `utils.py`
+
+### Setup auto-detection
+
+`repowire setup` checks:
+1. Claude Code version ≥ 2.1.80? → channel transport
+2. `bun` runtime available? → channel transport
+3. Otherwise → hooks transport (with clear message why)
+
+`install_hooks(channel_mode=True)` installs only the Stop hook when using channel transport.
 
 ## Design Philosophy: Lazy Repair
 
 Nothing polls. Work is deferred until needed, then piggy-backed on that request.
 
-- **Liveness:** `lazy_repair()` runs max 1x/30s, triggered by MCP endpoints. Dead peers discovered when someone talks to them.
-- **Persistence:** Disk writes debounced via dirty flags, flushed during lazy_repair or shutdown. Never on every mutation.
-- **Hooks:** WebSocket hook is fully reactive. Daemon pings, hook pongs with liveness. No timers, no file watchers.
-- **Rule:** Never add polling loops, periodic timers, or eager disk writes. Piggy-back on lazy_repair or the specific request.
-
-## Hooks (Claude Code)
-
-- **SessionStart** → registers peer, spawns ws-hook (flock dedup for sub-sessions), injects peer list as context
-- **Stop** → extracts response + tool calls from transcript, posts chat turns via `/events/chat`, delivers query response via `/response` (with correlation_id from pending file, flock-protected)
-- **UserPromptSubmit** → marks BUSY
-- **Notification** (idle_prompt) → resets to ONLINE
-
-State machine: `OFFLINE → ONLINE ↔ BUSY`
-
-Key files: `session_handler.py`, `stop_handler.py`, `prompt_handler.py`, `notification_handler.py`, `websocket_hook.py`, `utils.py` (has `derive_display_name()`)
-
-## Relay
-
-Hosted at repowire.io. Daemon connects outbound via WSS. Cookie-based auth for browser dashboard access.
-
-- `relay/server.py` — FastAPI relay (WS bridge + HTTP tunnel + SSE bridge + landing page)
-- `relay/auth.py` — API key validation
-- `daemon/relay_client.py` — outbound WSS with auto-reconnect, HTTP tunnel handler (strips proxy headers)
-- Deploy: `.github/workflows/relay.yml` → GCR → Helm → GKE
+- **Liveness:** `lazy_repair()` runs max 1x/30s, triggered by MCP endpoints
+- **Persistence:** Disk writes debounced via dirty flags, flushed during lazy_repair or shutdown
+- **Rule:** Never add polling loops, periodic timers, or eager disk writes
 
 ## Config
 
@@ -81,8 +119,8 @@ File: `~/.repowire/config.yaml`
 daemon:
   host: "127.0.0.1"
   port: 8377
-  auth_token: "optional"          # WebSocket auth
-  prune_max_age_hours: 24         # evict offline peers older than this
+  auth_token: "optional"
+  prune_max_age_hours: 24
   spawn:
     allowed_commands: [claude, claude --dangerously-skip-permissions]
     allowed_paths: [~/git, ~/projects]
@@ -90,36 +128,39 @@ daemon:
 relay:
   enabled: true
   url: "wss://repowire.io"
-  api_key: "rw_..."               # auto-generated
+  api_key: "rw_..."
 ```
 
-Peers auto-register via WebSocket on session start — no manual config.
+Channel config: `~/.claude.json` (user-level MCP servers) — managed by `repowire setup`.
 
-## Testing Notes
+## Relay
 
-- Route tests: `httpx.AsyncClient` + `ASGITransport`, manually init deps (no lifespan)
-- WebSocket tests: `httpx-ws` + `ASGIWebSocketTransport`
-- PeerRegistry tests: override `_events_path` and clear `_events` to isolate from real data
-- Hooks run from installed package — `uv tool install --force --reinstall .` after code changes
+Hosted at repowire.io. Daemon connects outbound via WSS. Cookie-based auth for dashboard.
+
+- `relay/server.py` — FastAPI relay (WS bridge + HTTP tunnel + SSE bridge)
+- `daemon/relay_client.py` — outbound WSS with auto-reconnect (strips proxy headers)
+- Deploy: `.github/workflows/relay.yml` → GCR → Helm → GKE
 
 ## Dashboard
 
-- Next.js static export served by daemon at `localhost:8377/dashboard`
-- Remote: served by relay at `repowire.io/dashboard` (cookie-authenticated tunnel)
+- Next.js static export at `localhost:8377/dashboard`, remote at `repowire.io/dashboard`
 - Events: 500-item circular buffer, persisted to `~/.repowire/events.json`
 - Tool calls: stop hook extracts from transcript JSONL, included in `chat_turn` events
 - Build: `repowire build-ui` or `cd web && npm run dev`
 
 ## Telegram Bot
 
-Mobile mesh control via Telegram. Registers as a peer, bridges messages bidirectionally.
-
 ```bash
 TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... repowire telegram start
 ```
 
-- `telegram/bot.py` — bot implementation (~230 lines, zero extra deps)
-- Button-first UX: `/peers` shows inline keyboards, tap to select reply target
-- Incoming notifications → Telegram messages with [Reply] button
-- Special peers: `@telegram` and `@dashboard` are human — context injection tells agents
-- Token stored in env vars, never in URLs (httpx base_url pattern)
+- `telegram/bot.py` — ~230 lines, zero extra deps
+- Sticky routing: `/select peer` → all messages go there
+- `@telegram` and `@dashboard` are human — context injection tells agents
+
+## Testing Notes
+
+- Route tests: `httpx.AsyncClient` + `ASGITransport`, manually init deps
+- WebSocket tests: `httpx-ws` + `ASGIWebSocketTransport`
+- Hooks run from installed package — `uv tool install --force --reinstall .` after changes
+- 222 tests covering routes, WebSocket, auth, query tracker, hooks, config, transcript
