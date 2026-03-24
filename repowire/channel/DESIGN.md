@@ -93,9 +93,22 @@ repowire setup  # detects Claude Code v2.1.80+
 2. **Phase 2**: Channel becomes default. Hooks stay as legacy fallback.
 3. **Phase 3**: Hooks deprecated. Channel-only.
 
+## Validated (2026-03-24)
+
+Tested on Claude Code v2.1.81 with `--dangerously-load-development-channels server:repowire-channel`:
+
+- ✅ Channel server connects to daemon via WebSocket and registers as peer
+- ✅ `notify_peer` → arrives as `← repowire-channel:` message in Claude's context
+- ✅ `ask_peer` → arrives with correlation_id, Claude calls `reply` tool with correct correlation_id
+- ✅ Full request/response loop works (ask → reply → future resolved)
+- ✅ Claude can use existing MCP tools (notify_peer, set_description) alongside channel
+- ✅ Permission relay capability declared (not yet tested end-to-end)
+
+Display name defaults to "channel" when `CLAUDE_SESSION_ID` not available as env var. Needs investigation — may need to read from Claude's MCP init message or use a different env var.
+
 ## Open questions
 
-- How does Claude Code pass `session_id` to the channel? (env var? init message?)
-- Can the channel server read the transcript for chat_turn posting? Or keep stop hook?
-- Should the channel be TypeScript (like official channels) or can it be Python?
-- How to handle `set_description` — is it an MCP tool on the channel or still via daemon HTTP?
+- How to get `session_id` in the channel server? (not available as env var in current test)
+- Keep minimal stop hook for chat_turn dashboard events? Or find another way?
+- `.mcp.json` placement: project root vs `~/.claude.json` for global install?
+- Package as a Claude Code plugin for easy distribution?
