@@ -39,7 +39,7 @@ https://github.com/user-attachments/assets/e356ce7c-9454-4e41-93af-3991c6f391b9
 
 ## Installation
 
-**Requirements:** macOS or Linux, Python 3.10+, tmux
+**Requirements:** macOS or Linux, Python 3.10+, tmux, [bun](https://bun.sh) (for channel transport)
 
 ```bash
 uv tool install repowire
@@ -49,7 +49,7 @@ uv tool install repowire
 ## Quick Start
 
 ```bash
-# One-time setup — installs hooks, MCP server, and daemon service
+# One-time setup — detects your Claude Code version and picks the best transport
 repowire setup
 
 # Verify everything is running
@@ -70,6 +70,65 @@ The sessions auto-discover each other. In frontend's Claude:
 ```
 
 Claude uses the `ask_peer` tool, backend responds, and you get the answer back.
+
+## How It Works
+
+All peers connect to a central daemon via **WebSocket**. The daemon routes addressed messages between peers — no pub/sub, no topics. Messages go from peer A to peer B by name.
+
+```
+┌──────────────┐          ┌──────────────┐          ┌──────────────┐
+│   Claude     │  channel │              │    WS    │   OpenCode   │
+│   frontend   │◄────────►│    Daemon    │◄────────►│   api        │
+└──────────────┘   (MCP)  │  :8377       │          └──────────────┘
+                          │              │
+┌──────────────┐  channel │              │
+│   Claude     │◄────────►│              │
+│   backend    │   (MCP)  └──────────────┘
+└──────────────┘
+```
+
+**Message types:**
+- `ask_peer` — request/response with correlation ID (blocks until answer, 300s timeout)
+- `notify_peer` — fire-and-forget (no response expected)
+- `broadcast` — fan-out to all peers in your circle
+
+**Circles** are logical subnets (mapped to tmux sessions). Peers can only communicate within their circle unless explicitly bypassed.
+
+### Claude Code Transport
+
+On Claude Code v2.1.80+, repowire uses the native **channel transport** — an MCP server that delivers messages directly into Claude's context. Claude replies via a `reply` tool instead of transcript scraping. No tmux injection, no hooks for message delivery.
+
+```
+Claude Code ←stdio→ repowire-channel (MCP) ←WebSocket→ Daemon
+```
+
+- Messages arrive as `<channel source="repowire" from_peer="..." msg_type="...">` tags
+- Queries include `correlation_id` — Claude calls the `reply` tool to respond
+- Permission relay: approve tool use remotely from Telegram or the dashboard
+- Requires claude.ai login (not available for API/Console key auth)
+
+On older Claude Code versions, repowire falls back to **hooks + tmux injection** — the original transport that uses lifecycle hooks and `tmux send-keys` for message delivery.
+
+<details>
+<summary><strong>Legacy hooks transport</strong></summary>
+
+For Claude Code < v2.1.80 or non-claude.ai auth:
+
+- **SessionStart** — registers peer, spawns WebSocket hook, injects peer list as context
+- **UserPromptSubmit** — marks peer BUSY
+- **Stop** — extracts response from transcript, delivers query responses, posts chat turns for dashboard
+- **Notification** (idle_prompt) — resets BUSY→ONLINE after interrupt
+
+`repowire setup` auto-detects the version and installs the right transport.
+
+</details>
+
+<details>
+<summary><strong>OpenCode integration</strong></summary>
+
+OpenCode has a plugin SDK. The repowire plugin (`~/.opencode/plugin/repowire.ts`) maintains a persistent WebSocket connection and uses `client.session.prompt()` to inject queries.
+
+</details>
 
 ## Control Plane
 
@@ -104,60 +163,13 @@ For remote access: `repowire setup --relay` connects your daemon to [repowire.io
 Control your mesh from your phone. A Telegram bot registers as a peer — notifications from agents appear in your chat, messages you send get routed to peers.
 
 ```bash
-# 1. Create a bot via @BotFather on Telegram — get your token
-# 2. Get your chat ID from @userinfobot
-# 3. Run the bot
 TELEGRAM_BOT_TOKEN="..." TELEGRAM_CHAT_ID="..." repowire telegram start
 ```
 
-- `/peers` — shows online peers with inline 📨 buttons
+- `/peers` — shows online peers with inline buttons
 - Tap a peer → type your message → sent as notification
-- Incoming notifications appear with [💬 Reply] buttons
+- Sticky routing: `/select repowire` → all messages go there until `/clear`
 - Agents know `@telegram` is you — they can `notify_peer('telegram', ...)` to reach your phone
-
-## How It Works
-
-All peers connect to a central daemon via **WebSocket**. The daemon routes addressed messages between peers — no pub/sub, no topics. Messages go from peer A to peer B by name.
-
-```
-┌──────────────┐          ┌──────────────┐          ┌──────────────┐
-│   Claude     │    WS    │              │    WS    │   OpenCode   │
-│   frontend   │◄────────►│    Daemon    │◄────────►│   api        │
-└──────────────┘          │  :8377       │          └──────────────┘
-                          │              │
-┌──────────────┐    WS    │              │
-│   Claude     │◄────────►│              │
-│   backend    │          └──────────────┘
-└──────────────┘
-```
-
-**Message types:**
-- `ask_peer` — request/response with correlation ID (blocks until answer, 300s timeout)
-- `notify_peer` — fire-and-forget (no response expected)
-- `broadcast` — fan-out to all peers in your circle
-
-**Circles** are logical subnets (mapped to tmux sessions). Peers can only communicate within their circle unless explicitly bypassed.
-
-<details>
-<summary><strong>Claude Code integration details</strong></summary>
-
-Claude Code doesn't have a messaging API. Repowire uses **hooks** for lifecycle and a **persistent WebSocket process** for message delivery:
-
-- **SessionStart** — registers peer, spawns WebSocket hook (with PID dedup for ephemeral sub-sessions), injects peer list as context
-- **UserPromptSubmit** — marks peer BUSY
-- **Stop** — extracts response + tool calls from transcript, posts chat turns via `/events/chat`, delivers query responses via `/response`
-- **Notification** (idle_prompt) — resets BUSY→ONLINE after interrupt
-
-Peer state machine: `OFFLINE → ONLINE ↔ BUSY`
-
-</details>
-
-<details>
-<summary><strong>OpenCode integration details</strong></summary>
-
-OpenCode has a plugin SDK. The repowire plugin (`~/.opencode/plugin/repowire.ts`) maintains a persistent WebSocket connection and uses `client.session.prompt()` to inject queries.
-
-</details>
 
 ## MCP Tools
 
@@ -169,7 +181,7 @@ OpenCode has a plugin SDK. The repowire plugin (`~/.opencode/plugin/repowire.ts`
 | `broadcast` | Fire-and-forget | Message all online peers in your circle |
 | `whoami` | Query | Your own peer identity |
 | `set_description` | Mutation | Update your task description, visible to all peers and the dashboard |
-| `spawn_peer` | Mutation | Spawn a new agent session (requires [allowlist config](#configuration-reference)) |
+| `spawn_peer` | Mutation | Spawn a new agent session (requires [allowlist config](#configuration)) |
 | `kill_peer` | Mutation | Kill a previously spawned session |
 
 `list_peers` and `whoami` return TSV (more token-efficient than JSON). For long-running requests, prefer `notify_peer` over `ask_peer`.
@@ -177,7 +189,7 @@ OpenCode has a plugin SDK. The repowire plugin (`~/.opencode/plugin/repowire.ts`
 ## CLI Reference
 
 ```bash
-repowire setup                    # Install hooks, MCP server, daemon service
+repowire setup                    # Auto-detect transport, install everything
 repowire setup --relay            # Same + enable remote dashboard via repowire.io
 repowire status                   # Show what's installed and running
 repowire serve                    # Run daemon in foreground
@@ -245,6 +257,7 @@ Self-host the relay: `repowire relay start --port 8000`
 - **WebSocket auth** — set `daemon.auth_token` in config to require bearer token for connections
 - **CORS** — restricted to localhost origins (plus `repowire.io` when relay is enabled)
 - **Spawn allowlist** — `daemon.spawn.allowed_commands` and `allowed_paths` must both be non-empty for MCP spawn to work
+- **Channel gating** — channel transport requires claude.ai login; API/Console key users get hooks fallback
 
 </details>
 
