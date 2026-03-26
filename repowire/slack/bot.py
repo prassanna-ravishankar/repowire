@@ -27,6 +27,11 @@ from repowire.config.models import DEFAULT_DAEMON_URL
 logger = logging.getLogger(__name__)
 
 
+def _esc(text: str) -> str:
+    """Escape Slack mrkdwn special characters."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _ws_url(http_url: str) -> str:
     """Convert http(s) URL to ws(s)."""
     p = urlparse(http_url)
@@ -56,7 +61,7 @@ class SlackPeer:
             headers={"Authorization": f"Bearer {bot_token}"},
             timeout=10.0,
         )
-        self._daemon_http = httpx.AsyncClient(base_url=daemon_url.rstrip("/"), timeout=10.0)
+        self._daemon_http = httpx.AsyncClient(base_url=self._daemon_url, timeout=10.0)
         self._ws: ClientConnection | None = None
         self._slack_ws: Any = None
         self._stopping = False
@@ -70,6 +75,8 @@ class SlackPeer:
         self._stopping = True
         if self._ws:
             await self._ws.close()
+        if self._slack_ws:
+            await self._slack_ws.close()
         await self._http.aclose()
         await self._daemon_http.aclose()
 
@@ -114,11 +121,11 @@ class SlackPeer:
         text = msg.get("text", "")
 
         if t == "notify":
-            await self._slack_send(f"*@{who}*\n{text}")
+            await self._slack_send(f"*@{_esc(who)}*\n{_esc(text)}")
         elif t == "query":
-            await self._slack_send(f":question: *@{who}*\n{text}")
+            await self._slack_send(f":question: *@{_esc(who)}*\n{_esc(text)}")
         elif t == "broadcast":
-            await self._slack_send(f":loudspeaker: *@{who}*\n{text}")
+            await self._slack_send(f":loudspeaker: *@{_esc(who)}*\n{_esc(text)}")
         elif t == "ping" and self._ws:
             await self._ws.send(json.dumps({"type": "pong"}))
 
