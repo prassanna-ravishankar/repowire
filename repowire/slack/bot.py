@@ -254,7 +254,7 @@ class SlackPeer:
             peer = value.split(":", 1)[1]
             if peer:
                 self._reply_target = peer
-                await self._slack_send(f"Now talking to *@{peer}*. All messages go there.")
+                await self._slack_send(f"Now talking to *@{_esc(peer)}*. All messages go there.")
         elif value == "cancel":
             self._reply_target = None
             await self._slack_send("Cancelled.")
@@ -280,7 +280,7 @@ class SlackPeer:
             peer = parts[1].strip().lstrip("@")
             if peer:
                 self._reply_target = peer
-                await self._slack_send(f"Now talking to *@{peer}*. All messages go there.")
+                await self._slack_send(f"Now talking to *@{_esc(peer)}*. All messages go there.")
             return
 
         # @peer message — explicit target (also sets sticky)
@@ -326,25 +326,27 @@ class SlackPeer:
                 branch = p.get("metadata", {}).get("branch", "")
                 icon = ":large_green_circle:" if p.get("status") == "online" else ":yellow_circle:"
 
-                line = f"{icon} *{folder}* `{name}`"
+                folder_esc = _esc(folder)
+                name_esc = _esc(name)
+                line = f"{icon} *{folder_esc}* `{name_esc}`"
                 if branch:
-                    line += f" `{branch}`"
+                    line += f" `{_esc(branch)}`"
                 if desc:
-                    line += f"\n_{desc}_"
+                    line += f"\n_{_esc(desc)}_"
 
                 blocks.append({
                     "type": "section",
                     "text": {"type": "mrkdwn", "text": line},
                     "accessory": {
                         "type": "button",
-                        "text": {"type": "plain_text", "text": f"💬 {folder}"},
+                        "text": {"type": "plain_text", "text": f"💬 {folder}"[:75]},
                         "value": f"target:{name}",
-                        "action_id": f"select_{name}",
+                        "action_id": f"select_{name}"[:255],
                     },
                 })
 
             names = ", ".join(Path(p.get("path", "")).name or p.get("name", "?") for p in active)
-            await self._slack_send(f"Online: {names}", blocks)
+            await self._slack_send(f"Online: {_esc(names)}", blocks)
         except Exception as e:
             logger.warning("Failed to list peers", exc_info=True)
             await self._slack_send(f"Error listing peers: {e}")
@@ -361,13 +363,13 @@ class SlackPeer:
                 },
             )
             if r.status_code == 200:
-                await self._slack_send(f":white_check_mark: → *@{peer}*")
+                await self._slack_send(f":white_check_mark: → *@{_esc(peer)}*")
             else:
                 try:
                     detail = r.json().get("detail", r.text)
                 except Exception:
                     detail = r.text
-                await self._slack_send(f":x: {detail}")
+                await self._slack_send(f":x: {_esc(detail)}")
         except Exception as e:
             logger.warning("Failed to notify peer %s", peer, exc_info=True)
             await self._slack_send(f"Error sending to {peer}: {e}")
