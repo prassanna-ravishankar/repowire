@@ -164,13 +164,13 @@ class TelegramPeer:
         photos = m.get("photo", [])
         if photos:
             caption = m.get("caption", "").strip()
-            await self._on_photo(photos[-1], caption)
+            await self._on_photo(photos[-1], caption, message_id=m.get("message_id"))
             return
 
         # Text
         text = m.get("text", "")
         if text:
-            await self._on_text(text.strip())
+            await self._on_text(text.strip(), message_id=m.get("message_id"))
 
     async def _on_callback(self, cb: dict) -> None:
         data = cb.get("data", "")
@@ -192,7 +192,7 @@ class TelegramPeer:
         elif data == "peers":
             await self._cmd_peers()
 
-    async def _on_text(self, text: str) -> None:
+    async def _on_text(self, text: str, message_id: int | None = None) -> None:
         # Commands
         if text in ("/start", "/peers", "/list"):
             await self._cmd_peers()
@@ -214,12 +214,12 @@ class TelegramPeer:
         m = re.match(r"^@(\S+)\s+(.+)", text, re.DOTALL)
         if m:
             self._reply_target = m.group(1)
-            await self._notify(m.group(1), m.group(2))
+            await self._notify(m.group(1), m.group(2), message_id=message_id)
             return
 
         # Sticky conversation — send to current peer
         if self._reply_target:
-            await self._notify(self._reply_target, text)
+            await self._notify(self._reply_target, text, message_id=message_id)
             return
 
         # No conversation active
@@ -230,7 +230,7 @@ class TelegramPeer:
             "`@name msg` — quick message"
         )
 
-    async def _on_photo(self, photo: dict, caption: str) -> None:
+    async def _on_photo(self, photo: dict, caption: str, message_id: int | None = None) -> None:
         """Handle incoming Telegram photo — upload to daemon, notify peer."""
         if not self._reply_target:
             await self._tg_send(
@@ -274,7 +274,7 @@ class TelegramPeer:
             msg = caption or "Photo attached"
             msg += f"\n[Attachment: {att['path']}]"
 
-            await self._notify(self._reply_target, msg)
+            await self._notify(self._reply_target, msg, message_id=message_id)
         except Exception as e:
             await self._tg_send(f"Error: {_esc(str(e))}")
 
@@ -312,7 +312,7 @@ class TelegramPeer:
         except Exception as e:
             await self._tg_send(f"Error: {_esc(str(e))}")
 
-    async def _notify(self, peer: str, message: str) -> None:
+    async def _notify(self, peer: str, message: str, message_id: int | None = None) -> None:
         try:
             r = await self._http.post(
                 f"{self._daemon_url}/notify",
@@ -324,7 +324,9 @@ class TelegramPeer:
                 },
             )
             if r.status_code == 200:
-                await self._tg_send(f"✓ → *@{_esc(peer)}*")
+                if message_id:
+                    await self._tg_react(message_id)
+                # No text reply on success — reaction is the confirmation
             else:
                 detail = r.json().get("detail", r.text)
                 await self._tg_send(f"✗ {_esc(str(detail))}")
@@ -332,6 +334,20 @@ class TelegramPeer:
             await self._tg_send(f"Error: {_esc(str(e))}")
 
     # -- Telegram API --
+
+    async def _tg_react(self, message_id: int, emoji: str = "👍") -> None:
+        """Add a reaction to a message (Bot API 7.0+)."""
+        try:
+            await self._http.post(
+                f"{self._bot_path}/setMessageReaction",
+                json={
+                    "chat_id": self._chat_id,
+                    "message_id": message_id,
+                    "reaction": [{"type": "emoji", "emoji": emoji}],
+                },
+            )
+        except Exception:
+            logger.warning("Telegram react failed", exc_info=True)
 
     async def _tg_send(self, text: str, markup: dict | None = None) -> None:
         try:
