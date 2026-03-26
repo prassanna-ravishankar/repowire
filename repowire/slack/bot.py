@@ -74,9 +74,15 @@ class SlackPeer:
     async def stop(self) -> None:
         self._stopping = True
         if self._ws:
-            await self._ws.close()
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
         if self._slack_ws:
-            await self._slack_ws.close()
+            try:
+                await self._slack_ws.close()
+            except Exception:
+                pass
         await self._http.aclose()
         await self._daemon_http.aclose()
 
@@ -97,14 +103,27 @@ class SlackPeer:
                         "backend": "claude-code",
                         "path": "/slack",
                     }))
-                    resp = json.loads(await ws.recv())
-                    if resp.get("type") != "connected":
-                        logger.error("Daemon connect failed: %s", resp)
+
+                    raw_resp = await ws.recv()
+                    try:
+                        resp = json.loads(raw_resp)
+                        if not isinstance(resp, dict) or resp.get("type") != "connected":
+                            logger.error("Daemon connect failed: %s", resp)
+                            await asyncio.sleep(backoff)
+                            continue
+                    except json.JSONDecodeError:
+                        logger.error("Daemon sent invalid JSON: %s", raw_resp)
                         await asyncio.sleep(backoff)
                         continue
+
                     logger.info("Daemon connected: %s", resp.get("session_id"))
                     async for raw in ws:
-                        await self._on_daemon_msg(json.loads(raw))
+                        try:
+                            await self._on_daemon_msg(json.loads(raw))
+                        except Exception:
+                            logger.exception("Error handling daemon message")
+                            if self._stopping:
+                                break
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -116,6 +135,8 @@ class SlackPeer:
                 backoff = min(backoff * 2, 30.0)
 
     async def _on_daemon_msg(self, msg: dict[str, Any]) -> None:
+        if not isinstance(msg, dict):
+            return
         t = msg.get("type", "")
         who = msg.get("from_peer", "?")
         text = msg.get("text", "")
@@ -148,8 +169,14 @@ class SlackPeer:
                     backoff = 1.0
                     logger.info("Slack Socket Mode connected")
                     async for raw in ws:
-                        data = json.loads(raw)
-                        await self._on_slack_event(ws, data)
+                        try:
+                            data = json.loads(raw)
+                            if await self._on_slack_event(ws, data) == "disconnect":
+                                break
+                        except Exception:
+                            logger.exception("Error handling Slack event")
+                            if self._stopping:
+                                break
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -167,6 +194,7 @@ class SlackPeer:
                 "/api/apps.connections.open",
                 headers={"Authorization": f"Bearer {self._app_token}"},
             )
+            r.raise_for_status()
             data = r.json()
             if data.get("ok"):
                 return data["url"]
@@ -175,8 +203,11 @@ class SlackPeer:
             logger.warning("Failed to get socket URL", exc_info=True)
         return None
 
-    async def _on_slack_event(self, ws: Any, envelope: dict) -> None:
-        """Handle a Socket Mode envelope."""
+    async def _on_slack_event(self, ws: Any, envelope: dict) -> str | None:
+        """Handle a Socket Mode envelope. Returns 'disconnect' if Slack requested it."""
+        if not isinstance(envelope, dict):
+            return None
+
         envelope_id = envelope.get("envelope_id")
         payload = envelope.get("payload", {})
         event_type = envelope.get("type")
@@ -192,6 +223,8 @@ class SlackPeer:
             await self._on_interaction(payload)
         elif event_type == "disconnect":
             logger.info("Slack requested disconnect, will reconnect")
+            return "disconnect"
+        return None
 
     async def _on_event(self, event: dict) -> None:
         """Handle Slack Events API event."""
@@ -219,8 +252,9 @@ class SlackPeer:
 
         if value.startswith("target:"):
             peer = value.split(":", 1)[1]
-            self._reply_target = peer
-            await self._slack_send(f"Now talking to *@{peer}*. All messages go there.")
+            if peer:
+                self._reply_target = peer
+                await self._slack_send(f"Now talking to *@{peer}*. All messages go there.")
         elif value == "cancel":
             self._reply_target = None
             await self._slack_send("Cancelled.")
@@ -237,17 +271,24 @@ class SlackPeer:
             self._reply_target = None
             await self._slack_send("Cleared. No active conversation.")
             return
+
         if text.startswith(("switch ", "select ")):
-            peer = text.split(maxsplit=1)[1].strip().lstrip("@")
-            self._reply_target = peer
-            await self._slack_send(f"Now talking to *@{peer}*. All messages go there.")
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await self._slack_send("Usage: `select <peer_name>`")
+                return
+            peer = parts[1].strip().lstrip("@")
+            if peer:
+                self._reply_target = peer
+                await self._slack_send(f"Now talking to *@{peer}*. All messages go there.")
             return
 
         # @peer message — explicit target (also sets sticky)
         m = re.match(r"^@(\S+)\s+(.+)", text, re.DOTALL)
         if m:
-            self._reply_target = m.group(1)
-            await self._notify(m.group(1), m.group(2))
+            peer = m.group(1)
+            self._reply_target = peer
+            await self._notify(peer, m.group(2))
             return
 
         # Sticky conversation
@@ -268,6 +309,7 @@ class SlackPeer:
     async def _cmd_peers(self) -> None:
         try:
             r = await self._daemon_http.get("/peers")
+            r.raise_for_status()
             peers = r.json().get("peers", [])
             active = [p for p in peers if p.get("status") in ("online", "busy")]
 
@@ -304,7 +346,8 @@ class SlackPeer:
             names = ", ".join(Path(p.get("path", "")).name or p.get("name", "?") for p in active)
             await self._slack_send(f"Online: {names}", blocks)
         except Exception as e:
-            await self._slack_send(f"Error: {e}")
+            logger.warning("Failed to list peers", exc_info=True)
+            await self._slack_send(f"Error listing peers: {e}")
 
     async def _notify(self, peer: str, message: str) -> None:
         try:
@@ -320,10 +363,14 @@ class SlackPeer:
             if r.status_code == 200:
                 await self._slack_send(f":white_check_mark: → *@{peer}*")
             else:
-                detail = r.json().get("detail", r.text)
+                try:
+                    detail = r.json().get("detail", r.text)
+                except Exception:
+                    detail = r.text
                 await self._slack_send(f":x: {detail}")
         except Exception as e:
-            await self._slack_send(f"Error: {e}")
+            logger.warning("Failed to notify peer %s", peer, exc_info=True)
+            await self._slack_send(f"Error sending to {peer}: {e}")
 
     # -- Slack API --
 
@@ -334,13 +381,17 @@ class SlackPeer:
             payload: dict[str, Any] = {"channel": self._channel_id, "text": text}
             if blocks:
                 payload["blocks"] = blocks
-            await self._http.post("/api/chat.postMessage", json=payload)
+            r = await self._http.post("/api/chat.postMessage", json=payload)
+            r.raise_for_status()
+            data = r.json()
+            if not data.get("ok"):
+                logger.error("Slack postMessage failed: %s", data.get("error"))
         except Exception:
             logger.warning("Slack send failed", exc_info=True)
 
 
-def main() -> None:
-    """Entry point: repowire slack start"""
+async def run_bot() -> None:
+    """Run the bot in the current event loop."""
     bot_token = os.environ.get("SLACK_BOT_TOKEN")
     app_token = os.environ.get("SLACK_APP_TOKEN")
     channel = os.environ.get("SLACK_CHANNEL_ID")
@@ -358,8 +409,14 @@ def main() -> None:
         daemon_url=daemon,
     )
     try:
-        asyncio.run(bot.start())
+        await bot.start()
+    finally:
+        await bot.stop()
+
+
+def main() -> None:
+    """Entry point: repowire slack start"""
+    try:
+        asyncio.run(run_bot())
     except KeyboardInterrupt:
         pass
-    finally:
-        asyncio.run(bot.stop())
