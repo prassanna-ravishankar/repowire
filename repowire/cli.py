@@ -931,6 +931,25 @@ def telegram_start() -> None:
 
 
 # =============================================================================
+# slack command group
+# =============================================================================
+
+
+@main.group(hidden=True)
+def slack() -> None:
+    """Manage the Slack bot peer."""
+    pass
+
+
+@slack.command(name="start")
+def slack_start() -> None:
+    """Start the Slack bot as a repowire peer."""
+    from repowire.slack.bot import main as bot_main
+
+    bot_main()
+
+
+# =============================================================================
 # service command group - system service management
 # =============================================================================
 
