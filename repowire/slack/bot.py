@@ -56,6 +56,7 @@ class SlackPeer:
             headers={"Authorization": f"Bearer {bot_token}"},
             timeout=10.0,
         )
+        self._daemon_http = httpx.AsyncClient(base_url=daemon_url.rstrip("/"), timeout=10.0)
         self._ws: ClientConnection | None = None
         self._slack_ws: Any = None
         self._stopping = False
@@ -70,6 +71,7 @@ class SlackPeer:
         if self._ws:
             await self._ws.close()
         await self._http.aclose()
+        await self._daemon_http.aclose()
 
     # -- Daemon WebSocket --
 
@@ -154,15 +156,14 @@ class SlackPeer:
     async def _get_socket_url(self) -> str | None:
         """Call apps.connections.open to get a Socket Mode WSS URL."""
         try:
-            async with httpx.AsyncClient(timeout=10.0) as c:
-                r = await c.post(
-                    "https://slack.com/api/apps.connections.open",
-                    headers={"Authorization": f"Bearer {self._app_token}"},
-                )
-                data = r.json()
-                if data.get("ok"):
-                    return data["url"]
-                logger.error("apps.connections.open failed: %s", data.get("error"))
+            r = await self._http.post(
+                "/api/apps.connections.open",
+                headers={"Authorization": f"Bearer {self._app_token}"},
+            )
+            data = r.json()
+            if data.get("ok"):
+                return data["url"]
+            logger.error("apps.connections.open failed: %s", data.get("error"))
         except Exception:
             logger.warning("Failed to get socket URL", exc_info=True)
         return None
@@ -259,8 +260,7 @@ class SlackPeer:
 
     async def _cmd_peers(self) -> None:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as c:
-                r = await c.get(f"{self._daemon_url}/peers")
+            r = await self._daemon_http.get("/peers")
             peers = r.json().get("peers", [])
             active = [p for p in peers if p.get("status") in ("online", "busy")]
 
@@ -294,22 +294,22 @@ class SlackPeer:
                     },
                 })
 
-            await self._slack_send_blocks(blocks)
+            names = ", ".join(Path(p.get("path", "")).name or p.get("name", "?") for p in active)
+            await self._slack_send(f"Online: {names}", blocks)
         except Exception as e:
             await self._slack_send(f"Error: {e}")
 
     async def _notify(self, peer: str, message: str) -> None:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as c:
-                r = await c.post(
-                    f"{self._daemon_url}/notify",
-                    json={
-                        "from_peer": self._display_name,
-                        "to_peer": peer,
-                        "text": message,
-                        "bypass_circle": True,
-                    },
-                )
+            r = await self._daemon_http.post(
+                "/notify",
+                json={
+                    "from_peer": self._display_name,
+                    "to_peer": peer,
+                    "text": message,
+                    "bypass_circle": True,
+                },
+            )
             if r.status_code == 200:
                 await self._slack_send(f":white_check_mark: → *@{peer}*")
             else:
@@ -320,21 +320,14 @@ class SlackPeer:
 
     # -- Slack API --
 
-    async def _slack_send(self, text: str) -> None:
+    async def _slack_send(
+        self, text: str, blocks: list[dict] | None = None
+    ) -> None:
         try:
-            await self._http.post(
-                "/api/chat.postMessage",
-                json={"channel": self._channel_id, "text": text},
-            )
-        except Exception:
-            logger.warning("Slack send failed", exc_info=True)
-
-    async def _slack_send_blocks(self, blocks: list[dict]) -> None:
-        try:
-            await self._http.post(
-                "/api/chat.postMessage",
-                json={"channel": self._channel_id, "blocks": blocks},
-            )
+            payload: dict[str, Any] = {"channel": self._channel_id, "text": text}
+            if blocks:
+                payload["blocks"] = blocks
+            await self._http.post("/api/chat.postMessage", json=payload)
         except Exception:
             logger.warning("Slack send failed", exc_info=True)
 
