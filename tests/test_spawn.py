@@ -244,6 +244,29 @@ class TestSpawnPeer:
 
     @patch("repowire.spawn._get_or_create_session")
     @patch("repowire.spawn.libtmux.Server")
+    def test_spawn_peer_codex_backend(
+        self,
+        mock_server_class: MagicMock,
+        mock_get_session: MagicMock,
+    ) -> None:
+        """Test spawn_peer uses codex command for codex backend."""
+        mock_session = MagicMock()
+        mock_session.windows = []
+        mock_window = MagicMock()
+        mock_pane = MagicMock()
+        mock_pane.id = "%42"
+        mock_window.active_pane = mock_pane
+        mock_session.new_window.return_value = mock_window
+        mock_get_session.return_value = mock_session
+
+        from repowire.config.models import AgentType
+        config = SpawnConfig(path="/tmp/test", circle="dev", backend=AgentType.CODEX)
+        spawn_peer(config)
+
+        mock_pane.send_keys.assert_called_once_with("codex", enter=True)
+
+    @patch("repowire.spawn._get_or_create_session")
+    @patch("repowire.spawn.libtmux.Server")
     def test_spawn_peer_unknown_backend_raises(
         self,
         mock_server_class: MagicMock,

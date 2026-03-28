@@ -459,6 +459,15 @@ def status() -> None:
         console.print("  [green]✓[/] opencode (available)")
     else:
         console.print("  [dim]✗[/] opencode (not detected)")
+
+    if shutil.which("codex") or (Path.home() / ".codex").exists():
+        from repowire.installers.codex import check_hooks_installed as check_codex_hooks
+        if check_codex_hooks():
+            console.print("  [green]✓[/] codex (hooks installed)")
+        else:
+            console.print("  [yellow]✗[/] codex (hooks not installed)")
+    else:
+        console.print("  [dim]✗[/] codex (not detected)")
     console.print("")
 
     # Check daemon service
@@ -684,6 +693,62 @@ def opencode_status() -> None:
             console.print("Run 'repowire opencode install' to set up.")
     except Exception as e:
         console.print(f"[red]Error checking status: {e}[/]")
+
+
+# =============================================================================
+# codex command group - manages OpenAI Codex hooks
+# =============================================================================
+
+
+@main.group(hidden=True)
+def codex() -> None:
+    """Manage OpenAI Codex hooks."""
+    pass
+
+
+@codex.command(name="install")
+def codex_install() -> None:
+    """Install Repowire hooks into Codex."""
+    from repowire.installers.codex import install_hooks, install_mcp
+
+    try:
+        install_hooks()
+        install_mcp()
+        console.print("[green]Codex hooks and MCP server installed successfully![/]")
+    except Exception as e:
+        console.print(f"[red]Failed to install Codex components: {e}[/]")
+
+
+@codex.command(name="uninstall")
+def codex_uninstall() -> None:
+    """Remove Repowire hooks from Codex."""
+    from repowire.installers.codex import uninstall_hooks, uninstall_mcp
+
+    try:
+        uninstall_hooks()
+        uninstall_mcp()
+        console.print("[green]Codex hooks and MCP server uninstalled.[/]")
+    except Exception as e:
+        console.print(f"[red]Failed to uninstall Codex components: {e}[/]")
+
+
+@codex.command(name="status")
+def codex_status() -> None:
+    """Check if Codex hooks are installed."""
+    from repowire.installers.codex import check_hooks_installed, check_mcp_installed
+
+    hooks_ok = check_hooks_installed()
+    mcp_ok = check_mcp_installed()
+
+    if hooks_ok and mcp_ok:
+        console.print("[green]Codex hooks and MCP server are installed.[/]")
+    elif hooks_ok:
+        console.print("[yellow]Codex hooks are installed, but MCP server is missing.[/]")
+    elif mcp_ok:
+        console.print("[yellow]Codex MCP server is installed, but hooks are missing.[/]")
+    else:
+        console.print("[yellow]Codex components are not installed.[/]")
+        console.print("Run 'repowire codex install' to set up.")
 
 
 @main.group()
