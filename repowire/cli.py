@@ -170,9 +170,14 @@ def setup(
         _setup_opencode()
         agents_setup.append("opencode")
 
+    # Detect and set up Codex if codex CLI available
+    if shutil.which("codex"):
+        _setup_codex()
+        agents_setup.append("codex")
+
     if not agents_setup:
         console.print("[yellow]No agent types detected.[/]")
-        console.print("Install 'claude' (Claude Code) or 'opencode' first.")
+        console.print("Install 'claude' (Claude Code), 'codex', or 'opencode' first.")
         return
 
     console.print(f"[green]✓[/] Configured agents: {', '.join(agents_setup)}")
@@ -295,6 +300,7 @@ def uninstall(yes: bool) -> None:
     # Uninstall all agent components (try both)
     _uninstall_claude_code()
     _uninstall_opencode()
+    _uninstall_codex()
 
     # Remove config directory
     config_dir = Config.get_config_dir()
@@ -360,6 +366,25 @@ def _uninstall_opencode() -> None:
         console.print(f"[yellow]![/] Failed to remove OpenCode plugin: {e}")
 
 
+def _uninstall_codex() -> None:
+    """Uninstall Codex components."""
+    from repowire.installers.codex import uninstall_hooks, uninstall_mcp
+
+    try:
+        if uninstall_hooks():
+            console.print("[green]✓[/] Codex hooks removed")
+        else:
+            console.print("[dim]Codex hooks not installed[/]")
+    except Exception as e:
+        console.print(f"[yellow]![/] Failed to remove Codex hooks: {e}")
+
+    try:
+        if uninstall_mcp():
+            console.print("[green]✓[/] Codex MCP config removed")
+    except Exception:
+        pass
+
+
 @main.command()
 def update() -> None:
     """Update repowire to the latest version, reinstall hooks, restart daemon."""
@@ -389,6 +414,8 @@ def update() -> None:
     # Reinstall hooks (non-interactive, preserving current channel mode)
     if shutil.which("claude"):
         _setup_claude_code(use_channels=check_channel_installed())
+    if shutil.which("codex"):
+        _setup_codex()
 
     # Restart daemon service if running
     from repowire.service.installer import get_service_status, restart_service
@@ -530,6 +557,23 @@ def _setup_opencode() -> None:
         console.print("[green]✓[/] OpenCode plugin installed")
     except Exception as e:
         console.print(f"[red]Failed to install OpenCode plugin: {e}[/]")
+
+
+def _setup_codex() -> None:
+    """Setup for OpenAI Codex agent type."""
+    from repowire.installers.codex import install_hooks, install_mcp
+
+    try:
+        install_hooks()
+        console.print("[green]✓[/] Codex hooks installed")
+    except Exception as e:
+        console.print(f"[red]Failed to install Codex hooks: {e}[/]")
+
+    try:
+        install_mcp()
+        console.print("[green]✓[/] Codex MCP server configured")
+    except Exception as e:
+        console.print(f"[red]Failed to configure Codex MCP: {e}[/]")
 
 
 @main.command()
