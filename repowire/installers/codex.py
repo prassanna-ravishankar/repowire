@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -37,21 +36,43 @@ def _make_hook_entry(command: str, matcher: str | None = None) -> dict:
     return entry
 
 
+_REPOWIRE_HOOKS = {
+    "SessionStart": _make_hook_entry("repowire hook session", matcher="startup"),
+    "Stop": _make_hook_entry("repowire hook stop"),
+    "UserPromptSubmit": _make_hook_entry("repowire hook prompt"),
+}
+
+
+def _is_repowire_hook(entry: dict) -> bool:
+    """Check if a hook entry belongs to repowire."""
+    for h in entry.get("hooks", []):
+        if "repowire" in h.get("command", ""):
+            return True
+    return False
+
+
 def install_hooks() -> bool:
-    """Install repowire hooks into ~/.codex/hooks.json."""
+    """Install repowire hooks into ~/.codex/hooks.json.
+
+    Appends to existing hook arrays rather than overwriting, preserving
+    user-defined hooks for the same events.
+    """
     data = _load_hooks()
     hooks = data.setdefault("hooks", {})
 
-    hooks["SessionStart"] = [_make_hook_entry("repowire hook session", matcher="startup")]
-    hooks["Stop"] = [_make_hook_entry("repowire hook stop")]
-    hooks["UserPromptSubmit"] = [_make_hook_entry("repowire hook prompt")]
+    for event, entry in _REPOWIRE_HOOKS.items():
+        existing = hooks.get(event, [])
+        # Remove any previous repowire entries, then append fresh
+        existing = [e for e in existing if not _is_repowire_hook(e)]
+        existing.append(entry)
+        hooks[event] = existing
 
     _save_hooks(data)
     return True
 
 
 def uninstall_hooks() -> bool:
-    """Remove repowire hooks from hooks.json."""
+    """Remove repowire hooks from hooks.json, preserving user-defined hooks."""
     data = _load_hooks()
     hooks = data.get("hooks", {})
     if not hooks:
@@ -59,9 +80,14 @@ def uninstall_hooks() -> bool:
 
     removed = False
     for event in HOOK_EVENTS:
-        if event in hooks:
-            del hooks[event]
+        entries = hooks.get(event, [])
+        filtered = [e for e in entries if not _is_repowire_hook(e)]
+        if len(filtered) < len(entries):
             removed = True
+            if filtered:
+                hooks[event] = filtered
+            else:
+                del hooks[event]
 
     if not hooks:
         data.pop("hooks", None)
@@ -78,10 +104,10 @@ def install_mcp() -> bool:
     """
     CODEX_HOME.mkdir(parents=True, exist_ok=True)
 
-    repowire_bin = shutil.which("repowire") or "repowire"
+    # Use bare command name — resolved via PATH at runtime, survives upgrades
     section = (
         "\n[mcp_servers.repowire]\n"
-        f'command = "{repowire_bin}"\n'
+        'command = "repowire"\n'
         'args = ["mcp"]\n'
     )
 
