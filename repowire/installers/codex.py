@@ -147,7 +147,9 @@ def get_codex_version() -> tuple[int, ...] | None:
         )
         if result.returncode != 0:
             return None
-        version_str = result.stdout.strip().split()[0]
+        # Output format: "codex-cli 0.111.0"
+        parts = result.stdout.strip().split()
+        version_str = parts[1] if len(parts) >= 2 else parts[0]
         return tuple(int(x) for x in version_str.split("."))
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, IndexError):
         return None
