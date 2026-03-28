@@ -15,6 +15,7 @@ from repowire.config.models import AgentType
 AGENT_COMMANDS: dict[AgentType, str] = {
     AgentType.CLAUDE_CODE: "claude",
     AgentType.OPENCODE: "opencode",
+    AgentType.CODEX: "codex",
 }
 
 

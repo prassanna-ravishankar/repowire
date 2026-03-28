@@ -234,6 +234,11 @@ async def main() -> int:
 
     circle = get_tmux_info()["session_name"] or "default"
     display_name = get_display_name()
+    backend_str = os.environ.get("REPOWIRE_BACKEND", "claude-code")
+    try:
+        backend = AgentType(backend_str)
+    except ValueError:
+        backend = AgentType.CLAUDE_CODE
     path = str(os.getcwd())
 
     # Snapshot pane command at startup to detect pane reuse
@@ -258,7 +263,7 @@ async def main() -> int:
                     "type": "connect",
                     "display_name": display_name,
                     "circle": circle,
-                    "backend": AgentType.CLAUDE_CODE,
+                    "backend": backend,
                     "path": path,
                     "pane_id": pane_id,
                 }
