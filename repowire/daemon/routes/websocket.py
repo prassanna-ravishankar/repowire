@@ -1,6 +1,6 @@
 """Unified WebSocket endpoint for all agent types.
 
-Handles both Claude Code and OpenCode connections via a single WebSocket protocol.
+Handles Claude Code, OpenCode, and Codex connections via a single WebSocket protocol.
 """
 
 from __future__ import annotations

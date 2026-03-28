@@ -22,7 +22,7 @@ class PeerStatus(str, Enum):
 class Peer(BaseModel):
     """A peer in the Repowire mesh.
 
-    A peer represents a Claude Code or OpenCode session that can send and receive messages.
+    A peer represents a Claude Code, OpenCode, or Codex session that can send and receive messages.
 
     Identity is based on a canonical `peer_id` assigned by the daemon's
     SessionMapper on WebSocket connect: `repow-{circle}-{uuid8}`

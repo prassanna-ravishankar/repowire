@@ -281,7 +281,7 @@ _LANDING_HTML = """\
   <h1>repowire</h1>
   <p class="tagline">Mesh network for AI coding agents</p>
   <p class="desc">
-    Let Claude Code and OpenCode sessions talk to each other across repos and machines.
+    Let Claude Code, OpenCode, and Codex sessions talk to each other across repos and machines.
   </p>
   <hr class="divider">
   <p class="access-label">Access your dashboard</p>
