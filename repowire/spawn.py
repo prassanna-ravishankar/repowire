@@ -16,6 +16,7 @@ AGENT_COMMANDS: dict[AgentType, str] = {
     AgentType.CLAUDE_CODE: "claude",
     AgentType.OPENCODE: "opencode",
     AgentType.CODEX: "codex",
+    AgentType.GEMINI: "gemini",
 }
 
 

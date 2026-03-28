@@ -44,7 +44,8 @@ class Peer(BaseModel):
 
     # Agent type
     backend: AgentType = Field(
-        default=AgentType.CLAUDE_CODE, description="Agent type: claude-code, opencode, or codex"
+        default=AgentType.CLAUDE_CODE,
+        description="Agent type: claude-code, opencode, codex, or gemini"
     )
 
     # circle (logical subnet)
@@ -95,6 +96,10 @@ class Peer(BaseModel):
     def is_codex(self) -> bool:
         """Check if this peer runs Codex."""
         return self.backend == AgentType.CODEX
+
+    def is_gemini(self) -> bool:
+        """Check if this peer runs Gemini."""
+        return self.backend == AgentType.GEMINI
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""

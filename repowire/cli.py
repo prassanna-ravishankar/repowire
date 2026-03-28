@@ -175,9 +175,14 @@ def setup(
         _setup_codex()
         agents_setup.append("codex")
 
+    # Detect and set up Gemini if gemini CLI available
+    if shutil.which("gemini"):
+        _setup_gemini()
+        agents_setup.append("gemini")
+
     if not agents_setup:
         console.print("[yellow]No agent types detected.[/]")
-        console.print("Install 'claude' (Claude Code), 'codex', or 'opencode' first.")
+        console.print("Install claude, codex, gemini, or opencode first.")
         return
 
     console.print(f"[green]✓[/] Configured agents: {', '.join(agents_setup)}")
@@ -301,6 +306,7 @@ def uninstall(yes: bool) -> None:
     _uninstall_claude_code()
     _uninstall_opencode()
     _uninstall_codex()
+    _uninstall_gemini()
 
     # Remove config directory
     config_dir = Config.get_config_dir()
@@ -385,6 +391,25 @@ def _uninstall_codex() -> None:
         pass
 
 
+def _uninstall_gemini() -> None:
+    """Uninstall Gemini components."""
+    from repowire.installers.gemini import uninstall_hooks, uninstall_mcp
+
+    try:
+        if uninstall_hooks():
+            console.print("[green]✓[/] Gemini hooks removed")
+        else:
+            console.print("[dim]Gemini hooks not installed[/]")
+    except Exception as e:
+        console.print(f"[yellow]![/] Failed to remove Gemini hooks: {e}")
+
+    try:
+        if uninstall_mcp():
+            console.print("[green]✓[/] Gemini MCP config removed")
+    except Exception:
+        pass
+
+
 @main.command()
 def update() -> None:
     """Update repowire to the latest version, reinstall hooks, restart daemon."""
@@ -416,6 +441,8 @@ def update() -> None:
         _setup_claude_code(use_channels=check_channel_installed())
     if shutil.which("codex"):
         _setup_codex()
+    if shutil.which("gemini"):
+        _setup_gemini()
 
     # Restart daemon service if running
     from repowire.service.installer import get_service_status, restart_service
@@ -585,6 +612,23 @@ def _setup_codex() -> None:
         console.print(f"[red]Failed to configure Codex MCP: {e}[/]")
 
 
+def _setup_gemini() -> None:
+    """Setup for Google Gemini CLI agent type."""
+    from repowire.installers.gemini import install_hooks, install_mcp
+
+    try:
+        install_hooks()
+        console.print("[green]✓[/] Gemini hooks installed")
+    except Exception as e:
+        console.print(f"[red]Failed to install Gemini hooks: {e}[/]")
+
+    try:
+        install_mcp()
+        console.print("[green]✓[/] Gemini MCP server configured")
+    except Exception as e:
+        console.print(f"[red]Failed to configure Gemini MCP: {e}[/]")
+
+
 @main.command()
 def mcp() -> None:
     """Start the MCP server (for Claude Code integration)."""
@@ -751,6 +795,57 @@ def codex_status() -> None:
         console.print("Run 'repowire codex install' to set up.")
 
 
+@main.group(hidden=True)
+def gemini() -> None:
+    """Manage Google Gemini CLI hooks."""
+    pass
+
+
+@gemini.command(name="install")
+def gemini_install() -> None:
+    """Install Repowire hooks into Gemini CLI."""
+    from repowire.installers.gemini import install_hooks, install_mcp
+
+    try:
+        install_hooks()
+        install_mcp()
+        console.print("[green]Gemini hooks and MCP server installed![/]")
+    except Exception as e:
+        console.print(f"[red]Failed to install Gemini components: {e}[/]")
+
+
+@gemini.command(name="uninstall")
+def gemini_uninstall() -> None:
+    """Remove Repowire hooks from Gemini CLI."""
+    from repowire.installers.gemini import uninstall_hooks, uninstall_mcp
+
+    try:
+        uninstall_hooks()
+        uninstall_mcp()
+        console.print("[green]Gemini hooks and MCP server uninstalled.[/]")
+    except Exception as e:
+        console.print(f"[red]Failed to uninstall Gemini components: {e}[/]")
+
+
+@gemini.command(name="status")
+def gemini_status() -> None:
+    """Check if Gemini CLI hooks are installed."""
+    from repowire.installers.gemini import check_hooks_installed, check_mcp_installed
+
+    hooks_ok = check_hooks_installed()
+    mcp_ok = check_mcp_installed()
+
+    if hooks_ok and mcp_ok:
+        console.print("[green]Gemini hooks and MCP server are installed.[/]")
+    elif hooks_ok:
+        console.print("[yellow]Gemini hooks installed, but MCP server missing.[/]")
+    elif mcp_ok:
+        console.print("[yellow]Gemini MCP server installed, but hooks missing.[/]")
+    else:
+        console.print("[yellow]Gemini components not installed.[/]")
+        console.print("Run 'repowire gemini install' to set up.")
+
+
 @main.group()
 def peer() -> None:
     """Manage peers in the mesh."""
@@ -828,7 +923,7 @@ def peer_list() -> None:
 @click.argument("path", type=click.Path(exists=True), default=".")
 @click.option(
     "--backend", "-b", default="claude-code",
-    type=click.Choice(["claude-code", "opencode", "codex"])
+    type=click.Choice(["claude-code", "opencode", "codex", "gemini"])
 )
 @click.option("--command", "-c", "cmd", help="Command to run (default: claude or opencode)")
 @click.option("--circle", help="Circle (defaults to 'default')")
