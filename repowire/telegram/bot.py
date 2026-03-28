@@ -365,12 +365,16 @@ class TelegramPeer:
 
 def main() -> None:
     """Entry point: repowire telegram start"""
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat = os.environ.get("TELEGRAM_CHAT_ID")
+    from repowire.config.models import load_config
+
+    cfg = load_config()
+    token = cfg.telegram.bot_token or os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat = cfg.telegram.chat_id or os.environ.get("TELEGRAM_CHAT_ID")
     daemon = os.environ.get("REPOWIRE_DAEMON_URL", DEFAULT_DAEMON_URL)
 
     if not token or not chat:
-        print("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars.")
+        print("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID,")
+        print("or configure in ~/.repowire/config.yaml under 'telegram:'")
         raise SystemExit(1)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")

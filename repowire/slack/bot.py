@@ -394,13 +394,17 @@ class SlackPeer:
 
 async def run_bot() -> None:
     """Run the bot in the current event loop."""
-    bot_token = os.environ.get("SLACK_BOT_TOKEN")
-    app_token = os.environ.get("SLACK_APP_TOKEN")
-    channel = os.environ.get("SLACK_CHANNEL_ID")
+    from repowire.config.models import load_config
+
+    cfg = load_config()
+    bot_token = cfg.slack.bot_token or os.environ.get("SLACK_BOT_TOKEN")
+    app_token = cfg.slack.app_token or os.environ.get("SLACK_APP_TOKEN")
+    channel = cfg.slack.channel_id or os.environ.get("SLACK_CHANNEL_ID")
     daemon = os.environ.get("REPOWIRE_DAEMON_URL", DEFAULT_DAEMON_URL)
 
     if not bot_token or not app_token or not channel:
-        print("Set SLACK_BOT_TOKEN, SLACK_APP_TOKEN, and SLACK_CHANNEL_ID env vars.")
+        print("Set SLACK_BOT_TOKEN, SLACK_APP_TOKEN, and SLACK_CHANNEL_ID,")
+        print("or configure in ~/.repowire/config.yaml under 'slack:'")
         raise SystemExit(1)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")

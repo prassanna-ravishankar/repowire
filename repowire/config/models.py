@@ -153,6 +153,21 @@ class LoggingConfig(BaseModel):
     file: str | None = Field(None, description="Log file path")
 
 
+class TelegramConfig(BaseModel):
+    """Telegram bot configuration."""
+
+    bot_token: str | None = Field(None, description="Telegram bot token")
+    chat_id: str | None = Field(None, description="Telegram chat ID")
+
+
+class SlackConfig(BaseModel):
+    """Slack bot configuration."""
+
+    bot_token: str | None = Field(None, description="Slack bot token (xoxb-...)")
+    app_token: str | None = Field(None, description="Slack app token (xapp-...)")
+    channel_id: str | None = Field(None, description="Slack channel ID (C...)")
+
+
 class Config(BaseModel):
     """Main Repowire configuration."""
 
@@ -162,6 +177,8 @@ class Config(BaseModel):
     relay: RelayConfig = Field(default_factory=RelayConfig)
     peers: dict[str, PeerConfig] = Field(default_factory=dict)  # legacy, kept for compat
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    slack: SlackConfig = Field(default_factory=SlackConfig)
 
     @classmethod
     def get_config_dir(cls) -> Path:
