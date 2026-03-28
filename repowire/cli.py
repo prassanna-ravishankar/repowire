@@ -92,6 +92,41 @@ def _detect_package_manager() -> str | None:
     return None
 
 
+_PKG_COMMANDS: dict[str, dict[str, list[str]]] = {
+    "uv": {
+        "upgrade": ["uv", "tool", "upgrade", "repowire"],
+        "uninstall": ["uv", "tool", "uninstall", "repowire"],
+    },
+    "pipx": {
+        "upgrade": ["pipx", "upgrade", "repowire"],
+        "uninstall": ["pipx", "uninstall", "repowire"],
+    },
+    "pip": {
+        "upgrade": ["pip", "install", "-U", "repowire"],
+        "uninstall": ["pip", "uninstall", "-y", "repowire"],
+    },
+}
+
+
+def _prompt_bot_config(
+    name: str,
+    config_section: object,
+    fields: list[tuple[str, str]],
+) -> None:
+    """Prompt user to configure a bot integration. Handles existing config display."""
+    token_field = fields[0][0]  # first field is always the primary token
+    has_config = bool(getattr(config_section, token_field, None))
+    if has_config:
+        masked = _mask_token(getattr(config_section, token_field))
+        console.print(f"[dim]{name} configured (token: {masked})[/]")
+        if click.confirm(f"  Reconfigure {name}?", default=False):
+            has_config = False
+    if not has_config and click.confirm(f"Configure {name} bot?", default=False):
+        for field_name, prompt_text in fields:
+            setattr(config_section, field_name, click.prompt(f"  {prompt_text}"))
+        console.print(f"[green]✓[/] {name} configured")
+
+
 @main.command()
 @click.option("--no-service", is_flag=True, help="Skip daemon service installation")
 @click.option("--relay", is_flag=True, help="Enable hosted relay via repowire.io")
@@ -151,32 +186,17 @@ def setup(
         console.print("[green]✓[/] Relay enabled")
         console.print(f"  Dashboard: {config.relay.dashboard_url}")
 
-    # Telegram: interactive prompt
+    # Bot integrations: interactive prompts
     if interactive:
-        has_tg = bool(config.telegram.bot_token)
-        if has_tg:
-            masked = _mask_token(config.telegram.bot_token)
-            console.print(f"[dim]Telegram configured (token: {masked})[/]")
-            if click.confirm("  Reconfigure Telegram?", default=False):
-                has_tg = False
-        if not has_tg and click.confirm("Configure Telegram bot?", default=False):
-            config.telegram.bot_token = click.prompt("  Bot token")
-            config.telegram.chat_id = click.prompt("  Chat ID")
-            console.print("[green]✓[/] Telegram configured")
-
-    # Slack: interactive prompt
-    if interactive:
-        has_slack = bool(config.slack.bot_token)
-        if has_slack:
-            masked = _mask_token(config.slack.bot_token)
-            console.print(f"[dim]Slack configured (token: {masked})[/]")
-            if click.confirm("  Reconfigure Slack?", default=False):
-                has_slack = False
-        if not has_slack and click.confirm("Configure Slack bot?", default=False):
-            config.slack.bot_token = click.prompt("  Bot token (xoxb-...)")
-            config.slack.app_token = click.prompt("  App token (xapp-...)")
-            config.slack.channel_id = click.prompt("  Channel ID (C...)")
-            console.print("[green]✓[/] Slack configured")
+        _prompt_bot_config("Telegram", config.telegram, [
+            ("bot_token", "Bot token"),
+            ("chat_id", "Chat ID"),
+        ])
+        _prompt_bot_config("Slack", config.slack, [
+            ("bot_token", "Bot token (xoxb-...)"),
+            ("app_token", "App token (xapp-...)"),
+            ("channel_id", "Channel ID (C...)"),
+        ])
 
     # Save config
     config.save()
@@ -280,12 +300,7 @@ def uninstall(yes: bool) -> None:
     pkg_mgr = _detect_package_manager()
     if pkg_mgr:
         if yes or click.confirm(f"Uninstall repowire package via {pkg_mgr}?", default=False):
-            cmds = {
-                "uv": ["uv", "tool", "uninstall", "repowire"],
-                "pipx": ["pipx", "uninstall", "repowire"],
-                "pip": ["pip", "uninstall", "-y", "repowire"],
-            }
-            subprocess.run(cmds[pkg_mgr])
+            subprocess.run(_PKG_COMMANDS[pkg_mgr]["uninstall"])
             console.print(f"[green]✓[/] Package removed via {pkg_mgr}")
 
     console.print("")
@@ -355,13 +370,10 @@ def update() -> None:
         return
 
     # Upgrade package
-    cmds = {
-        "uv": ["uv", "tool", "upgrade", "repowire"],
-        "pipx": ["pipx", "upgrade", "repowire"],
-        "pip": ["pip", "install", "-U", "repowire"],
-    }
     console.print(f"[cyan]Upgrading via {pkg_mgr}...[/]")
-    result = subprocess.run(cmds[pkg_mgr], capture_output=True, text=True)
+    result = subprocess.run(
+        _PKG_COMMANDS[pkg_mgr]["upgrade"], capture_output=True, text=True,
+    )
     if result.returncode != 0:
         console.print(f"[red]Upgrade failed:[/] {result.stderr[:200]}")
         return

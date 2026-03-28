@@ -191,15 +191,17 @@ class Config(BaseModel):
         return cls.get_config_dir() / "config.yaml"
 
     def save(self) -> None:
-        """Save configuration to file."""
+        """Save configuration to file atomically (write tmp + rename)."""
         config_dir = self.get_config_dir()
         config_dir.mkdir(parents=True, exist_ok=True)
 
         config_path = self.get_config_path()
+        tmp_path = config_path.with_suffix(".yaml.tmp")
         data = self.model_dump()
 
-        with open(config_path, "w") as f:
+        with open(tmp_path, "w") as f:
             yaml.safe_dump(data, f, default_flow_style=False)
+        tmp_path.replace(config_path)
 
     def get_peer(self, name: str) -> PeerConfig | None:
         """Get a peer by name (legacy config lookup)."""
