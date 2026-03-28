@@ -59,7 +59,7 @@ if command -v repowire >/dev/null 2>&1; then
     echo ""
     echo "Running setup..."
     echo ""
-    repowire setup
+    repowire setup "$@"
 else
     echo "repowire installed but not on PATH."
     echo "Add ~/.local/bin to your PATH, then run: repowire setup"

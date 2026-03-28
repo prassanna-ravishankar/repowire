@@ -123,7 +123,10 @@ def _prompt_bot_config(
             has_config = False
     if not has_config and click.confirm(f"Configure {name} bot?", default=False):
         for field_name, prompt_text in fields:
-            setattr(config_section, field_name, click.prompt(f"  {prompt_text}"))
+            hide = "token" in field_name
+            setattr(config_section, field_name, click.prompt(
+                f"  {prompt_text}", hide_input=hide,
+            ))
         console.print(f"[green]✓[/] {name} configured")
 
 
@@ -222,6 +225,10 @@ def setup(
         console.print("Run 'repowire serve' to start the daemon manually.")
     else:
         console.print("Daemon is running. Restart your IDE to use Repowire.")
+    console.print(
+        "[dim]To enable spawn_peer, configure allowed_commands and "
+        "allowed_paths in ~/.repowire/config.yaml[/]"
+    )
 
 
 @main.command(name="build-ui")

@@ -191,7 +191,7 @@ class Config(BaseModel):
         return cls.get_config_dir() / "config.yaml"
 
     def save(self) -> None:
-        """Save configuration to file atomically (write tmp + rename)."""
+        """Save configuration to file atomically (write tmp + rename, 0600 perms)."""
         config_dir = self.get_config_dir()
         config_dir.mkdir(parents=True, exist_ok=True)
 
@@ -201,6 +201,7 @@ class Config(BaseModel):
 
         with open(tmp_path, "w") as f:
             yaml.safe_dump(data, f, default_flow_style=False)
+        tmp_path.chmod(0o600)
         tmp_path.replace(config_path)
 
     def get_peer(self, name: str) -> PeerConfig | None:
