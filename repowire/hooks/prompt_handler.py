@@ -10,7 +10,7 @@ from repowire.hooks._tmux import get_pane_id
 from repowire.hooks.utils import update_status
 
 
-def main() -> int:
+def main(backend: str = "claude-code") -> int:
     """Main entry point for UserPromptSubmit hook."""
     try:
         input_data = json.loads(sys.stdin.read())

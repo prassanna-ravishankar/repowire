@@ -16,7 +16,7 @@ from repowire.hooks.utils import daemon_get, daemon_post, derive_display_name, g
 
 
 def _register_peer_http(
-    display_name: str, path: str, circle: str, metadata: dict | None = None
+    display_name: str, path: str, circle: str, backend: AgentType, metadata: dict | None = None
 ) -> bool:
     """Register peer via HTTP POST /peers (upsert-safe)."""
     payload: dict = {
@@ -24,7 +24,7 @@ def _register_peer_http(
         "display_name": display_name,
         "path": path,
         "circle": circle,
-        "backend": AgentType.CLAUDE_CODE,
+        "backend": backend,
     }
     if metadata:
         payload["metadata"] = metadata
@@ -98,7 +98,7 @@ def format_peers_context(peers: list[dict], my_name: str) -> str:
     return "\n".join(lines)
 
 
-def main() -> int:
+def main(backend: str = "claude-code") -> int:
     """Main entry point."""
     try:
         input_data = json.loads(sys.stdin.read())
@@ -109,6 +109,12 @@ def main() -> int:
     event = input_data.get("hook_event_name")
     cwd = input_data.get("cwd", os.getcwd())
     claude_session_id = input_data.get("session_id", "")
+
+    # Convert backend string to AgentType
+    try:
+        backend_type = AgentType(backend)
+    except ValueError:
+        backend_type = AgentType.CLAUDE_CODE
 
     # Get tmux info (pane_id used for tmux targeting)
     tmux_info = get_tmux_info()
@@ -144,6 +150,7 @@ def main() -> int:
                 try:
                     env = os.environ.copy()
                     env["REPOWIRE_DISPLAY_NAME"] = display_name
+                    env["REPOWIRE_BACKEND"] = backend  # Pass backend to websocket hook
                     pid_path = CACHE_DIR / "logs" / f"ws-hook-{pane_file}.pid"
                     proc = subprocess.Popen(
                         [sys.executable, str(hook_script)],
@@ -163,7 +170,8 @@ def main() -> int:
 
         # Register peer via HTTP.
         circle = tmux_info["session_name"] or "default"
-        _register_peer_http(display_name, cwd, circle, metadata={"project": folder_name})
+        metadata = {"project": folder_name}
+        _register_peer_http(display_name, cwd, circle, backend_type, metadata=metadata)
 
         # Fetch peers and output context for Claude
         peers = fetch_peers()

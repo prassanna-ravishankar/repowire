@@ -37,9 +37,9 @@ def _make_hook_entry(command: str, matcher: str | None = None) -> dict:
 
 
 _REPOWIRE_HOOKS = {
-    "SessionStart": _make_hook_entry("repowire hook session", matcher="startup"),
-    "Stop": _make_hook_entry("repowire hook stop"),
-    "UserPromptSubmit": _make_hook_entry("repowire hook prompt"),
+    "SessionStart": _make_hook_entry("repowire hook session --backend=codex", matcher="startup"),
+    "Stop": _make_hook_entry("repowire hook stop --backend=codex"),
+    "UserPromptSubmit": _make_hook_entry("repowire hook prompt --backend=codex"),
 }
 
 

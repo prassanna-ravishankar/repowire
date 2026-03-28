@@ -762,7 +762,8 @@ def peer_list() -> None:
 @peer.command(name="new")
 @click.argument("path", type=click.Path(exists=True), default=".")
 @click.option(
-    "--backend", "-b", type=click.Choice(["claude-code", "opencode"]), default="claude-code"
+    "--backend", "-b", default="claude-code",
+    type=click.Choice(["claude-code", "opencode", "codex"])
 )
 @click.option("--command", "-c", "cmd", help="Command to run (default: claude or opencode)")
 @click.option("--circle", help="Circle (defaults to 'default')")
@@ -1283,38 +1284,41 @@ def config_path() -> None:
 
 @main.group(hidden=True)
 def hook() -> None:
-    """Internal hook handlers (called by Claude Code)."""
+    """Internal hook handlers (called by Claude Code or Codex)."""
     pass
 
 
 @hook.command(name="stop")
-def hook_stop() -> None:
+@click.option("--backend", default="claude-code", help="Agent backend")
+def hook_stop(backend: str) -> None:
     """Handle Stop hook - capture response for pending queries."""
     import sys
 
     from repowire.hooks.stop_handler import main as stop_main
 
-    sys.exit(stop_main())
+    sys.exit(stop_main(backend=backend))
 
 
 @hook.command(name="session")
-def hook_session() -> None:
+@click.option("--backend", default="claude-code", help="Agent backend")
+def hook_session(backend: str) -> None:
     """Handle SessionStart/SessionEnd hooks - auto-register/unregister peers."""
     import sys
 
     from repowire.hooks.session_handler import main as session_main
 
-    sys.exit(session_main())
+    sys.exit(session_main(backend=backend))
 
 
 @hook.command(name="prompt")
-def hook_prompt() -> None:
+@click.option("--backend", default="claude-code", help="Agent backend")
+def hook_prompt(backend: str) -> None:
     """Handle UserPromptSubmit hook - mark peer as busy."""
     import sys
 
     from repowire.hooks.prompt_handler import main as prompt_main
 
-    sys.exit(prompt_main())
+    sys.exit(prompt_main(backend=backend))
 
 
 @hook.command(name="notification")

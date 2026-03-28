@@ -49,7 +49,7 @@ def _post_chat_turn(
     daemon_post("/events/chat", payload)
 
 
-def main() -> int:
+def main(backend: str = "claude-code") -> int:
     """Main entry point for stop hook."""
     try:
         input_data = json.loads(sys.stdin.read())
