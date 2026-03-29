@@ -60,10 +60,10 @@ def main(backend: str = "claude-code") -> int:
     if input_data.get("stop_hook_active", False):
         return 0
 
-    # Always mark peer as online when Claude finishes processing
+    # Always mark peer as online when agent finishes processing
     cwd = input_data.get("cwd", os.getcwd())
-    claude_session_id = input_data.get("session_id", "")
-    peer_display = derive_display_name(claude_session_id, cwd)
+    session_id = input_data.get("session_id", "")
+    peer_display = derive_display_name(session_id, cwd)
     pane_id = get_pane_id()
     if pane_id:
         if not update_status(pane_id, "online", use_pane_id=True):
@@ -79,18 +79,24 @@ def main(backend: str = "claude-code") -> int:
             )
 
     transcript_path_str = input_data.get("transcript_path")
-    if not transcript_path_str:
-        return 0
+    user_text = None
+    assistant_text = input_data.get("final_response")
+    tool_calls = []
 
-    # Extract and post last turn pair for dashboard
-    transcript_path = Path(transcript_path_str).expanduser().resolve()
-    user_text, assistant_text = extract_last_turn_pair(transcript_path)
+    if transcript_path_str:
+        # Extract and post last turn pair for dashboard
+        transcript_path = Path(transcript_path_str).expanduser().resolve()
+        user_text, transcript_assistant_text = extract_last_turn_pair(transcript_path)
+        if transcript_assistant_text:
+            assistant_text = transcript_assistant_text
+        tool_calls = extract_last_turn_tool_calls(transcript_path) if assistant_text else []
+
     # Strip whitespace-only texts to prevent empty chat bubbles
     if user_text and not user_text.strip():
         user_text = None
     if assistant_text and not assistant_text.strip():
         assistant_text = None
-    tool_calls = extract_last_turn_tool_calls(transcript_path) if assistant_text else []
+
     if user_text:
         _post_chat_turn(peer_display, "user", user_text)
     if assistant_text:
@@ -104,6 +110,8 @@ def main(backend: str = "claude-code") -> int:
             payload["correlation_id"] = cid
         daemon_post("/response", payload)
 
+    # For Gemini, always print the decision (Claude is more lenient)
+    print(json.dumps({"decision": "allow"}))
     return 0
 
 

@@ -121,21 +121,29 @@ class TestStopHandler:
     @patch("repowire.hooks.stop_handler.daemon_post")
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)
     @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
-    def test_no_tool_calls_when_none(self, mock_pane, mock_status, mock_post, tmp_path):
-        tp = _make_transcript(tmp_path, [
-            {"type": "user", "message": {"content": "Hi"}},
-            {"type": "assistant", "message": {"content": [
-                {"type": "text", "text": "Hello!"},
-            ]}},
-        ])
+    def test_gemini_after_agent_with_final_response(self, mock_pane, mock_status, mock_post):
+        """Test Gemini's AfterAgent hook which provides final_response but no transcript_path."""
         _run_hook({
-            "cwd": str(tmp_path),
-            "session_id": "abc12345-rest",
-            "transcript_path": str(tp),
+            "hook_event_name": "AfterAgent",
+            "cwd": "/tmp/test",
+            "session_id": "gemini123-rest",
+            "final_response": "I am finished.",
         })
 
+        # Should update status
+        mock_status.assert_called_once_with("%42", "online", use_pane_id=True)
+
+        # Should post assistant turn for dashboard
         chat_calls = [c for c in mock_post.call_args_list if c[0][0] == "/events/chat"]
-        assistant_calls = [c for c in chat_calls if c[0][1].get("role") == "assistant"]
-        assert len(assistant_calls) == 1
-        # tool_calls should be None (not included) when no tools used
-        assert assistant_calls[0][0][1].get("tool_calls") is None
+        assert len(chat_calls) == 1
+        payload = chat_calls[0][0][1]
+        assert payload["peer"] == "gemini12"
+        assert payload["role"] == "assistant"
+        assert payload["text"] == "I am finished."
+
+        # Should post response for query resolution
+        response_calls = [c for c in mock_post.call_args_list if c[0][0] == "/response"]
+        assert len(response_calls) == 1
+        payload = response_calls[0][0][1]
+        assert payload["pane_id"] == "%42"
+        assert payload["text"] == "I am finished."

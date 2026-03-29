@@ -943,7 +943,7 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
 
     actual_path = str(Path(path).resolve())
     actual_circle = circle or "default"
-    actual_cmd = cmd or ("claude" if backend == "claude-code" else "opencode")
+    actual_cmd = cmd or ""
     backend_type = AgentType(backend)
 
     config = SpawnConfig(

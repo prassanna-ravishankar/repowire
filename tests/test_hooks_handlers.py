@@ -33,6 +33,13 @@ class TestPromptHandler:
         assert result == 0
         mock_status.assert_called_once_with("%42", "busy", use_pane_id=True)
 
+    @patch("repowire.hooks.prompt_handler.update_status", return_value=True)
+    @patch("repowire.hooks.prompt_handler.get_pane_id", return_value="%42")
+    def test_gemini_before_agent(self, mock_pane, mock_status):
+        result = _run_with_input(prompt_main, {"hook_event_name": "BeforeAgent"})
+        assert result == 0
+        mock_status.assert_called_once_with("%42", "busy", use_pane_id=True)
+
     @patch("repowire.hooks.prompt_handler.update_status")
     @patch("repowire.hooks.prompt_handler.get_pane_id", return_value=None)
     def test_no_pane_id(self, mock_pane, mock_status):

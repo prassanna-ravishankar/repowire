@@ -22,7 +22,12 @@ def _load_settings() -> dict:
         return {}
     try:
         return json.loads(SETTINGS_PATH.read_text())
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"Corrupted settings.json at {SETTINGS_PATH}: {e}. "
+            "Please fix or delete the file manually."
+        ) from e
+    except OSError:
         return {}
 
 

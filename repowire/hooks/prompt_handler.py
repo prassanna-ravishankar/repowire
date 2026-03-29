@@ -18,7 +18,8 @@ def main(backend: str = "claude-code") -> int:
         print(f"repowire prompt: invalid JSON input: {e}", file=sys.stderr)
         return 0
 
-    if input_data.get("hook_event_name") != "UserPromptSubmit":
+    event = input_data.get("hook_event_name")
+    if event not in ("UserPromptSubmit", "BeforeAgent"):
         return 0
 
     pane_id = get_pane_id()
@@ -29,6 +30,8 @@ def main(backend: str = "claude-code") -> int:
                 file=sys.stderr,
             )
 
+    # For Gemini, always print the decision (Claude is more lenient)
+    print(json.dumps({"decision": "allow"}))
     return 0
 
 
