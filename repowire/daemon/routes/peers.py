@@ -28,7 +28,7 @@ class PeerInfo(BaseModel):
     tmux_session: str | None = None
     backend: str = "claude-code"
     circle: str = "global"
-    role: str = "agent"
+    role: PeerRole = PeerRole.AGENT
     status: str
     last_seen: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -46,7 +46,7 @@ def _peer_to_info(p: Peer) -> PeerInfo:
         tmux_session=p.tmux_session,
         backend=p.backend,
         circle=p.circle,
-        role=p.role.value,
+        role=p.role,
         status=p.status.value,
         last_seen=p.last_seen.isoformat() if p.last_seen else None,
         metadata=p.metadata,
