@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>REPOWIRE | Peer Grid</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;family=Inter:wght@300;400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .mesh-bg {
+            background-image: radial-gradient(circle at 2px 2px, rgba(59, 73, 76, 0.05) 1px, transparent 0);
+            background-size: 24px 24px;
+        }
+        .glass-panel {
+            background: rgba(50, 53, 60, 0.6);
+            backdrop-filter: blur(20px);
+        }
+        .pulse-online {
+            box-shadow: 0 0 0 0 rgba(121, 255, 91, 0.4);
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(121, 255, 91, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(121, 255, 91, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(121, 255, 91, 0); }
+        }
+    </style>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "on-secondary-fixed": "#022100",
+              "surface-container-low": "#191c22",
+              "secondary-fixed": "#79ff5b",
+              "primary-fixed-dim": "#00daf3",
+              "on-error": "#690005",
+              "on-primary-fixed": "#001f24",
+              "error": "#ffb4ab",
+              "surface-container-highest": "#32353c",
+              "tertiary-fixed": "#ffdeac",
+              "surface": "#10131a",
+              "inverse-on-surface": "#2e3037",
+              "primary-fixed": "#9cf0ff",
+              "tertiary-fixed-dim": "#ffba38",
+              "tertiary": "#ffe9cd",
+              "surface-container": "#1d2026",
+              "background": "#10131a",
+              "surface-container-lowest": "#0b0e14",
+              "on-tertiary-fixed-variant": "#604100",
+              "error-container": "#93000a",
+              "on-tertiary-fixed": "#281900",
+              "on-primary-fixed-variant": "#004f58",
+              "on-primary-container": "#00626e",
+              "on-secondary": "#053900",
+              "on-surface-variant": "#bac9cc",
+              "on-tertiary-container": "#775200",
+              "primary-container": "#00e5ff",
+              "on-secondary-container": "#0f6d00",
+              "surface-dim": "#10131a",
+              "secondary-fixed-dim": "#2ae500",
+              "on-background": "#e1e2eb",
+              "primary": "#c3f5ff",
+              "outline": "#849396",
+              "surface-bright": "#363940",
+              "on-error-container": "#ffdad6",
+              "on-tertiary": "#432c00",
+              "surface-tint": "#00daf3",
+              "surface-variant": "#32353c",
+              "inverse-surface": "#e1e2eb",
+              "surface-container-high": "#272a31",
+              "on-surface": "#e1e2eb",
+              "secondary": "#d7ffc5",
+              "outline-variant": "#3b494c",
+              "tertiary-container": "#ffc769",
+              "on-secondary-fixed-variant": "#095300",
+              "secondary-container": "#2ff801",
+              "on-primary": "#00363d",
+              "inverse-primary": "#006875"
+            },
+            fontFamily: {
+              "headline": ["Space Grotesk"],
+              "body": ["Inter"],
+              "label": ["Inter"]
+            },
+            borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+          },
+        },
+      }
+    </script>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-surface text-on-surface font-body selection:bg-primary-container selection:text-on-primary-container mesh-bg min-h-screen pb-32">
+<!-- TopAppBar -->
+<header class="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-6 h-16 bg-[#10131a] dark:bg-[#10131a]">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-cyan-400" data-icon="hub">hub</span>
+<h1 class="text-xl font-bold tracking-widest text-cyan-400 font-['Space_Grotesk'] uppercase">REPOWIRE</h1>
+</div>
+<div class="flex items-center gap-4">
+<div class="flex items-center gap-2 bg-surface-container-low px-3 py-1 rounded shadow-inner">
+<span class="w-2 h-2 rounded-full bg-secondary pulse-online"></span>
+<span class="text-[10px] font-headline font-bold uppercase tracking-widest text-secondary">Mesh Connected</span>
+</div>
+<div class="w-8 h-8 rounded-full border border-outline-variant bg-surface-container-highest flex items-center justify-center overflow-hidden">
+<img alt="User Profile" class="w-full h-full object-cover" data-alt="Close up portrait of a futuristic technical operator with subtle cybernetic enhancements and teal lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDxxf4UmnEHe5n8GpHTrCobIL3FzQFqZHIU99rCRqTUDpw7XBMfPfDPltLlMaWE9S1iQo7sTqzse8Rm1_Van-XLr0UO0Pyuq88cQJACyIMjagFgyY4DGM21XBXmFbix6lxyhJXPMXKI0Jg-_IErYwlqqz6UhzhMcuMLfCq1SkgWYEVIwtJYOJ8AMlnD-BxY8sIlxeGvqxQLoGJKW4YTf0RlnugKa9Plb2vGE82SrG40SD5D6TN4JbiAnY1ldKkXP-_wgFPpCW10mg"/>
+</div>
+</div>
+</header>
+<div class="fixed top-16 left-0 w-full z-40 bg-[#191c22] h-[2px]"></div>
+<!-- Main Content Canvas -->
+<main class="pt-24 px-6 max-w-2xl mx-auto">
+<!-- Dashboard Intro Section -->
+<section class="mb-10">
+<h2 class="font-headline text-3xl font-bold text-primary mb-2 tracking-tight">Active Peer Grid</h2>
+<div class="flex items-center justify-between text-on-surface-variant">
+<p class="text-sm font-light">Orchestrating 3 active instances across 2 circles.</p>
+<span class="material-symbols-outlined text-primary/40 text-lg" data-icon="reorder">reorder</span>
+</div>
+</section>
+<!-- Peer Grid: Asymmetric Bento Layout -->
+<div class="grid grid-cols-1 gap-4">
+<!-- Agent 1: Busy State -->
+<div class="relative group">
+<div class="absolute -top-[1px] left-0 w-full h-[2px] bg-tertiary-fixed-dim"></div>
+<div class="bg-surface-container-low p-5 transition-all duration-300 hover:bg-surface-container-high border-l-4 border-tertiary-fixed-dim/20">
+<div class="flex justify-between items-start mb-4">
+<div class="flex flex-col">
+<span class="font-headline text-lg font-bold text-on-surface tracking-wide">claude-project-a</span>
+<div class="flex items-center gap-2 mt-1">
+<span class="w-2 h-2 rounded-full bg-tertiary-fixed-dim shadow-[0_0_8px_rgba(255,186,56,0.5)]"></span>
+<span class="text-[10px] uppercase font-bold tracking-widest text-tertiary-fixed-dim">Busy</span>
+</div>
+</div>
+<span class="font-['JetBrains_Mono'] text-[10px] bg-surface-container-highest px-2 py-1 text-on-surface-variant uppercase">dev</span>
+</div>
+<p class="text-sm text-on-surface mb-6 leading-relaxed">
+<span class="text-primary/60 font-['JetBrains_Mono'] mr-1">&gt;</span> Indexing API endpoints for /src/auth
+                    </p>
+<div class="flex items-center gap-3 text-on-surface-variant">
+<span class="material-symbols-outlined text-sm" data-icon="folder_open">folder_open</span>
+<span class="text-[11px] font-['JetBrains_Mono'] truncate">~/projects/project-a</span>
+</div>
+</div>
+</div>
+<!-- Agent 2: Online State (Large Feature Card) -->
+<div class="relative group">
+<div class="absolute -top-[1px] left-0 w-full h-[2px] bg-secondary"></div>
+<div class="bg-surface-container-low p-5 transition-all duration-300 hover:bg-surface-container-high border-l-4 border-secondary/20">
+<div class="flex justify-between items-start mb-4">
+<div class="flex flex-col">
+<span class="font-headline text-lg font-bold text-on-surface tracking-wide">codex-infra</span>
+<div class="flex items-center gap-2 mt-1">
+<span class="w-2 h-2 rounded-full bg-secondary pulse-online"></span>
+<span class="text-[10px] uppercase font-bold tracking-widest text-secondary">Online</span>
+</div>
+</div>
+<span class="font-['JetBrains_Mono'] text-[10px] bg-surface-container-highest px-2 py-1 text-on-surface-variant uppercase">infra</span>
+</div>
+<p class="text-sm text-on-surface mb-6 leading-relaxed">
+<span class="text-secondary/60 font-['JetBrains_Mono'] mr-1">&gt;</span> Idle - Waiting for tasks
+                    </p>
+<div class="flex items-center gap-3 text-on-surface-variant">
+<span class="material-symbols-outlined text-sm" data-icon="folder_open">folder_open</span>
+<span class="text-[11px] font-['JetBrains_Mono'] truncate">~/git/infra</span>
+</div>
+</div>
+</div>
+<!-- Agent 3: Offline State -->
+<div class="relative group opacity-60 grayscale-[0.5]">
+<div class="absolute -top-[1px] left-0 w-full h-[2px] bg-outline-variant"></div>
+<div class="bg-surface-container-low p-5 transition-all duration-300 border-l-4 border-outline-variant/20">
+<div class="flex justify-between items-start mb-4">
+<div class="flex flex-col">
+<span class="font-headline text-lg font-bold text-on-surface tracking-wide">gemini-review</span>
+<div class="flex items-center gap-2 mt-1">
+<span class="w-2 h-2 rounded-full bg-outline"></span>
+<span class="text-[10px] uppercase font-bold tracking-widest text-outline">Offline</span>
+</div>
+</div>
+<span class="font-['JetBrains_Mono'] text-[10px] bg-surface-container-highest px-2 py-1 text-on-surface-variant uppercase">dev</span>
+</div>
+<p class="text-sm text-on-surface-variant mb-6 leading-relaxed italic">
+<span class="text-outline/40 font-['JetBrains_Mono'] mr-1">&gt;</span> Session terminated
+                    </p>
+<div class="flex items-center gap-3 text-on-surface-variant/40">
+<span class="material-symbols-outlined text-sm" data-icon="folder_open">folder_open</span>
+<span class="text-[11px] font-['JetBrains_Mono'] truncate">~/projects/project-b</span>
+</div>
+</div>
+</div>
+</div>
+<!-- System Stats Bar (Bottom Anchor) -->
+<div class="mt-8 flex gap-2">
+<div class="flex-1 bg-surface-container-lowest p-4 rounded border border-outline-variant/10">
+<span class="text-[10px] uppercase font-headline font-bold text-primary/40 block mb-1">Mesh Load</span>
+<span class="text-xl font-headline font-bold text-primary">14.2%</span>
+</div>
+<div class="flex-1 bg-surface-container-lowest p-4 rounded border border-outline-variant/10">
+<span class="text-[10px] uppercase font-headline font-bold text-primary/40 block mb-1">Latency</span>
+<span class="text-xl font-headline font-bold text-primary">24ms</span>
+</div>
+</div>
+</main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center px-4 pb-6 pt-2 bg-[#10131a]/80 backdrop-blur-xl border-t border-cyan-900/20 shadow-[0_-4px_24px_rgba(0,229,255,0.05)]">
+<!-- Dashboard (Active because it matches the Overview screen intent) -->
+<button class="flex flex-col items-center justify-center bg-cyan-400/10 text-cyan-400 rounded-lg p-3 active:scale-90 duration-200">
+<span class="material-symbols-outlined" data-icon="grid_view" style="font-variation-settings: 'FILL' 1;">grid_view</span>
+<span class="font-['Inter'] text-[10px] uppercase tracking-widest mt-1">Dash</span>
+</button>
+<!-- Mesh/Nodes -->
+<button class="flex flex-col items-center justify-center text-slate-500 p-3 hover:text-cyan-300 active:scale-90 duration-200">
+<span class="material-symbols-outlined" data-icon="lan">lan</span>
+<span class="font-['Inter'] text-[10px] uppercase tracking-widest mt-1">Nodes</span>
+</button>
+<!-- Settings -->
+<button class="flex flex-col items-center justify-center text-slate-500 p-3 hover:text-cyan-300 active:scale-90 duration-200">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+<span class="font-['Inter'] text-[10px] uppercase tracking-widest mt-1">Config</span>
+</button>
+</nav>
+<!-- Visual Mesh Grid Floor -->
+<div class="fixed inset-0 pointer-events-none z-[-1] opacity-30">
+<div class="absolute inset-0 bg-[linear-gradient(rgba(16,19,26,0)_0%,rgba(16,19,26,1)_100%)]"></div>
+</div>
+</body></html>

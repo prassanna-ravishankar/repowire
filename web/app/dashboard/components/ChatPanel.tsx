@@ -13,25 +13,40 @@ interface ChatPanelProps {
   events: Event[];
 }
 
-function ToolCallsList({ toolCalls }: { toolCalls: { name: string; input: string }[] }) {
+function ToolCallBlock({ toolCalls }: { toolCalls: { name: string; input: string }[] }) {
   const [expanded, setExpanded] = useState(false);
   if (toolCalls.length === 0) return null;
 
   return (
-    <div className="mt-2 border-t border-zinc-700/50 pt-2">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1.5 text-[11px] text-zinc-500 hover:text-zinc-400 transition-colors"
-      >
-        <ChevronRight className={cn("w-3 h-3 transition-transform", expanded && "rotate-90")} />
-        <span>{toolCalls.length} tool call{toolCalls.length > 1 ? "s" : ""}</span>
-      </button>
+    <div className="flex flex-col items-center w-full space-y-3 px-4 my-4">
+      <div className="w-full flex items-center gap-4">
+        <div className="h-[1px] flex-1 bg-outline-variant/30" />
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex items-center gap-2 px-3 py-1 bg-surface-container-lowest border border-primary/20 rounded hover:border-primary/40 transition-colors"
+        >
+          <span className="material-symbols-outlined text-[14px] text-primary" style={{ fontVariationSettings: "'FILL' 1" }}>
+            terminal
+          </span>
+          <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-primary">
+            {toolCalls.length} Tool Call{toolCalls.length > 1 ? "s" : ""}
+          </span>
+          <ChevronRight className={cn("w-3 h-3 text-primary transition-transform", expanded && "rotate-90")} />
+        </button>
+        <div className="h-[1px] flex-1 bg-outline-variant/30" />
+      </div>
+
       {expanded && (
-        <div className="mt-1.5 space-y-1 pl-4">
+        <div className="w-full bg-surface-container-lowest p-4 border border-outline-variant/20 rounded-lg font-mono">
           {toolCalls.map((tc, i) => (
-            <div key={i} className="flex items-baseline gap-2 text-[11px] font-mono">
-              <span className="text-blue-400 shrink-0">{tc.name}</span>
-              <span className="text-zinc-600 truncate">{tc.input}</span>
+            <div key={i} className="flex flex-col gap-1 mb-2 last:mb-0">
+              <div className="flex gap-2 text-xs">
+                <span className="text-secondary-fixed">invoke</span>
+                <span className="text-primary-fixed">{tc.name}</span>
+              </div>
+              <div className="pl-4 text-xs">
+                <span className="text-outline">{tc.input}</span>
+              </div>
             </div>
           ))}
         </div>
@@ -59,44 +74,55 @@ export function ChatPanel({ peer, events }: ChatPanelProps) {
 
   if (filtered.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-zinc-600 text-sm">
+      <div className="flex items-center justify-center h-full text-outline text-sm">
         No activity for {peerLabel(peer)} yet
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-3 p-4 overflow-y-auto h-full">
+    <div className="flex flex-col gap-3 p-4 mesh-bg overflow-y-auto h-full">
       {filtered.map((event) => {
         if (event.type === "chat_turn") {
           const isUser = event.role === "user";
           return (
-            <div key={event.id} className={cn("flex flex-col gap-1", isUser ? "items-end" : "items-start")}>
-              <span className="text-[10px] text-zinc-500 font-mono px-1">
-                {isUser ? "user" : peerLabel(peer)}
-              </span>
-              <div
-                className={cn(
-                  "max-w-[95%] sm:max-w-[80%] rounded-xl px-3 sm:px-4 py-2 sm:py-3 text-sm",
-                  isUser
-                    ? "bg-zinc-700 text-zinc-200"
-                    : "bg-zinc-800/50 text-zinc-300"
-                )}
-              >
-                {isUser ? (
-                  <p className="whitespace-pre-wrap">{event.text}</p>
-                ) : (
-                  <>
-                    <div className="prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-zinc-900 prose-pre:border prose-pre:border-zinc-700 prose-code:text-emerald-300 prose-ul:list-disc prose-ul:pl-4 prose-li:my-0.5 prose-table:border-collapse prose-th:border prose-th:border-zinc-700 prose-th:px-3 prose-th:py-1.5 prose-th:bg-zinc-900 prose-td:border prose-td:border-zinc-700 prose-td:px-3 prose-td:py-1.5">
+            <div key={event.id}>
+              <div className={cn("flex flex-col gap-1", isUser ? "items-start max-w-[85%]" : "items-end self-end max-w-[85%] ml-auto")}>
+                <div className="flex items-center gap-2 mb-1">
+                  {isUser && (
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-primary/60">
+                      Operator
+                    </span>
+                  )}
+                  <span className="text-[9px] text-outline-variant font-mono tabular-nums">
+                    {new Date(event.timestamp).toLocaleTimeString()}
+                  </span>
+                  {!isUser && (
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-400">
+                      {peerLabel(peer)}
+                    </span>
+                  )}
+                </div>
+                <div
+                  className={cn(
+                    "p-4 rounded-lg text-sm shadow-lg transition-all",
+                    isUser
+                      ? "bg-surface-container-low border-l-2 border-primary rounded-tl-none shadow-primary/5 group-hover:bg-surface-container"
+                      : "bg-surface-container-highest border-r-2 border-cyan-400 rounded-tr-none shadow-cyan-400/5"
+                  )}
+                >
+                  {isUser ? (
+                    <p className="whitespace-pre-wrap leading-relaxed text-on-surface">{event.text}</p>
+                  ) : (
+                    <div className="prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-surface-container-lowest prose-pre:border prose-pre:border-outline-variant/20 prose-code:text-primary-fixed prose-ul:list-disc prose-ul:pl-4 prose-li:my-0.5 prose-table:border-collapse prose-th:border prose-th:border-outline-variant/30 prose-th:px-3 prose-th:py-1.5 prose-th:bg-surface-container-low prose-td:border prose-td:border-outline-variant/30 prose-td:px-3 prose-td:py-1.5">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{event.text}</ReactMarkdown>
                     </div>
-                    {event.tool_calls && <ToolCallsList toolCalls={event.tool_calls} />}
-                  </>
-                )}
+                  )}
+                </div>
               </div>
-              <span className="text-[10px] text-zinc-600 font-mono tabular-nums px-1">
-                {new Date(event.timestamp).toLocaleTimeString()}
-              </span>
+              {!isUser && event.tool_calls && event.tool_calls.length > 0 && (
+                <ToolCallBlock toolCalls={event.tool_calls} />
+              )}
             </div>
           );
         }
@@ -104,18 +130,20 @@ export function ChatPanel({ peer, events }: ChatPanelProps) {
         // Repowire trace row
         const label =
           event.type === "query"
-            ? `⇢ query ${event.from} → ${event.to}`
+            ? `query ${event.from} → ${event.to}`
             : event.type === "response"
-            ? `⇢ response ${event.from} → ${event.to}`
+            ? `response ${event.from} → ${event.to}`
             : event.type === "notification"
-            ? `⇢ notify ${event.from} → ${event.to}`
-            : `⇢ broadcast from ${event.from}`;
+            ? `notify ${event.from} → ${event.to}`
+            : `broadcast from ${event.from}`;
 
         return (
-          <div key={event.id} className="flex items-start gap-2 text-xs font-mono text-zinc-600">
-            <span className="shrink-0 text-zinc-700">{new Date(event.timestamp).toLocaleTimeString()}</span>
-            <span className="text-zinc-500">{label}</span>
-            <span className="truncate text-zinc-600">{event.text}</span>
+          <div key={event.id} className="flex items-start gap-2 text-xs font-mono text-outline px-2">
+            <span className="shrink-0 text-outline-variant tabular-nums">
+              {new Date(event.timestamp).toLocaleTimeString()}
+            </span>
+            <span className="text-on-surface-variant">{label}</span>
+            <span className="truncate text-outline">{event.text}</span>
           </div>
         );
       })}

@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { X, Folder, GitBranch, Monitor, Terminal, Copy, Check } from "lucide-react";
-import { cn, shortPath, statusDot } from "../lib/utils";
+import { ArrowLeft, Copy, Check } from "lucide-react";
+import { cn, statusDot, statusTextColor } from "../lib/utils";
 import { peerLabel } from "../types";
 import type { Peer } from "../types";
 
@@ -21,91 +21,68 @@ export function PeerHeader({ peer, onClose }: PeerHeaderProps) {
   };
 
   return (
-    <div className="flex flex-col gap-1 px-3 sm:px-4 py-3 border-b border-zinc-800 bg-zinc-950 shrink-0">
-      <div className="flex items-center gap-2 sm:gap-4">
-        {/* Name + status */}
-        <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
-          <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", statusDot(peer.status))} />
-          <div className="flex flex-col min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-sm sm:text-base font-semibold text-zinc-200 truncate">
-                {peerLabel(peer)}
-              </span>
-              <button
-                onClick={copyName}
-                className="flex items-center gap-0.5 text-[10px] text-zinc-600 font-mono hover:text-zinc-400 transition-colors shrink-0"
-                title="Copy peer name"
-              >
-                <span>{peer.name}</span>
-                {copied ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
-              </button>
-            </div>
-            {peer.description && (
-              <span className="text-[11px] text-zinc-500 truncate">{peer.description}</span>
-            )}
-          </div>
-          <span
-            className={cn(
-              "text-[10px] px-2 py-0.5 rounded-full font-medium",
-              peer.status === "online" && "bg-emerald-500/10 text-emerald-400",
-              peer.status === "busy" && "bg-amber-500/10 text-amber-400",
-              peer.status === "offline" && "bg-zinc-700/50 text-zinc-500"
-            )}
-          >
-            {peer.status}
-          </span>
-        </div>
-
-        {/* Metadata chips */}
-      <div className="hidden sm:flex items-center gap-3 text-xs text-zinc-500 font-mono overflow-hidden">
-        {peer.backend && (
-          <div className="flex items-center gap-1 shrink-0">
-            <span className="text-zinc-600">agent:</span>
-            <span>{peer.backend}</span>
-          </div>
-        )}
-        <div className="flex items-center gap-1 shrink-0">
-          <span className="text-zinc-600">circle:</span>
-          <span>{peer.circle}</span>
-        </div>
-        {peer.metadata?.branch && (
-          <div className="flex items-center gap-1 shrink-0">
-            <GitBranch className="w-3 h-3 text-zinc-600" />
-            <span>{String(peer.metadata.branch)}</span>
-          </div>
-        )}
-        {peer.path && (() => {
-          const { folder, parent } = shortPath(peer.path);
-          return (
-            <div className="flex items-center gap-1 min-w-0">
-              <Folder className="w-3 h-3 text-zinc-600 shrink-0" />
-              <span className="text-zinc-600 truncate">{parent}</span>
-              <span className="shrink-0">{folder}</span>
-            </div>
-          );
-        })()}
-        {peer.machine && (
-          <div className="flex items-center gap-1 shrink-0 hidden lg:flex">
-            <Monitor className="w-3 h-3 text-zinc-600" />
-            <span>{peer.machine}</span>
-          </div>
-        )}
-        {peer.tmux_session && (
-          <div className="flex items-center gap-1 shrink-0 hidden xl:flex">
-            <Terminal className="w-3 h-3 text-zinc-600" />
-            <span>{peer.tmux_session}</span>
-          </div>
-        )}
-      </div>
-
-        {/* Close button */}
+    <div className="shrink-0">
+      <div className="flex items-center gap-4 px-4 py-3">
+        {/* Back button */}
         <button
           onClick={onClose}
-          className="ml-auto p-1.5 hover:bg-zinc-800 rounded-md transition-colors shrink-0"
+          className="flex items-center justify-center w-10 h-10 rounded-lg hover:bg-cyan-400/10 transition-colors active:scale-95 duration-200"
         >
-          <X className="w-4 h-4 text-zinc-500" />
+          <ArrowLeft className="w-5 h-5 text-cyan-400" />
         </button>
+
+        {/* Name + status */}
+        <div className="flex flex-col min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h1 className="font-headline text-xl font-bold tracking-widest text-cyan-400 uppercase truncate">
+              {peerLabel(peer)}
+            </h1>
+            <button
+              onClick={copyName}
+              className="flex items-center gap-1 text-[10px] text-outline font-mono hover:text-on-surface-variant transition-colors shrink-0"
+              title="Copy peer name"
+            >
+              {copied ? <Check className="w-3 h-3 text-secondary" /> : <Copy className="w-3 h-3" />}
+            </button>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className={cn("w-1.5 h-1.5 rounded-full", statusDot(peer.status))} />
+            <span className="text-[10px] font-body uppercase tracking-widest text-on-surface-variant">
+              {peer.status === "offline" ? "offline" : "active session"}
+            </span>
+          </div>
+        </div>
+
+        {/* Metadata */}
+        <div className="hidden sm:flex items-center gap-3 text-xs text-on-surface-variant font-mono">
+          {peer.backend && (
+            <span className="bg-surface-container-highest px-2 py-1 text-[10px] uppercase">
+              {peer.backend}
+            </span>
+          )}
+          <span className="bg-surface-container-highest px-2 py-1 text-[10px] uppercase">
+            {peer.circle}
+          </span>
+          {peer.metadata?.branch && (
+            <span className={cn("text-[10px]", statusTextColor(peer.status))}>
+              {String(peer.metadata.branch)}
+            </span>
+          )}
+        </div>
       </div>
+
+      {/* Description */}
+      {peer.description && (
+        <div className="px-4 pb-2">
+          <p className="text-xs text-on-surface-variant font-mono truncate">
+            <span className="text-primary/60 mr-1">&gt;</span>
+            {peer.description}
+          </p>
+        </div>
+      )}
+
+      {/* Separator */}
+      <div className="bg-surface-container-low h-[2px] w-full" />
     </div>
   );
 }

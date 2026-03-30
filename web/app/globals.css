@@ -1,32 +1,152 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  /* Surface hierarchy */
+  --color-surface: #10131a;
+  --color-surface-dim: #10131a;
+  --color-surface-bright: #363940;
+  --color-surface-container-lowest: #0b0e14;
+  --color-surface-container-low: #191c22;
+  --color-surface-container: #1d2026;
+  --color-surface-container-high: #272a31;
+  --color-surface-container-highest: #32353c;
+  --color-surface-variant: #32353c;
+  --color-surface-tint: #00daf3;
+  --color-background: #10131a;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  /* Primary (cyan) */
+  --color-primary: #c3f5ff;
+  --color-primary-container: #00e5ff;
+  --color-primary-fixed: #9cf0ff;
+  --color-primary-fixed-dim: #00daf3;
+  --color-on-primary: #00363d;
+  --color-on-primary-container: #00626e;
+  --color-on-primary-fixed: #001f24;
+  --color-on-primary-fixed-variant: #004f58;
+
+  /* Secondary (neon green) */
+  --color-secondary: #d7ffc5;
+  --color-secondary-container: #2ff801;
+  --color-secondary-fixed: #79ff5b;
+  --color-secondary-fixed-dim: #2ae500;
+  --color-on-secondary: #053900;
+  --color-on-secondary-container: #0f6d00;
+  --color-on-secondary-fixed: #022100;
+  --color-on-secondary-fixed-variant: #095300;
+
+  /* Tertiary (amber) */
+  --color-tertiary: #ffe9cd;
+  --color-tertiary-container: #ffc769;
+  --color-tertiary-fixed: #ffdeac;
+  --color-tertiary-fixed-dim: #ffba38;
+  --color-on-tertiary: #432c00;
+  --color-on-tertiary-container: #775200;
+  --color-on-tertiary-fixed: #281900;
+  --color-on-tertiary-fixed-variant: #604100;
+
+  /* Error */
+  --color-error: #ffb4ab;
+  --color-error-container: #93000a;
+  --color-on-error: #690005;
+  --color-on-error-container: #ffdad6;
+
+  /* Text & outline */
+  --color-on-surface: #e1e2eb;
+  --color-on-surface-variant: #bac9cc;
+  --color-on-background: #e1e2eb;
+  --color-outline: #849396;
+  --color-outline-variant: #3b494c;
+
+  /* Inverse */
+  --color-inverse-surface: #e1e2eb;
+  --color-inverse-on-surface: #2e3037;
+  --color-inverse-primary: #006875;
+
+  /* Fonts */
+  --font-headline: var(--font-space-grotesk), "Space Grotesk", sans-serif;
+  --font-body: var(--font-inter), "Inter", sans-serif;
+  --font-mono: var(--font-jetbrains-mono), "JetBrains Mono", monospace;
+
+  /* Sharp border radius */
+  --radius-sm: 0.0625rem;
+  --radius: 0.125rem;
+  --radius-md: 0.25rem;
+  --radius-lg: 0.375rem;
+  --radius-xl: 0.5rem;
+  --radius-2xl: 0.75rem;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-background);
+  color: var(--color-on-surface);
+  font-family: var(--font-body);
 }
 
-/* Markdown list styling */
+/* Mesh grid background */
+.mesh-bg {
+  background-image: radial-gradient(
+    circle at 2px 2px,
+    rgba(59, 73, 76, 0.05) 1px,
+    transparent 0
+  );
+  background-size: 24px 24px;
+}
+
+/* Glassmorphism panel */
+.glass-panel {
+  background: rgba(50, 53, 60, 0.6);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+/* Online pulse animation */
+.pulse-online {
+  box-shadow: 0 0 0 0 rgba(121, 255, 91, 0.4);
+  animation: pulse-ring 1.5s infinite;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(121, 255, 91, 0.7);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 10px rgba(121, 255, 91, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(121, 255, 91, 0);
+  }
+}
+
+/* Busy static glow */
+.glow-busy {
+  box-shadow: 0 0 8px rgba(255, 186, 56, 0.5);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #10131a;
+}
+::-webkit-scrollbar-thumb {
+  background: #3b494c;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #00e5ff;
+}
+
+/* Material Symbols */
+.material-symbols-outlined {
+  font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+}
+
+/* Prose overrides for dark terminal aesthetic */
 .prose ul {
   list-style-type: disc;
   padding-left: 1.5rem;
@@ -41,4 +161,31 @@ body {
 
 .prose li {
   margin: 0.25rem 0;
+}
+
+.prose pre {
+  background: #0b0e14;
+  border: 1px solid rgba(59, 73, 76, 0.2);
+}
+
+.prose code {
+  color: #9cf0ff;
+}
+
+.prose p {
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.prose th {
+  background: #191c22;
+}
+
+.prose td,
+.prose th {
+  border-color: rgba(59, 73, 76, 0.3);
+}
+
+.prose table {
+  border-collapse: collapse;
 }

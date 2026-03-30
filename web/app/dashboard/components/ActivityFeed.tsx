@@ -2,10 +2,10 @@
 
 import { useState, useMemo } from "react";
 import { Check, AlertCircle, RefreshCw, ChevronRight } from "lucide-react";
-import { cn } from "../lib/utils";
+import { cn, timeAgo } from "../lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Event } from "../types";
+import type { Event, Peer } from "../types";
 
 interface Conversation {
   id: string;
@@ -19,8 +19,9 @@ interface Conversation {
 
 interface ActivityFeedProps {
   events: Event[];
-  peerFilter?: string; // peer_id to filter events by
-  peerName?: string; // display name for empty state
+  peerFilter?: string;
+  peerName?: string;
+  peers?: Peer[];
 }
 
 function ConversationCard({
@@ -32,143 +33,155 @@ function ConversationCard({
   isExpanded: boolean;
   onToggle: () => void;
 }) {
+  const borderColor =
+    conversation.status === "error"
+      ? "border-error"
+      : conversation.status === "pending"
+      ? "border-primary-container"
+      : "border-secondary-fixed";
+
   const statusIcon =
     conversation.status === "success" ? (
-      <Check className="w-3.5 h-3.5 text-emerald-500" />
+      <Check className="w-3.5 h-3.5 text-secondary" />
     ) : conversation.status === "pending" ? (
-      <RefreshCw className="w-3.5 h-3.5 text-blue-400 animate-spin" />
+      <RefreshCw className="w-3.5 h-3.5 text-primary-container animate-spin" />
     ) : (
-      <AlertCircle className="w-3.5 h-3.5 text-red-400" />
+      <AlertCircle className="w-3.5 h-3.5 text-error" />
     );
 
   return (
-    <div
-      className={cn(
-        "border rounded-lg overflow-hidden transition-all",
-        conversation.status === "pending"
-          ? "border-blue-500/20 bg-blue-500/[0.02]"
-          : conversation.status === "error"
-          ? "border-red-500/20 bg-red-500/[0.02]"
-          : "border-zinc-800/50 bg-zinc-800/10"
-      )}
-    >
-      <button
-        onClick={onToggle}
-        className="w-full px-4 py-3 flex items-center gap-3 hover:bg-zinc-800/30 transition-colors"
-      >
-        <div className={cn("transition-transform", isExpanded && "rotate-90")}>
-          <ChevronRight className="w-4 h-4 text-zinc-500" />
-        </div>
-
-        <div className="flex items-center gap-2 text-sm">
-          <span className="font-medium text-zinc-300">@{conversation.from}</span>
-          <ChevronRight className="w-3 h-3 text-zinc-600" />
-          <span className="font-medium text-zinc-300">@{conversation.to}</span>
-        </div>
-
-        <div className="ml-auto flex items-center gap-3">
-          {statusIcon}
-          <span className="text-[10px] text-zinc-600 font-mono tabular-nums">
-            {new Date(conversation.timestamp).toLocaleTimeString()}
-          </span>
-        </div>
-      </button>
-
-      {!isExpanded && (
-        <div className="px-4 pb-3 pl-11">
-          <p className="text-sm text-zinc-500 truncate">
-            Q: {conversation.query.text}
-          </p>
-        </div>
-      )}
-
-      {isExpanded && (
-        <div className="px-4 pb-4 pl-11 space-y-3">
-          <div className="space-y-1">
-            <div className="text-[10px] uppercase text-blue-400 font-bold">Query</div>
-            <div className="bg-zinc-950 border border-zinc-800/50 rounded-lg p-3">
-              <div className="text-sm text-zinc-300 prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-zinc-900 prose-pre:border prose-pre:border-zinc-700 prose-code:text-blue-300 prose-ul:list-disc prose-ul:pl-4 prose-li:my-0.5">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {conversation.query.text}
-                </ReactMarkdown>
-              </div>
-            </div>
+    <div className="group transition-all duration-300">
+      <div className={cn("bg-surface-container-low border-l-2 hover:bg-surface-container transition-colors", borderColor)}>
+        <button
+          onClick={onToggle}
+          className="w-full px-4 py-3 flex items-center gap-3"
+        >
+          <div className={cn("transition-transform", isExpanded && "rotate-90")}>
+            <ChevronRight className="w-4 h-4 text-outline" />
           </div>
 
-          {conversation.response ? (
+          <div className="flex items-center gap-2 text-sm min-w-0">
+            <span className="font-mono text-xs text-primary font-bold truncate">
+              {conversation.from}
+            </span>
+            <span className="material-symbols-outlined text-[14px] text-outline">arrow_forward</span>
+            <span className="font-mono text-xs text-on-surface-variant font-bold truncate">
+              {conversation.to}
+            </span>
+          </div>
+
+          <div className="ml-auto flex items-center gap-3 shrink-0">
+            {statusIcon}
+            <span className="text-[10px] text-outline font-mono tabular-nums">
+              {timeAgo(conversation.timestamp)}
+            </span>
+          </div>
+        </button>
+
+        {!isExpanded && (
+          <div className="px-4 pb-3 pl-11">
+            <p className="text-sm text-on-surface-variant truncate font-mono">
+              {conversation.query.text}
+            </p>
+          </div>
+        )}
+
+        {isExpanded && (
+          <div className="px-4 pb-4 pl-11 space-y-3">
             <div className="space-y-1">
-              <div className="text-[10px] uppercase text-emerald-400 font-bold">Response</div>
-              <div className="bg-zinc-950 border border-emerald-500/10 rounded-lg p-3">
-                <div
-                  className={cn(
-                    "text-sm prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-zinc-900 prose-pre:border prose-pre:border-zinc-700 prose-code:text-emerald-300 prose-ul:list-disc prose-ul:pl-4 prose-li:my-0.5",
-                    conversation.status === "error" ? "text-red-400" : "text-zinc-300"
-                  )}
-                >
+              <div className="text-[10px] uppercase text-primary font-bold tracking-widest">Query</div>
+              <div className="bg-surface-container-lowest border border-outline-variant/10 p-3">
+                <div className="text-sm text-on-surface prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-surface prose-pre:border prose-pre:border-outline-variant/20 prose-code:text-primary-fixed">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {conversation.response.text}
+                    {conversation.query.text}
                   </ReactMarkdown>
                 </div>
               </div>
             </div>
-          ) : conversation.status === "pending" ? (
-            <div className="flex items-center gap-2 text-blue-400 text-xs">
-              <RefreshCw className="w-3 h-3 animate-spin" />
-              <span>Awaiting response...</span>
-            </div>
-          ) : null}
-        </div>
-      )}
+
+            {conversation.response ? (
+              <div className="space-y-1">
+                <div className="text-[10px] uppercase text-secondary font-bold tracking-widest">Response</div>
+                <div className="bg-surface-container-lowest border border-outline-variant/10 p-3">
+                  <div
+                    className={cn(
+                      "text-sm prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-surface prose-pre:border prose-pre:border-outline-variant/20 prose-code:text-primary-fixed",
+                      conversation.status === "error" ? "text-error" : "text-on-surface"
+                    )}
+                  >
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {conversation.response.text}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              </div>
+            ) : conversation.status === "pending" ? (
+              <div className="flex items-center gap-2 text-primary-container text-xs">
+                <RefreshCw className="w-3 h-3 animate-spin" />
+                <span>Awaiting response...</span>
+              </div>
+            ) : null}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 function NotificationRow({ event, isExpanded, onToggle }: { event: Event; isExpanded: boolean; onToggle: () => void }) {
   const isBroadcast = event.type === "broadcast";
+  const borderColor = isBroadcast ? "border-secondary-fixed" : "border-tertiary-fixed-dim";
+
   return (
-    <div className="border border-zinc-800/50 rounded-lg overflow-hidden bg-zinc-800/10">
-      <button
-        onClick={onToggle}
-        className="w-full px-4 py-3 flex items-center gap-3 hover:bg-zinc-800/30 transition-colors"
-      >
-        <div className={cn("transition-transform", isExpanded && "rotate-90")}>
-          <ChevronRight className="w-4 h-4 text-zinc-500" />
-        </div>
-        <div className="flex items-center gap-2 text-sm min-w-0">
-          <span className="font-medium text-zinc-300">@{event.from || "?"}</span>
-          {!isBroadcast && (
-            <>
-              <ChevronRight className="w-3 h-3 text-zinc-600 shrink-0" />
-              <span className="font-medium text-zinc-300">@{event.to || "?"}</span>
-            </>
-          )}
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono shrink-0">
-            {isBroadcast ? "broadcast" : "notify"}
+    <div className="group transition-all duration-300">
+      <div className={cn("bg-surface-container-low border-l-2 hover:bg-surface-container transition-colors", borderColor)}>
+        <button
+          onClick={onToggle}
+          className="w-full px-4 py-3 flex items-center gap-3"
+        >
+          <div className={cn("transition-transform", isExpanded && "rotate-90")}>
+            <ChevronRight className="w-4 h-4 text-outline" />
+          </div>
+          <div className="flex items-center gap-2 text-sm min-w-0">
+            <span className="font-mono text-xs font-bold text-on-surface truncate">
+              {event.from || "?"}
+            </span>
+            {!isBroadcast && (
+              <>
+                <span className="material-symbols-outlined text-[14px] text-outline">arrow_forward</span>
+                <span className="font-mono text-xs text-on-surface-variant truncate">
+                  {event.to || "?"}
+                </span>
+              </>
+            )}
+            <span className="font-mono text-[10px] bg-surface-container-highest px-1.5 py-0.5 rounded text-on-surface-variant shrink-0">
+              {isBroadcast ? "broadcast" : "notify"}
+            </span>
+          </div>
+          <span className="ml-auto text-[10px] text-outline font-mono tabular-nums shrink-0">
+            {timeAgo(event.timestamp)}
           </span>
-        </div>
-        <span className="ml-auto text-[10px] text-zinc-600 font-mono tabular-nums shrink-0">
-          {new Date(event.timestamp).toLocaleTimeString()}
-        </span>
-      </button>
-      {!isExpanded && (
-        <div className="px-4 pb-3 pl-11">
-          <p className="text-sm text-zinc-500 truncate">{event.text}</p>
-        </div>
-      )}
-      {isExpanded && (
-        <div className="px-4 pb-4 pl-11">
-          <div className="bg-zinc-950 border border-zinc-800/50 rounded-lg p-3">
-            <div className="text-sm text-zinc-300 prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-zinc-900 prose-code:text-emerald-300">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{event.text}</ReactMarkdown>
+        </button>
+        {!isExpanded && (
+          <div className="px-4 pb-3 pl-11">
+            <p className="text-sm text-on-surface-variant truncate font-mono">{event.text}</p>
+          </div>
+        )}
+        {isExpanded && (
+          <div className="px-4 pb-4 pl-11">
+            <div className="bg-surface-container-lowest border border-outline-variant/10 p-3">
+              <div className="text-sm text-on-surface prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-surface prose-code:text-primary-fixed">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{event.text}</ReactMarkdown>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
 
-export function ActivityFeed({ events, peerFilter, peerName }: ActivityFeedProps) {
+export function ActivityFeed({ events, peerFilter, peerName, peers }: ActivityFeedProps) {
   const { conversations, notifications } = useMemo(() => {
     const responseById = new Map<string, Event>();
     const queryEvents: Event[] = [];
@@ -204,7 +217,6 @@ export function ActivityFeed({ events, peerFilter, peerName }: ActivityFeedProps
     return { conversations, notifications: notifEvents };
   }, [events, peerFilter]);
 
-  // Merge and sort all activity by timestamp (newest first)
   type ActivityItem =
     | { kind: "conversation"; data: Conversation }
     | { kind: "notification"; data: Event };
@@ -233,36 +245,77 @@ export function ActivityFeed({ events, peerFilter, peerName }: ActivityFeedProps
     });
   };
 
+  const isTopLevel = !peerFilter;
+  const activePeerCount = peers?.filter((p) => p.status === "online" || p.status === "busy").length ?? 0;
+
   if (allActivity.length === 0) {
     return (
-      <div className="text-center py-12 text-zinc-600">
+      <div className="text-center py-12 text-outline">
+        <span className="material-symbols-outlined text-4xl mb-2">terminal</span>
         <p className="text-sm">
           {peerFilter ? `No activity involving ${peerName || peerFilter}` : "No activity yet"}
         </p>
-        <p className="text-xs mt-1">Send a message to get started</p>
+        <p className="text-xs mt-1 text-outline-variant">Send a message to get started</p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-3">
-      {allActivity.map((item) =>
-        item.kind === "conversation" ? (
-          <ConversationCard
-            key={item.data.id}
-            conversation={item.data}
-            isExpanded={expandedItems.has(item.data.id)}
-            onToggle={() => toggleItem(item.data.id)}
-          />
-        ) : (
-          <NotificationRow
-            key={item.data.id}
-            event={item.data}
-            isExpanded={expandedItems.has(item.data.id)}
-            onToggle={() => toggleItem(item.data.id)}
-          />
-        )
+    <div className="space-y-4 py-4">
+      {/* Stats header for top-level Logs tab */}
+      {isTopLevel && (
+        <>
+          <div className="grid grid-cols-2 gap-4 mb-6">
+            <div className="bg-surface-container-low p-4 relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-[2px] bg-primary-container" />
+              <p className="text-[10px] font-bold uppercase tracking-widest text-outline font-headline">
+                Total Events
+              </p>
+              <p className="text-2xl font-bold font-headline text-on-surface mt-1">{events.length}</p>
+            </div>
+            <div className="bg-surface-container-low p-4 relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-[2px] bg-secondary-fixed" />
+              <p className="text-[10px] font-bold uppercase tracking-widest text-outline font-headline">
+                Active Peers
+              </p>
+              <div className="flex items-baseline gap-2 mt-1">
+                <p className="text-2xl font-bold font-headline text-on-surface">{activePeerCount}</p>
+                <span className="flex h-2 w-2 rounded-full bg-secondary-fixed animate-pulse" />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-headline text-xs font-bold uppercase tracking-[0.2em] text-cyan-400">
+              Mesh Core Activity
+            </h2>
+            <span className="text-[10px] font-medium text-outline bg-surface-container-highest px-2 py-0.5 rounded">
+              LIVE_STREAM
+            </span>
+          </div>
+        </>
       )}
+
+      {/* Activity items */}
+      <div className="space-y-4">
+        {allActivity.map((item) =>
+          item.kind === "conversation" ? (
+            <ConversationCard
+              key={item.data.id}
+              conversation={item.data}
+              isExpanded={expandedItems.has(item.data.id)}
+              onToggle={() => toggleItem(item.data.id)}
+            />
+          ) : (
+            <NotificationRow
+              key={item.data.id}
+              event={item.data}
+              isExpanded={expandedItems.has(item.data.id)}
+              onToggle={() => toggleItem(item.data.id)}
+            />
+          )
+        )}
+      </div>
     </div>
   );
 }

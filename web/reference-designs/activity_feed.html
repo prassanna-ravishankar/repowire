@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>REPOWIRE | Mesh Activity</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;family=Inter:wght@300;400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #10131a;
+            background-image: radial-gradient(circle at 2px 2px, rgba(59, 73, 76, 0.05) 1px, transparent 0);
+            background-size: 24px 24px;
+        }
+        .headline-font { font-family: 'Space Grotesk', sans-serif; }
+        .mono-font { font-family: 'JetBrains Mono', monospace; }
+        
+        /* Glassmorphism utility */
+        .glass-panel {
+            background: rgba(50, 53, 60, 0.6);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+    </style>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "on-secondary-fixed": "#022100",
+                        "surface-container-low": "#191c22",
+                        "secondary-fixed": "#79ff5b",
+                        "primary-fixed-dim": "#00daf3",
+                        "on-error": "#690005",
+                        "on-primary-fixed": "#001f24",
+                        "error": "#ffb4ab",
+                        "surface-container-highest": "#32353c",
+                        "tertiary-fixed": "#ffdeac",
+                        "surface": "#10131a",
+                        "inverse-on-surface": "#2e3037",
+                        "primary-fixed": "#9cf0ff",
+                        "tertiary-fixed-dim": "#ffba38",
+                        "tertiary": "#ffe9cd",
+                        "surface-container": "#1d2026",
+                        "background": "#10131a",
+                        "surface-container-lowest": "#0b0e14",
+                        "on-tertiary-fixed-variant": "#604100",
+                        "error-container": "#93000a",
+                        "on-tertiary-fixed": "#281900",
+                        "on-primary-fixed-variant": "#004f58",
+                        "on-primary-container": "#00626e",
+                        "on-secondary": "#053900",
+                        "on-surface-variant": "#bac9cc",
+                        "on-tertiary-container": "#775200",
+                        "primary-container": "#00e5ff",
+                        "on-secondary-container": "#0f6d00",
+                        "surface-dim": "#10131a",
+                        "secondary-fixed-dim": "#2ae500",
+                        "on-background": "#e1e2eb",
+                        "primary": "#c3f5ff",
+                        "outline": "#849396",
+                        "surface-bright": "#363940",
+                        "on-error-container": "#ffdad6",
+                        "on-tertiary": "#432c00",
+                        "surface-tint": "#00daf3",
+                        "surface-variant": "#32353c",
+                        "inverse-surface": "#e1e2eb",
+                        "surface-container-high": "#272a31",
+                        "on-surface": "#e1e2eb",
+                        "secondary": "#d7ffc5",
+                        "outline-variant": "#3b494c",
+                        "tertiary-container": "#ffc769",
+                        "on-secondary-fixed-variant": "#095300",
+                        "secondary-container": "#2ff801",
+                        "on-primary": "#00363d",
+                        "inverse-primary": "#006875"
+                    },
+                    fontFamily: {
+                        "headline": ["Space Grotesk"],
+                        "body": ["Inter"],
+                        "label": ["Inter"]
+                    },
+                    borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+                },
+            },
+        }
+    </script>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="text-on-surface bg-background min-h-screen pb-24">
+<!-- TopAppBar -->
+<header class="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-6 h-16 bg-[#10131a] dark:bg-[#10131a]">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-cyan-400" data-icon="hub">hub</span>
+<h1 class="font-['Space_Grotesk'] tracking-tight uppercase text-xl font-bold tracking-widest text-cyan-400">REPOWIRE</h1>
+</div>
+<div class="flex items-center gap-4">
+<div class="w-8 h-8 rounded-full bg-surface-container-highest border border-outline-variant flex items-center justify-center overflow-hidden">
+<img alt="User Profile" class="w-full h-full object-cover" data-alt="minimalist user avatar silhouette in slate blue against a dark grey background" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBrYSyHEev7PP5EoGvDI1iEUjp85mz_c4J2gFCIYXn3xR3G7QajYVTSCgLciuegPYr4zM3NuyuYmJIgjaSyte8FRQcVsboV2GRo1duYXmt2hsqyjnkkAUwccYZLwR3zI6b_CXzKpsBKpuejSX23RRdUmUZObbs6RcEFtEIrmkyJq0ciEI8HXBqGZkZ1GwjXv94GWZU29Se4Bq2crZ5cgxbO3sWkQqDBIFSb4j1q8I6Q3NgCgLYspLMIiqqfljDUHSRYHca5XERLBA"/>
+</div>
+</div>
+</header>
+<!-- Separation Logic -->
+<div class="fixed top-16 left-0 z-50 bg-[#191c22] h-[2px] w-full"></div>
+<main class="pt-24 px-4 max-w-2xl mx-auto space-y-6">
+<!-- Dashboard Summary / Stats -->
+<div class="grid grid-cols-2 gap-4">
+<div class="bg-surface-container-low p-4 relative overflow-hidden">
+<div class="absolute top-0 left-0 w-full h-[2px] bg-primary-container"></div>
+<p class="text-[10px] font-bold uppercase tracking-widest text-slate-400 headline-font">Network Load</p>
+<p class="text-2xl font-bold headline-font text-on-surface mt-1">42.8%</p>
+<div class="mt-2 h-1 bg-surface-container-highest rounded-full overflow-hidden">
+<div class="h-full bg-primary-container w-[42%]"></div>
+</div>
+</div>
+<div class="bg-surface-container-low p-4 relative overflow-hidden">
+<div class="absolute top-0 left-0 w-full h-[2px] bg-secondary-fixed"></div>
+<p class="text-[10px] font-bold uppercase tracking-widest text-slate-400 headline-font">Active Peers</p>
+<div class="flex items-baseline gap-2 mt-1">
+<p class="text-2xl font-bold headline-font text-on-surface">12</p>
+<span class="flex h-2 w-2 rounded-full bg-secondary-fixed animate-pulse"></span>
+</div>
+<p class="text-[10px] text-secondary/60 uppercase mt-2">All Nodes Operational</p>
+</div>
+</div>
+<!-- Real-time Activity Feed -->
+<section class="space-y-4">
+<div class="flex items-center justify-between mb-2">
+<h2 class="font-headline text-xs font-bold uppercase tracking-[0.2em] text-cyan-400">Mesh Core Activity</h2>
+<span class="text-[10px] font-medium text-slate-500 bg-surface-container-highest px-2 py-0.5 rounded">LIVE_STREAM</span>
+</div>
+<!-- Event 1 -->
+<div class="group transition-all duration-300">
+<div class="bg-surface-container-low p-4 border-l-2 border-secondary-fixed hover:bg-surface-container transition-colors">
+<div class="flex justify-between items-start">
+<div class="flex flex-col">
+<span class="mono-font text-xs text-secondary font-bold">claude-project-a</span>
+<div class="flex items-center gap-2 mt-1">
+<span class="material-symbols-outlined text-[14px] text-slate-500" data-icon="broadcast_on_personal">broadcast_on_personal</span>
+<span class="text-[10px] uppercase tracking-widest text-slate-400">broadcast to</span>
+<span class="mono-font text-[10px] bg-surface-container-highest px-1.5 py-0.5 rounded text-on-surface-variant">dev</span>
+</div>
+</div>
+<span class="text-[10px] text-slate-500 mono-font">2m ago</span>
+</div>
+<div class="mt-3 p-2 bg-surface-container-lowest border border-outline-variant/10">
+<p class="mono-font text-xs text-on-surface leading-relaxed">"Migration complete"</p>
+</div>
+</div>
+</div>
+<!-- Event 2 -->
+<div class="group transition-all duration-300">
+<div class="bg-surface-container-low p-4 border-l-2 border-tertiary-fixed-dim hover:bg-surface-container transition-colors">
+<div class="flex justify-between items-start">
+<div class="flex flex-col">
+<span class="mono-font text-xs text-tertiary font-bold">codex-infra</span>
+<div class="flex items-center gap-2 mt-1">
+<span class="material-symbols-outlined text-[14px] text-slate-500" data-icon="notifications">notifications</span>
+<span class="text-[10px] uppercase tracking-widest text-slate-400">notified</span>
+<span class="mono-font text-[10px] bg-surface-container-highest px-1.5 py-0.5 rounded text-on-surface-variant">telegram</span>
+</div>
+</div>
+<span class="text-[10px] text-slate-500 mono-font">5m ago</span>
+</div>
+<div class="mt-3 p-2 bg-surface-container-lowest border border-outline-variant/10">
+<p class="mono-font text-xs text-tertiary-fixed-dim leading-relaxed">"High CPU usage on daemon"</p>
+</div>
+</div>
+</div>
+<!-- Event 3 -->
+<div class="group transition-all duration-300">
+<div class="bg-surface-container-low p-4 border-l-2 border-error hover:bg-surface-container transition-colors">
+<div class="flex justify-between items-start">
+<div class="flex flex-col">
+<span class="mono-font text-xs text-error font-bold">gemini-review</span>
+<div class="flex items-center gap-2 mt-1">
+<span class="material-symbols-outlined text-[14px] text-slate-500" data-icon="sync_problem">sync_problem</span>
+<span class="text-[10px] uppercase tracking-widest text-slate-400">query failed</span>
+<span class="mono-font text-[10px] bg-surface-container-highest px-1.5 py-0.5 rounded text-on-surface-variant">claude-project-a</span>
+</div>
+</div>
+<span class="text-[10px] text-slate-500 mono-font">10m ago</span>
+</div>
+<div class="mt-3 p-2 bg-surface-container-lowest border border-outline-variant/10">
+<p class="mono-font text-xs text-error leading-relaxed">"Request timed out after 5000ms"</p>
+</div>
+</div>
+</div>
+<!-- Decorative Mesh Grid Element -->
+<div class="relative py-8 flex flex-col items-center justify-center opacity-40">
+<div class="absolute inset-0 bg-gradient-to-b from-transparent via-cyan-900/10 to-transparent"></div>
+<span class="material-symbols-outlined text-cyan-400 text-4xl mb-2" data-icon="terminal">terminal</span>
+<p class="text-[10px] mono-font text-cyan-400 tracking-[0.3em] uppercase">End of stream buffer</p>
+</div>
+</section>
+</main>
+<!-- Bottom Navigation Shell -->
+<nav class="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center px-4 pb-6 pt-2 bg-[#10131a]/80 backdrop-blur-xl border-t border-cyan-900/20 shadow-[0_-4px_24px_rgba(0,229,255,0.05)]">
+<!-- Home / Dash -->
+<a class="flex flex-col items-center justify-center text-slate-500 p-3 hover:text-cyan-300 active:scale-90 duration-200" href="#">
+<span class="material-symbols-outlined" data-icon="grid_view">grid_view</span>
+<span class="font-['Inter'] text-[10px] uppercase tracking-widest mt-1">Home</span>
+</a>
+<!-- Activity (Active) -->
+<a class="flex flex-col items-center justify-center bg-cyan-400/10 text-cyan-400 rounded-lg p-3 active:scale-90 duration-200" href="#">
+<span class="material-symbols-outlined" data-icon="lan">lan</span>
+<span class="font-['Inter'] text-[10px] uppercase tracking-widest mt-1">Logs</span>
+</a>
+<!-- Settings -->
+<a class="flex flex-col items-center justify-center text-slate-500 p-3 hover:text-cyan-300 active:scale-90 duration-200" href="#">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+<span class="font-['Inter'] text-[10px] uppercase tracking-widest mt-1">Config</span>
+</a>
+</nav>
+</body></html>

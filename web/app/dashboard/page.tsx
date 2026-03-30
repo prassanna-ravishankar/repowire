@@ -1,14 +1,15 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { Menu, RefreshCw, Wifi, WifiOff, X } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { cn } from "./lib/utils";
-import { Sidebar } from "./components/Sidebar";
 import { OverviewGrid } from "./components/OverviewGrid";
 import { PeerHeader } from "./components/PeerHeader";
 import { ChatPanel } from "./components/ChatPanel";
 import { ComposeBar } from "./components/ComposeBar";
 import { ActivityFeed } from "./components/ActivityFeed";
+import { BottomNav, type NavTab } from "./components/BottomNav";
+import { SettingsPanel } from "./components/SettingsPanel";
 import type { Peer, Event } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8377";
@@ -20,7 +21,7 @@ export default function Dashboard() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"chat" | "activity">("chat");
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [activeNavTab, setActiveNavTab] = useState<NavTab>("dash");
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const fetchPeers = useCallback(async () => {
@@ -80,7 +81,6 @@ export default function Dashboard() {
             if (prev.some((existing) => existing.id === event.id)) return prev;
             return [...prev, event];
           });
-          // Refresh peers on status changes
           if (event.type === "status_change") fetchPeers();
         }
       } catch (error) {
@@ -99,12 +99,6 @@ export default function Dashboard() {
     };
   }, [fetchPeers, fetchEvents]);
 
-  const onlineCount = useMemo(
-    () => peers.filter((p) => p.status === "online" || p.status === "busy").length,
-    [peers]
-  );
-
-  // Resolve selected peer from current data (keeps it fresh as status updates come in)
   const selectedPeer = useMemo(
     () => (selectedPeerId ? peers.find((p) => p.peer_id === selectedPeerId) ?? null : null),
     [peers, selectedPeerId]
@@ -113,131 +107,124 @@ export default function Dashboard() {
   const handleSelectPeer = useCallback((peer: Peer) => {
     setSelectedPeerId(peer.peer_id);
     setActiveTab("chat");
-    setMobileMenuOpen(false);
   }, []);
 
   const handleClosePeer = useCallback(() => {
     setSelectedPeerId(null);
   }, []);
 
+  const handleNavTabChange = useCallback((tab: NavTab) => {
+    setActiveNavTab(tab);
+    setSelectedPeerId(null);
+  }, []);
+
   return (
-    <div className="h-dvh bg-zinc-950 text-zinc-400 font-sans flex flex-col overflow-hidden">
-      {/* Header */}
-      <header className="flex items-center justify-between px-3 sm:px-6 py-3 border-b border-zinc-800 shrink-0">
-        <div className="flex items-center gap-2 sm:gap-3">
-          <button
-            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="md:hidden p-1.5 hover:bg-zinc-800 rounded-md transition-colors"
-          >
-            {mobileMenuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
-          </button>
-          <button onClick={handleClosePeer} className="flex items-center gap-2 sm:gap-3 hover:opacity-80 transition-opacity">
-            <img src="/logo-dark.webp" alt="Repowire" className="w-7 h-7 rounded-lg" />
-            <span className="text-white font-bold tracking-tight text-lg hidden sm:inline">REPOWIRE</span>
+    <div className="h-dvh bg-surface text-on-surface font-body mesh-bg flex flex-col overflow-hidden">
+      {/* Top App Bar */}
+      <header className="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-6 h-16 bg-surface">
+        <div className="flex items-center gap-3">
+          <button onClick={handleClosePeer} className="flex items-center gap-3 hover:opacity-80 transition-opacity">
+            <span className="material-symbols-outlined text-cyan-400">hub</span>
+            <h1 className="text-xl font-bold tracking-widest text-cyan-400 font-headline uppercase">
+              REPOWIRE
+            </h1>
           </button>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-4">
+        <div className="flex items-center gap-4">
           <div
             className={cn(
-              "flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1 rounded-full text-xs font-medium",
-              isConnected ? "text-emerald-500" : "text-red-500"
+              "flex items-center gap-2 bg-surface-container-low px-3 py-1 rounded shadow-inner",
+              isConnected ? "text-secondary" : "text-error"
             )}
           >
-            {isConnected ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
-            <span className="hidden sm:inline">{isConnected ? "Connected" : "Disconnected"}</span>
-            <span className="text-zinc-600">·</span>
-            <span className="tabular-nums">{onlineCount} online</span>
+            <span className={cn("w-2 h-2 rounded-full", isConnected ? "bg-secondary pulse-online" : "bg-error")} />
+            <span className="text-[10px] font-headline font-bold uppercase tracking-widest">
+              {isConnected ? "Mesh Connected" : "Disconnected"}
+            </span>
           </div>
           <button
             onClick={refreshData}
-            className="p-2 hover:bg-zinc-800 rounded-lg transition-colors"
+            className="w-8 h-8 rounded flex items-center justify-center hover:bg-surface-container-high transition-colors"
           >
-            <RefreshCw className={cn("w-4 h-4", isRefreshing && "animate-spin")} />
+            <RefreshCw className={cn("w-4 h-4 text-on-surface-variant", isRefreshing && "animate-spin")} />
           </button>
         </div>
       </header>
 
-      {/* Body: sidebar + main panel */}
-      <div className="flex flex-1 overflow-hidden relative">
-        {/* Mobile sidebar overlay */}
-        {mobileMenuOpen && (
-          <div className="absolute inset-0 z-30 md:hidden flex">
-            <Sidebar
-              peers={peers}
-              selectedPeerId={selectedPeerId}
-              onSelectPeer={handleSelectPeer}
-              className="w-64 bg-zinc-950"
-            />
-            <div className="flex-1 bg-black/50" onClick={() => setMobileMenuOpen(false)} />
-          </div>
-        )}
+      {/* Header separator */}
+      <div className="fixed top-16 left-0 w-full z-40 bg-surface-container-low h-[2px]" />
 
-        {/* Desktop sidebar */}
-        <Sidebar
-          peers={peers}
-          selectedPeerId={selectedPeerId}
-          onSelectPeer={handleSelectPeer}
-          className="hidden md:flex"
-        />
+      {/* Main Content */}
+      <main className="flex-1 pt-[68px] pb-24 overflow-y-auto">
+        {selectedPeer ? (
+          /* Peer Detail View */
+          <div className="flex flex-col h-full">
+            <PeerHeader peer={selectedPeer} onClose={handleClosePeer} />
 
-        {/* Main panel */}
-        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
-          {selectedPeer ? (
-            /* State B: Peer Detail */
-            <>
-              <PeerHeader peer={selectedPeer} onClose={handleClosePeer} />
-
-              {/* Tabs */}
-              <div className="flex items-center gap-1 px-4 pt-2 pb-0 border-b border-zinc-800 shrink-0">
-                {(["chat", "activity"] as const).map((tab) => (
-                  <button
-                    key={tab}
-                    onClick={() => setActiveTab(tab)}
-                    className={cn(
-                      "px-3 py-2 text-xs font-medium rounded-t-md transition-colors border-b-2 -mb-px capitalize",
-                      activeTab === tab
-                        ? "border-zinc-400 text-zinc-200"
-                        : "border-transparent text-zinc-500 hover:text-zinc-400"
-                    )}
-                  >
-                    {tab}
-                  </button>
-                ))}
-                {isConnected && (
-                  <div className="ml-auto flex items-center gap-2 pb-2">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                    <span className="text-xs text-zinc-600">live</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Tab content */}
-              {activeTab === "chat" ? (
-                <div className="flex-1 flex flex-col overflow-hidden">
-                  <div className="flex-1 overflow-y-auto">
-                    <ChatPanel peer={selectedPeer} events={events} />
-                  </div>
-                  <ComposeBar key={selectedPeer.peer_id} peer={selectedPeer} apiBase={API_BASE} onSent={refreshData} />
-                </div>
-              ) : (
-                <div className="flex-1 overflow-y-auto p-4">
-                  <ActivityFeed events={events} peerFilter={selectedPeer.peer_id} peerName={selectedPeer.name} />
+            {/* Chat/Activity Tabs */}
+            <div className="flex items-center gap-1 px-4 pt-2 pb-0 shrink-0">
+              {(["chat", "activity"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={cn(
+                    "px-3 py-2 text-[10px] font-headline font-bold uppercase tracking-widest transition-colors border-b-2 -mb-px",
+                    activeTab === tab
+                      ? "border-primary text-primary"
+                      : "border-transparent text-outline hover:text-on-surface-variant"
+                  )}
+                >
+                  {tab}
+                </button>
+              ))}
+              {isConnected && (
+                <div className="ml-auto flex items-center gap-2 pb-2">
+                  <span className="w-2 h-2 rounded-full bg-secondary pulse-online" />
+                  <span className="text-[10px] font-mono text-outline uppercase tracking-widest">live</span>
                 </div>
               )}
-            </>
-          ) : (
-            /* State A: Overview */
-            <OverviewGrid
-              peers={peers}
-              events={events}
-              apiBase={API_BASE}
-              onSelectPeer={handleSelectPeer}
-              onRefresh={refreshData}
-            />
-          )}
-        </main>
-      </div>
+            </div>
+
+            {activeTab === "chat" ? (
+              <div className="flex-1 flex flex-col overflow-hidden">
+                <div className="flex-1 overflow-y-auto">
+                  <ChatPanel peer={selectedPeer} events={events} />
+                </div>
+                <ComposeBar key={selectedPeer.peer_id} peer={selectedPeer} apiBase={API_BASE} onSent={refreshData} />
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto px-4 py-4">
+                <ActivityFeed events={events} peerFilter={selectedPeer.peer_id} peerName={selectedPeer.name} />
+              </div>
+            )}
+          </div>
+        ) : (
+          /* Tab Content */
+          <>
+            {activeNavTab === "dash" && (
+              <OverviewGrid
+                peers={peers}
+                events={events}
+                apiBase={API_BASE}
+                onSelectPeer={handleSelectPeer}
+                onRefresh={refreshData}
+              />
+            )}
+            {activeNavTab === "logs" && (
+              <div className="px-4 max-w-2xl mx-auto">
+                <ActivityFeed events={events} peers={peers} />
+              </div>
+            )}
+            {activeNavTab === "config" && (
+              <SettingsPanel apiBase={API_BASE} isConnected={isConnected} />
+            )}
+          </>
+        )}
+      </main>
+
+      {/* Bottom Navigation */}
+      <BottomNav activeTab={activeNavTab} onTabChange={handleNavTabChange} />
     </div>
   );
 }

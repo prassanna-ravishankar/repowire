@@ -1,8 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Activity, Plus, Radio, Users } from "lucide-react";
-import { cn, shortPath, statusDot, timeAgo } from "../lib/utils";
+import { Plus } from "lucide-react";
+import { cn, statusDot, statusBorderColor, statusTopStrip, statusTextColor } from "../lib/utils";
 import { SpawnDialog } from "./SpawnDialog";
 import type { Peer, Event } from "../types";
 import { peerLabel } from "../types";
@@ -17,8 +17,14 @@ interface OverviewGridProps {
 
 export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }: OverviewGridProps) {
   const [showSpawn, setShowSpawn] = useState(false);
+
   const activePeers = useMemo(
     () => peers.filter((p) => p.status === "online" || p.status === "busy"),
+    [peers]
+  );
+
+  const offlinePeers = useMemo(
+    () => peers.filter((p) => p.status === "offline"),
     [peers]
   );
 
@@ -31,52 +37,26 @@ export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }
       .slice(0, 8);
   }, [events]);
 
-  // Find last activity time for each peer (single-pass, O(N))
-  const lastActivity = useMemo(() => {
-    const map = new Map<string, Event>();
-    for (const e of events) {
-      const ts = new Date(e.timestamp).getTime();
-      const update = (key: string) => {
-        const prev = map.get(key);
-        if (!prev || new Date(prev.timestamp).getTime() < ts) map.set(key, e);
-      };
-      if (e.from) update(e.from);
-      if (e.to) update(e.to);
-      if (e.peer) update(e.peer);
-    }
-    return map;
-  }, [events]);
-
   return (
-    <div className="flex-1 overflow-y-auto p-6">
-      {/* Metrics row + spawn button */}
-      <div className="flex gap-4 mb-6 items-center">
-        <MetricCard
-          icon={<Users className="w-4 h-4" />}
-          label="Online"
-          value={activePeers.length}
-          color="text-emerald-500"
-        />
-        <MetricCard
-          icon={<Radio className="w-4 h-4" />}
-          label="Busy"
-          value={busyCount}
-          color="text-amber-500"
-        />
-        <MetricCard
-          icon={<Activity className="w-4 h-4" />}
-          label="Events"
-          value={events.length}
-          color="text-zinc-400"
-        />
-        <button
-          onClick={() => setShowSpawn(true)}
-          className="ml-auto flex items-center gap-2 px-4 py-2.5 rounded-lg border border-zinc-700 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 text-sm font-medium transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          New Session
-        </button>
-      </div>
+    <div className="px-6 max-w-2xl mx-auto py-4">
+      {/* Section Header */}
+      <section className="mb-10">
+        <h2 className="font-headline text-3xl font-bold text-primary mb-2 tracking-tight">
+          Active Peer Grid
+        </h2>
+        <div className="flex items-center justify-between text-on-surface-variant">
+          <p className="text-sm font-light">
+            Orchestrating {activePeers.length} active instance{activePeers.length !== 1 ? "s" : ""}.
+          </p>
+          <button
+            onClick={() => setShowSpawn(true)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-surface-container-highest text-on-surface-variant text-xs font-headline font-bold uppercase tracking-widest hover:bg-surface-bright transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Spawn
+          </button>
+        </div>
+      </section>
 
       {showSpawn && (
         <SpawnDialog
@@ -86,145 +66,154 @@ export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }
         />
       )}
 
-      {/* Active peer cards */}
-      {activePeers.length > 0 && (
-        <div className="mb-8">
-          <h3 className="text-[10px] font-mono text-zinc-600 uppercase tracking-wider mb-3">
-            Active Peers
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {activePeers.map((peer) => {
-              const activity = lastActivity.get(peer.name);
-              return (
-                <button
-                  key={peer.peer_id}
-                  onClick={() => onSelectPeer(peer)}
-                  className="bg-zinc-900/50 border border-zinc-800/50 rounded-lg p-4 text-left hover:border-zinc-700 hover:bg-zinc-900 transition-all group"
-                >
-                  {/* Name + status */}
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className={cn("w-2 h-2 rounded-full", statusDot(peer.status))} />
-                    <span className="text-sm font-medium text-zinc-200 group-hover:text-white transition-colors truncate">
-                      {peerLabel(peer)}
-                    </span>
-                    <span
-                      className={cn(
-                        "text-[10px] px-1.5 py-0.5 rounded font-mono",
-                        peer.status === "busy"
-                          ? "bg-amber-500/10 text-amber-400"
-                          : "bg-emerald-500/10 text-emerald-400"
-                      )}
-                    >
-                      {peer.status}
-                    </span>
-                    {peer.backend && peer.backend !== "claude-code" && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono">
-                        {peer.backend}
-                      </span>
-                    )}
-                  </div>
-                  {peer.description ? (
-                    <p className="text-xs text-zinc-500 mb-1 truncate">{peer.description}</p>
-                  ) : (
-                    <div className="mb-2" />
-                  )}
+      {/* Active Peer Cards */}
+      <div className="grid grid-cols-1 gap-4 mb-8">
+        {activePeers.map((peer) => (
+          <PeerCard key={peer.peer_id} peer={peer} onSelect={onSelectPeer} />
+        ))}
+      </div>
 
-                  {/* Details */}
-                  <div className="space-y-1 text-xs text-zinc-500 font-mono">
-                    <div className="flex items-center gap-2">
-                      <span className="text-zinc-600">circle:</span>
-                      <span>{peer.circle}</span>
-                    </div>
-                    {peer.metadata?.branch && (
-                      <div className="flex items-center gap-2">
-                        <span className="text-zinc-600">branch:</span>
-                        <span className="truncate">{String(peer.metadata.branch)}</span>
-                      </div>
-                    )}
-                    {peer.path && (() => {
-                      const { folder, parent } = shortPath(peer.path);
-                      return (
-                        <div className="flex items-center gap-1 min-w-0">
-                          <span className="text-zinc-600">path:</span>
-                          <span className="text-zinc-600 truncate">{parent}</span>
-                          <span className="text-zinc-400 font-medium shrink-0">{folder}</span>
-                        </div>
-                      );
-                    })()}
-                  </div>
-
-                  {/* Last activity */}
-                  {activity && (
-                    <div className="mt-3 pt-2 border-t border-zinc-800/50 text-xs text-zinc-600 truncate">
-                      {activity.type === "query" && `⇢ query → ${activity.to}`}
-                      {activity.type === "response" && `⇠ response → ${activity.from}`}
-                      {activity.type === "notification" && `⇢ notify → ${activity.to}`}
-                      {activity.type === "broadcast" && `⇢ broadcast from ${activity.from}`}
-                      <span className="ml-2 text-zinc-700">{timeAgo(activity.timestamp)}</span>
-                    </div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+      {/* Offline Peers */}
+      {offlinePeers.length > 0 && (
+        <div className="grid grid-cols-1 gap-4 mb-8">
+          {offlinePeers.map((peer) => (
+            <PeerCard key={peer.peer_id} peer={peer} onSelect={onSelectPeer} offline />
+          ))}
         </div>
       )}
 
-      {/* No active peers fallback */}
-      {activePeers.length === 0 && (
+      {/* No peers fallback */}
+      {peers.length === 0 && (
         <div className="text-center py-16">
-          <div className="text-zinc-700 text-sm">No peers online</div>
-          <div className="text-zinc-800 text-xs mt-1">
-            Start an agent session to see it here
-          </div>
+          <span className="material-symbols-outlined text-4xl text-outline mb-2">hub</span>
+          <p className="text-sm text-outline">No peers registered</p>
+          <p className="text-xs text-outline-variant mt-1">Start an agent session to see it here</p>
         </div>
       )}
 
-      {/* Recent mesh activity */}
+      {/* Stats Bar */}
+      <div className="flex gap-2 mb-8">
+        <div className="flex-1 bg-surface-container-lowest p-4 rounded border border-outline-variant/10">
+          <span className="text-[10px] uppercase font-headline font-bold text-primary/40 block mb-1">
+            Online
+          </span>
+          <span className="text-xl font-headline font-bold text-primary">
+            {activePeers.length}
+          </span>
+        </div>
+        <div className="flex-1 bg-surface-container-lowest p-4 rounded border border-outline-variant/10">
+          <span className="text-[10px] uppercase font-headline font-bold text-tertiary-fixed-dim/40 block mb-1">
+            Busy
+          </span>
+          <span className="text-xl font-headline font-bold text-tertiary-fixed-dim">
+            {busyCount}
+          </span>
+        </div>
+        <div className="flex-1 bg-surface-container-lowest p-4 rounded border border-outline-variant/10">
+          <span className="text-[10px] uppercase font-headline font-bold text-on-surface-variant/40 block mb-1">
+            Events
+          </span>
+          <span className="text-xl font-headline font-bold text-on-surface-variant">
+            {events.length}
+          </span>
+        </div>
+      </div>
+
+      {/* Recent Activity */}
       {recentActivity.length > 0 && (
-        <div>
-          <h3 className="text-[10px] font-mono text-zinc-600 uppercase tracking-wider mb-3">
+        <section>
+          <h3 className="font-headline text-xs font-bold uppercase tracking-[0.2em] text-primary/60 mb-3">
             Recent Activity
           </h3>
           <div className="space-y-1">
             {recentActivity.map((event) => (
               <div
                 key={event.id}
-                className="flex items-center gap-3 px-3 py-2 rounded-md text-xs font-mono"
+                className="flex items-center gap-3 px-3 py-2 text-xs font-mono"
               >
-                <span className="text-zinc-700 tabular-nums shrink-0">
+                <span className="text-outline tabular-nums shrink-0">
                   {new Date(event.timestamp).toLocaleTimeString()}
                 </span>
                 <EventLabel event={event} />
-                <span className="text-zinc-600 truncate">{event.text}</span>
+                <span className="text-on-surface-variant truncate">{event.text}</span>
               </div>
             ))}
           </div>
-        </div>
+        </section>
       )}
     </div>
   );
 }
 
-function MetricCard({
-  icon,
-  label,
-  value,
-  color,
+function PeerCard({
+  peer,
+  onSelect,
+  offline,
 }: {
-  icon: React.ReactNode;
-  label: string;
-  value: number;
-  color: string;
+  peer: Peer;
+  onSelect: (peer: Peer) => void;
+  offline?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-3 bg-zinc-900/50 border border-zinc-800/50 rounded-lg px-4 py-3">
-      <div className={color}>{icon}</div>
-      <div>
-        <div className="text-lg font-bold text-zinc-200 tabular-nums">{value}</div>
-        <div className="text-[10px] text-zinc-600 uppercase tracking-wider">{label}</div>
+    <button
+      onClick={() => onSelect(peer)}
+      className={cn(
+        "relative group text-left transition-all duration-300",
+        offline && "opacity-60 grayscale-[0.5]"
+      )}
+    >
+      <div className={cn("absolute -top-[1px] left-0 w-full h-[2px]", statusTopStrip(peer.status))} />
+      <div
+        className={cn(
+          "bg-surface-container-low p-5 border-l-4 transition-all duration-300",
+          statusBorderColor(peer.status),
+          !offline && "hover:bg-surface-container-high"
+        )}
+      >
+        {/* Name + Status */}
+        <div className="flex justify-between items-start mb-4">
+          <div className="flex flex-col">
+            <span className="font-headline text-lg font-bold text-on-surface tracking-wide">
+              {peerLabel(peer)}
+            </span>
+            <div className="flex items-center gap-2 mt-1">
+              <span className={cn("w-2 h-2 rounded-full", statusDot(peer.status))} />
+              <span className={cn("text-[10px] uppercase font-bold tracking-widest", statusTextColor(peer.status))}>
+                {peer.status}
+              </span>
+            </div>
+          </div>
+          {peer.circle && (
+            <span className="font-mono text-[10px] bg-surface-container-highest px-2 py-1 text-on-surface-variant uppercase">
+              {peer.circle}
+            </span>
+          )}
+        </div>
+
+        {/* Description */}
+        {peer.description ? (
+          <p className="text-sm text-on-surface mb-6 leading-relaxed">
+            <span className={cn("font-mono mr-1", statusTextColor(peer.status) + "/60")}>&gt;</span>
+            {peer.description}
+          </p>
+        ) : (
+          <p className="text-sm text-on-surface-variant mb-6 leading-relaxed italic">
+            <span className="font-mono mr-1 text-outline/40">&gt;</span>
+            {offline ? "Session terminated" : "Idle - Waiting for tasks"}
+          </p>
+        )}
+
+        {/* Path */}
+        {peer.path && (
+          <div className="flex items-center gap-3 text-on-surface-variant">
+            <span className="material-symbols-outlined text-sm">folder_open</span>
+            <span className="text-[11px] font-mono truncate">
+              {peer.path.startsWith("/") ? `~${peer.path.replace(/^\/Users\/[^/]+/, "")}` : peer.path}
+            </span>
+          </div>
+        )}
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -232,29 +221,29 @@ function EventLabel({ event }: { event: Event }) {
   switch (event.type) {
     case "query":
       return (
-        <span className="text-blue-400 shrink-0">
+        <span className="text-primary shrink-0">
           {event.from} → {event.to}
         </span>
       );
     case "response":
       return (
-        <span className="text-emerald-400 shrink-0">
+        <span className="text-secondary shrink-0">
           {event.from} → {event.to}
         </span>
       );
     case "notification":
       return (
-        <span className="text-purple-400 shrink-0">
+        <span className="text-tertiary shrink-0">
           {event.from} → {event.to}
         </span>
       );
     case "broadcast":
       return (
-        <span className="text-amber-400 shrink-0">
+        <span className="text-secondary-fixed shrink-0">
           {event.from} → all
         </span>
       );
     default:
-      return <span className="text-zinc-500 shrink-0">{event.type}</span>;
+      return <span className="text-outline shrink-0">{event.type}</span>;
   }
 }

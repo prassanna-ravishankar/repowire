@@ -58,10 +58,8 @@ export function ComposeBar({ peer, apiBase, onSent }: ComposeBarProps) {
     try {
       let msg = text.trim();
 
-      // Hint so the agent knows dashboard sees responses automatically
       const hint = "\n(from @dashboard - reply naturally, dashboard sees your response automatically)";
 
-      // Upload attachment if present
       if (file) {
         const path = await uploadFile(file);
         if (!path) {
@@ -116,99 +114,98 @@ export function ComposeBar({ peer, apiBase, onSent }: ComposeBarProps) {
   };
 
   return (
-    <div className="border-t border-zinc-800 bg-zinc-950 p-2 sm:p-3 flex flex-col gap-2 shrink-0">
-      {/* Controls row */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-zinc-300 font-mono truncate max-w-[10rem]" title={peer.name}>
-            → {peerLabel(peer)}
-          </span>
-          <div className="flex rounded-md overflow-hidden border border-zinc-700">
+    <div className="shrink-0 px-4 pb-4">
+      <div className="bg-surface-container-low/95 backdrop-blur-xl border border-outline-variant/30 rounded-xl p-3 shadow-2xl">
+        {/* Mode toggle + scope */}
+        <div className="flex items-center gap-2 mb-3">
+          <div className="flex bg-surface-container-lowest p-1 rounded-lg border border-outline-variant/10">
             {(["notify", "ask"] as const).map((m) => (
               <button
                 key={m}
                 onClick={() => setMode(m)}
                 className={cn(
-                  "px-2.5 py-1 text-xs transition-colors",
-                  mode === m ? "bg-zinc-700 text-zinc-200" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+                  "px-3 py-1 text-[9px] font-bold uppercase tracking-wider rounded transition-colors",
+                  mode === m
+                    ? "bg-cyan-400 text-on-primary-fixed-variant"
+                    : "text-slate-500 hover:text-slate-300"
                 )}
               >
-                {m}
+                {m === "notify" ? "Notify" : "Query"}
               </button>
             ))}
           </div>
+          <div className="h-4 w-[1px] bg-outline-variant/30 mx-1" />
+          <span className="text-[9px] font-mono text-outline uppercase tracking-tighter">
+            → {peerLabel(peer)}
+          </span>
         </div>
-        <span className="ml-auto text-[10px] text-zinc-600 hidden sm:inline">⌘↵ to send</span>
-      </div>
 
-      {/* File preview */}
-      {file && (
-        <div className="flex items-center gap-2 px-2 py-1.5 bg-zinc-900 border border-zinc-700 rounded-lg text-xs text-zinc-400">
-          <Paperclip className="w-3 h-3 shrink-0" />
-          <span className="truncate flex-1">{file.name}</span>
-          <span className="text-zinc-600 shrink-0">{(file.size / 1024).toFixed(0)}KB</span>
-          <button onClick={() => setFile(null)} className="p-0.5 hover:text-zinc-200">
-            <X className="w-3 h-3" />
-          </button>
-        </div>
-      )}
-
-      {/* Textarea + attach */}
-      <div className="flex gap-2 items-end">
-        <textarea
-          ref={textareaRef}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder={mode === "notify" ? `Notify ${peerLabel(peer)}...` : `Ask ${peerLabel(peer)}...`}
-          rows={1}
-          className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder-zinc-600 resize-none focus:outline-none focus:ring-1 focus:ring-zinc-500"
-        />
-        <button
-          onClick={() => fileRef.current?.click()}
-          className="p-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors shrink-0"
-          title="Attach file"
-        >
-          <Paperclip className="w-4 h-4" />
-        </button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept="image/*,.pdf,.txt,.json,.csv,.md"
-          className="hidden"
-          onChange={(e) => { if (e.target.files?.[0]) setFile(e.target.files[0]); e.target.value = ""; }}
-        />
-      </div>
-
-      {/* Send button */}
-      <button
-        onClick={submit}
-        disabled={(!text.trim() && !file) || isPending}
-        className={cn(
-          "w-full flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-colors",
-          (text.trim() || file)
-            ? "bg-emerald-600 hover:bg-emerald-500 text-white"
-            : "bg-zinc-800 text-zinc-500",
-          "disabled:opacity-40 disabled:cursor-not-allowed"
+        {/* File preview */}
+        {file && (
+          <div className="flex items-center gap-2 px-2 py-1.5 bg-surface-container-lowest border border-outline-variant/20 rounded mb-2 text-xs text-on-surface-variant">
+            <Paperclip className="w-3 h-3 shrink-0" />
+            <span className="truncate flex-1">{file.name}</span>
+            <span className="text-outline shrink-0">{(file.size / 1024).toFixed(0)}KB</span>
+            <button onClick={() => setFile(null)} className="p-0.5 hover:text-on-surface">
+              <X className="w-3 h-3" />
+            </button>
+          </div>
         )}
-      >
-        {isPending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-        <span>{mode === "notify" ? "Send" : "Ask"}</span>
-      </button>
 
-      {error && (
-        <div className="flex items-center gap-2">
-          <p className="text-xs text-red-400 font-mono flex-1">{error}</p>
+        {/* Textarea + actions */}
+        <div className="relative flex items-end gap-3">
+          <button
+            onClick={() => fileRef.current?.click()}
+            className="p-2 text-outline hover:text-on-surface-variant transition-colors shrink-0"
+            title="Attach file"
+          >
+            <Paperclip className="w-4 h-4" />
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*,.pdf,.txt,.json,.csv,.md"
+            className="hidden"
+            onChange={(e) => { if (e.target.files?.[0]) setFile(e.target.files[0]); e.target.value = ""; }}
+          />
+          <textarea
+            ref={textareaRef}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Send instruction to peer..."
+            rows={1}
+            className="flex-1 bg-surface-container-lowest border-none focus:ring-1 focus:ring-cyan-400/50 rounded-lg text-sm font-mono py-3 px-4 placeholder:text-slate-600 resize-none max-h-32 text-on-surface outline-none"
+          />
           <button
             onClick={submit}
-            className="text-[10px] px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors shrink-0"
+            disabled={(!text.trim() && !file) || isPending}
+            className={cn(
+              "w-11 h-11 rounded-lg flex items-center justify-center shadow-lg active:scale-90 transition-transform shrink-0",
+              (text.trim() || file)
+                ? "bg-gradient-to-br from-primary to-primary-container text-on-primary shadow-cyan-400/20"
+                : "bg-surface-container-highest text-outline"
+            )}
+          >
+            {isPending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+          </button>
+        </div>
+      </div>
+
+      {/* Error / Response */}
+      {error && (
+        <div className="flex items-center gap-2 mt-2 px-3">
+          <p className="text-xs text-error font-mono flex-1">{error}</p>
+          <button
+            onClick={submit}
+            className="text-[10px] px-2 py-0.5 rounded bg-surface-container-highest text-on-surface-variant hover:text-on-surface transition-colors shrink-0"
           >
             Retry
           </button>
         </div>
       )}
       {response && (
-        <div className="text-xs text-zinc-400 bg-zinc-900 border border-zinc-800 rounded-lg p-2 max-h-24 overflow-y-auto font-mono whitespace-pre-wrap">
+        <div className="text-xs text-on-surface-variant bg-surface-container-lowest border border-outline-variant/20 rounded-lg p-2 mt-2 max-h-24 overflow-y-auto font-mono whitespace-pre-wrap">
           {response}
         </div>
       )}
