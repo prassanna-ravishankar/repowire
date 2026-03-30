@@ -14,6 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from repowire.config.models import DEFAULT_DAEMON_URL
 from repowire.hooks._tmux import get_pane_id
 from repowire.hooks.utils import get_display_name
+from repowire.protocol.errors import DaemonConnectionError, DaemonHTTPError, DaemonTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +50,12 @@ async def daemon_request(method: str, path: str, body: dict | None = None) -> di
         resp.raise_for_status()
         return resp.json()
     except httpx.ConnectError:
-        _http_client = None  # Reset stale client so next call reconnects
-        raise Exception("Repowire daemon is not reachable. Start it with 'repowire serve'.")
+        _http_client = None
+        raise DaemonConnectionError()
     except httpx.HTTPStatusError as e:
-        raise Exception(f"Daemon error {e.response.status_code}: {e.response.text}")
+        raise DaemonHTTPError(e.response.status_code, e.response.text)
     except httpx.TimeoutException:
-        raise Exception("Daemon request timed out.")
+        raise DaemonTimeoutError()
 
 
 async def _get_my_peer_name() -> str:
