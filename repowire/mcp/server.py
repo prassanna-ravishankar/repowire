@@ -124,7 +124,7 @@ def create_mcp_server() -> FastMCP:
     """Create the MCP server."""
     mcp = FastMCP("repowire")
 
-    tsv_header = "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\tdescription\tbackend"
+    tsv_header = "peer_id\tname\tproject\tcircle\trole\tstatus\tpath\tmachine\tdescription\tbackend"
 
     def _peer_to_tsv_row(p: dict) -> str:
         """Format a single peer dict as a TSV row."""
@@ -135,6 +135,7 @@ def create_mcp_server() -> FastMCP:
                 p.get("display_name") or p.get("name", ""),
                 project,
                 p.get("circle", ""),
+                p.get("role", "agent"),
                 p.get("status", ""),
                 p.get("path") or "",
                 p.get("machine") or "",

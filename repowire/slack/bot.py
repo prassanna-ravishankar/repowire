@@ -114,6 +114,7 @@ class SlackPeer:
                         "display_name": self._display_name,
                         "circle": self._circle,
                         "backend": "claude-code",
+                        "role": "service",
                         "path": "/slack",
                     }))
 
@@ -372,7 +373,6 @@ class SlackPeer:
                     "from_peer": self._display_name,
                     "to_peer": peer,
                     "text": message,
-                    "bypass_circle": True,
                 },
             )
             if r.status_code == 200:

@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
-from repowire.protocol.peers import Peer, PeerStatus
+from repowire.protocol.peers import Peer, PeerRole, PeerStatus
 
 if TYPE_CHECKING:
     from repowire.daemon.message_router import MessageRouter
@@ -45,6 +45,7 @@ class SessionMapping:
     circle: str
     backend: AgentType
     path: str | None = None
+    role: PeerRole = PeerRole.AGENT
     updated_at: str | None = None
 
     def __post_init__(self) -> None:
@@ -311,6 +312,7 @@ class PeerRegistry:
         circle: str,
         backend: AgentType,
         path: str | None = None,
+        role: PeerRole = PeerRole.AGENT,
     ) -> str:
         """Find existing mapping or allocate a new session_id. Must hold lock.
 
@@ -335,6 +337,7 @@ class PeerRegistry:
             circle=circle,
             backend=backend,
             path=path,
+            role=role,
         )
         logger.info(f"Created session {session_id} for {display_name}@{circle}")
         self._mappings_dirty = True
@@ -365,6 +368,7 @@ class PeerRegistry:
         tmux_session: str | None = None,
         metadata: dict | None = None,
         machine: str = "unknown",
+        role: PeerRole = PeerRole.AGENT,
     ) -> tuple[str, str]:
         """Allocate a peer_id and register the peer atomically.
 
@@ -375,7 +379,9 @@ class PeerRegistry:
         async with self._lock:
             # Daemon owns the name: build it from path + backend
             assigned_name = self._build_display_name(path or "", circle, backend)
-            peer_id = self._find_or_allocate_mapping(assigned_name, circle, backend, path)
+            peer_id = self._find_or_allocate_mapping(
+                assigned_name, circle, backend, path, role=role,
+            )
             if pane_id:
                 self._release_pane(pane_id, peer_id)
 
@@ -385,6 +391,7 @@ class PeerRegistry:
                 display_name=assigned_name,
                 circle=circle,
                 backend=backend,
+                role=role,
                 status=PeerStatus.ONLINE,
                 last_seen=datetime.now(timezone.utc),
                 pane_id=pane_id,
@@ -506,6 +513,8 @@ class PeerRegistry:
         if bypass:
             return
         if not from_obj or not to_obj:
+            return
+        if from_obj.bypasses_circles or to_obj.bypasses_circles:
             return
         if from_obj.circle != to_obj.circle:
             raise ValueError(
@@ -662,11 +671,11 @@ class PeerRegistry:
                     if name == from_peer:
                         from_peer_obj = peer
 
-            # Circle filtering
-            if not bypass_circle and from_peer_obj:
+            sender_bypasses = from_peer_obj and (bypass_circle or from_peer_obj.bypasses_circles)
+            if not sender_bypasses and from_peer_obj:
                 from_circle = from_peer_obj.circle
                 for sid, peer in self._peers.items():
-                    if peer.circle != from_circle:
+                    if peer.circle != from_circle and not peer.bypasses_circles:
                         exclude_session_ids.add(sid)
 
             from_peer_id = from_peer_obj.peer_id if from_peer_obj else None

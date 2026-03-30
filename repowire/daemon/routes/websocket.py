@@ -16,7 +16,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from repowire.config.models import AgentType
 from repowire.daemon.deps import get_app_state
 from repowire.daemon.routes._shared import is_valid_identifier
-from repowire.protocol.peers import PeerStatus
+from repowire.protocol.peers import PeerRole, PeerStatus
 
 if TYPE_CHECKING:
     from repowire.daemon.peer_registry import PeerRegistry
@@ -108,6 +108,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await websocket.close(code=4002, reason="Invalid backend")
             return
 
+        # Validate role
+        role_str = data.get("role", "agent")
+        try:
+            role = PeerRole(role_str)
+        except ValueError:
+            valid = ", ".join(r.value for r in PeerRole)
+            await websocket.send_json(
+                {"type": "error", "error": f"Invalid role: must be one of {valid}"}
+            )
+            await websocket.close(code=4002, reason="Invalid role")
+            return
+
         # Validate path if provided
         if path:
             normalized_path = os.path.normpath(os.path.abspath(path))
@@ -127,6 +139,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             pane_id=pane_id,
             tmux_session=tmux_session,
             machine=os.environ.get("HOSTNAME", "unknown"),
+            role=role,
         )
         session_id = peer_id
 

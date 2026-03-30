@@ -12,7 +12,7 @@ from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_peer_registry
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
-from repowire.protocol.peers import Peer
+from repowire.protocol.peers import Peer, PeerRole
 
 router = APIRouter(tags=["peers"])
 
@@ -28,6 +28,7 @@ class PeerInfo(BaseModel):
     tmux_session: str | None = None
     backend: str = "claude-code"
     circle: str = "global"
+    role: str = "agent"
     status: str
     last_seen: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -45,6 +46,7 @@ def _peer_to_info(p: Peer) -> PeerInfo:
         tmux_session=p.tmux_session,
         backend=p.backend,
         circle=p.circle,
+        role=p.role.value,
         status=p.status.value,
         last_seen=p.last_seen.isoformat() if p.last_seen else None,
         metadata=p.metadata,
@@ -67,6 +69,7 @@ class RegisterPeerRequest(BaseModel):
     tmux_session: str | None = Field(None, description="Tmux session:window")
     backend: AgentType = Field(default=AgentType.CLAUDE_CODE, description="Agent type")
     circle: str | None = Field(None, description="Circle (logical subnet)")
+    role: PeerRole = Field(default=PeerRole.AGENT, description="Peer role")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("circle")
@@ -152,6 +155,7 @@ async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str]:
         tmux_session=request.tmux_session,
         metadata=request.metadata,
         machine=request.machine or socket.gethostname(),
+        role=request.role,
     )
     return peer_id, display_name
 

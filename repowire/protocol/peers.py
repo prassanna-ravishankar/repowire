@@ -11,6 +11,15 @@ from pydantic import BaseModel, Field, model_validator
 from repowire.config.models import AgentType
 
 
+class PeerRole(str, Enum):
+    """Role of a peer in the mesh."""
+
+    AGENT = "agent"
+    SERVICE = "service"
+    ORCHESTRATOR = "orchestrator"
+    HUMAN = "human"
+
+
 class PeerStatus(str, Enum):
     """Status of a peer in the mesh."""
 
@@ -51,6 +60,8 @@ class Peer(BaseModel):
     # circle (logical subnet)
     circle: str = Field(default="global", description="Circle (logical subnet)")
 
+    role: PeerRole = Field(default=PeerRole.AGENT, description="Peer role")
+
     status: PeerStatus = Field(default=PeerStatus.OFFLINE, description="Current status")
     last_seen: datetime | None = Field(None, description="Last activity timestamp")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
@@ -80,6 +91,11 @@ class Peer(BaseModel):
                 if fallback:
                     data["peer_id"] = f"legacy-{fallback}"
         return data
+
+    @property
+    def bypasses_circles(self) -> bool:
+        """Whether this peer's role auto-bypasses circle boundaries."""
+        return self.role in (PeerRole.SERVICE, PeerRole.ORCHESTRATOR, PeerRole.HUMAN)
 
     def is_local(self) -> bool:
         """Check if this is a local peer."""
@@ -112,6 +128,7 @@ class Peer(BaseModel):
             "tmux_session": self.tmux_session,
             "backend": self.backend,
             "circle": self.circle,
+            "role": self.role.value,
             "status": self.status.value,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
             "metadata": self.metadata,

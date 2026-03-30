@@ -13,7 +13,7 @@ import pytest
 from repowire.config.models import Config, PeerConfig
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
-from repowire.protocol.peers import Peer, PeerStatus
+from repowire.protocol.peers import Peer, PeerRole, PeerStatus
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -286,3 +286,118 @@ class TestFromPeerCircleLookup:
 
         with pytest.raises(ValueError, match="Circle boundary"):
             await pm.query("orchestrator", "worker", "hello")
+
+
+# ---------------------------------------------------------------------------
+# Peer model -- role field
+# ---------------------------------------------------------------------------
+
+
+class TestPeerRoleField:
+    """Tests for role field in Peer model."""
+
+    def test_peer_default_role_is_agent(self):
+        peer = Peer(name="test", path="/test", machine="localhost")
+        assert peer.role == PeerRole.AGENT
+
+    def test_peer_role_in_to_dict(self):
+        peer = Peer(name="test", path="/test", machine="localhost", role=PeerRole.SERVICE)
+        data = peer.to_dict()
+        assert data["role"] == "service"
+
+    def test_peer_bypasses_circles_property(self):
+        agent = Peer(name="a", path="/a", machine="m", role=PeerRole.AGENT)
+        service = Peer(name="s", path="/s", machine="m", role=PeerRole.SERVICE)
+        orchestrator = Peer(name="o", path="/o", machine="m", role=PeerRole.ORCHESTRATOR)
+        human = Peer(name="h", path="/h", machine="m", role=PeerRole.HUMAN)
+
+        assert not agent.bypasses_circles
+        assert service.bypasses_circles
+        assert orchestrator.bypasses_circles
+        assert human.bypasses_circles
+
+
+# ---------------------------------------------------------------------------
+# Role-based circle bypass
+# ---------------------------------------------------------------------------
+
+
+class TestRoleBasedCircleBypass:
+    """Tests for role-based automatic circle bypass."""
+
+    @staticmethod
+    async def _register(
+        pm: PeerRegistry, session_id: str, name: str, circle: str,
+        role: PeerRole = PeerRole.AGENT,
+    ) -> None:
+        peer = Peer(
+            peer_id=session_id,
+            display_name=name,
+            path=f"/{name}",
+            machine="localhost",
+            circle=circle,
+            role=role,
+        )
+        await pm.register_peer(peer)
+
+    async def test_service_role_bypasses_circle(self, mock_message_router):
+        """Service peer can query agent in a different circle without bypass_circle."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-svc", "telegram", "default", role=PeerRole.SERVICE)
+        await self._register(pm, "sid-agent", "worker", "dev")
+
+        result = await pm.query("telegram", "worker", "hello")
+        assert result == "mock response"
+
+    async def test_orchestrator_role_bypasses_circle(self, mock_message_router):
+        """Orchestrator peer can query agent in a different circle."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-orch", "orchestrator", "global", role=PeerRole.ORCHESTRATOR)
+        await self._register(pm, "sid-agent", "worker", "dev")
+
+        result = await pm.query("orchestrator", "worker", "hello")
+        assert result == "mock response"
+
+    async def test_agent_role_does_not_bypass_circle(self, mock_message_router):
+        """Agent-to-agent cross-circle query is still blocked."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-a", "peer-a", "dev")
+        await self._register(pm, "sid-b", "peer-b", "staging")
+
+        with pytest.raises(ValueError, match="Circle boundary"):
+            await pm.query("peer-a", "peer-b", "hello")
+
+    async def test_target_role_bypasses_circle(self, mock_message_router):
+        """Agent can query a service peer in a different circle (target bypasses)."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-agent", "worker", "dev")
+        await self._register(pm, "sid-svc", "telegram", "default", role=PeerRole.SERVICE)
+
+        result = await pm.query("worker", "telegram", "hello")
+        assert result == "mock response"
+
+    async def test_service_notify_cross_circle(self, mock_message_router):
+        """Service peer can notify agent in a different circle."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-svc", "slack", "default", role=PeerRole.SERVICE)
+        await self._register(pm, "sid-agent", "worker", "dev")
+
+        await pm.notify("slack", "worker", "hi")
+        mock_message_router.send_notification.assert_called_once()
+
+    async def test_service_peer_receives_broadcast_cross_circle(self, mock_message_router):
+        """Service peer receives broadcasts from agents in other circles."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-agent", "worker", "dev")
+        await self._register(pm, "sid-svc", "telegram", "default", role=PeerRole.SERVICE)
+        await self._register(pm, "sid-other", "other-agent", "staging")
+
+        mock_message_router.broadcast = AsyncMock(return_value=["sid-svc"])
+        await pm.broadcast("worker", "hello everyone")
+
+        # Service peer should NOT be excluded; staging agent should be excluded
+        call_kwargs = mock_message_router.broadcast.call_args[1]
+        excluded = call_kwargs["exclude"]
+        assert "sid-agent" in excluded  # sender excluded
+        assert "sid-svc" not in excluded  # service peer NOT excluded
+        assert "sid-other" in excluded  # different-circle agent excluded

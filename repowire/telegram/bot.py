@@ -107,6 +107,7 @@ class TelegramPeer:
                         "display_name": self._display_name,
                         "circle": self._circle,
                         "backend": "claude-code",
+                        "role": "service",
                         "path": "/telegram",
                     }))
                     resp = json.loads(await ws.recv())
@@ -333,7 +334,6 @@ class TelegramPeer:
                     "from_peer": self._display_name,
                     "to_peer": peer,
                     "text": message,
-                    "bypass_circle": True,
                 },
             )
             if r.status_code == 200:
