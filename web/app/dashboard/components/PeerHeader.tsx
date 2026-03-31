@@ -80,11 +80,6 @@ export function PeerHeader({ peer, onClose }: PeerHeaderProps) {
               {peer.machine}
             </span>
           )}
-          {peer.tmux_session && (
-            <span className="text-[10px] text-outline hidden xl:inline">
-              {peer.tmux_session}
-            </span>
-          )}
         </div>
       </div>
 
