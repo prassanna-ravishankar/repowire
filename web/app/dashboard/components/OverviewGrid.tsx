@@ -177,7 +177,7 @@ function PeerCard({
       <div className={cn("absolute -top-[1px] left-0 w-full h-[2px]", statusTopStrip(peer.status))} />
       <div
         className={cn(
-          "bg-surface-container-low p-5 border-l-4 transition-all duration-300",
+          "bg-surface-container-low p-5 border-l-4 transition-all duration-300 overflow-hidden",
           statusBorderColor(peer.status),
           !offline && "hover:bg-surface-container-high"
         )}
@@ -185,7 +185,7 @@ function PeerCard({
         {/* Name + Status */}
         <div className="flex justify-between items-start mb-4">
           <div className="flex flex-col">
-            <span className="font-headline text-lg font-bold text-on-surface tracking-wide">
+            <span className="font-headline text-lg font-bold text-on-surface tracking-wide truncate">
               {peerLabel(peer)}
             </span>
             <div className="flex items-center gap-2 mt-1">
@@ -214,19 +214,19 @@ function PeerCard({
         )}
 
         {/* Metadata */}
-        <div className="flex items-center gap-3 text-on-surface-variant flex-wrap">
+        <div className="flex items-center gap-3 text-on-surface-variant min-w-0">
           {peer.path && (
-            <div className="flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-sm">folder_open</span>
-              <span className="text-[11px] font-mono truncate">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="material-symbols-outlined text-sm shrink-0">folder_open</span>
+              <span className="text-[11px] font-mono truncate" dir="rtl">
                 {peer.path.startsWith("/") ? `~${peer.path.replace(/^\/Users\/[^/]+/, "")}` : peer.path}
               </span>
             </div>
           )}
           {peer.metadata?.branch && (
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 shrink-0">
               <span className="material-symbols-outlined text-sm">commit</span>
-              <span className="text-[11px] font-mono truncate">{String(peer.metadata.branch)}</span>
+              <span className="text-[11px] font-mono">{String(peer.metadata.branch)}</span>
             </div>
           )}
         </div>
