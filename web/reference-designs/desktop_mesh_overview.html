@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>KINETIC MESH | Orchestrator</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;family=Inter:wght@300;400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "on-tertiary": "#432c00",
+                        "on-primary-container": "#00626e",
+                        "on-error": "#690005",
+                        "on-surface": "#e1e2eb",
+                        "on-primary-fixed-variant": "#004f58",
+                        "secondary-container": "#2ff801",
+                        "on-tertiary-container": "#775200",
+                        "surface-container-high": "#272a31",
+                        "surface-container-low": "#191c22",
+                        "surface": "#10131a",
+                        "on-primary-fixed": "#001f24",
+                        "secondary-fixed": "#79ff5b",
+                        "secondary-fixed-dim": "#2ae500",
+                        "on-error-container": "#ffdad6",
+                        "primary-fixed-dim": "#00daf3",
+                        "surface-container-lowest": "#0b0e14",
+                        "error-container": "#93000a",
+                        "surface-dim": "#10131a",
+                        "on-secondary-fixed": "#022100",
+                        "on-secondary": "#053900",
+                        "on-background": "#e1e2eb",
+                        "surface-bright": "#363940",
+                        "inverse-surface": "#e1e2eb",
+                        "outline": "#849396",
+                        "surface-variant": "#32353c",
+                        "on-surface-variant": "#bac9cc",
+                        "on-secondary-fixed-variant": "#095300",
+                        "on-secondary-container": "#0f6d00",
+                        "inverse-on-surface": "#2e3037",
+                        "surface-container-highest": "#32353c",
+                        "on-primary": "#00363d",
+                        "primary-fixed": "#9cf0ff",
+                        "on-tertiary-fixed-variant": "#604100",
+                        "error": "#ffb4ab",
+                        "surface-tint": "#00daf3",
+                        "surface-container": "#1d2026",
+                        "primary": "#c3f5ff",
+                        "background": "#10131a",
+                        "outline-variant": "#3b494c",
+                        "primary-container": "#00e5ff",
+                        "tertiary-fixed-dim": "#ffba38",
+                        "tertiary-fixed": "#ffdeac",
+                        "tertiary": "#ffe9cd",
+                        "secondary": "#d7ffc5",
+                        "inverse-primary": "#006875",
+                        "on-tertiary-fixed": "#281900",
+                        "tertiary-container": "#ffc769"
+                    },
+                    fontFamily: {
+                        "headline": ["Space Grotesk"],
+                        "body": ["Inter"],
+                        "label": ["Inter"],
+                        "mono": ["JetBrains Mono"]
+                    },
+                    borderRadius: { "DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem" },
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .mesh-grid-bg {
+            background-image: radial-gradient(circle at 1px 1px, #3b494c 1px, transparent 0);
+            background-size: 24px 24px;
+            opacity: 0.05;
+        }
+        .pulse-secondary {
+            box-shadow: 0 0 0 0 rgba(42, 229, 0, 0.4);
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(42, 229, 0, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(42, 229, 0, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(42, 229, 0, 0); }
+        }
+    </style>
+</head>
+<body class="bg-background text-on-surface font-body selection:bg-primary-container selection:text-on-primary-container">
+<!-- Background Mesh Layer -->
+<div class="fixed inset-0 mesh-grid-bg pointer-events-none"></div>
+<!-- SideNavBar Shell -->
+<aside class="fixed left-0 top-0 h-full w-64 bg-[#191c22] border-r border-[#32353c]/15 flex flex-col z-40">
+<div class="p-6">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 bg-primary-container flex items-center justify-center rounded-sm">
+<span class="material-symbols-outlined text-on-primary-container" style="font-variation-settings: 'FILL' 1;">hub</span>
+</div>
+<div>
+<h1 class="text-xl font-black text-[#00E5FF] tracking-tighter font-headline">KINETIC MESH</h1>
+<p class="text-[10px] uppercase tracking-widest text-slate-400 font-headline">v4.2.0-STABLE</p>
+</div>
+</div>
+</div>
+<nav class="flex-1 px-4 py-6 space-y-2">
+<!-- Active Tab: Network Mesh -->
+<a class="flex items-center gap-3 px-4 py-3 text-[#00E5FF] bg-[#32353c] border-r-2 border-[#00E5FF] font-bold transition-all" href="#">
+<span class="material-symbols-outlined" data-icon="hub">hub</span>
+<span class="text-xs uppercase tracking-widest">Network Mesh</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-slate-400 hover:bg-[#32353c] hover:text-[#00E5FF] transition-all duration-200" href="#">
+<span class="material-symbols-outlined" data-icon="smart_toy">smart_toy</span>
+<span class="text-xs uppercase tracking-widest">Agent Nodes</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-slate-400 hover:bg-[#32353c] hover:text-[#00E5FF] transition-all duration-200" href="#">
+<span class="material-symbols-outlined" data-icon="terminal">terminal</span>
+<span class="text-xs uppercase tracking-widest">Activity Logs</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-slate-400 hover:bg-[#32353c] hover:text-[#00E5FF] transition-all duration-200" href="#">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+<span class="text-xs uppercase tracking-widest">System Config</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-slate-400 hover:bg-[#32353c] hover:text-[#00E5FF] transition-all duration-200" href="#">
+<span class="material-symbols-outlined" data-icon="security">security</span>
+<span class="text-xs uppercase tracking-widest">Security</span>
+</a>
+</nav>
+<div class="p-4 border-t border-outline-variant/10">
+<button class="w-full py-3 bg-gradient-to-br from-primary to-primary-container text-on-primary font-bold text-xs uppercase tracking-widest rounded-sm hover:shadow-[0_0_15px_rgba(0,229,255,0.3)] transition-all active:scale-95">
+                Deploy New Node
+            </button>
+</div>
+<div class="px-4 py-6 space-y-1">
+<a class="flex items-center gap-3 px-4 py-2 text-slate-500 hover:text-primary transition-colors text-xs uppercase tracking-widest" href="#">
+<span class="material-symbols-outlined text-sm" data-icon="menu_book">menu_book</span>
+                Docs
+            </a>
+<a class="flex items-center gap-3 px-4 py-2 text-slate-500 hover:text-primary transition-colors text-xs uppercase tracking-widest" href="#">
+<span class="material-symbols-outlined text-sm" data-icon="support_agent">support_agent</span>
+                Support
+            </a>
+</div>
+</aside>
+<!-- TopAppBar Shell -->
+<header class="fixed top-0 right-0 left-64 h-16 bg-[#10131a]/80 backdrop-blur-md flex justify-between items-center px-8 z-30">
+<div class="flex items-center gap-8">
+<span class="text-lg font-bold text-slate-100 font-headline tracking-tight">ORCHESTRATOR</span>
+<nav class="hidden md:flex items-center gap-6">
+<a class="text-[#00E5FF] border-b-2 border-[#00E5FF] pb-1 text-xs uppercase tracking-widest font-bold" href="#">Global View</a>
+<a class="text-slate-400 font-medium hover:text-cyan-300 transition-all text-xs uppercase tracking-widest" href="#">Cluster A</a>
+<a class="text-slate-400 font-medium hover:text-cyan-300 transition-all text-xs uppercase tracking-widest" href="#">Cluster B</a>
+</nav>
+</div>
+<div class="flex items-center gap-6">
+<div class="flex items-center gap-2 px-3 py-1 bg-surface-container-low rounded-full border border-outline-variant/10">
+<div class="w-2 h-2 rounded-full bg-secondary-fixed pulse-secondary"></div>
+<span class="text-[10px] uppercase font-bold text-secondary-fixed tracking-widest">MESH CONNECTED</span>
+</div>
+<div class="flex items-center gap-4 text-slate-400">
+<span class="material-symbols-outlined hover:text-primary cursor-pointer transition-colors" data-icon="notifications_active">notifications_active</span>
+<span class="material-symbols-outlined hover:text-primary cursor-pointer transition-colors" data-icon="dns">dns</span>
+<div class="w-8 h-8 rounded-full bg-surface-container-highest border border-primary/20 overflow-hidden">
+<img alt="User Profile" class="w-full h-full object-cover" data-alt="Cyberpunk style profile avatar of a system architect with glowing neon visor and dark techwear background" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDegkBgBD6Vle5S6wrbo2AyM8_cJ5PuI5nUCwqE7DqhX2nbwBa-ks4hADiCez_yMhz3q1s6L6rTpOWdpiRBUmoR1TPmzCXgAvmrVrHMgi1U9BglQO8AcSgsplOCs2KtudHrHFPXyGOuUOdqy3yFECDq8A9ZBABzTsu_YEHY2vFS9Rqss2ivs-2AKIpXwCT72YSlrdsa0fVtk0sSerQnXDWLzaRAh-EePgGZjDfMGLqX1H0Slx_7nU-1L-SIsKsX0JA6zOY9YgrV_w"/>
+</div>
+</div>
+</div>
+</header>
+<!-- Main Canvas -->
+<main class="pl-64 pt-16 min-h-screen">
+<div class="p-8 max-w-7xl mx-auto">
+<!-- Header Section -->
+<div class="mb-12 flex justify-between items-end">
+<div>
+<p class="text-primary font-mono text-sm mb-1 tracking-widest uppercase">System Overview</p>
+<h2 class="text-5xl font-black text-on-surface font-headline tracking-tighter">Active Node Grid</h2>
+</div>
+<div class="text-right">
+<p class="text-slate-500 font-mono text-xs uppercase tracking-widest mb-1">Global Mesh Latency</p>
+<p class="text-3xl font-bold text-primary font-headline">14ms</p>
+</div>
+</div>
+<!-- Bento Grid of Nodes -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+<!-- Node Card 1: ONLINE -->
+<div class="group relative bg-surface-container-low p-6 transition-all hover:translate-y-[-4px]">
+<div class="absolute top-0 left-0 w-full h-[2px] bg-secondary shadow-[0_0_10px_rgba(215,255,197,0.5)]"></div>
+<div class="flex justify-between items-start mb-6">
+<div>
+<span class="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Node ID</span>
+<h3 class="text-xl font-bold font-headline text-on-surface group-hover:text-primary transition-colors">claude-project-a</h3>
+</div>
+<div class="flex flex-col items-end">
+<span class="flex items-center gap-1.5 text-secondary text-[10px] font-bold uppercase tracking-widest">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary pulse-secondary"></span>
+                                ONLINE
+                            </span>
+</div>
+</div>
+<div class="space-y-4">
+<div class="bg-surface-container-lowest p-3 border border-outline-variant/10">
+<p class="text-[10px] text-slate-500 uppercase tracking-widest font-mono mb-1">Current Task</p>
+<p class="text-sm font-body text-on-surface leading-relaxed">Analyzing repository dependencies and generating architecture manifest...</p>
+</div>
+<div class="flex justify-between text-[11px] font-mono">
+<span class="text-slate-500">PATH:</span>
+<span class="text-primary-fixed-dim">/root/dev/core-mesh/v2</span>
+</div>
+<div class="pt-4 flex items-center justify-between border-t border-outline-variant/10">
+<div class="flex -space-x-2">
+<div class="w-6 h-6 rounded-full bg-surface-container-high border border-surface-container-low flex items-center justify-center text-[10px]">AI</div>
+<div class="w-6 h-6 rounded-full bg-primary-container/20 border border-surface-container-low flex items-center justify-center text-[10px] text-primary">DS</div>
+</div>
+<span class="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">84% Load</span>
+</div>
+</div>
+</div>
+<!-- Node Card 2: BUSY -->
+<div class="group relative bg-surface-container-low p-6 transition-all hover:translate-y-[-4px]">
+<div class="absolute top-0 left-0 w-full h-[2px] bg-tertiary-fixed-dim shadow-[0_0_10px_rgba(255,186,56,0.3)]"></div>
+<div class="flex justify-between items-start mb-6">
+<div>
+<span class="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Node ID</span>
+<h3 class="text-xl font-bold font-headline text-on-surface group-hover:text-tertiary-fixed-dim transition-colors">codex-infra</h3>
+</div>
+<div class="flex flex-col items-end">
+<span class="flex items-center gap-1.5 text-tertiary-fixed-dim text-[10px] font-bold uppercase tracking-widest">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary-fixed-dim"></span>
+                                BUSY
+                            </span>
+</div>
+</div>
+<div class="space-y-4">
+<div class="bg-surface-container-lowest p-3 border border-outline-variant/10">
+<p class="text-[10px] text-slate-500 uppercase tracking-widest font-mono mb-1">Current Task</p>
+<p class="text-sm font-body text-on-surface leading-relaxed">Executing terraform provisioning for global edge cluster 'sigma-9'</p>
+</div>
+<div class="flex justify-between text-[11px] font-mono">
+<span class="text-slate-500">PATH:</span>
+<span class="text-primary-fixed-dim">/infra/terraform/edge/plan</span>
+</div>
+<div class="pt-4 border-t border-outline-variant/10">
+<div class="w-full bg-surface-container-highest h-1 rounded-full overflow-hidden">
+<div class="bg-tertiary-fixed-dim h-full w-[65%]"></div>
+</div>
+<div class="flex justify-between mt-2">
+<span class="text-[10px] text-slate-500 uppercase font-mono">Provisioning</span>
+<span class="text-[10px] text-tertiary-fixed-dim font-mono">65%</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Node Card 3: ONLINE (Reviewer) -->
+<div class="group relative bg-surface-container-low p-6 transition-all hover:translate-y-[-4px]">
+<div class="absolute top-0 left-0 w-full h-[2px] bg-secondary shadow-[0_0_10px_rgba(215,255,197,0.5)]"></div>
+<div class="flex justify-between items-start mb-6">
+<div>
+<span class="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Node ID</span>
+<h3 class="text-xl font-bold font-headline text-on-surface group-hover:text-primary transition-colors">gemini-review</h3>
+</div>
+<div class="flex flex-col items-end">
+<span class="flex items-center gap-1.5 text-secondary text-[10px] font-bold uppercase tracking-widest">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary pulse-secondary"></span>
+                                ONLINE
+                            </span>
+</div>
+</div>
+<div class="space-y-4">
+<div class="bg-surface-container-lowest p-3 border border-outline-variant/10">
+<p class="text-[10px] text-slate-500 uppercase tracking-widest font-mono mb-1">Current Task</p>
+<p class="text-sm font-body text-on-surface leading-relaxed">Reviewing security patches for Mesh-Connect Protocol v4.2</p>
+</div>
+<div class="flex justify-between text-[11px] font-mono">
+<span class="text-slate-500">PATH:</span>
+<span class="text-primary-fixed-dim">/security/audits/patches/42</span>
+</div>
+<div class="pt-4 flex items-center justify-between border-t border-outline-variant/10">
+<div class="flex gap-2">
+<span class="px-2 py-0.5 bg-error-container text-error text-[9px] font-bold uppercase tracking-widest">Critical</span>
+<span class="px-2 py-0.5 bg-surface-container-highest text-slate-400 text-[9px] font-bold uppercase tracking-widest">Patch</span>
+</div>
+<span class="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">12% CPU</span>
+</div>
+</div>
+</div>
+<!-- Large Stats / Status Section -->
+<div class="lg:col-span-2 bg-surface-container-low p-8 relative overflow-hidden flex flex-col justify-between min-h-[300px]">
+<div class="absolute top-0 right-0 w-64 h-64 bg-primary/5 rounded-full blur-3xl -mr-32 -mt-32"></div>
+<div>
+<h4 class="text-xs font-mono uppercase tracking-[0.4em] text-slate-500 mb-6">Mesh Performance Aggregator</h4>
+<div class="grid grid-cols-2 gap-12">
+<div>
+<p class="text-6xl font-black text-on-surface font-headline tracking-tighter">99.9<span class="text-primary text-4xl">%</span></p>
+<p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mt-2">Network Uptime (L7)</p>
+</div>
+<div>
+<p class="text-6xl font-black text-on-surface font-headline tracking-tighter">1.2<span class="text-primary text-4xl">TB</span></p>
+<p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mt-2">Data Synchronized / 24h</p>
+</div>
+</div>
+</div>
+<div class="flex gap-4 mt-8">
+<div class="flex-1 h-32 bg-surface-container-highest/50 p-4 border border-outline-variant/5">
+<div class="flex justify-between items-center mb-4">
+<span class="text-[10px] uppercase font-mono text-slate-500">Node Stability</span>
+<span class="material-symbols-outlined text-secondary text-sm" data-icon="trending_up">trending_up</span>
+</div>
+<div class="flex items-end gap-1 h-12">
+<div class="w-full bg-primary/20 h-[40%]"></div>
+<div class="w-full bg-primary/20 h-[60%]"></div>
+<div class="w-full bg-primary/20 h-[45%]"></div>
+<div class="w-full bg-primary/40 h-[80%]"></div>
+<div class="w-full bg-primary/30 h-[70%]"></div>
+<div class="w-full bg-primary/60 h-[90%]"></div>
+<div class="w-full bg-secondary h-[100%]"></div>
+</div>
+</div>
+<div class="flex-1 h-32 bg-surface-container-highest/50 p-4 border border-outline-variant/5">
+<div class="flex justify-between items-center mb-4">
+<span class="text-[10px] uppercase font-mono text-slate-500">Resource Leakage</span>
+<span class="material-symbols-outlined text-error text-sm" data-icon="trending_down">trending_down</span>
+</div>
+<div class="flex items-end gap-1 h-12">
+<div class="w-full bg-error/40 h-[100%]"></div>
+<div class="w-full bg-error/30 h-[80%]"></div>
+<div class="w-full bg-error/25 h-[60%]"></div>
+<div class="w-full bg-error/20 h-[40%]"></div>
+<div class="w-full bg-error/15 h-[20%]"></div>
+<div class="w-full bg-error/10 h-[10%]"></div>
+<div class="w-full bg-secondary h-[5%]"></div>
+</div>
+</div>
+</div>
+</div>
+<!-- Secondary Info Card -->
+<div class="bg-surface-container-highest p-6 flex flex-col justify-between">
+<div>
+<h4 class="text-sm font-bold font-headline text-primary mb-2">Protocol Diagnostics</h4>
+<p class="text-xs text-slate-400 leading-relaxed mb-6">The Kinetic Mesh engine is operating within nominal parameters. Peer discovery is currently optimized for low-latency synchronization.</p>
+<ul class="space-y-3">
+<li class="flex items-center gap-3">
+<span class="material-symbols-outlined text-secondary text-sm" data-icon="check_circle">check_circle</span>
+<span class="text-[11px] font-mono text-on-surface">UDP Heartbeat: Operational</span>
+</li>
+<li class="flex items-center gap-3">
+<span class="material-symbols-outlined text-secondary text-sm" data-icon="check_circle">check_circle</span>
+<span class="text-[11px] font-mono text-on-surface">P2P Encryption: AES-256</span>
+</li>
+<li class="flex items-center gap-3">
+<span class="material-symbols-outlined text-tertiary-fixed-dim text-sm" data-icon="warning">warning</span>
+<span class="text-[11px] font-mono text-on-surface">Storage: 89% Capacity</span>
+</li>
+</ul>
+</div>
+<div class="mt-8 pt-6 border-t border-outline-variant/20 flex justify-between items-center">
+<span class="text-[10px] uppercase tracking-widest text-slate-500">System Uptime</span>
+<span class="text-sm font-mono text-on-surface">412:12:04</span>
+</div>
+</div>
+</div>
+<!-- Orchestration Visualization (Data Packets) -->
+<div class="mt-8 bg-surface-container-low p-10 border border-outline-variant/10 relative overflow-hidden min-h-[200px]">
+<div class="flex justify-between items-center mb-10 relative z-10">
+<h3 class="text-xs uppercase tracking-[0.5em] text-slate-500 font-bold">Node Communication Map</h3>
+<div class="flex gap-4">
+<span class="text-[10px] text-primary flex items-center gap-2"><span class="w-2 h-2 bg-primary"></span> Signal</span>
+<span class="text-[10px] text-slate-500 flex items-center gap-2"><span class="w-2 h-2 bg-slate-500"></span> Passive</span>
+</div>
+</div>
+<div class="relative h-24 flex items-center justify-between px-20">
+<!-- Fake Nodes & Lines -->
+<div class="absolute inset-0 flex items-center px-20">
+<div class="w-full h-[1px] bg-primary/20 relative">
+<!-- Moving Packets -->
+<div class="absolute top-1/2 left-[20%] w-1.5 h-1.5 bg-primary rounded-full -translate-y-1/2 shadow-[0_0_8px_#00E5FF]"></div>
+<div class="absolute top-1/2 left-[50%] w-1.5 h-1.5 bg-primary rounded-full -translate-y-1/2 shadow-[0_0_8px_#00E5FF]"></div>
+<div class="absolute top-1/2 left-[80%] w-1.5 h-1.5 bg-primary rounded-full -translate-y-1/2 shadow-[0_0_8px_#00E5FF]"></div>
+</div>
+</div>
+<div class="relative z-10 w-12 h-12 bg-surface-container-highest border border-primary/40 flex items-center justify-center">
+<span class="material-symbols-outlined text-primary text-xl" data-icon="dns">dns</span>
+</div>
+<div class="relative z-10 w-12 h-12 bg-surface-container-highest border border-primary/40 flex items-center justify-center">
+<span class="material-symbols-outlined text-primary text-xl" data-icon="memory">memory</span>
+</div>
+<div class="relative z-10 w-12 h-12 bg-surface-container-highest border border-primary/40 flex items-center justify-center">
+<span class="material-symbols-outlined text-primary text-xl" data-icon="cloud_sync">cloud_sync</span>
+</div>
+<div class="relative z-10 w-12 h-12 bg-surface-container-highest border border-primary/40 flex items-center justify-center">
+<span class="material-symbols-outlined text-primary text-xl" data-icon="router">router</span>
+</div>
+</div>
+</div>
+<!-- Footer Meta -->
+<footer class="mt-12 py-8 border-t border-outline-variant/10 flex justify-between items-center opacity-50 text-[10px] font-mono uppercase tracking-[0.2em]">
+<div>© REPOWIRE KINETIC MESH v4.2.0</div>
+<div class="flex gap-8">
+<span>Latency: 14ms</span>
+<span>Packet Loss: 0.00%</span>
+<span>Auth: RSA-4096-PSS</span>
+</div>
+</footer>
+</div>
+</main>
+</body></html>

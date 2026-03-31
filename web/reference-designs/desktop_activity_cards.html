@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Repowire Orchestrator | Mesh Activity Feed</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700;900&amp;family=Inter:wght@300;400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "on-tertiary": "#432c00",
+                        "on-primary-container": "#00626e",
+                        "on-error": "#690005",
+                        "on-surface": "#e1e2eb",
+                        "on-primary-fixed-variant": "#004f58",
+                        "secondary-container": "#2ff801",
+                        "on-tertiary-container": "#775200",
+                        "surface-container-high": "#272a31",
+                        "surface-container-low": "#191c22",
+                        "surface": "#10131a",
+                        "on-primary-fixed": "#001f24",
+                        "secondary-fixed": "#79ff5b",
+                        "secondary-fixed-dim": "#2ae500",
+                        "on-error-container": "#ffdad6",
+                        "primary-fixed-dim": "#00daf3",
+                        "surface-container-lowest": "#0b0e14",
+                        "error-container": "#93000a",
+                        "surface-dim": "#10131a",
+                        "on-secondary-fixed": "#022100",
+                        "on-secondary": "#053900",
+                        "on-background": "#e1e2eb",
+                        "surface-bright": "#363940",
+                        "inverse-surface": "#e1e2eb",
+                        "outline": "#849396",
+                        "surface-variant": "#32353c",
+                        "on-surface-variant": "#bac9cc",
+                        "on-secondary-fixed-variant": "#095300",
+                        "on-secondary-container": "#0f6d00",
+                        "inverse-on-surface": "#2e3037",
+                        "surface-container-highest": "#32353c",
+                        "on-primary": "#00363d",
+                        "primary-fixed": "#9cf0ff",
+                        "on-tertiary-fixed-variant": "#604100",
+                        "error": "#ffb4ab",
+                        "surface-tint": "#00daf3",
+                        "surface-container": "#1d2026",
+                        "primary": "#c3f5ff",
+                        "background": "#10131a",
+                        "outline-variant": "#3b494c",
+                        "primary-container": "#00e5ff",
+                        "tertiary-fixed-dim": "#ffba38",
+                        "tertiary-fixed": "#ffdeac",
+                        "tertiary": "#ffe9cd",
+                        "secondary": "#d7ffc5",
+                        "inverse-primary": "#006875",
+                        "on-tertiary-fixed": "#281900",
+                        "tertiary-container": "#ffc769"
+                    },
+                    fontFamily: {
+                        "headline": ["Space Grotesk"],
+                        "body": ["Inter"],
+                        "label": ["Inter"],
+                        "mono": ["JetBrains Mono"]
+                    },
+                    borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .mesh-grid {
+            background-image: linear-gradient(to right, rgba(59, 73, 76, 0.05) 1px, transparent 1px),
+                              linear-gradient(to bottom, rgba(59, 73, 76, 0.05) 1px, transparent 1px);
+            background-size: 24px 24px;
+        }
+        .pulse-secondary {
+            box-shadow: 0 0 0 0 rgba(215, 255, 197, 0.4);
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(215, 255, 197, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(215, 255, 197, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(215, 255, 197, 0); }
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #3b494c;
+            border-radius: 10px;
+        }
+        .event-card {
+            background: linear-gradient(145deg, #191c22, #10131a);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .event-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+        }
+    </style>
+</head>
+<body class="bg-background text-on-surface font-body overflow-hidden">
+<div class="fixed inset-0 mesh-grid pointer-events-none"></div>
+<!-- SideNavBar Shell -->
+<aside class="fixed left-0 top-0 h-full flex flex-col z-40 w-64 border-r border-[#32353c]/15 bg-[#191c22] dark:bg-slate-900 font-['Space_Grotesk'] tracking-tight">
+<div class="p-6">
+<div class="text-xl font-black text-[#00E5FF] tracking-tighter">KINETIC MESH</div>
+<div class="text-[10px] uppercase tracking-widest text-slate-400 mt-1">v4.2.0-STABLE</div>
+</div>
+<nav class="flex-1 px-4 space-y-1 mt-4">
+<a class="flex items-center gap-3 px-4 py-3 rounded-DEFAULT transition-all text-slate-400 hover:text-slate-100 hover:bg-[#32353c]" href="#">
+<span class="material-symbols-outlined text-xl">hub</span>
+<span class="text-xs uppercase tracking-widest">Network Mesh</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-DEFAULT transition-all text-slate-400 hover:text-slate-100 hover:bg-[#32353c]" href="#">
+<span class="material-symbols-outlined text-xl">smart_toy</span>
+<span class="text-xs uppercase tracking-widest">Agent Nodes</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-DEFAULT transition-all text-[#00E5FF] bg-[#32353c] border-r-2 border-[#00E5FF] font-bold" href="#">
+<span class="material-symbols-outlined text-xl">terminal</span>
+<span class="text-xs uppercase tracking-widest">Activity Logs</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-DEFAULT transition-all text-slate-400 hover:text-slate-100 hover:bg-[#32353c]" href="#">
+<span class="material-symbols-outlined text-xl">settings</span>
+<span class="text-xs uppercase tracking-widest">System Config</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-DEFAULT transition-all text-slate-400 hover:text-slate-100 hover:bg-[#32353c]" href="#">
+<span class="material-symbols-outlined text-xl">security</span>
+<span class="text-xs uppercase tracking-widest">Security</span>
+</a>
+</nav>
+<div class="px-4 py-6 mt-auto border-t border-outline-variant/10">
+<button class="w-full bg-gradient-to-br from-primary to-primary-container text-on-primary py-3 rounded-DEFAULT font-bold text-xs uppercase tracking-widest mb-4 hover:shadow-[0_0_15px_rgba(0,229,255,0.3)] transition-all active:scale-95">
+                Deploy New Node
+            </button>
+<div class="space-y-1">
+<a class="flex items-center gap-3 px-4 py-2 text-slate-400 hover:text-on-surface transition-colors" href="#">
+<span class="material-symbols-outlined text-lg">menu_book</span>
+<span class="text-[10px] uppercase tracking-widest">Docs</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2 text-slate-400 hover:text-on-surface transition-colors" href="#">
+<span class="material-symbols-outlined text-lg">support_agent</span>
+<span class="text-[10px] uppercase tracking-widest">Support</span>
+</a>
+</div>
+</div>
+</aside>
+<!-- TopAppBar Shell -->
+<header class="fixed top-0 right-0 left-64 h-16 flex justify-between items-center px-8 z-30 bg-[#10131a]/80 backdrop-blur-md border-b border-outline-variant/10 shadow-[0_24px_48px_-12px_rgba(0,218,243,0.08)]">
+<div class="flex items-center gap-8">
+<div class="text-lg font-bold text-slate-100 font-headline uppercase tracking-tight">ORCHESTRATOR</div>
+<nav class="hidden md:flex gap-6">
+<a class="text-slate-400 font-medium hover:text-cyan-300 transition-all text-xs uppercase tracking-widest" href="#">Global View</a>
+<a class="text-slate-400 font-medium hover:text-cyan-300 transition-all text-xs uppercase tracking-widest" href="#">Cluster A</a>
+<a class="text-slate-400 font-medium hover:text-cyan-300 transition-all text-xs uppercase tracking-widest" href="#">Cluster B</a>
+</nav>
+</div>
+<div class="flex items-center gap-6">
+<div class="flex items-center gap-2 px-3 py-1 rounded bg-surface-container-low border border-outline-variant/20">
+<div class="w-2 h-2 rounded-full bg-secondary pulse-secondary"></div>
+<span class="text-[10px] font-bold text-secondary uppercase tracking-tighter">System Status: Optimal</span>
+</div>
+<div class="flex items-center gap-4 text-slate-400">
+<button class="material-symbols-outlined hover:text-primary transition-colors">notifications_active</button>
+<button class="material-symbols-outlined hover:text-primary transition-colors">dns</button>
+<div class="w-8 h-8 rounded bg-surface-container-highest flex items-center justify-center border border-outline-variant/30">
+<span class="material-symbols-outlined">account_circle</span>
+</div>
+</div>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="ml-64 mt-16 p-8 h-[calc(100vh-4rem)] overflow-y-auto custom-scrollbar">
+<div class="max-w-6xl mx-auto">
+<!-- Header Section -->
+<div class="flex flex-col md:flex-row justify-between items-start md:items-end mb-10 gap-6">
+<div>
+<h1 class="font-headline text-4xl font-black text-on-surface tracking-tighter uppercase">Activity Feed</h1>
+<p class="text-slate-400 mt-2 font-medium tracking-tight border-l-2 border-primary pl-4">Real-time telemetry and orchestration events from the Kinetic Mesh.</p>
+</div>
+<div class="flex gap-4">
+<div class="bg-surface-container-lowest p-1.5 rounded border border-outline-variant/20 flex gap-1">
+<button class="px-4 py-2 bg-surface-container-highest text-primary text-[10px] font-black uppercase tracking-widest rounded-DEFAULT">All Events</button>
+<button class="px-4 py-2 text-slate-400 text-[10px] font-black uppercase tracking-widest rounded-DEFAULT hover:text-on-surface transition-all">Errors</button>
+<button class="px-4 py-2 text-slate-400 text-[10px] font-black uppercase tracking-widest rounded-DEFAULT hover:text-on-surface transition-all">Nodes</button>
+</div>
+</div>
+</div>
+<!-- Feed Grid Layout -->
+<div class="grid grid-cols-1 gap-6">
+<!-- SUCCESS Event Card -->
+<div class="event-card group relative p-6 border border-outline-variant/20 rounded shadow-sm overflow-hidden">
+<div class="absolute top-0 left-0 w-1 h-full bg-secondary"></div>
+<div class="flex flex-col md:flex-row justify-between items-start gap-4 mb-6">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 flex-shrink-0 rounded bg-secondary/10 flex items-center justify-center border border-secondary/20">
+<span class="material-symbols-outlined text-secondary text-xl" style="font-variation-settings: 'FILL' 1;">check_circle</span>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<span class="text-[10px] font-black text-secondary uppercase tracking-[0.2em]">Node Provisioned</span>
+<span class="w-1 h-1 rounded-full bg-slate-600"></span>
+<span class="text-[10px] font-mono text-slate-500">REF: AN-07-SYNC</span>
+</div>
+<h3 class="text-xl font-bold text-on-surface font-headline tracking-tight group-hover:text-secondary transition-colors mt-1">ALPHA-NODE-07 successfully integrated</h3>
+</div>
+</div>
+<div class="text-right">
+<span class="text-xs font-mono text-slate-500 bg-surface-container-lowest px-2 py-1 rounded border border-outline-variant/10">14:20:44 UTC</span>
+</div>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-12 gap-4">
+<div class="md:col-span-8">
+<div class="bg-[#0b0e14]/50 p-4 rounded border border-outline-variant/10 font-mono text-xs text-secondary/80 overflow-x-auto">
+<pre><code>{
+  "node_id": "AN-07",
+  "status": "OPERATIONAL",
+  "mesh_sync": true,
+  "latency": "14ms",
+  "assigned_cluster": "Cluster A"
+}</code></pre>
+</div>
+</div>
+<div class="md:col-span-4 flex flex-col justify-end gap-3">
+<div class="p-3 rounded bg-surface-container-low border border-outline-variant/10">
+<div class="text-[9px] uppercase font-black text-slate-500 mb-2">Metadata</div>
+<div class="space-y-2">
+<div class="flex items-center justify-between text-[10px] uppercase font-bold tracking-widest text-on-surface">
+<span class="flex items-center gap-1.5 text-slate-400"><span class="material-symbols-outlined text-sm">lan</span> Backbone</span>
+<span>V2-Stable</span>
+</div>
+<div class="flex items-center justify-between text-[10px] uppercase font-bold tracking-widest text-on-surface">
+<span class="flex items-center gap-1.5 text-slate-400"><span class="material-symbols-outlined text-sm">schedule</span> Latency</span>
+<span class="text-secondary">14ms</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- BROADCAST Event Card -->
+<div class="event-card group relative p-6 border border-outline-variant/20 rounded shadow-sm overflow-hidden">
+<div class="absolute top-0 left-0 w-1 h-full bg-primary"></div>
+<div class="flex flex-col md:flex-row justify-between items-start gap-4 mb-6">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 flex-shrink-0 rounded bg-primary/10 flex items-center justify-center border border-primary/20">
+<span class="material-symbols-outlined text-primary text-xl">sensors</span>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<span class="text-[10px] font-black text-primary uppercase tracking-[0.2em]">Global Broadcast</span>
+<span class="w-1 h-1 rounded-full bg-slate-600"></span>
+<span class="text-[10px] font-mono text-slate-500">ID: BC-124-REINDEX</span>
+</div>
+<h3 class="text-xl font-bold text-on-surface font-headline tracking-tight group-hover:text-primary transition-colors mt-1">Mesh Network Re-indexing in progress</h3>
+</div>
+</div>
+<div class="text-right">
+<span class="text-xs font-mono text-slate-500 bg-surface-container-lowest px-2 py-1 rounded border border-outline-variant/10">14:18:12 UTC</span>
+</div>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-12 gap-4">
+<div class="md:col-span-8">
+<div class="bg-[#0b0e14]/50 p-4 rounded border border-outline-variant/10 font-mono text-xs text-primary/80 overflow-x-auto">
+<pre><code>{
+  "broadcast_type": "MESH_REINDEX",
+  "origin": "CORE_ORCHESTRATOR",
+  "affected_nodes": 124,
+  "priority": "HIGH"
+}</code></pre>
+</div>
+</div>
+<div class="md:col-span-4 flex flex-col justify-end gap-3">
+<div class="p-3 rounded bg-surface-container-low border border-outline-variant/10">
+<div class="text-[9px] uppercase font-black text-slate-500 mb-2">Scope Details</div>
+<div class="space-y-2">
+<div class="flex items-center justify-between text-[10px] uppercase font-bold tracking-widest text-on-surface">
+<span class="flex items-center gap-1.5 text-slate-400"><span class="material-symbols-outlined text-sm">public</span> Reach</span>
+<span>Universal</span>
+</div>
+<div class="flex items-center justify-between text-[10px] uppercase font-bold tracking-widest text-on-surface">
+<span class="flex items-center gap-1.5 text-slate-400"><span class="material-symbols-outlined text-sm">sync</span> Affected</span>
+<span class="text-primary">124 Nodes</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- ERROR Event Card -->
+<div class="event-card group relative p-6 border border-outline-variant/20 rounded shadow-sm overflow-hidden bg-error/5">
+<div class="absolute top-0 left-0 w-1 h-full bg-error"></div>
+<div class="flex flex-col md:flex-row justify-between items-start gap-4 mb-6">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 flex-shrink-0 rounded bg-error/10 flex items-center justify-center border border-error/30">
+<span class="material-symbols-outlined text-error text-xl">warning</span>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<span class="text-[10px] font-black text-error uppercase tracking-[0.2em]">Critical Alert</span>
+<span class="w-1 h-1 rounded-full bg-error/40"></span>
+<span class="text-[10px] font-mono text-error/60">ERR_0x772</span>
+</div>
+<h3 class="text-xl font-bold text-on-surface font-headline tracking-tight mt-1">Packet Drop Threshold Exceeded</h3>
+</div>
+</div>
+<div class="text-right">
+<span class="text-xs font-mono text-error-container bg-error/10 px-2 py-1 rounded border border-error/20">14:12:05 UTC</span>
+</div>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-12 gap-4">
+<div class="md:col-span-8">
+<div class="bg-[#0b0e14]/60 p-4 rounded border border-error/10 font-mono text-xs text-on-error-container/80 overflow-x-auto">
+<pre><code>{
+  "error_code": "0xERR_772",
+  "message": "Packet loss at 22% in Segment-D",
+  "mitigation": "AUTO_REORDER",
+  "status": "PENDING_RESOLUTION"
+}</code></pre>
+</div>
+</div>
+<div class="md:col-span-4 flex flex-col justify-end gap-3">
+<div class="flex flex-col gap-2">
+<button class="w-full py-2.5 bg-error text-on-error text-[10px] font-black uppercase tracking-widest rounded hover:shadow-[0_0_15px_rgba(255,180,171,0.3)] transition-all active:scale-95">
+                                    Emergency Reroute
+                                </button>
+<button class="w-full py-2.5 bg-surface-container-highest text-slate-300 text-[10px] font-black uppercase tracking-widest rounded border border-outline-variant/20 hover:border-error/40 transition-colors">
+                                    Acknowledge
+                                </button>
+</div>
+</div>
+</div>
+</div>
+<!-- STATUS Event Card -->
+<div class="event-card group relative p-6 border border-outline-variant/20 rounded shadow-sm overflow-hidden">
+<div class="absolute top-0 left-0 w-1 h-full bg-tertiary"></div>
+<div class="flex flex-col md:flex-row justify-between items-start gap-4 mb-6">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 flex-shrink-0 rounded bg-tertiary/10 flex items-center justify-center border border-tertiary/20">
+<span class="material-symbols-outlined text-tertiary text-xl">swap_horiz</span>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<span class="text-[10px] font-black text-tertiary uppercase tracking-[0.2em]">System Optimization</span>
+<span class="w-1 h-1 rounded-full bg-slate-600"></span>
+<span class="text-[10px] font-mono text-slate-500">TASK: DRAM_FLUSH</span>
+</div>
+<h3 class="text-xl font-bold text-on-surface font-headline tracking-tight group-hover:text-tertiary transition-colors mt-1">Memory Offloading complete</h3>
+</div>
+</div>
+<div class="text-right">
+<span class="text-xs font-mono text-slate-500 bg-surface-container-lowest px-2 py-1 rounded border border-outline-variant/10">14:05:33 UTC</span>
+</div>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-12 gap-4">
+<div class="md:col-span-8">
+<div class="bg-[#0b0e14]/50 p-4 rounded border border-outline-variant/10 font-mono text-xs text-tertiary/80 overflow-x-auto">
+<pre><code>{
+  "task": "DRAM_FLUSH",
+  "bytes_cleared": "4.2GB",
+  "cache_integrity": 1.0,
+  "next_run": "T-120min"
+}</code></pre>
+</div>
+</div>
+<div class="md:col-span-4 flex flex-col justify-end gap-3">
+<div class="p-3 rounded bg-surface-container-low border border-outline-variant/10">
+<div class="text-[9px] uppercase font-black text-slate-500 mb-2">Optimization Logs</div>
+<div class="space-y-2">
+<div class="flex items-center justify-between text-[10px] uppercase font-bold tracking-widest text-on-surface">
+<span class="flex items-center gap-1.5 text-slate-400"><span class="material-symbols-outlined text-sm">memory</span> Freed</span>
+<span>4.2 GB</span>
+</div>
+<div class="flex items-center justify-between text-[10px] uppercase font-bold tracking-widest text-on-surface">
+<span class="flex items-center gap-1.5 text-slate-400"><span class="material-symbols-outlined text-sm">verified</span> Integrity</span>
+<span class="text-tertiary">100%</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Footer Stats Grid -->
+<div class="mt-16 grid grid-cols-2 md:grid-cols-4 gap-4 pb-20">
+<div class="bg-surface-container-low p-5 rounded border-b-2 border-primary/30 flex flex-col">
+<span class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-primary"></span> Events (24h)
+                    </span>
+<span class="text-3xl font-headline font-black text-on-surface">12,842</span>
+</div>
+<div class="bg-surface-container-low p-5 rounded border-b-2 border-secondary/30 flex flex-col">
+<span class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary"></span> Uptime Mesh
+                    </span>
+<span class="text-3xl font-headline font-black text-on-surface">99.99%</span>
+</div>
+<div class="bg-surface-container-low p-5 rounded border-b-2 border-tertiary/30 flex flex-col">
+<span class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary"></span> Avg Latency
+                    </span>
+<span class="text-3xl font-headline font-black text-on-surface">2.4ms</span>
+</div>
+<div class="bg-surface-container-low p-5 rounded border-b-2 border-error/30 flex flex-col">
+<span class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-error"></span> Open Issues
+                    </span>
+<span class="text-3xl font-headline font-black text-on-surface">12</span>
+</div>
+</div>
+</div>
+</main>
+<!-- Contextual FAB -->
+<div class="fixed bottom-8 right-8 z-50">
+<button class="group flex items-center gap-4 bg-primary text-on-primary h-14 px-8 rounded font-black shadow-[0_12px_24px_-8px_rgba(0,229,255,0.4)] hover:shadow-[0_12px_32px_-4px_rgba(0,229,255,0.6)] transition-all active:scale-95 overflow-hidden">
+<span class="material-symbols-outlined text-xl transition-transform group-hover:rotate-180 duration-500">add_task</span>
+<span class="text-[10px] uppercase tracking-[0.2em]">Manually Trigger Event</span>
+</button>
+</div>
+</body></html>

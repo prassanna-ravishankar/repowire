@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { Plus } from "lucide-react";
 import { cn, statusDot, statusBorderColor, statusTopStrip, statusTextColor } from "../lib/utils";
+import { RoleBadge } from "./RoleBadge";
 import { SpawnDialog } from "./SpawnDialog";
 import type { Peer, Event } from "../types";
 import { peerLabel } from "../types";
@@ -13,22 +14,32 @@ interface OverviewGridProps {
   apiBase: string;
   onSelectPeer: (peer: Peer) => void;
   onRefresh: () => void;
+  circleFilter?: string | null;
 }
 
-export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }: OverviewGridProps) {
+export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh, circleFilter }: OverviewGridProps) {
   const [showSpawn, setShowSpawn] = useState(false);
 
+  // Filter out service peers and apply circle filter
+  const gridPeers = useMemo(
+    () => peers.filter((p) => p.role !== "service" && (!circleFilter || p.circle === circleFilter)),
+    [peers, circleFilter]
+  );
+
   const activePeers = useMemo(
-    () => peers.filter((p) => p.status === "online" || p.status === "busy"),
-    [peers]
+    () => gridPeers.filter((p) => p.status === "online" || p.status === "busy"),
+    [gridPeers]
   );
 
   const offlinePeers = useMemo(
-    () => peers.filter((p) => p.status === "offline"),
-    [peers]
+    () => gridPeers.filter((p) => p.status === "offline"),
+    [gridPeers]
   );
 
-  const busyCount = peers.filter((p) => p.status === "busy").length;
+  const busyCount = useMemo(
+    () => gridPeers.filter((p) => p.status === "busy").length,
+    [gridPeers]
+  );
 
   const recentActivity = useMemo(() => {
     return events
@@ -38,7 +49,7 @@ export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }
   }, [events]);
 
   return (
-    <div className="px-6 max-w-2xl mx-auto py-4">
+    <div className="px-6 max-w-2xl md:max-w-5xl mx-auto py-4">
       {/* Section Header */}
       <section className="mb-10">
         <h2 className="font-headline text-3xl font-bold text-primary mb-2 tracking-tight">
@@ -67,7 +78,7 @@ export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }
       )}
 
       {/* Active Peer Cards */}
-      <div className="grid grid-cols-1 gap-4 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
         {activePeers.map((peer) => (
           <PeerCard key={peer.peer_id} peer={peer} onSelect={onSelectPeer} />
         ))}
@@ -75,7 +86,7 @@ export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }
 
       {/* Offline Peers */}
       {offlinePeers.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
           {offlinePeers.map((peer) => (
             <PeerCard key={peer.peer_id} peer={peer} onSelect={onSelectPeer} offline />
           ))}
@@ -159,7 +170,8 @@ function PeerCard({
       onClick={() => onSelect(peer)}
       className={cn(
         "relative group text-left transition-all duration-300",
-        offline && "opacity-60 grayscale-[0.5]"
+        offline && "opacity-60 grayscale-[0.5]",
+        !offline && "md:hover:translate-y-[-4px]"
       )}
     >
       <div className={cn("absolute -top-[1px] left-0 w-full h-[2px]", statusTopStrip(peer.status))} />
@@ -183,23 +195,21 @@ function PeerCard({
               </span>
             </div>
           </div>
-          {peer.circle && (
-            <span className="font-mono text-[10px] bg-surface-container-highest px-2 py-1 text-on-surface-variant uppercase">
-              {peer.circle}
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            <RoleBadge role={peer.role} />
+            {peer.circle && (
+              <span className="font-mono text-[10px] bg-surface-container-highest px-2 py-1 text-on-surface-variant uppercase">
+                {peer.circle}
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Description */}
-        {peer.description ? (
+        {peer.description && (
           <p className="text-sm text-on-surface mb-6 leading-relaxed">
             <span className={cn("font-mono mr-1", statusTextColor(peer.status) + "/60")}>&gt;</span>
             {peer.description}
-          </p>
-        ) : (
-          <p className="text-sm text-on-surface-variant mb-6 leading-relaxed italic">
-            <span className="font-mono mr-1 text-outline/40">&gt;</span>
-            {offline ? "Session terminated" : "Idle - Waiting for tasks"}
           </p>
         )}
 

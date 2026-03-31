@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ArrowLeft, Copy, Check } from "lucide-react";
 import { cn, statusDot, statusTextColor } from "../lib/utils";
+import { RoleBadge } from "./RoleBadge";
 import { peerLabel } from "../types";
 import type { Peer } from "../types";
 
@@ -55,6 +56,7 @@ export function PeerHeader({ peer, onClose }: PeerHeaderProps) {
 
         {/* Metadata */}
         <div className="hidden sm:flex items-center gap-3 text-xs text-on-surface-variant font-mono">
+          <RoleBadge role={peer.role} />
           {peer.backend && (
             <span className="bg-surface-container-highest px-2 py-1 text-[10px] uppercase">
               {peer.backend}

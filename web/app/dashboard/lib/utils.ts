@@ -48,6 +48,21 @@ export function statusTextColor(status: "online" | "busy" | "offline"): string {
     : "text-outline";
 }
 
+export function roleBadgeClass(role?: string): string | null {
+  switch (role) {
+    case "service": return "bg-primary/10 text-primary";
+    case "orchestrator": return "bg-tertiary-fixed-dim/10 text-tertiary-fixed-dim";
+    case "human": return "bg-secondary/10 text-secondary";
+    default: return null;
+  }
+}
+
+export function backendIcon(backend?: string): string {
+  if (backend?.includes("telegram")) return "send";
+  if (backend?.includes("slack")) return "forum";
+  return "smart_toy";
+}
+
 /** Format path with folder name prominent: "myproject" or "…/parent/myproject" */
 export function shortPath(path: string): { folder: string; parent: string } {
   const parts = path.split("/").filter(Boolean);

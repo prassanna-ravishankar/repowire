@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { RefreshCw } from "lucide-react";
 import { cn } from "./lib/utils";
 import { OverviewGrid } from "./components/OverviewGrid";
@@ -8,8 +8,9 @@ import { PeerHeader } from "./components/PeerHeader";
 import { ChatPanel } from "./components/ChatPanel";
 import { ComposeBar } from "./components/ComposeBar";
 import { ActivityFeed } from "./components/ActivityFeed";
-import { BottomNav, type NavTab } from "./components/BottomNav";
+import { AppNav, type NavTab } from "./components/AppNav";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { SpawnDialog } from "./components/SpawnDialog";
 import type { Peer, Event } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8377";
@@ -22,7 +23,10 @@ export default function Dashboard() {
   const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"chat" | "activity">("chat");
   const [activeNavTab, setActiveNavTab] = useState<NavTab>("dash");
+  const [showSpawn, setShowSpawn] = useState(false);
+  const [circleFilter, setCircleFilter] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const eventIdsRef = useRef<Set<string>>(new Set());
 
   const fetchPeers = useCallback(async () => {
     try {
@@ -40,7 +44,8 @@ export default function Dashboard() {
     try {
       const res = await fetch(`${API_BASE}/events`);
       if (res.ok) {
-        const data = await res.json();
+        const data: Event[] = await res.json();
+        eventIdsRef.current = new Set(data.map((e) => e.id));
         setEvents(data);
       }
     } catch (error) {
@@ -77,10 +82,9 @@ export default function Dashboard() {
           typeof (parsed as Record<string, unknown>).timestamp === "string"
         ) {
           const event = parsed as Event;
-          setEvents((prev) => {
-            if (prev.some((existing) => existing.id === event.id)) return prev;
-            return [...prev, event];
-          });
+          if (eventIdsRef.current.has(event.id)) return;
+          eventIdsRef.current.add(event.id);
+          setEvents((prev) => [...prev, event]);
           if (event.type === "status_change") fetchPeers();
         }
       } catch (error) {
@@ -104,6 +108,15 @@ export default function Dashboard() {
     [peers, selectedPeerId]
   );
 
+  // Unique circles derived from peers (excluding service peers)
+  const circles = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of peers) {
+      if (p.role !== "service" && p.circle) set.add(p.circle);
+    }
+    return Array.from(set).sort();
+  }, [peers]);
+
   const handleSelectPeer = useCallback((peer: Peer) => {
     setSelectedPeerId(peer.peer_id);
     setActiveTab("chat");
@@ -118,19 +131,77 @@ export default function Dashboard() {
     setSelectedPeerId(null);
   }, []);
 
+  const handleSpawn = useCallback(() => setShowSpawn(true), []);
+
   return (
     <div className="h-dvh bg-surface text-on-surface font-body mesh-bg flex flex-col overflow-hidden">
-      {/* Top App Bar */}
-      <header className="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-6 h-16 bg-surface">
+      {/* Navigation: side rail on desktop, bottom tabs on mobile */}
+      <AppNav
+        activeTab={activeNavTab}
+        onTabChange={handleNavTabChange}
+        onSpawn={handleSpawn}
+      />
+
+      {/* Mobile Top App Bar (hidden on desktop) */}
+      <header className="md:hidden fixed top-0 left-0 w-full z-50 flex justify-between items-center px-6 h-16 bg-surface">
         <div className="flex items-center gap-3">
           <button onClick={handleClosePeer} className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-            <span className="material-symbols-outlined text-cyan-400">hub</span>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/logo-cyan.svg" alt="Repowire" className="w-7 h-7" />
             <h1 className="text-xl font-bold tracking-widest text-cyan-400 font-headline uppercase">
               REPOWIRE
             </h1>
           </button>
         </div>
+        <div className="flex items-center gap-4">
+          <div
+            className={cn(
+              "flex items-center gap-2 bg-surface-container-low px-3 py-1 rounded shadow-inner",
+              isConnected ? "text-secondary" : "text-error"
+            )}
+          >
+            <span className={cn("w-2 h-2 rounded-full", isConnected ? "bg-secondary pulse-online" : "bg-error")} />
+            <span className="text-[10px] font-headline font-bold uppercase tracking-widest">
+              {isConnected ? "Mesh Connected" : "Disconnected"}
+            </span>
+          </div>
+        </div>
+      </header>
 
+      {/* Desktop Top Bar (hidden on mobile) */}
+      <header className="hidden md:flex fixed top-0 left-64 right-0 z-40 justify-between items-center px-8 h-16 bg-surface/80 backdrop-blur-md border-b border-outline-variant/10">
+        {/* Circle filter tabs (only on Dash view) */}
+        <div className="flex items-center gap-6">
+          {activeNavTab === "dash" && !selectedPeer && circles.length > 1 && (
+            <nav className="flex items-center gap-6">
+              <button
+                onClick={() => setCircleFilter(null)}
+                className={cn(
+                  "text-xs uppercase tracking-widest font-bold pb-1 transition-all",
+                  circleFilter === null
+                    ? "text-primary border-b-2 border-primary"
+                    : "text-slate-400 hover:text-cyan-300"
+                )}
+              >
+                All Circles
+              </button>
+              {circles.map((circle) => (
+                <button
+                  key={circle}
+                  onClick={() => setCircleFilter(circle)}
+                  className={cn(
+                    "text-xs uppercase tracking-widest font-medium transition-all",
+                    circleFilter === circle
+                      ? "text-primary border-b-2 border-primary pb-1"
+                      : "text-slate-400 hover:text-cyan-300"
+                  )}
+                >
+                  {circle}
+                </button>
+              ))}
+            </nav>
+          )}
+        </div>
         <div className="flex items-center gap-4">
           <div
             className={cn(
@@ -152,11 +223,11 @@ export default function Dashboard() {
         </div>
       </header>
 
-      {/* Header separator */}
-      <div className="fixed top-16 left-0 w-full z-40 bg-surface-container-low h-[2px]" />
+      {/* Mobile header separator */}
+      <div className="md:hidden fixed top-16 left-0 w-full z-40 bg-surface-container-low h-[2px]" />
 
       {/* Main Content */}
-      <main className="flex-1 pt-[68px] pb-24 overflow-y-auto">
+      <main className="flex-1 pt-[68px] md:pt-16 pb-24 md:pb-0 md:pl-64 overflow-y-auto">
         {selectedPeer ? (
           /* Peer Detail View */
           <div className="flex flex-col h-full">
@@ -209,22 +280,29 @@ export default function Dashboard() {
                 apiBase={API_BASE}
                 onSelectPeer={handleSelectPeer}
                 onRefresh={refreshData}
+                circleFilter={circleFilter}
               />
             )}
             {activeNavTab === "logs" && (
-              <div className="px-4 max-w-2xl mx-auto">
+              <div className="px-4 max-w-2xl md:max-w-4xl mx-auto">
                 <ActivityFeed events={events} peers={peers} />
               </div>
             )}
             {activeNavTab === "config" && (
-              <SettingsPanel apiBase={API_BASE} isConnected={isConnected} />
+              <SettingsPanel apiBase={API_BASE} isConnected={isConnected} peers={peers} />
             )}
           </>
         )}
       </main>
 
-      {/* Bottom Navigation */}
-      <BottomNav activeTab={activeNavTab} onTabChange={handleNavTabChange} />
+      {/* Spawn Dialog */}
+      {showSpawn && (
+        <SpawnDialog
+          apiBase={API_BASE}
+          onClose={() => setShowSpawn(false)}
+          onSpawned={refreshData}
+        />
+      )}
     </div>
   );
 }
