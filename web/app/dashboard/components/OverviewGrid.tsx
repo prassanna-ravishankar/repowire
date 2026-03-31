@@ -213,15 +213,23 @@ function PeerCard({
           </p>
         )}
 
-        {/* Path */}
-        {peer.path && (
-          <div className="flex items-center gap-3 text-on-surface-variant">
-            <span className="material-symbols-outlined text-sm">folder_open</span>
-            <span className="text-[11px] font-mono truncate">
-              {peer.path.startsWith("/") ? `~${peer.path.replace(/^\/Users\/[^/]+/, "")}` : peer.path}
-            </span>
-          </div>
-        )}
+        {/* Metadata */}
+        <div className="flex items-center gap-3 text-on-surface-variant flex-wrap">
+          {peer.path && (
+            <div className="flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-sm">folder_open</span>
+              <span className="text-[11px] font-mono truncate">
+                {peer.path.startsWith("/") ? `~${peer.path.replace(/^\/Users\/[^/]+/, "")}` : peer.path}
+              </span>
+            </div>
+          )}
+          {peer.metadata?.branch && (
+            <div className="flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-sm">commit</span>
+              <span className="text-[11px] font-mono truncate">{String(peer.metadata.branch)}</span>
+            </div>
+          )}
+        </div>
       </div>
     </button>
   );

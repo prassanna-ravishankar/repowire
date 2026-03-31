@@ -70,6 +70,21 @@ export function PeerHeader({ peer, onClose }: PeerHeaderProps) {
               {String(peer.metadata.branch)}
             </span>
           )}
+          {peer.path && (
+            <span className="text-[10px] text-outline truncate max-w-[12rem] hidden md:inline">
+              {peer.path}
+            </span>
+          )}
+          {peer.machine && (
+            <span className="text-[10px] text-outline hidden lg:inline">
+              {peer.machine}
+            </span>
+          )}
+          {peer.tmux_session && (
+            <span className="text-[10px] text-outline hidden xl:inline">
+              {peer.tmux_session}
+            </span>
+          )}
         </div>
       </div>
 
