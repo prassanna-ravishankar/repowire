@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Plus } from "lucide-react";
-import { cn, statusDot, statusBorderColor, statusTopStrip, statusTextColor } from "../lib/utils";
+import { cn, statusDot, statusBorderColor, statusTopStrip, statusTextColor, shortPath } from "../lib/utils";
 import { RoleBadge } from "./RoleBadge";
 import { SpawnDialog } from "./SpawnDialog";
 import type { Peer, Event } from "../types";
@@ -215,14 +215,16 @@ function PeerCard({
 
         {/* Metadata */}
         <div className="flex items-center gap-3 text-on-surface-variant min-w-0">
-          {peer.path && (
-            <div className="flex items-center gap-1.5 min-w-0">
-              <span className="material-symbols-outlined text-sm shrink-0">folder_open</span>
-              <span className="text-[11px] font-mono truncate" dir="rtl">
-                {peer.path.startsWith("/") ? `~${peer.path.replace(/^\/Users\/[^/]+/, "")}` : peer.path}
-              </span>
-            </div>
-          )}
+          {peer.path && (() => {
+            const { folder, parent } = shortPath(peer.path);
+            return (
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="material-symbols-outlined text-sm shrink-0">folder_open</span>
+                <span className="text-[11px] font-mono text-outline truncate">{parent}</span>
+                <span className="text-[11px] font-mono shrink-0">{folder}</span>
+              </div>
+            );
+          })()}
           {peer.metadata?.branch && (
             <div className="flex items-center gap-1.5 shrink-0">
               <span className="material-symbols-outlined text-sm">commit</span>
