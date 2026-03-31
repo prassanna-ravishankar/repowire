@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useState, useMemo } from "react";
 import { cn, statusDot, backendIcon } from "../lib/utils";
 import { peerLabel } from "../types";
 import type { Peer } from "../types";
@@ -13,6 +13,8 @@ interface SettingsPanelProps {
 
 export function SettingsPanel({ apiBase, isConnected, peers }: SettingsPanelProps) {
   const host = apiBase.replace(/^https?:\/\//, "");
+
+  const [relayEnabled, setRelayEnabled] = useState(false);
 
   const servicePeers = useMemo(
     () => (peers ?? []).filter((p) => p.role === "service"),
@@ -99,9 +101,22 @@ export function SettingsPanel({ apiBase, isConnected, peers }: SettingsPanelProp
                 Tunnel local nodes to global cloud relay
               </p>
             </div>
-            <div className="relative inline-flex h-6 w-11 items-center rounded-full bg-surface-container-highest cursor-pointer">
-              <span className="inline-block h-4 w-4 transform translate-x-1 rounded-full bg-outline transition-transform" />
-            </div>
+            <button
+              role="switch"
+              aria-checked={relayEnabled}
+              onClick={() => setRelayEnabled(!relayEnabled)}
+              className={cn(
+                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                relayEnabled ? "bg-primary-container" : "bg-surface-container-highest"
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-block h-4 w-4 transform rounded-full transition-transform",
+                  relayEnabled ? "translate-x-6 bg-on-primary-container" : "translate-x-1 bg-outline"
+                )}
+              />
+            </button>
           </div>
 
           <div className="space-y-2">

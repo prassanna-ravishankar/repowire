@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import Image from "next/image";
 import { RefreshCw } from "lucide-react";
 import { cn } from "./lib/utils";
 import { OverviewGrid } from "./components/OverviewGrid";
@@ -146,8 +147,7 @@ export default function Dashboard() {
       <header className="md:hidden fixed top-0 left-0 w-full z-50 flex justify-between items-center px-6 h-16 bg-surface">
         <div className="flex items-center gap-3">
           <button onClick={handleClosePeer} className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo-cyan.svg" alt="Repowire" className="w-7 h-7" />
+            <Image src="/logo-cyan.svg" alt="Repowire" width={28} height={28} />
             <h1 className="text-xl font-bold tracking-widest text-cyan-400 font-headline uppercase">
               REPOWIRE
             </h1>

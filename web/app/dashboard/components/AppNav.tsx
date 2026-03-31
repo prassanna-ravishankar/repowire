@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { cn } from "../lib/utils";
 
 export type NavTab = "dash" | "logs" | "config";
@@ -24,8 +25,7 @@ export function AppNav({ activeTab, onTabChange, onSpawn }: AppNavProps) {
         {/* Logo */}
         <div className="p-6">
           <div className="flex items-center gap-3">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo-cyan.svg" alt="Repowire" className="w-7 h-7" />
+            <Image src="/logo-cyan.svg" alt="Repowire" width={28} height={28} />
             <h1 className="text-xl font-bold tracking-widest text-cyan-400 font-headline uppercase">
               REPOWIRE
             </h1>
