@@ -66,6 +66,7 @@ class Peer(BaseModel):
     last_seen: datetime | None = Field(None, description="Last activity timestamp")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     description: str = Field(default="", description="Current task description (self-reported)")
+    agents_context: str = Field(default="", description="Content of AGENTS.md for agent-to-agent context")
 
     @property
     def name(self) -> str:
@@ -133,4 +134,5 @@ class Peer(BaseModel):
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
             "metadata": self.metadata,
             "description": self.description,
+            "agents_context": self.agents_context,
         }

@@ -349,6 +349,35 @@ def create_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
+    async def describe_peer(peer_name: str, circle: str | None = None) -> str:
+        """[Repowire mesh] Get a peer's self-description from its AGENTS.md.
+
+        Returns the content of the peer's AGENTS.md file — a document written
+        for other agents describing what the peer does, its capabilities, and
+        how to query it effectively.
+
+        Use this before ask_peer() to understand what a peer is good at and
+        how to frame your question well.
+
+        Args:
+            peer_name: Name of the peer to describe
+            circle: Circle to scope the lookup (optional)
+
+        Returns:
+            The peer's AGENTS.md content, or a message if none is available.
+        """
+        await _ensure_registered()
+        path = f"/peers/{peer_name}/context"
+        if circle is not None:
+            path += f"?circle={circle}"
+        result = await daemon_request("GET", path)
+        context = result.get("agents_context", "")
+        if not context:
+            display_name = result.get("display_name", peer_name)
+            return f"{display_name} has not published an AGENTS.md. Use list_peers() to see its status."
+        return context
+
+    @mcp.tool()
     async def kill_peer(tmux_session: str) -> str:
         """[Repowire mesh] Kill a spawned coding session.
 

@@ -15,16 +15,29 @@ from repowire.hooks._tmux import get_tmux_info
 from repowire.hooks.utils import daemon_get, daemon_post, get_pane_file
 
 
+def _read_agents_context(path: str) -> str:
+    """Read AGENTS.md from the repo root, if it exists. Returns empty string if not found."""
+    agents_md = Path(path) / "AGENTS.md"
+    try:
+        if agents_md.exists():
+            return agents_md.read_text(encoding="utf-8")
+    except OSError:
+        pass
+    return ""
+
+
 def _register_peer_http(
     path: str, circle: str, backend: AgentType, metadata: dict | None = None
 ) -> str | None:
     """Register peer via HTTP POST /peers. Returns daemon-assigned display_name."""
     folder = Path(path).name
+    agents_context = _read_agents_context(path)
     payload: dict = {
         "name": folder,
         "path": path,
         "circle": circle,
         "backend": backend,
+        "agents_context": agents_context,
     }
     if metadata:
         payload["metadata"] = metadata

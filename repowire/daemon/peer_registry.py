@@ -369,6 +369,7 @@ class PeerRegistry:
         metadata: dict | None = None,
         machine: str = "unknown",
         role: PeerRole = PeerRole.AGENT,
+        agents_context: str = "",
     ) -> tuple[str, str]:
         """Allocate a peer_id and register the peer atomically.
 
@@ -399,6 +400,7 @@ class PeerRegistry:
                 path=path or "",
                 machine=machine,
                 metadata=metadata or {},
+                agents_context=agents_context,
             )
             self._peers[peer_id] = peer
             logger.info(f"Peer registered: {assigned_name} ({peer_id})")

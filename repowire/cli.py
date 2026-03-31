@@ -1513,5 +1513,144 @@ def hook_notification() -> None:
     sys.exit(notification_main())
 
 
+# =============================================================================
+# init command - generate a starter AGENTS.md
+# =============================================================================
+
+
+@main.command()
+@click.option(
+    "--path",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True),
+    help="Project directory (default: current directory)",
+)
+@click.option("--force", is_flag=True, help="Overwrite existing AGENTS.md")
+def init(path: str, force: bool) -> None:
+    """Generate a starter AGENTS.md for agent-to-agent context.
+
+    AGENTS.md is read by other agents in the mesh before querying this repo.
+    It describes what this project does, its capabilities, and how to ask
+    good questions — optimized for AI agents, not humans.
+    """
+    import subprocess
+
+    project_path = Path(path).resolve()
+    agents_md_path = project_path / "AGENTS.md"
+
+    if agents_md_path.exists() and not force:
+        console.print(f"[yellow]AGENTS.md already exists at {agents_md_path}[/]")
+        console.print("Use --force to overwrite.")
+        return
+
+    # Gather context from the project
+    project_name = project_path.name
+    description = ""
+    tech_stack: list[str] = []
+
+    # Try to extract description from pyproject.toml
+    pyproject = project_path / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            import tomllib  # Python 3.11+
+        except ImportError:
+            try:
+                import tomli as tomllib  # type: ignore[no-redef]
+            except ImportError:
+                tomllib = None  # type: ignore[assignment]
+        if tomllib:
+            try:
+                data = tomllib.loads(pyproject.read_text())
+                description = data.get("project", {}).get("description", "")
+                deps = list(data.get("project", {}).get("dependencies", []))
+                tech_stack.append("Python")
+                if any("fastapi" in d.lower() for d in deps):
+                    tech_stack.append("FastAPI")
+                if any("django" in d.lower() for d in deps):
+                    tech_stack.append("Django")
+            except Exception:
+                pass
+
+    # Try to extract from package.json
+    package_json = project_path / "package.json"
+    if package_json.exists():
+        try:
+            pkg = json.loads(package_json.read_text())
+            if not description:
+                description = pkg.get("description", "")
+            deps = list(pkg.get("dependencies", {}).keys())
+            tech_stack.append("Node.js")
+            if "next" in deps:
+                tech_stack.append("Next.js")
+            if "react" in deps:
+                tech_stack.append("React")
+        except Exception:
+            pass
+
+    # Check for common files
+    if (project_path / "Cargo.toml").exists():
+        tech_stack.append("Rust")
+    if (project_path / "go.mod").exists():
+        tech_stack.append("Go")
+
+    # Get git branch
+    git_branch = None
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True, text=True, cwd=project_path,
+        )
+        if result.returncode == 0:
+            git_branch = result.stdout.strip() or None
+    except Exception:
+        pass
+
+    tech_str = ", ".join(tech_stack) if tech_stack else "unknown"
+    branch_str = f"\n- **Active branch:** {git_branch}" if git_branch else ""
+
+    content = f"""# AGENTS.md — {project_name}
+
+> This file is for AI agents querying this repo via the Repowire mesh.
+> It describes what this project does and how to ask good questions.
+> Keep it short, factual, and up to date.
+
+## What this project does
+
+{description or f"[TODO: describe what {project_name} does in 1-2 sentences]"}
+
+## Tech stack
+
+- **Languages/frameworks:** {tech_str}{branch_str}
+
+## Capabilities
+
+What tasks is the agent in this repo good at handling? Examples:
+- [TODO: e.g., "answering questions about the API schema"]
+- [TODO: e.g., "reviewing changes to the auth module"]
+- [TODO: e.g., "running tests and reporting results"]
+
+## How to ask good questions
+
+Tips for other agents querying this repo:
+- [TODO: e.g., "include the file path and line number when asking about a bug"]
+- [TODO: e.g., "mention the PR number when asking about recent changes"]
+
+## Off-limits / caveats
+
+- [TODO: e.g., "do not ask this agent to deploy to production"]
+- [TODO: e.g., "this agent does not have access to the database"]
+
+## Current focus
+
+[TODO: describe what the team is currently working on, updated periodically]
+"""
+
+    agents_md_path.write_text(content, encoding="utf-8")
+    console.print(f"[green]Created {agents_md_path}[/]")
+    console.print(
+        "[dim]Edit AGENTS.md to describe your project for other agents in the mesh.[/]"
+    )
+
+
 if __name__ == "__main__":
     main()

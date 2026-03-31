@@ -33,6 +33,7 @@ class PeerInfo(BaseModel):
     last_seen: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     description: str = ""
+    agents_context: str = ""
 
 
 def _peer_to_info(p: Peer) -> PeerInfo:
@@ -51,6 +52,7 @@ def _peer_to_info(p: Peer) -> PeerInfo:
         last_seen=p.last_seen.isoformat() if p.last_seen else None,
         metadata=p.metadata,
         description=p.description,
+        agents_context=p.agents_context,
     )
 
 
@@ -71,6 +73,7 @@ class RegisterPeerRequest(BaseModel):
     circle: str | None = Field(None, description="Circle (logical subnet)")
     role: PeerRole = Field(default=PeerRole.AGENT, description="Peer role")
     metadata: dict[str, Any] = Field(default_factory=dict)
+    agents_context: str = Field(default="", description="Content of AGENTS.md for agent-to-agent context")
 
     @field_validator("circle")
     @classmethod
@@ -156,6 +159,7 @@ async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str]:
         metadata=request.metadata,
         machine=request.machine or socket.gethostname(),
         role=request.role,
+        agents_context=request.agents_context,
     )
     return peer_id, display_name
 
@@ -214,6 +218,35 @@ async def mark_peer_offline(
     peer_registry = get_peer_registry()
     cancelled = await peer_registry.mark_offline(name)
     return OfflineResponse(cancelled_queries=cancelled)
+
+
+class AgentsContextResponse(BaseModel):
+    """Response containing a peer's AGENTS.md content."""
+
+    peer_id: str
+    display_name: str
+    agents_context: str
+
+
+@router.get("/peers/{identifier}/context", response_model=AgentsContextResponse)
+async def get_peer_context(
+    identifier: str,
+    circle: str | None = Query(None),
+    _: str | None = Depends(require_auth),
+) -> AgentsContextResponse:
+    """Get a peer's AGENTS.md content for agent-to-agent context."""
+    peer_registry = get_peer_registry()
+    peer = await peer_registry.get_peer(identifier, circle=circle)
+    if not peer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Peer not found: {identifier}",
+        )
+    return AgentsContextResponse(
+        peer_id=peer.peer_id,
+        display_name=peer.display_name,
+        agents_context=peer.agents_context,
+    )
 
 
 class SetDescriptionRequest(BaseModel):
