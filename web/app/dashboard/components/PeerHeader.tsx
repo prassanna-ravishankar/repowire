@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ArrowLeft, Copy, Check } from "lucide-react";
-import { cn, statusDot, statusTextColor } from "../lib/utils";
+import { cn, statusDot, statusTextColor, shortPath } from "../lib/utils";
 import { RoleBadge } from "./RoleBadge";
 import { peerLabel } from "../types";
 import type { Peer } from "../types";
@@ -70,11 +70,14 @@ export function PeerHeader({ peer, onClose }: PeerHeaderProps) {
               {String(peer.metadata.branch)}
             </span>
           )}
-          {peer.path && (
-            <span className="text-[10px] text-outline truncate max-w-[12rem] hidden md:inline">
-              {peer.path}
-            </span>
-          )}
+          {peer.path && (() => {
+            const { folder, parent } = shortPath(peer.path);
+            return (
+              <span className="text-[10px] text-outline truncate max-w-[12rem] hidden md:inline">
+                {parent}<span className="text-on-surface-variant">{folder}</span>
+              </span>
+            );
+          })()}
           {peer.machine && (
             <span className="text-[10px] text-outline hidden lg:inline">
               {peer.machine}

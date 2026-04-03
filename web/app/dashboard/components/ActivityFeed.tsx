@@ -246,7 +246,10 @@ export function ActivityFeed({ events, peerFilter, peerName, peers }: ActivityFe
   };
 
   const isTopLevel = !peerFilter;
-  const activePeerCount = peers?.filter((p) => p.status === "online" || p.status === "busy").length ?? 0;
+  const activePeerCount = useMemo(
+    () => peers?.filter((p) => p.status === "online" || p.status === "busy").length ?? 0,
+    [peers]
+  );
 
   if (allActivity.length === 0) {
     return (

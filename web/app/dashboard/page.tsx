@@ -85,7 +85,10 @@ export default function Dashboard() {
           const event = parsed as Event;
           if (eventIdsRef.current.has(event.id)) return;
           eventIdsRef.current.add(event.id);
-          setEvents((prev) => [...prev, event]);
+          setEvents((prev) => {
+            const next = [...prev, event];
+            return next.length > 500 ? next.slice(-500) : next;
+          });
           if (event.type === "status_change") fetchPeers();
         }
       } catch (error) {
@@ -277,9 +280,7 @@ export default function Dashboard() {
               <OverviewGrid
                 peers={peers}
                 events={events}
-                apiBase={API_BASE}
                 onSelectPeer={handleSelectPeer}
-                onRefresh={refreshData}
                 circleFilter={circleFilter}
               />
             )}

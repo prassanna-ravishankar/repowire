@@ -1,24 +1,19 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { useMemo } from "react";
 import { cn, statusDot, statusBorderColor, statusTopStrip, statusTextColor, shortPath } from "../lib/utils";
 import { RoleBadge } from "./RoleBadge";
-import { SpawnDialog } from "./SpawnDialog";
 import type { Peer, Event } from "../types";
 import { peerLabel } from "../types";
 
 interface OverviewGridProps {
   peers: Peer[];
   events: Event[];
-  apiBase: string;
   onSelectPeer: (peer: Peer) => void;
-  onRefresh: () => void;
   circleFilter?: string | null;
 }
 
-export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh, circleFilter }: OverviewGridProps) {
-  const [showSpawn, setShowSpawn] = useState(false);
+export function OverviewGrid({ peers, events, onSelectPeer, circleFilter }: OverviewGridProps) {
 
   // Filter out service peers and apply circle filter
   const gridPeers = useMemo(
@@ -55,27 +50,10 @@ export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh, 
         <h2 className="font-headline text-3xl font-bold text-primary mb-2 tracking-tight">
           Active Peer Grid
         </h2>
-        <div className="flex items-center justify-between text-on-surface-variant">
-          <p className="text-sm font-light">
-            Orchestrating {activePeers.length} active instance{activePeers.length !== 1 ? "s" : ""}.
-          </p>
-          <button
-            onClick={() => setShowSpawn(true)}
-            className="flex items-center gap-2 px-3 py-1.5 bg-surface-container-highest text-on-surface-variant text-xs font-headline font-bold uppercase tracking-widest hover:bg-surface-bright transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Spawn
-          </button>
-        </div>
+        <p className="text-sm font-light text-on-surface-variant">
+          Orchestrating {activePeers.length} active instance{activePeers.length !== 1 ? "s" : ""}.
+        </p>
       </section>
-
-      {showSpawn && (
-        <SpawnDialog
-          apiBase={apiBase}
-          onClose={() => setShowSpawn(false)}
-          onSpawned={onRefresh}
-        />
-      )}
 
       {/* Active Peer Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
@@ -215,16 +193,7 @@ function PeerCard({
 
         {/* Metadata */}
         <div className="flex items-center gap-3 text-on-surface-variant min-w-0">
-          {peer.path && (() => {
-            const { folder, parent } = shortPath(peer.path);
-            return (
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="material-symbols-outlined text-sm shrink-0">folder_open</span>
-                <span className="text-[11px] font-mono text-outline truncate">{parent}</span>
-                <span className="text-[11px] font-mono shrink-0">{folder}</span>
-              </div>
-            );
-          })()}
+          {peer.path && <PeerPath path={peer.path} />}
           {peer.metadata?.branch && (
             <div className="flex items-center gap-1.5 shrink-0">
               <span className="material-symbols-outlined text-sm">commit</span>
@@ -234,6 +203,17 @@ function PeerCard({
         </div>
       </div>
     </button>
+  );
+}
+
+function PeerPath({ path }: { path: string }) {
+  const { folder, parent } = shortPath(path);
+  return (
+    <div className="flex items-center gap-1.5 min-w-0">
+      <span className="material-symbols-outlined text-sm shrink-0">folder_open</span>
+      <span className="text-[11px] font-mono text-outline truncate">{parent}</span>
+      <span className="text-[11px] font-mono shrink-0">{folder}</span>
+    </div>
   );
 }
 
