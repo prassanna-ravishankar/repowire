@@ -50,7 +50,7 @@ async def daemon_request(method: str, path: str, body: dict | None = None) -> di
         resp.raise_for_status()
         return resp.json()
     except httpx.ConnectError:
-        _http_client = None
+        _http_client = None  # Reset stale client so next call reconnects
         raise DaemonConnectionError()
     except httpx.HTTPStatusError as e:
         raise DaemonHTTPError(e.response.status_code, e.response.text)
