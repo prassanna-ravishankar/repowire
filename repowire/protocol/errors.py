@@ -1,7 +1,11 @@
 """Custom error types for Repowire protocol."""
 
 
-class PeerDisconnectedError(Exception):
+class RepowireError(Exception):
+    """Base class for all Repowire errors."""
+
+
+class PeerDisconnectedError(RepowireError):
     """Raised when a peer disconnects during a pending query."""
 
     def __init__(self, peer_name: str):
@@ -9,7 +13,11 @@ class PeerDisconnectedError(Exception):
         super().__init__(f"Peer '{peer_name}' disconnected")
 
 
-class DaemonConnectionError(Exception):
+class DaemonError(RepowireError):
+    """Base class for daemon-related errors."""
+
+
+class DaemonConnectionError(DaemonError):
     """Raised when the Repowire daemon is not reachable."""
 
     def __init__(self) -> None:
@@ -18,7 +26,7 @@ class DaemonConnectionError(Exception):
         )
 
 
-class DaemonHTTPError(Exception):
+class DaemonHTTPError(DaemonError):
     """Raised when the daemon returns an HTTP error response."""
 
     def __init__(self, status: int, text: str) -> None:
@@ -26,7 +34,7 @@ class DaemonHTTPError(Exception):
         super().__init__(f"Daemon error {status}: {text}")
 
 
-class DaemonTimeoutError(Exception):
+class DaemonTimeoutError(DaemonError):
     """Raised when a request to the daemon times out."""
 
     def __init__(self) -> None:
