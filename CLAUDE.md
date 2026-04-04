@@ -166,15 +166,7 @@ Hosted at repowire.io. Daemon connects outbound via WSS. Cookie-based auth for d
 
 ### Dashboard Design System
 
-The dashboard follows "The Kinetic Mesh" design system. Full spec + color tokens + Tailwind config at `web/reference-designs/design-system.md`. Reference HTML screens at `web/reference-designs/*.html`.
-
-Key rules:
-- **No-Line Rule:** No 1px borders for sectioning. Use tonal shifts (`surface-container-*`) and negative space.
-- **Engineering Brutalism:** Sharp corners (0.125-0.5rem max), high-density data, HUD aesthetic.
-- **Fonts:** Space Grotesk (headlines), Inter (body/labels), JetBrains Mono (code/data).
-- **Dark-only:** Surface base #10131a, never use pure white (#FFFFFF), always `on-surface` (#e1e2eb).
-- **Status colors:** Online = secondary/green (#d7ffc5), Busy = tertiary-fixed-dim/amber (#ffba38), Offline = outline/gray (#849396).
-- **Mobile-first:** Bottom nav bar with glass panel, 390px primary target.
+See [`docs/design-system.md`](docs/design-system.md) for the full spec (color tokens, Tailwind config, responsive layout, component patterns).
 
 ## Attachments
 
