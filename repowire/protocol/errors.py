@@ -38,6 +38,4 @@ class DaemonTimeoutError(DaemonError):
     """Raised when a request to the daemon times out."""
 
     def __init__(self) -> None:
-        super().__init__(
-            "Daemon request timed out. The daemon may be overloaded or unreachable."
-        )
+        super().__init__("Daemon request timed out.")
