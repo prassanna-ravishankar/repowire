@@ -20,11 +20,19 @@ from repowire import __version__
 from repowire.config.models import Config, load_config
 from repowire.daemon.auth import require_localhost
 from repowire.daemon.deps import cleanup_deps, init_deps
+from repowire.daemon.lifecycle_handler import LifecycleHandler
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.relay_client import RelayClient
-from repowire.daemon.routes import attachments, health, messages, peers, websocket
+from repowire.daemon.routes import (
+    attachments,
+    health,
+    lifecycle,
+    messages,
+    peers,
+    websocket,
+)
 from repowire.daemon.routes import spawn as spawn_routes
 from repowire.daemon.websocket_transport import WebSocketTransport
 
@@ -90,8 +98,28 @@ def create_app(
         app.state.peer_registry = peer_registry
         app.state.relay_mode = cfg.relay.enabled
 
+        lifecycle_handler = LifecycleHandler(
+            peer_registry=peer_registry,
+            query_tracker=query_tracker,
+            transport=transport,
+        )
+
         await peer_registry.start()
-        init_deps(cfg, peer_registry, app.state)
+        init_deps(
+            cfg, peer_registry, app.state,
+            lifecycle_handler=lifecycle_handler,
+        )
+
+        # Install tmux lifecycle hooks if tmux is available
+        try:
+            from repowire.hooks.tmux_lifecycle import install_hooks, is_tmux_available
+
+            if is_tmux_available():
+                tmux_hooks = install_hooks(cfg.daemon.host, cfg.daemon.port)
+                if tmux_hooks:
+                    logger.info("Installed %d tmux lifecycle hooks", len(tmux_hooks))
+        except Exception:
+            logger.debug("Tmux hooks not installed", exc_info=True)
 
         # Start relay client if enabled
         relay_client: RelayClient | None = None
@@ -179,6 +207,7 @@ def create_app(
     app.include_router(websocket.router)
     app.include_router(spawn_routes.router)
     app.include_router(attachments.router)
+    app.include_router(lifecycle.router)
 
     # --- Static File Serving (Dashboard) ---
     web_out = _find_web_output_dir()
@@ -279,8 +308,14 @@ def create_test_app(
         app.state.peer_registry = registry
         app.state.relay_mode = cfg.relay.enabled
 
+        lh = LifecycleHandler(
+            peer_registry=registry,
+            query_tracker=query_tracker,
+            transport=transport,
+        )
+
         await registry.start()
-        init_deps(cfg, registry, app.state)
+        init_deps(cfg, registry, app.state, lifecycle_handler=lh)
 
         yield
 
@@ -299,6 +334,7 @@ def create_test_app(
     app.include_router(websocket.router)
     app.include_router(spawn_routes.router)
     app.include_router(attachments.router)
+    app.include_router(lifecycle.router)
 
     return app
 

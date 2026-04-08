@@ -187,6 +187,19 @@ def setup(
 
     console.print(f"[green]✓[/] Configured agents: {', '.join(agents_setup)}")
 
+    # Install tmux lifecycle hooks if tmux is available
+    try:
+        from repowire.hooks.tmux_lifecycle import install_hooks, is_tmux_available
+
+        if is_tmux_available():
+            installed = install_hooks(
+                config.daemon.host, config.daemon.port,
+            )
+            if installed:
+                console.print(f"[green]✓[/] Tmux lifecycle hooks ({len(installed)} hooks)")
+    except Exception:
+        pass  # tmux not available or not running
+
     # Relay: flag, existing config, or interactive prompt
     if config.relay.enabled:
         console.print("[green]✓[/] Relay enabled (existing config)")
@@ -323,6 +336,19 @@ def uninstall(yes: bool) -> None:
             console.print(f"[yellow]![/] {message}")
     else:
         console.print("[dim]Daemon service not installed[/]")
+
+    # Uninstall tmux lifecycle hooks
+    try:
+        from repowire.hooks.tmux_lifecycle import is_tmux_available, uninstall_hooks
+
+        if is_tmux_available():
+            removed = uninstall_hooks()
+            if removed:
+                console.print(f"[green]✓[/] Tmux lifecycle hooks removed ({len(removed)} hooks)")
+            else:
+                console.print("[dim]Tmux lifecycle hooks not installed[/]")
+    except Exception as e:
+        console.print(f"[yellow]![/] Failed to remove tmux hooks: {e}")
 
     # Uninstall all agent components (try both)
     _uninstall_claude_code()

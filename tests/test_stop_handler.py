@@ -68,7 +68,9 @@ class TestStopHandler:
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)
     @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
     @patch("repowire.hooks.stop_handler.get_display_name", return_value="myproject-claude-code")
-    def test_uses_display_name_as_peer_name(self, mock_name, mock_pane, mock_status, mock_post, tmp_path):
+    def test_uses_display_name_as_peer_name(
+        self, mock_name, mock_pane, mock_status, mock_post, tmp_path,
+    ):
         tp = _make_transcript(tmp_path, [
             {"type": "user", "message": {"content": "Hi"}},
             {"type": "assistant", "message": {"content": [
@@ -146,7 +148,9 @@ class TestStopHandler:
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)
     @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
     @patch("repowire.hooks.stop_handler.get_display_name", return_value="test-gemini")
-    def test_gemini_after_agent_with_final_response(self, mock_name, mock_pane, mock_status, mock_post):
+    def test_gemini_after_agent_with_final_response(
+        self, mock_name, mock_pane, mock_status, mock_post,
+    ):
         """Test Gemini's AfterAgent hook which provides final_response but no transcript_path."""
         _run_hook({
             "hook_event_name": "AfterAgent",

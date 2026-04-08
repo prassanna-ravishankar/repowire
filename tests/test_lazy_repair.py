@@ -1,4 +1,4 @@
-"""Tests for lazy_repair, get_peer_by_pane, and ping/pong liveness."""
+"""Tests for lazy_repair, active_repair, get_peer_by_pane, and ping/pong liveness."""
 
 from __future__ import annotations
 
@@ -82,49 +82,60 @@ class TestGetPeerByPane:
 
 class TestLazyRepairDebounce:
     async def test_second_call_within_30s_is_noop(self):
-        transport = MagicMock(spec=WebSocketTransport)
-        manager = _make_manager(transport=transport)
+        manager = _make_manager()
 
-        peer = _make_peer()
+        peer = _make_peer(status=PeerStatus.OFFLINE)
         await manager.register_peer(peer)
+        # Force offline with old last_seen to make eviction observable
+        p = await manager.get_peer(peer.peer_id)
+        p.status = PeerStatus.OFFLINE
+        p.last_seen = datetime.now(timezone.utc) - timedelta(hours=100)
 
-        transport.is_connected = MagicMock(return_value=True)
-        transport.ping = AsyncMock(return_value={"type": "pong"})
-
-        # First call runs repair
+        # First call runs eviction
         await manager.lazy_repair()
-        assert transport.is_connected.call_count == 1
+        assert await manager.get_peer(peer.peer_id) is None
 
-        # Second call within 30s is a no-op
-        transport.is_connected.reset_mock()
+        # Re-add and make stale again
+        peer2 = _make_peer(peer_id="repow-dev-xyz99999")
+        await manager.register_peer(peer2)
+        p2 = await manager.get_peer(peer2.peer_id)
+        p2.status = PeerStatus.OFFLINE
+        p2.last_seen = datetime.now(timezone.utc) - timedelta(hours=100)
+
+        # Second call within 30s is a no-op (peer2 not evicted)
         await manager.lazy_repair()
-        assert transport.is_connected.call_count == 0
+        assert await manager.get_peer(peer2.peer_id) is not None
 
     async def test_runs_after_debounce_expires(self):
-        transport = MagicMock(spec=WebSocketTransport)
-        manager = _make_manager(transport=transport)
+        manager = _make_manager()
 
-        peer = _make_peer()
+        peer = _make_peer(status=PeerStatus.OFFLINE)
         await manager.register_peer(peer)
-
-        transport.is_connected = MagicMock(return_value=True)
-        transport.ping = AsyncMock(return_value={"type": "pong"})
+        p = await manager.get_peer(peer.peer_id)
+        p.status = PeerStatus.OFFLINE
+        p.last_seen = datetime.now(timezone.utc) - timedelta(hours=100)
 
         await manager.lazy_repair()
-        assert transport.is_connected.call_count == 1
+        assert await manager.get_peer(peer.peer_id) is None
+
+        # Re-add a stale peer
+        peer2 = _make_peer(peer_id="repow-dev-xyz99999")
+        await manager.register_peer(peer2)
+        p2 = await manager.get_peer(peer2.peer_id)
+        p2.status = PeerStatus.OFFLINE
+        p2.last_seen = datetime.now(timezone.utc) - timedelta(hours=100)
 
         # Simulate 31s passing
         manager._last_repair = time.monotonic() - 31.0
 
-        transport.is_connected.reset_mock()
         await manager.lazy_repair()
-        assert transport.is_connected.call_count == 1
+        assert await manager.get_peer(peer2.peer_id) is None
 
 
-# -- liveness checks --
+# -- active_repair liveness checks --
 
 
-class TestLazyRepairLiveness:
+class TestActiveRepairLiveness:
     async def test_no_ws_marks_offline(self):
         """Peer with no WebSocket connection is marked OFFLINE."""
         transport = MagicMock(spec=WebSocketTransport)
@@ -136,7 +147,7 @@ class TestLazyRepairLiveness:
         peer = _make_peer(status=PeerStatus.ONLINE)
         await manager.register_peer(peer)
 
-        await manager.lazy_repair()
+        await manager.active_repair()
 
         result = await manager.get_peer(peer.peer_id)
         assert result.status == PeerStatus.OFFLINE
@@ -151,7 +162,7 @@ class TestLazyRepairLiveness:
         peer = _make_peer(status=PeerStatus.ONLINE)
         await manager.register_peer(peer)
 
-        await manager.lazy_repair()
+        await manager.active_repair()
 
         result = await manager.get_peer(peer.peer_id)
         assert result.status == PeerStatus.ONLINE
@@ -168,7 +179,7 @@ class TestLazyRepairLiveness:
         peer = _make_peer(status=PeerStatus.ONLINE)
         await manager.register_peer(peer)
 
-        await manager.lazy_repair()
+        await manager.active_repair()
 
         result = await manager.get_peer(peer.peer_id)
         assert result.status == PeerStatus.OFFLINE
@@ -187,14 +198,14 @@ class TestLazyRepairLiveness:
         )
         await manager.register_peer(peer)
 
-        await manager.lazy_repair()
+        await manager.active_repair()
 
         result = await manager.get_peer(peer.peer_id)
         assert result.status == PeerStatus.ONLINE
         transport.ping.assert_not_awaited()
 
     async def test_offline_peers_skipped(self):
-        """OFFLINE peers are not checked during repair."""
+        """OFFLINE peers are not checked during active repair."""
         transport = MagicMock(spec=WebSocketTransport)
         transport.is_connected = MagicMock(side_effect=AssertionError("should not be called"))
         manager = _make_manager(transport=transport)
@@ -204,21 +215,21 @@ class TestLazyRepairLiveness:
         # Force status back to OFFLINE (register_peer sets ONLINE)
         peer.status = PeerStatus.OFFLINE
 
-        await manager.lazy_repair()
+        await manager.active_repair()
         transport.is_connected.assert_not_called()
 
     async def test_no_transport_is_noop(self):
-        """If no transport is provided, repair does nothing."""
+        """If no transport is provided, active repair does nothing."""
         manager = _make_manager(transport=None)
 
         peer = _make_peer(status=PeerStatus.ONLINE)
         await manager.register_peer(peer)
 
         # Should not raise
-        await manager.lazy_repair()
+        await manager.active_repair()
 
-    async def test_stale_offline_evicted_from_registry(self):
-        """Stale OFFLINE peers are removed from both _peers and _mappings."""
+    async def test_stale_offline_evicted(self):
+        """Stale OFFLINE peers are evicted during active repair."""
         transport = MagicMock(spec=WebSocketTransport)
         transport.is_connected = MagicMock(return_value=False)
         qt = MagicMock()
@@ -228,30 +239,25 @@ class TestLazyRepairLiveness:
         peer = _make_peer(status=PeerStatus.ONLINE)
         await manager.register_peer(peer)
 
-        # First repair: marks peer OFFLINE
-        await manager.lazy_repair()
+        # First repair marks peer offline (no WS connection)
+        await manager.active_repair()
         result = await manager.get_peer(peer.peer_id)
-        assert result is not None
         assert result.status == PeerStatus.OFFLINE
 
-        # Set last_seen far in the past to trigger stale eviction
+        # Make stale
         result.last_seen = datetime.now(timezone.utc) - timedelta(hours=100)
 
-        # Expire debounce
-        manager._last_repair = 0.0
-
-        # Second repair: evicts stale offline peer
-        await manager.lazy_repair()
-
+        # Second repair evicts stale peer
+        await manager.active_repair()
         assert await manager.get_peer(peer.peer_id) is None
 
 
 # -- concurrent lock --
 
 
-class TestLazyRepairConcurrency:
-    async def test_concurrent_lock_prevents_double_repair(self):
-        """Second concurrent call is skipped when lock is held."""
+class TestActiveRepairConcurrency:
+    async def test_concurrent_lock_serializes_repair(self):
+        """Concurrent active_repair calls are serialized, not skipped."""
         transport = MagicMock(spec=WebSocketTransport)
         manager = _make_manager(transport=transport)
 
@@ -260,21 +266,19 @@ class TestLazyRepairConcurrency:
 
         transport.is_connected = MagicMock(return_value=True)
 
-        # Ping takes 0.2s to simulate slow network
         async def slow_ping(*args, **kwargs):
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.05)
             return {"type": "pong"}
 
         transport.ping = AsyncMock(side_effect=slow_ping)
 
-        # Expire debounce so both calls attempt repair
-        manager._last_repair = 0.0
+        # Both calls run (second waits for first to release lock)
+        await asyncio.gather(
+            manager.active_repair(), manager.active_repair(),
+        )
 
-        # Run two repairs concurrently
-        await asyncio.gather(manager.lazy_repair(), manager.lazy_repair())
-
-        # Only one should have actually run (the other sees the lock held)
-        assert transport.is_connected.call_count == 1
+        # Both actually ran (serialized, not skipped)
+        assert transport.is_connected.call_count == 2
 
 
 # -- ping/pong transport --

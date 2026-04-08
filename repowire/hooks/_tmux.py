@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from typing import TypedDict
 
@@ -18,6 +19,21 @@ class TmuxInfo(TypedDict):
     pane_id: str | None  # tmux pane ID, used as filename stem for hook files
     session_name: str | None
     window_name: str | None
+
+
+def is_tmux_available() -> bool:
+    """Check if tmux is installed and a server is reachable."""
+    if not shutil.which("tmux"):
+        return False
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", ""],
+            capture_output=True,
+            timeout=3,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return False
 
 
 def get_pane_id() -> str | None:

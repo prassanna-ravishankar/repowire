@@ -4,6 +4,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from repowire.config.models import AgentType
 from repowire.daemon.peer_registry import PeerRegistry
 
@@ -115,9 +117,6 @@ def test_prune_noop_when_nothing_stale(tmp_path):
     }
     registry = _make_registry(tmp_path, mappings)
     assert registry.prune_offline() == 0
-
-
-import pytest
 
 
 @pytest.mark.asyncio
