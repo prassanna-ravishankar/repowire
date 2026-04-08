@@ -21,50 +21,79 @@ __all__ = ["is_tmux_available", "install_hooks", "uninstall_hooks"]
 # Numeric array index — avoids clobbering user hooks at default index [0].
 _HOOK_INDEX = 42
 
-# Hook definitions: (tmux_flag, shell_command_template).
+# Shell snippet: build a JSON array of pane IDs.
+# These are NOT passed through .format() — they're spliced in after.
+_PANE_IDS_SESSION = (
+    "$(tmux list-panes -s -F '#{pane_id}'"
+    """ | awk '{printf "\\\\\\"%s\\\\\\",", $0}'"""
+    " | sed 's/,$//')"
+)
+_PANE_IDS_WINDOW = (
+    "$(tmux list-panes -F '#{pane_id}'"
+    """ | awk '{printf "\\\\\\"%s\\\\\\",", $0}'"""
+    " | sed 's/,$//')"
+)
+
+# Hook definitions: list of (tmux_hook_name, tmux_flag, shell_command).
 #
 # tmux_flag: "-g" for session-level hooks, "-gw" for window-level hooks.
 # pane-exited (not pane-died, which requires remain-on-exit).
 #
-# Templates produce shell commands using double quotes for curl args.
-# JSON values use \" escaping (interpreted by sh, not tmux).
-# install_hooks wraps each in run-shell '...' — tmux single-quoted
-# strings pass their contents verbatim to sh.
-_HOOKS: dict[str, tuple[str, str]] = {
-    "pane-exited": (
+# Rename hooks use after-rename-* which fires post-rename. They collect
+# pane IDs to identify which peers to update (since tmux doesn't provide
+# the old name).
+_HOOKS: list[tuple[str, str, str]] = [
+    # -- pane exit --
+    (
+        "pane-exited",
         "-gw",
         "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/pane-died"
         ' -H "Content-Type: application/json"'
-        ' -d "{{\\"pane_id\\":\\"#{{pane_id}}\\"}}"',
+        ' -d "{\\"pane_id\\":\\"#{pane_id}\\\"}"',
     ),
-    "session-closed": (
+    # -- session close --
+    (
+        "session-closed",
         "-g",
-        "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/session-closed"
+        "curl -sf -X POST"
+        " http://{host}:{port}/hooks/lifecycle/session-closed"
         ' -H "Content-Type: application/json"'
-        ' -d "{{\\"session_name\\":\\"#{{session_name}}\\"}}"',
+        ' -d "{\\"session_name\\":\\"#{session_name}\\\"}"',
     ),
-    "session-renamed": (
+    # -- session rename (post-rename, sends pane IDs) --
+    (
+        "after-rename-session",
         "-g",
-        "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/session-renamed"
+        "curl -sf -X POST"
+        " http://{host}:{port}/hooks/lifecycle/session-renamed"
         ' -H "Content-Type: application/json"'
-        ' -d "{{\\"old_name\\":\\"#{{hook_session_name}}\\"'
-        ',\\"new_name\\":\\"#{{session_name}}\\"}}"',
+        ' -d "{\\"new_name\\":\\"#{session_name}\\",\\"pane_ids\\":['
+        + _PANE_IDS_SESSION
+        + ']}"',
     ),
-    "window-renamed": (
+    # -- window rename (post-rename, sends pane IDs) --
+    (
+        "after-rename-window",
         "-gw",
-        "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/window-renamed"
+        "curl -sf -X POST"
+        " http://{host}:{port}/hooks/lifecycle/window-renamed"
         ' -H "Content-Type: application/json"'
-        ' -d "{{\\"session_name\\":\\"#{{session_name}}\\"'
-        ',\\"old_name\\":\\"#{{hook_window_name}}\\"'
-        ',\\"new_name\\":\\"#{{window_name}}\\"}}"',
+        ' -d "{\\"session_name\\":\\"#{session_name}\\"'
+        ',\\"new_name\\":\\"#{window_name}\\"'
+        ',\\"pane_ids\\":['
+        + _PANE_IDS_WINDOW
+        + ']}"',
     ),
-    "client-detached": (
+    # -- client detach --
+    (
+        "client-detached",
         "-g",
-        "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/client-detached"
+        "curl -sf -X POST"
+        " http://{host}:{port}/hooks/lifecycle/client-detached"
         ' -H "Content-Type: application/json"'
-        ' -d "{{\\"session_name\\":\\"#{{session_name}}\\"}}"',
+        ' -d "{\\"session_name\\":\\"#{session_name}\\\"}"',
     ),
-}
+]
 
 
 def install_hooks(host: str = "127.0.0.1", port: int = 8377) -> list[str]:
@@ -73,9 +102,8 @@ def install_hooks(host: str = "127.0.0.1", port: int = 8377) -> list[str]:
     Returns list of hook names successfully installed.
     """
     installed: list[str] = []
-    for hook_name, (flag, cmd_template) in _HOOKS.items():
-        cmd = cmd_template.format(host=host, port=port)
-        # Single-quoted run-shell: tmux passes contents verbatim to sh.
+    for hook_name, flag, cmd_template in _HOOKS:
+        cmd = cmd_template.replace("{host}", host).replace("{port}", str(port))
         tmux_cmd = f"run-shell '{cmd}'"
         result = subprocess.run(
             ["tmux", "set-hook", flag, f"{hook_name}[{_HOOK_INDEX}]", tmux_cmd],
@@ -99,7 +127,7 @@ def uninstall_hooks() -> list[str]:
     Returns list of hook names successfully removed.
     """
     removed: list[str] = []
-    for hook_name, (flag, _) in _HOOKS.items():
+    for hook_name, flag, _ in _HOOKS:
         unsetter = flag + "u"  # -g → -gu, -gw → -gwu
         result = subprocess.run(
             ["tmux", "set-hook", unsetter, f"{hook_name}[{_HOOK_INDEX}]"],

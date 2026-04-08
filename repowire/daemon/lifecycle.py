@@ -14,14 +14,14 @@ class SessionClosedRequest(BaseModel):
 
 
 class SessionRenamedRequest(BaseModel):
-    old_name: str
     new_name: str
+    pane_ids: list[str]
 
 
 class WindowRenamedRequest(BaseModel):
     session_name: str
-    old_name: str
     new_name: str
+    pane_ids: list[str]
 
 
 class ClientDetachedRequest(BaseModel):

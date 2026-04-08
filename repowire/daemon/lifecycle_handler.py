@@ -74,56 +74,48 @@ class LifecycleHandler:
         return total
 
     async def handle_session_renamed(
-        self, old_name: str, new_name: str,
+        self, new_name: str, pane_ids: list[str],
     ) -> int:
-        """Update circle name for all peers in the old circle.
+        """Update circle for peers identified by their pane IDs.
 
         Returns number of peers updated.
         """
-        peers = await self._registry.get_peers_by_circle(old_name)
-        if not peers:
-            logger.debug("session_renamed: no peers in circle %s", old_name)
-            return 0
+        count = 0
+        for pane_id in pane_ids:
+            peer = await self._registry.get_peer_by_pane(pane_id)
+            if peer and peer.circle != new_name:
+                await self._registry.set_peer_circle(peer.peer_id, new_name)
+                count += 1
 
-        for peer in peers:
-            await self._registry.set_peer_circle(peer.peer_id, new_name)
-
-        logger.info(
-            "session_renamed: moved %d peers from %s → %s",
-            len(peers),
-            old_name,
-            new_name,
-        )
-        return len(peers)
+        if count:
+            logger.info(
+                "session_renamed: moved %d peers → %s",
+                count, new_name,
+            )
+        return count
 
     async def handle_window_renamed(
-        self, session_name: str, old_name: str, new_name: str,
-    ) -> bool:
-        """Update display name for the peer matching circle + old window name.
+        self, session_name: str, new_name: str, pane_ids: list[str],
+    ) -> int:
+        """Update display name for peers identified by their pane IDs.
 
-        Returns True if a peer was updated.
+        Returns number of peers updated.
         """
-        peers = await self._registry.get_peers_by_circle(session_name)
-        for peer in peers:
-            if peer.display_name == old_name:
+        count = 0
+        for pane_id in pane_ids:
+            peer = await self._registry.get_peer_by_pane(pane_id)
+            if peer and peer.display_name != new_name:
                 ok = await self._registry.update_peer_display_name(
                     peer.peer_id, new_name,
                 )
                 if ok:
                     logger.info(
                         "window_renamed: %s → %s in circle %s",
-                        old_name,
-                        new_name,
-                        session_name,
+                        peer.display_name, new_name, session_name,
                     )
-                return ok
+                    count += 1
 
-        logger.debug(
-            "window_renamed: no peer named %s in circle %s",
-            old_name,
-            session_name,
-        )
-        return False
+        return count
 
     async def handle_client_detached(self, session_name: str) -> None:
         """Log client detach. No state change for now."""

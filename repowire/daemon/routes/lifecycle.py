@@ -44,7 +44,7 @@ async def hook_session_renamed(
     _: None = Depends(require_localhost),
 ) -> OkResponse:
     handler = get_lifecycle_handler()
-    await handler.handle_session_renamed(request.old_name, request.new_name)
+    await handler.handle_session_renamed(request.new_name, request.pane_ids)
     return OkResponse()
 
 
@@ -55,7 +55,7 @@ async def hook_window_renamed(
 ) -> OkResponse:
     handler = get_lifecycle_handler()
     await handler.handle_window_renamed(
-        request.session_name, request.old_name, request.new_name,
+        request.session_name, request.new_name, request.pane_ids,
     )
     return OkResponse()
 

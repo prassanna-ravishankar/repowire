@@ -151,17 +151,39 @@ class TestSessionClosed:
 class TestSessionRenamed:
     async def test_updates_circle(self, client_and_registry):
         client, registry = client_and_registry
-        peer = _make_peer(circle="old-name")
+        peer = _make_peer(circle="old-name", pane_id="%5")
         await registry.register_peer(peer)
 
         r = await client.post(
             "/hooks/lifecycle/session-renamed",
-            json={"old_name": "old-name", "new_name": "new-name"},
+            json={"new_name": "new-name", "pane_ids": ["%5"]},
         )
         assert r.status_code == 200
 
         result = await registry.get_peer(peer.peer_id)
         assert result.circle == "new-name"
+
+    async def test_only_matching_panes(self, client_and_registry):
+        client, registry = client_and_registry
+        p1 = _make_peer(
+            peer_id="repow-dev-aaa11111", display_name="proj-a",
+            pane_id="%5", circle="alpha",
+        )
+        p2 = _make_peer(
+            peer_id="repow-dev-bbb22222", display_name="proj-b",
+            pane_id="%6", circle="alpha",
+        )
+        await registry.register_peer(p1)
+        await registry.register_peer(p2)
+
+        r = await client.post(
+            "/hooks/lifecycle/session-renamed",
+            json={"new_name": "beta", "pane_ids": ["%5"]},
+        )
+        assert r.status_code == 200
+
+        assert (await registry.get_peer(p1.peer_id)).circle == "beta"
+        assert (await registry.get_peer(p2.peer_id)).circle == "alpha"
 
 
 # -- window-renamed --
@@ -170,15 +192,15 @@ class TestSessionRenamed:
 class TestWindowRenamed:
     async def test_updates_display_name(self, client_and_registry):
         client, registry = client_and_registry
-        peer = _make_peer(display_name="old-window", circle="alpha")
+        peer = _make_peer(display_name="old-window", circle="alpha", pane_id="%5")
         await registry.register_peer(peer)
 
         r = await client.post(
             "/hooks/lifecycle/window-renamed",
             json={
                 "session_name": "alpha",
-                "old_name": "old-window",
                 "new_name": "new-window",
+                "pane_ids": ["%5"],
             },
         )
         assert r.status_code == 200

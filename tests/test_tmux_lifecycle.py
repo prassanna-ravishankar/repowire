@@ -11,6 +11,8 @@ from repowire.hooks.tmux_lifecycle import (
     uninstall_hooks,
 )
 
+_HOOK_NAMES = {name for name, _, _ in _HOOKS}
+
 
 class TestIsTmuxAvailable:
     def test_no_tmux_binary(self):
@@ -40,8 +42,8 @@ class TestInstallHooks:
             mock_run.return_value = MagicMock(returncode=0)
             result = install_hooks("127.0.0.1", 8377)
 
-        assert set(result) == set(_HOOKS.keys())
-        assert mock_run.call_count == len(_HOOKS)
+        assert set(result) == _HOOK_NAMES
+        assert mock_run.call_count == len(_HOOK_NAMES)
 
         for call in mock_run.call_args_list:
             args = call[0][0]
@@ -63,9 +65,9 @@ class TestInstallHooks:
             hook_flags[name] = args[2]
 
         assert hook_flags["pane-exited"] == "-gw"
-        assert hook_flags["window-renamed"] == "-gw"
+        assert hook_flags["after-rename-window"] == "-gw"
         assert hook_flags["session-closed"] == "-g"
-        assert hook_flags["session-renamed"] == "-g"
+        assert hook_flags["after-rename-session"] == "-g"
         assert hook_flags["client-detached"] == "-g"
 
     def test_partial_failure(self):
@@ -81,7 +83,7 @@ class TestInstallHooks:
         with patch("subprocess.run", side_effect=side_effect):
             result = install_hooks()
 
-        assert len(result) == len(_HOOKS) - 1
+        assert len(result) == len(_HOOK_NAMES) - 1
 
     def test_curl_commands_contain_correct_url(self):
         with patch("subprocess.run") as mock_run:
@@ -99,7 +101,7 @@ class TestUninstallHooks:
             mock_run.return_value = MagicMock(returncode=0)
             result = uninstall_hooks()
 
-        assert set(result) == set(_HOOKS.keys())
+        assert set(result) == _HOOK_NAMES
 
         for call in mock_run.call_args_list:
             args = call[0][0]
