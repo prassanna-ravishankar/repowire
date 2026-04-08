@@ -43,24 +43,37 @@ class TestInstallHooks:
         assert set(result) == set(_HOOKS.keys())
         assert mock_run.call_count == len(_HOOKS)
 
-        # Verify each call uses set-hook -g with [repowire] suffix
-        # and run-shell "..." as a single combined arg
         for call in mock_run.call_args_list:
             args = call[0][0]
             assert args[0] == "tmux"
             assert args[1] == "set-hook"
-            assert args[2] == "-g"
-            assert "[repowire]" in args[3]
+            assert args[2] in ("-g", "-gw")
+            assert "[42]" in args[3]
             assert args[4].startswith('run-shell "')
 
+    def test_window_hooks_use_gw_flag(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            install_hooks()
+
+        hook_flags = {}
+        for call in mock_run.call_args_list:
+            args = call[0][0]
+            name = args[3].split("[")[0]
+            hook_flags[name] = args[2]
+
+        assert hook_flags["pane-exited"] == "-gw"
+        assert hook_flags["window-renamed"] == "-gw"
+        assert hook_flags["session-closed"] == "-g"
+        assert hook_flags["session-renamed"] == "-g"
+        assert hook_flags["client-detached"] == "-g"
+
     def test_partial_failure(self):
-        """Some hooks fail to install, rest succeed."""
         call_count = 0
 
         def side_effect(*args, **kwargs):
             nonlocal call_count
             call_count += 1
-            # Fail the first hook
             if call_count == 1:
                 return MagicMock(returncode=1, stderr="error")
             return MagicMock(returncode=0)
@@ -76,7 +89,7 @@ class TestInstallHooks:
             install_hooks("10.0.0.1", 9999)
 
         for call in mock_run.call_args_list:
-            tmux_cmd = call[0][0][4]  # run-shell "curl ..."
+            tmux_cmd = call[0][0][4]
             assert "10.0.0.1:9999" in tmux_cmd
 
 
@@ -92,8 +105,8 @@ class TestUninstallHooks:
             args = call[0][0]
             assert args[0] == "tmux"
             assert args[1] == "set-hook"
-            assert args[2] == "-gu"
-            assert "[repowire]" in args[3]
+            assert args[2] in ("-gu", "-gwu")
+            assert "[42]" in args[3]
 
     def test_handles_missing_hooks(self):
         with patch("subprocess.run") as mock_run:

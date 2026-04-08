@@ -1,6 +1,6 @@
 """Tmux lifecycle hook registration.
 
-Installs/uninstalls global tmux hooks that POST to the daemon's
+Installs/uninstalls tmux hooks that POST to the daemon's
 /hooks/lifecycle/* endpoints on pane/session/window events.
 
 This is the ONLY module that knows about `tmux set-hook`.
@@ -18,41 +18,50 @@ logger = logging.getLogger(__name__)
 # Re-export for callers that import from this module.
 __all__ = ["is_tmux_available", "install_hooks", "uninstall_hooks"]
 
-# Tmux hook → curl command templates.
-# Format variables (#{...}) are expanded by tmux at fire time.
-# Named array hooks ([repowire] suffix) avoid clobbering user hooks.
+# Numeric array index — avoids clobbering user hooks at default index [0].
+_HOOK_INDEX = 42
+
+# Hook definitions: (tmux_flag, curl_template).
+#
+# tmux_flag: "-g" for session-level hooks, "-gw" for window-level hooks.
+# pane-exited (not pane-died, which requires remain-on-exit).
 #
 # Templates use single quotes for -H and -d so the curl command contains
 # no double quotes. install_hooks wraps each as run-shell "..." — since
 # single quotes are literal inside tmux double quotes, the quoting is clean.
-_HOOKS: dict[str, str] = {
-    "pane-died": (
+_HOOKS: dict[str, tuple[str, str]] = {
+    "pane-exited": (
+        "-gw",
         "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/pane-died"
         " -H 'Content-Type: application/json'"
-        " -d '{{\"pane_id\":\"#{{pane_id}}\"}}'"
+        " -d '{{\"pane_id\":\"#{{pane_id}}\"}}'",
     ),
     "session-closed": (
+        "-g",
         "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/session-closed"
         " -H 'Content-Type: application/json'"
-        " -d '{{\"session_name\":\"#{{session_name}}\"}}'"
+        " -d '{{\"session_name\":\"#{{session_name}}\"}}'",
     ),
     "session-renamed": (
+        "-g",
         "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/session-renamed"
         " -H 'Content-Type: application/json'"
         " -d '{{\"old_name\":\"#{{hook_session_name}}\""
-        ",\"new_name\":\"#{{session_name}}\"}}'"
+        ",\"new_name\":\"#{{session_name}}\"}}'",
     ),
     "window-renamed": (
+        "-gw",
         "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/window-renamed"
         " -H 'Content-Type: application/json'"
         " -d '{{\"session_name\":\"#{{session_name}}\""
         ",\"old_name\":\"#{{hook_window_name}}\""
-        ",\"new_name\":\"#{{window_name}}\"}}'"
+        ",\"new_name\":\"#{{window_name}}\"}}'",
     ),
     "client-detached": (
+        "-g",
         "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/client-detached"
         " -H 'Content-Type: application/json'"
-        " -d '{{\"session_name\":\"#{{session_name}}\"}}'"
+        " -d '{{\"session_name\":\"#{{session_name}}\"}}'",
     ),
 }
 
@@ -63,13 +72,11 @@ def install_hooks(host: str = "127.0.0.1", port: int = 8377) -> list[str]:
     Returns list of hook names successfully installed.
     """
     installed: list[str] = []
-    for hook_name, cmd_template in _HOOKS.items():
+    for hook_name, (flag, cmd_template) in _HOOKS.items():
         cmd = cmd_template.format(host=host, port=port)
-        # Combine run-shell + command as one tmux command string.
-        # cmd has no double quotes, so wrapping in run-shell "..." is safe.
         tmux_cmd = f'run-shell "{cmd}"'
         result = subprocess.run(
-            ["tmux", "set-hook", "-g", f"{hook_name}[repowire]", tmux_cmd],
+            ["tmux", "set-hook", flag, f"{hook_name}[{_HOOK_INDEX}]", tmux_cmd],
             capture_output=True,
             text=True,
             timeout=5,
@@ -90,9 +97,10 @@ def uninstall_hooks() -> list[str]:
     Returns list of hook names successfully removed.
     """
     removed: list[str] = []
-    for hook_name in _HOOKS:
+    for hook_name, (flag, _) in _HOOKS.items():
+        unsetter = flag + "u"  # -g → -gu, -gw → -gwu
         result = subprocess.run(
-            ["tmux", "set-hook", "-gu", f"{hook_name}[repowire]"],
+            ["tmux", "set-hook", unsetter, f"{hook_name}[{_HOOK_INDEX}]"],
             capture_output=True,
             text=True,
             timeout=5,
