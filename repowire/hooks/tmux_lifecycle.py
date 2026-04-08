@@ -21,32 +21,38 @@ __all__ = ["is_tmux_available", "install_hooks", "uninstall_hooks"]
 # Tmux hook → curl command templates.
 # Format variables (#{...}) are expanded by tmux at fire time.
 # Named array hooks ([repowire] suffix) avoid clobbering user hooks.
+#
+# Templates use single quotes for -H and -d so the curl command contains
+# no double quotes. install_hooks wraps each as run-shell "..." — since
+# single quotes are literal inside tmux double quotes, the quoting is clean.
 _HOOKS: dict[str, str] = {
     "pane-died": (
-        'curl -sf -X POST http://{host}:{port}/hooks/lifecycle/pane-died'
-        ' -H "Content-Type: application/json"'
-        ' -d \'{{"pane_id":"#{{pane_id}}"}}\''
+        "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/pane-died"
+        " -H 'Content-Type: application/json'"
+        " -d '{{\"pane_id\":\"#{{pane_id}}\"}}'"
     ),
     "session-closed": (
-        'curl -sf -X POST http://{host}:{port}/hooks/lifecycle/session-closed'
-        ' -H "Content-Type: application/json"'
-        ' -d \'{{"session_name":"#{{session_name}}"}}\''
+        "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/session-closed"
+        " -H 'Content-Type: application/json'"
+        " -d '{{\"session_name\":\"#{{session_name}}\"}}'"
     ),
     "session-renamed": (
-        'curl -sf -X POST http://{host}:{port}/hooks/lifecycle/session-renamed'
-        ' -H "Content-Type: application/json"'
-        ' -d \'{{"old_name":"#{{hook_session_name}}","new_name":"#{{session_name}}"}}\''
+        "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/session-renamed"
+        " -H 'Content-Type: application/json'"
+        " -d '{{\"old_name\":\"#{{hook_session_name}}\""
+        ",\"new_name\":\"#{{session_name}}\"}}'"
     ),
     "window-renamed": (
-        'curl -sf -X POST http://{host}:{port}/hooks/lifecycle/window-renamed'
-        ' -H "Content-Type: application/json"'
-        ' -d \'{{"session_name":"#{{session_name}}"'
-        ',"old_name":"#{{hook_window_name}}","new_name":"#{{window_name}}"}}\''
+        "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/window-renamed"
+        " -H 'Content-Type: application/json'"
+        " -d '{{\"session_name\":\"#{{session_name}}\""
+        ",\"old_name\":\"#{{hook_window_name}}\""
+        ",\"new_name\":\"#{{window_name}}\"}}'"
     ),
     "client-detached": (
-        'curl -sf -X POST http://{host}:{port}/hooks/lifecycle/client-detached'
-        ' -H "Content-Type: application/json"'
-        ' -d \'{{"session_name":"#{{session_name}}"}}\''
+        "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/client-detached"
+        " -H 'Content-Type: application/json'"
+        " -d '{{\"session_name\":\"#{{session_name}}\"}}'"
     ),
 }
 
@@ -59,8 +65,11 @@ def install_hooks(host: str = "127.0.0.1", port: int = 8377) -> list[str]:
     installed: list[str] = []
     for hook_name, cmd_template in _HOOKS.items():
         cmd = cmd_template.format(host=host, port=port)
+        # Combine run-shell + command as one tmux command string.
+        # cmd has no double quotes, so wrapping in run-shell "..." is safe.
+        tmux_cmd = f'run-shell "{cmd}"'
         result = subprocess.run(
-            ["tmux", "set-hook", "-g", f"{hook_name}[repowire]", "run-shell", cmd],
+            ["tmux", "set-hook", "-g", f"{hook_name}[repowire]", tmux_cmd],
             capture_output=True,
             text=True,
             timeout=5,
@@ -68,7 +77,10 @@ def install_hooks(host: str = "127.0.0.1", port: int = 8377) -> list[str]:
         if result.returncode == 0:
             installed.append(hook_name)
         else:
-            logger.warning("Failed to install tmux hook %s: %s", hook_name, result.stderr.strip())
+            logger.warning(
+                "Failed to install tmux hook %s: %s",
+                hook_name, result.stderr.strip(),
+            )
     return installed
 
 

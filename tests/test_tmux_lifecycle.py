@@ -44,13 +44,14 @@ class TestInstallHooks:
         assert mock_run.call_count == len(_HOOKS)
 
         # Verify each call uses set-hook -g with [repowire] suffix
+        # and run-shell "..." as a single combined arg
         for call in mock_run.call_args_list:
             args = call[0][0]
             assert args[0] == "tmux"
             assert args[1] == "set-hook"
             assert args[2] == "-g"
             assert "[repowire]" in args[3]
-            assert args[4] == "run-shell"
+            assert args[4].startswith('run-shell "')
 
     def test_partial_failure(self):
         """Some hooks fail to install, rest succeed."""
@@ -75,8 +76,8 @@ class TestInstallHooks:
             install_hooks("10.0.0.1", 9999)
 
         for call in mock_run.call_args_list:
-            cmd = call[0][0][5]  # The run-shell command string
-            assert "10.0.0.1:9999" in cmd
+            tmux_cmd = call[0][0][4]  # run-shell "curl ..."
+            assert "10.0.0.1:9999" in tmux_cmd
 
 
 class TestUninstallHooks:
