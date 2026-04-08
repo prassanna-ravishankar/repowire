@@ -49,7 +49,7 @@ class TestInstallHooks:
             assert args[1] == "set-hook"
             assert args[2] in ("-g", "-gw")
             assert "[42]" in args[3]
-            assert args[4].startswith('run-shell "')
+            assert args[4].startswith("run-shell '")
 
     def test_window_hooks_use_gw_flag(self):
         with patch("subprocess.run") as mock_run:
