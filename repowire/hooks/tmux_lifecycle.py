@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from pathlib import Path
 
 from repowire.hooks._tmux import is_tmux_available
 
@@ -21,25 +22,16 @@ __all__ = ["is_tmux_available", "install_hooks", "uninstall_hooks"]
 # Numeric array index — avoids clobbering user hooks at default index [0].
 _HOOK_INDEX = 42
 
-def _pane_ids_snippet(scope: str = "") -> str:
-    """Shell snippet that expands to a JSON array of pane IDs.
-
-    scope: "-s" for all panes in the session, "" for current window only.
-    """
-    return (
-        f"$(tmux list-panes{scope} -F '#{{pane_id}}'"
-        """ | awk '{printf "\\\\\\"%s\\\\\\",", $0}'"""
-        " | sed 's/,$//')"
-    )
+# Shell script for rename hooks (avoids tmux quoting hell with $()).
+_RENAME_SCRIPT = Path(__file__).parent / "tmux_rename_hook.sh"
 
 # Hook definitions: list of (tmux_hook_name, tmux_flag, shell_command).
 #
 # tmux_flag: "-g" for session-level hooks, "-gw" for window-level hooks.
 # pane-exited (not pane-died, which requires remain-on-exit).
 #
-# Rename hooks use after-rename-* which fires post-rename. They collect
-# pane IDs to identify which peers to update (since tmux doesn't provide
-# the old name).
+# Rename hooks call an external script because tmux's command parser
+# can't handle $() subshells in run-shell arguments.
 _HOOKS: list[tuple[str, str, str]] = [
     # -- pane exit --
     (
@@ -47,7 +39,7 @@ _HOOKS: list[tuple[str, str, str]] = [
         "-gw",
         "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/pane-died"
         ' -H "Content-Type: application/json"'
-        ' -d "{\\"pane_id\\":\\"#{pane_id}\\\"}"',
+        ' -d "{\\"pane_id\\":\\"#{pane_id}\\"}"',
     ),
     # -- session close --
     (
@@ -56,31 +48,23 @@ _HOOKS: list[tuple[str, str, str]] = [
         "curl -sf -X POST"
         " http://{host}:{port}/hooks/lifecycle/session-closed"
         ' -H "Content-Type: application/json"'
-        ' -d "{\\"session_name\\":\\"#{session_name}\\\"}"',
+        ' -d "{\\"session_name\\":\\"#{session_name}\\"}"',
     ),
-    # -- session rename (post-rename, sends pane IDs) --
+    # -- session rename (post-rename, via helper script) --
     (
         "after-rename-session",
         "-g",
-        "curl -sf -X POST"
+        "{script}"
         " http://{host}:{port}/hooks/lifecycle/session-renamed"
-        ' -H "Content-Type: application/json"'
-        ' -d "{\\"new_name\\":\\"#{session_name}\\",\\"pane_ids\\":['
-        + _pane_ids_snippet(" -s")
-        + ']}"',
+        " #{session_name} '' -s",
     ),
-    # -- window rename (post-rename, sends pane IDs) --
+    # -- window rename (post-rename, via helper script) --
     (
         "after-rename-window",
         "-gw",
-        "curl -sf -X POST"
+        "{script}"
         " http://{host}:{port}/hooks/lifecycle/window-renamed"
-        ' -H "Content-Type: application/json"'
-        ' -d "{\\"session_name\\":\\"#{session_name}\\"'
-        ',\\"new_name\\":\\"#{window_name}\\"'
-        ',\\"pane_ids\\":['
-        + _pane_ids_snippet()
-        + ']}"',
+        " #{window_name} #{session_name} ''",
     ),
     # -- client detach --
     (
@@ -89,7 +73,7 @@ _HOOKS: list[tuple[str, str, str]] = [
         "curl -sf -X POST"
         " http://{host}:{port}/hooks/lifecycle/client-detached"
         ' -H "Content-Type: application/json"'
-        ' -d "{\\"session_name\\":\\"#{session_name}\\\"}"',
+        ' -d "{\\"session_name\\":\\"#{session_name}\\"}"',
     ),
 ]
 
@@ -99,10 +83,16 @@ def install_hooks(host: str = "127.0.0.1", port: int = 8377) -> list[str]:
 
     Returns list of hook names successfully installed.
     """
+    script = str(_RENAME_SCRIPT)
     installed: list[str] = []
     for hook_name, flag, cmd_template in _HOOKS:
-        cmd = cmd_template.replace("{host}", host).replace("{port}", str(port))
-        tmux_cmd = f"run-shell '{cmd}'"
+        cmd = (
+            cmd_template
+            .replace("{host}", host)
+            .replace("{port}", str(port))
+            .replace("{script}", script)
+        )
+        tmux_cmd = f'run-shell "{cmd}"'
         result = subprocess.run(
             ["tmux", "set-hook", flag, f"{hook_name}[{_HOOK_INDEX}]", tmux_cmd],
             capture_output=True,
