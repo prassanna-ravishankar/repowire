@@ -6,7 +6,7 @@ type: project
 
 Lifecycle events are provider-agnostic HTTP endpoints at `/hooks/lifecycle/*` (pane-died, session-closed, session-renamed, window-renamed, client-detached). The daemon doesn't know or care what fires them.
 
-Tmux hooks are registered as named array hooks (`pane-died[repowire]`) using `tmux set-hook -g` — global, idempotent, don't clobber user hooks. Installed at daemon startup and `repowire setup`, cleaned up on `repowire uninstall`.
+Tmux hooks use numeric array index `[42]` to avoid clobbering user hooks at `[0]`. Session-level hooks use `-g`, window-level use `-gw`. `pane-exited` (not `pane-died`) for pane exit. Rename hooks use `after-rename-*` with pane ID collection since tmux doesn't provide the old name. Installed at daemon startup and `repowire setup`, cleaned up on `repowire uninstall`.
 
 `lazy_repair` no longer polls — it only does debounced stale eviction + persistence. `active_repair` retains the ping/pong sweep for diagnostics.
 

@@ -80,18 +80,17 @@ class LifecycleHandler:
 
         Returns number of peers updated.
         """
-        count = 0
-        for pane_id in pane_ids:
+        async def _rename(pane_id: str) -> bool:
             peer = await self._registry.get_peer_by_pane(pane_id)
             if peer and peer.circle != new_name:
                 await self._registry.set_peer_circle(peer.peer_id, new_name)
-                count += 1
+                return True
+            return False
 
+        results = await asyncio.gather(*(_rename(pid) for pid in pane_ids))
+        count = sum(results)
         if count:
-            logger.info(
-                "session_renamed: moved %d peers → %s",
-                count, new_name,
-            )
+            logger.info("session_renamed: moved %d peers → %s", count, new_name)
         return count
 
     async def handle_window_renamed(
@@ -101,8 +100,7 @@ class LifecycleHandler:
 
         Returns number of peers updated.
         """
-        count = 0
-        for pane_id in pane_ids:
+        async def _rename(pane_id: str) -> bool:
             peer = await self._registry.get_peer_by_pane(pane_id)
             if peer and peer.display_name != new_name:
                 ok = await self._registry.update_peer_display_name(
@@ -113,9 +111,11 @@ class LifecycleHandler:
                         "window_renamed: %s → %s in circle %s",
                         peer.display_name, new_name, session_name,
                     )
-                    count += 1
+                return ok
+            return False
 
-        return count
+        results = await asyncio.gather(*(_rename(pid) for pid in pane_ids))
+        return sum(results)
 
     async def handle_client_detached(self, session_name: str) -> None:
         """Log client detach. No state change for now."""

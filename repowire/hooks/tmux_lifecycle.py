@@ -21,18 +21,16 @@ __all__ = ["is_tmux_available", "install_hooks", "uninstall_hooks"]
 # Numeric array index — avoids clobbering user hooks at default index [0].
 _HOOK_INDEX = 42
 
-# Shell snippet: build a JSON array of pane IDs.
-# These are NOT passed through .format() — they're spliced in after.
-_PANE_IDS_SESSION = (
-    "$(tmux list-panes -s -F '#{pane_id}'"
-    """ | awk '{printf "\\\\\\"%s\\\\\\",", $0}'"""
-    " | sed 's/,$//')"
-)
-_PANE_IDS_WINDOW = (
-    "$(tmux list-panes -F '#{pane_id}'"
-    """ | awk '{printf "\\\\\\"%s\\\\\\",", $0}'"""
-    " | sed 's/,$//')"
-)
+def _pane_ids_snippet(scope: str = "") -> str:
+    """Shell snippet that expands to a JSON array of pane IDs.
+
+    scope: "-s" for all panes in the session, "" for current window only.
+    """
+    return (
+        f"$(tmux list-panes{scope} -F '#{{pane_id}}'"
+        """ | awk '{printf "\\\\\\"%s\\\\\\",", $0}'"""
+        " | sed 's/,$//')"
+    )
 
 # Hook definitions: list of (tmux_hook_name, tmux_flag, shell_command).
 #
@@ -68,7 +66,7 @@ _HOOKS: list[tuple[str, str, str]] = [
         " http://{host}:{port}/hooks/lifecycle/session-renamed"
         ' -H "Content-Type: application/json"'
         ' -d "{\\"new_name\\":\\"#{session_name}\\",\\"pane_ids\\":['
-        + _PANE_IDS_SESSION
+        + _pane_ids_snippet(" -s")
         + ']}"',
     ),
     # -- window rename (post-rename, sends pane IDs) --
@@ -81,7 +79,7 @@ _HOOKS: list[tuple[str, str, str]] = [
         ' -d "{\\"session_name\\":\\"#{session_name}\\"'
         ',\\"new_name\\":\\"#{window_name}\\"'
         ',\\"pane_ids\\":['
-        + _PANE_IDS_WINDOW
+        + _pane_ids_snippet()
         + ']}"',
     ),
     # -- client detach --

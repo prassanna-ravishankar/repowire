@@ -197,8 +197,8 @@ def setup(
             )
             if installed:
                 console.print(f"[green]✓[/] Tmux lifecycle hooks ({len(installed)} hooks)")
-    except Exception:
-        pass  # tmux not available or not running
+    except Exception as e:
+        console.print(f"[dim]Tmux hooks skipped: {e}[/]")
 
     # Relay: flag, existing config, or interactive prompt
     if config.relay.enabled:
