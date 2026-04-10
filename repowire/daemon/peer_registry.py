@@ -925,10 +925,10 @@ class PeerRegistry:
     # ------------------------------------------------------------------
 
     async def lazy_repair(self) -> None:
-        """Debounced maintenance: evict stale peers, persist dirty state.
+        """Debounced maintenance: demote ghosts, evict stale, persist.
 
         Max 1x per 30s. Called from message/peer endpoints. Lifecycle hooks
-        and WebSocket disconnect handle liveness — this only does cleanup.
+        and WebSocket disconnect handle liveness — this catches stragglers.
         """
         if time.monotonic() - self._last_repair < 30.0:
             return
@@ -936,9 +936,32 @@ class PeerRegistry:
             if time.monotonic() - self._last_repair < 30.0:
                 return
             self._last_repair = time.monotonic()
+            await self._demote_disconnected_peers()
             await self._evict_stale_peers()
             self._save_events()
             self._persist_mappings()
+
+    async def _demote_disconnected_peers(self) -> int:
+        """Mark ONLINE/BUSY peers without a WebSocket connection as OFFLINE.
+
+        Catches ghost peers that registered via HTTP but whose ws-hook
+        never connected (e.g. pane died before ws-hook could start).
+        """
+        if not self._transport:
+            return 0
+        async with self._lock:
+            ghosts = [
+                p for p in self._peers.values()
+                if p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
+                and not self._transport.is_connected(p.peer_id)
+            ]
+        count = 0
+        for peer in ghosts:
+            await self.mark_offline(peer.peer_id)
+            count += 1
+        if count:
+            logger.info("demoted %d ghost peers (no WebSocket)", count)
+        return count
 
     async def _evict_stale_peers(self) -> int:
         """Evict long-offline peers from both _peers and _mappings.
