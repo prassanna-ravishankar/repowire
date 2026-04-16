@@ -97,6 +97,20 @@ class TestPeers:
         assert len(peers) == 1
         assert peers[0]["display_name"] == name
 
+    async def test_register_peer_with_pane_id(self, client):
+        r = await client.post("/peers", json={
+            "name": "panepeer",
+            "path": "/tmp/panepeer",
+            "circle": "default",
+            "backend": "claude-code",
+            "pane_id": "%77",
+        })
+        assert r.status_code == 200
+
+        r = await client.get("/peers/by-pane/%2577")
+        assert r.status_code == 200
+        assert r.json()["display_name"] == "panepeer-claude-code"
+
     async def test_get_peer_by_name(self, client):
         r = await client.post("/peers", json={
             "name": "mypeer",

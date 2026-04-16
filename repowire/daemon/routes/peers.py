@@ -67,6 +67,7 @@ class RegisterPeerRequest(BaseModel):
     path: str | None = Field(None, description="Working directory path")
     machine: str | None = Field(None, description="Machine hostname")
     tmux_session: str | None = Field(None, description="Tmux session:window")
+    pane_id: str | None = Field(None, description="Tmux pane ID")
     backend: AgentType = Field(default=AgentType.CLAUDE_CODE, description="Agent type")
     circle: str | None = Field(None, description="Circle (logical subnet)")
     role: PeerRole = Field(default=PeerRole.AGENT, description="Peer role")
@@ -152,6 +153,7 @@ async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str]:
         circle=circle,
         backend=request.backend,
         path=request.path or "",
+        pane_id=request.pane_id,
         tmux_session=request.tmux_session,
         metadata=request.metadata,
         machine=request.machine or socket.gethostname(),

@@ -11,14 +11,30 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
-from repowire.config.models import CACHE_DIR, AgentType
+from repowire.config.models import AgentType
 from repowire.hooks._tmux import get_tmux_info
-from repowire.hooks.utils import daemon_get, daemon_post, get_pane_file
+from repowire.hooks.utils import (
+    clear_pane_runtime_state,
+    daemon_get,
+    daemon_post,
+    get_pane_file,
+    pane_logs_dir,
+    read_pane_runtime_metadata,
+    write_pane_runtime_metadata,
+    ws_hook_lock_path,
+    ws_hook_pid_path,
+)
 
 
 def _register_peer_http(
-    path: str, circle: str, backend: AgentType, metadata: dict | None = None
+    path: str,
+    circle: str,
+    backend: AgentType,
+    *,
+    pane_id: str | None = None,
+    metadata: dict | None = None,
 ) -> tuple[str | None, str | None]:
     """Register peer via HTTP POST /peers. Returns (peer_id, display_name)."""
     folder = Path(path).name
@@ -28,6 +44,8 @@ def _register_peer_http(
         "circle": circle,
         "backend": backend,
     }
+    if pane_id:
+        payload["pane_id"] = pane_id
     if metadata:
         payload["metadata"] = metadata
     result = daemon_post("/peers", payload)
@@ -64,6 +82,23 @@ def fetch_peers() -> list[dict] | None:
     if result:
         return result.get("peers", [])
     return None
+
+
+def _get_peer_id_for_pane(pane_id: str | None) -> str | None:
+    """Resolve the current daemon peer_id for a pane, if any."""
+    if not pane_id:
+        return None
+    result = daemon_get(f"/peers/by-pane/{quote(pane_id, safe='')}")
+    if result:
+        return result.get("peer_id")
+    return None
+
+
+def _mark_peer_offline(peer_id: str | None) -> None:
+    """Best-effort offline mark to cancel stale queries before pane takeover."""
+    if not peer_id:
+        return
+    daemon_post(f"/peers/{quote(peer_id, safe='')}/offline", {})
 
 
 def format_peers_context(peers: list[dict], my_name: str) -> str:
@@ -119,6 +154,7 @@ def main(backend: str = "claude-code") -> int:
 
     event = input_data.get("hook_event_name")
     cwd = input_data.get("cwd", os.getcwd())
+    hook_session_id = input_data.get("session_id", "")
 
     # Convert backend string to AgentType
     try:
@@ -134,35 +170,35 @@ def main(backend: str = "claude-code") -> int:
     folder_name = get_peer_name(cwd)
 
     if event == "SessionStart":
-        # Ephemeral tool sub-sessions (Haiku-proxied) fire SessionStart too.
-        # Skip entirely if a ws-hook is already running for this pane
-        # AND the working directory hasn't changed (same project).
-        # Uses flock instead of PID probe to avoid TOCTOU races.
+        # One ws-hook owns a pane at a time. A repeated SessionStart with the
+        # same hook session_id is treated as an ephemeral sub-session of the
+        # same live run. Anything else is a real takeover and starts fresh.
         pane_file = get_pane_file(pane_id)
-        log_dir = CACHE_DIR / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        lock_path = log_dir / f"ws-hook-{pane_file}.lock"
-        pid_path = log_dir / f"ws-hook-{pane_file}.pid"
-        cwd_path = log_dir / f"ws-hook-{pane_file}.cwd"
+        log_dir = pane_logs_dir()
+        lock_path = ws_hook_lock_path(pane_id)
+        pid_path = ws_hook_pid_path(pane_id)
+        prior_peer_id: str | None = None
         lock_fd = open(lock_path, "w")  # noqa: SIM115
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            # ws-hook alive -- check if it's the same project or a stale session
-            try:
-                old_cwd = cwd_path.read_text().strip()
-            except OSError:
-                old_cwd = ""
-            if old_cwd == cwd:
+            old_meta = read_pane_runtime_metadata(pane_id)
+            same_live_session = (
+                bool(hook_session_id)
+                and old_meta.get("hook_session_id") == hook_session_id
+                and old_meta.get("cwd") == cwd
+                and old_meta.get("backend") == backend
+            )
+            if same_live_session:
                 lock_fd.close()
-                return 0  # genuine sub-session, same project
-            # Different cwd -- new session in same pane, kill old ws-hook
+                return 0
+
+            prior_peer_id = old_meta.get("peer_id") or _get_peer_id_for_pane(pane_id)
             try:
                 old_pid = int(pid_path.read_text().strip())
                 os.kill(old_pid, signal.SIGTERM)
             except (OSError, ValueError):
-                pass  # already dead or pid file missing
-            # Re-acquire flock with timeout (SIGTERM may take a moment)
+                pass
             for _ in range(10):
                 try:
                     fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -170,7 +206,6 @@ def main(backend: str = "claude-code") -> int:
                 except OSError:
                     time.sleep(0.5)
             else:
-                # Old process didn't release lock, force kill
                 try:
                     old_pid = int(pid_path.read_text().strip())
                     os.kill(old_pid, signal.SIGKILL)
@@ -178,12 +213,34 @@ def main(backend: str = "claude-code") -> int:
                     pass
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
+        if prior_peer_id:
+            _mark_peer_offline(prior_peer_id)
+
+        clear_pane_runtime_state(pane_id)
+
         # Register peer via HTTP -- daemon assigns peer_id and display_name.
         circle = tmux_info["session_name"] or "default"
         metadata = {"project": folder_name}
-        peer_id, display_name = _register_peer_http(cwd, circle, backend_type, metadata=metadata)
+        peer_id, display_name = _register_peer_http(
+            cwd,
+            circle,
+            backend_type,
+            pane_id=pane_id,
+            metadata=metadata,
+        )
         if not display_name:
             display_name = folder_name  # fallback if daemon unreachable
+
+        write_pane_runtime_metadata(
+            pane_id,
+            {
+                "backend": backend,
+                "cwd": cwd,
+                "display_name": display_name,
+                "hook_session_id": hook_session_id,
+                "peer_id": peer_id,
+            },
+        )
 
         # Launch async WebSocket hook in background — one per pane.
         try:
@@ -206,7 +263,6 @@ def main(backend: str = "claude-code") -> int:
                         pass_fds=(lock_fd.fileno(),),
                     )
                     pid_path.write_text(str(proc.pid))
-                    cwd_path.write_text(cwd)
                 finally:
                     log_file.close()
                     lock_fd.close()  # child inherits flock; parent releases fd

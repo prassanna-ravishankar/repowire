@@ -22,13 +22,23 @@ except ImportError as e:
 
 from repowire.config.models import AgentType
 from repowire.hooks._tmux import get_tmux_info
-from repowire.hooks.utils import get_display_name, pending_cid_path
+from repowire.hooks.utils import (
+    clear_pane_runtime_state,
+    get_display_name,
+    pending_cid_path,
+    read_pane_runtime_metadata,
+    write_pane_runtime_metadata,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Set once at startup in main() — guards against pane reuse by a different agent
 _expected_command: str | None = None
+
+
+class PaneUnsafeError(RuntimeError):
+    """Raised when the pane no longer belongs to the expected live agent."""
 
 
 def _push_pending_cid(pane_id: str, correlation_id: str) -> None:
@@ -145,7 +155,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 )
             except Exception:
                 pass
-        return
+        raise PaneUnsafeError(f"Pane {pane_id} no longer matches the expected agent")
 
     if msg_type == "query":
         correlation_id = data.get("correlation_id", "")
@@ -169,6 +179,8 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                             }
                         )
                     )
+                if not await asyncio.to_thread(_is_pane_safe, pane_id):
+                    raise PaneUnsafeError(error_msg)
         except Exception as e:
             logger.error(f"Failed to inject query: {e}")
             if websocket:
@@ -184,6 +196,8 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                     )
                 except Exception:
                     pass
+            if not await asyncio.to_thread(_is_pane_safe, pane_id):
+                raise PaneUnsafeError(str(e)) from e
 
     elif msg_type == "notify":
         try:
@@ -222,7 +236,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 pass
         if not pane_alive:
             logger.info(f"Pane {pane_id} dead on ping, exiting")
-            os._exit(0)
+            raise PaneUnsafeError(f"Pane {pane_id} is no longer safe")
 
 
 async def main() -> int:
@@ -279,15 +293,28 @@ async def main() -> int:
                 if response.get("type") == "connected":
                     session_id = response["session_id"]
                     logger.info(f"Connected with session_id: {session_id}")
+                    metadata = read_pane_runtime_metadata(pane_id)
+                    metadata.update({
+                        "backend": backend.value,
+                        "cwd": path,
+                        "display_name": response.get("display_name", display_name),
+                        "peer_id": session_id,
+                    })
+                    write_pane_runtime_metadata(pane_id, metadata)
                 else:
                     logger.error(f"Unexpected response: {response}, retrying...")
                     await asyncio.sleep(2)
                     continue
 
                 # Message loop — fully reactive, no polling tasks
-                async for message in websocket:
-                    data = json.loads(message)
-                    await handle_message(data, pane_id, websocket)
+                try:
+                    async for message in websocket:
+                        data = json.loads(message)
+                        await handle_message(data, pane_id, websocket)
+                except PaneUnsafeError as e:
+                    logger.info("%s", e)
+                    clear_pane_runtime_state(pane_id)
+                    return 0
 
         except websockets.exceptions.ConnectionClosed as e:
             attempt += 1

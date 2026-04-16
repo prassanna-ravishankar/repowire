@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -102,6 +103,25 @@ class TestPaneDied:
 
         result = await registry.get_peer(peer.peer_id)
         assert result.status == PeerStatus.OFFLINE
+
+    async def test_clears_pending_pane_state(self, client_and_registry, tmp_path):
+        client, registry = client_and_registry
+        peer = _make_peer(pane_id="%5")
+        await registry.register_peer(peer)
+
+        with patch("repowire.config.models.CACHE_DIR", tmp_path):
+            log_dir = tmp_path / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            pending_path = log_dir / "pending-5.json"
+            pending_path.write_text('["cid-1"]')
+
+            r = await client.post(
+                "/hooks/lifecycle/pane-died",
+                json={"pane_id": "%5"},
+            )
+
+            assert r.status_code == 200
+            assert not pending_path.exists()
 
     async def test_unknown_pane_is_ok(self, client_and_registry):
         client, _ = client_and_registry

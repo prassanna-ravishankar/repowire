@@ -468,3 +468,71 @@ class TestMcpSpawnPeerReturn:
         assert result != "prod:alpha-svc"
 
 
+class TestMcpRegistration:
+    """Tests for MCP lazy registration behavior."""
+
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    @patch(
+        "repowire.mcp.server.get_tmux_info",
+        return_value={"pane_id": "%1", "session_name": "0", "window_name": "repowire"},
+    )
+    async def test_tmux_lazy_registration_uses_pane_and_circle(
+        self, _mock_tmux, mock_request: AsyncMock,
+    ) -> None:
+        """Tmux-backed MCP registration should converge on the pane-owned circle."""
+        import repowire.mcp.server as mcp_server
+
+        mcp_server._registered = False
+        mcp_server._cached_peer_name = None
+        mock_request.side_effect = [
+            Exception("not found"),
+            {"display_name": "repowire-codex"},
+        ]
+
+        with patch.dict("repowire.mcp.server.os.environ", {"PATH": "/tmp/.codex/bin"}):
+            await mcp_server._ensure_registered()
+
+        assert mock_request.await_count == 2
+        assert mock_request.await_args_list[0].args == ("GET", "/peers/by-pane/%251")
+        assert mock_request.await_args_list[1].args == (
+            "POST",
+            "/peers",
+            {
+                "name": "repowire",
+                "path": str(mcp_server.Path.cwd()),
+                "circle": "0",
+                "backend": "codex",
+                "pane_id": "%1",
+            },
+        )
+        assert mcp_server._cached_peer_name == "repowire-codex"
+
+        mcp_server._registered = False
+        mcp_server._cached_peer_name = None
+
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    @patch(
+        "repowire.mcp.server.get_tmux_info",
+        return_value={"pane_id": "%1", "session_name": "0", "window_name": "repowire"},
+    )
+    async def test_existing_pane_peer_skips_registration(
+        self, _mock_tmux, mock_request: AsyncMock,
+    ) -> None:
+        """If the pane already has a peer, MCP should not create a duplicate."""
+        import repowire.mcp.server as mcp_server
+
+        mcp_server._registered = False
+        mcp_server._cached_peer_name = None
+        mock_request.return_value = {"display_name": "repowire-codex"}
+
+        await mcp_server._ensure_registered()
+
+        assert mock_request.await_count == 1
+        assert mock_request.await_args_list[0].args == ("GET", "/peers/by-pane/%251")
+        assert mcp_server._cached_peer_name == "repowire-codex"
+
+        mcp_server._registered = False
+        mcp_server._cached_peer_name = None
+

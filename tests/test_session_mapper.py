@@ -153,3 +153,20 @@ async def test_new_pane_registration_clears_old_peer_pane_id(tmp_path):
     old_peer = await registry.get_peer(old_name)
     assert old_peer is not None
     assert old_peer.pane_id is None
+
+
+@pytest.mark.asyncio
+async def test_lookup_prefers_pane_owned_peer_when_names_collide(tmp_path):
+    """Name lookup should prefer the live pane-owned peer over a generic duplicate."""
+    registry = _make_registry(tmp_path)
+
+    await registry.allocate_and_register(
+        circle="default", backend=AgentType.CODEX, path="/tmp/repowire",
+    )
+    pane_peer_id, _pane_name = await registry.allocate_and_register(
+        circle="0", backend=AgentType.CODEX, path="/tmp/repowire", pane_id="%1",
+    )
+
+    peer = await registry.get_peer("repowire-codex")
+    assert peer is not None
+    assert peer.peer_id == pane_peer_id

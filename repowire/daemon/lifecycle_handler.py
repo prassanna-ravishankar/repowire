@@ -10,6 +10,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from repowire.hooks.utils import clear_pane_runtime_state
+
 if TYPE_CHECKING:
     from repowire.daemon.peer_registry import PeerRegistry
     from repowire.daemon.query_tracker import QueryTracker
@@ -39,10 +41,12 @@ class LifecycleHandler:
         peer = await self._registry.get_peer_by_pane(pane_id)
         if not peer:
             logger.debug("pane_died: no peer for pane %s", pane_id)
+            clear_pane_runtime_state(pane_id)
             return 0
 
         cancelled = await self._registry.mark_offline(peer.peer_id)
         await self._transport.disconnect(peer.peer_id)
+        clear_pane_runtime_state(pane_id)
         logger.info("pane_died: %s (%s) marked offline", peer.display_name, pane_id)
         return cancelled
 
@@ -57,8 +61,11 @@ class LifecycleHandler:
             return 0
 
         async def _offline(peer_id: str) -> int:
+            peer = await self._registry.get_peer(peer_id)
             cancelled = await self._registry.mark_offline(peer_id)
             await self._transport.disconnect(peer_id)
+            if peer and peer.pane_id:
+                clear_pane_runtime_state(peer.pane_id)
             return cancelled
 
         results = await asyncio.gather(

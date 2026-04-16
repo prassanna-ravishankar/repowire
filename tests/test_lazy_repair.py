@@ -131,6 +131,23 @@ class TestLazyRepairDebounce:
         await manager.lazy_repair()
         assert await manager.get_peer(peer2.peer_id) is None
 
+    async def test_connected_unsafe_peer_is_demoted(self):
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.is_connected = MagicMock(return_value=True)
+        transport.ping = AsyncMock(return_value={"type": "pong", "pane_alive": False})
+        qt = MagicMock()
+        qt.cancel_queries_to_peer = AsyncMock(return_value=0)
+        manager = _make_manager(transport=transport, query_tracker=qt)
+
+        peer = _make_peer(pane_id="%5", status=PeerStatus.ONLINE)
+        await manager.register_peer(peer)
+
+        await manager.lazy_repair()
+
+        result = await manager.get_peer(peer.peer_id)
+        assert result.status == PeerStatus.OFFLINE
+        transport.ping.assert_awaited_once_with(peer.peer_id, timeout=1.0)
+
 
 # -- active_repair liveness checks --
 

@@ -242,7 +242,14 @@ class PeerRegistry:
         if len(matches) == 1:
             return matches[0]
         active = [p for p in matches if p.status != PeerStatus.OFFLINE]
-        return active[0] if active else matches[0]
+        candidates = active or matches
+
+        def preference(peer: Peer) -> tuple[bool, bool, float]:
+            connected = bool(self._transport and self._transport.is_connected(peer.peer_id))
+            last_seen = peer.last_seen.timestamp() if peer.last_seen else 0.0
+            return connected, bool(peer.pane_id), last_seen
+
+        return max(candidates, key=preference)
 
     @staticmethod
     def _sanitize_folder_name(name: str) -> str:
@@ -937,6 +944,7 @@ class PeerRegistry:
                 return
             self._last_repair = time.monotonic()
             await self._demote_disconnected_peers()
+            await self._demote_unsafe_connected_peers()
             await self._evict_stale_peers()
             self._save_events()
             self._persist_mappings()
@@ -961,6 +969,41 @@ class PeerRegistry:
             count += 1
         if count:
             logger.info("demoted %d ghost peers (no WebSocket)", count)
+        return count
+
+    async def _demote_unsafe_connected_peers(self) -> int:
+        """Mark connected tmux peers OFFLINE if their pane is no longer safe."""
+        transport = self._transport
+        if not transport:
+            return 0
+
+        async with self._lock:
+            targets = [
+                p.peer_id for p in self._peers.values()
+                if p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
+                and p.pane_id
+                and p.backend != AgentType.OPENCODE
+                and transport.is_connected(p.peer_id)
+            ]
+
+        async def check(peer_id: str) -> tuple[str, bool]:
+            try:
+                pong = await transport.ping(peer_id, timeout=1.0)
+                return peer_id, bool(pong.get("pane_alive", True))
+            except Exception:
+                return peer_id, False
+
+        results = await asyncio.gather(*(check(peer_id) for peer_id in targets))
+        count = 0
+        for peer_id, pane_alive in results:
+            if pane_alive:
+                continue
+            await self.mark_offline(peer_id)
+            await transport.disconnect(peer_id)
+            count += 1
+
+        if count:
+            logger.info("demoted %d unsafe connected peers", count)
         return count
 
     async def _evict_stale_peers(self) -> int:

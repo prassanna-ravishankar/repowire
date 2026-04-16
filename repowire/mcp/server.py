@@ -12,7 +12,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 from repowire.config.models import DEFAULT_DAEMON_URL
-from repowire.hooks._tmux import get_pane_id
+from repowire.hooks._tmux import get_pane_id, get_tmux_info
 from repowire.hooks.utils import get_display_name
 from repowire.protocol.errors import DaemonConnectionError, DaemonHTTPError, DaemonTimeoutError
 
@@ -92,13 +92,28 @@ async def _ensure_registered() -> None:
     global _registered, _cached_peer_name
     if _registered:
         return
-    _registered = True
-    name = await _get_my_peer_name()
-    try:
-        await daemon_request("GET", f"/peers/{name}")
-        return  # Already registered -- skip
-    except Exception:
-        pass
+
+    tmux_info = get_tmux_info()
+    pane_id = tmux_info["pane_id"]
+    if pane_id:
+        try:
+            result = await daemon_request("GET", f"/peers/by-pane/{quote(pane_id, safe='')}")
+            name = result.get("display_name") or result.get("peer_id")
+            if name:
+                _cached_peer_name = name
+            _registered = True
+            return
+        except Exception:
+            pass
+    else:
+        name = await _get_my_peer_name()
+        try:
+            await daemon_request("GET", f"/peers/{quote(name, safe='')}")
+            _registered = True
+            return
+        except Exception:
+            pass
+
     # Detect backend from env set by each agent runtime
     if os.environ.get("GEMINI_CLI"):
         backend = "gemini"
@@ -107,16 +122,20 @@ async def _ensure_registered() -> None:
     else:
         backend = os.environ.get("REPOWIRE_BACKEND", "claude-code")
     try:
-        result = await daemon_request("POST", "/peers", {
+        body: dict = {
             "name": Path.cwd().name,
             "path": str(Path.cwd()),
-            "circle": "default",
+            "circle": tmux_info["session_name"] or "default",
             "backend": backend,
-        })
+        }
+        if pane_id:
+            body["pane_id"] = pane_id
+        result = await daemon_request("POST", "/peers", body)
         # Cache the daemon-assigned name
         assigned = result.get("display_name")
         if assigned:
             _cached_peer_name = assigned
+        _registered = True
     except Exception:
         pass  # Best-effort -- daemon may be down
 
