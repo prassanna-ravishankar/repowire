@@ -127,11 +127,17 @@ async def _ensure_registered() -> None:
 
     backend = _detect_backend()
 
+    try:
+        cwd = Path.cwd()
+    except OSError as e:
+        logger.warning("Cannot resolve cwd for MCP registration: %s", e)
+        return
+
     # Last-resort identity resolution: find hook-registered peer by path+backend.
     # Avoids creating a duplicate when MCP subprocess lacks tmux env vars.
     try:
         result = await daemon_request("GET", "/peers", params={
-            "path": str(Path.cwd()),
+            "path": str(cwd),
             "backend": backend,
             "status": "online",
         })
@@ -151,8 +157,8 @@ async def _ensure_registered() -> None:
 
     try:
         body: dict = {
-            "name": Path.cwd().name,
-            "path": str(Path.cwd()),
+            "name": cwd.name,
+            "path": str(cwd),
             "circle": tmux_info["session_name"] or "default",
             "backend": backend,
         }
