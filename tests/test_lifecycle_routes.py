@@ -210,7 +210,8 @@ class TestSessionRenamed:
 
 
 class TestWindowRenamed:
-    async def test_updates_display_name(self, client_and_registry):
+    async def test_does_not_update_display_name(self, client_and_registry):
+        """Window renames must not rewrite peer display_name (would strip backend suffix)."""
         client, registry = client_and_registry
         peer = _make_peer(display_name="old-window", circle="alpha", pane_id="%5")
         await registry.register_peer(peer)
@@ -226,7 +227,7 @@ class TestWindowRenamed:
         assert r.status_code == 200
 
         result = await registry.get_peer(peer.peer_id)
-        assert result.display_name == "new-window"
+        assert result.display_name == "old-window"
 
 
 # -- client-detached --

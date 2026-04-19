@@ -103,26 +103,17 @@ class LifecycleHandler:
     async def handle_window_renamed(
         self, session_name: str, new_name: str, pane_ids: list[str],
     ) -> int:
-        """Update display name for peers identified by their pane IDs.
+        """No-op. Window renames must not rewrite peer display_name.
 
-        Returns number of peers updated.
+        Why: Renaming would strip the backend suffix (e.g. -claude-code, -codex)
+        and create name collisions across backends sharing the same pane group.
+        Session registration is the sole source of peer naming.
         """
-        async def _rename(pane_id: str) -> bool:
-            peer = await self._registry.get_peer_by_pane(pane_id)
-            if peer and peer.display_name != new_name:
-                ok = await self._registry.update_peer_display_name(
-                    peer.peer_id, new_name,
-                )
-                if ok:
-                    logger.info(
-                        "window_renamed: %s → %s in circle %s",
-                        peer.display_name, new_name, session_name,
-                    )
-                return ok
-            return False
-
-        results = await asyncio.gather(*(_rename(pid) for pid in pane_ids))
-        return sum(results)
+        logger.debug(
+            "window_renamed ignored: session=%s new_name=%s panes=%d",
+            session_name, new_name, len(pane_ids),
+        )
+        return 0
 
     async def handle_client_detached(self, session_name: str) -> None:
         """Log client detach. No state change for now."""

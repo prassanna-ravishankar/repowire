@@ -91,9 +91,11 @@ class UnregisterPeerRequest(BaseModel):
 @router.get("/peers", response_model=PeersResponse)
 async def list_peers(
     status: str | None = Query(None, description="Filter by status", enum=["online", "offline"]),
+    path: str | None = Query(None, description="Filter by absolute path"),
+    backend: str | None = Query(None, description="Filter by backend"),
     _: str | None = Depends(require_auth),
 ) -> PeersResponse:
-    """Get list of all registered peers, optionally filtered by status."""
+    """Get list of all registered peers, optionally filtered."""
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
     peers = await peer_registry.get_all_peers()
@@ -102,6 +104,10 @@ async def list_peers(
         peers = [p for p in peers if p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)]
     elif status == "offline":
         peers = [p for p in peers if p.status == PeerStatus.OFFLINE]
+    if path:
+        peers = [p for p in peers if p.path == path]
+    if backend:
+        peers = [p for p in peers if p.backend == backend]
 
     return PeersResponse(peers=[_peer_to_info(p) for p in peers])
 

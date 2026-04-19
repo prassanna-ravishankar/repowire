@@ -486,16 +486,17 @@ class TestMcpRegistration:
         mcp_server._registered = False
         mcp_server._cached_peer_name = None
         mock_request.side_effect = [
-            Exception("not found"),
-            {"display_name": "repowire-codex"},
+            Exception("not found"),  # /peers/by-pane lookup
+            {"peers": []},  # /peers?path&backend fallback
+            {"display_name": "repowire-codex"},  # POST /peers
         ]
 
         with patch.dict("repowire.mcp.server.os.environ", {"PATH": "/tmp/.codex/bin"}):
             await mcp_server._ensure_registered()
 
-        assert mock_request.await_count == 2
+        assert mock_request.await_count == 3
         assert mock_request.await_args_list[0].args == ("GET", "/peers/by-pane/%251")
-        assert mock_request.await_args_list[1].args == (
+        assert mock_request.await_args_list[2].args == (
             "POST",
             "/peers",
             {
@@ -507,6 +508,43 @@ class TestMcpRegistration:
             },
         )
         assert mcp_server._cached_peer_name == "repowire-codex"
+
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    @patch("repowire.mcp.server.get_pane_id", return_value=None)
+    @patch(
+        "repowire.mcp.server.get_tmux_info",
+        return_value={"pane_id": None, "session_name": None, "window_name": None},
+    )
+    async def test_lazy_registration_adopts_existing_peer_by_path_backend(
+        self, _mock_tmux, _mock_pane, mock_request: AsyncMock,
+    ) -> None:
+        """When pane lookup fails, MCP should adopt hook-registered peer matching path+backend."""
+        import repowire.mcp.server as mcp_server
+
+        mcp_server._registered = False
+        mcp_server._cached_peer_name = None
+        mock_request.side_effect = [
+            Exception("name lookup fails"),  # GET /peers/<cwd-name>
+            {"peers": [{"display_name": "torale-seo", "tmux_session": "0:0"}]},
+        ]
+
+        with patch.dict("repowire.mcp.server.os.environ", {"PATH": "/tmp/.codex/bin"}):
+            await mcp_server._ensure_registered()
+
+        assert mcp_server._cached_peer_name == "torale-seo"
+        assert mcp_server._registered is True
+        # Should NOT have made a POST to register a duplicate peer
+        post_calls = [c for c in mock_request.await_args_list if c.args[0] == "POST"]
+        assert len(post_calls) == 0
+        # Path+backend query should have been made
+        get_calls = [c for c in mock_request.await_args_list if c.args[0] == "GET"]
+        path_backend_call = next(
+            (c for c in get_calls if c.args[1] == "/peers" and "params" in c.kwargs),
+            None,
+        )
+        assert path_backend_call is not None
+        assert path_backend_call.kwargs["params"]["backend"] == "codex"
 
         mcp_server._registered = False
         mcp_server._cached_peer_name = None

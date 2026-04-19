@@ -212,6 +212,37 @@ class TestPeers:
         assert len(peers) == 1
         assert peers[0]["display_name"] == offline_name
 
+    async def test_list_peers_path_backend_filter(self, client):
+        await client.post("/peers", json={
+            "name": "alpha", "path": "/tmp/proj-x",
+            "circle": "default", "backend": "claude-code",
+        })
+        await client.post("/peers", json={
+            "name": "beta", "path": "/tmp/proj-x",
+            "circle": "default", "backend": "codex",
+        })
+        await client.post("/peers", json={
+            "name": "gamma", "path": "/tmp/proj-y",
+            "circle": "default", "backend": "claude-code",
+        })
+
+        r = await client.get("/peers", params={"path": "/tmp/proj-x"})
+        assert {p["backend"] for p in r.json()["peers"]} == {"claude-code", "codex"}
+        assert all(p["path"] == "/tmp/proj-x" for p in r.json()["peers"])
+
+        r = await client.get("/peers", params={"backend": "codex"})
+        peers = r.json()["peers"]
+        assert len(peers) == 1
+        assert peers[0]["backend"] == "codex"
+
+        r = await client.get(
+            "/peers", params={"path": "/tmp/proj-x", "backend": "claude-code"},
+        )
+        peers = r.json()["peers"]
+        assert len(peers) == 1
+        assert peers[0]["path"] == "/tmp/proj-x"
+        assert peers[0]["backend"] == "claude-code"
+
 
 # -- Events --
 

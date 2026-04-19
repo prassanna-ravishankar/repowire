@@ -84,6 +84,15 @@ async def _get_my_peer_name() -> str:
     return _cached_peer_name
 
 
+def _detect_backend() -> str:
+    """Detect which agent runtime is hosting this MCP server."""
+    if os.environ.get("GEMINI_CLI"):
+        return "gemini"
+    if ".codex/" in os.environ.get("PATH", ""):
+        return "codex"
+    return os.environ.get("REPOWIRE_BACKEND", "claude-code")
+
+
 async def _ensure_registered() -> None:
     """Lazy-register this peer with the daemon on first MCP tool use.
 
@@ -116,13 +125,30 @@ async def _ensure_registered() -> None:
         except Exception:
             pass
 
-    # Detect backend from env set by each agent runtime
-    if os.environ.get("GEMINI_CLI"):
-        backend = "gemini"
-    elif ".codex/" in os.environ.get("PATH", ""):
-        backend = "codex"
-    else:
-        backend = os.environ.get("REPOWIRE_BACKEND", "claude-code")
+    backend = _detect_backend()
+
+    # Last-resort identity resolution: find hook-registered peer by path+backend.
+    # Avoids creating a duplicate when MCP subprocess lacks tmux env vars.
+    try:
+        result = await daemon_request("GET", "/peers", params={
+            "path": str(Path.cwd()),
+            "backend": backend,
+            "status": "online",
+        })
+        candidates = result.get("peers", [])
+        if candidates:
+            candidates.sort(
+                key=lambda p: (bool(p.get("tmux_session")), p.get("last_seen") or ""),
+                reverse=True,
+            )
+            assigned = candidates[0].get("display_name")
+            if assigned:
+                _cached_peer_name = assigned
+                _registered = True
+                return
+    except Exception:
+        pass
+
     try:
         body: dict = {
             "name": Path.cwd().name,
