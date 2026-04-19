@@ -146,8 +146,8 @@ async def _ensure_registered() -> None:
                 _cached_peer_name = assigned
                 _registered = True
                 return
-    except Exception:
-        pass
+    except (DaemonConnectionError, DaemonHTTPError, DaemonTimeoutError) as e:
+        logger.debug("Path+backend peer lookup failed: %s", e)
 
     try:
         body: dict = {

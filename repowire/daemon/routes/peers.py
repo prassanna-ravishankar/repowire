@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import socket
 from typing import Any
@@ -107,22 +108,19 @@ async def list_peers(
         peers = [p for p in peers if p.status == PeerStatus.OFFLINE]
     if path:
         # Normalize symlinks so registrations using different path forms still match.
-        # Cache realpath per unique stored path; only resolve when string equality fails.
-        target = os.path.realpath(path)
-        realpath_cache: dict[str, str] = {}
+        # realpath is blocking I/O; resolve every unique path once in a thread.
+        string_matches = [p for p in peers if p.path == path]
+        mismatched = [p for p in peers if p.path and p.path != path]
 
-        def _matches(p: Peer) -> bool:
-            if not p.path:
-                return False
-            if p.path == path:
-                return True
-            resolved = realpath_cache.get(p.path)
-            if resolved is None:
-                resolved = os.path.realpath(p.path)
-                realpath_cache[p.path] = resolved
-            return resolved == target
+        def _resolve_all(paths: list[str]) -> dict[str, str]:
+            unique = {p: os.path.realpath(p) for p in set(paths)}
+            return unique
 
-        peers = [p for p in peers if _matches(p)]
+        target, resolved_map = await asyncio.gather(
+            asyncio.to_thread(os.path.realpath, path),
+            asyncio.to_thread(_resolve_all, [p.path for p in mismatched]),
+        )
+        peers = string_matches + [p for p in mismatched if resolved_map.get(p.path) == target]
     if backend:
         peers = [p for p in peers if p.backend == backend]
 
