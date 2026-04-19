@@ -157,7 +157,7 @@ async def _ensure_registered() -> None:
 
     try:
         body: dict = {
-            "name": cwd.name,
+            "name": cwd.name or "root",
             "path": str(cwd),
             "circle": tmux_info["session_name"] or "default",
             "backend": backend,
