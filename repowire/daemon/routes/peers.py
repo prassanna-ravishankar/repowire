@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 from typing import Any
 
@@ -105,7 +106,12 @@ async def list_peers(
     elif status == "offline":
         peers = [p for p in peers if p.status == PeerStatus.OFFLINE]
     if path:
-        peers = [p for p in peers if p.path == path]
+        # Normalize symlinks so registrations using different path forms still match
+        target = os.path.realpath(path)
+        peers = [
+            p for p in peers
+            if p.path and (p.path == path or os.path.realpath(p.path) == target)
+        ]
     if backend:
         peers = [p for p in peers if p.backend == backend]
 

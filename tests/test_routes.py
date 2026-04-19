@@ -212,6 +212,22 @@ class TestPeers:
         assert len(peers) == 1
         assert peers[0]["display_name"] == offline_name
 
+    async def test_list_peers_path_filter_follows_symlinks(self, client, tmp_path):
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real)
+
+        await client.post("/peers", json={
+            "name": "viasymlink", "path": str(link),
+            "circle": "default", "backend": "claude-code",
+        })
+
+        r = await client.get("/peers", params={"path": str(real)})
+        peers = r.json()["peers"]
+        assert len(peers) == 1
+        assert peers[0]["backend"] == "claude-code"
+
     async def test_list_peers_path_backend_filter(self, client):
         await client.post("/peers", json={
             "name": "alpha", "path": "/tmp/proj-x",
