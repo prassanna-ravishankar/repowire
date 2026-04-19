@@ -106,12 +106,23 @@ async def list_peers(
     elif status == "offline":
         peers = [p for p in peers if p.status == PeerStatus.OFFLINE]
     if path:
-        # Normalize symlinks so registrations using different path forms still match
+        # Normalize symlinks so registrations using different path forms still match.
+        # Cache realpath per unique stored path; only resolve when string equality fails.
         target = os.path.realpath(path)
-        peers = [
-            p for p in peers
-            if p.path and (p.path == path or os.path.realpath(p.path) == target)
-        ]
+        realpath_cache: dict[str, str] = {}
+
+        def _matches(p: Peer) -> bool:
+            if not p.path:
+                return False
+            if p.path == path:
+                return True
+            resolved = realpath_cache.get(p.path)
+            if resolved is None:
+                resolved = os.path.realpath(p.path)
+                realpath_cache[p.path] = resolved
+            return resolved == target
+
+        peers = [p for p in peers if _matches(p)]
     if backend:
         peers = [p for p in peers if p.backend == backend]
 
