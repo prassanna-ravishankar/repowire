@@ -90,11 +90,16 @@ class UnregisterPeerRequest(BaseModel):
 
 
 
+def _resolve_realpath_map(paths: list[str]) -> dict[str, str]:
+    """Resolve realpath for each unique path. Blocking I/O - run in thread."""
+    return {p: os.path.realpath(p) for p in set(paths)}
+
+
 @router.get("/peers", response_model=PeersResponse)
 async def list_peers(
     status: str | None = Query(None, description="Filter by status", enum=["online", "offline"]),
     path: str | None = Query(None, description="Filter by absolute path"),
-    backend: str | None = Query(None, description="Filter by backend"),
+    backend: AgentType | None = Query(None, description="Filter by backend"),
     _: str | None = Depends(require_auth),
 ) -> PeersResponse:
     """Get list of all registered peers, optionally filtered."""
@@ -111,14 +116,9 @@ async def list_peers(
         # realpath is blocking I/O; resolve every unique path once in a thread.
         string_matches = [p for p in peers if p.path == path]
         mismatched = [p for p in peers if p.path and p.path != path]
-
-        def _resolve_all(paths: list[str]) -> dict[str, str]:
-            unique = {p: os.path.realpath(p) for p in set(paths)}
-            return unique
-
         target, resolved_map = await asyncio.gather(
             asyncio.to_thread(os.path.realpath, path),
-            asyncio.to_thread(_resolve_all, [p.path for p in mismatched]),
+            asyncio.to_thread(_resolve_realpath_map, [p.path for p in mismatched]),
         )
         peers = string_matches + [p for p in mismatched if resolved_map.get(p.path) == target]
     if backend:
