@@ -14,7 +14,7 @@ from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.routes._shared import OkResponse
-from repowire.protocol.peers import PeerStatus
+from repowire.protocol.peers import PeerRole, PeerStatus
 
 router = APIRouter(tags=["messages"])
 
@@ -127,6 +127,20 @@ async def notify_peer(
     """Send a notification to a peer (fire-and-forget)."""
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
+
+    to_peer_obj = await peer_registry.get_peer(request.to_peer, circle=request.circle)
+    from_peer_obj = await peer_registry.get_peer(request.from_peer)
+    if (
+        to_peer_obj is not None
+        and from_peer_obj is not None
+        and to_peer_obj.role == PeerRole.SERVICE
+        and to_peer_obj.display_name.startswith("telegram")
+        and from_peer_obj.role == PeerRole.AGENT
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User-facing peer access denied — escalate via director (see CLAUDE.md user-facing communication policy)",
+        )
 
     try:
         await peer_registry.notify(
