@@ -2,17 +2,33 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
 from contextlib import suppress
 from pathlib import Path
+
+import httpx
 
 from repowire.config.models import DEFAULT_DAEMON_URL
 
 DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", DEFAULT_DAEMON_URL)
+
+# Module-level pooled HTTP client so sequential daemon calls within one hook
+# process reuse the same TCP connection via keep-alive. Previously each
+# urllib.request.urlopen() call opened a fresh socket, leaving TIME_WAIT
+# accumulation heavy enough under multi-session Claude Code workloads to
+# exhaust the macOS ephemeral port pool (EADDRNOTAVAIL on outbound IPv4).
+_client: httpx.Client | None = None
+
+
+def _get_client() -> httpx.Client:
+    global _client
+    if _client is None:
+        _client = httpx.Client(base_url=DAEMON_URL, timeout=2.0)
+        atexit.register(_client.close)
+    return _client
 
 
 def get_pane_file(pane_id: str | None) -> str:
@@ -125,29 +141,20 @@ def clear_pane_runtime_state(pane_id: str | None) -> None:
 def _log_daemon_error(method: str, path: str, exc: Exception) -> None:
     """Log daemon request failure, including HTTP response body when available."""
     msg = f"repowire: daemon {method} {path} failed: {exc}"
-    if isinstance(exc, urllib.error.HTTPError):
-        try:
-            body = exc.read().decode(errors="ignore")
-            if body:
-                msg += f" - Body: {body}"
-        except Exception:
-            pass
+    if isinstance(exc, httpx.HTTPStatusError):
+        body = exc.response.text
+        if body:
+            msg += f" - Body: {body}"
     print(msg, file=sys.stderr)
 
 
 def daemon_post(path: str, payload: dict, *, timeout: float = 2.0) -> dict | None:
     """POST JSON to daemon. Returns parsed response or None on failure."""
     try:
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            f"{DAEMON_URL}{path}",
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        resp = _get_client().post(path, json=payload, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+    except (httpx.HTTPError, json.JSONDecodeError) as e:
         _log_daemon_error("POST", path, e)
         return None
 
@@ -155,10 +162,10 @@ def daemon_post(path: str, payload: dict, *, timeout: float = 2.0) -> dict | Non
 def daemon_get(path: str, *, timeout: float = 2.0) -> dict | None:
     """GET from daemon. Returns parsed response or None on failure."""
     try:
-        req = urllib.request.Request(f"{DAEMON_URL}{path}", method="GET")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        resp = _get_client().get(path, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+    except (httpx.HTTPError, json.JSONDecodeError) as e:
         _log_daemon_error("GET", path, e)
         return None
 
