@@ -15,6 +15,11 @@ interface SessionEventInfo {
 interface MessageEventInfo {
   role?: string
   sessionID?: string
+  model?: {
+    providerID: string
+    modelID: string
+    variant?: string
+  }
 }
 
 interface EventWithProperties {
@@ -46,6 +51,7 @@ let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 let reconnectAttempts: number = 0
 let opencodeClient: PluginClient | null = null
 let stableNameSet: boolean = false
+let activeModel: { providerID: string; modelID: string } | null = null
 
 // Note: We no longer rely on TMUX_PANE for identity. The daemon assigns
 // a unique peer_id (repow-{circle}-{uuid8}) on registration.
@@ -207,9 +213,13 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
     // Fire-and-forget - inject notification/broadcast
     if (opencodeClient) {
       try {
+        const body: Record<string, unknown> = { parts: [{ type: "text", text }] }
+        if (activeModel) {
+          body.model = activeModel
+        }
         await opencodeClient.session.prompt({
           path: { id: sessionId },
-          body: { parts: [{ type: "text", text }] }
+          body,
         })
       } catch (e) {
         console.error(`[repowire] Failed to inject ${msgType}:`, e)
@@ -267,10 +277,14 @@ async function handleIncomingQuery(correlationId: string, fromPeer: string, text
   try {
     // session.prompt() fires the query. It returns immediately with the
     // message skeleton (0 parts), but the model IS processing.
-    // Use session's default model (don't override)
+    // https://github.com/prassanna-ravishankar/repowire/issues/74
+    const body: Record<string, unknown> = { parts: [{ type: "text", text }] }
+    if (activeModel) {
+      body.model = activeModel
+    }
     const result = await opencodeClient.session.prompt({
       path: { id: sessionId },
-      body: { parts: [{ type: "text", text }] }
+      body,
     })
 
     // Get the message ID from the response
@@ -496,6 +510,10 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
             activeSessionId = info.sessionID
           }
           sendStatus("busy")
+        }
+        // https://github.com/prassanna-ravishankar/repowire/issues/74
+        if (info?.role === "user" && info?.model) {
+          activeModel = { providerID: info.model.providerID, modelID: info.model.modelID }
         }
       } else if (typedEvent.type === "session.idle") {
         sendStatus("idle")
