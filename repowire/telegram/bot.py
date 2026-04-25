@@ -40,6 +40,7 @@ MORE_LABEL = "… more"     # open full picker
 PEERS_LABEL = "📋 peers"
 CLEAR_LABEL = "❌ clear"
 RETRY_WINDOW_S = 60.0     # pending-retry TTL after a failed send
+PEERS_CACHE_TTL_S = 5.0   # short-lived cache for /peers fetch
 
 
 def _esc(text: str) -> str:
@@ -207,6 +208,8 @@ class TelegramPeer:
         self._recents: deque[str] = deque(maxlen=10)
         self._pending_retry: PendingRetry | None = None
         self._keyboard_enabled: bool = True
+        self._peers_cache: list[dict] | None = None
+        self._peers_cache_at: float = 0.0
 
     async def _run(self) -> None:
         await asyncio.gather(self._ws_loop(), self._poll_loop())
@@ -356,7 +359,7 @@ class TelegramPeer:
         # Reply-keyboard taps
         kind, arg = parse_keyboard_tap(text)
         if kind == "select" and arg:
-            await self._select_peer(arg, message_id=message_id)
+            await self._select_peer(arg, message_id=message_id, trigger_retry=True)
             return
         if kind == "peers":
             await self._cmd_peers()
@@ -423,11 +426,20 @@ class TelegramPeer:
             "`@name msg` — quick message"
         )
 
-    async def _select_peer(self, peer: str, message_id: int | None = None) -> None:
-        """Switch target peer. If a pending retry is active, replay its text."""
+    async def _select_peer(
+        self,
+        peer: str,
+        message_id: int | None = None,
+        trigger_retry: bool = False,
+    ) -> None:
+        """Switch target peer. If trigger_retry and a retry is pending, replay it.
+
+        Retry replay is opt-in (only keyboard taps set trigger_retry=True) so
+        that slash commands like /switch don't surprise the user by resending.
+        """
         peer = peer.lstrip("@")
         retry = self._pending_retry
-        if retry and retry.is_active(time.monotonic()):
+        if trigger_retry and retry and retry.is_active(time.monotonic()):
             self._reply_target = peer
             self._pending_retry = None
             await self._notify(peer, retry.text, message_id=message_id)
@@ -487,17 +499,32 @@ class TelegramPeer:
 
     # -- Commands --
 
-    async def _fetch_online_peers(self) -> list[dict]:
-        """Fetch current peers from daemon. Empty list on failure."""
+    async def _fetch_online_peers(self, *, use_cache: bool = True) -> list[dict]:
+        """Fetch current peers from daemon. Empty list on failure.
+
+        Caches for PEERS_CACHE_TTL_S to avoid hammering the daemon when
+        many bot messages fire in quick succession (each rebuilds the
+        keyboard). Pass use_cache=False for user-driven listings.
+        """
+        now = time.monotonic()
+        if (
+            use_cache
+            and self._peers_cache is not None
+            and now - self._peers_cache_at < PEERS_CACHE_TTL_S
+        ):
+            return self._peers_cache
         try:
             r = await self._http.get(f"{self._daemon_url}/peers")
-            return r.json().get("peers", [])
+            peers = r.json().get("peers", [])
+            self._peers_cache = peers
+            self._peers_cache_at = now
+            return peers
         except Exception:
             logger.warning("Failed to fetch peers", exc_info=True)
             return []
 
     async def _cmd_peers(self) -> None:
-        peers = await self._fetch_online_peers()
+        peers = await self._fetch_online_peers(use_cache=False)
         active = [p for p in peers if p.get("status") in ("online", "busy")]
 
         if not active:
