@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/prassanna-ravishankar-repowire-badge.png)](https://mseep.ai/app/prassanna-ravishankar-repowire)
+
 <div align="center">
   <picture>
     <source srcset="https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/images/logo-dark.webp" media="(prefers-color-scheme: dark)" width="150" height="150" />
