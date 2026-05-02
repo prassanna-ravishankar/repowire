@@ -50,7 +50,6 @@ let activeSessionId: string | null = null
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 let reconnectAttempts: number = 0
 let opencodeClient: PluginClient | null = null
-let stableNameSet: boolean = false
 let activeModel: { providerID: string; modelID: string } | null = null
 
 // Note: We no longer rely on TMUX_PANE for identity. The daemon assigns
@@ -97,12 +96,18 @@ function connectWebSocket() {
       }
     }
 
+    const savedPeerId = loadPeerId()
+
     const connectMsg: Record<string, unknown> = {
       type: "connect",
       display_name: peerName,
       circle,
       backend: "opencode",
       path: projectPath,
+    }
+
+    if (savedPeerId) {
+      connectMsg.peer_id = savedPeerId
     }
 
     if (tmuxSession) {
@@ -185,9 +190,10 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
   const msgType = data.type as string
 
   if (msgType === "connected") {
-    // Store daemon-assigned session_id as peer_id
+    // Store daemon-assigned session_id as peer_id and persist to disk
     if (data.session_id) {
       peerId = data.session_id as string
+      savePeerId(peerId)
       console.debug(`[repowire] Connected with session_id: ${peerId}`)
     }
     sendStatus("idle")
@@ -366,6 +372,40 @@ function sanitizePeerName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown"
 }
 
+// Persist peer_id to disk so it survives session restarts
+const PEER_ID_CACHE_DIR = (() => {
+  const os = require("os")
+  const path = require("path")
+  return path.join(os.homedir(), ".cache", "repowire")
+})()
+
+function savePeerId(id: string) {
+  try {
+    const fs = require("fs")
+    const path = require("path")
+    fs.mkdirSync(PEER_ID_CACHE_DIR, { recursive: true })
+    const file = path.join(PEER_ID_CACHE_DIR, "opencode-peer-id.json")
+    fs.writeFileSync(file, JSON.stringify({ peerId: id, path: projectPath }))
+  } catch (e) {
+    console.warn("[repowire] Failed to save peer_id:", e)
+  }
+}
+
+function loadPeerId(): string | null {
+  try {
+    const fs = require("fs")
+    const path = require("path")
+    const file = path.join(PEER_ID_CACHE_DIR, "opencode-peer-id.json")
+    if (!fs.existsSync(file)) return null
+    const data = JSON.parse(fs.readFileSync(file, "utf-8"))
+    // Only reuse if it was for the same project path
+    if (data.path === projectPath) return data.peerId
+    return null
+  } catch {
+    return null
+  }
+}
+
 // Main plugin export
 export const RepowirePlugin: Plugin = async ({ client, directory }) => {
   peerName = sanitizePeerName(directory.split("/").pop() || "unknown")
@@ -490,18 +530,6 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         const info = typedEvent.properties?.info as SessionEventInfo | undefined
         if (info?.id) {
           activeSessionId = info.id
-          if (!stableNameSet) {
-            stableNameSet = true
-            const stableName = sanitizePeerName(info.id.startsWith("ses") ? info.id.slice(3, 11) : info.id.slice(0, 8))
-            if (stableName !== peerName) {
-              peerName = stableName
-              if (ws?.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "update_display_name", display_name: stableName }))
-              } else {
-                ws?.close()  // fallback: reconnect will use the new name
-              }
-            }
-          }
         }
       } else if (typedEvent.type === "message.updated") {
         const info = typedEvent.properties?.info as MessageEventInfo | undefined
