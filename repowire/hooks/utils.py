@@ -54,6 +54,11 @@ def pending_cid_path(pane_id: str) -> Path:
     return pane_logs_dir() / f"pending-{get_pane_file(pane_id)}.json"
 
 
+def pending_notification_path(pane_id: str) -> Path:
+    """Path to the pending notifications file for a pane."""
+    return pane_logs_dir() / f"pending-notify-{get_pane_file(pane_id)}.json"
+
+
 def pane_logs_dir() -> Path:
     """Return the runtime log/state directory for pane-scoped hook files."""
     from repowire.config.models import CACHE_DIR
@@ -123,12 +128,23 @@ def clear_pending_cids(pane_id: str | None) -> None:
             path.unlink()
 
 
+def clear_pending_notifications(pane_id: str) -> None:
+    """Remove any queued notifications for a pane."""
+    pending_path = pending_notification_path(pane_id)
+    lock_path = pending_path.with_suffix(pending_path.suffix + ".lock")
+    for path in (pending_path, lock_path):
+        with suppress(OSError):
+            path.unlink()
+
+
 def clear_pane_runtime_state(pane_id: str | None) -> None:
     """Clear transient pane-scoped hook state after a pane dies or is taken over."""
     if not pane_id:
         return
 
     clear_pending_cids(pane_id)
+    if pane_id:
+        clear_pending_notifications(pane_id)
     for path in (
         ws_hook_pid_path(pane_id),
         ws_hook_meta_path(pane_id),

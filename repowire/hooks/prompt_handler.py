@@ -8,7 +8,11 @@ import sys
 
 from repowire.hooks._tmux import get_pane_id
 from repowire.hooks.adapters import hook_output, normalize
-from repowire.hooks.utils import update_status
+from repowire.hooks.utils import (
+    read_pane_runtime_metadata,
+    update_status,
+    write_pane_runtime_metadata,
+)
 
 
 def main(backend: str = "claude-code") -> int:
@@ -31,6 +35,9 @@ def main(backend: str = "claude-code") -> int:
                 f"repowire prompt: failed to update status for pane {pane_id}",
                 file=sys.stderr,
             )
+        metadata = read_pane_runtime_metadata(pane_id)
+        metadata["status"] = "busy"
+        write_pane_runtime_metadata(pane_id, metadata)
 
     hook_output(backend)
     return 0

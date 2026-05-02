@@ -8,9 +8,17 @@ import json
 import sys
 from pathlib import Path
 
-from repowire.hooks._tmux import get_pane_id
+from repowire.hooks._tmux import get_pane_id, send_tmux_keys
 from repowire.hooks.adapters import hook_output, normalize
-from repowire.hooks.utils import daemon_post, get_display_name, pending_cid_path, update_status
+from repowire.hooks.utils import (
+    daemon_post,
+    get_display_name,
+    pending_cid_path,
+    pending_notification_path,
+    read_pane_runtime_metadata,
+    update_status,
+    write_pane_runtime_metadata,
+)
 from repowire.session.transcript import extract_last_turn_pair, extract_last_turn_tool_calls
 
 
@@ -37,6 +45,41 @@ def _pop_pending_cid(pane_id: str) -> str | None:
                 fcntl.flock(lock_file, fcntl.LOCK_UN)
     except (json.JSONDecodeError, OSError, IndexError):
         return None
+
+
+def _pop_pending_notification(pane_id: str) -> str | None:
+    """Pop the oldest pending notification for a pane, if any.
+
+    Uses flock to prevent race with websocket_hook.
+    """
+    path = pending_notification_path(pane_id)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    try:
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                if not path.exists():
+                    return None
+                pending = json.loads(path.read_text())
+                if not pending:
+                    return None
+                message = pending.pop(0)
+                path.write_text(json.dumps(pending))
+                return message
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+    except (json.JSONDecodeError, OSError, IndexError):
+        return None
+
+
+def _flush_pending_notifications(pane_id: str) -> None:
+    """Deliver all pending notifications into the pane."""
+    while True:
+        message = _pop_pending_notification(pane_id)
+        if not message:
+            return
+        if not send_tmux_keys(pane_id, message):
+            return
 
 
 def _post_chat_turn(
@@ -77,6 +120,10 @@ def main(backend: str = "claude-code") -> int:
                 f"repowire stop: failed to update status for pane {pane_id}",
                 file=sys.stderr,
             )
+        metadata = read_pane_runtime_metadata(pane_id)
+        metadata["status"] = "online"
+        write_pane_runtime_metadata(pane_id, metadata)
+        _flush_pending_notifications(pane_id)
     else:
         if not update_status(peer_display, "online"):
             print(

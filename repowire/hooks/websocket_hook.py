@@ -11,7 +11,6 @@ import logging
 import os
 import subprocess
 import sys
-import time
 
 try:
     import websockets
@@ -21,11 +20,12 @@ except ImportError as e:
     sys.exit(1)
 
 from repowire.config.models import AgentType
-from repowire.hooks._tmux import get_tmux_info
+from repowire.hooks._tmux import get_tmux_info, send_tmux_keys
 from repowire.hooks.utils import (
     clear_pane_runtime_state,
     get_display_name,
     pending_cid_path,
+    pending_notification_path,
     read_pane_runtime_metadata,
     write_pane_runtime_metadata,
 )
@@ -63,36 +63,69 @@ def _push_pending_cid(pane_id: str, correlation_id: str) -> None:
 
 
 def _tmux_send_keys(pane_id: str, text: str) -> bool:
-    """Send keys to a tmux pane via subprocess.
-
-    Implements Gastown's battle-tested NudgeSession pattern:
-    1. Send text in literal mode (bracketed paste)
-    2. 500ms debounce — tested, required for paste to complete
-    3. Escape — exits vim INSERT mode if active, harmless otherwise
-    4. Enter — submits
-    """
+    """Send keys to a tmux pane via subprocess."""
     try:
-        subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, "-l", text],
-            capture_output=True,
-            check=True,
-        )
-        time.sleep(0.5)
-        subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, "Escape"],
-            capture_output=True,
-            check=True,
-        )
-        time.sleep(0.1)
-        subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, "Enter"],
-            capture_output=True,
-            check=True,
-        )
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        return send_tmux_keys(pane_id, text)
+    except Exception as e:
         logger.error(f"Failed to send keys to {pane_id}: {e}")
         return False
+
+
+def _push_pending_notification(pane_id: str, message: str) -> None:
+    """Append a notification to the pending file for a pane.
+
+    Uses flock to prevent race with _pop_pending_notification.
+    """
+    path = pending_notification_path(pane_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with open(lock_path, "w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            try:
+                pending = json.loads(path.read_text()) if path.exists() else []
+            except (json.JSONDecodeError, OSError):
+                pending = []
+            pending.append(message)
+            path.write_text(json.dumps(pending))
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def _pop_pending_notification(pane_id: str) -> str | None:
+    """Pop the oldest pending notification for a pane, if any.
+
+    Uses flock to prevent race with _push_pending_notification.
+    """
+    path = pending_notification_path(pane_id)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    try:
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                if not path.exists():
+                    return None
+                pending = json.loads(path.read_text())
+                if not pending:
+                    return None
+                message = pending.pop(0)
+                path.write_text(json.dumps(pending))
+                return message
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+    except (json.JSONDecodeError, OSError, IndexError):
+        return None
+
+
+def _flush_pending_notifications(pane_id: str) -> None:
+    """Deliver all pending notifications into the pane."""
+    while True:
+        message = _pop_pending_notification(pane_id)
+        if not message:
+            return
+        if not _tmux_send_keys(pane_id, message):
+            _push_pending_notification(pane_id, message)
+            return
 
 
 def _get_pane_command(pane_id: str) -> str | None:
@@ -203,8 +236,15 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         try:
             from_peer = data.get("from_peer", "unknown")
             text = data.get("text", "")
-            if await asyncio.to_thread(_tmux_send_keys, pane_id, f"@{from_peer}: {text}"):
-                logger.info(f"Injected notification from {from_peer}")
+            message = f"@{from_peer}: {text}"
+            metadata = read_pane_runtime_metadata(pane_id)
+            status = metadata.get("status")
+            if status == "busy":
+                _push_pending_notification(pane_id, message)
+                logger.info(f"Queued notification from {from_peer}")
+            else:
+                if await asyncio.to_thread(_tmux_send_keys, pane_id, message):
+                    logger.info(f"Injected notification from {from_peer}")
         except Exception as e:
             logger.error(f"Failed to inject notification: {e}")
 
@@ -213,8 +253,14 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
             from_peer = data.get("from_peer", "unknown")
             text = data.get("text", "")
             msg = f"@{from_peer} [broadcast]: {text}"
-            if await asyncio.to_thread(_tmux_send_keys, pane_id, msg):
-                logger.info(f"Injected broadcast from {from_peer}")
+            metadata = read_pane_runtime_metadata(pane_id)
+            status = metadata.get("status")
+            if status == "busy":
+                _push_pending_notification(pane_id, msg)
+                logger.info(f"Queued broadcast from {from_peer}")
+            else:
+                if await asyncio.to_thread(_tmux_send_keys, pane_id, msg):
+                    logger.info(f"Injected broadcast from {from_peer}")
         except Exception as e:
             logger.error(f"Failed to inject broadcast: {e}")
 
@@ -310,6 +356,10 @@ async def main() -> int:
                 try:
                     async for message in websocket:
                         data = json.loads(message)
+                        if data.get("type") in ("notify", "broadcast"):
+                            meta = read_pane_runtime_metadata(pane_id)
+                            if meta.get("status") == "online":
+                                _flush_pending_notifications(pane_id)
                         await handle_message(data, pane_id, websocket)
                 except PaneUnsafeError as e:
                     logger.info("%s", e)

@@ -8,11 +8,17 @@ Stop hook doesn't fire (e.g., user interrupts with Escape).
 
 from __future__ import annotations
 
+import fcntl
 import json
 import sys
 
-from repowire.hooks._tmux import get_pane_id
-from repowire.hooks.utils import update_status
+from repowire.hooks._tmux import get_pane_id, send_tmux_keys
+from repowire.hooks.utils import (
+    pending_notification_path,
+    read_pane_runtime_metadata,
+    update_status,
+    write_pane_runtime_metadata,
+)
 
 
 def main() -> int:
@@ -37,8 +43,47 @@ def main() -> int:
                 f"repowire notification: failed to update status for pane {pane_id}",
                 file=sys.stderr,
             )
+        metadata = read_pane_runtime_metadata(pane_id)
+        metadata["status"] = "online"
+        write_pane_runtime_metadata(pane_id, metadata)
+        _flush_pending_notifications(pane_id)
 
     return 0
+
+
+def _pop_pending_notification(pane_id: str) -> str | None:
+    """Pop the oldest pending notification for a pane, if any.
+
+    Uses flock to prevent race with websocket_hook.
+    """
+    path = pending_notification_path(pane_id)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    try:
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                if not path.exists():
+                    return None
+                pending = json.loads(path.read_text())
+                if not pending:
+                    return None
+                message = pending.pop(0)
+                path.write_text(json.dumps(pending))
+                return message
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+    except (json.JSONDecodeError, OSError, IndexError):
+        return None
+
+
+def _flush_pending_notifications(pane_id: str) -> None:
+    """Deliver all pending notifications into the pane."""
+    while True:
+        message = _pop_pending_notification(pane_id)
+        if not message:
+            return
+        if not send_tmux_keys(pane_id, message):
+            return
 
 
 if __name__ == "__main__":

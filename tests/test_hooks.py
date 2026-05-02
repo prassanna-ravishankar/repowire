@@ -5,7 +5,7 @@ from __future__ import annotations
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
-from repowire.hooks.websocket_hook import _is_pane_safe
+from repowire.hooks.websocket_hook import _is_pane_safe, _pop_pending_notification
 
 
 class TestIsPaneSafe:
@@ -52,3 +52,22 @@ class TestIsPaneSafe:
             side_effect=FileNotFoundError,
         ):
             assert _is_pane_safe("%5") is False
+
+
+class TestPendingNotifications:
+    def test_pop_pending_notification_empty(self, tmp_path):
+        with patch(
+            "repowire.hooks.websocket_hook.pending_notification_path",
+            return_value=tmp_path / "pending.json",
+        ):
+            assert _pop_pending_notification("%5") is None
+
+    def test_pop_pending_notification_returns_oldest(self, tmp_path):
+        pending_path = tmp_path / "pending.json"
+        pending_path.write_text('["first", "second"]')
+        with patch(
+            "repowire.hooks.websocket_hook.pending_notification_path",
+            return_value=pending_path,
+        ):
+            assert _pop_pending_notification("%5") == "first"
+            assert pending_path.read_text() == '["second"]'

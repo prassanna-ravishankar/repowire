@@ -47,6 +47,9 @@ let peerName: string = "unknown"
 let peerId: string | null = null  // Daemon-assigned unique ID
 let projectPath: string = ""
 let activeSessionId: string | null = null
+let primarySessionId: string | null = null
+let pendingNotifications: string[] = []
+let isBusy: boolean = false
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 let reconnectAttempts: number = 0
 let opencodeClient: PluginClient | null = null
@@ -203,33 +206,48 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
     }
   } else if (msgType === "notify" || msgType === "broadcast") {
     const text = data.text as string
-    // Try to resolve session (like we do for queries)
-    const sessionId = await resolveSessionId()
-    if (!sessionId) {
-      console.error(`[repowire] Cannot inject ${msgType}: no active session`)
+    if (isBusy) {
+      pendingNotifications.push(text)
       return
     }
+    await injectNotification(text)
+  }
+}
 
-    // Fire-and-forget - inject notification/broadcast
-    if (opencodeClient) {
-      try {
-        const body: Record<string, unknown> = { parts: [{ type: "text", text }] }
-        if (activeModel) {
-          body.model = activeModel
-        }
-        await opencodeClient.session.prompt({
-          path: { id: sessionId },
-          body,
-        })
-      } catch (e) {
-        console.error(`[repowire] Failed to inject ${msgType}:`, e)
+async function injectNotification(text: string) {
+  const sessionId = await resolveSessionId()
+  if (!sessionId) {
+    console.error("[repowire] Cannot inject notification: no active session")
+    return
+  }
+  if (opencodeClient) {
+    try {
+      const body: Record<string, unknown> = { parts: [{ type: "text", text }] }
+      if (activeModel) {
+        body.model = activeModel
       }
+      await opencodeClient.session.prompt({
+        path: { id: sessionId },
+        body,
+      })
+    } catch (e) {
+      console.error("[repowire] Failed to inject notification:", e)
     }
+  }
+}
+
+async function flushPendingNotifications() {
+  if (isBusy) return
+  while (pendingNotifications.length > 0) {
+    const next = pendingNotifications.shift()
+    if (!next) break
+    await injectNotification(next)
   }
 }
 
 // Resolve active session - try tracked ID, then list, then create
 async function resolveSessionId(): Promise<string | null> {
+  if (primarySessionId) return primarySessionId
   if (activeSessionId) return activeSessionId
   if (!opencodeClient) return null
 
@@ -239,6 +257,9 @@ async function resolveSessionId(): Promise<string | null> {
     const sessions = result?.data
     if (Array.isArray(sessions) && sessions.length > 0) {
       activeSessionId = sessions[sessions.length - 1].id
+      if (!primarySessionId) {
+        primarySessionId = activeSessionId
+      }
       return activeSessionId
     }
   } catch (e) {
@@ -250,6 +271,9 @@ async function resolveSessionId(): Promise<string | null> {
     const result = await opencodeClient.session.create({ body: {} })
     if (result?.data?.id) {
       activeSessionId = result.data.id
+      if (!primarySessionId) {
+        primarySessionId = activeSessionId
+      }
       return activeSessionId
     }
   } catch (e) {
@@ -490,6 +514,7 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         const info = typedEvent.properties?.info as SessionEventInfo | undefined
         if (info?.id) {
           activeSessionId = info.id
+          primarySessionId = info.id
           if (!stableNameSet) {
             stableNameSet = true
             const stableName = sanitizePeerName(info.id.startsWith("ses") ? info.id.slice(3, 11) : info.id.slice(0, 8))
@@ -506,7 +531,8 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
       } else if (typedEvent.type === "message.updated") {
         const info = typedEvent.properties?.info as MessageEventInfo | undefined
         if (info?.role === "assistant" && info?.sessionID) {
-          if (info.sessionID !== activeSessionId) {
+          isBusy = true
+          if (info.sessionID && info.sessionID !== activeSessionId) {
             activeSessionId = info.sessionID
           }
           sendStatus("busy")
@@ -516,12 +542,19 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
           activeModel = { providerID: info.model.providerID, modelID: info.model.modelID }
         }
       } else if (typedEvent.type === "session.idle") {
+        isBusy = false
         sendStatus("idle")
+        await flushPendingNotifications()
       } else if (typedEvent.type === "session.deleted") {
         const info = typedEvent.properties?.info as SessionEventInfo | undefined
         if (info?.id === activeSessionId) {
           activeSessionId = null
+          if (primarySessionId === info.id) {
+            primarySessionId = null
+          }
+          isBusy = false
           sendStatus("idle")
+          await flushPendingNotifications()
         }
       }
     },

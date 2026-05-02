@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from typing import TypedDict
 
 
@@ -97,3 +98,35 @@ def get_tmux_info() -> TmuxInfo:
         pass
 
     return {"pane_id": pane_id, "session_name": session_name, "window_name": window_name}
+
+
+def send_tmux_keys(pane_id: str, text: str) -> bool:
+    """Send keys to a tmux pane via subprocess.
+
+    Implements Gastown's battle-tested NudgeSession pattern:
+    1. Send text in literal mode (bracketed paste)
+    2. 500ms debounce - required for paste to complete
+    3. Escape - exits vim INSERT mode if active, harmless otherwise
+    4. Enter - submits
+    """
+    try:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "-l", text],
+            capture_output=True,
+            check=True,
+        )
+        time.sleep(0.5)
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "Escape"],
+            capture_output=True,
+            check=True,
+        )
+        time.sleep(0.1)
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "Enter"],
+            capture_output=True,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
