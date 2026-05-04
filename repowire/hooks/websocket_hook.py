@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 # Set once at startup in main() — guards against pane reuse by a different agent
 _expected_command: str | None = None
+_RECONNECT_WARNING_ATTEMPTS = 50
+_MAX_RECONNECT_DELAY_SECONDS = 30
 
 
 class PaneUnsafeError(RuntimeError):
@@ -265,13 +267,17 @@ async def main() -> int:
 
     logger.info(f"Starting WebSocket hook for {display_name}@{circle} (pane={pane_id})")
 
-    max_attempts = 50
-    attempt = 0
+    consecutive_failures = 0
 
-    while attempt < max_attempts:
+    while True:
         try:
             async with websockets.connect(uri, ping_interval=None, ping_timeout=None) as websocket:
-                attempt = 0
+                if consecutive_failures:
+                    logger.info(
+                        "Reconnected after %d consecutive failed attempts",
+                        consecutive_failures,
+                    )
+                consecutive_failures = 0
 
                 connect_msg: dict[str, str] = {
                     "type": "connect",
@@ -317,27 +323,44 @@ async def main() -> int:
                     return 0
 
         except websockets.exceptions.ConnectionClosed as e:
-            attempt += 1
+            consecutive_failures += 1
+            delay = min(2 ** (consecutive_failures - 1), _MAX_RECONNECT_DELAY_SECONDS)
             logger.warning(
-                f"Connection closed (attempt {attempt}/{max_attempts}): code={e.code}, "
-                f"reconnecting in 2s..."
+                "Connection closed (attempt %d): code=%s, reconnecting in %ss...",
+                consecutive_failures,
+                e.code,
+                delay,
             )
-            await asyncio.sleep(2)
+            if consecutive_failures == _RECONNECT_WARNING_ATTEMPTS:
+                logger.error(
+                    "WebSocket hook has failed %d consecutive reconnect attempts and is "
+                    "still retrying. Inbound repowire delivery is degraded until the "
+                    "daemon becomes reachable again.",
+                    consecutive_failures,
+                )
+            await asyncio.sleep(delay)
 
         except (websockets.exceptions.WebSocketException, OSError) as e:
-            attempt += 1
-            delay = min(1 * 2**attempt, 5)
+            consecutive_failures += 1
+            delay = min(2 ** (consecutive_failures - 1), _MAX_RECONNECT_DELAY_SECONDS)
             logger.warning(
-                f"Connection error (attempt {attempt}/{max_attempts}): {e}, retrying in {delay}s..."
+                "Connection error (attempt %d): %s, retrying in %ss...",
+                consecutive_failures,
+                e,
+                delay,
             )
+            if consecutive_failures == _RECONNECT_WARNING_ATTEMPTS:
+                logger.error(
+                    "WebSocket hook has failed %d consecutive reconnect attempts and is "
+                    "still retrying. Inbound repowire delivery is degraded until the "
+                    "daemon becomes reachable again.",
+                    consecutive_failures,
+                )
             await asyncio.sleep(delay)
             continue
 
         logger.info("Connection ended, reconnecting in 2s...")
         await asyncio.sleep(2)
-
-    logger.error(f"Exhausted {max_attempts} reconnect attempts, exiting")
-    return 1
 
 
 if __name__ == "__main__":

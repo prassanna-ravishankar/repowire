@@ -574,3 +574,34 @@ class TestMcpRegistration:
         mcp_server._registered = False
         mcp_server._cached_peer_name = None
 
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server.read_pane_runtime_metadata")
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    @patch(
+        "repowire.mcp.server.get_tmux_info",
+        return_value={"pane_id": "%1", "session_name": "0", "window_name": "repowire"},
+    )
+    async def test_strict_tmux_registration_raises_when_hook_peer_is_missing(
+        self,
+        _mock_tmux,
+        mock_request: AsyncMock,
+        mock_meta,
+    ) -> None:
+        """Hook-managed tmux peers should not silently re-register over HTTP."""
+        import repowire.mcp.server as mcp_server
+
+        mcp_server._registered = False
+        mcp_server._cached_peer_name = None
+        mock_request.side_effect = [Exception("not found")]
+        mock_meta.return_value = {
+            "peer_id": "repow-0-abc12345",
+            "display_name": "repowire-codex",
+        }
+
+        with pytest.raises(RuntimeError, match="inbound transport is disconnected"):
+            await mcp_server._ensure_registered(strict=True)
+
+        assert mock_request.await_count == 1
+        post_calls = [c for c in mock_request.await_args_list if c.args[0] == "POST"]
+        assert post_calls == []
+        assert mcp_server._cached_peer_name == "repowire-codex"

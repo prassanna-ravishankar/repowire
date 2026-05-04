@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 from subprocess import CompletedProcess
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import pytest
+
+import repowire.hooks.websocket_hook as websocket_hook
 from repowire.hooks.websocket_hook import _is_pane_safe
 
 
@@ -52,3 +57,42 @@ class TestIsPaneSafe:
             side_effect=FileNotFoundError,
         ):
             assert _is_pane_safe("%5") is False
+
+
+class TestWebsocketReconnect:
+    @pytest.mark.asyncio
+    async def test_main_keeps_retrying_after_warning_threshold(self):
+        """ws-hook should keep retrying after long disconnects instead of exiting."""
+        sleep_calls: list[int] = []
+
+        async def fake_sleep(delay: int) -> None:
+            sleep_calls.append(delay)
+            if len(sleep_calls) >= 51:
+                raise asyncio.CancelledError()
+
+        with (
+            patch.dict(os.environ, {"TMUX_PANE": "%5"}, clear=False),
+            patch(
+                "repowire.hooks.websocket_hook.get_tmux_info",
+                return_value={"session_name": "0"},
+            ),
+            patch("repowire.hooks.websocket_hook.get_display_name", return_value="repowire"),
+            patch("repowire.hooks.websocket_hook._get_pane_command", return_value="claude"),
+            patch("repowire.hooks.websocket_hook.websockets.connect", side_effect=OSError("down")),
+            patch(
+                "repowire.hooks.websocket_hook.asyncio.sleep",
+                new_callable=AsyncMock,
+            ) as mock_sleep,
+            patch.object(websocket_hook.logger, "error") as mock_error,
+        ):
+            mock_sleep.side_effect = fake_sleep
+
+            with pytest.raises(asyncio.CancelledError):
+                await websocket_hook.main()
+
+        assert len(sleep_calls) == 51
+        assert max(sleep_calls) == websocket_hook._MAX_RECONNECT_DELAY_SECONDS
+        assert any(
+            "still retrying" in call.args[0]
+            for call in mock_error.call_args_list
+        )

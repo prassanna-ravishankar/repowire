@@ -13,7 +13,7 @@ from mcp.server.fastmcp import FastMCP
 
 from repowire.config.models import DEFAULT_DAEMON_URL
 from repowire.hooks._tmux import get_pane_id, get_tmux_info
-from repowire.hooks.utils import get_display_name
+from repowire.hooks.utils import get_display_name, read_pane_runtime_metadata
 from repowire.protocol.errors import DaemonConnectionError, DaemonHTTPError, DaemonTimeoutError
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,19 @@ def _detect_backend() -> str:
     return os.environ.get("REPOWIRE_BACKEND", "claude-code")
 
 
-async def _ensure_registered() -> None:
+def _hook_disconnect_message(pane_id: str) -> str:
+    pane_file = pane_id.replace("%", "") or "unknown"
+    return (
+        "Repowire inbound transport is disconnected for this tmux pane. "
+        "The background websocket hook is retrying, but this session is "
+        "currently absent from the daemon registry, so outbound messaging is "
+        "blocked to avoid masking the failure. Check "
+        f"~/.cache/repowire/logs/ws-hook-{pane_file}.log or restart the session "
+        "if it does not recover."
+    )
+
+
+async def _ensure_registered(*, strict: bool = False) -> None:
     """Lazy-register this peer with the daemon on first MCP tool use.
 
     Skips registration if the peer already exists (e.g. SessionStart hook
@@ -116,6 +128,12 @@ async def _ensure_registered() -> None:
             return
         except Exception:
             pass
+
+        pane_meta = read_pane_runtime_metadata(pane_id)
+        if pane_meta.get("display_name") and _cached_peer_name is None:
+            _cached_peer_name = pane_meta["display_name"]
+        if strict and (pane_meta.get("peer_id") or pane_meta.get("display_name")):
+            raise RuntimeError(_hook_disconnect_message(pane_id))
     else:
         name = await _get_my_peer_name()
         try:
@@ -239,7 +257,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             The peer's response text
         """
-        await _ensure_registered()
+        await _ensure_registered(strict=True)
         from_peer = await _get_my_peer_name()
         body: dict = {
             "from_peer": from_peer,
@@ -273,7 +291,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Correlation ID (format: notif-XXXXXXXX) for tracking.
         """
-        await _ensure_registered()
+        await _ensure_registered(strict=True)
         from_peer = await _get_my_peer_name()
         correlation_id = f"notif-{uuid4().hex[:8]}"
         body: dict = {
@@ -302,7 +320,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Confirmation message
         """
-        await _ensure_registered()
+        await _ensure_registered(strict=True)
         from_peer = await _get_my_peer_name()
         result = await daemon_request(
             "POST",
@@ -325,7 +343,7 @@ def create_mcp_server() -> FastMCP:
 
         Returns TSV with columns: peer_id, name, project, circle, status, path, machine, description
         """
-        await _ensure_registered()
+        await _ensure_registered(strict=True)
         pane_id = get_pane_id()
         if pane_id:
             try:
@@ -353,7 +371,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Confirmation message
         """
-        await _ensure_registered()
+        await _ensure_registered(strict=True)
         pane_id = get_pane_id()
         name = ""
         if pane_id:
