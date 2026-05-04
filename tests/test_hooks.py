@@ -10,7 +10,26 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import repowire.hooks.websocket_hook as websocket_hook
-from repowire.hooks.websocket_hook import _is_pane_safe
+from repowire.hooks.websocket_hook import _is_pane_safe, _tmux_send_keys
+
+
+class TestTmuxSendKeys:
+    """Tests for _tmux_send_keys."""
+
+    def test_closes_bracketed_paste_without_bare_escape(self):
+        with (
+            patch("repowire.hooks.websocket_hook.subprocess.run") as mock_run,
+            patch("repowire.hooks.websocket_hook.time.sleep"),
+        ):
+            assert _tmux_send_keys("%5", "hello") is True
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls == [
+            ["tmux", "send-keys", "-t", "%5", "-l", "hello"],
+            ["tmux", "send-keys", "-t", "%5", "-H", "1b", "5b", "32", "30", "31", "7e"],
+            ["tmux", "send-keys", "-t", "%5", "Enter"],
+        ]
+        assert ["tmux", "send-keys", "-t", "%5", "Escape"] not in calls
 
 
 class TestIsPaneSafe:

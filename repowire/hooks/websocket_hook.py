@@ -70,7 +70,7 @@ def _tmux_send_keys(pane_id: str, text: str) -> bool:
     Implements Gastown's battle-tested NudgeSession pattern:
     1. Send text in literal mode (bracketed paste)
     2. 500ms debounce — tested, required for paste to complete
-    3. Escape — exits vim INSERT mode if active, harmless otherwise
+    3. Explicitly close bracketed paste mode with ESC[201~
     4. Enter — submits
     """
     try:
@@ -81,7 +81,7 @@ def _tmux_send_keys(pane_id: str, text: str) -> bool:
         )
         time.sleep(0.5)
         subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, "Escape"],
+            ["tmux", "send-keys", "-t", pane_id, "-H", "1b", "5b", "32", "30", "31", "7e"],
             capture_output=True,
             check=True,
         )
