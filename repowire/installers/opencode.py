@@ -10,9 +10,11 @@ import { tool } from "@opencode-ai/plugin"
 // Type definitions for event properties
 interface SessionEventInfo {
   id?: string
+  parentID?: string | null
 }
 
 interface MessageEventInfo {
+  id?: string
   role?: string
   sessionID?: string
   model?: {
@@ -20,12 +22,17 @@ interface MessageEventInfo {
     modelID: string
     variant?: string
   }
+  time?: { completed?: number }
+  status?: string
+  error?: unknown
+  parts?: Array<{ type: string; text?: string }>
 }
 
 interface EventWithProperties {
   type: string
   properties?: {
     info?: SessionEventInfo | MessageEventInfo
+    parts?: Array<{ type: string; text?: string }>
   }
 }
 
@@ -36,22 +43,30 @@ interface PeerInfo {
   path?: string
 }
 
+interface PendingQuery {
+  correlationId: string
+  buffer: string
+  timeoutHandle: ReturnType<typeof setTimeout>
+}
+
 // Configuration
 const DAEMON_URL = process.env.REPOWIRE_DAEMON_URL || "http://127.0.0.1:8377"
 const DAEMON_WS_URL = process.env.REPOWIRE_DAEMON_WS_URL || "ws://127.0.0.1:8377/ws"
 const AUTH_TOKEN = process.env.REPOWIRE_AUTH_TOKEN || ""  // Optional auth token
+const QUERY_TIMEOUT_MS = 120_000
 
 // State
 let ws: WebSocket | null = null
 let peerName: string = "unknown"
 let peerId: string | null = null  // Daemon-assigned unique ID
 let projectPath: string = ""
-let activeSessionId: string | null = null
+let primarySessionId: string | null = null
+let serverUrl: string | null = null
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 let reconnectAttempts: number = 0
 let opencodeClient: PluginClient | null = null
-let stableNameSet: boolean = false
 let activeModel: { providerID: string; modelID: string } | null = null
+const pendingQueries = new Map<string, PendingQuery>()
 
 // Note: We no longer rely on TMUX_PANE for identity. The daemon assigns
 // a unique peer_id (repow-{circle}-{uuid8}) on registration.
@@ -202,55 +217,64 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
       ws.send(JSON.stringify({ type: "pong", pane_alive: true }))
     }
   } else if (msgType === "notify" || msgType === "broadcast") {
+    const fromPeer = (data.from_peer as string) || "unknown"
     const text = data.text as string
-    // Try to resolve session (like we do for queries)
-    const sessionId = await resolveSessionId()
-    if (!sessionId) {
-      console.error(`[repowire] Cannot inject ${msgType}: no active session`)
-      return
-    }
-
-    // Fire-and-forget - inject notification/broadcast
-    if (opencodeClient) {
-      try {
-        const body: Record<string, unknown> = { parts: [{ type: "text", text }] }
-        if (activeModel) {
-          body.model = activeModel
-        }
-        await opencodeClient.session.prompt({
-          path: { id: sessionId },
-          body,
-        })
-      } catch (e) {
-        console.error(`[repowire] Failed to inject ${msgType}:`, e)
-      }
-    }
+    const prefix = msgType === "broadcast" ? "[broadcast] " : ""
+    await softInject(`@${fromPeer}: ${prefix}${text}`)
+  } else if (msgType === "permission_response") {
+    // Daemon-relayed approval reply (future hook, currently unused)
+    return
   }
 }
 
-// Resolve active session - try tracked ID, then list, then create
-async function resolveSessionId(): Promise<string | null> {
-  if (activeSessionId) return activeSessionId
+// Soft-inject text into the user's input box via tui.prompt.append.
+// No model call fires; the user reviews and decides whether to send.
+async function softInject(text: string) {
+  if (!serverUrl) {
+    console.warn("[repowire] No serverUrl available for soft inject")
+    return
+  }
+  try {
+    const res = await fetch(`${serverUrl}tui/publish`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "tui.prompt.append",
+        properties: { text: text + " " },
+      }),
+    })
+    if (!res.ok) {
+      console.warn(`[repowire] tui.prompt.append failed: ${res.status}`)
+    }
+  } catch (e) {
+    console.warn("[repowire] Failed to publish tui event:", e)
+  }
+}
+
+// Resolve the primary (root) session. Falls back to listing, then creating.
+async function resolvePrimarySession(): Promise<string | null> {
+  if (primarySessionId) return primarySessionId
   if (!opencodeClient) return null
 
-  // Try listing existing sessions
   try {
     const result = await opencodeClient.session.list()
     const sessions = result?.data
     if (Array.isArray(sessions) && sessions.length > 0) {
-      activeSessionId = sessions[sessions.length - 1].id
-      return activeSessionId
+      // Prefer root sessions (parentID null). Fall back to most recent.
+      const root = sessions.find((s: any) => s.parentID == null)
+      const chosen = root || sessions[sessions.length - 1]
+      primarySessionId = chosen.id
+      return primarySessionId
     }
   } catch (e) {
     console.warn("[repowire] Failed to list sessions:", e)
   }
 
-  // Create a new session as last resort
   try {
     const result = await opencodeClient.session.create({ body: {} })
     if (result?.data?.id) {
-      activeSessionId = result.data.id
-      return activeSessionId
+      primarySessionId = result.data.id
+      return primarySessionId
     }
   } catch (e) {
     console.warn("[repowire] Failed to create session:", e)
@@ -259,14 +283,15 @@ async function resolveSessionId(): Promise<string | null> {
   return null
 }
 
-// Handle incoming query - use sync prompt then poll for completed response
+// Handle incoming query: fire promptAsync, correlate response via message.updated.
+// https://github.com/prassanna-ravishankar/repowire/issues/74
 async function handleIncomingQuery(correlationId: string, fromPeer: string, text: string) {
   if (!opencodeClient) {
     sendError(correlationId, "OpenCode client not available")
     return
   }
 
-  const sessionId = await resolveSessionId()
+  const sessionId = await resolvePrimarySession()
   if (!sessionId) {
     sendError(correlationId, "Could not resolve or create OpenCode session")
     return
@@ -274,78 +299,70 @@ async function handleIncomingQuery(correlationId: string, fromPeer: string, text
 
   sendStatus("busy")
 
-  try {
-    // session.prompt() fires the query. It returns immediately with the
-    // message skeleton (0 parts), but the model IS processing.
-    // https://github.com/prassanna-ravishankar/repowire/issues/74
-    const body: Record<string, unknown> = { parts: [{ type: "text", text }] }
-    if (activeModel) {
-      body.model = activeModel
+  // Pre-generate a message ID so we can correlate the response from the event
+  // stream without waiting for the prompt API call to return.
+  const messageId = `msg_${correlationId}_${Date.now().toString(36)}`
+
+  const timeoutHandle = setTimeout(() => {
+    if (pendingQueries.has(messageId)) {
+      pendingQueries.delete(messageId)
+      sendError(correlationId, "Query timed out waiting for OpenCode response")
+      sendStatus("idle")
     }
-    const result = await opencodeClient.session.prompt({
+  }, QUERY_TIMEOUT_MS)
+
+  pendingQueries.set(messageId, { correlationId, buffer: "", timeoutHandle })
+
+  try {
+    const body: Record<string, unknown> = {
+      messageID: messageId,
+      parts: [{ type: "text", text }],
+    }
+    if (activeModel) body.model = activeModel
+
+    await opencodeClient.session.promptAsync({
       path: { id: sessionId },
       body,
     })
-
-    // Get the message ID from the response
-    const messageId = result?.data?.info?.id
-    if (!messageId) {
-      sendError(correlationId, "No message ID returned from OpenCode session.prompt()")
-      sendStatus("idle")
-      return
-    }
-
-    // Poll for completion: check the message until parts are populated
-    const maxWait = 120_000  // 120s
-    const pollInterval = 1_000  // 1s (faster polling)
-    const start = Date.now()
-
-    while (Date.now() - start < maxWait) {
-      await new Promise(r => setTimeout(r, pollInterval))
-
-      const msgResult = await opencodeClient.session.message({
-        path: { id: sessionId, messageID: messageId }
-      })
-      const msg = msgResult?.data
-
-      // Try multiple paths for parts (SDK response structure varies)
-      const parts = (msg as any)?.parts || (msg as any)?.info?.parts || []
-
-      let responseText = ""
-      for (const part of parts) {
-        if (part.type === "text" && part.text) responseText += part.text
-      }
-
-      // Check completion status
-      const info = (msg as any)?.info || msg
-      const isCompleted = info?.time?.completed || info?.status === "completed"
-      const hasError = info?.error
-
-      // If we got text, return it immediately
-      if (responseText) {
-        sendResponse(correlationId, responseText)
-        sendStatus("idle")
-        return
-      }
-
-      // If completed or errored WITHOUT text, stop polling
-      if (isCompleted || hasError) {
-        const errorMsg = hasError ? `Model error: ${JSON.stringify(info.error)}` : "(empty response - model completed without output)"
-        sendResponse(correlationId, errorMsg)
-        sendStatus("idle")
-        return
-      }
-    }
-
-    // Timeout
-    sendError(correlationId, "Query timed out waiting for OpenCode response")
   } catch (e) {
+    const pending = pendingQueries.get(messageId)
+    if (pending) {
+      clearTimeout(pending.timeoutHandle)
+      pendingQueries.delete(messageId)
+    }
     const errorMsg = e instanceof Error ? e.message : String(e)
-    console.error(`[repowire] Query failed: ${errorMsg}`)
+    console.error(`[repowire] promptAsync failed: ${errorMsg}`)
     sendError(correlationId, errorMsg)
-  } finally {
     sendStatus("idle")
   }
+}
+
+// Resolve a pending query when its message reaches a terminal state.
+function resolvePendingQuery(messageId: string, info: MessageEventInfo) {
+  const pending = pendingQueries.get(messageId)
+  if (!pending) return
+
+  const parts = info.parts || []
+  let text = pending.buffer
+  for (const part of parts) {
+    if (part.type === "text" && part.text) text = part.text
+  }
+  if (text) pending.buffer = text
+
+  const isCompleted = info.time?.completed || info.status === "completed"
+  const hasError = info.error
+  if (!isCompleted && !hasError) return
+
+  clearTimeout(pending.timeoutHandle)
+  pendingQueries.delete(messageId)
+  if (hasError) {
+    sendResponse(pending.correlationId, `Model error: ${JSON.stringify(hasError)}`)
+  } else if (pending.buffer) {
+    sendResponse(pending.correlationId, pending.buffer)
+  } else {
+    sendResponse(pending.correlationId, "(empty response: model completed without output)")
+  }
+  sendStatus("idle")
 }
 
 // Cleanup function
@@ -367,16 +384,21 @@ function sanitizePeerName(name: string): string {
 }
 
 // Main plugin export
-export const RepowirePlugin: Plugin = async ({ client, directory }) => {
+export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => {
   peerName = sanitizePeerName(directory.split("/").pop() || "unknown")
   projectPath = directory
   opencodeClient = client  // Store client for later use
 
+  // Capture serverUrl for tui/publish (POST /tui/publish soft-inject path).
+  // PluginInput.serverUrl is a URL object whose href ends with a trailing slash.
+  const su = (rest as { serverUrl?: URL | string }).serverUrl
+  if (su) serverUrl = typeof su === "string" ? su : su.toString()
+
   // Connect to daemon via WebSocket
   connectWebSocket()
 
-  // Note: We track activeSessionId via the event hook instead of listing sessions
-  // This avoids potential issues with client.session.list() at startup
+  // primarySessionId is set by event handler when session.updated fires for a
+  // root session (parentID == null), or by resolvePrimarySession on demand.
 
   // Register cleanup on process exit
   process.on("beforeExit", cleanup)
@@ -483,46 +505,77 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         },
       }),
     },
-    // Event hook to track session changes
+    // Event hook to track sessions and correlate query responses.
+    // Subagents create sub-sessions with their own IDs (parentID set), and
+    // their events fire on the same bus. Filter to root sessions for primary
+    // tracking so subagent activity doesn't clobber state.
     event: async ({ event }) => {
       const typedEvent = event as EventWithProperties
       if (typedEvent.type === "session.updated") {
         const info = typedEvent.properties?.info as SessionEventInfo | undefined
-        if (info?.id) {
-          activeSessionId = info.id
-          if (!stableNameSet) {
-            stableNameSet = true
-            const stableName = sanitizePeerName(info.id.startsWith("ses") ? info.id.slice(3, 11) : info.id.slice(0, 8))
-            if (stableName !== peerName) {
-              peerName = stableName
-              if (ws?.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "update_display_name", display_name: stableName }))
-              } else {
-                ws?.close()  // fallback: reconnect will use the new name
-              }
-            }
-          }
+        // Pin primarySessionId only for root sessions. parentID == null means
+        // "this is a root session." Refresh on every root update so /new and
+        // attach correctly retarget the pin.
+        if (info?.id && info.parentID == null) {
+          primarySessionId = info.id
         }
       } else if (typedEvent.type === "message.updated") {
         const info = typedEvent.properties?.info as MessageEventInfo | undefined
-        if (info?.role === "assistant" && info?.sessionID) {
-          if (info.sessionID !== activeSessionId) {
-            activeSessionId = info.sessionID
-          }
-          sendStatus("busy")
+        if (!info) return
+
+        // Only the primary session drives busy/idle and query correlation.
+        if (info.sessionID && info.sessionID === primarySessionId) {
+          if (info.role === "assistant") sendStatus("busy")
+          if (info.id) resolvePendingQuery(info.id, info)
         }
-        // https://github.com/prassanna-ravishankar/repowire/issues/74
-        if (info?.role === "user" && info?.model) {
+
+        // Track active model for context-compaction parity (issue #74).
+        if (info.role === "user" && info.model) {
           activeModel = { providerID: info.model.providerID, modelID: info.model.modelID }
         }
       } else if (typedEvent.type === "session.idle") {
-        sendStatus("idle")
-      } else if (typedEvent.type === "session.deleted") {
         const info = typedEvent.properties?.info as SessionEventInfo | undefined
-        if (info?.id === activeSessionId) {
-          activeSessionId = null
+        // Only flip status when the primary session goes idle. Subagent idle
+        // events are per-sub-session and shouldn't unblock the parent's view.
+        if (!info?.id || info.id === primarySessionId) {
           sendStatus("idle")
         }
+      } else if (typedEvent.type === "session.deleted") {
+        const info = typedEvent.properties?.info as SessionEventInfo | undefined
+        if (info?.id && info.id === primarySessionId) {
+          primarySessionId = null
+          sendStatus("idle")
+        }
+      }
+    },
+    // Permission relay: forward tool-approval prompts to the mesh so
+    // telegram/dashboard users can see what opencode is asking for. Modeled
+    // on the channel transport's permission relay (channel/server.ts).
+    // Fire-and-forget: opencode's own approval UI still gates the call.
+    "permission.ask": async (input, _output) => {
+      try {
+        const payload = input as Record<string, unknown>
+        const toolName = (payload.tool || payload.name || "tool") as string
+        const description = (payload.description || "") as string
+        const requestId = (payload.id || payload.request_id || "") as string
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 1500)
+        await fetch(`${DAEMON_URL}/notify`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            from_peer: peerName,
+            to_peer: "telegram",
+            text:
+              `Permission request: ${toolName}\\n` +
+              (description ? `${description}\\n` : "") +
+              (requestId ? `Reply "yes ${requestId}" or "no ${requestId}"` : ""),
+          }),
+        }).catch(() => undefined)
+        clearTimeout(timeout)
+      } catch (e) {
+        console.debug("[repowire] permission relay failed:", e)
       }
     },
     // Inject mesh network context into system prompt
