@@ -10,13 +10,10 @@ from pydantic import BaseModel, Field
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_config, get_peer_registry
+from repowire.daemon.peer_registry import PeerRegistry
 from repowire.spawn import SpawnConfig, SpawnResult, kill_peer, spawn_peer
 
 router = APIRouter(tags=["spawn"])
-
-# In-memory registry of tmux_sessions spawned by this daemon instance.
-# Only sessions in this set can be killed via /kill.
-_spawned_sessions: set[str] = set()
 
 
 class SpawnConfigResponse(BaseModel):
@@ -58,14 +55,6 @@ class SpawnResponse(BaseModel):
     tmux_session: str
 
 
-class KillRequest(BaseModel):
-    """Request to kill a spawned session."""
-
-    tmux_session: str = Field(
-        ..., description="Session ref returned by /spawn (e.g. 'default:myproject')"
-    )
-
-
 class KillResponse(BaseModel):
     """Result of a successful kill."""
 
@@ -77,6 +66,18 @@ class KillPeerRequest(BaseModel):
 
     peer_identifier: str = Field(..., description="Peer ID or display name from /peers")
     circle: str | None = Field(None, description="Circle to scope display-name lookup")
+    from_peer: str | None = Field(
+        None, description="Caller peer_id or display_name — used for role-based authorization"
+    )
+
+
+async def _authorize_kill(registry: PeerRegistry, from_peer: str | None) -> None:
+    """Hook for future role-based authorization.
+
+    No-op today. When we want to restrict kill to e.g. orchestrators, resolve
+    `from_peer` against `registry` here and raise 403 on mismatch.
+    """
+    _ = (registry, from_peer)
 
 
 def _validate_spawn_request(path: str, command: str) -> None:
@@ -144,34 +145,7 @@ async def spawn(
     except (ValueError, RuntimeError) as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-    _spawned_sessions.add(result.tmux_session)
     return SpawnResponse(display_name=result.display_name, tmux_session=result.tmux_session)
-
-
-@router.post("/kill", response_model=KillResponse)
-async def kill(
-    request: KillRequest,
-    _: str | None = Depends(require_auth),
-) -> KillResponse:
-    """Kill a spawned agent session.
-
-    Only sessions previously spawned via /spawn on this daemon instance can be killed.
-    """
-    if request.tmux_session not in _spawned_sessions:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Session not found or not spawned by repowire: {request.tmux_session}",
-        )
-
-    ok = kill_peer(request.tmux_session)
-    if not ok:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tmux session not found: {request.tmux_session}",
-        )
-
-    _spawned_sessions.discard(request.tmux_session)
-    return KillResponse()
 
 
 @router.post("/kill-peer", response_model=KillResponse)
@@ -186,6 +160,7 @@ async def kill_registered_peer(
     """
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
+    await _authorize_kill(peer_registry, request.from_peer)
     peers = await peer_registry.get_all_peers()
 
     peer = next((p for p in peers if p.peer_id == request.peer_identifier), None)
@@ -236,5 +211,4 @@ async def kill_registered_peer(
             detail=f"Tmux session not found: {peer.tmux_session}",
         )
 
-    _spawned_sessions.discard(peer.tmux_session)
     return KillResponse()

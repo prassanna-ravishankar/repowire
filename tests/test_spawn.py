@@ -468,13 +468,15 @@ class TestMcpSpawnPeerReturn:
         assert result != "prod:alpha-svc"
 
     @pytest.mark.asyncio
+    @patch("repowire.mcp.server._get_my_peer_name", new_callable=AsyncMock)
     @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
     async def test_kill_peer_uses_peer_identifier_not_tmux_session(
-        self, mock_request: AsyncMock,
+        self, mock_request: AsyncMock, mock_my_name: AsyncMock,
     ) -> None:
         """kill_peer MCP tool should send mesh identity to the safe kill route."""
         from repowire.mcp.server import create_mcp_server
 
+        mock_my_name.return_value = "orchestrator"
         mcp = create_mcp_server()
         tools = {name: fn for name, fn in mcp._tool_manager._tools.items()}
         kill_tool = tools["kill_peer"]
@@ -483,7 +485,11 @@ class TestMcpSpawnPeerReturn:
         mock_request.assert_awaited_once_with(
             "POST",
             "/kill-peer",
-            {"peer_identifier": "repow-5-abc12345", "circle": "5"},
+            {
+                "peer_identifier": "repow-5-abc12345",
+                "from_peer": "orchestrator",
+                "circle": "5",
+            },
         )
         assert result == "Killed peer repow-5-abc12345 in circle 5"
 

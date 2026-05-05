@@ -436,7 +436,10 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Confirmation message
         """
-        payload = {"peer_identifier": peer_identifier}
+        payload: dict[str, str] = {
+            "peer_identifier": peer_identifier,
+            "from_peer": await _get_my_peer_name(),
+        }
         if circle is not None:
             payload["circle"] = circle
         await daemon_request("POST", "/kill-peer", payload)
