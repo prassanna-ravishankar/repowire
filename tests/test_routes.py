@@ -8,8 +8,8 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from repowire.config.models import Config
-from repowire.daemon.deps import cleanup_deps, init_deps
+from repowire.config.models import AgentType, Config
+from repowire.daemon.deps import cleanup_deps, get_peer_registry, init_deps
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
@@ -258,6 +258,100 @@ class TestPeers:
         assert len(peers) == 1
         assert peers[0]["path"] == "/tmp/proj-x"
         assert peers[0]["backend"] == "claude-code"
+
+
+# -- Spawn / kill --
+
+
+class TestKillPeer:
+    async def test_kill_peer_by_peer_id_resolves_tmux_session(self, client, monkeypatch):
+        registry = get_peer_registry()
+        peer_id, _name = await registry.allocate_and_register(
+            circle="5",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/torale",
+            tmux_session="5:torale-window",
+        )
+        killed: list[str] = []
+
+        def fake_kill(tmux_session: str) -> bool:
+            killed.append(tmux_session)
+            return True
+
+        monkeypatch.setattr(spawn_routes, "kill_peer", fake_kill)
+
+        r = await client.post("/kill-peer", json={"peer_identifier": peer_id})
+
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert killed == ["5:torale-window"]
+
+    async def test_kill_peer_by_name_and_circle(self, client, monkeypatch):
+        registry = get_peer_registry()
+        _peer_id, display_name = await registry.allocate_and_register(
+            circle="5",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/torale",
+            tmux_session="5:torale-window",
+        )
+        killed: list[str] = []
+
+        def fake_kill(tmux_session: str) -> bool:
+            killed.append(tmux_session)
+            return True
+
+        monkeypatch.setattr(spawn_routes, "kill_peer", fake_kill)
+
+        r = await client.post(
+            "/kill-peer",
+            json={"peer_identifier": display_name, "circle": "5"},
+        )
+
+        assert r.status_code == 200
+        assert killed == ["5:torale-window"]
+
+    async def test_kill_peer_ambiguous_display_name_returns_409(self, client, monkeypatch):
+        registry = get_peer_registry()
+        await registry.allocate_and_register(
+            circle="5",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/torale",
+            tmux_session="5:torale-a",
+        )
+        await registry.allocate_and_register(
+            circle="6",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/torale",
+            tmux_session="6:torale-b",
+        )
+
+        def fail_kill(tmux_session: str) -> bool:
+            raise AssertionError(f"should not kill ambiguous peer: {tmux_session}")
+
+        monkeypatch.setattr(spawn_routes, "kill_peer", fail_kill)
+
+        r = await client.post(
+            "/kill-peer",
+            json={"peer_identifier": "torale-claude-code"},
+        )
+
+        assert r.status_code == 409
+        detail = r.json()["detail"]
+        assert "Ambiguous peer identifier" in detail["error"]
+        assert {p["circle"] for p in detail["candidates"]} == {"5", "6"}
+
+    async def test_kill_peer_without_tmux_session_returns_400(self, client):
+        registry = get_peer_registry()
+        peer_id, _name = await registry.allocate_and_register(
+            circle="5",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/torale",
+        )
+
+        r = await client.post("/kill-peer", json={"peer_identifier": peer_id})
+
+        assert r.status_code == 400
+        assert "no tmux session" in r.json()["detail"]
 
 
 # -- Events --

@@ -467,6 +467,26 @@ class TestMcpSpawnPeerReturn:
         # Must NOT be just the raw tmux_session string
         assert result != "prod:alpha-svc"
 
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    async def test_kill_peer_uses_peer_identifier_not_tmux_session(
+        self, mock_request: AsyncMock,
+    ) -> None:
+        """kill_peer MCP tool should send mesh identity to the safe kill route."""
+        from repowire.mcp.server import create_mcp_server
+
+        mcp = create_mcp_server()
+        tools = {name: fn for name, fn in mcp._tool_manager._tools.items()}
+        kill_tool = tools["kill_peer"]
+        result = await kill_tool.fn(peer_identifier="repow-5-abc12345", circle="5")
+
+        mock_request.assert_awaited_once_with(
+            "POST",
+            "/kill-peer",
+            {"peer_identifier": "repow-5-abc12345", "circle": "5"},
+        )
+        assert result == "Killed peer repow-5-abc12345 in circle 5"
+
 
 class TestMcpRegistration:
     """Tests for MCP lazy registration behavior."""

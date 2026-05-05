@@ -426,17 +426,22 @@ def create_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    async def kill_peer(tmux_session: str) -> str:
-        """[Repowire mesh] Kill a spawned coding session.
+    async def kill_peer(peer_identifier: str, circle: str | None = None) -> str:
+        """[Repowire mesh] Kill a registered local coding session.
 
         Args:
-            tmux_session: Session reference returned by spawn_peer (e.g. "default:myproject")
+            peer_identifier: Peer ID or display name from list_peers.
+            circle: Optional circle to disambiguate display names.
 
         Returns:
             Confirmation message
         """
-        await daemon_request("POST", "/kill", {"tmux_session": tmux_session})
-        return f"Killed {tmux_session}"
+        payload = {"peer_identifier": peer_identifier}
+        if circle is not None:
+            payload["circle"] = circle
+        await daemon_request("POST", "/kill-peer", payload)
+        scoped = f" in circle {circle}" if circle else ""
+        return f"Killed peer {peer_identifier}{scoped}"
 
     return mcp
 

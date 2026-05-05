@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
-from repowire.daemon.deps import get_config
+from repowire.daemon.deps import get_config, get_peer_registry
 from repowire.spawn import SpawnConfig, SpawnResult, kill_peer, spawn_peer
 
 router = APIRouter(tags=["spawn"])
@@ -70,6 +70,13 @@ class KillResponse(BaseModel):
     """Result of a successful kill."""
 
     ok: bool = True
+
+
+class KillPeerRequest(BaseModel):
+    """Request to kill a registered peer by mesh identity."""
+
+    peer_identifier: str = Field(..., description="Peer ID or display name from /peers")
+    circle: str | None = Field(None, description="Circle to scope display-name lookup")
 
 
 def _validate_spawn_request(path: str, command: str) -> None:
@@ -164,4 +171,70 @@ async def kill(
         )
 
     _spawned_sessions.discard(request.tmux_session)
+    return KillResponse()
+
+
+@router.post("/kill-peer", response_model=KillResponse)
+async def kill_registered_peer(
+    request: KillPeerRequest,
+    _: str | None = Depends(require_auth),
+) -> KillResponse:
+    """Kill a registered local peer by peer_id or display_name.
+
+    Unlike /kill, this route resolves mesh identity first so callers do not
+    need to know the tmux window name.
+    """
+    peer_registry = get_peer_registry()
+    await peer_registry.lazy_repair()
+    peers = await peer_registry.get_all_peers()
+
+    peer = next((p for p in peers if p.peer_id == request.peer_identifier), None)
+    if peer and request.circle and peer.circle != request.circle:
+        peer = None
+
+    if peer is None:
+        matches = [p for p in peers if p.display_name == request.peer_identifier]
+        if request.circle:
+            matches = [p for p in matches if p.circle == request.circle]
+
+        if not matches:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Peer not found: {request.peer_identifier}",
+            )
+
+        if len(matches) > 1:
+            candidates = [
+                {
+                    "peer_id": p.peer_id,
+                    "display_name": p.display_name,
+                    "circle": p.circle,
+                    "tmux_session": p.tmux_session,
+                }
+                for p in matches
+            ]
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": f"Ambiguous peer identifier: {request.peer_identifier}",
+                    "candidates": candidates,
+                },
+            )
+
+        peer = matches[0]
+
+    if not peer.tmux_session:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Peer has no tmux session: {peer.display_name}",
+        )
+
+    ok = kill_peer(peer.tmux_session)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Tmux session not found: {peer.tmux_session}",
+        )
+
+    _spawned_sessions.discard(peer.tmux_session)
     return KillResponse()
