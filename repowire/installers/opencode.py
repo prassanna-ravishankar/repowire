@@ -342,10 +342,13 @@ function resolvePendingQuery(messageId: string, info: MessageEventInfo) {
   const pending = pendingQueries.get(messageId)
   if (!pending) return
 
+  // info.parts is the full message state on every event. Concatenate all
+  // text parts to rebuild the response, then keep the latest non-empty
+  // result as buffer (in case a later event arrives with parts cleared).
   const parts = info.parts || []
-  let text = pending.buffer
+  let text = ""
   for (const part of parts) {
-    if (part.type === "text" && part.text) text = part.text
+    if (part.type === "text" && part.text) text += part.text
   }
   if (text) pending.buffer = text
 
