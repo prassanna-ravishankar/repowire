@@ -502,6 +502,33 @@ class PeerRegistry:
         async with self._lock:
             return self._lookup_peer_unlocked(identifier, circle=circle)
 
+    async def resolve_peer_strict(
+        self, identifier: str, circle: str | None = None
+    ) -> Peer | list[Peer]:
+        """Resolve a peer by id-or-display_name, returning all matches when ambiguous.
+
+        Unlike `get_peer`, an ambiguous display_name does not silently pick a
+        winner — the caller gets the full candidate list and must disambiguate.
+        Use this for destructive operations (kill, etc.) where guessing is wrong.
+
+        Returns:
+            The matching `Peer` (single match or peer_id hit), an empty list if
+            no peer matches, or a list of 2+ peers when the display_name is
+            ambiguous after circle filtering.
+        """
+        async with self._lock:
+            in_circle = lambda p: circle is None or p.circle == circle  # noqa: E731
+            by_id = [p for p in self._peers.values() if p.peer_id == identifier and in_circle(p)]
+            if by_id:
+                return by_id[0]
+            by_name = [
+                p for p in self._peers.values()
+                if p.display_name == identifier and in_circle(p)
+            ]
+            if len(by_name) == 1:
+                return by_name[0]
+            return by_name
+
     async def get_peer_by_pane(self, pane_id: str) -> Peer | None:
         """Lookup peer by tmux pane_id."""
         async with self._lock:

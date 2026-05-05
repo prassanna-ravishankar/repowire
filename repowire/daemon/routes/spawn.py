@@ -11,7 +11,6 @@ from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_config, get_peer_registry
 from repowire.daemon.peer_registry import PeerRegistry
-from repowire.protocol.peers import Peer
 from repowire.spawn import SpawnConfig, SpawnResult, kill_peer, spawn_peer
 
 router = APIRouter(tags=["spawn"])
@@ -144,45 +143,6 @@ async def spawn(
     return SpawnResponse(display_name=result.display_name, tmux_session=result.tmux_session)
 
 
-def _resolve_kill_target(peers: list[Peer], identifier: str, circle: str | None) -> Peer:
-    """Resolve a peer by peer_id then display_name, raising HTTP errors on miss/ambiguity.
-
-    Unlike `PeerRegistry.get_peer`, this surfaces ambiguous display_name matches
-    as 409 instead of silently picking a winner — kill is destructive enough to
-    warrant making the caller disambiguate.
-    """
-    def in_circle(p: Peer) -> bool:
-        return circle is None or p.circle == circle
-
-    by_id = [p for p in peers if p.peer_id == identifier and in_circle(p)]
-    if by_id:
-        return by_id[0]
-
-    by_name = [p for p in peers if p.display_name == identifier and in_circle(p)]
-    if not by_name:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Peer not found: {identifier}",
-        )
-    if len(by_name) > 1:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "error": f"Ambiguous peer identifier: {identifier}",
-                "candidates": [
-                    {
-                        "peer_id": p.peer_id,
-                        "display_name": p.display_name,
-                        "circle": p.circle,
-                        "tmux_session": p.tmux_session,
-                    }
-                    for p in by_name
-                ],
-            },
-        )
-    return by_name[0]
-
-
 @router.post("/kill-peer", response_model=KillResponse)
 async def kill_registered_peer(
     request: KillPeerRequest,
@@ -196,9 +156,33 @@ async def kill_registered_peer(
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
     await _authorize_kill(peer_registry, request.from_peer)
-    peers = await peer_registry.get_all_peers()
-    peer = _resolve_kill_target(peers, request.peer_identifier, request.circle)
+    resolved = await peer_registry.resolve_peer_strict(
+        request.peer_identifier, circle=request.circle,
+    )
 
+    if isinstance(resolved, list):
+        if not resolved:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Peer not found: {request.peer_identifier}",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": f"Ambiguous peer identifier: {request.peer_identifier}",
+                "candidates": [
+                    {
+                        "peer_id": p.peer_id,
+                        "display_name": p.display_name,
+                        "circle": p.circle,
+                        "tmux_session": p.tmux_session,
+                    }
+                    for p in resolved
+                ],
+            },
+        )
+
+    peer = resolved
     if not peer.tmux_session:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
