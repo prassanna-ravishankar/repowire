@@ -340,7 +340,7 @@ class TestKillPeer:
         assert "Ambiguous peer identifier" in detail["error"]
         assert {p["circle"] for p in detail["candidates"]} == {"5", "6"}
 
-    async def test_kill_peer_without_tmux_session_returns_400(self, client):
+    async def test_kill_peer_without_tmux_session_unregisters(self, client):
         registry = get_peer_registry()
         peer_id, _name = await registry.allocate_and_register(
             circle="5",
@@ -350,8 +350,23 @@ class TestKillPeer:
 
         r = await client.post("/kill-peer", json={"peer_identifier": peer_id})
 
-        assert r.status_code == 400
-        assert "no tmux session" in r.json()["detail"]
+        assert r.status_code == 200
+        assert await registry.get_peer(peer_id) is None
+
+    async def test_kill_peer_with_dead_tmux_session_unregisters(self, client, monkeypatch):
+        registry = get_peer_registry()
+        peer_id, _name = await registry.allocate_and_register(
+            circle="5",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/torale",
+            tmux_session="5:torale-stale",
+        )
+        monkeypatch.setattr(spawn_routes, "kill_peer", lambda _: False)
+
+        r = await client.post("/kill-peer", json={"peer_identifier": peer_id})
+
+        assert r.status_code == 200
+        assert await registry.get_peer(peer_id) is None
 
 
 # -- Events --

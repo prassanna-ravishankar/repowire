@@ -183,16 +183,7 @@ async def kill_registered_peer(
         )
 
     peer = resolved
-    if not peer.tmux_session:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Peer has no tmux session: {peer.display_name}",
-        )
-
-    if not kill_peer(peer.tmux_session):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tmux session not found: {peer.tmux_session}",
-        )
-
+    if peer.tmux_session:
+        kill_peer(peer.tmux_session)
+    await peer_registry.unregister_peer(peer.peer_id)
     return KillResponse()
