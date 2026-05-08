@@ -98,28 +98,27 @@ def uninstall_hooks() -> bool:
 
 
 def _enable_hooks_feature() -> None:
-    """Enable the codex_hooks feature flag in config.toml.
+    """Enable the hooks feature flag in config.toml.
 
-    Codex hooks are "under development" and default to false.
-    We need features.codex_hooks = true for hooks to fire.
+    Codex hooks default to false. We need features.hooks = true for them to fire.
+    Codex 0.129.0 renamed `codex_hooks` to `hooks` (legacy alias kept). If the
+    user's config already has either flag set, leave it alone.
     """
     CODEX_HOME.mkdir(parents=True, exist_ok=True)
 
     if CONFIG_PATH.exists():
         content = CONFIG_PATH.read_text()
-        if "codex_hooks" in content:
-            return  # already set
+        if "codex_hooks" in content or "hooks =" in content or "hooks=" in content:
+            return  # already set under either name
     else:
         content = ""
 
-    # Append or update the features section
     if "[features]" in content:
-        # Add to existing features section
         content = content.replace(
-            "[features]", "[features]\ncodex_hooks = true", 1
+            "[features]", "[features]\nhooks = true", 1
         )
     else:
-        content = content.rstrip() + "\n\n[features]\ncodex_hooks = true\n"
+        content = content.rstrip() + "\n\n[features]\nhooks = true\n"
 
     CONFIG_PATH.write_text(content)
 
@@ -128,7 +127,7 @@ def install_mcp() -> bool:
     """Add repowire MCP server to ~/.codex/config.toml.
 
     Appends the [mcp_servers.repowire] section. Preserves existing content.
-    Also enables the codex_hooks feature flag (required for hooks to fire).
+    Also enables the hooks feature flag (required for hooks to fire).
     """
     CODEX_HOME.mkdir(parents=True, exist_ok=True)
 
