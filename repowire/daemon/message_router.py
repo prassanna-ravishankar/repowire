@@ -120,6 +120,23 @@ class MessageRouter:
         await self._transport.send(to_session_id, message)
         logger.info(f"Notification sent: {from_peer} -> {to_peer_name}")
 
+    async def send_broadcast_to(
+        self,
+        from_peer: str,
+        to_session_id: str,
+        to_peer_name: str,
+        text: str,
+    ) -> None:
+        """Deliver a single broadcast copy to one peer. Used to replay buffered
+        broadcasts to a peer that was BUSY when the original fanout ran."""
+        message: dict[str, Any] = {
+            "type": "broadcast",
+            "from_peer": from_peer,
+            "text": text,
+        }
+        await self._transport.send(to_session_id, message)
+        logger.info(f"Broadcast (deferred) sent: {from_peer} -> {to_peer_name}")
+
     async def broadcast(
         self,
         from_peer: str,
