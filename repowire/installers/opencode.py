@@ -6,6 +6,9 @@ from pathlib import Path
 
 PLUGIN_CONTENT = """import type { Plugin, PluginClient } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
+import * as fs from "node:fs"
+import * as path from "node:path"
+import * as os from "node:os"
 
 // Type definitions for event properties
 interface SessionEventInfo {
@@ -71,6 +74,46 @@ const pendingQueries = new Map<string, PendingQuery>()
 // Note: We no longer rely on TMUX_PANE for identity. The daemon assigns
 // a unique peer_id (repow-{circle}-{uuid8}) on registration.
 
+// peer_id persistence: opencode runs as a fresh node process per session, so
+// any in-memory peer_id is lost on restart. Without persistence, the daemon
+// allocates a new id each time and the previous one lingers as a ghost peer.
+// We cache `{ [projectPath]: peer_id }` to disk and replay it in the connect
+// message; the daemon's allocate_and_register reuses the existing peer in-place
+// if the id matches. (Issue #81.)
+const PEER_ID_CACHE_PATH = path.join(os.homedir(), ".cache", "repowire", "opencode-peer-id.json")
+
+function loadPeerId(projectPath: string): string | null {
+  try {
+    if (!fs.existsSync(PEER_ID_CACHE_PATH)) return null
+    const raw = fs.readFileSync(PEER_ID_CACHE_PATH, "utf-8")
+    const data = JSON.parse(raw) as Record<string, string>
+    return data[projectPath] ?? null
+  } catch (e) {
+    console.debug("[repowire] Failed to load peer_id cache:", e)
+    return null
+  }
+}
+
+function savePeerId(projectPath: string, id: string): void {
+  try {
+    fs.mkdirSync(path.dirname(PEER_ID_CACHE_PATH), { recursive: true })
+    let data: Record<string, string> = {}
+    if (fs.existsSync(PEER_ID_CACHE_PATH)) {
+      try {
+        data = JSON.parse(fs.readFileSync(PEER_ID_CACHE_PATH, "utf-8")) as Record<string, string>
+      } catch {
+        // Corrupt cache: start fresh rather than fail to save.
+        data = {}
+      }
+    }
+    if (data[projectPath] === id) return
+    data[projectPath] = id
+    fs.writeFileSync(PEER_ID_CACHE_PATH, JSON.stringify(data, null, 2))
+  } catch (e) {
+    console.debug("[repowire] Failed to save peer_id cache:", e)
+  }
+}
+
 // HTTP helpers for daemon
 async function daemon(path: string, body?: object) {
   const res = await fetch(`${DAEMON_URL}${path}`, {
@@ -118,6 +161,14 @@ function connectWebSocket() {
       circle,
       backend: "opencode",
       path: projectPath,
+    }
+
+    // Replay cached peer_id so the daemon reuses the existing peer in-place
+    // instead of allocating a new one (which would leave the previous as a
+    // ghost). On first run there's nothing to replay.
+    const cachedPeerId = peerId || loadPeerId(projectPath)
+    if (cachedPeerId) {
+      connectMsg.peer_id = cachedPeerId
     }
 
     if (tmuxSession) {
@@ -200,10 +251,11 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
   const msgType = data.type as string
 
   if (msgType === "connected") {
-    // Store daemon-assigned session_id as peer_id
+    // Store daemon-assigned session_id as peer_id and persist for next run
     if (data.session_id) {
       peerId = data.session_id as string
       console.debug(`[repowire] Connected with session_id: ${peerId}`)
+      if (projectPath) savePeerId(projectPath, peerId)
     }
     sendStatus("idle")
   } else if (msgType === "query") {
