@@ -455,7 +455,7 @@ class TestMcpToolDescriptions:
         """All repowire MCP tools should include [Repowire mesh] in their description."""
         from repowire.mcp.server import create_mcp_server
         mcp = create_mcp_server()
-        mesh_tools = ["list_peers", "ask_peer", "notify_peer", "broadcast",
+        mesh_tools = ["list_peers", "ask", "ack", "notify_peer", "broadcast",
                        "spawn_peer", "kill_peer", "whoami", "set_description"]
         for name in mesh_tools:
             tool = mcp._tool_manager._tools.get(name)
@@ -469,7 +469,7 @@ class TestMcpToolDescriptions:
         """Tools that send messages should warn against using SendMessage."""
         from repowire.mcp.server import create_mcp_server
         mcp = create_mcp_server()
-        for name in ["ask_peer", "notify_peer", "broadcast", "spawn_peer"]:
+        for name in ["ask", "notify_peer", "broadcast", "spawn_peer"]:
             tool = mcp._tool_manager._tools.get(name)
             desc = tool.description or ""
             assert "SendMessage" in desc, (

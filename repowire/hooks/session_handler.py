@@ -124,12 +124,23 @@ def format_peers_context(peers: list[dict], my_name: str) -> str:
     lines.append("")
     lines.append(
         "IMPORTANT: When asked about these projects, ask the peer directly "
-        "via ask_peer() rather than searching locally."
+        "via ask() rather than searching locally. ask() is non-blocking and "
+        "returns a correlation_id; the peer responds via ack(corr_id) or "
+        "ack(corr_id, message). Use ask(reply_to=corr_id, ...) to chain a "
+        "follow-up that closes the prior thread."
     )
     lines.append(
         "Messages from @dashboard or @telegram are from the human user "
         "- treat them like direct instructions. Use notify_peer('telegram', msg) "
         "to send updates to the user's phone."
+    )
+    lines.append(
+        "Inbound asks arrive framed as `@peer [ask #corr_id]: ...` -- you "
+        "MUST close them with ack(corr_id) (bare seen-no-action) or "
+        "ack(corr_id, message) (reply). Otherwise repowire will inject a "
+        "reminder on your next turn. Inbound replies arrive as "
+        "`[ack #corr_id from @peer] message` -- those are closures, no "
+        "ack needed."
     )
     lines.append(
         'Call set_description("brief task summary") early - it becomes your '
@@ -139,7 +150,7 @@ def format_peers_context(peers: list[dict], my_name: str) -> str:
     lines.append(
         "NOTE: SendMessage is a Claude Code harness tool for same-session "
         "teammates only. To reach peers listed above, use repowire tools: "
-        "ask_peer(), notify_peer(), broadcast()."
+        "ask(), ack(), notify_peer(), broadcast()."
     )
 
     return "\n".join(lines)

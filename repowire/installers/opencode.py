@@ -673,21 +673,40 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
           return rows.join("\\n")
         },
       }),
-      ask_peer: tool({
-        description: "Ask another peer a question and wait for their response",
+      ask: tool({
+        description: "Open a non-blocking ask thread with a peer. Returns a correlation_id immediately. The peer responds via ack(corr_id) (bare close) or ack(corr_id, message) (reply, delivered as a notification framed [ack #cid from @peer] message).",
         args: {
           peer_name: tool.schema.string().describe("Name of the peer to ask"),
           query: tool.schema.string().describe("The question to ask"),
+          reply_to: tool.schema.string().optional().describe("If set, closes that prior ask before opening this one"),
         },
-        async execute({ peer_name, query }, ctx) {
+        async execute({ peer_name, query, reply_to }, ctx) {
           const me = callerPeer(ctx as { sessionID?: string })
-          const result = await daemon("/query", {
+          const body: any = {
             from_peer: me.peerName,
             to_peer: peer_name,
             text: query,
-          })
+          }
+          if (reply_to) body.reply_to = reply_to
+          const result = await daemon("/ask", body)
           if (result.error) throw new Error(result.error)
-          return result.text
+          return result.correlation_id || ""
+        },
+      }),
+      ack: tool({
+        description: "Close an open ask thread. Bare close: ack(corr_id). Reply: ack(corr_id, message) -- delivered to the original asker.",
+        args: {
+          correlation_id: tool.schema.string().describe("The ask's correlation_id"),
+          message: tool.schema.string().optional().describe("Optional reply content"),
+        },
+        async execute({ correlation_id, message }) {
+          const body: any = {
+            correlation_id,
+            from_peer: peerName,
+          }
+          if (message !== undefined) body.message = message
+          await daemon("/ack", body)
+          return `acked #${correlation_id}` + (message ? " with reply" : "")
         },
       }),
       notify_peer: tool({
@@ -912,8 +931,8 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
 Other peers online:
 ${peerList}
 
-IMPORTANT: When asked about other projects, ask the peer directly via ask_peer rather than searching locally.
-Use list_peers to refresh peer status. Use notify_peer for fire-and-forget messages.`)
+IMPORTANT: When asked about other projects, ask the peer directly via ask tool rather than searching locally. ask returns a correlation_id immediately; the peer closes the thread via ack (bare = seen, no action) or ack(message) (reply). Inbound asks arrive framed [ask #cid] -- you must ack them.
+Use list_peers to see current peer status. Use notify_peer for fire-and-forget messages.`)
       } catch (e) {
         console.debug("[repowire] Failed to fetch peer context:", e)
       }

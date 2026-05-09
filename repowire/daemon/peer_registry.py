@@ -620,7 +620,7 @@ class PeerRegistry:
         formatted_query = (
             f"[Repowire Query from @{from_peer}]\n"
             f"{text}\n\n"
-            f"IMPORTANT: Respond directly in your message. Do NOT use ask_peer() to reply - "
+            f"IMPORTANT: Respond directly in your message. Do NOT use ask() to reply - "
             f"your response is automatically captured and returned to {from_peer}."
         )
 

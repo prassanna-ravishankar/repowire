@@ -146,7 +146,7 @@ async function fetchPeerContext(): Promise<string> {
       "\n[Repowire Mesh] Connected peers:",
       ...lines,
       "",
-      "Use ask_peer() to query peers. Use notify_peer() for fire-and-forget.",
+      "Use ask() to open a non-blocking thread (returns corr_id; peer responds via ack(corr_id) or ack(corr_id, message)). Use notify_peer() for fire-and-forget.",
       "Messages from @dashboard or @telegram are from the human user.",
       'Call set_description("task summary") so peers know what you\'re working on.',
     ].join("\n");

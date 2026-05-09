@@ -230,7 +230,7 @@ def create_mcp_server() -> FastMCP:
         offline peers.
 
         Returns TSV: peer_id, name, project, circle, role, status, path, machine,
-        description, backend. Peers are reachable via ask_peer/notify_peer. Do NOT
+        description, backend. Peers are reachable via ask/notify_peer. Do NOT
         use SendMessage to contact them -- SendMessage is a Claude Code harness
         tool for same-session teammates only.
         """
@@ -244,24 +244,37 @@ def create_mcp_server() -> FastMCP:
         return "\n".join(rows)
 
     @mcp.tool()
-    async def ask_peer(peer_name: str, query: str, circle: str | None = None) -> str:
-        """[Repowire mesh] Ask a peer in another project and wait for response.
+    async def ask(
+        peer_name: str,
+        query: str,
+        reply_to: str | None = None,
+        circle: str | None = None,
+    ) -> str:
+        """[Repowire mesh] Open a non-blocking ask thread with a peer.
 
-        Reaches peers across different projects and machines via the repowire
-        daemon. For complex questions that may take a long time, consider using
-        notify_peer instead.
+        Returns immediately with a correlation_id. The peer receives the
+        ask, and when they respond they call `ack(correlation_id)` (bare
+        close, "seen, no action") or `ack(correlation_id, message)` (close
+        with reply content delivered back to you as a notification framed
+        `[ack #correlation_id from @peer] message`).
 
-        Do NOT use SendMessage to reach repowire peers. SendMessage is a Claude
-        Code harness tool for same-session teammates only.
+        To chain a follow-up: call `ask(peer_name, query, reply_to=corr_id)`.
+        That closes the prior thread AND opens a new one referencing it.
+
+        If you need a synchronous wait, write your own poll loop on the
+        notification stream — the MCP surface is non-blocking by design.
+
+        Do NOT use SendMessage to reach repowire peers. SendMessage is a
+        Claude Code harness tool for same-session teammates only.
 
         Args:
-            peer_name: Name of the peer to ask (e.g., "backend", "frontend")
+            peer_name: Name of the peer to ask
             query: The question or request to send
-            circle: Circle to scope the lookup (optional, required when multiple
-                    peers share the same name in different circles)
+            reply_to: If set, closes that prior ask before opening this one
+            circle: Circle to scope the lookup (optional)
 
         Returns:
-            The peer's response text
+            correlation_id for tracking this ask thread
         """
         await _ensure_registered(strict=True)
         from_peer = await _get_my_peer_name()
@@ -270,12 +283,46 @@ def create_mcp_server() -> FastMCP:
             "to_peer": peer_name,
             "text": query,
         }
+        if reply_to is not None:
+            body["reply_to"] = reply_to
         if circle is not None:
             body["circle"] = circle
-        result = await daemon_request("POST", "/query", body)
+        result = await daemon_request("POST", "/ask", body)
         if result.get("error"):
             raise Exception(result["error"])
-        return result.get("text", "")
+        return result.get("correlation_id", "")
+
+    @mcp.tool()
+    async def ack(correlation_id: str, message: str | None = None) -> str:
+        """[Repowire mesh] Close an open ask thread.
+
+        Bare ack: `ack(corr_id)` — closes the thread, signals "seen, no
+        action needed." Use when an ask doesn't require a substantive reply.
+
+        Reply ack: `ack(corr_id, message)` — IS the reply. Closes the thread
+        AND delivers the message back to the original asker, framed as
+        `[ack #corr_id from @you] message` via the notification pipeline.
+
+        Replies always reach the original asker, regardless of circle (the
+        thread was already established at ask-time).
+
+        Args:
+            correlation_id: The ask's correlation_id
+            message: Optional reply content. Omit for bare close.
+
+        Returns:
+            Confirmation message
+        """
+        await _ensure_registered(strict=True)
+        from_peer = await _get_my_peer_name()
+        body: dict = {
+            "correlation_id": correlation_id,
+            "from_peer": from_peer,
+        }
+        if message is not None:
+            body["message"] = message
+        await daemon_request("POST", "/ack", body)
+        return f"acked #{correlation_id}" + (" with reply" if message else "")
 
     @mcp.tool()
     async def notify_peer(peer_name: str, message: str, circle: str | None = None) -> str:
@@ -417,7 +464,7 @@ def create_mcp_server() -> FastMCP:
         by other backends. If omitted, codex gets a short default warmup.
 
         Do NOT use SendMessage to reach spawned peers. SendMessage is a Claude
-        Code harness tool for same-session teammates only. Use ask_peer() or
+        Code harness tool for same-session teammates only. Use ask() or
         notify_peer() instead.
 
         Args:
@@ -439,7 +486,7 @@ def create_mcp_server() -> FastMCP:
         return (
             f"Spawned {name} (tmux: {tmux}). "
             f"Peer will self-register shortly. Use list_peers() to confirm "
-            f"and get peer_id. Address it as '{name}' via ask_peer/notify_peer."
+            f"and get peer_id. Address it as '{name}' via ask/notify_peer."
         )
 
     @mcp.tool()
