@@ -522,12 +522,13 @@ class TestMcpRegistration:
 
         assert mock_request.await_count == 3
         assert mock_request.await_args_list[0].args == ("GET", "/peers/by-pane/%251")
+        cwd = mcp_server.Path.cwd()
         assert mock_request.await_args_list[2].args == (
             "POST",
             "/peers",
             {
-                "name": "repowire",
-                "path": str(mcp_server.Path.cwd()),
+                "name": cwd.name or "root",
+                "path": str(cwd),
                 "circle": "0",
                 "backend": "codex",
                 "pane_id": "%1",
