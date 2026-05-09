@@ -116,12 +116,13 @@ def _get_pane_command(pane_id: str) -> str | None:
             ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_current_command}"],
             capture_output=True,
             text=True,
+            timeout=5,
         )
         if result.returncode != 0:
             return None
         cmd = result.stdout.strip().lower()
         return cmd if cmd else None
-    except FileNotFoundError:
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
 
 
@@ -132,33 +133,39 @@ def _get_pane_pid(pane_id: str) -> int | None:
             ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_pid}"],
             capture_output=True,
             text=True,
+            timeout=5,
         )
         if result.returncode != 0:
             return None
         out = result.stdout.strip()
         return int(out) if out.isdigit() else None
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, ValueError, subprocess.TimeoutExpired):
         return None
 
 
-def _build_ps_child_map() -> dict[int, list[tuple[int, str]]] | None:
-    """Build {ppid: [(pid, basename(comm)), ...]} from one ps shell-out.
+def _build_ps_child_map() -> tuple[dict[int, list[int]], dict[int, str]] | None:
+    """Build (children, pid_to_comm) from one ps shell-out.
 
+    `children` maps {ppid: [pid, ...]}; `pid_to_comm` maps {pid: basename(comm)}.
     Portable across macOS/Linux. `pgrep -P` is non-recursive on macOS so we
-    walk the tree ourselves.
+    walk the tree ourselves. Returning the comm map alongside lets the BFS
+    check the root PID itself (in case the agent has `exec`'d to replace the
+    pane shell), not just descendants.
     """
     try:
         result = subprocess.run(
             ["ps", "-axo", "pid=,ppid=,comm="],
             capture_output=True,
             text=True,
+            timeout=5,
         )
         if result.returncode != 0:
             return None
-    except (FileNotFoundError, subprocess.SubprocessError):
+    except (FileNotFoundError, subprocess.SubprocessError, subprocess.TimeoutExpired):
         return None
 
-    children: dict[int, list[tuple[int, str]]] = {}
+    children: dict[int, list[int]] = {}
+    pid_to_comm: dict[int, str] = {}
     for line in result.stdout.splitlines():
         line = line.strip()
         if not line:
@@ -173,33 +180,36 @@ def _build_ps_child_map() -> dict[int, list[tuple[int, str]]] | None:
         except ValueError:
             continue
         comm = os.path.basename(parts[2].strip()).lower()
-        children.setdefault(ppid, []).append((pid, comm))
-    return children
+        pid_to_comm[pid] = comm
+        children.setdefault(ppid, []).append(pid)
+    return children, pid_to_comm
 
 
 def _find_agent_in_subtree(
     root_pid: int,
     expected: str,
-    children: dict[int, list[tuple[int, str]]],
+    children: dict[int, list[int]],
+    pid_to_comm: dict[int, str],
 ) -> int | None:
-    """BFS the pane's subtree for a process whose comm matches `expected`.
+    """BFS the pane's subtree (including root_pid) for a process matching `expected`.
 
     Returns the matching PID, or None. `expected` is matched case-insensitively
-    against the basename of `comm` (Linux truncates comm to 16 chars, but our
-    targets — claude, gemini, codex, opencode — fit fine).
+    against the basename of `comm`. The root PID itself is checked first to
+    handle the case where the agent has `exec`'d to replace the pane shell
+    (rare but valid; otherwise the agent IS the pane_pid and would be missed).
     """
     target = expected.lower()
     seen: set[int] = set()
     queue: list[int] = [root_pid]
     while queue:
-        ppid = queue.pop(0)
-        if ppid in seen:
+        pid = queue.pop(0)
+        if pid in seen:
             continue
-        seen.add(ppid)
-        for pid, comm in children.get(ppid, []):
-            if comm == target:
-                return pid
-            queue.append(pid)
+        seen.add(pid)
+        if pid_to_comm.get(pid) == target:
+            return pid
+        for child_pid in children.get(pid, []):
+            queue.append(child_pid)
     return None
 
 
@@ -229,17 +239,20 @@ def _is_pane_safe(pane_id: str) -> bool:
         except ProcessLookupError:
             _cached_agent_pid = None
         except PermissionError:
-            # Process exists but we can't signal it -- treat as alive.
-            return True
+            # Process exists but isn't ours -- agents run as the same user, so
+            # EPERM means the cached PID got reused by some system process and
+            # we'd be masking a takeover. Drop the cache and rescan.
+            _cached_agent_pid = None
 
     if _expected_command:
         pane_pid = _get_pane_pid(pane_id)
         if pane_pid is None:
             return False
-        children = _build_ps_child_map()
-        if children is None:
+        ps_result = _build_ps_child_map()
+        if ps_result is None:
             return False
-        match = _find_agent_in_subtree(pane_pid, _expected_command, children)
+        children, pid_to_comm = ps_result
+        match = _find_agent_in_subtree(pane_pid, _expected_command, children, pid_to_comm)
         if match is None:
             # Drop any cached PID so future fast-path checks don't trust a
             # stale-but-alive process that no longer matches the pane subtree.
@@ -403,9 +416,12 @@ async def main() -> int:
     # os.kill(pid, 0). Failure here is fine — _is_pane_safe will rebuild on demand.
     if _expected_command:
         pane_pid = _get_pane_pid(pane_id)
-        children = _build_ps_child_map() if pane_pid is not None else None
-        if pane_pid is not None and children is not None:
-            _cached_agent_pid = _find_agent_in_subtree(pane_pid, _expected_command, children)
+        ps_result = _build_ps_child_map() if pane_pid is not None else None
+        if pane_pid is not None and ps_result is not None:
+            children, pid_to_comm = ps_result
+            _cached_agent_pid = _find_agent_in_subtree(
+                pane_pid, _expected_command, children, pid_to_comm,
+            )
 
     daemon_host = os.environ.get("REPOWIRE_DAEMON_HOST", "127.0.0.1")
     daemon_port = os.environ.get("REPOWIRE_DAEMON_PORT", "8377")

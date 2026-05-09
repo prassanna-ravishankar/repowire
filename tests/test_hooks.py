@@ -274,6 +274,60 @@ class TestIsPaneSafeSubtree:
             assert _is_pane_safe("%5") is False
         assert websocket_hook._cached_agent_pid is None
 
+    def test_root_pid_itself_matches_when_agent_replaced_pane_shell(self):
+        """If the user ran `exec claude` from the shell, the agent IS the
+        pane_pid (no shell parent). BFS must check root, not just descendants."""
+        websocket_hook._expected_command = "claude"
+        ps_rows = [
+            (200, 1, "claude"),  # pane_pid IS the agent
+        ]
+        with self._patch_subprocess(pane_pid=200, ps_rows=ps_rows):
+            assert _is_pane_safe("%5") is True
+        assert websocket_hook._cached_agent_pid == 200
+
+    def test_eperm_on_cached_pid_triggers_rescan(self):
+        """os.kill(cached_pid, 0) raising PermissionError means PID got reused
+        by some non-agent process. Drop the cache and rescan rather than
+        masking takeover by treating EPERM as alive."""
+        websocket_hook._expected_command = "claude"
+        websocket_hook._cached_agent_pid = 12345  # arbitrary
+
+        ps_rows = [
+            (200, 1, "zsh"),
+            (300, 200, "claude"),
+        ]
+
+        def fake_kill(_pid, _sig):
+            raise PermissionError("EPERM")
+
+        with (
+            patch("repowire.hooks.websocket_hook.os.kill", side_effect=fake_kill),
+            self._patch_subprocess(pane_pid=200, ps_rows=ps_rows),
+        ):
+            # Rescan finds the real claude in the subtree, so safe -- but
+            # crucially, the cache was reset by the EPERM branch, then
+            # repopulated by the rescan with the correct PID.
+            assert _is_pane_safe("%5") is True
+        assert websocket_hook._cached_agent_pid == 300
+
+    def test_eperm_with_no_agent_in_subtree_returns_false(self):
+        """Same EPERM path, but rescan also fails to find the agent --
+        confirms the cache is cleared and takeover is detected."""
+        websocket_hook._expected_command = "claude"
+        websocket_hook._cached_agent_pid = 12345
+
+        ps_rows = [(200, 1, "zsh")]  # no agent
+
+        def fake_kill(_pid, _sig):
+            raise PermissionError("EPERM")
+
+        with (
+            patch("repowire.hooks.websocket_hook.os.kill", side_effect=fake_kill),
+            self._patch_subprocess(pane_pid=200, ps_rows=ps_rows),
+        ):
+            assert _is_pane_safe("%5") is False
+        assert websocket_hook._cached_agent_pid is None
+
 
 class TestPingHandlerThreshold:
     """The ping handler must tolerate transient unsafe results before exiting."""
