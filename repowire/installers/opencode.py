@@ -626,21 +626,28 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
     }
   }
 
-  // Bootstrap: enumerate existing root sessions and register a peer for each.
-  // session.created events handle anything created later.
-  try {
-    const result = await client.session.list()
-    const sessions = result?.data
-    if (Array.isArray(sessions)) {
-      for (const s of sessions) {
-        if (s && s.parentID == null && typeof s.id === "string") {
-          ensurePeer({ id: s.id, title: (s as { title?: string }).title })
+  // Bootstrap: enumerate existing root sessions on next tick, AFTER opencode
+  // finishes its own startup. Awaiting client.session.list() here would
+  // deadlock — the plugin loader blocks server startup, but session.list()
+  // hits opencode's /session endpoint which isn't ready until startup
+  // completes. setTimeout(0) yields control back to opencode's loader.
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const result = await client.session.list()
+        const sessions = result?.data
+        if (Array.isArray(sessions)) {
+          for (const s of sessions) {
+            if (s && s.parentID == null && typeof s.id === "string") {
+              ensurePeer({ id: s.id, title: (s as { title?: string }).title })
+            }
+          }
         }
+      } catch (e) {
+        console.warn("[repowire] Failed to enumerate sessions on bootstrap:", e)
       }
-    }
-  } catch (e) {
-    console.warn("[repowire] Failed to enumerate sessions on bootstrap:", e)
-  }
+    })()
+  }, 0)
 
   // beforeExit fires when the event loop is empty; cleanup is best-effort.
   // For signals, install a one-shot handler that cleans up and re-emits the
