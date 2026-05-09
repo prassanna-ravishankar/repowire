@@ -431,7 +431,10 @@ async function handleIncomingQuery(conn: PeerConn, correlationId: string, _fromP
     const errorMsg = e instanceof Error ? e.message : String(e)
     console.error(`[repowire] promptAsync failed for ${conn.peerName}: ${errorMsg}`)
     sendError(conn, correlationId, errorMsg)
-    // Don't force-idle: rely on session.status events.
+    // Synchronous failure: the run never started, so opencode will not
+    // publish session.status idle. Reset busy locally to unlock the peer.
+    conn.busy = false
+    sendStatus(conn, "idle")
   }
 }
 
@@ -512,17 +515,6 @@ function applyPartDelta(conn: PeerConn, props: MessagePartDeltaProps) {
     props.partID,
     (pending.pendingDeltasByPart.get(props.partID) || "") + props.delta,
   )
-}
-
-// Capture errors as they appear on assistant message.updated. We do not
-// finalize here — session.status idle is the authoritative terminal signal
-// (handles tool-calls loops, "stop with tool calls", "unknown" finish, etc.
-// without re-implementing opencode's run-loop terminal logic in the plugin).
-function captureAssistantError(pending: PendingQuery, info: MessageEventInfo) {
-  if (info.error) {
-    pending.hasError = true
-    pending.errorPayload = info.error
-  }
 }
 
 // Resolve all pending queries on this peer. Called via deferred flush when
@@ -830,13 +822,9 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
           activeModel = { providerID: info.model.providerID, modelID: info.model.modelID }
         }
 
-        // Discover assistant messages and capture any error payload. We do
-        // NOT finalize here — finalization waits for session.status idle.
+        // Discover assistant messages (also captures error payload).
+        // Finalization waits for session.status idle.
         trackAssistantMessage(conn, info)
-        if (info.role === "assistant" && info.id) {
-          const pending = conn.pendingByAssistantId.get(info.id)
-          if (pending) captureAssistantError(pending, info)
-        }
       } else if (typedEvent.type === "message.part.updated") {
         const part = props?.part
         if (!part?.sessionID) return
