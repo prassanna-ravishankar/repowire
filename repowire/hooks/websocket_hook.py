@@ -35,6 +35,18 @@ logger = logging.getLogger(__name__)
 
 # Set once at startup in main() — guards against pane reuse by a different agent
 _expected_command: str | None = None
+# PID of a process matching _expected_command found in the pane's subtree.
+# Cached so the steady-state safety check is os.kill(pid, 0), not a ps shell-out.
+# Periodically revalidated via full subtree rescan to defend against PID reuse
+# (the hook can run for days; OS PIDs eventually wrap).
+_cached_agent_pid: int | None = None
+_safety_check_count: int = 0
+_FAST_PATH_RESCAN_EVERY = 30
+# Daemon ping handler tolerates a few consecutive unsafe results to ride out
+# transient shell-outs (the agent's foreground briefly becoming git/python/etc.).
+# Only after this many in a row does the hook treat the pane as taken over.
+_consecutive_ping_unsafe = 0
+_CONSECUTIVE_PANE_UNSAFE_PINGS = 3
 _RECONNECT_WARNING_ATTEMPTS = 50
 _MAX_RECONNECT_DELAY_SECONDS = 30
 
@@ -113,19 +125,135 @@ def _get_pane_command(pane_id: str) -> str | None:
         return None
 
 
-def _is_pane_safe(pane_id: str) -> bool:
-    """Check if the tmux pane still has the expected agent process running.
+def _get_pane_pid(pane_id: str) -> int | None:
+    """Return the pane's shell PID via tmux. None on failure."""
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_pid}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        out = result.stdout.strip()
+        return int(out) if out.isdigit() else None
+    except (FileNotFoundError, ValueError):
+        return None
 
-    If _expected_command is set (module-level, captured at startup), the pane
-    is only safe when the same command is still running. Falls back to a shell
-    denylist otherwise.
+
+def _build_ps_child_map() -> dict[int, list[tuple[int, str]]] | None:
+    """Build {ppid: [(pid, basename(comm)), ...]} from one ps shell-out.
+
+    Portable across macOS/Linux. `pgrep -P` is non-recursive on macOS so we
+    walk the tree ourselves.
     """
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,comm="],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+
+    children: dict[int, list[tuple[int, str]]] = {}
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Format: "  pid ppid comm-with-spaces"
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+        except ValueError:
+            continue
+        comm = os.path.basename(parts[2].strip()).lower()
+        children.setdefault(ppid, []).append((pid, comm))
+    return children
+
+
+def _find_agent_in_subtree(
+    root_pid: int,
+    expected: str,
+    children: dict[int, list[tuple[int, str]]],
+) -> int | None:
+    """BFS the pane's subtree for a process whose comm matches `expected`.
+
+    Returns the matching PID, or None. `expected` is matched case-insensitively
+    against the basename of `comm` (Linux truncates comm to 16 chars, but our
+    targets — claude, gemini, codex, opencode — fit fine).
+    """
+    target = expected.lower()
+    seen: set[int] = set()
+    queue: list[int] = [root_pid]
+    while queue:
+        ppid = queue.pop(0)
+        if ppid in seen:
+            continue
+        seen.add(ppid)
+        for pid, comm in children.get(ppid, []):
+            if comm == target:
+                return pid
+            queue.append(pid)
+    return None
+
+
+def _is_pane_safe(pane_id: str) -> bool:
+    """Check if the pane still has the expected agent in its process subtree.
+
+    The pane's foreground command (`#{pane_current_command}`) is unreliable —
+    when the agent shells out for a tool call, the foreground briefly becomes
+    that subprocess. Walk the pane's subtree from `#{pane_pid}` (the shell)
+    instead and look for any descendant whose basename matches the expected
+    agent command. Cached PID is the steady-state fast path.
+
+    Falls back to the historic shell-denylist on the pane's foreground command
+    when `_expected_command` is unknown (no agent baseline to compare against).
+    """
+    global _cached_agent_pid, _safety_check_count
+    _safety_check_count += 1
+
+    # Fast path: confirm the previously-found agent PID is still alive.
+    # Skipped every _FAST_PATH_RESCAN_EVERY calls so PID reuse can't hide a
+    # takeover indefinitely on a long-lived hook.
+    rescan_due = (_safety_check_count % _FAST_PATH_RESCAN_EVERY) == 0
+    if _cached_agent_pid is not None and not rescan_due:
+        try:
+            os.kill(_cached_agent_pid, 0)
+            return True
+        except ProcessLookupError:
+            _cached_agent_pid = None
+        except PermissionError:
+            # Process exists but we can't signal it -- treat as alive.
+            return True
+
+    if _expected_command:
+        pane_pid = _get_pane_pid(pane_id)
+        if pane_pid is None:
+            return False
+        children = _build_ps_child_map()
+        if children is None:
+            return False
+        match = _find_agent_in_subtree(pane_pid, _expected_command, children)
+        if match is None:
+            # Drop any cached PID so future fast-path checks don't trust a
+            # stale-but-alive process that no longer matches the pane subtree.
+            _cached_agent_pid = None
+            return False
+        _cached_agent_pid = match
+        return True
+
+    # No expected baseline: fall back to foreground-command shell denylist so
+    # behavior is unchanged for setups that didn't capture a baseline at startup.
     shell_commands = {"bash", "zsh", "sh", "fish", "tcsh", "csh", "dash", "login"}
     cmd = _get_pane_command(pane_id)
     if not cmd:
         return False
-    if _expected_command:
-        return cmd == _expected_command
     return cmd not in shell_commands
 
 
@@ -221,6 +349,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
             logger.error(f"Failed to inject broadcast: {e}")
 
     elif msg_type == "ping":
+        global _consecutive_ping_unsafe
         pane_alive = await asyncio.to_thread(_is_pane_safe, pane_id)
         if websocket:
             try:
@@ -236,7 +365,17 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 )
             except Exception:
                 pass
-        if not pane_alive:
+        if pane_alive:
+            _consecutive_ping_unsafe = 0
+            return
+        _consecutive_ping_unsafe += 1
+        logger.warning(
+            "Pane %s reported unsafe on ping (%d/%d consecutive)",
+            pane_id,
+            _consecutive_ping_unsafe,
+            _CONSECUTIVE_PANE_UNSAFE_PINGS,
+        )
+        if _consecutive_ping_unsafe >= _CONSECUTIVE_PANE_UNSAFE_PINGS:
             logger.info(f"Pane {pane_id} dead on ping, exiting")
             raise PaneUnsafeError(f"Pane {pane_id} is no longer safe")
 
@@ -258,8 +397,15 @@ async def main() -> int:
     path = str(os.getcwd())
 
     # Snapshot pane command at startup to detect pane reuse
-    global _expected_command
+    global _expected_command, _cached_agent_pid
     _expected_command = _get_pane_command(pane_id)
+    # Pre-populate the cached agent PID so the steady-state safety check is
+    # os.kill(pid, 0). Failure here is fine — _is_pane_safe will rebuild on demand.
+    if _expected_command:
+        pane_pid = _get_pane_pid(pane_id)
+        children = _build_ps_child_map() if pane_pid is not None else None
+        if pane_pid is not None and children is not None:
+            _cached_agent_pid = _find_agent_in_subtree(pane_pid, _expected_command, children)
 
     daemon_host = os.environ.get("REPOWIRE_DAEMON_HOST", "127.0.0.1")
     daemon_port = os.environ.get("REPOWIRE_DAEMON_PORT", "8377")

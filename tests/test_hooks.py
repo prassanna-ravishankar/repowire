@@ -115,3 +115,245 @@ class TestWebsocketReconnect:
             "still retrying" in call.args[0]
             for call in mock_error.call_args_list
         )
+
+
+def _ps_output(rows: list[tuple[int, int, str]]) -> str:
+    """Render a list of (pid, ppid, comm) as ps -axo output."""
+    return "\n".join(f"{pid} {ppid} {comm}" for pid, ppid, comm in rows) + "\n"
+
+
+class TestIsPaneSafeSubtree:
+    """Tests for the process-subtree-based pane safety check.
+
+    The fix replaces foreground-command (`pane_current_command`) with a walk
+    of the pane's process subtree, so transient shell-outs (`git`, `python`,
+    subagents) don't false-positive as pane reuse.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_module_state(self):
+        """Avoid cross-test contamination of the cached agent PID + baseline."""
+        websocket_hook._cached_agent_pid = None
+        websocket_hook._expected_command = None
+        websocket_hook._safety_check_count = 0
+        yield
+        websocket_hook._cached_agent_pid = None
+        websocket_hook._expected_command = None
+        websocket_hook._safety_check_count = 0
+
+    def _patch_subprocess(self, pane_pid: int | None, ps_rows: list[tuple[int, int, str]]):
+        """Patch subprocess.run to answer tmux pane_pid + ps invocations."""
+        def fake_run(args, **_kwargs):
+            if args[0] == "tmux":
+                stdout = "" if pane_pid is None else f"{pane_pid}\n"
+                rc = 1 if pane_pid is None else 0
+                return CompletedProcess(args=args, returncode=rc, stdout=stdout, stderr="")
+            if args[0] == "ps":
+                return CompletedProcess(
+                    args=args, returncode=0, stdout=_ps_output(ps_rows), stderr="",
+                )
+            raise AssertionError(f"unexpected subprocess.run call: {args!r}")
+        return patch("repowire.hooks.websocket_hook.subprocess.run", side_effect=fake_run)
+
+    def test_subtree_with_agent_returns_true_even_when_foreground_is_git(self):
+        """Agent shells out to git: foreground is git, but agent still in subtree."""
+        websocket_hook._expected_command = "claude"
+        ps_rows = [
+            (100, 1, "tmux"),
+            (200, 100, "zsh"),       # pane shell
+            (300, 200, "claude"),    # the agent
+            (400, 300, "git"),       # transient subprocess
+        ]
+        with self._patch_subprocess(pane_pid=200, ps_rows=ps_rows):
+            assert _is_pane_safe("%5") is True
+        assert websocket_hook._cached_agent_pid == 300
+
+    def test_subtree_with_agent_returns_true_when_agent_is_foreground(self):
+        """Steady state: agent is in subtree (no shell-out happening)."""
+        websocket_hook._expected_command = "claude"
+        ps_rows = [
+            (200, 1, "zsh"),
+            (300, 200, "claude"),
+        ]
+        with self._patch_subprocess(pane_pid=200, ps_rows=ps_rows):
+            assert _is_pane_safe("%5") is True
+
+    def test_subtree_without_agent_returns_false(self):
+        """Pane has no agent in subtree (only the shell remains)."""
+        websocket_hook._expected_command = "claude"
+        ps_rows = [
+            (200, 1, "zsh"),
+        ]
+        with self._patch_subprocess(pane_pid=200, ps_rows=ps_rows):
+            assert _is_pane_safe("%5") is False
+
+    def test_takeover_by_different_agent_returns_false(self):
+        """User killed claude and started gemini in same pane: takeover."""
+        websocket_hook._expected_command = "claude"
+        ps_rows = [
+            (200, 1, "zsh"),
+            (300, 200, "gemini"),
+        ]
+        with self._patch_subprocess(pane_pid=200, ps_rows=ps_rows):
+            assert _is_pane_safe("%5") is False
+
+    def test_no_pane_pid_returns_false(self):
+        """tmux returned no pane_pid: pane gone."""
+        websocket_hook._expected_command = "claude"
+        with self._patch_subprocess(pane_pid=None, ps_rows=[]):
+            assert _is_pane_safe("%5") is False
+
+    def test_cached_pid_fast_path(self):
+        """When the cache is populated, no subprocesses should fire."""
+        websocket_hook._expected_command = "claude"
+        websocket_hook._cached_agent_pid = os.getpid()  # guaranteed alive
+        with patch("repowire.hooks.websocket_hook.subprocess.run") as mock_run:
+            assert _is_pane_safe("%5") is True
+        mock_run.assert_not_called()
+
+    def test_cached_pid_invalidated_on_process_lookup_error(self):
+        """Stale cached PID triggers a rescan, not a permanent miss."""
+        websocket_hook._expected_command = "claude"
+        websocket_hook._cached_agent_pid = 999_999_999  # almost certainly dead
+        ps_rows = [
+            (200, 1, "zsh"),
+            (300, 200, "claude"),
+        ]
+        with self._patch_subprocess(pane_pid=200, ps_rows=ps_rows):
+            assert _is_pane_safe("%5") is True
+        assert websocket_hook._cached_agent_pid == 300
+
+    def test_truncated_comm_path_basenamed(self):
+        """ps may emit `/usr/local/bin/claude`; basename should match `claude`."""
+        websocket_hook._expected_command = "claude"
+        ps_rows = [
+            (200, 1, "/bin/zsh"),
+            (300, 200, "/usr/local/bin/claude"),
+        ]
+        with self._patch_subprocess(pane_pid=200, ps_rows=ps_rows):
+            assert _is_pane_safe("%5") is True
+
+    def test_cached_pid_periodically_rescans(self):
+        """PID-reuse defense: every Nth call must do a full subtree rescan
+        even when os.kill says the cached PID is alive."""
+        websocket_hook._expected_command = "claude"
+        websocket_hook._cached_agent_pid = os.getpid()
+        # Drive _safety_check_count to one short of the rescan threshold.
+        websocket_hook._safety_check_count = websocket_hook._FAST_PATH_RESCAN_EVERY - 1
+        ps_rows = [
+            (200, 1, "zsh"),
+            (300, 200, "claude"),
+        ]
+        with self._patch_subprocess(pane_pid=200, ps_rows=ps_rows) as mock_run:
+            # The next call hits the rescan cadence -> ps must fire.
+            assert _is_pane_safe("%5") is True
+            assert mock_run.called
+
+    def test_periodic_rescan_detects_takeover_under_alive_pid(self):
+        """If the cached PID is alive but the pane subtree no longer contains
+        the agent (PID reuse), the cadence rescan must catch it."""
+        websocket_hook._expected_command = "claude"
+        websocket_hook._cached_agent_pid = os.getpid()
+        websocket_hook._safety_check_count = websocket_hook._FAST_PATH_RESCAN_EVERY - 1
+        ps_rows = [
+            (200, 1, "zsh"),
+            # No claude in the subtree any more.
+        ]
+        with self._patch_subprocess(pane_pid=200, ps_rows=ps_rows):
+            assert _is_pane_safe("%5") is False
+
+    def test_rescan_miss_clears_cache_so_future_checks_dont_trust_stale_pid(self):
+        """Once a rescan finds no agent in the subtree, the cache must be
+        cleared so the next 29 fast-path checks don't fall back to trusting
+        an alive-but-unrelated PID (PID reuse defense)."""
+        websocket_hook._expected_command = "claude"
+        websocket_hook._cached_agent_pid = os.getpid()
+        websocket_hook._safety_check_count = websocket_hook._FAST_PATH_RESCAN_EVERY - 1
+        ps_rows_takeover = [(200, 1, "zsh")]  # no agent in subtree
+        with self._patch_subprocess(pane_pid=200, ps_rows=ps_rows_takeover):
+            assert _is_pane_safe("%5") is False
+        assert websocket_hook._cached_agent_pid is None
+
+
+class TestPingHandlerThreshold:
+    """The ping handler must tolerate transient unsafe results before exiting."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_counter(self):
+        websocket_hook._consecutive_ping_unsafe = 0
+        websocket_hook._cached_agent_pid = None
+        websocket_hook._expected_command = None
+        websocket_hook._safety_check_count = 0
+        yield
+        websocket_hook._consecutive_ping_unsafe = 0
+        websocket_hook._cached_agent_pid = None
+        websocket_hook._expected_command = None
+        websocket_hook._safety_check_count = 0
+
+    @pytest.mark.asyncio
+    async def test_single_unsafe_ping_does_not_raise(self):
+        ws = AsyncMock()
+        ws.send = AsyncMock()
+        with (
+            patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=False),
+            patch(
+                "repowire.hooks.websocket_hook.get_tmux_info",
+                return_value={"session_name": "0"},
+            ),
+        ):
+            await websocket_hook.handle_message({"type": "ping"}, "%5", ws)
+        assert websocket_hook._consecutive_ping_unsafe == 1
+
+    @pytest.mark.asyncio
+    async def test_threshold_unsafe_pings_raise(self):
+        ws = AsyncMock()
+        ws.send = AsyncMock()
+        with (
+            patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=False),
+            patch(
+                "repowire.hooks.websocket_hook.get_tmux_info",
+                return_value={"session_name": "0"},
+            ),
+        ):
+            for _ in range(websocket_hook._CONSECUTIVE_PANE_UNSAFE_PINGS - 1):
+                await websocket_hook.handle_message({"type": "ping"}, "%5", ws)
+            with pytest.raises(websocket_hook.PaneUnsafeError):
+                await websocket_hook.handle_message({"type": "ping"}, "%5", ws)
+
+    @pytest.mark.asyncio
+    async def test_safe_ping_resets_counter(self):
+        """A successful safety check between failures must reset the counter."""
+        ws = AsyncMock()
+        ws.send = AsyncMock()
+        with patch(
+            "repowire.hooks.websocket_hook.get_tmux_info",
+            return_value={"session_name": "0"},
+        ):
+            with patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=False):
+                for _ in range(websocket_hook._CONSECUTIVE_PANE_UNSAFE_PINGS - 1):
+                    await websocket_hook.handle_message({"type": "ping"}, "%5", ws)
+            assert websocket_hook._consecutive_ping_unsafe == (
+                websocket_hook._CONSECUTIVE_PANE_UNSAFE_PINGS - 1
+            )
+            with patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=True):
+                await websocket_hook.handle_message({"type": "ping"}, "%5", ws)
+            assert websocket_hook._consecutive_ping_unsafe == 0
+
+    @pytest.mark.asyncio
+    async def test_pong_always_sent_with_pane_alive_field(self):
+        """Even on unsafe, the pong must go out so the daemon knows the state."""
+        ws = AsyncMock()
+        ws.send = AsyncMock()
+        with (
+            patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=False),
+            patch(
+                "repowire.hooks.websocket_hook.get_tmux_info",
+                return_value={"session_name": "0"},
+            ),
+        ):
+            await websocket_hook.handle_message({"type": "ping"}, "%5", ws)
+        ws.send.assert_called_once()
+        import json as _json
+        sent = _json.loads(ws.send.call_args.args[0])
+        assert sent["type"] == "pong"
+        assert sent["pane_alive"] is False
