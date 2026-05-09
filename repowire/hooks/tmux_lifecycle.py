@@ -37,7 +37,7 @@ _HOOKS: list[tuple[str, str, str]] = [
     (
         "pane-exited",
         "-gw",
-        "curl -sf -X POST http://{host}:{port}/hooks/lifecycle/pane-died"
+        "curl -sf -o /dev/null -X POST http://{host}:{port}/hooks/lifecycle/pane-died"
         ' -H "Content-Type: application/json"'
         ' -d "{\\"pane_id\\":\\"#{pane_id}\\"}"',
     ),
@@ -45,7 +45,7 @@ _HOOKS: list[tuple[str, str, str]] = [
     (
         "session-closed",
         "-g",
-        "curl -sf -X POST"
+        "curl -sf -o /dev/null -X POST"
         " http://{host}:{port}/hooks/lifecycle/session-closed"
         ' -H "Content-Type: application/json"'
         ' -d "{\\"session_name\\":\\"#{session_name}\\"}"',
@@ -70,7 +70,7 @@ _HOOKS: list[tuple[str, str, str]] = [
     (
         "client-detached",
         "-g",
-        "curl -sf -X POST"
+        "curl -sf -o /dev/null -X POST"
         " http://{host}:{port}/hooks/lifecycle/client-detached"
         ' -H "Content-Type: application/json"'
         ' -d "{\\"session_name\\":\\"#{session_name}\\"}"',

@@ -24,4 +24,4 @@ else
   json="{\"new_name\":\"$new_name\",\"pane_ids\":[$panes]}"
 fi
 
-curl -sf -X POST "$url" -H "Content-Type: application/json" -d "$json"
+curl -sf -o /dev/null -X POST "$url" -H "Content-Type: application/json" -d "$json"
