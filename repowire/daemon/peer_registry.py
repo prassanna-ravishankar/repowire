@@ -721,6 +721,67 @@ class PeerRegistry:
             text=text,
         )
 
+    async def deliver_ask(
+        self,
+        from_peer: str,
+        to_peer: str,
+        text: str,
+        correlation_id: str,
+        reply_to: str | None = None,
+        bypass_circle: bool = False,
+        circle: str | None = None,
+    ) -> None:
+        """Inject an ask to a peer (non-blocking lifecycle).
+
+        Wire-level this is a notify with intent="ask" + correlation_id so the
+        recipient's ws-hook pushes the corr_id onto the per-pane FIFO. BUSY
+        recipients get the ask buffered and drained on idle, same path as
+        regular notifies.
+        """
+        async with self._lock:
+            peer = self._lookup_peer_unlocked(to_peer, circle=circle)
+            if not peer:
+                raise ValueError(f"Unknown peer: {to_peer}")
+            from_obj = self._resolve_from_peer_unlocked(from_peer, peer, bypass_circle)
+            peer_id = peer.peer_id
+            peer_name = peer.display_name
+            from_peer_id = from_obj.peer_id if from_obj else None
+            queued = self._enqueue_if_busy_unlocked(
+                peer,
+                {
+                    "kind": "notify",
+                    "from_peer": from_peer,
+                    "text": text,
+                    "intent": "ask",
+                    "correlation_id": correlation_id,
+                    "reply_to": reply_to,
+                },
+            )
+
+        self.add_event(
+            "ask",
+            {
+                "from": from_peer, "to": to_peer, "text": text,
+                "from_peer_id": from_peer_id, "to_peer_id": peer_id,
+                "correlation_id": correlation_id,
+                "reply_to": reply_to,
+                "queued": queued,
+            },
+        )
+
+        if queued:
+            return
+
+        await self._router.send_notification(
+            from_peer=from_peer,
+            to_session_id=peer_id,
+            to_peer_name=peer_name,
+            text=text,
+            intent="ask",
+            correlation_id=correlation_id,
+            reply_to=reply_to,
+        )
+
     async def broadcast(
         self,
         from_peer: str,
@@ -863,6 +924,9 @@ class PeerRegistry:
                         to_session_id=peer_id,
                         to_peer_name=peer_name,
                         text=msg["text"],
+                        intent=msg.get("intent", "notify"),
+                        correlation_id=msg.get("correlation_id"),
+                        reply_to=msg.get("reply_to"),
                     )
                 elif msg["kind"] == "broadcast":
                     # The original broadcast fanout already ran for online

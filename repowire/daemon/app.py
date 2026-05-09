@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from repowire import __version__
 from repowire.config.models import Config, load_config
+from repowire.daemon.ask_tracker import AskTracker
 from repowire.daemon.auth import require_localhost
 from repowire.daemon.deps import cleanup_deps, init_deps
 from repowire.daemon.lifecycle_handler import LifecycleHandler
@@ -26,6 +27,7 @@ from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.relay_client import RelayClient
 from repowire.daemon.routes import (
+    asks,
     attachments,
     health,
     lifecycle,
@@ -77,6 +79,7 @@ def create_app(
         _cleanup_stale_artifacts(max_age_hours=cfg.daemon.prune_max_age_hours)
         transport = WebSocketTransport()
         query_tracker = QueryTracker()
+        ask_tracker = AskTracker(ttl_hours=cfg.daemon.prune_max_age_hours)
         message_router = MessageRouter(
             transport=transport,
             query_tracker=query_tracker,
@@ -94,6 +97,7 @@ def create_app(
         app.state.config = cfg
         app.state.transport = transport
         app.state.query_tracker = query_tracker
+        app.state.ask_tracker = ask_tracker
         app.state.message_router = message_router
         app.state.peer_registry = peer_registry
         app.state.relay_mode = cfg.relay.enabled
@@ -204,6 +208,7 @@ def create_app(
     app.include_router(health.router)
     app.include_router(peers.router)
     app.include_router(messages.router)
+    app.include_router(asks.router)
     app.include_router(websocket.router)
     app.include_router(spawn_routes.router)
     app.include_router(attachments.router)
@@ -288,6 +293,7 @@ def create_test_app(
 
         transport = WebSocketTransport()
         query_tracker = QueryTracker()
+        ask_tracker = AskTracker(ttl_hours=cfg.daemon.prune_max_age_hours)
         msg_router = message_router or MessageRouter(
             transport=transport,
             query_tracker=query_tracker,
@@ -304,6 +310,7 @@ def create_test_app(
         app.state.config = cfg
         app.state.transport = transport
         app.state.query_tracker = query_tracker
+        app.state.ask_tracker = ask_tracker
         app.state.message_router = msg_router
         app.state.peer_registry = registry
         app.state.relay_mode = cfg.relay.enabled
@@ -331,6 +338,7 @@ def create_test_app(
     app.include_router(health.router)
     app.include_router(peers.router)
     app.include_router(messages.router)
+    app.include_router(asks.router)
     app.include_router(websocket.router)
     app.include_router(spawn_routes.router)
     app.include_router(attachments.router)

@@ -15,6 +15,7 @@ class AppState(Protocol):
 
     transport: Any
     query_tracker: Any
+    ask_tracker: Any
     peer_registry: PeerRegistry
     config: Config
 
