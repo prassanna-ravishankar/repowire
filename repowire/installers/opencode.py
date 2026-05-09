@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-PLUGIN_CONTENT = """import type { Plugin, PluginClient } from "@opencode-ai/plugin"
+PLUGIN_CONTENT = """import type { Plugin, PluginInput } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
+
+type OpenCodeClient = PluginInput["client"]
 import * as fs from "node:fs"
 import * as path from "node:path"
 import * as os from "node:os"
@@ -13,6 +15,7 @@ import * as os from "node:os"
 // Type definitions for event properties
 interface SessionEventInfo {
   id?: string
+  title?: string
   parentID?: string | null
 }
 
@@ -20,6 +23,7 @@ interface MessageEventInfo {
   id?: string
   role?: string
   sessionID?: string
+  parentID?: string  // assistant messages link to the originating user message
   model?: {
     providerID: string
     modelID: string
@@ -27,15 +31,46 @@ interface MessageEventInfo {
   }
   time?: { completed?: number }
   status?: string
+  // `finish` distinguishes terminal from intermediate completions. When the
+  // model returns "tool-calls" opencode runs the tools and starts another
+  // assistant message for the same parent userMessageId, so we must not
+  // resolve the pending query yet.
+  // Source: packages/opencode/src/session/prompt.ts:1440-1448.
+  finish?: string
   error?: unknown
-  parts?: Array<{ type: string; text?: string }>
+}
+
+// message.part.updated payload: { sessionID, part, time }
+// where part has { id, messageID, sessionID, type ("text"), text, ... }
+interface MessagePartInfo {
+  id?: string
+  messageID?: string
+  sessionID?: string
+  type?: string
+  text?: string
+}
+
+// message.part.delta payload: { sessionID, messageID, partID, field, delta }
+// `delta` is the new chunk only (text-delta puts the new chars in `delta`).
+interface MessagePartDeltaProps {
+  sessionID?: string
+  messageID?: string
+  partID?: string
+  field?: string  // e.g. "text-delta"
+  delta?: string
 }
 
 interface EventWithProperties {
   type: string
   properties?: {
     info?: SessionEventInfo | MessageEventInfo
-    parts?: Array<{ type: string; text?: string }>
+    part?: MessagePartInfo
+    sessionID?: string
+    messageID?: string
+    partID?: string
+    field?: string
+    delta?: string
+    status?: { type?: string }
   }
 }
 
@@ -48,53 +83,76 @@ interface PeerInfo {
 
 interface PendingQuery {
   correlationId: string
-  buffer: string
+  userMessageId: string             // pre-generated user message ID (parent of the assistant reply)
+  assistantMessageIds: Set<string>  // assistants seen with parentID === userMessageId (tool-call loops produce many)
+  textPartIds: Set<string>          // partIDs known to be text type
+  reasoningPartIds: Set<string>     // partIDs known to be reasoning (deltas ignored)
+  textByPartId: Map<string, string> // accumulated text per text partID — joined in arrival order at flush
+  partOrder: string[]               // insertion order of text partIDs (Maps preserve set order, but explicit for clarity)
+  pendingDeltasByPart: Map<string, string>  // deltas seen before part.updated identified the part
+  hasError: boolean
+  errorPayload: unknown
   timeoutHandle: ReturnType<typeof setTimeout>
+}
+
+// Per-session peer connection. Each root session in the opencode server gets
+// its own PeerConn (its own WebSocket, peer_id, busy state, pending queries).
+interface PeerConn {
+  sessionId: string
+  sessionTitle: string | null
+  peerId: string | null
+  peerName: string
+  ws: WebSocket | null
+  pendingQueries: Map<string, PendingQuery>  // key: userMessageId
+  pendingByAssistantId: Map<string, PendingQuery>  // populated once assistant ID known
+  busy: boolean
+  flushTimer: ReturnType<typeof setTimeout> | null  // deferred flush after idle (race-safe vs late part.updated)
+  reconnectTimeout: ReturnType<typeof setTimeout> | null
+  reconnectAttempts: number
+  closed: boolean
 }
 
 // Configuration
 const DAEMON_URL = process.env.REPOWIRE_DAEMON_URL || "http://127.0.0.1:8377"
 const DAEMON_WS_URL = process.env.REPOWIRE_DAEMON_WS_URL || "ws://127.0.0.1:8377/ws"
-const AUTH_TOKEN = process.env.REPOWIRE_AUTH_TOKEN || ""  // Optional auth token
+const AUTH_TOKEN = process.env.REPOWIRE_AUTH_TOKEN || ""
 const QUERY_TIMEOUT_MS = 120_000
+const MAX_RECONNECT_ATTEMPTS = 50
 
-// State
-let ws: WebSocket | null = null
-let peerName: string = "unknown"
-let peerId: string | null = null  // Daemon-assigned unique ID
+// Module state (server-wide, not per-session).
 let projectPath: string = ""
-let primarySessionId: string | null = null
 let serverUrl: string | null = null
-let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
-let reconnectAttempts: number = 0
-let opencodeClient: PluginClient | null = null
+let opencodeClient: OpenCodeClient | null = null
 let activeModel: { providerID: string; modelID: string } | null = null
-const pendingQueries = new Map<string, PendingQuery>()
+let circle: string = "default"
+let tmuxSession: string | undefined = undefined
+let tmuxPane: string | undefined = undefined
 
-// Note: We no longer rely on TMUX_PANE for identity. The daemon assigns
-// a unique peer_id (repow-{circle}-{uuid8}) on registration.
+// Per-session registries.
+const peerBySession = new Map<string, PeerConn>()
 
 // peer_id persistence: opencode runs as a fresh node process per session, so
-// any in-memory peer_id is lost on restart. Without persistence, the daemon
-// allocates a new id each time and the previous one lingers as a ghost peer.
-// We cache `{ [projectPath]: peer_id }` to disk and replay it in the connect
-// message; the daemon's allocate_and_register reuses the existing peer in-place
-// if the id matches. (Issue #81.)
-const PEER_ID_CACHE_PATH = path.join(os.homedir(), ".cache", "repowire", "opencode-peer-id.json")
+// any in-memory peer_id is lost on restart. We cache per (projectPath, sessionId)
+// so each session reuses its peer_id across restarts (issue #81/#93).
+const PEER_ID_CACHE_PATH = path.join(os.homedir(), ".cache", "repowire", "opencode-peer-ids.json")
 
-function loadPeerId(projectPath: string): string | null {
+function cacheKey(projectPath: string, sessionId: string): string {
+  return `${projectPath}#${sessionId}`
+}
+
+function loadPeerId(projectPath: string, sessionId: string): string | null {
   try {
     if (!fs.existsSync(PEER_ID_CACHE_PATH)) return null
     const raw = fs.readFileSync(PEER_ID_CACHE_PATH, "utf-8")
     const data = JSON.parse(raw) as Record<string, string>
-    return data[projectPath] ?? null
+    return data[cacheKey(projectPath, sessionId)] ?? null
   } catch (e) {
     console.debug("[repowire] Failed to load peer_id cache:", e)
     return null
   }
 }
 
-function savePeerId(projectPath: string, id: string): void {
+function savePeerId(projectPath: string, sessionId: string, id: string): void {
   try {
     fs.mkdirSync(path.dirname(PEER_ID_CACHE_PATH), { recursive: true })
     let data: Record<string, string> = {}
@@ -102,21 +160,21 @@ function savePeerId(projectPath: string, id: string): void {
       try {
         data = JSON.parse(fs.readFileSync(PEER_ID_CACHE_PATH, "utf-8")) as Record<string, string>
       } catch {
-        // Corrupt cache: start fresh rather than fail to save.
         data = {}
       }
     }
-    if (data[projectPath] === id) return
-    data[projectPath] = id
+    const key = cacheKey(projectPath, sessionId)
+    if (data[key] === id) return
+    data[key] = id
     fs.writeFileSync(PEER_ID_CACHE_PATH, JSON.stringify(data, null, 2))
   } catch (e) {
     console.debug("[repowire] Failed to save peer_id cache:", e)
   }
 }
 
-// HTTP helpers for daemon
-async function daemon(path: string, body?: object) {
-  const res = await fetch(`${DAEMON_URL}${path}`, {
+// HTTP helper for daemon
+async function daemon(p: string, body?: object) {
+  const res = await fetch(`${DAEMON_URL}${p}`, {
     method: body ? "POST" : "GET",
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
@@ -125,162 +183,123 @@ async function daemon(path: string, body?: object) {
   return res.json()
 }
 
-// WebSocket connection to daemon
-function connectWebSocket() {
-  if (ws?.readyState === WebSocket.OPEN) return
+function sanitizePeerName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown"
+}
 
-  ws = new WebSocket(DAEMON_WS_URL)
+function peerNameFor(folder: string, session: { id: string; title?: string | null }): string {
+  const slug = sanitizePeerName(session.title || session.id.slice(-8)).slice(0, 32) || session.id.slice(-8)
+  return sanitizePeerName(`${folder}-${slug}`)
+}
+
+// Open a WebSocket for a single PeerConn. Each session has its own WS.
+function connectPeerWebSocket(conn: PeerConn) {
+  if (conn.closed) return
+  if (conn.ws?.readyState === WebSocket.OPEN) return
+
+  const ws = new WebSocket(DAEMON_WS_URL)
+  conn.ws = ws
 
   ws.onopen = () => {
-    reconnectAttempts = 0  // Reset on successful connection
-    // Send connect message - daemon assigns session_id and registers peer
-    // Derive circle from tmux session name (like Claude Code hooks do)
-    let circle = "default"
-    let tmuxSession: string | undefined
-    const tmuxPane = process.env.TMUX_PANE
-    if (process.env.TMUX && tmuxPane) {
-      try {
-        const { execFileSync } = require("child_process")
-        // Use -t to target our specific pane, not the most recently active session
-        const session = execFileSync("tmux", ["display-message", "-t", tmuxPane, "-p", "#S"], { encoding: "utf-8" }).trim()
-        const window = execFileSync("tmux", ["display-message", "-t", tmuxPane, "-p", "#W"], { encoding: "utf-8" }).trim()
-        if (session) {
-          circle = session
-          if (window) {
-            tmuxSession = `${session}:${window}`
-          }
-        }
-      } catch (e) {
-        console.warn("[repowire] Failed to derive circle from tmux:", e)
-      }
-    }
-
+    conn.reconnectAttempts = 0
     const connectMsg: Record<string, unknown> = {
       type: "connect",
-      display_name: peerName,
+      display_name: conn.peerName,
       circle,
       backend: "opencode",
       path: projectPath,
     }
-
-    // Replay cached peer_id so the daemon reuses the existing peer in-place
-    // instead of allocating a new one (which would leave the previous as a
-    // ghost). On first run there's nothing to replay.
-    const cachedPeerId = peerId || loadPeerId(projectPath)
-    if (cachedPeerId) {
-      connectMsg.peer_id = cachedPeerId
-    }
-
-    if (tmuxSession) {
-      connectMsg.tmux_session = tmuxSession
-    }
-
-    if (tmuxPane) {
-      connectMsg.pane_id = tmuxPane
-    }
-
-    if (AUTH_TOKEN) {
-      connectMsg.auth_token = AUTH_TOKEN
-    }
-    ws?.send(JSON.stringify(connectMsg))
+    const cachedPeerId = conn.peerId || loadPeerId(projectPath, conn.sessionId)
+    if (cachedPeerId) connectMsg.peer_id = cachedPeerId
+    if (tmuxSession) connectMsg.tmux_session = tmuxSession
+    if (tmuxPane) connectMsg.pane_id = tmuxPane
+    if (AUTH_TOKEN) connectMsg.auth_token = AUTH_TOKEN
+    ws.send(JSON.stringify(connectMsg))
   }
 
   ws.onmessage = async (event) => {
     try {
       const data = JSON.parse(event.data.toString())
-      await handleDaemonMessage(data)
+      await handleDaemonMessage(conn, data)
     } catch (e) {
-      console.error("[repowire] Failed to parse daemon message:", e)
+      console.error(`[repowire] Failed to parse daemon message for ${conn.peerName}:`, e)
     }
   }
 
   ws.onclose = () => {
-    console.debug(`[repowire] WebSocket disconnected, scheduling reconnect`)
-    scheduleReconnect()
+    if (conn.closed) return
+    console.debug(`[repowire] WebSocket disconnected for ${conn.peerName}, scheduling reconnect`)
+    schedulePeerReconnect(conn)
   }
 
   ws.onerror = (err) => {
-    console.error("[repowire] WebSocket error:", err)
+    console.error(`[repowire] WebSocket error for ${conn.peerName}:`, err)
   }
 }
 
-const MAX_RECONNECT_ATTEMPTS = 50
-
-function scheduleReconnect() {
-  if (reconnectTimeout) clearTimeout(reconnectTimeout)
-  reconnectAttempts++
-  if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-    console.error(`[repowire] Exhausted ${MAX_RECONNECT_ATTEMPTS} reconnect attempts, giving up`)
+function schedulePeerReconnect(conn: PeerConn) {
+  if (conn.closed) return
+  if (conn.reconnectTimeout) clearTimeout(conn.reconnectTimeout)
+  conn.reconnectAttempts++
+  if (conn.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+    console.error(`[repowire] Exhausted reconnect attempts for ${conn.peerName}, giving up`)
     return
   }
-  // Exponential backoff: 3s, 6s, 12s, 24s, max 60s
-  const delay = Math.min(3000 * Math.pow(2, reconnectAttempts - 1), 60000)
-  reconnectTimeout = setTimeout(() => {
-    connectWebSocket()
-  }, delay)
+  const delay = Math.min(3000 * Math.pow(2, conn.reconnectAttempts - 1), 60000)
+  conn.reconnectTimeout = setTimeout(() => connectPeerWebSocket(conn), delay)
 }
 
-function sendStatus(status: "busy" | "idle" | "offline") {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "status", status }))
-  } else {
-    console.warn(`[repowire] Cannot send status '${status}': WebSocket not open`)
+function sendStatus(conn: PeerConn, status: "busy" | "idle" | "offline") {
+  if (conn.ws?.readyState === WebSocket.OPEN) {
+    conn.ws.send(JSON.stringify({ type: "status", status }))
   }
 }
 
-// Session tracking is now handled internally, no need to send to daemon
-
-function sendResponse(correlationId: string, text: string) {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "response", correlation_id: correlationId, text }))
-  } else {
-    console.warn(`[repowire] Cannot send response for ${correlationId}: WebSocket not open`)
+function sendResponse(conn: PeerConn, correlationId: string, text: string) {
+  if (conn.ws?.readyState === WebSocket.OPEN) {
+    conn.ws.send(JSON.stringify({ type: "response", correlation_id: correlationId, text }))
   }
 }
 
-function sendError(correlationId: string, error: string) {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "error", correlation_id: correlationId, error }))
-  } else {
-    console.warn(`[repowire] Cannot send error for ${correlationId}: WebSocket not open`)
+function sendError(conn: PeerConn, correlationId: string, error: string) {
+  if (conn.ws?.readyState === WebSocket.OPEN) {
+    conn.ws.send(JSON.stringify({ type: "error", correlation_id: correlationId, error }))
   }
 }
 
-// Handle messages from daemon
-async function handleDaemonMessage(data: Record<string, unknown>) {
+// Handle messages from daemon, scoped to one PeerConn (one WS).
+async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>) {
   const msgType = data.type as string
 
   if (msgType === "connected") {
-    // Store daemon-assigned session_id as peer_id and persist for next run
     if (data.session_id) {
-      peerId = data.session_id as string
-      console.debug(`[repowire] Connected with session_id: ${peerId}`)
-      if (projectPath) savePeerId(projectPath, peerId)
+      conn.peerId = data.session_id as string
+      console.debug(`[repowire] ${conn.peerName} connected with peer_id: ${conn.peerId}`)
+      savePeerId(projectPath, conn.sessionId, conn.peerId)
     }
-    sendStatus("idle")
+    sendStatus(conn, conn.busy ? "busy" : "idle")
   } else if (msgType === "query") {
     const correlationId = data.correlation_id as string
     const fromPeer = data.from_peer as string
     const text = data.text as string
-    await handleIncomingQuery(correlationId, fromPeer, text)
+    await handleIncomingQuery(conn, correlationId, fromPeer, text)
   } else if (msgType === "ping") {
-    // Respond to daemon liveness check
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "pong", pane_alive: true }))
+    if (conn.ws?.readyState === WebSocket.OPEN) {
+      conn.ws.send(JSON.stringify({ type: "pong", pane_alive: true }))
     }
   } else if (msgType === "notify" || msgType === "broadcast") {
     const fromPeer = (data.from_peer as string) || "unknown"
     const text = data.text as string
     const prefix = msgType === "broadcast" ? "[broadcast] " : ""
-    await softInject(`@${fromPeer}: ${prefix}${text}`)
+    // Soft-inject into the global TUI prompt. tui.prompt.append has no
+    // per-session target, so prefix with target peer name to disambiguate
+    // when the user navigates between sessions.
+    await softInject(`@${fromPeer} → ${conn.peerName}: ${prefix}${text}`)
   } else if (msgType === "permission_response") {
-    // Daemon-relayed approval reply (future hook, currently unused)
     return
   }
 }
 
-// Soft-inject text into the user's input box via tui.prompt.append.
-// No model call fires; the user reviews and decides whether to send.
 async function softInject(text: string) {
   if (!serverUrl) {
     console.warn("[repowire] No serverUrl available for soft inject")
@@ -295,177 +314,356 @@ async function softInject(text: string) {
         properties: { text: text + " " },
       }),
     })
-    if (!res.ok) {
-      console.warn(`[repowire] tui.prompt.append failed: ${res.status}`)
-    }
+    if (!res.ok) console.warn(`[repowire] tui.prompt.append failed: ${res.status}`)
   } catch (e) {
     console.warn("[repowire] Failed to publish tui event:", e)
   }
 }
 
-// Resolve the primary (root) session. Falls back to listing, then creating.
-async function resolvePrimarySession(): Promise<string | null> {
-  if (primarySessionId) return primarySessionId
-  if (!opencodeClient) return null
-
-  try {
-    const result = await opencodeClient.session.list()
-    const sessions = result?.data
-    if (Array.isArray(sessions) && sessions.length > 0) {
-      // Prefer root sessions (parentID null). Fall back to most recent.
-      const root = sessions.find((s: any) => s.parentID == null)
-      const chosen = root || sessions[sessions.length - 1]
-      primarySessionId = chosen.id
-      return primarySessionId
-    }
-  } catch (e) {
-    console.warn("[repowire] Failed to list sessions:", e)
+// Per-session lifecycle.
+function ensurePeer(session: { id: string; title?: string | null }) {
+  if (peerBySession.has(session.id)) return
+  const folder = path.basename(projectPath) || "unknown"
+  const conn: PeerConn = {
+    sessionId: session.id,
+    sessionTitle: session.title ?? null,
+    peerId: loadPeerId(projectPath, session.id),
+    peerName: peerNameFor(folder, session),
+    ws: null,
+    pendingQueries: new Map(),
+    pendingByAssistantId: new Map(),
+    busy: false,
+    flushTimer: null,
+    reconnectTimeout: null,
+    reconnectAttempts: 0,
+    closed: false,
   }
-
-  try {
-    const result = await opencodeClient.session.create({ body: {} })
-    if (result?.data?.id) {
-      primarySessionId = result.data.id
-      return primarySessionId
-    }
-  } catch (e) {
-    console.warn("[repowire] Failed to create session:", e)
-  }
-
-  return null
+  peerBySession.set(session.id, conn)
+  connectPeerWebSocket(conn)
 }
 
-// Handle incoming query: fire promptAsync, correlate response via message.updated.
-// https://github.com/prassanna-ravishankar/repowire/issues/74
-async function handleIncomingQuery(correlationId: string, fromPeer: string, text: string) {
+function removePeer(sessionId: string) {
+  const conn = peerBySession.get(sessionId)
+  if (!conn) return
+  conn.closed = true
+  if (conn.reconnectTimeout) {
+    clearTimeout(conn.reconnectTimeout)
+    conn.reconnectTimeout = null
+  }
+  if (conn.flushTimer) {
+    clearTimeout(conn.flushTimer)
+    conn.flushTimer = null
+  }
+  for (const [, pending] of conn.pendingQueries) {
+    clearTimeout(pending.timeoutHandle)
+    sendError(conn, pending.correlationId, "session deleted")
+  }
+  conn.pendingQueries.clear()
+  conn.pendingByAssistantId.clear()
+  if (conn.ws) {
+    sendStatus(conn, "offline")
+    try { conn.ws.close() } catch { /* ignore */ }
+    conn.ws = null
+  }
+  peerBySession.delete(sessionId)
+}
+
+// Inbound query handler scoped to a specific peer/session.
+// https://github.com/prassanna-ravishankar/repowire/issues/74 (correlation),
+// https://github.com/prassanna-ravishankar/repowire/issues/93 (per-session).
+async function handleIncomingQuery(conn: PeerConn, correlationId: string, _fromPeer: string, text: string) {
   if (!opencodeClient) {
-    sendError(correlationId, "OpenCode client not available")
+    sendError(conn, correlationId, "OpenCode client not available")
     return
   }
 
-  const sessionId = await resolvePrimarySession()
-  if (!sessionId) {
-    sendError(correlationId, "Could not resolve or create OpenCode session")
+  // Concurrency guard: opencode has no per-session prompt mutex, so two
+  // concurrent promptAsync calls would interleave streams. Reject the
+  // second cleanly. Drive different sessions in parallel instead.
+  if (conn.busy) {
+    sendError(conn, correlationId, "Session busy: another query is already in flight on this peer")
     return
   }
 
-  sendStatus("busy")
+  conn.busy = true
+  sendStatus(conn, "busy")
 
-  // Pre-generate a message ID so we can correlate the response from the event
-  // stream without waiting for the prompt API call to return.
-  const messageId = `msg_${correlationId}_${Date.now().toString(36)}`
-
-  const timeoutHandle = setTimeout(() => {
-    if (pendingQueries.has(messageId)) {
-      pendingQueries.delete(messageId)
-      sendError(correlationId, "Query timed out waiting for OpenCode response")
-      sendStatus("idle")
-    }
-  }, QUERY_TIMEOUT_MS)
-
-  pendingQueries.set(messageId, { correlationId, buffer: "", timeoutHandle })
+  // Pre-generated user message ID. The assistant reply will have a fresh ID
+  // with parentID set to this. We correlate via parentID, not via this ID
+  // directly (the user message would resolve immediately on its first event,
+  // which is wrong).
+  const userMessageId = `msg_${correlationId}_${Date.now().toString(36)}`
+  const pending: PendingQuery = {
+    correlationId,
+    userMessageId,
+    assistantMessageIds: new Set(),
+    textPartIds: new Set(),
+    reasoningPartIds: new Set(),
+    textByPartId: new Map(),
+    partOrder: [],
+    pendingDeltasByPart: new Map(),
+    hasError: false,
+    errorPayload: null,
+    timeoutHandle: setTimeout(() => {
+      if (conn.pendingQueries.has(userMessageId)) {
+        conn.pendingQueries.delete(userMessageId)
+        for (const aid of pending.assistantMessageIds) conn.pendingByAssistantId.delete(aid)
+        sendError(conn, correlationId, "Query timed out waiting for OpenCode response")
+      }
+    }, QUERY_TIMEOUT_MS),
+  }
+  conn.pendingQueries.set(userMessageId, pending)
 
   try {
     const body: Record<string, unknown> = {
-      messageID: messageId,
+      messageID: userMessageId,
       parts: [{ type: "text", text }],
     }
     if (activeModel) body.model = activeModel
-
     await opencodeClient.session.promptAsync({
-      path: { id: sessionId },
+      path: { id: conn.sessionId },
       body,
     })
   } catch (e) {
-    const pending = pendingQueries.get(messageId)
-    if (pending) {
-      clearTimeout(pending.timeoutHandle)
-      pendingQueries.delete(messageId)
-    }
+    clearTimeout(pending.timeoutHandle)
+    conn.pendingQueries.delete(userMessageId)
+    for (const aid of pending.assistantMessageIds) conn.pendingByAssistantId.delete(aid)
     const errorMsg = e instanceof Error ? e.message : String(e)
-    console.error(`[repowire] promptAsync failed: ${errorMsg}`)
-    sendError(correlationId, errorMsg)
-    sendStatus("idle")
+    console.error(`[repowire] promptAsync failed for ${conn.peerName}: ${errorMsg}`)
+    sendError(conn, correlationId, errorMsg)
+    // Don't force-idle: rely on session.status events.
   }
 }
 
-// Resolve a pending query when its message reaches a terminal state.
-function resolvePendingQuery(messageId: string, info: MessageEventInfo) {
-  const pending = pendingQueries.get(messageId)
+// Discover assistant messages whose parentID matches one of our pending
+// user message IDs. Multiple assistants can share the same parent during
+// tool-call loops (packages/opencode/src/session/prompt.ts:1440-1448), so
+// we track the full set, not just the latest.
+function trackAssistantMessage(conn: PeerConn, info: MessageEventInfo) {
+  if (info.role !== "assistant" || !info.id || !info.parentID) return
+  const pending = conn.pendingQueries.get(info.parentID)
+  if (!pending) return
+  if (info.error) {
+    pending.hasError = true
+    pending.errorPayload = info.error
+  }
+  if (pending.assistantMessageIds.has(info.id)) return
+  pending.assistantMessageIds.add(info.id)
+  conn.pendingByAssistantId.set(info.id, pending)
+}
+
+// message.part.updated carries the full latest part state. Track which
+// partIDs are text parts so we can filter delta events to text only
+// (reasoning deltas also use `field: "text"` and would otherwise leak in).
+// Source: packages/opencode/src/session/processor.ts:522-573, 246-255.
+function applyPartUpdated(conn: PeerConn, part: MessagePartInfo) {
+  const messageId = part.messageID
+  if (!messageId || !part.id) return
+  const pending = conn.pendingByAssistantId.get(messageId)
   if (!pending) return
 
-  // info.parts is the full message state on every event. Concatenate all
-  // text parts to rebuild the response, then keep the latest non-empty
-  // result as buffer (in case a later event arrives with parts cleared).
-  const parts = info.parts || []
-  let text = ""
-  for (const part of parts) {
-    if (part.type === "text" && part.text) text += part.text
-  }
-  if (text) pending.buffer = text
+  if (part.type === "text") {
+    const isNew = !pending.textPartIds.has(part.id)
+    pending.textPartIds.add(part.id)
+    if (isNew) pending.partOrder.push(part.id)
 
-  const isCompleted = info.time?.completed || info.status === "completed"
-  const hasError = info.error
-  if (!isCompleted && !hasError) return
+    const buffered = pending.pendingDeltasByPart.get(part.id) || ""
+    pending.pendingDeltasByPart.delete(part.id)
 
-  clearTimeout(pending.timeoutHandle)
-  pendingQueries.delete(messageId)
-  if (hasError) {
-    sendResponse(pending.correlationId, `Model error: ${JSON.stringify(hasError)}`)
-  } else if (pending.buffer) {
-    sendResponse(pending.correlationId, pending.buffer)
-  } else {
-    sendResponse(pending.correlationId, "(empty response: model completed without output)")
+    // opencode emits the initial text part with text: "" before any deltas
+    // (processor.ts:522-531), then a final full snapshot at text-end. An
+    // empty snapshot must NOT discard accumulated deltas, but a non-empty
+    // snapshot is authoritative for THIS part only (other text parts in
+    // the same pending are joined separately at flush).
+    if (typeof part.text === "string" && part.text.length > 0) {
+      pending.textByPartId.set(part.id, part.text)
+    } else {
+      const existing = pending.textByPartId.get(part.id) || ""
+      pending.textByPartId.set(part.id, existing + buffered)
+    }
+  } else if (part.type === "reasoning") {
+    pending.reasoningPartIds.add(part.id)
+    pending.pendingDeltasByPart.delete(part.id)  // discard reasoning deltas
   }
-  sendStatus("idle")
 }
 
-// Cleanup function
+// message.part.delta carries a chunk in `delta`. Both text and reasoning
+// deltas use field "text" (processor.ts:246-255 + 534-543), so we filter
+// by the partID classification we built from message.part.updated. If the
+// partID is unknown (delta arrived first), buffer it under the partID and
+// replay/discard once the part is identified.
+function applyPartDelta(conn: PeerConn, props: MessagePartDeltaProps) {
+  const messageId = props.messageID
+  if (!messageId) return
+  const pending = conn.pendingByAssistantId.get(messageId)
+  if (!pending) return
+  if (props.field !== "text" || typeof props.delta !== "string" || !props.partID) return
+
+  if (pending.textPartIds.has(props.partID)) {
+    const existing = pending.textByPartId.get(props.partID) || ""
+    pending.textByPartId.set(props.partID, existing + props.delta)
+    return
+  }
+  if (pending.reasoningPartIds.has(props.partID)) {
+    return
+  }
+  // Unknown partID — defer until message.part.updated classifies it.
+  pending.pendingDeltasByPart.set(
+    props.partID,
+    (pending.pendingDeltasByPart.get(props.partID) || "") + props.delta,
+  )
+}
+
+// Capture errors as they appear on assistant message.updated. We do not
+// finalize here — session.status idle is the authoritative terminal signal
+// (handles tool-calls loops, "stop with tool calls", "unknown" finish, etc.
+// without re-implementing opencode's run-loop terminal logic in the plugin).
+function captureAssistantError(pending: PendingQuery, info: MessageEventInfo) {
+  if (info.error) {
+    pending.hasError = true
+    pending.errorPayload = info.error
+  }
+}
+
+// Resolve all pending queries on this peer. Called via deferred flush when
+// session.status reports idle — the brief delay protects against a race
+// where session.status (direct publish) arrives before the final
+// message.part.updated (sync-published) for the answer text.
+const FLUSH_DEFER_MS = 100
+
+function scheduleFlush(conn: PeerConn) {
+  // Snapshot which queries are eligible to flush at idle. A new query
+  // accepted during the deferred window must NOT be flushed by this timer
+  // — it gets its own idle cycle.
+  const eligible = Array.from(conn.pendingQueries.keys())
+  if (conn.flushTimer) clearTimeout(conn.flushTimer)
+  conn.flushTimer = setTimeout(() => {
+    conn.flushTimer = null
+    flushPendingNow(conn, eligible)
+  }, FLUSH_DEFER_MS)
+}
+
+function flushPendingNow(conn: PeerConn, userMessageIds?: string[]) {
+  const ids = userMessageIds ?? Array.from(conn.pendingQueries.keys())
+  if (ids.length === 0) return
+  for (const userMessageId of ids) {
+    const pending = conn.pendingQueries.get(userMessageId)
+    if (!pending) continue
+    clearTimeout(pending.timeoutHandle)
+    for (const aid of pending.assistantMessageIds) conn.pendingByAssistantId.delete(aid)
+
+    // Concatenate all text parts in arrival order. Tool-call loops produce
+    // multiple text parts; we want them all, joined with a blank line so
+    // the reply reads like a continuous response.
+    const chunks: string[] = []
+    for (const partId of pending.partOrder) {
+      const text = pending.textByPartId.get(partId)
+      if (text) chunks.push(text)
+    }
+    const reply = chunks.join("\\n\\n")
+
+    if (pending.hasError) {
+      sendResponse(conn, pending.correlationId, `Model error: ${JSON.stringify(pending.errorPayload)}`)
+    } else if (reply) {
+      sendResponse(conn, pending.correlationId, reply)
+    } else if (pending.assistantMessageIds.size === 0) {
+      // No assistant ever parented on our userMessageId. This typically
+      // means a concurrent TUI/API prompt landed just after ours, the
+      // runner picked their user message as `lastUser`, and our user got
+      // absorbed without its own assistant turn (prompt.ts:1412-1515).
+      sendError(
+        conn,
+        pending.correlationId,
+        "Query did not produce a dedicated assistant turn (likely a concurrent prompt absorbed it)",
+      )
+    } else {
+      sendResponse(conn, pending.correlationId, "(empty response: session went idle without output)")
+    }
+    conn.pendingQueries.delete(userMessageId)
+  }
+}
+
+// Tool caller attribution: ctx.sessionID identifies the calling session
+// (packages/plugin/src/tool.ts:4-21,32-36 in opencode). Map it to the
+// PeerConn so from_peer reflects the actual session, not a project-wide alias.
+function callerPeer(ctx: { sessionID?: string } | undefined): { peerName: string; peerId: string | null } {
+  const sid = ctx?.sessionID
+  const conn = sid ? peerBySession.get(sid) : undefined
+  if (conn) return { peerName: conn.peerName, peerId: conn.peerId }
+  // Subagent or unknown context: pick first available root peer as fallback.
+  const fallback = peerBySession.values().next().value as PeerConn | undefined
+  if (fallback) return { peerName: fallback.peerName, peerId: fallback.peerId }
+  return { peerName: sanitizePeerName(path.basename(projectPath) || "unknown"), peerId: null }
+}
+
 function cleanup() {
-  if (reconnectTimeout) {
-    clearTimeout(reconnectTimeout)
-    reconnectTimeout = null
+  for (const conn of peerBySession.values()) {
+    conn.closed = true
+    if (conn.reconnectTimeout) clearTimeout(conn.reconnectTimeout)
+    if (conn.flushTimer) clearTimeout(conn.flushTimer)
+    if (conn.ws) {
+      sendStatus(conn, "offline")
+      try { conn.ws.close() } catch { /* ignore */ }
+      conn.ws = null
+    }
   }
-  if (ws) {
-    sendStatus("offline")
-    ws.close()
-    ws = null
-  }
-}
-
-// Sanitize peer name to match daemon validation (alphanumeric, dots, underscore, hyphen)
-function sanitizePeerName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown"
+  peerBySession.clear()
 }
 
 // Main plugin export
 export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => {
-  peerName = sanitizePeerName(directory.split("/").pop() || "unknown")
   projectPath = directory
-  opencodeClient = client  // Store client for later use
+  opencodeClient = client
 
-  // Capture serverUrl for tui/publish (POST /tui/publish soft-inject path).
-  // PluginInput.serverUrl is a URL object whose href ends with a trailing slash.
   const su = (rest as { serverUrl?: URL | string }).serverUrl
   if (su) serverUrl = typeof su === "string" ? su : su.toString()
 
-  // Connect to daemon via WebSocket
-  connectWebSocket()
+  // Derive circle from tmux session name (matches Claude Code hooks).
+  tmuxPane = process.env.TMUX_PANE
+  if (process.env.TMUX && tmuxPane) {
+    try {
+      const { execFileSync } = require("child_process")
+      const session = execFileSync("tmux", ["display-message", "-t", tmuxPane, "-p", "#S"], { encoding: "utf-8" }).trim()
+      const window = execFileSync("tmux", ["display-message", "-t", tmuxPane, "-p", "#W"], { encoding: "utf-8" }).trim()
+      if (session) {
+        circle = session
+        if (window) tmuxSession = `${session}:${window}`
+      }
+    } catch (e) {
+      console.warn("[repowire] Failed to derive circle from tmux:", e)
+    }
+  }
 
-  // primarySessionId is set by event handler when session.updated fires for a
-  // root session (parentID == null), or by resolvePrimarySession on demand.
+  // Bootstrap: enumerate existing root sessions and register a peer for each.
+  // session.created events handle anything created later.
+  try {
+    const result = await client.session.list()
+    const sessions = result?.data
+    if (Array.isArray(sessions)) {
+      for (const s of sessions) {
+        if (s && s.parentID == null && typeof s.id === "string") {
+          ensurePeer({ id: s.id, title: (s as { title?: string }).title })
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[repowire] Failed to enumerate sessions on bootstrap:", e)
+  }
 
-  // Register cleanup on process exit
+  // beforeExit fires when the event loop is empty; cleanup is best-effort.
+  // For signals, install a one-shot handler that cleans up and re-emits the
+  // default behavior (process.exit). Without `once`, our handler would
+  // override Node's default termination behavior on SIGINT/SIGTERM.
   process.on("beforeExit", cleanup)
-  process.on("SIGINT", cleanup)
-  process.on("SIGTERM", cleanup)
+  process.once("SIGINT", () => { try { cleanup() } finally { process.exit(130) } })
+  process.once("SIGTERM", () => { try { cleanup() } finally { process.exit(143) } })
 
   return {
     tool: {
       list_peers: tool({
         description: "List all available peers in the mesh network",
         args: {},
-        async execute() {
+        async execute(_args, _ctx) {
           const result = await daemon("/peers")
           const peers = result.peers || []
           const rows = ["peer_id\tname\tproject\tcircle\tstatus\tpath\tdescription"]
@@ -482,11 +680,12 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
           peer_name: tool.schema.string().describe("Name of the peer to ask"),
           query: tool.schema.string().describe("The question to ask"),
         },
-        async execute({ peer_name, query }) {
+        async execute({ peer_name, query }, ctx) {
+          const me = callerPeer(ctx as { sessionID?: string })
           const result = await daemon("/query", {
-            from_peer: peerName,
+            from_peer: me.peerName,
             to_peer: peer_name,
-            text: query
+            text: query,
           })
           if (result.error) throw new Error(result.error)
           return result.text
@@ -498,11 +697,12 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
           peer_name: tool.schema.string().describe("Name of the peer"),
           message: tool.schema.string().describe("The message to send"),
         },
-        async execute({ peer_name, message }) {
+        async execute({ peer_name, message }, ctx) {
+          const me = callerPeer(ctx as { sessionID?: string })
           await daemon("/notify", {
-            from_peer: peerName,
+            from_peer: me.peerName,
             to_peer: peer_name,
-            text: message
+            text: message,
           })
           return "Notification sent"
         },
@@ -512,10 +712,11 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
         args: {
           message: tool.schema.string().describe("Message to broadcast"),
         },
-        async execute({ message }) {
+        async execute({ message }, ctx) {
+          const me = callerPeer(ctx as { sessionID?: string })
           const result = await daemon("/broadcast", {
-            from_peer: peerName,
-            text: message
+            from_peer: me.peerName,
+            text: message,
           })
           return `Broadcast sent to: ${result.sent_to?.join(", ") || "no peers"}`
         },
@@ -523,8 +724,9 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
       whoami: tool({
         description: "Get information about this peer in the mesh",
         args: {},
-        async execute() {
-          const identifier = peerId || peerName
+        async execute(_args, ctx) {
+          const me = callerPeer(ctx as { sessionID?: string })
+          const identifier = me.peerId || me.peerName
           try {
             const result = await daemon(`/peers/${encodeURIComponent(identifier)}`)
             const project = result.metadata?.project || ""
@@ -532,7 +734,7 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
             const row = [result.peer_id || "", result.display_name || result.name || "", project, result.circle || "", result.status || "", result.path || "", result.machine || "", result.description || ""].join("\t")
             return `${header}\n${row}`
           } catch {
-            return `peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\tdescription\n${peerId || ""}\t${peerName}\t\t\tnot registered\t\t\t`
+            return `peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\tdescription\n${me.peerId || ""}\t${me.peerName}\t\t\tnot registered\t\t\t`
           }
         },
       }),
@@ -541,78 +743,127 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
         args: {
           description: tool.schema.string().describe("Short description of your current task"),
         },
-        async execute({ description }) {
-          await daemon(`/peers/${encodeURIComponent(peerName)}/description`, { description })
+        async execute({ description }, ctx) {
+          const me = callerPeer(ctx as { sessionID?: string })
+          await daemon(`/peers/${encodeURIComponent(me.peerName)}/description`, { description })
           return `description updated: ${description}`
         },
       }),
       set_circle: tool({
-        description: "Join a named circle to communicate with peers in that circle. Use this to communicate with peers in different circles (e.g., Claude Code sessions in tmux).",
+        description: "Join a named circle to communicate with peers in that circle. Applies to all sessions in this opencode server (circle is server-wide so reconnects keep it).",
         args: {
           circle: tool.schema.string().describe("Circle name to join (e.g., 'dev', 'frontend')"),
         },
-        async execute({ circle }) {
-          if (ws?.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "set_circle", circle }))
-            return `Joined circle: ${circle}`
+        async execute({ circle: target }, _ctx) {
+          // Update module state so reconnect carries the new circle.
+          circle = target
+          let sent = 0
+          for (const conn of peerBySession.values()) {
+            if (conn.ws?.readyState === WebSocket.OPEN) {
+              conn.ws.send(JSON.stringify({ type: "set_circle", circle: target }))
+              sent++
+            }
           }
-          return "Error: Not connected to daemon"
+          return sent > 0
+            ? `Joined circle: ${target} (${sent} session peer${sent === 1 ? "" : "s"})`
+            : `Circle queued: ${target} (will apply on reconnect)`
         },
       }),
     },
-    // Event hook to track sessions and correlate query responses.
-    // Subagents create sub-sessions with their own IDs (parentID set), and
-    // their events fire on the same bus. Filter to root sessions for primary
-    // tracking so subagent activity doesn't clobber state.
+    // Per-session event routing. Every session/message event carries
+    // sessionID, so dispatch to the matching PeerConn.
     event: async ({ event }) => {
       const typedEvent = event as EventWithProperties
-      if (typedEvent.type === "session.updated") {
-        const info = typedEvent.properties?.info as SessionEventInfo | undefined
-        // Pin primarySessionId only for root sessions. parentID == null means
-        // "this is a root session." Refresh on every root update so /new and
-        // attach correctly retarget the pin.
+      const props = typedEvent.properties
+
+      if (typedEvent.type === "session.created") {
+        const info = props?.info as SessionEventInfo | undefined
         if (info?.id && info.parentID == null) {
-          primarySessionId = info.id
+          ensurePeer({ id: info.id, title: info.title })
         }
+      } else if (typedEvent.type === "session.updated") {
+        const info = props?.info as SessionEventInfo | undefined
+        if (info?.id && info.parentID == null && !peerBySession.has(info.id)) {
+          ensurePeer({ id: info.id, title: info.title })
+        }
+      } else if (typedEvent.type === "session.deleted") {
+        const info = props?.info as SessionEventInfo | undefined
+        if (info?.id) removePeer(info.id)
+      } else if (typedEvent.type === "session.status") {
+        // Authoritative busy/idle from opencode's run-state. Idle is the
+        // canonical "done" signal for pending queries — using it avoids
+        // re-implementing opencode's terminal-message logic (tool-call
+        // loops, "stop with tool calls", reasoning vs text, etc.).
+        // Source: packages/opencode/src/session/status.ts:38-83.
+        const sid = props?.sessionID
+        if (!sid) return
+        const conn = peerBySession.get(sid)
+        if (!conn) return
+        const statusType = props?.status?.type
+        if (statusType === "busy") {
+          conn.busy = true
+          sendStatus(conn, "busy")
+        } else if (statusType === "idle") {
+          conn.busy = false
+          scheduleFlush(conn)
+          sendStatus(conn, "idle")
+        }
+        // "retry" is left as-is (no status flip).
+      } else if (typedEvent.type === "session.idle") {
+        // Legacy event; session.status is the modern path, but a few opencode
+        // versions still publish session.idle. Treat it the same as idle.
+        const info = props?.info as SessionEventInfo | undefined
+        const sid = info?.id || props?.sessionID
+        if (!sid) return
+        const conn = peerBySession.get(sid)
+        if (!conn) return
+        conn.busy = false
+        scheduleFlush(conn)
+        sendStatus(conn, "idle")
       } else if (typedEvent.type === "message.updated") {
-        const info = typedEvent.properties?.info as MessageEventInfo | undefined
-        if (!info) return
+        const info = props?.info as MessageEventInfo | undefined
+        if (!info?.sessionID) return
+        const conn = peerBySession.get(info.sessionID)
+        if (!conn) return
 
-        // Only the primary session drives busy/idle and query correlation.
-        if (info.sessionID && info.sessionID === primarySessionId) {
-          if (info.role === "assistant") sendStatus("busy")
-          if (info.id) resolvePendingQuery(info.id, info)
-        }
-
-        // Track active model for context-compaction parity (issue #74).
         if (info.role === "user" && info.model) {
           activeModel = { providerID: info.model.providerID, modelID: info.model.modelID }
         }
-      } else if (typedEvent.type === "session.idle") {
-        const info = typedEvent.properties?.info as SessionEventInfo | undefined
-        // Only flip status when the primary session goes idle. Subagent idle
-        // events are per-sub-session and shouldn't unblock the parent's view.
-        if (!info?.id || info.id === primarySessionId) {
-          sendStatus("idle")
+
+        // Discover assistant messages and capture any error payload. We do
+        // NOT finalize here — finalization waits for session.status idle.
+        trackAssistantMessage(conn, info)
+        if (info.role === "assistant" && info.id) {
+          const pending = conn.pendingByAssistantId.get(info.id)
+          if (pending) captureAssistantError(pending, info)
         }
-      } else if (typedEvent.type === "session.deleted") {
-        const info = typedEvent.properties?.info as SessionEventInfo | undefined
-        if (info?.id && info.id === primarySessionId) {
-          primarySessionId = null
-          sendStatus("idle")
-        }
+      } else if (typedEvent.type === "message.part.updated") {
+        const part = props?.part
+        if (!part?.sessionID) return
+        const conn = peerBySession.get(part.sessionID)
+        if (!conn) return
+        applyPartUpdated(conn, part)
+      } else if (typedEvent.type === "message.part.delta") {
+        const sid = props?.sessionID
+        if (!sid) return
+        const conn = peerBySession.get(sid)
+        if (!conn) return
+        applyPartDelta(conn, props as MessagePartDeltaProps)
       }
     },
     // Permission relay: forward tool-approval prompts to the mesh so
-    // telegram/dashboard users can see what opencode is asking for. Modeled
-    // on the channel transport's permission relay (channel/server.ts).
-    // Fire-and-forget: opencode's own approval UI still gates the call.
+    // telegram/dashboard users can see what opencode is asking for. Attribute
+    // from the calling session's peer when sessionID is in the input.
     "permission.ask": async (input, _output) => {
       try {
         const payload = input as Record<string, unknown>
-        const toolName = (payload.tool || payload.name || "tool") as string
+        // opencode field names: `permission` is the permission slug (e.g. "bash"),
+        // `sessionID` is canonical (packages/opencode/src/permission/index.ts:40-52).
+        const toolName = (payload.permission || payload.name || "tool") as string
         const description = (payload.description || "") as string
         const requestId = (payload.id || payload.request_id || "") as string
+        const sid = payload.sessionID as string | undefined
+        const me = callerPeer(sid ? { sessionID: sid } : undefined)
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 1500)
         await fetch(`${DAEMON_URL}/notify`, {
@@ -620,7 +871,7 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,
           body: JSON.stringify({
-            from_peer: peerName,
+            from_peer: me.peerName,
             to_peer: "telegram",
             text:
               `Permission request: ${toolName}\\n` +
@@ -633,9 +884,13 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
         console.debug("[repowire] permission relay failed:", e)
       }
     },
-    // Inject mesh network context into system prompt
-    "experimental.chat.system.transform": async (_input, output) => {
+    // Per-session system prompt: tell the LLM which peer name it is so it
+    // introduces itself correctly when other peers ask.
+    "experimental.chat.system.transform": async (input, output) => {
       try {
+        const sid = (input as { sessionID?: string })?.sessionID
+        const conn = sid ? peerBySession.get(sid) : undefined
+
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 2000)
         const res = await fetch(`${DAEMON_URL}/peers`, { signal: controller.signal })
@@ -643,22 +898,28 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
         if (!res.ok) return
         const result = await res.json()
         const peers = (result.peers || []) as PeerInfo[]
-        const otherPeers = peers.filter((p: PeerInfo) => p.name !== peerName && p.status === "online")
+        const myNames = new Set<string>()
+        for (const c of peerBySession.values()) myNames.add(c.peerName)
+        const otherPeers = peers.filter((p: PeerInfo) => !myNames.has(p.name) && p.status === "online")
 
-        if (otherPeers.length > 0) {
-          const peerList = otherPeers.map((p: PeerInfo) =>
-            `  - ${p.name} on ${p.machine || "unknown"} (${p.path || "unknown path"})`
-          ).join("\\n")
+        const peerList = otherPeers.length > 0
+          ? otherPeers.map((p: PeerInfo) =>
+              `  - ${p.name} on ${p.machine || "unknown"} (${p.path || "unknown path"})`
+            ).join("\\n")
+          : "  (no other peers online)"
 
-          output.system.push(`[Repowire Mesh] You have access to other coding sessions working on related projects:
+        const identity = conn
+          ? `You are peer "${conn.peerName}" in the Repowire mesh.`
+          : `You are one of these mesh peers: ${[...myNames].join(", ") || "(none)"}.`
+
+        output.system.push(`[Repowire Mesh] ${identity}
+
+Other peers online:
 ${peerList}
 
-IMPORTANT: When asked about these projects, ask the peer directly via ask_peer tool rather than searching locally.
-Use list_peers to see current peer status. Use notify_peer for fire-and-forget messages.
-Peer list may be outdated - use list_peers tool to refresh.`)
-        }
+IMPORTANT: When asked about other projects, ask the peer directly via ask_peer rather than searching locally.
+Use list_peers to refresh peer status. Use notify_peer for fire-and-forget messages.`)
       } catch (e) {
-        // Daemon not running or timeout - skip context injection
         console.debug("[repowire] Failed to fetch peer context:", e)
       }
     },
