@@ -99,6 +99,59 @@ def extract_last_turn_tool_calls(transcript_path: Path) -> list[dict[str, str]]:
     return tool_calls
 
 
+def extract_last_turn_raw_tool_calls(transcript_path: Path) -> list[dict[str, Any]]:
+    """Like extract_last_turn_tool_calls but returns raw tool inputs.
+
+    Used by the ask-ack reminder logic to detect ack(corr_id=X) and
+    ask(reply_to=X) invocations in the just-completed turn — those need to
+    inspect the unsummarized arguments. Mirrors the same walk-backwards
+    logic as extract_last_turn_tool_calls.
+
+    Returns list of {"name": str, "input": dict | Any}.
+    """
+    if not transcript_path.exists():
+        return []
+
+    entries: list[dict[str, Any]] = []
+    with open(transcript_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    raw_calls: list[dict[str, Any]] = []
+    found_assistant = False
+    for entry in reversed(entries):
+        entry_type = entry.get("type")
+        if entry_type == "user" and found_assistant:
+            content = entry.get("message", {}).get("content", [])
+            is_tool_result = isinstance(content, list) and all(
+                isinstance(c, dict) and c.get("type") == "tool_result" for c in content
+            )
+            if not is_tool_result:
+                break
+            continue
+        if entry_type != "assistant":
+            continue
+        found_assistant = True
+        content = entry.get("message", {}).get("content", [])
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "tool_use":
+                raw_calls.append({
+                    "name": item.get("name", "unknown"),
+                    "input": item.get("input", {}),
+                })
+
+    raw_calls.reverse()
+    return raw_calls
+
+
 def _summarize_tool_input(name: str, tool_input: Any) -> str:
     """Create a one-line summary of tool input."""
     if not isinstance(tool_input, dict):

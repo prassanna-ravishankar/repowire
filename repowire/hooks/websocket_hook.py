@@ -380,11 +380,23 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 raise PaneUnsafeError(str(e)) from e
 
     elif msg_type == "notify":
+        # Wire-level notify can carry intent=ask (new ask-ack lifecycle),
+        # intent=ack_reply (closure of a thread we initiated), or intent=notify
+        # (plain FYI, no lifecycle). Only intent=ask pushes onto the per-pane
+        # FIFO so the recipient's Stop hook can record pickup at turn boundary.
         try:
             from_peer = data.get("from_peer", "unknown")
             text = data.get("text", "")
-            if await asyncio.to_thread(_tmux_send_keys, pane_id, f"@{from_peer}: {text}"):
-                logger.info(f"Injected notification from {from_peer}")
+            intent = data.get("intent", "notify")
+            correlation_id = data.get("correlation_id", "")
+            if intent == "ask":
+                injected_text = f"@{from_peer} [ask #{correlation_id}]: {text}"
+            else:
+                injected_text = f"@{from_peer}: {text}"
+            if await asyncio.to_thread(_tmux_send_keys, pane_id, injected_text):
+                if intent == "ask" and correlation_id:
+                    _push_pending_cid(pane_id, correlation_id)
+                logger.info(f"Injected notification ({intent}) from {from_peer}")
         except Exception as e:
             logger.error(f"Failed to inject notification: {e}")
 

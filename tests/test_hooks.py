@@ -13,6 +13,89 @@ import repowire.hooks.websocket_hook as websocket_hook
 from repowire.hooks.websocket_hook import _is_pane_safe, _tmux_send_keys
 
 
+class TestHandleNotifyIntent:
+    """Tests for handle_message routing on type=notify with various intents.
+
+    The wire-level invariant: only intent=ask pushes onto the per-pane FIFO.
+    intent=notify (FYI) and intent=ack_reply (closure of a thread we
+    initiated) must NOT trigger a FIFO push, otherwise the receiving peer
+    would think it owes an ack on something that is itself a closure.
+    """
+
+    @pytest.mark.asyncio
+    async def test_intent_ask_pushes_cid(self):
+        with (
+            patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=True),
+            patch("repowire.hooks.websocket_hook._tmux_send_keys", return_value=True),
+            patch("repowire.hooks.websocket_hook._push_pending_cid") as mock_push,
+        ):
+            await websocket_hook.handle_message(
+                {
+                    "type": "notify",
+                    "intent": "ask",
+                    "correlation_id": "ask-abc",
+                    "from_peer": "alice",
+                    "text": "ping?",
+                },
+                "%5",
+            )
+        mock_push.assert_called_once_with("%5", "ask-abc")
+
+    @pytest.mark.asyncio
+    async def test_intent_notify_does_not_push(self):
+        with (
+            patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=True),
+            patch("repowire.hooks.websocket_hook._tmux_send_keys", return_value=True),
+            patch("repowire.hooks.websocket_hook._push_pending_cid") as mock_push,
+        ):
+            await websocket_hook.handle_message(
+                {
+                    "type": "notify",
+                    "intent": "notify",
+                    "from_peer": "alice",
+                    "text": "fyi",
+                },
+                "%5",
+            )
+        mock_push.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_intent_ack_reply_does_not_push(self):
+        """An ack-with-msg arriving at the original asker must not push a
+        cid onto their FIFO — it's a closure of a thread they initiated,
+        not a new ask owing them an ack."""
+        with (
+            patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=True),
+            patch("repowire.hooks.websocket_hook._tmux_send_keys", return_value=True),
+            patch("repowire.hooks.websocket_hook._push_pending_cid") as mock_push,
+        ):
+            await websocket_hook.handle_message(
+                {
+                    "type": "notify",
+                    "intent": "ack_reply",
+                    "correlation_id": "ask-original",
+                    "from_peer": "bob",
+                    "text": "[ack #ask-original from @bob] all good",
+                },
+                "%5",
+            )
+        mock_push.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_default_intent_treated_as_notify(self):
+        """No intent field present (legacy senders) → treated as plain notify."""
+        with (
+            patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=True),
+            patch("repowire.hooks.websocket_hook._tmux_send_keys", return_value=True),
+            patch("repowire.hooks.websocket_hook._push_pending_cid") as mock_push,
+        ):
+            await websocket_hook.handle_message(
+                {"type": "notify", "from_peer": "alice", "text": "hi"},
+                "%5",
+            )
+        mock_push.assert_not_called()
+
+
 class TestTmuxSendKeys:
     """Tests for _tmux_send_keys."""
 

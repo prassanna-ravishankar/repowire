@@ -10,7 +10,18 @@ from pathlib import Path
 
 from repowire.hooks._tmux import get_pane_id
 from repowire.hooks.adapters import hook_output, normalize
-from repowire.hooks.utils import daemon_post, get_display_name, pending_cid_path, update_status
+from repowire.hooks.ask_lifecycle import (
+    fetch_and_filter_pending,
+    format_reminder_block,
+    record_pickups,
+)
+from repowire.hooks.utils import (
+    daemon_post,
+    get_display_name,
+    pending_cid_path,
+    update_status,
+    write_reminder_buffer,
+)
 from repowire.session.transcript import extract_last_turn_pair, extract_last_turn_tool_calls
 
 
@@ -110,13 +121,37 @@ def main(backend: str = "claude-code") -> int:
             peer_display, "assistant", assistant_text, tool_calls or None, pane_id=pane_id,
         )
 
-    # Deliver response to daemon for query resolution
+    # Deliver response to daemon for query resolution (legacy /query path).
+    # Pops the oldest cid; the daemon resolves it as a query future if one is
+    # pending, else falls through to the ask-tracker pickup path via the
+    # record_pickups call below for any other cids on the FIFO.
     if pane_id and assistant_text:
         resp_payload: dict = {"pane_id": pane_id, "text": assistant_text}
         cid = _pop_pending_cid(pane_id)
         if cid:
             resp_payload["correlation_id"] = cid
         daemon_post("/response", resp_payload)
+
+    # Ask-ack lifecycle: single fetch-and-share design.
+    #
+    # fetch_and_filter_pending bumps the daemon's per-peer turn counter ONCE
+    # and returns the new value as `current_turn_seq`. That same N is then
+    # passed to record_pickups, so new arrivals are tagged with seq=N. The
+    # grace check `picked_up_turn_seq < current_turn_seq` is N<N (false) for
+    # this-turn pickups. Next Stop fire bumps to N+1, picks tagged with N
+    # are flagged (N<N+1). Exactly one turn of grace, deterministic, no
+    # ordering dependency between the two calls within this Stop fire.
+    if pane_id:
+        transcript_path = (
+            Path(payload.transcript_path).expanduser().resolve()
+            if payload.transcript_path else None
+        )
+        due, current_turn_seq = fetch_and_filter_pending(
+            pane_id, transcript_path, peer_display,
+        )
+        if due:
+            write_reminder_buffer(pane_id, format_reminder_block(due))
+        record_pickups(pane_id, current_turn_seq)
 
     hook_output(backend)
     return 0
