@@ -264,27 +264,41 @@ class TestPeers:
 
 
 class TestKillPeer:
-    async def test_kill_peer_by_peer_id_resolves_tmux_session(self, client, monkeypatch):
+    """kill_peer route tests.
+
+    Ownership model: a peer's pane is killed iff its pane_id was recorded
+    in `_SPAWNED_PANE_IDS` at /spawn time. Neither tmux_session nor pane_id
+    presence alone implies daemon ownership — OpenCode (and any HTTP /peers
+    caller) can populate them for externally-attached panes.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_spawned_panes(self):
+        spawn_routes._SPAWNED_PANE_IDS.clear()
+        yield
+        spawn_routes._SPAWNED_PANE_IDS.clear()
+
+    async def test_kill_peer_by_peer_id_kills_spawned_pane(self, client, monkeypatch):
         registry = get_peer_registry()
         peer_id, _name = await registry.allocate_and_register(
             circle="5",
             backend=AgentType.CLAUDE_CODE,
             path="/tmp/torale",
             tmux_session="5:torale-window",
+            pane_id="%42",
         )
+        spawn_routes._SPAWNED_PANE_IDS.add("%42")
         killed: list[str] = []
-
-        def fake_kill(tmux_session: str) -> bool:
-            killed.append(tmux_session)
-            return True
-
-        monkeypatch.setattr(spawn_routes, "kill_peer", fake_kill)
+        monkeypatch.setattr(
+            spawn_routes, "kill_pane", lambda pid: killed.append(pid) or True,
+        )
 
         r = await client.post("/kill-peer", json={"peer_identifier": peer_id})
 
         assert r.status_code == 200
-        assert r.json()["ok"] is True
-        assert killed == ["5:torale-window"]
+        assert r.json() == {"ok": True, "tmux_killed": True}
+        assert killed == ["%42"]
+        assert "%42" not in spawn_routes._SPAWNED_PANE_IDS  # cleared after kill
 
     async def test_kill_peer_by_name_and_circle(self, client, monkeypatch):
         registry = get_peer_registry()
@@ -293,14 +307,13 @@ class TestKillPeer:
             backend=AgentType.CLAUDE_CODE,
             path="/tmp/torale",
             tmux_session="5:torale-window",
+            pane_id="%42",
         )
+        spawn_routes._SPAWNED_PANE_IDS.add("%42")
         killed: list[str] = []
-
-        def fake_kill(tmux_session: str) -> bool:
-            killed.append(tmux_session)
-            return True
-
-        monkeypatch.setattr(spawn_routes, "kill_peer", fake_kill)
+        monkeypatch.setattr(
+            spawn_routes, "kill_pane", lambda pid: killed.append(pid) or True,
+        )
 
         r = await client.post(
             "/kill-peer",
@@ -308,7 +321,7 @@ class TestKillPeer:
         )
 
         assert r.status_code == 200
-        assert killed == ["5:torale-window"]
+        assert killed == ["%42"]
 
     async def test_kill_peer_ambiguous_display_name_returns_409(self, client, monkeypatch):
         registry = get_peer_registry()
@@ -317,18 +330,20 @@ class TestKillPeer:
             backend=AgentType.CLAUDE_CODE,
             path="/tmp/torale",
             tmux_session="5:torale-a",
+            pane_id="%1",
         )
         await registry.allocate_and_register(
             circle="6",
             backend=AgentType.CLAUDE_CODE,
             path="/tmp/torale",
             tmux_session="6:torale-b",
+            pane_id="%2",
         )
 
-        def fail_kill(tmux_session: str) -> bool:
-            raise AssertionError(f"should not kill ambiguous peer: {tmux_session}")
+        def fail_kill(*_args):
+            raise AssertionError("should not kill ambiguous peer")
 
-        monkeypatch.setattr(spawn_routes, "kill_peer", fail_kill)
+        monkeypatch.setattr(spawn_routes, "kill_pane", fail_kill)
 
         r = await client.post(
             "/kill-peer",
@@ -340,7 +355,7 @@ class TestKillPeer:
         assert "Ambiguous peer identifier" in detail["error"]
         assert {p["circle"] for p in detail["candidates"]} == {"5", "6"}
 
-    async def test_kill_peer_without_tmux_session_unregisters(self, client):
+    async def test_kill_peer_without_pane_id_unregisters(self, client):
         registry = get_peer_registry()
         peer_id, _name = await registry.allocate_and_register(
             circle="5",
@@ -351,85 +366,63 @@ class TestKillPeer:
         r = await client.post("/kill-peer", json={"peer_identifier": peer_id})
 
         assert r.status_code == 200
+        assert r.json()["tmux_killed"] is None
         assert await registry.get_peer(peer_id) is None
 
-    async def test_kill_peer_with_dead_tmux_session_unregisters(self, client, monkeypatch):
+    async def test_kill_peer_opencode_attached_skips_tmux_kill(self, client, monkeypatch):
+        """OpenCode plugin sends BOTH tmux_session and pane_id from any user
+        tmux pane (installers/opencode.py:613-622, 213-216). Without a
+        spawned-pane record, /kill-peer must NOT touch the user's tmux.
+        """
         registry = get_peer_registry()
         peer_id, _name = await registry.allocate_and_register(
             circle="5",
-            backend=AgentType.CLAUDE_CODE,
+            backend=AgentType.OPENCODE,
             path="/tmp/torale",
-            tmux_session="5:torale-stale",
+            tmux_session="user-session:my-window",
+            pane_id="%77",
         )
-        monkeypatch.setattr(spawn_routes, "kill_peer", lambda _: False)
+        # _SPAWNED_PANE_IDS deliberately empty — peer was attached, not spawned
 
-        r = await client.post("/kill-peer", json={"peer_identifier": peer_id})
+        def must_not_call(*_args):
+            raise AssertionError("must not touch tmux for externally-attached peer")
 
-        assert r.status_code == 200
-        assert await registry.get_peer(peer_id) is None
-
-    async def test_kill_peer_prefers_pane_id_when_available(self, client, monkeypatch):
-        """Spawned peers (tmux_session + pane_id both set) kill via pane_id."""
-        registry = get_peer_registry()
-        peer_id, _name = await registry.allocate_and_register(
-            circle="5",
-            backend=AgentType.CLAUDE_CODE,
-            path="/tmp/torale",
-            tmux_session="5:torale-window",
-            pane_id="%42",
-        )
-        pane_killed: list[str] = []
-        window_killed: list[str] = []
-
-        monkeypatch.setattr(
-            spawn_routes,
-            "kill_pane",
-            lambda pid: pane_killed.append(pid) or True,
-        )
-        monkeypatch.setattr(
-            spawn_routes,
-            "kill_peer",
-            lambda ts: window_killed.append(ts) or True,
-        )
+        monkeypatch.setattr(spawn_routes, "kill_pane", must_not_call)
 
         r = await client.post("/kill-peer", json={"peer_identifier": peer_id})
 
         assert r.status_code == 200
         body = r.json()
-        assert body["ok"] is True
-        assert body["tmux_killed"] is True
-        assert pane_killed == ["%42"]
-        assert window_killed == []
+        assert body == {"ok": True, "tmux_killed": None}
+        assert await registry.get_peer(peer_id) is None
 
-    async def test_kill_peer_externally_attached_skips_tmux_kill(self, client, monkeypatch):
-        """Peer with pane_id but no tmux_session (SessionStart-registered)
-        is externally attached — daemon must not touch its tmux pane."""
+    async def test_kill_peer_claude_sessionstart_skips_tmux_kill(self, client, monkeypatch):
+        """Claude SessionStart hook sets pane_id but not tmux_session
+        (hooks/session_handler.py:42-51). Still must not be killed —
+        pane_id alone isn't ownership; only the spawned-set is.
+        """
         registry = get_peer_registry()
         peer_id, _name = await registry.allocate_and_register(
             circle="5",
             backend=AgentType.CLAUDE_CODE,
             path="/tmp/torale",
             pane_id="%99",
-            # NOTE: tmux_session intentionally omitted — mirrors SessionStart hook
         )
 
         def must_not_call(*_args):
             raise AssertionError("must not touch tmux for externally-attached peer")
 
         monkeypatch.setattr(spawn_routes, "kill_pane", must_not_call)
-        monkeypatch.setattr(spawn_routes, "kill_peer", must_not_call)
 
         r = await client.post("/kill-peer", json={"peer_identifier": peer_id})
 
         assert r.status_code == 200
-        body = r.json()
-        assert body["ok"] is True
-        assert body["tmux_killed"] is None
+        assert r.json()["tmux_killed"] is None
         assert await registry.get_peer(peer_id) is None
 
     async def test_kill_peer_orphan_pane_surfaces_false(self, client, monkeypatch):
-        """If kill_pane fails (e.g. pane already gone), tmux_killed=False but
-        peer is still unregistered."""
+        """If kill_pane fails (pane already gone), tmux_killed=False but
+        peer is still unregistered and the spawn record is cleared."""
         registry = get_peer_registry()
         peer_id, _name = await registry.allocate_and_register(
             circle="5",
@@ -438,13 +431,40 @@ class TestKillPeer:
             tmux_session="5:torale-window",
             pane_id="%7",
         )
+        spawn_routes._SPAWNED_PANE_IDS.add("%7")
         monkeypatch.setattr(spawn_routes, "kill_pane", lambda _: False)
 
         r = await client.post("/kill-peer", json={"peer_identifier": peer_id})
 
         assert r.status_code == 200
-        body = r.json()
-        assert body["tmux_killed"] is False
+        assert r.json()["tmux_killed"] is False
+        assert await registry.get_peer(peer_id) is None
+        assert "%7" not in spawn_routes._SPAWNED_PANE_IDS
+
+    async def test_kill_peer_post_restart_safefails(self, client, monkeypatch):
+        """After a daemon restart _SPAWNED_PANE_IDS is empty. kill_peer must
+        safe-fail (skip pane kill, return tmux_killed=None, still unregister)
+        rather than guess and risk killing a user's pane."""
+        registry = get_peer_registry()
+        peer_id, _name = await registry.allocate_and_register(
+            circle="5",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/torale",
+            tmux_session="5:torale-window",
+            pane_id="%55",
+        )
+        # _SPAWNED_PANE_IDS empty (simulates post-restart state)
+
+        monkeypatch.setattr(
+            spawn_routes,
+            "kill_pane",
+            lambda _: (_ for _ in ()).throw(AssertionError("must not call")),
+        )
+
+        r = await client.post("/kill-peer", json={"peer_identifier": peer_id})
+
+        assert r.status_code == 200
+        assert r.json()["tmux_killed"] is None
         assert await registry.get_peer(peer_id) is None
 
 

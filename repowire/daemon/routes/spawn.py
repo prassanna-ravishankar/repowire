@@ -18,7 +18,6 @@ from repowire.spawn import (
     SpawnConfig,
     SpawnResult,
     kill_pane,
-    kill_peer,
     spawn_peer,
 )
 
@@ -29,6 +28,13 @@ _COMMAND_TO_BACKEND: dict[str, AgentType] = {
 # Strong references to background warmup tasks. asyncio holds only weak refs to
 # tasks, so without this set a long-sleeping warmup can be GC'd mid-flight.
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+# Pane ids of peers spawned via /spawn. Used by /kill-peer to gate tmux pane
+# kills: only panes the daemon spawned should be killed. The OpenCode plugin
+# sends tmux_session from any user-attached pane, so tmux_session alone is not
+# a daemon-spawn signal. Lost on daemon restart — that case safe-fails to
+# "skip pane kill" (matches pre-v0.11.1 behavior).
+_SPAWNED_PANE_IDS: set[str] = set()
 
 
 def _backend_from_command(command: str) -> AgentType:
@@ -182,6 +188,12 @@ async def spawn(
     except (ValueError, RuntimeError) as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
+    # Record that we own this pane so /kill-peer can safely kill it later.
+    # Externally-attached agents (notably OpenCode) also report tmux_session,
+    # so tmux_session alone is NOT a daemon-spawn signal — pane_id ownership is.
+    if result.pane_id:
+        _SPAWNED_PANE_IDS.add(result.pane_id)
+
     # Schedule post-spawn warmup in the background -- the codex case sleeps
     # ~10s and would otherwise stall the /spawn response. claude/opencode/gemini
     # warmups are no-ops and return immediately. Hold a strong ref to the task
@@ -242,15 +254,14 @@ async def kill_registered_peer(
         )
 
     peer = resolved
-    # Only daemon-spawned peers populate tmux_session (SessionStart hook omits
-    # it). Use that as the gate so we never kill panes we don't own. Prefer
-    # pane_id for the actual kill — it's stable across window renames, while
-    # tmux_session is window-name based and silently fails after a rename.
+    # Only kill the pane if the daemon spawned it. We track spawned pane_ids
+    # in _SPAWNED_PANE_IDS at /spawn time. tmux_session is NOT a reliable
+    # ownership signal — the OpenCode plugin sends it from any user-attached
+    # pane (installers/opencode.py:213-216), and any HTTP /peers caller could
+    # too. Pane-id-set membership is the single source of truth.
     tmux_killed: bool | None = None
-    if peer.tmux_session:
-        if peer.pane_id:
-            tmux_killed = kill_pane(peer.pane_id)
-        else:
-            tmux_killed = kill_peer(peer.tmux_session)
+    if peer.pane_id and peer.pane_id in _SPAWNED_PANE_IDS:
+        tmux_killed = kill_pane(peer.pane_id)
+        _SPAWNED_PANE_IDS.discard(peer.pane_id)
     await peer_registry.unregister_peer(peer.peer_id)
     return KillResponse(tmux_killed=tmux_killed)
