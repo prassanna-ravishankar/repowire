@@ -285,24 +285,15 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
     await handleIncomingQuery(conn, correlationId, fromPeer, text)
   } else if (msgType === "ask") {
     // First-class ask: surface with [ask #cid] framing so the agent can
-    // ack via the ack tool. POST pickup ONLY if softInject succeeded —
-    // otherwise we'd be telling the daemon "delivered" without the agent
-    // having seen anything.
+    // ack via the ack tool. Daemon doesn't track pickup under the
+    // simplified model — open asks are surfaced via Stop hook reminders
+    // until acked.
     const correlationId = data.correlation_id as string
     const fromPeer = (data.from_peer as string) || "unknown"
     const text = data.text as string
-    const delivered = await softInject(
+    await softInject(
       `@${fromPeer} → ${conn.peerName} [ask #${correlationId}]: ${text}`,
     )
-    if (delivered && correlationId) {
-      try {
-        await daemon(`/asks/${encodeURIComponent(correlationId)}/picked_up`, {
-          correlation_id: correlationId,
-        })
-      } catch (e) {
-        console.debug("[repowire] failed to post ask pickup:", e)
-      }
-    }
   } else if (msgType === "ping") {
     if (conn.ws?.readyState === WebSocket.OPEN) {
       conn.ws.send(JSON.stringify({ type: "pong", pane_alive: true }))

@@ -231,7 +231,7 @@ repowire telegram start
 
 `list_peers` and `whoami` return TSV (more token-efficient than JSON).
 
-If an agent picks up an ask but doesn't ack/reply within one full turn, repowire injects a reminder block at the start of the next prompt (capped to 3 most-recent, once-only). Tool-call detection is the source of truth — prose `[ack #cid]` mentions don't close anything, only a real `ack()` call does.
+If an agent receives an ask but doesn't ack/reply, repowire injects a reminder block at the start of every subsequent prompt until the ask is acked. Tool-call detection is the source of truth — prose `[ack #cid]` mentions don't close anything, only a real `ack()` call does.
 
 The legacy `ask_peer` (blocking, request/response) is removed in this release. The legacy `/query` + `/response` HTTP endpoints remain as compatibility shims for the telegram bot and CLI; they will be removed in v0.13.
 

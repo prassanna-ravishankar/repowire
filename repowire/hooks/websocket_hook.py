@@ -23,7 +23,6 @@ from repowire.config.models import AgentType
 from repowire.hooks._tmux import get_tmux_info
 from repowire.hooks.utils import (
     clear_pane_runtime_state,
-    daemon_post,
     get_display_name,
     push_query_cid,
     read_pane_runtime_metadata,
@@ -58,14 +57,6 @@ class PaneUnsafeError(RuntimeError):
 def _push_query_cid(pane_id: str, correlation_id: str) -> None:
     """Append a /query correlation_id to the per-pane FIFO."""
     push_query_cid(pane_id, correlation_id)
-
-
-def _post_ask_picked_up(pane_id: str, correlation_id: str) -> None:
-    """Tell the daemon this ask was delivered; daemon snapshots turn_seq."""
-    daemon_post(
-        f"/asks/{correlation_id}/picked_up",
-        {"correlation_id": correlation_id, "pane_id": pane_id},
-    )
 
 
 def _tmux_send_keys(pane_id: str, text: str) -> bool:
@@ -372,18 +363,15 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 raise PaneUnsafeError(str(e)) from e
 
     elif msg_type == "ask":
-        # First-class ask: inject framed text, then POST pickup so the daemon
-        # can snapshot turn_seq for the grace-window check. No FIFO involved.
+        # First-class ask: inject framed text. Daemon doesn't track pickup
+        # under the simplified model — open asks are surfaced via Stop hook
+        # reminders until acked.
         correlation_id = data.get("correlation_id", "")
         from_peer = data.get("from_peer", "unknown")
         text = data.get("text", "")
         injected_text = f"@{from_peer} [ask #{correlation_id}]: {text}"
         try:
             if await asyncio.to_thread(_tmux_send_keys, pane_id, injected_text):
-                if correlation_id:
-                    await asyncio.to_thread(
-                        _post_ask_picked_up, pane_id, correlation_id,
-                    )
                 logger.info(
                     f"Injected ask from {from_peer}: {correlation_id[:8]}",
                 )

@@ -75,20 +75,23 @@ class TestSendQuery:
 class TestBroadcast:
     async def test_broadcast_to_all(self, router, transport):
         transport.get_all_sessions.return_value = ["sid-1", "sid-2", "sid-3"]
-        sent = await router.broadcast("sender", "hello all")
+        sent, failed = await router.broadcast("sender", "hello all")
         assert len(sent) == 3
+        assert failed == []
         assert transport.send.call_count == 3
 
     async def test_broadcast_excludes(self, router, transport):
         transport.get_all_sessions.return_value = ["sid-1", "sid-2", "sid-3"]
-        sent = await router.broadcast("sender", "hello", exclude={"sid-2"})
+        sent, failed = await router.broadcast("sender", "hello", exclude={"sid-2"})
         assert len(sent) == 2
         assert "sid-2" not in sent
+        assert failed == []
 
     async def test_broadcast_empty(self, router, transport):
         transport.get_all_sessions.return_value = []
-        sent = await router.broadcast("sender", "hello")
+        sent, failed = await router.broadcast("sender", "hello")
         assert sent == []
+        assert failed == []
 
     async def test_broadcast_partial_failure(self, router, transport):
         transport.get_all_sessions.return_value = ["sid-1", "sid-2"]
@@ -102,8 +105,11 @@ class TestBroadcast:
                 raise TransportError("disconnected")
 
         transport.send.side_effect = fail_second
-        sent = await router.broadcast("sender", "hello")
+        sent, failed = await router.broadcast("sender", "hello")
         assert len(sent) == 1
+        assert len(failed) == 1
+        assert failed[0]["session_id"] == "sid-2"
+        assert "disconnected" in failed[0]["error"]
 
 
 class TestSendAsk:

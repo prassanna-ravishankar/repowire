@@ -88,14 +88,9 @@ def main(backend: str = "claude-code") -> int:
             resp_payload["correlation_id"] = cid
         daemon_post("/response", resp_payload)
 
-    # Ask-ack reminder fetch MUST happen before update_status. update_status
-    # transitions the peer from BUSY to online, which drains the BUSY buffer
-    # in the daemon and triggers fresh ask deliveries. Those deliveries POST
-    # pickup at the daemon's current turn_seq. If we bumped turn_seq AFTER
-    # the drain, those pickups would snapshot N and the same Stop's pending
-    # poll would flag them (N<N+1) — same-turn reminder, exactly the bug
-    # we're trying to avoid. By bumping first, drained-asks snapshot N+1
-    # and don't become eligible until the NEXT Stop.
+    # Ask-ack reminder: poll daemon for open asks targeting this peer and
+    # write them to the per-pane reminder buffer for the next prompt to
+    # inject. Open asks are surfaced every turn until acked.
     if pane_id:
         transcript_path = (
             Path(payload.transcript_path).expanduser().resolve()
@@ -105,7 +100,7 @@ def main(backend: str = "claude-code") -> int:
         if due:
             write_reminder_buffer(pane_id, format_reminder_block(due))
 
-    # Mark peer online — drains BUSY buffer if any. Now safe re: above.
+    # Mark peer online.
     if pane_id:
         if not update_status(pane_id, "online", use_pane_id=True):
             print(

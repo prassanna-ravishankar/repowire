@@ -128,8 +128,10 @@ class MessageRouter:
         """Send a first-class ask wire message.
 
         Wire shape: {type: ask, correlation_id, from_peer, text, reply_to?}.
-        The receiving transport must dispatch type=ask explicitly and POST
-        /asks/{cid}/picked_up after presenting the message to the agent.
+        The receiving transport dispatches type=ask explicitly and surfaces
+        the message to the agent (e.g. tmux paste). The daemon doesn't track
+        pickup state — open asks reappear in every Stop hook reminder until
+        acked.
 
         Raises:
             TransportError: If send fails
@@ -145,38 +147,18 @@ class MessageRouter:
         await self._transport.send(to_session_id, message)
         logger.info(f"Ask sent: {from_peer} -> {to_peer_name} ({correlation_id[:8]})")
 
-    async def send_broadcast_to(
-        self,
-        from_peer: str,
-        to_session_id: str,
-        to_peer_name: str,
-        text: str,
-    ) -> None:
-        """Deliver a single broadcast copy to one peer. Used to replay buffered
-        broadcasts to a peer that was BUSY when the original fanout ran."""
-        message: dict[str, Any] = {
-            "type": "broadcast",
-            "from_peer": from_peer,
-            "text": text,
-        }
-        await self._transport.send(to_session_id, message)
-        logger.info(f"Broadcast (deferred) sent: {from_peer} -> {to_peer_name}")
-
     async def broadcast(
         self,
         from_peer: str,
         text: str,
         exclude: set[str] | None = None,
-    ) -> list[str]:
-        """Broadcast to all connected peers.
-
-        Args:
-            from_peer: Display name of sender
-            text: Broadcast text
-            exclude: Set of session IDs to exclude
+    ) -> tuple[list[str], list[dict[str, str]]]:
+        """Best-effort broadcast to all connected peers (minus excludes).
 
         Returns:
-            List of session IDs that received the broadcast
+            (sent_session_ids, failed) where failed is [{session_id, error}, ...]
+            for recipients whose transport raised. One failure does not abort
+            the rest of the fanout.
         """
         excluded = exclude or set()
         message: dict[str, Any] = {
@@ -185,18 +167,21 @@ class MessageRouter:
             "text": text,
         }
 
-        async def _send_one(session_id: str) -> str | None:
+        async def _send_one(session_id: str) -> tuple[str, str | None]:
             try:
                 await self._transport.send(session_id, message)
-                return session_id
+                return session_id, None
             except TransportError as e:
                 logger.warning(f"Broadcast to {session_id} failed: {e}")
-                return None
+                return session_id, str(e)
 
-        results = await asyncio.gather(
-            *(_send_one(sid) for sid in self._transport.get_all_sessions() if sid not in excluded),
+        targets = [sid for sid in self._transport.get_all_sessions() if sid not in excluded]
+        results = await asyncio.gather(*(_send_one(sid) for sid in targets))
+        sent_to = [sid for sid, err in results if err is None]
+        failed = [{"session_id": sid, "error": err} for sid, err in results if err is not None]
+
+        logger.info(
+            "Broadcast from %s: sent to %d peers, %d failed",
+            from_peer, len(sent_to), len(failed),
         )
-        sent_to = [r for r in results if r is not None]
-
-        logger.info(f"Broadcast from {from_peer}: sent to {len(sent_to)} peers")
-        return sent_to
+        return sent_to, failed

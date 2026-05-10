@@ -100,29 +100,6 @@ function connectDaemon(mcp: Server): void {
         },
       });
 
-      // Transport-side pickup: tell the daemon this ask was delivered so it
-      // can snapshot turn_seq for the grace-window check. Channel uses HTTP
-      // base URL (DAEMON_URL is a WebSocket-flavored value).
-      if (msg.type === "ask" && msg.correlation_id) {
-        const httpUrl = DAEMON_URL.replace("ws://", "http://").replace(
-          "wss://",
-          "https://"
-        );
-        try {
-          await fetch(
-            `${httpUrl}/asks/${encodeURIComponent(msg.correlation_id)}/picked_up`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ correlation_id: msg.correlation_id }),
-            }
-          );
-        } catch (e) {
-          console.error(
-            `repowire: failed to post ask pickup for ${msg.correlation_id}: ${e}`
-          );
-        }
-      }
     }
   });
 

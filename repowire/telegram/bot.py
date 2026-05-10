@@ -280,6 +280,15 @@ class TelegramPeer:
         elif t == "query":
             self._touch_recent(who)
             await self._tg_send(f"❓ *@{_esc(who)}*\n{_esc(text)}")
+        elif t == "ask":
+            self._touch_recent(who)
+            cid = msg.get("correlation_id", "")
+            short_cid = cid[:12] if cid else "?"
+            markup = _kb([[("✓ Ack", f"ack:{cid}")]]) if cid else None
+            await self._tg_send(
+                f"❓ *@{_esc(who)}* `[ask #{_esc(short_cid)}]`\n{_esc(text)}",
+                markup=markup,
+            )
         elif t == "broadcast":
             self._touch_recent(who)
             await self._tg_send(f"📢 *@{_esc(who)}*\n{_esc(text)}")
@@ -354,6 +363,30 @@ class TelegramPeer:
             await self._tg_send("Cancelled\\.")
         elif data == "peers":
             await self._cmd_peers()
+        elif data.startswith("ack:"):
+            cid = data.split(":", 1)[1]
+            await self._ack_ask(cid)
+
+    async def _ack_ask(self, correlation_id: str) -> None:
+        """Bare-ack an open ask. POSTs /ack with from_peer=telegram."""
+        try:
+            r = await self._http.post(
+                f"{self._daemon_url}/ack",
+                json={
+                    "correlation_id": correlation_id,
+                    "from_peer": "telegram",
+                },
+                timeout=5.0,
+            )
+            short = correlation_id[:12]
+            if r.status_code == 200:
+                await self._tg_send(f"✓ Acked `#{_esc(short)}`")
+            elif r.status_code == 404:
+                await self._tg_send(f"`#{_esc(short)}` already closed or unknown")
+            else:
+                await self._tg_send(f"Ack failed for `#{_esc(short)}`: {r.status_code}")
+        except Exception as e:
+            await self._tg_send(f"Ack error: {_esc(str(e))}")
 
     async def _on_text(self, text: str, message_id: int | None = None) -> None:
         # Reply-keyboard taps

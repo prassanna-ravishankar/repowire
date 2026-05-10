@@ -392,7 +392,7 @@ class TestRoleBasedCircleBypass:
         await self._register(pm, "sid-svc", "telegram", "default", role=PeerRole.SERVICE)
         await self._register(pm, "sid-other", "other-agent", "staging")
 
-        mock_message_router.broadcast = AsyncMock(return_value=["sid-svc"])
+        mock_message_router.broadcast = AsyncMock(return_value=(["sid-svc"], []))
         await pm.broadcast("worker", "hello everyone")
 
         # Service peer should NOT be excluded; staging agent should be excluded

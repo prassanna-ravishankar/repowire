@@ -42,8 +42,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     - connected: {type, session_id}
     - query: {type, correlation_id, from_peer, text}    (legacy blocking RPC)
     - ask: {type, correlation_id, from_peer, text, reply_to?}
-        Non-blocking ask. Recipient injects text, then POSTs
-        /asks/{cid}/picked_up (no body fields beyond cid + optional pane_id).
+        Non-blocking ask. Recipient injects text. Daemon doesn't track
+        pickup; open asks reappear in every Stop hook reminder until acked.
     - notify: {type, from_peer, text}    (plain FYI, no lifecycle)
     - broadcast: {type, from_peer, text}
     """

@@ -135,10 +135,10 @@ class TestFormatReminderBlock:
         assert "what's the status?" in block
         assert "ack(corr_id)" in block
 
-    def test_truncates_long_text(self):
+    def test_preserves_full_text(self):
+        """Reminder carries full ask text — no truncation."""
         long_text = "x" * 500
         block = format_reminder_block([{
             "correlation_id": "ask-x", "from_peer": "a", "text": long_text,
         }])
-        assert "..." in block
-        assert len(block) < 500
+        assert long_text in block

@@ -57,9 +57,9 @@ The daemon is the single routing hub. It doesn't care how a peer connects — al
 - `channel/server.ts` — **experimental** Claude Code transport: MCP channel with reply tool, permission relay
 - `daemon/peer_registry.py` — peer state, circle access, events, lazy_repair, ghost eviction
 - `daemon/message_router.py` — sends `type=ask` / `notify` / `broadcast` over WebSocket; legacy `send_query` for /query shim
-- `daemon/ask_tracker.py` — non-blocking ask lifecycle (register/pickup/close/reminders, daemon-owned turn_seq under lock)
+- `daemon/ask_tracker.py` — slim ask state store: register, close, get, pending_for_peer. Open asks reappear in every Stop hook poll until acked.
 - `daemon/query_tracker.py` — legacy /query correlation ID tracking, asyncio Futures (async-locked)
-- `daemon/routes/asks.py` — `/ask`, `/ack`, `/asks/{cid}/picked_up`, `/asks/pending`, `/asks/{cid}/mark_reminded`
+- `daemon/routes/asks.py` — `/ask`, `/ack`, `/asks/pending`. `/asks/{cid}/picked_up` + `/asks/{cid}/mark_reminded` are deprecated no-op 200 endpoints kept for one release for transport compat.
 - `daemon/routes/` — other HTTP endpoints (peers, messages, websocket, spawn, health)
 - `mcp/server.py` — MCP tools (list_peers, ask, ack, notify_peer, broadcast, whoami, set_description, spawn_peer, kill_peer)
 - `relay/server.py` — hosted relay at repowire.io (WS bridge + HTTP tunnel)
@@ -81,11 +81,11 @@ Claude Code → hooks → websocket_hook.py ←WebSocket→ Daemon
 - **Stop** →
   1. extracts response + tool calls from transcript, posts chat turns
   2. delivers legacy /query response (single-purpose `pending-query-{pane}.json` FIFO)
-  3. fetches `/asks/pending` (bumps daemon turn_seq) and writes any due reminders to `reminder-{pane}.txt`
-  4. then `update_status(online)` (drains BUSY-buffered asks; deferred until after the bump so drained-asks snapshot N+1 and aren't reminded same-turn)
+  3. fetches `/asks/pending` → all open asks for this peer → writes to `reminder-{pane}.txt`
+  4. then `update_status(online)`
 - **UserPromptSubmit** → marks BUSY, consumes `reminder-{pane}.txt` and emits as `additionalContext`
 - **Notification** (idle_prompt) → resets ONLINE; also consumes the reminder buffer as a fallback path
-- **ws-hook** → on `type=ask` arrival, injects `[ask #cid]` framed text and POSTs `/asks/{cid}/picked_up` directly (transport-side pickup; daemon snapshots turn_seq under lock)
+- **ws-hook** → on `type=ask` arrival, injects `[ask #cid]` framed text. Daemon doesn't track pickup; the Stop hook reminder is the only way an un-acked ask is resurfaced.
 
 In channel mode, only the Stop hook is kept (for dashboard chat_turn events).
 `install_hooks(channel_mode=True)` installs only the Stop hook when using channel transport.
@@ -122,7 +122,7 @@ Claude Code <stdio> channel/server.ts <WebSocket> Daemon
 
 - Messages arrive as `<channel source="repowire" from_peer="..." msg_type="...">` tags
 - Queries (legacy /query shim) include `correlation_id` — Claude calls the `reply` tool to respond
-- Asks (`msg_type=ask`) include `correlation_id` (and optional `reply_to`) — Claude calls the `ack(correlation_id, message?)` tool to close. Channel server POSTs `/asks/{cid}/picked_up` after dispatch so the daemon can snapshot turn_seq for the grace window.
+- Asks (`msg_type=ask`) include `correlation_id` (and optional `reply_to`) — Claude calls the `ack(correlation_id, message?)` tool to close. Open asks reappear in every Stop hook reminder until acked.
 - Permission relay: forwards tool approval prompts to Telegram/dashboard
 - Requires claude.ai login (not API/Console key), Claude Code v2.1.80+, bun runtime
 - Opt-in only: `repowire setup --experimental-channels`

@@ -102,15 +102,6 @@ class PeerRegistry:
         self._last_repair: float = 0.0
         self._repair_lock = asyncio.Lock()
 
-        # Notifications/broadcasts buffered while a peer is BUSY. Issue #79:
-        # injecting during a busy turn drops the message into the active
-        # subagent's context instead of the human's main session. Drain on the
-        # BUSY -> ONLINE transition (see update_peer_status). In-memory only --
-        # buffered messages are best-effort and don't survive daemon restart.
-        # Cap per-peer to avoid unbounded growth if a peer never goes idle.
-        self._pending_messages: dict[str, list[dict[str, Any]]] = {}
-        self._pending_messages_max = 100
-
     # ------------------------------------------------------------------
     # Mapping persistence
     # ------------------------------------------------------------------
@@ -689,8 +680,14 @@ class PeerRegistry:
     ) -> None:
         """Send a notification to a peer (fire-and-forget).
 
+        Direct wire send via the router. No daemon-side queueing: BUSY peers
+        have a live WS and ws-hook buffers the tmux paste through the busy
+        turn, so direct send is sufficient. Offline peers raise TransportError
+        so callers can retry or escalate.
+
         Raises:
-            ValueError: If peer not found or circle boundary violated
+            ValueError: peer not found / circle boundary violated.
+            TransportError: peer has no live WS.
         """
         async with self._lock:
             peer = self._lookup_peer_unlocked(to_peer, circle=circle)
@@ -700,22 +697,14 @@ class PeerRegistry:
             peer_id = peer.peer_id
             peer_name = peer.display_name
             from_peer_id = from_obj.peer_id if from_obj else None
-            queued = self._enqueue_if_busy_unlocked(
-                peer,
-                {"kind": "notify", "from_peer": from_peer, "text": text},
-            )
 
         self.add_event(
             "notification",
             {
                 "from": from_peer, "to": to_peer, "text": text,
                 "from_peer_id": from_peer_id, "to_peer_id": peer_id,
-                "queued": queued,
             },
         )
-
-        if queued:
-            return
 
         await self._router.send_notification(
             from_peer=from_peer,
@@ -734,11 +723,16 @@ class PeerRegistry:
         bypass_circle: bool = False,
         circle: str | None = None,
     ) -> None:
-        """Inject an ask to a peer as a first-class type=ask wire message.
+        """Inject an ask to a peer as a type=ask wire frame.
 
-        BUSY recipients get the ask buffered and drained on idle. Pickup is
-        always the recipient transport's job — never daemon-side — so this
-        method only writes the wire frame.
+        Direct wire send via the router. BUSY isn't a delivery barrier under
+        async ask semantics — ws-hook buffers the tmux paste through the busy
+        turn. Offline peers raise TransportError so the /ask route can roll
+        back the tracker registration and return an error to the caller.
+
+        Raises:
+            ValueError: peer not found / circle violation.
+            TransportError: peer has no live WS.
         """
         async with self._lock:
             peer = self._lookup_peer_unlocked(to_peer, circle=circle)
@@ -748,16 +742,6 @@ class PeerRegistry:
             peer_id = peer.peer_id
             peer_name = peer.display_name
             from_peer_id = from_obj.peer_id if from_obj else None
-            queued = self._enqueue_if_busy_unlocked(
-                peer,
-                {
-                    "kind": "ask",
-                    "from_peer": from_peer,
-                    "text": text,
-                    "correlation_id": correlation_id,
-                    "reply_to": reply_to,
-                },
-            )
 
         self.add_event(
             "ask",
@@ -766,12 +750,8 @@ class PeerRegistry:
                 "from_peer_id": from_peer_id, "to_peer_id": peer_id,
                 "correlation_id": correlation_id,
                 "reply_to": reply_to,
-                "queued": queued,
             },
         )
-
-        if queued:
-            return
 
         await self._router.send_ask(
             from_peer=from_peer,
@@ -788,17 +768,16 @@ class PeerRegistry:
         text: str,
         exclude: list[str] | None = None,
         bypass_circle: bool = False,
-    ) -> list[str]:
-        """Broadcast a message to all peers.
+    ) -> tuple[list[str], list[dict[str, str]]]:
+        """Broadcast to all peers in sender's circle (or all, if sender bypasses).
 
-        Returns:
-            List of peer names that received the broadcast
+        Best-effort per-peer: a stale WS for one recipient doesn't fail the
+        whole call. Returns ([sent_to_names], [{peer, error}, ...]).
         """
         exclude_names = set(exclude or [])
         exclude_names.add(from_peer)
 
         exclude_session_ids: set[str] = set()
-        queued_peer_names: list[str] = []
         async with self._lock:
             from_peer_obj: Peer | None = None
             for name in exclude_names:
@@ -815,19 +794,9 @@ class PeerRegistry:
                     if peer.circle != from_circle and not peer.bypasses_circles:
                         exclude_session_ids.add(sid)
 
-            # Queue for any BUSY recipient so the broadcast lands in their main
-            # session after they finish, not in whatever subagent is running.
-            for sid, peer in self._peers.items():
-                if sid in exclude_session_ids:
-                    continue
-                if self._enqueue_if_busy_unlocked(
-                    peer,
-                    {"kind": "broadcast", "from_peer": from_peer, "text": text},
-                ):
-                    exclude_session_ids.add(sid)
-                    queued_peer_names.append(peer.display_name)
-
             from_peer_id = from_peer_obj.peer_id if from_peer_obj else None
+            id_to_name = {sid: p.display_name for sid, p in self._peers.items()}
+
         self.add_event(
             "broadcast",
             {
@@ -836,30 +805,25 @@ class PeerRegistry:
             },
         )
 
-        sent_session_ids = await self._router.broadcast(
+        sent_ids, failed = await self._router.broadcast(
             from_peer=from_peer,
             text=text,
             exclude=exclude_session_ids,
         )
 
-        async with self._lock:
-            sent_names = [
-                self._peers[sid].display_name
-                for sid in sent_session_ids
-                if sid in self._peers
-            ]
-        # Recipients we deferred while busy still count as "will receive."
-        return sent_names + queued_peer_names
+        sent_names = [id_to_name[sid] for sid in sent_ids if sid in id_to_name]
+        failed_named = [
+            {"peer": id_to_name.get(f["session_id"], f["session_id"]), "error": f["error"]}
+            for f in failed
+        ]
+        return sent_names, failed_named
 
     # ------------------------------------------------------------------
     # Status / metadata mutations
     # ------------------------------------------------------------------
 
     async def update_peer_status(self, identifier: str, status: PeerStatus) -> None:
-        """Update peer status, draining any buffered notifications on BUSY -> ONLINE."""
-        to_flush: list[dict[str, Any]] = []
-        flush_peer_id: str | None = None
-        flush_peer_name: str | None = None
+        """Update peer status + last_seen. No side effects beyond that."""
         async with self._lock:
             peer = self._lookup_peer_unlocked(identifier)
             if not peer:
@@ -869,90 +833,8 @@ class PeerRegistry:
                     status.value,
                 )
                 return
-            previous = peer.status
             peer.status = status
             peer.last_seen = datetime.now(timezone.utc)
-            # Drain on any non-BUSY transition out of BUSY. OFFLINE drops the
-            # queue (the peer is gone); ONLINE replays it.
-            if previous == PeerStatus.BUSY and status != PeerStatus.BUSY:
-                queued = self._pending_messages.pop(peer.peer_id, [])
-                if status == PeerStatus.ONLINE and queued:
-                    to_flush = queued
-                    flush_peer_id = peer.peer_id
-                    flush_peer_name = peer.display_name
-
-        if to_flush and flush_peer_id and flush_peer_name:
-            await self._flush_pending(flush_peer_id, flush_peer_name, to_flush)
-
-    def _enqueue_if_busy_unlocked(self, peer: Peer, message: dict[str, Any]) -> bool:
-        """If peer is BUSY, append to its pending queue. Returns True if queued.
-
-        Caller must hold self._lock. The queue is per-peer FIFO; flush order is
-        preserved by appending here and popping the whole list at flush time.
-        """
-        if peer.status != PeerStatus.BUSY:
-            return False
-        queue = self._pending_messages.setdefault(peer.peer_id, [])
-        if len(queue) >= self._pending_messages_max:
-            # Drop oldest to bound memory under stuck-busy peers. Better than
-            # blocking the sender or unbounded growth.
-            dropped = queue.pop(0)
-            logger.warning(
-                "Pending queue for %s full (%d) -- dropping oldest %s from %s",
-                peer.display_name,
-                self._pending_messages_max,
-                dropped.get("kind"),
-                dropped.get("from_peer"),
-            )
-        queue.append(message)
-        return True
-
-    async def _flush_pending(
-        self,
-        peer_id: str,
-        peer_name: str,
-        messages: list[dict[str, Any]],
-    ) -> None:
-        """Send buffered notify/broadcast messages in order. Single task,
-        sequential await -- preserves FIFO ordering even if a send fails or
-        is slow."""
-        for msg in messages:
-            try:
-                if msg["kind"] == "notify":
-                    await self._router.send_notification(
-                        from_peer=msg["from_peer"],
-                        to_session_id=peer_id,
-                        to_peer_name=peer_name,
-                        text=msg["text"],
-                    )
-                elif msg["kind"] == "ask":
-                    # Pickup remains the recipient transport's job; flushing
-                    # only writes the wire frame.
-                    await self._router.send_ask(
-                        from_peer=msg["from_peer"],
-                        to_session_id=peer_id,
-                        to_peer_name=peer_name,
-                        correlation_id=msg["correlation_id"],
-                        text=msg["text"],
-                        reply_to=msg.get("reply_to"),
-                    )
-                elif msg["kind"] == "broadcast":
-                    # The original broadcast fanout already ran for online
-                    # recipients; this is just the deferred copy for one
-                    # previously-busy peer.
-                    await self._router.send_broadcast_to(
-                        from_peer=msg["from_peer"],
-                        to_session_id=peer_id,
-                        to_peer_name=peer_name,
-                        text=msg["text"],
-                    )
-            except Exception as e:
-                logger.warning(
-                    "Failed to flush buffered %s to %s: %s",
-                    msg.get("kind"),
-                    peer_name,
-                    e,
-                )
 
     async def update_description(
         self, identifier: str, description: str, circle: str | None = None

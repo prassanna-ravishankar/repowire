@@ -32,10 +32,10 @@ def main(backend: str = "claude-code") -> int:
                 file=sys.stderr,
             )
 
-    # Ask-ack reminder injection: if the previous Stop hook flagged any
-    # un-acked asks past the grace window, surface them as additionalContext
-    # so the agent sees them at the start of this turn. Buffer is consumed
-    # (deleted) on read so the same reminder doesn't repeat.
+    # Ask-ack reminder injection: surface any open asks the previous Stop
+    # hook found for this peer as additionalContext at the start of this
+    # turn. Buffer is consumed (deleted) on read; the next Stop will re-fetch
+    # if asks are still open.
     reminder = consume_reminder_buffer(pane_id) if pane_id else None
     if reminder and backend == "claude-code":
         # Claude Code reads hookSpecificOutput.additionalContext on

@@ -58,10 +58,11 @@ class BroadcastRequest(BaseModel):
 
 
 class BroadcastResponse(BaseModel):
-    """Response from a broadcast."""
+    """Response from a broadcast. Best-effort per-recipient."""
 
     ok: bool = True
     sent_to: list[str]
+    failed: list[dict[str, str]] = Field(default_factory=list)
 
 
 class SessionUpdateRequest(BaseModel):
@@ -124,7 +125,13 @@ async def notify_peer(
     request: NotifyRequest,
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
-    """Send a notification to a peer (fire-and-forget)."""
+    """Send a notification to a peer (fire-and-forget).
+
+    Direct WS send. 503 if the recipient has no live connection so the
+    caller knows to retry later.
+    """
+    from repowire.daemon.websocket_transport import TransportError
+
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
 
@@ -142,6 +149,11 @@ async def notify_peer(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),
         )
+    except TransportError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Peer {request.to_peer} has no live connection: {e}",
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -154,18 +166,18 @@ async def broadcast_message(
     request: BroadcastRequest,
     _: str | None = Depends(require_auth),
 ) -> BroadcastResponse:
-    """Broadcast a message to all peers."""
+    """Broadcast a message to all eligible peers. Best-effort per-recipient."""
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
 
-    sent_to = await peer_registry.broadcast(
+    sent_to, failed = await peer_registry.broadcast(
         from_peer=request.from_peer,
         text=request.text,
         exclude=request.exclude,
         bypass_circle=request.bypass_circle,
     )
 
-    return BroadcastResponse(sent_to=sent_to)
+    return BroadcastResponse(sent_to=sent_to, failed=failed)
 
 
 @router.post("/session/update", response_model=OkResponse)

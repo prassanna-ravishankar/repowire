@@ -1,20 +1,17 @@
 """Ask/ack lifecycle tracking for the Repowire daemon.
 
-The AskTracker manages the non-blocking ask/ack lifecycle introduced in the
-ask-ack-notify refactor. Asks are registered when a peer fires `ask()`, the
-target peer picks them up on its next Stop hook (turn boundary), and they
-are closed when the target either:
+The AskTracker is the source of truth for open ask threads. Asks are
+registered when a peer fires `ask()`, the recipient transport injects the
+wire frame on receipt, and the ask is closed when the recipient either:
 
   - calls `ack(corr_id)` — bare close, no content
   - calls `ack(corr_id, msg)` — close with reply content delivered to asker
   - calls `ask(reply_to=corr_id, ...)` — opens a new thread + closes this one
 
-If a peer picks up an ask but doesn't ack/reply within one full turn after
-pickup, the Stop hook injects a reminder (capped to 3 most recent, once-only).
-
-Unlike QueryTracker (which used asyncio Futures for synchronous blocking),
-AskTracker is purely a state store. Reply delivery is handled by the
-notification pipeline (so it inherits BUSY-buffering for free).
+Open asks targeting a peer are surfaced every Stop hook turn via
+`/asks/pending`, so an agent that hasn't acked will be reminded on every
+subsequent turn until they do. Reply delivery is handled by the
+notification pipeline (framed `[ack #cid from @peer] msg`).
 
 In-memory only. Asks are evicted after 24h via TTL sweep mirroring the
 config's prune_max_age_hours.
@@ -38,9 +35,7 @@ _EVICTION_INTERVAL_SECONDS = 300.0
 class Ask:
     """An open ask awaiting ack/reply.
 
-    picked_up_turn_seq: per-peer turn counter at pickup. Compared against the
-        next pending-poll's seq for the one-turn grace check. None until pickup.
-    close_reason: 'ack' | 'ack_with_msg' | 'reply_to' | 'evicted'.
+    close_reason: 'ack' | 'ack_with_msg' | 'reply_to' | 'evicted' | 'send_failed'.
     """
 
     correlation_id: str
@@ -51,16 +46,12 @@ class Ask:
     text: str
     reply_to: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    picked_up: bool = False
-    picked_up_at: datetime | None = None
-    picked_up_turn_seq: int | None = None
-    reminded: bool = False
     closed: bool = False
     close_reason: str | None = None
 
 
 class AskTracker:
-    """In-memory store for the ask/ack lifecycle.
+    """In-memory store of open ask threads.
 
     All mutating methods are async-locked. Read methods are unlocked snapshots
     (callers that need consistency should re-check after acting).
@@ -69,7 +60,6 @@ class AskTracker:
     def __init__(self, *, ttl_hours: float = 24.0) -> None:
         self._lock = asyncio.Lock()
         self._asks: dict[str, Ask] = {}
-        self._turn_seq: dict[str, int] = {}
         self._ttl = timedelta(hours=ttl_hours)
         self._last_eviction: float = 0.0
 
@@ -106,34 +96,6 @@ class AskTracker:
             logger.debug("Registered ask %s: %s -> %s", cid, from_peer_name, to_peer_name)
             return cid
 
-    async def mark_picked_up(self, correlation_id: str) -> bool:
-        """Mark an ask as picked up by the recipient.
-
-        Snapshots the recipient's current turn_seq atomically (under the same
-        lock that increment_turn uses). Clients don't supply turn_seq — they
-        only signal "delivered." This keeps the grace-window math daemon-owned.
-
-        Idempotent — first call sticks; later calls are no-ops so replays
-        can't shift the grace window.
-        """
-        async with self._lock:
-            ask = self._asks.get(correlation_id)
-            if not ask or ask.closed or ask.picked_up:
-                return False
-            ask.picked_up = True
-            ask.picked_up_at = datetime.now(timezone.utc)
-            ask.picked_up_turn_seq = self._turn_seq.get(ask.to_peer_id, 0)
-            return True
-
-    async def mark_reminded(self, correlation_id: str) -> bool:
-        """Flip reminded=True. Once-only."""
-        async with self._lock:
-            ask = self._asks.get(correlation_id)
-            if not ask or ask.closed or ask.reminded:
-                return False
-            ask.reminded = True
-            return True
-
     async def close(self, correlation_id: str, reason: str) -> Ask | None:
         """Close an ask. Returns the Ask if it existed and wasn't already closed."""
         async with self._lock:
@@ -149,33 +111,12 @@ class AskTracker:
         """Look up an ask by corr_id."""
         return self._asks.get(correlation_id)
 
-    async def increment_turn(self, peer_id: str) -> int:
-        """Bump the per-peer turn counter and return the new value.
-
-        Called from the Stop hook intake path. Each Stop fire for a pane is
-        one turn. The counter is used to compare against picked_up_turn_seq
-        for the grace-window check.
-        """
-        async with self._lock:
-            self._turn_seq[peer_id] = self._turn_seq.get(peer_id, 0) + 1
-            return self._turn_seq[peer_id]
-
     async def pending_for_peer(
         self,
         peer_id: str,
-        current_turn_seq: int,
-        max_results: int = 3,
+        max_results: int = 10,
     ) -> list[Ask]:
-        """Return open asks targeting this peer that are due for a reminder.
-
-        Selects asks where:
-          - to_peer_id == peer_id
-          - picked_up == True
-          - reminded == False
-          - closed == False
-          - picked_up_turn_seq < current_turn_seq  (one full turn of grace)
-
-        Returns the most recent `max_results` asks, newest first.
+        """Return open asks targeting this peer, newest first, capped at max_results.
 
         Lazy-repair: opportunistically evicts TTL-expired asks at most once
         per _EVICTION_INTERVAL_SECONDS. Stop hooks call this on every turn,
@@ -185,12 +126,7 @@ class AskTracker:
         async with self._lock:
             candidates = [
                 ask for ask in self._asks.values()
-                if ask.to_peer_id == peer_id
-                and ask.picked_up
-                and not ask.reminded
-                and not ask.closed
-                and ask.picked_up_turn_seq is not None
-                and ask.picked_up_turn_seq < current_turn_seq
+                if ask.to_peer_id == peer_id and not ask.closed
             ]
             candidates.sort(key=lambda a: a.created_at, reverse=True)
             return candidates[:max_results]
@@ -204,7 +140,7 @@ class AskTracker:
         await self.evict_expired()
 
     async def forget_peer(self, peer_id: str) -> int:
-        """Drop turn counter and any asks involving this peer.
+        """Drop any asks involving this peer.
 
         Called by PeerRegistry when pruning offline peers, so the tracker's
         memory footprint is bounded by the live peer set.
@@ -212,7 +148,6 @@ class AskTracker:
         Returns the number of asks dropped.
         """
         async with self._lock:
-            self._turn_seq.pop(peer_id, None)
             doomed = [
                 cid for cid, ask in self._asks.items()
                 if ask.to_peer_id == peer_id or ask.from_peer_id == peer_id

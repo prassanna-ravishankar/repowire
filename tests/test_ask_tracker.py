@@ -1,4 +1,4 @@
-"""Tests for AskTracker — ask/ack lifecycle state."""
+"""Tests for AskTracker — slim ask/ack lifecycle state."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -32,74 +32,15 @@ class TestRegister:
         assert ask.to_peer_name == "t"
         assert ask.text == "msg"
         assert ask.reply_to == "prior-cid"
-        assert ask.picked_up is False
         assert ask.closed is False
 
-
-class TestPickup:
-    async def test_first_call_snapshots_current_turn(self, tracker):
-        cid = await tracker.register("a", "a", "b-id", "b", "x")
-        # Bump recipient's turn to 3
-        await tracker.increment_turn("b-id")
-        await tracker.increment_turn("b-id")
-        await tracker.increment_turn("b-id")
-        ok = await tracker.mark_picked_up(cid)
-        assert ok
+    async def test_retry_with_existing_id_returns_same(self, tracker):
+        cid = await tracker.register("a", "a", "b-id", "b", "x", correlation_id="ask-dup")
+        again = await tracker.register("a", "a", "b-id", "b", "different", correlation_id="ask-dup")
+        assert again == cid
+        # original entry preserved
         ask = await tracker.get(cid)
-        assert ask.picked_up
-        assert ask.picked_up_turn_seq == 3
-
-    async def test_idempotent_second_call(self, tracker):
-        cid = await tracker.register("a", "a", "b-id", "b", "x")
-        await tracker.mark_picked_up(cid)
-        # First call snapshotted seq=0; bump to 5 and try to repickup
-        for _ in range(5):
-            await tracker.increment_turn("b-id")
-        ok = await tracker.mark_picked_up(cid)
-        assert not ok
-        ask = await tracker.get(cid)
-        # Original seq must stick
-        assert ask.picked_up_turn_seq == 0
-
-    async def test_unknown_id(self, tracker):
-        assert not await tracker.mark_picked_up("never")
-
-    async def test_no_state_shift_on_closed(self, tracker):
-        cid = await tracker.register("a", "a", "b-id", "b", "x")
-        await tracker.close(cid, reason="ack")
-        ok = await tracker.mark_picked_up(cid)
-        assert not ok
-        ask = await tracker.get(cid)
-        assert ask.picked_up_turn_seq is None
-        assert not ask.picked_up
-
-    async def test_race_pickup_then_pending_increment(self, tracker):
-        """Pickup at seq=N, then /asks/pending bumps to N+1 → ask is due."""
-        cid = await tracker.register("a", "a", "b-id", "b", "x")
-        # turn_seq starts at 0; pickup snapshots 0
-        await tracker.mark_picked_up(cid)
-        ask = await tracker.get(cid)
-        assert ask.picked_up_turn_seq == 0
-        # Stop hook calls /asks/pending → increment to 1
-        new_seq = await tracker.increment_turn("b-id")
-        assert new_seq == 1
-        result = await tracker.pending_for_peer("b-id", current_turn_seq=new_seq)
-        assert len(result) == 1
-
-    async def test_race_increment_then_pickup_same_cycle(self, tracker):
-        """Same Stop fire bumps to N, pickup happens after, snapshots N → not due same cycle."""
-        cid = await tracker.register("a", "a", "b-id", "b", "x")
-        new_seq = await tracker.increment_turn("b-id")
-        assert new_seq == 1
-        await tracker.mark_picked_up(cid)
-        ask = await tracker.get(cid)
-        assert ask.picked_up_turn_seq == 1
-        # Same cycle: 1 < 1 false → not flagged
-        assert await tracker.pending_for_peer("b-id", current_turn_seq=new_seq) == []
-        # Next cycle: 1 < 2 → flagged
-        next_seq = await tracker.increment_turn("b-id")
-        result = await tracker.pending_for_peer("b-id", current_turn_seq=next_seq)
-        assert len(result) == 1
+        assert ask.text == "x"
 
 
 class TestClose:
@@ -122,70 +63,57 @@ class TestClose:
 
 
 class TestPendingForPeer:
-    async def test_filters_unpicked(self, tracker):
+    async def test_returns_open_asks(self, tracker):
         cid = await tracker.register("a", "a", "b-id", "b", "x")
-        result = await tracker.pending_for_peer("b-id", current_turn_seq=5)
-        assert result == []
-        await tracker.mark_picked_up(cid)
-        result = await tracker.pending_for_peer("b-id", current_turn_seq=5)
+        result = await tracker.pending_for_peer("b-id")
         assert len(result) == 1
+        assert result[0].correlation_id == cid
 
-    async def test_grace_window_one_turn(self, tracker):
-        """picked_up_turn_seq < current_turn_seq is the rule."""
+    async def test_repeats_until_closed(self, tracker):
+        """Open asks reappear on every poll — no once-only flag."""
         cid = await tracker.register("a", "a", "b-id", "b", "x")
-        # Bump turn to 3, pickup snapshots 3
         for _ in range(3):
-            await tracker.increment_turn("b-id")
-        await tracker.mark_picked_up(cid)
-        # Same-turn check: 3 < 3 is false
-        assert await tracker.pending_for_peer("b-id", current_turn_seq=3) == []
-        # Next turn: 3 < 4 true
-        result = await tracker.pending_for_peer("b-id", current_turn_seq=4)
-        assert len(result) == 1
-
-    async def test_skips_reminded(self, tracker):
-        cid = await tracker.register("a", "a", "b-id", "b", "x")
-        await tracker.mark_picked_up(cid)
-        await tracker.mark_reminded(cid)
-        assert await tracker.pending_for_peer("b-id", current_turn_seq=5) == []
+            result = await tracker.pending_for_peer("b-id")
+            assert len(result) == 1
+        # After ack, gone
+        await tracker.close(cid, reason="ack")
+        assert await tracker.pending_for_peer("b-id") == []
 
     async def test_skips_closed(self, tracker):
         cid = await tracker.register("a", "a", "b-id", "b", "x")
-        await tracker.mark_picked_up(cid)
         await tracker.close(cid, reason="ack")
-        assert await tracker.pending_for_peer("b-id", current_turn_seq=5) == []
+        assert await tracker.pending_for_peer("b-id") == []
 
     async def test_caps_to_max(self, tracker):
-        cids = []
-        for i in range(5):
-            cid = await tracker.register("a", "a", "b-id", "b", f"x{i}")
-            await tracker.mark_picked_up(cid)
-            cids.append(cid)
-        result = await tracker.pending_for_peer("b-id", current_turn_seq=5, max_results=3)
-        assert len(result) == 3
+        for i in range(15):
+            await tracker.register("a", "a", "b-id", "b", f"x{i}")
+        result = await tracker.pending_for_peer("b-id", max_results=5)
+        assert len(result) == 5
 
     async def test_newest_first(self, tracker):
         cid_old = await tracker.register("a", "a", "b-id", "b", "old")
         cid_new = await tracker.register("a", "a", "b-id", "b", "new")
         ask_old = await tracker.get(cid_old)
         ask_old.created_at = datetime.now(timezone.utc) - timedelta(minutes=5)
-        await tracker.mark_picked_up(cid_old)
-        await tracker.mark_picked_up(cid_new)
-        result = await tracker.pending_for_peer("b-id", current_turn_seq=5)
+        result = await tracker.pending_for_peer("b-id")
         assert result[0].correlation_id == cid_new
 
     async def test_other_peer_excluded(self, tracker):
-        cid = await tracker.register("a", "a", "b-id", "b", "x")
-        await tracker.mark_picked_up(cid)
-        result = await tracker.pending_for_peer("other-id", current_turn_seq=5)
+        await tracker.register("a", "a", "b-id", "b", "x")
+        result = await tracker.pending_for_peer("other-id")
         assert result == []
 
 
-class TestTurnCounter:
-    async def test_increments_per_peer(self, tracker):
-        assert await tracker.increment_turn("p1") == 1
-        assert await tracker.increment_turn("p1") == 2
-        assert await tracker.increment_turn("p2") == 1
+class TestForgetPeer:
+    async def test_drops_asks_to_or_from_peer(self, tracker):
+        cid_to = await tracker.register("a", "a", "b-id", "b", "x")
+        cid_from = await tracker.register("b", "b", "c-id", "c", "y")
+        # Forget "b-id": cid_to (to_peer_id=b-id) drops; cid_from is unaffected
+        # (from_peer_id="b" not "b-id", to_peer_id="c-id").
+        dropped = await tracker.forget_peer("b-id")
+        assert dropped == 1
+        assert await tracker.get(cid_to) is None
+        assert await tracker.get(cid_from) is not None
 
 
 class TestEvictExpired:

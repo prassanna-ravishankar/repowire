@@ -55,7 +55,8 @@ def pending_query_cid_path(pane_id: str | None) -> Path:
     """Path to the pending /query correlation_id file for a pane.
 
     Single-purpose: only legacy /query cids land here. Ask cids are handled
-    transport-side (POST /asks/{cid}/picked_up) and never use a FIFO.
+    transport-side (direct injection of type=ask wire frames) and never use
+    a FIFO.
     """
     return pane_logs_dir() / f"pending-query-{get_pane_file(pane_id)}.json"
 
@@ -155,9 +156,9 @@ def write_pane_runtime_metadata(pane_id: str | None, metadata: dict) -> None:
 def reminder_buffer_path(pane_id: str | None) -> Path:
     """Path to the pane's pending reminder text file.
 
-    The Stop hook writes ask-ack reminder text here when there are pending
-    asks past the grace window. The next UserPromptSubmit (or
-    Notification/idle_prompt) hook reads it, injects, and deletes.
+    The Stop hook writes ask-ack reminder text here when this peer has any
+    open asks. The next UserPromptSubmit (or Notification/idle_prompt) hook
+    reads it, injects, and deletes.
     """
     return pane_logs_dir() / f"reminder-{get_pane_file(pane_id)}.txt"
 

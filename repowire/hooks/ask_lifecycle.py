@@ -1,11 +1,13 @@
 """Stop-hook reminder logic for the ask/ack lifecycle.
 
-Pickup is reported transport-side at delivery time (see ws-hook /
-opencode plugin / channel server) — never from this module. The Stop
-hook's only role here is reminder fetch + injection: query the daemon
-for picked-up-but-not-acked asks past the grace window, filter out
-any cids the agent already acked/replied to in the just-completed turn,
-and persist the rendered reminder block for the next prompt to inject.
+Each Stop hook polls the daemon for open asks targeting this peer and
+renders them as a reminder block for the next prompt. Open asks are
+nagged every turn until acked — no once-only flag, no grace window.
+
+Client-side filter drops cids the agent already acked/replied to via
+tool calls in the just-completed turn (their MCP ack call is in flight
+to the daemon concurrently with this hook, so the daemon may not yet
+reflect closure).
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from repowire.hooks.utils import daemon_get, daemon_post
+from repowire.hooks.utils import daemon_get
 from repowire.session.transcript import extract_last_turn_raw_tool_calls
 
 logger = logging.getLogger(__name__)
@@ -60,12 +62,12 @@ def fetch_and_filter_pending(
     pane_id: str,
     transcript_path: Path | None,
 ) -> list[dict[str, Any]]:
-    """Fetch due reminders, filter out ones acked/replied this turn.
+    """Fetch open asks for this pane, filter out ones acked/replied this turn.
 
-    The daemon-side filter handles picked_up + reminded + grace-window. The
-    client-side filter here drops cids the agent already acked/replied to
-    via tool calls in the just-completed turn (the only signal visible from
-    the transcript).
+    The daemon returns every open ask for this peer. The client-side filter
+    here drops cids the agent already acked/replied to via tool calls in the
+    just-completed turn — those acks are in flight concurrently and the
+    daemon may not yet reflect closure.
     """
     result = daemon_get(f"/asks/pending?pane_id={quote(pane_id, safe='')}")
     if not result:
@@ -81,22 +83,8 @@ def fetch_and_filter_pending(
     for ask in asks:
         cid = ask.get("correlation_id", "")
         if cid in handled:
-            # Filter only — do NOT auto-close. The agent's ack() tool call
-            # is in flight to the daemon at the same time as this hook;
-            # racing /ack here can land first with no message body and
-            # close the ask before the real ack-with-msg arrives, dropping
-            # the reply. The MCP tool call is the source of truth for
-            # closure; this hook just prevents same-turn reminders.
             continue
         pending.append(ask)
-
-    for ask in pending:
-        cid = ask.get("correlation_id", "")
-        if cid:
-            daemon_post(
-                f"/asks/{cid}/mark_reminded",
-                {"correlation_id": cid},
-            )
 
     return pending
 
@@ -106,15 +94,13 @@ def format_reminder_block(asks: list[dict[str, Any]]) -> str:
     if not asks:
         return ""
     lines = [
-        "[repowire] You have un-acknowledged asks. Each needs ack(corr_id) "
-        "to close (bare = seen-no-action), ack(corr_id, message) to reply, "
-        "or ask(reply_to=corr_id, ...) to chain a follow-up.",
+        "[repowire] You have open asks awaiting your response. Each needs "
+        "ack(corr_id) to close (bare = seen-no-action), ack(corr_id, message) "
+        "to reply, or ask(reply_to=corr_id, ...) to chain a follow-up.",
     ]
     for ask in asks:
         cid = ask.get("correlation_id", "")
         from_peer = ask.get("from_peer", "?")
         text = (ask.get("text") or "").strip()
-        if len(text) > 200:
-            text = text[:197] + "..."
-        lines.append(f"  - #{cid} from @{from_peer}: {text}")
+        lines.append(f"  - @{from_peer} [ask #{cid}]: {text}")
     return "\n".join(lines)
