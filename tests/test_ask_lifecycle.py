@@ -126,19 +126,31 @@ class TestFormatReminderBlock:
     def test_empty(self):
         assert format_reminder_block([]) == ""
 
-    def test_single(self):
+    def test_single_is_terse(self):
+        """Single ask: cid + asker, no body. Body is already in agent's transcript."""
         block = format_reminder_block([{
             "correlation_id": "ask-x", "from_peer": "alice", "text": "what's the status?",
         }])
         assert "ask-x" in block
         assert "@alice" in block
-        assert "what's the status?" in block
-        assert "ack(corr_id)" in block
+        assert "what's the status?" not in block  # body NOT re-included
 
-    def test_preserves_full_text(self):
-        """Reminder carries full ask text — no truncation."""
-        long_text = "x" * 500
+    def test_multiple_lists_cids(self):
+        block = format_reminder_block([
+            {"correlation_id": "ask-x", "from_peer": "alice", "text": "first"},
+            {"correlation_id": "ask-y", "from_peer": "bob", "text": "second"},
+        ])
+        assert "ask-x" in block
+        assert "ask-y" in block
+        assert "@alice" in block
+        assert "@bob" in block
+        # bodies not included
+        assert "first" not in block
+        assert "second" not in block
+
+    def test_does_not_balloon_with_long_text(self):
+        """Reminder size is independent of original ask body length."""
         block = format_reminder_block([{
-            "correlation_id": "ask-x", "from_peer": "a", "text": long_text,
+            "correlation_id": "ask-x", "from_peer": "a", "text": "x" * 5000,
         }])
-        assert long_text in block
+        assert len(block) < 200

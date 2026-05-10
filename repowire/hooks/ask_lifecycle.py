@@ -93,17 +93,17 @@ def fetch_and_filter_pending(
 
 
 def format_reminder_block(asks: list[dict[str, Any]]) -> str:
-    """Format a context-injection block listing un-acked asks."""
+    """Terse reminder: just corr_ids + asker, no ask body.
+
+    The original ask was already injected into the terminal by ws-hook at
+    delivery time, so it's in the agent's transcript/context. The reminder
+    only needs to nudge with the identifier — the agent can scroll back for
+    full text or just ack.
+    """
     if not asks:
         return ""
-    lines = [
-        "[repowire] You have open asks awaiting your response. Each needs "
-        "ack(corr_id) to close (bare = seen-no-action), ack(corr_id, message) "
-        "to reply, or ask(reply_to=corr_id, ...) to chain a follow-up.",
-    ]
-    for ask in asks:
-        cid = ask.get("correlation_id", "")
-        from_peer = ask.get("from_peer", "?")
-        text = (ask.get("text") or "").strip()
-        lines.append(f"  - @{from_peer} [ask #{cid}]: {text}")
-    return "\n".join(lines)
+    cids = ", ".join(
+        f"#{a.get('correlation_id', '?')} from @{a.get('from_peer', '?')}"
+        for a in asks
+    )
+    return f"[repowire] {len(asks)} open ask(s): {cids}. ack(corr_id) each to close."
