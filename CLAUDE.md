@@ -81,10 +81,10 @@ Claude Code → hooks → websocket_hook.py ←WebSocket→ Daemon
 - **Stop** →
   1. extracts response + tool calls from transcript, posts chat turns
   2. delivers legacy /query response (single-purpose `pending-query-{pane}.json` FIFO)
-  3. fetches `/asks/pending` → all open asks for this peer → writes to `reminder-{pane}.txt`
+  3. fetches `/asks/pending` → if open asks present, emits `{"decision": "block", "reason": <reminder>}` so Claude continues with the reminder as context (Stop event doesn't accept additionalContext)
   4. then `update_status(online)`
-- **UserPromptSubmit** → marks BUSY, consumes `reminder-{pane}.txt` and emits as `additionalContext`
-- **Notification** (idle_prompt) → resets ONLINE; also consumes the reminder buffer as a fallback path
+- **UserPromptSubmit** → marks BUSY (Claude Code only)
+- **Notification** (idle_prompt) → resets ONLINE
 - **ws-hook** → on `type=ask` arrival, injects `[ask #cid]` framed text. Daemon doesn't track pickup; the Stop hook reminder is the only way an un-acked ask is resurfaced.
 
 In channel mode, only the Stop hook is kept (for dashboard chat_turn events).

@@ -1,6 +1,8 @@
 """Tests for the stop hook handler."""
 
+import io
 import json
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -176,3 +178,117 @@ class TestStopHandler:
         payload = response_calls[0][0][1]
         assert payload["pane_id"] == "%42"
         assert payload["text"] == "I am finished."
+
+
+class TestReminderStopOutput:
+    """Stop hook emits decision=block + reason JSON when open asks exist (claude-code only)."""
+
+    @patch("repowire.hooks.stop_handler.daemon_post")
+    @patch("repowire.hooks.stop_handler.update_status", return_value=True)
+    @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
+    @patch("repowire.hooks.stop_handler.get_display_name", return_value="alice")
+    @patch("repowire.hooks.stop_handler.fetch_and_filter_pending")
+    def test_block_decision_when_pending(
+        self, mock_pending, mock_name, mock_pane, mock_status, mock_post,
+    ):
+        mock_pending.return_value = [
+            {"correlation_id": "ask-x", "from_peer": "bob", "text": "status?"},
+        ]
+        buf = io.StringIO()
+        with patch("sys.stdin") as stdin, redirect_stdout(buf):
+            stdin.read.return_value = json.dumps({
+                "cwd": "/tmp/test",
+                "session_id": "s1",
+            })
+            assert main() == 0
+        out = buf.getvalue().strip()
+        assert out, "expected JSON output when pending asks present"
+        parsed = json.loads(out)
+        assert parsed["decision"] == "block"
+        assert "ask-x" in parsed["reason"]
+        assert "@bob" in parsed["reason"]
+
+    @patch("repowire.hooks.stop_handler.daemon_post")
+    @patch("repowire.hooks.stop_handler.update_status", return_value=True)
+    @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
+    @patch("repowire.hooks.stop_handler.get_display_name", return_value="alice")
+    @patch("repowire.hooks.stop_handler.fetch_and_filter_pending", return_value=[])
+    def test_no_output_when_no_pending(
+        self, mock_pending, mock_name, mock_pane, mock_status, mock_post,
+    ):
+        buf = io.StringIO()
+        with patch("sys.stdin") as stdin, redirect_stdout(buf):
+            stdin.read.return_value = json.dumps({
+                "cwd": "/tmp/test",
+                "session_id": "s1",
+            })
+            assert main() == 0
+        # No JSON, no block
+        assert buf.getvalue().strip() == ""
+
+    @patch("repowire.hooks.stop_handler.daemon_post")
+    @patch("repowire.hooks.stop_handler.update_status", return_value=True)
+    @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
+    @patch("repowire.hooks.stop_handler.get_display_name", return_value="alice")
+    @patch("repowire.hooks.stop_handler.fetch_and_filter_pending")
+    def test_no_block_when_stop_hook_active(
+        self, mock_pending, mock_name, mock_pane, mock_status, mock_post,
+    ):
+        """stop_hook_active=true on input → early-return, no reminder fetch, no block."""
+        buf = io.StringIO()
+        with patch("sys.stdin") as stdin, redirect_stdout(buf):
+            stdin.read.return_value = json.dumps({
+                "cwd": "/tmp/test",
+                "session_id": "s1",
+                "stop_hook_active": True,
+            })
+            assert main() == 0
+        assert buf.getvalue().strip() == ""
+        mock_pending.assert_not_called()
+
+    @patch("repowire.hooks.stop_handler.daemon_post")
+    @patch("repowire.hooks.stop_handler.update_status", return_value=True)
+    @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
+    @patch("repowire.hooks.stop_handler.get_display_name", return_value="alice")
+    @patch("repowire.hooks.stop_handler.fetch_and_filter_pending")
+    def test_block_decision_for_codex_backend(
+        self, mock_pending, mock_name, mock_pane, mock_status, mock_post,
+    ):
+        """Codex Stop hook supports decision=block + reason (per docs)."""
+        mock_pending.return_value = [
+            {"correlation_id": "ask-x", "from_peer": "bob", "text": "status?"},
+        ]
+        buf = io.StringIO()
+        with patch("sys.stdin") as stdin, redirect_stdout(buf):
+            stdin.read.return_value = json.dumps({
+                "cwd": "/tmp/test",
+                "session_id": "s1",
+            })
+            assert main(backend="codex") == 0
+        parsed = json.loads(buf.getvalue().strip())
+        assert parsed["decision"] == "block"
+        assert "ask-x" in parsed["reason"]
+
+    @patch("repowire.hooks.stop_handler.daemon_post")
+    @patch("repowire.hooks.stop_handler.update_status", return_value=True)
+    @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
+    @patch("repowire.hooks.stop_handler.get_display_name", return_value="alice")
+    @patch("repowire.hooks.stop_handler.fetch_and_filter_pending")
+    def test_deny_decision_for_gemini_backend(
+        self, mock_pending, mock_name, mock_pane, mock_status, mock_post,
+    ):
+        """Gemini AfterAgent uses decision=deny + reason to force retry prompt."""
+        mock_pending.return_value = [
+            {"correlation_id": "ask-x", "from_peer": "bob", "text": "status?"},
+        ]
+        buf = io.StringIO()
+        with patch("sys.stdin") as stdin, redirect_stdout(buf):
+            stdin.read.return_value = json.dumps({
+                "cwd": "/tmp/test",
+                "session_id": "s1",
+            })
+            assert main(backend="gemini") == 0
+        parsed = json.loads(buf.getvalue().strip())
+        assert parsed["decision"] == "deny"
+        assert "ask-x" in parsed["reason"]
+

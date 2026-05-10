@@ -92,18 +92,30 @@ def fetch_and_filter_pending(
     return pending
 
 
-def format_reminder_block(asks: list[dict[str, Any]]) -> str:
-    """Terse reminder: just corr_ids + asker, no ask body.
+_BODY_SNIPPET_CHARS = 150
 
-    The original ask was already injected into the terminal by ws-hook at
-    delivery time, so it's in the agent's transcript/context. The reminder
-    only needs to nudge with the identifier — the agent can scroll back for
-    full text or just ack.
+
+def format_reminder_block(asks: list[dict[str, Any]]) -> str:
+    """Compact reminder: cid + asker + a snippet of body per ask.
+
+    The original ask was injected into the terminal by ws-hook at delivery
+    time, so the full body is usually still in the agent's transcript. The
+    snippet is a fallback for cases where the body fell out of context
+    (compaction, missed paste, restart) — enough to recall the ask without
+    the wall-of-text problem of re-pasting the full body every Stop cycle.
     """
     if not asks:
         return ""
-    cids = ", ".join(
-        f"#{a.get('correlation_id', '?')} from @{a.get('from_peer', '?')}"
-        for a in asks
-    )
-    return f"[repowire] {len(asks)} open ask(s): {cids}. ack(corr_id) each to close."
+    lines = [
+        f"[repowire] {len(asks)} open ask(s). Handle each: ack(corr_id) bare "
+        "if no reply needed, ack(corr_id, message) to reply.",
+    ]
+    for a in asks:
+        cid = a.get("correlation_id", "?")
+        from_peer = a.get("from_peer", "?")
+        body = (a.get("text") or "").strip().replace("\n", " ")
+        if len(body) > _BODY_SNIPPET_CHARS:
+            body = body[: _BODY_SNIPPET_CHARS - 1] + "…"
+        head = f"  - #{cid} from @{from_peer}"
+        lines.append(f"{head}: {body}" if body else head)
+    return "\n".join(lines)

@@ -90,8 +90,11 @@ def main(backend: str = "claude-code") -> int:
     # Ask-ack reminder: poll daemon for open asks targeting this peer.
     # Backstop only — ws-hook already pasted the original ask into the
     # terminal; this catches missed/un-acked asks on every Stop fire.
-    # Surface via Stop's additionalContext so it lands directly in the next
-    # turn without a separate UserPromptSubmit consumer or buffer file.
+    # Surface via Stop's decision=block + reason: Stop doesn't accept
+    # additionalContext, but block+reason keeps Claude generating with
+    # the reason as continuation context. stop_hook_active=true on the
+    # follow-up Stop (we early-return at top of main()) bounds it to one
+    # nudge per response cycle.
     reminder_text: str | None = None
     if pane_id:
         transcript_path = (
@@ -116,16 +119,29 @@ def main(backend: str = "claude-code") -> int:
                 file=sys.stderr,
             )
 
-    if reminder_text and backend == "claude-code":
-        # Stop hook supports decision=block to keep Claude generating with
-        # `reason` as continuation context. stop_hook_active=true on the
-        # follow-up Stop prevents an infinite loop: we early-returned for
-        # that case at the top of main().
-        print(json.dumps({
-            "decision": "block",
-            "reason": reminder_text,
-        }))
-        return 0
+    if reminder_text:
+        # Per-backend reminder injection. Each backend's end-of-turn hook
+        # accepts a different decision keyword to inject `reason` as
+        # continuation context for the next prompt:
+        #   claude-code, codex: {"decision": "block", "reason": ...}
+        #     Reason becomes continuation context (Claude) or a new
+        #     continuation prompt (Codex). stop_hook_active=true on the
+        #     follow-up Stop bounds the loop (early-return at top of main).
+        #   gemini AfterAgent:  {"decision": "deny",  "reason": ...}
+        #     Reason becomes a new prompt to force a retry turn.
+        # opencode uses a plugin runtime, not this hook — see follow-up
+        # issue for plugin-side reminder path.
+        decision_keyword = {
+            "claude-code": "block",
+            "codex": "block",
+            "gemini": "deny",
+        }.get(backend)
+        if decision_keyword:
+            print(json.dumps({
+                "decision": decision_keyword,
+                "reason": reminder_text,
+            }))
+            return 0
 
     hook_output(backend)
     return 0

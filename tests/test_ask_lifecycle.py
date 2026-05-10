@@ -126,16 +126,17 @@ class TestFormatReminderBlock:
     def test_empty(self):
         assert format_reminder_block([]) == ""
 
-    def test_single_is_terse(self):
-        """Single ask: cid + asker, no body. Body is already in agent's transcript."""
+    def test_single_includes_snippet(self):
+        """Single ask: cid + asker + body snippet for compaction recovery."""
         block = format_reminder_block([{
             "correlation_id": "ask-x", "from_peer": "alice", "text": "what's the status?",
         }])
         assert "ask-x" in block
         assert "@alice" in block
-        assert "what's the status?" not in block  # body NOT re-included
+        assert "what's the status?" in block  # body included as snippet
+        assert "ack(corr_id)" in block
 
-    def test_multiple_lists_cids(self):
+    def test_multiple_lists_each(self):
         block = format_reminder_block([
             {"correlation_id": "ask-x", "from_peer": "alice", "text": "first"},
             {"correlation_id": "ask-y", "from_peer": "bob", "text": "second"},
@@ -144,13 +145,22 @@ class TestFormatReminderBlock:
         assert "ask-y" in block
         assert "@alice" in block
         assert "@bob" in block
-        # bodies not included
-        assert "first" not in block
-        assert "second" not in block
+        assert "first" in block
+        assert "second" in block
 
-    def test_does_not_balloon_with_long_text(self):
-        """Reminder size is independent of original ask body length."""
+    def test_truncates_long_body(self):
+        """Per-ask body snippet capped to bound block size under verbose asks."""
+        long_text = "x" * 5000
         block = format_reminder_block([{
-            "correlation_id": "ask-x", "from_peer": "a", "text": "x" * 5000,
+            "correlation_id": "ask-x", "from_peer": "a", "text": long_text,
         }])
-        assert len(block) < 200
+        # Truncated, not 5000 chars
+        assert len(block) < 400
+        assert "…" in block
+
+    def test_handles_empty_text(self):
+        block = format_reminder_block([{
+            "correlation_id": "ask-x", "from_peer": "a", "text": "",
+        }])
+        assert "ask-x" in block
+        assert "@a" in block
