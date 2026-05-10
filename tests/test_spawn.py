@@ -516,6 +516,7 @@ class TestMcpSpawnPeerReturn:
         from repowire.mcp.server import create_mcp_server
 
         mock_my_name.return_value = "orchestrator"
+        mock_request.return_value = {"ok": True, "tmux_killed": True}
         mcp = create_mcp_server()
         tools = {name: fn for name, fn in mcp._tool_manager._tools.items()}
         kill_tool = tools["kill_peer"]
@@ -530,7 +531,49 @@ class TestMcpSpawnPeerReturn:
                 "circle": "5",
             },
         )
-        assert result == "Killed peer repow-5-abc12345 in circle 5"
+        assert "Killed peer repow-5-abc12345 in circle 5" in result
+        assert "tmux pane killed" in result
+
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server._get_my_peer_name", new_callable=AsyncMock)
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    async def test_kill_peer_surfaces_skipped_tmux_kill(
+        self, mock_request: AsyncMock, mock_my_name: AsyncMock,
+    ) -> None:
+        """When the daemon returns tmux_killed=None (ownership not proven),
+        the MCP tool must tell the caller — not silently report success."""
+        from repowire.mcp.server import create_mcp_server
+
+        mock_my_name.return_value = "orchestrator"
+        mock_request.return_value = {"ok": True, "tmux_killed": None}
+        mcp = create_mcp_server()
+        kill_tool = {name: fn for name, fn in mcp._tool_manager._tools.items()}["kill_peer"]
+        result = await kill_tool.fn(peer_identifier="repow-5-abc12345")
+
+        assert "Killed peer repow-5-abc12345" in result
+        assert "skipped" in result.lower()
+        assert "ownership not proven" in result.lower()
+        assert "tmux kill-pane" in result
+
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server._get_my_peer_name", new_callable=AsyncMock)
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    async def test_kill_peer_surfaces_failed_tmux_kill(
+        self, mock_request: AsyncMock, mock_my_name: AsyncMock,
+    ) -> None:
+        """When the daemon returns tmux_killed=False (kill attempted but failed),
+        the MCP tool must surface the orphan-pane risk."""
+        from repowire.mcp.server import create_mcp_server
+
+        mock_my_name.return_value = "orchestrator"
+        mock_request.return_value = {"ok": True, "tmux_killed": False}
+        mcp = create_mcp_server()
+        kill_tool = {name: fn for name, fn in mcp._tool_manager._tools.items()}["kill_peer"]
+        result = await kill_tool.fn(peer_identifier="repow-5-abc12345")
+
+        assert "Killed peer repow-5-abc12345" in result
+        assert "failed" in result.lower()
+        assert "tmux list-panes" in result
 
 
 class TestMcpRegistration:

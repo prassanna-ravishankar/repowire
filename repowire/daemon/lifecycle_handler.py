@@ -36,8 +36,17 @@ class LifecycleHandler:
     async def handle_pane_died(self, pane_id: str) -> int:
         """Mark the peer in this pane OFFLINE and disconnect its transport.
 
+        Also clears the pane id from the spawn-ownership set so a future tmux
+        server restart can't reuse the id and accidentally match an externally
+        attached peer.
+
         Returns number of cancelled queries.
         """
+        # Imported here to avoid a routes → handler → routes import cycle.
+        from repowire.daemon.routes.spawn import forget_spawned_pane
+
+        forget_spawned_pane(pane_id)
+
         peer = await self._registry.get_peer_by_pane(pane_id)
         if not peer:
             logger.debug("pane_died: no peer for pane %s", pane_id)

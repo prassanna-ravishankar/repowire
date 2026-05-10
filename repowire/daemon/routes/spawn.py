@@ -32,9 +32,24 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 # Pane ids of peers spawned via /spawn. Used by /kill-peer to gate tmux pane
 # kills: only panes the daemon spawned should be killed. The OpenCode plugin
 # sends tmux_session from any user-attached pane, so tmux_session alone is not
-# a daemon-spawn signal. Lost on daemon restart — that case safe-fails to
-# "skip pane kill" (matches pre-v0.11.1 behavior).
+# a daemon-spawn signal.
+#
+# Lifecycle assumptions:
+# - Lost on daemon restart → /kill-peer safe-fails to tmux_killed=None
+# - Cleared on pane_died lifecycle event (see lifecycle_handler.handle_pane_died)
+#   to prevent stale entries from matching a reused pane id after a tmux server
+#   restart. Tmux pane ids are session-lifetime unique within a server, so this
+#   set is only safe for the current tmux server's lifetime.
 _SPAWNED_PANE_IDS: set[str] = set()
+
+
+def forget_spawned_pane(pane_id: str) -> None:
+    """Remove a pane id from the spawned set (called on pane_died lifecycle).
+
+    Idempotent. Used by daemon.lifecycle_handler to prevent stale entries
+    from matching reused pane ids after a tmux server restart.
+    """
+    _SPAWNED_PANE_IDS.discard(pane_id)
 
 
 def _backend_from_command(command: str) -> AgentType:
@@ -96,9 +111,14 @@ class KillResponse(BaseModel):
     """Result of a successful kill.
 
     `tmux_killed` reports whether the underlying tmux pane was terminated:
-    - True  → daemon-spawned peer, pane killed successfully
-    - False → daemon-spawned peer, but tmux kill failed (orphan pane likely)
-    - None  → externally-attached peer; daemon does not own its pane
+    - True  → pane kill attempted and succeeded
+    - False → pane kill attempted but failed (likely orphan pane already gone;
+              caller should verify with `tmux list-panes -a`)
+    - None  → pane kill skipped because daemon ownership was not proven.
+              Causes: peer was externally attached (no /spawn), peer had no
+              pane_id, or daemon restarted since /spawn (in-memory ownership
+              set was lost). Caller can verify with `tmux list-panes` and
+              follow up with manual `tmux kill-pane` if needed.
     """
 
     ok: bool = True

@@ -446,12 +446,20 @@ def create_mcp_server() -> FastMCP:
     async def kill_peer(peer_identifier: str, circle: str | None = None) -> str:
         """[Repowire mesh] Kill a registered local coding session.
 
+        The peer is always deregistered from the mesh. The tmux pane behind
+        it is only killed if the daemon spawned the peer via spawn_peer in
+        the current daemon lifetime. Externally attached peers, or peers
+        whose ownership was lost across a daemon restart, are deregistered
+        without touching tmux — verify and follow up with `tmux kill-pane`
+        if the pane survives.
+
         Args:
             peer_identifier: Peer ID or display name from list_peers.
             circle: Optional circle to disambiguate display names.
 
         Returns:
-            Confirmation message
+            Confirmation describing both the deregistration and the tmux
+            pane outcome.
         """
         payload: dict[str, str] = {
             "peer_identifier": peer_identifier,
@@ -459,9 +467,20 @@ def create_mcp_server() -> FastMCP:
         }
         if circle is not None:
             payload["circle"] = circle
-        await daemon_request("POST", "/kill-peer", payload)
+        result = await daemon_request("POST", "/kill-peer", payload)
         scoped = f" in circle {circle}" if circle else ""
-        return f"Killed peer {peer_identifier}{scoped}"
+        tmux_killed = (result or {}).get("tmux_killed")
+        if tmux_killed is True:
+            tmux_note = "tmux pane killed"
+        elif tmux_killed is False:
+            tmux_note = "tmux pane kill attempted but failed (verify with `tmux list-panes`)"
+        else:
+            tmux_note = (
+                "tmux pane kill skipped (daemon ownership not proven — "
+                "externally attached, or daemon restarted since spawn). "
+                "Verify with `tmux list-panes` and manually `tmux kill-pane` if needed."
+            )
+        return f"Killed peer {peer_identifier}{scoped}: {tmux_note}"
 
     return mcp
 

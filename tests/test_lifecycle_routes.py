@@ -131,6 +131,41 @@ class TestPaneDied:
         )
         assert r.status_code == 200
 
+    async def test_clears_spawned_pane_ownership(self, client_and_registry):
+        """pane_died must clear the pane id from _SPAWNED_PANE_IDS so a
+        future tmux server restart can't reuse it and accidentally match
+        an externally-attached peer."""
+        from repowire.daemon.routes import spawn as spawn_routes
+
+        client, _ = client_and_registry
+        spawn_routes._SPAWNED_PANE_IDS.add("%5")
+        try:
+            r = await client.post(
+                "/hooks/lifecycle/pane-died",
+                json={"pane_id": "%5"},
+            )
+            assert r.status_code == 200
+            assert "%5" not in spawn_routes._SPAWNED_PANE_IDS
+        finally:
+            spawn_routes._SPAWNED_PANE_IDS.discard("%5")
+
+    async def test_clears_spawned_pane_even_without_peer(self, client_and_registry):
+        """The cleanup happens even if no peer was registered for the pane —
+        e.g. spawned peer crashed before registering."""
+        from repowire.daemon.routes import spawn as spawn_routes
+
+        client, _ = client_and_registry
+        spawn_routes._SPAWNED_PANE_IDS.add("%88")
+        try:
+            r = await client.post(
+                "/hooks/lifecycle/pane-died",
+                json={"pane_id": "%88"},
+            )
+            assert r.status_code == 200
+            assert "%88" not in spawn_routes._SPAWNED_PANE_IDS
+        finally:
+            spawn_routes._SPAWNED_PANE_IDS.discard("%88")
+
 
 # -- session-closed --
 
