@@ -24,7 +24,7 @@ export function peerLabel(peer: Peer): string {
 
 export interface Event {
   id: string;
-  type: "query" | "response" | "notification" | "broadcast" | "status_change" | "chat_turn";
+  type: "query" | "response" | "notification" | "broadcast" | "status_change" | "chat_turn" | "ask";
   timestamp: string;
   from?: string;
   to?: string;
