@@ -83,9 +83,17 @@ class AskTracker:
         reply_to: str | None = None,
         correlation_id: str | None = None,
     ) -> str:
-        """Register a new open ask. Returns the correlation_id."""
+        """Register a new open ask. Returns the correlation_id.
+
+        If correlation_id is supplied and already exists, this is treated as
+        a retry: the existing entry is preserved (lifecycle state intact)
+        and the same id is returned. Auto-generated cids never collide.
+        """
         async with self._lock:
             cid = correlation_id or f"ask-{uuid4().hex[:8]}"
+            if cid in self._asks:
+                logger.debug("Ask %s already registered; treating as retry", cid)
+                return cid
             self._asks[cid] = Ask(
                 correlation_id=cid,
                 from_peer_id=from_peer_id,
@@ -210,6 +218,10 @@ class AskTracker:
                 if ask.to_peer_id == peer_id or ask.from_peer_id == peer_id
             ]
             for cid in doomed:
+                ask = self._asks[cid]
+                if not ask.closed:
+                    ask.closed = True
+                    ask.close_reason = "evicted"
                 del self._asks[cid]
             return len(doomed)
 

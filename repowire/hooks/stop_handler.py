@@ -101,7 +101,7 @@ def main(backend: str = "claude-code") -> int:
             Path(payload.transcript_path).expanduser().resolve()
             if payload.transcript_path else None
         )
-        due = fetch_and_filter_pending(pane_id, transcript_path, peer_display)
+        due = fetch_and_filter_pending(pane_id, transcript_path)
         if due:
             write_reminder_buffer(pane_id, format_reminder_block(due))
 

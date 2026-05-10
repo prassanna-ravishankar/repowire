@@ -59,7 +59,6 @@ def _scan_acks_and_replies(transcript_path: Path | None) -> tuple[set[str], set[
 def fetch_and_filter_pending(
     pane_id: str,
     transcript_path: Path | None,
-    self_peer_name: str,
 ) -> list[dict[str, Any]]:
     """Fetch due reminders, filter out ones acked/replied this turn.
 
@@ -82,15 +81,12 @@ def fetch_and_filter_pending(
     for ask in asks:
         cid = ask.get("correlation_id", "")
         if cid in handled:
-            # Closure requires a real ack() tool call — prose acks were
-            # intentionally dropped because they trigger on accidental
-            # mentions like "I'll do [ack #abc] later."
-            if cid in acked:
-                daemon_post(
-                    "/ack",
-                    {"correlation_id": cid, "from_peer": self_peer_name},
-                )
-            # reply_to closures already happened daemon-side at /ask time
+            # Filter only — do NOT auto-close. The agent's ack() tool call
+            # is in flight to the daemon at the same time as this hook;
+            # racing /ack here can land first with no message body and
+            # close the ask before the real ack-with-msg arrives, dropping
+            # the reply. The MCP tool call is the source of truth for
+            # closure; this hook just prevents same-turn reminders.
             continue
         pending.append(ask)
 
