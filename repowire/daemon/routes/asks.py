@@ -4,14 +4,15 @@ The non-blocking ask/ack model:
 
   POST /ask                       — register an ask, inject to recipient, return corr_id
   POST /ack                       — close an ask (bare or with reply content)
-  POST /asks/{cid}/picked_up      — recipient's Stop hook records pickup (turn boundary)
+  POST /asks/{cid}/picked_up      — transport signals delivery (daemon snapshots turn_seq)
   GET  /asks/pending              — recipient's Stop hook polls for due reminders
   POST /asks/{cid}/mark_reminded  — recipient's Stop hook flips once-only reminder flag
 
-The wire protocol carrying these to peers reuses `type: notify` with an
-`intent` field. ws-hook reads `intent` to decide whether to push a corr_id
-onto the per-pane FIFO (intent=ask) or just deliver as a plain notify
-(intent=notify, intent=ack_reply).
+The wire protocol carries these to peers as a first-class `type: ask`
+message: `{type: ask, correlation_id, from_peer, text, reply_to}`. Each
+transport (ws-hook, opencode plugin, channel server) dispatches `type=ask`
+explicitly and POSTs `/asks/{cid}/picked_up` after presenting the message
+to the agent.
 """
 
 from __future__ import annotations
@@ -61,10 +62,13 @@ class AckRequest(BaseModel):
 
 
 class PickedUpRequest(BaseModel):
-    """Stop hook reports pickup for a corr_id at a given turn sequence."""
+    """Transport reports that an ask was delivered to its recipient.
+
+    Daemon owns turn_seq sequencing — it snapshots its own per-peer counter
+    atomically when this endpoint is called. Clients only signal "delivered."
+    """
 
     correlation_id: str
-    turn_seq: int = Field(..., description="Per-peer turn counter at pickup")
     pane_id: str | None = Field(None, description="Pane that picked up (for logging)")
 
 
@@ -201,7 +205,7 @@ async def mark_picked_up(
     ask_tracker = state.ask_tracker
     if request.correlation_id != correlation_id:
         raise HTTPException(status_code=400, detail="correlation_id mismatch")
-    await ask_tracker.mark_picked_up(correlation_id, request.turn_seq)
+    await ask_tracker.mark_picked_up(correlation_id)
     return OkResponse()
 
 

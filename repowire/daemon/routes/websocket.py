@@ -34,14 +34,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     Protocol (Client -> Daemon):
     - connect: {type, display_name, circle, backend, path?, auth_token?}
-    - response: {type, correlation_id, text}
+    - response: {type, correlation_id, text}    (legacy /query reply)
     - status: {type, status: busy|idle|online}
     - error: {type, correlation_id, error}
 
     Protocol (Daemon -> Client):
     - connected: {type, session_id}
-    - query: {type, correlation_id, from_peer, text}
-    - notify: {type, from_peer, text}
+    - query: {type, correlation_id, from_peer, text}    (legacy blocking RPC)
+    - ask: {type, correlation_id, from_peer, text, reply_to?}
+        Non-blocking ask. Recipient injects text, then POSTs
+        /asks/{cid}/picked_up (no body fields beyond cid + optional pane_id).
+    - notify: {type, from_peer, text}    (plain FYI, no lifecycle)
     - broadcast: {type, from_peer, text}
     """
     await websocket.accept()

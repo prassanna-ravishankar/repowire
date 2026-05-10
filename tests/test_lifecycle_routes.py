@@ -112,7 +112,7 @@ class TestPaneDied:
         with patch("repowire.config.models.CACHE_DIR", tmp_path):
             log_dir = tmp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
-            pending_path = log_dir / "pending-5.json"
+            pending_path = log_dir / "pending-query-5.json"
             pending_path.write_text('["cid-1"]')
 
             r = await client.post(

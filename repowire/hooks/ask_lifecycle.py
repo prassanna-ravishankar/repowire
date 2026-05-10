@@ -1,15 +1,11 @@
-"""Stop-hook helpers for the ask/ack lifecycle.
+"""Stop-hook reminder logic for the ask/ack lifecycle.
 
-Two responsibilities:
-
-  1. Pickup notification: pop any corr_ids the ws-hook pushed onto the per-pane
-     FIFO and tell the daemon "this turn is when we picked them up." The daemon
-     uses the turn sequence to enforce the one-turn grace before reminding.
-
-  2. Reminder injection: detect acks/replies in the just-completed turn,
-     query the daemon for picked-up-but-not-acked asks past the grace
-     window, and emit additionalContext (or fall back to printing to stderr
-     for backends that don't honor it) to nudge the agent.
+Pickup is reported transport-side at delivery time (see ws-hook /
+opencode plugin / channel server) — never from this module. The Stop
+hook's only role here is reminder fetch + injection: query the daemon
+for picked-up-but-not-acked asks past the grace window, filter out
+any cids the agent already acked/replied to in the just-completed turn,
+and persist the rendered reminder block for the next prompt to inject.
 """
 
 from __future__ import annotations
@@ -19,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from repowire.hooks.utils import daemon_get, daemon_post, pop_all_pending_cids
+from repowire.hooks.utils import daemon_get, daemon_post
 from repowire.session.transcript import extract_last_turn_raw_tool_calls
 
 logger = logging.getLogger(__name__)
@@ -60,48 +56,24 @@ def _scan_acks_and_replies(transcript_path: Path | None) -> tuple[set[str], set[
     return acked, replied_to
 
 
-def record_pickups(pane_id: str, current_turn_seq: int) -> None:
-    """Drain the FIFO and record each corr_id as picked-up at this turn.
-
-    `current_turn_seq` is the SAME value returned by fetch_and_filter_pending
-    in this Stop fire. Pickups tagged with seq=N produce N<N=false in the
-    same-turn grace check, and N<N+1=true on the next Stop fire — exactly
-    one turn of grace, regardless of call order.
-    """
-    for cid in pop_all_pending_cids(pane_id):
-        daemon_post(
-            f"/asks/{cid}/picked_up",
-            {
-                "correlation_id": cid,
-                "turn_seq": current_turn_seq,
-                "pane_id": pane_id,
-            },
-        )
-
-
 def fetch_and_filter_pending(
     pane_id: str,
     transcript_path: Path | None,
     self_peer_name: str,
-) -> tuple[list[dict[str, Any]], int]:
+) -> list[dict[str, Any]]:
     """Fetch due reminders, filter out ones acked/replied this turn.
 
-    Returns (asks_to_inject, current_turn_seq). The caller passes
-    current_turn_seq to record_pickups so newly-arrived asks get tagged
-    with the turn that just ended (next Stop fire's grace window will
-    flip them eligible).
-
-    The daemon-side filter handles picked_up + reminded + grace-window. We
-    apply the additional client-side filter for "this turn already
-    handled it" because that's the only thing visible from the transcript.
+    The daemon-side filter handles picked_up + reminded + grace-window. The
+    client-side filter here drops cids the agent already acked/replied to
+    via tool calls in the just-completed turn (the only signal visible from
+    the transcript).
     """
     result = daemon_get(f"/asks/pending?pane_id={quote(pane_id, safe='')}")
     if not result:
-        return [], 0
-    current_turn_seq = result.get("current_turn_seq", 0)
+        return []
     asks = result.get("asks", [])
     if not asks:
-        return [], current_turn_seq
+        return []
 
     acked, replied_to = _scan_acks_and_replies(transcript_path)
     handled = acked | replied_to
@@ -110,7 +82,6 @@ def fetch_and_filter_pending(
     for ask in asks:
         cid = ask.get("correlation_id", "")
         if cid in handled:
-            # Close on the daemon side so it doesn't keep showing up.
             # Closure requires a real ack() tool call — prose acks were
             # intentionally dropped because they trigger on accidental
             # mentions like "I'll do [ack #abc] later."
@@ -123,7 +94,6 @@ def fetch_and_filter_pending(
             continue
         pending.append(ask)
 
-    # Mark each as reminded so we don't nudge twice (once-only rule)
     for ask in pending:
         cid = ask.get("correlation_id", "")
         if cid:
@@ -132,7 +102,7 @@ def fetch_and_filter_pending(
                 {"correlation_id": cid},
             )
 
-    return pending, current_turn_seq
+    return pending
 
 
 def format_reminder_block(asks: list[dict[str, Any]]) -> str:

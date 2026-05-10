@@ -99,27 +99,11 @@ class MessageRouter:
         to_session_id: str,
         to_peer_name: str,
         text: str,
-        intent: str = "notify",
-        correlation_id: str | None = None,
-        reply_to: str | None = None,
     ) -> None:
-        """Send notification (fire-and-forget).
+        """Send a plain FYI notification (fire-and-forget, no lifecycle).
 
-        The wire shape is `type: notify` with an optional `intent` field.
-        intent="ask" carries a correlation_id the ws-hook pushes onto the
-        per-pane FIFO so the recipient's Stop hook can record pickup.
-        intent="notify" is a plain FYI (no lifecycle).
-        intent="ack_reply" is an ack-with-msg delivered back to the original
-        asker; the framing in `text` already identifies it.
-
-        Args:
-            from_peer: Display name of sender
-            to_session_id: Session ID of recipient
-            to_peer_name: Display name of recipient (for logging)
-            text: Notification text
-            intent: 'notify' (default), 'ask', or 'ack_reply'
-            correlation_id: Required when intent='ask'; ignored otherwise
-            reply_to: Optional prior corr_id this ask replies to
+        Wire shape: {type: notify, from_peer, text}. Use send_ask for
+        ask-lifecycle messages.
 
         Raises:
             TransportError: If send fails
@@ -128,15 +112,38 @@ class MessageRouter:
             "type": "notify",
             "from_peer": from_peer,
             "text": text,
-            "intent": intent,
         }
-        if correlation_id is not None:
-            message["correlation_id"] = correlation_id
+        await self._transport.send(to_session_id, message)
+        logger.info(f"Notification sent: {from_peer} -> {to_peer_name}")
+
+    async def send_ask(
+        self,
+        from_peer: str,
+        to_session_id: str,
+        to_peer_name: str,
+        correlation_id: str,
+        text: str,
+        reply_to: str | None = None,
+    ) -> None:
+        """Send a first-class ask wire message.
+
+        Wire shape: {type: ask, correlation_id, from_peer, text, reply_to?}.
+        The receiving transport must dispatch type=ask explicitly and POST
+        /asks/{cid}/picked_up after presenting the message to the agent.
+
+        Raises:
+            TransportError: If send fails
+        """
+        message: dict[str, Any] = {
+            "type": "ask",
+            "correlation_id": correlation_id,
+            "from_peer": from_peer,
+            "text": text,
+        }
         if reply_to is not None:
             message["reply_to"] = reply_to
-
         await self._transport.send(to_session_id, message)
-        logger.info(f"Notification sent ({intent}): {from_peer} -> {to_peer_name}")
+        logger.info(f"Ask sent: {from_peer} -> {to_peer_name} ({correlation_id[:8]})")
 
     async def send_broadcast_to(
         self,

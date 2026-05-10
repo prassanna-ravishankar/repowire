@@ -23,8 +23,9 @@ from repowire.config.models import AgentType
 from repowire.hooks._tmux import get_tmux_info
 from repowire.hooks.utils import (
     clear_pane_runtime_state,
+    daemon_post,
     get_display_name,
-    push_pending_cid,
+    push_query_cid,
     read_pane_runtime_metadata,
     write_pane_runtime_metadata,
 )
@@ -54,9 +55,17 @@ class PaneUnsafeError(RuntimeError):
     """Raised when the pane no longer belongs to the expected live agent."""
 
 
-def _push_pending_cid(pane_id: str, correlation_id: str) -> None:
-    """Append a correlation_id to the per-pane pickup FIFO."""
-    push_pending_cid(pane_id, correlation_id)
+def _push_query_cid(pane_id: str, correlation_id: str) -> None:
+    """Append a /query correlation_id to the per-pane FIFO."""
+    push_query_cid(pane_id, correlation_id)
+
+
+def _post_ask_picked_up(pane_id: str, correlation_id: str) -> None:
+    """Tell the daemon this ask was delivered; daemon snapshots turn_seq."""
+    daemon_post(
+        f"/asks/{correlation_id}/picked_up",
+        {"correlation_id": correlation_id, "pane_id": pane_id},
+    )
 
 
 def _tmux_send_keys(pane_id: str, text: str) -> bool:
@@ -301,10 +310,10 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
     msg_type = data.get("type")
 
     # Safety: verify agent is still running in the pane before injecting text
-    needs_safety = msg_type in ("query", "notify", "broadcast")
+    needs_safety = msg_type in ("query", "ask", "notify", "broadcast")
     if needs_safety and not await asyncio.to_thread(_is_pane_safe, pane_id):
         logger.warning(f"Pane {pane_id} not safe for injection, dropping {msg_type}")
-        if msg_type == "query" and websocket:
+        if msg_type in ("query", "ask") and websocket:
             correlation_id = data.get("correlation_id", "")
             try:
                 await websocket.send(
@@ -327,7 +336,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         try:
             if await asyncio.to_thread(_tmux_send_keys, pane_id, text):
                 # Track pending correlation_id for stop hook response delivery
-                _push_pending_cid(pane_id, correlation_id)
+                _push_query_cid(pane_id, correlation_id)
                 logger.info(f"Injected query from {from_peer}: {correlation_id[:8]}")
             else:
                 error_msg = f"Failed to send keys to pane {pane_id}"
@@ -362,24 +371,34 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
             if not await asyncio.to_thread(_is_pane_safe, pane_id):
                 raise PaneUnsafeError(str(e)) from e
 
+    elif msg_type == "ask":
+        # First-class ask: inject framed text, then POST pickup so the daemon
+        # can snapshot turn_seq for the grace-window check. No FIFO involved.
+        correlation_id = data.get("correlation_id", "")
+        from_peer = data.get("from_peer", "unknown")
+        text = data.get("text", "")
+        injected_text = f"@{from_peer} [ask #{correlation_id}]: {text}"
+        try:
+            if await asyncio.to_thread(_tmux_send_keys, pane_id, injected_text):
+                if correlation_id:
+                    await asyncio.to_thread(
+                        _post_ask_picked_up, pane_id, correlation_id,
+                    )
+                logger.info(
+                    f"Injected ask from {from_peer}: {correlation_id[:8]}",
+                )
+        except Exception as e:
+            logger.error(f"Failed to inject ask: {e}")
+
     elif msg_type == "notify":
-        # Wire-level notify can carry intent=ask (new ask-ack lifecycle),
-        # intent=ack_reply (closure of a thread we initiated), or intent=notify
-        # (plain FYI, no lifecycle). Only intent=ask pushes onto the per-pane
-        # FIFO so the recipient's Stop hook can record pickup at turn boundary.
+        # Plain FYI, no lifecycle.
         try:
             from_peer = data.get("from_peer", "unknown")
             text = data.get("text", "")
-            intent = data.get("intent", "notify")
-            correlation_id = data.get("correlation_id", "")
-            if intent == "ask":
-                injected_text = f"@{from_peer} [ask #{correlation_id}]: {text}"
-            else:
-                injected_text = f"@{from_peer}: {text}"
-            if await asyncio.to_thread(_tmux_send_keys, pane_id, injected_text):
-                if intent == "ask" and correlation_id:
-                    _push_pending_cid(pane_id, correlation_id)
-                logger.info(f"Injected notification ({intent}) from {from_peer}")
+            if await asyncio.to_thread(
+                _tmux_send_keys, pane_id, f"@{from_peer}: {text}",
+            ):
+                logger.info(f"Injected notification from {from_peer}")
         except Exception as e:
             logger.error(f"Failed to inject notification: {e}")
 

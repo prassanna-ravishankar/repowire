@@ -47,8 +47,9 @@ def _make_app(tmp_path: Path):
     )
     init_deps(cfg, registry, state)
 
-    # Stub the wire-level send so /ask doesn't fail on missing transport
+    # Stub the wire-level send so /ask and /ack don't fail on missing transport
     router.send_notification = AsyncMock()
+    router.send_ask = AsyncMock()
 
     app = FastAPI()
     app.include_router(peers.router)
@@ -189,46 +190,58 @@ class TestPickedUp:
             "from_peer": "alice", "to_peer": bob, "text": "?",
         })
         cid = r.json()["correlation_id"]
+        # Body no longer carries turn_seq; daemon snapshots its own counter.
         r = await client.post(f"/asks/{cid}/picked_up", json={
-            "correlation_id": cid, "turn_seq": 3,
+            "correlation_id": cid,
         })
         assert r.status_code == 200
         ask = await at.get(cid)
         assert ask.picked_up
-        assert ask.picked_up_turn_seq == 3
+        assert ask.picked_up_turn_seq == 0  # no /asks/pending called yet
 
 
 class TestPendingAsks:
     async def test_grace_window(self, env):
-        client, _, at = env
+        client, _, _ = env
         await _register_peer(client, "alice")
         bob = await _register_peer(client, "bob", pane_id="%50")
         r = await client.post("/ask", json={
             "from_peer": "alice", "to_peer": bob, "text": "?",
         })
         cid = r.json()["correlation_id"]
-        # Pickup at seq=1
-        await client.post(f"/asks/{cid}/picked_up", json={
-            "correlation_id": cid, "turn_seq": 1,
-        })
 
-        # Same-turn check: bumps to 1, picked_up_turn_seq=1, 1<1 false
+        # Transport-style pickup at delivery: snapshots turn_seq=0 (no
+        # /asks/pending has been called yet).
+        await client.post(f"/asks/{cid}/picked_up", json={"correlation_id": cid})
+
+        # First /asks/pending bumps counter to 1. picked_up_turn_seq=0 < 1 true.
         r = await client.get("/asks/pending?pane_id=%2550")
         assert r.status_code == 200
         body = r.json()
-        # Wait — first call bumps from 0 to 1; we already gave seq=1 to pickup,
-        # so 1 < 1 is false. Empty result.
-        # Actually pickup happened with seq=1 manually; first /asks/pending
-        # increments per-peer turn from 0 to 1. So filter is 1 < 1 = false.
-        assert body["asks"] == []
         assert body["current_turn_seq"] == 1
+        assert len(body["asks"]) == 1
+        assert body["asks"][0]["correlation_id"] == cid
 
-        # Next /asks/pending bumps to 2, 1 < 2 true, flagged
-        r = await client.get("/asks/pending?pane_id=%2550")
+    async def test_pickup_after_pending_not_flagged_same_cycle(self, env):
+        """Race case: /asks/pending bumps before pickup → same cycle skips."""
+        client, _, _ = env
+        await _register_peer(client, "alice")
+        bob = await _register_peer(client, "bob", pane_id="%51")
+        r = await client.post("/ask", json={
+            "from_peer": "alice", "to_peer": bob, "text": "?",
+        })
+        cid = r.json()["correlation_id"]
+        # Stop hook fires first: /asks/pending bumps to 1. Ask not picked up
+        # yet → empty result.
+        r = await client.get("/asks/pending?pane_id=%2551")
+        assert r.json()["asks"] == []
+        # Pickup arrives next: snapshots seq=1.
+        await client.post(f"/asks/{cid}/picked_up", json={"correlation_id": cid})
+        # Next Stop fire bumps to 2 → flagged.
+        r = await client.get("/asks/pending?pane_id=%2551")
         body = r.json()
         assert body["current_turn_seq"] == 2
         assert len(body["asks"]) == 1
-        assert body["asks"][0]["correlation_id"] == cid
 
     async def test_unknown_pane(self, env):
         client, _, _ = env

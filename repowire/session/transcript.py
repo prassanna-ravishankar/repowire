@@ -47,12 +47,12 @@ def extract_last_turn_pair(transcript_path: Path) -> tuple[str | None, str | Non
 
 
 def _iter_last_turn_tool_uses(transcript_path: Path) -> list[dict[str, Any]]:
-    """Return raw tool_use items from the last assistant turn, chronological order.
+    """Return raw tool_use items from the last turn, chronological order.
 
-    Walks backward from the end of the transcript, collecting tool_use
-    items from assistant entries. Stops at the first real user message,
-    skipping tool_result entries (which have type=user but aren't real
-    user prompts).
+    Handles both Claude shape (`{type:assistant,message:{content:[tool_use]}}`)
+    and Codex shape (`{type:response_item,payload:{type:function_call,name,arguments}}`).
+    Each entry is yielded as a normalized `{type:tool_use, name, input}` dict
+    where `input` is a parsed dict (Codex `arguments` are JSON-decoded).
     """
     if not transcript_path.exists():
         return []
@@ -68,6 +68,27 @@ def _iter_last_turn_tool_uses(transcript_path: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
 
+    if not entries:
+        return []
+
+    if _looks_like_codex(entries):
+        return _walk_codex(entries)
+    return _walk_claude(entries)
+
+
+def _looks_like_codex(entries: list[dict[str, Any]]) -> bool:
+    """Heuristic: codex transcripts have response_item entries; Claude has assistant/user."""
+    for entry in entries:
+        entry_type = entry.get("type")
+        if entry_type == "response_item":
+            return True
+        if entry_type in ("assistant", "user"):
+            return False
+    return False
+
+
+def _walk_claude(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Backward walk through Claude-style transcript for last-turn tool_uses."""
     items: list[dict[str, Any]] = []
     found_assistant = False
     for entry in reversed(entries):
@@ -89,7 +110,46 @@ def _iter_last_turn_tool_uses(transcript_path: Path) -> list[dict[str, Any]]:
         for item in content:
             if isinstance(item, dict) and item.get("type") == "tool_use":
                 items.append(item)
+    items.reverse()
+    return items
 
+
+def _walk_codex(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Backward walk through Codex-style transcript for last-turn function_calls.
+
+    Codex entries are flat `response_item`s. The turn boundary is the most
+    recent user message — Codex represents this as either:
+      - {payload: {type: "message", role: "user", ...}}        (real shape)
+      - {payload: {type: "user_message" | "user_input", ...}}  (variant)
+    We collect function_calls back to that boundary, ignoring intervening
+    assistant messages and tool outputs.
+    """
+    items: list[dict[str, Any]] = []
+    for entry in reversed(entries):
+        if entry.get("type") != "response_item":
+            continue
+        payload = entry.get("payload", {})
+        if not isinstance(payload, dict):
+            continue
+        payload_type = payload.get("type")
+        if payload_type in ("user_message", "user_input"):
+            break
+        if payload_type == "message" and payload.get("role") == "user":
+            break
+        if payload_type != "function_call":
+            continue
+        name = payload.get("name", "unknown")
+        args_raw = payload.get("arguments", {})
+        if isinstance(args_raw, str):
+            try:
+                args = json.loads(args_raw) if args_raw else {}
+            except json.JSONDecodeError:
+                args = {}
+        elif isinstance(args_raw, dict):
+            args = args_raw
+        else:
+            args = {}
+        items.append({"type": "tool_use", "name": name, "input": args})
     items.reverse()
     return items
 

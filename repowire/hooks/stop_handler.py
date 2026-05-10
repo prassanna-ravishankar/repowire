@@ -9,15 +9,11 @@ from pathlib import Path
 
 from repowire.hooks._tmux import get_pane_id
 from repowire.hooks.adapters import hook_output, normalize
-from repowire.hooks.ask_lifecycle import (
-    fetch_and_filter_pending,
-    format_reminder_block,
-    record_pickups,
-)
+from repowire.hooks.ask_lifecycle import fetch_and_filter_pending, format_reminder_block
 from repowire.hooks.utils import (
     daemon_post,
     get_display_name,
-    pop_pending_cid,
+    pop_query_cid,
     update_status,
     write_reminder_buffer,
 )
@@ -53,21 +49,8 @@ def main(backend: str = "claude-code") -> int:
 
     payload = normalize(input_data, backend)
 
-    # Mark peer as online when agent finishes processing
     peer_display = get_display_name()
     pane_id = get_pane_id()
-    if pane_id:
-        if not update_status(pane_id, "online", use_pane_id=True):
-            print(
-                f"repowire stop: failed to update status for pane {pane_id}",
-                file=sys.stderr,
-            )
-    else:
-        if not update_status(peer_display, "online"):
-            print(
-                f"repowire stop: failed to update status for {peer_display}",
-                file=sys.stderr,
-            )
 
     # Get response text: adapter extracts from agent-specific fields,
     # fall back to transcript parsing for Claude Code
@@ -95,29 +78,46 @@ def main(backend: str = "claude-code") -> int:
             peer_display, "assistant", assistant_text, tool_calls or None, pane_id=pane_id,
         )
 
-    # Deliver response to daemon for query resolution (legacy /query path).
-    # Pops the oldest cid; the daemon resolves it as a query future if one is
-    # pending, else falls through to the ask-tracker pickup path via the
-    # record_pickups call below for any other cids on the FIFO.
+    # Deliver response to daemon for legacy /query future resolution.
+    # The query FIFO is single-purpose (only /query cids land here), so this
+    # never collides with the ask-ack lifecycle.
     if pane_id and assistant_text:
         resp_payload: dict = {"pane_id": pane_id, "text": assistant_text}
-        cid = pop_pending_cid(pane_id)
+        cid = pop_query_cid(pane_id)
         if cid:
             resp_payload["correlation_id"] = cid
         daemon_post("/response", resp_payload)
 
-    # Ask-ack lifecycle: single fetch-and-share turn_seq (see record_pickups).
+    # Ask-ack reminder fetch MUST happen before update_status. update_status
+    # transitions the peer from BUSY to online, which drains the BUSY buffer
+    # in the daemon and triggers fresh ask deliveries. Those deliveries POST
+    # pickup at the daemon's current turn_seq. If we bumped turn_seq AFTER
+    # the drain, those pickups would snapshot N and the same Stop's pending
+    # poll would flag them (N<N+1) — same-turn reminder, exactly the bug
+    # we're trying to avoid. By bumping first, drained-asks snapshot N+1
+    # and don't become eligible until the NEXT Stop.
     if pane_id:
         transcript_path = (
             Path(payload.transcript_path).expanduser().resolve()
             if payload.transcript_path else None
         )
-        due, current_turn_seq = fetch_and_filter_pending(
-            pane_id, transcript_path, peer_display,
-        )
+        due = fetch_and_filter_pending(pane_id, transcript_path, peer_display)
         if due:
             write_reminder_buffer(pane_id, format_reminder_block(due))
-        record_pickups(pane_id, current_turn_seq)
+
+    # Mark peer online — drains BUSY buffer if any. Now safe re: above.
+    if pane_id:
+        if not update_status(pane_id, "online", use_pane_id=True):
+            print(
+                f"repowire stop: failed to update status for pane {pane_id}",
+                file=sys.stderr,
+            )
+    else:
+        if not update_status(peer_display, "online"):
+            print(
+                f"repowire stop: failed to update status for {peer_display}",
+                file=sys.stderr,
+            )
 
     hook_output(backend)
     return 0

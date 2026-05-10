@@ -73,15 +73,23 @@ function connectDaemon(mcp: Server): void {
     }
 
     // Deliver message to Claude via channel notification
-    if (msg.type === "query" || msg.type === "notify" || msg.type === "broadcast") {
+    if (
+      msg.type === "query" ||
+      msg.type === "ask" ||
+      msg.type === "notify" ||
+      msg.type === "broadcast"
+    ) {
       const meta: Record<string, string> = {
         from_peer: msg.from_peer ?? "unknown",
         msg_type: msg.type,
       };
 
-      if (msg.type === "query" && msg.correlation_id) {
+      if ((msg.type === "query" || msg.type === "ask") && msg.correlation_id) {
         meta.correlation_id = msg.correlation_id;
         pendingCorrelations.set(msg.correlation_id, msg.from_peer);
+      }
+      if (msg.type === "ask" && msg.reply_to) {
+        meta.reply_to = msg.reply_to;
       }
 
       await mcp.notification({
@@ -91,6 +99,30 @@ function connectDaemon(mcp: Server): void {
           meta,
         },
       });
+
+      // Transport-side pickup: tell the daemon this ask was delivered so it
+      // can snapshot turn_seq for the grace-window check. Channel uses HTTP
+      // base URL (DAEMON_URL is a WebSocket-flavored value).
+      if (msg.type === "ask" && msg.correlation_id) {
+        const httpUrl = DAEMON_URL.replace("ws://", "http://").replace(
+          "wss://",
+          "https://"
+        );
+        try {
+          await fetch(
+            `${httpUrl}/asks/${encodeURIComponent(msg.correlation_id)}/picked_up`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ correlation_id: msg.correlation_id }),
+            }
+          );
+        } catch (e) {
+          console.error(
+            `repowire: failed to post ask pickup for ${msg.correlation_id}: ${e}`
+          );
+        }
+      }
     }
   });
 
@@ -172,6 +204,7 @@ const mcp = new Server(
     instructions: [
       "Repowire mesh messages arrive as <channel source=\"repowire\" from_peer=\"...\" msg_type=\"...\">.",
       "For queries (msg_type=\"query\"), reply using the reply tool with the correlation_id from the tag.",
+      "For asks (msg_type=\"ask\"), the tag carries correlation_id. Use the ack tool: ack(correlation_id) for bare close, ack(correlation_id, message) to deliver a reply to the original asker.",
       "For notifications (msg_type=\"notify\"), act on them directly.",
       "Messages from @dashboard or @telegram are from the human user — treat as direct instructions.",
       peerContext,

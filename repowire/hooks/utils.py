@@ -51,21 +51,19 @@ def get_display_name() -> str:
     return Path.cwd().name
 
 
-def pending_cid_path(pane_id: str | None) -> Path:
-    """Path to the pending correlation_id file for a pane."""
-    return pane_logs_dir() / f"pending-{get_pane_file(pane_id)}.json"
+def pending_query_cid_path(pane_id: str | None) -> Path:
+    """Path to the pending /query correlation_id file for a pane.
+
+    Single-purpose: only legacy /query cids land here. Ask cids are handled
+    transport-side (POST /asks/{cid}/picked_up) and never use a FIFO.
+    """
+    return pane_logs_dir() / f"pending-query-{get_pane_file(pane_id)}.json"
 
 
 @contextmanager
-def _locked_pending_cids(pane_id: str) -> Iterator[list[str]]:
-    """Yield the parsed pending-cid list under flock; persist on clean exit.
-
-    Mutate the yielded list in place — the wrapper writes it back when the
-    block exits. Read errors degrade to an empty list. Single shared
-    implementation for push, pop, and pop-all so the three call sites can't
-    drift on flock semantics.
-    """
-    path = pending_cid_path(pane_id)
+def _locked_query_cids(pane_id: str) -> Iterator[list[str]]:
+    """Yield the parsed pending-query-cid list under flock; persist on clean exit."""
+    path = pending_query_cid_path(pane_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
     with open(lock_path, "w") as lock_file:
@@ -83,26 +81,18 @@ def _locked_pending_cids(pane_id: str) -> Iterator[list[str]]:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
-def push_pending_cid(pane_id: str, correlation_id: str) -> None:
-    """Append a correlation_id to the pane's pickup FIFO under flock."""
-    with _locked_pending_cids(pane_id) as pending:
+def push_query_cid(pane_id: str, correlation_id: str) -> None:
+    """Append a /query correlation_id to the per-pane FIFO under flock."""
+    with _locked_query_cids(pane_id) as pending:
         pending.append(correlation_id)
 
 
-def pop_pending_cid(pane_id: str) -> str | None:
-    """Pop the oldest correlation_id from the pane's FIFO under flock."""
-    with _locked_pending_cids(pane_id) as pending:
+def pop_query_cid(pane_id: str) -> str | None:
+    """Pop the oldest /query correlation_id from the per-pane FIFO under flock."""
+    with _locked_query_cids(pane_id) as pending:
         if not pending:
             return None
         return pending.pop(0)
-
-
-def pop_all_pending_cids(pane_id: str) -> list[str]:
-    """Drain the pane's FIFO under flock. Returns popped corr_ids in order."""
-    with _locked_pending_cids(pane_id) as pending:
-        drained = list(pending)
-        pending.clear()
-        return drained
 
 
 def pane_logs_dir() -> Path:
@@ -198,11 +188,11 @@ def write_reminder_buffer(pane_id: str | None, text: str) -> None:
 
 
 def clear_pending_cids(pane_id: str | None) -> None:
-    """Remove any queued correlation IDs for a pane."""
+    """Remove any queued /query correlation IDs for a pane."""
     if not pane_id:
         return
 
-    pending_path = pending_cid_path(pane_id)
+    pending_path = pending_query_cid_path(pane_id)
     lock_path = pending_path.with_suffix(pending_path.suffix + ".lock")
     for path in (pending_path, lock_path):
         with suppress(OSError):

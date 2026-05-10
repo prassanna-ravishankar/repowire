@@ -734,12 +734,11 @@ class PeerRegistry:
         bypass_circle: bool = False,
         circle: str | None = None,
     ) -> None:
-        """Inject an ask to a peer (non-blocking lifecycle).
+        """Inject an ask to a peer as a first-class type=ask wire message.
 
-        Wire-level this is a notify with intent="ask" + correlation_id so the
-        recipient's ws-hook pushes the corr_id onto the per-pane FIFO. BUSY
-        recipients get the ask buffered and drained on idle, same path as
-        regular notifies.
+        BUSY recipients get the ask buffered and drained on idle. Pickup is
+        always the recipient transport's job — never daemon-side — so this
+        method only writes the wire frame.
         """
         async with self._lock:
             peer = self._lookup_peer_unlocked(to_peer, circle=circle)
@@ -752,10 +751,9 @@ class PeerRegistry:
             queued = self._enqueue_if_busy_unlocked(
                 peer,
                 {
-                    "kind": "notify",
+                    "kind": "ask",
                     "from_peer": from_peer,
                     "text": text,
-                    "intent": "ask",
                     "correlation_id": correlation_id,
                     "reply_to": reply_to,
                 },
@@ -775,13 +773,12 @@ class PeerRegistry:
         if queued:
             return
 
-        await self._router.send_notification(
+        await self._router.send_ask(
             from_peer=from_peer,
             to_session_id=peer_id,
             to_peer_name=peer_name,
-            text=text,
-            intent="ask",
             correlation_id=correlation_id,
+            text=text,
             reply_to=reply_to,
         )
 
@@ -927,8 +924,16 @@ class PeerRegistry:
                         to_session_id=peer_id,
                         to_peer_name=peer_name,
                         text=msg["text"],
-                        intent=msg.get("intent", "notify"),
-                        correlation_id=msg.get("correlation_id"),
+                    )
+                elif msg["kind"] == "ask":
+                    # Pickup remains the recipient transport's job; flushing
+                    # only writes the wire frame.
+                    await self._router.send_ask(
+                        from_peer=msg["from_peer"],
+                        to_session_id=peer_id,
+                        to_peer_name=peer_name,
+                        correlation_id=msg["correlation_id"],
+                        text=msg["text"],
                         reply_to=msg.get("reply_to"),
                     )
                 elif msg["kind"] == "broadcast":

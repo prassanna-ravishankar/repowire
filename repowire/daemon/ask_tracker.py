@@ -98,11 +98,15 @@ class AskTracker:
             logger.debug("Registered ask %s: %s -> %s", cid, from_peer_name, to_peer_name)
             return cid
 
-    async def mark_picked_up(self, correlation_id: str, turn_seq: int) -> bool:
+    async def mark_picked_up(self, correlation_id: str) -> bool:
         """Mark an ask as picked up by the recipient.
 
-        Idempotent — the first call sticks; subsequent calls are no-ops so
-        replays from a duplicated FIFO entry can't shift the grace window.
+        Snapshots the recipient's current turn_seq atomically (under the same
+        lock that increment_turn uses). Clients don't supply turn_seq — they
+        only signal "delivered." This keeps the grace-window math daemon-owned.
+
+        Idempotent — first call sticks; later calls are no-ops so replays
+        can't shift the grace window.
         """
         async with self._lock:
             ask = self._asks.get(correlation_id)
@@ -110,7 +114,7 @@ class AskTracker:
                 return False
             ask.picked_up = True
             ask.picked_up_at = datetime.now(timezone.utc)
-            ask.picked_up_turn_seq = turn_seq
+            ask.picked_up_turn_seq = self._turn_seq.get(ask.to_peer_id, 0)
             return True
 
     async def mark_reminded(self, correlation_id: str) -> bool:

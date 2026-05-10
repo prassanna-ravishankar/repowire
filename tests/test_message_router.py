@@ -104,3 +104,37 @@ class TestBroadcast:
         transport.send.side_effect = fail_second
         sent = await router.broadcast("sender", "hello")
         assert len(sent) == 1
+
+
+class TestSendAsk:
+    async def test_wire_shape(self, router, transport):
+        await router.send_ask(
+            from_peer="alice",
+            to_session_id="sid-bob",
+            to_peer_name="bob",
+            correlation_id="ask-abc",
+            text="ping?",
+        )
+        transport.send.assert_called_once()
+        sid, msg = transport.send.call_args[0]
+        assert sid == "sid-bob"
+        assert msg["type"] == "ask"
+        assert msg["correlation_id"] == "ask-abc"
+        assert msg["from_peer"] == "alice"
+        assert msg["text"] == "ping?"
+        # No intent field — it's a first-class type
+        assert "intent" not in msg
+        # No reply_to when not supplied
+        assert "reply_to" not in msg
+
+    async def test_includes_reply_to(self, router, transport):
+        await router.send_ask(
+            from_peer="alice",
+            to_session_id="sid-bob",
+            to_peer_name="bob",
+            correlation_id="ask-new",
+            text="follow-up",
+            reply_to="ask-prior",
+        )
+        msg = transport.send.call_args[0][1]
+        assert msg["reply_to"] == "ask-prior"

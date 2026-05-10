@@ -236,7 +236,7 @@ class TestSessionMain:
                 "peer_id": "repow-default-old12345",
             }))
             (log_dir / "ws-hook-1.pid").write_text("99999")
-            (log_dir / "pending-1.json").write_text(json.dumps(["stale-cid"]))
+            (log_dir / "pending-query-1.json").write_text(json.dumps(["stale-cid"]))
 
             with patch("repowire.hooks.session_handler.fcntl") as mock_fcntl, \
                  patch("repowire.hooks.session_handler.os.kill") as mock_kill, \
@@ -258,4 +258,4 @@ class TestSessionMain:
                 assert result == 0
                 mock_kill.assert_called_once_with(99999, signal.SIGTERM)
                 mock_register.assert_called_once()
-                assert not (log_dir / "pending-1.json").exists()
+                assert not (log_dir / "pending-query-1.json").exists()
