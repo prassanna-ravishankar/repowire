@@ -117,13 +117,13 @@ def main(backend: str = "claude-code") -> int:
             )
 
     if reminder_text and backend == "claude-code":
-        # Claude Code reads hookSpecificOutput.additionalContext on Stop and
-        # wraps it as a system reminder in the next model request.
+        # Stop hook supports decision=block to keep Claude generating with
+        # `reason` as continuation context. stop_hook_active=true on the
+        # follow-up Stop prevents an infinite loop: we early-returned for
+        # that case at the top of main().
         print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "Stop",
-                "additionalContext": reminder_text,
-            }
+            "decision": "block",
+            "reason": reminder_text,
         }))
         return 0
 
