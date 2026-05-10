@@ -28,7 +28,6 @@ const BARE_ACK_TIMEOUT_MS = 120_000;
 
 export function ComposeBar({ peer, apiBase, events, onSent }: ComposeBarProps) {
   const [text, setText] = useState("");
-  const [mode, setMode] = useState<"notify" | "ask">("notify");
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingAsks, setPendingAsks] = useState<PendingAsk[]>([]);
@@ -131,52 +130,34 @@ export function ComposeBar({ peer, apiBase, events, onSent }: ComposeBarProps) {
         msg = msg ? `${msg}\n[Attachment: ${path}]` : `[Attachment: ${path}]`;
       }
 
-      const body = JSON.stringify({
-        from_peer: "dashboard",
-        to_peer: peer.name,
-        text: msg + hint,
-        bypass_circle: true,
+      const res = await fetch(`${apiBase}/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from_peer: "dashboard",
+          to_peer: peer.name,
+          text: msg + hint,
+          bypass_circle: true,
+        }),
       });
-
-      if (mode === "notify") {
-        const res = await fetch(`${apiBase}/notify`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body,
-        });
-        if (!res.ok) {
-          const errBody = await res.json().catch(() => ({}));
-          setError(errBody.detail || `Error ${res.status}`);
-        } else {
-          setText("");
-          setFile(null);
-          if (onSent) setTimeout(onSent, 1000);
-        }
-      } else {
-        const res = await fetch(`${apiBase}/ask`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body,
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.error) {
-          setError(data.error || data.detail || `Error ${res.status}`);
-        } else if (data.correlation_id) {
-          const preview = msg.length > 60 ? msg.slice(0, 60) + "…" : msg;
-          setPendingAsks((prev) => [
-            ...prev,
-            {
-              correlation_id: data.correlation_id,
-              to_peer: peer.name,
-              preview,
-              sent_at: Date.now(),
-              state: "pending",
-            },
-          ]);
-          setText("");
-          setFile(null);
-          if (onSent) setTimeout(onSent, 1000);
-        }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        setError(data.error || data.detail || `Error ${res.status}`);
+      } else if (data.correlation_id) {
+        const preview = msg.length > 60 ? msg.slice(0, 60) + "…" : msg;
+        setPendingAsks((prev) => [
+          ...prev,
+          {
+            correlation_id: data.correlation_id,
+            to_peer: peer.name,
+            preview,
+            sent_at: Date.now(),
+            state: "pending",
+          },
+        ]);
+        setText("");
+        setFile(null);
+        if (onSent) setTimeout(onSent, 1000);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Request failed");
@@ -195,29 +176,10 @@ export function ComposeBar({ peer, apiBase, events, onSent }: ComposeBarProps) {
   return (
     <div className="shrink-0 px-4 pb-4">
       <div className="bg-surface-container-low/95 backdrop-blur-xl border border-outline-variant/30 rounded-xl p-3 shadow-2xl">
-        {/* Mode toggle + scope */}
+        {/* Scope label */}
         <div className="flex items-center gap-2 mb-3">
-          <div className="flex bg-surface-container-lowest p-1 rounded-lg border border-outline-variant/10">
-            {(["notify", "ask"] as const).map((m) => (
-              <button
-                key={m}
-                onClick={() => setMode(m)}
-                aria-label={`${m} mode`}
-                aria-pressed={mode === m}
-                className={cn(
-                  "px-3 py-1 text-[9px] font-bold uppercase tracking-wider rounded transition-colors",
-                  mode === m
-                    ? "bg-cyan-400 text-on-primary-fixed-variant"
-                    : "text-slate-500 hover:text-slate-300"
-                )}
-              >
-                {m === "notify" ? "Notify" : "Ask"}
-              </button>
-            ))}
-          </div>
-          <div className="h-4 w-[1px] bg-outline-variant/30 mx-1" />
           <span className="text-[9px] font-mono text-outline uppercase tracking-tighter">
-            → {peerLabel(peer)}
+            ask → {peerLabel(peer)}
           </span>
         </div>
 
@@ -262,7 +224,7 @@ export function ComposeBar({ peer, apiBase, events, onSent }: ComposeBarProps) {
           <button
             onClick={submit}
             disabled={(!text.trim() && !file) || isPending}
-            aria-label={mode === "notify" ? "Send message" : "Ask peer"}
+            aria-label="Ask peer"
             aria-busy={isPending}
             className={cn(
               "w-11 h-11 rounded-lg flex items-center justify-center shadow-lg active:scale-90 transition-transform shrink-0",
