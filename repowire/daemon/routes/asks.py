@@ -252,7 +252,7 @@ async def mark_reminded(
     """Deprecated no-op kept for hook-compat during one release.
 
     Old Stop hooks POSTed here after writing the once-only reminder. Under
-    the simplified model open asks are reminded every turn until acked.
+    the simplified model open asks reappear in every Stop poll until acked.
     """
     return OkResponse()
 

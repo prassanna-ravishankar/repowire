@@ -1,8 +1,11 @@
 """Stop-hook reminder logic for the ask/ack lifecycle.
 
 Each Stop hook polls the daemon for open asks targeting this peer and
-renders them as a reminder block for the next prompt. Open asks are
-nagged every turn until acked — no once-only flag, no grace window.
+renders them as a reminder block for the next prompt. Backstop only —
+the original ask was already pasted into the terminal by ws-hook when
+the WS frame arrived. The reminder catches missed asks and asks the
+agent hasn't yet acked. Open asks reappear in every Stop poll until
+acked — no once-only flag, no grace window.
 
 Client-side filter drops cids the agent already acked/replied to via
 tool calls in the just-completed turn (their MCP ack call is in flight

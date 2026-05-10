@@ -391,7 +391,10 @@ def create_mcp_server() -> FastMCP:
         else:
             parts.append("Broadcast sent to: no peers online")
         if failed:
-            failures = ", ".join(f"{f.get('peer', '?')} ({f.get('error', 'unknown')})" for f in failed)
+            failures = ", ".join(
+                f"{f.get('peer', '?')} ({f.get('error', 'unknown')})"
+                for f in failed
+            )
             parts.append(f"Failed: {failures}")
         return "; ".join(parts)
 

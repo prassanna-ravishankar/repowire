@@ -8,7 +8,7 @@ wire frame on receipt, and the ask is closed when the recipient either:
   - calls `ack(corr_id, msg)` — close with reply content delivered to asker
   - calls `ask(reply_to=corr_id, ...)` — opens a new thread + closes this one
 
-Open asks targeting a peer are surfaced every Stop hook turn via
+Open asks targeting a peer are surfaced on every Stop hook poll via
 `/asks/pending`, so an agent that hasn't acked will be reminded on every
 subsequent turn until they do. Reply delivery is handled by the
 notification pipeline (framed `[ack #cid from @peer] msg`).
@@ -119,7 +119,7 @@ class AskTracker:
         """Return open asks targeting this peer, newest first, capped at max_results.
 
         Lazy-repair: opportunistically evicts TTL-expired asks at most once
-        per _EVICTION_INTERVAL_SECONDS. Stop hooks call this on every turn,
+        per _EVICTION_INTERVAL_SECONDS. Stop hooks call this on each response,
         so the dict gets swept regularly without a background timer.
         """
         await self._maybe_evict_expired()

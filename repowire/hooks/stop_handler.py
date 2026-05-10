@@ -90,7 +90,9 @@ def main(backend: str = "claude-code") -> int:
 
     # Ask-ack reminder: poll daemon for open asks targeting this peer and
     # write them to the per-pane reminder buffer for the next prompt to
-    # inject. Open asks are surfaced every turn until acked.
+    # inject. Backstop only — ws-hook already pasted the original ask into
+    # the terminal; this catches the case where the agent missed it or
+    # hasn't acked yet.
     if pane_id:
         transcript_path = (
             Path(payload.transcript_path).expanduser().resolve()
