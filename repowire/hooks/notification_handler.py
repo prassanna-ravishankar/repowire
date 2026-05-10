@@ -12,7 +12,7 @@ import json
 import sys
 
 from repowire.hooks._tmux import get_pane_id
-from repowire.hooks.utils import consume_reminder_buffer, update_status
+from repowire.hooks.utils import update_status
 
 
 def main() -> int:
@@ -37,21 +37,6 @@ def main() -> int:
                 f"repowire notification: failed to update status for pane {pane_id}",
                 file=sys.stderr,
             )
-
-        # Idle is the secondary injection path for ask-ack reminders. If the
-        # agent has gone idle (no follow-up user prompt) but has un-acked
-        # asks, surface the reminder via additionalContext so it lands the
-        # next time the agent does anything. Notification hooks support the
-        # same hookSpecificOutput shape as UserPromptSubmit on Claude Code.
-        reminder = consume_reminder_buffer(pane_id)
-        if reminder:
-            print(json.dumps({
-                "hookSpecificOutput": {
-                    "hookEventName": "Notification",
-                    "additionalContext": reminder,
-                }
-            }))
-            return 0
 
     return 0
 

@@ -8,7 +8,7 @@ import sys
 
 from repowire.hooks._tmux import get_pane_id
 from repowire.hooks.adapters import hook_output, normalize
-from repowire.hooks.utils import consume_reminder_buffer, update_status
+from repowire.hooks.utils import update_status
 
 
 def main(backend: str = "claude-code") -> int:
@@ -31,22 +31,6 @@ def main(backend: str = "claude-code") -> int:
                 f"repowire prompt: failed to update status for pane {pane_id}",
                 file=sys.stderr,
             )
-
-    # Ask-ack reminder injection: surface any open asks the previous Stop
-    # hook found for this peer as additionalContext at the start of this
-    # turn. Buffer is consumed (deleted) on read; the next Stop will re-fetch
-    # if asks are still open.
-    reminder = consume_reminder_buffer(pane_id) if pane_id else None
-    if reminder and backend == "claude-code":
-        # Claude Code reads hookSpecificOutput.additionalContext on
-        # UserPromptSubmit and prepends it to the agent's context for the turn.
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "UserPromptSubmit",
-                "additionalContext": reminder,
-            }
-        }))
-        return 0
 
     hook_output(backend)
     return 0

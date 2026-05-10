@@ -15,7 +15,6 @@ from repowire.hooks.utils import (
     get_display_name,
     pop_query_cid,
     update_status,
-    write_reminder_buffer,
 )
 from repowire.session.transcript import extract_last_turn_pair, extract_last_turn_tool_calls
 
@@ -88,11 +87,12 @@ def main(backend: str = "claude-code") -> int:
             resp_payload["correlation_id"] = cid
         daemon_post("/response", resp_payload)
 
-    # Ask-ack reminder: poll daemon for open asks targeting this peer and
-    # write them to the per-pane reminder buffer for the next prompt to
-    # inject. Backstop only — ws-hook already pasted the original ask into
-    # the terminal; this catches the case where the agent missed it or
-    # hasn't acked yet.
+    # Ask-ack reminder: poll daemon for open asks targeting this peer.
+    # Backstop only — ws-hook already pasted the original ask into the
+    # terminal; this catches missed/un-acked asks on every Stop fire.
+    # Surface via Stop's additionalContext so it lands directly in the next
+    # turn without a separate UserPromptSubmit consumer or buffer file.
+    reminder_text: str | None = None
     if pane_id:
         transcript_path = (
             Path(payload.transcript_path).expanduser().resolve()
@@ -100,7 +100,7 @@ def main(backend: str = "claude-code") -> int:
         )
         due = fetch_and_filter_pending(pane_id, transcript_path)
         if due:
-            write_reminder_buffer(pane_id, format_reminder_block(due))
+            reminder_text = format_reminder_block(due)
 
     # Mark peer online.
     if pane_id:
@@ -115,6 +115,17 @@ def main(backend: str = "claude-code") -> int:
                 f"repowire stop: failed to update status for {peer_display}",
                 file=sys.stderr,
             )
+
+    if reminder_text and backend == "claude-code":
+        # Claude Code reads hookSpecificOutput.additionalContext on Stop and
+        # wraps it as a system reminder in the next model request.
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "Stop",
+                "additionalContext": reminder_text,
+            }
+        }))
+        return 0
 
     hook_output(backend)
     return 0
