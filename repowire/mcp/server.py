@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
@@ -14,14 +13,7 @@ from mcp.server.fastmcp import FastMCP
 
 from repowire.config.models import DEFAULT_DAEMON_URL
 from repowire.hooks._tmux import get_pane_id, get_tmux_info
-from repowire.hooks.utils import (
-    get_display_name,
-    pane_logs_dir,
-    read_pane_runtime_metadata,
-    write_pane_runtime_metadata,
-    ws_hook_lock_path,
-    ws_hook_pid_path,
-)
+from repowire.hooks.utils import get_display_name, read_pane_runtime_metadata
 from repowire.protocol.errors import DaemonConnectionError, DaemonHTTPError, DaemonTimeoutError
 from repowire.spawn_hints import consume_hint
 
@@ -184,13 +176,8 @@ async def _ensure_registered(*, strict: bool = False) -> None:
 
     # Tmux env is stripped by codex's MCP sandbox, so session_name is None
     # there. Fall back to the spawn hint dropped by the daemon's /spawn route
-    # before defaulting to "default". The hint may also carry the tmux pane_id
-    # captured at spawn time -- the only anchor a codex MCP subprocess has to
-    # the pane that owns it, since codex strips TMUX/TMUX_PANE here.
-    hint = consume_hint(str(cwd), backend)
-    circle = tmux_info["session_name"] or (hint.circle if hint else None) or "default"
-    hint_pane_id = hint.pane_id if hint else None
-    effective_pane_id = pane_id or hint_pane_id
+    # before defaulting to "default".
+    circle = tmux_info["session_name"] or consume_hint(str(cwd), backend) or "default"
 
     try:
         body: dict = {
@@ -199,147 +186,16 @@ async def _ensure_registered(*, strict: bool = False) -> None:
             "circle": circle,
             "backend": backend,
         }
-        if effective_pane_id:
-            body["pane_id"] = effective_pane_id
+        if pane_id:
+            body["pane_id"] = pane_id
         result = await daemon_request("POST", "/peers", body)
         # Cache the daemon-assigned name
         assigned = result.get("display_name")
-        peer_id = result.get("peer_id")
         if assigned:
             _cached_peer_name = assigned
         _registered = True
     except Exception:
-        return  # Best-effort -- daemon may be down
-
-    # Codex MCP subprocesses don't fire SessionStart at startup, so without
-    # this we'd register a peer that has no inbound websocket transport.
-    # Spawn the ws-hook ourselves when the spawn hint anchored us to a pane.
-    if backend == "codex" and hint_pane_id and assigned:
-        _spawn_ws_hook_for_pane(
-            pane_id=hint_pane_id,
-            display_name=assigned,
-            peer_id=peer_id,
-            backend=backend,
-            cwd=str(cwd),
-        )
-
-
-def _spawn_ws_hook_for_pane(
-    *,
-    pane_id: str,
-    display_name: str,
-    peer_id: str | None,
-    backend: str,
-    cwd: str,
-) -> None:
-    """Spawn the websocket_hook subprocess for a codex pane.
-
-    Mirrors the SessionStart-driven path in session_handler.py but anchors on
-    the pane_id recovered from the spawn hint, since codex strips tmux env
-    from the MCP subprocess. Idempotent via flock: a later SessionStart that
-    fires when the user finally prompts will see the lock held and either
-    treat us as the same live session or take over cleanly.
-    """
-    import fcntl
-    import subprocess
-
-    from repowire.hooks import session_handler  # local import to avoid cycle
-
-    log_dir = pane_logs_dir()
-    pane_file = pane_id.replace("%", "") or "unknown"
-    lock_path = ws_hook_lock_path(pane_id)
-    pid_path = ws_hook_pid_path(pane_id)
-
-    try:
-        lock_fd = open(lock_path, "w")
-    except OSError as e:
-        logger.warning("ws-hook spawn: cannot open lock for %s: %s", pane_id, e)
-        return
-
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        # Another process owns this pane already (a real SessionStart, or an
-        # earlier MCP eager spawn). Trust it and bail.
-        lock_fd.close()
-        return
-
-    write_pane_runtime_metadata(
-        pane_id,
-        {
-            "backend": backend,
-            "cwd": cwd,
-            "display_name": display_name,
-            "hook_session_id": "",  # filled by SessionStart if it fires later
-            "peer_id": peer_id,
-        },
-    )
-
-    hook_script = Path(session_handler.__file__).parent / "websocket_hook.py"
-    if not hook_script.exists():
-        lock_fd.close()
-        return
-
-    log_file = open(log_dir / f"ws-hook-{pane_file}.log", "w")
-    try:
-        env = os.environ.copy()
-        env["REPOWIRE_DISPLAY_NAME"] = display_name
-        if peer_id:
-            env["REPOWIRE_PEER_ID"] = peer_id
-        env["REPOWIRE_BACKEND"] = backend
-        # Codex strips TMUX/TMUX_PANE from the MCP subprocess. Reinject them
-        # so the ws-hook can reach tmux for inbound message injection.
-        env["TMUX_PANE"] = pane_id
-        env.setdefault("TMUX", _discover_tmux_env(pane_id) or "")
-        try:
-            proc = subprocess.Popen(
-                [sys.executable, str(hook_script)],
-                stdout=log_file,
-                stderr=log_file,
-                start_new_session=True,
-                cwd=cwd,
-                env=env,
-                pass_fds=(lock_fd.fileno(),),
-            )
-            pid_path.write_text(str(proc.pid))
-        except OSError as e:
-            logger.warning("ws-hook spawn failed for %s: %s", pane_id, e)
-    finally:
-        log_file.close()
-        lock_fd.close()  # child inherits flock; parent releases fd
-
-
-def _discover_tmux_env(pane_id: str) -> str | None:
-    """Find the TMUX env value (socket,pid,session) for a pane.
-
-    Used when spawning the ws-hook from the codex MCP subprocess, which has
-    TMUX stripped. Without TMUX set, the hook's `tmux` shell-outs would
-    target the wrong server. Returns None if we can't discover it (no tmux
-    binary, no matching pane); the caller falls back to an empty string.
-    """
-    import shutil
-    import subprocess
-
-    if not shutil.which("tmux"):
-        return None
-    try:
-        result = subprocess.run(
-            ["tmux", "display-message", "-t", pane_id, "-p",
-             "#{socket_path},#{pid},#{session_id}"],
-            capture_output=True, text=True, timeout=3,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-    raw = result.stdout.strip()
-    if not raw or "," not in raw:
-        return None
-    socket_path, pid, session_id = raw.split(",", 2)
-    # tmux's TMUX env format is "socket_path,pid,session_index". session_id is
-    # like "$3" -- strip the leading "$" to get the index.
-    sid = session_id.lstrip("$")
-    return f"{socket_path},{pid},{sid}"
+        pass  # Best-effort -- daemon may be down
 
 
 def create_mcp_server() -> FastMCP:
@@ -602,12 +458,4 @@ def create_mcp_server() -> FastMCP:
 async def run_mcp_server() -> None:
     """Run the MCP server."""
     mcp = create_mcp_server()
-    # Eager-register at startup so peers whose SessionStart hook fires lazily
-    # (codex: only on first user prompt) appear in the daemon registry as soon
-    # as their MCP subprocess is alive. Idempotent for runtimes whose hook
-    # already ran -- _ensure_registered short-circuits on a fast GET.
-    try:
-        await _ensure_registered()
-    except Exception as e:
-        logger.debug("Eager MCP registration failed (non-fatal): %s", e)
     await mcp.run_stdio_async()
