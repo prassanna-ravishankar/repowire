@@ -73,7 +73,7 @@ Both sessions auto-register as peers and discover each other. In project-a:
 "Ask project-b what API endpoints they expose"
 ```
 
-The agent calls `ask_peer`, project-b receives the question, responds, and the answer comes back. Works across Claude Code, Codex, Gemini CLI, and OpenCode in any mix.
+The agent calls `ask`, project-b receives the question and acks back with `ack(corr_id, "...")`. The reply lands in project-a as a notification framed `[ack #cid from @project-b] ...`. Works across Claude Code, Codex, Gemini CLI, and OpenCode in any mix.
 
 Or use the CLI helper to spawn sessions in tmux:
 
@@ -91,8 +91,9 @@ All peers connect to a central daemon via **WebSocket**. The daemon routes addre
 </p>
 
 **Message types:**
-- `ask_peer` - request/response with correlation ID (blocks until answer, 300s timeout)
-- `notify_peer` - fire-and-forget (no response expected)
+- `ask` - non-blocking. Returns a correlation_id immediately; the recipient closes the thread with `ack(corr_id)` (bare close, "seen, no action") or `ack(corr_id, message)` (close with reply, delivered to the asker as a notification framed `[ack #cid from @peer] message`). Chain follow-ups with `ask(reply_to=corr_id, ...)`.
+- `ack` - close an open ask thread. Bare or with a reply message.
+- `notify_peer` - fire-and-forget (no lifecycle, no response expected)
 - `broadcast` - fan-out to all peers in your circle
 
 **Circles** are logical subnets (mapped to tmux sessions). Peers can only communicate within their circle unless explicitly bypassed.
@@ -133,7 +134,7 @@ repowire setup --experimental-channels
 <details>
 <summary>Multi-repo coordination</summary>
 
-Agents in different repos ask each other questions in real time. Project-a needs to know project-b's API shape? `ask_peer("project-b", "what endpoints do you expose?")` gets a live answer from the actual codebase, not stale docs.
+Agents in different repos ask each other questions in real time. Project-a needs to know project-b's API shape? `ask("project-b", "what endpoints do you expose?")` opens a thread; project-b replies with `ack(corr_id, "POST /users, GET /users/:id, ...")` and project-a sees a live answer from the actual codebase, not stale docs.
 </details>
 
 <details>
@@ -219,15 +220,20 @@ repowire telegram start
 | Tool | Type | Description |
 |------|------|-------------|
 | `list_peers` | Query | List all peers with status, circle, path, description |
-| `ask_peer` | Blocking | Send a question and wait for the response |
-| `notify_peer` | Fire-and-forget | Send a notification. Peer can `notify_peer` back when ready |
+| `ask` | Non-blocking | Open a thread. Returns a correlation_id immediately. Optional `reply_to=cid` chains a follow-up that closes the prior thread |
+| `ack` | Close | Close an open ask thread. Bare `ack(cid)` is "seen, no action"; `ack(cid, message)` delivers a reply to the asker |
+| `notify_peer` | Fire-and-forget | Send a notification (no lifecycle, no reply tracking) |
 | `broadcast` | Fire-and-forget | Message all online peers in your circle |
 | `whoami` | Query | Your own peer identity |
 | `set_description` | Mutation | Update your task description, visible to all peers and the dashboard |
 | `spawn_peer` | Mutation | Spawn a new agent session (requires [allowlist config](#configuration)) |
 | `kill_peer` | Mutation | Kill a previously spawned session |
 
-`list_peers` and `whoami` return TSV (more token-efficient than JSON). For long-running requests, prefer `notify_peer` over `ask_peer`.
+`list_peers` and `whoami` return TSV (more token-efficient than JSON).
+
+If an agent picks up an ask but doesn't ack/reply within one full turn, repowire injects a reminder block at the start of the next prompt (capped to 3 most-recent, once-only). Tool-call detection is the source of truth — prose `[ack #cid]` mentions don't close anything, only a real `ack()` call does.
+
+The legacy `ask_peer` (blocking, request/response) is removed in this release. The legacy `/query` + `/response` HTTP endpoints remain as compatibility shims for the telegram bot and CLI; they will be removed in v0.13.
 
 ## CLI Reference
 

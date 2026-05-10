@@ -76,10 +76,10 @@ git push origin your-branch-name
 
 | Module | What it does |
 |---|---|
-| `daemon/` | Central routing hub: peer registry, message router, query tracker, HTTP routes |
-| `hooks/` | Default agent transport (Claude, Codex, Gemini): session, stop, prompt, notification handlers |
+| `daemon/` | Central routing hub: peer registry, message router, ask tracker (non-blocking ask lifecycle), legacy query tracker, HTTP routes |
+| `hooks/` | Default agent transport (Claude, Codex, Gemini): session, stop, prompt, notification handlers + ask-pickup transport reporter |
 | `channel/server.ts` | Experimental MCP stdio transport (requires bun) |
-| `mcp/server.py` | MCP tools: `list_peers`, `ask_peer`, `notify_peer`, etc. |
+| `mcp/server.py` | MCP tools: `list_peers`, `ask`, `ack`, `notify_peer`, `broadcast`, etc. |
 | `relay/server.py` | Hosted relay at repowire.io (WS bridge + HTTP tunnel) |
 | `telegram/bot.py` | Telegram bot peer for mobile mesh control |
 | `slack/bot.py` | Slack bot peer via Socket Mode |

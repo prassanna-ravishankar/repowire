@@ -56,10 +56,12 @@ The daemon is the single routing hub. It doesn't care how a peer connects — al
 
 - `channel/server.ts` — **experimental** Claude Code transport: MCP channel with reply tool, permission relay
 - `daemon/peer_registry.py` — peer state, circle access, events, lazy_repair, ghost eviction
-- `daemon/message_router.py` — routes queries/notifications/broadcasts via WebSocket
-- `daemon/query_tracker.py` — correlation ID tracking, asyncio Futures (async-locked)
-- `daemon/routes/` — HTTP endpoints (peers, messages, websocket, spawn, health)
-- `mcp/server.py` — MCP tools (list_peers, ask_peer, notify_peer, etc.)
+- `daemon/message_router.py` — sends `type=ask` / `notify` / `broadcast` over WebSocket; legacy `send_query` for /query shim
+- `daemon/ask_tracker.py` — non-blocking ask lifecycle (register/pickup/close/reminders, daemon-owned turn_seq under lock)
+- `daemon/query_tracker.py` — legacy /query correlation ID tracking, asyncio Futures (async-locked)
+- `daemon/routes/asks.py` — `/ask`, `/ack`, `/asks/{cid}/picked_up`, `/asks/pending`, `/asks/{cid}/mark_reminded`
+- `daemon/routes/` — other HTTP endpoints (peers, messages, websocket, spawn, health)
+- `mcp/server.py` — MCP tools (list_peers, ask, ack, notify_peer, broadcast, whoami, set_description, spawn_peer, kill_peer)
 - `relay/server.py` — hosted relay at repowire.io (WS bridge + HTTP tunnel)
 - `telegram/bot.py` — mobile mesh control via Telegram inline buttons
 - `hooks/` — **default** Claude Code transport (session, stop, prompt, notification, websocket_hook)
@@ -71,18 +73,24 @@ The daemon is the single routing hub. It doesn't care how a peer connects — al
 
 ```
 Claude Code → hooks → websocket_hook.py ←WebSocket→ Daemon
-             → stop hook → transcript parse → HTTP /response
+             → stop hook → transcript parse → HTTP /response (legacy /query)
+                                            → /asks/pending  (reminder fetch)
 ```
 
 - **SessionStart** → registers peer, spawns ws-hook (flock dedup), injects peer context
-- **Stop** → extracts response + tool calls from transcript, posts chat turns, delivers responses
-- **UserPromptSubmit** → marks BUSY
-- **Notification** (idle_prompt) → resets ONLINE
+- **Stop** →
+  1. extracts response + tool calls from transcript, posts chat turns
+  2. delivers legacy /query response (single-purpose `pending-query-{pane}.json` FIFO)
+  3. fetches `/asks/pending` (bumps daemon turn_seq) and writes any due reminders to `reminder-{pane}.txt`
+  4. then `update_status(online)` (drains BUSY-buffered asks; deferred until after the bump so drained-asks snapshot N+1 and aren't reminded same-turn)
+- **UserPromptSubmit** → marks BUSY, consumes `reminder-{pane}.txt` and emits as `additionalContext`
+- **Notification** (idle_prompt) → resets ONLINE; also consumes the reminder buffer as a fallback path
+- **ws-hook** → on `type=ask` arrival, injects `[ask #cid]` framed text and POSTs `/asks/{cid}/picked_up` directly (transport-side pickup; daemon snapshots turn_seq under lock)
 
 In channel mode, only the Stop hook is kept (for dashboard chat_turn events).
 `install_hooks(channel_mode=True)` installs only the Stop hook when using channel transport.
 
-Key files: `session_handler.py`, `stop_handler.py`, `prompt_handler.py`, `notification_handler.py`, `websocket_hook.py`, `utils.py`
+Key files: `session_handler.py`, `stop_handler.py`, `prompt_handler.py`, `notification_handler.py`, `websocket_hook.py`, `ask_lifecycle.py`, `utils.py`
 
 ### Hook Adapter (`hooks/adapters.py`)
 
@@ -113,7 +121,8 @@ Claude Code <stdio> channel/server.ts <WebSocket> Daemon
 ```
 
 - Messages arrive as `<channel source="repowire" from_peer="..." msg_type="...">` tags
-- Queries include `correlation_id` - Claude calls the `reply` tool to respond
+- Queries (legacy /query shim) include `correlation_id` — Claude calls the `reply` tool to respond
+- Asks (`msg_type=ask`) include `correlation_id` (and optional `reply_to`) — Claude calls the `ack(correlation_id, message?)` tool to close. Channel server POSTs `/asks/{cid}/picked_up` after dispatch so the daemon can snapshot turn_seq for the grace window.
 - Permission relay: forwards tool approval prompts to Telegram/dashboard
 - Requires claude.ai login (not API/Console key), Claude Code v2.1.80+, bun runtime
 - Opt-in only: `repowire setup --experimental-channels`
