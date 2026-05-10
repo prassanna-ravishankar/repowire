@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from repowire.hooks.utils import daemon_get, daemon_post, pop_all_pending_cids
 from repowire.session.transcript import extract_last_turn_raw_tool_calls
@@ -94,7 +95,7 @@ def fetch_and_filter_pending(
     apply the additional client-side filter for "this turn already
     handled it" because that's the only thing visible from the transcript.
     """
-    result = daemon_get(f"/asks/pending?pane_id={pane_id}")
+    result = daemon_get(f"/asks/pending?pane_id={quote(pane_id, safe='')}")
     if not result:
         return [], 0
     current_turn_seq = result.get("current_turn_seq", 0)
