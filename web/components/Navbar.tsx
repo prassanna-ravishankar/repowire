@@ -1,43 +1,33 @@
-import Link from 'next/link';
-import Image from 'next/image';
-import { Github } from 'lucide-react';
+import Link from "next/link";
+import Image from "next/image";
+import { Github } from "lucide-react";
 
 export default function Navbar() {
   return (
-    <nav className="fixed top-0 w-full z-50 bg-white/80 dark:bg-black/80 backdrop-blur-md border-b border-gray-200 dark:border-gray-800">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex justify-between h-16 items-center">
-          <div className="flex-shrink-0 flex items-center gap-2">
-            <Link href="/" className="flex items-center gap-2">
-              <div className="relative w-8 h-8">
-                <Image
-                  src="/logo-light.webp"
-                  alt="Repowire Logo"
-                  fill
-                  sizes="32px"
-                  className="object-contain dark:hidden"
-                />
-                <Image
-                  src="/logo-dark.webp"
-                  alt="Repowire Logo"
-                  fill
-                  sizes="32px"
-                  className="object-contain hidden dark:block"
-                />
-              </div>
-              <span className="font-bold text-xl tracking-tight">Repowire</span>
-            </Link>
-          </div>
-          <div className="flex items-center gap-4">
-            <Link 
-              href="https://github.com/prassanna-ravishankar/repowire"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white transition-colors"
-            >
-              <Github className="w-5 h-5" />
-            </Link>
-          </div>
+    <nav className="fixed top-0 z-50 w-full border-b border-border-faint mesh-panel">
+      <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+        <Link href="/" className="flex items-center gap-3">
+          <Image src="/brand/logo-mark-copper.svg" alt="" width={24} height={26} priority />
+          <span className="font-headline text-sm font-bold uppercase tracking-[0.2em] text-on-surface">
+            REPOWIRE
+          </span>
+        </Link>
+        <div className="flex items-center gap-4">
+          <Link
+            href="/dashboard"
+            className="hidden font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-outline transition-colors hover:text-primary-fixed sm:inline"
+          >
+            Dashboard
+          </Link>
+          <Link
+            href="https://github.com/prassanna-ravishankar/repowire"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-outline transition-colors hover:text-on-surface"
+          >
+            <span className="sr-only">GitHub</span>
+            <Github className="h-5 w-5" />
+          </Link>
         </div>
       </div>
     </nav>

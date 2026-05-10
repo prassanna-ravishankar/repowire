@@ -2,174 +2,234 @@
 @plugin "@tailwindcss/typography";
 
 @theme inline {
-  /* Surface hierarchy */
-  --color-surface: #10131a;
-  --color-surface-dim: #10131a;
-  --color-surface-bright: #363940;
-  --color-surface-container-lowest: #0b0e14;
-  --color-surface-container-low: #191c22;
-  --color-surface-container: #1d2026;
-  --color-surface-container-high: #272a31;
-  --color-surface-container-highest: #32353c;
-  --color-surface-variant: #32353c;
-  --color-surface-tint: #00daf3;
-  --color-background: #10131a;
+  /* Warm ink surfaces */
+  --color-surface: #0f0e0c;
+  --color-surface-dim: #0a0907;
+  --color-surface-bright: #3a3629;
+  --color-surface-container-lowest: #0a0907;
+  --color-surface-container-low: #15140f;
+  --color-surface-container: #1c1a14;
+  --color-surface-container-high: #232017;
+  --color-surface-container-highest: #2c2920;
+  --color-surface-variant: #3a3629;
+  --color-surface-tint: #c77b3d;
+  --color-background: #0f0e0c;
 
-  /* Primary (cyan) */
-  --color-primary: #c3f5ff;
-  --color-primary-container: #00e5ff;
-  --color-primary-fixed: #9cf0ff;
-  --color-primary-fixed-dim: #00daf3;
-  --color-on-primary: #00363d;
-  --color-on-primary-container: #00626e;
-  --color-on-primary-fixed: #001f24;
-  --color-on-primary-fixed-variant: #004f58;
+  /* Brand: copper wire */
+  --color-primary: #c77b3d;
+  --color-primary-container: #e09f53;
+  --color-primary-fixed: #ecbb83;
+  --color-primary-fixed-dim: #d18a3d;
+  --color-on-primary: #18120a;
+  --color-on-primary-container: #18120a;
+  --color-on-primary-fixed: #18120a;
+  --color-on-primary-fixed-variant: #3a210f;
 
-  /* Secondary (neon green) */
-  --color-secondary: #d7ffc5;
-  --color-secondary-container: #2ff801;
-  --color-secondary-fixed: #79ff5b;
-  --color-secondary-fixed-dim: #2ae500;
-  --color-on-secondary: #053900;
-  --color-on-secondary-container: #0f6d00;
-  --color-on-secondary-fixed: #022100;
-  --color-on-secondary-fixed-variant: #095300;
+  /* Status */
+  --color-secondary: #b6e04a;
+  --color-secondary-container: #6f8a2a;
+  --color-secondary-fixed: #b6e04a;
+  --color-secondary-fixed-dim: #6f8a2a;
+  --color-on-secondary: #182006;
+  --color-on-secondary-container: #eef9c8;
+  --color-on-secondary-fixed: #182006;
+  --color-on-secondary-fixed-variant: #2b360e;
 
-  /* Tertiary (amber) */
-  --color-tertiary: #ffe9cd;
-  --color-tertiary-container: #ffc769;
-  --color-tertiary-fixed: #ffdeac;
-  --color-tertiary-fixed-dim: #ffba38;
-  --color-on-tertiary: #432c00;
-  --color-on-tertiary-container: #775200;
-  --color-on-tertiary-fixed: #281900;
-  --color-on-tertiary-fixed-variant: #604100;
+  --color-tertiary: #f0b548;
+  --color-tertiary-container: #a87b22;
+  --color-tertiary-fixed: #f0b548;
+  --color-tertiary-fixed-dim: #f0b548;
+  --color-on-tertiary: #2a1a02;
+  --color-on-tertiary-container: #fff0c8;
+  --color-on-tertiary-fixed: #2a1a02;
+  --color-on-tertiary-fixed-variant: #4d3308;
 
-  /* Error */
-  --color-error: #ffb4ab;
-  --color-error-container: #93000a;
-  --color-on-error: #690005;
-  --color-on-error-container: #ffdad6;
+  /* Accent and errors */
+  --color-accent: #5ba3f5;
+  --color-error: #d5503a;
+  --color-error-container: #872d1c;
+  --color-on-error: #fff1ed;
+  --color-on-error-container: #ffe0d8;
 
-  /* Text & outline */
-  --color-on-surface: #e1e2eb;
-  --color-on-surface-variant: #bac9cc;
-  --color-on-background: #e1e2eb;
-  --color-outline: #849396;
-  --color-outline-variant: #3b494c;
+  /* Text and outlines */
+  --color-on-surface: #ece7d4;
+  --color-on-surface-variant: #b6b1a0;
+  --color-on-background: #ece7d4;
+  --color-outline: #908b7a;
+  --color-outline-variant: #4f4a3b;
+  --color-border: #2c2920;
+  --color-border-strong: #3a3629;
+  --color-border-faint: #2a271e;
 
-  /* Inverse */
-  --color-inverse-surface: #e1e2eb;
-  --color-inverse-on-surface: #2e3037;
-  --color-inverse-primary: #006875;
+  /* Light paper aliases for marketing bands */
+  --color-paper: #f7f2e7;
+  --color-paper-raised: #faf8f1;
+  --color-paper-hover: #ece6d4;
+  --color-ink: #1a1812;
 
   /* Fonts */
-  --font-headline: var(--font-space-grotesk), "Space Grotesk", sans-serif;
-  --font-body: var(--font-inter), "Inter", sans-serif;
-  --font-mono: var(--font-jetbrains-mono), "JetBrains Mono", monospace;
+  --font-headline: var(--font-jetbrains-mono), "JetBrains Mono", monospace;
+  --font-body: var(--font-ibm-plex-sans), "IBM Plex Sans", system-ui, sans-serif;
+  --font-label: var(--font-ibm-plex-sans), "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), "JetBrains Mono", ui-monospace, monospace;
 
-  /* Sharp border radius */
-  --radius-sm: 0.0625rem;
-  --radius: 0.125rem;
+  /* Sharp radii */
+  --radius-sm: 0.125rem;
+  --radius: 0.25rem;
   --radius-md: 0.25rem;
   --radius-lg: 0.375rem;
-  --radius-xl: 0.5rem;
-  --radius-2xl: 0.75rem;
+  --radius-xl: 0.625rem;
+  --radius-2xl: 0.625rem;
 }
 
+:root {
+  --ink-1000: #0a0907;
+  --ink-950: #0f0e0c;
+  --ink-900: #15140f;
+  --ink-850: #1c1a14;
+  --ink-800: #232017;
+  --ink-700: #2c2920;
+  --ink-600: #3a3629;
+  --ink-500: #4f4a3b;
+  --ink-400: #6e6a5b;
+  --ink-300: #908b7a;
+  --ink-200: #b6b1a0;
+  --ink-100: #d8d3c1;
+  --ink-50: #ece7d4;
+  --bone-50: #faf8f1;
+  --bone-100: #f7f2e7;
+  --bone-200: #ece6d4;
+  --bone-300: #ddd5be;
+  --copper-300: #e09f53;
+  --copper-500: #c77b3d;
+  --copper-700: #874d27;
+  --copper-800: #5e361b;
+  --signal-300: #5ba3f5;
+  --online: #b6e04a;
+  --busy: #f0b548;
+  --offline: #5c5f66;
+  --error: #d5503a;
+  --border: #2c2920;
+  --border-faint: #2a271e;
+  --border-strong: #3a3629;
+  --fg-1: #ece7d4;
+  --fg-2: #d8d3c1;
+  --fg-3: #b6b1a0;
+  --fg-4: #908b7a;
+  --fg-5: #6e6a5b;
+  --glow-copper: 0 0 0 1px rgba(199, 123, 61, 0.4), 0 0 24px -4px rgba(199, 123, 61, 0.35);
+  --glow-online: 0 0 0 1px rgba(182, 224, 74, 0.35), 0 0 16px -4px rgba(182, 224, 74, 0.4);
+  --glow-busy: 0 0 12px -2px rgba(240, 181, 72, 0.5);
+  --shadow-1: 0 1px 0 0 rgba(199, 123, 61, 0.05) inset, 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 2px 0 0 rgba(0, 0, 0, 0.4), 0 6px 20px -8px rgba(0, 0, 0, 0.6);
+  --shadow-3: 0 24px 48px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(199, 123, 61, 0.06) inset;
+  --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+
+html,
 body {
-  background: var(--color-background);
-  color: var(--color-on-surface);
+  background: var(--ink-950);
+  color: var(--fg-2);
   font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Mesh grid background */
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+::selection {
+  background: rgba(199, 123, 61, 0.28);
+  color: var(--fg-1);
+}
+
 .mesh-bg {
-  background-image: radial-gradient(
-    circle at 2px 2px,
-    rgba(59, 73, 76, 0.05) 1px,
-    transparent 0
-  );
-  background-size: 24px 24px;
+  background-image: radial-gradient(circle at 2px 2px, rgba(199, 123, 61, 0.11) 1px, transparent 0);
+  background-size: 22px 22px;
 }
 
-/* Glassmorphism panel */
-.glass-panel {
-  background: rgba(50, 53, 60, 0.6);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+.mesh-panel {
+  background: rgba(15, 14, 12, 0.8);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
-/* Online pulse animation */
 .pulse-online {
-  box-shadow: 0 0 0 0 rgba(121, 255, 91, 0.4);
-  animation: pulse-ring 1.5s infinite;
+  box-shadow: 0 0 0 0 rgba(182, 224, 74, 0.4);
+  animation: pulse-ring 1.6s infinite;
 }
 
 @keyframes pulse-ring {
   0% {
-    transform: scale(0.95);
-    box-shadow: 0 0 0 0 rgba(121, 255, 91, 0.7);
+    box-shadow: 0 0 0 0 rgba(182, 224, 74, 0.55);
   }
   70% {
-    transform: scale(1);
-    box-shadow: 0 0 0 10px rgba(121, 255, 91, 0);
+    box-shadow: 0 0 0 9px rgba(182, 224, 74, 0);
   }
   100% {
-    transform: scale(0.95);
-    box-shadow: 0 0 0 0 rgba(121, 255, 91, 0);
+    box-shadow: 0 0 0 0 rgba(182, 224, 74, 0);
   }
 }
 
-/* Busy static glow */
 .glow-busy {
-  box-shadow: 0 0 8px rgba(255, 186, 56, 0.5);
+  box-shadow: var(--glow-busy);
 }
 
-/* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 4px;
 }
+
 ::-webkit-scrollbar-track {
-  background: #10131a;
-}
-::-webkit-scrollbar-thumb {
-  background: #3b494c;
-  border-radius: 2px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #00e5ff;
+  background: var(--ink-1000);
 }
 
-/* Material Symbols */
+::-webkit-scrollbar-thumb {
+  background: var(--ink-600);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--copper-700);
+}
+
 .material-symbols-outlined {
   font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
 }
 
-/* Prose overrides for dark terminal aesthetic */
-.prose ul {
-  list-style-type: disc;
-  padding-left: 1.5rem;
-  margin: 0.5rem 0;
+.prose {
+  color: var(--fg-2);
 }
 
-.prose ol {
-  list-style-type: decimal;
-  padding-left: 1.5rem;
-  margin: 0.5rem 0;
+.prose :where(a):not(:where([class~="not-prose"] *)) {
+  color: var(--copper-300);
 }
 
-.prose li {
-  margin: 0.25rem 0;
+.prose :where(strong):not(:where([class~="not-prose"] *)) {
+  color: var(--fg-1);
 }
 
-.prose pre {
-  background: #0b0e14;
-  border: 1px solid rgba(59, 73, 76, 0.2);
+.prose :where(pre):not(:where([class~="not-prose"] *)) {
+  background: var(--ink-1000);
+  border: 1px solid var(--border-faint);
+  border-radius: 4px;
 }
 
-.prose code {
-  color: #9cf0ff;
+.prose :where(code):not(:where([class~="not-prose"] *)) {
+  color: var(--copper-200, #ecbb83);
 }
 
 .prose p {
@@ -177,15 +237,31 @@ body {
   margin-bottom: 0.25rem;
 }
 
-.prose th {
-  background: #191c22;
+.prose ul {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin: 0.5rem 0;
 }
 
-.prose td,
-.prose th {
-  border-color: rgba(59, 73, 76, 0.3);
+.prose ol {
+  list-style-type: decimal;
+  padding-left: 1.25rem;
+  margin: 0.5rem 0;
+}
+
+.prose li {
+  margin: 0.2rem 0;
 }
 
 .prose table {
   border-collapse: collapse;
+}
+
+.prose th,
+.prose td {
+  border-color: rgba(79, 74, 59, 0.45);
+}
+
+.prose th {
+  background: var(--ink-900);
 }

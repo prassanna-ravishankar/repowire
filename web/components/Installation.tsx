@@ -1,56 +1,56 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { Check, Copy } from 'lucide-react';
+import { Check, Copy } from "lucide-react";
+import { useState } from "react";
 
 export default function Installation() {
   const [copied, setCopied] = useState(false);
 
   const copyToClipboard = () => {
-    navigator.clipboard.writeText('uv tool install repowire');
+    navigator.clipboard.writeText("uv tool install repowire");
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   return (
-    <div id="installation" className="bg-gray-50 dark:bg-gray-900 py-16 sm:py-24">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-        <h2 className="text-3xl font-extrabold text-gray-900 dark:text-white sm:text-4xl mb-4">
-          Get Started in Seconds
-        </h2>
-        <p className="text-xl text-gray-500 dark:text-gray-400 mb-8">
-          Install with pip or uv. Requires macOS/Linux and Python 3.10+.
+    <section id="installation" className="border-b border-border-faint bg-surface py-20 sm:py-24">
+      <div className="mx-auto max-w-7xl px-4 text-center sm:px-6 lg:px-8">
+        <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
+          Install
         </p>
-        
-        <div className="max-w-2xl mx-auto relative rounded-lg bg-gray-800 p-4 shadow-2xl">
-          <div className="flex items-center justify-between font-mono text-sm sm:text-base text-gray-300">
-            <div className="flex items-center">
-              <span className="text-green-400 mr-2">$</span>
-              <span>uv tool install repowire</span>
+        <h2 className="mt-3 font-headline text-3xl font-bold text-on-surface sm:text-4xl">
+          Start the mesh locally
+        </h2>
+        <p className="mx-auto mt-4 max-w-2xl text-lg leading-8 text-on-surface-variant">
+          Install with uv. Repowire supports macOS/Linux and Python 3.10+.
+        </p>
+
+        <div className="mx-auto mt-8 max-w-2xl border border-border-faint bg-surface-container-low p-4 text-left shadow-[var(--shadow-2)]">
+          <div className="flex items-center justify-between gap-4 font-mono text-sm text-on-surface">
+            <div className="flex min-w-0 items-center">
+              <span className="mr-2 text-primary">$</span>
+              <span className="truncate">uv tool install repowire</span>
             </div>
             <button
               onClick={copyToClipboard}
-              className="ml-4 p-2 rounded-md hover:bg-gray-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="rounded p-2 text-outline transition-colors hover:bg-surface-container-high hover:text-on-surface focus:outline-none focus:ring-1 focus:ring-primary"
               aria-label="Copy to clipboard"
             >
-              {copied ? (
-                <Check className="w-5 h-5 text-green-400" />
-              ) : (
-                <Copy className="w-5 h-5 text-gray-400" />
-              )}
+              {copied ? <Check className="h-5 w-5 text-secondary" /> : <Copy className="h-5 w-5" />}
             </button>
           </div>
         </div>
 
-        <div className="mt-8 text-sm text-gray-500">
-          <p>
-            Alternatively: <code>pip install repowire</code>
-          </p>
+        <div className="mt-8 font-mono text-xs leading-6 text-outline">
+          <p>Alternative: <code className="text-primary-fixed">pip install repowire</code></p>
           <p className="mt-2">
-            See the <a href="https://github.com/prassanna-ravishankar/repowire" className="text-blue-500 hover:underline">documentation</a> for full setup instructions.
+            Full setup lives in the{" "}
+            <a href="https://github.com/prassanna-ravishankar/repowire" className="text-primary-fixed hover:underline">
+              repository documentation
+            </a>.
           </p>
         </div>
       </div>
-    </div>
+    </section>
   );
 }

@@ -1,4 +1,5 @@
 __pycache__/
+.DS_Store
 *.pyc
 *.pyo
 .venv/
@@ -11,6 +12,7 @@ build/
 .pytest_cache/
 .repowire/
 ui/
+repowire-design-system/
 
 # Debug artifacts
 .gemini-clipboard/

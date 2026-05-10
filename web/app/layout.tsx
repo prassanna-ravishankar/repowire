@@ -1,23 +1,27 @@
 import type { Metadata, Viewport } from "next";
-import { Space_Grotesk, Inter, JetBrains_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
-const spaceGrotesk = Space_Grotesk({
-  variable: "--font-space-grotesk",
-  subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
+const ibmPlexSans = localFont({
+  variable: "--font-ibm-plex-sans",
+  display: "swap",
+  src: [
+    { path: "./fonts/IBMPlexSans-Regular.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/IBMPlexSans-Medium.woff2", weight: "500", style: "normal" },
+    { path: "./fonts/IBMPlexSans-SemiBold.woff2", weight: "600", style: "normal" },
+    { path: "./fonts/IBMPlexSans-Bold.woff2", weight: "700", style: "normal" },
+  ],
 });
 
-const inter = Inter({
-  variable: "--font-inter",
-  subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
-});
-
-const jetbrainsMono = JetBrains_Mono({
+const jetbrainsMono = localFont({
   variable: "--font-jetbrains-mono",
-  subsets: ["latin"],
-  weight: ["400", "500"],
+  display: "swap",
+  src: [
+    { path: "./fonts/JetBrainsMono-Regular.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/JetBrainsMono-Medium.woff2", weight: "500", style: "normal" },
+    { path: "./fonts/JetBrainsMono-Medium.woff2", weight: "600", style: "normal" },
+    { path: "./fonts/JetBrainsMono-Bold.woff2", weight: "700", style: "normal" },
+  ],
 });
 
 export const viewport: Viewport = {
@@ -38,14 +42,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="dark">
-      <head>
-        <link
-          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
-          rel="stylesheet"
-        />
-      </head>
       <body
-        className={`${spaceGrotesk.variable} ${inter.variable} ${jetbrainsMono.variable} antialiased`}
+        className={`${ibmPlexSans.variable} ${jetbrainsMono.variable} antialiased`}
       >
         {children}
       </body>

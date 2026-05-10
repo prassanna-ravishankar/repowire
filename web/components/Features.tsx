@@ -1,70 +1,64 @@
-import { Share2, Zap, Server, Shield, Network, RefreshCw } from 'lucide-react';
+import { Network, RefreshCw, Server, Share2, Shield, Zap } from "lucide-react";
 
 const features = [
   {
-    name: 'Sync Communication',
-    description: 'Real-time messaging between active coding sessions. No stale context or manual updates.',
+    name: "Sync communication",
+    description: "Message active coding sessions without pasting context between terminals.",
     icon: Zap,
   },
   {
-    name: 'Multi-Repo Context',
-    description: 'Ask questions about code in other repositories without leaving your current session.',
+    name: "Multi-repo context",
+    description: "Ask questions about code in another repository without leaving the current session.",
     icon: Share2,
   },
   {
-    name: 'Tmux Integration',
-    description: 'Seamlessly integrates with tmux to manage and discover active Claude sessions.',
+    name: "Tmux integration",
+    description: "Discover sessions, inject asks, and capture responses through the default hooks transport.",
     icon: Server,
   },
   {
-    name: 'Daemon Architecture',
-    description: 'Central daemon manages peer discovery and routing, running as a robust system service.',
+    name: "Daemon routing",
+    description: "A local FastAPI daemon keeps peer state and routes asks, notifications, and broadcasts.",
     icon: Network,
   },
   {
-    name: 'Secure & Local',
-    description: 'All communication happens locally on your machine by default. No data leaves your network.',
+    name: "Local by default",
+    description: "Communication stays on your machine unless you explicitly enable relay mode.",
     icon: Shield,
   },
   {
-    name: 'Auto-Discovery',
-    description: 'Sessions automatically find each other. Just start Claude in a repo and it joins the mesh.',
+    name: "Lazy repair",
+    description: "No polling loops. Liveness and persistence work happens when the mesh is already active.",
     icon: RefreshCw,
   },
 ];
 
 export default function Features() {
   return (
-    <div className="py-24 bg-gray-50 dark:bg-gray-900 transition-colors">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="lg:text-center">
-          <h2 className="text-base text-blue-600 font-semibold tracking-wide uppercase">Features</h2>
-          <p className="mt-2 text-3xl leading-8 font-extrabold tracking-tight text-gray-900 dark:text-white sm:text-4xl">
-            A better way to manage context
+    <section className="border-b border-border-faint bg-surface py-20 sm:py-24">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="max-w-2xl">
+          <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
+            Features
           </p>
-          <p className="mt-4 max-w-2xl text-xl text-gray-500 dark:text-gray-400 lg:mx-auto">
-            Repowire bridges the gap between isolated AI sessions, creating a collaborative mesh of intelligence for your entire codebase.
+          <h2 className="mt-3 font-headline text-3xl font-bold text-on-surface sm:text-4xl">
+            Built for live agent work
+          </h2>
+          <p className="mt-4 text-lg leading-8 text-on-surface-variant">
+            Repowire sits between isolated agent sessions and gives them a shared routing layer.
           </p>
         </div>
 
-        <div className="mt-20">
-          <dl className="space-y-10 md:space-y-0 md:grid md:grid-cols-2 md:gap-x-8 md:gap-y-10">
-            {features.map((feature) => (
-              <div key={feature.name} className="relative">
-                <dt>
-                  <div className="absolute flex items-center justify-center h-12 w-12 rounded-md bg-blue-500 text-white">
-                    <feature.icon className="h-6 w-6" aria-hidden="true" />
-                  </div>
-                  <p className="ml-16 text-lg leading-6 font-medium text-gray-900 dark:text-white">{feature.name}</p>
-                </dt>
-                <dd className="mt-2 ml-16 text-base text-gray-500 dark:text-gray-400">
-                  {feature.description}
-                </dd>
-              </div>
-            ))}
-          </dl>
+        <div className="mt-12 grid gap-px overflow-hidden border border-border-faint bg-border-faint md:grid-cols-2 lg:grid-cols-3">
+          {features.map((feature) => (
+            <div key={feature.name} className="bg-surface-container-low p-6 transition-colors hover:bg-surface-container">
+              <feature.icon className="h-5 w-5 text-primary" aria-hidden="true" />
+              <h3 className="mt-5 font-headline text-base font-semibold text-on-surface">{feature.name}</h3>
+              <p className="mt-3 text-sm leading-6 text-on-surface-variant">{feature.description}</p>
+            </div>
+          ))}
         </div>
       </div>
-    </div>
+    </section>
   );
 }
