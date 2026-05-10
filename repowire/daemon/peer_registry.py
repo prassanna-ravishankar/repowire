@@ -25,6 +25,7 @@ from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus
 
 if TYPE_CHECKING:
+    from repowire.daemon.ask_tracker import AskTracker
     from repowire.daemon.message_router import MessageRouter
     from repowire.daemon.query_tracker import QueryTracker
     from repowire.daemon.websocket_transport import WebSocketTransport
@@ -74,11 +75,13 @@ class PeerRegistry:
         query_tracker: QueryTracker | None = None,
         transport: WebSocketTransport | None = None,
         persistence_path: Path | None = None,
+        ask_tracker: AskTracker | None = None,
     ) -> None:
         self._config = config
         self._router = message_router
         self._query_tracker = query_tracker
         self._transport = transport
+        self._ask_tracker = ask_tracker
 
         # Peer registry: peer_id -> Peer (single source of truth)
         self._peers: dict[str, Peer] = {}
@@ -1227,6 +1230,9 @@ class PeerRegistry:
             if stale:
                 self._mappings_dirty = True
                 logger.info("evicted %d stale offline peers", len(stale))
+        if stale and self._ask_tracker is not None:
+            for pid in stale:
+                await self._ask_tracker.forget_peer(pid)
         return len(stale)
 
     async def active_repair(self) -> None:

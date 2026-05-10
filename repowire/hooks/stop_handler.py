@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import json
 import sys
 from pathlib import Path
@@ -18,36 +17,11 @@ from repowire.hooks.ask_lifecycle import (
 from repowire.hooks.utils import (
     daemon_post,
     get_display_name,
-    pending_cid_path,
+    pop_pending_cid,
     update_status,
     write_reminder_buffer,
 )
 from repowire.session.transcript import extract_last_turn_pair, extract_last_turn_tool_calls
-
-
-def _pop_pending_cid(pane_id: str) -> str | None:
-    """Pop the oldest pending correlation_id for a pane, if any.
-
-    Uses flock to prevent race with websocket_hook's _push_pending_cid.
-    """
-    path = pending_cid_path(pane_id)
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    try:
-        with open(lock_path, "w") as lock_file:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
-            try:
-                if not path.exists():
-                    return None
-                pending = json.loads(path.read_text())
-                if not pending:
-                    return None
-                cid = pending.pop(0)
-                path.write_text(json.dumps(pending))
-                return cid
-            finally:
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
-    except (json.JSONDecodeError, OSError, IndexError):
-        return None
 
 
 def _post_chat_turn(
@@ -127,20 +101,12 @@ def main(backend: str = "claude-code") -> int:
     # record_pickups call below for any other cids on the FIFO.
     if pane_id and assistant_text:
         resp_payload: dict = {"pane_id": pane_id, "text": assistant_text}
-        cid = _pop_pending_cid(pane_id)
+        cid = pop_pending_cid(pane_id)
         if cid:
             resp_payload["correlation_id"] = cid
         daemon_post("/response", resp_payload)
 
-    # Ask-ack lifecycle: single fetch-and-share design.
-    #
-    # fetch_and_filter_pending bumps the daemon's per-peer turn counter ONCE
-    # and returns the new value as `current_turn_seq`. That same N is then
-    # passed to record_pickups, so new arrivals are tagged with seq=N. The
-    # grace check `picked_up_turn_seq < current_turn_seq` is N<N (false) for
-    # this-turn pickups. Next Stop fire bumps to N+1, picks tagged with N
-    # are flagged (N<N+1). Exactly one turn of grace, deterministic, no
-    # ordering dependency between the two calls within this Stop fire.
+    # Ask-ack lifecycle: single fetch-and-share turn_seq (see record_pickups).
     if pane_id:
         transcript_path = (
             Path(payload.transcript_path).expanduser().resolve()

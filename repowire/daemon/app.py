@@ -90,6 +90,7 @@ def create_app(
             query_tracker=query_tracker,
             transport=transport,
             persistence_path=Path.home() / ".repowire" / "sessions.json",
+            ask_tracker=ask_tracker,
         )
         peer_registry.prune_offline(max_age_hours=cfg.daemon.prune_max_age_hours)
 
@@ -305,6 +306,7 @@ def create_test_app(
             query_tracker=query_tracker,
             transport=transport,
             persistence_path=persistence_path,
+            ask_tracker=ask_tracker,
         )
 
         app.state.config = cfg

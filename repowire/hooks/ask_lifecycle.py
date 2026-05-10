@@ -14,46 +14,18 @@ Two responsibilities:
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
 
-from repowire.hooks.utils import (
-    daemon_get,
-    daemon_post,
-    pending_cid_path,
-)
+from repowire.hooks.utils import daemon_get, daemon_post, pop_all_pending_cids
 from repowire.session.transcript import extract_last_turn_raw_tool_calls
 
 logger = logging.getLogger(__name__)
 
 
-_ACK_TOOL_NAMES = ("ack", "mcp__repowire__ack")
-_ASK_TOOL_NAMES = ("ask", "mcp__repowire__ask", "ask_peer", "mcp__repowire__ask_peer")
-
-
-def _pop_all_pending_cids(pane_id: str) -> list[str]:
-    """Drain the per-pane FIFO. Used at turn boundary for pickup recording."""
-    import fcntl
-
-    path = pending_cid_path(pane_id)
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    try:
-        with open(lock_path, "w") as lock_file:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
-            try:
-                if not path.exists():
-                    return []
-                pending = json.loads(path.read_text())
-                if not pending:
-                    return []
-                path.write_text("[]")
-                return pending if isinstance(pending, list) else []
-            finally:
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
-    except (json.JSONDecodeError, OSError):
-        return []
+_ACK_BARE_NAMES = frozenset({"ack"})
+_ASK_BARE_NAMES = frozenset({"ask", "ask_peer"})
 
 
 def _scan_acks_and_replies(transcript_path: Path | None) -> tuple[set[str], set[str]]:
@@ -68,20 +40,18 @@ def _scan_acks_and_replies(transcript_path: Path | None) -> tuple[set[str], set[
     if not transcript_path:
         return acked, replied_to
 
-    raw_calls = extract_last_turn_raw_tool_calls(transcript_path)
-    for call in raw_calls:
+    for call in extract_last_turn_raw_tool_calls(transcript_path):
         name = call.get("name", "")
-        # Tool names may be namespaced (mcp__repowire__ack) or bare (ack)
-        bare = name.split("__")[-1] if "__" in name else name
+        bare = name.rpartition("__")[2] or name
         tool_input = call.get("input", {})
         if not isinstance(tool_input, dict):
             continue
 
-        if bare in ("ack",) or name in _ACK_TOOL_NAMES:
+        if bare in _ACK_BARE_NAMES:
             cid = tool_input.get("correlation_id") or tool_input.get("corr_id")
             if isinstance(cid, str) and cid:
                 acked.add(cid)
-        elif bare in ("ask", "ask_peer") or name in _ASK_TOOL_NAMES:
+        elif bare in _ASK_BARE_NAMES:
             reply_to = tool_input.get("reply_to")
             if isinstance(reply_to, str) and reply_to:
                 replied_to.add(reply_to)
@@ -97,8 +67,7 @@ def record_pickups(pane_id: str, current_turn_seq: int) -> None:
     same-turn grace check, and N<N+1=true on the next Stop fire — exactly
     one turn of grace, regardless of call order.
     """
-    pending = _pop_all_pending_cids(pane_id)
-    for cid in pending:
+    for cid in pop_all_pending_cids(pane_id):
         daemon_post(
             f"/asks/{cid}/picked_up",
             {

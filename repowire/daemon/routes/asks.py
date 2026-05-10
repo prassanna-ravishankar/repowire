@@ -155,33 +155,26 @@ async def ack_ask(
     state = get_app_state()
     ask_tracker = state.ask_tracker
 
-    ask = await ask_tracker.get(request.correlation_id)
-    if not ask:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No open ask with correlation_id: {request.correlation_id}",
-        )
-    if ask.closed:
-        return OkResponse()  # idempotent
-
     reason = "ack_with_msg" if request.message else "ack"
     closed = await ask_tracker.close(request.correlation_id, reason=reason)
     if closed is None:
-        return OkResponse()  # raced with another ack
+        # Either unknown corr_id or already closed. Distinguish via get():
+        # idempotent re-ack returns 200, truly unknown returns 404.
+        if await ask_tracker.get(request.correlation_id) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No open ask with correlation_id: {request.correlation_id}",
+            )
+        return OkResponse()
 
     if request.message:
-        # Deliver as a notification with `[ack #cid from @peer] msg` framing.
-        # This goes through the existing BUSY-buffer pipeline, so if the
-        # original asker is busy when the ack lands, it queues + drains on idle.
-        # bypass_circle=True: an ack closes a thread that was already
-        # established at ask-time, so circle isolation (which gates *who can
-        # initiate* a thread) doesn't apply. The original asker is the
-        # legitimate recipient regardless of where they sit now.
+        # bypass_circle=True: ack closes a thread already established at
+        # ask-time; circle gate doesn't reapply.
         framed = f"[ack #{request.correlation_id} from @{request.from_peer}] {request.message}"
         try:
             await peer_registry.notify(
                 from_peer=request.from_peer,
-                to_peer=ask.from_peer_name,
+                to_peer=closed.from_peer_name,
                 text=framed,
                 bypass_circle=True,
             )

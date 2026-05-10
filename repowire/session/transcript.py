@@ -46,110 +46,80 @@ def extract_last_turn_pair(transcript_path: Path) -> tuple[str | None, str | Non
     return last_user, (last_assistant if last_assistant_had_text else None)
 
 
-def extract_last_turn_tool_calls(transcript_path: Path) -> list[dict[str, str]]:
-    """Extract tool calls from the last assistant turn.
+def _iter_last_turn_tool_uses(transcript_path: Path) -> list[dict[str, Any]]:
+    """Return raw tool_use items from the last assistant turn, chronological order.
 
-    Reads the transcript backwards from the last assistant message,
-    collecting tool_use entries until the previous user message.
+    Walks backward from the end of the transcript, collecting tool_use
+    items from assistant entries. Stops at the first real user message,
+    skipping tool_result entries (which have type=user but aren't real
+    user prompts).
+    """
+    if not transcript_path.exists():
+        return []
+
+    entries: list[dict[str, Any]] = []
+    with open(transcript_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    items: list[dict[str, Any]] = []
+    found_assistant = False
+    for entry in reversed(entries):
+        entry_type = entry.get("type")
+        if entry_type == "user" and found_assistant:
+            content = entry.get("message", {}).get("content", [])
+            is_tool_result = isinstance(content, list) and all(
+                isinstance(c, dict) and c.get("type") == "tool_result" for c in content
+            )
+            if not is_tool_result:
+                break
+            continue
+        if entry_type != "assistant":
+            continue
+        found_assistant = True
+        content = entry.get("message", {}).get("content", [])
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "tool_use":
+                items.append(item)
+
+    items.reverse()
+    return items
+
+
+def extract_last_turn_tool_calls(transcript_path: Path) -> list[dict[str, str]]:
+    """Tool calls from the last assistant turn, summarized for chat display.
 
     Returns list of {"name": "...", "input": "one-line summary"}.
     """
-    if not transcript_path.exists():
-        return []
-
-    entries: list[dict[str, Any]] = []
-    with open(transcript_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-
-    # Walk backwards: collect tool_use from assistant entries until we hit a real user message
-    tool_calls: list[dict[str, str]] = []
-    found_assistant = False
-    for entry in reversed(entries):
-        entry_type = entry.get("type")
-        if entry_type == "user" and found_assistant:
-            # Skip tool_result entries (they have type=user but aren't real user messages)
-            content = entry.get("message", {}).get("content", [])
-            is_tool_result = isinstance(content, list) and all(
-                isinstance(c, dict) and c.get("type") == "tool_result" for c in content
-            )
-            if not is_tool_result:
-                break
-            continue
-        if entry_type != "assistant":
-            continue
-        found_assistant = True
-        content = entry.get("message", {}).get("content", [])
-        if not isinstance(content, list):
-            continue
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "tool_use":
-                name = item.get("name", "unknown")
-                tool_input = item.get("input", {})
-                summary = _summarize_tool_input(name, tool_input)
-                tool_calls.append({"name": name, "input": summary})
-
-    tool_calls.reverse()  # chronological order
-    return tool_calls
+    return [
+        {
+            "name": item.get("name", "unknown"),
+            "input": _summarize_tool_input(
+                item.get("name", "unknown"), item.get("input", {}),
+            ),
+        }
+        for item in _iter_last_turn_tool_uses(transcript_path)
+    ]
 
 
 def extract_last_turn_raw_tool_calls(transcript_path: Path) -> list[dict[str, Any]]:
-    """Like extract_last_turn_tool_calls but returns raw tool inputs.
+    """Tool calls from the last assistant turn with raw, unsummarized inputs.
 
-    Used by the ask-ack reminder logic to detect ack(corr_id=X) and
-    ask(reply_to=X) invocations in the just-completed turn — those need to
-    inspect the unsummarized arguments. Mirrors the same walk-backwards
-    logic as extract_last_turn_tool_calls.
-
+    Used by the ask-ack reminder logic to inspect ack/ask arguments.
     Returns list of {"name": str, "input": dict | Any}.
     """
-    if not transcript_path.exists():
-        return []
-
-    entries: list[dict[str, Any]] = []
-    with open(transcript_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-
-    raw_calls: list[dict[str, Any]] = []
-    found_assistant = False
-    for entry in reversed(entries):
-        entry_type = entry.get("type")
-        if entry_type == "user" and found_assistant:
-            content = entry.get("message", {}).get("content", [])
-            is_tool_result = isinstance(content, list) and all(
-                isinstance(c, dict) and c.get("type") == "tool_result" for c in content
-            )
-            if not is_tool_result:
-                break
-            continue
-        if entry_type != "assistant":
-            continue
-        found_assistant = True
-        content = entry.get("message", {}).get("content", [])
-        if not isinstance(content, list):
-            continue
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "tool_use":
-                raw_calls.append({
-                    "name": item.get("name", "unknown"),
-                    "input": item.get("input", {}),
-                })
-
-    raw_calls.reverse()
-    return raw_calls
+    return [
+        {"name": item.get("name", "unknown"), "input": item.get("input", {})}
+        for item in _iter_last_turn_tool_uses(transcript_path)
+    ]
 
 
 def _summarize_tool_input(name: str, tool_input: Any) -> str:

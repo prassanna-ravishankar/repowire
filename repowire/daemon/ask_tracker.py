@@ -24,32 +24,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
+_EVICTION_INTERVAL_SECONDS = 300.0
+
 
 @dataclass
 class Ask:
     """An open ask awaiting ack/reply.
 
-    Attributes:
-        correlation_id: Unique identifier for this ask
-        from_peer_id: peer_id of the sender
-        from_peer_name: display name of the sender
-        to_peer_id: peer_id of the recipient
-        to_peer_name: display name of the recipient
-        text: the ask's content
-        reply_to: corr_id of an earlier ask this one replies to (chained convo)
-        created_at: when the ask was registered
-        picked_up: True after the recipient's first Stop hook post-delivery
-        picked_up_at: timestamp of pickup
-        picked_up_turn_seq: monotonic turn counter at pickup (for one-turn grace)
-        reminded: True once a reminder has been injected (once-only)
-        closed: True once acked, replied-with-msg, or superseded by reply_to
-        close_reason: one of 'ack', 'ack_with_msg', 'reply_to', 'evicted'
+    picked_up_turn_seq: per-peer turn counter at pickup. Compared against the
+        next pending-poll's seq for the one-turn grace check. None until pickup.
+    close_reason: 'ack' | 'ack_with_msg' | 'reply_to' | 'evicted'.
     """
 
     correlation_id: str
@@ -78,10 +69,9 @@ class AskTracker:
     def __init__(self, *, ttl_hours: float = 24.0) -> None:
         self._lock = asyncio.Lock()
         self._asks: dict[str, Ask] = {}
-        # Per-peer turn counter: incremented on every Stop hook fire for that pane.
-        # Used to enforce the "one turn of grace after pickup" rule.
         self._turn_seq: dict[str, int] = {}
         self._ttl = timedelta(hours=ttl_hours)
+        self._last_eviction: float = 0.0
 
     async def register(
         self,
@@ -174,7 +164,12 @@ class AskTracker:
           - picked_up_turn_seq < current_turn_seq  (one full turn of grace)
 
         Returns the most recent `max_results` asks, newest first.
+
+        Lazy-repair: opportunistically evicts TTL-expired asks at most once
+        per _EVICTION_INTERVAL_SECONDS. Stop hooks call this on every turn,
+        so the dict gets swept regularly without a background timer.
         """
+        await self._maybe_evict_expired()
         async with self._lock:
             candidates = [
                 ask for ask in self._asks.values()
@@ -187,6 +182,32 @@ class AskTracker:
             ]
             candidates.sort(key=lambda a: a.created_at, reverse=True)
             return candidates[:max_results]
+
+    async def _maybe_evict_expired(self) -> None:
+        """Run TTL eviction if enough wall time has passed since the last sweep."""
+        now = time.monotonic()
+        if now - self._last_eviction < _EVICTION_INTERVAL_SECONDS:
+            return
+        self._last_eviction = now
+        await self.evict_expired()
+
+    async def forget_peer(self, peer_id: str) -> int:
+        """Drop turn counter and any asks involving this peer.
+
+        Called by PeerRegistry when pruning offline peers, so the tracker's
+        memory footprint is bounded by the live peer set.
+
+        Returns the number of asks dropped.
+        """
+        async with self._lock:
+            self._turn_seq.pop(peer_id, None)
+            doomed = [
+                cid for cid, ask in self._asks.items()
+                if ask.to_peer_id == peer_id or ask.from_peer_id == peer_id
+            ]
+            for cid in doomed:
+                del self._asks[cid]
+            return len(doomed)
 
     async def evict_expired(self) -> int:
         """Drop asks older than TTL. Returns count evicted.

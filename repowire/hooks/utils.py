@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import atexit
+import fcntl
 import json
 import os
 import sys
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 import httpx
@@ -49,9 +51,58 @@ def get_display_name() -> str:
     return Path.cwd().name
 
 
-def pending_cid_path(pane_id: str) -> Path:
+def pending_cid_path(pane_id: str | None) -> Path:
     """Path to the pending correlation_id file for a pane."""
     return pane_logs_dir() / f"pending-{get_pane_file(pane_id)}.json"
+
+
+@contextmanager
+def _locked_pending_cids(pane_id: str) -> Iterator[list[str]]:
+    """Yield the parsed pending-cid list under flock; persist on clean exit.
+
+    Mutate the yielded list in place — the wrapper writes it back when the
+    block exits. Read errors degrade to an empty list. Single shared
+    implementation for push, pop, and pop-all so the three call sites can't
+    drift on flock semantics.
+    """
+    path = pending_cid_path(pane_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with open(lock_path, "w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            try:
+                pending = json.loads(path.read_text()) if path.exists() else []
+                if not isinstance(pending, list):
+                    pending = []
+            except (json.JSONDecodeError, OSError):
+                pending = []
+            yield pending
+            path.write_text(json.dumps(pending))
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def push_pending_cid(pane_id: str, correlation_id: str) -> None:
+    """Append a correlation_id to the pane's pickup FIFO under flock."""
+    with _locked_pending_cids(pane_id) as pending:
+        pending.append(correlation_id)
+
+
+def pop_pending_cid(pane_id: str) -> str | None:
+    """Pop the oldest correlation_id from the pane's FIFO under flock."""
+    with _locked_pending_cids(pane_id) as pending:
+        if not pending:
+            return None
+        return pending.pop(0)
+
+
+def pop_all_pending_cids(pane_id: str) -> list[str]:
+    """Drain the pane's FIFO under flock. Returns popped corr_ids in order."""
+    with _locked_pending_cids(pane_id) as pending:
+        drained = list(pending)
+        pending.clear()
+        return drained
 
 
 def pane_logs_dir() -> Path:
