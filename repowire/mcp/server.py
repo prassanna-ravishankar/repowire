@@ -64,12 +64,17 @@ async def daemon_request(
 async def _get_my_peer_name() -> str:
     """Get own peer name. Cached after first resolution.
 
-    Priority: REPOWIRE_DISPLAY_NAME env var > pane-based daemon lookup > cwd folder name.
+    Resolution order:
+    1. pane-based daemon lookup (most authoritative — handles suffix collisions)
+    2. pane runtime metadata file (written by SessionStart; covers the case
+       where the daemon hasn't yet finished registration on the first MCP
+       call, but the hook already wrote display_name to disk)
+    3. REPOWIRE_DISPLAY_NAME env var or cwd folder name (collides for
+       same-cwd peers — last resort, see #107)
     """
     global _cached_peer_name
     if _cached_peer_name is not None:
         return _cached_peer_name
-    # Pane-based lookup is most authoritative (handles suffix collisions)
     pane_id = get_pane_id()
     if pane_id:
         try:
@@ -80,7 +85,11 @@ async def _get_my_peer_name() -> str:
                 return name
         except Exception:
             pass
-    # Fall back to env var (set by session handler) or cwd folder name
+        pane_meta = read_pane_runtime_metadata(pane_id)
+        name = pane_meta.get("display_name") or pane_meta.get("peer_id")
+        if name:
+            _cached_peer_name = name
+            return name
     _cached_peer_name = get_display_name()
     return _cached_peer_name
 
