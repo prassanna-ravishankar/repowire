@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -507,10 +506,11 @@ class TestMcpSpawnPeerReturn:
         assert result != "prod:alpha-svc"
 
     @pytest.mark.asyncio
+    @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
     @patch("repowire.mcp.server._get_my_peer_name", new_callable=AsyncMock)
     @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
     async def test_kill_peer_uses_peer_identifier_not_tmux_session(
-        self, mock_request: AsyncMock, mock_my_name: AsyncMock,
+        self, mock_request: AsyncMock, mock_my_name: AsyncMock, _mock_register: AsyncMock,
     ) -> None:
         """kill_peer MCP tool should send mesh identity to the safe kill route."""
         from repowire.mcp.server import create_mcp_server
@@ -535,10 +535,11 @@ class TestMcpSpawnPeerReturn:
         assert "tmux pane killed" in result
 
     @pytest.mark.asyncio
+    @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
     @patch("repowire.mcp.server._get_my_peer_name", new_callable=AsyncMock)
     @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
     async def test_kill_peer_surfaces_skipped_tmux_kill(
-        self, mock_request: AsyncMock, mock_my_name: AsyncMock,
+        self, mock_request: AsyncMock, mock_my_name: AsyncMock, _mock_register: AsyncMock,
     ) -> None:
         """When the daemon returns tmux_killed=None (ownership not proven),
         the MCP tool must tell the caller — not silently report success."""
@@ -556,10 +557,11 @@ class TestMcpSpawnPeerReturn:
         assert "tmux kill-pane" in result
 
     @pytest.mark.asyncio
+    @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
     @patch("repowire.mcp.server._get_my_peer_name", new_callable=AsyncMock)
     @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
     async def test_kill_peer_surfaces_failed_tmux_kill(
-        self, mock_request: AsyncMock, mock_my_name: AsyncMock,
+        self, mock_request: AsyncMock, mock_my_name: AsyncMock, _mock_register: AsyncMock,
     ) -> None:
         """When the daemon returns tmux_killed=False (kill attempted but failed),
         the MCP tool must surface the orphan-pane risk."""

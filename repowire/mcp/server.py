@@ -61,16 +61,42 @@ async def daemon_request(
         raise DaemonTimeoutError()
 
 
+def _metadata_matches_current_process(pane_meta: dict) -> bool:
+    """Verify pane runtime metadata describes the *current* process.
+
+    Pane metadata can outlive the session that wrote it (no daemon
+    process owns the file; cleanup is best-effort via clear_pane_runtime_state).
+    If a daemon restart races with pane reuse, we could read stale metadata
+    pointing at a previous tenant's display_name.
+
+    Reject metadata whose cwd or backend mismatches what we observe now.
+    """
+    meta_cwd = pane_meta.get("cwd")
+    meta_backend = pane_meta.get("backend")
+    if not meta_cwd or not meta_backend:
+        return False
+    try:
+        current_cwd = str(Path.cwd())
+    except OSError:
+        return False
+    if str(meta_cwd) != current_cwd:
+        return False
+    return meta_backend == _detect_backend()
+
+
 async def _get_my_peer_name() -> str:
-    """Get own peer name. Cached after first resolution.
+    """Get own peer name. Cached after first successful resolution.
 
     Resolution order:
     1. pane-based daemon lookup (most authoritative — handles suffix collisions)
-    2. pane runtime metadata file (written by SessionStart; covers the case
-       where the daemon hasn't yet finished registration on the first MCP
-       call, but the hook already wrote display_name to disk)
+    2. pane runtime metadata file, validated against current cwd+backend
+       (covers daemon-not-yet-ready races; rejects stale metadata from a
+       prior tenant of a reused pane)
     3. REPOWIRE_DISPLAY_NAME env var or cwd folder name (collides for
        same-cwd peers — last resort, see #107)
+
+    The cwd-folder fallback is intentionally not cached, so a later call
+    that can reach the daemon can still resolve the correct suffixed name.
     """
     global _cached_peer_name
     if _cached_peer_name is not None:
@@ -86,12 +112,12 @@ async def _get_my_peer_name() -> str:
         except Exception:
             pass
         pane_meta = read_pane_runtime_metadata(pane_id)
-        name = pane_meta.get("display_name") or pane_meta.get("peer_id")
-        if name:
-            _cached_peer_name = name
-            return name
-    _cached_peer_name = get_display_name()
-    return _cached_peer_name
+        if _metadata_matches_current_process(pane_meta):
+            name = pane_meta.get("display_name") or pane_meta.get("peer_id")
+            if name:
+                _cached_peer_name = name
+                return name
+    return get_display_name()
 
 
 def _detect_backend() -> str:
@@ -529,6 +555,7 @@ def create_mcp_server() -> FastMCP:
             Confirmation describing both the deregistration and the tmux
             pane outcome.
         """
+        await _ensure_registered(strict=True)
         payload: dict[str, str] = {
             "peer_identifier": peer_identifier,
             "from_peer": await _get_my_peer_name(),
