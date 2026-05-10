@@ -62,9 +62,12 @@ class TestSpawnResult:
         result = SpawnResult(
             display_name="myapp",
             tmux_session="default:myapp",
+            pane_id="%42",
         )
         assert result.display_name == "myapp"
         assert result.tmux_session == "default:myapp"
+        assert result.pane_id == "%42"
+        assert result.message is None
 
 
 class TestUniqueWindowName:

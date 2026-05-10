@@ -29,6 +29,7 @@ class SpawnConfig:
     circle: str
     backend: AgentType
     command: str = ""  # Full command to run (e.g., "claude --model opus")
+    message: str | None = None  # Optional warmup intent passed to post_spawn_warmup
 
     @property
     def display_name(self) -> str:
@@ -42,6 +43,8 @@ class SpawnResult:
 
     display_name: str
     tmux_session: str  # e.g., "circle:name"
+    pane_id: str  # tmux pane id (e.g. "%42") for post-spawn warmup
+    message: str | None = None  # Echo of the warmup intent (None = use default)
 
 
 def spawn_peer(config: SpawnConfig) -> SpawnResult:
@@ -94,6 +97,8 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
     return SpawnResult(
         display_name=window_name,
         tmux_session=tmux_session,
+        pane_id=pane.id or "",
+        message=config.message,
     )
 
 

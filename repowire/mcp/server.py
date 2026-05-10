@@ -392,7 +392,12 @@ def create_mcp_server() -> FastMCP:
         return f"description updated: {description}"
 
     @mcp.tool()
-    async def spawn_peer(path: str, command: str, circle: str = "default") -> str:
+    async def spawn_peer(
+        path: str,
+        command: str,
+        circle: str = "default",
+        message: str | None = None,
+    ) -> str:
         """[Repowire mesh] Spawn a new coding session in a different project directory.
 
         The command must exactly match an entry in daemon.spawn.allowed_commands
@@ -406,6 +411,11 @@ def create_mcp_server() -> FastMCP:
         The circle maps to the tmux session name and cannot be reassigned after
         spawn.
 
+        Pass `message` to seed the spawned agent with first-turn context (task
+        brief, who spawned them, what to work on). Required for codex peers to
+        register with the mesh promptly; treated as a friendly opening prompt
+        by other backends. If omitted, codex gets a short default warmup.
+
         Do NOT use SendMessage to reach spawned peers. SendMessage is a Claude
         Code harness tool for same-session teammates only. Use ask_peer() or
         notify_peer() instead.
@@ -414,15 +424,16 @@ def create_mcp_server() -> FastMCP:
             path: Absolute path to the project directory
             command: Command to run (e.g. "claude", "claude --dangerously-skip-permissions")
             circle: Circle to spawn into (default: "default") -- maps to tmux session name
+            message: Optional first-turn prompt for the spawned agent. Codex
+                     requires it (or a default) to fire its SessionStart hook.
 
         Returns:
             Spawn confirmation with display_name and tmux_session
         """
-        result = await daemon_request(
-            "POST",
-            "/spawn",
-            {"path": path, "command": command, "circle": circle},
-        )
+        body: dict = {"path": path, "command": command, "circle": circle}
+        if message is not None:
+            body["message"] = message
+        result = await daemon_request("POST", "/spawn", body)
         name = result["display_name"]
         tmux = result["tmux_session"]
         return (

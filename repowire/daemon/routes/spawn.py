@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,6 +12,7 @@ from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_config, get_peer_registry
 from repowire.daemon.peer_registry import PeerRegistry
+from repowire.installers.post_spawn import post_spawn_warmup
 from repowire.spawn import AGENT_COMMANDS, SpawnConfig, SpawnResult, kill_peer, spawn_peer
 
 _COMMAND_TO_BACKEND: dict[str, AgentType] = {
@@ -55,6 +57,14 @@ class SpawnRequest(BaseModel):
     path: str = Field(..., description="Absolute path to the project directory")
     command: str = Field(..., description="Command to run — must be in allowed_commands")
     circle: str = Field(default="default", description="Circle to spawn into")
+    message: str | None = Field(
+        default=None,
+        description=(
+            "Optional warmup message to send to the spawned agent. Used by "
+            "backends whose hook lifecycle requires a first prompt (codex). "
+            "Other backends ignore it. Default: a short branded warmup."
+        ),
+    )
 
 
 class SpawnResponse(BaseModel):
@@ -138,17 +148,35 @@ async def spawn(
     """
     _validate_spawn_request(request.path, request.command)
 
+    resolved_path = str(Path(request.path).expanduser().resolve())
+    backend = _backend_from_command(request.command)
+
     try:
         result: SpawnResult = spawn_peer(
             SpawnConfig(
-                path=str(Path(request.path).expanduser().resolve()),
+                path=resolved_path,
                 circle=request.circle,
-                backend=_backend_from_command(request.command),
+                backend=backend,
                 command=request.command,
+                message=request.message,
             )
         )
     except (ValueError, RuntimeError) as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+    # Schedule post-spawn warmup in the background -- the codex case sleeps
+    # ~10s and would otherwise stall the /spawn response. claude/opencode/gemini
+    # warmups are no-ops and return immediately.
+    if result.pane_id:
+        asyncio.ensure_future(
+            post_spawn_warmup(
+                backend,
+                result.pane_id,
+                path=resolved_path,
+                circle=request.circle,
+                message=result.message,
+            )
+        )
 
     return SpawnResponse(display_name=result.display_name, tmux_session=result.tmux_session)
 
