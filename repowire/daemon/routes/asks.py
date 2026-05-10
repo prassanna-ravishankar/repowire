@@ -127,9 +127,9 @@ async def open_ask(
         reply_to=request.reply_to,
     )
 
-    # Deliver to recipient via the existing notify pipeline. The wire message
-    # carries intent=ask + correlation_id so the ws-hook pushes onto the
-    # per-pane FIFO for pickup detection on the next Stop hook fire.
+    # Deliver as a first-class type=ask wire message. The recipient transport
+    # (ws-hook / opencode plugin / channel server) POSTs /asks/{cid}/picked_up
+    # after presenting the message to its agent.
     try:
         await peer_registry.deliver_ask(
             from_peer=request.from_peer,
