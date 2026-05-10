@@ -13,7 +13,14 @@ from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_config, get_peer_registry
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.installers.post_spawn import post_spawn_warmup
-from repowire.spawn import AGENT_COMMANDS, SpawnConfig, SpawnResult, kill_peer, spawn_peer
+from repowire.spawn import (
+    AGENT_COMMANDS,
+    SpawnConfig,
+    SpawnResult,
+    kill_pane,
+    kill_peer,
+    spawn_peer,
+)
 
 _COMMAND_TO_BACKEND: dict[str, AgentType] = {
     cmd: backend for backend, cmd in AGENT_COMMANDS.items()
@@ -80,9 +87,16 @@ class SpawnResponse(BaseModel):
 
 
 class KillResponse(BaseModel):
-    """Result of a successful kill."""
+    """Result of a successful kill.
+
+    `tmux_killed` reports whether the underlying tmux pane was terminated:
+    - True  → daemon-spawned peer, pane killed successfully
+    - False → daemon-spawned peer, but tmux kill failed (orphan pane likely)
+    - None  → externally-attached peer; daemon does not own its pane
+    """
 
     ok: bool = True
+    tmux_killed: bool | None = None
 
 
 class KillPeerRequest(BaseModel):
@@ -228,7 +242,15 @@ async def kill_registered_peer(
         )
 
     peer = resolved
+    # Only daemon-spawned peers populate tmux_session (SessionStart hook omits
+    # it). Use that as the gate so we never kill panes we don't own. Prefer
+    # pane_id for the actual kill — it's stable across window renames, while
+    # tmux_session is window-name based and silently fails after a rename.
+    tmux_killed: bool | None = None
     if peer.tmux_session:
-        kill_peer(peer.tmux_session)
+        if peer.pane_id:
+            tmux_killed = kill_pane(peer.pane_id)
+        else:
+            tmux_killed = kill_peer(peer.tmux_session)
     await peer_registry.unregister_peer(peer.peer_id)
-    return KillResponse()
+    return KillResponse(tmux_killed=tmux_killed)

@@ -14,6 +14,7 @@ from repowire.spawn import (
     _get_or_create_session,
     _unique_window_name,
     attach_session,
+    kill_pane,
     kill_peer,
     spawn_peer,
 )
@@ -395,6 +396,34 @@ class TestKillPeer:
 
         result = kill_peer("dev:frontend")
         assert result is False
+
+
+class TestKillPane:
+    """Tests for kill_pane (stable-pane-id kill)."""
+
+    def test_kill_pane_empty_id_returns_false(self) -> None:
+        assert kill_pane("") is False
+
+    @patch("repowire.spawn.subprocess.run")
+    def test_kill_pane_success(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0)
+        assert kill_pane("%42") is True
+        mock_run.assert_called_once_with(
+            ["tmux", "kill-pane", "-t", "%42"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @patch("repowire.spawn.subprocess.run")
+    def test_kill_pane_failure_returns_false(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=1)
+        assert kill_pane("%99") is False
+
+    @patch("repowire.spawn.subprocess.run")
+    def test_kill_pane_oserror_returns_false(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = OSError("tmux missing")
+        assert kill_pane("%1") is False
 
 
 class TestAttachSession:

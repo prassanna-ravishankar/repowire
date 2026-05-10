@@ -141,7 +141,11 @@ def attach_session(tmux_session: str) -> None:
 
 
 def kill_peer(tmux_session: str) -> bool:
-    """Kill a tmux window. Returns True if successful."""
+    """Kill a tmux window by session:window string.
+
+    Window-name based, so vulnerable to renames. Prefer kill_pane(pane_id)
+    when a stable pane id is available.
+    """
     if ":" not in tmux_session:
         return False
 
@@ -160,4 +164,24 @@ def kill_peer(tmux_session: str) -> bool:
         window.kill()
         return True
     except (LibTmuxException, ObjectDoesNotExist):
+        return False
+
+
+def kill_pane(pane_id: str) -> bool:
+    """Kill a tmux pane by stable pane id (e.g. "%42").
+
+    Pane ids survive window renames, so this is the preferred kill handle
+    for daemon-spawned peers.
+    """
+    if not pane_id:
+        return False
+    try:
+        result = subprocess.run(
+            ["tmux", "kill-pane", "-t", pane_id],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
         return False
