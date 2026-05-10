@@ -1,13 +1,24 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Check, Copy, Paperclip, RefreshCw, Send, X } from "lucide-react";
+import { AlertCircle, Check, Clock, Copy, Paperclip, RefreshCw, Send, X } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
 import type { Event, Peer } from "../types";
 import { peerLabel } from "../types";
 import { formatTime, StatusLabel } from "./status";
 
-type ComposeMode = "notify" | "ask";
+interface PendingAsk {
+  correlation_id: string;
+  to_peer: string;
+  preview: string;
+  sent_at: number;
+  state: "pending" | "delivered" | "timed_out";
+  reply?: string;
+  reply_from?: string;
+}
+
+const ACK_FRAME_RE = /^\[ack #([^\]\s]+) from @([^\]\s]+)\]\s?([\s\S]*)$/;
+const BARE_ACK_TIMEOUT_MS = 120_000;
 
 export function PeerView({
   peer,
@@ -79,7 +90,7 @@ export function PeerView({
         )}
       </div>
 
-      <ComposeBar peer={peer} apiBase={apiBase} onSent={onSent} />
+      <ComposeBar peer={peer} apiBase={apiBase} events={events} onSent={onSent} />
     </>
   );
 }
@@ -118,6 +129,8 @@ function ThreadItem({ event, peer }: { event: Event; peer: Peer }) {
   const label =
     event.type === "query"
       ? `query ${event.from} -> ${event.to}`
+      : event.type === "ask"
+      ? `ask ${event.from} -> ${event.to}`
       : event.type === "response"
       ? `response ${event.from} -> ${event.to}`
       : event.type === "notification"
@@ -157,12 +170,21 @@ function ToolCallBlock({ toolCalls }: { toolCalls: { name: string; input: string
   );
 }
 
-function ComposeBar({ peer, apiBase, onSent }: { peer: Peer; apiBase: string; onSent?: () => void }) {
+function ComposeBar({
+  peer,
+  apiBase,
+  events,
+  onSent,
+}: {
+  peer: Peer;
+  apiBase: string;
+  events: Event[];
+  onSent?: () => void;
+}) {
   const [text, setText] = useState("");
-  const [mode, setMode] = useState<ComposeMode>("notify");
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [response, setResponse] = useState<string | null>(null);
+  const [pendingAsks, setPendingAsks] = useState<PendingAsk[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -173,6 +195,55 @@ function ComposeBar({ peer, apiBase, onSent }: { peer: Peer; apiBase: string; on
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
   }, [text]);
+
+  // Match incoming notification events to pending asks via [ack #cid from @peer] framing.
+  const openCids = useMemo(
+    () => pendingAsks.filter((a) => a.state === "pending").map((a) => a.correlation_id),
+    [pendingAsks]
+  );
+  useEffect(() => {
+    if (openCids.length === 0) return;
+    for (const ev of events) {
+      if (ev.type !== "notification" || !ev.text) continue;
+      const m = ev.text.match(ACK_FRAME_RE);
+      if (!m) continue;
+      const [, cid, from, body] = m;
+      if (!openCids.includes(cid)) continue;
+      setPendingAsks((prev) =>
+        prev.map((a) =>
+          a.correlation_id === cid && a.state === "pending"
+            ? { ...a, state: "delivered", reply: body, reply_from: from }
+            : a
+        )
+      );
+    }
+  }, [events, openCids]);
+
+  // Bare-ack soft timeout: flip pending → timed_out after 120s.
+  useEffect(() => {
+    if (openCids.length === 0) return;
+    const timers = openCids.map((cid) => {
+      const ask = pendingAsks.find((a) => a.correlation_id === cid);
+      if (!ask) return null;
+      const elapsed = Date.now() - ask.sent_at;
+      const remaining = Math.max(0, BARE_ACK_TIMEOUT_MS - elapsed);
+      return window.setTimeout(() => {
+        setPendingAsks((prev) =>
+          prev.map((a) =>
+            a.correlation_id === cid && a.state === "pending"
+              ? { ...a, state: "timed_out" }
+              : a
+          )
+        );
+      }, remaining);
+    });
+    return () => {
+      for (const t of timers) if (t !== null) window.clearTimeout(t);
+    };
+  }, [openCids, pendingAsks]);
+
+  const dismissAsk = (cid: string) =>
+    setPendingAsks((prev) => prev.filter((a) => a.correlation_id !== cid));
 
   const uploadFile = async (upload: File): Promise<string | null> => {
     const formData = new FormData();
@@ -194,7 +265,6 @@ function ComposeBar({ peer, apiBase, onSent }: { peer: Peer; apiBase: string; on
   const submit = async () => {
     if ((!text.trim() && !file) || isPending) return;
     setError(null);
-    setResponse(null);
     setIsPending(true);
 
     try {
@@ -209,8 +279,7 @@ function ComposeBar({ peer, apiBase, onSent }: { peer: Peer; apiBase: string; on
         msg = msg ? `${msg}\n[Attachment: ${path}]` : `[Attachment: ${path}]`;
       }
 
-      const endpoint = mode === "notify" ? "notify" : "query";
-      const res = await fetch(`${apiBase}/${endpoint}`, {
+      const res = await fetch(`${apiBase}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -222,14 +291,23 @@ function ComposeBar({ peer, apiBase, onSent }: { peer: Peer; apiBase: string; on
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.error) {
-        setError(data.detail || data.error || `Error ${res.status}`);
-        return;
+        setError(data.error || data.detail || `Error ${res.status}`);
+      } else if (data.correlation_id) {
+        const preview = msg.length > 60 ? msg.slice(0, 60) + "…" : msg;
+        setPendingAsks((prev) => [
+          ...prev,
+          {
+            correlation_id: data.correlation_id,
+            to_peer: peer.name,
+            preview,
+            sent_at: Date.now(),
+            state: "pending",
+          },
+        ]);
+        setText("");
+        setFile(null);
+        onSent?.();
       }
-
-      if (mode === "ask") setResponse(data.text ?? null);
-      setText("");
-      setFile(null);
-      onSent?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Request failed");
     } finally {
@@ -244,24 +322,14 @@ function ComposeBar({ peer, apiBase, onSent }: { peer: Peer; apiBase: string; on
     }
   };
 
+  const visibleAsks = pendingAsks.filter((a) => a.to_peer === peer.name);
+
   return (
     <div className="border-t border-border-faint bg-surface-dim p-3 md:p-4">
       <div className="mb-2 flex items-center gap-2">
-        <div className="inline-flex border border-border-faint bg-surface-container-lowest p-1">
-          {(["notify", "ask"] as const).map((item) => (
-            <button
-              key={item}
-              onClick={() => setMode(item)}
-              className={cn(
-                "px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] transition-colors",
-                mode === item ? "bg-primary text-on-primary" : "text-outline hover:text-on-surface"
-              )}
-            >
-              {item === "notify" ? "Notify" : "Query"}
-            </button>
-          ))}
-        </div>
-        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-outline">to {peerLabel(peer)}</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-outline">
+          ask &rarr; {peerLabel(peer)}
+        </span>
       </div>
 
       {file && (
@@ -305,7 +373,8 @@ function ComposeBar({ peer, apiBase, onSent }: { peer: Peer; apiBase: string; on
         <button
           onClick={submit}
           disabled={(!text.trim() && !file) || isPending}
-          aria-label={mode === "notify" ? "Send message" : "Ask peer"}
+          aria-label="Ask peer"
+          aria-busy={isPending}
           className={cn(
             "flex h-10 w-10 shrink-0 items-center justify-center rounded transition-[filter,transform] active:scale-[0.98]",
             text.trim() || file ? "bg-primary text-on-primary hover:brightness-110" : "bg-surface-container-high text-outline"
@@ -322,9 +391,55 @@ function ComposeBar({ peer, apiBase, onSent }: { peer: Peer; apiBase: string; on
           <button onClick={submit} className="border border-error/30 px-2 py-0.5 text-[10px] uppercase">Retry</button>
         </div>
       )}
-      {response && (
-        <div className="mt-2 max-h-24 overflow-y-auto border border-border-faint bg-surface-container-lowest p-2 font-mono text-xs whitespace-pre-wrap text-on-surface-variant">
-          {response}
+
+      {visibleAsks.length > 0 && (
+        <div className="mt-2 flex flex-col gap-1.5">
+          {visibleAsks.map((a) => (
+            <div
+              key={a.correlation_id}
+              className={cn(
+                "border bg-surface-container-lowest px-3 py-2 font-mono text-xs",
+                a.state === "delivered"
+                  ? "border-primary/40"
+                  : a.state === "timed_out"
+                  ? "border-border-faint text-outline"
+                  : "border-border-faint"
+              )}
+            >
+              <div className="flex items-center gap-2">
+                {a.state === "delivered" ? (
+                  <Check className="h-3 w-3 shrink-0 text-primary" aria-hidden="true" />
+                ) : a.state === "timed_out" ? (
+                  <Check className="h-3 w-3 shrink-0 text-outline" aria-hidden="true" />
+                ) : (
+                  <Clock className="h-3 w-3 shrink-0 animate-pulse text-outline" aria-hidden="true" />
+                )}
+                <span className="shrink-0 text-[10px] uppercase tracking-[0.14em] text-outline">
+                  #{a.correlation_id.slice(0, 8)}
+                </span>
+                <span className="flex-1 truncate text-on-surface-variant">{a.preview}</span>
+                <span className="shrink-0 text-[10px] text-outline">
+                  {a.state === "pending"
+                    ? "pending"
+                    : a.state === "delivered"
+                    ? `reply from @${a.reply_from}`
+                    : "acked (no reply)"}
+                </span>
+                <button
+                  onClick={() => dismissAsk(a.correlation_id)}
+                  aria-label="Dismiss"
+                  className="shrink-0 p-0.5 text-outline hover:text-on-surface"
+                >
+                  <X className="h-3 w-3" aria-hidden="true" />
+                </button>
+              </div>
+              {a.state === "delivered" && a.reply && (
+                <div className="mt-1.5 max-h-24 overflow-y-auto whitespace-pre-wrap pl-5 text-on-surface-variant">
+                  {a.reply}
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
