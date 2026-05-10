@@ -197,6 +197,42 @@ class TestAck:
         })
         assert r.status_code == 404
 
+    async def test_ack_with_msg_503_when_reply_undeliverable(self, env):
+        """If reply delivery fails (no live WS), ack returns 503 and ask stays open."""
+        client, _, at, msg_router = env
+        alice = await _register_peer(client, "alice")
+        bob = await _register_peer(client, "bob")
+        r = await client.post("/ask", json={
+            "from_peer": alice, "to_peer": bob, "text": "?",
+        })
+        cid = r.json()["correlation_id"]
+
+        # Asker's notify path now fails
+        msg_router.send_notification.side_effect = TransportError("No connection")
+
+        r = await client.post("/ack", json={
+            "correlation_id": cid, "from_peer": bob, "message": "all good",
+        })
+        assert r.status_code == 503
+        ask = await at.get(cid)
+        assert not ask.closed  # MUST remain open so recipient can retry
+
+    async def test_bare_ack_succeeds_even_if_router_would_fail(self, env):
+        """Bare ack doesn't deliver anything, so router state is irrelevant."""
+        client, _, at, msg_router = env
+        alice = await _register_peer(client, "alice")
+        bob = await _register_peer(client, "bob")
+        r = await client.post("/ask", json={
+            "from_peer": alice, "to_peer": bob, "text": "?",
+        })
+        cid = r.json()["correlation_id"]
+        msg_router.send_notification.side_effect = TransportError("dead")
+
+        r = await client.post("/ack", json={"correlation_id": cid, "from_peer": bob})
+        assert r.status_code == 200
+        ask = await at.get(cid)
+        assert ask.closed
+
     async def test_ack_idempotent(self, env):
         client, _, _, _ = env
         await _register_peer(client, "alice")

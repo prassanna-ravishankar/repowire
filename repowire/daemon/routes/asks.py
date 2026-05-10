@@ -152,19 +152,32 @@ async def ack_ask(
     request: AckRequest,
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
-    """Close an ask. With `message`, delivers the reply to the original asker."""
+    """Close an ask. With `message`, delivers the reply to the original asker.
+
+    Bare ack: close the ask, return 200.
+
+    Ack-with-message: deliver the reply first; only close on successful
+    delivery. If the asker has no live WS the ask stays open and 503 is
+    returned so the recipient can retry (or drop the message and bare-ack
+    if they give up). This avoids closing the thread while silently dropping
+    the reply under the new fail-loud / no-queue contract.
+
+    Returns:
+        200 on success, 200 on idempotent re-ack (already closed), 404 if
+        unknown corr_id, 503 if reply delivery failed.
+    """
     peer_registry = get_peer_registry()
     state = get_app_state()
     ask_tracker = state.ask_tracker
 
-    reason = "ack_with_msg" if request.message else "ack"
-    closed = await ask_tracker.close(request.correlation_id, reason=reason)
-    if closed is None:
-        if await ask_tracker.get(request.correlation_id) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No open ask with correlation_id: {request.correlation_id}",
-            )
+    existing = await ask_tracker.get(request.correlation_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No open ask with correlation_id: {request.correlation_id}",
+        )
+    if existing.closed:
+        # Idempotent re-ack: already closed, nothing to do.
         return OkResponse()
 
     if request.message:
@@ -174,23 +187,43 @@ async def ack_ask(
         try:
             await peer_registry.notify(
                 from_peer=request.from_peer,
-                to_peer=closed.from_peer_name,
+                to_peer=existing.from_peer_name,
                 text=framed,
                 bypass_circle=True,
             )
         except ValueError as e:
+            # Asker peer no longer in registry. Close as best-effort and
+            # log; nothing to retry against.
             logger.warning(
-                "ack reply delivery failed for %s: %s", request.correlation_id, e,
-            )
-        except TransportError as e:
-            logger.warning(
-                "ack reply delivery failed for %s (no live WS): %s",
+                "ack reply for %s: asker missing (%s); closing without delivery",
                 request.correlation_id, e,
             )
+            await ask_tracker.close(request.correlation_id, reason="ack_with_msg")
+            return OkResponse()
+        except TransportError as e:
+            # Asker has no live WS. Leave the ask open so the recipient can
+            # retry (and report 503 so the MCP caller knows the reply did
+            # not land).
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Reply delivery failed for {existing.from_peer_name}: {e}. "
+                    "Ask remains open; retry when the asker reconnects."
+                ),
+            )
         except Exception as e:
+            # Unexpected error — also leave the ask open and surface a 500.
             logger.exception(
                 "ack reply delivery error for %s: %s", request.correlation_id, e,
             )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Reply delivery error: {e}",
+            )
+
+        await ask_tracker.close(request.correlation_id, reason="ack_with_msg")
+    else:
+        await ask_tracker.close(request.correlation_id, reason="ack")
 
     return OkResponse()
 

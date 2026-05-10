@@ -753,7 +753,13 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
             from_peer: me.peerName,
             text: message,
           })
-          return `Broadcast sent to: ${result.sent_to?.join(", ") || "no peers"}`
+          const parts: string[] = []
+          parts.push(`Broadcast sent to: ${result.sent_to?.join(", ") || "no peers"}`)
+          if (result.failed?.length) {
+            const fails = result.failed.map((f: { peer: string; error: string }) => `${f.peer} (${f.error})`).join(", ")
+            parts.push(`Failed: ${fails}`)
+          }
+          return parts.join("; ")
         },
       }),
       whoami: tool({

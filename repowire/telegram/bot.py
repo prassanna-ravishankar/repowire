@@ -368,13 +368,13 @@ class TelegramPeer:
             await self._ack_ask(cid)
 
     async def _ack_ask(self, correlation_id: str) -> None:
-        """Bare-ack an open ask. POSTs /ack with from_peer=telegram."""
+        """Bare-ack an open ask. Uses the bot's configured display name."""
         try:
             r = await self._http.post(
                 f"{self._daemon_url}/ack",
                 json={
                     "correlation_id": correlation_id,
-                    "from_peer": "telegram",
+                    "from_peer": self._display_name,
                 },
                 timeout=5.0,
             )

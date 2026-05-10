@@ -384,7 +384,16 @@ def create_mcp_server() -> FastMCP:
             },
         )
         sent_to = result.get("sent_to", [])
-        return f"Broadcast sent to: {', '.join(sent_to) if sent_to else 'no peers online'}"
+        failed = result.get("failed", [])
+        parts = []
+        if sent_to:
+            parts.append(f"Broadcast sent to: {', '.join(sent_to)}")
+        else:
+            parts.append("Broadcast sent to: no peers online")
+        if failed:
+            failures = ", ".join(f"{f.get('peer', '?')} ({f.get('error', 'unknown')})" for f in failed)
+            parts.append(f"Failed: {failures}")
+        return "; ".join(parts)
 
     def _format_peer_tsv(result: dict) -> str:
         """Format a peer result dict as a TSV row with header."""
