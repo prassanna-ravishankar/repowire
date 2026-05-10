@@ -19,6 +19,10 @@ _COMMAND_TO_BACKEND: dict[str, AgentType] = {
     cmd: backend for backend, cmd in AGENT_COMMANDS.items()
 }
 
+# Strong references to background warmup tasks. asyncio holds only weak refs to
+# tasks, so without this set a long-sleeping warmup can be GC'd mid-flight.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
 
 def _backend_from_command(command: str) -> AgentType:
     """Derive AgentType from the first token of the command string."""
@@ -166,9 +170,10 @@ async def spawn(
 
     # Schedule post-spawn warmup in the background -- the codex case sleeps
     # ~10s and would otherwise stall the /spawn response. claude/opencode/gemini
-    # warmups are no-ops and return immediately.
+    # warmups are no-ops and return immediately. Hold a strong ref to the task
+    # in a module-level set so asyncio doesn't GC it mid-sleep.
     if result.pane_id:
-        asyncio.ensure_future(
+        task = asyncio.create_task(
             post_spawn_warmup(
                 backend,
                 result.pane_id,
@@ -177,6 +182,8 @@ async def spawn(
                 message=result.message,
             )
         )
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
 
     return SpawnResponse(display_name=result.display_name, tmux_session=result.tmux_session)
 
