@@ -127,7 +127,9 @@ class TestSendAsk:
         assert msg["type"] == "ask"
         assert msg["correlation_id"] == "ask-abc"
         assert msg["from_peer"] == "alice"
-        assert msg["text"] == "ping?"
+        assert msg["text"].startswith("ping?\n")
+        assert "↳ ack #ask-abc" in msg["text"]
+        assert 'ack #ask-abc "reply"' in msg["text"]
         # No intent field — it's a first-class type
         assert "intent" not in msg
         # No reply_to when not supplied

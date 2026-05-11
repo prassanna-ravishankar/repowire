@@ -136,11 +136,14 @@ class MessageRouter:
         Raises:
             TransportError: If send fails
         """
+        hinted_text = (
+            f'{text}\n↳ ack #{correlation_id} (bare) or ack #{correlation_id} "reply"'
+        )
         message: dict[str, Any] = {
             "type": "ask",
             "correlation_id": correlation_id,
             "from_peer": from_peer,
-            "text": text,
+            "text": hinted_text,
         }
         if reply_to is not None:
             message["reply_to"] = reply_to
