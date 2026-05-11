@@ -61,6 +61,7 @@ _RELAY_PREFIXES = ("/api/v1/", "/d/", "/_next/")
 _TUNNEL_PREFIXES = (
     "/peers", "/events", "/query", "/notify", "/broadcast",
     "/session", "/response", "/spawn", "/ws", "/attachments",
+    "/ask", "/ack", "/asks",
 )
 
 # Static file extensions served from web/out root (logos, favicon, images)
