@@ -142,8 +142,8 @@ export default function Dashboard() {
   }, []);
 
   return (
-    <div className="h-dvh overflow-hidden bg-surface text-on-surface font-body mesh-bg">
-      <div className="grid h-full grid-rows-[48px_1fr_56px] md:grid-cols-[420px_1fr] md:grid-rows-[52px_1fr]">
+    <div className="bg-surface text-on-surface font-body mesh-bg md:h-dvh md:overflow-hidden">
+      <div className="flex min-h-dvh flex-col md:grid md:h-full md:min-h-0 md:grid-cols-[420px_1fr] md:grid-rows-[52px_1fr]">
         <TopBar
           counts={counts}
           isConnected={isConnected}
@@ -153,7 +153,7 @@ export default function Dashboard() {
           onSettings={() => setShowSettings(true)}
         />
 
-        <div className={cn("min-h-0 md:block", selectedPeer || mobileTab === "mesh" ? "hidden" : "block")}>
+        <div className={cn("min-h-0 flex-1 md:block", selectedPeer || mobileTab === "mesh" ? "hidden" : "block")}>
           <PeerRoster
             peers={filteredPeers}
             allCount={visiblePeers.length}
@@ -164,7 +164,7 @@ export default function Dashboard() {
           />
         </div>
 
-        <main className={cn("relative min-h-0 overflow-hidden border-l border-border-faint bg-surface-dim", !selectedPeer && mobileTab === "peers" ? "hidden md:flex" : "flex", "flex-col")}>
+        <main className={cn("relative min-h-0 flex-1 border-l border-border-faint bg-surface-dim md:overflow-hidden", !selectedPeer && mobileTab === "peers" ? "hidden md:flex" : "flex", "flex-col")}>
           <WireTrace active={Boolean(selectedPeer)} />
           {selectedPeer ? (
             <PeerView

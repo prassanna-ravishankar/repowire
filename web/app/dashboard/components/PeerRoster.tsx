@@ -33,8 +33,8 @@ export function PeerRoster({
   }, [peers]);
 
   return (
-    <aside className="flex h-full min-h-0 flex-col overflow-hidden bg-surface-dim">
-      <div className="flex items-center gap-2 border-b border-border-faint px-3 py-2">
+    <aside className="flex min-h-0 flex-col bg-surface-dim md:h-full md:overflow-hidden">
+      <div className="sticky top-[var(--topbar-offset)] z-20 flex items-center gap-2 border-b border-border-faint bg-surface-dim px-3 py-2 md:static">
         <Search className="h-3.5 w-3.5 shrink-0 text-outline" />
         <input
           value={filter}
@@ -45,7 +45,7 @@ export function PeerRoster({
         <span className="font-mono text-[10px] text-outline tabular-nums">{peers.length}/{allCount}</span>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 md:overflow-y-auto">
         {byCircle.map(([circle, list]) => (
           <section key={circle}>
             <div className="flex items-baseline justify-between px-3.5 pb-1.5 pt-3 font-mono text-[9px] font-semibold uppercase tracking-[0.2em] text-outline">

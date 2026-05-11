@@ -18,7 +18,7 @@ export function TopBar({
   onSettings: () => void;
 }) {
   return (
-    <header className="col-span-full flex h-12 items-center gap-3 border-b border-border-faint bg-surface-dim px-3 md:h-[52px] md:px-5">
+    <header className="sticky top-0 z-30 col-span-full flex h-12 items-center gap-3 border-b border-border-faint bg-surface-dim px-3 pt-[env(safe-area-inset-top)] md:static md:h-[52px] md:px-5 md:pt-0">
       <div className="flex min-w-0 items-center gap-3 md:w-[397px]">
         <Image src="/brand/logo-mark-copper.svg" alt="" width={22} height={24} priority />
         <span className="font-headline text-xs font-bold tracking-[0.2em] text-on-surface">REPOWIRE</span>

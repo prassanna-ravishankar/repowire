@@ -14,7 +14,7 @@ export function MobileTabs({
   onChange: (tab: MobileTab) => void;
 }) {
   return (
-    <nav className="col-span-full flex border-t border-border-faint bg-surface-dim md:hidden">
+    <nav className="sticky bottom-0 z-30 col-span-full flex border-t border-border-faint bg-surface-dim pb-[env(safe-area-inset-bottom)] md:hidden">
       <MobileTabButton active={activeTab === "peers"} label="PEERS" sub={`${counts.online} online · ${counts.busy} busy`} onClick={() => onChange("peers")} />
       <MobileTabButton active={activeTab === "mesh"} label="MESH" sub={`${eventCount} events`} onClick={() => onChange("mesh")} />
     </nav>

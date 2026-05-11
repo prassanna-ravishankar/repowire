@@ -13,7 +13,7 @@ export default function Installation() {
   };
 
   return (
-    <section id="installation" className="border-b border-border-faint bg-surface py-20 sm:py-24">
+    <section id="installation" className="border-b border-border-faint bg-surface py-14 sm:py-20 lg:py-24">
       <div className="mx-auto max-w-7xl px-4 text-center sm:px-6 lg:px-8">
         <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
           Install

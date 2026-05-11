@@ -33,7 +33,7 @@ export function PeerView({
   onClose: () => void;
   onSent: () => void;
 }) {
-  const scrollerRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
   const thread = useMemo(() => {
     const id = peer.peer_id;
     return events
@@ -45,15 +45,14 @@ export function PeerView({
   }, [events, peer.peer_id]);
 
   useEffect(() => {
-    const scroller = scrollerRef.current;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    bottomRef.current?.scrollIntoView({ block: "end" });
   }, [thread.length]);
 
   const { folder, parent } = peer.path ? shortPath(peer.path) : { folder: "", parent: "" };
 
   return (
     <>
-      <div className="flex items-center gap-3 border-b border-border-faint px-4 py-3 md:px-6">
+      <div className="sticky top-[var(--topbar-offset)] z-10 flex items-center gap-3 border-b border-border-faint bg-surface-dim px-4 py-3 md:static md:px-6">
         <span className={cn("h-2.5 w-2.5 rounded-full", statusDot(peer.status))} />
         <div className="min-w-0 flex-1">
           <h1 className="truncate font-headline text-lg font-bold text-on-surface">{peerLabel(peer)}</h1>
@@ -79,7 +78,7 @@ export function PeerView({
         </div>
       )}
 
-      <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
+      <div className="min-h-0 flex-1 px-4 py-4 md:overflow-y-auto md:px-6">
         {thread.length === 0 ? (
           <div className="py-10 font-mono text-xs leading-6 text-outline">
             &gt; no messages with {peerLabel(peer)}.<br />
@@ -88,6 +87,7 @@ export function PeerView({
         ) : (
           thread.map((event) => <ThreadItem key={event.id} event={event} peer={peer} />)
         )}
+        <div ref={bottomRef} />
       </div>
 
       <ComposeBar peer={peer} apiBase={apiBase} events={events} onSent={onSent} />
@@ -105,16 +105,16 @@ function ThreadItem({ event, peer }: { event: Event; peer: Peer }) {
         </div>
         <div
           className={cn(
-            "max-w-[82%] rounded p-3 font-mono text-[13px] leading-6 text-on-surface",
+            "max-w-[82%] min-w-0 rounded p-3 font-mono text-[13px] leading-6 text-on-surface [overflow-wrap:anywhere]",
             isUser
               ? "border-r-2 border-primary bg-primary/10"
               : "border-l-2 border-primary/70 bg-surface-container-high"
           )}
         >
           {isUser ? (
-            <p className="whitespace-pre-wrap">{event.text}</p>
+            <p className="whitespace-pre-wrap break-words">{event.text}</p>
           ) : (
-            <div className="prose prose-invert prose-sm max-w-none">
+            <div className="prose prose-invert prose-sm max-w-none break-words [&_pre]:overflow-x-auto">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{event.text}</ReactMarkdown>
             </div>
           )}
@@ -325,7 +325,7 @@ function ComposeBar({
   const visibleAsks = pendingAsks.filter((a) => a.to_peer === peer.name);
 
   return (
-    <div className="border-t border-border-faint bg-surface-dim p-3 md:p-4">
+    <div className="sticky bottom-0 z-10 border-t border-border-faint bg-surface-dim p-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] md:static md:p-4">
       <div className="mb-2 flex items-center gap-2">
         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-outline">
           ask &rarr; {peerLabel(peer)}
@@ -417,8 +417,8 @@ function ComposeBar({
                 <span className="shrink-0 text-[10px] uppercase tracking-[0.14em] text-outline">
                   #{a.correlation_id.slice(0, 8)}
                 </span>
-                <span className="flex-1 truncate text-on-surface-variant">{a.preview}</span>
-                <span className="shrink-0 text-[10px] text-outline">
+                <span className="hidden flex-1 truncate text-on-surface-variant md:inline">{a.preview}</span>
+                <span className="ml-auto shrink-0 text-[10px] text-outline md:ml-0">
                   {a.state === "pending"
                     ? "pending"
                     : a.state === "delivered"
@@ -432,6 +432,9 @@ function ComposeBar({
                 >
                   <X className="h-3 w-3" aria-hidden="true" />
                 </button>
+              </div>
+              <div className="mt-1 pl-5 text-on-surface-variant [overflow-wrap:anywhere] md:hidden">
+                {a.preview}
               </div>
               {a.state === "delivered" && a.reply && (
                 <div className="mt-1.5 max-h-24 overflow-y-auto whitespace-pre-wrap pl-5 text-on-surface-variant">

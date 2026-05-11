@@ -124,6 +124,15 @@
   --shadow-2: 0 2px 0 0 rgba(0, 0, 0, 0.4), 0 6px 20px -8px rgba(0, 0, 0, 0.6);
   --shadow-3: 0 24px 48px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(199, 123, 61, 0.06) inset;
   --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
+
+  /* Sticky-below-TopBar offset. Mobile: 48px topbar + iOS notch. Desktop overrides below. */
+  --topbar-offset: calc(48px + env(safe-area-inset-top));
+}
+
+@media (min-width: 768px) {
+  :root {
+    --topbar-offset: 52px;
+  }
 }
 
 html,

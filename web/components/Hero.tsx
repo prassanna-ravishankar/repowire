@@ -7,7 +7,7 @@ import { motion } from "framer-motion";
 
 export default function Hero() {
   return (
-    <section className="relative min-h-[92vh] overflow-hidden border-b border-border-faint pt-28">
+    <section className="relative overflow-hidden border-b border-border-faint pt-24 sm:min-h-[92svh] sm:pt-28">
       <Image
         src="/brand/repowire-arch.webp"
         alt=""
@@ -18,7 +18,7 @@ export default function Hero() {
       />
       <div className="absolute inset-0 bg-surface/85" />
 
-      <div className="relative z-10 mx-auto flex min-h-[calc(92vh-7rem)] max-w-7xl flex-col justify-center px-4 pb-20 sm:px-6 lg:px-8">
+      <div className="relative z-10 mx-auto flex max-w-7xl flex-col justify-center px-4 pb-14 sm:min-h-[calc(92svh-7rem)] sm:px-6 sm:pb-20 lg:px-8">
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}

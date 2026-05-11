@@ -25,7 +25,7 @@ const steps = [
 
 export default function HowItWorks() {
   return (
-    <section className="border-b border-border-faint bg-surface-dim py-20 sm:py-24">
+    <section className="border-b border-border-faint bg-surface-dim py-14 sm:py-20 lg:py-24">
       <div className="mx-auto grid max-w-7xl gap-12 px-4 sm:px-6 lg:grid-cols-[0.9fr_1.1fr] lg:px-8">
         <div>
           <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
@@ -51,7 +51,7 @@ export default function HowItWorks() {
           </div>
         </div>
 
-        <div className="relative min-h-[360px] overflow-hidden border border-border-faint bg-surface-container-low p-4">
+        <div className="relative overflow-hidden border border-border-faint bg-surface-container-low p-4 sm:min-h-[360px]">
           <div className="mb-4 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-outline">
             System architecture
           </div>
@@ -60,9 +60,9 @@ export default function HowItWorks() {
             alt="Repowire architecture"
             width={1000}
             height={700}
-            className="h-full min-h-[300px] w-full object-cover opacity-80"
+            className="h-auto w-full object-cover opacity-80 sm:h-full sm:min-h-[300px]"
           />
-          <div className="absolute inset-x-4 bottom-4 border-l-2 border-primary bg-surface-dim/95 p-4">
+          <div className="mt-4 border-l-2 border-primary bg-surface-dim/95 p-4 sm:absolute sm:inset-x-4 sm:bottom-4 sm:mt-0">
             <p className="font-mono text-xs leading-6 text-on-surface-variant">
               daemon/ws {">"} hooks/channel {">"} peer session {">"} response capture
             </p>
