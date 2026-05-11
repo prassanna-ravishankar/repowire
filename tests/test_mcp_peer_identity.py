@@ -19,8 +19,10 @@ from repowire.mcp import server as mcp_server
 @pytest.fixture(autouse=True)
 def reset_cache():
     mcp_server._cached_peer_name = None
+    mcp_server._registered = False
     yield
     mcp_server._cached_peer_name = None
+    mcp_server._registered = False
 
 
 def _matching_meta(extra: dict | None = None) -> dict:
@@ -217,6 +219,74 @@ def test_all_outbound_tools_strict_register():
             f"before sending; otherwise from_peer can race a hook drop. "
             f"See PR #108 / Issue #107."
         )
+
+
+@pytest.mark.asyncio
+async def test_ensure_registered_does_not_claim_when_multiple_candidates():
+    """When MCP has no pane_id (codex sandbox case) and the daemon returns
+    multiple online peers matching path+backend, MCP must NOT pick one
+    arbitrarily — that's the cross-session identity-theft bug. It should
+    fall through to fresh POST /peers and cache the daemon-assigned name.
+    See repowire-c6z.
+    """
+    candidates = [
+        {"display_name": "agentbox-codex", "peer_id": "p1"},
+        {"display_name": "agentbox-2-codex", "peer_id": "p2"},
+    ]
+    posted_name = "agentbox-3-codex"
+
+    async def daemon_router(method, url, body=None, params=None):  # noqa: ARG001
+        del body, params
+        if method == "GET" and url.startswith("/peers/by-pane/"):
+            raise RuntimeError("no pane_id passed in this scenario")
+        if method == "GET" and url == "/peers":
+            return {"peers": candidates}
+        if method == "GET" and url.startswith("/peers/"):
+            raise RuntimeError("name lookup miss")
+        if method == "POST" and url == "/peers":
+            return {"peer_id": "p3", "display_name": posted_name}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    with patch.object(
+            mcp_server, "get_tmux_info", return_value={"pane_id": None, "session_name": None},
+         ), \
+         patch.object(mcp_server, "get_pane_id", return_value=None), \
+         patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_router)), \
+         patch.object(mcp_server, "get_display_name", return_value="agentbox"):
+        await mcp_server._ensure_registered()
+
+    assert mcp_server._cached_peer_name == posted_name, (
+        "MCP must register fresh when path+backend has multiple online candidates, "
+        "not claim one arbitrarily"
+    )
+    assert mcp_server._cached_peer_name not in {c["display_name"] for c in candidates}
+
+
+@pytest.mark.asyncio
+async def test_ensure_registered_claims_when_exactly_one_candidate():
+    """The single-candidate case is the legitimate use of path+backend
+    fallback: hook-registered peer exists, MCP subprocess started without
+    pane env, no ambiguity → reuse the hook-assigned name.
+    """
+    sole = {"display_name": "agentbox-codex", "peer_id": "p1"}
+
+    async def daemon_router(method, url, body=None, params=None):  # noqa: ARG001
+        del body, params
+        if method == "GET" and url == "/peers":
+            return {"peers": [sole]}
+        if method == "GET" and url.startswith("/peers/"):
+            raise RuntimeError("name lookup miss")
+        raise AssertionError(f"unexpected request: {method} {url} (should not POST)")
+
+    with patch.object(
+            mcp_server, "get_tmux_info", return_value={"pane_id": None, "session_name": None},
+         ), \
+         patch.object(mcp_server, "get_pane_id", return_value=None), \
+         patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_router)), \
+         patch.object(mcp_server, "get_display_name", return_value="agentbox"):
+        await mcp_server._ensure_registered()
+
+    assert mcp_server._cached_peer_name == "agentbox-codex"
 
 
 @pytest.mark.asyncio
