@@ -188,7 +188,9 @@ async def _ensure_registered(*, strict: bool = False) -> None:
         return
 
     # Last-resort identity resolution: find hook-registered peer by path+backend.
-    # Avoids creating a duplicate when MCP subprocess lacks tmux env vars.
+    # Only claim when there is exactly one online candidate — multiple matches
+    # are ambiguous and inheriting an arbitrary peer's identity causes
+    # cross-session impersonation (see repowire-c6z).
     try:
         result = await daemon_request("GET", "/peers", params={
             "path": str(cwd),
@@ -196,11 +198,7 @@ async def _ensure_registered(*, strict: bool = False) -> None:
             "status": "online",
         })
         candidates = result.get("peers", [])
-        if candidates:
-            candidates.sort(
-                key=lambda p: (bool(p.get("tmux_session")), p.get("last_seen") or ""),
-                reverse=True,
-            )
+        if len(candidates) == 1:
             assigned = candidates[0].get("display_name")
             if assigned:
                 _cached_peer_name = assigned

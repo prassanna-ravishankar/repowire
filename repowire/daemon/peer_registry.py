@@ -359,10 +359,16 @@ class PeerRegistry:
         When a new ws-hook claims a pane, the old peer's pane registration is
         stale. Clearing it prevents get_peer_by_pane from returning the wrong
         peer after a session restart in the same tmux pane. Must hold lock.
+
+        Also marks the displaced peer offline: losing the pane means its
+        ws-hook is no longer the live owner of that tmux pane, so the peer's
+        inbound transport is gone. Leaving it ONLINE with pane_id=None creates
+        zombie peers that future sessions may incorrectly claim.
         """
         for sid, peer in self._peers.items():
             if peer.pane_id == pane_id and sid != new_peer_id:
                 peer.pane_id = None
+                peer.status = PeerStatus.OFFLINE
 
     # ------------------------------------------------------------------
     # Allocate + register (atomic, the preferred public API)

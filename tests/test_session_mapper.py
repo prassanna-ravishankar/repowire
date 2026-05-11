@@ -8,6 +8,7 @@ import pytest
 
 from repowire.config.models import AgentType
 from repowire.daemon.peer_registry import PeerRegistry
+from repowire.protocol.peers import PeerStatus
 
 
 def _make_registry(tmp_path: Path, mappings: dict | None = None) -> PeerRegistry:
@@ -149,10 +150,12 @@ async def test_new_pane_registration_clears_old_peer_pane_id(tmp_path):
     assert peer is not None
     assert peer.peer_id == new_id
 
-    # Old peer still exists but no longer owns the pane
+    # Old peer still exists but no longer owns the pane, and is marked
+    # offline so it can't be claimed by future MCP path+backend lookups.
     old_peer = await registry.get_peer(old_name)
     assert old_peer is not None
     assert old_peer.pane_id is None
+    assert old_peer.status == PeerStatus.OFFLINE
 
 
 @pytest.mark.asyncio
