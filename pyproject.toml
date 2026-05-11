@@ -77,6 +77,9 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.ruff.lint.per-file-ignores]
 # TypeScript plugin code embedded as string has long lines
 "repowire/installers/opencode.py" = ["E501"]
+"repowire/installers/pi.py" = ["E501"]
+# Test function names occasionally mirror camelCase API names being asserted.
+"tests/test_pi_installer.py" = ["N802"]
 
 [tool.ty.rules]
 # Suppress ty false positives (ty is pre-release)

@@ -117,6 +117,10 @@ class Peer(BaseModel):
         """Check if this peer runs Gemini."""
         return self.backend == AgentType.GEMINI
 
+    def is_pi(self) -> bool:
+        """Check if this peer runs Pi."""
+        return self.backend == AgentType.PI
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {

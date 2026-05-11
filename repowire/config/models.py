@@ -28,6 +28,7 @@ class AgentType(str, Enum):
     OPENCODE = "opencode"
     CODEX = "codex"
     GEMINI = "gemini"
+    PI = "pi"
 
 
 class RelayConfig(BaseModel):

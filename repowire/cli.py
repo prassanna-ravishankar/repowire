@@ -180,9 +180,14 @@ def setup(
         _setup_gemini()
         agents_setup.append("gemini")
 
+    # Detect and set up Pi if pi CLI or config exists
+    if shutil.which("pi") or (Path.home() / ".pi").exists():
+        _setup_pi()
+        agents_setup.append("pi")
+
     if not agents_setup:
         console.print("[yellow]No agent types detected.[/]")
-        console.print("Install claude, codex, gemini, or opencode first.")
+        console.print("Install claude, codex, gemini, opencode, or pi first.")
         return
 
     console.print(f"[green]✓[/] Configured agents: {', '.join(agents_setup)}")
@@ -355,6 +360,7 @@ def uninstall(yes: bool) -> None:
     _uninstall_opencode()
     _uninstall_codex()
     _uninstall_gemini()
+    _uninstall_pi()
 
     # Remove config directory
     config_dir = Config.get_config_dir()
@@ -458,6 +464,19 @@ def _uninstall_gemini() -> None:
         pass
 
 
+def _uninstall_pi() -> None:
+    """Uninstall Pi components."""
+    from repowire.installers.pi import uninstall_extension
+
+    try:
+        if uninstall_extension():
+            console.print("[green]✓[/] Pi extension removed")
+        else:
+            console.print("[dim]Pi extension not installed[/]")
+    except Exception as e:
+        console.print(f"[yellow]![/] Failed to remove Pi extension: {e}")
+
+
 @main.command()
 def update() -> None:
     """Update repowire to the latest version, reinstall hooks, restart daemon."""
@@ -491,6 +510,8 @@ def update() -> None:
         _setup_codex()
     if shutil.which("gemini"):
         _setup_gemini()
+    if shutil.which("pi") or (Path.home() / ".pi").exists():
+        _setup_pi()
 
     # Restart daemon service if running
     from repowire.service.installer import get_service_status, restart_service
@@ -543,6 +564,15 @@ def status() -> None:
             console.print("  [yellow]✗[/] codex (hooks not installed)")
     else:
         console.print("  [dim]✗[/] codex (not detected)")
+
+    if shutil.which("pi") or (Path.home() / ".pi").exists():
+        from repowire.installers.pi import check_extension_installed as check_pi_ext
+        if check_pi_ext():
+            console.print("  [green]✓[/] pi (extension installed)")
+        else:
+            console.print("  [yellow]✗[/] pi (extension not installed)")
+    else:
+        console.print("  [dim]✗[/] pi (not detected)")
     console.print("")
 
     # Check daemon service
@@ -675,6 +705,17 @@ def _setup_gemini() -> None:
         console.print("[green]✓[/] Gemini MCP server configured")
     except Exception as e:
         console.print(f"[red]Failed to configure Gemini MCP: {e}[/]")
+
+
+def _setup_pi() -> None:
+    """Setup for Pi (pi.dev) agent type."""
+    from repowire.installers.pi import install_extension
+
+    try:
+        install_extension()
+        console.print("[green]✓[/] Pi extension installed")
+    except Exception as e:
+        console.print(f"[red]Failed to install Pi extension: {e}[/]")
 
 
 @main.command()
