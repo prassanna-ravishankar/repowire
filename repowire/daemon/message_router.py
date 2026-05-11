@@ -137,7 +137,8 @@ class MessageRouter:
             TransportError: If send fails
         """
         hinted_text = (
-            f'{text}\n↳ ack #{correlation_id} (bare) or ack #{correlation_id} "reply"'
+            f'{text.rstrip()}\n'
+            f'↳ ack("{correlation_id}") or ack("{correlation_id}", "reply")'
         )
         message: dict[str, Any] = {
             "type": "ask",

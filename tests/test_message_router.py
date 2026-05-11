@@ -128,12 +128,27 @@ class TestSendAsk:
         assert msg["correlation_id"] == "ask-abc"
         assert msg["from_peer"] == "alice"
         assert msg["text"].startswith("ping?\n")
-        assert "↳ ack #ask-abc" in msg["text"]
-        assert 'ack #ask-abc "reply"' in msg["text"]
+        assert '↳ ack("ask-abc")' in msg["text"]
+        assert 'ack("ask-abc", "reply")' in msg["text"]
         # No intent field — it's a first-class type
         assert "intent" not in msg
         # No reply_to when not supplied
         assert "reply_to" not in msg
+
+    async def test_hint_strips_trailing_whitespace(self, router, transport):
+        """Trailing newlines/whitespace in ask body don't push the hint adrift."""
+        await router.send_ask(
+            from_peer="alice",
+            to_session_id="sid-bob",
+            to_peer_name="bob",
+            correlation_id="ask-ws",
+            text="line one\nline two\n\n  \n",
+        )
+        msg = transport.send.call_args[0][1]
+        assert msg["text"] == (
+            'line one\nline two\n'
+            '↳ ack("ask-ws") or ack("ask-ws", "reply")'
+        )
 
     async def test_includes_reply_to(self, router, transport):
         await router.send_ask(

@@ -31,7 +31,7 @@ class TestHandleAskAndNotify:
                     "type": "ask",
                     "correlation_id": "ask-abc",
                     "from_peer": "alice",
-                    "text": 'ping?\n↳ ack #ask-abc (bare) or ack #ask-abc "reply"',
+                    "text": 'ping?\n↳ ack("ask-abc") or ack("ask-abc", "reply")',
                 },
                 "%5",
             )
@@ -40,7 +40,7 @@ class TestHandleAskAndNotify:
         assert "@alice" in injected
         assert "[ask #ask-abc]" in injected
         assert "ping?" in injected
-        assert "↳ ack #ask-abc" in injected
+        assert '↳ ack("ask-abc")' in injected
 
     @pytest.mark.asyncio
     async def test_type_notify_injects_plain_text(self):
