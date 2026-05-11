@@ -46,7 +46,6 @@ interface PendingQuery {
 // own PeerConn (its own WebSocket, peer_id, busy state, pending queries).
 interface PeerConn {
   sessionId: string;
-  sessionTitle: string | null;
   peerId: string | null;
   peerName: string;
   ws: WebSocket | null;
@@ -55,9 +54,8 @@ interface PeerConn {
   reconnectTimeout: ReturnType<typeof setTimeout> | null;
   reconnectAttempts: number;
   closed: boolean;
-  // Map of in-flight assistant turn -> correlation id, so message_end can
-  // flush the right pending query. Pi has no parent-message linkage like
-  // opencode; we track the active turn instead.
+  // Tracks the currently-streaming correlation. message_update deltas and
+  // turn_end finalize get routed to this pending query.
   activeTurnCorrelationId: string | null;
 }
 
@@ -131,8 +129,8 @@ function sanitizePeerName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown";
 }
 
-function peerNameFor(folder: string, session: { id: string; title?: string | null }): string {
-  const slug = sanitizePeerName(session.title || session.id.slice(-8)).slice(0, 32) || session.id.slice(-8);
+function peerNameFor(folder: string, sessionId: string, sessionName: string | null): string {
+  const slug = sanitizePeerName(sessionName || sessionId.slice(-8)).slice(0, 32) || sessionId.slice(-8);
   return sanitizePeerName(folder + "-" + slug);
 }
 
@@ -275,14 +273,13 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
   }
 }
 
-function ensurePeer(session: { id: string; title?: string | null }) {
-  if (peerBySession.has(session.id)) return;
+function ensurePeer(sessionId: string, sessionName: string | null) {
+  if (peerBySession.has(sessionId)) return;
   const folder = path.basename(projectPath) || "unknown";
   const conn: PeerConn = {
-    sessionId: session.id,
-    sessionTitle: session.title ?? null,
-    peerId: loadPeerId(projectPath, session.id),
-    peerName: peerNameFor(folder, session),
+    sessionId,
+    peerId: loadPeerId(projectPath, sessionId),
+    peerName: peerNameFor(folder, sessionId, sessionName),
     ws: null,
     pendingQueries: new Map(),
     busy: false,
@@ -291,7 +288,7 @@ function ensurePeer(session: { id: string; title?: string | null }) {
     closed: false,
     activeTurnCorrelationId: null,
   };
-  peerBySession.set(session.id, conn);
+  peerBySession.set(sessionId, conn);
   connectPeerWebSocket(conn);
 }
 
@@ -395,16 +392,13 @@ function cleanup() {
   peerBySession.clear();
 }
 
-// Resolve which PeerConn a tool call is attributed to. Pi's ExtensionContext
-// exposes the active session via ctx.sessionManager (readonly). When we can
-// read the active session id from there, look up the matching PeerConn.
+// Resolve which PeerConn a tool call is attributed to. ctx.sessionManager
+// exposes the active session id via getSessionId() (pi 0.74 ReadonlySessionManager).
 // Fall back to the first registered peer if the lookup fails (subagent
 // contexts, unknown shape, etc.).
-function callerPeer(ctx: unknown): { peerName: string; peerId: string | null } {
+function callerPeer(ctx: ExtensionContext | undefined): { peerName: string; peerId: string | null } {
   try {
-    const sm = (ctx as { sessionManager?: { getActiveSessionId?: () => string | null } } | undefined)
-      ?.sessionManager;
-    const activeId = sm?.getActiveSessionId?.();
+    const activeId = ctx?.sessionManager?.getSessionId?.();
     if (activeId) {
       const conn = peerBySession.get(activeId);
       if (conn) return { peerName: conn.peerName, peerId: conn.peerId };
@@ -424,6 +418,18 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   // so the latest captured ctx remains valid for soft-inject branching.
   function capture(_event: unknown, ctx: ExtensionContext) {
     piCtx = ctx;
+  }
+
+  // Resolve "the peer for the currently active session" from a captured ctx.
+  // session_start carries no session id in pi 0.74 — we read it off ctx.sessionManager.
+  function activePeerFromCtx(ctx: ExtensionContext | undefined): PeerConn | undefined {
+    try {
+      const sid = ctx?.sessionManager?.getSessionId?.();
+      if (sid) return peerBySession.get(sid);
+    } catch {
+      /* fall through */
+    }
+    return undefined;
   }
 
   // Derive circle from tmux session name (matches Claude Code hooks).
@@ -446,25 +452,39 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   // reload/fork) to avoid double-registration on session-tree navigation.
   // Fork creates a new session id we'll see via a later session_start
   // with reason "new" if it becomes a root session.
+  // session_start fires at boot (reason: "startup"), on resume/reload/fork
+  // navigation, and on /new. SessionStartEvent carries only `reason` and an
+  // optional previousSessionFile — the active session id is on ctx, not the
+  // event. We register a peer only on startup/new.
   pi.on("session_start", async (event, ctx) => {
     capture(event, ctx);
     const reason = (event as { reason?: string }).reason;
-    const sessionId = (event as { sessionId?: string; id?: string }).sessionId
-      || (event as { sessionId?: string; id?: string }).id;
-    const title = (event as { title?: string }).title ?? null;
-    if (!sessionId) return;
-    if (reason === "startup" || reason === "new") {
-      ensurePeer({ id: sessionId, title });
+    if (reason !== "startup" && reason !== "new") return;
+    try {
+      const sessionId = ctx.sessionManager.getSessionId?.();
+      if (!sessionId) {
+        console.warn("[repowire] session_start: no session id on ctx");
+        return;
+      }
+      let sessionName: string | null = null;
+      try { sessionName = ctx.sessionManager.getSessionName?.() ?? null; } catch { /* optional */ }
+      ensurePeer(sessionId, sessionName);
+    } catch (e) {
+      console.warn("[repowire] session_start handler failed:", e);
     }
-    // resume/reload/fork: peer already registered (or will be by the
-    // matching startup/new event). No-op here.
   });
 
+  // session_shutdown carries `reason` ("quit" | "reload" | "new" | "resume" | "fork").
+  // Pi tears down the extension runtime on quit/reload/new/resume/fork. Disconnect
+  // the active peer cleanly.
   pi.on("session_shutdown", async (event, ctx) => {
     capture(event, ctx);
-    const sessionId = (event as { sessionId?: string; id?: string }).sessionId
-      || (event as { sessionId?: string; id?: string }).id;
-    if (sessionId) removePeer(sessionId);
+    try {
+      const sessionId = ctx.sessionManager.getSessionId?.();
+      if (sessionId) removePeer(sessionId);
+    } catch {
+      /* swallow — we're tearing down */
+    }
   });
 
   // Scaffold for pre-compact handling. Out of scope for v1: in the future,
@@ -484,41 +504,38 @@ export default async function repowireExtension(pi: ExtensionAPI) {
 
   pi.on("turn_end", async (event, ctx) => {
     capture(event, ctx);
-    for (const conn of peerBySession.values()) {
-      const cid = conn.activeTurnCorrelationId;
-      if (!cid) continue;
+    // Finalize: route to the active session's peer only. If the turn was
+    // driven by handleIncomingQuery, activeTurnCorrelationId is set.
+    const conn = activePeerFromCtx(ctx);
+    if (!conn) return;
+    const cid = conn.activeTurnCorrelationId;
+    if (cid) {
       flushPending(conn, cid);
       conn.activeTurnCorrelationId = null;
-      conn.busy = false;
-      sendStatus(conn, "idle");
     }
+    conn.busy = false;
+    sendStatus(conn, "idle");
   });
 
+  // message_update carries an assistantMessageEvent union. text_delta gives
+  // us new text chunks. error type gives us the final error if streaming
+  // failed (no errorMessage on message_end in pi 0.74). thinking_delta is
+  // discarded — we only want answer text.
   pi.on("message_update", async (event, ctx) => {
     capture(event, ctx);
-    const delta = (event as { delta?: string; text?: string }).delta
-      || (event as { delta?: string; text?: string }).text;
-    if (typeof delta !== "string" || !delta) return;
-    for (const conn of peerBySession.values()) {
-      const cid = conn.activeTurnCorrelationId;
-      if (!cid) continue;
-      const pending = conn.pendingQueries.get(cid);
-      if (!pending) continue;
-      pending.buffer.push(delta);
-    }
-  });
-
-  pi.on("message_end", async (event, ctx) => {
-    capture(event, ctx);
-    const error = (event as { error?: unknown }).error;
-    if (!error) return;
-    for (const conn of peerBySession.values()) {
-      const cid = conn.activeTurnCorrelationId;
-      if (!cid) continue;
-      const pending = conn.pendingQueries.get(cid);
-      if (!pending) continue;
+    const ame = (event as { assistantMessageEvent?: { type?: string; delta?: string; error?: unknown; reason?: string } }).assistantMessageEvent;
+    if (!ame) return;
+    const conn = activePeerFromCtx(ctx);
+    if (!conn) return;
+    const cid = conn.activeTurnCorrelationId;
+    if (!cid) return;
+    const pending = conn.pendingQueries.get(cid);
+    if (!pending) return;
+    if (ame.type === "text_delta" && typeof ame.delta === "string") {
+      pending.buffer.push(ame.delta);
+    } else if (ame.type === "error") {
       pending.hasError = true;
-      pending.errorPayload = error;
+      pending.errorPayload = ame.error ?? ame.reason ?? "stream error";
     }
   });
 
@@ -534,6 +551,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   // strictly requires TypeBox, swap in Type.Object().
   pi.registerTool({
     name: "list_peers",
+    label: "Repowire: list peers",
     description: "List all available peers in the mesh network",
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _onUpdate, ctx) {
@@ -544,12 +562,13 @@ export default async function repowireExtension(pi: ExtensionAPI) {
         const project = p.metadata?.project || "";
         rows.push([p.peer_id || "", p.display_name || p.name || "", project, p.circle || "", p.status || "", p.path || "", p.description || ""].join("\t"));
       }
-      return { content: [{ type: "text", text: rows.join("\n") }] };
+      return { content: [{ type: "text", text: rows.join("\n") }], details: undefined };
     },
   });
 
   pi.registerTool({
     name: "ask",
+    label: "Repowire: ask peer",
     description: "Open a non-blocking ask thread with a peer. Returns a correlation_id immediately. The peer responds via ack(corr_id) (bare close) or ack(corr_id, message) (reply, delivered as a notification framed [ack #cid from @peer] message).",
     parameters: Type.Object({
       peer_name: Type.String({ description: "Name of the peer to ask" }),
@@ -566,12 +585,13 @@ export default async function repowireExtension(pi: ExtensionAPI) {
       if (params.reply_to) body.reply_to = params.reply_to;
       const result = await daemon("/ask", body);
       if (result.error) throw new Error(result.error);
-      return { content: [{ type: "text", text: result.correlation_id || "" }] };
+      return { content: [{ type: "text", text: result.correlation_id || "" }], details: undefined };
     },
   });
 
   pi.registerTool({
     name: "ack",
+    label: "Repowire: ack thread",
     description: "Close an open ask thread. Bare close: ack(corr_id). Reply: ack(corr_id, message) -- delivered to the original asker.",
     parameters: Type.Object({
       correlation_id: Type.String({ description: "The ask's correlation_id" }),
@@ -586,12 +606,13 @@ export default async function repowireExtension(pi: ExtensionAPI) {
       if (params.message !== undefined) body.message = params.message;
       await daemon("/ack", body);
       const text = "acked #" + params.correlation_id + (params.message ? " with reply" : "");
-      return { content: [{ type: "text", text }] };
+      return { content: [{ type: "text", text }], details: undefined };
     },
   });
 
   pi.registerTool({
     name: "notify_peer",
+    label: "Repowire: notify peer",
     description: "Send a notification to another peer (fire-and-forget)",
     parameters: Type.Object({
       peer_name: Type.String({ description: "Name of the peer" }),
@@ -604,12 +625,13 @@ export default async function repowireExtension(pi: ExtensionAPI) {
         to_peer: params.peer_name,
         text: params.message,
       });
-      return { content: [{ type: "text", text: "Notification sent" }] };
+      return { content: [{ type: "text", text: "Notification sent" }], details: undefined };
     },
   });
 
   pi.registerTool({
     name: "broadcast",
+    label: "Repowire: broadcast",
     description: "Broadcast a message to all peers in the mesh",
     parameters: Type.Object({
       message: Type.String({ description: "Message to broadcast" }),
@@ -626,12 +648,13 @@ export default async function repowireExtension(pi: ExtensionAPI) {
         const fails = result.failed.map((f: { peer: string; error: string }) => f.peer + " (" + f.error + ")").join(", ");
         parts.push("Failed: " + fails);
       }
-      return { content: [{ type: "text", text: parts.join("; ") }] };
+      return { content: [{ type: "text", text: parts.join("; ") }], details: undefined };
     },
   });
 
   pi.registerTool({
     name: "whoami",
+    label: "Repowire: whoami",
     description: "Get information about this peer in the mesh",
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _onUpdate, ctx) {
@@ -642,17 +665,18 @@ export default async function repowireExtension(pi: ExtensionAPI) {
         const project = result.metadata?.project || "";
         const header = "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\tdescription";
         const row = [result.peer_id || "", result.display_name || result.name || "", project, result.circle || "", result.status || "", result.path || "", result.machine || "", result.description || ""].join("\t");
-        return { content: [{ type: "text", text: header + "\n" + row }] };
+        return { content: [{ type: "text", text: header + "\n" + row }], details: undefined };
       } catch {
         const text = "peer_id\tname\tproject\tcircle\tstatus\tpath\tmachine\tdescription\n"
           + (me.peerId || "") + "\t" + me.peerName + "\t\t\tnot registered\t\t\t";
-        return { content: [{ type: "text", text }] };
+        return { content: [{ type: "text", text }], details: undefined };
       }
     },
   });
 
   pi.registerTool({
     name: "set_description",
+    label: "Repowire: set description",
     description: "Update your task description, visible to other peers via list_peers. Call this at the start of a task.",
     parameters: Type.Object({
       description: Type.String({ description: "Short description of your current task" }),
@@ -660,12 +684,13 @@ export default async function repowireExtension(pi: ExtensionAPI) {
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const me = callerPeer(ctx);
       await daemon("/peers/" + encodeURIComponent(me.peerName) + "/description", { description: params.description });
-      return { content: [{ type: "text", text: "description updated: " + params.description }] };
+      return { content: [{ type: "text", text: "description updated: " + params.description }], details: undefined };
     },
   });
 
   pi.registerTool({
     name: "set_circle",
+    label: "Repowire: set circle",
     description: "Join a named circle to communicate with peers in that circle. Applies to all sessions in this pi process (circle is process-wide so reconnects keep it).",
     parameters: Type.Object({
       circle: Type.String({ description: "Circle name to join (e.g., 'dev', 'frontend')" }),
@@ -682,7 +707,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
       const text = sent > 0
         ? "Joined circle: " + params.circle + " (" + sent + " session peer" + (sent === 1 ? "" : "s") + ")"
         : "Circle queued: " + params.circle + " (will apply on reconnect)";
-      return { content: [{ type: "text", text }] };
+      return { content: [{ type: "text", text }], details: undefined };
     },
   });
 }

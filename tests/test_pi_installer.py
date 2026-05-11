@@ -25,9 +25,8 @@ def test_extension_default_export_is_async_factory():
 
 def test_session_start_filters_by_reason():
     """Peer registration happens only on reason startup or new, not resume/reload/fork."""
-    assert 'reason === "startup"' in PLUGIN_CONTENT
-    assert 'reason === "new"' in PLUGIN_CONTENT
-    # The handler must read reason from the event payload.
+    assert 'reason !== "startup"' in PLUGIN_CONTENT
+    assert 'reason !== "new"' in PLUGIN_CONTENT
     assert "session_start" in PLUGIN_CONTENT
 
 
@@ -47,15 +46,24 @@ def test_turn_end_flushes_pending():
     assert "flushPending" in PLUGIN_CONTENT
 
 
-def test_message_update_buffers_text():
-    """Streaming deltas land in the pending buffer for the active correlation."""
+def test_message_update_buffers_text_deltas():
+    """Streaming text_deltas (not thinking_deltas) buffer into the pending query."""
     assert "message_update" in PLUGIN_CONTENT
-    assert "pending.buffer.push" in PLUGIN_CONTENT
+    assert "assistantMessageEvent" in PLUGIN_CONTENT
+    assert 'ame.type === "text_delta"' in PLUGIN_CONTENT
+    assert "pending.buffer.push(ame.delta)" in PLUGIN_CONTENT
 
 
-def test_message_end_captures_errors():
-    assert "message_end" in PLUGIN_CONTENT
+def test_message_update_captures_stream_errors():
+    """assistantMessageEvent type 'error' surfaces as a query error."""
+    assert 'ame.type === "error"' in PLUGIN_CONTENT
     assert "pending.hasError = true" in PLUGIN_CONTENT
+
+
+def test_session_id_from_session_manager():
+    """Session id is read from ctx.sessionManager.getSessionId, not the event payload."""
+    assert "getSessionId" in PLUGIN_CONTENT
+    assert "ctx.sessionManager" in PLUGIN_CONTENT
 
 
 def test_soft_inject_uses_send_user_message():
@@ -86,9 +94,29 @@ def test_ctx_capture_for_isidle():
 
 
 def test_caller_peer_uses_session_manager():
-    """callerPeer reads active session from ctx.sessionManager for attribution."""
+    """callerPeer reads active session from ctx.sessionManager.getSessionId for attribution."""
     assert "sessionManager" in PLUGIN_CONTENT
-    assert "getActiveSessionId" in PLUGIN_CONTENT
+    assert "getSessionId" in PLUGIN_CONTENT
+
+
+def test_tools_have_label_field():
+    """Pi 0.74 ToolDefinition requires a `label` field for UI display."""
+    # Every registerTool block needs a label. Cheap heuristic: count
+    # registerTool calls vs label entries inside them.
+    register_count = PLUGIN_CONTENT.count("pi.registerTool(")
+    label_count = PLUGIN_CONTENT.count('label: "Repowire:')
+    assert register_count == label_count, (
+        f"label_count ({label_count}) != registerTool count ({register_count})"
+    )
+    assert register_count >= 8
+
+
+def test_tool_results_include_details_field():
+    """AgentToolResult requires `details`; set undefined for tools without structured details."""
+    # Each tool execute returns at least one result object with details: undefined.
+    assert "details: undefined" in PLUGIN_CONTENT
+    # Heuristic: at least as many details fields as tool definitions.
+    assert PLUGIN_CONTENT.count("details: undefined") >= 8
 
 
 def test_ask_is_framed_with_correlation_id():
