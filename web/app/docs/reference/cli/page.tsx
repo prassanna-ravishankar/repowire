@@ -17,7 +17,7 @@ export default function CliReference() {
 
       <Cmd name="repowire setup" usage="repowire setup [--relay] [--non-interactive]">
         <p>
-          One-time install. Detects every agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires lifecycle hooks and the MCP server for each, and installs the daemon as a user service. <Mono>--relay</Mono> opts in to the hosted relay at <Mono>repowire.io</Mono>. <Mono>--non-interactive</Mono> skips prompts and uses flag values only.
+          One-time install. Detects every agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode, Pi), wires lifecycle hooks and the MCP server for each, and installs the daemon as a user service. <Mono>--relay</Mono> opts in to the hosted relay at <Mono>repowire.io</Mono>. <Mono>--non-interactive</Mono> skips prompts and uses flag values only.
         </p>
       </Cmd>
 
@@ -53,7 +53,7 @@ export default function CliReference() {
 
       <Cmd name="repowire uninstall" usage="repowire uninstall [--yes]">
         <p>
-          Remove hooks, MCP entries, and the daemon service. Leaves <Mono>~/.repowire/</Mono> in place so events and config survive reinstalls.
+          Remove hooks, MCP entries, and the daemon service. Prompts before deleting <Mono>~/.repowire/</Mono> (config, logs, attachments); decline to keep it for reinstalls. <Mono>--yes</Mono> skips the prompts and removes the directory along with the installed package.
         </p>
       </Cmd>
 
