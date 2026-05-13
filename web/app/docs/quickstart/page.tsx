@@ -63,7 +63,6 @@ cd ~/projects/project-b && codex`}
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <NextCard href="/docs/concepts" title="Concepts" desc="Peers, circles, ask vs notify vs broadcast." />
-          <NextCard href="/docs/tools" title="Tools" desc="MCP tools your agent calls to route messages." />
         </div>
       </div>
     </article>
