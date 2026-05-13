@@ -556,6 +556,32 @@ class PeerRegistry:
         async with self._lock:
             return list(self._peers.values())
 
+    async def get_orchestrator(self, circle: str) -> Peer | None:
+        """Return the live orchestrator for a circle, or None.
+
+        Live = role=ORCHESTRATOR, status in (ONLINE, BUSY), and last_seen within
+        2 * heartbeat_interval (one missed beat tolerated, two means dead). If
+        multiple match, returns the most recently seen.
+        """
+        tolerance = self._config.daemon.heartbeat_interval * 2
+        now = datetime.now(timezone.utc)
+        async with self._lock:
+            candidates = [
+                p for p in self._peers.values()
+                if p.circle == circle
+                and p.role == PeerRole.ORCHESTRATOR
+                and p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
+                and p.last_seen is not None
+                and (now - p.last_seen).total_seconds() <= tolerance
+            ]
+            if not candidates:
+                return None
+            return max(candidates, key=lambda p: p.last_seen or now)
+
+    async def is_orchestrator_present(self, circle: str) -> bool:
+        """True iff a live orchestrator exists in the circle (see get_orchestrator)."""
+        return (await self.get_orchestrator(circle)) is not None
+
     # ------------------------------------------------------------------
     # Circle access control (internal)
     # ------------------------------------------------------------------

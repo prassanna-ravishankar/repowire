@@ -535,6 +535,47 @@ def create_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
+    async def orchestrator_status(circle: str | None = None) -> str:
+        """[Repowire mesh] Check whether a live orchestrator is present in a circle.
+
+        Useful before dispatching long-running work that assumes an orchestrator
+        will be available to coordinate. "Live" = role=orchestrator, status
+        online/busy, and last heartbeat within 2 * heartbeat_interval (one
+        missed beat tolerated).
+
+        Args:
+            circle: Circle to check. Defaults to your own circle.
+
+        Returns:
+            TSV row: circle, present, peer_name, peer_id, last_seen, stale_after_seconds
+        """
+        await _ensure_registered()
+        target_circle = circle
+        if target_circle is None:
+            try:
+                me = await daemon_request(
+                    "GET", f"/peers/{await _get_my_peer_name()}",
+                )
+                target_circle = me.get("circle") or "global"
+            except Exception:
+                target_circle = "global"
+        result = await daemon_request(
+            "GET", f"/circles/{quote(target_circle, safe='')}/orchestrator",
+        )
+        header = "circle\tpresent\tpeer_name\tpeer_id\tlast_seen\tstale_after_seconds"
+        row = "\t".join(
+            [
+                result.get("circle", target_circle),
+                "true" if result.get("present") else "false",
+                result.get("peer_name") or "",
+                result.get("peer_id") or "",
+                result.get("last_seen") or "",
+                str(result.get("stale_after_seconds", "")),
+            ]
+        )
+        return f"{header}\n{row}"
+
+    @mcp.tool()
     async def kill_peer(peer_identifier: str, circle: str | None = None) -> str:
         """[Repowire mesh] Kill a registered local coding session.
 

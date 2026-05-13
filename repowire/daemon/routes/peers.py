@@ -288,6 +288,46 @@ async def set_peer_circle_endpoint(
     return OkResponse()
 
 
+class OrchestratorStatusResponse(BaseModel):
+    """Liveness status of a circle's orchestrator."""
+
+    circle: str
+    present: bool
+    peer_id: str | None = None
+    peer_name: str | None = None
+    last_seen: str | None = None
+    stale_after_seconds: int
+
+
+@router.get("/circles/{name}/orchestrator", response_model=OrchestratorStatusResponse)
+async def get_circle_orchestrator(
+    name: str,
+    _: str | None = Depends(require_auth),
+) -> OrchestratorStatusResponse:
+    """Return the orchestrator presence status for a circle.
+
+    `present=True` iff there's a peer with role=orchestrator, status online/busy,
+    and last_seen within 2 * heartbeat_interval (one missed beat tolerated).
+    """
+    peer_registry = get_peer_registry()
+    tolerance = peer_registry._config.daemon.heartbeat_interval * 2
+    orch = await peer_registry.get_orchestrator(name)
+    if orch is None:
+        return OrchestratorStatusResponse(
+            circle=name,
+            present=False,
+            stale_after_seconds=tolerance,
+        )
+    return OrchestratorStatusResponse(
+        circle=name,
+        present=True,
+        peer_id=orch.peer_id,
+        peer_name=orch.display_name,
+        last_seen=orch.last_seen.isoformat() if orch.last_seen else None,
+        stale_after_seconds=tolerance,
+    )
+
+
 # Legacy endpoints for backward compatibility
 
 
