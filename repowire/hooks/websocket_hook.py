@@ -523,8 +523,16 @@ async def main() -> int:
                 # Message loop — fully reactive, no polling tasks
                 try:
                     async for message in websocket:
-                        data = json.loads(message)
-                        await handle_message(data, pane_id, websocket)
+                        try:
+                            data = json.loads(message)
+                            await handle_message(data, pane_id, websocket)
+                        except PaneUnsafeError:
+                            raise
+                        except Exception as exc:
+                            # A malformed payload or handler bug must not kill
+                            # the hook -- Stop-hook respawn is a safety net,
+                            # not a routine recovery path. Log and keep reading.
+                            logger.exception("Error handling message: %s", exc)
                 except PaneUnsafeError as e:
                     logger.info("%s", e)
                     clear_pane_runtime_state(pane_id)

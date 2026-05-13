@@ -16,6 +16,7 @@ from repowire.hooks.utils import (
     pop_query_cid,
     update_status,
 )
+from repowire.hooks.ws_hook_supervisor import maybe_respawn
 from repowire.session.transcript import extract_last_turn_pair, extract_last_turn_tool_calls
 
 
@@ -50,6 +51,11 @@ def main(backend: str = "claude-code") -> int:
 
     peer_display = get_display_name()
     pane_id = get_pane_id()
+
+    # Lazy-repair: if the ws-hook process for this pane died (OOM, SIGKILL,
+    # unhandled exception), Stop is the cheapest place to notice and relaunch.
+    # No new polling -- this piggy-backs on traffic that already runs every turn.
+    maybe_respawn(pane_id)
 
     # Get response text: adapter extracts from agent-specific fields,
     # fall back to transcript parsing for Claude Code

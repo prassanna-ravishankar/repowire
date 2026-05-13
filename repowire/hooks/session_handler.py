@@ -19,13 +19,12 @@ from repowire.hooks.utils import (
     clear_pane_runtime_state,
     daemon_get,
     daemon_post,
-    get_pane_file,
-    pane_logs_dir,
     read_pane_runtime_metadata,
     write_pane_runtime_metadata,
     ws_hook_lock_path,
     ws_hook_pid_path,
 )
+from repowire.hooks.ws_hook_supervisor import spawn_ws_hook
 from repowire.spawn_hints import consume_hint_full
 
 
@@ -188,8 +187,6 @@ def main(backend: str = "claude-code") -> int:
         # One ws-hook owns a pane at a time. A repeated SessionStart with the
         # same hook session_id is treated as an ephemeral sub-session of the
         # same live run. Anything else is a real takeover and starts fresh.
-        pane_file = get_pane_file(pane_id)
-        log_dir = pane_logs_dir()
         lock_path = ws_hook_lock_path(pane_id)
         pid_path = ws_hook_pid_path(pane_id)
         prior_peer_id: str | None = None
@@ -268,30 +265,19 @@ def main(backend: str = "claude-code") -> int:
 
         # Launch async WebSocket hook in background — one per pane.
         try:
-            hook_script = Path(__file__).parent / "websocket_hook.py"
-            if hook_script.exists():
-                log_file = open(log_dir / f"ws-hook-{pane_file}.log", "w")  # noqa: SIM115
-                try:
-                    env = os.environ.copy()
-                    env["REPOWIRE_DISPLAY_NAME"] = display_name
-                    if peer_id:
-                        env["REPOWIRE_PEER_ID"] = peer_id
-                    env["REPOWIRE_BACKEND"] = backend
-                    proc = subprocess.Popen(
-                        [sys.executable, str(hook_script)],
-                        stdout=log_file,
-                        stderr=log_file,
-                        start_new_session=True,
-                        cwd=cwd,
-                        env=env,
-                        pass_fds=(lock_fd.fileno(),),
-                    )
-                    pid_path.write_text(str(proc.pid))
-                finally:
-                    log_file.close()
-                    lock_fd.close()  # child inherits flock; parent releases fd
+            spawn_ws_hook(
+                pane_id=pane_id,
+                peer_id=peer_id,
+                display_name=display_name,
+                backend=backend,
+                cwd=cwd,
+                lock_fd=lock_fd,
+            )
         except Exception as e:
             print(f"repowire: failed to start WebSocket hook: {e}", file=sys.stderr)
+        finally:
+            # Child inherited the flock via pass_fds; release our copy.
+            lock_fd.close()
 
         # Fetch peers and output context for Claude
         peers = fetch_peers()
