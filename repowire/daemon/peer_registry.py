@@ -26,6 +26,7 @@ from repowire.protocol.peers import Peer, PeerRole, PeerStatus
 
 if TYPE_CHECKING:
     from repowire.daemon.ask_tracker import AskTracker
+    from repowire.daemon.event_bus import EventBus
     from repowire.daemon.message_router import MessageRouter
     from repowire.daemon.query_tracker import QueryTracker
     from repowire.daemon.websocket_transport import WebSocketTransport
@@ -76,12 +77,14 @@ class PeerRegistry:
         transport: WebSocketTransport | None = None,
         persistence_path: Path | None = None,
         ask_tracker: AskTracker | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
         self._config = config
         self._router = message_router
         self._query_tracker = query_tracker
         self._transport = transport
         self._ask_tracker = ask_tracker
+        self._event_bus = event_bus
 
         # Peer registry: peer_id -> Peer (single source of truth)
         self._peers: dict[str, Peer] = {}
@@ -208,6 +211,26 @@ class PeerRegistry:
     def get_events(self) -> list[dict[str, Any]]:
         """Get the last 100 events."""
         return list(self._events)
+
+    def _emit_status_change(
+        self, peer: Peer, old_status: PeerStatus, new_status: PeerStatus,
+    ) -> None:
+        """Publish a PeerStatusChanged event if the status actually changed.
+
+        Safe to call with the registry lock held: publish only schedules
+        delivery tasks, it does not await.
+        """
+        if self._event_bus is None or old_status == new_status:
+            return
+        from repowire.daemon.event_bus import PeerStatusChanged
+        self._event_bus.publish(
+            PeerStatusChanged(
+                peer_id=peer.peer_id,
+                display_name=peer.display_name,
+                old_status=old_status,
+                new_status=new_status,
+            )
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -367,8 +390,10 @@ class PeerRegistry:
         """
         for sid, peer in self._peers.items():
             if peer.pane_id == pane_id and sid != new_peer_id:
+                old_status = peer.status
                 peer.pane_id = None
                 peer.status = PeerStatus.OFFLINE
+                self._emit_status_change(peer, old_status, PeerStatus.OFFLINE)
 
     # ------------------------------------------------------------------
     # Allocate + register (atomic, the preferred public API)
@@ -400,8 +425,10 @@ class PeerRegistry:
             # Reconnect: if caller provides a peer_id that exists, take over
             if peer_id and peer_id in self._peers:
                 existing = self._peers[peer_id]
+                old_status = existing.status
                 existing.status = PeerStatus.ONLINE
                 existing.last_seen = datetime.now(timezone.utc)
+                self._emit_status_change(existing, old_status, PeerStatus.ONLINE)
                 if pane_id:
                     self._release_pane(pane_id, peer_id)
                     existing.pane_id = pane_id
@@ -461,9 +488,11 @@ class PeerRegistry:
                     and (old_peer.circle == peer.circle or old_peer.status == PeerStatus.OFFLINE)
                 ):
                     del self._peers[old_sid]
+            old_status = peer.status if peer.peer_id in self._peers else PeerStatus.OFFLINE
             peer.status = PeerStatus.ONLINE
             peer.last_seen = datetime.now(timezone.utc)
             self._peers[peer.peer_id] = peer
+            self._emit_status_change(peer, old_status, PeerStatus.ONLINE)
             logger.info(f"Peer registered: {peer.display_name} ({peer.peer_id})")
 
     # ------------------------------------------------------------------
@@ -874,8 +903,10 @@ class PeerRegistry:
                     status.value,
                 )
                 return
+            old_status = peer.status
             peer.status = status
             peer.last_seen = datetime.now(timezone.utc)
+            self._emit_status_change(peer, old_status, status)
 
     async def touch_last_seen(
         self, identifier: str, circle: str | None = None,
@@ -972,8 +1003,10 @@ class PeerRegistry:
             peer = self._lookup_peer_unlocked(identifier)
             if not peer:
                 return 0
+            old_status = peer.status
             peer.status = PeerStatus.OFFLINE
             peer.last_seen = datetime.now(timezone.utc)
+            self._emit_status_change(peer, old_status, PeerStatus.OFFLINE)
             session_id = peer.peer_id
 
         cancelled = 0
