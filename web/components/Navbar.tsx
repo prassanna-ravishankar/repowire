@@ -12,7 +12,13 @@ export default function Navbar() {
             REPOWIRE
           </span>
         </Link>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-5">
+          <Link
+            href="/docs/quickstart"
+            className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-outline transition-colors hover:text-primary-fixed"
+          >
+            Docs
+          </Link>
           <Link
             href="/dashboard"
             className="hidden font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-outline transition-colors hover:text-primary-fixed sm:inline"
