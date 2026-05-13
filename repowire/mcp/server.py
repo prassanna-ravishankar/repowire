@@ -48,6 +48,8 @@ async def daemon_request(
         url = f"{DAEMON_URL}{path}"
         if method == "GET":
             resp = await client.get(url, params=params)
+        elif method == "DELETE":
+            resp = await client.delete(url, params=params)
         else:
             resp = await client.post(url, json=body or {})
         resp.raise_for_status()
@@ -724,6 +726,100 @@ def create_mcp_server() -> FastMCP:
                 )
             )
         return "\n".join(rows)
+
+    @mcp.tool()
+    async def schedule_create(
+        to_peer: str,
+        text: str,
+        fire_at: str,
+        kind: str = "notify",
+        circle: str | None = None,
+    ) -> str:
+        """[Repowire mesh] Schedule a one-shot future message to a peer.
+
+        At `fire_at` the daemon will deliver `text` to `to_peer` on your
+        behalf. `kind="notify"` is fire-and-forget; `kind="ask"` opens an
+        ask thread (recipient must `ack`). Recurring schedules are not
+        supported in the MVP.
+
+        Use this for self-wake reminders, post-stand-up nudges, or future
+        check-ins that don't need a live caller waiting.
+
+        Args:
+            to_peer: Display name of the recipient. Use your own peer name
+                     to schedule a self-wake.
+            text: Message body to deliver.
+            fire_at: ISO-8601 datetime (e.g. "2026-05-14T09:00:00Z" or
+                     "2026-05-14T09:00:00+00:00"). Naive datetimes are
+                     interpreted as UTC.
+            kind: "notify" (default) or "ask".
+            circle: Circle to scope recipient lookup.
+
+        Returns:
+            schedule_id (format: sched-XXXXXXXX). Use it with
+            schedule_delete to cancel.
+        """
+        await _ensure_registered(strict=True)
+        from_peer = await _get_my_peer_name()
+        body: dict = {
+            "from_peer": from_peer,
+            "to_peer": to_peer,
+            "text": text,
+            "fire_at": fire_at,
+            "kind": kind,
+        }
+        if circle is not None:
+            body["circle"] = circle
+        result = await daemon_request("POST", "/schedules", body)
+        return result.get("schedule_id", "")
+
+    @mcp.tool()
+    async def schedule_list(mine_only: bool = True) -> str:
+        """[Repowire mesh] List pending scheduled check-ins.
+
+        Returns TSV with columns: schedule_id, from_peer, to_peer, kind,
+        fire_at, text. Schedules are sorted by fire_at ascending.
+
+        Args:
+            mine_only: If True (default), return only schedules you
+                       created. If False, return all schedules on the
+                       daemon.
+        """
+        await _ensure_registered()
+        params: dict | None = None
+        if mine_only:
+            params = {"from_peer": await _get_my_peer_name()}
+        result = await daemon_request("GET", "/schedules", params=params)
+        header = "schedule_id\tfrom_peer\tto_peer\tkind\tfire_at\ttext"
+        rows = [header]
+        for s in result.get("schedules", []):
+            rows.append(
+                "\t".join(
+                    [
+                        s.get("schedule_id", ""),
+                        s.get("from_peer", ""),
+                        s.get("to_peer", ""),
+                        s.get("kind", ""),
+                        s.get("fire_at", ""),
+                        (s.get("text", "") or "").replace("\t", " ").replace("\n", " "),
+                    ]
+                )
+            )
+        return "\n".join(rows)
+
+    @mcp.tool()
+    async def schedule_delete(schedule_id: str) -> str:
+        """[Repowire mesh] Cancel a pending scheduled check-in.
+
+        Args:
+            schedule_id: ID returned by schedule_create.
+
+        Returns:
+            Confirmation message.
+        """
+        await _ensure_registered(strict=True)
+        await daemon_request("DELETE", f"/schedules/{quote(schedule_id, safe='')}")
+        return f"deleted schedule {schedule_id}"
 
     return mcp
 

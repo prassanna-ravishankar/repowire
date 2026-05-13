@@ -18,6 +18,8 @@ class AppState(Protocol):
     ask_tracker: Any
     peer_registry: PeerRegistry
     config: Config
+    schedule_store: Any
+    scheduler: Any
 
 
 # Global state - initialized by lifespan

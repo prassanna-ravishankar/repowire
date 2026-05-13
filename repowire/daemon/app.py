@@ -36,9 +36,12 @@ from repowire.daemon.routes import (
     messages,
     peers,
     reviews,
+    schedules,
     websocket,
 )
 from repowire.daemon.routes import spawn as spawn_routes
+from repowire.daemon.schedule_store import ScheduleStore
+from repowire.daemon.scheduler import Scheduler
 from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
@@ -99,6 +102,15 @@ def create_app(
         )
         peer_registry.prune_offline(max_age_hours=cfg.daemon.prune_max_age_hours)
 
+        schedule_store = ScheduleStore(
+            persistence_path=Path.home() / ".repowire" / "schedules.json",
+        )
+        scheduler = Scheduler(
+            store=schedule_store,
+            peer_registry=peer_registry,
+            ask_tracker=ask_tracker,
+        )
+
         # Store in app state for route handlers
         app.state.config = cfg
         app.state.transport = transport
@@ -111,6 +123,8 @@ def create_app(
         app.state.review_queue_store = ReviewQueueStore(
             Path.home() / ".repowire" / "review_queue.json"
         )
+        app.state.schedule_store = schedule_store
+        app.state.scheduler = scheduler
 
         lifecycle_handler = LifecycleHandler(
             peer_registry=peer_registry,
@@ -119,6 +133,7 @@ def create_app(
         )
 
         await peer_registry.start()
+        await scheduler.start()
         init_deps(
             cfg, peer_registry, app.state,
             lifecycle_handler=lifecycle_handler,
@@ -180,6 +195,7 @@ def create_app(
             logger.info("%s service stopped", name)
         if relay_client:
             await relay_client.stop()
+        await scheduler.stop()
         peer_registry._save_events()
         peer_registry._persist_mappings()
         await peer_registry.stop()
@@ -224,6 +240,7 @@ def create_app(
     app.include_router(spawn_routes.router)
     app.include_router(attachments.router)
     app.include_router(lifecycle.router)
+    app.include_router(schedules.router)
 
     # --- Static File Serving (Dashboard) ---
     web_out = _find_web_output_dir()
@@ -321,6 +338,16 @@ def create_test_app(
             event_bus=event_bus,
         )
 
+        schedule_store = ScheduleStore(
+            persistence_path=(persistence_path.parent if persistence_path else Path("/tmp"))
+            / "schedules.json",
+        )
+        scheduler = Scheduler(
+            store=schedule_store,
+            peer_registry=registry,
+            ask_tracker=ask_tracker,
+        )
+
         app.state.config = cfg
         app.state.transport = transport
         app.state.query_tracker = query_tracker
@@ -331,6 +358,8 @@ def create_test_app(
         app.state.relay_mode = cfg.relay.enabled
         rq_dir = persistence_path.parent if persistence_path else Path.home() / ".repowire"
         app.state.review_queue_store = ReviewQueueStore(rq_dir / "review_queue.json")
+        app.state.schedule_store = schedule_store
+        app.state.scheduler = scheduler
 
         lh = LifecycleHandler(
             peer_registry=registry,
@@ -339,10 +368,12 @@ def create_test_app(
         )
 
         await registry.start()
+        await scheduler.start()
         init_deps(cfg, registry, app.state, lifecycle_handler=lh)
 
         yield
 
+        await scheduler.stop()
         await registry.stop()
         cleanup_deps()
 
@@ -361,6 +392,7 @@ def create_test_app(
     app.include_router(spawn_routes.router)
     app.include_router(attachments.router)
     app.include_router(lifecycle.router)
+    app.include_router(schedules.router)
 
     return app
 
