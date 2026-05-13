@@ -310,7 +310,7 @@ async def get_circle_orchestrator(
     and last_seen within 2 * heartbeat_interval (one missed beat tolerated).
     """
     peer_registry = get_peer_registry()
-    tolerance = peer_registry._config.daemon.heartbeat_interval * 2
+    tolerance = peer_registry.heartbeat_tolerance()
     orch = await peer_registry.get_orchestrator(name)
     if orch is None:
         return OrchestratorStatusResponse(

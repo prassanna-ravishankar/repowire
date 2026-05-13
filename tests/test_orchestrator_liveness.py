@@ -69,6 +69,16 @@ async def _register_orch(
     return peer
 
 
+class TestHeartbeatTolerance:
+    def test_returns_double_heartbeat_interval(self, tmp_path):
+        registry = _make_registry(tmp_path, heartbeat=30)
+        assert registry.heartbeat_tolerance() == 60
+
+    def test_tracks_config_change(self, tmp_path):
+        registry = _make_registry(tmp_path, heartbeat=5)
+        assert registry.heartbeat_tolerance() == 10
+
+
 class TestIsOrchestratorPresent:
     async def test_returns_false_when_no_orchestrator(self, tmp_path):
         registry = _make_registry(tmp_path)

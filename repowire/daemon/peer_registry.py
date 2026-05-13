@@ -556,6 +556,15 @@ class PeerRegistry:
         async with self._lock:
             return list(self._peers.values())
 
+    def heartbeat_tolerance(self) -> int:
+        """Seconds a peer's last_seen may lag before it's considered dead.
+
+        Two heartbeat intervals: one missed beat is tolerated (normal jitter),
+        two means the wire is dead. Public accessor so callers (routes, MCP)
+        don't reach into `_config`.
+        """
+        return self._config.daemon.heartbeat_interval * 2
+
     async def get_orchestrator(self, circle: str) -> Peer | None:
         """Return the live orchestrator for a circle, or None.
 
@@ -563,7 +572,7 @@ class PeerRegistry:
         2 * heartbeat_interval (one missed beat tolerated, two means dead). If
         multiple match, returns the most recently seen.
         """
-        tolerance = self._config.daemon.heartbeat_interval * 2
+        tolerance = self.heartbeat_tolerance()
         now = datetime.now(timezone.utc)
         async with self._lock:
             candidates = [
