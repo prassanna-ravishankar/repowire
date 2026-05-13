@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from repowire.telegram.bot import TelegramPeer
+from repowire.telegram.bot import OrchestratorStatus, TelegramPeer
 
 
 @pytest.fixture
@@ -93,3 +93,40 @@ async def test_accepts_busy_orchestrator(
     )
     await bot._seed_default_target_from_orchestrator()
     assert bot._reply_target == "orchestrator"
+
+
+@pytest.mark.asyncio
+async def test_no_active_text_reports_missing_orchestrator(
+    bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        bot,
+        "_fetch_orchestrator_status",
+        AsyncMock(return_value=OrchestratorStatus(present=False)),
+    )
+    send = AsyncMock()
+    monkeypatch.setattr(bot, "_tg_send", send)
+
+    await bot._on_text("hello mesh")
+
+    send.assert_awaited_once()
+    assert "No orchestrator online" in send.await_args.args[0]
+    assert "repowire orchestrator start" in send.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_no_active_text_keeps_peer_picker_when_orchestrator_present(
+    bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        bot,
+        "_fetch_orchestrator_status",
+        AsyncMock(return_value=OrchestratorStatus(present=True, peer="orchestrator")),
+    )
+    send = AsyncMock()
+    monkeypatch.setattr(bot, "_tg_send", send)
+
+    await bot._on_text("hello mesh")
+
+    send.assert_awaited_once()
+    assert "No active conversation" in send.await_args.args[0]

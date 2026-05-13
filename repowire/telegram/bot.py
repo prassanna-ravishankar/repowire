@@ -20,7 +20,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
 import websockets
@@ -71,6 +71,12 @@ class PendingRetry:
 
     def is_active(self, now: float) -> bool:
         return now < self.expires_at
+
+
+@dataclass
+class OrchestratorStatus:
+    present: bool
+    peer: str | None = None
 
 
 def compute_visible_recents(
@@ -279,24 +285,11 @@ class TelegramPeer:
         """
         if self._reply_target:
             return  # respect explicit prior selection
-        try:
-            peers = await self._fetch_online_peers(use_cache=False)
-        except Exception:
+        status = await self._fetch_orchestrator_status(use_cache=False)
+        if not status.present or not status.peer:
             return
-        orchestrators = [
-            p for p in peers
-            if p.get("role") == "orchestrator"
-            and p.get("status") in ("online", "busy")
-        ]
-        if not orchestrators:
-            return
-        # Prefer the local one if multiple exist (shouldn't happen, but defensive)
-        target = orchestrators[0]
-        name = target.get("name") or target.get("display_name")
-        if not name:
-            return
-        self._reply_target = name
-        logger.info("Default reply target seeded to orchestrator: %s", name)
+        self._reply_target = status.peer
+        logger.info("Default reply target seeded to orchestrator: %s", status.peer)
 
     async def _on_ws(self, msg: dict[str, Any]) -> None:
         t = msg.get("type", "")
@@ -481,6 +474,10 @@ class TelegramPeer:
 
         # No conversation active
         self._pending_retry = None
+        orchestrator = await self._fetch_orchestrator_status()
+        if not orchestrator.present:
+            await self._send_no_orchestrator()
+            return
         await self._tg_send(
             "No active conversation\\.\n\n"
             "`/peers` — list peers\n"
@@ -514,6 +511,10 @@ class TelegramPeer:
     async def _on_photo(self, photo: dict, caption: str, message_id: int | None = None) -> None:
         """Handle incoming Telegram photo — upload to daemon, notify peer."""
         if not self._reply_target:
+            orchestrator = await self._fetch_orchestrator_status()
+            if not orchestrator.present:
+                await self._send_no_orchestrator()
+                return
             await self._tg_send(
                 "Select a peer first with /select or /peers, then send the photo\\."
             )
@@ -584,6 +585,54 @@ class TelegramPeer:
         except Exception:
             logger.warning("Failed to fetch peers", exc_info=True)
             return []
+
+    async def _fetch_orchestrator_status(
+        self, *, use_cache: bool = True,
+    ) -> OrchestratorStatus:
+        """Return route-backed orchestrator presence for this bot's circle.
+
+        The daemon route is landing in a sibling branch. Until it is present,
+        fall back to the old peer-list scan so this surface remains testable.
+        """
+        try:
+            r = await self._http.get(
+                f"{self._daemon_url}/circles/{quote(self._circle, safe='')}/orchestrator",
+                timeout=5.0,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                peer = (
+                    data.get("peer_id")
+                    or data.get("peer_name")
+                    or data.get("display_name")
+                    or data.get("name")
+                )
+                return OrchestratorStatus(
+                    present=bool(data.get("present")),
+                    peer=str(peer) if peer else None,
+                )
+        except Exception:
+            logger.debug("Failed to fetch orchestrator status route", exc_info=True)
+
+        peers = await self._fetch_online_peers(use_cache=use_cache)
+        orchestrators = [
+            p for p in peers
+            if p.get("role") == "orchestrator"
+            and p.get("circle", self._circle) == self._circle
+            and p.get("status") in ("online", "busy")
+        ]
+        if not orchestrators:
+            return OrchestratorStatus(present=False)
+
+        target = orchestrators[0]
+        peer = target.get("peer_id") or target.get("name") or target.get("display_name")
+        return OrchestratorStatus(present=True, peer=str(peer) if peer else None)
+
+    async def _send_no_orchestrator(self) -> None:
+        await self._tg_send(
+            f"No orchestrator online in circle `{_esc(self._circle)}`\\.\n"
+            "Spawn one with `repowire orchestrator start`\\."
+        )
 
     async def _cmd_peers(self) -> None:
         peers = await self._fetch_online_peers(use_cache=False)

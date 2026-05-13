@@ -9,13 +9,14 @@ import { PeerRoster } from "./components/PeerRoster";
 import { PeerView } from "./components/PeerView";
 import { TopBar } from "./components/TopBar";
 import { WireTrace } from "./components/WireTrace";
-import type { Event, Peer } from "./types";
+import type { Event, OrchestratorStatus, Peer } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8377";
 
 export default function Dashboard() {
   const [peers, setPeers] = useState<Peer[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
+  const [orchestrators, setOrchestrators] = useState<OrchestratorStatus[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
@@ -24,18 +25,65 @@ export default function Dashboard() {
   const [showSpawn, setShowSpawn] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const eventIdsRef = useRef<Set<string>>(new Set());
+  const peersRef = useRef<Peer[]>([]);
+
+  const fetchOrchestrators = useCallback(async (nextPeers?: Peer[]) => {
+    const sourcePeers = nextPeers ?? peersRef.current;
+    const circles = Array.from(
+      new Set(sourcePeers.map((peer) => peer.circle || "default"))
+    ).sort((a, b) => a.localeCompare(b));
+
+    if (circles.length === 0) {
+      setOrchestrators([]);
+      return;
+    }
+
+    const statuses = await Promise.all(
+      circles.map(async (circle): Promise<OrchestratorStatus> => {
+        try {
+          const res = await fetch(`${API_BASE}/circles/${encodeURIComponent(circle)}/orchestrator`);
+          if (res.ok) {
+            const data = await res.json();
+            return { circle, ...data };
+          }
+        } catch (error) {
+          console.debug("Falling back to peer-list orchestrator status:", error);
+        }
+
+        const peer = sourcePeers.find(
+          (candidate) =>
+            (candidate.circle || "default") === circle &&
+            candidate.role === "orchestrator" &&
+            (candidate.status === "online" || candidate.status === "busy")
+        );
+        return {
+          circle,
+          present: Boolean(peer),
+          peer_id: peer?.peer_id ?? null,
+          peer_name: peer?.name ?? null,
+          display_name: peer?.display_name ?? null,
+          last_seen: peer?.last_seen ?? null,
+          stale_after: null,
+        };
+      })
+    );
+    setOrchestrators(statuses);
+  }, []);
 
   const fetchPeers = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/peers`);
       if (res.ok) {
         const data = await res.json();
-        setPeers(data.peers || data);
+        const nextPeers: Peer[] = data.peers || data;
+        peersRef.current = nextPeers;
+        setPeers(nextPeers);
+        await fetchOrchestrators(nextPeers);
       }
     } catch (error) {
       console.error("Failed to fetch peers:", error);
     }
-  }, []);
+  }, [fetchOrchestrators]);
 
   const fetchEvents = useCallback(async () => {
     try {
@@ -105,6 +153,18 @@ export default function Dashboard() {
     [peers]
   );
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void fetchOrchestrators();
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [fetchOrchestrators]);
+
+  const missingOrchestrators = useMemo(
+    () => orchestrators.filter((status) => !status.present),
+    [orchestrators]
+  );
+
   const filteredPeers = useMemo(() => {
     const term = filter.trim().toLowerCase();
     if (!term) return visiblePeers;
@@ -143,7 +203,7 @@ export default function Dashboard() {
 
   return (
     <div className="bg-surface text-on-surface font-body mesh-bg md:h-dvh md:overflow-hidden">
-      <div className="flex min-h-dvh flex-col md:grid md:h-full md:min-h-0 md:grid-cols-[420px_1fr] md:grid-rows-[52px_1fr]">
+      <div className="flex min-h-dvh flex-col md:grid md:h-full md:min-h-0 md:grid-cols-[420px_1fr] md:grid-rows-[52px_auto_1fr]">
         <TopBar
           counts={counts}
           isConnected={isConnected}
@@ -152,6 +212,22 @@ export default function Dashboard() {
           onSpawn={() => setShowSpawn(true)}
           onSettings={() => setShowSettings(true)}
         />
+
+        {missingOrchestrators.length > 0 && (
+          <div className="col-span-full border-b border-error/30 bg-error-container px-3 py-2 text-on-error-container md:px-5">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] leading-5">
+              <span className="font-bold uppercase tracking-[0.16em]">orchestrator offline</span>
+              {missingOrchestrators.map((status) => (
+                <span key={status.circle} className="rounded border border-error/35 bg-error/15 px-2 py-0.5">
+                  circle / {status.circle}
+                </span>
+              ))}
+              <span className="text-on-error-container/85">
+                spawn one with <code className="font-bold">repowire orchestrator start</code>
+              </span>
+            </div>
+          </div>
+        )}
 
         <div className={cn("min-h-0 flex-1 md:block", selectedPeer || mobileTab === "mesh" ? "hidden" : "block")}>
           <PeerRoster

@@ -17,6 +17,16 @@ export interface Peer {
   };
 }
 
+export interface OrchestratorStatus {
+  circle: string;
+  present: boolean;
+  peer_id?: string | null;
+  peer_name?: string | null;
+  display_name?: string | null;
+  last_seen?: string | null;
+  stale_after?: string | null;
+}
+
 /** Human-readable label: display_name is daemon-assigned and human-friendly. */
 export function peerLabel(peer: Peer): string {
   return peer.display_name || peer.name;
