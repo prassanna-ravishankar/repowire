@@ -877,6 +877,24 @@ class PeerRegistry:
             peer.status = status
             peer.last_seen = datetime.now(timezone.utc)
 
+    async def touch_last_seen(
+        self, identifier: str, circle: str | None = None,
+    ) -> bool:
+        """Refresh a peer's last_seen without changing status.
+
+        Outbound MCP traffic from a peer is a liveness signal even when the
+        peer's ws-hook has dropped (inbound is broken, but the agent is alive
+        and acting). Lets `is_orchestrator_present` and other last_seen-keyed
+        checks count that activity instead of going stale on the new wrinkle
+        introduced by the liveness slice.
+        """
+        async with self._lock:
+            peer = self._lookup_peer_unlocked(identifier, circle=circle)
+            if not peer:
+                return False
+            peer.last_seen = datetime.now(timezone.utc)
+            return True
+
     async def update_description(
         self, identifier: str, description: str, circle: str | None = None
     ) -> bool:

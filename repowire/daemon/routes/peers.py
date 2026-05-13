@@ -270,6 +270,29 @@ async def set_peer_description(
     return OkResponse()
 
 
+@router.post("/peers/{name}/touch", response_model=OkResponse)
+async def touch_peer_last_seen(
+    name: str,
+    circle: str | None = Query(None),
+    _: str | None = Depends(require_auth),
+) -> OkResponse:
+    """Refresh a peer's last_seen without changing status.
+
+    Called by MCP tool entry so outbound MCP traffic counts as a liveness
+    signal — covers the case where a peer's ws-hook has dropped but the
+    agent is still alive and acting (otherwise `is_orchestrator_present`
+    and other last_seen-keyed checks go stale).
+    """
+    peer_registry = get_peer_registry()
+    found = await peer_registry.touch_last_seen(name, circle=circle)
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Peer not found: {name}",
+        )
+    return OkResponse()
+
+
 class SetCircleRequest(BaseModel):
     """Request to set peer's circle."""
 

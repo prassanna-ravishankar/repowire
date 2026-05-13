@@ -599,12 +599,13 @@ class TestMcpRegistration:
             Exception("not found"),  # /peers/by-pane lookup
             {"peers": []},  # /peers?path&backend fallback
             {"display_name": "repowire-codex"},  # POST /peers
+            {"ok": True},  # POST /peers/repowire-codex/touch
         ]
 
         with patch.dict("repowire.mcp.server.os.environ", {"PATH": "/tmp/.codex/bin"}):
             await mcp_server._ensure_registered()
 
-        assert mock_request.await_count == 3
+        assert mock_request.await_count == 4
         assert mock_request.await_args_list[0].args == ("GET", "/peers/by-pane/%251")
         cwd = mcp_server.Path.cwd()
         assert mock_request.await_args_list[2].args == (
@@ -617,6 +618,9 @@ class TestMcpRegistration:
                 "backend": "codex",
                 "pane_id": "%1",
             },
+        )
+        assert mock_request.await_args_list[3].args == (
+            "POST", "/peers/repowire-codex/touch",
         )
         assert mcp_server._cached_peer_name == "repowire-codex"
 
@@ -638,6 +642,7 @@ class TestMcpRegistration:
         mock_request.side_effect = [
             Exception("name lookup fails"),  # GET /peers/<cwd-name>
             {"peers": [{"display_name": "torale-seo", "tmux_session": "0:0"}]},
+            {"ok": True},  # POST /peers/torale-seo/touch
         ]
 
         with patch.dict("repowire.mcp.server.os.environ", {"PATH": "/tmp/.codex/bin"}):
@@ -645,9 +650,12 @@ class TestMcpRegistration:
 
         assert mcp_server._cached_peer_name == "torale-seo"
         assert mcp_server._registered is True
-        # Should NOT have made a POST to register a duplicate peer
-        post_calls = [c for c in mock_request.await_args_list if c.args[0] == "POST"]
-        assert len(post_calls) == 0
+        # Should NOT have made a POST to register a duplicate peer (touch is fine).
+        register_posts = [
+            c for c in mock_request.await_args_list
+            if c.args[0] == "POST" and c.args[1] == "/peers"
+        ]
+        assert len(register_posts) == 0
         # Path+backend query should have been made
         get_calls = [c for c in mock_request.await_args_list if c.args[0] == "GET"]
         path_backend_call = next(
@@ -674,12 +682,18 @@ class TestMcpRegistration:
 
         mcp_server._registered = False
         mcp_server._cached_peer_name = None
-        mock_request.return_value = {"display_name": "repowire-codex"}
+        mock_request.side_effect = [
+            {"display_name": "repowire-codex"},  # GET /peers/by-pane
+            {"ok": True},  # POST /peers/repowire-codex/touch
+        ]
 
         await mcp_server._ensure_registered()
 
-        assert mock_request.await_count == 1
+        assert mock_request.await_count == 2
         assert mock_request.await_args_list[0].args == ("GET", "/peers/by-pane/%251")
+        assert mock_request.await_args_list[1].args == (
+            "POST", "/peers/repowire-codex/touch",
+        )
         assert mcp_server._cached_peer_name == "repowire-codex"
 
         mcp_server._registered = False

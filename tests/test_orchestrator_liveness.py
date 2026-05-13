@@ -248,3 +248,63 @@ class TestCircleOrchestratorRoute:
         body = r.json()
         assert body["present"] is False
         assert body["peer_id"] is None
+
+
+class TestTouchLastSeen:
+    """MCP outbound traffic must keep `is_orchestrator_present` true even when
+    the peer's ws-hook is dead. The dead-ws-hook + active-MCP shape is the
+    bug the fix targets.
+    """
+
+    async def test_touch_resurrects_stale_orchestrator(self, tmp_path):
+        registry = _make_registry(tmp_path, heartbeat=30)
+        # Stale heartbeat: peer is "registered offline" by the liveness clock
+        # but ONLINE in status. ws-hook is also disconnected (default
+        # transport has no connection for this peer).
+        stale = datetime.now(timezone.utc) - timedelta(seconds=90)
+        await _register_orch(registry, circle="team", last_seen=stale)
+        transport = registry._transport
+        assert transport is not None
+        assert transport.is_connected("repow-team-orch1") is False
+        assert await registry.is_orchestrator_present("team") is False
+
+        # MCP traffic from the live agent touches last_seen via the new path.
+        touched = await registry.touch_last_seen("repow-team-orch1")
+        assert touched is True
+
+        assert await registry.is_orchestrator_present("team") is True
+
+    async def test_touch_does_not_change_status(self, tmp_path):
+        registry = _make_registry(tmp_path)
+        await _register_orch(
+            registry, circle="team", status=PeerStatus.OFFLINE,
+        )
+        await registry.touch_last_seen("repow-team-orch1")
+        async with registry._lock:
+            assert registry._peers["repow-team-orch1"].status == PeerStatus.OFFLINE
+
+    async def test_touch_returns_false_for_unknown_peer(self, tmp_path):
+        registry = _make_registry(tmp_path)
+        assert await registry.touch_last_seen("does-not-exist") is False
+
+    async def test_touch_route_404_for_unknown_peer(self, app_and_registry):
+        client, _ = app_and_registry
+        r = await client.post("/peers/nope/touch")
+        assert r.status_code == 404
+
+    async def test_touch_route_refreshes_last_seen(self, app_and_registry):
+        client, registry = app_and_registry
+        stale = datetime.now(timezone.utc) - timedelta(seconds=90)
+        await _register_orch(
+            registry, circle="team", name="orch", peer_id="orch-1", last_seen=stale,
+        )
+        r = await client.get("/circles/team/orchestrator")
+        assert r.json()["present"] is False
+
+        r = await client.post("/peers/orch-1/touch")
+        assert r.status_code == 200
+
+        r = await client.get("/circles/team/orchestrator")
+        body = r.json()
+        assert body["present"] is True
+        assert body["peer_id"] == "orch-1"

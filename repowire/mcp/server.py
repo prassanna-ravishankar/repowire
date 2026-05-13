@@ -141,15 +141,35 @@ def _hook_disconnect_message(pane_id: str) -> str:
     )
 
 
-async def _ensure_registered(*, strict: bool = False) -> None:
-    """Lazy-register this peer with the daemon on first MCP tool use.
+async def _touch_last_seen() -> None:
+    """Refresh this peer's last_seen on the daemon (best-effort).
 
-    Skips registration if the peer already exists (e.g. SessionStart hook
-    already registered it). Only registers as fallback for agents where
-    hooks don't fire (one-shot prompt mode).
+    Called from `_ensure_registered` so every MCP tool entry feeds the
+    liveness clock. Closes the "ws-hook dropped but agent is alive and
+    acting via MCP" gap that would otherwise leave `is_orchestrator_present`
+    (and other last_seen-keyed checks) stale.
+    """
+    if _cached_peer_name is None:
+        return
+    try:
+        await daemon_request(
+            "POST", f"/peers/{quote(_cached_peer_name, safe='')}/touch",
+        )
+    except Exception:
+        pass
+
+
+async def _ensure_registered(*, strict: bool = False) -> None:
+    """Lazy-register this peer with the daemon on first MCP tool use, and
+    refresh last_seen on every call.
+
+    Registration short-circuits after the first successful resolve; the
+    last_seen touch runs on every entry so MCP activity counts as a liveness
+    signal even when ws-hook has dropped.
     """
     global _registered, _cached_peer_name
     if _registered:
+        await _touch_last_seen()
         return
 
     tmux_info = get_tmux_info()
@@ -161,6 +181,7 @@ async def _ensure_registered(*, strict: bool = False) -> None:
             if name:
                 _cached_peer_name = name
             _registered = True
+            await _touch_last_seen()
             return
         except Exception:
             pass
@@ -174,7 +195,9 @@ async def _ensure_registered(*, strict: bool = False) -> None:
         name = await _get_my_peer_name()
         try:
             await daemon_request("GET", f"/peers/{quote(name, safe='')}")
+            _cached_peer_name = name
             _registered = True
+            await _touch_last_seen()
             return
         except Exception:
             pass
@@ -203,6 +226,7 @@ async def _ensure_registered(*, strict: bool = False) -> None:
             if assigned:
                 _cached_peer_name = assigned
                 _registered = True
+                await _touch_last_seen()
                 return
     except (DaemonConnectionError, DaemonHTTPError, DaemonTimeoutError) as e:
         logger.debug("Path+backend peer lookup failed: %s", e)
@@ -227,6 +251,7 @@ async def _ensure_registered(*, strict: bool = False) -> None:
         if assigned:
             _cached_peer_name = assigned
         _registered = True
+        await _touch_last_seen()
     except Exception:
         pass  # Best-effort -- daemon may be down
 
