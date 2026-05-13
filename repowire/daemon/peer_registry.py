@@ -488,7 +488,8 @@ class PeerRegistry:
                     and (old_peer.circle == peer.circle or old_peer.status == PeerStatus.OFFLINE)
                 ):
                     del self._peers[old_sid]
-            old_status = peer.status if peer.peer_id in self._peers else PeerStatus.OFFLINE
+            existing = self._peers.get(peer.peer_id)
+            old_status = existing.status if existing else PeerStatus.OFFLINE
             peer.status = PeerStatus.ONLINE
             peer.last_seen = datetime.now(timezone.utc)
             self._peers[peer.peer_id] = peer

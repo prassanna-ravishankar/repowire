@@ -230,6 +230,35 @@ class TestRegistryEmitsStatusChange:
         assert received[0].old_status == PeerStatus.ONLINE
         assert received[0].new_status == PeerStatus.OFFLINE
 
+    async def test_reregister_uses_existing_status_as_old(
+        self, registry_with_bus,
+    ) -> None:
+        """Regression: register_peer with an existing peer_id must read
+        old_status from the registry, not from the incoming Peer object.
+        """
+        registry, _bus, received = registry_with_bus
+        peer = Peer(
+            peer_id="sid-re", display_name="rho", circle="global",
+            status=PeerStatus.OFFLINE, path="/x", machine="m",
+        )
+        await registry.register_peer(peer)
+        await asyncio.sleep(0)
+        await registry.update_peer_status("sid-re", PeerStatus.BUSY)
+        await asyncio.sleep(0)
+        received.clear()
+
+        # New Peer object carrying OFFLINE — but registry state is BUSY.
+        # Emission must reflect BUSY -> ONLINE, not OFFLINE -> ONLINE.
+        replacement = Peer(
+            peer_id="sid-re", display_name="rho", circle="global",
+            status=PeerStatus.OFFLINE, path="/x", machine="m",
+        )
+        await registry.register_peer(replacement)
+        await asyncio.sleep(0)
+        assert len(received) == 1
+        assert received[0].old_status == PeerStatus.BUSY
+        assert received[0].new_status == PeerStatus.ONLINE
+
     async def test_no_bus_means_no_emission(self, mock_router, tmp_path) -> None:
         registry = PeerRegistry(
             config=Config(),
