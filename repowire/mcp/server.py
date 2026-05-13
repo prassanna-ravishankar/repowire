@@ -281,11 +281,12 @@ def create_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    async def list_peers(show_offline: bool = False) -> str:
+    async def list_peers(show_offline: bool = False, include_self: bool = False) -> str:
         """[Repowire mesh] List all peers across projects and machines.
 
-        By default shows only online/busy peers. Set show_offline=True to include
-        offline peers.
+        By default shows only online/busy peers and hides the calling peer
+        (you). Set show_offline=True to include offline peers, or
+        include_self=True to include yourself in the listing.
 
         Returns TSV: peer_id, name, project, circle, role, status, path, machine,
         description, backend. Peers are reachable via ask/notify_peer. Do NOT
@@ -296,6 +297,13 @@ def create_mcp_server() -> FastMCP:
         params = None if show_offline else {"status": "online"}
         result = await daemon_request("GET", "/peers", params=params)
         peers = result.get("peers", [])
+        if not include_self:
+            my_name = _cached_peer_name
+            if my_name:
+                peers = [
+                    p for p in peers
+                    if (p.get("display_name") or p.get("name")) != my_name
+                ]
         rows = [tsv_header]
         for p in peers:
             rows.append(_peer_to_tsv_row(p))

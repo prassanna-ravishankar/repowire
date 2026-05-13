@@ -764,6 +764,86 @@ class TestSpawnRouteBackendFromCommand:
         assert _backend_from_command("") is AgentType.CLAUDE_CODE
 
 
+class TestMcpListPeersSelfFilter:
+    """list_peers should hide the calling peer by default (QoL)."""
+
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    async def test_list_peers_hides_self_by_default(
+        self, mock_request: AsyncMock, _mock_register: AsyncMock,
+    ) -> None:
+        import repowire.mcp.server as mcp_server
+        mcp_server._cached_peer_name = "orchestrator"
+        mock_request.return_value = {
+            "peers": [
+                {"peer_id": "repow-1-aa", "display_name": "orchestrator",
+                 "circle": "main", "status": "online", "backend": "claude-code"},
+                {"peer_id": "repow-1-bb", "display_name": "alpha",
+                 "circle": "main", "status": "online", "backend": "claude-code"},
+            ]
+        }
+
+        try:
+            mcp = mcp_server.create_mcp_server()
+            list_tool = mcp._tool_manager._tools["list_peers"]
+            result = await list_tool.fn()
+            assert "alpha" in result
+            assert "orchestrator" not in result
+        finally:
+            mcp_server._cached_peer_name = None
+
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    async def test_list_peers_include_self_opt_in(
+        self, mock_request: AsyncMock, _mock_register: AsyncMock,
+    ) -> None:
+        import repowire.mcp.server as mcp_server
+        mcp_server._cached_peer_name = "orchestrator"
+        mock_request.return_value = {
+            "peers": [
+                {"peer_id": "repow-1-aa", "display_name": "orchestrator",
+                 "circle": "main", "status": "online", "backend": "claude-code"},
+                {"peer_id": "repow-1-bb", "display_name": "alpha",
+                 "circle": "main", "status": "online", "backend": "claude-code"},
+            ]
+        }
+
+        try:
+            mcp = mcp_server.create_mcp_server()
+            list_tool = mcp._tool_manager._tools["list_peers"]
+            result = await list_tool.fn(include_self=True)
+            assert "orchestrator" in result
+            assert "alpha" in result
+        finally:
+            mcp_server._cached_peer_name = None
+
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    async def test_list_peers_no_self_filter_when_name_unknown(
+        self, mock_request: AsyncMock, _mock_register: AsyncMock,
+    ) -> None:
+        """If _cached_peer_name is None, no filtering happens (don't accidentally drop peers)."""
+        import repowire.mcp.server as mcp_server
+        mcp_server._cached_peer_name = None
+        mock_request.return_value = {
+            "peers": [
+                {"peer_id": "repow-1-aa", "display_name": "alpha",
+                 "circle": "main", "status": "online", "backend": "claude-code"},
+                {"peer_id": "repow-1-bb", "display_name": "beta",
+                 "circle": "main", "status": "online", "backend": "claude-code"},
+            ]
+        }
+
+        mcp = mcp_server.create_mcp_server()
+        list_tool = mcp._tool_manager._tools["list_peers"]
+        result = await list_tool.fn()
+        assert "alpha" in result
+        assert "beta" in result
+
+
 class TestRunMcpServer:
     """Sanity check that run_mcp_server enters the stdio loop."""
 
