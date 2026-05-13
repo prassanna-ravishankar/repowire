@@ -259,6 +259,19 @@ class TestRegistryEmitsStatusChange:
         assert received[0].old_status == PeerStatus.BUSY
         assert received[0].new_status == PeerStatus.ONLINE
 
+    async def test_app_wires_event_bus_into_registry(self, tmp_path) -> None:
+        """The daemon app factory must construct an EventBus and pass it
+        to PeerRegistry, otherwise the feature is dormant at runtime.
+        """
+        from repowire.daemon.app import create_test_app
+
+        app = create_test_app(persistence_path=tmp_path / "sessions.json")
+        async with app.router.lifespan_context(app):
+            bus = app.state.event_bus
+            registry = app.state.peer_registry
+            assert isinstance(bus, EventBus)
+            assert registry._event_bus is bus
+
     async def test_no_bus_means_no_emission(self, mock_router, tmp_path) -> None:
         registry = PeerRegistry(
             config=Config(),

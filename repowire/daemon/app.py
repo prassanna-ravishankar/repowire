@@ -21,6 +21,7 @@ from repowire.config.models import Config, load_config
 from repowire.daemon.ask_tracker import AskTracker
 from repowire.daemon.auth import require_localhost
 from repowire.daemon.deps import cleanup_deps, init_deps
+from repowire.daemon.event_bus import EventBus
 from repowire.daemon.lifecycle_handler import LifecycleHandler
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
@@ -84,6 +85,7 @@ def create_app(
             transport=transport,
             query_tracker=query_tracker,
         )
+        event_bus = EventBus()
         peer_registry = PeerRegistry(
             config=cfg,
             message_router=message_router,
@@ -91,6 +93,7 @@ def create_app(
             transport=transport,
             persistence_path=Path.home() / ".repowire" / "sessions.json",
             ask_tracker=ask_tracker,
+            event_bus=event_bus,
         )
         peer_registry.prune_offline(max_age_hours=cfg.daemon.prune_max_age_hours)
 
@@ -101,6 +104,7 @@ def create_app(
         app.state.ask_tracker = ask_tracker
         app.state.message_router = message_router
         app.state.peer_registry = peer_registry
+        app.state.event_bus = event_bus
         app.state.relay_mode = cfg.relay.enabled
 
         lifecycle_handler = LifecycleHandler(
@@ -300,6 +304,7 @@ def create_test_app(
             query_tracker=query_tracker,
         )
 
+        event_bus = EventBus()
         registry = PeerRegistry(
             config=cfg,
             message_router=msg_router,
@@ -307,6 +312,7 @@ def create_test_app(
             transport=transport,
             persistence_path=persistence_path,
             ask_tracker=ask_tracker,
+            event_bus=event_bus,
         )
 
         app.state.config = cfg
@@ -315,6 +321,7 @@ def create_test_app(
         app.state.ask_tracker = ask_tracker
         app.state.message_router = msg_router
         app.state.peer_registry = registry
+        app.state.event_bus = event_bus
         app.state.relay_mode = cfg.relay.enabled
 
         lh = LifecycleHandler(
