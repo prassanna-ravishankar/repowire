@@ -1,0 +1,156 @@
+export const metadata = {
+  title: "MCP tools · Repowire Docs",
+};
+
+export default function ToolsReference() {
+  return (
+    <article className="max-w-3xl">
+      <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
+        Reference
+      </p>
+      <h1 className="mt-3 font-headline text-3xl font-bold text-on-surface sm:text-4xl">
+        MCP tools
+      </h1>
+      <p className="mt-4 text-base leading-7 text-on-surface-variant">
+        Every agent in the mesh exposes the same set of MCP tools through the repowire server. Tool calls go to the local daemon over HTTP; the agent never sees daemon internals. Names are stable and used identically across Claude Code, Codex, Gemini CLI, and OpenCode.
+      </p>
+
+      <Tool
+        name="ask"
+        signature={`ask(peer_name: str, query: str, reply_to: str | None = None, circle: str | None = None) -> str`}
+      >
+        <p>
+          Open a non-blocking ask thread. Returns a <Mono>correlation_id</Mono> immediately. The recipient closes the thread with <Mono>ack</Mono>; the daemon routes the close back as a notification framed <Mono>[ack #cid from @peer]</Mono>.
+        </p>
+        <p>
+          Pass <Mono>reply_to</Mono> to chain a follow-up: the prior thread closes and a new one opens referencing it. Pass <Mono>circle</Mono> only when two peers share a name in different circles.
+        </p>
+        <Example>
+{`ask("project-b", "What API endpoints do you expose?")
+# returns "ask-c1a1c7dd"`}
+        </Example>
+      </Tool>
+
+      <Tool
+        name="ack"
+        signature={`ack(correlation_id: str, message: str | None = None) -> str`}
+      >
+        <p>
+          Close an open ask. Bare <Mono>ack(cid)</Mono> signals &ldquo;seen, no action needed.&rdquo; A reply <Mono>ack(cid, message)</Mono> closes the thread and delivers the message back to the original asker. Replies always reach the asker regardless of circle, because the thread was established at ask-time.
+        </p>
+        <Example>
+{`ack("ask-c1a1c7dd")
+ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")`}
+        </Example>
+      </Tool>
+
+      <Tool
+        name="notify_peer"
+        signature={`notify_peer(peer_name: str, message: str, circle: str | None = None) -> str`}
+      >
+        <p>
+          Fire-and-forget. No lifecycle, no expected response. Returns a synthetic <Mono>notif-XXXXXXXX</Mono> ID for client-side tracking, not a thread you can close. Use for status pings and announcements.
+        </p>
+        <p>
+          The special peer <Mono>telegram</Mono> routes to the user&rsquo;s phone. The <Mono>dashboard</Mono> already sees agent turns; you do not need to notify it.
+        </p>
+        <Example>
+{`notify_peer("telegram", "deploy finished, green across CI")`}
+        </Example>
+      </Tool>
+
+      <Tool name="broadcast" signature={`broadcast(message: str) -> str`}>
+        <p>
+          Fan out to every online peer in your circle. No correlation, no reply. Use sparingly; treat it as a soft interrupt for everyone in scope.
+        </p>
+        <Example>
+{`broadcast("rebasing main, hold pushes for ~5 min")`}
+        </Example>
+      </Tool>
+
+      <Tool
+        name="list_peers"
+        signature={`list_peers(show_offline: bool = False, include_self: bool = False) -> str`}
+      >
+        <p>
+          Returns a TSV with columns: <Mono>peer_id, name, project, circle, role, status, path, machine, description, backend</Mono>. Defaults to online + busy peers and hides the caller. Pass <Mono>show_offline=True</Mono> for the full registry; pass <Mono>include_self=True</Mono> when an orchestrator needs its own row.
+        </p>
+      </Tool>
+
+      <Tool name="whoami" signature={`whoami() -> str`}>
+        <p>
+          Returns the caller&rsquo;s own TSV row. Useful when an agent needs to know which display name it is registered under (display names get suffixed on collision: <Mono>repowire</Mono>, <Mono>repowire-2</Mono>).
+        </p>
+      </Tool>
+
+      <Tool name="set_description" signature={`set_description(description: str) -> str`}>
+        <p>
+          Update the free-form description visible in <Mono>list_peers</Mono>. Call this at the start of a task so peers can see what you are working on without asking.
+        </p>
+        <Example>{`set_description("rebuilding docs slice B")`}</Example>
+      </Tool>
+
+      <Tool
+        name="spawn_peer"
+        signature={`spawn_peer(path: str, command: str, circle: str = "default", message: str | None = None) -> str`}
+      >
+        <p>
+          Spawn a new agent session in a project directory. The <Mono>command</Mono> must exactly match an entry in <Mono>daemon.spawn.allowed_commands</Mono> in <Mono>~/.repowire/config.yaml</Mono>; spawn is off by default until you allowlist something.
+        </p>
+        <p>
+          The spawned agent self-registers via its SessionStart hook within a few seconds. The <Mono>message</Mono> seeds first-turn context. Codex requires it (or a default) to fire its hook; other backends treat it as an opening prompt.
+        </p>
+      </Tool>
+
+      <Tool
+        name="kill_peer"
+        signature={`kill_peer(peer_identifier: str, circle: str | None = None) -> str`}
+      >
+        <p>
+          Terminate a peer by name or peer_id. Used by orchestrators to reclaim slots when a session is stuck or done. The daemon will mark the peer offline and reap its tmux pane.
+        </p>
+      </Tool>
+
+      <div className="mt-12 border-t border-border-faint pt-8">
+        <div className="mb-3 font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-outline">
+          See also
+        </div>
+        <p className="text-sm leading-6 text-on-surface-variant">
+          The <a className="text-primary-fixed underline-offset-4 hover:underline" href="/docs/reference/client">typed Python client</a> exposes the same calls over the daemon&rsquo;s HTTP API for non-MCP callers.
+        </p>
+      </div>
+    </article>
+  );
+}
+
+function Tool({
+  name,
+  signature,
+  children,
+}: {
+  name: string;
+  signature: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="mt-10">
+      <h2 className="font-mono text-base font-semibold text-primary-fixed">{name}</h2>
+      <pre className="mt-3 overflow-x-auto border border-border-faint bg-surface-container-low p-3 font-mono text-xs leading-6 text-on-surface">
+        <code>{signature}</code>
+      </pre>
+      <div className="mt-4 space-y-4 text-sm leading-6 text-on-surface-variant">{children}</div>
+    </section>
+  );
+}
+
+function Example({ children }: { children: React.ReactNode }) {
+  return (
+    <pre className="overflow-x-auto border-l-2 border-primary/60 bg-surface-container-low p-4 font-mono text-xs leading-6 text-on-surface">
+      <code>{children}</code>
+    </pre>
+  );
+}
+
+function Mono({ children }: { children: React.ReactNode }) {
+  return <code className="font-mono text-primary-fixed">{children}</code>;
+}

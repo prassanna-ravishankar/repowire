@@ -20,11 +20,11 @@ export default function Quickstart() {
 
       <Step n="01" title="Install">
         <CodeBlock>
-{`# detects uv / pipx / pip, runs interactive setup
-curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
+{`# recommended: install with uv (fast, isolated)
+uv tool install repowire
 
-# or manually
-uv tool install repowire`}
+# or use the interactive installer (detects uv / pipx / pip)
+curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh`}
         </CodeBlock>
         <p className="mt-3 text-sm leading-6 text-on-surface-variant">
           Requires tmux. The installer detects your agents (Claude Code, Codex, Gemini, OpenCode) and wires hooks and MCP for each one it finds.
@@ -53,7 +53,7 @@ cd ~/projects/project-b && codex`}
           &ldquo;Ask project-b what API endpoints they expose.&rdquo;
         </div>
         <p className="mt-3 text-sm leading-6 text-on-surface-variant">
-          The agent calls <code className="font-mono text-primary-fixed">ask</code>. <code className="font-mono text-primary-fixed">project-b</code> receives the question and acks back with <code className="font-mono text-primary-fixed">ack(corr_id, &quot;...&quot;)</code>. The reply lands in <code className="font-mono text-primary-fixed">project-a</code> as a notification framed <code className="font-mono text-primary-fixed">[ack #cid from @project-b]</code>.
+          The agent invokes the <code className="font-mono text-primary-fixed">ask</code> MCP tool with <code className="font-mono text-primary-fixed">peer_name=&quot;project-b&quot;</code>. <code className="font-mono text-primary-fixed">project-b</code> receives the question and acks back with <code className="font-mono text-primary-fixed">ack(corr_id, &quot;...&quot;)</code>. The reply lands in <code className="font-mono text-primary-fixed">project-a</code> as a notification framed <code className="font-mono text-primary-fixed">[ack #cid from @project-b]</code>.
         </p>
       </Step>
 
@@ -63,6 +63,7 @@ cd ~/projects/project-b && codex`}
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <NextCard href="/docs/concepts" title="Concepts" desc="Peers, circles, ask vs notify vs broadcast." />
+          <NextCard href="/docs/reference/tools" title="MCP tools" desc="ask, ack, notify_peer, broadcast, and friends." />
         </div>
       </div>
     </article>
