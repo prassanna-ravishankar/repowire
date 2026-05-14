@@ -173,3 +173,96 @@ async def test_lookup_prefers_pane_owned_peer_when_names_collide(tmp_path):
     peer = await registry.get_peer("repowire-codex")
     assert peer is not None
     assert peer.peer_id == pane_peer_id
+
+
+@pytest.mark.asyncio
+async def test_circle_and_description_persist_across_restart(tmp_path):
+    """A peer re-registering after restart restores its prior circle + description.
+
+    Reproduces issue #134: `claude --continue` loses tmux session context, so
+    the new registration arrives with circle="default" even though the peer
+    was previously moved to a non-default circle. The persisted mapping should
+    bring both circle and description back without manual /peers/circle calls.
+    """
+    path = tmp_path / "sessions.json"
+    orch_dir = tmp_path / "orchproj"
+    orch_dir.mkdir()
+    registry = PeerRegistry(
+        config=__import__("repowire.config.models", fromlist=["Config"]).Config(),
+        message_router=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(),
+        persistence_path=path,
+    )
+
+    peer_id, name = await registry.allocate_and_register(
+        circle="5", backend=AgentType.CLAUDE_CODE, path=str(orch_dir),
+    )
+    await registry.update_description(peer_id, "watching the mesh")
+    await registry.mark_offline(peer_id)
+    # Flush to disk so a fresh registry can load it.
+    registry._persist_mappings()
+
+    # Simulate daemon restart: brand new registry reading the same file.
+    registry2 = PeerRegistry(
+        config=__import__("repowire.config.models", fromlist=["Config"]).Config(),
+        message_router=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(),
+        persistence_path=path,
+    )
+    # claude --continue: tmux session name didn't propagate, so the hook
+    # falls back to circle="default".
+    new_id, new_name = await registry2.allocate_and_register(
+        circle="default", backend=AgentType.CLAUDE_CODE, path=str(orch_dir),
+    )
+    assert new_name == name
+    assert new_id == peer_id, "should adopt the prior session id"
+    peer = await registry2.get_peer(new_id)
+    assert peer is not None
+    assert peer.circle == "5"
+    assert peer.description == "watching the mesh"
+
+
+@pytest.mark.asyncio
+async def test_fresh_peer_with_no_prior_record_gets_defaults(tmp_path):
+    """A brand new path/backend gets default circle and empty description."""
+    registry = _make_registry(tmp_path)
+    peer_id, _name = await registry.allocate_and_register(
+        circle="default", backend=AgentType.CLAUDE_CODE, path="/tmp/freshproj",
+    )
+    peer = await registry.get_peer(peer_id)
+    assert peer is not None
+    assert peer.circle == "default"
+    assert peer.description == ""
+
+
+@pytest.mark.asyncio
+async def test_non_default_circle_does_not_collapse_other_circle_peer(tmp_path):
+    """Two peers at the same path in different non-default circles stay distinct.
+
+    Adoption is gated on the incoming circle being "default" precisely to
+    avoid this case: a second orchestrator registering with an explicit
+    different circle must not be folded into the first one's mapping.
+    """
+    registry = _make_registry(tmp_path)
+    first_id, _ = await registry.allocate_and_register(
+        circle="A", backend=AgentType.CLAUDE_CODE, path="/tmp/shared",
+    )
+    second_id, _ = await registry.allocate_and_register(
+        circle="B", backend=AgentType.CLAUDE_CODE, path="/tmp/shared",
+    )
+    assert first_id != second_id
+    first_peer = await registry.get_peer(first_id)
+    second_peer = await registry.get_peer(second_id)
+    assert first_peer is not None and first_peer.circle == "A"
+    assert second_peer is not None and second_peer.circle == "B"
+
+
+@pytest.mark.asyncio
+async def test_description_update_persists_to_mapping(tmp_path):
+    """update_description writes through to the SessionMapping for durability."""
+    registry = _make_registry(tmp_path)
+    peer_id, _ = await registry.allocate_and_register(
+        circle="default", backend=AgentType.CLAUDE_CODE, path="/tmp/descproj",
+    )
+    await registry.update_description(peer_id, "doing the thing")
+    mapping = registry.get_mapping(peer_id)
+    assert mapping is not None
+    assert mapping.description == "doing the thing"

@@ -49,6 +49,7 @@ class SessionMapping:
     path: str | None = None
     role: PeerRole = PeerRole.AGENT
     updated_at: str | None = None
+    description: str = ""
 
     def __post_init__(self) -> None:
         if self.updated_at is None:
@@ -363,6 +364,27 @@ class PeerRegistry:
                 self._mappings_dirty = True
                 return sid
 
+        # Cross-circle adoption: when the caller supplied the fallback circle
+        # ("default") but a prior mapping exists for the same (name, backend,
+        # path), reuse it so the peer's prior circle and description survive
+        # restarts where the tmux session name didn't propagate (e.g. claude
+        # --continue). Strictly gated on circle == "default" to avoid
+        # collapsing genuinely separate same-path peers in different circles.
+        if circle == "default" and path:
+            for sid, mapping in self._mappings.items():
+                if (
+                    mapping.display_name == display_name
+                    and mapping.backend == backend
+                    and mapping.path == path
+                ):
+                    mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                    self._mappings_dirty = True
+                    logger.info(
+                        f"Adopted prior session {sid} for {display_name} "
+                        f"(restored circle={mapping.circle})"
+                    )
+                    return sid
+
         session_id = f"repow-{circle}-{uuid4().hex[:8]}"
         self._mappings[session_id] = SessionMapping(
             session_id=session_id,
@@ -447,11 +469,19 @@ class PeerRegistry:
             if pane_id:
                 self._release_pane(pane_id, allocated_id)
 
+            # Restore circle + description from persisted mapping. The
+            # mapping is the durable source of truth for these fields; when
+            # _find_or_allocate_mapping adopted a prior session, its stored
+            # circle may differ from the caller-supplied one and should win.
+            restored = self._mappings.get(allocated_id)
+            effective_circle = restored.circle if restored else circle
+            restored_description = restored.description if restored else ""
+
             # --- create and insert Peer ---
             peer = Peer(
                 peer_id=allocated_id,
                 display_name=assigned_name,
-                circle=circle,
+                circle=effective_circle,
                 backend=backend,
                 role=role,
                 status=PeerStatus.ONLINE,
@@ -461,6 +491,7 @@ class PeerRegistry:
                 path=path or "",
                 machine=machine,
                 metadata=metadata or {},
+                description=restored_description,
             )
             self._peers[allocated_id] = peer
             logger.info(f"Peer registered: {assigned_name} ({allocated_id})")
@@ -937,6 +968,11 @@ class PeerRegistry:
                 return False
             peer.description = description
             peer.last_seen = datetime.now(timezone.utc)
+            mapping = self._mappings.get(peer.peer_id)
+            if mapping and mapping.description != description:
+                mapping.description = description
+                mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                self._mappings_dirty = True
             return True
 
     async def set_peer_circle(self, identifier: str, circle: str) -> None:
