@@ -141,6 +141,15 @@ class Scheduler:
                 "Fired schedule %s: %s -> %s (%s)",
                 sched.schedule_id, sched.from_peer, sched.to_peer, sched.kind,
             )
+        except Exception as e:
+            # Catch-all so a misbehaving delivery (anything beyond the inner
+            # ValueError/TransportError handlers above) doesn't escape and
+            # kill the scheduler task. The loop continues to the next
+            # schedule; this one still gets dropped via the finally block.
+            logger.exception(
+                "Scheduled %s %s: unexpected error during fire (%s); dropping",
+                sched.kind, sched.schedule_id, e,
+            )
         finally:
             # One-shot: always drop from the store after firing (success or
             # delivery failure). Retry policy is out of scope for the MVP.

@@ -119,3 +119,27 @@ async def test_earlier_schedule_added_after_later_fires_first(env) -> None:
     args = registry.notify.await_args
     assert args.kwargs["text"] == "sooner"
     await scheduler.stop()
+
+
+async def test_unexpected_exception_does_not_kill_loop(env) -> None:
+    """A delivery that raises something other than ValueError/TransportError
+    must not propagate up to _run and kill the scheduler. The bad schedule
+    gets dropped; the next one still fires."""
+    scheduler, store, registry, _ = env
+    # First call raises something the inner except blocks DON'T catch
+    # (TypeError stands in for any unexpected exception type).
+    registry.notify.side_effect = [TypeError("unexpected"), None]
+    await scheduler.start()
+    bad = store.create("a", "b", "first-bad", _now_plus(0.05))
+    scheduler.notify_changed()
+    await asyncio.sleep(0.2)
+    # Bad schedule got dropped despite the exception.
+    assert store.get(bad.schedule_id) is None
+    # Scheduler still alive — second schedule fires successfully.
+    good = store.create("a", "b", "second-good", _now_plus(0.05))
+    scheduler.notify_changed()
+    await asyncio.sleep(0.2)
+    assert store.get(good.schedule_id) is None
+    # Both fires were attempted (and second one succeeded).
+    assert registry.notify.await_count == 2
+    await scheduler.stop()
