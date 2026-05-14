@@ -27,6 +27,7 @@ from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.relay_client import RelayClient
+from repowire.daemon.review_queue_store import ReviewQueueStore
 from repowire.daemon.routes import (
     asks,
     attachments,
@@ -34,6 +35,7 @@ from repowire.daemon.routes import (
     lifecycle,
     messages,
     peers,
+    reviews,
     websocket,
 )
 from repowire.daemon.routes import spawn as spawn_routes
@@ -106,6 +108,9 @@ def create_app(
         app.state.peer_registry = peer_registry
         app.state.event_bus = event_bus
         app.state.relay_mode = cfg.relay.enabled
+        app.state.review_queue_store = ReviewQueueStore(
+            Path.home() / ".repowire" / "review_queue.json"
+        )
 
         lifecycle_handler = LifecycleHandler(
             peer_registry=peer_registry,
@@ -214,6 +219,7 @@ def create_app(
     app.include_router(peers.router)
     app.include_router(messages.router)
     app.include_router(asks.router)
+    app.include_router(reviews.router)
     app.include_router(websocket.router)
     app.include_router(spawn_routes.router)
     app.include_router(attachments.router)
@@ -323,6 +329,8 @@ def create_test_app(
         app.state.peer_registry = registry
         app.state.event_bus = event_bus
         app.state.relay_mode = cfg.relay.enabled
+        rq_dir = persistence_path.parent if persistence_path else Path.home() / ".repowire"
+        app.state.review_queue_store = ReviewQueueStore(rq_dir / "review_queue.json")
 
         lh = LifecycleHandler(
             peer_registry=registry,
@@ -348,6 +356,7 @@ def create_test_app(
     app.include_router(peers.router)
     app.include_router(messages.router)
     app.include_router(asks.router)
+    app.include_router(reviews.router)
     app.include_router(websocket.router)
     app.include_router(spawn_routes.router)
     app.include_router(attachments.router)

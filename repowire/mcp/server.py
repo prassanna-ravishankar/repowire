@@ -662,6 +662,69 @@ def create_mcp_server() -> FastMCP:
             )
         return f"Killed peer {peer_identifier}{scoped}: {tmux_note}"
 
+    @mcp.tool()
+    async def mark_reviewed(pr_url: str, last_reviewed_sha: str | None = None) -> str:
+        """[Repowire mesh] Record that you've reviewed a PR.
+
+        Use this after reviewing a GitHub pull request so it stops surfacing
+        in your `review_queue`. If `last_reviewed_sha` is omitted the daemon
+        best-effort fetches the current HEAD via `gh api`; future pushes to
+        the PR will then show up as `re-review-suggested`.
+
+        Args:
+            pr_url: Full GitHub PR URL (https://github.com/owner/repo/pull/N)
+            last_reviewed_sha: SHA you just reviewed. Optional.
+
+        Returns:
+            Confirmation message.
+        """
+        await _ensure_registered(strict=True)
+        reviewer = await _get_my_peer_name()
+        body: dict = {"reviewer": reviewer, "pr_url": pr_url}
+        if last_reviewed_sha is not None:
+            body["last_reviewed_sha"] = last_reviewed_sha
+        await daemon_request("POST", "/reviews", body)
+        return f"marked reviewed: {pr_url}"
+
+    @mcp.tool()
+    async def review_queue(peer_name: str | None = None) -> str:
+        """[Repowire mesh] List PRs awaiting your review.
+
+        Defaults to the calling peer. Returns TSV with columns:
+        pr_url, last_reviewed_sha, current_head_sha, state, my_action.
+
+        my_action values:
+          - none-needed:           PR open, head SHA matches what you reviewed
+          - re-review-suggested:   PR open, new commits since your review
+          - merged-since-review:   PR merged after you last reviewed it
+          - closed-since-review:   PR closed (not merged) since your review
+          - unknown:               GitHub API unreachable; falls back to cached state
+
+        Args:
+            peer_name: Reviewer to query. Defaults to you.
+
+        Returns:
+            TSV rows, header included.
+        """
+        await _ensure_registered(strict=True)
+        reviewer = peer_name or await _get_my_peer_name()
+        result = await daemon_request("GET", "/reviews", params={"reviewer": reviewer})
+        header = "pr_url\tlast_reviewed_sha\tcurrent_head_sha\tstate\tmy_action"
+        rows = [header]
+        for item in result.get("reviews", []):
+            rows.append(
+                "\t".join(
+                    [
+                        item.get("pr_url", ""),
+                        item.get("last_reviewed_sha") or "",
+                        item.get("current_head_sha") or "",
+                        item.get("state", ""),
+                        item.get("my_action", ""),
+                    ]
+                )
+            )
+        return "\n".join(rows)
+
     return mcp
 
 
