@@ -845,7 +845,7 @@ class TestMcpListPeersSelfFilter:
 
 
 class TestMcpListPeersLastSeen:
-    """list_peers TSV must include last_seen as the trailing column."""
+    """list_peers TSV must include last_seen + turn_state as trailing columns."""
 
     @pytest.mark.asyncio
     @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
@@ -859,10 +859,12 @@ class TestMcpListPeersLastSeen:
             "peers": [
                 {"peer_id": "repow-1-aa", "display_name": "alpha",
                  "circle": "main", "status": "online", "backend": "claude-code",
-                 "last_seen": "2026-05-14T12:00:00+00:00"},
+                 "last_seen": "2026-05-14T12:00:00+00:00",
+                 "turn_state": "awaiting_input"},
                 {"peer_id": "repow-1-bb", "display_name": "beta",
                  "circle": "main", "status": "online", "backend": "claude-code",
-                 "last_seen": None},
+                 "last_seen": None,
+                 "turn_state": None},
             ]
         }
 
@@ -871,10 +873,15 @@ class TestMcpListPeersLastSeen:
         result = await list_tool.fn()
         lines = result.splitlines()
         header = lines[0].split("\t")
-        assert header[-1] == "last_seen"
+        # turn_state appended after last_seen to keep positional TSV consumers
+        # of the pre-#139 layout stable (same rule that put last_seen last in #138).
+        assert header[-2] == "last_seen"
+        assert header[-1] == "turn_state"
         alpha_row = next(line for line in lines[1:] if "alpha" in line).split("\t")
         beta_row = next(line for line in lines[1:] if "beta" in line).split("\t")
-        assert alpha_row[-1] == "2026-05-14T12:00:00+00:00"
+        assert alpha_row[-2] == "2026-05-14T12:00:00+00:00"
+        assert alpha_row[-1] == "awaiting_input"
+        assert beta_row[-2] == ""
         assert beta_row[-1] == ""
 
 

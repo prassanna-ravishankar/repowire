@@ -260,9 +260,12 @@ def create_mcp_server() -> FastMCP:
     """Create the MCP server."""
     mcp = FastMCP("repowire")
 
+    # New columns append at the end so positional-indexing TSV consumers
+    # survive across releases (same rule that put last_seen at the tail in
+    # #138). Keep turn_state last for the same reason.
     tsv_header = (
-        "peer_id\tname\tproject\tcircle\trole\tstatus\tturn_state\tpath\t"
-        "machine\tdescription\tbackend\tlast_seen"
+        "peer_id\tname\tproject\tcircle\trole\tstatus\tpath\t"
+        "machine\tdescription\tbackend\tlast_seen\tturn_state"
     )
 
     def _peer_to_tsv_row(p: dict) -> str:
@@ -276,12 +279,12 @@ def create_mcp_server() -> FastMCP:
                 p.get("circle", ""),
                 p.get("role", "agent"),
                 p.get("status", ""),
-                p.get("turn_state") or "",
                 p.get("path") or "",
                 p.get("machine") or "",
                 p.get("description") or "",
                 p.get("backend", ""),
                 p.get("last_seen") or "",
+                p.get("turn_state") or "",
             ]
         )
 
@@ -293,11 +296,11 @@ def create_mcp_server() -> FastMCP:
         (you). Set show_offline=True to include offline peers, or
         include_self=True to include yourself in the listing.
 
-        Returns TSV: peer_id, name, project, circle, role, status, turn_state,
-        path, machine, description, backend, last_seen. The turn_state column
-        is "" when unknown; otherwise idle, working, awaiting_input (peer is
-        waiting on user input mid-turn), or pending_first_turn (peer was
-        spawn-seeded but the seed never reached the agent -- re-send via
+        Returns TSV: peer_id, name, project, circle, role, status, path,
+        machine, description, backend, last_seen, turn_state. The turn_state
+        column is "" when unknown; otherwise idle, working, awaiting_input
+        (peer is waiting on user input mid-turn), or pending_first_turn (peer
+        was spawn-seeded but the seed never reached the agent -- re-send via
         notify_peer). Peers are reachable via ask/notify_peer. Do NOT
         use SendMessage to contact them -- SendMessage is a Claude Code harness
         tool for same-session teammates only.
@@ -482,7 +485,7 @@ def create_mcp_server() -> FastMCP:
         """[Repowire mesh] Return your identity in the repowire mesh.
 
         Returns TSV with columns: peer_id, name, project, circle, role, status,
-        turn_state, path, machine, description, backend, last_seen
+        path, machine, description, backend, last_seen, turn_state
         """
         await _ensure_registered(strict=True)
         pane_id = get_pane_id()
