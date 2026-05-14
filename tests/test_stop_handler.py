@@ -162,7 +162,9 @@ class TestStopHandler:
         })
 
         # Should update status
-        mock_status.assert_called_once_with("%42", "online", use_pane_id=True)
+        mock_status.assert_called_once_with(
+            "%42", "online", use_pane_id=True, turn_state="idle",
+        )
 
         # Should post assistant turn for dashboard
         chat_calls = [c for c in mock_post.call_args_list if c[0][0] == "/events/chat"]

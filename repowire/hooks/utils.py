@@ -212,11 +212,36 @@ def daemon_get(path: str, *, timeout: float = 2.0) -> dict | None:
         return None
 
 
-def update_status(peer_identifier: str, status_value: str, *, use_pane_id: bool = False) -> bool:
-    """Update peer status via daemon HTTP API."""
+def update_status(
+    peer_identifier: str,
+    status_value: str,
+    *,
+    use_pane_id: bool = False,
+    turn_state: str | None = None,
+) -> bool:
+    """Update peer status (and optionally turn_state) via daemon HTTP API."""
+    payload: dict = {"status": status_value}
     if use_pane_id:
-        payload = {"pane_id": peer_identifier, "status": status_value}
+        payload["pane_id"] = peer_identifier
     else:
-        payload = {"peer_name": peer_identifier, "status": status_value}
+        payload["peer_name"] = peer_identifier
+    if turn_state is not None:
+        payload["turn_state"] = turn_state
+    result = daemon_post("/session/update", payload)
+    return result is not None
+
+
+def update_turn_state(
+    peer_identifier: str,
+    turn_state: str,
+    *,
+    use_pane_id: bool = False,
+) -> bool:
+    """Update peer turn_state alone (no status change) via daemon HTTP API."""
+    payload: dict = {"turn_state": turn_state}
+    if use_pane_id:
+        payload["pane_id"] = peer_identifier
+    else:
+        payload["peer_name"] = peer_identifier
     result = daemon_post("/session/update", payload)
     return result is not None

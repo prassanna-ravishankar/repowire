@@ -111,15 +111,15 @@ def main(backend: str = "claude-code") -> int:
         if due:
             reminder_text = format_reminder_block(due)
 
-    # Mark peer online.
+    # Mark peer online and turn_state=idle (turn finished cleanly).
     if pane_id:
-        if not update_status(pane_id, "online", use_pane_id=True):
+        if not update_status(pane_id, "online", use_pane_id=True, turn_state="idle"):
             print(
                 f"repowire stop: failed to update status for pane {pane_id}",
                 file=sys.stderr,
             )
     else:
-        if not update_status(peer_display, "online"):
+        if not update_status(peer_display, "online", turn_state="idle"):
             print(
                 f"repowire stop: failed to update status for {peer_display}",
                 file=sys.stderr,

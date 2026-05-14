@@ -92,7 +92,11 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
     # the requested circle when their MCP/hook subprocess registers. Role is
     # included for spawns that need a non-default role (e.g. orchestrator).
     write_hint(
-        config.path, config.backend.value, config.circle, role=config.role,
+        config.path,
+        config.backend.value,
+        config.circle,
+        role=config.role,
+        pending_first_turn=bool(config.message),
     )
 
     pane.send_keys(cmd, enter=True)

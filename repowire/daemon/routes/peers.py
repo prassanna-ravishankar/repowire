@@ -14,7 +14,7 @@ from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_peer_registry
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
-from repowire.protocol.peers import Peer, PeerRole, PeerStatus
+from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
 
 router = APIRouter(tags=["peers"])
 
@@ -32,6 +32,7 @@ class PeerInfo(BaseModel):
     circle: str = "global"
     role: PeerRole = PeerRole.AGENT
     status: str
+    turn_state: TurnState | None = None
     last_seen: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     description: str = ""
@@ -50,6 +51,7 @@ def _peer_to_info(p: Peer) -> PeerInfo:
         circle=p.circle,
         role=p.role,
         status=p.status.value,
+        turn_state=p.turn_state,
         last_seen=p.last_seen.isoformat() if p.last_seen else None,
         metadata=p.metadata,
         description=p.description,
@@ -73,6 +75,9 @@ class RegisterPeerRequest(BaseModel):
     backend: AgentType = Field(default=AgentType.CLAUDE_CODE, description="Agent type")
     circle: str | None = Field(None, description="Circle (logical subnet)")
     role: PeerRole = Field(default=PeerRole.AGENT, description="Peer role")
+    turn_state: TurnState | None = Field(
+        None, description="Initial per-turn progress (optional)"
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("circle")
@@ -186,6 +191,7 @@ async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str]:
         metadata=request.metadata,
         machine=request.machine or socket.gethostname(),
         role=request.role,
+        turn_state=request.turn_state,
     )
     return peer_id, display_name
 

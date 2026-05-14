@@ -32,7 +32,12 @@ def main() -> int:
 
     pane_id = get_pane_id()
     if pane_id:
-        if not update_status(pane_id, "online", use_pane_id=True):
+        # idle_prompt = agent's prompt is live and unconsumed (rate limit,
+        # permission, tool clarification). Distinct from "idle" (Stop fired,
+        # no turn in progress) -- this is mid-turn waiting on user input.
+        if not update_status(
+            pane_id, "online", use_pane_id=True, turn_state="awaiting_input",
+        ):
             print(
                 f"repowire notification: failed to update status for pane {pane_id}",
                 file=sys.stderr,

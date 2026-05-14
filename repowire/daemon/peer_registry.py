@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
-from repowire.protocol.peers import Peer, PeerRole, PeerStatus
+from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
 
 if TYPE_CHECKING:
     from repowire.daemon.ask_tracker import AskTracker
@@ -450,6 +450,7 @@ class PeerRegistry:
         machine: str = "unknown",
         role: PeerRole = PeerRole.AGENT,
         peer_id: str | None = None,
+        turn_state: TurnState | None = None,
     ) -> tuple[str, str]:
         """Allocate a peer_id and register the peer atomically.
 
@@ -467,6 +468,8 @@ class PeerRegistry:
                 old_status = existing.status
                 existing.status = PeerStatus.ONLINE
                 existing.last_seen = datetime.now(timezone.utc)
+                if turn_state is not None:
+                    existing.turn_state = turn_state
                 self._emit_status_change(existing, old_status, PeerStatus.ONLINE)
                 if pane_id:
                     self._release_pane(pane_id, peer_id)
@@ -509,6 +512,7 @@ class PeerRegistry:
                 machine=machine,
                 metadata=metadata or {},
                 description=restored_description,
+                turn_state=turn_state,
             )
             self._peers[allocated_id] = peer
             logger.info(f"Peer registered: {assigned_name} ({allocated_id})")
@@ -956,6 +960,26 @@ class PeerRegistry:
             peer.status = status
             peer.last_seen = datetime.now(timezone.utc)
             self._emit_status_change(peer, old_status, status)
+
+    async def update_peer_turn_state(
+        self, identifier: str, turn_state: TurnState | None,
+    ) -> None:
+        """Update peer turn_state (idle/working/awaiting_input/pending_first_turn).
+
+        Orthogonal to status; does not refresh last_seen on its own (the
+        accompanying status update typically does). No event is emitted for
+        v1 — list_peers consumers pick it up on next read.
+        """
+        async with self._lock:
+            peer = self._lookup_peer_unlocked(identifier)
+            if not peer:
+                logger.warning(
+                    "update_peer_turn_state: peer not found: %s (turn_state=%s not applied)",
+                    identifier,
+                    turn_state,
+                )
+                return
+            peer.turn_state = turn_state
 
     async def touch_last_seen(
         self, identifier: str, circle: str | None = None,

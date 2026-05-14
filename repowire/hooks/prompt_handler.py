@@ -26,7 +26,7 @@ def main(backend: str = "claude-code") -> int:
 
     pane_id = get_pane_id()
     if pane_id:
-        if not update_status(pane_id, "busy", use_pane_id=True):
+        if not update_status(pane_id, "busy", use_pane_id=True, turn_state="working"):
             print(
                 f"repowire prompt: failed to update status for pane {pane_id}",
                 file=sys.stderr,

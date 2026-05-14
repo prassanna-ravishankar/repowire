@@ -36,6 +36,7 @@ def _register_peer_http(
     pane_id: str | None = None,
     metadata: dict | None = None,
     role: str | None = None,
+    turn_state: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Register peer via HTTP POST /peers. Returns (peer_id, display_name)."""
     folder = Path(path).name
@@ -51,6 +52,8 @@ def _register_peer_http(
         payload["metadata"] = metadata
     if role:
         payload["role"] = role
+    if turn_state:
+        payload["turn_state"] = turn_state
     result = daemon_post("/peers", payload)
     if result:
         return result.get("peer_id"), result.get("display_name")
@@ -240,6 +243,12 @@ def main(backend: str = "claude-code") -> int:
             or "default"
         )
         hint_role = hint.get("role") if hint else None
+        # Spawn-seed-drop guard: if the daemon spawned this peer with a seed
+        # message, mark turn_state=pending_first_turn so orchestrators can
+        # see the brief never landed and re-send via notify_peer. The first
+        # UserPromptSubmit transitions this to "working".
+        hint_pending_first_turn = bool(hint and hint.get("pending_first_turn"))
+        initial_turn_state = "pending_first_turn" if hint_pending_first_turn else None
         metadata = {"project": folder_name}
         peer_id, display_name = _register_peer_http(
             cwd,
@@ -248,6 +257,7 @@ def main(backend: str = "claude-code") -> int:
             pane_id=pane_id,
             metadata=metadata,
             role=hint_role,
+            turn_state=initial_turn_state,
         )
         if not display_name:
             display_name = folder_name  # fallback if daemon unreachable

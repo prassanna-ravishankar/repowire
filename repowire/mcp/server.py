@@ -261,7 +261,7 @@ def create_mcp_server() -> FastMCP:
     mcp = FastMCP("repowire")
 
     tsv_header = (
-        "peer_id\tname\tproject\tcircle\trole\tstatus\tpath\t"
+        "peer_id\tname\tproject\tcircle\trole\tstatus\tturn_state\tpath\t"
         "machine\tdescription\tbackend\tlast_seen"
     )
 
@@ -276,6 +276,7 @@ def create_mcp_server() -> FastMCP:
                 p.get("circle", ""),
                 p.get("role", "agent"),
                 p.get("status", ""),
+                p.get("turn_state") or "",
                 p.get("path") or "",
                 p.get("machine") or "",
                 p.get("description") or "",
@@ -292,8 +293,12 @@ def create_mcp_server() -> FastMCP:
         (you). Set show_offline=True to include offline peers, or
         include_self=True to include yourself in the listing.
 
-        Returns TSV: peer_id, name, project, circle, role, status, path, machine,
-        description, backend, last_seen. Peers are reachable via ask/notify_peer. Do NOT
+        Returns TSV: peer_id, name, project, circle, role, status, turn_state,
+        path, machine, description, backend, last_seen. The turn_state column
+        is "" when unknown; otherwise idle, working, awaiting_input (peer is
+        waiting on user input mid-turn), or pending_first_turn (peer was
+        spawn-seeded but the seed never reached the agent -- re-send via
+        notify_peer). Peers are reachable via ask/notify_peer. Do NOT
         use SendMessage to contact them -- SendMessage is a Claude Code harness
         tool for same-session teammates only.
         """
@@ -477,7 +482,7 @@ def create_mcp_server() -> FastMCP:
         """[Repowire mesh] Return your identity in the repowire mesh.
 
         Returns TSV with columns: peer_id, name, project, circle, role, status,
-        path, machine, description, backend, last_seen
+        turn_state, path, machine, description, backend, last_seen
         """
         await _ensure_registered(strict=True)
         pane_id = get_pane_id()

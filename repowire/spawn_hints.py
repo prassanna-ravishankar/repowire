@@ -49,10 +49,20 @@ def _hint_path(path: str, backend: str) -> Path:
 
 
 def write_hint(
-    path: str, backend: str, circle: str, *, role: str | None = None,
+    path: str,
+    backend: str,
+    circle: str,
+    *,
+    role: str | None = None,
+    pending_first_turn: bool = False,
 ) -> None:
     """Record spawn intent so a peer registering from this path+backend can
     discover its requested circle (and optionally role).
+
+    ``pending_first_turn=True`` marks spawned peers that have a seed message
+    in flight but no first turn yet -- the session handler uses it to set
+    the peer's initial turn_state, so orchestrators can spot
+    spawn-seed-drops and re-send the brief.
     """
     payload: dict = {
         "path": str(Path(path).resolve()),
@@ -62,6 +72,8 @@ def write_hint(
     }
     if role:
         payload["role"] = role
+    if pending_first_turn:
+        payload["pending_first_turn"] = True
     target = _hint_path(path, backend)
     try:
         target.write_text(json.dumps(payload))
@@ -119,4 +131,6 @@ def consume_hint_full(path: str, backend: str) -> dict | None:
     role = data.get("role")
     if isinstance(role, str) and role:
         out["role"] = role
+    if data.get("pending_first_turn") is True:
+        out["pending_first_turn"] = True
     return out

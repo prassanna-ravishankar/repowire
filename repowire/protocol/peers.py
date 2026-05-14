@@ -4,11 +4,22 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 from repowire.config.models import AgentType
+
+# Per-turn progress, orthogonal to PeerStatus (online/busy/offline liveness).
+# - "idle":               Stop hook fired, no turn in progress
+# - "working":            UserPromptSubmit fired, mid-turn
+# - "awaiting_input":     Notification(idle_prompt) fired -- agent prompt is
+#                         live and unconsumed (rate limit, permission, tool
+#                         clarification, etc). Orchestrator should respond.
+# - "pending_first_turn": Peer was spawned with a seed message but the first
+#                         turn never started (spawn-seed drop). Orchestrator
+#                         should re-send the brief via notify_peer.
+TurnState = Literal["idle", "working", "awaiting_input", "pending_first_turn"]
 
 
 class PeerRole(str, Enum):
@@ -64,6 +75,14 @@ class Peer(BaseModel):
     role: PeerRole = Field(default=PeerRole.AGENT, description="Peer role")
 
     status: PeerStatus = Field(default=PeerStatus.OFFLINE, description="Current status")
+    turn_state: TurnState | None = Field(
+        None,
+        description=(
+            "Per-turn progress (orthogonal to status): idle | working | "
+            "awaiting_input | pending_first_turn. None when unknown (e.g. "
+            "pre-feature peers, or before any hook has fired)."
+        ),
+    )
     last_seen: datetime | None = Field(None, description="Last activity timestamp")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     description: str = Field(default="", description="Current task description (self-reported)")
@@ -135,6 +154,7 @@ class Peer(BaseModel):
             "circle": self.circle,
             "role": self.role.value,
             "status": self.status.value,
+            "turn_state": self.turn_state,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
             "metadata": self.metadata,
             "description": self.description,

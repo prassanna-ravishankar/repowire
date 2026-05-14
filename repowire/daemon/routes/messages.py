@@ -14,7 +14,7 @@ from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.routes._shared import OkResponse
-from repowire.protocol.peers import PeerStatus
+from repowire.protocol.peers import PeerStatus, TurnState
 
 router = APIRouter(tags=["messages"])
 
@@ -70,7 +70,20 @@ class SessionUpdateRequest(BaseModel):
 
     peer_name: str | None = Field(None, description="Peer name")
     pane_id: str | None = Field(None, description="Tmux pane ID (alternative to peer_name)")
-    status: str = Field(..., description="New status (online, busy, offline)")
+    status: str | None = Field(
+        None,
+        description=(
+            "New status (online, busy, offline). Optional when only "
+            "turn_state is being updated."
+        ),
+    )
+    turn_state: TurnState | None = Field(
+        None,
+        description=(
+            "New turn_state (idle, working, awaiting_input, "
+            "pending_first_turn). Orthogonal to status."
+        ),
+    )
     metadata: dict | None = Field(None, description="Optional metadata")
 
 
@@ -185,16 +198,24 @@ async def update_session(
     request: SessionUpdateRequest,
     _: str | None = Depends(require_auth),
 ) -> OkResponse:
-    """Update session status for a peer."""
+    """Update session status and/or turn_state for a peer."""
     peer_registry = get_peer_registry()
 
-    try:
-        peer_status = PeerStatus(request.status)
-    except ValueError:
+    if request.status is None and request.turn_state is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid status: {request.status}. Must be one of: online, busy, offline",
+            detail="At least one of status or turn_state is required",
         )
+
+    peer_status: PeerStatus | None = None
+    if request.status is not None:
+        try:
+            peer_status = PeerStatus(request.status)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid status: {request.status}. Must be one of: online, busy, offline",
+            )
 
     # Resolve peer identifier
     if request.peer_name:
@@ -213,7 +234,10 @@ async def update_session(
             detail="Either peer_name or pane_id required",
         )
 
-    await peer_registry.update_peer_status(identifier, peer_status)
+    if peer_status is not None:
+        await peer_registry.update_peer_status(identifier, peer_status)
+    if request.turn_state is not None:
+        await peer_registry.update_peer_turn_state(identifier, request.turn_state)
     return OkResponse()
 
 
