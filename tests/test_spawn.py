@@ -844,6 +844,40 @@ class TestMcpListPeersSelfFilter:
         assert "beta" in result
 
 
+class TestMcpListPeersLastSeen:
+    """list_peers TSV must include last_seen as the trailing column."""
+
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    async def test_list_peers_includes_last_seen_column(
+        self, mock_request: AsyncMock, _mock_register: AsyncMock,
+    ) -> None:
+        import repowire.mcp.server as mcp_server
+        mcp_server._cached_peer_name = None
+        mock_request.return_value = {
+            "peers": [
+                {"peer_id": "repow-1-aa", "display_name": "alpha",
+                 "circle": "main", "status": "online", "backend": "claude-code",
+                 "last_seen": "2026-05-14T12:00:00+00:00"},
+                {"peer_id": "repow-1-bb", "display_name": "beta",
+                 "circle": "main", "status": "online", "backend": "claude-code",
+                 "last_seen": None},
+            ]
+        }
+
+        mcp = mcp_server.create_mcp_server()
+        list_tool = mcp._tool_manager._tools["list_peers"]
+        result = await list_tool.fn()
+        lines = result.splitlines()
+        header = lines[0].split("\t")
+        assert header[-1] == "last_seen"
+        alpha_row = next(line for line in lines[1:] if "alpha" in line).split("\t")
+        beta_row = next(line for line in lines[1:] if "beta" in line).split("\t")
+        assert alpha_row[-1] == "2026-05-14T12:00:00+00:00"
+        assert beta_row[-1] == ""
+
+
 class TestRunMcpServer:
     """Sanity check that run_mcp_server enters the stdio loop."""
 

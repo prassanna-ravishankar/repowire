@@ -73,7 +73,7 @@ ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")`}
         signature={`list_peers(show_offline: bool = False, include_self: bool = False) -> str`}
       >
         <p>
-          Returns a TSV with columns: <Mono>peer_id, name, project, circle, role, status, path, machine, description, backend</Mono>. Defaults to online + busy peers and hides the caller. Pass <Mono>show_offline=True</Mono> for the full registry; pass <Mono>include_self=True</Mono> when an orchestrator needs its own row.
+          Returns a TSV with columns: <Mono>peer_id, name, project, circle, role, status, path, machine, description, backend, last_seen</Mono>. Defaults to online + busy peers and hides the caller. Pass <Mono>show_offline=True</Mono> for the full registry; pass <Mono>include_self=True</Mono> when an orchestrator needs its own row.
         </p>
       </Tool>
 

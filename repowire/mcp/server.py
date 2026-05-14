@@ -260,7 +260,10 @@ def create_mcp_server() -> FastMCP:
     """Create the MCP server."""
     mcp = FastMCP("repowire")
 
-    tsv_header = "peer_id\tname\tproject\tcircle\trole\tstatus\tpath\tmachine\tdescription\tbackend"
+    tsv_header = (
+        "peer_id\tname\tproject\tcircle\trole\tstatus\tpath\t"
+        "machine\tdescription\tbackend\tlast_seen"
+    )
 
     def _peer_to_tsv_row(p: dict) -> str:
         """Format a single peer dict as a TSV row."""
@@ -277,6 +280,7 @@ def create_mcp_server() -> FastMCP:
                 p.get("machine") or "",
                 p.get("description") or "",
                 p.get("backend", ""),
+                p.get("last_seen") or "",
             ]
         )
 
@@ -289,7 +293,7 @@ def create_mcp_server() -> FastMCP:
         include_self=True to include yourself in the listing.
 
         Returns TSV: peer_id, name, project, circle, role, status, path, machine,
-        description, backend. Peers are reachable via ask/notify_peer. Do NOT
+        description, backend, last_seen. Peers are reachable via ask/notify_peer. Do NOT
         use SendMessage to contact them -- SendMessage is a Claude Code harness
         tool for same-session teammates only.
         """
@@ -472,7 +476,8 @@ def create_mcp_server() -> FastMCP:
     async def whoami() -> str:
         """[Repowire mesh] Return your identity in the repowire mesh.
 
-        Returns TSV with columns: peer_id, name, project, circle, status, path, machine, description
+        Returns TSV with columns: peer_id, name, project, circle, role, status,
+        path, machine, description, backend, last_seen
         """
         await _ensure_registered(strict=True)
         pane_id = get_pane_id()
