@@ -111,6 +111,7 @@ class MessageRouter:
         message: dict[str, Any] = {
             "type": "notify",
             "from_peer": from_peer,
+            "to_peer": to_peer_name,
             "text": text,
         }
         await self._transport.send(to_session_id, message)
@@ -144,6 +145,7 @@ class MessageRouter:
             "type": "ask",
             "correlation_id": correlation_id,
             "from_peer": from_peer,
+            "to_peer": to_peer_name,
             "text": hinted_text,
         }
         if reply_to is not None:

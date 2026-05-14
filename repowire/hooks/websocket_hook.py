@@ -368,8 +368,13 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         # reminders until acked.
         correlation_id = data.get("correlation_id", "")
         from_peer = data.get("from_peer", "unknown")
+        to_peer = data.get("to_peer", "")
         text = data.get("text", "")
-        injected_text = f"@{from_peer} [ask #{correlation_id}]: {text}"
+        # `to_peer` is included so a recipient can spot misroutes when two
+        # peers share a display_name across circles (issue #136). Older
+        # daemons may omit it — keep the legacy frame in that case.
+        to_label = f" → @{to_peer}" if to_peer else ""
+        injected_text = f"@{from_peer}{to_label} [ask #{correlation_id}]: {text}"
         try:
             if await asyncio.to_thread(_tmux_send_keys, pane_id, injected_text):
                 logger.info(
@@ -382,9 +387,11 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         # Plain FYI, no lifecycle.
         try:
             from_peer = data.get("from_peer", "unknown")
+            to_peer = data.get("to_peer", "")
             text = data.get("text", "")
+            to_label = f" → @{to_peer}" if to_peer else ""
             if await asyncio.to_thread(
-                _tmux_send_keys, pane_id, f"@{from_peer}: {text}",
+                _tmux_send_keys, pane_id, f"@{from_peer}{to_label}: {text}",
             ):
                 logger.info(f"Injected notification from {from_peer}")
         except Exception as e:

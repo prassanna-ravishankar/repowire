@@ -253,7 +253,9 @@ class PeerRegistry:
         """Lookup peer by session_id or display_name. Must be called with lock held.
 
         When multiple peers share a display_name (different circles), filters by
-        circle if provided, otherwise prefers online ones.
+        circle if provided. If circle is unspecified and multiple *online*
+        peers share the name, raises ValueError instead of silently picking
+        one (see issue #136: misroute via ambiguous resolve).
         """
         if identifier in self._peers:
             return self._peers[identifier]
@@ -270,6 +272,21 @@ class PeerRegistry:
             return matches[0]
         active = [p for p in matches if p.status != PeerStatus.OFFLINE]
         candidates = active or matches
+
+        # Ambiguous: >1 viable candidate and no explicit circle to disambiguate.
+        # Pane ownership is the only safe tiebreaker — a pane-owned peer is
+        # locally bound to a live tmux pane, so picking it over a pane-less
+        # twin is unambiguous. Anything else (e.g. last_seen) is a guess and
+        # caused issue #136 misroutes. Refuse to guess in that case.
+        if circle is None and len(candidates) > 1:
+            paned = [p for p in candidates if p.pane_id]
+            if len(paned) == 1:
+                return paned[0]
+            circles = sorted({p.circle for p in candidates})
+            raise ValueError(
+                f"Ambiguous peer name {identifier!r}: matches in circles "
+                f"{circles}. Specify a circle= or pass a peer_id."
+            )
 
         def preference(peer: Peer) -> tuple[bool, bool, float]:
             connected = bool(self._transport and self._transport.is_connected(peer.peer_id))

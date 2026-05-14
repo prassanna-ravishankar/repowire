@@ -246,6 +246,92 @@ class TestSameNameDifferentCircles:
 
 
 # ---------------------------------------------------------------------------
+# Misroute repros: ambiguous display_name across circles when circle=None
+# (issue #136)
+# ---------------------------------------------------------------------------
+
+
+class TestAmbiguousDisplayNameNoSilentWinner:
+    """When two *online* peers share a display_name across circles and the
+    caller doesn't specify circle, the daemon must NOT silently pick one.
+
+    A peer_id hit is unambiguous and continues to resolve.
+    Pure offline/online disambiguation is unchanged: a single viable target
+    wins even without an explicit circle.
+    """
+
+    @staticmethod
+    async def _register(pm: PeerRegistry, session_id: str, name: str, circle: str) -> None:
+        peer = Peer(
+            peer_id=session_id,
+            display_name=name,
+            path=f"/{name}",
+            machine="localhost",
+            circle=circle,
+        )
+        await pm.register_peer(peer)
+
+    async def test_notify_ambiguous_name_no_circle_raises(
+        self, mock_message_router):
+        """Two online peers share a display_name across circles → notify must error."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-a", "myproject", "teamA")
+        await self._register(pm, "sid-b", "myproject", "teamB")
+
+        with pytest.raises(ValueError, match="[Aa]mbiguous"):
+            await pm.notify("cli", "myproject", "hi")
+
+        mock_message_router.send_notification.assert_not_called()
+
+    async def test_ask_ambiguous_name_no_circle_raises(
+        self, mock_message_router):
+        """Same shape for asks: ambiguous targets must not silently route."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-a", "myproject", "teamA")
+        await self._register(pm, "sid-b", "myproject", "teamB")
+
+        mock_message_router.send_ask = AsyncMock()
+        with pytest.raises(ValueError, match="[Aa]mbiguous"):
+            await pm.deliver_ask("cli", "myproject", "hi", correlation_id="ask-1")
+
+        mock_message_router.send_ask.assert_not_called()
+
+    async def test_query_ambiguous_name_no_circle_raises(
+        self, mock_message_router):
+        """Same shape for legacy queries."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-a", "myproject", "teamA")
+        await self._register(pm, "sid-b", "myproject", "teamB")
+
+        with pytest.raises(ValueError, match="[Aa]mbiguous"):
+            await pm.query("cli", "myproject", "hello")
+
+        mock_message_router.send_query.assert_not_called()
+
+    async def test_ambiguous_name_with_explicit_circle_resolves(
+        self, mock_message_router):
+        """Explicit circle disambiguates — no error, routes to the right peer."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-a", "myproject", "teamA")
+        await self._register(pm, "sid-b", "myproject", "teamB")
+
+        await pm.notify("cli", "myproject", "hi", circle="teamB")
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] == "sid-b"
+
+    async def test_peer_id_resolution_is_unambiguous(
+        self, mock_message_router):
+        """A peer_id lookup always wins — peer_ids are globally unique."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-a", "myproject", "teamA")
+        await self._register(pm, "sid-b", "myproject", "teamB")
+
+        await pm.notify("cli", "sid-b", "hi")
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] == "sid-b"
+
+
+# ---------------------------------------------------------------------------
 # from_peer circle-preferred lookup (Fix 3 regression)
 # ---------------------------------------------------------------------------
 

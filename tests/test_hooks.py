@@ -55,6 +55,78 @@ class TestHandleAskAndNotify:
         mock_send.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_notify_injection_includes_recipient_when_provided(self):
+        """When the daemon includes `to_peer`, the injected frame labels the
+        recipient so the receiver can spot misroutes at a glance (issue #136).
+        """
+        with (
+            patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=True),
+            patch("repowire.hooks.websocket_hook._tmux_send_keys", return_value=True) as mock_send,
+        ):
+            await websocket_hook.handle_message(
+                {
+                    "type": "notify",
+                    "from_peer": "alice",
+                    "to_peer": "bob",
+                    "text": "fyi",
+                },
+                "%5",
+            )
+        injected = mock_send.call_args.args[1]
+        assert "@alice" in injected
+        assert "bob" in injected, (
+            "recipient label missing — receiver can't tell who the message "
+            f"was addressed to: {injected!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_ask_injection_includes_recipient_when_provided(self):
+        """Asks also carry the recipient label so cross-circle/dup-name
+        misroutes are visible to the receiver.
+        """
+        with (
+            patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=True),
+            patch("repowire.hooks.websocket_hook._tmux_send_keys", return_value=True) as mock_send,
+        ):
+            await websocket_hook.handle_message(
+                {
+                    "type": "ask",
+                    "correlation_id": "ask-xyz",
+                    "from_peer": "alice",
+                    "to_peer": "bob",
+                    "text": "ping?",
+                },
+                "%5",
+            )
+        injected = mock_send.call_args.args[1]
+        assert "@alice" in injected
+        assert "[ask #ask-xyz]" in injected
+        assert "bob" in injected, (
+            "recipient label missing from ask injection: " f"{injected!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_notify_injection_omits_recipient_when_absent(self):
+        """Backward-compatible: frames without `to_peer` still inject cleanly.
+
+        Older daemons (or out-of-band test fixtures) don't populate `to_peer`;
+        the hook must not crash or inject an empty label.
+        """
+        with (
+            patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=True),
+            patch("repowire.hooks.websocket_hook._tmux_send_keys", return_value=True) as mock_send,
+        ):
+            await websocket_hook.handle_message(
+                {"type": "notify", "from_peer": "alice", "text": "fyi"},
+                "%5",
+            )
+        injected = mock_send.call_args.args[1]
+        assert "@alice" in injected
+        assert "fyi" in injected
+        # no stray "to:" label when to_peer missing
+        assert "to:" not in injected.lower() or "to:None" not in injected
+
+    @pytest.mark.asyncio
     async def test_ack_reply_arrives_as_plain_notify(self):
         """Ack-with-msg replies are plain notifies."""
         with (
