@@ -1,0 +1,6 @@
+apiVersion: v2
+name: repowire-docs
+description: docs.repowire.io (mkdocs-material static site)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

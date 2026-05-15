@@ -1,0 +1,30 @@
+replicaCount: 1
+
+image:
+  repository: us-docker.pkg.dev/baldmaninc/gcr.io/repowire-docs
+  tag: latest
+  pullPolicy: Always
+
+service:
+  type: ClusterIP
+  port: 80
+
+hostname: docs.repowire.io
+wwwRedirect: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+nodeSelector:
+  cloud.google.com/gke-spot: "true"
+
+tolerations:
+  - effect: NoSchedule
+    key: cloud.google.com/gke-spot
+    operator: Equal
+    value: "true"
