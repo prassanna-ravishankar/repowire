@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "./lib/utils";
+import { useEventStream } from "./lib/useEventStream";
 import { SettingsDialog, SpawnDialog } from "./components/DashboardDialogs";
 import { MeshFeed } from "./components/MeshFeed";
 import { MobileTabs, type MobileTab } from "./components/MobileTabs";
@@ -34,7 +35,6 @@ function DashboardInner() {
   const [peers, setPeers] = useState<Peer[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [orchestrators, setOrchestrators] = useState<OrchestratorStatus[]>([]);
-  const [isConnected, setIsConnected] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
@@ -42,6 +42,7 @@ function DashboardInner() {
   const [showSpawn, setShowSpawn] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const eventIdsRef = useRef<Set<string>>(new Set());
+  const lastSeenIdRef = useRef<string | null>(null);
   const peersRef = useRef<Peer[]>([]);
 
   const fetchOrchestrators = useCallback(async (nextPeers?: Peer[]) => {
@@ -108,12 +109,33 @@ function DashboardInner() {
       if (res.ok) {
         const data: Event[] = await res.json();
         eventIdsRef.current = new Set(data.map((event) => event.id));
+        if (data.length > 0) lastSeenIdRef.current = data[data.length - 1].id;
         setEvents(data);
       }
     } catch (error) {
       console.error("Failed to fetch events:", error);
     }
   }, []);
+
+  const ingestEvent = useCallback(
+    (event: Event) => {
+      if (eventIdsRef.current.has(event.id)) return;
+      eventIdsRef.current.add(event.id);
+      lastSeenIdRef.current = event.id;
+      setEvents((prev) => {
+        const next = [...prev, event];
+        return next.length > 500 ? next.slice(-500) : next;
+      });
+      if (event.type === "status_change") void fetchPeers();
+    },
+    [fetchPeers],
+  );
+
+  const connection = useEventStream({
+    apiBase: API_BASE,
+    onEvent: ingestEvent,
+    getLastSeenId: useCallback(() => lastSeenIdRef.current, []),
+  });
 
   const refreshData = useCallback(async () => {
     setIsRefreshing(true);
@@ -122,42 +144,7 @@ function DashboardInner() {
   }, [fetchEvents, fetchPeers]);
 
   useEffect(() => {
-    const loadInitialData = async () => {
-      await Promise.all([fetchPeers(), fetchEvents()]);
-    };
-    void loadInitialData();
-
-    const eventSource = new EventSource(`${API_BASE}/events/stream`);
-    eventSource.onopen = () => setIsConnected(true);
-    eventSource.onmessage = (e) => {
-      try {
-        const parsed: unknown = JSON.parse(e.data);
-        if (
-          typeof parsed === "object" &&
-          parsed !== null &&
-          "id" in parsed &&
-          "type" in parsed &&
-          "timestamp" in parsed &&
-          typeof (parsed as Record<string, unknown>).id === "string" &&
-          typeof (parsed as Record<string, unknown>).type === "string" &&
-          typeof (parsed as Record<string, unknown>).timestamp === "string"
-        ) {
-          const event = parsed as Event;
-          if (eventIdsRef.current.has(event.id)) return;
-          eventIdsRef.current.add(event.id);
-          setEvents((prev) => {
-            const next = [...prev, event];
-            return next.length > 500 ? next.slice(-500) : next;
-          });
-          if (event.type === "status_change") fetchPeers();
-        }
-      } catch (error) {
-        console.error("Failed to parse SSE event:", error);
-      }
-    };
-    eventSource.onerror = () => setIsConnected(false);
-
-    return () => eventSource.close();
+    void Promise.all([fetchPeers(), fetchEvents()]);
   }, [fetchEvents, fetchPeers]);
 
   const selectedPeer = useMemo(
@@ -223,7 +210,7 @@ function DashboardInner() {
       <div className="flex min-h-dvh flex-col md:grid md:h-full md:min-h-0 md:grid-cols-[420px_1fr] md:grid-rows-[52px_auto_1fr]">
         <TopBar
           counts={counts}
-          isConnected={isConnected}
+          connection={connection}
           isRefreshing={isRefreshing}
           onRefresh={refreshData}
           onSpawn={() => setShowSpawn(true)}
@@ -292,7 +279,7 @@ function DashboardInner() {
       {showSettings && (
         <SettingsDialog
           apiBase={API_BASE}
-          isConnected={isConnected}
+          isConnected={connection.status === "live"}
           peers={peers}
           onClose={() => setShowSettings(false)}
         />

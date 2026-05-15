@@ -105,6 +105,9 @@ class PeerRegistry:
         self._load_events()
         self._last_repair: float = 0.0
         self._repair_lock = asyncio.Lock()
+        # Per-subscriber wakeup events for SSE streamers. add_event() sets
+        # all of them; each streamer clears and waits on its own.
+        self._event_subscribers: set[asyncio.Event] = set()
 
     # ------------------------------------------------------------------
     # Mapping persistence
@@ -199,7 +202,32 @@ class PeerRegistry:
             }
         )
         self._events_dirty = True
+        for sub in self._event_subscribers:
+            sub.set()
         return event_id
+
+    def subscribe_events(self) -> asyncio.Event:
+        """Register a wakeup Event fired on each add_event call.
+
+        Caller must pair with unsubscribe_events on cleanup.
+        """
+        evt = asyncio.Event()
+        self._event_subscribers.add(evt)
+        return evt
+
+    def unsubscribe_events(self, evt: asyncio.Event) -> None:
+        """Remove a subscriber Event registered via subscribe_events."""
+        self._event_subscribers.discard(evt)
+
+    def events_since(self, event_id: str | None) -> list[dict[str, Any]]:
+        """Return events after the given id. If id is None or evicted, return all."""
+        events = list(self._events)
+        if event_id is None:
+            return events
+        for i, event in enumerate(events):
+            if event["id"] == event_id:
+                return events[i + 1 :]
+        return events
 
     def _update_event(self, event_id: str, updates: dict[str, Any]) -> bool:
         """Update an existing event by ID."""

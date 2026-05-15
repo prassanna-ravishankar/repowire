@@ -6,7 +6,7 @@ import asyncio
 import json
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -328,11 +328,24 @@ async def ingest_chat_turn(
 
 @router.get("/events")
 async def get_events(
+    since: str | None = Query(None, description="Return events after this event id"),
     _: str | None = Depends(require_auth),
 ) -> list[dict]:
-    """Get the last 100 communication events."""
+    """Get communication events.
+
+    Without ``since``: returns the full buffered window (last 500).
+    With ``since``: returns events after the given id, or the full window if
+    the id has been evicted from the buffer (gap-recovery fallback).
+    """
     peer_registry = get_peer_registry()
-    return peer_registry.get_events()
+    if since is None:
+        return peer_registry.get_events()
+    return peer_registry.events_since(since)
+
+
+# Heartbeat interval for SSE keep-alives. Long enough that idle connections
+# aren't chatty, short enough that proxies/clients notice a dead socket.
+SSE_HEARTBEAT_SECS = 15.0
 
 
 @router.get("/events/stream")
@@ -341,46 +354,41 @@ async def stream_events(
 ) -> StreamingResponse:
     """Stream events via Server-Sent Events (SSE).
 
-    Clients connect once and receive events as they occur.
+    Event-driven: blocks on an asyncio.Event set by ``add_event``, with a
+    periodic comment-frame heartbeat so both ends detect dead connections.
     """
     peer_registry = get_peer_registry()
 
     async def event_generator():
+        # Subscribe before the initial flush so events added concurrently
+        # with the flush still wake us on the next loop iteration.
+        wakeup = peer_registry.subscribe_events()
         last_event_id: str | None = None
-        while True:
-            events = peer_registry.get_events()
+        try:
+            initial = peer_registry.get_events()
+            for event in initial:
+                yield f"data: {json.dumps(event)}\n\n"
+            if initial:
+                last_event_id = initial[-1]["id"]
+            # Clear any signals raised during the initial flush; we've already
+            # delivered everything currently buffered.
+            wakeup.clear()
 
-            # Find new events since last seen ID
-            if not events:
-                await asyncio.sleep(0.5)
-                continue
+            while True:
+                try:
+                    await asyncio.wait_for(wakeup.wait(), timeout=SSE_HEARTBEAT_SECS)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                wakeup.clear()
 
-            if last_event_id is None:
-                # First poll: send all current events
-                for event in events:
-                    yield f"data: {json.dumps(event)}\n\n"
-                last_event_id = events[-1]["id"]
-            else:
-                # Find index after last seen event
-                new_events = []
-                seen = False
-                for event in events:
-                    if seen:
-                        new_events.append(event)
-                    elif event["id"] == last_event_id:
-                        seen = True
-
-                if not seen:
-                    # last_event_id was evicted from deque; send all
-                    new_events = events
-
+                new_events = peer_registry.events_since(last_event_id)
                 for event in new_events:
                     yield f"data: {json.dumps(event)}\n\n"
-
                 if new_events:
                     last_event_id = new_events[-1]["id"]
-
-            await asyncio.sleep(0.5)
+        finally:
+            peer_registry.unsubscribe_events(wakeup)
 
     return StreamingResponse(
         event_generator(),

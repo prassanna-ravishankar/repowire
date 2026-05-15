@@ -1,22 +1,24 @@
 import Image from "next/image";
 import { Plus, RefreshCw, Settings } from "lucide-react";
 import { cn } from "../lib/utils";
+import type { ConnectionState } from "../lib/useEventStream";
 
 export function TopBar({
   counts,
-  isConnected,
+  connection,
   isRefreshing,
   onRefresh,
   onSpawn,
   onSettings,
 }: {
   counts: Record<"online" | "busy" | "offline", number>;
-  isConnected: boolean;
+  connection: ConnectionState;
   isRefreshing: boolean;
   onRefresh: () => void;
   onSpawn: () => void;
   onSettings: () => void;
 }) {
+  const badge = connectionBadge(connection);
   return (
     <header className="sticky top-0 z-30 col-span-full flex min-h-[calc(48px+env(safe-area-inset-top))] items-center gap-3 border-b border-border-faint bg-surface-dim px-3 pt-[env(safe-area-inset-top)] md:static md:h-[52px] md:min-h-0 md:px-5 md:pt-0">
       <div className="flex min-w-0 items-center gap-3 md:w-[397px]">
@@ -35,14 +37,13 @@ export function TopBar({
       <div
         className={cn(
           "ml-auto flex items-center gap-2 border px-2.5 py-1 font-mono text-[10px] font-semibold tracking-[0.16em] md:ml-0",
-          isConnected
-            ? "border-secondary/25 bg-secondary/10 text-secondary"
-            : "border-error/25 bg-error/10 text-error"
+          badge.className,
         )}
+        title={badge.title}
       >
-        <span className={cn("h-2 w-2 rounded-full", isConnected ? "bg-secondary pulse-online" : "bg-error")} />
-        <span className="hidden sm:inline">{isConnected ? "MESH CONNECTED" : "DISCONNECTED"}</span>
-        <span className="sm:hidden">{isConnected ? "LIVE" : "DOWN"}</span>
+        <span className={cn("h-2 w-2 rounded-full", badge.dot)} />
+        <span className="hidden sm:inline">{badge.long}</span>
+        <span className="sm:hidden">{badge.short}</span>
       </div>
 
       <button
@@ -68,6 +69,42 @@ export function TopBar({
       </button>
     </header>
   );
+}
+
+interface BadgeSpec {
+  className: string;
+  dot: string;
+  long: string;
+  short: string;
+  title: string;
+}
+
+function connectionBadge(state: ConnectionState): BadgeSpec {
+  if (state.status === "live") {
+    return {
+      className: "border-secondary/25 bg-secondary/10 text-secondary",
+      dot: "bg-secondary pulse-online",
+      long: "MESH CONNECTED",
+      short: "LIVE",
+      title: "Connected to daemon event stream",
+    };
+  }
+  if (state.status === "reconnecting") {
+    return {
+      className: "border-tertiary-fixed-dim/30 bg-tertiary-fixed-dim/10 text-tertiary-fixed-dim",
+      dot: "bg-tertiary-fixed-dim glow-busy",
+      long: `RECONNECTING ${state.retryInSec}s`,
+      short: `${state.retryInSec}s`,
+      title: `Connection dropped. Retrying in ${state.retryInSec}s.`,
+    };
+  }
+  return {
+    className: "border-error/25 bg-error/10 text-error",
+    dot: "bg-error",
+    long: "DISCONNECTED",
+    short: "DOWN",
+    title: "Not connected to daemon event stream",
+  };
 }
 
 function CountPill({ label, value, tone }: { label: string; value: number; tone: "online" | "busy" | "offline" }) {
