@@ -105,6 +105,14 @@ async def list_peers(
     status: str | None = Query(None, description="Filter by status", enum=["online", "offline"]),
     path: str | None = Query(None, description="Filter by absolute path"),
     backend: AgentType | None = Query(None, description="Filter by backend"),
+    circle: str | None = Query(
+        None,
+        description=(
+            "Filter by circle. Omit or '*' for mesh-wide. A concrete name returns peers "
+            "in that circle plus any peer whose role bypasses circles (service, "
+            "orchestrator, human)."
+        ),
+    ),
     _: str | None = Depends(require_auth),
 ) -> PeersResponse:
     """Get list of all registered peers, optionally filtered."""
@@ -128,6 +136,8 @@ async def list_peers(
         peers = string_matches + [p for p in mismatched if resolved_map.get(p.path) == target]
     if backend:
         peers = [p for p in peers if p.backend == backend]
+    if circle is not None and circle != "*":
+        peers = [p for p in peers if p.circle == circle or p.bypasses_circles]
 
     return PeersResponse(peers=[_peer_to_info(p) for p in peers])
 

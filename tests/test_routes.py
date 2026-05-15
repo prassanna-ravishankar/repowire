@@ -259,6 +259,43 @@ class TestPeers:
         assert peers[0]["path"] == "/tmp/proj-x"
         assert peers[0]["backend"] == "claude-code"
 
+    async def test_list_peers_circle_filter(self, client):
+        r = await client.post("/peers", json={
+            "name": "alpha", "path": "/tmp/alpha",
+            "circle": "team-a", "backend": "claude-code",
+        })
+        alpha = r.json()["display_name"]
+        r = await client.post("/peers", json={
+            "name": "beta", "path": "/tmp/beta",
+            "circle": "team-b", "backend": "claude-code",
+        })
+        beta = r.json()["display_name"]
+        # Service peer bypasses circles — should appear under any circle filter.
+        r = await client.post("/peers", json={
+            "name": "telegram", "path": "/tmp/telegram",
+            "circle": "global", "backend": "claude-code",
+            "role": "service",
+        })
+        telegram = r.json()["display_name"]
+
+        # No circle param: back-compat — return everyone.
+        r = await client.get("/peers")
+        assert {p["display_name"] for p in r.json()["peers"]} == {alpha, beta, telegram}
+
+        # Explicit '*' is mesh-wide.
+        r = await client.get("/peers", params={"circle": "*"})
+        assert {p["display_name"] for p in r.json()["peers"]} == {alpha, beta, telegram}
+
+        # Concrete circle: returns that circle plus bypass-roles.
+        r = await client.get("/peers", params={"circle": "team-a"})
+        assert {p["display_name"] for p in r.json()["peers"]} == {alpha, telegram}
+        r = await client.get("/peers", params={"circle": "team-b"})
+        assert {p["display_name"] for p in r.json()["peers"]} == {beta, telegram}
+
+        # A circle no peer belongs to still surfaces bypass-roles.
+        r = await client.get("/peers", params={"circle": "nobody"})
+        assert {p["display_name"] for p in r.json()["peers"]} == {telegram}
+
 
 # -- Spawn / kill --
 

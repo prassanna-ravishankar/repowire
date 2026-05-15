@@ -27,8 +27,79 @@ _http_client: httpx.AsyncClient | None = None
 # Cached peer name: resolved lazily from env var, pane lookup, or registration
 _cached_peer_name: str | None = None
 
+# Cached caller identity (circle + role), populated alongside _cached_peer_name.
+# Used by list_peers/ask/notify_peer to scope to the caller's circle by default
+# and to widen the default when the caller's role is orchestrator. Avoids
+# re-hitting the daemon for whoami on every list_peers call.
+_cached_my_circle: str | None = None
+_cached_my_role: str | None = None
+
 # Lazy registration: ensure peer is registered on first MCP tool use
 _registered: bool = False
+
+
+_BYPASS_ROLES = {"service", "orchestrator", "human"}
+
+
+async def _resolve_circle_for_send(
+    peer_name: str, explicit_circle: str | None, my_circle: str | None
+) -> str | None:
+    """Resolve which circle to pass to /ask or /notify for `peer_name`.
+
+    - Explicit circle wins.
+    - Otherwise try caller's circle; if a peer is found there, use it.
+    - Otherwise fall back to a global lookup, but only accept the match
+      when its role bypasses circles (service/orchestrator/human).
+    - Returns None to mean "let the daemon resolve globally without a
+      circle hint" — the daemon's ambiguous-name refusal then applies.
+    """
+    if explicit_circle is not None:
+        return explicit_circle
+    if my_circle:
+        try:
+            await daemon_request(
+                "GET",
+                f"/peers/{quote(peer_name, safe='')}",
+                params={"circle": my_circle},
+            )
+            return my_circle
+        except DaemonHTTPError as e:
+            if e.status != 404:
+                raise
+        try:
+            result = await daemon_request(
+                "GET", f"/peers/{quote(peer_name, safe='')}"
+            )
+        except DaemonHTTPError as e:
+            if e.status == 404:
+                return my_circle  # let daemon return its own 404 on the send
+            raise
+        role = (result.get("role") or "").lower()
+        if role in _BYPASS_ROLES:
+            return result.get("circle")
+        return my_circle  # no bypass match; force daemon to 404 in caller's circle
+    return None
+
+
+async def _get_my_identity() -> tuple[str | None, str | None, str | None]:
+    """Return (name, circle, role) for the calling peer.
+
+    Cached after first resolve; safe to call from every MCP entry. Returns
+    Nones when the daemon can't be reached or the peer hasn't registered yet.
+    """
+    global _cached_my_circle, _cached_my_role
+    name = await _get_my_peer_name()
+    if _cached_my_circle is not None and _cached_my_role is not None:
+        return name, _cached_my_circle, _cached_my_role
+    if not name:
+        return name, _cached_my_circle, _cached_my_role
+    try:
+        result = await daemon_request("GET", f"/peers/{quote(name, safe='')}")
+        _cached_my_circle = result.get("circle") or _cached_my_circle
+        _cached_my_role = result.get("role") or _cached_my_role
+    except Exception:
+        pass
+    return name, _cached_my_circle, _cached_my_role
 
 
 def _get_http_client() -> httpx.AsyncClient:
@@ -169,7 +240,7 @@ async def _ensure_registered(*, strict: bool = False) -> None:
     last_seen touch runs on every entry so MCP activity counts as a liveness
     signal even when ws-hook has dropped.
     """
-    global _registered, _cached_peer_name
+    global _registered, _cached_peer_name, _cached_my_circle, _cached_my_role
     if _registered:
         await _touch_last_seen()
         return
@@ -182,6 +253,10 @@ async def _ensure_registered(*, strict: bool = False) -> None:
             name = result.get("display_name") or result.get("peer_id")
             if name:
                 _cached_peer_name = name
+            if result.get("circle"):
+                _cached_my_circle = result.get("circle")
+            if result.get("role"):
+                _cached_my_role = result.get("role")
             _registered = True
             await _touch_last_seen()
             return
@@ -196,8 +271,12 @@ async def _ensure_registered(*, strict: bool = False) -> None:
     else:
         name = await _get_my_peer_name()
         try:
-            await daemon_request("GET", f"/peers/{quote(name, safe='')}")
+            result = await daemon_request("GET", f"/peers/{quote(name, safe='')}")
             _cached_peer_name = name
+            if result.get("circle"):
+                _cached_my_circle = result.get("circle")
+            if result.get("role"):
+                _cached_my_role = result.get("role")
             _registered = True
             await _touch_last_seen()
             return
@@ -227,6 +306,10 @@ async def _ensure_registered(*, strict: bool = False) -> None:
             assigned = candidates[0].get("display_name")
             if assigned:
                 _cached_peer_name = assigned
+                if candidates[0].get("circle"):
+                    _cached_my_circle = candidates[0].get("circle")
+                if candidates[0].get("role"):
+                    _cached_my_role = candidates[0].get("role")
                 _registered = True
                 await _touch_last_seen()
                 return
@@ -252,6 +335,8 @@ async def _ensure_registered(*, strict: bool = False) -> None:
         assigned = result.get("display_name")
         if assigned:
             _cached_peer_name = assigned
+        _cached_my_circle = circle
+        _cached_my_role = "agent"
         _registered = True
         await _touch_last_seen()
     except Exception:
@@ -291,12 +376,24 @@ def create_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    async def list_peers(show_offline: bool = False, include_self: bool = False) -> str:
-        """[Repowire mesh] List all peers across projects and machines.
+    async def list_peers(
+        show_offline: bool = False,
+        include_self: bool = False,
+        circle: str | None = None,
+    ) -> str:
+        """[Repowire mesh] List peers, scoped to your circle by default.
 
-        By default shows only online/busy peers and hides the calling peer
-        (you). Set show_offline=True to include offline peers, or
-        include_self=True to include yourself in the listing.
+        By default shows only online/busy peers in your own circle and hides
+        the calling peer (you). Peers whose role bypasses circles (service,
+        orchestrator, human) are always visible regardless of the circle
+        filter. Pass `circle='*'` for a mesh-wide listing, or a concrete
+        circle name to scope to that circle.
+
+        Callers with role=orchestrator default to mesh-wide (`*`) when no
+        explicit circle is passed — orchestrators need the full view.
+
+        Set show_offline=True to include offline peers, or include_self=True
+        to include yourself in the listing.
 
         Returns TSV: peer_id, name, project, circle, role, status, path,
         machine, description, backend, last_seen, turn_state. The turn_state
@@ -308,16 +405,28 @@ def create_mcp_server() -> FastMCP:
         tool for same-session teammates only.
         """
         await _ensure_registered()
-        params = None if show_offline else {"status": "online"}
-        result = await daemon_request("GET", "/peers", params=params)
+        my_name, my_circle, my_role = await _get_my_identity()
+
+        effective_circle: str | None
+        if circle is not None:
+            effective_circle = circle
+        elif my_role == "orchestrator":
+            effective_circle = "*"
+        else:
+            effective_circle = my_circle
+
+        params: dict[str, str] = {}
+        if not show_offline:
+            params["status"] = "online"
+        if effective_circle is not None and effective_circle != "*":
+            params["circle"] = effective_circle
+        result = await daemon_request("GET", "/peers", params=params or None)
         peers = result.get("peers", [])
-        if not include_self:
-            my_name = _cached_peer_name
-            if my_name:
-                peers = [
-                    p for p in peers
-                    if (p.get("display_name") or p.get("name")) != my_name
-                ]
+        if not include_self and my_name:
+            peers = [
+                p for p in peers
+                if (p.get("display_name") or p.get("name")) != my_name
+            ]
         rows = [tsv_header]
         for p in peers:
             rows.append(_peer_to_tsv_row(p))
@@ -351,13 +460,17 @@ def create_mcp_server() -> FastMCP:
             peer_name: Name of the peer to ask
             query: The question or request to send
             reply_to: If set, closes that prior ask before opening this one
-            circle: Circle to scope the lookup (optional)
+            circle: Circle to scope the lookup. Defaults to your own circle,
+                    with fallback to peers whose role bypasses circles
+                    (service, orchestrator, human). Pass explicitly to target
+                    a peer in a different circle.
 
         Returns:
             correlation_id for tracking this ask thread
         """
         await _ensure_registered(strict=True)
-        from_peer = await _get_my_peer_name()
+        from_peer, my_circle, _ = await _get_my_identity()
+        effective_circle = await _resolve_circle_for_send(peer_name, circle, my_circle)
         body: dict = {
             "from_peer": from_peer,
             "to_peer": peer_name,
@@ -365,8 +478,8 @@ def create_mcp_server() -> FastMCP:
         }
         if reply_to is not None:
             body["reply_to"] = reply_to
-        if circle is not None:
-            body["circle"] = circle
+        if effective_circle is not None:
+            body["circle"] = effective_circle
         result = await daemon_request("POST", "/ask", body)
         if result.get("error"):
             raise Exception(result["error"])
@@ -418,22 +531,25 @@ def create_mcp_server() -> FastMCP:
         Args:
             peer_name: Name of the peer to notify
             message: The notification message
-            circle: Circle to scope the lookup (optional, required when multiple
-                    peers share the same name in different circles)
+            circle: Circle to scope the lookup. Defaults to your own circle,
+                    with fallback to peers whose role bypasses circles
+                    (service, orchestrator, human). Pass explicitly to target
+                    a peer in a different circle.
 
         Returns:
             Correlation ID (format: notif-XXXXXXXX) for tracking.
         """
         await _ensure_registered(strict=True)
-        from_peer = await _get_my_peer_name()
+        from_peer, my_circle, _ = await _get_my_identity()
+        effective_circle = await _resolve_circle_for_send(peer_name, circle, my_circle)
         correlation_id = f"notif-{uuid4().hex[:8]}"
         body: dict = {
             "from_peer": from_peer,
             "to_peer": peer_name,
             "text": f"[#{correlation_id}] {message}",
         }
-        if circle is not None:
-            body["circle"] = circle
+        if effective_circle is not None:
+            body["circle"] = effective_circle
         await daemon_request("POST", "/notify", body)
         return correlation_id
 

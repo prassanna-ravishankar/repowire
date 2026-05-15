@@ -213,7 +213,7 @@ def test_all_outbound_tools_strict_register():
     for tool in outbound_tools:
         idx = source.find(f"async def {tool}(")
         assert idx >= 0, f"Could not find {tool} in mcp/server.py"
-        body = source[idx : idx + 1500]
+        body = source[idx : idx + 2200]
         assert "_ensure_registered(strict=True)" in body, (
             f"MCP tool {tool} must call _ensure_registered(strict=True) "
             f"before sending; otherwise from_peer can race a hook drop. "
