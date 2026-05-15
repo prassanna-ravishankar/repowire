@@ -6,10 +6,10 @@ metadata:
     app: {{ .Release.Name }}
 spec:
   type: {{ .Values.service.type }}
-  ports:
-    - port: {{ .Values.service.port }}
-      targetPort: 3000
-      protocol: TCP
-      name: http
   selector:
     app: {{ .Release.Name }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: 80
+      protocol: TCP
+      name: http

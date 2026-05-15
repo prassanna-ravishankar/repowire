@@ -7,14 +7,23 @@ image:
 
 service:
   type: ClusterIP
-  port: 3000
-
-resources:
-  limits:
-    cpu: 200m
-    memory: 256Mi
-  requests:
-    cpu: 100m
-    memory: 128Mi
+  port: 80
 
 hostname: repowire.io
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+nodeSelector:
+  cloud.google.com/gke-spot: "true"
+
+tolerations:
+  - effect: NoSchedule
+    key: cloud.google.com/gke-spot
+    operator: Equal
+    value: "true"

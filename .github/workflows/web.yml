@@ -1,0 +1,92 @@
+name: Web
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "web-image/**"
+      - "charts/repowire-web/**"
+      - ".github/workflows/web.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - "web-image/**"
+      - "charts/repowire-web/**"
+      - ".github/workflows/web.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build static export
+        working-directory: web
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+
+      - name: Upload site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-out
+          path: web/out/
+          retention-days: 7
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-docker.pkg.dev --quiet
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: web-image/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            us-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/gcr.io/repowire-web:${{ github.sha }}
+            us-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/gcr.io/repowire-web:latest
+          cache-from: type=registry,ref=us-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/gcr.io/repowire-web:latest
+          cache-to: type=inline
+
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ secrets.GKE_CLUSTER }}
+          location: ${{ secrets.GKE_REGION }}
+
+      - name: Deploy
+        run: |
+          helm upgrade --install repowire-web charts/repowire-web \
+            --namespace repowire \
+            --set image.tag=${{ github.sha }} \
+            --wait --timeout 5m
+          kubectl rollout status deployment/repowire-web -n repowire --timeout=120s
