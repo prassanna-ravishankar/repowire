@@ -25,6 +25,9 @@ session-logs.md
 web/out/
 .coverage
 
+# mkdocs build output (uv run mkdocs build)
+site/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

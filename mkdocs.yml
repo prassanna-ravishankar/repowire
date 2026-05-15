@@ -1,0 +1,161 @@
+site_name: Repowire
+site_description: Mesh network for AI coding agents. Local-first daemon routes ask, notify, and broadcast between Claude Code, Codex, Gemini, and OpenCode sessions.
+site_url: https://docs.repowire.io/
+repo_url: https://github.com/prassanna-ravishankar/repowire
+repo_name: prassanna-ravishankar/repowire
+edit_uri: edit/main/docs/
+copyright: MIT licensed.
+
+docs_dir: docs
+site_dir: site
+
+# Fail the build on broken links, missing nav entries, or duplicate slugs.
+strict: true
+
+# Internal docs that live under docs/ but should not be published.
+exclude_docs: |
+  design-system.md
+  ia-proposal.md
+  overrides/
+
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  language: en
+  font:
+    text: IBM Plex Sans
+    code: JetBrains Mono
+  logo: assets/logo-mark-copper.svg
+  favicon: assets/favicon.ico
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - toc.follow
+    - content.code.copy
+    - content.code.annotate
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+    - search.share
+
+extra_css:
+  - stylesheets/copper-mesh.css
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/prassanna-ravishankar/repowire
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/repowire/
+
+nav:
+  - Home: index.md
+  - Quickstart:
+      - quickstart/index.md
+      - Install: quickstart/install.md
+      - Setup: quickstart/setup.md
+      - First ask: quickstart/first-ask.md
+  - Concepts:
+      - concepts/index.md
+      - Peers and circles: concepts/peers-and-circles.md
+      - Message types: concepts/message-types.md
+      - Lazy repair: concepts/lazy-repair.md
+      - Control surfaces: concepts/control-surfaces.md
+      - Orchestrator pattern: concepts/orchestrator.md
+  - Setup per agent:
+      - agents/index.md
+      - Claude Code: agents/claude-code.md
+      - Codex: agents/codex.md
+      - Gemini CLI: agents/gemini.md
+      - OpenCode: agents/opencode.md
+  - Control surfaces:
+      - surfaces/index.md
+      - Web dashboard: surfaces/dashboard.md
+      - Telegram bot: surfaces/telegram.md
+      - Slack bot: surfaces/slack.md
+  - Relay:
+      - relay/index.md
+      - Hosted relay: relay/hosted.md
+      - Self-hosting: relay/self-hosting.md
+      - Security posture: relay/security.md
+  - Patterns:
+      - patterns/index.md
+      - Multi-repo coordination: patterns/multi-repo.md
+      - Cross-agent review: patterns/cross-agent-review.md
+      - Orchestrator coordination: patterns/orchestrator-coordination.md
+      - Worktree isolation: patterns/worktree-isolation.md
+      - Mobile mesh management: patterns/mobile-mesh.md
+      - Infrastructure-as-peer: patterns/infra-as-peer.md
+      - Overnight autonomy: patterns/overnight-autonomy.md
+  - Reference:
+      - reference/index.md
+      - MCP tools: reference/mcp-tools.md
+      - Python client: reference/python-client.md
+      - CLI: reference/cli.md
+      - Configuration: reference/configuration.md
+      - Architecture: reference/architecture.md
+  - Troubleshooting:
+      - troubleshooting/index.md
+      - Hooks not firing: troubleshooting/hooks.md
+      - Daemon unreachable: troubleshooting/daemon.md
+      - Ghost peers: troubleshooting/ghost-peers.md
+      - Channel-mode auth: troubleshooting/channel-auth.md
+      - Relay key rotation: troubleshooting/relay-keys.md
+      - Diagnostic commands: troubleshooting/diagnostics.md
+  - Comparisons:
+      - comparisons/index.md
+      - vs Happy: comparisons/happy.md
+      - vs cloud coding services: comparisons/cloud-coding.md
+      - vs Memory Bank: comparisons/memory-bank.md
+      - vs Claude Squad: comparisons/claude-squad.md
+      - vs Gastown: comparisons/gastown.md
+  - About:
+      - about/index.md
+      - Versioning: about/versioning.md
+      - License: about/license.md
+      - Contributing: about/contributing.md

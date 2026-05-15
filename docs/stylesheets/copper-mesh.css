@@ -1,0 +1,69 @@
+/* Copper Mesh tokens for mkdocs-material.
+   Mirrors web/app/globals.css; keep in sync by hand for now. */
+
+:root {
+  --copper-500: #C77B3D;
+  --copper-400: #D69261;
+  --copper-600: #A6612A;
+  --signal-300: #5BA3F5;
+  --online: #B6E04A;
+  --busy: #F0B548;
+  --offline: #5C5F66;
+  --error: #D5503A;
+  --bone-100: #F7F2E7;
+  --ink-950: #0F0E0C;
+  --ink-900: #15130F;
+  --ink-800: #1C1A15;
+  --ink-700: #26221B;
+}
+
+/* Light scheme: bone on ink-as-accent. */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color:        var(--copper-500);
+  --md-primary-fg-color--light: var(--copper-400);
+  --md-primary-fg-color--dark:  var(--copper-600);
+  --md-accent-fg-color:         var(--signal-300);
+  --md-typeset-a-color:         var(--copper-600);
+}
+
+/* Dark scheme: ink surfaces, copper wires. */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color:        var(--copper-500);
+  --md-primary-fg-color--light: var(--copper-400);
+  --md-primary-fg-color--dark:  var(--copper-600);
+  --md-accent-fg-color:         var(--signal-300);
+  --md-typeset-a-color:         var(--copper-400);
+
+  --md-default-bg-color:        var(--ink-950);
+  --md-default-fg-color:        #E6E1D5;
+  --md-default-fg-color--light: #C4BFB1;
+  --md-default-fg-color--lighter: #8A867B;
+  --md-code-bg-color:           var(--ink-800);
+  --md-code-fg-color:           #E6E1D5;
+}
+
+/* Quiet down the chrome. */
+.md-header {
+  box-shadow: none;
+  border-bottom: 1px solid rgba(199, 123, 61, 0.18);
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* Status-pill style for small label spans. */
+.md-typeset .label {
+  display: inline-block;
+  padding: 2px 8px;
+  font-family: var(--md-code-font);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  border: 1px solid var(--copper-500);
+  color: var(--copper-400);
+}

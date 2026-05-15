@@ -39,6 +39,11 @@ dev = [
     "ruff>=0.1.0",
     "ty",
 ]
+docs = [
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5.0",
+    "pymdown-extensions>=10.7",
+]
 
 [project.scripts]
 repowire = "repowire.cli:main"
@@ -56,6 +61,9 @@ exclude = [
     "web/.next",
     ".venv",
     "dist",
+    "docs",
+    "site",
+    "mkdocs.yml",
 ]
 
 [tool.hatch.build.targets.sdist.force-include]
