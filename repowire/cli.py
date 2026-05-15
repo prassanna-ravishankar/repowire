@@ -1358,6 +1358,119 @@ def peer_list(show_offline: bool) -> None:
     console.print(table)
 
 
+@peer.command(name="describe")
+@click.argument("identifier")
+@click.option(
+    "--circle", "-c", default=None,
+    help="Circle to scope lookup when a display_name is ambiguous across circles.",
+)
+def peer_describe(identifier: str, circle: str | None) -> None:
+    """Show all known state for one peer.
+
+    IDENTIFIER may be a display_name (e.g. 'clitcoin-claude-code') or a
+    peer_id (e.g. 'repow-5-abd4d21e'). When a display_name matches multiple
+    peers across circles, pass --circle to disambiguate.
+    """
+    import sys
+
+    import httpx
+
+    from repowire.peer_describe import (
+        ResolveAmbiguous,
+        ResolveNotFound,
+        ambiguity_message,
+        build_snapshot,
+        fetch_all_peers,
+        resolve_peer,
+    )
+
+    daemon_url = _get_daemon_url()
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            peers = fetch_all_peers(client, daemon_url)
+            outcome = resolve_peer(peers, identifier, circle=circle)
+            if isinstance(outcome, ResolveNotFound):
+                console.print(f"[red]Peer not found:[/] {identifier}")
+                console.print("[dim]Run `repowire peer list` to see available names.[/]")
+                sys.exit(1)
+            if isinstance(outcome, ResolveAmbiguous):
+                console.print(f"[red]{ambiguity_message(outcome)}[/]")
+                sys.exit(1)
+            snapshot = build_snapshot(client, daemon_url, outcome)
+    except httpx.ConnectError:
+        console.print(
+            f"[red]Cannot connect to daemon at {daemon_url}.[/] "
+            "Run 'repowire serve' first.",
+        )
+        sys.exit(1)
+    except httpx.HTTPStatusError as e:
+        console.print(f"[red]Daemon error: {e}[/]")
+        sys.exit(1)
+
+    _render_peer_snapshot(snapshot)
+
+
+def _render_peer_snapshot(snapshot: object) -> None:
+    """Render a PeerSnapshot to the console."""
+    from repowire.peer_describe import PeerSnapshot, humanize_last_seen
+
+    assert isinstance(snapshot, PeerSnapshot)
+    p = snapshot.peer
+    status = p.get("status", "?")
+    status_color = {"online": "green", "busy": "yellow", "offline": "red"}.get(status, "white")
+
+    rows: list[tuple[str, str]] = [
+        ("Peer", f"[cyan]{p.get('display_name', '?')}[/]  [dim]({p.get('peer_id', '?')})[/]"),
+        ("Project", p.get("metadata", {}).get("project") or "[dim]-[/]"),
+        ("Circle", f"[magenta]{p.get('circle', 'global')}[/]"),
+        ("Role", p.get("role", "agent")),
+        ("Backend", p.get("backend", "?")),
+        ("Status", f"[{status_color}]{status}[/]"),
+        ("Path", p.get("path") or "[dim]-[/]"),
+        ("Machine", p.get("machine") or "[dim]-[/]"),
+        ("Last seen", humanize_last_seen(p.get("last_seen"))),
+        ("Turn state", p.get("turn_state") or "[dim]-[/]"),
+        ("Description", p.get("description") or "[dim]-[/]"),
+    ]
+
+    for label, value in rows:
+        console.print(f"[bold]{label + ':':14}[/] {value}")
+
+    console.print("")
+    n_in = len(snapshot.inbound_asks)
+    n_out = len(snapshot.outbound_asks)
+    console.print(f"[bold]Open asks:[/]    {n_in} inbound, {n_out} outbound")
+    for a in snapshot.inbound_asks:
+        when = humanize_last_seen(a.created_at)
+        snippet = a.text if len(a.text) <= 60 else a.text[:57] + "..."
+        console.print(
+            f"  [green]inbound[/]   {a.correlation_id}  from [cyan]@{a.from_peer}[/]  "
+            f"{when}  [dim]\"{snippet}\"[/]",
+        )
+    for a in snapshot.outbound_asks:
+        when = humanize_last_seen(a.created_at)
+        snippet = a.text if len(a.text) <= 60 else a.text[:57] + "..."
+        console.print(
+            f"  [yellow]outbound[/]  {a.correlation_id}  to [cyan]@{a.to_peer}[/]  "
+            f"{when}  [dim]\"{snippet}\"[/]",
+        )
+
+    console.print("")
+    console.print(f"[bold]Recent activity:[/]  (last {len(snapshot.recent_activity)} events)")
+    if not snapshot.recent_activity:
+        console.print("  [dim]no recent events[/]")
+        return
+    for ev in snapshot.recent_activity:
+        ts = ev.timestamp[11:16] if len(ev.timestamp) >= 16 else ev.timestamp
+        arrow = {"inbound": "←", "outbound": "→", "self": "·"}.get(ev.direction, " ")
+        cp = f"@{ev.counterparty}" if ev.counterparty else ""
+        snippet = ev.text if len(ev.text) <= 60 else ev.text[:57] + "..."
+        line = f"  [dim]{ts}[/]  {arrow} [cyan]{ev.event_type}[/] {cp}"
+        if snippet:
+            line += f"  [dim]\"{snippet}\"[/]"
+        console.print(line)
+
+
 @peer.command(name="new")
 @click.argument("path", type=click.Path(exists=True), default=".")
 @click.option(

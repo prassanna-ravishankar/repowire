@@ -55,10 +55,13 @@ Exits 0 if all checks pass (or only warn/skip). Exits 1 if any check fails — s
 ```bash
 repowire peer new PATH [--circle CIRCLE]   # spawn a new peer in tmux
 repowire peer list                          # god-view list (all circles, includes caller)
+repowire peer describe NAME_OR_ID [--circle C]  # full state for one peer
 repowire peer prune                         # remove offline peers from the registry
 ```
 
 `peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP [`list_peers`](mcp-tools.md#list_peers) tool defaults to a peer-facing view (online only, caller hidden).
+
+`peer describe` accepts either a display name (`clitcoin-claude-code`) or a peer id (`repow-5-abd4d21e`). Pass `--circle` when a display name is ambiguous across circles — without it, the command refuses to guess and prints the same misroute-style refusal the daemon emits internally. Output includes identity (project, circle, role, backend), liveness (status, path, machine, last-seen), open ask threads in both directions, and the last few communication events involving the peer. Reads `GET /peers`, `GET /peers/{id}`, `GET /asks/pending?direction=both`, and `GET /events` — no new daemon endpoints.
 
 ## `repowire build-ui`
 

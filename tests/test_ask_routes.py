@@ -324,6 +324,47 @@ class TestPendingAsks:
         r = await client.get("/asks/pending?peer_id=does-not-exist")
         assert r.status_code == 404
 
+    async def test_direction_outbound_returns_asks_this_peer_opened(self, env):
+        """direction=outbound returns asks where this peer is the sender."""
+        client, _, _, _ = env
+        alice = await _register_peer(client, "alice")
+        bob = await _register_peer(client, "bob")
+        # Use the actual assigned display_name so from_peer_id resolves
+        # to alice's peer_id (and not the literal "alice" string fallback).
+        r = await client.post("/ask", json={
+            "from_peer": alice, "to_peer": bob, "text": "?",
+        })
+        cid = r.json()["correlation_id"]
+
+        # Default direction (inbound): alice has no inbound asks
+        r = await client.get(f"/asks/pending?peer_id={alice}")
+        assert r.status_code == 200
+        assert r.json()["asks"] == []
+
+        # direction=outbound: alice has one outbound ask
+        r = await client.get(f"/asks/pending?peer_id={alice}&direction=outbound")
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["asks"]) == 1
+        assert body["asks"][0]["correlation_id"] == cid
+        assert body["asks"][0]["direction"] == "outbound"
+        assert body["asks"][0]["to_peer"] == bob
+
+        # direction=both: union (alice still has only the outbound)
+        r = await client.get(f"/asks/pending?peer_id={alice}&direction=both")
+        assert len(r.json()["asks"]) == 1
+
+        # Bob's inbound view is unchanged by default
+        r = await client.get(f"/asks/pending?peer_id={bob}")
+        assert len(r.json()["asks"]) == 1
+        assert r.json()["asks"][0]["direction"] == "inbound"
+
+    async def test_direction_invalid_returns_400(self, env):
+        client, _, _, _ = env
+        bob = await _register_peer(client, "bob")
+        r = await client.get(f"/asks/pending?peer_id={bob}&direction=sideways")
+        assert r.status_code == 400
+
 
 class TestDeprecatedNoOps:
     """Compat: legacy transports may still POST these. Should return 200 silently."""

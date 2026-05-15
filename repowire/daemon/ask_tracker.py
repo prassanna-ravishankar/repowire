@@ -115,18 +115,33 @@ class AskTracker:
         self,
         peer_id: str,
         max_results: int = 10,
+        direction: str = "inbound",
     ) -> list[Ask]:
-        """Return open asks targeting this peer, newest first, capped at max_results.
+        """Return open asks for this peer, newest first, capped at max_results.
+
+        direction:
+          - "inbound"  (default): asks targeting this peer (to_peer_id == peer_id)
+          - "outbound": asks this peer opened (from_peer_id == peer_id)
+          - "both":    union of the two
 
         Lazy-repair: opportunistically evicts TTL-expired asks at most once
         per _EVICTION_INTERVAL_SECONDS. Stop hooks call this on each response,
         so the dict gets swept regularly without a background timer.
         """
+        if direction not in ("inbound", "outbound", "both"):
+            raise ValueError(f"invalid direction: {direction!r}")
         await self._maybe_evict_expired()
         async with self._lock:
+            def matches(ask: Ask) -> bool:
+                if direction == "inbound":
+                    return ask.to_peer_id == peer_id
+                if direction == "outbound":
+                    return ask.from_peer_id == peer_id
+                return ask.to_peer_id == peer_id or ask.from_peer_id == peer_id
+
             candidates = [
                 ask for ask in self._asks.values()
-                if ask.to_peer_id == peer_id and not ask.closed
+                if matches(ask) and not ask.closed
             ]
             candidates.sort(key=lambda a: a.created_at, reverse=True)
             return candidates[:max_results]

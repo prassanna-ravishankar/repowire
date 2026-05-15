@@ -267,6 +267,8 @@ repowire serve --relay            # Run daemon with relay connection
 repowire peer new PATH            # Spawn new peer in tmux
 repowire peer new . --circle dev  # Spawn with custom circle
 repowire peer list                # List peers and their status (god-view, includes offline)
+repowire peer describe NAME       # Show full state for one peer (open asks, last seen, recent activity)
+repowire peer describe NAME --circle 5    # Disambiguate when name exists in multiple circles
 repowire peer prune               # Remove offline peers
 
 repowire telegram start           # Run Telegram bot (config or env vars)

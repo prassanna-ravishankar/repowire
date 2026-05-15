@@ -75,8 +75,10 @@ class _NoOpRequest(BaseModel):
 class PendingAsk(BaseModel):
     correlation_id: str
     from_peer: str
+    to_peer: str
     text: str
     created_at: str
+    direction: str  # "inbound" or "outbound"
 
 
 class PendingAsksResponse(BaseModel):
@@ -261,19 +263,32 @@ async def mark_reminded(
 async def pending_asks(
     pane_id: str | None = None,
     peer_id: str | None = None,
+    direction: str = "inbound",
     _: str | None = Depends(require_auth),
 ) -> PendingAsksResponse:
-    """Return all open asks targeting this peer, newest first.
+    """Return open asks for this peer, newest first.
 
     Lookup is by either `pane_id` (tmux-pane-keyed transports: Claude Code,
     Codex, Gemini Stop hooks) or `peer_id` (transports that own multiple
     peers per process, like the pi extension which runs N sessions sharing
     one tmux pane). Exactly one is required.
+
+    `direction` selects which side of the ask thread to return:
+      - "inbound"  (default) — asks targeting this peer (Stop-hook reminders)
+      - "outbound" — asks this peer opened (used by `repowire peer describe`)
+      - "both"    — union of the two
+
+    The default is `inbound` to preserve back-compat with Stop-hook polls.
     """
     if not pane_id and not peer_id:
         raise HTTPException(status_code=400, detail="Must provide pane_id or peer_id")
     if pane_id and peer_id:
         raise HTTPException(status_code=400, detail="Provide only one of pane_id or peer_id")
+    if direction not in ("inbound", "outbound", "both"):
+        raise HTTPException(
+            status_code=400,
+            detail="direction must be one of: inbound, outbound, both",
+        )
 
     peer_registry = get_peer_registry()
     state = get_app_state()
@@ -291,15 +306,24 @@ async def pending_asks(
             raise HTTPException(status_code=404, detail=f"No peer with id: {peer_id}")
         resolved_peer_id = peer.peer_id
 
-    pending = await ask_tracker.pending_for_peer(resolved_peer_id)
+    pending = await ask_tracker.pending_for_peer(resolved_peer_id, direction=direction)
+
+    def _direction_for(ask: object) -> str:
+        # Inbound if the ask targets this peer, outbound if from this peer.
+        # With direction="both" the same ask can only be one of the two.
+        from repowire.daemon.ask_tracker import Ask  # local to avoid cycle in tests
+        assert isinstance(ask, Ask)
+        return "inbound" if ask.to_peer_id == resolved_peer_id else "outbound"
 
     return PendingAsksResponse(
         asks=[
             PendingAsk(
                 correlation_id=ask.correlation_id,
                 from_peer=ask.from_peer_name,
+                to_peer=ask.to_peer_name,
                 text=ask.text,
                 created_at=ask.created_at.isoformat(),
+                direction=_direction_for(ask),
             )
             for ask in pending
         ],
