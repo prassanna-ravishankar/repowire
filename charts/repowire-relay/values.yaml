@@ -36,7 +36,6 @@ httpRoute:
   enabled: true
   hostnames:
     - relay.repowire.io
-    - repowire.io
   gatewayNamespace: clusterkit
   gatewayName: clusterkit-gateway
   annotations:
