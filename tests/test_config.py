@@ -2,10 +2,14 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+from pydantic import ValidationError
+
 from repowire.config.models import (
     AgentType,
     Config,
     DaemonConfig,
+    LoggingConfig,
     PeerConfig,
     RelayConfig,
     SpawnSettings,
@@ -129,3 +133,30 @@ class TestPeerConfigEffective:
     def test_effective_peer_id_legacy(self):
         peer = PeerConfig(name="test", tmux_session="0:test")
         assert peer.effective_peer_id == "legacy-0:test"
+
+
+class TestLoggingConfig:
+    def test_default_level(self):
+        assert LoggingConfig().level == "info"
+
+    @pytest.mark.parametrize("level", ["debug", "info", "warning", "error", "critical"])
+    def test_valid_levels(self, level: str):
+        assert LoggingConfig(level=level).level == level
+
+    @pytest.mark.parametrize("level", ["DEBUG", "Info", "WARNING", "Error", "CRITICAL"])
+    def test_case_insensitive_normalized_to_lower(self, level: str):
+        assert LoggingConfig(level=level).level == level.lower()
+
+    @pytest.mark.parametrize("level", ["trace", "verbose", "", "warn", "fatal", "info "])
+    def test_invalid_level_raises(self, level: str):
+        with pytest.raises(ValidationError) as exc:
+            LoggingConfig(level=level)
+        # Pydantic wraps the ValueError; check the message surfaces the user's input
+        assert level in str(exc.value) or repr(level) in str(exc.value)
+
+    def test_invalid_level_message_lists_valid_options(self):
+        with pytest.raises(ValidationError) as exc:
+            LoggingConfig(level="loud")
+        msg = str(exc.value)
+        for valid in ["debug", "info", "warning", "error", "critical"]:
+            assert valid in msg

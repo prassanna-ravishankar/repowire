@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DEFAULT_QUERY_TIMEOUT: float = 300.0
 """Default timeout in seconds for peer-to-peer queries (5 minutes)."""
@@ -149,11 +149,25 @@ class DaemonConfig(BaseModel):
     spawn: SpawnSettings = Field(default_factory=SpawnSettings)
 
 
+_VALID_LOG_LEVELS = frozenset({"debug", "info", "warning", "error", "critical"})
+
+
 class LoggingConfig(BaseModel):
     """Logging configuration."""
 
     level: str = Field(default="info", description="Log level")
     file: str | None = Field(None, description="Log file path")
+
+    @field_validator("level")
+    @classmethod
+    def _validate_level(cls, v: str) -> str:
+        normalized = v.lower()
+        if normalized not in _VALID_LOG_LEVELS:
+            raise ValueError(
+                f"Invalid log level '{v}'. Must be one of: "
+                f"{', '.join(sorted(_VALID_LOG_LEVELS))}"
+            )
+        return normalized
 
 
 class TelegramConfig(BaseModel):
