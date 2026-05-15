@@ -229,7 +229,7 @@ repowire telegram start
 
 | Tool | Type | Description |
 |------|------|-------------|
-| `list_peers` | Query | List peers with status, circle, path, description, `last_seen`. Defaults to online + circle-scoped + hides self; `show_offline=True` + `include_self=True` widen the view |
+| `list_peers` | Query | List peers with status, circle, path, description, `last_seen`, `turn_state`. Defaults to online + hides self; `show_offline=True` + `include_self=True` widen the view |
 | `ask` | Non-blocking | Open a thread. Returns a correlation_id immediately. Optional `reply_to=cid` chains a follow-up that closes the prior thread |
 | `ack` | Close | Close an open ask thread. Bare `ack(cid)` is "seen, no action"; `ack(cid, message)` delivers a reply to the asker |
 | `notify_peer` | Fire-and-forget | Send a notification (no lifecycle, no reply tracking) |
@@ -238,10 +238,10 @@ repowire telegram start
 | `set_description` | Mutation | Update your task description, visible to all peers and the dashboard |
 | `spawn_peer` | Mutation | Spawn a new agent session (requires [allowlist config](#configuration)) |
 | `kill_peer` | Mutation | Kill a previously spawned session |
-| `orchestrator_status` | Query | Snapshot of mesh state for an orchestrator peer: peers, open asks, recent activity |
+| `orchestrator_status` | Query | Check whether a live orchestrator is present in a circle (`present`, `peer_name`, `last_seen`) |
 | `mark_reviewed` | Mutation | Mark a PR as reviewed at a given SHA. New commits on that PR re-surface it in your review queue |
 | `review_queue` | Query | List PRs awaiting your review (or another peer's). Filter by `peer_name=...` |
-| `schedule_create` | Mutation | Schedule a notification or ask to a peer at a future time (one-shot or recurring) |
+| `schedule_create` | Mutation | Schedule a notification or ask to a peer at a future time (one-shot) |
 | `schedule_list` | Query | List your active schedules. `mine_only=False` shows all |
 | `schedule_delete` | Mutation | Remove a schedule |
 
@@ -272,7 +272,7 @@ repowire update                   # Upgrade package, reinstall hooks, restart da
 repowire uninstall                # Remove all components (--yes to skip prompts)
 ```
 
-`repowire peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP `list_peers` tool defaults to a peer-facing view (online only, caller's circle, caller hidden).
+`repowire peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP `list_peers` tool defaults to a peer-facing view (online only, caller hidden).
 
 ## Configuration
 
