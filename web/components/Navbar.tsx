@@ -1,6 +1,8 @@
 import Link from "next/link";
 import Image from "next/image";
-import { Github } from "lucide-react";
+import { Github, LogIn } from "lucide-react";
+
+const DASHBOARD_URL = "https://relay.repowire.io/dashboard";
 
 export default function Navbar() {
   return (
@@ -20,12 +22,6 @@ export default function Navbar() {
             Docs
           </Link>
           <Link
-            href="/dashboard"
-            className="hidden font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-outline transition-colors hover:text-primary-fixed sm:inline"
-          >
-            Dashboard
-          </Link>
-          <Link
             href="https://github.com/prassanna-ravishankar/repowire"
             target="_blank"
             rel="noopener noreferrer"
@@ -33,6 +29,14 @@ export default function Navbar() {
           >
             <span className="sr-only">GitHub</span>
             <Github className="h-5 w-5" />
+          </Link>
+          <Link
+            href={DASHBOARD_URL}
+            className="inline-flex items-center gap-1.5 rounded border border-primary/40 bg-primary/10 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-primary-fixed transition-[filter,transform,background] hover:bg-primary/20 hover:brightness-110 active:scale-[0.98]"
+          >
+            <LogIn className="h-3 w-3" />
+            <span className="hidden sm:inline">Sign in</span>
+            <span className="sm:hidden">Dash</span>
           </Link>
         </div>
       </div>

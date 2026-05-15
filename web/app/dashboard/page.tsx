@@ -13,7 +13,19 @@ import type { Event, OrchestratorStatus, Peer } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8377";
 
+const RELAY_DASHBOARD_URL = "https://relay.repowire.io/dashboard";
+
 export default function Dashboard() {
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.location.hostname === "repowire.io") {
+      window.location.replace(RELAY_DASHBOARD_URL);
+    }
+  }, []);
+
+  return <DashboardInner />;
+}
+
+function DashboardInner() {
   const [peers, setPeers] = useState<Peer[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [orchestrators, setOrchestrators] = useState<OrchestratorStatus[]>([]);
