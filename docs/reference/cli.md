@@ -30,6 +30,26 @@ repowire status
 
 Show what's installed, which agents were detected, and whether the daemon is running.
 
+## `repowire doctor`
+
+```bash
+repowire doctor
+```
+
+Run a battery of diagnostic checks and print color-coded results. Each check reports `✓` (ok), `⚠` (warn, non-fatal), `✗` (fail), or `·` (skip, not applicable).
+
+Checks include:
+
+- Daemon reachable (`GET /health`, prints version)
+- Per-runtime hook + MCP install state (claude-code, codex, gemini, opencode, pi)
+- `tmux`, Python, and package-manager (`uv`/`pipx`/`pip`) availability
+- Spawn allowlist resolves (commands on `PATH`, paths exist as directories)
+- WebSocket auth token state
+- Relay reachable (when `relay.enabled`)
+- Channel transport (when configured via `--experimental-channels`)
+
+Exits 0 if all checks pass (or only warn/skip). Exits 1 if any check fails — suitable for `bash`-style health gates.
+
 ## `repowire peer`
 
 ```bash

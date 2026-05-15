@@ -260,6 +260,7 @@ repowire setup                    # Install hooks, MCP server, daemon service
 repowire setup --relay            # Same + enable remote dashboard via repowire.io
 repowire setup --experimental-channels  # Use channel transport (needs claude.ai login + bun)
 repowire status                   # Show what's installed and running
+repowire doctor                   # Diagnostic checks (daemon, hooks, runtimes, relay, ...)
 repowire serve                    # Run daemon in foreground
 repowire serve --relay            # Run daemon with relay connection
 

@@ -630,6 +630,84 @@ def status() -> None:
         pass
 
 
+# =============================================================================
+# doctor command - diagnostic checks
+# =============================================================================
+
+
+_STATUS_GLYPHS = {
+    "ok": ("[green]✓[/]", "green"),
+    "warn": ("[yellow]⚠[/]", "yellow"),
+    "fail": ("[red]✗[/]", "red"),
+    "skip": ("[dim]·[/]", "dim"),
+}
+
+
+def _render_result(result: object, indent: int = 0) -> None:
+    """Print a CheckResult and its children."""
+    from repowire.doctor import CheckResult, Status  # local import to keep top tidy
+
+    assert isinstance(result, CheckResult)
+    glyph, _ = _STATUS_GLYPHS[result.status.value]
+    pad = "  " * indent
+    line = f"{pad}{glyph} {result.name}"
+    if result.detail:
+        # Dim the detail so the status+name pop
+        line += f"  [dim]{result.detail}[/]"
+    console.print(line)
+    for child in result.children:
+        _render_result(child, indent=indent + 1)
+    # Mark unused import shim (Status referenced only via .value above)
+    _ = Status
+
+
+@main.command()
+def doctor() -> None:
+    """Run diagnostic checks and report repowire health."""
+    from repowire.config.models import load_config
+    from repowire.doctor import Status, exit_code, run_all
+
+    config = load_config()
+    daemon_url = _get_daemon_url()
+
+    console.print("[cyan]repowire doctor[/]")
+    console.print("")
+
+    results = run_all(config, daemon_url)
+    for r in results:
+        _render_result(r)
+
+    console.print("")
+
+    code = exit_code(results)
+    counts = {s: 0 for s in Status}
+
+    def _walk(r: object) -> None:
+        from repowire.doctor import CheckResult
+
+        assert isinstance(r, CheckResult)
+        counts[r.status] += 1
+        for c in r.children:
+            _walk(c)
+
+    for r in results:
+        _walk(r)
+
+    summary = (
+        f"[green]{counts[Status.OK]} ok[/]  "
+        f"[yellow]{counts[Status.WARN]} warn[/]  "
+        f"[red]{counts[Status.FAIL]} fail[/]  "
+        f"[dim]{counts[Status.SKIP]} skip[/]"
+    )
+    console.print(summary)
+
+    if code != 0:
+        console.print("[red]doctor: failing checks present[/]")
+    import sys
+
+    sys.exit(code)
+
+
 def _cleanup_legacy_artifacts() -> None:
     """Remove file artifacts from pre-lazy-repair versions.
 
