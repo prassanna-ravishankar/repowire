@@ -147,6 +147,16 @@ Have a different agent review your work. Peer A builds a feature, peer B runs a 
 <summary>Orchestrator</summary>
 
 A dedicated coordinator peer manages the mesh. It dispatches tasks, tracks progress, runs review cycles, and coordinates releases across multiple project peers. The pattern that makes 10+ agents manageable.
+
+The orchestrator loop:
+
+1. Scan a GitHub project board for `Todo` items.
+2. Claim by `notify_peer`-ing the target project peer with the task brief; flip the board item to `In Progress`.
+3. Receive `ask`/`notify` updates as work progresses (`set_description` keeps the dashboard honest).
+4. On peer reports `done`, review the PR (`review_queue` surfaces open PRs the peer touched), merge after sign-off, flip the board item to `Done`.
+5. Roll a release tag when a batch lands.
+
+A second orchestrator peer can co-exist as an observer/learner without colliding — use `orchestrator_status` to see open asks and avoid double-claiming. Pair a `claude-code` orchestrator with a `codex` or `gemini` one to keep the mesh moving when one runtime hits credit limits.
 </details>
 
 <details>
@@ -219,7 +229,7 @@ repowire telegram start
 
 | Tool | Type | Description |
 |------|------|-------------|
-| `list_peers` | Query | List all peers with status, circle, path, description |
+| `list_peers` | Query | List peers with status, circle, path, description, `last_seen`. Defaults to online + circle-scoped + hides self; `show_offline=True` + `include_self=True` widen the view |
 | `ask` | Non-blocking | Open a thread. Returns a correlation_id immediately. Optional `reply_to=cid` chains a follow-up that closes the prior thread |
 | `ack` | Close | Close an open ask thread. Bare `ack(cid)` is "seen, no action"; `ack(cid, message)` delivers a reply to the asker |
 | `notify_peer` | Fire-and-forget | Send a notification (no lifecycle, no reply tracking) |
@@ -228,12 +238,18 @@ repowire telegram start
 | `set_description` | Mutation | Update your task description, visible to all peers and the dashboard |
 | `spawn_peer` | Mutation | Spawn a new agent session (requires [allowlist config](#configuration)) |
 | `kill_peer` | Mutation | Kill a previously spawned session |
+| `orchestrator_status` | Query | Snapshot of mesh state for an orchestrator peer: peers, open asks, recent activity |
+| `mark_reviewed` | Mutation | Mark a PR as reviewed at a given SHA. New commits on that PR re-surface it in your review queue |
+| `review_queue` | Query | List PRs awaiting your review (or another peer's). Filter by `peer_name=...` |
+| `schedule_create` | Mutation | Schedule a notification or ask to a peer at a future time (one-shot or recurring) |
+| `schedule_list` | Query | List your active schedules. `mine_only=False` shows all |
+| `schedule_delete` | Mutation | Remove a schedule |
 
 `list_peers` and `whoami` return TSV (more token-efficient than JSON).
 
-If an agent receives an ask but doesn't ack/reply, repowire injects a reminder block at the start of every subsequent prompt until the ask is acked. Tool-call detection is the source of truth — prose `[ack #cid]` mentions don't close anything, only a real `ack()` call does.
+**Reminder injection.** If an agent receives an ask but doesn't ack/reply, repowire injects a reminder block at the start of every subsequent prompt until the ask is acked. Tool-call detection is the source of truth — prose `[ack #cid]` mentions don't close anything, only a real `ack()` call does. If a peer appears paused at the prompt (idle but with unhandled work), the daemon detects this and surfaces it on the dashboard.
 
-The legacy `ask_peer` (blocking, request/response) is removed in this release. The legacy `/query` + `/response` HTTP endpoints remain as compatibility shims for the telegram bot and CLI; they will be removed in v0.13.
+**Misroute refusal.** Ambiguous peer names (multiple peers sharing a display name across circles) cause `ask`/`notify_peer` to refuse with a hint, instead of routing to the wrong peer. Always pass explicit `circle=...` to disambiguate.
 
 ## CLI Reference
 
@@ -247,7 +263,7 @@ repowire serve --relay            # Run daemon with relay connection
 
 repowire peer new PATH            # Spawn new peer in tmux
 repowire peer new . --circle dev  # Spawn with custom circle
-repowire peer list                # List peers and their status
+repowire peer list                # List peers and their status (god-view, includes offline)
 repowire peer prune               # Remove offline peers
 
 repowire telegram start           # Run Telegram bot (config or env vars)
@@ -255,6 +271,8 @@ repowire slack start              # Run Slack bot (config or env vars)
 repowire update                   # Upgrade package, reinstall hooks, restart daemon
 repowire uninstall                # Remove all components (--yes to skip prompts)
 ```
+
+`repowire peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP `list_peers` tool defaults to a peer-facing view (online only, caller's circle, caller hidden).
 
 ## Configuration
 
