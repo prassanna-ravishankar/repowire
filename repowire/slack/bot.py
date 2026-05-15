@@ -376,7 +376,16 @@ class SlackPeer:
                 },
             )
             if r.status_code == 200:
-                await self._slack_send(f":white_check_mark: → *@{_esc(peer)}*")
+                try:
+                    delivery_status = r.json().get("status", "sent")
+                except Exception:
+                    delivery_status = "sent"
+                icon = (
+                    ":hourglass_flowing_sand:"
+                    if delivery_status == "queued"
+                    else ":white_check_mark:"
+                )
+                await self._slack_send(f"{icon} → *@{_esc(peer)}*")
             else:
                 try:
                     detail = r.json().get("detail", r.text)

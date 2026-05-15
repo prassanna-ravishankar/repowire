@@ -638,6 +638,69 @@ class TestNotify:
         })
         assert r.status_code == 404
 
+    async def test_notify_online_recipient_returns_sent(self, client, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from repowire.protocol.peers import PeerStatus
+
+        registry = get_peer_registry()
+        _sender_id, sender_name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/sender",
+        )
+        recipient_id, recipient_name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/recipient",
+        )
+        # Recipient is ONLINE (default from allocate_and_register)
+        registry._peers[recipient_id].status = PeerStatus.ONLINE
+        monkeypatch.setattr(
+            registry._router, "send_notification", AsyncMock(return_value=None),
+        )
+
+        r = await client.post("/notify", json={
+            "from_peer": sender_name,
+            "to_peer": recipient_name,
+            "text": "hello",
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["status"] == "sent"
+
+    async def test_notify_busy_recipient_returns_queued(self, client, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from repowire.protocol.peers import PeerStatus
+
+        registry = get_peer_registry()
+        _sender_id, sender_name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/sender2",
+        )
+        recipient_id, recipient_name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/recipient2",
+        )
+        registry._peers[recipient_id].status = PeerStatus.BUSY
+        monkeypatch.setattr(
+            registry._router, "send_notification", AsyncMock(return_value=None),
+        )
+
+        r = await client.post("/notify", json={
+            "from_peer": sender_name,
+            "to_peer": recipient_name,
+            "text": "hello",
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["status"] == "queued"
+
 
 # -- Broadcast --
 

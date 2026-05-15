@@ -680,7 +680,12 @@ class TelegramPeer:
             )
             if r.status_code == 200:
                 if message_id:
-                    await self._tg_react(message_id)
+                    try:
+                        delivery_status = r.json().get("status", "sent")
+                    except Exception:
+                        delivery_status = "sent"
+                    emoji = "⏳" if delivery_status == "queued" else "✓"
+                    await self._tg_react(message_id, emoji=emoji)
                 # No text reply on success — reaction is the confirmation
             else:
                 detail = r.json().get("detail", r.text)

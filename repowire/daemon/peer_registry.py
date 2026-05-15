@@ -18,7 +18,7 @@ from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
@@ -800,13 +800,18 @@ class PeerRegistry:
         text: str,
         bypass_circle: bool = False,
         circle: str | None = None,
-    ) -> None:
+    ) -> Literal["sent", "queued"]:
         """Send a notification to a peer (fire-and-forget).
 
         Direct wire send via the router. No daemon-side queueing: BUSY peers
         have a live WS and ws-hook buffers the tmux paste through the busy
         turn, so direct send is sufficient. Offline peers raise TransportError
         so callers can retry or escalate.
+
+        Returns:
+            "sent" if recipient was ONLINE at send-time (immediate delivery),
+            "queued" if recipient was BUSY (ws-hook holds the paste until the
+            current turn ends).
 
         Raises:
             ValueError: peer not found / circle boundary violated.
@@ -820,12 +825,16 @@ class PeerRegistry:
             peer_id = peer.peer_id
             peer_name = peer.display_name
             from_peer_id = from_obj.peer_id if from_obj else None
+            delivery_status: Literal["sent", "queued"] = (
+                "queued" if peer.status == PeerStatus.BUSY else "sent"
+            )
 
         self.add_event(
             "notification",
             {
                 "from": from_peer, "to": to_peer, "text": text,
                 "from_peer_id": from_peer_id, "to_peer_id": peer_id,
+                "delivery_status": delivery_status,
             },
         )
 
@@ -835,6 +844,7 @@ class PeerRegistry:
             to_peer_name=peer_name,
             text=text,
         )
+        return delivery_status
 
     async def deliver_ask(
         self,

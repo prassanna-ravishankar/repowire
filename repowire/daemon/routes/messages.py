@@ -48,6 +48,18 @@ class NotifyRequest(BaseModel):
     circle: str | None = Field(None, description="Circle to scope target peer lookup")
 
 
+class NotifyResponse(BaseModel):
+    """Response from /notify.
+
+    ``status`` reflects the recipient's state at send-time: ``sent`` means
+    ONLINE (immediate paste), ``queued`` means BUSY (ws-hook holds the paste
+    until the current turn ends). Wire format otherwise unchanged.
+    """
+
+    ok: bool = True
+    status: Literal["sent", "queued"] = "sent"
+
+
 class BroadcastRequest(BaseModel):
     """Request to broadcast a message."""
 
@@ -133,15 +145,17 @@ async def query_peer(
         return QueryResponse(error=f"Query failed: {e}")
 
 
-@router.post("/notify", response_model=OkResponse)
+@router.post("/notify", response_model=NotifyResponse)
 async def notify_peer(
     request: NotifyRequest,
     _: str | None = Depends(require_auth),
-) -> OkResponse:
+) -> NotifyResponse:
     """Send a notification to a peer (fire-and-forget).
 
     Direct WS send. 503 if the recipient has no live connection so the
-    caller knows to retry later.
+    caller knows to retry later. Returns ``status=sent`` when the recipient
+    was ONLINE at send-time, ``status=queued`` when the recipient was BUSY
+    (ws-hook holds the paste until the agent's current turn ends).
     """
     from repowire.daemon.websocket_transport import TransportError
 
@@ -149,14 +163,14 @@ async def notify_peer(
     await peer_registry.lazy_repair()
 
     try:
-        await peer_registry.notify(
+        delivery_status = await peer_registry.notify(
             from_peer=request.from_peer,
             to_peer=request.to_peer,
             text=request.text,
             bypass_circle=request.bypass_circle,
             circle=request.circle,
         )
-        return OkResponse()
+        return NotifyResponse(status=delivery_status)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

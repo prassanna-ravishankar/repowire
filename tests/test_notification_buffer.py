@@ -50,25 +50,27 @@ class TestNotifyDirectSend:
         sender = _add_peer(registry, "alice", PeerStatus.ONLINE)
         recipient = _add_peer(registry, "bob", PeerStatus.BUSY)
 
-        await registry.notify(
+        result = await registry.notify(
             from_peer=sender.display_name,
             to_peer=recipient.display_name,
         text="hi",
         )
 
         router.send_notification.assert_awaited_once()
+        assert result == "queued"
 
     async def test_notify_to_online_peer_sends_directly(self, registry, router):
         sender = _add_peer(registry, "alice", PeerStatus.ONLINE)
         recipient = _add_peer(registry, "bob", PeerStatus.ONLINE)
 
-        await registry.notify(
+        result = await registry.notify(
             from_peer=sender.display_name,
             to_peer=recipient.display_name,
             text="hi",
         )
 
         router.send_notification.assert_awaited_once()
+        assert result == "sent"
 
     async def test_notify_propagates_transport_error(self, registry, router):
         sender = _add_peer(registry, "alice", PeerStatus.ONLINE)
