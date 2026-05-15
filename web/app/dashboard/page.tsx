@@ -16,12 +16,17 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8377";
 const RELAY_DASHBOARD_URL = "https://relay.repowire.io/dashboard";
 
 export default function Dashboard() {
+  const [redirecting] = useState(
+    () => typeof window !== "undefined" && window.location.hostname === "repowire.io",
+  );
+
   useEffect(() => {
-    if (typeof window !== "undefined" && window.location.hostname === "repowire.io") {
+    if (redirecting) {
       window.location.replace(RELAY_DASHBOARD_URL);
     }
-  }, []);
+  }, [redirecting]);
 
+  if (redirecting) return null;
   return <DashboardInner />;
 }
 
