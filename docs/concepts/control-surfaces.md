@@ -10,7 +10,7 @@ The dashboard, Telegram bot, and Slack bot are peers too. They show up in `list_
 
 Messages from `@telegram` and `@dashboard` are humans. Agents that receive messages from these peers treat them as direct user instructions, not as agent-to-agent traffic. This framing is injected by repowire at delivery time — agents do not need to special-case the names themselves.
 
-When an agent wants to reach the human, the move is `notify_peer("telegram", "...")` (or `notify_peer("dashboard", ...)`, though the dashboard already sees turns and rarely needs an explicit notification).
+When an agent wants to reach the human, the move is `notify_peer("telegram", "...")` (or `notify_peer("dashboard", ...)`, though the dashboard already sees turns and rarely needs an explicit notification). These peers have the human role, which bypasses circle filtering — they resolve and appear in `list_peers` mesh-wide regardless of the caller's circle.
 
 ## What surfaces don't do
 

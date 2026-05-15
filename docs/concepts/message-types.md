@@ -29,4 +29,4 @@ Fan-out to all online peers in your circle. No correlation, no reply. Use sparin
 
 ## Misroute refusal
 
-If a `peer_name` matches multiple peers across different circles, `ask` and `notify_peer` refuse the call with a hint to disambiguate. Pass an explicit `circle=` argument to pick one. This prevents a silent wrong-peer delivery when display names collide.
+`ask` and `notify_peer` resolve peer names within the caller's circle by default; peers whose role bypasses circles (`orchestrator`, `service`, human surfaces like `@telegram` / `@dashboard` / `@slack`) resolve mesh-wide. If a name matches multiple peers within the resolution scope, the daemon refuses the call with a hint to disambiguate. Pass an explicit `circle=` argument to pick one. This prevents a silent wrong-peer delivery when display names collide.

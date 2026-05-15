@@ -12,7 +12,9 @@ ask(peer_name: str, query: str, reply_to: str | None = None, circle: str | None 
 
 Open a non-blocking ask thread. Returns a `correlation_id` immediately. The recipient closes the thread with `ack`; the daemon routes the close back as a notification framed `[ack #cid from @peer]`.
 
-Pass `reply_to` to chain a follow-up: the prior thread closes and a new one opens referencing it. Pass `circle` only when two peers share a name in different circles — see [misroute refusal](../concepts/message-types.md#misroute-refusal).
+Peer resolution defaults to the caller's circle. Peers whose role bypasses circles (`orchestrator`, `service`, human surfaces) resolve mesh-wide; everything else is scoped to the caller's circle so the daemon's ambiguous-resolve refusal applies. Pass `circle="<name>"` to target a different circle explicitly.
+
+Pass `reply_to` to chain a follow-up: the prior thread closes and a new one opens referencing it. See [misroute refusal](../concepts/message-types.md#misroute-refusal) for what happens when names collide within the resolution scope.
 
 ```python
 ask("project-b", "What API endpoints do you expose?")
@@ -40,7 +42,9 @@ notify_peer(peer_name: str, message: str, circle: str | None = None) -> str
 
 Fire-and-forget. No lifecycle, no expected response. Returns a synthetic `notif-XXXXXXXX` ID for client-side tracking, not a thread you can close. Use for status pings and announcements.
 
-The special peer `telegram` routes to the user's phone. The `dashboard` already sees agent turns; you do not need to notify it.
+Peer resolution mirrors `ask`: defaults to the caller's circle, except for peers whose role bypasses circles (`orchestrator`, `service`, human surfaces) which resolve mesh-wide. Pass `circle="<name>"` to target a different circle.
+
+The special peer `telegram` routes to the user's phone. The `dashboard` already sees agent turns; you do not need to notify it. Both are human-role peers and resolve mesh-wide regardless of your circle.
 
 ```python
 notify_peer("telegram", "deploy finished, green across CI")
@@ -70,7 +74,9 @@ Returns a TSV with columns: `peer_id`, `name`, `project`, `circle`, `role`, `sta
 
 `turn_state` is empty when unknown; otherwise `idle`, `working`, `awaiting_input` (peer is mid-turn waiting on user input), or `pending_first_turn` (spawn-seeded peer whose first prompt never landed — re-send via `notify_peer`).
 
-By default returns online + busy peers across **all circles** and hides the caller. Pass `show_offline=True` for the full registry; pass `include_self=True` when an orchestrator needs its own row.
+By default returns online + busy peers in the **caller's circle** and hides the caller. Peers whose role bypasses circles (`orchestrator`, `service`, and human surfaces like `telegram` / `dashboard` / `slack`) are always visible regardless of the filter. Callers with `role=orchestrator` default to mesh-wide (`circle="*"`).
+
+Pass `circle="*"` to widen to the whole mesh, `circle="<name>"` to scope to a different circle, `show_offline=True` to include offline peers, or `include_self=True` to include the caller's own row.
 
 ### `whoami`
 

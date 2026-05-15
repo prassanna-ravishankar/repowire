@@ -27,4 +27,6 @@ Most peers run as `agent`. A peer can also register as `orchestrator` — same r
 
 ## Listing peers
 
-The MCP `list_peers` tool returns peers across all circles by default, filtered to `online` + `busy` status, with the calling peer hidden. Pass `show_offline=True` or `include_self=True` to widen the view. The CLI `repowire peer list` returns the god-view: every peer in every circle, caller included.
+The MCP `list_peers` tool returns peers in the caller's circle by default, filtered to `online` + `busy` status, with the calling peer hidden. Peers whose role bypasses circles — `orchestrator`, `service`, and human surfaces like `@telegram` / `@dashboard` / `@slack` — are always visible regardless of the caller's circle. Pass `circle="*"` to widen to the whole mesh, `circle="<name>"` to scope to a specific circle, `show_offline=True` for offline peers, or `include_self=True` to include the caller's own row. Orchestrator-role callers default to mesh-wide (`*`).
+
+The CLI `repowire peer list` is god-view: every peer in every circle, caller included, regardless of role.
