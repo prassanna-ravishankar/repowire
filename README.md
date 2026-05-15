@@ -229,8 +229,8 @@ repowire telegram start
 
 | Tool | Type | Description |
 |------|------|-------------|
-| `list_peers` | Query | List peers with status, circle, path, description, `last_seen`, `turn_state`. Defaults to online + hides self; `show_offline=True` + `include_self=True` widen the view |
-| `ask` | Non-blocking | Open a thread. Returns a correlation_id immediately. Optional `reply_to=cid` chains a follow-up that closes the prior thread |
+| `list_peers` | Query | List peers with status, circle, path, description, `last_seen`, `turn_state`. Defaults to online + caller's circle + hides self. Pass `circle='*'` for mesh-wide, `show_offline=True` + `include_self=True` to widen. Orchestrator-role callers default to mesh-wide |
+| `ask` | Non-blocking | Open a thread. Returns a correlation_id immediately. Defaults to caller's circle; falls back to global lookup only when the target's role bypasses circles. Optional `reply_to=cid` chains a follow-up that closes the prior thread |
 | `ack` | Close | Close an open ask thread. Bare `ack(cid)` is "seen, no action"; `ack(cid, message)` delivers a reply to the asker |
 | `notify_peer` | Fire-and-forget | Send a notification (no lifecycle, no reply tracking) |
 | `broadcast` | Fire-and-forget | Message all online peers in your circle |
@@ -250,6 +250,8 @@ repowire telegram start
 **Reminder injection.** If an agent receives an ask but doesn't ack/reply, repowire injects a reminder block at the start of every subsequent prompt until the ask is acked. Tool-call detection is the source of truth — prose `[ack #cid]` mentions don't close anything, only a real `ack()` call does. If a peer appears paused at the prompt (idle but with unhandled work), the daemon detects this and surfaces it on the dashboard.
 
 **Misroute refusal.** Ambiguous peer names (multiple peers sharing a display name across circles) cause `ask`/`notify_peer` to refuse with a hint, instead of routing to the wrong peer. Always pass explicit `circle=...` to disambiguate.
+
+**Circle scoping.** As of v0.13.4, the MCP surface defaults to the caller's own circle. Peers with role `service`, `orchestrator`, or `human` (e.g. the Telegram bot, the orchestrator, you) bypass circles and are always visible. Pass `circle='*'` to widen any call to mesh-wide. Orchestrator peers default to mesh-wide automatically — they need the full view.
 
 ## CLI Reference
 
@@ -272,7 +274,7 @@ repowire update                   # Upgrade package, reinstall hooks, restart da
 repowire uninstall                # Remove all components (--yes to skip prompts)
 ```
 
-`repowire peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP `list_peers` tool defaults to a peer-facing view (online only, caller hidden).
+`repowire peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP `list_peers` tool defaults to a peer-facing view (online only, caller's circle, caller hidden) — see [Circle scoping](#mcp-tools).
 
 ## Configuration
 
