@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -174,6 +175,48 @@ async def test_upload_and_download_attachment(client: AsyncRepowireClient, tmp_p
 
         downloaded = await client.download_attachment(uploaded.id)
         assert downloaded == b"hello attachment"
+
+
+async def test_attachment_quota_rejects_when_dir_full(
+    client: AsyncRepowireClient, tmp_path
+):
+    """When the attachments dir already exceeds MAX_DIR_SIZE, upload returns 507."""
+    attachment_dir = tmp_path / "attachments"
+    attachment_dir.mkdir(parents=True)
+    # Pre-fill the dir with one file at the cap so a fresh upload tips it over.
+    fat = attachment_dir / "pre-existing.bin"
+    fat.write_bytes(b"\x00" * (attachments.MAX_DIR_SIZE))
+
+    with (
+        patch.object(attachments, "ATTACHMENTS_DIR", attachment_dir),
+        patch.object(attachments, "MAX_AGE_HOURS", 999_999),  # block TTL cleanup
+    ):
+        with pytest.raises(DaemonHTTPError) as exc_info:
+            await client.upload_attachment(
+                b"new content", filename="new.txt", content_type="text/plain"
+            )
+        assert exc_info.value.status == 507
+        assert "full" in str(exc_info.value).lower() or "cap" in str(exc_info.value).lower()
+
+
+async def test_attachment_quota_allows_after_ttl_sweep(
+    client: AsyncRepowireClient, tmp_path
+):
+    """If pre-existing files are expired, the upload handler sweeps them and the upload succeeds."""
+    attachment_dir = tmp_path / "attachments"
+    attachment_dir.mkdir(parents=True)
+    stale = attachment_dir / "stale.bin"
+    stale.write_bytes(b"\x00" * attachments.MAX_DIR_SIZE)
+    # Force the file's mtime to look expired.
+    old = time.time() - (attachments.MAX_AGE_HOURS + 1) * 3600
+    os.utime(stale, (old, old))
+
+    with patch.object(attachments, "ATTACHMENTS_DIR", attachment_dir):
+        uploaded = await client.upload_attachment(
+            b"fresh upload", filename="fresh.txt", content_type="text/plain"
+        )
+        assert uploaded.size == len(b"fresh upload")
+    assert not stale.exists()
 
 
 async def test_auth_token_is_sent(tmp_path):
