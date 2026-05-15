@@ -311,6 +311,63 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
   }
 }
 
+// Reminder snippet length, mirrors hooks/ask_lifecycle.py:_BODY_SNIPPET_CHARS.
+const REMINDER_BODY_SNIPPET_CHARS = 150
+
+interface PendingAskRow {
+  correlation_id: string
+  from_peer: string
+  to_peer: string
+  text: string
+  created_at: string
+  direction: string
+}
+
+// Format the reminder block exactly like hooks/ask_lifecycle.py:format_reminder_block
+// so all backends emit the same wording.
+function formatAskReminder(asks: PendingAskRow[]): string {
+  if (asks.length === 0) return ""
+  const lines: string[] = [
+    `[repowire] ${asks.length} open ask(s). Handle each: ack(corr_id) bare ` +
+      `if no reply needed, ack(corr_id, message) to reply.`,
+  ]
+  for (const a of asks) {
+    const cid = a.correlation_id || "?"
+    const fromPeer = a.from_peer || "?"
+    let body = (a.text || "").trim().replace(/\\n/g, " ")
+    if (body.length > REMINDER_BODY_SNIPPET_CHARS) {
+      body = body.slice(0, REMINDER_BODY_SNIPPET_CHARS - 1) + "…"
+    }
+    const head = `  - #${cid} from @${fromPeer}`
+    lines.push(body ? `${head}: ${body}` : head)
+  }
+  return lines.join("\\n")
+}
+
+// Plugin-runtime reminder: opencode doesn't run our Stop hook, so we poll
+// /asks/pending on every idle and softInject the same reminder block the
+// other backends emit. inbound-only (peer doesn't need to be reminded of
+// asks they opened). Idempotent w.r.t. ack — if the user has already
+// acked, the daemon will return an empty list.
+async function pollAndRemindPendingAsks(conn: PeerConn): Promise<void> {
+  if (!conn.peerId) return
+  try {
+    const url = `${DAEMON_URL}/asks/pending?peer_id=${encodeURIComponent(conn.peerId)}&direction=inbound`
+    const res = await fetch(url, {
+      method: "GET",
+      headers: AUTH_TOKEN ? { "Authorization": `Bearer ${AUTH_TOKEN}` } : undefined,
+    })
+    if (!res.ok) return
+    const data = (await res.json()) as { asks?: PendingAskRow[] }
+    const asks = data.asks || []
+    if (asks.length === 0) return
+    const reminder = formatAskReminder(asks)
+    if (reminder) await softInject(reminder)
+  } catch (e) {
+    console.debug(`[repowire] ask-reminder poll failed for ${conn.peerName}:`, e)
+  }
+}
+
 async function softInject(text: string): Promise<boolean> {
   if (!serverUrl) {
     console.warn("[repowire] No serverUrl available for soft inject")
@@ -848,6 +905,7 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
           conn.busy = false
           scheduleFlush(conn)
           sendStatus(conn, "idle")
+          void pollAndRemindPendingAsks(conn)
         }
         // "retry" is left as-is (no status flip).
       } else if (typedEvent.type === "session.idle") {
@@ -861,6 +919,7 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
         conn.busy = false
         scheduleFlush(conn)
         sendStatus(conn, "idle")
+        void pollAndRemindPendingAsks(conn)
       } else if (typedEvent.type === "message.updated") {
         const info = props?.info as MessageEventInfo | undefined
         if (!info?.sessionID) return

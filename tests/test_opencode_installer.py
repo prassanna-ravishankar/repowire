@@ -119,6 +119,21 @@ def test_no_session_id_hash_override():
     assert "info.id.startsWith(\"ses\")" not in PLUGIN_CONTENT
 
 
+def test_ask_reminder_polls_on_idle():
+    """On session idle, plugin polls /asks/pending and softInjects a reminder."""
+    assert "pollAndRemindPendingAsks" in PLUGIN_CONTENT
+    # Polls inbound-only via peer_id (mirrors what claude-code/codex/gemini
+    # Stop hooks emit on every turn close).
+    assert "/asks/pending?peer_id=" in PLUGIN_CONTENT
+    assert "direction=inbound" in PLUGIN_CONTENT
+    # Wording matches hooks/ask_lifecycle.py:format_reminder_block so the
+    # reminder block is consistent across all four backends.
+    assert "[repowire] ${asks.length} open ask(s)" in PLUGIN_CONTENT
+    assert "ack(corr_id) bare" in PLUGIN_CONTENT
+    # Hook fires from both modern session.status idle and legacy session.idle.
+    assert "void pollAndRemindPendingAsks(conn)" in PLUGIN_CONTENT
+
+
 def test_permission_relay_hook_present():
     """permission.ask fires a notify to the telegram peer for relay."""
     assert '"permission.ask"' in PLUGIN_CONTENT
