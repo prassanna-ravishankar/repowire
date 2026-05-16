@@ -57,7 +57,36 @@ class TestNotifyDirectSend:
         )
 
         router.send_notification.assert_awaited_once()
+        kwargs = router.send_notification.await_args.kwargs
+        assert kwargs["to_session_id"] == recipient.peer_id
+        assert kwargs["to_peer_name"] == recipient.display_name
+        assert kwargs["intended_recipient_name"] == recipient.display_name
         assert result == "queued"
+
+    async def test_quick_busy_notifies_keep_frame_target_on_actual_target(
+        self, registry, router,
+    ):
+        sender = _add_peer(registry, "alice", PeerStatus.ONLINE)
+        recipient = _add_peer(registry, "bob", PeerStatus.BUSY)
+
+        first = await registry.notify(
+            from_peer=sender.display_name,
+            to_peer=recipient.display_name,
+            text="first",
+        )
+        second = await registry.notify(
+            from_peer=sender.display_name,
+            to_peer=recipient.peer_id,
+            text="second",
+        )
+        await registry.update_peer_status(recipient.peer_id, PeerStatus.ONLINE)
+
+        assert (first, second) == ("queued", "queued")
+        assert router.send_notification.await_count == 2
+        calls = router.send_notification.await_args_list
+        for call in calls:
+            assert call.kwargs["to_session_id"] == recipient.peer_id
+            assert call.kwargs["to_peer_name"] == recipient.display_name
 
     async def test_notify_to_online_peer_sends_directly(self, registry, router):
         sender = _add_peer(registry, "alice", PeerStatus.ONLINE)

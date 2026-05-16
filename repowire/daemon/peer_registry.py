@@ -491,23 +491,39 @@ class PeerRegistry:
         """
         async with self._lock:
             # Reconnect: if caller provides a peer_id that exists, take over
+            # only when it still describes the same peer identity. Stale pane
+            # metadata can otherwise bind another pane's WebSocket to this id.
             if peer_id and peer_id in self._peers:
                 existing = self._peers[peer_id]
-                old_status = existing.status
-                existing.status = PeerStatus.ONLINE
-                existing.last_seen = datetime.now(timezone.utc)
-                if turn_state is not None:
-                    existing.turn_state = turn_state
-                self._emit_status_change(existing, old_status, PeerStatus.ONLINE)
-                if pane_id:
-                    self._release_pane(pane_id, peer_id)
-                    existing.pane_id = pane_id
-                if tmux_session:
-                    existing.tmux_session = tmux_session
-                if machine != "unknown":
-                    existing.machine = machine
-                logger.info(f"Peer reconnected: {existing.display_name} ({peer_id})")
-                return peer_id, existing.display_name
+                same_backend = existing.backend == backend
+                same_path = not existing.path or not path or existing.path == path
+                if not same_backend or not same_path:
+                    logger.warning(
+                        "Ignoring stale peer_id claim %s: existing=%s backend=%s path=%s "
+                        "claim_backend=%s claim_path=%s",
+                        peer_id,
+                        existing.display_name,
+                        existing.backend.value,
+                        existing.path,
+                        backend.value,
+                        path,
+                    )
+                else:
+                    old_status = existing.status
+                    existing.status = PeerStatus.ONLINE
+                    existing.last_seen = datetime.now(timezone.utc)
+                    if turn_state is not None:
+                        existing.turn_state = turn_state
+                    self._emit_status_change(existing, old_status, PeerStatus.ONLINE)
+                    if pane_id:
+                        self._release_pane(pane_id, peer_id)
+                        existing.pane_id = pane_id
+                    if tmux_session:
+                        existing.tmux_session = tmux_session
+                    if machine != "unknown":
+                        existing.machine = machine
+                    logger.info(f"Peer reconnected: {existing.display_name} ({peer_id})")
+                    return peer_id, existing.display_name
 
             # Fresh registration: daemon owns the name
             assigned_name = self._build_display_name(path or "", circle, backend)
@@ -871,6 +887,7 @@ class PeerRegistry:
             to_session_id=peer_id,
             to_peer_name=peer_name,
             text=text,
+            intended_recipient_name=to_peer,
         )
         return delivery_status
 
@@ -921,6 +938,7 @@ class PeerRegistry:
             correlation_id=correlation_id,
             text=text,
             reply_to=reply_to,
+            intended_recipient_name=to_peer,
         )
 
     async def broadcast(

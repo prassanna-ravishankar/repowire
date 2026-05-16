@@ -176,6 +176,36 @@ async def test_lookup_prefers_pane_owned_peer_when_names_collide(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_stale_peer_id_claim_does_not_steal_existing_peer(tmp_path):
+    """A stale REPOWIRE_PEER_ID must not bind a different pane to an old peer."""
+    registry = _make_registry(tmp_path)
+
+    sse_id, sse_name = await registry.allocate_and_register(
+        circle="dev",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/repowire.feat-sse-improve",
+        pane_id="%1",
+    )
+
+    claimed_id, claimed_name = await registry.allocate_and_register(
+        circle="dev",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/repowire-orchestrator",
+        pane_id="%2",
+        peer_id=sse_id,
+    )
+
+    assert claimed_id != sse_id
+    assert claimed_name != sse_name
+    sse_peer = await registry.get_peer(sse_id)
+    assert sse_peer is not None
+    assert sse_peer.pane_id == "%1"
+    claimed_peer = await registry.get_peer_by_pane("%2")
+    assert claimed_peer is not None
+    assert claimed_peer.peer_id == claimed_id
+
+
+@pytest.mark.asyncio
 async def test_circle_and_description_persist_across_restart(tmp_path):
     """A peer re-registering after restart restores its prior circle + description.
 

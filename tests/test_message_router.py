@@ -1,5 +1,6 @@
 """Tests for MessageRouter — query, notification, and broadcast delivery."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -35,12 +36,32 @@ class TestSendNotification:
         msg = transport.send.call_args[0][1]
         assert msg["type"] == "notify"
         assert msg["from_peer"] == "sender"
+        assert msg["to_peer"] == "recipient"
         assert msg["text"] == "hello"
 
     async def test_transport_error_propagates(self, router, transport):
         transport.send.side_effect = TransportError("disconnected")
         with pytest.raises(TransportError):
             await router.send_notification("sender", "sid-1", "recipient", "hello")
+
+    async def test_logs_delivery_trace(self, router, transport, caplog):
+        caplog.set_level(logging.INFO, logger="repowire.daemon.message_router")
+        transport.get_connection_pane_id.return_value = "%7"
+
+        await router.send_notification(
+            "sender",
+            "sid-1",
+            "recipient",
+            "hello",
+            intended_recipient_name="requested-name",
+        )
+
+        assert "Notify delivery trace" in caplog.text
+        assert "sender_identity=sender" in caplog.text
+        assert "intended_recipient_name=requested-name" in caplog.text
+        assert "resolved_peer_id=sid-1" in caplog.text
+        assert "frame.to_peer=recipient" in caplog.text
+        assert "actual_delivered_pane_id=%7" in caplog.text
 
 
 class TestSendQuery:
@@ -127,6 +148,7 @@ class TestSendAsk:
         assert msg["type"] == "ask"
         assert msg["correlation_id"] == "ask-abc"
         assert msg["from_peer"] == "alice"
+        assert msg["to_peer"] == "bob"
         assert msg["text"].startswith("ping?\n")
         assert '↳ ack("ask-abc")' in msg["text"]
         assert 'ack("ask-abc", "reply")' in msg["text"]

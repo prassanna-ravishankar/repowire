@@ -24,6 +24,8 @@ class ConnectionInfo:
 
     session_id: str
     websocket: WebSocket
+    pane_id: str | None = None
+    display_name: str | None = None
     connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -39,7 +41,13 @@ class WebSocketTransport:
         self._lock = asyncio.Lock()
         self._pong_futures: dict[str, asyncio.Future[dict]] = {}
 
-    async def connect(self, session_id: str, websocket: WebSocket) -> None:
+    async def connect(
+        self,
+        session_id: str,
+        websocket: WebSocket,
+        pane_id: str | None = None,
+        display_name: str | None = None,
+    ) -> None:
         """Register WebSocket connection.
 
         If a connection already exists for this session_id, replace it
@@ -52,6 +60,8 @@ class WebSocketTransport:
             self._connections[session_id] = ConnectionInfo(
                 session_id=session_id,
                 websocket=websocket,
+                pane_id=pane_id,
+                display_name=display_name,
             )
             logger.info(f"Registered connection for {session_id}")
 
@@ -107,6 +117,11 @@ class WebSocketTransport:
     def get_all_sessions(self) -> list[str]:
         """Get all connected session IDs."""
         return list(self._connections.keys())
+
+    def get_connection_pane_id(self, session_id: str) -> str | None:
+        """Return the pane currently bound to a WebSocket session, if known."""
+        conn = self._connections.get(session_id)
+        return conn.pane_id if conn else None
 
     async def ping(self, session_id: str, timeout: float = 5.0) -> dict:
         """Send a ping to a peer and wait for pong.

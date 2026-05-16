@@ -151,7 +151,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         session_id = peer_id
 
         # Register with transport (handles connection + status tracking)
-        await transport.connect(session_id, websocket)
+        await transport.connect(
+            session_id,
+            websocket,
+            pane_id=pane_id,
+            display_name=assigned_name,
+        )
 
         # Send connect response with daemon-assigned name
         await websocket.send_json({

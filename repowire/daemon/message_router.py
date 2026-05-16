@@ -99,6 +99,7 @@ class MessageRouter:
         to_session_id: str,
         to_peer_name: str,
         text: str,
+        intended_recipient_name: str | None = None,
     ) -> None:
         """Send a plain FYI notification (fire-and-forget, no lifecycle).
 
@@ -114,6 +115,15 @@ class MessageRouter:
             "to_peer": to_peer_name,
             "text": text,
         }
+        logger.info(
+            "Notify delivery trace: sender_identity=%s intended_recipient_name=%s "
+            "resolved_peer_id=%s frame.to_peer=%s actual_delivered_pane_id=%s",
+            from_peer,
+            intended_recipient_name or to_peer_name,
+            to_session_id,
+            message["to_peer"],
+            self._transport.get_connection_pane_id(to_session_id),
+        )
         await self._transport.send(to_session_id, message)
         logger.info(f"Notification sent: {from_peer} -> {to_peer_name}")
 
@@ -125,6 +135,7 @@ class MessageRouter:
         correlation_id: str,
         text: str,
         reply_to: str | None = None,
+        intended_recipient_name: str | None = None,
     ) -> None:
         """Send a first-class ask wire message.
 
@@ -150,6 +161,15 @@ class MessageRouter:
         }
         if reply_to is not None:
             message["reply_to"] = reply_to
+        logger.info(
+            "Ask delivery trace: sender_identity=%s intended_recipient_name=%s "
+            "resolved_peer_id=%s frame.to_peer=%s actual_delivered_pane_id=%s",
+            from_peer,
+            intended_recipient_name or to_peer_name,
+            to_session_id,
+            message["to_peer"],
+            self._transport.get_connection_pane_id(to_session_id),
+        )
         await self._transport.send(to_session_id, message)
         logger.info(f"Ask sent: {from_peer} -> {to_peer_name} ({correlation_id[:8]})")
 
