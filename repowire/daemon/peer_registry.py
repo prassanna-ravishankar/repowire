@@ -109,6 +109,11 @@ class PeerRegistry:
         # all of them; each streamer clears and waits on its own.
         self._event_subscribers: set[asyncio.Event] = set()
 
+        # When each peer's current description was set. Used for clear-on-read
+        # TTL — see config.daemon.description_ttl_seconds. Registry-internal
+        # so the wire-facing Peer schema stays untouched.
+        self._description_set_at: dict[str, datetime] = {}
+
     # ------------------------------------------------------------------
     # Mapping persistence
     # ------------------------------------------------------------------
@@ -635,7 +640,10 @@ class PeerRegistry:
     async def get_peer(self, identifier: str, circle: str | None = None) -> Peer | None:
         """Get a peer by session_id or display_name."""
         async with self._lock:
-            return self._lookup_peer_unlocked(identifier, circle=circle)
+            peer = self._lookup_peer_unlocked(identifier, circle=circle)
+            if peer:
+                self._apply_description_ttl(peer)
+            return peer
 
     async def resolve_peer_strict(
         self, identifier: str, circle: str | None = None
@@ -655,13 +663,17 @@ class PeerRegistry:
             in_circle = lambda p: circle is None or p.circle == circle  # noqa: E731
             by_id = [p for p in self._peers.values() if p.peer_id == identifier and in_circle(p)]
             if by_id:
+                self._apply_description_ttl(by_id[0])
                 return by_id[0]
             by_name = [
                 p for p in self._peers.values()
                 if p.display_name == identifier and in_circle(p)
             ]
             if len(by_name) == 1:
+                self._apply_description_ttl(by_name[0])
                 return by_name[0]
+            for p in by_name:
+                self._apply_description_ttl(p)
             return by_name
 
     async def get_peer_by_pane(self, pane_id: str) -> Peer | None:
@@ -669,18 +681,25 @@ class PeerRegistry:
         async with self._lock:
             for peer in self._peers.values():
                 if peer.pane_id == pane_id:
+                    self._apply_description_ttl(peer)
                     return peer
             return None
 
     async def get_peers_by_circle(self, circle: str) -> list[Peer]:
         """Get all peers in a given circle."""
         async with self._lock:
-            return [p for p in self._peers.values() if p.circle == circle]
+            peers = [p for p in self._peers.values() if p.circle == circle]
+            for p in peers:
+                self._apply_description_ttl(p)
+            return peers
 
     async def get_all_peers(self) -> list[Peer]:
         """Get all registered peers."""
         async with self._lock:
-            return list(self._peers.values())
+            peers = list(self._peers.values())
+            for p in peers:
+                self._apply_description_ttl(p)
+            return peers
 
     def heartbeat_tolerance(self) -> int:
         """Seconds a peer's last_seen may lag before it's considered dead.
@@ -1065,12 +1084,44 @@ class PeerRegistry:
                 return False
             peer.description = description
             peer.last_seen = datetime.now(timezone.utc)
+            if description:
+                self._description_set_at[peer.peer_id] = datetime.now(timezone.utc)
+            else:
+                self._description_set_at.pop(peer.peer_id, None)
             mapping = self._mappings.get(peer.peer_id)
             if mapping and mapping.description != description:
                 mapping.description = description
                 mapping.updated_at = datetime.now(timezone.utc).isoformat()
                 self._mappings_dirty = True
             return True
+
+    def _apply_description_ttl(self, peer: Peer) -> None:
+        """Clear peer.description if it's older than the configured TTL.
+
+        Mutates in place so list_peers / get_peer reflect cleared state on the
+        next read without waiting for a sweep. TTL <= 0 disables the check.
+        """
+        if not peer.description:
+            return
+        ttl = self._config.daemon.description_ttl_seconds
+        if ttl <= 0:
+            return
+        set_at = self._description_set_at.get(peer.peer_id)
+        if set_at is None:
+            # Description was set before TTL tracking started (e.g. restored
+            # from a persisted mapping). Stamp now so the TTL window is
+            # well-defined, rather than clearing a description we cannot age.
+            self._description_set_at[peer.peer_id] = datetime.now(timezone.utc)
+            return
+        if (datetime.now(timezone.utc) - set_at).total_seconds() < ttl:
+            return
+        peer.description = ""
+        self._description_set_at.pop(peer.peer_id, None)
+        mapping = self._mappings.get(peer.peer_id)
+        if mapping and mapping.description:
+            mapping.description = ""
+            mapping.updated_at = datetime.now(timezone.utc).isoformat()
+            self._mappings_dirty = True
 
     async def set_peer_circle(self, identifier: str, circle: str) -> None:
         """Update peer's circle (both in-memory Peer AND persistent mapping)."""

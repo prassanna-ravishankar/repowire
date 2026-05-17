@@ -145,6 +145,17 @@ class DaemonConfig(BaseModel):
         default=24, description="Remove session mappings and offline peers older than this",
     )
 
+    # Peer description TTL — clears stale task descriptions on read.
+    # Peers tend to forget to clear their set_description after a task ends;
+    # this caps the staleness window without requiring a background sweep.
+    description_ttl_seconds: float = Field(
+        default=900,
+        description=(
+            "Seconds before a peer's task description is auto-cleared on read. "
+            "Set to 0 to disable."
+        ),
+    )
+
     # Spawn settings
     spawn: SpawnSettings = Field(default_factory=SpawnSettings)
 
