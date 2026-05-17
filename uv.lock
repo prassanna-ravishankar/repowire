@@ -3,6 +3,18 @@ revision = 2
 requires-python = ">=3.10"
 
 [[package]]
+name = "agent-client-protocol"
+version = "0.10.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/21/5c/d60196c536c8f66bb6a238c8a6d0d6fa84a2e3436008c139cb4a79003a25/agent_client_protocol-0.10.0.tar.gz", hash = "sha256:f8a6041e27423131e42e4d0cdd850d5b094b1092f79cc29501ab2bd57b92ee88", size = 81502, upload-time = "2026-05-07T19:11:56.784Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6c/cc/139895c0c5cd2acefc365085da0735d93df0cf8427ff4ee351961090e1af/agent_client_protocol-0.10.0-py3-none-any.whl", hash = "sha256:97a1a69c5d094e2625b09c4dbc2d5cf19637c4943630ceed52ab0578ecd5e14c", size = 65400, upload-time = "2026-05-07T19:11:55.614Z" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1357,6 +1369,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+acp-probe = [
+    { name = "agent-client-protocol" },
+]
 dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1378,6 +1393,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agent-client-protocol", marker = "extra == 'acp-probe'", specifier = ">=0.10.0" },
     { name = "click", specifier = ">=8.1.7" },
     { name = "fastapi", specifier = ">=0.109.0" },
     { name = "httpx", specifier = ">=0.26.0" },
@@ -1398,7 +1414,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0" },
     { name = "websockets", specifier = ">=13.0" },
 ]
-provides-extras = ["relay", "dev", "docs"]
+provides-extras = ["relay", "dev", "docs", "acp-probe"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -44,6 +44,9 @@ docs = [
     "mkdocs-material>=9.5.0",
     "pymdown-extensions>=10.7",
 ]
+acp-probe = [
+    "agent-client-protocol>=0.10.0",
+]
 
 [project.scripts]
 repowire = "repowire.cli:main"
