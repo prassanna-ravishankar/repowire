@@ -1,0 +1,13 @@
+# copilot probe results
+- C1: **pass** — protocol_version=1; load_session=True
+- C2: **pass** — session_id=4454db3a-2c2a-4e7b-9bb6-b9e48869e417
+- C3: **pass** — 9 agent_message_chunk frames, stop_reason=end_turn
+- C4: **pass** — 1 start, 1 progress
+- C5: **pass** — 1 request_permission round-trips (OK)
+- C6: **partial** — stop_reason=end_turn
+- C7: **pass** — 2 replayed chunks, marker_found=True
+- C8: **n/a** — agent does not advertise session_capabilities.close
+- C9: **pass** — file_after='after'
+- C10: **n/a** — terminal probe requires RecordingClient terminal handlers; deferred
+- C11: **pass** — 1 plan updates
+- C12: **pass** — image=True, audio=False
