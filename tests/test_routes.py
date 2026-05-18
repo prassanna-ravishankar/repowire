@@ -669,6 +669,31 @@ class TestNotify:
         })
         assert r.status_code == 404
 
+    async def test_notify_ambiguous_peer_returns_409(self, client):
+        """When two peers share a display_name across circles, /notify must
+        return 409 (matches peer/description/touch/ask) instead of 404 or 500.
+        See codex round-1 review on PR #195.
+        """
+        registry = get_peer_registry()
+        await registry.allocate_and_register(
+            circle="alpha",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/twin",
+        )
+        await registry.allocate_and_register(
+            circle="beta",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/twin",
+        )
+
+        r = await client.post("/notify", json={
+            "from_peer": "sender",
+            "to_peer": "twin-claude-code",
+            "text": "hello",
+        })
+        assert r.status_code == 409
+        assert "Ambiguous peer name" in r.json()["detail"]
+
     async def test_notify_online_recipient_returns_sent(self, client, monkeypatch):
         from unittest.mock import AsyncMock
 

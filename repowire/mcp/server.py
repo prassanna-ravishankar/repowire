@@ -244,7 +244,14 @@ async def _touch_last_seen() -> None:
     liveness clock. Closes the "ws-hook dropped but agent is alive and
     acting via MCP" gap that would otherwise leave `is_orchestrator_present`
     (and other last_seen-keyed checks) stale.
+
+    On 404/409 (daemon doesn't recognise our cached peer_id — typically
+    because the daemon was restarted and our cache is stale), invalidate
+    registration so the next MCP call re-resolves identity. Without this
+    the cached _cached_peer_id is sent as from_peer on ask/notify and
+    ack replies route to a nonexistent peer_id.
     """
+    global _registered, _cached_peer_id
     identifier = _cached_peer_id or _cached_peer_name
     if identifier is None:
         return
@@ -252,6 +259,12 @@ async def _touch_last_seen() -> None:
         await daemon_request(
             "POST", f"/peers/{quote(identifier, safe='')}/touch",
         )
+    except DaemonHTTPError as e:
+        if e.status in (404, 409):
+            # Cache is stale (daemon restart, peer reassignment, or ambiguous
+            # match). Force re-registration on the next call.
+            _registered = False
+            _cached_peer_id = None
     except Exception:
         pass
 

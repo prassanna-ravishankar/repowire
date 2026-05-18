@@ -303,3 +303,63 @@ async def test_caches_after_first_resolution():
         await mcp_server._get_my_peer_name()
     # Second call short-circuits via cache
     assert mock_pane.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_touch_404_invalidates_registration():
+    """If the daemon doesn't recognise our cached peer_id (typically because
+    it was restarted and our cache is stale), _touch_last_seen must invalidate
+    so the next MCP call re-resolves. Without this the stale _cached_peer_id
+    is sent as from_peer on ask/notify and ack replies route nowhere.
+    """
+    mcp_server._cached_peer_id = "stale-peer-id"
+    mcp_server._cached_peer_name = "p-name"
+    mcp_server._registered = True
+
+    async def daemon_404(method, path, body=None, params=None):
+        del method, path, body, params
+        raise mcp_server.DaemonHTTPError(404, "Peer not found")
+
+    with patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_404)):
+        await mcp_server._touch_last_seen()
+
+    assert mcp_server._registered is False
+    assert mcp_server._cached_peer_id is None
+
+
+@pytest.mark.asyncio
+async def test_touch_409_invalidates_registration():
+    """Same invalidation on 409 ambiguous match (peer reassignment race)."""
+    mcp_server._cached_peer_id = "ambiguous-peer-id"
+    mcp_server._cached_peer_name = "p-name"
+    mcp_server._registered = True
+
+    async def daemon_409(method, path, body=None, params=None):
+        del method, path, body, params
+        raise mcp_server.DaemonHTTPError(409, "Ambiguous")
+
+    with patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_409)):
+        await mcp_server._touch_last_seen()
+
+    assert mcp_server._registered is False
+    assert mcp_server._cached_peer_id is None
+
+
+@pytest.mark.asyncio
+async def test_touch_other_errors_do_not_invalidate():
+    """Connection errors, timeouts, 5xx must NOT invalidate the cache; those
+    are transient and the cache is probably still correct.
+    """
+    mcp_server._cached_peer_id = "real-peer-id"
+    mcp_server._cached_peer_name = "p-name"
+    mcp_server._registered = True
+
+    async def daemon_500(method, path, body=None, params=None):
+        del method, path, body, params
+        raise mcp_server.DaemonHTTPError(500, "Internal error")
+
+    with patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_500)):
+        await mcp_server._touch_last_seen()
+
+    assert mcp_server._registered is True
+    assert mcp_server._cached_peer_id == "real-peer-id"

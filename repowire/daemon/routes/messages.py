@@ -176,9 +176,15 @@ async def notify_peer(
         )
         return NotifyResponse(status=delivery_status)
     except ValueError as e:
+        # Ambiguous-display-name lookups → 409 (matches peer/description/touch/ask
+        # paths). "Unknown peer" stays 404.
+        msg = str(e)
+        is_ambiguous = msg.startswith("Ambiguous peer name")
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
+            status_code=(
+                status.HTTP_409_CONFLICT if is_ambiguous else status.HTTP_404_NOT_FOUND
+            ),
+            detail=msg,
         )
     except TransportError as e:
         raise HTTPException(
