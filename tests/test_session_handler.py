@@ -87,7 +87,7 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
         "repowire.hooks.session_handler._register_peer_http",
-        return_value=("repow-default-abc12345", "test-claude-code"),
+        return_value=("repow-default-abc12345", "test-claude-code", False),
     )
     @patch(
         "repowire.hooks.session_handler.get_tmux_info",
@@ -118,7 +118,7 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
         "repowire.hooks.session_handler._register_peer_http",
-        return_value=("repow-default-abc12345", "test-claude-code"),
+        return_value=("repow-default-abc12345", "test-claude-code", False),
     )
     @patch(
         "repowire.hooks.session_handler.get_tmux_info",
@@ -161,7 +161,7 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
         "repowire.hooks.session_handler._register_peer_http",
-        return_value=("repow-default-abc12345", "newproj-claude-code"),
+        return_value=("repow-default-abc12345", "newproj-claude-code", False),
     )
     @patch(
         "repowire.hooks.session_handler.get_tmux_info",
@@ -216,7 +216,7 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
         "repowire.hooks.session_handler._register_peer_http",
-        return_value=("repow-default-abc12345", "test-claude-code"),
+        return_value=("repow-default-abc12345", "test-claude-code", False),
     )
     @patch(
         "repowire.hooks.session_handler.get_tmux_info",

@@ -176,6 +176,37 @@ class TestPeers:
         names = [p["display_name"] for p in r.json()["peers"]]
         assert names.count(name) == 1
 
+    async def test_register_pane_hijack_returns_409(self, client):
+        """A subprocess agent (parent_pid matches the live pane peer's
+        agent_pid) gets 409 instead of stealing the pane. See issue #190."""
+        r = await client.post("/peers", json={
+            "name": "parent",
+            "path": "/tmp/parent-proj",
+            "circle": "default",
+            "backend": "claude-code",
+            "pane_id": "%hijack",
+            "agent_pid": 41001,
+            "parent_pid": 40000,
+        })
+        assert r.status_code == 200
+        parent_name = r.json()["display_name"]
+
+        r = await client.post("/peers", json={
+            "name": "child",
+            "path": "/tmp/child-cwd",
+            "circle": "default",
+            "backend": "gemini",
+            "pane_id": "%hijack",
+            "agent_pid": 41002,
+            "parent_pid": 41001,
+        })
+        assert r.status_code == 409
+        assert "%hijack" in r.json()["detail"]
+
+        r = await client.get("/peers/by-pane/%25hijack")
+        assert r.status_code == 200
+        assert r.json()["display_name"] == parent_name
+
     async def test_list_peers_status_filter(self, client):
         r = await client.post("/peers", json={
             "name": "onlinepeer",

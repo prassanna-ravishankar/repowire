@@ -371,3 +371,159 @@ async def test_description_update_persists_to_mapping(tmp_path):
     mapping = registry.get_mapping(peer_id)
     assert mapping is not None
     assert mapping.description == "doing the thing"
+
+
+# ---------------------------------------------------------------------------
+# Pane-hijack guard (issue #190)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pane_hijack_rejected_when_parent_pid_matches_existing_agent(tmp_path):
+    """A fresh SessionStart whose parent_pid matches the live pane peer's
+    agent_pid is rejected — this is the subprocess-agent hijack case (e.g.
+    ``gemini --yolo`` run from inside a claude-code pane inheriting TMUX_PANE)."""
+    from repowire.daemon.peer_registry import PaneHijackRejectedError
+
+    registry = _make_registry(tmp_path)
+
+    parent_agent_pid = 11111
+    parent_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/orchestrator",
+        pane_id="%1",
+        agent_pid=parent_agent_pid,
+        parent_pid=99999,  # parent's own parent (a shell) — irrelevant here
+    )
+
+    with pytest.raises(PaneHijackRejectedError):
+        await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.GEMINI,
+            path="/tmp/some-other-cwd",
+            pane_id="%1",
+            agent_pid=22222,
+            parent_pid=parent_agent_pid,  # gemini's parent IS the claude pid
+        )
+
+    # Original peer keeps the pane.
+    peer = await registry.get_peer_by_pane("%1")
+    assert peer is not None
+    assert peer.peer_id == parent_id
+    assert peer.backend == AgentType.CLAUDE_CODE
+
+
+@pytest.mark.asyncio
+async def test_relaunch_after_crash_allowed_when_existing_peer_is_stale(tmp_path):
+    """If the prior peer's last_seen is older than the heartbeat tolerance,
+    the guard does not fire — the prior agent is presumed dead."""
+    registry = _make_registry(tmp_path)
+
+    parent_agent_pid = 33333
+    await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/oldproj",
+        pane_id="%2",
+        agent_pid=parent_agent_pid,
+    )
+    # Backdate the prior peer well beyond heartbeat tolerance.
+    tolerance = registry.heartbeat_tolerance()
+    stale_when = datetime.now(timezone.utc) - timedelta(seconds=tolerance * 4)
+    for peer in registry._peers.values():
+        if peer.pane_id == "%2":
+            peer.last_seen = stale_when
+
+    # New claude launches in the same pane. Even if (improbably) its ppid
+    # collides with the dead agent's pid, the staleness lets it through.
+    new_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/newproj",
+        pane_id="%2",
+        agent_pid=44444,
+        parent_pid=parent_agent_pid,
+    )
+    new_peer = await registry.get_peer_by_pane("%2")
+    assert new_peer is not None and new_peer.peer_id == new_id
+
+
+@pytest.mark.asyncio
+async def test_worktree_swap_in_same_pane_allowed(tmp_path):
+    """`cd ~/other-proj && claude` in an existing pane: the new claude's
+    parent is the shell, not the prior agent. Guard does not fire."""
+    registry = _make_registry(tmp_path)
+
+    await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/proj-a",
+        pane_id="%3",
+        agent_pid=55555,
+    )
+
+    new_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/proj-b",
+        pane_id="%3",
+        agent_pid=66666,
+        parent_pid=77777,  # the shell's pid, not the prior agent's
+    )
+    peer = await registry.get_peer_by_pane("%3")
+    assert peer is not None and peer.peer_id == new_id
+    assert peer.path == "/tmp/proj-b"
+
+
+@pytest.mark.asyncio
+async def test_reconnect_with_same_peer_id_bypasses_hijack_guard(tmp_path):
+    """The reconnect path (#167) uses a known peer_id; the hijack guard runs
+    in the fresh-claim branch only and must not fire on legitimate reconnects."""
+    registry = _make_registry(tmp_path)
+
+    peer_id, name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/reconnect-proj",
+        pane_id="%4",
+        agent_pid=88888,
+    )
+
+    reclaimed_id, reclaimed_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/reconnect-proj",
+        pane_id="%4",
+        peer_id=peer_id,
+        agent_pid=88888,
+        parent_pid=88888,  # would normally trip the guard if this were a fresh claim
+    )
+    assert reclaimed_id == peer_id
+    assert reclaimed_name == name
+
+
+@pytest.mark.asyncio
+async def test_hijack_guard_skipped_when_existing_agent_pid_missing(tmp_path):
+    """Peers registered before this feature have no agent_pid recorded; the
+    guard cannot decide and must not block them."""
+    registry = _make_registry(tmp_path)
+
+    await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/legacy-proj",
+        pane_id="%5",
+        # agent_pid intentionally omitted (legacy peer)
+    )
+
+    new_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.GEMINI,
+        path="/tmp/sub",
+        pane_id="%5",
+        agent_pid=12121,
+        parent_pid=99999,
+    )
+    peer = await registry.get_peer_by_pane("%5")
+    assert peer is not None and peer.peer_id == new_id

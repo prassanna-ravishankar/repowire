@@ -14,6 +14,7 @@ from repowire import peer_mcp
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_peer_registry
+from repowire.daemon.peer_registry import PaneHijackRejectedError
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
 
@@ -78,6 +79,17 @@ class RegisterPeerRequest(BaseModel):
     role: PeerRole = Field(default=PeerRole.AGENT, description="Peer role")
     turn_state: TurnState | None = Field(
         None, description="Initial per-turn progress (optional)"
+    )
+    agent_pid: int | None = Field(
+        None,
+        description="PID of the registering agent process (hook's own pid).",
+    )
+    parent_pid: int | None = Field(
+        None,
+        description=(
+            "Parent PID of the registering hook (os.getppid()). "
+            "Used for pane-hijack detection."
+        ),
     )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -193,17 +205,25 @@ async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str]:
     circle = request.circle or "global"
 
     peer_registry = get_peer_registry()
-    peer_id, display_name = await peer_registry.allocate_and_register(
-        circle=circle,
-        backend=request.backend,
-        path=request.path or "",
-        pane_id=request.pane_id,
-        tmux_session=request.tmux_session,
-        metadata=request.metadata,
-        machine=request.machine or socket.gethostname(),
-        role=request.role,
-        turn_state=request.turn_state,
-    )
+    try:
+        peer_id, display_name = await peer_registry.allocate_and_register(
+            circle=circle,
+            backend=request.backend,
+            path=request.path or "",
+            pane_id=request.pane_id,
+            tmux_session=request.tmux_session,
+            metadata=request.metadata,
+            machine=request.machine or socket.gethostname(),
+            role=request.role,
+            turn_state=request.turn_state,
+            agent_pid=request.agent_pid,
+            parent_pid=request.parent_pid,
+        )
+    except PaneHijackRejectedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     return peer_id, display_name
 
 

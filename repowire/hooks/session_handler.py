@@ -19,6 +19,7 @@ from repowire.hooks.utils import (
     clear_pane_runtime_state,
     daemon_get,
     daemon_post,
+    daemon_post_with_status,
     read_pane_runtime_metadata,
     write_pane_runtime_metadata,
     ws_hook_lock_path,
@@ -38,8 +39,16 @@ def _register_peer_http(
     metadata: dict | None = None,
     role: str | None = None,
     turn_state: str | None = None,
-) -> tuple[str | None, str | None]:
-    """Register peer via HTTP POST /peers. Returns (peer_id, display_name)."""
+    agent_pid: int | None = None,
+    parent_pid: int | None = None,
+) -> tuple[str | None, str | None, bool]:
+    """Register peer via HTTP POST /peers.
+
+    Returns (peer_id, display_name, hijack_rejected). hijack_rejected is True
+    iff the daemon returned 409 because the pane-hijack guard rejected this
+    fresh SessionStart claim (a subprocess agent inheriting its parent's
+    TMUX_PANE). The caller should abort registration cleanly in that case.
+    """
     folder = Path(path).name
     payload: dict = {
         "name": folder,
@@ -55,10 +64,21 @@ def _register_peer_http(
         payload["role"] = role
     if turn_state:
         payload["turn_state"] = turn_state
-    result = daemon_post("/peers", payload)
-    if result:
-        return result.get("peer_id"), result.get("display_name")
-    return None, None
+    if agent_pid is not None:
+        payload["agent_pid"] = agent_pid
+    if parent_pid is not None:
+        payload["parent_pid"] = parent_pid
+    status_code, result = daemon_post_with_status("/peers", payload)
+    if status_code == 409:
+        detail = (result or {}).get("detail", "")
+        print(
+            f"repowire: SessionStart rejected by daemon pane-hijack guard: {detail}",
+            file=sys.stderr,
+        )
+        return None, None, True
+    if status_code is not None and 200 <= status_code < 300 and result:
+        return result.get("peer_id"), result.get("display_name"), False
+    return None, None, False
 
 
 def get_peer_name(cwd: str) -> str:
@@ -257,7 +277,7 @@ def main(backend: str = "claude-code") -> int:
         git_status = compute_git_status(cwd)
         if git_status is not None:
             metadata["git_status"] = git_status
-        peer_id, display_name = _register_peer_http(
+        peer_id, display_name, hijack_rejected = _register_peer_http(
             cwd,
             circle,
             backend_type,
@@ -265,7 +285,14 @@ def main(backend: str = "claude-code") -> int:
             metadata=metadata,
             role=hint_role,
             turn_state=initial_turn_state,
+            agent_pid=os.getpid(),
+            parent_pid=os.getppid(),
         )
+        if hijack_rejected:
+            # Daemon rejected this pane claim. Don't write pane metadata,
+            # don't spawn ws-hook — the original peer keeps the pane.
+            lock_fd.close()
+            return 0
         if not display_name:
             display_name = folder_name  # fallback if daemon unreachable
 

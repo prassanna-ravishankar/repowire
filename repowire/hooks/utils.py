@@ -201,6 +201,27 @@ def daemon_post(path: str, payload: dict, *, timeout: float = 2.0) -> dict | Non
         return None
 
 
+def daemon_post_with_status(
+    path: str, payload: dict, *, timeout: float = 2.0
+) -> tuple[int | None, dict | None]:
+    """POST JSON to daemon. Returns (status_code, parsed_body).
+
+    Unlike ``daemon_post`` this surfaces the HTTP status so callers can
+    distinguish e.g. 409 (daemon rejected the claim) from other failures.
+    On transport failure returns (None, None).
+    """
+    try:
+        resp = _get_client().post(path, json=payload, timeout=timeout)
+    except httpx.HTTPError as e:
+        _log_daemon_error("POST", path, e)
+        return None, None
+    try:
+        body = resp.json()
+    except (json.JSONDecodeError, ValueError):
+        body = None
+    return resp.status_code, body
+
+
 def daemon_get(path: str, *, timeout: float = 2.0) -> dict | None:
     """GET from daemon. Returns parsed response or None on failure."""
     try:

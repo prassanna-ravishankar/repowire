@@ -86,6 +86,15 @@ class Peer(BaseModel):
     last_seen: datetime | None = Field(None, description="Last activity timestamp")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     description: str = Field(default="", description="Current task description (self-reported)")
+    agent_pid: int | None = Field(
+        None,
+        description=(
+            "PID of the agent process that owns this peer (the SessionStart "
+            "hook's own pid at registration time). Used by the pane-hijack "
+            "guard to detect a subprocess agent registering inside its parent "
+            "agent's tmux pane."
+        ),
+    )
 
     @property
     def name(self) -> str:
@@ -158,4 +167,5 @@ class Peer(BaseModel):
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
             "metadata": self.metadata,
             "description": self.description,
+            "agent_pid": self.agent_pid,
         }
