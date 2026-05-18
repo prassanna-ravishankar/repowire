@@ -20,6 +20,8 @@ interface PendingAsk {
 const ACK_FRAME_RE = /^\[ack #([^\]\s]+) from @([^\]\s]+)\]\s?([\s\S]*)$/;
 const BARE_ACK_TIMEOUT_MS = 120_000;
 
+type PeerTab = "chat" | "mcp";
+
 export function PeerView({
   peer,
   events,
@@ -34,6 +36,7 @@ export function PeerView({
   onSent: () => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [activeTab, setActiveTab] = useState<PeerTab>("chat");
   const thread = useMemo(() => {
     const id = peer.peer_id;
     return events
@@ -47,6 +50,11 @@ export function PeerView({
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [thread.length]);
+
+  // Reset to chat when switching peers so the tab choice doesn't leak across selections.
+  useEffect(() => {
+    setActiveTab("chat");
+  }, [peer.peer_id]);
 
   const { folder, parent } = peer.path ? shortPath(peer.path) : { folder: "", parent: "" };
 
@@ -81,19 +89,30 @@ export function PeerView({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 px-4 py-4 md:overflow-y-auto md:px-6">
-        {thread.length === 0 ? (
-          <div className="py-10 font-mono text-xs leading-6 text-outline">
-            &gt; no messages with {peerLabel(peer)}.<br />
-            <span>send one to begin a query.</span>
-          </div>
-        ) : (
-          thread.map((event) => <ThreadItem key={event.id} event={event} peer={peer} />)
-        )}
-        <div ref={bottomRef} />
+      <div className="flex shrink-0 gap-0 border-b border-border-faint px-4 md:px-6" role="tablist">
+        <TabButton label="chat" active={activeTab === "chat"} onClick={() => setActiveTab("chat")} />
+        <TabButton label="mcp" active={activeTab === "mcp"} onClick={() => setActiveTab("mcp")} />
       </div>
 
-      <ComposeBar peer={peer} apiBase={apiBase} events={events} onSent={onSent} />
+      {activeTab === "chat" ? (
+        <>
+          <div className="min-h-0 flex-1 px-4 py-4 md:overflow-y-auto md:px-6">
+            {thread.length === 0 ? (
+              <div className="py-10 font-mono text-xs leading-6 text-outline">
+                &gt; no messages with {peerLabel(peer)}.<br />
+                <span>send one to begin a query.</span>
+              </div>
+            ) : (
+              thread.map((event) => <ThreadItem key={event.id} event={event} peer={peer} />)
+            )}
+            <div ref={bottomRef} />
+          </div>
+
+          <ComposeBar peer={peer} apiBase={apiBase} events={events} onSent={onSent} />
+        </>
+      ) : (
+        <McpPanel peer={peer} apiBase={apiBase} />
+      )}
     </>
   );
 }
@@ -471,6 +490,341 @@ function GitStatusBadge({ status }: { status?: { ahead: number; behind: number; 
       aria-label={tooltip}
       className={cn("inline-block h-2 w-2 shrink-0 rounded-full", color)}
     />
+  );
+}
+
+function TabButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={cn(
+        "border-b-2 px-3 py-2 font-mono text-[11px] uppercase tracking-[0.14em]",
+        active
+          ? "border-primary text-on-surface"
+          : "border-transparent text-outline hover:text-on-surface"
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
+interface McpServerEntry {
+  name: string;
+  scope: string;
+  type: string;
+  command: string | null;
+  args: string[];
+  url: string | null;
+  env_keys: string[];
+}
+
+function McpPanel({ peer, apiBase }: { peer: Peer; apiBase: string }) {
+  const [servers, setServers] = useState<McpServerEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [crossHost, setCrossHost] = useState(false);
+  const [unsupported, setUnsupported] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setServers(null);
+    setError(null);
+    setCrossHost(false);
+    setUnsupported(false);
+    (async () => {
+      try {
+        const r = await fetch(`${apiBase}/peers/${encodeURIComponent(peer.name)}/mcp`);
+        if (r.status === 409) {
+          const body = await r.json().catch(() => ({}));
+          if (body?.detail?.error === "cross_host") {
+            if (!cancelled) setCrossHost(true);
+            return;
+          }
+        }
+        if (r.status === 501) {
+          if (!cancelled) setUnsupported(true);
+          return;
+        }
+        if (!r.ok) {
+          const text = await r.text();
+          if (!cancelled) setError(text || `HTTP ${r.status}`);
+          return;
+        }
+        const data = await r.json();
+        if (!cancelled) setServers(data.servers || []);
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [peer.name, apiBase, refreshTick]);
+
+  async function handleRemove(name: string) {
+    if (!confirm(`Remove MCP server "${name}"?`)) return;
+    const r = await fetch(
+      `${apiBase}/peers/${encodeURIComponent(peer.name)}/mcp/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    );
+    if (!r.ok) {
+      const text = await r.text();
+      setError(text || `HTTP ${r.status}`);
+      return;
+    }
+    setRefreshTick((n) => n + 1);
+  }
+
+  if (crossHost) {
+    return (
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 md:px-6">
+        <div className="rounded border border-border-faint bg-surface-container-low p-4 font-mono text-xs text-outline">
+          <div className="mb-1 font-semibold text-on-surface-variant">remote host</div>
+          Per-peer MCP config is same-host only in v1. Peer runs on{" "}
+          <span className="text-on-surface">{peer.machine}</span>; ACP transport is required to reach it.
+        </div>
+      </div>
+    );
+  }
+
+  if (unsupported) {
+    return (
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 md:px-6">
+        <div className="rounded border border-border-faint bg-surface-container-low p-4 font-mono text-xs text-outline">
+          Backend <span className="text-on-surface">{peer.backend}</span> does not support MCP config in v1.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
+      {error && (
+        <div className="mb-3 rounded border border-error/30 bg-error/10 px-3 py-2 font-mono text-xs text-on-surface">
+          {error}
+          <button
+            onClick={() => { setError(null); setRefreshTick((n) => n + 1); }}
+            className="ml-2 underline"
+          >
+            retry
+          </button>
+        </div>
+      )}
+
+      {servers === null ? (
+        <div className="font-mono text-xs text-outline">loading...</div>
+      ) : servers.length === 0 ? (
+        <div className="py-6 font-mono text-xs text-outline">
+          no MCP servers configured.
+        </div>
+      ) : (
+        <ul className="space-y-2">
+          {servers.map((s) => (
+            <li
+              key={s.name}
+              className="flex items-start justify-between gap-3 rounded border border-border-faint bg-surface-container-low px-3 py-2 font-mono text-xs"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-on-surface">{s.name}</span>
+                  <span className="text-[10px] uppercase tracking-wider text-outline">
+                    {s.type}
+                  </span>
+                  {s.scope && s.scope !== "user" && (
+                    <span className="text-[10px] uppercase tracking-wider text-outline">
+                      {s.scope}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-0.5 truncate text-outline">
+                  {s.url || [s.command, ...s.args].filter(Boolean).join(" ")}
+                </div>
+                {s.env_keys.length > 0 && (
+                  <div className="mt-0.5 text-[10px] text-outline">
+                    env: {s.env_keys.join(", ")}
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={() => handleRemove(s.name)}
+                className="shrink-0 border border-border-faint px-2 py-1 text-[10px] uppercase text-outline hover:bg-surface-container-high hover:text-on-surface"
+              >
+                remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="mt-4">
+        {showAdd ? (
+          <AddMcpForm
+            peer={peer}
+            apiBase={apiBase}
+            onCancel={() => setShowAdd(false)}
+            onAdded={() => {
+              setShowAdd(false);
+              setRefreshTick((n) => n + 1);
+            }}
+            onError={(msg) => setError(msg)}
+          />
+        ) : (
+          <button
+            onClick={() => setShowAdd(true)}
+            className="border border-border-faint px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.14em] text-on-surface hover:bg-surface-container-high"
+          >
+            + add server
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AddMcpForm({
+  peer,
+  apiBase,
+  onCancel,
+  onAdded,
+  onError,
+}: {
+  peer: Peer;
+  apiBase: string;
+  onCancel: () => void;
+  onAdded: () => void;
+  onError: (msg: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [type, setType] = useState<"stdio" | "http" | "sse">("stdio");
+  const [command, setCommand] = useState("");
+  const [argsText, setArgsText] = useState("");
+  const [url, setUrl] = useState("");
+  const [envText, setEnvText] = useState("");
+  const [scope, setScope] = useState<"user" | "project">("user");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit() {
+    if (!name.trim()) {
+      onError("server name is required");
+      return;
+    }
+    const env: Record<string, string> = {};
+    for (const line of envText.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq <= 0) continue;
+      env[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1);
+    }
+    setSubmitting(true);
+    try {
+      const r = await fetch(
+        `${apiBase}/peers/${encodeURIComponent(peer.name)}/mcp?scope=${scope}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: name.trim(),
+            type,
+            command: type === "stdio" ? command.trim() : null,
+            args: type === "stdio"
+              ? argsText.split(/\s+/).filter(Boolean)
+              : [],
+            url: type !== "stdio" ? url.trim() : null,
+            env,
+          }),
+        }
+      );
+      if (!r.ok) {
+        const text = await r.text();
+        onError(text || `HTTP ${r.status}`);
+        return;
+      }
+      onAdded();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded border border-border-faint bg-surface-container-low p-3 font-mono text-xs">
+      <input
+        placeholder="name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        className="w-full border border-border-faint bg-surface px-2 py-1 text-on-surface"
+      />
+      <div className="flex gap-2">
+        <select
+          value={type}
+          onChange={(e) => setType(e.target.value as typeof type)}
+          className="border border-border-faint bg-surface px-2 py-1 text-on-surface"
+        >
+          <option value="stdio">stdio</option>
+          <option value="http">http</option>
+          <option value="sse">sse</option>
+        </select>
+        {peer.backend === "claude-code" && (
+          <select
+            value={scope}
+            onChange={(e) => setScope(e.target.value as typeof scope)}
+            className="border border-border-faint bg-surface px-2 py-1 text-on-surface"
+          >
+            <option value="user">user scope</option>
+            <option value="project">project scope</option>
+          </select>
+        )}
+      </div>
+      {type === "stdio" ? (
+        <>
+          <input
+            placeholder="command"
+            value={command}
+            onChange={(e) => setCommand(e.target.value)}
+            className="w-full border border-border-faint bg-surface px-2 py-1 text-on-surface"
+          />
+          <input
+            placeholder="args (space separated)"
+            value={argsText}
+            onChange={(e) => setArgsText(e.target.value)}
+            className="w-full border border-border-faint bg-surface px-2 py-1 text-on-surface"
+          />
+        </>
+      ) : (
+        <input
+          placeholder="url"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          className="w-full border border-border-faint bg-surface px-2 py-1 text-on-surface"
+        />
+      )}
+      <textarea
+        placeholder="env (one KEY=value per line)"
+        value={envText}
+        onChange={(e) => setEnvText(e.target.value)}
+        rows={3}
+        className="w-full border border-border-faint bg-surface px-2 py-1 text-on-surface"
+      />
+      <div className="flex gap-2">
+        <button
+          onClick={submit}
+          disabled={submitting}
+          className="border border-primary/40 bg-primary/10 px-3 py-1 uppercase tracking-[0.14em] text-on-surface hover:bg-primary/20 disabled:opacity-50"
+        >
+          {submitting ? "adding..." : "add"}
+        </button>
+        <button
+          onClick={onCancel}
+          className="border border-border-faint px-3 py-1 uppercase tracking-[0.14em] text-outline hover:text-on-surface"
+        >
+          cancel
+        </button>
+      </div>
+    </div>
   );
 }
 

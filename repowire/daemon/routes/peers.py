@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
+from repowire import peer_mcp
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_peer_registry
@@ -365,6 +366,138 @@ async def get_circle_orchestrator(
         last_seen=orch.last_seen.isoformat() if orch.last_seen else None,
         stale_after_seconds=tolerance,
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-peer MCP config (#183) — same-host only in v1
+# ---------------------------------------------------------------------------
+
+
+class McpServerResponse(BaseModel):
+    name: str
+    scope: str = "user"
+    type: str = "stdio"
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    url: str | None = None
+    env_keys: list[str] = Field(default_factory=list)
+
+
+class McpListResponse(BaseModel):
+    servers: list[McpServerResponse]
+
+
+class McpAddRequest(BaseModel):
+    name: str = Field(..., min_length=1, description="Server name (unique per peer)")
+    type: str = Field(default="stdio", description="stdio | http | sse")
+    command: str | None = Field(default=None, description="Command for stdio type")
+    args: list[str] = Field(default_factory=list)
+    url: str | None = Field(default=None, description="URL for http/sse type")
+    env: dict[str, str] = Field(default_factory=dict)
+
+
+async def _resolve_peer_or_404(name: str, circle: str | None) -> Peer:
+    peer_registry = get_peer_registry()
+    peer = await peer_registry.get_peer(name, circle=circle)
+    if not peer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Peer not found: {name}",
+        )
+    return peer
+
+
+def _enforce_local(peer: Peer) -> None:
+    """Reject cross-host operations until ACP transport is wired (issue #183)."""
+    self_machine = socket.gethostname()
+    if peer.machine and peer.machine != self_machine:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "cross_host",
+                "hint": (
+                    "Per-peer MCP config is same-host only in v1; "
+                    "ACP transport required for remote peers."
+                ),
+                "peer_machine": peer.machine,
+                "self_machine": self_machine,
+            },
+        )
+
+
+def _map_peer_mcp_error(e: peer_mcp.PeerMcpError) -> HTTPException:
+    if isinstance(e, peer_mcp.NotSupportedError):
+        return HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e))
+    if isinstance(e, peer_mcp.DuplicateServerError):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    if isinstance(e, peer_mcp.ServerNotFoundError):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    if isinstance(e, peer_mcp.BackendTimeoutError):
+        return HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(e))
+    return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+
+
+@router.get("/peers/{name}/mcp", response_model=McpListResponse)
+async def list_peer_mcp(
+    name: str,
+    circle: str | None = Query(None),
+    _: str | None = Depends(require_auth),
+) -> McpListResponse:
+    """List MCP servers configured for the peer's backend.
+
+    Same-host only — returns 409 cross_host for remote peers.
+    """
+    peer = await _resolve_peer_or_404(name, circle)
+    _enforce_local(peer)
+    try:
+        entries = await asyncio.to_thread(peer_mcp.list_servers, peer)
+    except peer_mcp.PeerMcpError as e:
+        raise _map_peer_mcp_error(e) from e
+    return McpListResponse(servers=[McpServerResponse(**e.to_dict()) for e in entries])
+
+
+@router.post("/peers/{name}/mcp", response_model=OkResponse)
+async def add_peer_mcp(
+    name: str,
+    request: McpAddRequest,
+    circle: str | None = Query(None),
+    scope: str = Query("user", description="user | project (claude-code only)"),
+    _: str | None = Depends(require_auth),
+) -> OkResponse:
+    """Add an MCP server to the peer's backend config."""
+    peer = await _resolve_peer_or_404(name, circle)
+    _enforce_local(peer)
+    spec = peer_mcp.McpServerSpec(
+        name=request.name,
+        type=request.type,
+        command=request.command,
+        args=list(request.args),
+        url=request.url,
+        env=dict(request.env),
+        scope=scope,
+    )
+    try:
+        await asyncio.to_thread(peer_mcp.add_server, peer, spec)
+    except peer_mcp.PeerMcpError as e:
+        raise _map_peer_mcp_error(e) from e
+    return OkResponse()
+
+
+@router.delete("/peers/{name}/mcp/{server_name}", response_model=OkResponse)
+async def remove_peer_mcp(
+    name: str,
+    server_name: str,
+    circle: str | None = Query(None),
+    _: str | None = Depends(require_auth),
+) -> OkResponse:
+    """Remove an MCP server from the peer's backend config."""
+    peer = await _resolve_peer_or_404(name, circle)
+    _enforce_local(peer)
+    try:
+        await asyncio.to_thread(peer_mcp.remove_server, peer, server_name)
+    except peer_mcp.PeerMcpError as e:
+        raise _map_peer_mcp_error(e) from e
+    return OkResponse()
 
 
 # Legacy endpoints for backward compatibility
