@@ -17,6 +17,7 @@ from repowire.daemon.deps import get_peer_registry
 from repowire.daemon.peer_registry import PaneHijackRejectedError
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
+from repowire.session.history import load_peer_turns, page_turns
 
 router = APIRouter(tags=["peers"])
 
@@ -332,6 +333,60 @@ async def touch_peer_last_seen(
             detail=f"Peer not found: {name}",
         )
     return OkResponse()
+
+
+class TranscriptTurn(BaseModel):
+    role: str
+    text: str
+    timestamp: str
+    session_id: str
+    tool_calls: list[dict[str, str]] = Field(default_factory=list)
+
+
+class TranscriptResponse(BaseModel):
+    turns: list[TranscriptTurn]
+    next_before: str | None = None
+
+
+@router.get("/peers/{name}/transcript", response_model=TranscriptResponse)
+async def get_peer_transcript(
+    name: str,
+    limit: int = Query(50, ge=1, le=500, description="Max turns to return"),
+    before: str | None = Query(
+        None, description="ISO-8601 cursor; return turns strictly older than this."
+    ),
+    circle: str | None = Query(None),
+    _: str | None = Depends(require_auth),
+) -> TranscriptResponse:
+    """Paginated newest-first transcript for a peer's working directory.
+
+    v1 reads Claude Code JSONLs under ~/.claude/projects/<encoded-cwd>/.
+    Codex peers return an empty list (follow-up: rollout header scan).
+    Returns 200 with empty turns when no transcript files exist.
+    """
+    peer_registry = get_peer_registry()
+    peer = await peer_registry.get_peer(name, circle=circle)
+    if peer is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Peer not found: {name}",
+        )
+
+    turns = await asyncio.to_thread(load_peer_turns, peer.path, peer.backend)
+    page, next_before = page_turns(turns, limit, before)
+    return TranscriptResponse(
+        turns=[
+            TranscriptTurn(
+                role=t.role,
+                text=t.text,
+                timestamp=t.timestamp,
+                session_id=t.session_id,
+                tool_calls=t.tool_calls,
+            )
+            for t in page
+        ],
+        next_before=next_before,
+    )
 
 
 class SetCircleRequest(BaseModel):

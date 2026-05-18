@@ -7,6 +7,14 @@ import type { Event, Peer } from "../types";
 import { peerLabel } from "../types";
 import { formatTime, StatusLabel } from "./status";
 
+interface TranscriptTurn {
+  role: "user" | "assistant";
+  text: string;
+  timestamp: string;
+  session_id: string;
+  tool_calls: { name: string; input: string }[];
+}
+
 interface PendingAsk {
   correlation_id: string;
   to_peer: string;
@@ -20,7 +28,7 @@ interface PendingAsk {
 const ACK_FRAME_RE = /^\[ack #([^\]\s]+) from @([^\]\s]+)\]\s?([\s\S]*)$/;
 const BARE_ACK_TIMEOUT_MS = 120_000;
 
-type PeerTab = "chat" | "mcp";
+type PeerTab = "chat" | "mcp" | "history";
 
 export function PeerView({
   peer,
@@ -91,6 +99,7 @@ export function PeerView({
 
       <div className="flex shrink-0 gap-0 border-b border-border-faint px-4 md:px-6" role="tablist">
         <TabButton label="chat" active={activeTab === "chat"} onClick={() => setActiveTab("chat")} />
+        <TabButton label="history" active={activeTab === "history"} onClick={() => setActiveTab("history")} />
         <TabButton label="mcp" active={activeTab === "mcp"} onClick={() => setActiveTab("mcp")} />
       </div>
 
@@ -110,6 +119,8 @@ export function PeerView({
 
           <ComposeBar peer={peer} apiBase={apiBase} events={events} onSent={onSent} />
         </>
+      ) : activeTab === "history" ? (
+        <HistoryPane peer={peer} apiBase={apiBase} />
       ) : (
         <McpPanel peer={peer} apiBase={apiBase} />
       )}
@@ -188,6 +199,118 @@ function ToolCallBlock({ toolCalls }: { toolCalls: { name: string; input: string
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function HistoryPane({ peer, apiBase }: { peer: Peer; apiBase: string }) {
+  const [turns, setTurns] = useState<TranscriptTurn[]>([]);
+  const [nextBefore, setNextBefore] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [initialized, setInitialized] = useState(false);
+  const topSentinelRef = useRef<HTMLDivElement>(null);
+
+  const fetchPage = async (before: string | null) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const url = new URL(`${apiBase}/peers/${encodeURIComponent(peer.name)}/transcript`, window.location.origin);
+      url.searchParams.set("limit", "50");
+      if (before) url.searchParams.set("before", before);
+      const res = await fetch(url.toString().replace(window.location.origin, ""), {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        setError(`Error ${res.status}`);
+        return;
+      }
+      const data = (await res.json()) as { turns: TranscriptTurn[]; next_before: string | null };
+      setTurns((prev) => [...prev, ...data.turns]);
+      setNextBefore(data.next_before);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Request failed");
+    } finally {
+      setLoading(false);
+      setInitialized(true);
+    }
+  };
+
+  useEffect(() => {
+    setTurns([]);
+    setNextBefore(null);
+    setInitialized(false);
+    fetchPage(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peer.peer_id]);
+
+  useEffect(() => {
+    const el = topSentinelRef.current;
+    if (!el || !nextBefore || loading) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) fetchPage(nextBefore);
+      },
+      { rootMargin: "100px" }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextBefore, loading]);
+
+  return (
+    <div className="min-h-0 flex-1 px-4 py-4 md:overflow-y-auto md:px-6">
+      {nextBefore && (
+        <div ref={topSentinelRef} className="py-2 text-center font-mono text-[10px] text-outline">
+          {loading ? "loading older…" : "scroll up for older"}
+        </div>
+      )}
+      {turns.length === 0 && initialized && !loading && (
+        <div className="py-10 font-mono text-xs leading-6 text-outline">
+          &gt; no transcript history for {peerLabel(peer)}.<br />
+          <span>{peer.backend === "claude-code" ? "this peer has no on-disk sessions yet." : "history is claude-code only in v1."}</span>
+        </div>
+      )}
+      {turns.length === 0 && !initialized && loading && (
+        <div className="py-10 font-mono text-xs leading-6 text-outline">&gt; loading…</div>
+      )}
+      {error && (
+        <div className="mb-2 flex items-center gap-2 font-mono text-xs text-error">
+          <AlertCircle className="h-3.5 w-3.5" />
+          <span>{error}</span>
+        </div>
+      )}
+      {[...turns].reverse().map((turn, idx) => (
+        <HistoryTurn key={`${turn.session_id}-${turn.timestamp}-${idx}`} turn={turn} peer={peer} />
+      ))}
+    </div>
+  );
+}
+
+function HistoryTurn({ turn, peer }: { turn: TranscriptTurn; peer: Peer }) {
+  const isUser = turn.role === "user";
+  return (
+    <div className={cn("mb-4 flex flex-col", isUser ? "items-end" : "items-start")}>
+      <div className="mb-1 font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-outline">
+        {isUser ? "@user" : peerLabel(peer)} · {turn.timestamp ? formatTime(turn.timestamp) : "—"}
+      </div>
+      <div
+        className={cn(
+          "max-w-[82%] min-w-0 rounded p-3 font-mono text-[13px] leading-6 text-on-surface [overflow-wrap:anywhere]",
+          isUser
+            ? "border-r-2 border-primary/40 bg-primary/5"
+            : "border-l-2 border-primary/40 bg-surface-container-high"
+        )}
+      >
+        {isUser ? (
+          <p className="whitespace-pre-wrap break-words">{turn.text}</p>
+        ) : (
+          <div className="prose prose-invert prose-sm max-w-none break-words [&_pre]:overflow-x-auto">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.text}</ReactMarkdown>
+          </div>
+        )}
+      </div>
+      {!isUser && turn.tool_calls.length > 0 && <ToolCallBlock toolCalls={turn.tool_calls} />}
     </div>
   );
 }
