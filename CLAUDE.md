@@ -3,7 +3,7 @@
 ## Build & Test
 
 ```bash
-uv tool install --force --reinstall .   # install globally (hooks run from installed package!)
+uv tool install . --force-reinstall     # install globally (hooks run from installed package!)
 uv sync --extra dev                     # dev deps (pytest, ruff, ty, httpx-ws)
 pytest                                  # 222 tests
 ruff check repowire/                    # lint
@@ -244,7 +244,7 @@ Use `.claude/memory/MEMORY.md` as the index. One file per memory, frontmatter fo
 
 - Route tests: `httpx.AsyncClient` + `ASGITransport`, manually init deps
 - WebSocket tests: `httpx-ws` + `ASGIWebSocketTransport`
-- Hooks run from installed package - `uv tool install --force --reinstall .` after changes
+- Hooks run from installed package - `uv tool install . --force-reinstall` after changes
 - Mock `subprocess.Popen` in session handler tests to prevent ws-hook leaking to live daemon
 - 231 tests covering routes, WebSocket, auth, query tracker, hooks, config, transcript
 

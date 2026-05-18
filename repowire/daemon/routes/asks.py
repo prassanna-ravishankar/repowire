@@ -135,6 +135,14 @@ async def open_ask(
     peer = await _get_peer_or_http(request.to_peer, circle=request.circle)
 
     from_peer_obj = await _resolve_sender_for_target(request.from_peer, peer)
+    if from_peer_obj is None:
+        logger.warning(
+            "Opening ask with unresolved sender %r for target peer_id=%s name=%s circle=%s",
+            request.from_peer,
+            peer.peer_id,
+            peer.display_name,
+            peer.circle,
+        )
     from_peer_id = from_peer_obj.peer_id if from_peer_obj else request.from_peer
     from_peer_name = from_peer_obj.display_name if from_peer_obj else request.from_peer
 

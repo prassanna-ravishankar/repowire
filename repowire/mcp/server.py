@@ -204,7 +204,6 @@ async def _get_my_peer_name() -> str:
             name = result.get("display_name") or result.get("peer_id")
             if name:
                 _cache_identity(result)
-                _cached_peer_name = name
                 return name
         except Exception:
             pass
