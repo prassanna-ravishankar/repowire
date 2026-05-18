@@ -54,6 +54,10 @@ class NotifyResponse(BaseModel):
     ``status`` reflects the recipient's state at send-time: ``sent`` means
     ONLINE (immediate paste), ``queued`` means BUSY (ws-hook holds the paste
     until the current turn ends). Wire format otherwise unchanged.
+
+    Notify is fire-and-forget: daemon-side success means the frame was handed
+    to the recipient WebSocket, not that the agent received or processed it.
+    Use ask/ack when confirmed delivery matters.
     """
 
     ok: bool = True

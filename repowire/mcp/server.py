@@ -524,6 +524,8 @@ def create_mcp_server() -> FastMCP:
         Use for status updates, announcements, or replying to notifications.
         Special peers: 'telegram' sends to user's phone.
         The dashboard sees your responses automatically via chat turns - no need to notify it.
+        Fire-and-forget means daemon-side success does NOT guarantee agent receipt.
+        Use ask() when confirmed delivery matters.
 
         Do NOT use SendMessage to reach repowire peers. SendMessage is a Claude
         Code harness tool for same-session teammates only.

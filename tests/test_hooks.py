@@ -55,6 +55,51 @@ class TestHandleAskAndNotify:
         mock_send.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_notify_tmux_failure_logs_drop_without_daemon_error(self, caplog):
+        websocket = AsyncMock()
+        with (
+            patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=True),
+            patch("repowire.hooks.websocket_hook._tmux_send_keys", return_value=False),
+        ):
+            await websocket_hook.handle_message(
+                {
+                    "type": "notify",
+                    "from_peer": "alice",
+                    "to_peer": "bob",
+                    "text": "fyi",
+                },
+                "%5",
+                websocket,
+            )
+
+        websocket.send.assert_not_called()
+        assert "Inbound notification dropped: tmux send-keys failed" in caplog.text
+        assert "pane=%5" in caplog.text
+        assert "from=alice" in caplog.text
+        assert "to=bob" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_notify_pane_safety_drop_has_no_daemon_error_frame(self, caplog):
+        websocket = AsyncMock()
+        with patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=False):
+            with pytest.raises(websocket_hook.PaneUnsafeError):
+                await websocket_hook.handle_message(
+                    {
+                        "type": "notify",
+                        "from_peer": "alice",
+                        "to_peer": "bob",
+                        "text": "fyi",
+                    },
+                    "%5",
+                    websocket,
+                )
+
+        websocket.send.assert_not_called()
+        assert "Inbound delivery dropped: pane %5 not safe for notify injection" in caplog.text
+        assert "from=alice" in caplog.text
+        assert "to=bob" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_notify_injection_includes_recipient_when_provided(self):
         """When the daemon includes `to_peer`, the injected frame labels the
         recipient so the receiver can spot misroutes at a glance (issue #136).
