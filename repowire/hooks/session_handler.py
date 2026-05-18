@@ -316,6 +316,20 @@ def main(backend: str = "claude-code") -> int:
             # rejection must leave the world unchanged (issue #190).
             lock_fd.close()
             return 0
+        registration_accepted = peer_id is not None
+        if needs_takeover and not registration_accepted:
+            # Hijack-candidate path: the daemon didn't reject (no 409), but
+            # also didn't confirm acceptance (transport error, 5xx, etc.).
+            # Without a confirmed accept we can't justify tearing down the
+            # incumbent's ws-hook / pane metadata — that would leave a
+            # half-broken pane on every daemon hiccup. Bail cleanly.
+            print(
+                "repowire: registration unconfirmed during pane takeover, "
+                "leaving incumbent in place",
+                file=sys.stderr,
+            )
+            lock_fd.close()
+            return 0
         if not display_name:
             display_name = folder_name  # fallback if daemon unreachable
 

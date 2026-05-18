@@ -82,7 +82,11 @@ class RegisterPeerRequest(BaseModel):
     )
     agent_pid: int | None = Field(
         None,
-        description="PID of the registering agent process (hook's own pid).",
+        description=(
+            "PID of the agent process that owns this peer "
+            "(os.getppid() from the registering hook, i.e. the hook's "
+            "parent, NOT the hook's own pid)."
+        ),
     )
     parent_pid: int | None = Field(
         None,

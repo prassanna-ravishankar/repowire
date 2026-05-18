@@ -90,9 +90,9 @@ class Peer(BaseModel):
         None,
         description=(
             "PID of the agent process that owns this peer (the SessionStart "
-            "hook's own pid at registration time). Used by the pane-hijack "
-            "guard to detect a subprocess agent registering inside its parent "
-            "agent's tmux pane."
+            "hook's parent process, i.e. os.getppid() from the hook). Used "
+            "by the pane-hijack guard to detect a subprocess agent "
+            "registering inside its parent agent's tmux pane."
         ),
     )
 
