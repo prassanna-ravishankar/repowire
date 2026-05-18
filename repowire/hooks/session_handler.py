@@ -25,6 +25,7 @@ from repowire.hooks.utils import (
     ws_hook_pid_path,
 )
 from repowire.hooks.ws_hook_supervisor import spawn_ws_hook
+from repowire.peer_describe import compute_git_status
 from repowire.spawn_hints import consume_hint_full
 
 
@@ -249,7 +250,13 @@ def main(backend: str = "claude-code") -> int:
         # UserPromptSubmit transitions this to "working".
         hint_pending_first_turn = bool(hint and hint.get("pending_first_turn"))
         initial_turn_state = "pending_first_turn" if hint_pending_first_turn else None
-        metadata = {"project": folder_name}
+        metadata: dict = {"project": folder_name}
+        branch = get_git_branch(cwd)
+        if branch:
+            metadata["branch"] = branch
+        git_status = compute_git_status(cwd)
+        if git_status is not None:
+            metadata["git_status"] = git_status
         peer_id, display_name = _register_peer_http(
             cwd,
             circle,

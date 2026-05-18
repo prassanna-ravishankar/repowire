@@ -14,6 +14,7 @@ Resolution rules mirror the daemon's own ambiguity refusal:
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -261,6 +262,67 @@ def build_snapshot(
 # ---------------------------------------------------------------------------
 # Time formatting helpers (pure, testable)
 # ---------------------------------------------------------------------------
+
+
+def _parse_git_status_porcelain(output: str) -> dict[str, int]:
+    """Parse `git status --porcelain=v2 --branch` output into counts.
+
+    Returns dict with ahead/behind/dirty/staged counts. dirty includes
+    unstaged tracked changes plus untracked files. staged counts changes
+    in the index.
+    """
+    ahead = 0
+    behind = 0
+    dirty = 0
+    staged = 0
+    for line in output.splitlines():
+        if line.startswith("# branch.ab "):
+            parts = line.split()
+            # "# branch.ab +1 -2"
+            for tok in parts[2:]:
+                if tok.startswith("+"):
+                    ahead = int(tok[1:])
+                elif tok.startswith("-"):
+                    behind = int(tok[1:])
+        elif line.startswith("1 ") or line.startswith("2 "):
+            # "1 XY ..." for ordinary, "2 XY ..." for rename/copy.
+            # XY are the staged/unstaged status codes; "." means unchanged.
+            xy = line.split(" ", 2)[1]
+            if len(xy) == 2:
+                if xy[0] != ".":
+                    staged += 1
+                if xy[1] != ".":
+                    dirty += 1
+        elif line.startswith("u "):
+            # Unmerged entries count toward both sides.
+            staged += 1
+            dirty += 1
+        elif line.startswith("? "):
+            dirty += 1
+    return {"ahead": ahead, "behind": behind, "dirty": dirty, "staged": staged}
+
+
+def compute_git_status(cwd: str) -> dict[str, int] | None:
+    """Return git status counts for cwd, or None if not a git repo.
+
+    Counts come from `git status --porcelain=v2 --branch`:
+      - ahead / behind: commits relative to upstream (0 if no upstream)
+      - staged: tracked changes in the index
+      - dirty: unstaged tracked changes + untracked files
+    """
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain=v2", "--branch"],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    return _parse_git_status_porcelain(result.stdout)
 
 
 def humanize_last_seen(iso: str | None, now: datetime | None = None) -> str:

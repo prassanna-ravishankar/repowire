@@ -383,3 +383,186 @@ def test_dataclass_construct_smoke():
         direction="outbound", counterparty="alice", text="hi",
     )
     assert e.event_type == "notification"
+
+
+# ---------------------------------------------------------------------------
+# Git status parsing (compute_git_status integration tests use real repos)
+# ---------------------------------------------------------------------------
+
+
+from repowire.peer_describe import _parse_git_status_porcelain, compute_git_status  # noqa: E402
+
+
+def test_parse_clean_no_upstream():
+    out = "# branch.oid abc123\n# branch.head main\n"
+    assert _parse_git_status_porcelain(out) == {"ahead": 0, "behind": 0, "dirty": 0, "staged": 0}
+
+
+def test_parse_clean_with_upstream():
+    out = (
+        "# branch.oid abc123\n"
+        "# branch.head main\n"
+        "# branch.upstream origin/main\n"
+        "# branch.ab +0 -0\n"
+    )
+    assert _parse_git_status_porcelain(out) == {"ahead": 0, "behind": 0, "dirty": 0, "staged": 0}
+
+
+def test_parse_ahead_only():
+    out = "# branch.ab +3 -0\n"
+    assert _parse_git_status_porcelain(out)["ahead"] == 3
+    assert _parse_git_status_porcelain(out)["behind"] == 0
+
+
+def test_parse_behind_only():
+    out = "# branch.ab +0 -2\n"
+    res = _parse_git_status_porcelain(out)
+    assert res["ahead"] == 0
+    assert res["behind"] == 2
+
+
+def test_parse_ahead_and_behind():
+    out = "# branch.ab +1 -2\n"
+    res = _parse_git_status_porcelain(out)
+    assert res["ahead"] == 1 and res["behind"] == 2
+
+
+def test_parse_dirty_unstaged():
+    out = "1 .M N... 100644 100644 100644 aaa bbb file.txt\n"
+    res = _parse_git_status_porcelain(out)
+    assert res["dirty"] == 1 and res["staged"] == 0
+
+
+def test_parse_staged_only():
+    out = "1 M. N... 100644 100644 100644 aaa bbb file.txt\n"
+    res = _parse_git_status_porcelain(out)
+    assert res["staged"] == 1 and res["dirty"] == 0
+
+
+def test_parse_staged_and_unstaged_same_file():
+    out = "1 MM N... 100644 100644 100644 aaa bbb file.txt\n"
+    res = _parse_git_status_porcelain(out)
+    assert res["staged"] == 1 and res["dirty"] == 1
+
+
+def test_parse_untracked_counts_as_dirty():
+    out = "? newfile.txt\n? other.py\n"
+    res = _parse_git_status_porcelain(out)
+    assert res["dirty"] == 2 and res["staged"] == 0
+
+
+def test_parse_unmerged_counts_both():
+    out = "u UU N... 100644 100644 100644 100644 aaa bbb ccc conflict.txt\n"
+    res = _parse_git_status_porcelain(out)
+    assert res["staged"] == 1 and res["dirty"] == 1
+
+
+def test_parse_combined():
+    out = (
+        "# branch.ab +1 -2\n"
+        "1 M. N... 100644 100644 100644 aaa bbb staged.txt\n"
+        "1 .M N... 100644 100644 100644 aaa bbb dirty.txt\n"
+        "? untracked.txt\n"
+    )
+    assert _parse_git_status_porcelain(out) == {"ahead": 1, "behind": 2, "dirty": 2, "staged": 1}
+
+
+def test_compute_git_status_non_git_dir(tmp_path):
+    assert compute_git_status(str(tmp_path)) is None
+
+
+def _git(cwd, *args):
+    import subprocess
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def test_compute_git_status_clean_repo(tmp_path):
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    _git(tmp_path, "commit", "--allow-empty", "-m", "init")
+    res = compute_git_status(str(tmp_path))
+    assert res == {"ahead": 0, "behind": 0, "dirty": 0, "staged": 0}
+
+
+def test_compute_git_status_dirty_and_untracked(tmp_path):
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "a.txt").write_text("a")
+    _git(tmp_path, "add", "a.txt")
+    _git(tmp_path, "commit", "-m", "init")
+    (tmp_path / "a.txt").write_text("changed")  # unstaged
+    (tmp_path / "b.txt").write_text("new")       # untracked
+    (tmp_path / "c.txt").write_text("staged")
+    _git(tmp_path, "add", "c.txt")               # staged
+    res = compute_git_status(str(tmp_path))
+    assert res is not None
+    assert res["dirty"] == 2  # a.txt modified + b.txt untracked
+    assert res["staged"] == 1
+
+
+def test_compute_git_status_ahead(tmp_path):
+    import subprocess
+    # Create a bare upstream, clone, commit ahead.
+    upstream = tmp_path / "upstream.git"
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(upstream)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", "-q", str(upstream), str(work)], check=True, capture_output=True)
+    _git(work, "config", "user.email", "t@t")
+    _git(work, "config", "user.name", "t")
+    _git(work, "commit", "--allow-empty", "-m", "first")
+    _git(work, "push", "-q", "origin", "main")
+    _git(work, "commit", "--allow-empty", "-m", "ahead1")
+    _git(work, "commit", "--allow-empty", "-m", "ahead2")
+    res = compute_git_status(str(work))
+    assert res is not None
+    assert res["ahead"] == 2 and res["behind"] == 0
+
+
+def test_compute_git_status_behind(tmp_path):
+    import subprocess
+    upstream = tmp_path / "upstream.git"
+    work_a = tmp_path / "a"
+    work_b = tmp_path / "b"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(upstream)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", "-q", str(upstream), str(work_a)], check=True, capture_output=True)
+    _git(work_a, "config", "user.email", "t@t")
+    _git(work_a, "config", "user.name", "t")
+    _git(work_a, "commit", "--allow-empty", "-m", "first")
+    _git(work_a, "push", "-q", "origin", "main")
+    subprocess.run(["git", "clone", "-q", str(upstream), str(work_b)], check=True, capture_output=True)
+    _git(work_b, "config", "user.email", "t@t")
+    _git(work_b, "config", "user.name", "t")
+    # Now push more from A so B is behind.
+    _git(work_a, "commit", "--allow-empty", "-m", "second")
+    _git(work_a, "push", "-q", "origin", "main")
+    _git(work_b, "fetch", "-q")
+    res = compute_git_status(str(work_b))
+    assert res is not None
+    assert res["behind"] == 1 and res["ahead"] == 0
+
+
+def test_compute_git_status_ahead_and_behind(tmp_path):
+    import subprocess
+    upstream = tmp_path / "upstream.git"
+    work_a = tmp_path / "a"
+    work_b = tmp_path / "b"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(upstream)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", "-q", str(upstream), str(work_a)], check=True, capture_output=True)
+    _git(work_a, "config", "user.email", "t@t")
+    _git(work_a, "config", "user.name", "t")
+    _git(work_a, "commit", "--allow-empty", "-m", "first")
+    _git(work_a, "push", "-q", "origin", "main")
+    subprocess.run(["git", "clone", "-q", str(upstream), str(work_b)], check=True, capture_output=True)
+    _git(work_b, "config", "user.email", "t@t")
+    _git(work_b, "config", "user.name", "t")
+    # A pushes ahead by 1.
+    _git(work_a, "commit", "--allow-empty", "-m", "second")
+    _git(work_a, "push", "-q", "origin", "main")
+    # B makes a local commit (ahead 1) then fetches (behind 1 from A's push).
+    _git(work_b, "commit", "--allow-empty", "-m", "local")
+    _git(work_b, "fetch", "-q")
+    res = compute_git_status(str(work_b))
+    assert res is not None
+    assert res["ahead"] == 1 and res["behind"] == 1

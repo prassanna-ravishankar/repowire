@@ -13,6 +13,12 @@ export interface Peer {
   description?: string;
   metadata?: {
     branch?: string;
+    git_status?: {
+      ahead: number;
+      behind: number;
+      dirty: number;
+      staged: number;
+    };
     [key: string]: unknown;
   };
 }

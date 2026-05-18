@@ -98,8 +98,10 @@ class TestSessionMain:
         },
     )
     @patch("repowire.hooks.session_handler.subprocess.Popen")
+    @patch("repowire.hooks.session_handler.compute_git_status", return_value=None)
+    @patch("repowire.hooks.session_handler.get_git_branch", return_value=None)
     def test_session_start_registers(
-        self, mock_popen, mock_tmux, mock_register, mock_fetch, tmp_path,
+        self, mock_branch, mock_status, mock_popen, mock_tmux, mock_register, mock_fetch, tmp_path,
     ):
         with patch("repowire.config.models.CACHE_DIR", tmp_path):
             result = _run_with_input({
@@ -173,7 +175,9 @@ class TestSessionMain:
         self, mock_tmux, mock_register, mock_fetch, tmp_path,
     ):
         """Different cwd in same pane kills old ws-hook and re-registers."""
-        with patch("repowire.config.models.CACHE_DIR", tmp_path):
+        with patch("repowire.config.models.CACHE_DIR", tmp_path), \
+             patch("repowire.hooks.session_handler.get_git_branch", return_value=None), \
+             patch("repowire.hooks.session_handler.compute_git_status", return_value=None):
             log_dir = tmp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             (log_dir / "ws-hook-1.meta.json").write_text(json.dumps({
@@ -226,7 +230,9 @@ class TestSessionMain:
         self, mock_tmux, mock_register, mock_fetch, tmp_path,
     ):
         """Same cwd with a different hook session_id is treated as a fresh takeover."""
-        with patch("repowire.config.models.CACHE_DIR", tmp_path):
+        with patch("repowire.config.models.CACHE_DIR", tmp_path), \
+             patch("repowire.hooks.session_handler.get_git_branch", return_value=None), \
+             patch("repowire.hooks.session_handler.compute_git_status", return_value=None):
             log_dir = tmp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             (log_dir / "ws-hook-1.meta.json").write_text(json.dumps({

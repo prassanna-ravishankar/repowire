@@ -56,9 +56,12 @@ export function PeerView({
         <span className={cn("h-2.5 w-2.5 rounded-full", statusDot(peer.status))} />
         <div className="min-w-0 flex-1">
           <h1 className="truncate font-headline text-lg font-bold text-on-surface">{peerLabel(peer)}</h1>
-          <div className="mt-1 truncate font-mono text-[11px] text-outline">
-            {peer.backend || "agent"} · {peer.metadata?.branch ? String(peer.metadata.branch) : peer.circle}
-            {peer.path ? <> · {parent}<span className="text-on-surface-variant">{folder}</span></> : null}
+          <div className="mt-1 flex items-center gap-1.5 truncate font-mono text-[11px] text-outline">
+            <span className="truncate">
+              {peer.backend || "agent"} · {peer.metadata?.branch ? String(peer.metadata.branch) : peer.circle}
+              {peer.path ? <> · {parent}<span className="text-on-surface-variant">{folder}</span></> : null}
+            </span>
+            <GitStatusBadge status={peer.metadata?.git_status} />
           </div>
         </div>
         <StatusLabel status={peer.status} />
@@ -446,6 +449,28 @@ function ComposeBar({
         </div>
       )}
     </div>
+  );
+}
+
+function GitStatusBadge({ status }: { status?: { ahead: number; behind: number; dirty: number; staged: number } }) {
+  if (!status) return null;
+  const { ahead, behind, dirty, staged } = status;
+  const hasLocal = dirty > 0 || staged > 0;
+  const hasRemote = ahead > 0 || behind > 0;
+  const color = hasLocal && hasRemote
+    ? "bg-error"
+    : hasRemote
+    ? "bg-orange-500"
+    : hasLocal
+    ? "bg-yellow-500"
+    : "bg-green-500";
+  const tooltip = `git: ${ahead} ahead, ${behind} behind, ${staged} staged, ${dirty} dirty`;
+  return (
+    <span
+      title={tooltip}
+      aria-label={tooltip}
+      className={cn("inline-block h-2 w-2 shrink-0 rounded-full", color)}
+    />
   );
 }
 
