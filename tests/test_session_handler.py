@@ -319,3 +319,75 @@ class TestSessionMain:
             # agent. We mocked _read_ppid_of to 4242.
             assert kwargs["parent_pid"] == 4242
             mock_read_ppid.assert_called_once_with(31415)
+
+    @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
+    @patch(
+        "repowire.hooks.session_handler._register_peer_http",
+        return_value=(None, None, True),  # hijack_rejected=True
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={
+            "pane_id": "%1",
+            "session_name": "default",
+            "window_name": "test",
+        },
+    )
+    @patch("repowire.hooks.session_handler.compute_git_status", return_value=None)
+    @patch("repowire.hooks.session_handler.get_git_branch", return_value=None)
+    @patch("repowire.hooks.session_handler._read_ppid_of", return_value=99999)
+    def test_rejected_hijack_leaves_incumbent_untouched(
+        self,
+        mock_read_ppid,
+        mock_branch,
+        mock_status,
+        mock_tmux,
+        mock_register,
+        mock_fetch,
+        tmp_path,
+    ):
+        """When the daemon rejects a hijack (409), the hook must NOT kill the
+        incumbent's ws-hook, NOT mark the prior peer offline, and NOT clear
+        the pane runtime metadata. Issue #190 round-2 review."""
+        with patch("repowire.config.models.CACHE_DIR", tmp_path), \
+             patch("repowire.hooks.session_handler._mark_peer_offline") as mock_offline, \
+             patch("repowire.hooks.session_handler.spawn_ws_hook") as mock_spawn, \
+             patch("repowire.hooks.session_handler.write_pane_runtime_metadata") as mock_write:
+            log_dir = tmp_path / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            incumbent_meta = {
+                "backend": "claude-code",
+                "cwd": "/incumbent/proj",
+                "hook_session_id": "incumbent-session",
+                "peer_id": "repow-default-incumbent",
+                "display_name": "incumbent-claude-code",
+            }
+            meta_path = log_dir / "ws-hook-1.meta.json"
+            pid_path = log_dir / "ws-hook-1.pid"
+            meta_path.write_text(json.dumps(incumbent_meta))
+            pid_path.write_text("12345")
+
+            with patch("repowire.hooks.session_handler.fcntl") as mock_fcntl, \
+                 patch("repowire.hooks.session_handler.os.kill") as mock_kill:
+                mock_fcntl.LOCK_EX = 2
+                mock_fcntl.LOCK_NB = 4
+                # Incumbent holds the lock → first flock attempt fails.
+                mock_fcntl.flock.side_effect = OSError("Resource temporarily unavailable")
+
+                result = _run_with_input({
+                    "hook_event_name": "SessionStart",
+                    "cwd": "/hijacker/proj",
+                    "session_id": "hijacker-session",
+                })
+
+            assert result == 0
+            mock_register.assert_called_once()
+            mock_kill.assert_not_called()
+            mock_offline.assert_not_called()
+            mock_spawn.assert_not_called()
+            mock_write.assert_not_called()
+            # Incumbent's on-disk state untouched.
+            assert meta_path.exists()
+            assert json.loads(meta_path.read_text()) == incumbent_meta
+            assert pid_path.exists()
+            assert pid_path.read_text() == "12345"

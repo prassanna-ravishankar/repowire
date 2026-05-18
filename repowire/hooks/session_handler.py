@@ -242,6 +242,7 @@ def main(backend: str = "claude-code") -> int:
         lock_path = ws_hook_lock_path(pane_id)
         pid_path = ws_hook_pid_path(pane_id)
         prior_peer_id: str | None = None
+        needs_takeover = False
         lock_fd = open(lock_path, "w")  # noqa: SIM115
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -256,31 +257,13 @@ def main(backend: str = "claude-code") -> int:
             if same_live_session:
                 lock_fd.close()
                 return 0
-
             prior_peer_id = old_meta.get("peer_id") or _get_peer_id_for_pane(pane_id)
-            try:
-                old_pid = int(pid_path.read_text().strip())
-                os.kill(old_pid, signal.SIGTERM)
-            except (OSError, ValueError):
-                pass
-            for _ in range(10):
-                try:
-                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError:
-                    time.sleep(0.5)
-            else:
-                try:
-                    old_pid = int(pid_path.read_text().strip())
-                    os.kill(old_pid, signal.SIGKILL)
-                except (OSError, ValueError):
-                    pass
-                fcntl.flock(lock_fd, fcntl.LOCK_EX)
-
-        if prior_peer_id:
-            _mark_peer_offline(prior_peer_id)
-
-        clear_pane_runtime_state(pane_id)
+            # Real takeover-or-hijack scenario. Defer the destructive parts
+            # (killing the incumbent ws-hook, marking the prior peer offline,
+            # clearing pane runtime state) until AFTER the daemon accepts our
+            # registration. A rejected hijack (#190) must leave the incumbent
+            # untouched.
+            needs_takeover = True
 
         # Register peer via HTTP -- daemon assigns peer_id and display_name.
         # Codex strips tmux env from hook subprocesses, so fall back to the
@@ -328,12 +311,40 @@ def main(backend: str = "claude-code") -> int:
             parent_pid=parent_pid_val,
         )
         if hijack_rejected:
-            # Daemon rejected this pane claim. Don't write pane metadata,
-            # don't spawn ws-hook — the original peer keeps the pane.
+            # Daemon rejected this pane claim. Don't touch the incumbent's
+            # ws-hook, prior-peer status, or pane runtime metadata — the
+            # rejection must leave the world unchanged (issue #190).
             lock_fd.close()
             return 0
         if not display_name:
             display_name = folder_name  # fallback if daemon unreachable
+
+        # Daemon accepted our claim. NOW perform the destructive takeover
+        # steps: evict the incumbent ws-hook, mark its peer offline, clear
+        # its pane runtime state, then claim the flock for ourselves.
+        if needs_takeover:
+            try:
+                old_pid = int(pid_path.read_text().strip())
+                os.kill(old_pid, signal.SIGTERM)
+            except (OSError, ValueError):
+                pass
+            for _ in range(10):
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    time.sleep(0.5)
+            else:
+                try:
+                    old_pid = int(pid_path.read_text().strip())
+                    os.kill(old_pid, signal.SIGKILL)
+                except (OSError, ValueError):
+                    pass
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+            if prior_peer_id and prior_peer_id != peer_id:
+                _mark_peer_offline(prior_peer_id)
+            clear_pane_runtime_state(pane_id)
 
         write_pane_runtime_metadata(
             pane_id,
