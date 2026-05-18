@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from repowire.daemon.auth import require_auth
@@ -158,15 +158,19 @@ async def ack_ask(
 
     Bare ack: close the ask, return 200.
 
+    Bare re-ack of an already-closed ask is idempotent and returns 200.
+
     Ack-with-message: deliver the reply first; only close on successful
-    delivery. If the asker has no live WS the ask stays open and 503 is
-    returned so the recipient can retry (or drop the message and bare-ack
-    if they give up). This avoids closing the thread while silently dropping
-    the reply under the new fail-loud / no-queue contract.
+    delivery. If the ask is already closed, the reply cannot be delivered and
+    410 is returned. If the asker has no live WS the ask stays open and 503 is
+    returned so the recipient can retry (or drop the message and bare-ack if
+    they give up). This avoids closing the thread while silently dropping the
+    reply under the new fail-loud / no-queue contract.
 
     Returns:
-        200 on success, 200 on idempotent re-ack (already closed), 404 if
-        unknown corr_id, 503 if reply delivery failed.
+        200 on success, 200 on idempotent bare re-ack, 404 if unknown corr_id,
+        410 if an ack-with-message targets an already-closed ask, 503 if reply
+        delivery failed.
     """
     peer_registry = get_peer_registry()
     state = get_app_state()
@@ -178,8 +182,16 @@ async def ack_ask(
             status_code=404,
             detail=f"No open ask with correlation_id: {request.correlation_id}",
         )
+    if existing.closed and request.message:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=(
+                f"Ask {request.correlation_id} is already closed; "
+                "reply message was not delivered."
+            ),
+        )
     if existing.closed:
-        # Idempotent re-ack: already closed, nothing to do.
+        # Idempotent bare re-ack: already closed, nothing to do.
         return OkResponse()
 
     if request.message:

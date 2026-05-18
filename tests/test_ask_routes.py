@@ -249,6 +249,26 @@ class TestAck:
         })
         assert r2.status_code == 200
 
+    async def test_ack_with_msg_on_closed_ask_returns_410(self, env):
+        client, _, _, msg_router = env
+        await _register_peer(client, "alice")
+        bob = await _register_peer(client, "bob")
+        r = await client.post("/ask", json={
+            "from_peer": "alice", "to_peer": bob, "text": "?",
+        })
+        cid = r.json()["correlation_id"]
+        await client.post("/ack", json={
+            "correlation_id": cid, "from_peer": bob,
+        })
+
+        r2 = await client.post("/ack", json={
+            "correlation_id": cid, "from_peer": bob, "message": "late reply",
+        })
+
+        assert r2.status_code == 410
+        assert "already closed" in r2.json()["detail"]
+        assert msg_router.send_notification.await_count == 0
+
 
 class TestPendingAsks:
     async def test_returns_open_asks(self, env):
