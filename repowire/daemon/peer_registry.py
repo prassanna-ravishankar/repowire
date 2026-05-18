@@ -1042,19 +1042,24 @@ class PeerRegistry:
     async def touch_last_seen(
         self, identifier: str, circle: str | None = None,
     ) -> bool:
-        """Refresh a peer's last_seen without changing status.
+        """Refresh a peer's last_seen and revive OFFLINE peers.
 
         Outbound MCP traffic from a peer is a liveness signal even when the
         peer's ws-hook has dropped (inbound is broken, but the agent is alive
-        and acting). Lets `is_orchestrator_present` and other last_seen-keyed
-        checks count that activity instead of going stale on the new wrinkle
-        introduced by the liveness slice.
+        and acting). If the registry still marks that peer OFFLINE, the
+        observed activity is stronger evidence than the stale status, so revive
+        it to ONLINE while preserving BUSY/ONLINE peers as-is.
         """
         async with self._lock:
             peer = self._lookup_peer_unlocked(identifier, circle=circle)
             if not peer:
                 return False
+            old_status = peer.status
+            if peer.status == PeerStatus.OFFLINE:
+                peer.status = PeerStatus.ONLINE
             peer.last_seen = datetime.now(timezone.utc)
+            if old_status != peer.status:
+                self._emit_status_change(peer, old_status, peer.status)
             return True
 
     async def update_description(

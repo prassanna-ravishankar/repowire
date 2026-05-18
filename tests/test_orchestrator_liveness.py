@@ -274,14 +274,23 @@ class TestTouchLastSeen:
 
         assert await registry.is_orchestrator_present("team") is True
 
-    async def test_touch_does_not_change_status(self, tmp_path):
+    async def test_touch_revives_offline_peer(self, tmp_path):
         registry = _make_registry(tmp_path)
         await _register_orch(
             registry, circle="team", status=PeerStatus.OFFLINE,
         )
         await registry.touch_last_seen("repow-team-orch1")
         async with registry._lock:
-            assert registry._peers["repow-team-orch1"].status == PeerStatus.OFFLINE
+            assert registry._peers["repow-team-orch1"].status == PeerStatus.ONLINE
+
+    async def test_touch_preserves_busy_status(self, tmp_path):
+        registry = _make_registry(tmp_path)
+        await _register_orch(
+            registry, circle="team", status=PeerStatus.BUSY,
+        )
+        await registry.touch_last_seen("repow-team-orch1")
+        async with registry._lock:
+            assert registry._peers["repow-team-orch1"].status == PeerStatus.BUSY
 
     async def test_touch_returns_false_for_unknown_peer(self, tmp_path):
         registry = _make_registry(tmp_path)
@@ -308,3 +317,19 @@ class TestTouchLastSeen:
         body = r.json()
         assert body["present"] is True
         assert body["peer_id"] == "orch-1"
+
+    async def test_touch_route_revives_offline_peer(self, app_and_registry):
+        client, registry = app_and_registry
+        await _register_orch(
+            registry,
+            circle="team",
+            name="orch",
+            peer_id="orch-1",
+            status=PeerStatus.OFFLINE,
+        )
+
+        r = await client.post("/peers/orch-1/touch")
+        assert r.status_code == 200
+
+        async with registry._lock:
+            assert registry._peers["orch-1"].status == PeerStatus.ONLINE
