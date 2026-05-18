@@ -533,12 +533,14 @@ class PeerRegistry:
             if pane_id:
                 self._release_pane(pane_id, allocated_id)
 
-            # Restore circle + description from persisted mapping. The
+            # Restore circle, role, and description from persisted mapping. The
             # mapping is the durable source of truth for these fields; when
             # _find_or_allocate_mapping adopted a prior session, its stored
-            # circle may differ from the caller-supplied one and should win.
+            # circle/role may differ from the caller-supplied defaults and
+            # should win.
             restored = self._mappings.get(allocated_id)
             effective_circle = restored.circle if restored else circle
+            effective_role = restored.role if restored else role
             restored_description = restored.description if restored else ""
 
             # --- create and insert Peer ---
@@ -547,7 +549,7 @@ class PeerRegistry:
                 display_name=assigned_name,
                 circle=effective_circle,
                 backend=backend,
-                role=role,
+                role=effective_role,
                 status=PeerStatus.ONLINE,
                 last_seen=datetime.now(timezone.utc),
                 pane_id=pane_id,

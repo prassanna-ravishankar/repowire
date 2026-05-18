@@ -8,7 +8,7 @@ import pytest
 
 from repowire.config.models import AgentType
 from repowire.daemon.peer_registry import PeerRegistry
-from repowire.protocol.peers import PeerStatus
+from repowire.protocol.peers import PeerRole, PeerStatus
 
 
 def _make_registry(tmp_path: Path, mappings: dict | None = None) -> PeerRegistry:
@@ -248,6 +248,48 @@ async def test_circle_and_description_persist_across_restart(tmp_path):
     assert peer is not None
     assert peer.circle == "5"
     assert peer.description == "watching the mesh"
+
+
+@pytest.mark.asyncio
+async def test_role_persists_across_restart_adoption(tmp_path):
+    """A restarted daemon must not downgrade an adopted peer's persisted role."""
+    path = tmp_path / "sessions.json"
+    orch_dir = tmp_path / "orchproj"
+    orch_dir.mkdir()
+    registry = PeerRegistry(
+        config=__import__("repowire.config.models", fromlist=["Config"]).Config(),
+        message_router=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(),
+        persistence_path=path,
+    )
+
+    peer_id, name = await registry.allocate_and_register(
+        circle="5",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(orch_dir),
+        role=PeerRole.ORCHESTRATOR,
+    )
+    registry._persist_mappings()
+
+    # Simulate daemon restart: in-memory peers are gone, but sessions.json
+    # still carries the role. The reconnecting ws-hook has no spawn hint and
+    # therefore supplies the default role=agent.
+    registry2 = PeerRegistry(
+        config=__import__("repowire.config.models", fromlist=["Config"]).Config(),
+        message_router=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(),
+        persistence_path=path,
+    )
+    new_id, new_name = await registry2.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(orch_dir),
+        role=PeerRole.AGENT,
+    )
+
+    assert new_name == name
+    assert new_id == peer_id
+    peer = await registry2.get_peer(new_id)
+    assert peer is not None
+    assert peer.role == PeerRole.ORCHESTRATOR
 
 
 @pytest.mark.asyncio
