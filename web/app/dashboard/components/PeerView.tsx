@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertCircle, Check, Clock, Copy, Paperclip, RefreshCw, Send, X } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
+import { clearProtected, markProtected, useIsPeerProtected } from "../lib/protection";
 import type { Event, Peer } from "../types";
 import { peerLabel } from "../types";
 import { formatTime, StatusLabel } from "./status";
@@ -45,7 +46,8 @@ export function PeerView({
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<PeerTab>("chat");
-  const thread = useMemo(() => {
+  const protectedNow = useIsPeerProtected(peer.peer_id);
+  const liveThread = useMemo(() => {
     const id = peer.peer_id;
     return events
       .filter((event) => {
@@ -55,9 +57,27 @@ export function PeerView({
       .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   }, [events, peer.peer_id]);
 
+  // While the peer is protected (e.g. unsubmitted compose draft), freeze the
+  // rendered thread so new SSE events don't reorder/clobber it mid-compose.
+  // The frozen snapshot is captured at the moment protection engages and is
+  // released the moment it clears. Snapshot is derived during render via the
+  // setState-during-render pattern so the freeze takes effect synchronously
+  // with the protection transition.
+  const [frozenThread, setFrozenThread] = useState<Event[] | null>(null);
+  const [wasProtected, setWasProtected] = useState(false);
+  if (protectedNow && !wasProtected) {
+    setWasProtected(true);
+    setFrozenThread(liveThread);
+  } else if (!protectedNow && wasProtected) {
+    setWasProtected(false);
+    setFrozenThread(null);
+  }
+  const thread = protectedNow && frozenThread ? frozenThread : liveThread;
+
   useEffect(() => {
+    if (protectedNow) return;
     bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [thread.length]);
+  }, [thread.length, protectedNow]);
 
   // Reset to chat when switching peers so the tab choice doesn't leak across selections.
   useEffect(() => {
@@ -341,6 +361,18 @@ function ComposeBar({
     el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
   }, [text]);
 
+  // Compose dirty → protect the peer view so inbound SSE doesn't reset scroll
+  // / clobber UI while the user is typing. Cleared on submit, empty input, or
+  // peer switch (unmount).
+  const isDirty = text.trim().length > 0 || file !== null;
+  useEffect(() => {
+    if (isDirty) markProtected(peer.peer_id, "compose");
+    else clearProtected(peer.peer_id, "compose");
+  }, [isDirty, peer.peer_id]);
+  useEffect(() => {
+    return () => clearProtected(peer.peer_id, "compose");
+  }, [peer.peer_id]);
+
   // Match incoming notification events to pending asks via [ack #cid from @peer] framing.
   const openCids = useMemo(
     () => pendingAsks.filter((a) => a.state === "pending").map((a) => a.correlation_id),
@@ -475,6 +507,16 @@ function ComposeBar({
         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-outline">
           ask &rarr; {peerLabel(peer)}
         </span>
+        {isDirty && (
+          <span
+            data-testid="compose-draft-pill"
+            title="Inbound updates paused while draft is unsaved"
+            className="inline-flex items-center gap-1 border border-primary/40 bg-primary/10 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-primary"
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-primary" aria-hidden="true" />
+            draft
+          </span>
+        )}
       </div>
 
       {file && (
@@ -508,12 +550,17 @@ function ComposeBar({
         />
         <textarea
           ref={textareaRef}
+          data-testid="compose-textarea"
+          data-dirty={isDirty ? "true" : "false"}
           value={text}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={onKeyDown}
           placeholder={`ask ${peerLabel(peer)} something...`}
           rows={1}
-          className="max-h-32 min-h-10 flex-1 resize-none rounded border border-border-faint bg-surface-container-lowest px-3 py-2.5 font-mono text-base text-on-surface outline-none placeholder:text-outline focus:border-primary focus:ring-1 focus:ring-primary md:text-sm"
+          className={cn(
+            "max-h-32 min-h-10 flex-1 resize-none rounded border bg-surface-container-lowest px-3 py-2.5 font-mono text-base text-on-surface outline-none placeholder:text-outline focus:border-primary focus:ring-1 focus:ring-primary md:text-sm",
+            isDirty ? "border-primary/40" : "border-border-faint"
+          )}
         />
         <button
           onClick={submit}
