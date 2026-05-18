@@ -155,6 +155,13 @@ class DaemonConfig(BaseModel):
             "Set to 0 to disable."
         ),
     )
+    peer_reap_ttl_seconds: float = Field(
+        default=600,
+        description=(
+            "Seconds an OFFLINE peer may remain in the registry before lazy repair "
+            "reaps it. Set to 0 to disable."
+        ),
+    )
 
     # Spawn settings
     spawn: SpawnSettings = Field(default_factory=SpawnSettings)

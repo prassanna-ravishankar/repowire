@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from repowire.config.models import AgentType, Config
-from repowire.daemon.peer_registry import PeerRegistry
+from repowire.daemon.peer_registry import PeerRegistry, SessionMapping
 from repowire.daemon.websocket_transport import WebSocketTransport
 from repowire.protocol.peers import Peer, PeerStatus
 
@@ -22,6 +22,7 @@ def _make_peer(
     backend: AgentType = AgentType.CLAUDE_CODE,
     pane_id: str | None = None,
     circle: str = "dev",
+    last_seen: datetime | None = None,
 ) -> Peer:
     return Peer(
         peer_id=peer_id,
@@ -32,21 +33,30 @@ def _make_peer(
         circle=circle,
         status=status,
         pane_id=pane_id,
+        last_seen=last_seen or datetime.now(timezone.utc),
     )
 
 
 def _make_manager(
     transport: WebSocketTransport | None = None,
     query_tracker: MagicMock | None = None,
+    ask_tracker: MagicMock | None = None,
+    *,
+    peer_reap_ttl_seconds: float | None = None,
 ) -> PeerRegistry:
     config = Config()
+    if peer_reap_ttl_seconds is not None:
+        config.daemon.peer_reap_ttl_seconds = peer_reap_ttl_seconds
     router = MagicMock()
-    return PeerRegistry(
+    registry = PeerRegistry(
         config=config,
         message_router=router,
         query_tracker=query_tracker,
         transport=transport,
+        ask_tracker=ask_tracker,
     )
+    registry._events.clear()
+    return registry
 
 
 # -- get_peer_by_pane --
@@ -147,6 +157,83 @@ class TestLazyRepairDebounce:
         result = await manager.get_peer(peer.peer_id)
         assert result.status == PeerStatus.OFFLINE
         transport.ping.assert_awaited_once_with(peer.peer_id, timeout=1.0)
+
+
+class TestLazyRepairReaper:
+    async def test_reaps_offline_peer_after_ttl(self):
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.disconnect = AsyncMock(return_value=True)
+        ask_tracker = MagicMock()
+        ask_tracker.forget_peer = AsyncMock(return_value=1)
+        manager = _make_manager(
+            transport=transport,
+            ask_tracker=ask_tracker,
+            peer_reap_ttl_seconds=600,
+        )
+        stale_seen = datetime.now(timezone.utc) - timedelta(seconds=601)
+        peer = _make_peer(
+            status=PeerStatus.OFFLINE,
+            pane_id="%5",
+            last_seen=stale_seen,
+        )
+        await manager.register_peer(peer)
+        async with manager._lock:
+            live = manager._peers[peer.peer_id]
+            live.status = PeerStatus.OFFLINE
+            live.last_seen = stale_seen
+            manager._mappings[peer.peer_id] = SessionMapping(
+                session_id=peer.peer_id,
+                display_name=peer.display_name,
+                circle=peer.circle,
+                backend=peer.backend,
+                path=peer.path,
+            )
+
+        await manager.lazy_repair()
+
+        assert await manager.get_peer(peer.peer_id) is None
+        assert peer.peer_id not in manager._mappings
+        transport.disconnect.assert_awaited_once_with(peer.peer_id)
+        ask_tracker.forget_peer.assert_awaited_once_with(peer.peer_id)
+        events = manager.get_events()
+        assert len(events) == 1
+        assert events[0]["type"] == "peer_reaped"
+        assert events[0]["peer_id"] == peer.peer_id
+        assert events[0]["display_name"] == peer.display_name
+        assert events[0]["backend"] == peer.backend.value
+        assert events[0]["pane_id"] == "%5"
+        assert events[0]["reason"] == "offline_ttl"
+
+    async def test_does_not_reap_offline_peer_younger_than_ttl(self):
+        manager = _make_manager(peer_reap_ttl_seconds=600)
+        recent_seen = datetime.now(timezone.utc) - timedelta(seconds=599)
+        peer = _make_peer(status=PeerStatus.OFFLINE, last_seen=recent_seen)
+        await manager.register_peer(peer)
+        async with manager._lock:
+            live = manager._peers[peer.peer_id]
+            live.status = PeerStatus.OFFLINE
+            live.last_seen = recent_seen
+
+        await manager.lazy_repair()
+
+        result = await manager.get_peer(peer.peer_id)
+        assert result is not None
+        assert result.status == PeerStatus.OFFLINE
+
+    async def test_reaper_disabled_with_zero_ttl(self):
+        manager = _make_manager(peer_reap_ttl_seconds=0)
+        stale_seen = datetime.now(timezone.utc) - timedelta(hours=1)
+        peer = _make_peer(status=PeerStatus.OFFLINE, last_seen=stale_seen)
+        await manager.register_peer(peer)
+        async with manager._lock:
+            live = manager._peers[peer.peer_id]
+            live.status = PeerStatus.OFFLINE
+            live.last_seen = stale_seen
+
+        await manager.lazy_repair()
+
+        assert await manager.get_peer(peer.peer_id) is not None
+        assert manager.get_events() == []
 
 
 # -- active_repair liveness checks --

@@ -1320,6 +1320,7 @@ class PeerRegistry:
             self._last_repair = time.monotonic()
             await self._demote_disconnected_peers()
             await self._demote_unsafe_connected_peers()
+            await self._reap_dangling_peers()
             await self._evict_stale_peers()
             self._save_events()
             self._persist_mappings()
@@ -1380,6 +1381,59 @@ class PeerRegistry:
         if count:
             logger.info("demoted %d unsafe connected peers", count)
         return count
+
+    async def _reap_dangling_peers(self) -> int:
+        """Remove OFFLINE peers whose liveness TTL has expired.
+
+        Lazy-repair only: no background polling. ONLINE/BUSY peers are first
+        demoted by the WebSocket liveness checks above; this pass removes peers
+        that stayed offline past the configured grace window.
+        """
+        ttl = self._config.daemon.peer_reap_ttl_seconds
+        if ttl <= 0:
+            return 0
+
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=ttl)
+        async with self._lock:
+            stale = [
+                p for p in self._peers.values()
+                if p.status == PeerStatus.OFFLINE
+                and p.last_seen is not None
+                and p.last_seen < cutoff
+            ]
+            for peer in stale:
+                self._peers.pop(peer.peer_id, None)
+                self._mappings.pop(peer.peer_id, None)
+                self._description_set_at.pop(peer.peer_id, None)
+                self._mappings_dirty = True
+
+        for peer in stale:
+            if self._transport is not None:
+                try:
+                    await self._transport.disconnect(peer.peer_id)
+                except Exception as e:
+                    logger.warning(
+                        "reaper: failed to disconnect %s transport: %s",
+                        peer.peer_id,
+                        e,
+                    )
+            if self._ask_tracker is not None:
+                await self._ask_tracker.forget_peer(peer.peer_id)
+            self.add_event(
+                "peer_reaped",
+                {
+                    "peer_id": peer.peer_id,
+                    "display_name": peer.display_name,
+                    "backend": peer.backend.value,
+                    "path": peer.path,
+                    "pane_id": peer.pane_id,
+                    "reason": "offline_ttl",
+                },
+            )
+
+        if stale:
+            logger.info("reaped %d dangling offline peers", len(stale))
+        return len(stale)
 
     async def _evict_stale_peers(self) -> int:
         """Evict long-offline peers from both _peers and _mappings.
