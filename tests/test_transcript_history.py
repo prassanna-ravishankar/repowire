@@ -13,7 +13,9 @@ from unittest.mock import patch
 from repowire.session.history import (
     Turn,
     _encode_cwd,
+    decode_cursor,
     discover_claude_sessions,
+    encode_cursor,
     load_peer_turns,
     page_turns,
 )
@@ -169,8 +171,15 @@ class TestLoadPeerTurnsBackends:
         assert load_peer_turns("/any/path", "gemini") == []
 
 
-def _t(ts: str) -> Turn:
-    return Turn(role="user", text=ts, timestamp=ts, session_id="s", tool_calls=[])
+def _t(ts: str, session_id: str = "s", line_offset: int = 0, text: str | None = None) -> Turn:
+    return Turn(
+        role="user",
+        text=text if text is not None else ts,
+        timestamp=ts,
+        session_id=session_id,
+        tool_calls=[],
+        line_offset=line_offset,
+    )
 
 
 class TestPageTurns:
@@ -178,11 +187,12 @@ class TestPageTurns:
         turns = [_t("2026-01-03"), _t("2026-01-02"), _t("2026-01-01")]
         page, nxt = page_turns(turns, limit=2, before=None)
         assert [t.text for t in page] == ["2026-01-03", "2026-01-02"]
-        assert nxt == "2026-01-02"
+        assert decode_cursor(nxt or "") == ("2026-01-02", "s", 0)
 
     def test_cursor_filters_strictly_older(self):
         turns = [_t("2026-01-03"), _t("2026-01-02"), _t("2026-01-01")]
-        page, nxt = page_turns(turns, limit=10, before="2026-01-03")
+        cursor = encode_cursor(turns[0])
+        page, nxt = page_turns(turns, limit=10, before=cursor)
         assert [t.text for t in page] == ["2026-01-02", "2026-01-01"]
         assert nxt is None
 
@@ -196,3 +206,71 @@ class TestPageTurns:
         page, nxt = page_turns([], limit=5, before=None)
         assert page == []
         assert nxt is None
+
+    def test_same_timestamp_boundary_no_drop(self):
+        # Three turns share the page-boundary timestamp. With a plain-timestamp
+        # cursor, paginating after the first page would drop the remaining two.
+        # The composite cursor must include a tiebreaker so they survive.
+        turns = [
+            _t("2026-01-03T00:00:00Z", session_id="s", line_offset=2, text="a"),
+            _t("2026-01-02T00:00:00Z", session_id="s", line_offset=1, text="b"),
+            _t("2026-01-02T00:00:00Z", session_id="s", line_offset=0, text="c"),
+            _t("2026-01-02T00:00:00Z", session_id="r", line_offset=0, text="d"),
+            _t("2026-01-01T00:00:00Z", session_id="s", line_offset=0, text="e"),
+        ]
+        # Pre-sort to match what load_peer_turns produces (newest-first by composite key).
+        turns.sort(key=lambda t: (t.timestamp, t.session_id, t.line_offset), reverse=True)
+        page1, cursor1 = page_turns(turns, limit=2, before=None)
+        assert [t.text for t in page1] == ["a", "b"]
+        assert cursor1 is not None
+        page2, cursor2 = page_turns(turns, limit=2, before=cursor1)
+        # The remaining same-ts turns must be returned, not dropped.
+        assert [t.text for t in page2] == ["c", "d"]
+        assert cursor2 is not None
+        page3, cursor3 = page_turns(turns, limit=2, before=cursor2)
+        assert [t.text for t in page3] == ["e"]
+        assert cursor3 is None
+
+    def test_empty_timestamp_consistent_across_pages(self):
+        # Turns with empty timestamps must be reachable when paginating with
+        # a cursor, not just on the first page.
+        turns = [
+            _t("2026-01-02T00:00:00Z", session_id="s", line_offset=0, text="recent"),
+            _t("2026-01-01T00:00:00Z", session_id="s", line_offset=0, text="older"),
+            _t("", session_id="s", line_offset=5, text="no_ts_a"),
+            _t("", session_id="s", line_offset=3, text="no_ts_b"),
+        ]
+        turns.sort(key=lambda t: (t.timestamp, t.session_id, t.line_offset), reverse=True)
+        # First page includes the newest non-empty-ts turn.
+        page1, cursor1 = page_turns(turns, limit=1, before=None)
+        assert [t.text for t in page1] == ["recent"]
+        assert cursor1 is not None
+        # Paginate through everything; empty-ts turns must surface, not vanish.
+        seen: list[str] = list(t.text for t in page1)
+        cursor = cursor1
+        while cursor is not None:
+            page, cursor = page_turns(turns, limit=1, before=cursor)
+            seen.extend(t.text for t in page)
+        assert "no_ts_a" in seen
+        assert "no_ts_b" in seen
+        assert seen == ["recent", "older", "no_ts_a", "no_ts_b"]
+
+    def test_cursor_roundtrip(self):
+        t = _t("2026-01-02T00:00:00Z", session_id="abc-123", line_offset=42)
+        cursor = encode_cursor(t)
+        assert decode_cursor(cursor) == ("2026-01-02T00:00:00Z", "abc-123", 42)
+
+    def test_malformed_cursor_falls_back_to_first_page(self):
+        turns = [_t("2026-01-02"), _t("2026-01-01")]
+        page, _ = page_turns(turns, limit=10, before="not-a-real-cursor!!!")
+        assert [t.text for t in page] == ["2026-01-02", "2026-01-01"]
+
+    def test_empty_timestamp_included_on_first_page(self):
+        # Regression: first page used to include empty-ts turns; this must still hold.
+        turns = [
+            _t("2026-01-02", session_id="s", line_offset=0, text="a"),
+            _t("", session_id="s", line_offset=1, text="b"),
+        ]
+        turns.sort(key=lambda t: (t.timestamp, t.session_id, t.line_offset), reverse=True)
+        page, _ = page_turns(turns, limit=10, before=None)
+        assert [t.text for t in page] == ["a", "b"]

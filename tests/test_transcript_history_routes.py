@@ -129,7 +129,7 @@ async def test_returns_paginated_turns(tmp_path: Path):
                 body = res.json()
                 assert res.status_code == 200
                 assert [t["text"] for t in body["turns"]] == ["a2", "q2"]
-                assert body["next_before"] == "2026-01-02T00:00:00Z"
+                assert body["next_before"] is not None
 
                 res2 = await ac.get(
                     f"/peers/{name}/transcript",
@@ -159,6 +159,116 @@ async def test_codex_peer_returns_empty_v1(tmp_path: Path):
             res = await ac.get(f"/peers/{name}/transcript")
         assert res.status_code == 200
         assert res.json()["turns"] == []
+    finally:
+        cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_same_timestamp_boundary_does_not_drop_turns(tmp_path: Path):
+    """Regression: when the page-boundary timestamp is shared by multiple
+    turns, the cursor must include a tiebreaker so they survive pagination."""
+    app, registry = _make_app(tmp_path)
+    projects_root = tmp_path / "projects"
+    peer_path = "/peer/work"
+    try:
+        _, name = await registry.allocate_and_register(
+            circle="global",
+            backend=AgentType.CLAUDE_CODE,
+            path=peer_path,
+            pane_id=None,
+            tmux_session=None,
+            metadata={},
+            machine="test",
+        )
+        # Five turns; three share the same timestamp at the page boundary.
+        _write_session(projects_root, peer_path, [
+            {"type": "user", "timestamp": "2026-01-01T00:00:00Z", "sessionId": "s1",
+             "message": {"content": "oldest"}},
+            {"type": "user", "timestamp": "2026-01-02T00:00:00Z", "sessionId": "s1",
+             "message": {"content": "mid_a"}},
+            {"type": "user", "timestamp": "2026-01-02T00:00:00Z", "sessionId": "s1",
+             "message": {"content": "mid_b"}},
+            {"type": "user", "timestamp": "2026-01-02T00:00:00Z", "sessionId": "s1",
+             "message": {"content": "mid_c"}},
+            {"type": "user", "timestamp": "2026-01-03T00:00:00Z", "sessionId": "s1",
+             "message": {"content": "newest"}},
+        ])
+
+        with patch(
+            "repowire.session.history._claude_projects_dir",
+            return_value=projects_root,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+                # Page 1: limit=2 lands the boundary mid-cluster.
+                res = await ac.get(f"/peers/{name}/transcript", params={"limit": 2})
+                body = res.json()
+                texts: list[str] = [t["text"] for t in body["turns"]]
+                cursor = body["next_before"]
+                assert cursor is not None
+                while cursor is not None:
+                    res = await ac.get(
+                        f"/peers/{name}/transcript",
+                        params={"limit": 2, "before": cursor},
+                    )
+                    body = res.json()
+                    texts.extend(t["text"] for t in body["turns"])
+                    cursor = body["next_before"]
+                # All five turns must be present; no drop at the boundary.
+                assert sorted(texts) == sorted(
+                    ["newest", "mid_a", "mid_b", "mid_c", "oldest"]
+                )
+    finally:
+        cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_empty_timestamp_turns_reachable_via_cursor(tmp_path: Path):
+    """Regression: turns with empty timestamps used to be included on the
+    first page but dropped on paginated requests."""
+    app, registry = _make_app(tmp_path)
+    projects_root = tmp_path / "projects"
+    peer_path = "/peer/work"
+    try:
+        _, name = await registry.allocate_and_register(
+            circle="global",
+            backend=AgentType.CLAUDE_CODE,
+            path=peer_path,
+            pane_id=None,
+            tmux_session=None,
+            metadata={},
+            machine="test",
+        )
+        _write_session(projects_root, peer_path, [
+            {"type": "user", "sessionId": "s1",
+             "message": {"content": "no_ts_a"}},
+            {"type": "user", "sessionId": "s1",
+             "message": {"content": "no_ts_b"}},
+            {"type": "user", "timestamp": "2026-01-01T00:00:00Z", "sessionId": "s1",
+             "message": {"content": "older"}},
+            {"type": "user", "timestamp": "2026-01-02T00:00:00Z", "sessionId": "s1",
+             "message": {"content": "newer"}},
+        ])
+
+        with patch(
+            "repowire.session.history._claude_projects_dir",
+            return_value=projects_root,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+                texts: list[str] = []
+                cursor: str | None = None
+                for _ in range(10):
+                    params: dict[str, object] = {"limit": 1}
+                    if cursor is not None:
+                        params["before"] = cursor
+                    res = await ac.get(f"/peers/{name}/transcript", params=params)
+                    body = res.json()
+                    texts.extend(t["text"] for t in body["turns"])
+                    cursor = body["next_before"]
+                    if cursor is None:
+                        break
+                assert "no_ts_a" in texts
+                assert "no_ts_b" in texts
+                assert sorted(texts) == sorted(["newer", "older", "no_ts_a", "no_ts_b"])
     finally:
         cleanup_deps()
 
