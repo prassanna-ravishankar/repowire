@@ -124,3 +124,53 @@ def test_start_spawns_with_role_orchestrator(
     assert config.role == "orchestrator"
     assert config.backend.value == "pi"
     assert config.command == "pi"
+
+
+def _stub_start_deps(monkeypatch: pytest.MonkeyPatch, runtime: str) -> MagicMock:
+    """Stub daemon health, runtime detection, and spawn for orchestrator start."""
+    spawn_mock = MagicMock()
+    spawn_mock.return_value = MagicMock(
+        display_name="orchestrator",
+        tmux_session="default:orchestrator",
+        pane_id="%99",
+    )
+    monkeypatch.setattr("repowire.spawn.spawn_peer", spawn_mock)
+    monkeypatch.setattr("repowire.cli._get_daemon_url", lambda: "http://127.0.0.1:8377")
+    httpx_get_mock = MagicMock()
+    httpx_get_mock.return_value.__enter__.return_value.get.return_value = MagicMock(
+        raise_for_status=lambda: None,
+    )
+    monkeypatch.setattr("httpx.Client", httpx_get_mock)
+    monkeypatch.setattr("repowire.cli._detect_runtime_for_orchestrator", lambda: runtime)
+    return spawn_mock
+
+
+def test_start_uses_default_command_when_yaml_omits_it(
+    tmp_workspace: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No `command` in orchestrator.yaml → fall back to built-in default."""
+    runner = CliRunner()
+    runner.invoke(main, ["orchestrator", "init"])
+    spawn_mock = _stub_start_deps(monkeypatch, "claude-code")
+
+    result = runner.invoke(main, ["orchestrator", "start"])
+    assert result.exit_code == 0, result.output
+    config = spawn_mock.call_args[0][0]
+    assert config.command == "claude --dangerously-skip-permissions"
+
+
+def test_start_honors_command_override_from_yaml(
+    tmp_workspace: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`command:` in orchestrator.yaml overrides the built-in default."""
+    runner = CliRunner()
+    runner.invoke(main, ["orchestrator", "init"])
+    (tmp_workspace / "orchestrator.yaml").write_text(
+        'command: "claude --dangerously-skip-permissions --model opus"\n'
+    )
+    spawn_mock = _stub_start_deps(monkeypatch, "claude-code")
+
+    result = runner.invoke(main, ["orchestrator", "start"])
+    assert result.exit_code == 0, result.output
+    config = spawn_mock.call_args[0][0]
+    assert config.command == "claude --dangerously-skip-permissions --model opus"

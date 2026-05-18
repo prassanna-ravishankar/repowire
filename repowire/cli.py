@@ -1260,7 +1260,7 @@ def orchestrator_start(runtime: str | None, service: bool) -> None:
 
     circle = yaml_config.get("circle") or "default"
     backend = AgentType(selected_runtime)
-    command = _ORCHESTRATOR_RUNTIME_COMMANDS[selected_runtime]
+    command = yaml_config.get("command") or _ORCHESTRATOR_RUNTIME_COMMANDS[selected_runtime]
 
     console.print(
         f"[cyan]Spawning orchestrator[/] "

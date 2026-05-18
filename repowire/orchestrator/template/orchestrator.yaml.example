@@ -12,6 +12,13 @@
 # Circle (logical subnet) the orchestrator joins. Default: "default".
 # circle: default
 
+# Override the spawn command for the selected runtime. When unset, the
+# orchestrator uses the built-in default for each runtime (e.g.
+# `claude --dangerously-skip-permissions` for claude-code). Useful for
+# wrappers, extra flags, or pinning a specific binary path. No validation —
+# the operator owns this string.
+# command: "claude --dangerously-skip-permissions --model opus"
+
 # Default telegram chat id for routing user-directed updates. Leave unset
 # to fall back to the global TELEGRAM_CHAT_ID from ~/.repowire/config.yaml.
 # telegram_chat_id: ""
