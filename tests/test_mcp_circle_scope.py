@@ -20,18 +20,21 @@ from repowire.protocol.errors import DaemonHTTPError
 @pytest.fixture(autouse=True)
 def reset_cache():
     mcp_server._cached_peer_name = None
+    mcp_server._cached_peer_id = None
     mcp_server._cached_my_circle = None
     mcp_server._cached_my_role = None
     mcp_server._registered = True  # bypass _ensure_registered side effects
     yield
     mcp_server._cached_peer_name = None
+    mcp_server._cached_peer_id = None
     mcp_server._cached_my_circle = None
     mcp_server._cached_my_role = None
     mcp_server._registered = False
 
 
-def _seed_identity(name: str, circle: str, role: str) -> None:
+def _seed_identity(name: str, circle: str, role: str, peer_id: str | None = None) -> None:
     mcp_server._cached_peer_name = name
+    mcp_server._cached_peer_id = peer_id
     mcp_server._cached_my_circle = circle
     mcp_server._cached_my_role = role
 
@@ -59,6 +62,30 @@ def _get_notify_tool():
 
 
 class TestListPeersCircleScope:
+    @pytest.mark.asyncio
+    async def test_identity_lookup_prefers_cached_peer_id(self):
+        _seed_identity("dupe-name", "", "", peer_id="repow-team-a-me")
+        mcp_server._cached_my_circle = None
+        mcp_server._cached_my_role = None
+        captured: dict = {}
+
+        async def fake_request(method, path, body=None, params=None):
+            captured["path"] = path
+            return {
+                "peer_id": "repow-team-a-me",
+                "display_name": "dupe-name",
+                "circle": "team-a",
+                "role": "agent",
+            }
+
+        with patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=fake_request)):
+            name, circle, role = await mcp_server._get_my_identity()
+
+        assert captured["path"] == "/peers/repow-team-a-me"
+        assert name == "dupe-name"
+        assert circle == "team-a"
+        assert role == "agent"
+
     @pytest.mark.asyncio
     async def test_default_scopes_to_callers_circle(self):
         _seed_identity("me", "team-a", "agent")
@@ -239,6 +266,25 @@ class TestAskNotifyCircleResolution:
             await ask("bob", "hi", circle="team-c")
 
         assert captured["body"]["circle"] == "team-c"
+
+    @pytest.mark.asyncio
+    async def test_ask_uses_cached_peer_id_as_sender(self):
+        _seed_identity("me", "team-a", "agent", peer_id="repow-team-a-me")
+        ask = _get_ask_tool()
+        captured: dict = {}
+
+        async def fake_request(method, path, body=None, params=None):
+            if path.startswith("/peers/") and method == "GET":
+                return {"display_name": "bob", "circle": "team-a", "role": "agent"}
+            if path == "/ask":
+                captured["body"] = body
+                return {"correlation_id": "ask-5"}
+            return {}
+
+        with patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=fake_request)):
+            await ask("bob", "hi")
+
+        assert captured["body"]["from_peer"] == "repow-team-a-me"
 
     @pytest.mark.asyncio
     async def test_notify_peer_uses_same_fallback(self):

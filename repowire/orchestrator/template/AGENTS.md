@@ -32,6 +32,7 @@ Where most of your judgment budget goes. Not codifiable as recipes; these are he
 - **Same peer or fresh peer?** Default same if the work is continuous with prior. Fresh costs ~10s + context-load — pay it for independent review, fresh-eyes audits, decoupled concerns. Same model = same blind spots; cross-model is genuinely different.
 - **Worktree per concern.** Never two peers on overlapping files in the same worktree, even with well-behaved peers. Use `git worktree add` aggressively — they're cheap.
 - **Route to specific peer names.** A peer at `<project>.<feature>-<runtime>` carries that work's context. Don't relay back to the bare `<project>-<runtime>` peer; the suffix is the disambiguator.
+- **Prefer peer IDs when names collide.** Same-path spawned peers can share confusing display-name families (`agentbox-codex`, `agentbox-2-codex`, etc.). When `list_peers()` shows several plausible targets, address `ask`/`notify_peer` by the `peer_id` column instead of guessing from display name. The ask lifecycle routes replies by peer_id once opened, but the initial target still needs to be the intended peer.
 - **Brief depth proportional to stakes.** Typo fix: one line. Architectural change: long brief with file:line citations + memory references. The brief is what you owe the peer; calibrate.
 
 ## Patterns reference

@@ -80,6 +80,13 @@ async def _register_peer(client, name: str, pane_id: str | None = None) -> str:
     return r.json()["display_name"]
 
 
+async def _register_peer_info(client, name: str, pane_id: str | None = None) -> dict:
+    display_name = await _register_peer(client, name, pane_id=pane_id)
+    r = await client.get(f"/peers/{display_name}")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 class TestAsk:
     async def test_returns_correlation_id(self, env):
         client, _, _, _ = env
@@ -154,6 +161,31 @@ class TestAsk:
         prior = await at.get(first_cid)
         assert not prior.closed
 
+    async def test_peer_id_sender_is_canonicalized_for_reply_path(self, env):
+        client, registry, at, msg_router = env
+        alice = await _register_peer_info(client, "alice")
+        bob = await _register_peer_info(client, "bob")
+
+        r = await client.post("/ask", json={
+            "from_peer": alice["peer_id"], "to_peer": bob["peer_id"], "text": "?",
+        })
+
+        assert r.status_code == 200
+        cid = r.json()["correlation_id"]
+        ask = await at.get(cid)
+        assert ask.from_peer_id == alice["peer_id"]
+        assert ask.from_peer_name == alice["display_name"]
+        assert ask.to_peer_id == bob["peer_id"]
+        assert ask.to_peer_name == bob["display_name"]
+        assert msg_router.send_ask.await_args.kwargs["from_peer"] == alice["display_name"]
+        assert msg_router.send_ask.await_args.kwargs["to_session_id"] == bob["peer_id"]
+        event = registry.get_events()[-1]
+        assert event["type"] == "ask"
+        assert event["from"] == alice["display_name"]
+        assert event["to"] == bob["display_name"]
+        assert event["from_peer_id"] == alice["peer_id"]
+        assert event["to_peer_id"] == bob["peer_id"]
+
 
 class TestAck:
     async def test_bare_ack_closes(self, env):
@@ -189,6 +221,59 @@ class TestAck:
         ask = await at.get(cid)
         assert ask.closed
         assert ask.close_reason == "ack_with_msg"
+
+    async def test_ack_reply_uses_stored_peer_ids_not_reported_from_peer(self, env):
+        client, registry, at, msg_router = env
+        alice = await _register_peer_info(client, "alice")
+        bob = await _register_peer_info(client, "bob")
+        r = await client.post("/ask", json={
+            "from_peer": alice["peer_id"], "to_peer": bob["peer_id"], "text": "?",
+        })
+        cid = r.json()["correlation_id"]
+
+        # Simulate a recipient MCP process reporting the wrong local identity.
+        r = await client.post("/ack", json={
+            "correlation_id": cid,
+            "from_peer": alice["display_name"],
+            "message": "reply from bob",
+        })
+
+        assert r.status_code == 200
+        ask = await at.get(cid)
+        assert ask.closed
+        assert ask.close_reason == "ack_with_msg"
+        kwargs = msg_router.send_notification.await_args.kwargs
+        assert kwargs["from_peer"] == bob["display_name"]
+        assert kwargs["to_session_id"] == alice["peer_id"]
+        assert f"from @{bob['display_name']}" in kwargs["text"]
+        event = registry.get_events()[-1]
+        assert event["type"] == "notification"
+        assert event["from"] == bob["display_name"]
+        assert event["to"] == alice["display_name"]
+        assert event["from_peer_id"] == bob["peer_id"]
+        assert event["to_peer_id"] == alice["peer_id"]
+
+    async def test_ack_reply_does_not_require_from_peer(self, env):
+        client, _, at, msg_router = env
+        alice = await _register_peer_info(client, "alice")
+        bob = await _register_peer_info(client, "bob")
+        r = await client.post("/ask", json={
+            "from_peer": alice["peer_id"], "to_peer": bob["peer_id"], "text": "?",
+        })
+        cid = r.json()["correlation_id"]
+
+        r = await client.post("/ack", json={
+            "correlation_id": cid,
+            "message": "reply from bob",
+        })
+
+        assert r.status_code == 200
+        ask = await at.get(cid)
+        assert ask.closed
+        assert ask.close_reason == "ack_with_msg"
+        kwargs = msg_router.send_notification.await_args.kwargs
+        assert kwargs["from_peer"] == bob["display_name"]
+        assert kwargs["to_session_id"] == alice["peer_id"]
 
     async def test_ack_unknown_id_404(self, env):
         client, _, _, _ = env

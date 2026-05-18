@@ -50,6 +50,27 @@ curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/
 uv tool install repowire    # or: pipx install repowire / pip install repowire
 ```
 
+Developing from source:
+
+```bash
+git clone https://github.com/prassanna-ravishankar/repowire
+cd repowire
+uv sync --extra dev
+uv tool install . --force-reinstall
+```
+
+Hooks and MCP servers run the installed `repowire` executable, not your checkout. After changing daemon, hook, or MCP code locally, reinstall the tool and restart the daemon service so the live mesh uses the new code:
+
+```bash
+uv tool install . --force-reinstall
+repowire setup --non-interactive   # rewrites hooks/MCP/service to the installed local build
+
+# If only daemon code changed, restarting the service is enough:
+launchctl unload ~/Library/LaunchAgents/io.repowire.daemon.plist && \
+  launchctl load ~/Library/LaunchAgents/io.repowire.daemon.plist
+# Linux: systemctl --user restart repowire
+```
+
 ## Quick Start
 
 ```bash
@@ -249,7 +270,7 @@ repowire telegram start
 
 **Reminder injection.** If an agent receives an ask but doesn't ack/reply, repowire injects a reminder block at the start of every subsequent prompt until the ask is acked. Tool-call detection is the source of truth — prose `[ack #cid]` mentions don't close anything, only a real `ack()` call does. If a peer appears paused at the prompt (idle but with unhandled work), the daemon detects this and surfaces it on the dashboard.
 
-**Misroute refusal.** Ambiguous peer names (multiple peers sharing a display name across circles) cause `ask`/`notify_peer` to refuse with a hint, instead of routing to the wrong peer. Always pass explicit `circle=...` to disambiguate.
+**Misroute refusal.** Ambiguous peer names (multiple peers sharing a display name across circles) cause `ask`/`notify_peer` to refuse with a hint, instead of routing to the wrong peer. Always pass explicit `circle=...` to disambiguate. When several same-path peers have similar display names (`agentbox-codex`, `agentbox-2-codex`, ...), address the peer by the `peer_id` column from `list_peers`; ask/ack state is pinned to peer IDs once opened.
 
 **Circle scoping.** As of v0.13.4, the MCP surface defaults to the caller's own circle. Peers with role `service`, `orchestrator`, or `human` (e.g. the Telegram bot, the orchestrator, you) bypass circles and are always visible. Pass `circle='*'` to widen any call to mesh-wide. Orchestrator peers default to mesh-wide automatically — they need the full view.
 

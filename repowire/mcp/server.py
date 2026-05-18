@@ -26,6 +26,7 @@ _http_client: httpx.AsyncClient | None = None
 
 # Cached peer name: resolved lazily from env var, pane lookup, or registration
 _cached_peer_name: str | None = None
+_cached_peer_id: str | None = None
 
 # Cached caller identity (circle + role), populated alongside _cached_peer_name.
 # Used by list_peers/ask/notify_peer to scope to the caller's circle by default
@@ -39,6 +40,20 @@ _registered: bool = False
 
 
 _BYPASS_ROLES = {"service", "orchestrator", "human"}
+
+
+def _cache_identity(result: dict) -> None:
+    """Cache canonical identity fields returned by daemon peer endpoints."""
+    global _cached_peer_id, _cached_peer_name, _cached_my_circle, _cached_my_role
+    if result.get("peer_id"):
+        _cached_peer_id = result["peer_id"]
+    name = result.get("display_name") or result.get("name")
+    if name:
+        _cached_peer_name = name
+    if result.get("circle"):
+        _cached_my_circle = result.get("circle")
+    if result.get("role"):
+        _cached_my_role = result.get("role")
 
 
 async def _resolve_circle_for_send(
@@ -94,12 +109,20 @@ async def _get_my_identity() -> tuple[str | None, str | None, str | None]:
     if not name:
         return name, _cached_my_circle, _cached_my_role
     try:
-        result = await daemon_request("GET", f"/peers/{quote(name, safe='')}")
+        identifier = _cached_peer_id or name
+        result = await daemon_request("GET", f"/peers/{quote(identifier, safe='')}")
+        _cache_identity(result)
         _cached_my_circle = result.get("circle") or _cached_my_circle
         _cached_my_role = result.get("role") or _cached_my_role
     except Exception:
         pass
     return name, _cached_my_circle, _cached_my_role
+
+
+async def _get_my_peer_identifier() -> str:
+    """Return the canonical peer_id when known, otherwise the display name."""
+    await _get_my_identity()
+    return _cached_peer_id or await _get_my_peer_name()
 
 
 def _get_http_client() -> httpx.AsyncClient:
@@ -180,6 +203,7 @@ async def _get_my_peer_name() -> str:
             result = await daemon_request("GET", f"/peers/by-pane/{quote(pane_id, safe='')}")
             name = result.get("display_name") or result.get("peer_id")
             if name:
+                _cache_identity(result)
                 _cached_peer_name = name
                 return name
         except Exception:
@@ -222,11 +246,12 @@ async def _touch_last_seen() -> None:
     acting via MCP" gap that would otherwise leave `is_orchestrator_present`
     (and other last_seen-keyed checks) stale.
     """
-    if _cached_peer_name is None:
+    identifier = _cached_peer_id or _cached_peer_name
+    if identifier is None:
         return
     try:
         await daemon_request(
-            "POST", f"/peers/{quote(_cached_peer_name, safe='')}/touch",
+            "POST", f"/peers/{quote(identifier, safe='')}/touch",
         )
     except Exception:
         pass
@@ -240,10 +265,12 @@ async def _ensure_registered(*, strict: bool = False) -> None:
     last_seen touch runs on every entry so MCP activity counts as a liveness
     signal even when ws-hook has dropped.
     """
-    global _registered, _cached_peer_name, _cached_my_circle, _cached_my_role
+    global _registered, _cached_peer_name, _cached_my_circle, _cached_my_role, _cached_peer_id
     if _registered:
         await _touch_last_seen()
         return
+    if _cached_peer_name is None:
+        _cached_peer_id = None
 
     tmux_info = get_tmux_info()
     pane_id = tmux_info["pane_id"]
@@ -252,11 +279,7 @@ async def _ensure_registered(*, strict: bool = False) -> None:
             result = await daemon_request("GET", f"/peers/by-pane/{quote(pane_id, safe='')}")
             name = result.get("display_name") or result.get("peer_id")
             if name:
-                _cached_peer_name = name
-            if result.get("circle"):
-                _cached_my_circle = result.get("circle")
-            if result.get("role"):
-                _cached_my_role = result.get("role")
+                _cache_identity(result)
             _registered = True
             await _touch_last_seen()
             return
@@ -272,11 +295,7 @@ async def _ensure_registered(*, strict: bool = False) -> None:
         name = await _get_my_peer_name()
         try:
             result = await daemon_request("GET", f"/peers/{quote(name, safe='')}")
-            _cached_peer_name = name
-            if result.get("circle"):
-                _cached_my_circle = result.get("circle")
-            if result.get("role"):
-                _cached_my_role = result.get("role")
+            _cache_identity(result)
             _registered = True
             await _touch_last_seen()
             return
@@ -305,11 +324,7 @@ async def _ensure_registered(*, strict: bool = False) -> None:
         if len(candidates) == 1:
             assigned = candidates[0].get("display_name")
             if assigned:
-                _cached_peer_name = assigned
-                if candidates[0].get("circle"):
-                    _cached_my_circle = candidates[0].get("circle")
-                if candidates[0].get("role"):
-                    _cached_my_role = candidates[0].get("role")
+                _cache_identity(candidates[0])
                 _registered = True
                 await _touch_last_seen()
                 return
@@ -332,9 +347,7 @@ async def _ensure_registered(*, strict: bool = False) -> None:
             body["pane_id"] = pane_id
         result = await daemon_request("POST", "/peers", body)
         # Cache the daemon-assigned name
-        assigned = result.get("display_name")
-        if assigned:
-            _cached_peer_name = assigned
+        _cache_identity(result)
         _cached_my_circle = circle
         _cached_my_role = "agent"
         _registered = True
@@ -469,7 +482,8 @@ def create_mcp_server() -> FastMCP:
             correlation_id for tracking this ask thread
         """
         await _ensure_registered(strict=True)
-        from_peer, my_circle, _ = await _get_my_identity()
+        from_peer_name, my_circle, _ = await _get_my_identity()
+        from_peer = _cached_peer_id or from_peer_name
         effective_circle = await _resolve_circle_for_send(peer_name, circle, my_circle)
         body: dict = {
             "from_peer": from_peer,
@@ -507,7 +521,7 @@ def create_mcp_server() -> FastMCP:
             Confirmation message
         """
         await _ensure_registered(strict=True)
-        from_peer = await _get_my_peer_name()
+        from_peer = await _get_my_peer_identifier()
         body: dict = {
             "correlation_id": correlation_id,
             "from_peer": from_peer,
@@ -542,7 +556,8 @@ def create_mcp_server() -> FastMCP:
             Correlation ID (format: notif-XXXXXXXX) for tracking.
         """
         await _ensure_registered(strict=True)
-        from_peer, my_circle, _ = await _get_my_identity()
+        from_peer_name, my_circle, _ = await _get_my_identity()
+        from_peer = _cached_peer_id or from_peer_name
         effective_circle = await _resolve_circle_for_send(peer_name, circle, my_circle)
         correlation_id = f"notif-{uuid4().hex[:8]}"
         body: dict = {
@@ -618,7 +633,8 @@ def create_mcp_server() -> FastMCP:
 
         name = await _get_my_peer_name()
         try:
-            result = await daemon_request("GET", f"/peers/{name}")
+            identifier = _cached_peer_id or name
+            result = await daemon_request("GET", f"/peers/{quote(identifier, safe='')}")
             return _format_peer_tsv(result)
         except Exception as e:
             return f"{tsv_header}\n\t{name}\t\t\tERROR: {e}\t\t\t"
@@ -646,7 +662,12 @@ def create_mcp_server() -> FastMCP:
                 logger.warning("Could not get peer name by pane_id '%s': %s", pane_id, e)
         if not name:
             name = await _get_my_peer_name()
-        await daemon_request("POST", f"/peers/{name}/description", {"description": description})
+        identifier = _cached_peer_id or name
+        await daemon_request(
+            "POST",
+            f"/peers/{quote(identifier, safe='')}/description",
+            {"description": description},
+        )
         return f"description updated: {description}"
 
     @mcp.tool()

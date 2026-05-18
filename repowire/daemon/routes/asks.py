@@ -32,6 +32,7 @@ from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.routes._shared import OkResponse
 from repowire.daemon.websocket_transport import TransportError
+from repowire.protocol.peers import Peer
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["asks"])
@@ -63,7 +64,13 @@ class AckRequest(BaseModel):
 
     correlation_id: str
     message: str | None = None
-    from_peer: str = Field(..., description="Display name of the acking peer")
+    from_peer: str | None = Field(
+        None,
+        description=(
+            "Compatibility-only acking peer identity. Reply routing uses the "
+            "stored ask recipient, not this field."
+        ),
+    )
 
 
 class _NoOpRequest(BaseModel):
@@ -85,6 +92,30 @@ class PendingAsksResponse(BaseModel):
     asks: list[PendingAsk]
 
 
+async def _get_peer_or_http(identifier: str, *, circle: str | None = None) -> Peer:
+    """Resolve a peer id/display name and convert ambiguity to HTTP errors."""
+    peer_registry = get_peer_registry()
+    try:
+        peer = await peer_registry.get_peer(identifier, circle=circle)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    if not peer:
+        raise HTTPException(status_code=404, detail=f"Unknown peer: {identifier}")
+    return peer
+
+
+async def _resolve_sender_for_target(from_peer: str, target: Peer) -> Peer | None:
+    """Resolve an ask sender, preferring the target circle for display-name lookups."""
+    peer_registry = get_peer_registry()
+    try:
+        return (
+            await peer_registry.get_peer(from_peer, circle=target.circle)
+            or await peer_registry.get_peer(from_peer)
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
 @router.post("/ask", response_model=AskResponse)
 async def open_ask(
     request: AskRequest,
@@ -101,16 +132,15 @@ async def open_ask(
     ask_tracker = state.ask_tracker
     await peer_registry.lazy_repair()
 
-    peer = await peer_registry.get_peer(request.to_peer, circle=request.circle)
-    if not peer:
-        raise HTTPException(status_code=404, detail=f"Unknown peer: {request.to_peer}")
+    peer = await _get_peer_or_http(request.to_peer, circle=request.circle)
 
-    from_peer_obj = await peer_registry.get_peer(request.from_peer)
+    from_peer_obj = await _resolve_sender_for_target(request.from_peer, peer)
     from_peer_id = from_peer_obj.peer_id if from_peer_obj else request.from_peer
+    from_peer_name = from_peer_obj.display_name if from_peer_obj else request.from_peer
 
     cid = await ask_tracker.register(
         from_peer_id=from_peer_id,
-        from_peer_name=request.from_peer,
+        from_peer_name=from_peer_name,
         to_peer_id=peer.peer_id,
         to_peer_name=peer.display_name,
         text=request.text,
@@ -119,8 +149,8 @@ async def open_ask(
 
     try:
         await peer_registry.deliver_ask(
-            from_peer=request.from_peer,
-            to_peer=request.to_peer,
+            from_peer=from_peer_id,
+            to_peer=peer.peer_id,
             text=request.text,
             correlation_id=cid,
             reply_to=request.reply_to,
@@ -197,11 +227,11 @@ async def ack_ask(
     if request.message:
         # bypass_circle=True: ack closes a thread already established at
         # ask-time; circle gate doesn't reapply.
-        framed = f"[ack #{request.correlation_id} from @{request.from_peer}] {request.message}"
+        framed = f"[ack #{request.correlation_id} from @{existing.to_peer_name}] {request.message}"
         try:
             await peer_registry.notify(
-                from_peer=request.from_peer,
-                to_peer=existing.from_peer_name,
+                from_peer=existing.to_peer_id,
+                to_peer=existing.from_peer_id,
                 text=framed,
                 bypass_circle=True,
             )

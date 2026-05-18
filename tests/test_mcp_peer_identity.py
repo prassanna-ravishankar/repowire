@@ -19,9 +19,11 @@ from repowire.mcp import server as mcp_server
 @pytest.fixture(autouse=True)
 def reset_cache():
     mcp_server._cached_peer_name = None
+    mcp_server._cached_peer_id = None
     mcp_server._registered = False
     yield
     mcp_server._cached_peer_name = None
+    mcp_server._cached_peer_id = None
     mcp_server._registered = False
 
 

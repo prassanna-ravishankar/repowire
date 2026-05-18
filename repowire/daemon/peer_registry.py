@@ -960,6 +960,7 @@ class PeerRegistry:
             peer_id = peer.peer_id
             peer_name = peer.display_name
             from_peer_id = from_obj.peer_id if from_obj else None
+            from_peer_name = from_obj.display_name if from_obj else from_peer
             delivery_status: Literal["sent", "queued"] = (
                 "queued" if peer.status == PeerStatus.BUSY else "sent"
             )
@@ -967,14 +968,14 @@ class PeerRegistry:
         self.add_event(
             "notification",
             {
-                "from": from_peer, "to": to_peer, "text": text,
+                "from": from_peer_name, "to": peer_name, "text": text,
                 "from_peer_id": from_peer_id, "to_peer_id": peer_id,
                 "delivery_status": delivery_status,
             },
         )
 
         await self._router.send_notification(
-            from_peer=from_peer,
+            from_peer=from_peer_name,
             to_session_id=peer_id,
             to_peer_name=peer_name,
             text=text,
@@ -1011,11 +1012,12 @@ class PeerRegistry:
             peer_id = peer.peer_id
             peer_name = peer.display_name
             from_peer_id = from_obj.peer_id if from_obj else None
+            from_peer_name = from_obj.display_name if from_obj else from_peer
 
         self.add_event(
             "ask",
             {
-                "from": from_peer, "to": to_peer, "text": text,
+                "from": from_peer_name, "to": peer_name, "text": text,
                 "from_peer_id": from_peer_id, "to_peer_id": peer_id,
                 "correlation_id": correlation_id,
                 "reply_to": reply_to,
@@ -1023,7 +1025,7 @@ class PeerRegistry:
         )
 
         await self._router.send_ask(
-            from_peer=from_peer,
+            from_peer=from_peer_name,
             to_session_id=peer_id,
             to_peer_name=peer_name,
             correlation_id=correlation_id,

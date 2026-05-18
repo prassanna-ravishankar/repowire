@@ -112,6 +112,14 @@ The MCP server needs to know its own peer_id for `from_peer` in tool calls. Key 
 - Backend detection: `GEMINI_CLI` env var for Gemini, `.codex/` in PATH for Codex, else claude-code
 - Codex fires SessionStart late (after first interaction, not at startup). The MCP lazy registration covers this gap.
 - `_get_my_peer_name()` caches peer name from pane-based daemon lookup, falls back to cwd folder name
+- Cache and send the daemon-assigned `peer_id` for routing-sensitive MCP calls
+  (`ask`, `ack`, `notify_peer`) whenever available. Display names are
+  human-facing and can collide across spawned same-path peers; the daemon
+  canonicalizes ask state to peer IDs and ack replies route back to the
+  stored asker ID.
+- `whoami`, `set_description`, and `touch` should also prefer peer_id once
+  cached so ambiguous display-name lookups return a clean 409 instead of
+  misrouting or surfacing intermittent 500s.
 - Tmux pane fallback: `get_pane_id()` tries `TMUX_PANE` env var, then `tmux display-message` (guarded by `TMUX` env to prevent false positives from non-tmux terminals)
 
 ### Channel (experimental - `repowire setup --experimental-channels`)
