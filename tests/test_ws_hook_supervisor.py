@@ -24,11 +24,11 @@ def cache_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _write_meta(pane_id: str, cwd: str) -> None:
+def _write_meta(pane_id: str, cwd: str, backend: str = "claude-code") -> None:
     write_pane_runtime_metadata(
         pane_id,
         {
-            "backend": "claude-code",
+            "backend": backend,
             "cwd": cwd,
             "display_name": "respawn-test",
             "hook_session_id": "sess-1",
@@ -67,7 +67,9 @@ class TestMaybeRespawn:
         with patch.object(
             ws_hook_supervisor, "spawn_ws_hook", return_value=12345,
         ) as mock_spawn:
-            assert ws_hook_supervisor.maybe_respawn(PANE_ID) is True
+            assert ws_hook_supervisor.maybe_respawn(
+                PANE_ID, backend="claude-code", cwd=str(cache_dir),
+            ) is True
             mock_spawn.assert_called_once()
             kwargs = mock_spawn.call_args.kwargs
             assert kwargs["pane_id"] == PANE_ID
@@ -75,6 +77,53 @@ class TestMaybeRespawn:
             assert kwargs["backend"] == "claude-code"
             assert kwargs["peer_id"] == "repow-default-deadbeef"
             assert kwargs["cwd"] == str(cache_dir)
+
+    def test_rejects_respawn_without_current_context(self, cache_dir, caplog):
+        ws_hook_pid_path(PANE_ID).write_text("99999999")
+        _write_meta(PANE_ID, str(cache_dir))
+
+        with patch.object(ws_hook_supervisor, "spawn_ws_hook") as mock_spawn:
+            assert ws_hook_supervisor.maybe_respawn(PANE_ID) is False
+            mock_spawn.assert_not_called()
+
+        assert "ws-hook respawn rejected" in caplog.text
+        assert "metadata claims backend=claude-code" in caplog.text
+        assert f"cwd={cache_dir}" in caplog.text
+        assert f"(pane {PANE_ID})" in caplog.text
+
+    def test_rejects_respawn_when_backend_mismatches(self, cache_dir, caplog):
+        ws_hook_pid_path(PANE_ID).write_text("99999999")
+        _write_meta(PANE_ID, str(cache_dir), backend="gemini")
+
+        with patch.object(ws_hook_supervisor, "spawn_ws_hook") as mock_spawn:
+            assert ws_hook_supervisor.maybe_respawn(
+                PANE_ID, backend="claude-code", cwd=str(cache_dir),
+            ) is False
+            mock_spawn.assert_not_called()
+
+        assert (
+            "ws-hook respawn rejected: metadata claims backend=gemini "
+            f"cwd={cache_dir} but current hook reports backend=claude-code "
+            f"cwd={cache_dir} (pane {PANE_ID})"
+        ) in caplog.text
+
+    def test_rejects_respawn_when_cwd_mismatches(self, cache_dir, tmp_path, caplog):
+        ws_hook_pid_path(PANE_ID).write_text("99999999")
+        metadata_cwd = str(cache_dir / "old")
+        current_cwd = str(tmp_path / "current")
+        _write_meta(PANE_ID, metadata_cwd)
+
+        with patch.object(ws_hook_supervisor, "spawn_ws_hook") as mock_spawn:
+            assert ws_hook_supervisor.maybe_respawn(
+                PANE_ID, backend="claude-code", cwd=current_cwd,
+            ) is False
+            mock_spawn.assert_not_called()
+
+        assert (
+            "ws-hook respawn rejected: metadata claims backend=claude-code "
+            f"cwd={metadata_cwd} but current hook reports backend=claude-code "
+            f"cwd={current_cwd} (pane {PANE_ID})"
+        ) in caplog.text
 
     def test_does_not_respawn_when_lock_contested(self, cache_dir):
         ws_hook_pid_path(PANE_ID).write_text("99999999")

@@ -44,6 +44,26 @@ class TestStopHandler:
             })
             assert result == 0
 
+    @patch("repowire.hooks.stop_handler.maybe_respawn")
+    @patch("repowire.hooks.stop_handler.update_status", return_value=True)
+    @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
+    def test_respawn_receives_current_backend_and_cwd(
+        self, mock_pane, mock_status, mock_respawn,
+    ):
+        with patch("sys.stdin") as stdin:
+            stdin.read.return_value = json.dumps({
+                "hook_event_name": "AfterAgent",
+                "cwd": "/tmp/current",
+                "session_id": "gemini123-rest",
+                "final_response": "done",
+            })
+            result = main("gemini")
+
+        assert result == 0
+        mock_respawn.assert_called_once_with(
+            "%42", backend="gemini", cwd="/tmp/current",
+        )
+
     @patch("repowire.hooks.stop_handler.daemon_post")
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)
     @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
@@ -293,4 +313,3 @@ class TestReminderStopOutput:
         parsed = json.loads(buf.getvalue().strip())
         assert parsed["decision"] == "deny"
         assert "ask-x" in parsed["reason"]
-

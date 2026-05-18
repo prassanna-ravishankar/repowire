@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -55,7 +56,7 @@ def main(backend: str = "claude-code") -> int:
     # Lazy-repair: if the ws-hook process for this pane died (OOM, SIGKILL,
     # unhandled exception), Stop is the cheapest place to notice and relaunch.
     # No new polling -- this piggy-backs on traffic that already runs every turn.
-    maybe_respawn(pane_id)
+    maybe_respawn(pane_id, backend=backend, cwd=input_data.get("cwd") or os.getcwd())
 
     # Get response text: adapter extracts from agent-specific fields,
     # fall back to transcript parsing for Claude Code

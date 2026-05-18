@@ -206,6 +206,39 @@ async def test_stale_peer_id_claim_does_not_steal_existing_peer(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_stale_peer_id_claim_same_path_different_backend_does_not_steal_peer(tmp_path):
+    """Same-cwd sibling agents must not be allowed to rebind each other's peer_id."""
+    registry = _make_registry(tmp_path)
+    shared_path = "/tmp/repowire-research-acp-claude"
+
+    gemini_id, gemini_name = await registry.allocate_and_register(
+        circle="dev",
+        backend=AgentType.GEMINI,
+        path=shared_path,
+        pane_id="%1",
+    )
+
+    claimed_id, claimed_name = await registry.allocate_and_register(
+        circle="dev",
+        backend=AgentType.CLAUDE_CODE,
+        path=shared_path,
+        pane_id="%2",
+        peer_id=gemini_id,
+    )
+
+    assert claimed_id != gemini_id
+    assert claimed_name != gemini_name
+    gemini_peer = await registry.get_peer(gemini_id)
+    assert gemini_peer is not None
+    assert gemini_peer.backend == AgentType.GEMINI
+    assert gemini_peer.pane_id == "%1"
+    claimed_peer = await registry.get_peer_by_pane("%2")
+    assert claimed_peer is not None
+    assert claimed_peer.peer_id == claimed_id
+    assert claimed_peer.backend == AgentType.CLAUDE_CODE
+
+
+@pytest.mark.asyncio
 async def test_circle_and_description_persist_across_restart(tmp_path):
     """A peer re-registering after restart restores its prior circle + description.
 

@@ -15,6 +15,7 @@ the persisted pane metadata. No new polling.
 from __future__ import annotations
 
 import fcntl
+import logging
 import os
 import subprocess
 import sys
@@ -27,6 +28,8 @@ from repowire.hooks.utils import (
     ws_hook_lock_path,
     ws_hook_pid_path,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def spawn_ws_hook(
@@ -89,7 +92,12 @@ def _pid_alive(pid: int) -> bool:
         return True
 
 
-def maybe_respawn(pane_id: str | None) -> bool:
+def maybe_respawn(
+    pane_id: str | None,
+    *,
+    backend: str | None = None,
+    cwd: str | None = None,
+) -> bool:
     """Restart the ws-hook for `pane_id` iff its prior process is dead.
 
     Lazy-repair path triggered from the Stop hook. Returns True when a fresh
@@ -132,11 +140,11 @@ def maybe_respawn(pane_id: str | None) -> bool:
                 return False
 
             metadata = read_pane_runtime_metadata(pane_id)
-            cwd = metadata.get("cwd")
+            metadata_cwd = metadata.get("cwd")
             display_name = metadata.get("display_name")
-            backend = metadata.get("backend") or "claude-code"
+            metadata_backend = metadata.get("backend") or "claude-code"
             peer_id = metadata.get("peer_id")
-            if not cwd or not display_name:
+            if not metadata_cwd or not display_name:
                 # Without these we can't recreate the prior connect state.
                 # Drop the stale pid file so a future SessionStart isn't
                 # confused, but don't spawn blindly.
@@ -145,13 +153,35 @@ def maybe_respawn(pane_id: str | None) -> bool:
                 except OSError:
                     pass
                 return False
+            if not backend or not cwd:
+                logger.warning(
+                    "ws-hook respawn rejected: metadata claims backend=%s cwd=%s "
+                    "but current hook reports backend=%s cwd=%s (pane %s)",
+                    metadata_backend,
+                    metadata_cwd,
+                    backend,
+                    cwd,
+                    pane_id,
+                )
+                return False
+            if metadata_backend != backend or metadata_cwd != cwd:
+                logger.warning(
+                    "ws-hook respawn rejected: metadata claims backend=%s cwd=%s "
+                    "but current hook reports backend=%s cwd=%s (pane %s)",
+                    metadata_backend,
+                    metadata_cwd,
+                    backend,
+                    cwd,
+                    pane_id,
+                )
+                return False
 
             new_pid = spawn_ws_hook(
                 pane_id=pane_id,
                 peer_id=peer_id,
                 display_name=display_name,
-                backend=backend,
-                cwd=cwd,
+                backend=metadata_backend,
+                cwd=metadata_cwd,
                 lock_fd=lock_fd,
             )
             return new_pid is not None
