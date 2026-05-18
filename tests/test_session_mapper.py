@@ -527,3 +527,65 @@ async def test_hijack_guard_skipped_when_existing_agent_pid_missing(tmp_path):
     )
     peer = await registry.get_peer_by_pane("%5")
     assert peer is not None and peer.peer_id == new_id
+
+
+@pytest.mark.asyncio
+async def test_agent_pid_persists_in_session_mapping(tmp_path):
+    """agent_pid is written to and read back from the on-disk SessionMapping.
+    Persisting it is the prerequisite for the hijack guard surviving daemon
+    restart: when the peer rehydrates via its ws-hook reconnect (same
+    peer_id), the registry has agent_pid to compare against."""
+    registry = _make_registry(tmp_path)
+
+    original_agent_pid = 51515
+    peer_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(tmp_path),
+        pane_id="%9",
+        agent_pid=original_agent_pid,
+    )
+    registry._mappings_dirty = True
+    registry._persist_mappings()
+
+    raw = json.loads((tmp_path / "sessions.json").read_text())
+    assert raw[peer_id]["agent_pid"] == original_agent_pid
+
+    reloaded = _make_registry(tmp_path)
+    mapping = reloaded.get_mapping(peer_id)
+    assert mapping is not None
+    assert mapping.agent_pid == original_agent_pid
+
+
+@pytest.mark.asyncio
+async def test_reconnect_updates_agent_pid_on_live_peer_and_mapping(tmp_path):
+    """When the same peer_id reconnects after the original agent process
+    has changed (e.g. daemon-restart followed by ws-hook reconnect with a
+    fresh agent_pid), both the live Peer and the SessionMapping are
+    refreshed so subsequent hijack checks compare against the live pid."""
+    registry = _make_registry(tmp_path)
+
+    peer_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(tmp_path),
+        pane_id="%r",
+        agent_pid=10001,
+    )
+    m0 = registry.get_mapping(peer_id)
+    assert m0 is not None and m0.agent_pid == 10001
+
+    reclaimed_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(tmp_path),
+        pane_id="%r",
+        peer_id=peer_id,
+        agent_pid=20002,
+    )
+    assert reclaimed_id == peer_id
+    peer = await registry.get_peer(peer_id)
+    assert peer is not None
+    assert peer.agent_pid == 20002
+    m1 = registry.get_mapping(peer_id)
+    assert m1 is not None and m1.agent_pid == 20002

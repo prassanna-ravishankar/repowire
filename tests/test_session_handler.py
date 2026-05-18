@@ -265,3 +265,57 @@ class TestSessionMain:
                 mock_kill.assert_called_once_with(99999, signal.SIGTERM)
                 mock_register.assert_called_once()
                 assert not (log_dir / "pending-query-1.json").exists()
+
+    @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
+    @patch(
+        "repowire.hooks.session_handler._register_peer_http",
+        return_value=("repow-default-abc12345", "test-claude-code", False),
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={
+            "pane_id": "%1",
+            "session_name": "default",
+            "window_name": "test",
+        },
+    )
+    @patch("repowire.hooks.session_handler.subprocess.Popen")
+    @patch("repowire.hooks.session_handler.compute_git_status", return_value=None)
+    @patch("repowire.hooks.session_handler.get_git_branch", return_value=None)
+    @patch("repowire.hooks.session_handler._read_ppid_of", return_value=4242)
+    def test_session_start_sends_agent_pid_as_ppid_not_own_pid(
+        self,
+        mock_read_ppid,
+        mock_branch,
+        mock_status,
+        mock_popen,
+        mock_tmux,
+        mock_register,
+        mock_fetch,
+        tmp_path,
+    ):
+        """The agent_pid in the registration payload must be os.getppid(),
+        not os.getpid() — the hook process dies seconds after registration,
+        so storing its own pid makes the pane-hijack guard useless after
+        the hook exits (issue #190 review)."""
+        import os as os_mod
+
+        with patch("repowire.config.models.CACHE_DIR", tmp_path), \
+             patch("repowire.hooks.session_handler.os.getppid", return_value=31415):
+            result = _run_with_input({
+                "hook_event_name": "SessionStart",
+                "cwd": str(tmp_path),
+                "session_id": "abc12345-rest",
+            })
+            assert result == 0
+            mock_register.assert_called_once()
+            kwargs = mock_register.call_args.kwargs
+            # agent_pid must be the AGENT's pid (the hook's parent), not the
+            # hook's own pid. We patched getppid to 31415 — if the value is
+            # os.getpid() (this pytest process), the test catches the bug.
+            assert kwargs["agent_pid"] == 31415
+            assert kwargs["agent_pid"] != os_mod.getpid()
+            # parent_pid is computed by walking up one more step from the
+            # agent. We mocked _read_ppid_of to 4242.
+            assert kwargs["parent_pid"] == 4242
+            mock_read_ppid.assert_called_once_with(31415)

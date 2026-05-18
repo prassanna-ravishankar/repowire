@@ -30,6 +30,34 @@ from repowire.peer_describe import compute_git_status
 from repowire.spawn_hints import consume_hint_full
 
 
+def _read_ppid_of(pid: int) -> int | None:
+    """Return the parent pid of ``pid``, or None if it can't be determined.
+
+    Used by the pane-hijack guard payload: the hook's ppid is the agent
+    process; the agent's ppid is what tells us whether the agent was itself
+    spawned by another mesh peer (a hijack) or by a plain shell (legitimate).
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        # Best-effort: any failure (subprocess error, missing binary, OS
+        # error, or in tests where subprocess.Popen is mocked) → unknown
+        # parent. The guard treats parent_pid=None as "can't decide" and
+        # lets the claim through, which is the safe default.
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except (ValueError, AttributeError):
+        return None
+
+
 def _register_peer_http(
     path: str,
     circle: str,
@@ -277,6 +305,17 @@ def main(backend: str = "claude-code") -> int:
         git_status = compute_git_status(cwd)
         if git_status is not None:
             metadata["git_status"] = git_status
+        # Pid lineage for the pane-hijack guard:
+        #   - agent_pid: the AGENT process that owns this hook == os.getppid().
+        #     The hook process itself dies seconds later, so its own pid is
+        #     useless for after-the-fact identity checks.
+        #   - parent_pid: the AGENT's parent. For a legitimately launched
+        #     agent that's a shell; for a subprocess agent (e.g. gemini
+        #     invoked by a still-running claude), it's the parent agent's
+        #     pid, which will match the existing peer's recorded agent_pid
+        #     and trip the guard.
+        agent_pid_val = os.getppid()
+        parent_pid_val = _read_ppid_of(agent_pid_val)
         peer_id, display_name, hijack_rejected = _register_peer_http(
             cwd,
             circle,
@@ -285,8 +324,8 @@ def main(backend: str = "claude-code") -> int:
             metadata=metadata,
             role=hint_role,
             turn_state=initial_turn_state,
-            agent_pid=os.getpid(),
-            parent_pid=os.getppid(),
+            agent_pid=agent_pid_val,
+            parent_pid=parent_pid_val,
         )
         if hijack_rejected:
             # Daemon rejected this pane claim. Don't write pane metadata,

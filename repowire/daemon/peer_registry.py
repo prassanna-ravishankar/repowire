@@ -57,6 +57,11 @@ class SessionMapping:
     role: PeerRole = PeerRole.AGENT
     updated_at: str | None = None
     description: str = ""
+    # Pid of the agent process that last owned this peer. Persisted so the
+    # pane-hijack guard (issue #190) survives daemon restart: when the
+    # original peer rehydrates via its ws-hook, we restore this value into
+    # the in-memory Peer and the guard can compare against it.
+    agent_pid: int | None = None
 
     def __post_init__(self) -> None:
         if self.updated_at is None:
@@ -404,6 +409,7 @@ class PeerRegistry:
         backend: AgentType,
         path: str | None = None,
         role: PeerRole = PeerRole.AGENT,
+        agent_pid: int | None = None,
     ) -> str:
         """Find existing mapping or allocate a new session_id. Must hold lock.
 
@@ -417,6 +423,8 @@ class PeerRegistry:
             ):
                 mapping.path = path
                 mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                if agent_pid is not None:
+                    mapping.agent_pid = agent_pid
                 logger.info(f"Reusing session {sid} for {display_name}@{circle}")
                 self._mappings_dirty = True
                 return sid
@@ -435,6 +443,8 @@ class PeerRegistry:
                     and mapping.path == path
                 ):
                     mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                    if agent_pid is not None:
+                        mapping.agent_pid = agent_pid
                     self._mappings_dirty = True
                     logger.info(
                         f"Adopted prior session {sid} for {display_name} "
@@ -450,6 +460,7 @@ class PeerRegistry:
             backend=backend,
             path=path,
             role=role,
+            agent_pid=agent_pid,
         )
         logger.info(f"Created session {session_id} for {display_name}@{circle}")
         self._mappings_dirty = True
@@ -536,6 +547,12 @@ class PeerRegistry:
                         existing.tmux_session = tmux_session
                     if machine != "unknown":
                         existing.machine = machine
+                    if agent_pid is not None:
+                        existing.agent_pid = agent_pid
+                        mapping = self._mappings.get(peer_id)
+                        if mapping is not None and mapping.agent_pid != agent_pid:
+                            mapping.agent_pid = agent_pid
+                            self._mappings_dirty = True
                     logger.info(f"Peer reconnected: {existing.display_name} ({peer_id})")
                     return peer_id, existing.display_name
 
@@ -578,6 +595,7 @@ class PeerRegistry:
             assigned_name = self._build_display_name(path or "", circle, backend)
             allocated_id = self._find_or_allocate_mapping(
                 assigned_name, circle, backend, path, role=role,
+                agent_pid=agent_pid,
             )
             if pane_id:
                 self._release_pane(pane_id, allocated_id)
@@ -591,6 +609,13 @@ class PeerRegistry:
             effective_circle = restored.circle if restored else circle
             effective_role = restored.role if restored else role
             restored_description = restored.description if restored else ""
+            # Caller-supplied agent_pid wins (it's the live process); fall
+            # back to whatever the mapping persisted across daemon restart.
+            effective_agent_pid = (
+                agent_pid
+                if agent_pid is not None
+                else (restored.agent_pid if restored else None)
+            )
 
             # --- create and insert Peer ---
             peer = Peer(
@@ -608,7 +633,7 @@ class PeerRegistry:
                 metadata=metadata or {},
                 description=restored_description,
                 turn_state=turn_state,
-                agent_pid=agent_pid,
+                agent_pid=effective_agent_pid,
             )
             self._peers[allocated_id] = peer
             logger.info(f"Peer registered: {assigned_name} ({allocated_id})")
