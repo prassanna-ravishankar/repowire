@@ -53,11 +53,15 @@ async def post_spawn_warmup(
         if backend == AgentType.CODEX:
             text = message or DEFAULT_WARMUP_TEMPLATE.format(path=path, circle=circle)
             await _codex_warmup(pane_id, text)
-        else:
-            # claude-code, opencode, gemini: SessionStart (or equivalent) fires
-            # at boot, so no nudge needed. If a future backend needs one, add a
-            # branch here.
-            return
+        elif message:
+            # claude-code, opencode, gemini: SessionStart fires at boot so the
+            # peer self-registers without a nudge, but the per-spawn seed
+            # message was previously dropped on the floor. Deliver it via
+            # tmux send-keys after a short settle delay so the agent has a
+            # prompt to receive into. This closes the
+            # `pending_first_turn` drop where spawn brief silently vanished.
+            await _claude_code_family_seed(pane_id, message)
+        # else: no seed message — registration via SessionStart is enough.
     except Exception as e:
         logger.warning("post_spawn_warmup failed for %s pane %s: %s", backend, pane_id, e)
 
@@ -95,6 +99,29 @@ async def _codex_warmup(pane_id: str, message: str) -> None:
 
     await asyncio.sleep(1)
 
+    await _tmux_send(pane_id, message, literal=True)
+    await asyncio.sleep(0.2)
+    await _tmux_send(pane_id, "C-m")
+
+
+async def _claude_code_family_seed(pane_id: str, message: str) -> None:
+    """Deliver the per-spawn seed message into a claude-code-family pane.
+
+    These backends boot a TUI prompt that's ready to receive input within a
+    few seconds. Sleep for the boot budget, then send the seed text + Enter.
+    Best-effort — failure is logged and swallowed by the caller.
+
+    Sequence:
+      1. Sleep 5s   -- claude-code-family TUI boot budget
+      2. send-keys message + C-m
+    """
+    if not pane_id:
+        return
+    if not shutil.which("tmux"):
+        logger.warning("seed-message: tmux binary not found, skipping")
+        return
+
+    await asyncio.sleep(5)
     await _tmux_send(pane_id, message, literal=True)
     await asyncio.sleep(0.2)
     await _tmux_send(pane_id, "C-m")

@@ -9,6 +9,7 @@ import pytest
 from repowire.config.models import AgentType
 from repowire.installers.post_spawn import (
     DEFAULT_WARMUP_TEMPLATE,
+    _claude_code_family_seed,
     _codex_warmup,
     post_spawn_warmup,
 )
@@ -79,6 +80,117 @@ class TestPostSpawnWarmup:
             AgentType.CODEX, "%42",
             path="/tmp/proj", circle="5", message=None,
         )
+
+    @pytest.mark.asyncio
+    @patch("repowire.installers.post_spawn._claude_code_family_seed", new_callable=AsyncMock)
+    @patch("repowire.installers.post_spawn._codex_warmup", new_callable=AsyncMock)
+    async def test_claude_code_with_message_delivers_seed(
+        self, mock_codex: AsyncMock, mock_seed: AsyncMock,
+    ) -> None:
+        """claude-code spawn with a per-spawn seed message must deliver it,
+        not silently drop. This closes the pending_first_turn bug where
+        spawn briefs vanished without reaching the agent.
+        """
+        await post_spawn_warmup(
+            AgentType.CLAUDE_CODE, "%42",
+            path="/tmp/proj", circle="5",
+            message="Task brief from orch",
+        )
+        mock_codex.assert_not_awaited()
+        mock_seed.assert_awaited_once_with("%42", "Task brief from orch")
+
+    @pytest.mark.asyncio
+    @patch("repowire.installers.post_spawn._claude_code_family_seed", new_callable=AsyncMock)
+    @patch("repowire.installers.post_spawn._codex_warmup", new_callable=AsyncMock)
+    async def test_opencode_with_message_delivers_seed(
+        self, mock_codex: AsyncMock, mock_seed: AsyncMock,
+    ) -> None:
+        await post_spawn_warmup(
+            AgentType.OPENCODE, "%42",
+            path="/tmp/proj", circle="5",
+            message="Task brief",
+        )
+        mock_codex.assert_not_awaited()
+        mock_seed.assert_awaited_once_with("%42", "Task brief")
+
+    @pytest.mark.asyncio
+    @patch("repowire.installers.post_spawn._claude_code_family_seed", new_callable=AsyncMock)
+    @patch("repowire.installers.post_spawn._codex_warmup", new_callable=AsyncMock)
+    async def test_gemini_with_message_delivers_seed(
+        self, mock_codex: AsyncMock, mock_seed: AsyncMock,
+    ) -> None:
+        await post_spawn_warmup(
+            AgentType.GEMINI, "%42",
+            path="/tmp/proj", circle="5",
+            message="Task brief",
+        )
+        mock_codex.assert_not_awaited()
+        mock_seed.assert_awaited_once_with("%42", "Task brief")
+
+    @pytest.mark.asyncio
+    @patch("repowire.installers.post_spawn._claude_code_family_seed", new_callable=AsyncMock)
+    @patch("repowire.installers.post_spawn._codex_warmup", new_callable=AsyncMock)
+    async def test_claude_code_without_message_is_still_noop(
+        self, mock_codex: AsyncMock, mock_seed: AsyncMock,
+    ) -> None:
+        """Bare spawns (no message) preserve the prior no-op behavior."""
+        await post_spawn_warmup(
+            AgentType.CLAUDE_CODE, "%42",
+            path="/tmp/proj", circle="5", message=None,
+        )
+        mock_codex.assert_not_awaited()
+        mock_seed.assert_not_awaited()
+
+
+class TestClaudeCodeFamilySeed:
+    """_claude_code_family_seed drives the seed-delivery sequence."""
+
+    @pytest.mark.asyncio
+    @patch("repowire.installers.post_spawn._tmux_send", new_callable=AsyncMock)
+    @patch("repowire.installers.post_spawn.asyncio.sleep", new_callable=AsyncMock)
+    @patch("repowire.installers.post_spawn.shutil.which", return_value="/usr/bin/tmux")
+    async def test_seed_delivery_sequence(
+        self,
+        _mock_which,
+        mock_sleep: AsyncMock,
+        mock_send: AsyncMock,
+    ) -> None:
+        await _claude_code_family_seed("%42", "Task brief from orch")
+
+        # message + C-m submit = 2 sends
+        assert mock_send.await_count == 2
+        calls = mock_send.await_args_list
+        assert calls[0].args == ("%42", "Task brief from orch")
+        assert calls[0].kwargs == {"literal": True}
+        assert calls[1].args == ("%42", "C-m")
+
+        # Sleeps: 5s boot + 0.2s pre-submit
+        sleep_args = [c.args[0] for c in mock_sleep.await_args_list]
+        assert sleep_args == [5, 0.2]
+
+    @pytest.mark.asyncio
+    @patch("repowire.installers.post_spawn._tmux_send", new_callable=AsyncMock)
+    @patch("repowire.installers.post_spawn.asyncio.sleep", new_callable=AsyncMock)
+    @patch("repowire.installers.post_spawn.shutil.which", return_value=None)
+    async def test_seed_skips_when_tmux_missing(
+        self,
+        _mock_which,
+        _mock_sleep: AsyncMock,
+        mock_send: AsyncMock,
+    ) -> None:
+        await _claude_code_family_seed("%42", "Task brief")
+        mock_send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("repowire.installers.post_spawn._tmux_send", new_callable=AsyncMock)
+    @patch("repowire.installers.post_spawn.asyncio.sleep", new_callable=AsyncMock)
+    async def test_seed_skips_when_pane_id_empty(
+        self,
+        _mock_sleep: AsyncMock,
+        mock_send: AsyncMock,
+    ) -> None:
+        await _claude_code_family_seed("", "Task brief")
+        mock_send.assert_not_awaited()
 
 
 class TestCodexWarmup:
