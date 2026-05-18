@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -10,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
-from repowire.daemon.deps import get_config, get_peer_registry
+from repowire.daemon.deps import get_app_state, get_config, get_peer_registry
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.installers.post_spawn import post_spawn_warmup
 from repowire.spawn import (
@@ -285,3 +286,186 @@ async def kill_registered_peer(
         _SPAWNED_PANE_IDS.discard(peer.pane_id)
     await peer_registry.unregister_peer(peer.peer_id)
     return KillResponse(tmux_killed=tmux_killed)
+
+
+# ---------------------------------------------------------------------------
+# Backend switcher (§4.8) — kill + respawn same path/circle with new backend
+# ---------------------------------------------------------------------------
+
+
+class SwitchBackendRequest(BaseModel):
+    """Request to switch a running peer's backend."""
+
+    new_backend: AgentType = Field(..., description="Target agent runtime")
+
+
+class SwitchBackendResponse(BaseModel):
+    """Result of a successful backend switch."""
+
+    ok: bool = True
+    display_name: str
+    tmux_session: str
+    old_backend: AgentType
+    new_backend: AgentType
+
+
+def _command_for_backend(new_backend: AgentType) -> str | None:
+    """Return the first allowed_commands entry whose first token maps to new_backend."""
+    cfg = get_config()
+    for cmd in cfg.daemon.spawn.allowed_commands:
+        head = cmd.split(None, 1)[0] if cmd else ""
+        if _COMMAND_TO_BACKEND.get(head) is new_backend:
+            return cmd
+    return None
+
+
+@router.post("/peers/{name}/switch-backend", response_model=SwitchBackendResponse)
+async def switch_peer_backend(
+    name: str,
+    request: SwitchBackendRequest,
+    circle: str | None = None,
+    _: str | None = Depends(require_auth),
+) -> SwitchBackendResponse:
+    """Switch a peer's backend by killing it and respawning at the same path/circle.
+
+    Same-host only in v1: cross-host peers return 409 (same shape as the per-peer
+    MCP routes). Conversation state is NOT preserved across the switch — the new
+    backend starts fresh in the peer's working directory. ACP-native switching is
+    out of scope until ACP phase-3 lands.
+
+    Errors:
+    - 404: peer not found
+    - 409 same_backend: new_backend equals current backend (no-op)
+    - 409 cross_host: peer runs on a different machine
+    - 409 in_flight_asks: peer has open asks; caller must retry after they close
+    - 422 command_unavailable: no entry in daemon.spawn.allowed_commands maps to
+      new_backend — operator must add one to ~/.repowire/config.yaml
+    """
+    peer_registry = get_peer_registry()
+    await peer_registry.lazy_repair()
+    peer = await peer_registry.get_peer(name, circle=circle)
+    if not peer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Peer not found: {name}",
+        )
+
+    self_machine = socket.gethostname()
+    if peer.machine and peer.machine != self_machine:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "cross_host",
+                "hint": (
+                    "Backend switch is same-host only in v1; "
+                    "ACP transport required for remote peers."
+                ),
+                "peer_machine": peer.machine,
+                "self_machine": self_machine,
+            },
+        )
+
+    current_backend = peer.backend
+    if current_backend is request.new_backend:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "same_backend",
+                "hint": f"Peer is already running {current_backend.value}",
+                "backend": current_backend.value,
+            },
+        )
+
+    if not peer.path:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "missing_path",
+                "hint": "Peer has no recorded working directory; cannot respawn.",
+            },
+        )
+
+    command = _command_for_backend(request.new_backend)
+    if command is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "command_unavailable",
+                "hint": (
+                    f"No entry in daemon.spawn.allowed_commands maps to "
+                    f"{request.new_backend.value!r}. Add one to "
+                    f"~/.repowire/config.yaml (e.g. {request.new_backend.value!r})."
+                ),
+                "new_backend": request.new_backend.value,
+            },
+        )
+
+    # Validate the resolved command + peer's existing path against allowlists so
+    # operators can't bypass /spawn's guardrails via a backend switch.
+    _validate_spawn_request(peer.path, command)
+
+    # In-flight asks: refuse rather than orphan correlation IDs. Caller documents
+    # this as a transient TransportError-shaped 409 — retry once the asks close.
+    state = get_app_state()
+    ask_tracker = state.ask_tracker
+    pending = await ask_tracker.pending_for_peer(peer.peer_id, direction="both")
+    if pending:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "in_flight_asks",
+                "hint": (
+                    "Peer has open asks; backend switch would orphan them. "
+                    "Retry after they're acked or evicted."
+                ),
+                "open_asks": [a.correlation_id for a in pending],
+            },
+        )
+
+    # Capture pre-kill state. Use the path-derived stem so the respawn lands on
+    # the same window-name base (tmux will pick a unique suffix if needed).
+    spawn_circle = peer.circle or "default"
+    resolved_path = str(Path(peer.path).expanduser().resolve())
+
+    # Kill the existing peer (pane + registry entry) using the same ownership
+    # rules as /kill-peer: only daemon-spawned panes are killed.
+    if peer.pane_id and peer.pane_id in _SPAWNED_PANE_IDS:
+        kill_pane(peer.pane_id)
+        _SPAWNED_PANE_IDS.discard(peer.pane_id)
+    await peer_registry.unregister_peer(peer.peer_id)
+
+    # Respawn with the new backend.
+    try:
+        result: SpawnResult = spawn_peer(
+            SpawnConfig(
+                path=resolved_path,
+                circle=spawn_circle,
+                backend=request.new_backend,
+                command=command,
+            )
+        )
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e),
+        ) from e
+
+    if result.pane_id:
+        _SPAWNED_PANE_IDS.add(result.pane_id)
+        task = asyncio.create_task(
+            post_spawn_warmup(
+                request.new_backend,
+                result.pane_id,
+                path=resolved_path,
+                circle=spawn_circle,
+                message=result.message,
+            )
+        )
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+    return SwitchBackendResponse(
+        display_name=result.display_name,
+        tmux_session=result.tmux_session,
+        old_backend=current_backend,
+        new_backend=request.new_backend,
+    )

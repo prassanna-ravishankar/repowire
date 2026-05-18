@@ -86,6 +86,7 @@ export function PeerView({
           </div>
         </div>
         <StatusLabel status={peer.status} />
+        <SwitchBackendControl peer={peer} apiBase={apiBase} />
         {peer.path ? <OpenInEditorButton path={peer.path} /> : null}
         <CopyPeerName peer={peer} />
         <button
@@ -1008,6 +1009,120 @@ function OpenInEditorButton({ path }: { path: string }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+const BACKEND_BY_COMMAND_HEAD: Record<string, string> = {
+  claude: "claude-code",
+  opencode: "opencode",
+  codex: "codex",
+  gemini: "gemini",
+  pi: "pi",
+};
+
+function backendForCommand(cmd: string): string | null {
+  const head = cmd.trim().split(/\s+/)[0] ?? "";
+  return BACKEND_BY_COMMAND_HEAD[head] ?? null;
+}
+
+function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }) {
+  const [allowedCommands, setAllowedCommands] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${apiBase}/spawn/config`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        setAllowedCommands(Array.isArray(data.allowed_commands) ? data.allowed_commands : []);
+      })
+      .catch(() => {
+        if (!cancelled) setAllowedCommands([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase]);
+
+  // Map allowed_commands → unique backends, filter out current backend.
+  const options = useMemo(() => {
+    if (!allowedCommands) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const cmd of allowedCommands) {
+      const backend = backendForCommand(cmd);
+      if (!backend || backend === peer.backend || seen.has(backend)) continue;
+      seen.add(backend);
+      out.push(backend);
+    }
+    return out;
+  }, [allowedCommands, peer.backend]);
+
+  if (allowedCommands === null || options.length === 0) return null;
+
+  async function onChange(event: React.ChangeEvent<HTMLSelectElement>) {
+    const newBackend = event.target.value;
+    event.target.value = "";  // reset placeholder
+    if (!newBackend) return;
+    if (!confirm(
+      `Switch ${peer.name} from ${peer.backend} to ${newBackend}?\n\n` +
+      `The current session will be killed and a fresh ${newBackend} session ` +
+      `will start in the same directory. Conversation state is not preserved.`
+    )) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const r = await fetch(
+        `${apiBase}/peers/${encodeURIComponent(peer.name)}/switch-backend`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ new_backend: newBackend }),
+        }
+      );
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        const detail = body?.detail;
+        const hint = typeof detail === "string"
+          ? detail
+          : detail?.hint || detail?.error || `HTTP ${r.status}`;
+        setError(hint);
+        return;
+      }
+      // Success: peer list will refresh via events; nothing else to do here.
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Request failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="hidden items-center gap-1.5 sm:flex" title={error || undefined}>
+      <select
+        aria-label="Switch backend"
+        disabled={busy}
+        defaultValue=""
+        onChange={onChange}
+        className={cn(
+          "h-8 max-w-[140px] truncate rounded border bg-surface-container-low px-2 font-mono text-[11px] uppercase tracking-[0.14em] text-on-surface-variant",
+          error ? "border-error/60" : "border-border",
+          busy && "opacity-50"
+        )}
+      >
+        <option value="" disabled>
+          {busy ? "switching…" : `switch → ${peer.backend}`}
+        </option>
+        {options.map((backend) => (
+          <option key={backend} value={backend}>
+            {backend}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

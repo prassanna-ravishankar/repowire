@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10"
 
 [[package]]
@@ -1352,7 +1352,7 @@ wheels = [
 
 [[package]]
 name = "repowire"
-version = "0.13.17"
+version = "0.13.19"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
