@@ -280,7 +280,11 @@ async def _ensure_registered(*, strict: bool = False) -> None:
     global _registered, _cached_peer_name, _cached_my_circle, _cached_my_role, _cached_peer_id
     if _registered:
         await _touch_last_seen()
-        return
+        # _touch_last_seen invalidates _registered on 404/409 (daemon restart,
+        # peer reassignment). Fall through to re-resolve identity in THIS call
+        # so the current MCP tool doesn't continue with stale from_peer.
+        if _registered:
+            return
     if _cached_peer_name is None:
         _cached_peer_id = None
 

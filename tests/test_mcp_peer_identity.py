@@ -363,3 +363,47 @@ async def test_touch_other_errors_do_not_invalidate():
 
     assert mcp_server._registered is True
     assert mcp_server._cached_peer_id == "real-peer-id"
+
+
+@pytest.mark.asyncio
+async def test_ensure_registered_re_resolves_in_same_call_after_touch_404():
+    """After _touch_last_seen 404 invalidates the cache, _ensure_registered
+    must continue into the registration path within the SAME call — not wait
+    for the next MCP entry. Otherwise the current ask/notify uses stale
+    from_peer and the eventual ack reply routes to a nonexistent peer_id.
+    """
+    mcp_server._cached_peer_id = "stale-id"
+    mcp_server._cached_peer_name = "stale-name"
+    mcp_server._registered = True
+
+    call_log: list[tuple[str, str]] = []
+    # First touch is the stale-id one and 404s; the post-re-registration
+    # touch uses the fresh id and should succeed.
+    touch_count = {"n": 0}
+
+    async def daemon_router(method, path, body=None, params=None):
+        del body, params
+        call_log.append((method, path))
+        if method == "POST" and "/touch" in path:
+            touch_count["n"] += 1
+            if touch_count["n"] == 1:
+                raise mcp_server.DaemonHTTPError(404, "Peer not found")
+            return {"ok": True}
+        if method == "GET" and path.startswith("/peers/by-pane/"):
+            return {"display_name": "fresh-name", "peer_id": "fresh-id"}
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+    tmux_info = {"pane_id": "%99", "session_name": None}
+    with patch.object(mcp_server, "get_tmux_info", return_value=tmux_info), \
+         patch.object(mcp_server, "get_pane_id", return_value="%99"), \
+         patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_router)):
+        await mcp_server._ensure_registered()
+
+    # First the touch (which 404s and invalidates), then by-pane re-resolve.
+    assert any("/touch" in path for _, path in call_log), "touch should fire"
+    assert any("/peers/by-pane/" in path for _, path in call_log), \
+        "re-registration must happen in the same call after touch invalidates"
+    assert mcp_server._cached_peer_id == "fresh-id", \
+        "post-restart peer_id must be canonicalized in same call, not stale"
+    assert mcp_server._cached_peer_name == "fresh-name"
+    assert mcp_server._registered is True
