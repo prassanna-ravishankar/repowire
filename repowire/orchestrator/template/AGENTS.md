@@ -57,6 +57,20 @@ The user delegates merge authority for verified-clean PRs (95% case). Use it; do
 
 If unsure whether something is no-go, surface once. Cheap to ask, expensive to unship.
 
+## Surface change discipline
+
+When a task changes tools, commands, prompts, or user-visible behavior, require a surface matrix before implementation. Check every user and agent entrypoint for that product, not just the one implementation path:
+
+- Agent tools and protocol/MCP registrations
+- Direct tool wrappers exposed by the local coding harness
+- CLI commands, flags, and help text
+- Web or desktop dashboard controls and docs pages
+- Chat/bot/mobile surfaces
+- Installer/setup/bootstrap prompts and generated templates
+- README, reference docs, and examples
+
+Use the matrix to decide what ships together, what needs compatibility shims, and what docs must change. Missing surfaces become explicit follow-up issues, not hidden assumptions.
+
 ## Release discipline
 
 - **Never tag from a branch.** Tag and publish only from `main`, only after PR merged AND review confirmed against merged-main commit.
@@ -64,9 +78,26 @@ If unsure whether something is no-go, surface once. Cheap to ask, expensive to u
 - **Semver judgment:** patch for fixes/small additions, minor for significant features. Ask if unsure. Never auto-bump to 1.0 — that's an intentional decision, not an increment.
 - For projects with PyPI/release CI: tag-push fires irreversible publish. Pause for review on merged-main before tagging.
 
+## Runtime dogfood guardrails
+
+Before risky or experimental runtime work (service restarts, hook/protocol changes, scheduler work, deploys, migrations), schedule self-wakes or watchdog asks so silence is observable. If the wake fires and the worker is silent or status looks stale, inspect the underlying terminal, logs, or panes before assuming the mesh state is complete.
+
 ## Cleanup hygiene
 
-For any "is X clean?" check (machine switch, kill-peer prep, prune, audit), enumerate worktrees with `git worktree list` for every project, not just `git status` on the root. Sibling worktrees with unique unpushed commits are invisible to root-dir status. Cross-check `list_peers()` against `tmux list-windows` — orphan tmux windows are the gap.
+Cleanup is a triad: **registered peer/session + terminal/process + workspace artifacts**. For git work, that means worktrees, branches, and generated artifacts too. For any "is X clean?" check (machine switch, kill-peer prep, prune, audit), enumerate all relevant worktrees/workspaces, not just the root `git status`. Sibling worktrees with unique unpushed commits are invisible to root-dir status. Cross-check the mesh registry against terminal/session state — orphan panes or processes are the common gap. Preserve dirty, unmerged, or unpushed user work unless the user explicitly tells you to clear it.
+
+## Version-skew checks
+
+If a newly shipped tool, command, or agent method appears missing, verify the installed surface before debugging the implementation:
+
+```bash
+which <tool>
+<tool> --version
+<service> version          # or its health/version endpoint
+<source-runner> <tool> ... # repo-local command for comparison, e.g. uv run/npm exec/cargo run
+```
+
+Installed binaries, long-running services/daemons, agent tool servers, and source checkouts can all be on different versions. Reinstall or restart the right component before concluding the feature is absent.
 
 ## Spawn flags per runtime
 
