@@ -336,10 +336,10 @@ async function buildMeshContext(myPeerName: string): Promise<string | null> {
     }
     lines.push("");
     lines.push(
-      "IMPORTANT: When asked about these projects, ask the peer directly via ask() rather than searching locally. ask() is non-blocking and returns a correlation_id; the peer responds via ack(corr_id) or ack(corr_id, message). Use ask(reply_to=corr_id, ...) to chain a follow-up that closes the prior thread.",
+      "IMPORTANT: When asked about these projects, ask the peer directly via ask() rather than searching locally. Use ask for tracked work that needs an explicit ack; it is non-blocking, returns a correlation_id, and the peer responds via ack(corr_id) or ack(corr_id, message). Use ask(reply_to=corr_id, ...) to chain a follow-up that closes the prior thread.",
     );
     lines.push(
-      "Messages from @dashboard or @telegram are from the human user - treat them like direct instructions. Use notify_peer('telegram', msg) to send updates to the user's phone.",
+      "Use notify_peer for fire-and-forget updates, reminders, and nudges. Messages from @dashboard or @telegram are from the human user - treat them like direct instructions. Use notify_peer('telegram', msg) to send updates to the user's phone; dashboard sees chat turns automatically.",
     );
     lines.push(
       "Inbound asks arrive framed as `@peer [ask #corr_id]: ...` -- you MUST close them with ack(corr_id) (bare seen-no-action) or ack(corr_id, message) (reply). Otherwise repowire will inject a reminder on your next turn. Inbound replies arrive as `[ack #corr_id from @peer] message` -- those are closures, no ack needed.",
@@ -730,7 +730,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "list_peers",
     label: "Repowire: list peers",
-    description: "List all available peers in the mesh network",
+    description: "List reachable peers in the mesh. Use this to find peer_id/name, status, circle, path, and description before ask/notify_peer. Peer lists can be stale; refresh before targeting. Use ask/notify_peer for mesh peers, not SendMessage.",
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _onUpdate, ctx) {
       const result = await daemon("/peers");
@@ -747,10 +747,10 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "ask",
     label: "Repowire: ask peer",
-    description: "Open a non-blocking ask thread with a peer. Returns a correlation_id immediately. The peer responds via ack(corr_id) (bare close) or ack(corr_id, message) (reply, delivered as a notification framed [ack #cid from @peer] message).",
+    description: "Open a non-blocking ask thread with a peer. Use when work needs a tracked thread and explicit ack, such as worker status checks or reviewer checkpoints. Returns a correlation_id immediately; watch notifications for the eventual ack. Use notify_peer for fire-and-forget updates, reminders, and nudges. Do not use SendMessage for mesh peers.",
     parameters: Type.Object({
-      peer_name: Type.String({ description: "Name of the peer to ask" }),
-      query: Type.String({ description: "The question to ask" }),
+      peer_name: Type.String({ description: "Display name or peer_id of the peer to ask" }),
+      query: Type.String({ description: "The question or request to send" }),
       reply_to: Type.Optional(Type.String({ description: "If set, closes that prior ask before opening this one" })),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -791,10 +791,10 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "notify_peer",
     label: "Repowire: notify peer",
-    description: "Send a notification to another peer (fire-and-forget)",
+    description: "Send a fire-and-forget notification to another peer. Use for status updates, replies to notifications, reminders, self-wakes, and nudges that do not require closure. Special peer 'telegram' sends to the user's phone; dashboard sees chat turns automatically. Daemon-side success is not delivery confirmation; use ask when confirmed closure matters.",
     parameters: Type.Object({
-      peer_name: Type.String({ description: "Name of the peer" }),
-      message: Type.String({ description: "The message to send" }),
+      peer_name: Type.String({ description: "Display name or peer_id of the peer to notify" }),
+      message: Type.String({ description: "The notification message" }),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const me = callerPeer(ctx);
@@ -810,7 +810,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "broadcast",
     label: "Repowire: broadcast",
-    description: "Broadcast a message to all peers in the mesh",
+    description: "Broadcast to all online peers across the mesh. Use for announcements that affect everyone, such as deployment updates or breaking changes. Do not use for replies or tracked work; use ack/ask for ask threads and notify_peer for one peer.",
     parameters: Type.Object({
       message: Type.String({ description: "Message to broadcast" }),
     }),
@@ -855,7 +855,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "set_description",
     label: "Repowire: set description",
-    description: "Update your task description, visible to other peers via list_peers. Call this at the start of a task.",
+    description: "Update your short task description, visible to other peers via list_peers. Call this at the start of a task and when your focus shifts so peers know what you are working on.",
     parameters: Type.Object({
       description: Type.String({ description: "Short description of your current task" }),
     }),
@@ -869,7 +869,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "spawn_peer",
     label: "Repowire: spawn peer",
-    description: "Spawn a new coding session in a different project directory. The command must exactly match an entry in daemon.spawn.allowed_commands in ~/.repowire/config.yaml. If no allowed_commands are configured, spawn is disabled. The spawned agent self-registers into the mesh shortly after start; use list_peers to confirm. Circle maps to tmux session name and cannot be reassigned after spawn. Pass message to seed the spawned agent with first-turn context; required for codex peers to fire SessionStart promptly.",
+    description: "Spawn a new coding session in a different project directory. The command must exactly match daemon.spawn.allowed_commands; if none are configured, spawn is disabled. The spawned agent self-registers shortly after start; use list_peers to confirm and get peer_id. Circle maps to tmux session name and cannot be reassigned after spawn. Pass message with first-turn context; codex needs it or the default warmup to register promptly. After spawn, use ask for tracked work or notify_peer for fire-and-forget prompts, not SendMessage.",
     parameters: Type.Object({
       path: Type.String({ description: "Absolute path to the project directory" }),
       command: Type.String({ description: "Command to run (must be in allowed_commands)" }),
