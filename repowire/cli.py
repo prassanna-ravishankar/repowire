@@ -34,8 +34,20 @@ def main() -> None:
 @click.option("--host", default=DEFAULT_HOST, help="Bind address")
 @click.option("--port", default=DEFAULT_PORT, type=int, help="Port")
 @click.option("--relay", is_flag=True, help="Enable relay mode")
-def serve(host: str, port: int, relay: bool) -> None:
+@click.option(
+    "--no-install-hooks",
+    is_flag=True,
+    help=(
+        "Skip installing tmux lifecycle hooks on startup. Useful for smoke/test "
+        "daemons under a temp HOME, since tmux hooks are server-global and would "
+        "otherwise rewrite the user's live mesh hooks. Also honored via "
+        "REPOWIRE_DISABLE_HOOK_INSTALL=1."
+    ),
+)
+def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
     """Start the repowire HTTP daemon."""
+    import os
+
     import uvicorn
 
     from repowire.config.models import load_config
@@ -49,7 +61,11 @@ def serve(host: str, port: int, relay: bool) -> None:
         config.relay.ensure_api_key()
         config.save()
 
-    app = create_app(config=config)
+    env_disable = os.environ.get("REPOWIRE_DISABLE_HOOK_INSTALL", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    install_hooks = not (no_install_hooks or env_disable)
+    app = create_app(config=config, install_tmux_hooks=install_hooks)
     console.print(f"[cyan]Starting Repowire daemon on {host}:{port}...[/]")
     if config.relay.dashboard_url:
         console.print(f"[green]Dashboard:[/] {config.relay.dashboard_url}")

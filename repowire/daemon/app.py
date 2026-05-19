@@ -65,16 +65,22 @@ def _cleanup_stale_artifacts(max_age_hours: float = 72) -> None:
 
 def create_app(
     config: Config | None = None,
+    install_tmux_hooks: bool = True,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Args:
         config: Optional configuration. Loaded from disk if not provided.
+        install_tmux_hooks: When False, skip installing server-global tmux
+            lifecycle hooks during startup. Smoke/test daemons running under
+            a temp HOME should pass False so they don't rewrite the user's
+            live tmux hooks (which are not scoped to HOME).
 
     Returns:
         Configured FastAPI application.
     """
     _config = config
+    _install_tmux_hooks = install_tmux_hooks
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -142,16 +148,22 @@ def create_app(
             lifecycle_handler=lifecycle_handler,
         )
 
-        # Install tmux lifecycle hooks if tmux is available
-        try:
-            from repowire.hooks.tmux_lifecycle import install_hooks, is_tmux_available
+        # Install tmux lifecycle hooks if tmux is available.
+        # Skipped when the caller disables it (e.g. smoke daemons under a
+        # temp HOME), because tmux hooks are server-global and would
+        # otherwise rewrite the user's live mesh hooks.
+        if _install_tmux_hooks:
+            try:
+                from repowire.hooks import tmux_lifecycle
 
-            if is_tmux_available():
-                tmux_hooks = install_hooks(cfg.daemon.host, cfg.daemon.port)
-                if tmux_hooks:
-                    logger.info("Installed %d tmux lifecycle hooks", len(tmux_hooks))
-        except Exception:
-            logger.debug("Tmux hooks not installed", exc_info=True)
+                if tmux_lifecycle.is_tmux_available():
+                    tmux_hooks = tmux_lifecycle.install_hooks(cfg.daemon.host, cfg.daemon.port)
+                    if tmux_hooks:
+                        logger.info("Installed %d tmux lifecycle hooks", len(tmux_hooks))
+            except Exception:
+                logger.debug("Tmux hooks not installed", exc_info=True)
+        else:
+            logger.info("Skipping tmux lifecycle hook install (install_tmux_hooks=False)")
 
         # Start relay client if enabled
         relay_client: RelayClient | None = None
