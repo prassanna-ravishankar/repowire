@@ -32,6 +32,23 @@ const BARE_ACK_TIMEOUT_MS = 120_000;
 
 type PeerTab = "chat" | "mcp" | "history";
 
+/** Pending-turn group built from chat_turn_delta events. Synthetic client-side
+ * shape — not a wire event — carrying a discriminator so the thread renderer
+ * can branch without runtime probing. Declared up here (rather than next to
+ * the renderer) because session-protection generics need it at component
+ * scope. */
+interface ChatTurnDeltaGroup {
+  type: "chat_turn_delta_group";
+  id: string;
+  turn_id: string;
+  peer_id?: string;
+  timestamp: string;
+  text: string;
+  tool_calls: { name: string; input: string }[];
+}
+
+type ThreadItemEntry = Event | ChatTurnDeltaGroup;
+
 export function PeerView({
   peer,
   events,
@@ -70,7 +87,7 @@ export function PeerView({
   // from this component's render. The snapshot survives peer switches and is
   // released by the store when the last protection source for this peer
   // clears.
-  const frozenFromStore = useFrozenThread<Event>(peer.peer_id);
+  const frozenFromStore = useFrozenThread<ThreadItemEntry>(peer.peer_id);
   const liveThreadRef = useRef(liveThread);
   // Layout-effect timing: run before browser paint so that by the time the
   // user can interact (or any post-commit setDraftText fires), the ref and
@@ -85,7 +102,7 @@ export function PeerView({
     // liveThread without us writing to the store from this component's
     // render. Layout-effect ensures the provider is registered before paint
     // and therefore before any post-commit user input.
-    return registerSnapshotProvider<Event>(peer.peer_id, () => liveThreadRef.current);
+    return registerSnapshotProvider<ThreadItemEntry>(peer.peer_id, () => liveThreadRef.current);
   }, [peer.peer_id]);
   const thread = protectedNow && frozenFromStore ? frozenFromStore : liveThread;
 
@@ -1190,20 +1207,6 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
     </div>
   );
 }
-
-/** Pending-turn group built from chat_turn_delta events. Carries `type` so
- * the thread renderer can branch without runtime probing. */
-interface ChatTurnDeltaGroup {
-  type: "chat_turn_delta_group";
-  id: string;
-  turn_id: string;
-  peer_id?: string;
-  timestamp: string;
-  text: string;
-  tool_calls: { name: string; input: string }[];
-}
-
-type ThreadItemEntry = Event | ChatTurnDeltaGroup;
 
 /** Coalesce chat_turn_delta events into one pending bubble per turn_id, then
  * drop any group whose turn_id has a matching final `chat_turn`.
