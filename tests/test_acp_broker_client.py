@@ -850,3 +850,39 @@ async def test_pending_reply_kept_when_redelivery_still_fails(tmp_path: Path) ->
     assert ask is not None
     assert ask.closed is False, "ask kept open after failed redelivery"
     assert ask.pending_reply is not None, "stash retained for next reconnect"
+
+
+def test_make_recorder_raises_clean_error_when_acp_sdk_missing(monkeypatch) -> None:
+    """When the optional `agent-client-protocol` runtime isn't installed,
+    AcpClient construction must fail with an AcpClientError carrying an
+    install hint — not a bare ModuleNotFoundError leaked from the import.
+
+    Regression: smoke test of v0.13.27 deployment surfaced bare
+    `ModuleNotFoundError: No module named 'acp'` in daemon logs, blocking
+    diagnosis until reading source. The hint shortcircuits that.
+    """
+    import builtins
+    import sys
+
+    from repowire.acp import client as acp_client_mod
+
+    # Drop any cached acp.* modules so the test sees a real ImportError path.
+    for name in list(sys.modules):
+        if name == "acp" or name.startswith("acp."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "acp" or name.startswith("acp."):
+            raise ModuleNotFoundError(f"No module named '{name}'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(acp_client_mod.AcpClientError) as exc_info:
+        acp_client_mod._make_recorder()
+
+    msg = str(exc_info.value)
+    assert "agent-client-protocol" in msg
+    assert "experiments.acp_broker_client" in msg

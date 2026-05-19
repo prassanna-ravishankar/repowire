@@ -46,14 +46,29 @@ class AcpPromptResult:
     updates: list[Any] = field(default_factory=list)
 
 
+_ACP_INSTALL_HINT = (
+    "Install the optional ACP runtime: `uv tool upgrade --reinstall "
+    "--with agent-client-protocol repowire` (or `pip install "
+    "'repowire[acp]'`). Then restart the daemon. The ACP broker only "
+    "starts subprocesses when experiments.acp_broker_client is true."
+)
+
+
 def _make_recorder() -> Any:
     """Build a fresh ``acp.Client`` instance that records updates for one peer.
 
     Defined as a factory rather than a top-level class so the ``acp`` import
     stays lazy — the broker only imports the SDK when the ACP path is wired up.
+    Raises ``AcpClientError`` with an install hint when the optional ACP
+    runtime is missing.
     """
-    import acp
-    from acp.schema import AllowedOutcome, DeniedOutcome
+    try:
+        import acp
+        from acp.schema import AllowedOutcome, DeniedOutcome
+    except ModuleNotFoundError as e:
+        raise AcpClientError(
+            f"agent-client-protocol SDK not installed: {e}. {_ACP_INSTALL_HINT}"
+        ) from e
 
     class _BrokerRecorder(acp.Client):
         """Records ``session/update`` notifications for the broker.
