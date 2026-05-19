@@ -204,6 +204,155 @@ class TestSwitchBackendRoute:
         )
         assert r.status_code == 404
 
+    async def test_kill_pane_failure_aborts_switch(self, env, tmp_path):
+        """If kill_pane returns False, abort and leave the peer registered.
+
+        Otherwise we'd unregister a peer whose underlying agent is still alive,
+        leaving a zombie runtime.
+        """
+        name = await _register(env.client, name="alpha", backend="claude-code",
+                                path=str(tmp_path))
+        peer = await env.registry.get_peer(name)
+        assert peer is not None
+        # Force the daemon to think it owns the pane so kill_pane is called.
+        pane_id = "%9999"
+        peer.pane_id = pane_id
+        spawn_routes._SPAWNED_PANE_IDS.add(pane_id)
+        try:
+            with patch.object(spawn_routes, "spawn_peer") as mock_spawn, \
+                patch.object(spawn_routes, "kill_pane", return_value=False) as mock_kill:
+                r = await env.client.post(
+                    f"/peers/{name}/switch-backend",
+                    json={"new_backend": "codex"},
+                )
+            assert r.status_code == 500
+            assert r.json()["detail"]["error"] == "kill_failed"
+            mock_kill.assert_called_once_with(pane_id)
+            mock_spawn.assert_not_called()
+            # Peer must still be registered — we refused to deregister a live
+            # runtime.
+            assert await env.registry.get_peer(name) is not None
+            # Quiesce barrier must be released so subsequent asks aren't blocked
+            # forever.
+            assert peer.peer_id not in env.ask_tracker._quiescing
+        finally:
+            spawn_routes._SPAWNED_PANE_IDS.discard(pane_id)
+
+    async def test_concurrent_ask_blocked_during_switch(self, env, tmp_path):
+        """A /ask landing mid-switch must be refused so it can't be orphaned.
+
+        Simulates the race codex flagged: pre-check passes, then a new ask
+        arrives during the kill+respawn window. spawn_peer is synchronous, so
+        we use it as the synchronization point — while it runs, the barrier is
+        held, and an /ask issued just before the switch but processed during
+        spawn must be rejected.
+        """
+        name = await _register(env.client, name="alpha", backend="claude-code",
+                                path=str(tmp_path))
+        peer = await env.registry.get_peer(name)
+        assert peer is not None
+
+        racy_ask_result: dict[str, object] = {}
+
+        def fake_spawn(_cfg):
+            # While spawn_peer runs, the quiesce barrier is held. Verify a
+            # concurrent register() would be rejected by inspecting the
+            # in-process barrier set (the same check register() does under
+            # the lock).
+            try:
+                from repowire.daemon.ask_tracker import QuiescedError
+                if peer.peer_id in env.ask_tracker._quiescing:
+                    raise QuiescedError(peer.peer_id)
+                racy_ask_result["error"] = "no_barrier"
+            except Exception as e:
+                racy_ask_result["error"] = type(e).__name__
+            from repowire.spawn import SpawnResult
+            return SpawnResult(
+                display_name="alpha", tmux_session="default:alpha", pane_id="%200",
+            )
+
+        with patch.object(spawn_routes, "spawn_peer", side_effect=fake_spawn), \
+            patch.object(spawn_routes, "kill_pane", return_value=True), \
+            patch.object(spawn_routes, "post_spawn_warmup", new_callable=AsyncMock):
+            r = await env.client.post(
+                f"/peers/{name}/switch-backend",
+                json={"new_backend": "codex"},
+            )
+        assert r.status_code == 200, r.text
+        # The racing register() would have been rejected by the barrier.
+        assert racy_ask_result.get("error") == "QuiescedError"
+        # Barrier must have been released after the switch completed.
+        assert peer.peer_id not in env.ask_tracker._quiescing
+
+
+class TestAskTrackerQuiesceBarrier:
+    """Direct unit tests for the AskTracker switch barrier."""
+
+    async def test_register_rejected_while_quiescing(self):
+        from repowire.daemon.ask_tracker import AskTracker, QuiescedError
+        tracker = AskTracker()
+        peer_id = "repow-default-aa11bb22"
+        await tracker.begin_quiesce(peer_id)
+        with pytest.raises(QuiescedError):
+            await tracker.register(
+                from_peer_id="dashboard",
+                from_peer_name="dashboard",
+                to_peer_id=peer_id,
+                to_peer_name="alpha",
+                text="should be refused",
+            )
+        await tracker.end_quiesce(peer_id)
+        # After release, register succeeds.
+        cid = await tracker.register(
+            from_peer_id="dashboard",
+            from_peer_name="dashboard",
+            to_peer_id=peer_id,
+            to_peer_name="alpha",
+            text="now allowed",
+        )
+        assert cid
+
+    async def test_begin_quiesce_fails_with_open_asks(self):
+        from repowire.daemon.ask_tracker import AskTracker, QuiesceFailedError
+        tracker = AskTracker()
+        peer_id = "repow-default-aa11bb22"
+        cid = await tracker.register(
+            from_peer_id="dashboard",
+            from_peer_name="dashboard",
+            to_peer_id=peer_id,
+            to_peer_name="alpha",
+            text="open ask",
+        )
+        with pytest.raises(QuiesceFailedError) as ei:
+            await tracker.begin_quiesce(peer_id)
+        assert cid in ei.value.open_cids
+        # No barrier acquired on failure → second register still works.
+        cid2 = await tracker.register(
+            from_peer_id="dashboard",
+            from_peer_name="dashboard",
+            to_peer_id=peer_id,
+            to_peer_name="alpha",
+            text="still open",
+        )
+        assert cid2 != cid
+
+    async def test_quiesce_blocks_outbound_too(self):
+        """A peer that is itself asking shouldn't have its outbound asks
+        accepted mid-switch either — the asker would die before getting a
+        reply."""
+        from repowire.daemon.ask_tracker import AskTracker, QuiescedError
+        tracker = AskTracker()
+        peer_id = "repow-default-aa11bb22"
+        await tracker.begin_quiesce(peer_id)
+        with pytest.raises(QuiescedError):
+            await tracker.register(
+                from_peer_id=peer_id,
+                from_peer_name="alpha",
+                to_peer_id="dashboard",
+                to_peer_name="dashboard",
+                text="outbound during switch",
+            )
+
 
 class TestCommandForBackend:
     def test_returns_first_matching_allowed_command(self, tmp_path):

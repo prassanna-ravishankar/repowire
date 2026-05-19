@@ -28,6 +28,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from repowire.daemon.ask_tracker import QuiescedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.routes._shared import OkResponse
@@ -146,14 +147,24 @@ async def open_ask(
     from_peer_id = from_peer_obj.peer_id if from_peer_obj else request.from_peer
     from_peer_name = from_peer_obj.display_name if from_peer_obj else request.from_peer
 
-    cid = await ask_tracker.register(
-        from_peer_id=from_peer_id,
-        from_peer_name=from_peer_name,
-        to_peer_id=peer.peer_id,
-        to_peer_name=peer.display_name,
-        text=request.text,
-        reply_to=request.reply_to,
-    )
+    try:
+        cid = await ask_tracker.register(
+            from_peer_id=from_peer_id,
+            from_peer_name=from_peer_name,
+            to_peer_id=peer.peer_id,
+            to_peer_name=peer.display_name,
+            text=request.text,
+            reply_to=request.reply_to,
+        )
+    except QuiescedError as e:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "peer_switching",
+                "hint": f"Peer {request.to_peer} is mid-switch; retry shortly.",
+                "peer_id": e.peer_id,
+            },
+        ) from e
 
     try:
         await peer_registry.deliver_ask(

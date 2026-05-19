@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from repowire.config.models import AgentType
+from repowire.daemon.ask_tracker import QuiesceFailedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_config, get_peer_registry
 from repowire.daemon.peer_registry import PeerRegistry
@@ -307,6 +308,9 @@ class SwitchBackendResponse(BaseModel):
     tmux_session: str
     old_backend: AgentType
     new_backend: AgentType
+    command: str = Field(
+        ..., description="The allowed_commands entry actually used to spawn",
+    )
 
 
 def _command_for_backend(new_backend: AgentType) -> str | None:
@@ -333,6 +337,20 @@ async def switch_peer_backend(
     backend starts fresh in the peer's working directory. ACP-native switching is
     out of scope until ACP phase-3 lands.
 
+    Race-safety:
+    - In-flight asks are blocked atomically via AskTracker.begin_quiesce: the
+      barrier both verifies no open asks exist AND prevents new /ask registrations
+      targeting the peer (either direction) until the switch completes. New
+      callers see 503 peer_switching during the window.
+    - kill_pane failure aborts the switch (500 kill_failed) rather than
+      unregistering a peer whose runtime is still alive.
+    - Known limitation: between unregister_peer and the new agent's SessionStart
+      self-register there is a small window where the peer name is absent from
+      the registry. A concurrent /spawn for the same path+backend+circle could
+      in theory race for the freed name. Operators triggering simultaneous
+      switches against the same peer is the only path that hits this; addressing
+      it requires a name-reservation primitive in PeerRegistry and is deferred.
+
     Errors:
     - 404: peer not found
     - 409 same_backend: new_backend equals current backend (no-op)
@@ -340,6 +358,8 @@ async def switch_peer_backend(
     - 409 in_flight_asks: peer has open asks; caller must retry after they close
     - 422 command_unavailable: no entry in daemon.spawn.allowed_commands maps to
       new_backend — operator must add one to ~/.repowire/config.yaml
+    - 500 kill_failed: the daemon-owned tmux pane could not be killed; the old
+      runtime may still be alive. Investigate with `tmux list-panes -a`.
     """
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
@@ -404,12 +424,15 @@ async def switch_peer_backend(
     # operators can't bypass /spawn's guardrails via a backend switch.
     _validate_spawn_request(peer.path, command)
 
-    # In-flight asks: refuse rather than orphan correlation IDs. Caller documents
-    # this as a transient TransportError-shaped 409 — retry once the asks close.
+    # Acquire the ask-tracker quiesce barrier atomically: this both verifies no
+    # open asks exist for the peer AND blocks new /ask registrations targeting
+    # the peer until end_quiesce() runs. Without the barrier a fresh /ask could
+    # race between the pending check and the kill and be orphaned by the switch.
     state = get_app_state()
     ask_tracker = state.ask_tracker
-    pending = await ask_tracker.pending_for_peer(peer.peer_id, direction="both")
-    if pending:
+    try:
+        await ask_tracker.begin_quiesce(peer.peer_id)
+    except QuiesceFailedError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
@@ -418,54 +441,73 @@ async def switch_peer_backend(
                     "Peer has open asks; backend switch would orphan them. "
                     "Retry after they're acked or evicted."
                 ),
-                "open_asks": [a.correlation_id for a in pending],
+                "open_asks": e.open_cids,
             },
-        )
-
-    # Capture pre-kill state. Use the path-derived stem so the respawn lands on
-    # the same window-name base (tmux will pick a unique suffix if needed).
-    spawn_circle = peer.circle or "default"
-    resolved_path = str(Path(peer.path).expanduser().resolve())
-
-    # Kill the existing peer (pane + registry entry) using the same ownership
-    # rules as /kill-peer: only daemon-spawned panes are killed.
-    if peer.pane_id and peer.pane_id in _SPAWNED_PANE_IDS:
-        kill_pane(peer.pane_id)
-        _SPAWNED_PANE_IDS.discard(peer.pane_id)
-    await peer_registry.unregister_peer(peer.peer_id)
-
-    # Respawn with the new backend.
-    try:
-        result: SpawnResult = spawn_peer(
-            SpawnConfig(
-                path=resolved_path,
-                circle=spawn_circle,
-                backend=request.new_backend,
-                command=command,
-            )
-        )
-    except (ValueError, RuntimeError) as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e),
         ) from e
 
-    if result.pane_id:
-        _SPAWNED_PANE_IDS.add(result.pane_id)
-        task = asyncio.create_task(
-            post_spawn_warmup(
-                request.new_backend,
-                result.pane_id,
-                path=resolved_path,
-                circle=spawn_circle,
-                message=result.message,
-            )
-        )
-        _BACKGROUND_TASKS.add(task)
-        task.add_done_callback(_BACKGROUND_TASKS.discard)
+    try:
+        # Capture pre-kill state. Use the path-derived stem so the respawn lands
+        # on the same window-name base (tmux will pick a unique suffix if
+        # needed).
+        spawn_circle = peer.circle or "default"
+        resolved_path = str(Path(peer.path).expanduser().resolve())
 
-    return SwitchBackendResponse(
-        display_name=result.display_name,
-        tmux_session=result.tmux_session,
-        old_backend=current_backend,
-        new_backend=request.new_backend,
-    )
+        # Only kill daemon-owned panes (same ownership rule as /kill-peer). If
+        # kill_pane returns False the underlying agent is still alive — abort
+        # rather than leave a zombie runtime running against a deregistered
+        # identity.
+        if peer.pane_id and peer.pane_id in _SPAWNED_PANE_IDS:
+            if not kill_pane(peer.pane_id):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "error": "kill_failed",
+                        "hint": (
+                            "tmux kill-pane failed for the peer's pane; the "
+                            "old agent may still be alive. Aborting switch to "
+                            "avoid a zombie runtime. Check `tmux list-panes -a`."
+                        ),
+                        "pane_id": peer.pane_id,
+                    },
+                )
+            _SPAWNED_PANE_IDS.discard(peer.pane_id)
+        await peer_registry.unregister_peer(peer.peer_id)
+
+        # Respawn with the new backend.
+        try:
+            result: SpawnResult = spawn_peer(
+                SpawnConfig(
+                    path=resolved_path,
+                    circle=spawn_circle,
+                    backend=request.new_backend,
+                    command=command,
+                )
+            )
+        except (ValueError, RuntimeError) as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e),
+            ) from e
+
+        if result.pane_id:
+            _SPAWNED_PANE_IDS.add(result.pane_id)
+            task = asyncio.create_task(
+                post_spawn_warmup(
+                    request.new_backend,
+                    result.pane_id,
+                    path=resolved_path,
+                    circle=spawn_circle,
+                    message=result.message,
+                )
+            )
+            _BACKGROUND_TASKS.add(task)
+            task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+        return SwitchBackendResponse(
+            display_name=result.display_name,
+            tmux_session=result.tmux_session,
+            old_backend=current_backend,
+            new_backend=request.new_backend,
+            command=command,
+        )
+    finally:
+        await ask_tracker.end_quiesce(peer.peer_id)

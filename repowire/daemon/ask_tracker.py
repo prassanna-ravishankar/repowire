@@ -31,6 +31,24 @@ logger = logging.getLogger(__name__)
 _EVICTION_INTERVAL_SECONDS = 300.0
 
 
+class QuiesceFailedError(Exception):
+    """Raised when begin_quiesce cannot acquire the barrier because open
+    asks already exist for the peer."""
+
+    def __init__(self, peer_id: str, open_cids: list[str]) -> None:
+        super().__init__(f"Peer {peer_id} has open asks: {open_cids}")
+        self.peer_id = peer_id
+        self.open_cids = open_cids
+
+
+class QuiescedError(Exception):
+    """Raised when register() is called while a peer is mid-switch."""
+
+    def __init__(self, peer_id: str) -> None:
+        super().__init__(f"Peer {peer_id} is mid-switch; ask refused")
+        self.peer_id = peer_id
+
+
 @dataclass
 class Ask:
     """An open ask awaiting ack/reply.
@@ -62,6 +80,34 @@ class AskTracker:
         self._asks: dict[str, Ask] = {}
         self._ttl = timedelta(hours=ttl_hours)
         self._last_eviction: float = 0.0
+        # peer_ids currently mid-switch — new asks to/from them are refused so
+        # the switch route can kill+respawn without orphaning correlation IDs.
+        self._quiescing: set[str] = set()
+
+
+    async def begin_quiesce(self, peer_id: str) -> None:
+        """Atomically: verify no open asks for peer, mark peer as quiescing.
+
+        While quiesced, register() rejects new asks for this peer in either
+        direction. Use end_quiesce() in a finally to release.
+
+        Raises QuiesceFailedError if open asks exist.
+        """
+        async with self._lock:
+            open_asks = [
+                a.correlation_id for a in self._asks.values()
+                if not a.closed and (a.to_peer_id == peer_id or a.from_peer_id == peer_id)
+            ]
+            if open_asks:
+                raise QuiesceFailedError(peer_id, open_asks)
+            self._quiescing.add(peer_id)
+            logger.debug("Quiesced peer %s for switch", peer_id)
+
+    async def end_quiesce(self, peer_id: str) -> None:
+        """Release the switch barrier. Idempotent."""
+        async with self._lock:
+            self._quiescing.discard(peer_id)
+            logger.debug("Released quiesce for peer %s", peer_id)
 
     async def register(
         self,
@@ -78,8 +124,14 @@ class AskTracker:
         If correlation_id is supplied and already exists, this is treated as
         a retry: the existing entry is preserved (lifecycle state intact)
         and the same id is returned. Auto-generated cids never collide.
+
+        Raises QuiescedError if either endpoint is mid-switch.
         """
         async with self._lock:
+            if to_peer_id in self._quiescing:
+                raise QuiescedError(to_peer_id)
+            if from_peer_id in self._quiescing:
+                raise QuiescedError(from_peer_id)
             cid = correlation_id or f"ask-{uuid4().hex[:8]}"
             if cid in self._asks:
                 logger.debug("Ask %s already registered; treating as retry", cid)
