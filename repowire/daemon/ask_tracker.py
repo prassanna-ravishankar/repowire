@@ -91,9 +91,19 @@ class AskTracker:
         While quiesced, register() rejects new asks for this peer in either
         direction. Use end_quiesce() in a finally to release.
 
-        Raises QuiesceFailedError if open asks exist.
+        Exclusive: a concurrent begin_quiesce for the same peer_id raises
+        QuiesceFailedError with an empty open_cids list, so only one caller
+        ever holds the barrier at a time. Without this, two concurrent
+        switches against the same peer would both enter the critical
+        kill/spawn section and the first end_quiesce would prematurely
+        release the barrier for the second.
+
+        Raises QuiesceFailedError if open asks exist OR the peer is already
+        quiescing.
         """
         async with self._lock:
+            if peer_id in self._quiescing:
+                raise QuiesceFailedError(peer_id, [])
             open_asks = [
                 a.correlation_id for a in self._asks.values()
                 if not a.closed and (a.to_peer_id == peer_id or a.from_peer_id == peer_id)

@@ -433,6 +433,20 @@ async def switch_peer_backend(
     try:
         await ask_tracker.begin_quiesce(peer.peer_id)
     except QuiesceFailedError as e:
+        if not e.open_cids:
+            # Concurrent switch already holds the barrier — refuse so we don't
+            # both enter the kill/spawn section and have the first end_quiesce
+            # prematurely release the barrier for the second.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "switch_in_progress",
+                    "hint": (
+                        "Another switch is in progress for this peer. "
+                        "Retry shortly."
+                    ),
+                },
+            ) from e
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={

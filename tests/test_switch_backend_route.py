@@ -204,6 +204,31 @@ class TestSwitchBackendRoute:
         )
         assert r.status_code == 404
 
+    async def test_concurrent_switch_returns_409_switch_in_progress(self, env, tmp_path):
+        """A second switch for the same peer while the first is mid-flight
+        must be refused, not silently piggy-back on the same barrier."""
+        name = await _register(env.client, name="alpha", backend="claude-code",
+                                path=str(tmp_path))
+        peer = await env.registry.get_peer(name)
+        assert peer is not None
+
+        # Pre-acquire the barrier to simulate an in-progress switch.
+        await env.ask_tracker.begin_quiesce(peer.peer_id)
+        try:
+            with patch.object(spawn_routes, "spawn_peer") as mock_spawn, \
+                patch.object(spawn_routes, "kill_pane", return_value=True):
+                r = await env.client.post(
+                    f"/peers/{name}/switch-backend",
+                    json={"new_backend": "codex"},
+                )
+            assert r.status_code == 409
+            assert r.json()["detail"]["error"] == "switch_in_progress"
+            mock_spawn.assert_not_called()
+            # Peer must still exist; we didn't enter the kill section.
+            assert await env.registry.get_peer(name) is not None
+        finally:
+            await env.ask_tracker.end_quiesce(peer.peer_id)
+
     async def test_kill_pane_failure_aborts_switch(self, env, tmp_path):
         """If kill_pane returns False, abort and leave the peer registered.
 
@@ -335,6 +360,27 @@ class TestAskTrackerQuiesceBarrier:
             text="still open",
         )
         assert cid2 != cid
+
+    async def test_begin_quiesce_is_exclusive(self):
+        """Two begin_quiesce calls for the same peer must not both succeed.
+
+        Otherwise two concurrent switches could both enter the critical
+        section, and the first end_quiesce would prematurely release the
+        barrier for the second.
+        """
+        from repowire.daemon.ask_tracker import AskTracker, QuiesceFailedError
+        tracker = AskTracker()
+        peer_id = "repow-default-aa11bb22"
+        await tracker.begin_quiesce(peer_id)
+        with pytest.raises(QuiesceFailedError) as ei:
+            await tracker.begin_quiesce(peer_id)
+        # Empty open_cids signals "already quiescing" vs "had open asks".
+        assert ei.value.open_cids == []
+        # A different peer can still acquire its own barrier.
+        await tracker.begin_quiesce("repow-default-cc33dd44")
+        await tracker.end_quiesce(peer_id)
+        # After release, re-acquire works.
+        await tracker.begin_quiesce(peer_id)
 
     async def test_quiesce_blocks_outbound_too(self):
         """A peer that is itself asking shouldn't have its outbound asks
