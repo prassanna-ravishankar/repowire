@@ -106,9 +106,11 @@ Minimum policy:
 
 - Localhost bind only by default (`127.0.0.1`, `::1`).
 - Require `Authorization: Bearer <daemon.auth_token>` by default.
-- `repowire setup` should generate/reuse a local daemon token when enabling HTTP MCP; local-only MCP must not require a human login.
-- Provide a low-friction discovery command such as `repowire mcp-url` or `repowire mcp config` that prints the Streamable HTTP URL plus bearer-token client snippet.
+- `repowire setup` / install should generate a local daemon bearer token if absent, then reuse it for localhost HTTP MCP.
+- Local-only MCP must not require a human login.
+- Feed the generated bearer token into generated MCP HTTP client config when Repowire writes client config, or expose it through a helper such as `repowire mcp-url` / `repowire mcp config` that prints the Streamable HTTP URL plus bearer-token snippet.
 - If no token is configured, either generate one automatically during setup or refuse to enable HTTP MCP unless an explicit `allow_unauthenticated_localhost: true` dev flag is set.
+- Add a rotation/regeneration follow-up command, for example `repowire auth rotate` or `repowire mcp rotate-token`, that updates the stored daemon token and prints/refreshes affected MCP HTTP client snippets.
 - Do not treat localhost as trusted by itself. Local browsers, Electron apps, package scripts, build tools, and unrelated local processes can all reach `127.0.0.1`.
 
 ### Local threat model
@@ -123,11 +125,11 @@ Do not expose `/mcp` through the hosted relay in the first slice.
 
 Reason: MCP over Streamable HTTP gives broad tool access including messaging, spawning, killing, schedules, review metadata, and possibly attachments. The existing relay already tunnels dashboard/API traffic behind relay auth, but MCP clients tend to cache server URLs/tokens and may run outside browsers. Relay exposure needs scoped tokens and a tighter route allowlist.
 
-Future relay support should require:
+Future relay/remote MCP support is a different trust boundary and can require stronger user authentication than localhost MCP. It should require:
 
 - explicit `expose_via_relay: true`,
 - human login or another remote-user authentication flow,
-- scoped MCP token separate from `relay.api_key`,
+- scoped MCP token separate from `relay.api_key` and separate from the local daemon token if possible,
 - route-level deny/allow policy for dangerous tools,
 - CORS/origin restrictions for browser-based MCP clients.
 
@@ -166,7 +168,7 @@ Future relay support should require:
 1. Add hidden/experimental config and daemon mount for `/mcp` on localhost only.
 2. Reuse existing `create_mcp_server()`; preserve `repowire mcp` exactly.
 3. Add HTTP caller-context support without changing stdio identity resolution.
-4. Ensure local setup generates/reuses `daemon.auth_token` and add an easy config surface (`repowire mcp-url` / `repowire mcp config`) that prints URL + bearer token snippets for clients that support Streamable HTTP.
+4. Ensure local setup generates/reuses `daemon.auth_token`, feeds it into generated HTTP MCP client config where possible, and add an easy config surface (`repowire mcp-url` / `repowire mcp config`) that prints URL + bearer token snippets for clients that support Streamable HTTP.
 5. Document client examples for remote-MCP-capable clients, clearly marking stdio as the default stable path.
 6. After dogfooding, add setup/status output:
    - whether HTTP MCP is enabled,
@@ -209,7 +211,8 @@ When implemented, update:
 
 1. Should HTTP MCP expose all existing MCP tools initially, or start with read/routing only and gate lifecycle tools behind scopes?
 2. Do we add a first-class `AgentType.MCP_HTTP`/backend value, or model it as a human/service surface without backend expansion?
-3. Is the setup-generated `daemon.auth_token` sufficient for localhost-only v1, or should HTTP MCP require a new scoped token from day one?
+3. Is the setup-generated `daemon.auth_token` sufficient for localhost-only v1, or should HTTP MCP require a new scoped local-only token from day one?
 4. What exact CLI should expose local config: `repowire mcp-url`, `repowire mcp config`, or status output?
-5. Should HTTP MCP sessions be persisted as peers, or should they be ephemeral control-surface identities removed when the MCP session closes?
-6. Should path and machine fields be redacted/empty for HTTP identities to avoid misleading list output?
+5. What rotation command should own token regeneration and client-snippet refresh: a general `repowire auth rotate` or MCP-specific `repowire mcp rotate-token`?
+6. Should HTTP MCP sessions be persisted as peers, or should they be ephemeral control-surface identities removed when the MCP session closes?
+7. Should path and machine fields be redacted/empty for HTTP identities to avoid misleading list output?
