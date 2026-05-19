@@ -1557,10 +1557,14 @@ def _http_error_detail(error: object) -> str:
     response = getattr(error, "response", None)
     if response is None:
         return str(error)
+    return _http_response_detail(response)
+
+
+def _http_response_detail(response: Any) -> str:
     try:
         body = response.json()
     except Exception:
-        return str(error)
+        return str(response)
     return str(body.get("detail") or body)
 
 
@@ -1675,6 +1679,61 @@ def peer_describe(identifier: str, circle: str | None) -> None:
         sys.exit(1)
 
     _render_peer_snapshot(snapshot)
+
+
+@peer.command(name="claim-role")
+@click.argument("role", type=click.Choice(["orchestrator"]))
+@click.option("--peer", "peer_name", help="Existing peer id or display name to update")
+@click.option("--circle", "-c", help="Circle to scope lookup and role ownership")
+@click.option("--force", "-f", is_flag=True, help="Demote an existing live holder")
+def peer_claim_role(role: str, peer_name: str | None, circle: str | None, force: bool) -> None:
+    """Claim a singleton special role for an existing peer."""
+    import sys
+
+    import httpx
+
+    daemon_url = _get_daemon_url()
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            target = peer_name or _current_cli_peer_name(client)
+            resp = client.post(
+                f"{daemon_url}/peers/claim-role",
+                json={
+                    "role": role,
+                    "peer_name": target,
+                    "circle": circle,
+                    "force": force,
+                },
+            )
+            if resp.status_code == 404:
+                console.print(f"[red]Peer not found:[/] {target}")
+                console.print(
+                    "[dim]Pass --peer with an existing peer from "
+                    "`repowire peer list -a`.[/]"
+                )
+                sys.exit(1)
+            if resp.status_code == 409:
+                console.print(f"[red]Cannot claim role:[/] {_http_response_detail(resp)}")
+                console.print("[dim]Use --force only if the current holder should be demoted.[/]")
+                sys.exit(1)
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.ConnectError:
+        console.print(
+            f"[red]Cannot connect to daemon at {daemon_url}.[/] Run 'repowire serve' first.",
+        )
+        sys.exit(1)
+    except httpx.HTTPStatusError as e:
+        console.print(f"[red]Failed to claim role:[/] {_http_error_detail(e)}")
+        sys.exit(1)
+
+    console.print(
+        f"[green]Claimed role={data.get('role')}[/] for "
+        f"[cyan]{data.get('peer_name')}[/] in circle [magenta]{data.get('circle')}[/]"
+    )
+    holders = data.get("previous_holders") or []
+    if holders:
+        console.print(f"[dim]Demoted {len(holders)} previous holder(s).[/]")
 
 
 def _render_peer_snapshot(snapshot: object) -> None:

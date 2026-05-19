@@ -14,7 +14,7 @@ from repowire import peer_mcp
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_peer_registry
-from repowire.daemon.peer_registry import PaneHijackRejectedError
+from repowire.daemon.peer_registry import PaneHijackRejectedError, RoleClaimConflictError
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
 from repowire.session.history import load_peer_turns, page_turns
@@ -65,6 +65,27 @@ class PeersResponse(BaseModel):
     """Response containing list of peers."""
 
     peers: list[PeerInfo]
+
+
+class ClaimRoleRequest(BaseModel):
+    """Request to claim a singleton special role for an existing peer."""
+
+    role: PeerRole = Field(..., description="Special role to claim")
+    peer_name: str = Field(..., min_length=1, description="Existing peer id or display name")
+    circle: str | None = Field(None, description="Circle to scope lookup/claim")
+    force: bool = Field(False, description="Demote an existing live holder")
+
+
+class ClaimRoleResponse(BaseModel):
+    """Response from a successful special role claim."""
+
+    ok: bool = True
+    peer_id: str
+    peer_name: str
+    role: PeerRole
+    circle: str
+    already_held: bool = False
+    previous_holders: list[dict[str, str | None]] = Field(default_factory=list)
 
 
 class RegisterPeerRequest(BaseModel):
@@ -173,6 +194,58 @@ async def get_peer_by_pane(
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"No peer for pane: {pane_id}",
+    )
+
+
+@router.post(
+    "/peers/claim-role",
+    response_model=ClaimRoleResponse,
+    include_in_schema=False,
+)
+async def claim_peer_role(
+    request: ClaimRoleRequest,
+    _: str | None = Depends(require_auth),
+) -> ClaimRoleResponse:
+    """Claim a singleton special role for an existing peer.
+
+    CLI repair surface only in v0.13. This route is intentionally not exposed
+    through MCP/Pi tools.
+    """
+    if request.role != PeerRole.ORCHESTRATOR:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only role=orchestrator can be claimed",
+        )
+    peer_registry = get_peer_registry()
+    try:
+        result = await peer_registry.claim_special_role(
+            request.peer_name,
+            request.role,
+            circle=request.circle,
+            force=request.force,
+        )
+    except RoleClaimConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Peer not found: {request.peer_name}",
+        )
+    return ClaimRoleResponse(
+        peer_id=result.peer.peer_id,
+        peer_name=result.peer.display_name,
+        role=result.peer.role,
+        circle=result.peer.circle,
+        already_held=result.already_held,
+        previous_holders=result.previous_holders,
     )
 
 

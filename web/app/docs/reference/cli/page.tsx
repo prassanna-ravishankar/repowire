@@ -46,6 +46,18 @@ repowire service uninstall`}
       </Cmd>
 
       <Cmd
+        name="repowire peer"
+        usage={`repowire peer list
+repowire peer describe NAME_OR_ID [--circle C]
+repowire peer claim-role orchestrator [--peer NAME_OR_ID] [--circle C] [--force]
+repowire peer prune`}
+      >
+        <p>
+          Inspect and repair registered peers. <Mono>peer list</Mono> is an operator view across all circles. <Mono>peer describe</Mono> shows one peer&apos;s identity, role, liveness, open asks, and recent events. <Mono>peer claim-role orchestrator</Mono> is a narrow repair command for an existing peer whose durable session mapping lost the orchestrator role after daemon restart; it refuses to demote a fresh online or busy holder unless <Mono>--force</Mono> is passed.
+        </p>
+      </Cmd>
+
+      <Cmd
         name="repowire schedule"
         usage={`repowire schedule self WHEN_OR_CRON TEXT [--cron]
 repowire schedule create TO_PEER WHEN_OR_CRON TEXT --from-peer FROM_PEER [--cron]

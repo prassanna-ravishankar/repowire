@@ -72,12 +72,15 @@ Exits 0 if all checks pass (or only warn/skip). Exits 1 if any check fails — s
 repowire peer new PATH [--circle CIRCLE]   # spawn a new peer in tmux
 repowire peer list                          # god-view list (all circles, includes caller)
 repowire peer describe NAME_OR_ID [--circle C]  # full state for one peer
+repowire peer claim-role orchestrator [--peer NAME_OR_ID] [--circle C] [--force]
 repowire peer prune                         # remove offline peers from the registry
 ```
 
 `peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP [`list_peers`](mcp-tools.md#list_peers) tool defaults to a peer-facing view (online only, caller hidden).
 
 `peer describe` accepts either a display name (`clitcoin-claude-code`) or a peer id (`repow-5-abd4d21e`). Pass `--circle` when a display name is ambiguous across circles — without it, the command refuses to guess and prints the same misroute-style refusal the daemon emits internally. Output includes identity (project, circle, role, backend), liveness (status, path, machine, last-seen), open ask threads in both directions, and the last few communication events involving the peer. Reads `GET /peers`, `GET /peers/{id}`, `GET /asks/pending?direction=both`, and `GET /events` — no new daemon endpoints.
+
+`peer claim-role orchestrator` repairs an existing registered peer when the durable session mapping has the wrong role after daemon restart. It updates the live peer and its persisted session mapping, demoting offline or stale orchestrator holders in the same circle. It refuses to demote a fresh online/busy holder unless `--force` is passed. Omit `--peer` only from inside a registered peer shell where Repowire can discover the current peer.
 
 ## `repowire schedule`
 

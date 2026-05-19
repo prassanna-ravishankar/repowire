@@ -57,6 +57,19 @@ class PaneHijackRejectedError(Exception):
     """
 
 
+class RoleClaimConflictError(Exception):
+    """Raised when a live peer already holds the requested special role."""
+
+
+@dataclass
+class RoleClaimResult:
+    """Result of claiming a special peer role."""
+
+    peer: Peer
+    previous_holders: list[dict[str, str | None]]
+    already_held: bool = False
+
+
 # ---------------------------------------------------------------------------
 # SessionMapping dataclass (previously in session_mapper.py)
 # ---------------------------------------------------------------------------
@@ -1407,6 +1420,123 @@ class PeerRegistry:
             if old_status != peer.status:
                 self._emit_status_change(peer, old_status, peer.status)
             return True
+
+    async def claim_special_role(
+        self,
+        identifier: str,
+        role: PeerRole,
+        *,
+        circle: str | None = None,
+        force: bool = False,
+    ) -> RoleClaimResult | None:
+        """Claim a singleton special role for an existing live peer.
+
+        Narrow v0.13 repair hook: only orchestrator is supported. The target
+        peer must already exist; this never allocates a new peer. A fresh
+        ONLINE/BUSY holder in the same circle blocks the claim unless force is
+        set. Offline/stale holders are demoted in both live registry state and
+        durable mappings so restarts do not reintroduce the bad role.
+        """
+        if role != PeerRole.ORCHESTRATOR:
+            raise ValueError("Only role=orchestrator can be claimed")
+
+        now = datetime.now(timezone.utc)
+        tolerance = self.heartbeat_tolerance()
+
+        def fresh_holder(peer: Peer) -> bool:
+            return (
+                peer.role == role
+                and peer.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
+                and peer.last_seen is not None
+                and (now - peer.last_seen).total_seconds() <= tolerance
+            )
+
+        async with self._lock:
+            target = self._lookup_peer_unlocked(identifier, circle=circle)
+            if not target:
+                return None
+            target_circle = circle or target.circle
+
+            blockers = [
+                p for p in self._peers.values()
+                if p.peer_id != target.peer_id
+                and p.circle == target_circle
+                and fresh_holder(p)
+            ]
+            if blockers and not force:
+                holder = max(blockers, key=lambda p: p.last_seen or now)
+                raise RoleClaimConflictError(
+                    f"role={role.value} is already held by "
+                    f"{holder.display_name} ({holder.peer_id}) in circle {target_circle}"
+                )
+
+            previous_holders: list[dict[str, str | None]] = []
+            for peer in self._peers.values():
+                if (
+                    peer.peer_id == target.peer_id
+                    or peer.circle != target_circle
+                    or peer.role != role
+                ):
+                    continue
+                previous_holders.append(
+                    {
+                        "peer_id": peer.peer_id,
+                        "display_name": peer.display_name,
+                        "status": peer.status.value,
+                        "last_seen": peer.last_seen.isoformat() if peer.last_seen else None,
+                    }
+                )
+                peer.role = PeerRole.AGENT
+                mapping = self._mappings.get(peer.peer_id)
+                if mapping and mapping.role != PeerRole.AGENT:
+                    mapping.role = PeerRole.AGENT
+                    mapping.updated_at = now.isoformat()
+                    self._mappings_dirty = True
+
+            already_held = target.role == role
+            target.role = role
+            target.last_seen = now
+            mapping = self._mappings.get(target.peer_id)
+            if mapping:
+                mapping.role = role
+                mapping.updated_at = now.isoformat()
+                self._mappings_dirty = True
+
+            for sid, mapping in self._mappings.items():
+                if (
+                    sid == target.peer_id
+                    or mapping.circle != target_circle
+                    or mapping.role != role
+                ):
+                    continue
+                previous_holders.append(
+                    {
+                        "peer_id": sid,
+                        "display_name": mapping.display_name,
+                        "status": "mapping-only",
+                        "last_seen": mapping.updated_at,
+                    }
+                )
+                mapping.role = PeerRole.AGENT
+                mapping.updated_at = now.isoformat()
+                self._mappings_dirty = True
+
+            self.add_event(
+                "role_claimed",
+                {
+                    "peer_id": target.peer_id,
+                    "peer": target.display_name,
+                    "role": role.value,
+                    "circle": target_circle,
+                    "force": force,
+                    "previous_holders": previous_holders,
+                },
+            )
+            return RoleClaimResult(
+                peer=target,
+                previous_holders=previous_holders,
+                already_held=already_held,
+            )
 
     async def update_description(
         self, identifier: str, description: str, circle: str | None = None
