@@ -1,500 +1,202 @@
-# Graph Report - /Users/prass/development/projects/repowire  (2026-04-27)
-
-## Corpus Check
-- 0 files · ~99,999 words
-- Verdict: corpus is large enough that graph structure adds value.
-
-## Summary
-- 1912 nodes · 5473 edges · 71 communities detected
-- Extraction: 50% EXTRACTED · 50% INFERRED · 0% AMBIGUOUS · INFERRED: 2729 edges (avg confidence: 0.58)
-- Token cost: 0 input · 0 output
-
-## Community Hubs (Navigation)
-- [[_COMMUNITY_Daemon Routing Core|Daemon Routing Core]]
-- [[_COMMUNITY_CLI & Setup Commands|CLI & Setup Commands]]
-- [[_COMMUNITY_FastAPI App Factory|FastAPI App Factory]]
-- [[_COMMUNITY_Channel Installer|Channel Installer]]
-- [[_COMMUNITY_Telegram Bot|Telegram Bot]]
-- [[_COMMUNITY_Attachments|Attachments]]
-- [[_COMMUNITY_Daemon Errors|Daemon Errors]]
-- [[_COMMUNITY_Config & Persistence|Config & Persistence]]
-- [[_COMMUNITY_Hook Adapter Normalization|Hook Adapter Normalization]]
-- [[_COMMUNITY_Relay Auth Tokens|Relay Auth Tokens]]
-- [[_COMMUNITY_Peer Registry Lifecycle|Peer Registry Lifecycle]]
-- [[_COMMUNITY_Architecture Overview|Architecture Overview]]
-- [[_COMMUNITY_Agent Type Enum|Agent Type Enum]]
-- [[_COMMUNITY_Hooks Transport Utilities|Hooks Transport Utilities]]
-- [[_COMMUNITY_WebSocket Hook Tests|WebSocket Hook Tests]]
-- [[_COMMUNITY_Message Router Transport|Message Router Transport]]
-- [[_COMMUNITY_Message Types|Message Types]]
-- [[_COMMUNITY_Codex Installer|Codex Installer]]
-- [[_COMMUNITY_Datastar Dashboard Routes|Datastar Dashboard Routes]]
-- [[_COMMUNITY_Dashboard Templates|Dashboard Templates]]
-- [[_COMMUNITY_Community 20|Community 20]]
-- [[_COMMUNITY_Community 21|Community 21]]
-- [[_COMMUNITY_Community 22|Community 22]]
-- [[_COMMUNITY_Community 23|Community 23]]
-- [[_COMMUNITY_Community 24|Community 24]]
-- [[_COMMUNITY_Community 25|Community 25]]
-- [[_COMMUNITY_Community 26|Community 26]]
-- [[_COMMUNITY_Community 27|Community 27]]
-- [[_COMMUNITY_Community 28|Community 28]]
-- [[_COMMUNITY_Community 29|Community 29]]
-- [[_COMMUNITY_Community 30|Community 30]]
-- [[_COMMUNITY_Community 31|Community 31]]
-- [[_COMMUNITY_Community 32|Community 32]]
-- [[_COMMUNITY_Community 33|Community 33]]
-- [[_COMMUNITY_Community 34|Community 34]]
-- [[_COMMUNITY_Community 35|Community 35]]
-- [[_COMMUNITY_Community 36|Community 36]]
-- [[_COMMUNITY_Community 37|Community 37]]
-- [[_COMMUNITY_Community 38|Community 38]]
-- [[_COMMUNITY_Community 39|Community 39]]
-- [[_COMMUNITY_Community 40|Community 40]]
-- [[_COMMUNITY_Community 41|Community 41]]
-- [[_COMMUNITY_Community 42|Community 42]]
-- [[_COMMUNITY_Community 43|Community 43]]
-- [[_COMMUNITY_Community 44|Community 44]]
-- [[_COMMUNITY_Community 56|Community 56]]
-- [[_COMMUNITY_Community 57|Community 57]]
-- [[_COMMUNITY_Community 58|Community 58]]
-- [[_COMMUNITY_Community 60|Community 60]]
-- [[_COMMUNITY_Community 61|Community 61]]
-- [[_COMMUNITY_Community 63|Community 63]]
-- [[_COMMUNITY_Community 64|Community 64]]
-- [[_COMMUNITY_Community 65|Community 65]]
-- [[_COMMUNITY_Community 66|Community 66]]
-- [[_COMMUNITY_Community 67|Community 67]]
-- [[_COMMUNITY_Community 71|Community 71]]
-- [[_COMMUNITY_Community 72|Community 72]]
-- [[_COMMUNITY_Community 73|Community 73]]
-- [[_COMMUNITY_Community 74|Community 74]]
-- [[_COMMUNITY_Community 75|Community 75]]
-- [[_COMMUNITY_Community 102|Community 102]]
-- [[_COMMUNITY_Community 103|Community 103]]
-- [[_COMMUNITY_Community 104|Community 104]]
-- [[_COMMUNITY_Community 105|Community 105]]
-- [[_COMMUNITY_Community 106|Community 106]]
-- [[_COMMUNITY_Community 107|Community 107]]
-- [[_COMMUNITY_Community 108|Community 108]]
-- [[_COMMUNITY_Community 109|Community 109]]
-- [[_COMMUNITY_Community 110|Community 110]]
-- [[_COMMUNITY_Community 111|Community 111]]
-- [[_COMMUNITY_Community 112|Community 112]]
-
-## God Nodes (most connected - your core abstractions)
-1. `AgentType` - 325 edges
-2. `Config` - 276 edges
-3. `PeerRegistry` - 205 edges
-4. `PeerStatus` - 185 edges
-5. `Peer` - 175 edges
-6. `SpawnConfig` - 161 edges
-7. `MessageRouter` - 155 edges
-8. `WebSocketTransport` - 147 edges
-9. `QueryTracker` - 141 edges
-10. `PeerRole` - 138 edges
-
-## Surprising Connections (you probably didn't know these)
-- `_get_client()` --references--> `Hooks Transport (default)`  [INFERRED]
-  /Users/prass/development/projects/repowire/repowire/hooks/utils.py → CLAUDE.md
-- `Next.js Dashboard (web/)` --semantically_similar_to--> `React v1 Dashboard (replaced Datastar)`  [INFERRED] [semantically similar]
-  web/README.md → experiments/datastar-dashboard/README.md
-- `Compose Bar (Datastar peer_detail)` --semantically_similar_to--> `Compose Bar Component (design system)`  [INFERRED] [semantically similar]
-  experiments/datastar-dashboard/templates/partials/peer_detail.html → docs/design-system.md
-- `Peer Status Indicator (emerald/amber/zinc)` --semantically_similar_to--> `Status Indicators (Online/Busy/Offline)`  [INFERRED] [semantically similar]
-  experiments/datastar-dashboard/templates/partials/peer_detail.html → docs/design-system.md
-- `TelegramPeer` --references--> `Daemon-as-Routing-Hub Architecture`  [EXTRACTED]
-  /Users/prass/development/projects/repowire/repowire/telegram/bot.py → CLAUDE.md
-
-## Hyperedges (group relationships)
-- **Telegram Reply-Keyboard Pipeline** — bot_compute_visible_recents, bot_build_reply_keyboard, bot_parse_keyboard_tap, bot_current_reply_keyboard, bot_on_text [EXTRACTED 0.90]
-- **Hook → Daemon HTTP Layer (pooled client)** — utils_get_client, utils_daemon_post, utils_daemon_get, utils_update_status, utils_log_daemon_error [EXTRACTED 0.90]
-- **OpenCode Incoming Query Lifecycle** — opencode_handle_incoming_query, opencode_resolve_session_id, opencode_active_model_tracking, opencode_ws_reconnect [EXTRACTED 0.85]
-
-## Communities
-
-### Community 0 - "Daemon Routing Core"
-Cohesion: 0.03
-Nodes (181): BaseModel, get_peer_registry(), MessageRouter, broadcast_message(), BroadcastRequest, BroadcastResponse, ChatTurnRequest, deliver_response() (+173 more)
-
-### Community 1 - "CLI & Setup Commands"
-Cohesion: 0.03
-Nodes (192): peer_new(), Register a peer for mesh communication., Unregister a peer from the mesh., Ask a peer a question (CLI testing utility)., Remove offline peers from the daemon., Prompt user to configure a bot integration. Handles existing config display., Manage Claude Code hooks (alias for 'claude')., Install Repowire hooks into Claude Code. (+184 more)
-
-### Community 2 - "FastAPI App Factory"
-Cohesion: 0.03
-Nodes (114): _cleanup_stale_artifacts(), create_app(), create_test_app(), _find_web_output_dir(), FastAPI application factory for the Repowire daemon., Find the web output directory for the dashboard.      Checks dev mode first (rel, Create app for testing with optional mock components.      Args:         config:, Remove stale PID, log, and lock files from cache directory. (+106 more)
-
-### Community 3 - "Channel Installer"
-Cohesion: 0.03
-Nodes (129): check_channel_installed(), check_hooks_installed(), _find_channel_server(), get_claude_version(), _has_bun(), install_channel(), install_hooks(), _load_claude_settings() (+121 more)
-
-### Community 4 - "Telegram Bot"
-Cohesion: 0.03
-Nodes (85): Telegram Photo Attachment Upload Flow, build_reply_keyboard(), TelegramPeer._cmd_peers, compute_visible_recents(), TelegramPeer._current_reply_keyboard, _esc(), TelegramPeer._fetch_online_peers, _kb() (+77 more)
-
-### Community 5 - "Attachments"
-Cohesion: 0.03
-Nodes (95): _cleanup_expired(), _ensure_dir(), get_attachment(), Attachment upload/download endpoints., Remove attachments older than MAX_AGE_HOURS. Best-effort., Upload a file attachment. Returns {id, path, filename, size}., Download an attachment by ID., upload_attachment() (+87 more)
-
-### Community 6 - "Daemon Errors"
-Cohesion: 0.04
-Nodes (54): DaemonConnectionError, DaemonError, DaemonHTTPError, DaemonTimeoutError, PeerDisconnectedError, Custom error types for Repowire protocol., Base class for daemon-related errors., Raised when the Repowire daemon is not reachable. (+46 more)
-
-### Community 7 - "Config & Persistence"
-Cohesion: 0.05
-Nodes (39): dashboard_url(), effective_name(), effective_peer_id(), get_config_dir(), get_config_path(), LoggingConfig, Configuration models for Repowire., Settings controlling which commands and paths agents are allowed to spawn into. (+31 more)
-
-### Community 8 - "Hook Adapter Normalization"
-Cohesion: 0.05
-Nodes (36): hook_output(), HookPayload, normalize(), Normalize agent-specific hook payloads into a common format.  Each agent runtime, Normalized hook payload, agent-agnostic., Normalize an agent-specific hook payload into a common format., Print required hook output to stdout. Gemini needs explicit approval., main() (+28 more)
-
-### Community 9 - "Relay Auth Tokens"
-Cohesion: 0.06
-Nodes (42): APIKey, Token-based authentication for the relay server.  Tokens are server-issued rando, Verify API key for relay mode.      Returns the API key if valid, None if auth i, A relay API key (token)., Issue a new token for a user. If user already has one, return it., Update the user_id for an auto-registered token., Dependency that requires authentication when relay mode is enabled., Validate a token. Auto-registers unknown but well-formed tokens.      Tokens are (+34 more)
-
-### Community 10 - "Peer Registry Lifecycle"
-Cohesion: 0.11
-Nodes (23): get_peer(), register_peer(), _make_manager(), _make_peer(), manager(), Tests for lazy_repair, active_repair, get_peer_by_pane, and ping/pong liveness., TestActiveRepairConcurrency, TestActiveRepairLiveness (+15 more)
-
-### Community 11 - "Architecture Overview"
-Cohesion: 0.06
-Nodes (43): Chat Bots (Telegram, Slack, ...), Claude Code Agent, Codex Agent, Cross-Machine Mesh, Daemon :8377 (local-first routing hub), Dashboard (localhost:8377), Gemini CLI Agent, hooks + MCP Transport (+35 more)
-
-### Community 12 - "Agent Type Enum"
-Cohesion: 0.1
-Nodes (12): Convert to dictionary for serialization., Check if this is a local peer., Check if this peer runs OpenCode., Check if this peer runs Codex., Check if this peer runs Gemini., _make_peer(), Tests for repowire/protocol/peers.py — Peer model helpers., TestBackendHelpers (+4 more)
-
-### Community 13 - "Hooks Transport Utilities"
-Cohesion: 0.08
-Nodes (39): Hook Adapter (cross-agent normalization), Hooks Transport (default), MCP Server Identity / lazy registration, clear_pane_runtime_state(), clear_pending_cids(), daemon_get(), daemon_post(), _get_client() (+31 more)
-
-### Community 14 - "WebSocket Hook Tests"
-Cohesion: 0.1
-Nodes (24): Tests for websocket_hook helper functions., Tests for _is_pane_safe., tmux exits 0 with empty stdout for non-existent panes — must return False., Pane running a bare shell should return False., Pane running an agent binary should return True., Agent may report version string as pane_current_command — should return True., Nonzero returncode from tmux means pane is gone., FileNotFoundError (tmux not found) should return False. (+16 more)
-
-### Community 15 - "Message Router Transport"
-Cohesion: 0.11
-Nodes (12): Message routing logic.  Routes messages via WebSocket transport., Send notification (fire-and-forget).          Args:             from_peer: Displ, Tests for MessageRouter — query, notification, and broadcast delivery., router(), TestBroadcast, TestSendNotification, tracker(), transport() (+4 more)
-
-### Community 16 - "Message Types"
-Cohesion: 0.17
-Nodes (15): Enum, BroadcastMessage, create(), from_dict(), Message, MessageType, NotificationMessage, QueryMessage (+7 more)
-
-### Community 17 - "Codex Installer"
-Cohesion: 0.16
-Nodes (22): check_hooks_installed(), check_mcp_installed(), _enable_hooks_feature(), get_codex_version(), install_hooks(), install_mcp(), _is_repowire_hook(), _load_hooks() (+14 more)
-
-### Community 18 - "Datastar Dashboard Routes"
-Cohesion: 0.18
-Nodes (19): _enrich_peer(), _format_event(), generate_sse_updates(), _peer_label(), Datastar-powered dashboard routes for the relay server.  Serves the dashboard HT, Render peer detail partial., Render the full dashboard HTML page with optional pre-rendered content., Generator that yields Datastar SSE events for live dashboard updates.      Args: (+11 more)
-
-### Community 19 - "Dashboard Templates"
-Cohesion: 0.1
-Nodes (21): dashboard.html (Datastar base template), Compose Bar (Datastar peer_detail), overview.html (Datastar partial), peer_detail.html (Datastar partial), Peer Status Indicator (emerald/amber/zinc), sidebar.html (Datastar partial), SSE Init (@get /v2/sse) in base template, Cloudflare + SSE Incompatibility (lesson) (+13 more)
-
-### Community 20 - "Community 20"
-Cohesion: 0.26
-Nodes (9): Tests for prompt and notification hook handlers., _run_with_input(), test_gemini_before_agent(), test_no_pane_id(), test_sets_busy(), test_sets_online_on_idle(), test_status_update_failure(), TestNotificationHandler (+1 more)
-
-### Community 21 - "Community 21"
-Cohesion: 0.23
-Nodes (10): RoleBadge(), backendIcon(), cn(), roleBadgeClass(), shortPath(), statusBorderColor(), statusDot(), statusTextColor() (+2 more)
-
-### Community 22 - "Community 22"
-Cohesion: 0.2
-Nodes (13): Agent Types Matrix, Daemon-as-Routing-Hub Architecture, Lazy Repair Design Philosophy, check_plugin_installed(), _get_plugin_path(), install_plugin(), OpenCode Plugin TypeScript Source, OpenCode plugin installer. (+5 more)
-
-### Community 23 - "Community 23"
-Cohesion: 0.18
-Nodes (11): Development Environment Setup, Hooks Run from Installed Package (gotcha), Ruff Linter (line length 100), Channel Transport (Experimental), Claude Code Agent, OpenAI Codex Agent, Google Gemini CLI Agent, Hooks Transport (Default) (+3 more)
-
-### Community 24 - "Community 24"
-Cohesion: 0.2
-Nodes (10): Circles (Logical Subnets), Context Breakout Problem (design rationale), HTTP Daemon (FastAPI :8377), Mesh Network for AI Coding Agents, OpenCode Agent, Repowire Project, Slack Bot Peer, Telegram Bot Peer (+2 more)
-
-### Community 25 - "Community 25"
-Cohesion: 0.22
-Nodes (1): Agent-type-specific installers.
-
-### Community 26 - "Community 26"
-Cohesion: 0.61
-Nodes (6): ClientDetachedRequest, PaneDiedRequest, Lifecycle event endpoints — provider-agnostic (tmux, containers, etc.)., SessionClosedRequest, SessionRenamedRequest, WindowRenamedRequest
-
-### Community 27 - "Community 27"
-Cohesion: 0.43
-Nodes (5): health_check(), HealthResponse, Health check endpoint., Health check response., Check daemon health status.
-
-### Community 28 - "Community 28"
-Cohesion: 0.8
-Nodes (3): onKeyDown(), submit(), uploadFile()
-
-### Community 29 - "Community 29"
-Cohesion: 0.6
-Nodes (3): connectDaemon(), fetchPeerContext(), scheduleReconnect()
-
-### Community 30 - "Community 30"
-Cohesion: 0.5
-Nodes (4): Full Color Token Set (Tailwind @theme), No-Line Rule (tonal boundary design), Surface Hierarchy Tokens, Typography System (Space Grotesk / Inter / JetBrains Mono)
-
-### Community 31 - "Community 31"
-Cohesion: 0.5
-Nodes (4): AGENTS.md (symlink to CLAUDE.md), CLAUDE.md (codebase guide), Memory Sanitization Rules, Versioning Rules Rationale
-
-### Community 32 - "Community 32"
-Cohesion: 0.67
-Nodes (1): RootLayout()
-
-### Community 33 - "Community 33"
-Cohesion: 0.67
-Nodes (1): peerLabel()
-
-### Community 34 - "Community 34"
-Cohesion: 0.67
-Nodes (1): copyName()
-
-### Community 35 - "Community 35"
-Cohesion: 0.67
-Nodes (1): handleSpawn()
-
-### Community 36 - "Community 36"
-Cohesion: 0.67
-Nodes (1): toggleItem()
-
-### Community 37 - "Community 37"
-Cohesion: 0.67
-Nodes (1): Hero()
-
-### Community 38 - "Community 38"
-Cohesion: 0.67
-Nodes (1): Navbar()
-
-### Community 39 - "Community 39"
-Cohesion: 0.67
-Nodes (1): Features()
-
-### Community 40 - "Community 40"
-Cohesion: 0.67
-Nodes (1): Footer()
-
-### Community 41 - "Community 41"
-Cohesion: 0.67
-Nodes (1): copyToClipboard()
-
-### Community 42 - "Community 42"
-Cohesion: 1.0
-Nodes (2): ask_peer MCP Tool, Correlation ID (ask_peer timeout 300s)
-
-### Community 43 - "Community 43"
-Cohesion: 1.0
-Nodes (2): experiments/datastar-dashboard/dashboard.py, Jinja2 Templates (Datastar experiment)
-
-### Community 44 - "Community 44"
-Cohesion: 1.0
-Nodes (2): Beads Issue Tracker integration, Session Completion Workflow
-
-### Community 56 - "Community 56"
-Cohesion: 1.0
-Nodes (1): Repeated SessionStart for the same logical session skips ws-hook takeover.
-
-### Community 57 - "Community 57"
-Cohesion: 1.0
-Nodes (1): Different cwd in same pane kills old ws-hook and re-registers.
-
-### Community 58 - "Community 58"
-Cohesion: 1.0
-Nodes (1): Same cwd with a different hook session_id is treated as a fresh takeover.
-
-### Community 60 - "Community 60"
-Cohesion: 1.0
-Nodes (1): Chat turn payloads should include pane_id for server-side peer_id resolution.
-
-### Community 61 - "Community 61"
-Cohesion: 1.0
-Nodes (1): Test Gemini's AfterAgent hook which provides final_response but no transcript_pa
-
-### Community 63 - "Community 63"
-Cohesion: 1.0
-Nodes (1): Dashboard URL via the relay, or None if not configured.
-
-### Community 64 - "Community 64"
-Cohesion: 1.0
-Nodes (1): Get the effective peer name (display_name or fallback to name).
-
-### Community 65 - "Community 65"
-Cohesion: 1.0
-Nodes (1): Get the effective peer_id (or generate legacy placeholder).
-
-### Community 66 - "Community 66"
-Cohesion: 1.0
-Nodes (1): Get the Repowire config directory.
-
-### Community 67 - "Community 67"
-Cohesion: 1.0
-Nodes (1): Get the config file path.
-
-### Community 71 - "Community 71"
-Cohesion: 1.0
-Nodes (1): Create from dictionary.
-
-### Community 72 - "Community 72"
-Cohesion: 1.0
-Nodes (1): Create a query message.
-
-### Community 73 - "Community 73"
-Cohesion: 1.0
-Nodes (1): Create a response message.
-
-### Community 74 - "Community 74"
-Cohesion: 1.0
-Nodes (1): Create a notification message.
-
-### Community 75 - "Community 75"
-Cohesion: 1.0
-Nodes (1): Create a broadcast message.
-
-### Community 102 - "Community 102"
-Cohesion: 1.0
-Nodes (1): notify_peer MCP Tool
-
-### Community 103 - "Community 103"
-Cohesion: 1.0
-Nodes (1): broadcast MCP Tool
-
-### Community 104 - "Community 104"
-Cohesion: 1.0
-Nodes (1): list_peers MCP Tool
-
-### Community 105 - "Community 105"
-Cohesion: 1.0
-Nodes (1): whoami MCP Tool
-
-### Community 106 - "Community 106"
-Cohesion: 1.0
-Nodes (1): set_description MCP Tool
-
-### Community 107 - "Community 107"
-Cohesion: 1.0
-Nodes (1): spawn_peer MCP Tool
-
-### Community 108 - "Community 108"
-Cohesion: 1.0
-Nodes (1): kill_peer MCP Tool
-
-### Community 109 - "Community 109"
-Cohesion: 1.0
-Nodes (1): Lazy Repair Philosophy (CONTRIBUTING reference)
-
-### Community 110 - "Community 110"
-Cohesion: 1.0
-Nodes (1): Geist Font (Vercel)
-
-### Community 111 - "Community 111"
-Cohesion: 1.0
-Nodes (1): Responsive Layout (Mobile + Desktop)
-
-### Community 112 - "Community 112"
-Cohesion: 1.0
-Nodes (1): Channel Transport (experimental)
-
-## Knowledge Gaps
-- **270 isolated node(s):** `Human-readable label: folder name > session ID.`, `Returns (parent, folder) for display.`, `Add display helpers to a peer dict.`, `Add display helpers to an event dict.`, `Render sidebar partial.` (+265 more)
-  These have ≤1 connection - possible missing edges or undocumented components.
-- **Thin community `Community 25`** (9 nodes): `Agent-type-specific installers.`, `__init__.py`, `__init__.py`, `__init__.py`, `__init__.py`, `__init__.py`, `__init__.py`, `__init__.py`, `__init__.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 32`** (3 nodes): `RootLayout()`, `layout.tsx`, `layout.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 33`** (3 nodes): `peerLabel()`, `types.ts`, `types.ts`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 34`** (3 nodes): `copyName()`, `PeerHeader.tsx`, `PeerHeader.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 35`** (3 nodes): `handleSpawn()`, `SpawnDialog.tsx`, `SpawnDialog.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 36`** (3 nodes): `toggleItem()`, `ActivityFeed.tsx`, `ActivityFeed.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 37`** (3 nodes): `Hero()`, `Hero.tsx`, `Hero.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 38`** (3 nodes): `Navbar()`, `Navbar.tsx`, `Navbar.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 39`** (3 nodes): `Features()`, `Features.tsx`, `Features.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 40`** (3 nodes): `Footer()`, `Footer.tsx`, `Footer.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 41`** (3 nodes): `copyToClipboard()`, `Installation.tsx`, `Installation.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 42`** (2 nodes): `ask_peer MCP Tool`, `Correlation ID (ask_peer timeout 300s)`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 43`** (2 nodes): `experiments/datastar-dashboard/dashboard.py`, `Jinja2 Templates (Datastar experiment)`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 44`** (2 nodes): `Beads Issue Tracker integration`, `Session Completion Workflow`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 56`** (1 nodes): `Repeated SessionStart for the same logical session skips ws-hook takeover.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 57`** (1 nodes): `Different cwd in same pane kills old ws-hook and re-registers.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 58`** (1 nodes): `Same cwd with a different hook session_id is treated as a fresh takeover.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 60`** (1 nodes): `Chat turn payloads should include pane_id for server-side peer_id resolution.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 61`** (1 nodes): `Test Gemini's AfterAgent hook which provides final_response but no transcript_pa`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 63`** (1 nodes): `Dashboard URL via the relay, or None if not configured.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 64`** (1 nodes): `Get the effective peer name (display_name or fallback to name).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 65`** (1 nodes): `Get the effective peer_id (or generate legacy placeholder).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 66`** (1 nodes): `Get the Repowire config directory.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 67`** (1 nodes): `Get the config file path.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 71`** (1 nodes): `Create from dictionary.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 72`** (1 nodes): `Create a query message.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 73`** (1 nodes): `Create a response message.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 74`** (1 nodes): `Create a notification message.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 75`** (1 nodes): `Create a broadcast message.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 102`** (1 nodes): `notify_peer MCP Tool`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 103`** (1 nodes): `broadcast MCP Tool`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 104`** (1 nodes): `list_peers MCP Tool`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 105`** (1 nodes): `whoami MCP Tool`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 106`** (1 nodes): `set_description MCP Tool`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 107`** (1 nodes): `spawn_peer MCP Tool`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 108`** (1 nodes): `kill_peer MCP Tool`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 109`** (1 nodes): `Lazy Repair Philosophy (CONTRIBUTING reference)`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 110`** (1 nodes): `Geist Font (Vercel)`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 111`** (1 nodes): `Responsive Layout (Mobile + Desktop)`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 112`** (1 nodes): `Channel Transport (experimental)`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-
-## Suggested Questions
-_Questions this graph is uniquely positioned to answer:_
-
-- **Why does `AgentType` connect `CLI & Setup Commands` to `Daemon Routing Core`, `FastAPI App Factory`, `Telegram Bot`, `Attachments`, `Daemon Errors`, `Config & Persistence`, `Peer Registry Lifecycle`, `Agent Type Enum`, `WebSocket Hook Tests`, `Message Types`?**
-  _High betweenness centrality (0.230) - this node is a cross-community bridge._
-- **Why does `Config` connect `CLI & Setup Commands` to `Daemon Routing Core`, `FastAPI App Factory`, `Channel Installer`, `Telegram Bot`, `Config & Persistence`, `Peer Registry Lifecycle`, `Message Router Transport`?**
-  _High betweenness centrality (0.117) - this node is a cross-community bridge._
-- **Why does `PeerRegistry` connect `FastAPI App Factory` to `Daemon Routing Core`, `CLI & Setup Commands`, `Telegram Bot`, `Daemon Errors`, `Peer Registry Lifecycle`, `Message Router Transport`?**
-  _High betweenness centrality (0.068) - this node is a cross-community bridge._
-- **Are the 320 inferred relationships involving `AgentType` (e.g. with `TestSpawnConfig` and `TestSpawnResult`) actually correct?**
-  _`AgentType` has 320 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 269 inferred relationships involving `Config` (e.g. with `_make_app()` and `TestAppFactory`) actually correct?**
-  _`Config` has 269 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 155 inferred relationships involving `PeerRegistry` (e.g. with `_make_app()` and `TestAppFactory`) actually correct?**
-  _`PeerRegistry` has 155 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 180 inferred relationships involving `PeerStatus` (e.g. with `TestPeerCircleField` and `TestPeerConfigCircle`) actually correct?**
-  _`PeerStatus` has 180 INFERRED edges - model-reasoned connections that need verification._
+# Repowire Graphify Architecture Report
+
+Generated: 2026-05-19  
+Worktree: `/Users/prass/development/projects/repowire.graphify`  
+Branch: `docs/graphify-repowire`
+
+## Scope and Method
+
+Requested practical scope was README/agent instructions, docs, daemon, MCP, dashboard, and docs app surfaces. I used the graphify skill workflow as far as this runtime permits:
+
+```bash
+sed -n '1,760p' /Users/prass/.agents/skills/graphify/SKILL.md
+which graphify
+bd prime
+bd dolt pull
+bd ready
+bd create --title="Generate graphify architecture report" --description="Analyze scoped repowire docs and architecture files with graphify, produce graphify-out artifacts, and report whether outputs belong in repo or generated artifacts." --type=task --priority=2
+graphify update .
+```
+
+Important blockers/limitations:
+
+- `bd dolt pull` failed with `Error 1105: no remote`; `bd ready` reported no open issues.
+- `bd create` failed because `.beads` is missing `issue_prefix`; I did not initialize or modify Beads metadata.
+- Full graphify semantic extraction in the skill requires parallel extraction subagents. This runtime only permits spawning subagents when explicitly requested, so I did not run LLM semantic extraction subagents.
+- `graphify update .` refreshed the deterministic/code graph only. The architecture conclusions below are therefore a hybrid of graphify AST output plus direct inspection of docs and architecture modules.
+- A direct cross-circle ask to `repowire.v013-session-arch-codex` was blocked by circle boundary; session-native roadmap context was routed via `orchestrator-2-codex` and is included only as roadmap language.
+
+## Graph Outputs
+
+`graphify update .` completed successfully:
+
+```text
+Re-extracting code files in . (no LLM needed)...
+  AST extraction: 207/207 files (100%)
+[graphify watch] Rebuilt: 4326 nodes, 14541 edges, 224 communities
+[graphify watch] graph.json, graph.html and GRAPH_REPORT.md updated in graphify-out
+Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.
+```
+
+Generated/updated files:
+
+- `graphify-out/graph.json` — graphify generated a 7.1 MB snapshot with 4,326 nodes, 14,541 links, and 3 hyperedges during the run. I restored this tracked large artifact after inspection because it should stay generated/out-of-band unless the repo intentionally tracks refreshed snapshots.
+- `graphify-out/graph.html` — graphify generated a 4.9 MB interactive graph during the run. I restored this tracked large artifact after inspection for the same reason.
+- `graphify-out/GRAPH_REPORT.md` — this focused architecture report.
+- `graphify-out/cache/` contains generated cache JSON files; untracked cache files from this run were removed.
+
+Repo suitability:
+
+- `GRAPH_REPORT.md` is suitable to commit as a docs handoff artifact.
+- `graph.json`, `graph.html`, `manifest.json`, `cost.json`, and cache files are generated artifacts. They are useful locally, but at their current sizes they should stay generated/out-of-band unless the project intentionally tracks graphify output snapshots.
+- Existing tracked graphify artifacts were already present before this run. I did not edit product runtime code.
+
+## Graphify Hub Findings
+
+The deterministic graph identifies these most connected abstractions:
+
+1. `AgentType`
+2. `Config`
+3. `PeerRegistry`
+4. `PeerStatus`
+5. `Peer`
+6. `MessageRouter`
+7. `WebSocketTransport`
+8. `QueryTracker`
+9. `PeerRole`
+10. `SpawnConfig`
+
+Read as architecture signal: Repowire is organized around typed peer identity, daemon configuration, registry lifecycle, and transport-neutral routing through a WebSocket-backed hub. The graph also surfaced three useful cross-cutting hyperedges already present in the output: Telegram reply-keyboard pipeline, hook-to-daemon HTTP utilities, and OpenCode incoming-query lifecycle.
+
+## Architecture Communities
+
+### Mesh and MCP Tools
+
+Primary files: `repowire/mcp/server.py`, `docs/reference/mcp-tools.md`, `docs/concepts/message-types.md`, `docs/concepts/peers-and-circles.md`.
+
+The MCP server is intentionally a thin HTTP client over the local daemon. Every tool entry calls lazy registration/touch logic, resolves the caller identity, and sends HTTP requests to daemon routes. The public tool surface is the mesh API agents actually use:
+
+- Routing: `ask`, `ack`, `notify_peer`, `broadcast`.
+- Inspection: `list_peers`, `whoami`, `set_description`, `orchestrator_status`.
+- Lifecycle: `spawn_peer`, `kill_peer`.
+- Review/scheduling: `mark_reviewed`, `review_queue`, `schedule_create`, `schedule_self`, `schedule_cron`, `schedule_list`, `schedule_delete`.
+
+Key docs point: the distinction between `ask` and `notify_peer` is lifecycle, not message content. `ask` opens a durable correlation that must be closed by `ack`; `notify_peer` is fire-and-forget. `ack` replies are routed back to the original asker independent of current circle because the thread was established at ask time.
+
+Identity is central. The MCP server caches daemon-assigned `peer_id` when available, falls back to display name only when needed, and scopes send/list behavior by caller circle unless targeting role-bypass peers (`orchestrator`, `service`, human surfaces). This is the basis for the README claim that agents can address peers by name while the daemon prevents ambiguous misroutes.
+
+### Daemon Routing and Scheduler
+
+Primary files: `repowire/daemon/app.py`, `repowire/daemon/peer_registry.py`, `repowire/daemon/message_router.py`, `repowire/daemon/ask_tracker.py`, `repowire/daemon/query_tracker.py`, `repowire/daemon/scheduler.py`, `repowire/daemon/schedule_store.py`, `repowire/daemon/routes/*.py`.
+
+The daemon is the single routing hub. `create_app()` wires the component stack on startup:
+
+- `WebSocketTransport` owns live peer connections.
+- `QueryTracker` preserves legacy blocking query futures.
+- `AskTracker` stores first-class open ask state.
+- `MessageRouter` emits `query`, `ask`, `notify`, and `broadcast` frames over the transport.
+- `PeerRegistry` is the source of truth for peer identity, circle, status, display-name collision handling, persistent session mappings, and events.
+- `ScheduleStore` plus `Scheduler` drive one-shot and cron check-ins.
+- `ReviewQueueStore`, relay client, Telegram/Slack services, and ACP manager attach around the same hub.
+
+Routing remains explicit:
+
+- `/ask` resolves sender/recipient, registers the ask, optionally chooses ACP routing, otherwise delivers a `type=ask` WebSocket frame.
+- `/ack` closes the tracked ask and frames a reply notification back to the stored asker identity.
+- `/asks/pending` lets Stop hooks resurface unacked asks on every turn.
+- `/notify` and `/broadcast` skip ask lifecycle state.
+
+Scheduler note for docs: the scheduler has a background task, but it sleeps until the next due schedule or a wake event when schedules change. That is consistent with the lazy-repair philosophy because it is schedule-driven rather than peer polling.
+
+### Transports, ACP, and WebSocket
+
+Primary files: `repowire/daemon/routes/websocket.py`, `repowire/daemon/websocket_transport.py`, `repowire/hooks/*`, `repowire/installers/claude_code.py`, `repowire/installers/opencode.py`, `repowire/channel/server.ts`, `repowire/acp/*`, `docs/agents/*.md`, `docs/troubleshooting/channel-auth.md`.
+
+Transport split:
+
+- Default Claude Code, Codex, and Gemini path uses hooks plus a background WebSocket hook/client. Hooks normalize runtime-specific events into canonical session/prompt/stop behavior.
+- OpenCode uses a TypeScript plugin with an in-process persistent WebSocket connection.
+- Experimental Claude Code channel transport routes messages through an MCP channel server and leaves the Stop hook for dashboard chat turn extraction.
+- Telegram, Slack, dashboard, relay, and external clients are control surfaces around the daemon API; they are not separate routing authorities.
+
+The WebSocket protocol is small: clients connect with identity fields, then exchange `response`, `status`, `set_circle`, and related lifecycle messages. Daemon-to-client frames include `query`, `ask`, `notify`, and `broadcast`.
+
+ACP is present but should be documented as experimental. The ACP broker path is gated by `experiments.acp_broker_client` and only applies when the target peer has a valid `metadata["acp"]` block. In that case `/ask` bypasses the WebSocket transport for that peer, prompts a broker-side ACP subprocess, and completes the original ask by notifying the asker. Existing comments call this Phase 3 and keep `notify`, `broadcast`, and non-ACP peers on the WebSocket path.
+
+Suggested public wording: ACP is an experiment toward session-native execution, not production-ready transport replacement.
+
+### Dashboard and Docs
+
+Primary files: `web/app/dashboard/page.tsx`, `web/app/dashboard/components/*`, `web/app/dashboard/lib/useEventStream.ts`, `web/app/docs/*`, `docs/surfaces/dashboard.md`, `docs/design-system.md`.
+
+The dashboard is a live control surface over daemon state:
+
+- It fetches `/peers` and `/events` initially.
+- It subscribes to server-sent events via `useEventStream` and keeps a 500-event client-side view.
+- It renders peer roster, mesh feed, per-peer thread, MCP panel, history panel, spawn/settings dialogs, mobile tabs, and orchestrator-offline warnings.
+- Per-peer chat groups chat turns, ask/notify/response events, streaming deltas, tool calls, attachments, and pending ask state.
+
+The docs app is intentionally smaller than the MkDocs corpus. `web/app/docs/_nav.ts` currently exposes quickstart, concepts, MCP tools, Python client, and CLI. The full `docs/` tree has richer reference and troubleshooting content, including architecture stubs. README/docs refresh should avoid duplicating everything in the README; use README for a concise model and link to docs pages for details.
+
+### Orchestrator Workflows
+
+Primary files: `docs/concepts/orchestrator.md`, `docs/patterns/orchestrator-coordination.md`, `repowire/orchestrator/template/*`, `repowire/mcp/server.py`, scheduler/review routes.
+
+An orchestrator is metadata plus workflow, not a privileged daemon actor. The mesh treats it as a peer with `role=orchestrator`; humans and agents choose to route work through it. Useful workflow primitives:
+
+- `list_peers` defaults to mesh-wide for orchestrator-role callers.
+- `orchestrator_status` checks live orchestrator presence per circle.
+- `set_description` keeps dashboard state useful during delegated work.
+- `review_queue` and `mark_reviewed` connect PR review obligations to peers.
+- `schedule_*` tools enable future self/peer check-ins.
+
+Docs should describe the orchestrator as the coordination loop for multi-repo work: scan queue, dispatch to project peer, receive updates, review, release. It should not be framed as access control or a separate scheduler service.
+
+### Session-Native Roadmap
+
+Source: roadmap context routed from `repowire.v013-session-arch-codex` via `orchestrator-2-codex` on 2026-05-19, plus local ACP/config/daemon evidence.
+
+Roadmap-only language for README/docs:
+
+- The v0.13 train is moving from transient peer connection toward durable session.
+- Public-safe terms: session-first/session-native, durable session, runtime executor, transport-neutral routing, session timeline, compatible v0.13.x slices.
+- Planned sequence: transport router for ask/notify, session/timeline store, dashboard merged persisted plus realtime timeline, session command/composer surface, runtime manager plus approval events.
+- Position ACP as one experimental route toward broker-side/runtime execution, not as fully production-ready.
+
+Avoid these claims in public docs for now:
+
+- Do not say session-native is fully shipped.
+- Do not label it v0.14.
+- Do not claim all history is unified.
+- Do not claim model switching or plan approval is implemented.
+- Do not say ACP is production-ready.
+- Do not claim routes are fully transport-unaware yet.
+
+## README/Docs Implications
+
+High-signal README architecture language:
+
+- Repowire is a local-first mesh for AI coding sessions.
+- The daemon is the single routing hub; peers connect through transport adapters.
+- All peers speak the same message model: `ask`, `ack`, `notify_peer`, `broadcast`.
+- MCP tools are the stable agent-facing API; daemon routes and transports are implementation details.
+- Circles are logical subnets for scoping, not authorization.
+- Human control surfaces (`dashboard`, `telegram`, `slack`) are peers with human-role routing behavior.
+- Lazy repair means state is eventually consistent and repaired on interaction; avoid promising continuous monitoring.
+- Experimental surfaces should be named explicitly: channel transport, ACP broker client, chat turn streaming.
+
+Recommended CLAUDE/AGENTS updates:
+
+- Update test count if README/CI has changed since the current 222/231 mismatch.
+- Add `repowire/acp/*`, scheduler files, review queue store, and dashboard SSE/streaming components to key modules if they matter for current development.
+- Clarify that `graphify update .` performs deterministic/code refresh; full semantic docs extraction still requires `/graphify --update` with extraction agents.
+- Keep the existing lazy-repair warning strong: do not add peer polling loops, periodic ghost checks, or eager persistence.
+
+## Suggested Follow-Up Issues
+
+I could not create Beads issues because Beads is not initialized correctly in this worktree. Suggested follow-ups for whoever owns task tracking:
+
+- Decide whether `graphify-out/graph.json` and `graphify-out/graph.html` should remain tracked or move to generated artifacts/release assets.
+- Fill `docs/reference/architecture.md`; it is currently a stub despite the README/CLAUDE architecture content being rich.
+- Add a short public roadmap section using session-native wording above, clearly marked planned/in-progress.
+- Document ACP under an experimental/developer section, not in the stable quickstart path.
