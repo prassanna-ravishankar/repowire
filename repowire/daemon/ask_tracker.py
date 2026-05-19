@@ -197,6 +197,17 @@ class AskTracker:
             logger.debug("Stashed pending reply on ask %s", correlation_id)
             return True
 
+    async def clear_pending_reply(self, correlation_id: str) -> None:
+        """Drop the stashed reply from an ask (idempotent).
+
+        Used after successful redelivery so the closed Ask object doesn't
+        retain reply text it can never use again.
+        """
+        async with self._lock:
+            ask = self._asks.get(correlation_id)
+            if ask is not None:
+                ask.pending_reply = None
+
     async def take_pending_replies_for_asker(self, peer_id: str) -> list[Ask]:
         """Snapshot open asks targeting this asker that have a stashed reply.
 

@@ -1098,10 +1098,12 @@ class PeerRegistry:
     async def update_peer_status(self, identifier: str, status: PeerStatus) -> None:
         """Update peer status + last_seen.
 
-        On an OFFLINE→ONLINE/BUSY transition, opportunistically redeliver any
-        ACP-stashed pending replies that targeted this peer as the asker.
-        Runs in a background task so the status update itself stays
-        side-effect-free for callers that don't care.
+        When ``experiments.acp_broker_client`` is on, OFFLINE→ONLINE/BUSY
+        transitions also schedule a background task that redelivers any
+        ACP-stashed pending replies targeting this peer as the asker. The
+        scheduling is gated on the flag so the default flag-off path has
+        zero new behaviour or perf overhead vs. pre-phase-3: no extra task,
+        no extra ask-tracker scan, no extra notify.
         """
         async with self._lock:
             peer = self._lookup_peer_unlocked(identifier)
@@ -1122,18 +1124,33 @@ class PeerRegistry:
             )
             asker_peer_id = peer.peer_id if became_live else None
 
-        if asker_peer_id is not None and self._ask_tracker is not None:
+        if (
+            asker_peer_id is not None
+            and self._ask_tracker is not None
+            and self._acp_redelivery_enabled()
+        ):
             asyncio.create_task(
                 self._redeliver_pending_replies(asker_peer_id),
                 name=f"redeliver-{asker_peer_id[:12]}",
             )
 
+    def _acp_redelivery_enabled(self) -> bool:
+        """Whether the ACP-routed stash/redeliver path is opted in.
+
+        Defensive against future Config refactors: a missing
+        ``experiments`` block or attribute is treated as flag-off, never
+        a crash.
+        """
+        experiments = getattr(self._config, "experiments", None)
+        return bool(getattr(experiments, "acp_broker_client", False))
+
     async def _redeliver_pending_replies(self, asker_peer_id: str) -> None:
         """Drain ACP-stashed replies for an asker that just came back online.
 
         Best-effort: a failure here just leaves the reply stashed for the next
-        reconnect. Successful redelivery closes the ask (ack_with_msg) so the
-        same reply can't be delivered twice.
+        reconnect. Successful redelivery closes the ask (ack_with_msg) and
+        clears the stash so the Ask object isn't holding reply text it can
+        never use again.
         """
         if self._ask_tracker is None:
             return
@@ -1160,6 +1177,9 @@ class PeerRegistry:
                 )
                 continue
             await self._ask_tracker.close(ask.correlation_id, reason="ack_with_msg")
+            # Drop the stash from the closed Ask object so we're not
+            # retaining reply text past its useful life.
+            await self._ask_tracker.clear_pending_reply(ask.correlation_id)
             logger.info(
                 "redeliver: delivered stashed reply for %s to %s",
                 ask.correlation_id, asker_peer_id,

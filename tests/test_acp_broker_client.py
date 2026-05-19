@@ -672,6 +672,128 @@ async def test_pending_reply_redelivered_on_asker_reconnect(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_reconnect_redelivery_is_skipped_when_flag_off(tmp_path: Path) -> None:
+    """Codex re-review BLOCKER: flag-off ⇒ zero new behaviour on reconnect.
+
+    With ``experiments.acp_broker_client`` off, an OFFLINE→ONLINE transition
+    must NOT scan the ask tracker and must NOT call notify on the asker's
+    behalf — even if a pending_reply somehow ended up stashed. The phase-3
+    contract is strict: flag off means the WS/MCP path runs unchanged.
+
+    We seed a stashed reply directly into the tracker (bypassing the
+    flag-gated _acp_complete write path) and assert that the reconnect
+    hook leaves it untouched. With the flag on, the same scenario would
+    drain and deliver — proven by the redelivery test above.
+    """
+    cfg = Config()
+    cfg.experiments.acp_broker_client = False  # explicitly off
+
+    transport = WebSocketTransport()
+    qt = QueryTracker()
+    at = AskTracker(ttl_hours=24.0)
+    router = MessageRouter(transport=transport, query_tracker=qt)
+    registry = PeerRegistry(
+        config=cfg, message_router=router, query_tracker=qt,
+        transport=transport, persistence_path=tmp_path / "sessions.json",
+        ask_tracker=at,
+    )
+    registry._events_path = tmp_path / "events.json"
+    registry._last_repair = time.monotonic() + 3600
+
+    asker = Peer(
+        peer_id="asker-id", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%asker", circle="default",
+    )
+    answerer = Peer(
+        peer_id="answerer-id", display_name="answerer", path=str(tmp_path),
+        machine="localhost", pane_id="%answerer", circle="default",
+    )
+    await registry.register_peer(asker)
+    await registry.register_peer(answerer)
+    await registry.update_peer_status(asker.peer_id, PeerStatus.OFFLINE)
+
+    notify_calls: list[dict] = []
+
+    async def _record(**kwargs):
+        notify_calls.append(kwargs)
+
+    router.send_notification = AsyncMock(side_effect=_record)
+
+    cid = await at.register(
+        from_peer_id=asker.peer_id, from_peer_name=asker.display_name,
+        to_peer_id=answerer.peer_id, to_peer_name=answerer.display_name,
+        text="hi",
+    )
+    # Seed the stash directly (the flag-gated _acp_complete is the only normal
+    # source, but the assertion is "if a stash exists, flag-off must ignore it")
+    stashed = await at.set_pending_reply(cid, f"[ack #{cid} from @answerer] stale")
+    assert stashed is True
+
+    await registry.update_peer_status(asker.peer_id, PeerStatus.ONLINE)
+    await asyncio.sleep(0.05)
+
+    # With flag off: no redeliver task scheduled → no notify call,
+    # ask still open, pending_reply still on the ask.
+    assert notify_calls == [], "flag-off path called notify on reconnect"
+    ask = await at.get(cid)
+    assert ask is not None
+    assert ask.closed is False
+    assert ask.pending_reply is not None
+
+
+@pytest.mark.asyncio
+async def test_pending_reply_cleared_after_successful_redelivery(tmp_path: Path) -> None:
+    """NIT from codex: don't retain reply text past its useful life.
+
+    After a redelivery succeeds the ask is closed, but the Ask object would
+    still carry the stashed text without an explicit clear. Verify the
+    redelivery path nulls pending_reply.
+    """
+    cfg = Config()
+    cfg.experiments.acp_broker_client = True
+    transport = WebSocketTransport()
+    qt = QueryTracker()
+    at = AskTracker(ttl_hours=24.0)
+    router = MessageRouter(transport=transport, query_tracker=qt)
+    registry = PeerRegistry(
+        config=cfg, message_router=router, query_tracker=qt,
+        transport=transport, persistence_path=tmp_path / "sessions.json",
+        ask_tracker=at,
+    )
+    registry._events_path = tmp_path / "events.json"
+    registry._last_repair = time.monotonic() + 3600
+
+    asker = Peer(
+        peer_id="asker-id", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%asker", circle="default",
+    )
+    answerer = Peer(
+        peer_id="answerer-id", display_name="answerer", path=str(tmp_path),
+        machine="localhost", pane_id="%answerer", circle="default",
+    )
+    await registry.register_peer(asker)
+    await registry.register_peer(answerer)
+    await registry.update_peer_status(asker.peer_id, PeerStatus.OFFLINE)
+
+    router.send_notification = AsyncMock()  # succeeds
+
+    cid = await at.register(
+        from_peer_id=asker.peer_id, from_peer_name=asker.display_name,
+        to_peer_id=answerer.peer_id, to_peer_name=answerer.display_name,
+        text="hi",
+    )
+    await at.set_pending_reply(cid, f"[ack #{cid} from @answerer] body")
+
+    await registry.update_peer_status(asker.peer_id, PeerStatus.ONLINE)
+    await asyncio.sleep(0.05)
+
+    ask = await at.get(cid)
+    assert ask is not None
+    assert ask.closed is True
+    assert ask.pending_reply is None
+
+
+@pytest.mark.asyncio
 async def test_pending_reply_kept_when_redelivery_still_fails(tmp_path: Path) -> None:
     """Redelivery is best-effort: if it still fails, the stash stays put.
 
