@@ -86,6 +86,7 @@ export function PeerView({
           </div>
         </div>
         <StatusLabel status={peer.status} />
+        {peer.path ? <OpenInEditorButton path={peer.path} /> : null}
         <CopyPeerName peer={peer} />
         <button
           onClick={onClose}
@@ -952,6 +953,61 @@ function AddMcpForm({
           cancel
         </button>
       </div>
+    </div>
+  );
+}
+
+const EDITOR_SCHEMES: { id: string; label: string; href: (path: string) => string }[] = [
+  { id: "vscode", label: "VS Code", href: (p) => `vscode://file/${encodeURI(p)}` },
+  { id: "cursor", label: "Cursor", href: (p) => `cursor://file/${encodeURI(p)}` },
+  { id: "zed", label: "Zed", href: (p) => `zed://${encodeURI(p)}` },
+];
+
+function OpenInEditorButton({ path }: { path: string }) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  return (
+    <div ref={containerRef} className="relative hidden sm:inline-flex">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={`Open ${path} in editor`}
+        aria-label="Open peer cwd in editor"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        data-testid="open-in-editor"
+        className="flex h-8 w-8 items-center justify-center rounded border border-border text-outline transition-colors hover:bg-surface-container-high hover:text-on-surface"
+      >
+        <span aria-hidden="true">↗</span>
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 top-9 z-20 w-32 rounded border border-border bg-surface-container-low py-1 shadow-md"
+        >
+          {EDITOR_SCHEMES.map((scheme) => (
+            <a
+              key={scheme.id}
+              href={scheme.href(path)}
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className="block px-3 py-1.5 font-mono text-[11px] text-on-surface transition-colors hover:bg-surface-container-high"
+            >
+              {scheme.label}
+            </a>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
