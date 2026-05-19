@@ -75,7 +75,12 @@ export function PeerView({
           <div className="mt-1 flex items-center gap-1.5 truncate font-mono text-[11px] text-outline">
             <span className="truncate">
               {peer.backend || "agent"} · {peer.metadata?.branch ? String(peer.metadata.branch) : peer.circle}
-              {peer.path ? <> · {parent}<span className="text-on-surface-variant">{folder}</span></> : null}
+              {peer.path ? (
+                <>
+                  {" · "}
+                  <PathCopyButton path={peer.path} parent={parent} folder={folder} />
+                </>
+              ) : null}
             </span>
             <GitStatusBadge status={peer.metadata?.git_status} />
           </div>
@@ -948,6 +953,31 @@ function AddMcpForm({
         </button>
       </div>
     </div>
+  );
+}
+
+function PathCopyButton({ path, parent, folder }: { path: string; parent: string; folder: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(path);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      title={copied ? "Copied" : `Copy ${path}`}
+      aria-label={`Copy peer cwd ${path}`}
+      data-testid="copy-peer-cwd"
+      className="cursor-pointer rounded px-0.5 transition-colors hover:bg-surface-container-high hover:text-on-surface focus:outline focus:outline-1 focus:outline-primary"
+    >
+      {parent}
+      <span className="text-on-surface-variant">{folder}</span>
+      {copied ? (
+        <span className="ml-1 inline-flex items-center text-secondary" aria-hidden="true">✓</span>
+      ) : null}
+    </button>
   );
 }
 
