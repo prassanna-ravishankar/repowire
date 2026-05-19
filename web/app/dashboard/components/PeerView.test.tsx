@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { PeerView } from "./PeerView";
-import { __resetProtectionForTests, isProtected } from "../lib/protection";
+import { __resetProtectionForTests, getFrozenThread, isProtected } from "../lib/protection";
 import { __resetDraftsForTests, getDraftText, setDraftText } from "../lib/drafts";
 import type { Event, Peer } from "../types";
 
@@ -173,6 +173,41 @@ describe("PeerView session protection", () => {
     expect(isProtected(PEER.peer_id)).toBe(false);
     rerender(<PeerView peer={PEER} events={withNewA} apiBase="" onClose={() => {}} onSent={() => {}} />);
     expect(screen.getByText("alice arrived while offscreen")).toBeInTheDocument();
+  });
+
+  it("captures the just-committed thread when compose is dirtied right after an SSE commit", () => {
+    // Documents the intended invariant from useLayoutEffect timing: after an
+    // SSE-driven commit, the snapshot provider's ref already reflects the
+    // new thread, so a user keystroke that immediately follows the commit
+    // captures the just-arrived event in the freeze. Note: jsdom + RTL's
+    // act() flushes both layout and passive effects before returning, so
+    // this test cannot independently distinguish layout from passive
+    // timing — its primary value is regression coverage for the captured
+    // snapshot's contents and lock-in for the documented contract.
+    const initial: Event[] = [chatTurn("e1", "first turn", "2025-01-01T00:00:00Z")];
+    const { rerender } = render(
+      <PeerView peer={PEER} events={initial} apiBase="" onClose={() => {}} onSent={() => {}} />
+    );
+
+    const incoming = [...initial, chatTurn("e2", "just arrived", "2025-01-01T00:00:01Z")];
+    // Commit the new event first; layout effects run during this commit so
+    // the snapshot provider ref must now reflect `incoming`. A passive
+    // useEffect would leave a window here in real browsers where the user
+    // could dirty compose before the ref refresh ran.
+    act(() => {
+      rerender(
+        <PeerView peer={PEER} events={incoming} apiBase="" onClose={() => {}} onSent={() => {}} />
+      );
+    });
+    // Now simulate the user dirtying compose immediately after the commit.
+    act(() => {
+      setDraftText(PEER.peer_id, "drafting");
+    });
+
+    expect(isProtected(PEER.peer_id)).toBe(true);
+    const snapshot = getFrozenThread<Event>(PEER.peer_id);
+    expect(snapshot).not.toBeNull();
+    expect(snapshot!.map((e) => e.id)).toContain("e2");
   });
 
   it("flips protection synchronously with the keystroke (no passive-effect race)", () => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertCircle, Check, Clock, Copy, Paperclip, RefreshCw, Send, X } from "lucide-react";
@@ -68,14 +68,19 @@ export function PeerView({
   // clears.
   const frozenFromStore = useFrozenThread<Event>(peer.peer_id);
   const liveThreadRef = useRef(liveThread);
-  useEffect(() => {
+  // Layout-effect timing: run before browser paint so that by the time the
+  // user can interact (or any post-commit setDraftText fires), the ref and
+  // provider already reflect the just-committed thread. A passive useEffect
+  // here leaves a window where markProtected could capture a stale thread.
+  useLayoutEffect(() => {
     liveThreadRef.current = liveThread;
   }, [liveThread]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     // Register a provider closure (over the ref) so markProtected — called
     // from the synchronous setDraftText path — can capture the latest
     // liveThread without us writing to the store from this component's
-    // render. The ref is updated by the effect above on each commit.
+    // render. Layout-effect ensures the provider is registered before paint
+    // and therefore before any post-commit user input.
     return registerSnapshotProvider<Event>(peer.peer_id, () => liveThreadRef.current);
   }, [peer.peer_id]);
   const thread = protectedNow && frozenFromStore ? frozenFromStore : liveThread;
