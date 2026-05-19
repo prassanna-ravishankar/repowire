@@ -86,6 +86,8 @@ Before risky or experimental runtime work (service restarts, hook/protocol chang
 
 Cleanup is a triad: **registered peer/session + terminal/process + workspace artifacts**. For git work, that means worktrees, branches, and generated artifacts too. For any "is X clean?" check (machine switch, kill-peer prep, prune, audit), enumerate all relevant worktrees/workspaces, not just the root `git status`. Sibling worktrees with unique unpushed commits are invisible to root-dir status. Cross-check the mesh registry against terminal/session state — orphan panes or processes are the common gap. Preserve dirty, unmerged, or unpushed user work unless the user explicitly tells you to clear it.
 
+Stale visible peers may represent resumable terminal sessions whose mesh registration is stale. Treat deregistration and process killing as separate decisions: prune or deregister bad registry rows when needed, but only kill the terminal/process after verifying it is disposable or the user asked for destructive cleanup. If a terminal still exists with useful state, prefer resume/reattach by session/window/pane plus project path over kill-and-respawn. If the platform lacks a `resume_peer`/`reattach_peer` primitive, surface that as the safer desired action rather than destroying state.
+
 ## Version-skew checks
 
 If a newly shipped tool, command, or agent method appears missing, verify the installed surface before debugging the implementation:

@@ -11,6 +11,7 @@ After a PR merges and the work is complete: clean up the registered peer/session
 ## When NOT to reach for it
 
 - The peer has follow-up work queued (continuation turns)
+- The visible peer is stale but its terminal/session may be resumable
 - The worktree is the main project worktree, not a feature clone
 - A parallel review is still verifying the merge — don't clean up until they ✅
 
@@ -35,11 +36,11 @@ After a PR merges and the work is complete: clean up the registered peer/session
    mcp__repowire__kill_peer(name="<project>.<feature>-<runtime>")
    ```
 
-4. **VERIFY the terminal/process is actually gone.** A registry cleanup may not kill the underlying tmux window, pane, shell, or worker process. Check:
+4. **VERIFY the terminal/process state.** A registry cleanup may not kill the underlying tmux window, pane, shell, or worker process. Check:
    ```bash
    tmux list-windows -t <circle>
    ```
-   If the window is still there:
+   If the terminal still exists and may contain useful state, prefer resume/reattach by session/window/pane and project path over destructive cleanup. If the work is disposable and cleanup was requested, then kill it:
    ```bash
    tmux kill-window -t <circle>:<window-name>
    ```
@@ -65,11 +66,12 @@ After a PR merges and the work is complete: clean up the registered peer/session
 
 ## Anti-patterns
 
-- **Skipping the tmux verify step.** `kill_peer` lies about pane death. Orphan tmux windows accumulate; eats memory; confuses later audits.
-- **Pruning the worktree before confirming the pane/process is dead.** Orphan agents can keep running in a deleted directory. Harmless functionally but pollutes state.
+- **Treating stale registry rows as proof the session is dead.** The terminal may still be resumable. Deregister stale mesh state separately from killing processes.
+- **Skipping the tmux verify step.** `kill_peer` may deregister without killing a pane if ownership was lost. Orphan tmux windows accumulate; eats memory; confuses later audits.
+- **Pruning the worktree before confirming the pane/process is dead or resumable.** Orphan agents can keep running in a deleted directory. Harmless functionally but pollutes state.
 - **Cleaning up before a parallel review is done.** They need the worktree to verify against. Wait for ✅.
 
 ## When something looks wrong
 
 - **Branch has unpushed commits, dirty files, or unmerged work not on main:** check `git log @{u}..HEAD`, `git status --short`, and `git ls-remote origin <branch>`. Could be abandoned work or user work. Surface before destroying.
-- **`kill_peer` returns 404:** peer was already deregistered (likely from a SessionEnd hook). Tmux pane may still be live; check anyway.
+- **`kill_peer` returns 404 or only deregisters:** peer was already deregistered, or the orchestrator lost ownership of the terminal process. Tmux pane may still be live; check anyway and offer resume/reattach if it has useful state.
