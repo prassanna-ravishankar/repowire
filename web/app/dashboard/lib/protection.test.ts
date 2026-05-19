@@ -6,7 +6,7 @@ import {
   getProtectionSources,
   isProtected,
   markProtected,
-  setFrozenThread,
+  registerSnapshotProvider,
 } from "./protection";
 
 afterEach(() => {
@@ -49,9 +49,17 @@ describe("protection registry", () => {
     expect(isProtected("p1")).toBe(false);
   });
 
-  it("frozen thread snapshot survives until the last source clears", () => {
+  it("captures a snapshot via the registered provider on first source", () => {
+    registerSnapshotProvider<{ id: string }>("p1", () => [{ id: "e1" }, { id: "e2" }]);
+    expect(getFrozenThread<{ id: string }>("p1")).toBeNull();
+
     markProtected("p1", "compose");
-    setFrozenThread("p1", [{ id: "e1" }]);
+    expect(getFrozenThread<{ id: string }>("p1")).toEqual([{ id: "e1" }, { id: "e2" }]);
+  });
+
+  it("frozen thread snapshot survives until the last source clears", () => {
+    registerSnapshotProvider<{ id: string }>("p1", () => [{ id: "e1" }]);
+    markProtected("p1", "compose");
     expect(getFrozenThread<{ id: string }>("p1")).toEqual([{ id: "e1" }]);
 
     // Adding a second source doesn't disturb the snapshot.
@@ -67,10 +75,20 @@ describe("protection registry", () => {
     expect(getFrozenThread<{ id: string }>("p1")).toBeNull();
   });
 
-  it("frozen snapshots are per-peer", () => {
-    setFrozenThread("p1", [{ id: "a" }]);
-    setFrozenThread("p2", [{ id: "b" }]);
-    expect(getFrozenThread<{ id: string }>("p1")).toEqual([{ id: "a" }]);
-    expect(getFrozenThread<{ id: string }>("p2")).toEqual([{ id: "b" }]);
+  it("does not re-capture on a second protection cycle without a new provider value", () => {
+    let counter = 0;
+    registerSnapshotProvider("p1", () => [{ id: `gen-${++counter}` }]);
+    markProtected("p1", "compose");
+    expect(getFrozenThread<{ id: string }>("p1")).toEqual([{ id: "gen-1" }]);
+    // Mark a second time without clearing — must not re-invoke provider.
+    markProtected("p1", "editor");
+    expect(getFrozenThread<{ id: string }>("p1")).toEqual([{ id: "gen-1" }]);
+    // Full clear releases.
+    clearProtected("p1", "compose");
+    clearProtected("p1", "editor");
+    expect(getFrozenThread<{ id: string }>("p1")).toBeNull();
+    // New cycle invokes provider again.
+    markProtected("p1", "compose");
+    expect(getFrozenThread<{ id: string }>("p1")).toEqual([{ id: "gen-2" }]);
   });
 });

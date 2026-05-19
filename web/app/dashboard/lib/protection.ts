@@ -11,8 +11,11 @@ export type ProtectionSource = "compose" | "editor" | string;
 
 type Listener = () => void;
 
+type SnapshotProvider = () => unknown[];
+
 const reasons = new Map<string, Set<ProtectionSource>>();
 const frozenThreads = new Map<string, unknown[]>();
+const snapshotProviders = new Map<string, SnapshotProvider>();
 const listeners = new Set<Listener>();
 
 function emit() {
@@ -27,7 +30,15 @@ export function markProtected(peerId: string, source: ProtectionSource): void {
     reasons.set(peerId, set);
   }
   if (set.has(source)) return;
+  const isFirstSource = set.size === 0;
   set.add(source);
+  // On the protected → protected transition (first source for this peer),
+  // capture a snapshot from the registered provider. This runs from the
+  // synchronous input/store-update path, never from a component render.
+  if (isFirstSource && !frozenThreads.has(peerId)) {
+    const provider = snapshotProviders.get(peerId);
+    if (provider) frozenThreads.set(peerId, provider());
+  }
   emit();
 }
 
@@ -45,19 +56,30 @@ export function clearProtected(peerId: string, source: ProtectionSource): void {
   emit();
 }
 
-// Per-peer frozen thread snapshot. Captured at the moment protection first
-// engages for a peer (so the captured snapshot reflects the thread the user
-// was looking at when they started typing) and held until protection fully
-// clears — survives the user switching to another peer and back.
-export function setFrozenThread<T>(peerId: string, snapshot: T[]): void {
-  if (!peerId) return;
-  frozenThreads.set(peerId, snapshot as unknown[]);
-  emit();
-}
-
+// Per-peer frozen thread snapshot. Captured automatically by markProtected
+// from a registered provider, held until the last protection source clears.
+// Lives next to the protection state so it survives the user navigating
+// between peers while their draft is still dirty.
 export function getFrozenThread<T>(peerId: string): T[] | null {
   const snap = frozenThreads.get(peerId);
   return (snap as T[] | undefined) ?? null;
+}
+
+// Register/update the snapshot provider for a peer. Called from the
+// displayed PeerView via useEffect so the closure always sees the latest
+// liveThread; markProtected calls it at the moment protection first engages.
+// Returns an unregister function.
+export function registerSnapshotProvider<T>(
+  peerId: string,
+  provider: () => T[]
+): () => void {
+  snapshotProviders.set(peerId, provider as SnapshotProvider);
+  return () => {
+    // Only unregister if still the same provider (peer-switch races).
+    if (snapshotProviders.get(peerId) === (provider as SnapshotProvider)) {
+      snapshotProviders.delete(peerId);
+    }
+  };
 }
 
 export function isProtected(peerId: string): boolean {
@@ -73,7 +95,10 @@ export function getProtectionSources(peerId: string): ProtectionSource[] {
 export function __resetProtectionForTests(): void {
   reasons.clear();
   frozenThreads.clear();
-  emit();
+  snapshotProviders.clear();
+  // Intentionally no emit() — tests call this between renders when no
+  // components are subscribed and an emit would trip the React "update
+  // outside act()" warning during teardown.
 }
 
 function subscribe(listener: Listener): () => void {

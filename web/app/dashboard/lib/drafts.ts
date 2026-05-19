@@ -87,7 +87,7 @@ export function clearDraft(peerId: string): void {
 
 export function __resetDraftsForTests(): void {
   drafts.clear();
-  for (const [peerId] of listeners) emit(peerId);
+  // No emit — see note in protection.ts.
 }
 
 function subscribe(peerId: string) {

@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertCircle, Check, Clock, Copy, Paperclip, RefreshCw, Send, X } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
-import { setFrozenThread, useFrozenThread, useIsPeerProtected } from "../lib/protection";
+import { registerSnapshotProvider, useFrozenThread, useIsPeerProtected } from "../lib/protection";
 import { clearDraft, setDraftFile, setDraftText, useDraftFile, useDraftText } from "../lib/drafts";
 import type { Event, Peer } from "../types";
 import { peerLabel } from "../types";
@@ -60,16 +60,24 @@ export function PeerView({
 
   // While the peer is protected (e.g. unsubmitted compose draft), freeze the
   // rendered thread so new SSE events don't reorder/clobber it mid-compose.
-  // The snapshot lives in the protection store keyed by peer_id so it
-  // survives the user switching to another peer and back — A's freeze must
-  // stay frozen even when A is offscreen and new A events arrive in the
-  // parent's events list. We capture the snapshot synchronously at the
-  // protection transition; the store releases it when the last protection
-  // source clears.
+  // The snapshot lives in the protection store keyed by peer_id; markProtected
+  // captures it via a provider closure that we register here, so capture
+  // happens on the synchronous input/store-update path (setDraftText), never
+  // from this component's render. The snapshot survives peer switches and is
+  // released by the store when the last protection source for this peer
+  // clears.
   const frozenFromStore = useFrozenThread<Event>(peer.peer_id);
-  if (protectedNow && frozenFromStore === null) {
-    setFrozenThread(peer.peer_id, liveThread);
-  }
+  const liveThreadRef = useRef(liveThread);
+  useEffect(() => {
+    liveThreadRef.current = liveThread;
+  }, [liveThread]);
+  useEffect(() => {
+    // Register a provider closure (over the ref) so markProtected — called
+    // from the synchronous setDraftText path — can capture the latest
+    // liveThread without us writing to the store from this component's
+    // render. The ref is updated by the effect above on each commit.
+    return registerSnapshotProvider<Event>(peer.peer_id, () => liveThreadRef.current);
+  }, [peer.peer_id]);
   const thread = protectedNow && frozenFromStore ? frozenFromStore : liveThread;
 
   useEffect(() => {
