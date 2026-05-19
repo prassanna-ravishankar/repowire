@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.console import Console
@@ -1311,6 +1312,256 @@ def _get_daemon_url() -> str:
 
     config = load_config()
     return f"http://{config.daemon.host}:{config.daemon.port}"
+
+
+def _parse_schedule_when(raw: str) -> str:
+    """Parse CLI schedule time: ISO-8601 or compact relative duration."""
+    import re
+    from datetime import datetime, timedelta, timezone
+
+    text = raw.strip()
+    rel = text
+    if rel.lower().startswith("in "):
+        rel = rel[3:].strip()
+    match = re.fullmatch(r"(?i)(\d+)\s*([smhdw])", rel)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2).lower()
+        seconds = {
+            "s": amount,
+            "m": amount * 60,
+            "h": amount * 3600,
+            "d": amount * 86400,
+            "w": amount * 604800,
+        }[unit]
+        return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+    return text
+
+
+def _current_cli_peer_name(client: Any | None = None) -> str:
+    """Best-effort current peer name for CLI self scheduling."""
+    import os
+    from urllib.parse import quote
+
+    import httpx
+
+    if os.environ.get("REPOWIRE_DISPLAY_NAME"):
+        return os.environ["REPOWIRE_DISPLAY_NAME"]
+    if os.environ.get("REPOWIRE_PEER_ID"):
+        return os.environ["REPOWIRE_PEER_ID"]
+
+    pane_id = os.environ.get("TMUX_PANE")
+    if pane_id:
+        owns_client = client is None
+        http_client = client or httpx.Client(timeout=5.0)
+        try:
+            resp = http_client.get(
+                f"{_get_daemon_url()}/peers/by-pane/{quote(pane_id, safe='')}",
+            )
+            if resp.status_code < 400:
+                body = resp.json()
+                name = body.get("display_name") or body.get("name") or body.get("peer_id")
+                if name:
+                    return name
+        finally:
+            if owns_client:
+                http_client.close()
+
+    from repowire.hooks.utils import get_display_name
+
+    return get_display_name()
+
+
+@main.group()
+def schedule() -> None:
+    """Schedule one-time or recurring mesh messages."""
+    pass
+
+
+@schedule.command(name="self")
+@click.argument("when_or_cron")
+@click.argument("text")
+@click.option(
+    "--cron",
+    "is_cron",
+    is_flag=True,
+    help="Treat WHEN_OR_CRON as a recurring cron expression instead of a one-time time.",
+)
+@click.option("--from-peer", help="Override the calling peer identity")
+@click.option("--kind", default="notify", type=click.Choice(["notify", "ask"]))
+@click.option("--circle", "-c", default=None, help="Circle to scope self lookup")
+def schedule_self_cmd(
+    when_or_cron: str,
+    text: str,
+    is_cron: bool,
+    from_peer: str | None,
+    kind: str,
+    circle: str | None,
+) -> None:
+    """Schedule a future message to this peer.
+
+    WHEN_OR_CRON may be ISO-8601, a relative time like 10m/1h/"in 30s",
+    or a cron expression when --cron is passed.
+    """
+    import httpx
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            peer_name = from_peer or _current_cli_peer_name(client)
+            body = {
+                "from_peer": peer_name,
+                "to_peer": peer_name,
+                "text": text,
+                "kind": kind,
+            }
+            if is_cron:
+                body["cron"] = when_or_cron
+            else:
+                body["fire_at"] = _parse_schedule_when(when_or_cron)
+            if circle:
+                body["circle"] = circle
+            resp = client.post(f"{_get_daemon_url()}/schedules", json=body)
+            resp.raise_for_status()
+            _print_schedule_created(resp.json())
+    except httpx.ConnectError:
+        console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
+    except httpx.HTTPStatusError as e:
+        detail = _http_error_detail(e)
+        console.print(f"[red]Failed to create schedule: {detail}[/]")
+
+
+@schedule.command(name="create")
+@click.argument("to_peer")
+@click.argument("when_or_cron")
+@click.argument("text")
+@click.option("--from-peer", required=True, help="Peer identity to send from")
+@click.option(
+    "--cron",
+    "is_cron",
+    is_flag=True,
+    help="Treat WHEN_OR_CRON as a recurring cron expression instead of a one-time time.",
+)
+@click.option("--kind", default="notify", type=click.Choice(["notify", "ask"]))
+@click.option("--circle", "-c", default=None, help="Circle to scope recipient lookup")
+def schedule_create_cmd(
+    to_peer: str,
+    when_or_cron: str,
+    text: str,
+    from_peer: str,
+    is_cron: bool,
+    kind: str,
+    circle: str | None,
+) -> None:
+    """Schedule a future message to another peer."""
+    import httpx
+
+    body = {
+        "from_peer": from_peer,
+        "to_peer": to_peer,
+        "text": text,
+        "kind": kind,
+    }
+    if is_cron:
+        body["cron"] = when_or_cron
+    else:
+        body["fire_at"] = _parse_schedule_when(when_or_cron)
+    if circle:
+        body["circle"] = circle
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.post(f"{_get_daemon_url()}/schedules", json=body)
+            resp.raise_for_status()
+            _print_schedule_created(resp.json())
+    except httpx.ConnectError:
+        console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
+    except httpx.HTTPStatusError as e:
+        detail = _http_error_detail(e)
+        console.print(f"[red]Failed to create schedule: {detail}[/]")
+
+
+@schedule.command(name="list")
+@click.option("--from-peer", help="Filter by creator peer")
+def schedule_list_cmd(from_peer: str | None) -> None:
+    """List pending schedules."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            params = {"from_peer": from_peer} if from_peer else None
+            resp = client.get(f"{_get_daemon_url()}/schedules", params=params)
+            resp.raise_for_status()
+            schedules = resp.json().get("schedules", [])
+    except httpx.ConnectError:
+        console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
+        return
+    except httpx.HTTPStatusError as e:
+        console.print(f"[red]Failed to list schedules: {_http_error_detail(e)}[/]")
+        return
+
+    if not schedules:
+        console.print("[yellow]No schedules.[/]")
+        return
+    table = Table(title="Repowire Schedules")
+    table.add_column("ID", style="cyan")
+    table.add_column("From")
+    table.add_column("To")
+    table.add_column("Kind")
+    table.add_column("Next fire")
+    table.add_column("Cron")
+    table.add_column("Text")
+    for s in schedules:
+        table.add_row(
+            s.get("schedule_id", ""),
+            s.get("from_peer", ""),
+            s.get("to_peer", ""),
+            s.get("kind", ""),
+            s.get("fire_at", ""),
+            s.get("cron") or "-",
+            (s.get("text") or "").replace("\n", " "),
+        )
+    console.print(table)
+
+
+@schedule.command(name="delete")
+@click.argument("schedule_id")
+def schedule_delete_cmd(schedule_id: str) -> None:
+    """Cancel a pending schedule."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.delete(f"{_get_daemon_url()}/schedules/{schedule_id}")
+            if resp.status_code == 404:
+                console.print(f"[red]No schedule: {schedule_id}[/]")
+                return
+            resp.raise_for_status()
+            console.print(f"[green]Deleted schedule {schedule_id}[/]")
+    except httpx.ConnectError:
+        console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
+    except httpx.HTTPStatusError as e:
+        console.print(f"[red]Failed to delete schedule: {_http_error_detail(e)}[/]")
+
+
+def _print_schedule_created(schedule: dict) -> None:
+    console.print(f"[green]Scheduled {schedule.get('schedule_id')}[/]")
+    console.print(f"  from: [cyan]{schedule.get('from_peer')}[/]")
+    console.print(f"  to:   [cyan]{schedule.get('to_peer')}[/]")
+    console.print(f"  kind: {schedule.get('kind')}")
+    console.print(f"  next: {schedule.get('fire_at')}")
+    if schedule.get("cron"):
+        console.print(f"  cron: {schedule.get('cron')}")
+
+
+def _http_error_detail(error: object) -> str:
+    response = getattr(error, "response", None)
+    if response is None:
+        return str(error)
+    try:
+        body = response.json()
+    except Exception:
+        return str(error)
+    return str(body.get("detail") or body)
 
 
 @peer.command(name="list")

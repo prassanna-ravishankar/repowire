@@ -1,17 +1,18 @@
-"""One-shot scheduled check-in dispatcher.
+"""Scheduled check-in dispatcher.
 
 A single background task sleeps until the next-due schedule's `fire_at`, then
-fires it and removes it. No polling: the wake event is only set when the
-schedule set changes (create/delete) or when something fires. Past-due
-schedules at startup fire immediately.
+fires it. One-shot schedules are removed after firing; recurring cron
+schedules are advanced to their next fire time. No polling: the wake event is
+only set when the schedule set changes (create/delete) or when something fires.
+Past-due schedules at startup fire immediately.
 
 Delivery reuses the existing peer-registry primitives:
   - kind="notify" -> PeerRegistry.notify (fire-and-forget)
   - kind="ask"    -> PeerRegistry.deliver_ask (registers in AskTracker first)
 
-On delivery failure (peer missing or no live WS) the schedule is dropped
-rather than retried — the MVP is one-shot. We log loudly so misfires are
-visible.
+On delivery failure (peer missing or no live WS), one-shot schedules are
+dropped and recurring schedules advance to their next cron fire. We log loudly
+so misfires are visible.
 """
 
 from __future__ import annotations
@@ -151,7 +152,15 @@ class Scheduler:
                 sched.kind, sched.schedule_id, e,
             )
         finally:
-            # One-shot: always drop from the store after firing (success or
-            # delivery failure). Retry policy is out of scope for the MVP.
-            self._store.delete(sched.schedule_id)
+            if sched.cron:
+                try:
+                    self._store.reschedule_next(sched.schedule_id)
+                except ValueError as e:
+                    logger.warning(
+                        "Recurring schedule %s has invalid cron after fire (%s); dropping",
+                        sched.schedule_id, e,
+                    )
+                    self._store.delete(sched.schedule_id)
+            else:
+                self._store.delete(sched.schedule_id)
             self._store.persist()

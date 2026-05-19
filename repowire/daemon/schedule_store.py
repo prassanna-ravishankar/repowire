@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from repowire.daemon.schedule_cron import next_fire_after, validate_cron
+
 logger = logging.getLogger(__name__)
 
 ScheduleKind = str  # "ask" | "notify"
@@ -35,6 +37,7 @@ class Schedule:
     fire_at: str  # ISO-8601 UTC
     kind: ScheduleKind = "notify"
     circle: str | None = None
+    cron: str | None = None
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(),
     )
@@ -98,11 +101,13 @@ class ScheduleStore:
         fire_at: datetime,
         kind: ScheduleKind = "notify",
         circle: str | None = None,
+        cron: str | None = None,
     ) -> Schedule:
         if kind not in _VALID_KINDS:
             raise ValueError(f"kind must be one of {sorted(_VALID_KINDS)}; got {kind!r}")
         if fire_at.tzinfo is None:
             raise ValueError("fire_at must be timezone-aware")
+        normalized_cron = validate_cron(cron) if cron is not None else None
         sid = f"sched-{uuid4().hex[:8]}"
         sched = Schedule(
             schedule_id=sid,
@@ -112,10 +117,45 @@ class ScheduleStore:
             fire_at=fire_at.astimezone(timezone.utc).isoformat(),
             kind=kind,
             circle=circle,
+            cron=normalized_cron,
         )
         self._schedules[sid] = sched
         self._dirty = True
         return sched
+
+    def create_cron(
+        self,
+        from_peer: str,
+        to_peer: str,
+        text: str,
+        cron: str,
+        *,
+        kind: ScheduleKind = "notify",
+        circle: str | None = None,
+        now: datetime | None = None,
+    ) -> Schedule:
+        """Create a recurring schedule from a cron expression."""
+        base = now or datetime.now(timezone.utc)
+        normalized_cron = validate_cron(cron)
+        return self.create(
+            from_peer=from_peer,
+            to_peer=to_peer,
+            text=text,
+            fire_at=next_fire_after(normalized_cron, base),
+            kind=kind,
+            circle=circle,
+            cron=normalized_cron,
+        )
+
+    def reschedule_next(self, schedule_id: str, after: datetime | None = None) -> bool:
+        """Advance a recurring schedule to its next fire time."""
+        sched = self._schedules.get(schedule_id)
+        if sched is None or sched.cron is None:
+            return False
+        base = after or datetime.now(timezone.utc)
+        sched.fire_at = next_fire_after(sched.cron, base).isoformat()
+        self._dirty = True
+        return True
 
     def delete(self, schedule_id: str) -> Schedule | None:
         s = self._schedules.pop(schedule_id, None)

@@ -87,6 +87,28 @@ def test_persist_roundtrip(tmp_path: Path) -> None:
     assert loaded.circle == "default"
 
 
+def test_create_cron_sets_next_fire_and_persists_expression(tmp_path: Path) -> None:
+    store = ScheduleStore(tmp_path / "schedules.json")
+    now = datetime(2026, 5, 19, 8, 10, tzinfo=timezone.utc)
+    sched = store.create_cron(
+        "alice", "alice", "stand up", "*/15 * * * *", now=now,
+    )
+    assert sched.cron == "*/15 * * * *"
+    assert sched.fire_at == datetime(2026, 5, 19, 8, 15, tzinfo=timezone.utc).isoformat()
+
+
+def test_reschedule_next_advances_recurring_schedule(tmp_path: Path) -> None:
+    store = ScheduleStore(tmp_path / "schedules.json")
+    now = datetime(2026, 5, 19, 8, 10, tzinfo=timezone.utc)
+    sched = store.create_cron("alice", "alice", "ping", "@hourly", now=now)
+    ok = store.reschedule_next(
+        sched.schedule_id,
+        after=datetime(2026, 5, 19, 9, 0, tzinfo=timezone.utc),
+    )
+    assert ok is True
+    assert sched.fire_at == datetime(2026, 5, 19, 10, 0, tzinfo=timezone.utc).isoformat()
+
+
 def test_persist_noop_when_clean(tmp_path: Path) -> None:
     path = tmp_path / "schedules.json"
     store = ScheduleStore(path)

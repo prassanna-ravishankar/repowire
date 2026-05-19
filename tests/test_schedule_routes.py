@@ -89,6 +89,29 @@ class TestCreate:
         assert store.get(body["schedule_id"]) is not None
         scheduler.notify_changed.assert_called_once()
 
+    async def test_accepts_cron_schedule(self, env):
+        client, store, scheduler = env
+        r = await client.post("/schedules", json={
+            "from_peer": "alice",
+            "to_peer": "alice",
+            "text": "stretch",
+            "cron": "*/15 * * * *",
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["cron"] == "*/15 * * * *"
+        assert body["fire_at"]
+        assert store.get(body["schedule_id"]) is not None
+        scheduler.notify_changed.assert_called_once()
+
+    async def test_rejects_fire_at_and_cron_together(self, env):
+        client, _, _ = env
+        r = await client.post("/schedules", json={
+            "from_peer": "alice", "to_peer": "bob",
+            "text": "x", "fire_at": _future_iso(), "cron": "* * * * *",
+        })
+        assert r.status_code == 400
+
     async def test_rejects_invalid_fire_at(self, env):
         client, _, _ = env
         r = await client.post("/schedules", json={
@@ -101,7 +124,7 @@ class TestCreate:
         client, _, _ = env
         r = await client.post("/schedules", json={
             "from_peer": "alice", "to_peer": "bob",
-            "text": "x", "fire_at": _future_iso(), "kind": "cron",
+            "text": "x", "fire_at": _future_iso(), "kind": "recurring",
         })
         assert r.status_code == 400
 

@@ -105,6 +105,23 @@ async def test_delivery_failure_drops_schedule(env) -> None:
     await scheduler.stop()
 
 
+async def test_recurring_schedule_reschedules_after_fire(env) -> None:
+    scheduler, store, registry, _ = env
+    await scheduler.start()
+    sched = store.create(
+        "alice", "alice", "stretch", _now_plus(0.05),
+        kind="notify", cron="* * * * *",
+    )
+    scheduler.notify_changed()
+    await asyncio.sleep(0.2)
+    registry.notify.assert_awaited_once()
+    current = store.get(sched.schedule_id)
+    assert current is not None
+    assert current.cron == "* * * * *"
+    assert current.fire_at_dt() > datetime.now(timezone.utc)
+    await scheduler.stop()
+
+
 async def test_earlier_schedule_added_after_later_fires_first(env) -> None:
     scheduler, store, registry, _ = env
     await scheduler.start()

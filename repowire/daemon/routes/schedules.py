@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state
 from repowire.daemon.routes._shared import OkResponse
+from repowire.daemon.schedule_cron import CronExpressionError
 from repowire.daemon.schedule_store import Schedule
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,8 @@ class ScheduleCreateRequest(BaseModel):
     from_peer: str = Field(..., description="Display name of the scheduler")
     to_peer: str = Field(..., description="Display name of the recipient")
     text: str = Field(..., description="Message to deliver")
-    fire_at: str = Field(..., description="ISO-8601 datetime (UTC or with offset)")
+    fire_at: str | None = Field(None, description="ISO-8601 datetime (UTC or with offset)")
+    cron: str | None = Field(None, description="Five-field cron expression for recurrence")
     kind: str = Field("notify", description='"notify" or "ask"')
     circle: str | None = Field(None)
 
@@ -39,6 +41,7 @@ class ScheduleResponse(BaseModel):
     fire_at: str
     kind: str
     circle: str | None
+    cron: str | None
     created_at: str
 
     @classmethod
@@ -51,6 +54,7 @@ class ScheduleResponse(BaseModel):
             fire_at=s.fire_at,
             kind=s.kind,
             circle=s.circle,
+            cron=s.cron,
             created_at=s.created_at,
         )
 
@@ -82,17 +86,32 @@ async def create_schedule(
     store = state.schedule_store
     scheduler = state.scheduler
 
-    fire_at = _parse_fire_at(request.fire_at)
-    try:
-        sched = store.create(
-            from_peer=request.from_peer,
-            to_peer=request.to_peer,
-            text=request.text,
-            fire_at=fire_at,
-            kind=request.kind,
-            circle=request.circle,
+    if (request.fire_at is None) == (request.cron is None):
+        raise HTTPException(
+            status_code=400,
+            detail="provide exactly one of fire_at or cron",
         )
-    except ValueError as e:
+    try:
+        if request.cron is not None:
+            sched = store.create_cron(
+                from_peer=request.from_peer,
+                to_peer=request.to_peer,
+                text=request.text,
+                cron=request.cron,
+                kind=request.kind,
+                circle=request.circle,
+            )
+        else:
+            assert request.fire_at is not None
+            sched = store.create(
+                from_peer=request.from_peer,
+                to_peer=request.to_peer,
+                text=request.text,
+                fire_at=_parse_fire_at(request.fire_at),
+                kind=request.kind,
+                circle=request.circle,
+            )
+    except (ValueError, CronExpressionError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     store.persist()
     scheduler.notify_changed()

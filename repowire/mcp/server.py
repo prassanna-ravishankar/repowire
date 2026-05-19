@@ -929,16 +929,103 @@ def create_mcp_server() -> FastMCP:
         return result.get("schedule_id", "")
 
     @mcp.tool()
-    async def schedule_list(mine_only: bool = True) -> str:
+    async def schedule_self(
+        text: str,
+        fire_at: str | None = None,
+        cron: str | None = None,
+        kind: str = "notify",
+        circle: str | None = None,
+    ) -> str:
+        """[Repowire mesh] Schedule a future message to yourself.
+
+        Convenience wrapper around schedule_create for self-wake reminders.
+        For one-time schedules, pass `fire_at`. For recurring schedules, pass
+        a five-field `cron` expression (or aliases like `@hourly`, `@daily`).
+        Use `kind="notify"` for a fire-and-forget reminder, or `kind="ask"`
+        when you want the future message to create an ask thread.
+
+        Args:
+            text: Message body to deliver to yourself.
+            fire_at: ISO-8601 datetime (e.g. "2026-05-14T09:00:00Z" or
+                     "2026-05-14T09:00:00+00:00"). Naive datetimes are
+                     interpreted as UTC.
+            cron: Five-field cron expression for recurring delivery.
+            kind: "notify" (default) or "ask".
+            circle: Circle to scope recipient lookup.
+
+        Returns:
+            schedule_id (format: sched-XXXXXXXX). Use it with
+            schedule_delete to cancel.
+        """
+        await _ensure_registered(strict=True)
+        if (fire_at is None) == (cron is None):
+            raise ValueError("provide exactly one of fire_at or cron")
+        from_peer = await _get_my_peer_name()
+        body: dict = {
+            "from_peer": from_peer,
+            "to_peer": from_peer,
+            "text": text,
+            "kind": kind,
+        }
+        if fire_at is not None:
+            body["fire_at"] = fire_at
+        if cron is not None:
+            body["cron"] = cron
+        if circle is not None:
+            body["circle"] = circle
+        result = await daemon_request("POST", "/schedules", body)
+        return result.get("schedule_id", "")
+
+    @mcp.tool()
+    async def schedule_cron(
+        to_peer: str,
+        text: str,
+        cron: str,
+        kind: str = "notify",
+        circle: str | None = None,
+    ) -> str:
+        """[Repowire mesh] Schedule a recurring cron message to a peer.
+
+        Args:
+            to_peer: Display name of the recipient.
+            text: Message body to deliver.
+            cron: Five-field cron expression, or alias such as `@hourly`,
+                  `@daily`, `@weekly`, or `@monthly`.
+            kind: "notify" (default) or "ask".
+            circle: Circle to scope recipient lookup.
+
+        Returns:
+            schedule_id (format: sched-XXXXXXXX). Use schedule_delete to cancel.
+        """
+        await _ensure_registered(strict=True)
+        from_peer = await _get_my_peer_name()
+        body: dict = {
+            "from_peer": from_peer,
+            "to_peer": to_peer,
+            "text": text,
+            "cron": cron,
+            "kind": kind,
+        }
+        if circle is not None:
+            body["circle"] = circle
+        result = await daemon_request("POST", "/schedules", body)
+        return result.get("schedule_id", "")
+
+    @mcp.tool()
+    async def schedule_list(mine_only: bool = True, include_cron: bool = False) -> str:
         """[Repowire mesh] List pending scheduled check-ins.
 
         Returns TSV with columns: schedule_id, from_peer, to_peer, kind,
-        fire_at, text. Schedules are sorted by fire_at ascending.
+        fire_at, text. Schedules are sorted by fire_at ascending. Pass
+        include_cron=True to append a trailing cron column for recurring
+        schedules.
 
         Args:
             mine_only: If True (default), return only schedules you
                        created. If False, return all schedules on the
                        daemon.
+            include_cron: If True, append a trailing cron column. Defaults
+                          False to preserve the original TSV schema.
         """
         await _ensure_registered()
         params: dict | None = None
@@ -946,20 +1033,21 @@ def create_mcp_server() -> FastMCP:
             params = {"from_peer": await _get_my_peer_name()}
         result = await daemon_request("GET", "/schedules", params=params)
         header = "schedule_id\tfrom_peer\tto_peer\tkind\tfire_at\ttext"
+        if include_cron:
+            header += "\tcron"
         rows = [header]
         for s in result.get("schedules", []):
-            rows.append(
-                "\t".join(
-                    [
-                        s.get("schedule_id", ""),
-                        s.get("from_peer", ""),
-                        s.get("to_peer", ""),
-                        s.get("kind", ""),
-                        s.get("fire_at", ""),
-                        (s.get("text", "") or "").replace("\t", " ").replace("\n", " "),
-                    ]
-                )
-            )
+            fields = [
+                s.get("schedule_id", ""),
+                s.get("from_peer", ""),
+                s.get("to_peer", ""),
+                s.get("kind", ""),
+                s.get("fire_at", ""),
+                (s.get("text", "") or "").replace("\t", " ").replace("\n", " "),
+            ]
+            if include_cron:
+                fields.append(s.get("cron") or "")
+            rows.append("\t".join(fields))
         return "\n".join(rows)
 
     @mcp.tool()

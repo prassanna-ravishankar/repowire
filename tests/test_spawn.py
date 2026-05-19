@@ -455,7 +455,9 @@ class TestMcpToolDescriptions:
         from repowire.mcp.server import create_mcp_server
         mcp = create_mcp_server()
         mesh_tools = ["list_peers", "ask", "ack", "notify_peer", "broadcast",
-                       "spawn_peer", "kill_peer", "whoami", "set_description"]
+                       "spawn_peer", "kill_peer", "whoami", "set_description",
+                       "schedule_create", "schedule_self", "schedule_cron",
+                       "schedule_list", "schedule_delete"]
         for name in mesh_tools:
             tool = mcp._tool_manager._tools.get(name)
             assert tool is not None, f"Tool {name} not found"
