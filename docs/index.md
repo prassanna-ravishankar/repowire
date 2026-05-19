@@ -8,7 +8,7 @@ hide:
 
 Mesh network for AI coding agents. A local-first daemon routes `ask`, `notify`, and `broadcast` between active Claude Code, Codex, Gemini CLI, and OpenCode sessions.
 
-Current release: v0.13.31 adds scheduled mesh messages, including recurring cron schedules, self-wake reminders, MCP scheduling tools, and `repowire schedule` CLI commands.
+Current release: v0.13.32 bundles the transport-router extraction for ask/notify delivery, the graphify architecture report, refreshed README/docs/images, and the session-scoped dashboard timeline that merges the selected peer/session Claude transcript with realtime events.
 
 ## Install
 

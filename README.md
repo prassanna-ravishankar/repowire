@@ -22,7 +22,7 @@ Repowire connects your agents into a live mesh. Any agent can query, notify, or 
 
 Read more: [the context breakout problem](https://prassanna.io/blog/vibe-bottleneck/) and [the idea behind Repowire](https://prassanna.io/blog/repowire/).
 
-**Current release:** v0.13.31 adds scheduled mesh messages: one-shot reminders, recurring cron schedules, self-wake scheduling, MCP tools (`schedule_create`, `schedule_self`, `schedule_cron`, `schedule_list`, `schedule_delete`), and CLI commands under `repowire schedule`.
+**Current release:** v0.13.32 bundles the transport-router extraction for ask/notify delivery, the graphify architecture report, refreshed README/docs/images, and the session-scoped dashboard timeline that merges the selected peer/session Claude transcript with realtime events.
 
 <details>
 <summary><strong>How does repowire compare?</strong></summary>
