@@ -42,6 +42,7 @@ def _a(ts: str, text: str, tool_uses: list[dict] | None = None) -> dict:
         content.extend(tool_uses)
     return {
         "type": "assistant",
+        "uuid": "assistant-uuid",
         "timestamp": ts,
         "sessionId": "s1",
         "message": {"content": content},
@@ -137,6 +138,87 @@ class TestLoadPeerTurnsClaude:
             turns = load_peer_turns(peer_path, "claude-code")
         assert turns[0].tool_calls == [{"name": "Bash", "input": "ls -la"}]
 
+    def test_assistant_turn_id_prefers_claude_uuid(self, tmp_path: Path):
+        peer_path, projects_root = self._setup(
+            tmp_path,
+            [
+                {
+                    "type": "assistant",
+                    "uuid": "live-equivalent-id",
+                    "id": "entry-id",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "sessionId": "s1",
+                    "message": {
+                        "id": "message-id",
+                        "content": [{"type": "text", "text": "hello"}],
+                    },
+                }
+            ],
+        )
+        with patch("repowire.session.history._claude_projects_dir", return_value=projects_root):
+            turns = load_peer_turns(peer_path, "claude-code")
+        assert turns[0].turn_id == "live-equivalent-id"
+
+    def test_tool_turn_final_text_uses_first_assistant_uuid(self, tmp_path: Path):
+        peer_path, projects_root = self._setup(
+            tmp_path,
+            [
+                {
+                    "type": "user",
+                    "uuid": "u1",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "sessionId": "s1",
+                    "message": {"content": "check files"},
+                },
+                {
+                    "type": "assistant",
+                    "uuid": "uuid-1",
+                    "timestamp": "2026-01-01T00:00:01Z",
+                    "sessionId": "s1",
+                    "message": {"content": [
+                        {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+                    ]},
+                },
+                {
+                    "type": "user",
+                    "uuid": "tool-result",
+                    "timestamp": "2026-01-01T00:00:02Z",
+                    "sessionId": "s1",
+                    "message": {"content": [{"type": "tool_result", "content": "ok"}]},
+                },
+                {
+                    "type": "assistant",
+                    "uuid": "uuid-2",
+                    "timestamp": "2026-01-01T00:00:03Z",
+                    "sessionId": "s1",
+                    "message": {"content": [{"type": "text", "text": "done"}]},
+                },
+            ],
+        )
+        with patch("repowire.session.history._claude_projects_dir", return_value=projects_root):
+            turns = load_peer_turns(peer_path, "claude-code")
+        assistant_turns = [turn for turn in turns if turn.role == "assistant"]
+        assert len(assistant_turns) == 1
+        assert assistant_turns[0].text == "done"
+        assert assistant_turns[0].turn_id == "uuid-1"
+        assert assistant_turns[0].tool_calls == [{"name": "Bash", "input": "ls"}]
+
+    def test_turn_id_falls_back_when_no_live_equivalent_id(self, tmp_path: Path):
+        peer_path, projects_root = self._setup(
+            tmp_path,
+            [
+                {
+                    "type": "assistant",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "sessionId": "s1",
+                    "message": {"content": [{"type": "text", "text": "hello"}]},
+                }
+            ],
+        )
+        with patch("repowire.session.history._claude_projects_dir", return_value=projects_root):
+            turns = load_peer_turns(peer_path, "claude-code")
+        assert turns[0].turn_id == "history:s1:0"
+
     def test_skips_malformed_lines(self, tmp_path: Path):
         peer_path, projects_root = self._setup(tmp_path, [_a("2026-01-01T00:00:00Z", "ok")])
         session_dir = projects_root / _encode_cwd(peer_path)
@@ -177,6 +259,7 @@ def _t(ts: str, session_id: str = "s", line_offset: int = 0, text: str | None = 
         text=text if text is not None else ts,
         timestamp=ts,
         session_id=session_id,
+        turn_id=f"history:{session_id}:{line_offset}",
         tool_calls=[],
         line_offset=line_offset,
     )

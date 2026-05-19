@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PeerView } from "./PeerView";
 import { __resetProtectionForTests, getFrozenThread, isProtected } from "../lib/protection";
 import { __resetDraftsForTests, getDraftText, setDraftText } from "../lib/drafts";
@@ -41,14 +41,220 @@ beforeEach(() => {
   scrollSpy.mockClear();
   __resetProtectionForTests();
   __resetDraftsForTests();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => new Promise<Response>(() => {})),
+  );
 });
 
 afterEach(() => {
   __resetProtectionForTests();
   __resetDraftsForTests();
+  vi.unstubAllGlobals();
 });
 
 describe("PeerView session protection", () => {
+  it("renders persisted transcript turns in the primary chat timeline", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/spawn/config")) return new Promise<Response>(() => {});
+      return new Response(
+        JSON.stringify({
+          turns: [
+            {
+              role: "assistant",
+              text: "persisted answer",
+              timestamp: "2025-01-01T00:00:00Z",
+              session_id: "session-a",
+              turn_id: "turn-a",
+              tool_calls: [],
+            },
+          ],
+          next_before: null,
+        }),
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <PeerView
+        peer={{ ...PEER, metadata: { hook_session_id: "session-a" } }}
+        events={[]}
+        apiBase=""
+        onClose={() => {}}
+        onSent={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("persisted answer")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("session_id=session-a"),
+        expect.any(Object),
+      );
+    });
+  });
+
+  it("keeps active session sticky after choosing newest realtime session", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/spawn/config")) return new Promise<Response>(() => {});
+      return new Response(JSON.stringify({ turns: [], next_before: null }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const liveS1 = {
+      ...chatTurn("s1-final", "session one", "2025-01-01T00:00:02Z"),
+      session_id: "s1",
+      turn_id: "t1",
+    };
+    const lateOlder = {
+      ...chatTurn("s0-final", "older session", "2025-01-01T00:00:01Z"),
+      session_id: "s0",
+      turn_id: "t0",
+    };
+
+    const { rerender } = render(
+      <PeerView peer={PEER} events={[liveS1]} apiBase="" onClose={() => {}} onSent={() => {}} />,
+    );
+    expect(await screen.findByText("session one")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("session_id=s1"))).toBe(true);
+    });
+
+    rerender(<PeerView peer={PEER} events={[lateOlder, liveS1]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    expect(screen.getByText("session one")).toBeInTheDocument();
+    expect(screen.queryByText("older session")).not.toBeInTheDocument();
+  });
+
+  it("does not let delayed transcript discovery overwrite realtime session fallback", async () => {
+    let resolveDiscovery: (response: Response) => void = () => {};
+    const discovery = new Promise<Response>((resolve) => {
+      resolveDiscovery = resolve;
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
+      if (url.includes("session_id=session-new")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ turns: [], next_before: null }), { status: 200 }),
+        );
+      }
+      return discovery;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const liveNew = {
+      ...chatTurn("new-final", "new realtime session", "2025-01-01T00:00:02Z"),
+      session_id: "session-new",
+      turn_id: "turn-new",
+    };
+
+    render(<PeerView peer={PEER} events={[liveNew]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    expect(await screen.findByText("new realtime session")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveDiscovery(
+        new Response(
+          JSON.stringify({
+            turns: [
+              {
+                role: "assistant",
+                text: "stale transcript session",
+                timestamp: "2025-01-01T00:00:01Z",
+                session_id: "session-old",
+                turn_id: "turn-old",
+                tool_calls: [],
+              },
+            ],
+            next_before: null,
+          }),
+          { status: 200 },
+        ),
+      );
+      await discovery;
+    });
+
+    expect(screen.getByText("new realtime session")).toBeInTheDocument();
+    expect(screen.queryByText("stale transcript session")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("session_id=session-new"))).toBe(true);
+    });
+  });
+
+  it("collapses persisted assistant rows when matching realtime final arrives", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes("/spawn/config")) return new Promise<Response>(() => {});
+        return new Response(
+          JSON.stringify({
+            turns: [
+              {
+                role: "assistant",
+                text: "persisted duplicate",
+                timestamp: "2025-01-01T00:00:00Z",
+                session_id: "session-a",
+                turn_id: "turn-a",
+                tool_calls: [],
+              },
+            ],
+            next_before: null,
+          }),
+          { status: 200 },
+        );
+      }),
+    );
+    const live = {
+      ...chatTurn("live-a", "live final wins", "2025-01-01T00:00:01Z"),
+      session_id: "session-a",
+      turn_id: "turn-a",
+    };
+
+    render(
+      <PeerView
+        peer={{ ...PEER, metadata: { hook_session_id: "session-a" } }}
+        events={[live]}
+        apiBase=""
+        onClose={() => {}}
+        onSent={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("live final wins")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("persisted duplicate")).not.toBeInTheDocument());
+  });
+
+  it("renders streaming deltas only for the active session", async () => {
+    const deltaActive: Event = {
+      id: "delta-active",
+      type: "chat_turn_delta",
+      timestamp: "2025-01-01T00:00:00Z",
+      peer_id: PEER.peer_id,
+      session_id: "session-a",
+      turn_id: "turn-a",
+      chunk_index: 0,
+      kind: "text",
+      text: "active stream",
+    };
+    const deltaOther: Event = {
+      ...deltaActive,
+      id: "delta-other",
+      session_id: "session-b",
+      text: "other stream",
+    };
+
+    render(
+      <PeerView
+        peer={{ ...PEER, metadata: { hook_session_id: "session-a" } }}
+        events={[deltaOther, deltaActive]}
+        apiBase=""
+        onClose={() => {}}
+        onSent={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("active stream")).toBeInTheDocument();
+    expect(screen.queryByText("other stream")).not.toBeInTheDocument();
+  });
+
   it("auto-scrolls on new events when not protected", () => {
     const initial: Event[] = [chatTurn("e1", "hello", "2025-01-01T00:00:00Z")];
     const { rerender } = render(

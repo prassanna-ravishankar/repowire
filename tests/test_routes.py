@@ -661,6 +661,7 @@ class TestEvents:
         r = await client.post("/events/chat_delta", json={
             "peer": "streampeer",
             "role": "assistant",
+            "session_id": "stream-session",
             "turn_id": "turn-abc",
             "chunk_index": 0,
             "kind": "text",
@@ -673,6 +674,7 @@ class TestEvents:
         assert len(events) == 1
         e = events[0]
         assert e["type"] == "chat_turn_delta"
+        assert e["session_id"] == "stream-session"
         assert e["turn_id"] == "turn-abc"
         assert e["chunk_index"] == 0
         assert e["kind"] == "text"
@@ -735,10 +737,12 @@ class TestEvents:
             "peer": "testpeer",
             "role": "assistant",
             "text": "final",
+            "session_id": "session-9",
             "turn_id": "msg-uuid-9",
         })
         assert r.status_code == 200
         events = (await client.get("/events")).json()
+        assert events[0]["session_id"] == "session-9"
         assert events[0]["turn_id"] == "msg-uuid-9"
 
     async def test_tool_use_turn_canonical_id_drops_deltas(self, client):
@@ -856,8 +860,8 @@ class TestEvents:
                 assert r.status_code == 200
             assert len(msgs_mod._finalized_turn_ids) == 5
             # Oldest evicted.
-            assert "cap-0" not in msgs_mod._finalized_turn_ids
-            assert "cap-19" in msgs_mod._finalized_turn_ids
+            assert "legacy:cap-0" not in msgs_mod._finalized_turn_ids
+            assert "legacy:cap-19" in msgs_mod._finalized_turn_ids
         finally:
             msgs_mod._finalized_turn_ids.clear()
             msgs_mod._FINALIZED_TURN_IDS_CAPACITY = 4096

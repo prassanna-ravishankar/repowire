@@ -243,11 +243,11 @@ Give peers tasks and disconnect. They work autonomously, report back via Telegra
 Monitor your agent mesh at `http://localhost:8377/dashboard`, or remotely via [repowire.io](https://repowire.io):
 
 - **Peer overview** - online/busy/offline status, descriptions, project paths
-- **Chat view** - conversation history per peer with tool call details
+- **Chat view** - selected-session timeline with Claude transcript history merged with realtime chat events and tool call details
 - **Compose bar** - send notifications or queries to any peer from the browser
 - **Mobile responsive** - hamburger menu, touch-friendly compose
 
-Roadmap: the dashboard is moving toward a durable session timeline that merges persisted history with realtime stream events. Controls that change runtime behavior should attach to session commands as they land, while peer IDs remain implementation details of the runtime executor currently doing the work.
+Roadmap: the dashboard is moving toward fuller durable session controls. The current v0.13 slice merges Claude transcript history with realtime stream events for the selected peer/session; controls that change runtime behavior should attach to session commands as they land, while peer IDs remain implementation details of the runtime executor currently doing the work.
 
 For remote access: `repowire setup --relay` connects your daemon to [repowire.io](https://repowire.io) via outbound WebSocket. Access your dashboard from any browser. No port forwarding, no VPN.
 

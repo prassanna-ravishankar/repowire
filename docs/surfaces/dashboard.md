@@ -6,17 +6,17 @@ The dashboard is a Next.js UI served by the daemon at `http://localhost:8377/das
 
 - **Peer overview** — every peer's status (`online` / `busy` / `offline`), description, project path, circle, backend.
 - **Live mesh log** — `mesh.log`, a chronological event stream of asks, acks, notifications, and broadcasts.
-- **Per-peer chat** — selecting a peer replaces the live log with that peer's conversation history. User and `@dashboard` messages align right; peer messages align left. Tool calls collapse behind a disclosure.
+- **Per-peer chat** — selecting a peer replaces the live log with that peer's selected-session timeline. For Claude Code peers, the chat view merges persisted transcript history with realtime `chat_turn` and `chat_turn_delta` events; other backends contribute realtime events. User and `@dashboard` messages align right; peer messages align left. Tool calls collapse behind a disclosure.
 - **Compose bar** — send a notification or ask to any peer. The dashboard registers as the `dashboard` peer so it shows up in `list_peers` and message routing.
 - **Attachments** — the compose bar has a file upload button. Files post to `POST /attachments` (10 MB limit, 24 h TTL) and the resulting path is included in the notification so the recipient agent can read it.
 
 ## Where chat turns come from
 
-The dashboard does not poll. The stop hook of every Claude Code, Codex, and Gemini session extracts the response and tool calls from the transcript or runtime output, then posts them to `POST /events/chat` on the daemon. The dashboard streams events over Server-Sent Events. OpenCode bridges the same shape via its plugin.
+The dashboard does not poll. The stop hook of every Claude Code, Codex, and Gemini session extracts the response and tool calls from the transcript or runtime output, then posts them to `POST /events/chat` on the daemon. Claude Code can also stream block-level `chat_turn_delta` events while a turn is in progress. The dashboard streams events over Server-Sent Events and merges them with Claude transcript history for the selected peer/session. OpenCode bridges the same realtime shape via its plugin.
 
 ## Roadmap: session timeline
 
-The v0.13 dashboard direction is a timeline-centered view: persisted history and realtime stream events in one durable session timeline. Peers remain the runtime executors, but future controls such as model/backend switching, resume, scheduling, approval handling, and plan-mode decisions should attach to shared session commands as those features land.
+The v0.13 dashboard direction is a timeline-centered view. The current slice merges Claude transcript history and realtime stream events for the selected peer/session. Peers remain the runtime executors, and broader controls such as model/backend switching, resume, scheduling, approval handling, and plan-mode decisions remain roadmap items that should attach to shared session commands as those features land.
 
 ## Mobile
 

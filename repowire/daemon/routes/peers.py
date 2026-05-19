@@ -358,6 +358,7 @@ class TranscriptTurn(BaseModel):
     text: str
     timestamp: str
     session_id: str
+    turn_id: str
     tool_calls: list[dict[str, str]] = Field(default_factory=list)
 
 
@@ -379,6 +380,14 @@ async def get_peer_transcript(
             "stable pagination across same-timestamp boundaries."
         ),
     ),
+    session_id: str | None = Query(
+        None,
+        description=(
+            "Optional hook/runtime transcript session id used for dashboard "
+            "scoping. When set, "
+            "only turns from that session are returned."
+        ),
+    ),
     circle: str | None = Query(None),
     _: str | None = Depends(require_auth),
 ) -> TranscriptResponse:
@@ -397,6 +406,8 @@ async def get_peer_transcript(
         )
 
     turns = await asyncio.to_thread(load_peer_turns, peer.path, peer.backend)
+    if session_id:
+        turns = [turn for turn in turns if turn.session_id == session_id]
     page, next_before = page_turns(turns, limit, before)
     return TranscriptResponse(
         turns=[
@@ -405,6 +416,7 @@ async def get_peer_transcript(
                 text=t.text,
                 timestamp=t.timestamp,
                 session_id=t.session_id,
+                turn_id=t.turn_id,
                 tool_calls=t.tool_calls,
             )
             for t in page

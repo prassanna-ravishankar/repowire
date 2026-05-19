@@ -53,7 +53,7 @@ def test_streamer_emits_text_block_delta(tmp_path):
 
     def runner():
         with patch.object(streamer, "daemon_post", side_effect=fake_post):
-            streamer.run(transcript, "peer1", "%42")
+            streamer.run(transcript, "peer1", "%42", "session-1")
         done.set()
 
     t = threading.Thread(target=runner, daemon=True)
@@ -73,6 +73,7 @@ def test_streamer_emits_text_block_delta(tmp_path):
     assert text_posts[0]["chunk_index"] == 0
     assert text_posts[0]["peer"] == "peer1"
     assert text_posts[0]["pane_id"] == "%42"
+    assert text_posts[0]["session_id"] == "session-1"
     assert text_posts[0]["turn_id"] == "uuid-1"
 
 

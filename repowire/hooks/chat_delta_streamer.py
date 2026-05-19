@@ -162,6 +162,7 @@ def _content_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
 def _emit_text(
     peer: str,
     pane_id: str,
+    session_id: str | None,
     turn_id: str,
     chunk_index: int,
     text: str,
@@ -176,12 +177,15 @@ def _emit_text(
         "is_final": False,
         "pane_id": pane_id,
     }
+    if session_id:
+        payload["session_id"] = session_id
     return daemon_post("/events/chat_delta", payload) is not None
 
 
 def _emit_tool_use(
     peer: str,
     pane_id: str,
+    session_id: str | None,
     turn_id: str,
     chunk_index: int,
     name: str,
@@ -199,11 +203,13 @@ def _emit_tool_use(
         "is_final": False,
         "pane_id": pane_id,
     }
+    if session_id:
+        payload["session_id"] = session_id
     return daemon_post("/events/chat_delta", payload) is not None
 
 
 def _tail_transcript(
-    transcript_path: Path, peer: str, pane_id: str, pid_path: Path,
+    transcript_path: Path, peer: str, pane_id: str, session_id: str | None, pid_path: Path,
 ) -> None:
     """Inner tail loop. Exits when pidfile is removed, idle, or wall-clock cap.
 
@@ -274,13 +280,13 @@ def _tail_transcript(
                             text = block.get("text") or ""
                             if not text.strip():
                                 continue
-                            if _emit_text(peer, pane_id, turn_id, chunk_index, text):
+                            if _emit_text(peer, pane_id, session_id, turn_id, chunk_index, text):
                                 chunk_index += 1
                         elif block_type == "tool_use":
                             name = block.get("name", "unknown")
                             tool_input = block.get("input", {})
                             if _emit_tool_use(
-                                peer, pane_id, turn_id, chunk_index, name, tool_input,
+                                peer, pane_id, session_id, turn_id, chunk_index, name, tool_input,
                             ):
                                 chunk_index += 1
     except FileNotFoundError:
@@ -289,7 +295,12 @@ def _tail_transcript(
         pass
 
 
-def run(transcript_path: Path, peer: str, pane_id: str) -> int:
+def run(
+    transcript_path: Path,
+    peer: str,
+    pane_id: str,
+    session_id: str | None = None,
+) -> int:
     """Single-owner streamer entry point.
 
     Acquires a non-blocking flock on the per-pane lockfile for the whole
@@ -321,7 +332,7 @@ def run(transcript_path: Path, peer: str, pane_id: str) -> int:
             return 1
 
         try:
-            _tail_transcript(transcript_path, peer, pane_id, pid_path)
+            _tail_transcript(transcript_path, peer, pane_id, session_id, pid_path)
         finally:
             # Owner-checked unlink: only remove the pidfile if it still names
             # us. A fresh streamer that overwrote the pid will release the
@@ -347,8 +358,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--transcript", required=True, help="Path to transcript JSONL")
     parser.add_argument("--peer", required=True, help="Peer display name")
     parser.add_argument("--pane-id", required=True, help="Tmux pane id (state key)")
+    parser.add_argument("--session-id", help="Hook/runtime session id for dashboard scoping")
     args = parser.parse_args(argv)
-    return run(Path(args.transcript).expanduser(), args.peer, args.pane_id)
+    return run(Path(args.transcript).expanduser(), args.peer, args.pane_id, args.session_id)
 
 
 if __name__ == "__main__":

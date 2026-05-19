@@ -70,6 +70,7 @@ class TestPromptHandler:
         with patch("repowire.config.models.load_config", return_value=Config()):
             result = _run_with_input(prompt_main, {
                 "hook_event_name": "UserPromptSubmit",
+                "session_id": "hook-session-1",
                 "transcript_path": str(transcript),
             })
         assert result == 0
@@ -89,6 +90,7 @@ class TestPromptHandler:
         with patch("repowire.config.models.load_config", return_value=cfg):
             result = _run_with_input(prompt_main, {
                 "hook_event_name": "UserPromptSubmit",
+                "session_id": "hook-session-1",
                 "transcript_path": str(transcript),
             })
         assert result == 0
@@ -97,6 +99,8 @@ class TestPromptHandler:
         assert "repowire.hooks.chat_delta_streamer" in argv
         assert "--transcript" in argv
         assert "--pane-id" in argv
+        assert "--session-id" in argv
+        assert "hook-session-1" in argv
 
     @patch("repowire.hooks.prompt_handler.subprocess.Popen")
     @patch("repowire.hooks.prompt_handler.update_status", return_value=True)

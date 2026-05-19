@@ -50,6 +50,7 @@ def _post_chat_turn(
     text: str,
     tool_calls: list[dict[str, str]] | None = None,
     pane_id: str | None = None,
+    session_id: str | None = None,
     turn_id: str | None = None,
 ) -> None:
     """Post a chat turn to the daemon for dashboard display. Best-effort.
@@ -63,6 +64,8 @@ def _post_chat_turn(
         payload["tool_calls"] = tool_calls
     if pane_id:
         payload["pane_id"] = pane_id
+    if session_id:
+        payload["session_id"] = session_id
     if turn_id:
         payload["turn_id"] = turn_id
     daemon_post("/events/chat", payload)
@@ -117,7 +120,13 @@ def main(backend: str = "claude-code") -> int:
     _stop_chat_delta_streamer(pane_id)
 
     if user_text:
-        _post_chat_turn(peer_display, "user", user_text, pane_id=pane_id)
+        _post_chat_turn(
+            peer_display,
+            "user",
+            user_text,
+            pane_id=pane_id,
+            session_id=payload.session_id or None,
+        )
     if assistant_text:
         _post_chat_turn(
             peer_display,
@@ -125,6 +134,7 @@ def main(backend: str = "claude-code") -> int:
             assistant_text,
             tool_calls or None,
             pane_id=pane_id,
+            session_id=payload.session_id or None,
             turn_id=turn_id,
         )
 

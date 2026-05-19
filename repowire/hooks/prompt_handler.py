@@ -14,7 +14,7 @@ from repowire.hooks.utils import get_display_name, update_status
 
 
 def _maybe_spawn_chat_delta_streamer(
-    transcript_path: str | None, pane_id: str | None,
+    transcript_path: str | None, pane_id: str | None, session_id: str | None = None,
 ) -> None:
     """Spawn the per-turn transcript tailer if the experiment is on.
 
@@ -47,18 +47,21 @@ def _maybe_spawn_chat_delta_streamer(
     terminate_live_streamer(pane_id)
 
     try:
+        argv = [
+            sys.executable,
+            "-m",
+            "repowire.hooks.chat_delta_streamer",
+            "--transcript",
+            str(Path(transcript_path).expanduser()),
+            "--peer",
+            get_display_name(),
+            "--pane-id",
+            pane_id,
+        ]
+        if session_id:
+            argv.extend(["--session-id", session_id])
         subprocess.Popen(  # noqa: S603 — fixed argv, no shell
-            [
-                sys.executable,
-                "-m",
-                "repowire.hooks.chat_delta_streamer",
-                "--transcript",
-                str(Path(transcript_path).expanduser()),
-                "--peer",
-                get_display_name(),
-                "--pane-id",
-                pane_id,
-            ],
+            argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -93,7 +96,11 @@ def main(backend: str = "claude-code") -> int:
             )
 
     if backend == "claude-code":
-        _maybe_spawn_chat_delta_streamer(payload.transcript_path, pane_id)
+        _maybe_spawn_chat_delta_streamer(
+            payload.transcript_path,
+            pane_id,
+            payload.session_id or None,
+        )
 
     hook_output(backend)
     return 0

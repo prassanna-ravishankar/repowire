@@ -62,6 +62,7 @@ export interface Event {
   new_status?: "online" | "busy" | "offline";
   query_id?: string;
   correlation_id?: string;
+  session_id?: string;
   tool_calls?: { name: string; input: string }[];
   // chat_turn_delta fields
   turn_id?: string;

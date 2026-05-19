@@ -85,6 +85,11 @@ class TestStopHandler:
         paths = [c[0][0] for c in calls]
         assert "/events/chat" in paths
         assert "/response" in paths
+        chat_payloads = [c[0][1] for c in calls if c[0][0] == "/events/chat"]
+        assert [payload["session_id"] for payload in chat_payloads] == [
+            "abc12345-rest",
+            "abc12345-rest",
+        ]
 
     @patch("repowire.hooks.stop_handler.daemon_post")
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)

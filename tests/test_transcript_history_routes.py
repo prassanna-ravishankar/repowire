@@ -129,6 +129,7 @@ async def test_returns_paginated_turns(tmp_path: Path):
                 body = res.json()
                 assert res.status_code == 200
                 assert [t["text"] for t in body["turns"]] == ["a2", "q2"]
+                assert body["turns"][0]["turn_id"].startswith("history:s1:")
                 assert body["next_before"] is not None
 
                 res2 = await ac.get(
@@ -137,6 +138,66 @@ async def test_returns_paginated_turns(tmp_path: Path):
                 )
                 body2 = res2.json()
                 assert [t["text"] for t in body2["turns"]] == ["a1", "q1"]
+                assert body2["next_before"] is None
+    finally:
+        cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_session_id_filter_applies_before_pagination_and_returns_turn_id(tmp_path: Path):
+    app, registry = _make_app(tmp_path)
+    projects_root = tmp_path / "projects"
+    peer_path = "/peer/work"
+    try:
+        _, name = await registry.allocate_and_register(
+            circle="global",
+            backend=AgentType.CLAUDE_CODE,
+            path=peer_path,
+            pane_id=None,
+            tmux_session=None,
+            metadata={},
+            machine="test",
+        )
+        _write_session(projects_root, peer_path, [
+            {"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+             "sessionId": "s1", "message": {"content": "s1 old prompt"}},
+            {"type": "assistant", "uuid": "s1-old-id", "timestamp": "2026-01-01T00:00:00Z",
+             "sessionId": "s1", "message": {"content": [{"type": "text", "text": "s1 old"}]}},
+            {"type": "user", "timestamp": "2026-01-03T00:00:00Z",
+             "sessionId": "s2", "message": {"content": "s2 prompt"}},
+            {"type": "assistant", "uuid": "s2-new-id", "timestamp": "2026-01-03T00:00:00Z",
+             "sessionId": "s2", "message": {"content": [{"type": "text", "text": "s2 new"}]}},
+            {"type": "user", "timestamp": "2026-01-02T00:00:00Z",
+             "sessionId": "s1", "message": {"content": "s1 new prompt"}},
+            {"type": "assistant", "uuid": "s1-new-id", "timestamp": "2026-01-02T00:00:00Z",
+             "sessionId": "s1", "message": {"content": [{"type": "text", "text": "s1 new"}]}},
+        ])
+
+        with patch(
+            "repowire.session.history._claude_projects_dir",
+            return_value=projects_root,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+                res = await ac.get(
+                    f"/peers/{name}/transcript",
+                    params={"session_id": "s1", "limit": 2},
+                )
+                body = res.json()
+                assert [t["text"] for t in body["turns"]] == ["s1 new", "s1 new prompt"]
+                assert body["turns"][0]["turn_id"] == "s1-new-id"
+                assert body["next_before"] is not None
+
+                res2 = await ac.get(
+                    f"/peers/{name}/transcript",
+                    params={
+                        "session_id": "s1",
+                        "limit": 2,
+                        "before": body["next_before"],
+                    },
+                )
+                body2 = res2.json()
+                assert [t["text"] for t in body2["turns"]] == ["s1 old", "s1 old prompt"]
+                assert body2["turns"][0]["turn_id"] == "s1-old-id"
                 assert body2["next_before"] is None
     finally:
         cleanup_deps()

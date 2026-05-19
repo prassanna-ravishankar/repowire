@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertCircle, Check, Clock, Copy, Paperclip, RefreshCw, Send, X } from "lucide-react";
@@ -14,6 +14,7 @@ interface TranscriptTurn {
   text: string;
   timestamp: string;
   session_id: string;
+  turn_id: string;
   tool_calls: { name: string; input: string }[];
 }
 
@@ -40,6 +41,7 @@ type PeerTab = "chat" | "mcp" | "history";
 interface ChatTurnDeltaGroup {
   type: "chat_turn_delta_group";
   id: string;
+  session_id?: string;
   turn_id: string;
   peer_id?: string;
   timestamp: string;
@@ -47,7 +49,12 @@ interface ChatTurnDeltaGroup {
   tool_calls: { name: string; input: string }[];
 }
 
-type ThreadItemEntry = Event | ChatTurnDeltaGroup;
+interface HistoryTimelineTurn extends TranscriptTurn {
+  type: "history_turn";
+  id: string;
+}
+
+type ThreadItemEntry = Event | ChatTurnDeltaGroup | HistoryTimelineTurn;
 
 export function PeerView({
   peer,
@@ -64,20 +71,160 @@ export function PeerView({
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<PeerTab>("chat");
+  const metadataSession = typeof peer.metadata?.hook_session_id === "string"
+    ? peer.metadata.hook_session_id
+    : null;
+  const [activeSessionState, setActiveSessionState] = useState<{ peerId: string; sessionId: string | null }>({
+    peerId: peer.peer_id,
+    sessionId: metadataSession,
+  });
+  const activeSessionId = activeSessionState.peerId === peer.peer_id
+    ? activeSessionState.sessionId
+    : metadataSession;
+  const activeSessionRef = useRef(activeSessionState);
+  const [timelineTurns, setTimelineTurns] = useState<TranscriptTurn[]>([]);
+  const [timelineNextBefore, setTimelineNextBefore] = useState<string | null>(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineError, setTimelineError] = useState<string | null>(null);
+  const [timelineInitialized, setTimelineInitialized] = useState(false);
+  const timelineTopSentinelRef = useRef<HTMLDivElement>(null);
+  const lastMetadataSessionRef = useRef<string | null>(metadataSession);
   const protectedNow = useIsPeerProtected(peer.peer_id);
+  useEffect(() => {
+    activeSessionRef.current = activeSessionState;
+  }, [activeSessionState]);
+  const realtimeSessionIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const event of events) {
+      if (
+        (event.type === "chat_turn" || event.type === "chat_turn_delta") &&
+        event.peer_id === peer.peer_id &&
+        event.session_id
+      ) {
+        ids.push(event.session_id);
+      }
+    }
+    return ids;
+  }, [events, peer.peer_id]);
   const liveThread = useMemo(() => {
     const id = peer.peer_id;
-    return coalesceDeltas(
-      events
-        .filter((event) => {
-          if (event.type === "chat_turn" || event.type === "chat_turn_delta") {
-            return event.peer_id === id;
+    const scopedEvents = events
+      .filter((event) => {
+        if (event.type === "chat_turn" || event.type === "chat_turn_delta") {
+          if (event.peer_id !== id) return false;
+          if (activeSessionId) return event.session_id === activeSessionId;
+          return !event.session_id;
+        }
+        return event.from_peer_id === id || event.to_peer_id === id;
+      })
+      .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    return mergeTimeline(timelineTurns, scopedEvents, activeSessionId);
+  }, [activeSessionId, events, peer.peer_id, timelineTurns]);
+
+  const fetchTimelinePage = useCallback(
+    async (before: string | null, sessionId: string | null) => {
+      setTimelineLoading(true);
+      setTimelineError(null);
+      try {
+        const url = new URL(
+          `${apiBase}/peers/${encodeURIComponent(peer.name)}/transcript`,
+          window.location.origin,
+        );
+        url.searchParams.set("limit", sessionId ? "50" : "1");
+        if (sessionId) url.searchParams.set("session_id", sessionId);
+        if (before) url.searchParams.set("before", before);
+        const res = await fetch(url.toString().replace(window.location.origin, ""), {
+          credentials: "include",
+        });
+        if (!res.ok) {
+          setTimelineError(`Error ${res.status}`);
+          return;
+        }
+        const data = (await res.json()) as { turns: TranscriptTurn[]; next_before: string | null };
+        if (!sessionId) {
+          const currentSelection = activeSessionRef.current;
+          if (
+            data.turns[0]?.session_id &&
+            currentSelection.peerId === peer.peer_id &&
+            currentSelection.sessionId === null &&
+            !lastMetadataSessionRef.current
+          ) {
+            setActiveSessionState({ peerId: peer.peer_id, sessionId: data.turns[0].session_id });
           }
-          return event.from_peer_id === id || event.to_peer_id === id;
-        })
-        .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+          return;
+        }
+        setTimelineTurns((prev) => {
+          const seen = new Set(prev.map((turn) => `${turn.session_id}:${turn.turn_id}`));
+          const next = [...prev];
+          for (const turn of data.turns) {
+            const key = `${turn.session_id}:${turn.turn_id}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              next.push(turn);
+            }
+          }
+          return next;
+        });
+        setTimelineNextBefore(data.next_before);
+      } catch (e) {
+        setTimelineError(e instanceof Error ? e.message : "Request failed");
+      } finally {
+        setTimelineLoading(false);
+        setTimelineInitialized(true);
+      }
+    },
+    [apiBase, peer.name, peer.peer_id],
+  );
+
+  useEffect(() => {
+    lastMetadataSessionRef.current = metadataSession;
+    setActiveSessionState({ peerId: peer.peer_id, sessionId: metadataSession });
+    setTimelineTurns([]);
+    setTimelineNextBefore(null);
+    setTimelineError(null);
+    setTimelineInitialized(false);
+    // Sticky selection resets only on peer changes; metadata changes are handled below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peer.peer_id]);
+
+  useEffect(() => {
+    if (!metadataSession || metadataSession === lastMetadataSessionRef.current) return;
+    lastMetadataSessionRef.current = metadataSession;
+    setActiveSessionState({ peerId: peer.peer_id, sessionId: metadataSession });
+    setTimelineTurns([]);
+    setTimelineNextBefore(null);
+    setTimelineError(null);
+    setTimelineInitialized(false);
+  }, [metadataSession, peer.peer_id]);
+
+  useEffect(() => {
+    if (activeSessionId || realtimeSessionIds.length === 0) return;
+    setActiveSessionState({
+      peerId: peer.peer_id,
+      sessionId: realtimeSessionIds[realtimeSessionIds.length - 1],
+    });
+  }, [activeSessionId, peer.peer_id, realtimeSessionIds]);
+
+  useEffect(() => {
+    setTimelineTurns([]);
+    setTimelineNextBefore(null);
+    setTimelineError(null);
+    setTimelineInitialized(false);
+    void fetchTimelinePage(null, activeSessionId);
+  }, [activeSessionId, fetchTimelinePage]);
+
+  useEffect(() => {
+    const el = timelineTopSentinelRef.current;
+    if (!el || !activeSessionId || !timelineNextBefore || timelineLoading) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) void fetchTimelinePage(timelineNextBefore, activeSessionId);
+      },
+      { rootMargin: "100px" },
     );
-  }, [events, peer.peer_id]);
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [activeSessionId, fetchTimelinePage, timelineLoading, timelineNextBefore]);
 
   // While the peer is protected (e.g. unsubmitted compose draft), freeze the
   // rendered thread so new SSE events don't reorder/clobber it mid-compose.
@@ -165,15 +312,34 @@ export function PeerView({
       {activeTab === "chat" ? (
         <>
           <div className="min-h-0 flex-1 px-4 py-4 md:overflow-y-auto md:px-6">
+            {activeSessionId && timelineNextBefore && (
+              <div ref={timelineTopSentinelRef} className="py-2 text-center font-mono text-[10px] text-outline">
+                {timelineLoading ? "loading older..." : "scroll up for older"}
+              </div>
+            )}
+            {timelineError && (
+              <div className="mb-2 flex items-center gap-2 font-mono text-xs text-error">
+                <AlertCircle className="h-3.5 w-3.5" />
+                <span>{timelineError}</span>
+              </div>
+            )}
             {thread.length === 0 ? (
               <div className="py-10 font-mono text-xs leading-6 text-outline">
-                &gt; no messages with {peerLabel(peer)}.<br />
-                <span>send one to begin a query.</span>
+                {timelineLoading && !timelineInitialized ? (
+                  <>&gt; loading...</>
+                ) : (
+                  <>
+                    &gt; no messages with {peerLabel(peer)}.<br />
+                    <span>send one to begin a query.</span>
+                  </>
+                )}
               </div>
             ) : (
               thread.map((event) =>
                 event.type === "chat_turn_delta_group" ? (
-                  <StreamingTurnItem key={`stream-${event.turn_id}`} group={event} peer={peer} />
+                  <StreamingTurnItem key={`stream-${event.session_id || "legacy"}-${event.turn_id}`} group={event} peer={peer} />
+                ) : event.type === "history_turn" ? (
+                  <HistoryTurn key={event.id} turn={event} peer={peer} />
                 ) : (
                   <ThreadItem key={event.id} event={event as Event} peer={peer} />
                 )
@@ -1208,6 +1374,59 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
   );
 }
 
+function timelineKey(sessionId?: string, turnId?: string): string | null {
+  if (!turnId) return null;
+  return `${sessionId || "legacy"}:${turnId}`;
+}
+
+function mergeTimeline(
+  historyTurns: TranscriptTurn[],
+  sortedEvents: Event[],
+  activeSessionId: string | null,
+): ThreadItemEntry[] {
+  const historyItems: HistoryTimelineTurn[] = historyTurns
+    .filter((turn) => !activeSessionId || turn.session_id === activeSessionId)
+    .map((turn) => ({
+      ...turn,
+      type: "history_turn",
+      id: `history-${turn.session_id}-${turn.turn_id}`,
+    }));
+  const historyByKey = new Map<string, HistoryTimelineTurn>();
+  for (const turn of historyItems) {
+    const key = timelineKey(turn.session_id, turn.turn_id);
+    if (key) historyByKey.set(key, turn);
+  }
+
+  const liveItems = coalesceDeltas(sortedEvents);
+  const out: ThreadItemEntry[] = [];
+  const replacedHistoryKeys = new Set<string>();
+
+  for (const item of liveItems) {
+    if (item.type === "chat_turn") {
+      const key = timelineKey(item.session_id, item.turn_id);
+      if (key) replacedHistoryKeys.add(key);
+      out.push(item);
+      continue;
+    }
+    if (item.type === "chat_turn_delta_group") {
+      const key = timelineKey(item.session_id, item.turn_id);
+      if (key && historyByKey.has(key)) continue;
+      out.push(item);
+      continue;
+    }
+    out.push(item);
+  }
+
+  for (const item of historyItems) {
+    const key = timelineKey(item.session_id, item.turn_id);
+    if (key && replacedHistoryKeys.has(key)) continue;
+    out.push(item);
+  }
+
+  out.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  return out;
+}
+
 /** Coalesce chat_turn_delta events into one pending bubble per turn_id, then
  * drop any group whose turn_id has a matching final `chat_turn`.
  *
@@ -1229,7 +1448,8 @@ function coalesceDeltas(sorted: Event[]): ThreadItemEntry[] {
   const peerLastChatTurnTs = new Map<string, string>();
   for (const ev of sorted) {
     if (ev.type !== "chat_turn" || ev.role !== "assistant") continue;
-    if (ev.turn_id) finalizedTurnIds.add(ev.turn_id);
+    const key = timelineKey(ev.session_id, ev.turn_id);
+    if (key) finalizedTurnIds.add(key);
     if (ev.peer_id) {
       const prev = peerLastChatTurnTs.get(ev.peer_id);
       if (!prev || prev < ev.timestamp) peerLastChatTurnTs.set(ev.peer_id, ev.timestamp);
@@ -1238,22 +1458,25 @@ function coalesceDeltas(sorted: Event[]): ThreadItemEntry[] {
 
   for (const ev of sorted) {
     if (ev.type !== "chat_turn_delta" || !ev.turn_id) continue;
-    if (finalizedTurnIds.has(ev.turn_id)) continue;
+    const key = timelineKey(ev.session_id, ev.turn_id);
+    if (key && finalizedTurnIds.has(key)) continue;
     const lastFinalTs = ev.peer_id ? peerLastChatTurnTs.get(ev.peer_id) : undefined;
     if (lastFinalTs && ev.timestamp <= lastFinalTs) continue;
 
-    let group = groups.get(ev.turn_id);
+    const groupKey = key || `event:${ev.id}`;
+    let group = groups.get(groupKey);
     if (!group) {
       group = {
         type: "chat_turn_delta_group",
         id: `delta-group-${ev.turn_id}`,
+        session_id: ev.session_id,
         turn_id: ev.turn_id,
         peer_id: ev.peer_id,
         timestamp: ev.timestamp,
         text: "",
         tool_calls: [],
       };
-      groups.set(ev.turn_id, group);
+      groups.set(groupKey, group);
     }
     if (ev.kind === "tool_use" && ev.tool_call) {
       group.tool_calls.push(ev.tool_call);

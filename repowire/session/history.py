@@ -32,6 +32,7 @@ class Turn:
     text: str
     timestamp: str  # ISO-8601; "" if missing
     session_id: str
+    turn_id: str
     tool_calls: list[dict[str, str]]  # [{name, input}] — empty for user turns
     line_offset: int = 0  # tie-breaker for same-timestamp turns within a session file
 
@@ -86,6 +87,43 @@ def _iter_claude_turns(path: Path) -> Iterator[Turn]:
     Skips tool-only assistant entries (no text) and tool_result-only user
     entries, which match the semantics of the dashboard's live chat_turn ring.
     """
+    assistant_session_id = ""
+    assistant_turn_id: str | None = None
+    assistant_text: str | None = None
+    assistant_timestamp = ""
+    assistant_line_offset = 0
+    assistant_tool_calls: list[dict[str, str]] = []
+
+    def flush_assistant() -> Turn | None:
+        nonlocal assistant_turn_id
+        nonlocal assistant_text
+        nonlocal assistant_timestamp
+        nonlocal assistant_line_offset
+        nonlocal assistant_tool_calls
+        if not assistant_turn_id or not assistant_text:
+            assistant_turn_id = None
+            assistant_text = None
+            assistant_timestamp = ""
+            assistant_line_offset = 0
+            assistant_tool_calls = []
+            return None
+
+        turn = Turn(
+            role="assistant",
+            text=assistant_text,
+            timestamp=assistant_timestamp,
+            session_id=assistant_session_id,
+            turn_id=assistant_turn_id,
+            tool_calls=assistant_tool_calls,
+            line_offset=assistant_line_offset,
+        )
+        assistant_turn_id = None
+        assistant_text = None
+        assistant_timestamp = ""
+        assistant_line_offset = 0
+        assistant_tool_calls = []
+        return turn
+
     try:
         with open(path) as f:
             for line_no, line in enumerate(f):
@@ -110,11 +148,37 @@ def _iter_claude_turns(path: Path) -> Iterator[Turn]:
                     continue
 
                 text = _extract_text(content)
-                tool_calls: list[dict[str, str]] = []
-                if entry_type == "assistant" and isinstance(content, list):
+                session_id = entry.get("sessionId", "") or path.stem
+
+                if entry_type == "user":
+                    assistant_turn = flush_assistant()
+                    if assistant_turn:
+                        yield assistant_turn
+                    if not text:
+                        continue
+                    yield Turn(
+                        role="user",
+                        text=text,
+                        timestamp=entry.get("timestamp", "") or "",
+                        session_id=session_id,
+                        turn_id=f"history:{session_id}:{line_no}",
+                        tool_calls=[],
+                        line_offset=line_no,
+                    )
+                    continue
+
+                if assistant_turn_id is None:
+                    message_id = message.get("id") if isinstance(message, dict) else None
+                    entry_id = entry.get("uuid") or entry.get("id")
+                    assistant_turn_id = str(
+                        entry_id or message_id or f"history:{session_id}:{line_no}"
+                    )
+                    assistant_session_id = session_id
+
+                if isinstance(content, list):
                     for item in content:
                         if isinstance(item, dict) and item.get("type") == "tool_use":
-                            tool_calls.append({
+                            assistant_tool_calls.append({
                                 "name": item.get("name", "unknown"),
                                 "input": _summarize_tool_input(
                                     item.get("name", "unknown"),
@@ -122,17 +186,13 @@ def _iter_claude_turns(path: Path) -> Iterator[Turn]:
                                 ),
                             })
 
-                if not text and not tool_calls:
-                    continue
-
-                yield Turn(
-                    role=entry_type,
-                    text=text,
-                    timestamp=entry.get("timestamp", "") or "",
-                    session_id=entry.get("sessionId", "") or path.stem,
-                    tool_calls=tool_calls,
-                    line_offset=line_no,
-                )
+                if text:
+                    assistant_text = text
+                    assistant_timestamp = entry.get("timestamp", "") or ""
+                    assistant_line_offset = line_no
+            assistant_turn = flush_assistant()
+            if assistant_turn:
+                yield assistant_turn
     except OSError:
         return
 

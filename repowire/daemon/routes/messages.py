@@ -367,6 +367,10 @@ class ChatTurnRequest(BaseModel):
     peer: str
     role: Literal["user", "assistant"]
     text: str
+    session_id: str | None = Field(
+        None,
+        description="Hook/runtime transcript session id used for dashboard scoping",
+    )
     tool_calls: list[ToolCallInfo] | None = None
     turn_id: str | None = Field(
         None,
@@ -391,18 +395,23 @@ _FINALIZED_TURN_IDS_CAPACITY: int = 4096
 _finalized_turn_ids: dict[str, None] = {}
 
 
-def _mark_turn_finalized(turn_id: str) -> None:
-    if turn_id in _finalized_turn_ids:
+def _turn_finalized_key(session_id: str | None, turn_id: str) -> str:
+    return f"{session_id or 'legacy'}:{turn_id}"
+
+
+def _mark_turn_finalized(turn_id: str, session_id: str | None = None) -> None:
+    key = _turn_finalized_key(session_id, turn_id)
+    if key in _finalized_turn_ids:
         # Refresh recency so a finalized id stays in the set as long as deltas
         # might still trickle in.
-        del _finalized_turn_ids[turn_id]
-    _finalized_turn_ids[turn_id] = None
+        del _finalized_turn_ids[key]
+    _finalized_turn_ids[key] = None
     while len(_finalized_turn_ids) > _FINALIZED_TURN_IDS_CAPACITY:
         _finalized_turn_ids.pop(next(iter(_finalized_turn_ids)))
 
 
-def _is_turn_finalized(turn_id: str) -> bool:
-    return turn_id in _finalized_turn_ids
+def _is_turn_finalized(turn_id: str, session_id: str | None = None) -> bool:
+    return _turn_finalized_key(session_id, turn_id) in _finalized_turn_ids
 
 
 @router.post("/events/chat", response_model=OkResponse)
@@ -421,7 +430,7 @@ async def ingest_chat_turn(
             data["peer"] = peer.display_name  # canonicalize to registered name
 
     if request.turn_id and request.role == "assistant":
-        _mark_turn_finalized(request.turn_id)
+        _mark_turn_finalized(request.turn_id, request.session_id)
 
     peer_registry.add_event("chat_turn", data)
     return OkResponse()
@@ -438,6 +447,10 @@ class ChatTurnDeltaRequest(BaseModel):
 
     peer: str
     role: Literal["assistant"] = "assistant"
+    session_id: str | None = Field(
+        None,
+        description="Hook/runtime transcript session id used for dashboard scoping",
+    )
     turn_id: str = Field(..., description="Stable id for the assistant turn (deltas group by this)")
     chunk_index: int = Field(..., ge=0, description="Monotonic 0-based index within the turn")
     kind: Literal["text", "tool_use"] = Field(default="text", description="Block kind")
@@ -460,7 +473,7 @@ async def ingest_chat_turn_delta(
     200 on drop so the streamer's best-effort post doesn't retry into a
     failure loop.
     """
-    if _is_turn_finalized(request.turn_id):
+    if _is_turn_finalized(request.turn_id, request.session_id):
         return OkResponse()
 
     peer_registry = get_peer_registry()

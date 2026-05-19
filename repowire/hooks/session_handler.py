@@ -282,6 +282,8 @@ def main(backend: str = "claude-code") -> int:
         hint_pending_first_turn = bool(hint and hint.get("pending_first_turn"))
         initial_turn_state = "pending_first_turn" if hint_pending_first_turn else None
         metadata: dict = {"project": folder_name}
+        if hook_session_id:
+            metadata["hook_session_id"] = hook_session_id
         branch = get_git_branch(cwd)
         if branch:
             metadata["branch"] = branch
