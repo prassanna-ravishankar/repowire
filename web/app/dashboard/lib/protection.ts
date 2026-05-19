@@ -12,6 +12,7 @@ export type ProtectionSource = "compose" | "editor" | string;
 type Listener = () => void;
 
 const reasons = new Map<string, Set<ProtectionSource>>();
+const frozenThreads = new Map<string, unknown[]>();
 const listeners = new Set<Listener>();
 
 function emit() {
@@ -35,8 +36,28 @@ export function clearProtected(peerId: string, source: ProtectionSource): void {
   const set = reasons.get(peerId);
   if (!set || !set.has(source)) return;
   set.delete(source);
-  if (set.size === 0) reasons.delete(peerId);
+  if (set.size === 0) {
+    reasons.delete(peerId);
+    // When the last source releases, drop the frozen snapshot so the next
+    // protection cycle captures fresh.
+    frozenThreads.delete(peerId);
+  }
   emit();
+}
+
+// Per-peer frozen thread snapshot. Captured at the moment protection first
+// engages for a peer (so the captured snapshot reflects the thread the user
+// was looking at when they started typing) and held until protection fully
+// clears — survives the user switching to another peer and back.
+export function setFrozenThread<T>(peerId: string, snapshot: T[]): void {
+  if (!peerId) return;
+  frozenThreads.set(peerId, snapshot as unknown[]);
+  emit();
+}
+
+export function getFrozenThread<T>(peerId: string): T[] | null {
+  const snap = frozenThreads.get(peerId);
+  return (snap as T[] | undefined) ?? null;
 }
 
 export function isProtected(peerId: string): boolean {
@@ -51,6 +72,7 @@ export function getProtectionSources(peerId: string): ProtectionSource[] {
 
 export function __resetProtectionForTests(): void {
   reasons.clear();
+  frozenThreads.clear();
   emit();
 }
 
@@ -66,5 +88,13 @@ export function useIsPeerProtected(peerId: string | null | undefined): boolean {
     subscribe,
     () => (peerId ? isProtected(peerId) : false),
     () => false
+  );
+}
+
+export function useFrozenThread<T>(peerId: string | null | undefined): T[] | null {
+  return useSyncExternalStore(
+    subscribe,
+    () => (peerId ? getFrozenThread<T>(peerId) : null),
+    () => null
   );
 }

@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   __resetProtectionForTests,
   clearProtected,
+  getFrozenThread,
   getProtectionSources,
   isProtected,
   markProtected,
+  setFrozenThread,
 } from "./protection";
 
 afterEach(() => {
@@ -45,5 +47,30 @@ describe("protection registry", () => {
     markProtected("p1", "compose");
     clearProtected("p1", "compose");
     expect(isProtected("p1")).toBe(false);
+  });
+
+  it("frozen thread snapshot survives until the last source clears", () => {
+    markProtected("p1", "compose");
+    setFrozenThread("p1", [{ id: "e1" }]);
+    expect(getFrozenThread<{ id: string }>("p1")).toEqual([{ id: "e1" }]);
+
+    // Adding a second source doesn't disturb the snapshot.
+    markProtected("p1", "editor");
+    expect(getFrozenThread<{ id: string }>("p1")).toEqual([{ id: "e1" }]);
+
+    // Clearing one source leaves the snapshot intact.
+    clearProtected("p1", "compose");
+    expect(getFrozenThread<{ id: string }>("p1")).toEqual([{ id: "e1" }]);
+
+    // Clearing the last source drops the snapshot.
+    clearProtected("p1", "editor");
+    expect(getFrozenThread<{ id: string }>("p1")).toBeNull();
+  });
+
+  it("frozen snapshots are per-peer", () => {
+    setFrozenThread("p1", [{ id: "a" }]);
+    setFrozenThread("p2", [{ id: "b" }]);
+    expect(getFrozenThread<{ id: string }>("p1")).toEqual([{ id: "a" }]);
+    expect(getFrozenThread<{ id: string }>("p2")).toEqual([{ id: "b" }]);
   });
 });

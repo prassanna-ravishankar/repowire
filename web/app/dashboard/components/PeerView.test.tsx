@@ -132,6 +132,49 @@ describe("PeerView session protection", () => {
     expect(isProtected(PEER.peer_id)).toBe(true);
   });
 
+  it("freezes A's thread even when A events arrive while A is offscreen", () => {
+    // The leak this guards against: A is protected, user switches to B, an
+    // SSE event for A arrives (added to parent events), user switches back to
+    // A. If the frozen snapshot weren't kept per-peer in the store it would
+    // be lost during the B render and the new A event would render despite
+    // A still being protected.
+    const initialA = [chatTurn("a1", "alice original", "2025-01-01T00:00:00Z", PEER.peer_id)];
+    const { rerender } = render(
+      <PeerView peer={PEER} events={initialA} apiBase="" onClose={() => {}} onSent={() => {}} />
+    );
+
+    // Dirty A.
+    fireEvent.change(screen.getByTestId("compose-textarea"), { target: { value: "drafting" } });
+    expect(isProtected(PEER.peer_id)).toBe(true);
+    expect(screen.getByText("alice original")).toBeInTheDocument();
+
+    // Switch to B.
+    rerender(<PeerView peer={OTHER} events={initialA} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    act(() => {});
+    expect(isProtected(PEER.peer_id)).toBe(true); // A's protection survives
+
+    // SSE event for A arrives while user is on B.
+    const withNewA = [
+      ...initialA,
+      chatTurn("a2", "alice arrived while offscreen", "2025-01-01T00:00:30Z", PEER.peer_id),
+    ];
+    rerender(<PeerView peer={OTHER} events={withNewA} apiBase="" onClose={() => {}} onSent={() => {}} />);
+
+    // Switch back to A while still dirty.
+    rerender(<PeerView peer={PEER} events={withNewA} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    act(() => {});
+
+    expect(isProtected(PEER.peer_id)).toBe(true);
+    expect(screen.getByText("alice original")).toBeInTheDocument();
+    expect(screen.queryByText("alice arrived while offscreen")).not.toBeInTheDocument();
+
+    // Clear A's draft -> the new event finally appears.
+    fireEvent.change(screen.getByTestId("compose-textarea"), { target: { value: "" } });
+    expect(isProtected(PEER.peer_id)).toBe(false);
+    rerender(<PeerView peer={PEER} events={withNewA} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    expect(screen.getByText("alice arrived while offscreen")).toBeInTheDocument();
+  });
+
   it("flips protection synchronously with the keystroke (no passive-effect race)", () => {
     // The failure mode this guards against: an SSE update arrives in the
     // window between the user keystroke and the dirty-flag effect running.

@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertCircle, Check, Clock, Copy, Paperclip, RefreshCw, Send, X } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
-import { useIsPeerProtected } from "../lib/protection";
+import { setFrozenThread, useFrozenThread, useIsPeerProtected } from "../lib/protection";
 import { clearDraft, setDraftFile, setDraftText, useDraftFile, useDraftText } from "../lib/drafts";
 import type { Event, Peer } from "../types";
 import { peerLabel } from "../types";
@@ -60,20 +60,17 @@ export function PeerView({
 
   // While the peer is protected (e.g. unsubmitted compose draft), freeze the
   // rendered thread so new SSE events don't reorder/clobber it mid-compose.
-  // The frozen snapshot is captured at the moment protection engages and is
-  // released the moment it clears. Snapshot is derived during render via the
-  // setState-during-render pattern so the freeze takes effect synchronously
-  // with the protection transition.
-  const [frozenThread, setFrozenThread] = useState<Event[] | null>(null);
-  const [wasProtected, setWasProtected] = useState(false);
-  if (protectedNow && !wasProtected) {
-    setWasProtected(true);
-    setFrozenThread(liveThread);
-  } else if (!protectedNow && wasProtected) {
-    setWasProtected(false);
-    setFrozenThread(null);
+  // The snapshot lives in the protection store keyed by peer_id so it
+  // survives the user switching to another peer and back — A's freeze must
+  // stay frozen even when A is offscreen and new A events arrive in the
+  // parent's events list. We capture the snapshot synchronously at the
+  // protection transition; the store releases it when the last protection
+  // source clears.
+  const frozenFromStore = useFrozenThread<Event>(peer.peer_id);
+  if (protectedNow && frozenFromStore === null) {
+    setFrozenThread(peer.peer_id, liveThread);
   }
-  const thread = protectedNow && frozenThread ? frozenThread : liveThread;
+  const thread = protectedNow && frozenFromStore ? frozenFromStore : liveThread;
 
   useEffect(() => {
     if (protectedNow) return;
