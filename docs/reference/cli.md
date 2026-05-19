@@ -8,10 +8,10 @@ The `repowire` command is a thin wrapper around setup, the daemon, and the bot p
 repowire setup [--relay] [--experimental-channels] [--non-interactive]
 ```
 
-One-time install. Detects every agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires lifecycle hooks and the MCP server for each, and installs the daemon as a user service.
+One-time install. Detects every agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode, Pi), wires the appropriate Repowire transport for each, and installs the daemon as a user service.
 
 - `--relay` opts in to the hosted relay at `repowire.io`.
-- `--experimental-channels` enables the MCP channel transport for Claude Code (v2.1.80+, claude.ai login, bun).
+- `--experimental-channels` enables the experimental MCP channel / ACP transport for Claude Code (v2.1.80+, claude.ai login, bun).
 - `--non-interactive` skips prompts and uses flag values only.
 
 ## `repowire serve`
@@ -29,6 +29,22 @@ repowire status
 ```
 
 Show what's installed, which agents were detected, and whether the daemon is running.
+
+## `repowire service`
+
+```bash
+repowire service install
+repowire service restart
+repowire service status
+repowire service uninstall
+```
+
+Manage the installed daemon user service. `install` writes and starts the
+platform service (`launchd` on macOS, `systemd --user` on Linux), `restart`
+restarts the installed daemon after a local reinstall or config change,
+`status` shows whether it is installed/running, and `uninstall` removes the
+service entry. Prefer these commands over raw `launchctl` or `systemctl`
+unless you are troubleshooting the platform service manager directly.
 
 ## `repowire doctor`
 

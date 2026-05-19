@@ -15,15 +15,27 @@ export default function CliReference() {
         The <Mono>repowire</Mono> command is a thin wrapper around setup, the daemon, and the bot peers. Most users only ever need <Mono>setup</Mono>. Everything else is for operators running their own daemon or control surfaces.
       </p>
 
-      <Cmd name="repowire setup" usage="repowire setup [--relay] [--non-interactive]">
+      <Cmd name="repowire setup" usage="repowire setup [--relay] [--experimental-channels] [--non-interactive]">
         <p>
-          One-time install. Detects every agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode, Pi), wires lifecycle hooks and the MCP server for each, and installs the daemon as a user service. <Mono>--relay</Mono> opts in to the hosted relay at <Mono>repowire.io</Mono>. <Mono>--non-interactive</Mono> skips prompts and uses flag values only.
+          One-time install. Detects every agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode, Pi), wires the appropriate Repowire transport for each, and installs the daemon as a user service. <Mono>--relay</Mono> opts in to the hosted relay at <Mono>repowire.io</Mono>. <Mono>--experimental-channels</Mono> enables the experimental MCP channel / ACP transport for Claude Code. <Mono>--non-interactive</Mono> skips prompts and uses flag values only.
         </p>
       </Cmd>
 
       <Cmd name="repowire serve" usage="repowire serve [--host HOST] [--port PORT] [--relay]">
         <p>
           Run the daemon in the foreground. Useful for debugging hooks or running outside the installed service. Defaults to <Mono>127.0.0.1:8377</Mono>.
+        </p>
+      </Cmd>
+
+      <Cmd
+        name="repowire service"
+        usage={`repowire service install
+repowire service restart
+repowire service status
+repowire service uninstall`}
+      >
+        <p>
+          Manage the installed daemon user service. <Mono>install</Mono> writes and starts the platform service (<Mono>launchd</Mono> on macOS, <Mono>systemd --user</Mono> on Linux), <Mono>restart</Mono> restarts the installed daemon after a local reinstall or config change, <Mono>status</Mono> shows whether it is installed/running, and <Mono>uninstall</Mono> removes the service entry. Prefer these commands over raw <Mono>launchctl</Mono> or <Mono>systemctl</Mono> unless you are troubleshooting the platform service manager directly.
         </p>
       </Cmd>
 

@@ -6,9 +6,9 @@ hide:
 
 # Repowire
 
-Mesh network for AI coding agents. A local-first daemon routes `ask`, `notify`, and `broadcast` between active Claude Code, Codex, Gemini CLI, and OpenCode sessions.
+Repowire is a local-first mesh for live AI coding-agent sessions. A daemon routes `ask`, `notify`, `broadcast`, and scheduled wake-ups between active Claude Code, Codex, Gemini CLI, OpenCode, and Pi sessions, plus human control surfaces such as the dashboard, Telegram, Slack, and orchestrator peers.
 
-Current release: v0.13.32 bundles the transport-router extraction for ask/notify delivery, the graphify architecture report, refreshed README/docs/images, and the session-scoped dashboard timeline that merges the selected peer/session Claude transcript with realtime events.
+Use it when one repo needs a live answer from another repo, when you want to drive work from your phone or browser, or when an orchestrator peer needs to coordinate several project peers.
 
 ## Install
 
@@ -44,10 +44,11 @@ Both sessions auto-register. In `project-a`:
 
 The agent calls the `ask` MCP tool. `project-b` receives the question and acks back with `ack(corr_id, "...")`. The reply lands in `project-a` framed as `[ack #cid from @project-b] ...`.
 
-## Where to next
+## What to read next
 
 - [Quickstart](quickstart/index.md) walks through install, setup, and the first cross-repo ask.
 - [Concepts](concepts/index.md) covers peers, circles, message types, and the orchestrator pattern.
-- [Session-native roadmap](concepts/session-native-roadmap.md) explains the v0.13 direction for durable session timelines and dashboard/session controls.
+- [Control surfaces](surfaces/index.md) explains dashboard, Telegram, Slack, and relay control paths.
+- [Patterns](patterns/index.md) covers multi-repo asks, mobile dispatch, worktree isolation, scheduled wake-ups, and orchestrator coordination.
 - [MCP tools reference](reference/mcp-tools.md) is the source of truth for the agent API.
-- [Troubleshooting](troubleshooting/index.md) for when hooks or the daemon misbehave.
+- [CLI reference](reference/cli.md) covers setup, services, peers, schedules, bots, and diagnostics.

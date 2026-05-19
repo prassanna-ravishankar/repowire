@@ -8,7 +8,7 @@ This is the one-time install step. It runs from your shell, not from inside an a
 
 ## What setup does
 
-For every agent runtime it finds, it wires lifecycle hooks and the repowire MCP server. Auto-detection covers Claude Code, Codex, Gemini CLI, and OpenCode. Then it installs the local daemon as a user service (launchd on macOS, systemd on Linux).
+For every agent runtime it finds, it wires the appropriate Repowire transport. Auto-detection covers Claude Code, Codex, Gemini CLI, OpenCode, and Pi. Then it installs the local daemon as a user service (launchd on macOS, systemd on Linux).
 
 When setup finishes, the daemon is listening on `127.0.0.1:8377`. Open a new agent session in any directory and it will register itself.
 
@@ -24,7 +24,7 @@ repowire setup --non-interactive        # take flag values only, no prompts
 
 `--relay` makes the dashboard available at `https://repowire.io/dashboard` over an outbound WebSocket. See [hosted relay](../relay/hosted.md).
 
-`--experimental-channels` replaces tmux-injection delivery with direct MCP-channel delivery for Claude Code only. See [Claude Code setup](../agents/claude-code.md).
+`--experimental-channels` replaces tmux-injection delivery with direct MCP-channel / ACP delivery for Claude Code only. It is experimental. See [Claude Code setup](../agents/claude-code.md).
 
 ## Verifying
 

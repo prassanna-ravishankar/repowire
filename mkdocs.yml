@@ -1,5 +1,5 @@
 site_name: Repowire
-site_description: Mesh network for AI coding agents. Local-first daemon routes ask, notify, and broadcast between Claude Code, Codex, Gemini, and OpenCode sessions.
+site_description: Local-first mesh for live AI coding-agent sessions across Claude Code, Codex, Gemini CLI, OpenCode, Pi, and human control surfaces.
 site_url: https://docs.repowire.io/
 repo_url: https://github.com/prassanna-ravishankar/repowire
 repo_name: prassanna-ravishankar/repowire
