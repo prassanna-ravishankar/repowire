@@ -22,6 +22,8 @@ Repowire connects your agents into a live mesh. Any agent can query, notify, or 
 
 Read more: [the context breakout problem](https://prassanna.io/blog/vibe-bottleneck/) and [the idea behind Repowire](https://prassanna.io/blog/repowire/).
 
+**Current release:** v0.13.31 adds scheduled mesh messages: one-shot reminders, recurring cron schedules, self-wake scheduling, MCP tools (`schedule_create`, `schedule_self`, `schedule_cron`, `schedule_list`, `schedule_delete`), and CLI commands under `repowire schedule`.
+
 <details>
 <summary><strong>How does repowire compare?</strong></summary>
 
@@ -119,6 +121,21 @@ All peers connect to a central daemon via **WebSocket**. The daemon routes addre
 
 **Circles** are logical subnets (mapped to tmux sessions). Peers can only communicate within their circle unless explicitly bypassed.
 
+### Current Direction: Session-Native Mesh
+
+Repowire's v0.13 architecture train is incrementally shifting the product boundary from a transient peer connection to a durable session. The ask/notify transport-router extraction has landed; the remaining sequence adds a session/timeline store, updates the dashboard to render persisted and realtime conversation state together, moves composer and control actions onto session commands, and centralizes runtime lifecycle plus approval events. The goal is compatibility first: existing peer, hook, MCP, and dashboard workflows should keep working while the internals become session-native.
+
+This is roadmap/current direction, not a claim that every item is fully shipped today:
+
+- **Session-first mesh.** Repowire is moving toward sessions as the durable unit of work, with peers acting as live runtime executors.
+- **Transport-neutral routing.** Ask/notify delivery now goes through a transport router. WebSocket hooks, experimental ACP, relay, and future transports continue moving toward the same message/control boundary.
+- **Timeline-centered dashboard.** The roadmap is to merge persisted history and realtime events into one session timeline instead of separate live/history views.
+- **Shared command surface.** Controls such as send message, switch backend/model, resume, schedule, and approvals should target sessions and be reusable from dashboard, MCP, Telegram, and other surfaces.
+- **Incremental v0.13 train.** Compatible v0.13.x slices preserve current hooks/MCP/HTTP behavior while the session-native model hardens.
+- **Human approval path.** Permission and plan approval events are expected to become first-class timeline/control events instead of transport-specific callbacks.
+
+The current public surface still exposes peers, circles, asks, notifications, and schedules. Do not assume model switching, plan approval, reliable delivery across every transport, production-ready ACP, or fully transport-neutral routes/control paths are complete today.
+
 ### Supported Agents
 
 | Agent | Transport | How it connects |
@@ -134,6 +151,17 @@ All agents use **hooks + tmux injection** for message delivery:
 - **SessionStart** - registers peer, spawns WebSocket hook, injects peer list
 - **UserPromptSubmit** / **BeforeAgent** - marks peer BUSY
 - **Stop** / **AfterAgent** - marks peer ONLINE, extracts response for dashboard
+
+### Skills and Plugin Marketplaces
+
+Repowire installs its own hooks, MCP server, daemon service, and OpenCode plugin. It does not currently install third-party agent skills or publish a Claude Code plugin marketplace entry.
+
+Those ecosystems are complementary:
+
+- [Vercel Labs `skills`](https://github.com/vercel-labs/skills) installs reusable `SKILL.md` packages across agents with commands like `npx skills add vercel-labs/agent-skills -a claude-code` or `-a codex`.
+- [Claude Code plugin marketplaces](https://code.claude.com/docs/en/discover-plugins) distribute Claude Code plugins that can bundle skills, agents, hooks, MCP servers, and related config. Manage them from Claude Code's `/plugin` UI or `claude plugin ...` commands.
+
+Use those when you want reusable agent behavior on top of the Repowire mesh. Use `repowire setup` for Repowire's transport and routing layer.
 
 <details>
 <summary><strong>Experimental: Claude Code channel transport</strong></summary>
@@ -219,6 +247,8 @@ Monitor your agent mesh at `http://localhost:8377/dashboard`, or remotely via [r
 - **Compose bar** - send notifications or queries to any peer from the browser
 - **Mobile responsive** - hamburger menu, touch-friendly compose
 
+Roadmap: the dashboard is moving toward a durable session timeline that merges persisted history with realtime stream events. Controls that change runtime behavior should attach to session commands as they land, while peer IDs remain implementation details of the runtime executor currently doing the work.
+
 For remote access: `repowire setup --relay` connects your daemon to [repowire.io](https://repowire.io) via outbound WebSocket. Access your dashboard from any browser. No port forwarding, no VPN.
 
 <details>
@@ -263,7 +293,9 @@ repowire telegram start
 | `mark_reviewed` | Mutation | Mark a PR as reviewed at a given SHA. New commits on that PR re-surface it in your review queue |
 | `review_queue` | Query | List PRs awaiting your review (or another peer's). Filter by `peer_name=...` |
 | `schedule_create` | Mutation | Schedule a notification or ask to a peer at a future time (one-shot) |
-| `schedule_list` | Query | List your active schedules. `mine_only=False` shows all |
+| `schedule_self` | Mutation | Schedule a one-shot or recurring reminder to yourself (`fire_at` or `cron`) |
+| `schedule_cron` | Mutation | Schedule a recurring cron notification or ask to another peer |
+| `schedule_list` | Query | List your active schedules. `mine_only=False` shows all; `include_cron=True` appends recurrence |
 | `schedule_delete` | Mutation | Remove a schedule |
 
 `list_peers` and `whoami` return TSV (more token-efficient than JSON).
@@ -291,6 +323,13 @@ repowire peer list                # List peers and their status (god-view, inclu
 repowire peer describe NAME       # Show full state for one peer (open asks, last seen, recent activity)
 repowire peer describe NAME --circle 5    # Disambiguate when name exists in multiple circles
 repowire peer prune               # Remove offline peers
+
+repowire schedule self 10m "check CI"       # Wake this peer later
+repowire schedule self "0 9 * * 1-5" "standup prep" --cron
+repowire schedule create PEER 2026-05-19T18:00:00Z "handoff" --from-peer ME
+repowire schedule create PEER "@hourly" "status?" --from-peer ME --cron --kind ask
+repowire schedule list             # Show pending one-shot and recurring schedules
+repowire schedule delete sched-12345678
 
 repowire telegram start           # Run Telegram bot (config or env vars)
 repowire slack start              # Run Slack bot (config or env vars)

@@ -12,6 +12,8 @@ For every agent runtime it finds, it wires lifecycle hooks and the repowire MCP 
 
 When setup finishes, the daemon is listening on `127.0.0.1:8377`. Open a new agent session in any directory and it will register itself.
 
+`repowire setup` owns Repowire's transport and routing layer. It does not install third-party skills or Claude Code marketplace plugins; those can be installed separately if you want reusable agent behaviors on top of the mesh.
+
 ## Useful flags
 
 ```bash

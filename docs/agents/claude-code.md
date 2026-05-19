@@ -24,6 +24,17 @@ The hooks shell out to the `repowire` CLI: `repowire hook session`, `repowire ho
 
 The repowire MCP server is added under `mcpServers.repowire` in the same settings file. It runs as `repowire mcp` over stdio.
 
+## Plugins and skills
+
+Claude Code has its own plugin and skill distribution surfaces. Repowire does not currently ship as a Claude Code marketplace plugin, and `repowire setup` does not install third-party skills.
+
+You can still use those surfaces alongside Repowire:
+
+- [Vercel Labs `skills`](https://github.com/vercel-labs/skills) installs reusable `SKILL.md` packages across agents, for example `npx skills add vercel-labs/agent-skills -a claude-code`.
+- [Claude Code plugin marketplaces](https://code.claude.com/docs/en/discover-plugins) install plugins that can bundle skills, agents, hooks, MCP servers, LSP servers, and settings. Claude Code exposes them through `/plugin` and `claude plugin ...` commands.
+
+Treat these as capability packaging layers. Repowire's Claude Code integration remains the hooks + MCP transport described above.
+
 ## Channel transport (experimental)
 
 ```bash

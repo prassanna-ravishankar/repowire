@@ -8,6 +8,8 @@ hide:
 
 Mesh network for AI coding agents. A local-first daemon routes `ask`, `notify`, and `broadcast` between active Claude Code, Codex, Gemini CLI, and OpenCode sessions.
 
+Current release: v0.13.31 adds scheduled mesh messages, including recurring cron schedules, self-wake reminders, MCP scheduling tools, and `repowire schedule` CLI commands.
+
 ## Install
 
 ```bash
@@ -46,5 +48,6 @@ The agent calls the `ask` MCP tool. `project-b` receives the question and acks b
 
 - [Quickstart](quickstart/index.md) walks through install, setup, and the first cross-repo ask.
 - [Concepts](concepts/index.md) covers peers, circles, message types, and the orchestrator pattern.
+- [Session-native roadmap](concepts/session-native-roadmap.md) explains the v0.13 direction for durable session timelines and dashboard/session controls.
 - [MCP tools reference](reference/mcp-tools.md) is the source of truth for the agent API.
 - [Troubleshooting](troubleshooting/index.md) for when hooks or the daemon misbehave.

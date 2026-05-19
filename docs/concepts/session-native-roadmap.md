@@ -1,0 +1,39 @@
+# Session-native roadmap
+
+Repowire's current public model is peer-oriented: running agent processes register as peers, and tools route `ask`, `ack`, `notify`, `broadcast`, and schedules between those peers.
+
+The v0.13 architecture train is moving toward a **session-native mesh**. This is roadmap and design direction, not a statement that all of it has shipped.
+
+## Direction
+
+- **Session-first mesh.** Sessions become the durable unit of work, with peers acting as live runtime executors.
+- **Transport-neutral routing.** Ask/notify delivery now goes through a transport router. WebSocket hooks, experimental ACP, relay, and future transports continue moving toward the same message/control boundary.
+- **Timeline-centered dashboard.** Persisted history and realtime events converge into one session timeline instead of separate live/history views.
+- **Shared command surface.** Controls such as send message, switch backend/model, resume, schedule, and approvals target sessions and can be reused from dashboard, MCP, Telegram, and other surfaces.
+- **Compatible v0.13.x slices.** The architecture changes land incrementally while preserving current hooks, MCP tools, HTTP routes, and dashboard workflows.
+- **Human approval path.** Permission and plan approval events become first-class timeline/control events instead of transport-specific callbacks.
+
+The ask/notify transport-router extraction has landed. The remaining planned sequence adds a session/timeline store, updates the dashboard to render persisted and realtime conversation state together, moves composer/control actions onto session commands, and centralizes runtime lifecycle plus approval events.
+
+## What is shipped today
+
+Today, the stable surface is still peer and message based:
+
+- Agents register as peers.
+- Circles scope routing.
+- `ask` opens a thread; `ack` closes it.
+- `notify_peer` and `broadcast` are fire-and-forget.
+- `schedule_create`, `schedule_self`, and `schedule_cron` schedule future deliveries through the daemon.
+- The dashboard shows peers, live events, per-peer chat history, tool calls, and compose controls.
+
+## What not to assume yet
+
+- Do not describe seamless model switching, approval brokering, or backend changes as completed functionality.
+- Do not imply every route/control path is transport-neutral yet.
+- Do not call ACP production-ready; treat ACP as experimental.
+- Do not claim reliable delivery across all transports.
+- Do not call this a v0.14 plan; the current direction belongs to the v0.13 architecture train.
+
+## Why it matters
+
+The peer model is useful for routing, but humans think in sessions: "this workstream", "this review", "this release train". Session-native architecture lets the dashboard and control surfaces preserve that shape while the runtime executor and transport can change underneath.

@@ -60,12 +60,25 @@ The daemon is the single routing hub. It doesn't care how a peer connects — al
 - `daemon/ask_tracker.py` — slim ask state store: register, close, get, pending_for_peer. Open asks reappear in every Stop hook poll until acked.
 - `daemon/query_tracker.py` — legacy /query correlation ID tracking, asyncio Futures (async-locked)
 - `daemon/routes/asks.py` — `/ask`, `/ack`, `/asks/pending`. `/asks/{cid}/picked_up` + `/asks/{cid}/mark_reminded` are deprecated no-op 200 endpoints kept for one release for transport compat.
+- `daemon/routes/schedules.py`, `daemon/scheduler.py`, `daemon/schedule_store.py`, `daemon/schedule_cron.py` — one-shot and recurring scheduled mesh messages.
 - `daemon/routes/` — other HTTP endpoints (peers, messages, websocket, spawn, health)
-- `mcp/server.py` — MCP tools (list_peers, ask, ack, notify_peer, broadcast, whoami, set_description, spawn_peer, kill_peer)
+- `mcp/server.py` — MCP tools (list_peers, ask, ack, notify_peer, broadcast, whoami, set_description, spawn_peer, kill_peer, review_queue, mark_reviewed, schedule_create, schedule_self, schedule_cron, schedule_list, schedule_delete)
 - `relay/server.py` — hosted relay at repowire.io (WS bridge + HTTP tunnel)
 - `telegram/bot.py` — mobile mesh control via Telegram inline buttons
 - `hooks/` — **default** Claude Code transport (session, stop, prompt, notification, websocket_hook)
 - `slack/bot.py` — Slack bot peer via Socket Mode
+
+### v0.13 session-native architecture train
+
+Frame this as roadmap/current direction, not fully shipped behavior:
+
+- **Session-first/session-native mesh:** sessions are becoming the durable unit of work; peers remain live runtime executors.
+- **Transport-neutral routing:** ask/notify delivery now goes through a transport router. WebSocket hooks, experimental ACP, relay, and future transports continue moving toward the same message/control boundary.
+- **Session timeline:** dashboard direction is persisted history plus realtime events in one timeline, not separate live/history mental models.
+- **Shared command surface:** send message, resume, schedule, switch backend/model, plan mode, and approvals should become session commands reusable from dashboard, MCP, Telegram, and future surfaces.
+- **Compatible v0.13.x slices:** preserve current hooks/MCP/HTTP behavior while internals harden.
+
+Avoid claiming model switching, plan approval, reliable delivery across every transport, production-ready ACP, or transport-neutral routes/control paths are complete today. Do not call this v0.14. The ask/notify transport-router extraction has landed, but ACP remains experimental and not every route/control path is transport-neutral yet.
 
 ## Transports
 
@@ -180,6 +193,7 @@ Hosted at repowire.io. Daemon connects outbound via WSS. Cookie-based auth for d
 - Tool calls: stop hook extracts from transcript JSONL, included in `chat_turn` events
 - File uploads: 📎 button in compose bar, uploads to `POST /attachments`, path included in notification
 - Build: `repowire build-ui` or `cd web && npm run dev`
+- Roadmap: merged session timeline (persisted history + realtime stream) and session-targeted command controls. Keep this framed as planned/current direction unless implementing the relevant product slice.
 
 ### Dashboard Design System
 
@@ -226,6 +240,27 @@ Four supported runtimes, all use the same hooks + MCP pattern:
 
 `repowire setup` auto-detects installed CLIs. Backend shows in `list_peers` TSV and peer context injection.
 
+## Public Docs Expectations
+
+Feature work that changes public behavior must update public docs in the same PR:
+
+- README when the install path, quickstart, supported agents, major features, screenshots, MCP tools, CLI commands, dashboard behavior, relay/security posture, or roadmap positioning changes.
+- `docs/reference/mcp-tools.md` when MCP signatures, return formats, defaults, routing semantics, or lifecycle behavior change.
+- `docs/reference/cli.md` when CLI commands, flags, examples, or output columns change.
+- `docs/agents/*` when per-runtime install/config/hook/plugin behavior changes.
+- `docs/surfaces/*` when dashboard, Telegram, Slack, attachments, or relay behavior changes.
+- `docs/concepts/*` and `docs/patterns/*` when the recommended workflow or architecture framing changes.
+- `web/app/docs/*` when the shipped Next docs pages mirror the changed reference surface.
+- README screenshots under `images/` when dashboard UI changes materially; use browser-generated screenshots only, not AI-generated UI mockups.
+
+When adding features, explicitly check docs impact before closing the issue. If docs are intentionally deferred, file a Beads follow-up and say why in the PR handoff.
+
+Third-party extension context:
+
+- Vercel Labs `skills` (`npx skills add ...`) installs reusable `SKILL.md` packages across agents. Repowire does not install these today.
+- Claude Code plugin marketplaces can distribute plugins bundling skills, agents, hooks, MCP servers, LSP servers, and settings. Repowire does not currently ship a Claude marketplace plugin.
+- If Repowire adds first-class plugin/skills packaging later, update README, `docs/agents/claude-code.md`, install/setup docs, and uninstall docs together.
+
 ## Memory
 
 Memory is stored in-repo at `.claude/memory/` (committed, shared across contributors).
@@ -256,7 +291,7 @@ A graphify knowledge graph lives in `graphify-out/`. After significant code chan
 /graphify . --update   # incremental re-extraction (only changed files)
 ```
 
-The graph covers 133 files, 1864 nodes, 5455 edges across the full codebase. Key god nodes: `AgentType`, `Config`, `PeerRegistry`, `MessageRouter`.
+The generated report lives at `graphify-out/GRAPH_REPORT.md`. Use it as a navigation aid and summarize it when helpful; do not paste large generated JSON/cache artifacts into README or hand-written docs. Current major hubs include `AgentType`, `Config`, `PeerRegistry`, `MessageRouter`, and `WebSocketTransport`.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker

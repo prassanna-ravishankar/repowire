@@ -38,3 +38,5 @@ The package ships:
 - The Next.js dashboard, pre-built and served from the daemon at `/dashboard`.
 
 Nothing runs yet. Run [setup](setup.md) to wire the hooks for your agents.
+
+Repowire does not install third-party agent skills. If you want reusable `SKILL.md` packages, use a skills installer such as [Vercel Labs `skills`](https://github.com/vercel-labs/skills) alongside Repowire.

@@ -14,6 +14,10 @@ The dashboard is a Next.js UI served by the daemon at `http://localhost:8377/das
 
 The dashboard does not poll. The stop hook of every Claude Code, Codex, and Gemini session extracts the response and tool calls from the transcript or runtime output, then posts them to `POST /events/chat` on the daemon. The dashboard streams events over Server-Sent Events. OpenCode bridges the same shape via its plugin.
 
+## Roadmap: session timeline
+
+The v0.13 dashboard direction is a timeline-centered view: persisted history and realtime stream events in one durable session timeline. Peers remain the runtime executors, but future controls such as model/backend switching, resume, scheduling, approval handling, and plan-mode decisions should attach to shared session commands as those features land.
+
 ## Mobile
 
 The dashboard is mobile-responsive: hamburger menu for the peer list, touch-friendly compose bar, sticky bottom switcher between peer roster and mesh log. You don't need the Telegram or Slack bot to drive the mesh from a phone — though those surfaces are often more convenient than the mobile dashboard.
@@ -31,4 +35,5 @@ This produces a static export served by the daemon directly. The relay serves th
 ## See also
 
 - [Concepts: control surfaces](../concepts/control-surfaces.md) for the "surfaces are peers" framing.
+- [Session-native roadmap](../concepts/session-native-roadmap.md) for the dashboard/session direction.
 - [Hosted relay](../relay/hosted.md) for the remote-dashboard tunneling model.

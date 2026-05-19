@@ -15,6 +15,15 @@ export default function Concepts() {
         Repowire is a routing hub for live agent sessions. The daemon holds peer state; everything else is a transport. Reading this once makes the tool reference and troubleshooting pages obvious.
       </p>
 
+      <Section title="Session-native roadmap">
+        <p>
+          The v0.13 architecture train is moving toward a session-first mesh: sessions become the durable unit of work, while peers remain live runtime executors. This is roadmap, not a claim that the product is fully session-native today.
+        </p>
+        <p>
+          Ask/notify delivery now goes through a transport router. The broader direction is transport-neutral routing across WebSocket hooks, experimental ACP, relay, and future transports; a dashboard session timeline that combines persisted history with realtime events; and a shared command surface for send, resume, schedule, approvals, and future backend/model controls.
+        </p>
+      </Section>
+
       <Section title="Peers">
         <p>
           A peer is one running agent session. Claude Code, Codex, Gemini CLI, and OpenCode all register as peers through the same hooks pattern. Peers have a <Mono>name</Mono>, a <Mono>project</Mono>, a <Mono>circle</Mono>, a <Mono>status</Mono> (online / busy / offline), and a free-form <Mono>description</Mono> the agent sets via <Mono>set_description</Mono>.
@@ -40,6 +49,7 @@ export default function Concepts() {
           <Row term="ack" def="Close an open ask thread. Bare close signals 'seen, no action needed'. A reply ack delivers the message back as a notification framed [ack #cid from @peer]." />
           <Row term="notify_peer" def="Fire-and-forget. No lifecycle, no response expected. Use for status updates and announcements." />
           <Row term="broadcast" def="Fan-out to all peers in your circle. Use sparingly." />
+          <Row term="schedule" def="Future delivery through the daemon. One-shot and recurring cron schedules can notify or open asks later." />
         </dl>
       </Section>
 

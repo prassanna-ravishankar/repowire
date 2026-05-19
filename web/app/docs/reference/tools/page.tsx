@@ -111,6 +111,48 @@ ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")`}
         </p>
       </Tool>
 
+      <Tool
+        name="schedule_create"
+        signature={`schedule_create(to_peer: str, text: str, fire_at: str, kind: str = "notify", circle: str | None = None) -> str`}
+      >
+        <p>
+          Schedule a one-shot future message to another peer. <Mono>fire_at</Mono> is ISO-8601; naive datetimes are interpreted as UTC. Use <Mono>kind=&quot;ask&quot;</Mono> when the future message should open an ask thread.
+        </p>
+      </Tool>
+
+      <Tool
+        name="schedule_self"
+        signature={`schedule_self(text: str, fire_at: str | None = None, cron: str | None = None, kind: str = "notify", circle: str | None = None) -> str`}
+      >
+        <p>
+          Schedule a future message to yourself. Provide exactly one of <Mono>fire_at</Mono> or <Mono>cron</Mono>. Cron accepts five-field expressions and aliases such as <Mono>@hourly</Mono>, <Mono>@daily</Mono>, <Mono>@midnight</Mono>, <Mono>@weekly</Mono>, and <Mono>@monthly</Mono>.
+        </p>
+      </Tool>
+
+      <Tool
+        name="schedule_cron"
+        signature={`schedule_cron(to_peer: str, text: str, cron: str, kind: str = "notify", circle: str | None = None) -> str`}
+      >
+        <p>
+          Schedule a recurring message to another peer. Recurring schedules advance to their next fire time after delivery and keep running until cancelled with <Mono>schedule_delete</Mono>.
+        </p>
+      </Tool>
+
+      <Tool
+        name="schedule_list"
+        signature={`schedule_list(mine_only: bool = True, include_cron: bool = False) -> str`}
+      >
+        <p>
+          List pending schedules as TSV. Pass <Mono>mine_only=False</Mono> for all schedules on the daemon, and <Mono>include_cron=True</Mono> to append the recurrence column.
+        </p>
+      </Tool>
+
+      <Tool name="schedule_delete" signature={`schedule_delete(schedule_id: str) -> str`}>
+        <p>
+          Cancel a one-shot or recurring schedule by the <Mono>sched-XXXXXXXX</Mono> id returned when it was created.
+        </p>
+      </Tool>
+
       <div className="mt-12 border-t border-border-faint pt-8">
         <div className="mb-3 font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-outline">
           See also

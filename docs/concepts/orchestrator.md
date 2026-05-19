@@ -22,7 +22,7 @@ Pair runtimes: a `claude-code` orchestrator alongside a `codex` or `gemini` one 
 
 ## Scheduled check-ins
 
-`schedule_create(to_peer, text, fire_at, kind="notify")` defers a single future message — fire-and-forget if `kind="notify"`, or an opened ask thread if `kind="ask"`. Recurring schedules are not supported in the MVP; if you need a cadence, your orchestrator should re-schedule the next one when it handles the current one.
+`schedule_create(to_peer, text, fire_at, kind="notify")` defers a single future message — fire-and-forget if `kind="notify"`, or an opened ask thread if `kind="ask"`. `schedule_cron(to_peer, text, cron, kind="notify")` adds recurring check-ins, and `schedule_self(text, fire_at=...|cron=...)` is the convenience form for self-wake reminders.
 
 ## When *not* to orchestrate
 

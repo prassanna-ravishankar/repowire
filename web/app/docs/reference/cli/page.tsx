@@ -33,6 +33,18 @@ export default function CliReference() {
         </p>
       </Cmd>
 
+      <Cmd
+        name="repowire schedule"
+        usage={`repowire schedule self WHEN_OR_CRON TEXT [--cron]
+repowire schedule create TO_PEER WHEN_OR_CRON TEXT --from-peer FROM_PEER [--cron]
+repowire schedule list
+repowire schedule delete SCHEDULE_ID`}
+      >
+        <p>
+          Create one-shot or recurring scheduled mesh messages. Without <Mono>--cron</Mono>, the time may be ISO-8601 or relative, such as <Mono>10m</Mono>, <Mono>1h</Mono>, or <Mono>in 30s</Mono>. With <Mono>--cron</Mono>, use five-field cron syntax or aliases such as <Mono>@hourly</Mono>, <Mono>@daily</Mono>, <Mono>@midnight</Mono>, <Mono>@weekly</Mono>, and <Mono>@monthly</Mono>. Add <Mono>--kind ask</Mono> when the scheduled delivery should open an ask thread.
+        </p>
+      </Cmd>
+
       <Cmd name="repowire telegram start" usage="repowire telegram start">
         <p>
           Run the Telegram bot peer. Reads <Mono>TELEGRAM_BOT_TOKEN</Mono> and <Mono>TELEGRAM_CHAT_ID</Mono> from the environment. The bot registers as the <Mono>telegram</Mono> peer; messages from it are framed as human input.

@@ -29,6 +29,9 @@ curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/
         <p className="mt-3 text-sm leading-6 text-on-surface-variant">
           Requires tmux. The installer detects your agents (Claude Code, Codex, Gemini, OpenCode) and wires hooks and MCP for each one it finds.
         </p>
+        <p className="mt-3 text-sm leading-6 text-on-surface-variant">
+          Repowire setup does not install third-party skills or Claude Code marketplace plugins. Add reusable skills separately with tools such as <code className="font-mono text-primary-fixed">npx skills add</code>.
+        </p>
       </Step>
 
       <Step n="02" title="Set up">

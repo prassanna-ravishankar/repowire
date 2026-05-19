@@ -35,7 +35,16 @@ schedule_create(
 )
 ```
 
-At 6 AM the orchestrator gets a forced ask; the answer surfaces in your morning Telegram (or whatever surface the orchestrator chooses to forward to). One-shot; if you want a cadence, the orchestrator re-schedules the next one when it handles the current.
+At 6 AM the orchestrator gets a forced ask; the answer surfaces in your morning Telegram (or whatever surface the orchestrator chooses to forward to). For a recurring cadence, use `schedule_cron` or `schedule_self(..., cron="...")`:
+
+```python
+schedule_cron(
+    to_peer="orchestrator",
+    text="weekday morning status: overnight work, blockers, next action",
+    cron="0 6 * * 1-5",
+    kind="ask",
+)
+```
 
 ## Failure modes to plan for
 
@@ -59,6 +68,6 @@ At 6 AM the orchestrator gets a forced ask; the answer surfaces in your morning 
 
 ## See also
 
-- [Schedules](../reference/mcp-tools.md#scheduling) — `schedule_create`, `schedule_list`, `schedule_delete`.
+- [Schedules](../reference/mcp-tools.md#scheduling) — `schedule_create`, `schedule_self`, `schedule_cron`, `schedule_list`, `schedule_delete`.
 - [Mobile mesh management](mobile-mesh.md) — talking to peers from your phone.
 - [Troubleshooting: ghost peers](../troubleshooting/ghost-peers.md) for stuck-state diagnosis.

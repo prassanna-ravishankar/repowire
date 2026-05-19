@@ -164,19 +164,39 @@ List PRs awaiting your review (or another peer's). Defaults to the calling peer.
 schedule_create(to_peer: str, text: str, fire_at: str, kind: str = "notify", circle: str | None = None) -> str
 ```
 
-Schedule a **one-shot** future message to a peer. Recurring schedules are not supported in the MVP.
+Schedule a **one-shot** future message to a peer. Use `schedule_cron` for recurring schedules, or `schedule_self` when the recipient is the calling peer.
 
 At `fire_at`, the daemon delivers `text` to `to_peer` on your behalf. `kind="notify"` is fire-and-forget; `kind="ask"` opens an ask thread (the recipient must `ack`). `fire_at` is ISO-8601; naive datetimes are interpreted as UTC.
 
 Use for self-wake reminders, post-stand-up nudges, or future check-ins that don't need a live caller waiting. Returns a `sched-XXXXXXXX` ID; pass it to `schedule_delete` to cancel.
 
+### `schedule_self`
+
+```python
+schedule_self(text: str, fire_at: str | None = None, cron: str | None = None, kind: str = "notify", circle: str | None = None) -> str
+```
+
+Schedule a future message to yourself. Provide exactly one of `fire_at` or `cron`.
+
+For one-shot reminders, pass an ISO-8601 `fire_at`. For recurring reminders, pass a five-field cron expression or an alias such as `@hourly`, `@daily`, `@midnight`, `@weekly`, or `@monthly`. `kind="notify"` delivers a reminder; `kind="ask"` opens an ask thread that must be acked.
+
+### `schedule_cron`
+
+```python
+schedule_cron(to_peer: str, text: str, cron: str, kind: str = "notify", circle: str | None = None) -> str
+```
+
+Schedule a recurring message to a peer. `cron` accepts standard five-field cron syntax, including ranges, steps, and comma-separated values, plus aliases such as `@hourly`, `@daily`, `@midnight`, `@weekly`, and `@monthly`.
+
+Recurring schedules advance to their next matching fire time after delivery. Cancel them with `schedule_delete`.
+
 ### `schedule_list`
 
 ```python
-schedule_list(mine_only: bool = True) -> str
+schedule_list(mine_only: bool = True, include_cron: bool = False) -> str
 ```
 
-List pending scheduled check-ins. Returns TSV with columns: `schedule_id`, `from_peer`, `to_peer`, `kind`, `fire_at`, `text`. Sorted by `fire_at` ascending. Pass `mine_only=False` to see all schedules on the daemon.
+List pending scheduled check-ins. Returns TSV with columns: `schedule_id`, `from_peer`, `to_peer`, `kind`, `fire_at`, `text`. Sorted by `fire_at` ascending. Pass `mine_only=False` to see all schedules on the daemon. Pass `include_cron=True` to append a trailing `cron` column for recurring schedules.
 
 ### `schedule_delete`
 

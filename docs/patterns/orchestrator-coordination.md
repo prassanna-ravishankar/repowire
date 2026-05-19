@@ -43,12 +43,12 @@ Pairing runtimes also hedges against rate limits and credit caps on either side.
 
 ## Scheduled check-ins
 
-`schedule_create(to_peer, text, fire_at, kind="notify")` defers a single future message. One-shot only; recurring schedules are not in the MVP. If you want a cadence, the orchestrator re-schedules the next one when it handles the current one.
+`schedule_create(to_peer, text, fire_at, kind="notify")` defers a single future message. Use `schedule_cron(to_peer, text, cron, kind="notify")` for recurring check-ins, or `schedule_self(text, fire_at=...|cron=...)` when the orchestrator is scheduling its own wake-up.
 
 Typical uses:
 
 - Wake yourself in 25 minutes to check on a long-running migration peer.
-- Nudge a peer for a status update at the top of the hour.
+- Nudge a peer for a status update at the top of the hour, once or on a cron cadence.
 - Schedule a release tag right after the freeze window ends.
 
 ## When to skip the orchestrator
@@ -60,4 +60,4 @@ Typical uses:
 ## See also
 
 - [Concepts: orchestrator pattern](../concepts/orchestrator.md) — same idea, less how-to.
-- [`orchestrator_status`](../reference/mcp-tools.md#orchestrator_status), [`review_queue`](../reference/mcp-tools.md#review_queue), [`schedule_create`](../reference/mcp-tools.md#schedule_create).
+- [`orchestrator_status`](../reference/mcp-tools.md#orchestrator_status), [`review_queue`](../reference/mcp-tools.md#review_queue), [`schedule_create`](../reference/mcp-tools.md#schedule_create), [`schedule_cron`](../reference/mcp-tools.md#schedule_cron).

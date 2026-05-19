@@ -1,4 +1,72 @@
 # Architecture
 
-!!! note "Stub"
-    Daemon module map, transports, wire protocol. Content lands in step 4.
+Repowire is a local-first routing daemon plus thin transport adapters for each agent runtime.
+
+```text
+Agent runtime
+  ├─ hooks + MCP (Claude Code, Codex, Gemini)
+  ├─ plugin + WebSocket (OpenCode)
+  └─ channel transport (Claude Code experimental)
+        ↓
+HTTP/WebSocket daemon on 127.0.0.1:8377
+        ↓
+Dashboard, Telegram, Slack, relay, and other peers
+```
+
+The daemon is the single routing hub. It does not care whether a peer arrived through hooks, an OpenCode plugin, a bot, relay traffic, or experimental channel delivery. Every peer is represented in the registry and routes messages through the same core message layer.
+
+## Core modules
+
+| Area | Files | Responsibility |
+| --- | --- | --- |
+| Daemon app | `repowire/daemon/app.py`, `repowire/daemon/deps.py` | FastAPI app factory, dependency wiring, dashboard/static serving |
+| Peer state | `repowire/daemon/peer_registry.py` | Registration, liveness, circles, roles, lazy repair |
+| Message routing | `repowire/daemon/message_router.py`, `repowire/daemon/websocket_transport.py` | `ask`, `notify`, `broadcast`, and response delivery over connected peers |
+| Ask lifecycle | `repowire/daemon/ask_tracker.py`, `repowire/daemon/routes/asks.py` | Open ask state, pending reminders, close/ack handling |
+| Schedules | `repowire/daemon/scheduler.py`, `repowire/daemon/schedule_store.py`, `repowire/daemon/routes/schedules.py` | One-shot and recurring cron deliveries |
+| Hooks | `repowire/hooks/` | Runtime event adapters, tmux injection, transcript/chat extraction |
+| MCP server | `repowire/mcp/server.py` | Agent-facing tools over stdio |
+| Control surfaces | `web/`, `repowire/telegram/bot.py`, `repowire/slack/bot.py` | Dashboard and human peers |
+| Relay | `repowire/relay/server.py`, `repowire/daemon/relay_client.py` | Hosted remote dashboard and cross-machine tunnel |
+
+## Transports
+
+### Hooks + MCP
+
+Claude Code, Codex, and Gemini use lifecycle hooks for registration/status/chat extraction and MCP tools for outbound commands. The hook adapter normalizes each runtime's event names and response fields.
+
+Default message delivery still uses tmux injection plus Stop-hook reminders for unacked asks. The MCP server lazily registers on tool calls so runtimes that initialize late, especially Codex, still get a peer identity before routing.
+
+### OpenCode plugin
+
+OpenCode does not expose the same hook shape, so Repowire installs a TypeScript plugin. The plugin holds a WebSocket connection to the daemon and bridges OpenCode session events into the same peer/message model.
+
+### Channel transport
+
+`repowire setup --experimental-channels` installs Claude Code's experimental channel transport. Messages arrive as `<channel source="repowire">` tags, while replies route through a channel reply tool. This requires Claude Code support, claude.ai login, and `bun`.
+
+### Relay
+
+The daemon connects outbound to the hosted relay over WSS. The relay tunnels dashboard HTTP/SSE calls and bridges WebSocket traffic without requiring inbound access to the user's machine.
+
+## Lazy repair
+
+Repowire avoids polling loops. Liveness repair, persistence flushes, and ghost cleanup are piggy-backed on user-visible requests, bounded by cooldowns. The design rule is: repair when needed, not on timers.
+
+## v0.13 session-native direction
+
+The current stable surface is peer-oriented, but the v0.13 architecture train is moving toward a session-first mesh:
+
+- Sessions become the durable unit of work.
+- Peers remain runtime executors.
+- Ask/notify delivery now goes through a transport router; WebSocket hooks, experimental ACP, relay, and future transports continue moving toward transport-neutral routing.
+- The dashboard moves toward a session timeline that merges persisted history and realtime events.
+- Composer actions, scheduling, approval handling, resume, and backend/model controls move toward a shared command surface.
+
+This is a roadmap. Current routes and tools still expose peers, circles, asks, notifications, and schedules. The ask/notify transport-router extraction has landed, but ACP remains experimental and not every route/control path is transport-neutral yet.
+
+## Knowledge graph
+
+`graphify-out/GRAPH_REPORT.md` summarizes the codebase graph. The current report identifies the main hubs as `AgentType`, `Config`, `PeerRegistry`, `MessageRouter`, and `WebSocketTransport`, with communities around daemon routing, CLI/setup, channel installer, Telegram, attachments, hook normalization, relay auth, and peer lifecycle.
+
+Keep generated graph JSON and cache files out of prose docs. Link or summarize the report when useful; do not paste large graph artifacts into README or hand-written docs.

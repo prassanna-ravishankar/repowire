@@ -107,6 +107,7 @@ nav:
       - Lazy repair: concepts/lazy-repair.md
       - Control surfaces: concepts/control-surfaces.md
       - Orchestrator pattern: concepts/orchestrator.md
+      - Session-native roadmap: concepts/session-native-roadmap.md
   - Setup per agent:
       - agents/index.md
       - Claude Code: agents/claude-code.md

@@ -63,6 +63,19 @@ repowire peer prune                         # remove offline peers from the regi
 
 `peer describe` accepts either a display name (`clitcoin-claude-code`) or a peer id (`repow-5-abd4d21e`). Pass `--circle` when a display name is ambiguous across circles — without it, the command refuses to guess and prints the same misroute-style refusal the daemon emits internally. Output includes identity (project, circle, role, backend), liveness (status, path, machine, last-seen), open ask threads in both directions, and the last few communication events involving the peer. Reads `GET /peers`, `GET /peers/{id}`, `GET /asks/pending?direction=both`, and `GET /events` — no new daemon endpoints.
 
+## `repowire schedule`
+
+```bash
+repowire schedule self WHEN_OR_CRON TEXT [--cron] [--kind notify|ask] [--circle CIRCLE]
+repowire schedule create TO_PEER WHEN_OR_CRON TEXT --from-peer FROM_PEER [--cron] [--kind notify|ask] [--circle CIRCLE]
+repowire schedule list [--from-peer FROM_PEER]
+repowire schedule delete SCHEDULE_ID
+```
+
+Create one-shot or recurring scheduled mesh messages. Without `--cron`, `WHEN_OR_CRON` may be ISO-8601 or a relative time like `10m`, `1h`, or `in 30s`. With `--cron`, it is a five-field cron expression or alias such as `@hourly`, `@daily`, `@midnight`, `@weekly`, or `@monthly`.
+
+`schedule self` targets the current CLI peer identity by default and is the easiest way to wake the same session later. `schedule create` targets another peer and requires `--from-peer` so the daemon knows who the scheduled message is from. `--kind ask` opens an ask thread when the schedule fires; `notify` is fire-and-forget.
+
 ## `repowire build-ui`
 
 ```bash
