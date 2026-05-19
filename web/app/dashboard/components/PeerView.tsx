@@ -3,7 +3,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertCircle, Check, Clock, Copy, Paperclip, RefreshCw, Send, X } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
-import { clearProtected, markProtected, useIsPeerProtected } from "../lib/protection";
+import { useIsPeerProtected } from "../lib/protection";
+import { clearDraft, setDraftFile, setDraftText, useDraftFile, useDraftText } from "../lib/drafts";
 import type { Event, Peer } from "../types";
 import { peerLabel } from "../types";
 import { formatTime, StatusLabel } from "./status";
@@ -346,11 +347,20 @@ function ComposeBar({
   events: Event[];
   onSent?: () => void;
 }) {
-  const [text, setText] = useState("");
+  // Draft text / file live in a per-peer external store, not local state, so
+  // they survive peer switches without leaking across peers via shared
+  // ComposeBar state. The store also flips protection SYNCHRONOUSLY when the
+  // dirty bit changes — closing the "passive effect race" where an SSE event
+  // could arrive after onChange but before a dirty-effect ran.
+  const text = useDraftText(peer.peer_id);
+  const file = useDraftFile(peer.peer_id);
+  const setText = (next: string) => setDraftText(peer.peer_id, next);
+  const setFile = (next: File | null) => setDraftFile(peer.peer_id, next);
+  const isDirty = text.trim().length > 0 || file !== null;
+
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingAsks, setPendingAsks] = useState<PendingAsk[]>([]);
-  const [file, setFile] = useState<File | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -360,18 +370,6 @@ function ComposeBar({
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
   }, [text]);
-
-  // Compose dirty → protect the peer view so inbound SSE doesn't reset scroll
-  // / clobber UI while the user is typing. Cleared on submit, empty input, or
-  // peer switch (unmount).
-  const isDirty = text.trim().length > 0 || file !== null;
-  useEffect(() => {
-    if (isDirty) markProtected(peer.peer_id, "compose");
-    else clearProtected(peer.peer_id, "compose");
-  }, [isDirty, peer.peer_id]);
-  useEffect(() => {
-    return () => clearProtected(peer.peer_id, "compose");
-  }, [peer.peer_id]);
 
   // Match incoming notification events to pending asks via [ack #cid from @peer] framing.
   const openCids = useMemo(
@@ -481,8 +479,7 @@ function ComposeBar({
             state: "pending",
           },
         ]);
-        setText("");
-        setFile(null);
+        clearDraft(peer.peer_id);
         onSent?.();
       }
     } catch (e) {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { PeerView } from "./PeerView";
 import { __resetProtectionForTests, isProtected } from "../lib/protection";
+import { __resetDraftsForTests, getDraftText, setDraftText } from "../lib/drafts";
 import type { Event, Peer } from "../types";
 
 const PEER: Peer = {
@@ -14,12 +15,20 @@ const PEER: Peer = {
   circle: "default",
 };
 
-function chatTurn(id: string, text: string, ts: string): Event {
+const OTHER: Peer = {
+  ...PEER,
+  peer_id: "peer-2",
+  name: "bob",
+  display_name: "bob",
+  path: "/tmp/bob",
+};
+
+function chatTurn(id: string, text: string, ts: string, peerId = PEER.peer_id): Event {
   return {
     id,
     type: "chat_turn",
     timestamp: ts,
-    peer_id: PEER.peer_id,
+    peer_id: peerId,
     role: "assistant",
     text,
   };
@@ -28,14 +37,15 @@ function chatTurn(id: string, text: string, ts: string): Event {
 const scrollSpy = vi.fn();
 
 beforeEach(() => {
-  // jsdom doesn't implement scrollIntoView
   Element.prototype.scrollIntoView = scrollSpy;
   scrollSpy.mockClear();
   __resetProtectionForTests();
+  __resetDraftsForTests();
 });
 
 afterEach(() => {
   __resetProtectionForTests();
+  __resetDraftsForTests();
 });
 
 describe("PeerView session protection", () => {
@@ -63,9 +73,10 @@ describe("PeerView session protection", () => {
     expect(textarea.dataset.dirty).toBe("false");
     expect(isProtected(PEER.peer_id)).toBe(false);
 
-    // Dirty compose -> protection engages
     fireEvent.change(textarea, { target: { value: "drafting a reply" } });
-    expect(textarea.dataset.dirty).toBe("true");
+    expect((screen.getByTestId("compose-textarea") as HTMLTextAreaElement).dataset.dirty).toBe(
+      "true"
+    );
     expect(isProtected(PEER.peer_id)).toBe(true);
     expect(screen.getByTestId("compose-draft-pill")).toBeInTheDocument();
 
@@ -85,24 +96,68 @@ describe("PeerView session protection", () => {
     fireEvent.change(screen.getByTestId("compose-textarea"), { target: { value: "" } });
     expect(isProtected(PEER.peer_id)).toBe(false);
 
-    // Force a re-render so the now-unfrozen liveThread is rendered
     rerender(<PeerView peer={PEER} events={incoming} apiBase="" onClose={() => {}} onSent={() => {}} />);
     expect(screen.getByText("incoming turn")).toBeInTheDocument();
     expect(scrollSpy).toHaveBeenCalled();
   });
 
-  it("clears protection when peer is switched", () => {
+  it("preserves draft and protection across peer switch", () => {
     const { rerender } = render(
       <PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />
     );
-    fireEvent.change(screen.getByTestId("compose-textarea"), { target: { value: "drafting" } });
+    fireEvent.change(screen.getByTestId("compose-textarea"), {
+      target: { value: "half-written draft" },
+    });
     expect(isProtected(PEER.peer_id)).toBe(true);
+    expect(getDraftText(PEER.peer_id)).toBe("half-written draft");
 
-    const other: Peer = { ...PEER, peer_id: "peer-2", name: "bob", display_name: "bob" };
-    rerender(<PeerView peer={other} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
-    // Flush effect cleanup that releases the prior peer's protection.
+    // Switch to a different peer.
+    rerender(<PeerView peer={OTHER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
     act(() => {});
 
-    expect(isProtected(PEER.peer_id)).toBe(false);
+    // Other peer is not protected and has no draft.
+    expect(isProtected(OTHER.peer_id)).toBe(false);
+    expect((screen.getByTestId("compose-textarea") as HTMLTextAreaElement).value).toBe("");
+
+    // A's draft and protection survive the switch.
+    expect(getDraftText(PEER.peer_id)).toBe("half-written draft");
+    expect(isProtected(PEER.peer_id)).toBe(true);
+
+    // Switch back to A: draft is restored, protection still engaged.
+    rerender(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    act(() => {});
+    expect((screen.getByTestId("compose-textarea") as HTMLTextAreaElement).value).toBe(
+      "half-written draft"
+    );
+    expect(isProtected(PEER.peer_id)).toBe(true);
+  });
+
+  it("flips protection synchronously with the keystroke (no passive-effect race)", () => {
+    // The failure mode this guards against: an SSE update arrives in the
+    // window between the user keystroke and the dirty-flag effect running.
+    // If protection flips inside a passive useEffect, the new event renders
+    // before the freeze engages. With the store's synchronous mark, the
+    // very next render — even one triggered by an SSE update — must already
+    // see protected=true and freeze the thread.
+    const initial: Event[] = [chatTurn("e1", "before", "2025-01-01T00:00:00Z")];
+    const { rerender } = render(
+      <PeerView peer={PEER} events={initial} apiBase="" onClose={() => {}} onSent={() => {}} />
+    );
+
+    // Synchronously dirty the draft (this is what onChange does internally).
+    // Importantly we do NOT flush effects between setDraftText and the next
+    // render — the rerender below simulates a parent re-render carrying a new
+    // events list, racing the still-unflushed dirty effect from the old model.
+    act(() => {
+      setDraftText(PEER.peer_id, "x");
+    });
+
+    const racingEvents = [...initial, chatTurn("e2", "racing event", "2025-01-01T00:00:01Z")];
+    rerender(
+      <PeerView peer={PEER} events={racingEvents} apiBase="" onClose={() => {}} onSent={() => {}} />
+    );
+
+    expect(isProtected(PEER.peer_id)).toBe(true);
+    expect(screen.queryByText("racing event")).not.toBeInTheDocument();
   });
 });
