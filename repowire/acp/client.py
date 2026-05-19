@@ -126,6 +126,7 @@ class AcpClient:
         self._exit_stack: Any = None
         self._lock = asyncio.Lock()
         self._closed = False
+        self._crashed = False
 
     @property
     def session_id(self) -> str | None:
@@ -180,16 +181,35 @@ class AcpClient:
         logger.info("ACP session/new ok: session_id=%s cwd=%s", self._session_id, cwd)
         return self._session_id
 
+    @property
+    def crashed(self) -> bool:
+        """True if a prompt failed in a way that poisoned the session/subprocess.
+
+        The manager checks this after every ``prompt`` to decide whether to
+        drop the cached client so the next ask respawns a fresh subprocess.
+        """
+        return self._crashed
+
     async def prompt(self, text: str, *, timeout: float = 120.0) -> AcpPromptResult:
         """Send a ``session/prompt`` and return the assistant's final turn.
 
         Streams ``session/update`` notifications into the recorder while waiting
         for ``session/prompt`` to settle. Phase-3 returns the concatenated
         ``agent_message_chunk`` text as the ack reply.
+
+        On timeout: send ``session/cancel`` (best-effort), then close the
+        subprocess so a late stream of chunks can't leak into the next ask's
+        recorder. The client is marked ``crashed`` and the manager drops it.
+
+        On any transport / protocol failure: same — close + mark crashed.
+        Phase-3 favours respawn-on-error over silently reusing a wedged
+        connection, since asks are cheap to retry.
         """
         import acp
 
         async with self._lock:
+            if self._closed:
+                raise AcpClientError("client is closed")
             await self._ensure_started()
             session_id = await self._ensure_session()
             assert self._connection is not None
@@ -205,9 +225,19 @@ class AcpClient:
                     timeout=timeout,
                 )
             except asyncio.TimeoutError as e:
+                await self._abort_after_failure(cancel_first=True)
                 raise AcpClientError(f"prompt timed out after {timeout}s") from e
             except Exception as e:
+                await self._abort_after_failure(cancel_first=False)
                 raise AcpClientError(f"prompt failed: {e}") from e
+
+            # session/update notifications arrive on the same stdio stream as
+            # the session/prompt response, but the SDK dispatches them as
+            # separate asyncio tasks. The prompt future can resolve before all
+            # pending notification handlers have run, especially against a
+            # fast agent like our echo stub. Drain the loop briefly so any
+            # in-flight `session/update` is recorded before we read it.
+            await _drain_pending_updates(self._recorder)
 
             assembled = _assemble_agent_text(self._recorder.updates)
             return AcpPromptResult(
@@ -215,6 +245,25 @@ class AcpClient:
                 stop_reason=str(resp.stop_reason),
                 updates=list(self._recorder.updates),
             )
+
+    async def _abort_after_failure(self, *, cancel_first: bool) -> None:
+        """Mark the client crashed and tear it down so the manager drops it.
+
+        ``cancel_first`` covers the timeout case: send ``session/cancel`` so
+        the agent stops working before we drop its stdio. For protocol errors
+        we skip the cancel — the connection is already in a bad state.
+        """
+        self._crashed = True
+        if cancel_first:
+            try:
+                if self._connection is not None and self._session_id is not None:
+                    await self._connection.cancel(self._session_id)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ACP cancel during abort failed: %s", e)
+        try:
+            await self._close_locked()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ACP close during abort failed: %s", e)
 
     async def cancel(self) -> None:
         """Send ``session/cancel`` for the current session, if one exists."""
@@ -227,6 +276,14 @@ class AcpClient:
 
     async def close(self) -> None:
         """Tear down the subprocess and clear session state. Idempotent."""
+        await self._close_locked()
+
+    async def _close_locked(self) -> None:
+        """Inner close used both from ``close()`` and from the prompt lock.
+
+        Idempotent. Does NOT acquire ``self._lock`` so it's safe to call while
+        the prompt path already holds it.
+        """
         if self._closed:
             return
         self._closed = True
@@ -238,6 +295,41 @@ class AcpClient:
                 await stack.__aexit__(None, None, None)
             except Exception as e:  # noqa: BLE001
                 logger.warning("ACP teardown error: %s", e)
+
+
+async def _drain_pending_updates(
+    recorder: Any,
+    *,
+    quiescent_ticks: int = 4,
+    max_wait_seconds: float = 0.25,
+    sleep_step: float = 0.01,
+) -> None:
+    """Yield control until in-flight session/update tasks have all recorded.
+
+    The SDK dispatches each incoming JSON-RPC frame as a separate task, so a
+    session/prompt response future can resolve before sibling session/update
+    handlers — and even before the notification frame has been read off the
+    pipe in the first place. We poll the recorder for new updates, exiting
+    when ``quiescent_ticks`` consecutive polls observe no growth, or when
+    ``max_wait_seconds`` elapses.
+
+    The bound is intentionally small: phase-3 is interested in the assistant
+    reply that was already streamed by the time stop_reason arrived. Long
+    tails belong to later phases (chat_turn_delta streaming).
+    """
+    deadline = asyncio.get_running_loop().time() + max_wait_seconds
+    quiet = 0
+    last = len(recorder.updates)
+    while asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(sleep_step)
+        current = len(recorder.updates)
+        if current == last:
+            quiet += 1
+            if quiet >= quiescent_ticks:
+                return
+        else:
+            quiet = 0
+            last = current
 
 
 def _assemble_agent_text(updates: list[Any]) -> str:

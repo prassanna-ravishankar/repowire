@@ -36,6 +36,8 @@ from repowire.daemon.websocket_transport import WebSocketTransport
 from repowire.protocol.peers import AgentType, Peer, PeerStatus
 
 STUB_PATH = Path(__file__).parent / "fixtures" / "acp_echo_agent.py"
+CRASH_STUB_PATH = Path(__file__).parent / "fixtures" / "acp_crash_agent.py"
+SLOW_STUB_PATH = Path(__file__).parent / "fixtures" / "acp_slow_agent.py"
 PYTHON = sys.executable
 
 
@@ -318,3 +320,181 @@ def _peer_with_acp(peer_id: str, cfg: AcpPeerConfig) -> Peer:
     p = _bare_peer(peer_id)
     p.metadata["acp"] = cfg.model_dump()
     return p
+
+
+# ----- lifecycle regression tests (codex BLOCKING #1, #2, #3) -----
+
+
+@pytest.mark.asyncio
+async def test_manager_drops_client_when_subprocess_crashes(tmp_path: Path) -> None:
+    """Codex BLOCKING #2: a crashed subprocess must not poison the manager cache.
+
+    The crash-stub returns one normal response, then ``sys.exit(1)`` on the
+    second prompt. Without the fix the manager would keep handing out the dead
+    client forever; with the fix the second prompt raises ``AcpClientError``
+    and the manager drops the cached entry so the third prompt respawns.
+    """
+    from repowire.acp import AcpClient, AcpClientError, AcpPeerSpec
+
+    cfg = AcpPeerConfig(command=PYTHON, args=[str(CRASH_STUB_PATH)], cwd=str(tmp_path))
+    mgr = AcpClientManager()
+    spec = AcpPeerSpec(peer_id="crash-peer", config=cfg)
+    try:
+        # 1: ok
+        r1 = await mgr.prompt(spec, "first")
+        assert r1.text == "[ok] first"
+        first_client = await mgr.get_or_create(spec)
+
+        # 2: subprocess exits → AcpClientError, cached client evicted
+        with pytest.raises(AcpClientError):
+            await mgr.prompt(spec, "second")
+        assert "crash-peer" not in mgr._clients  # type: ignore[attr-defined]
+        assert first_client.crashed is True
+
+        # 3: a fresh client is spawned; we should get a normal echo again
+        r3 = await mgr.prompt(spec, "third")
+        assert r3.text == "[ok] third"
+        respawned = await mgr.get_or_create(spec)
+        assert respawned is not first_client
+        assert isinstance(respawned, AcpClient)
+    finally:
+        await mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_prompt_timeout_closes_client_and_evicts_from_manager(tmp_path: Path) -> None:
+    """Codex BLOCKING #3: a timed-out prompt must cancel + close, not leak.
+
+    The slow-stub blocks forever in ``prompt``. With a short broker-side
+    timeout we expect:
+      * the prompt raises ``AcpClientError``
+      * the client is marked crashed and closed
+      * the manager has dropped the entry
+      * a follow-up prompt respawns a fresh subprocess
+    """
+    from repowire.acp import AcpClientError, AcpPeerSpec
+
+    cfg = AcpPeerConfig(command=PYTHON, args=[str(SLOW_STUB_PATH)], cwd=str(tmp_path))
+    mgr = AcpClientManager()
+    spec = AcpPeerSpec(peer_id="slow-peer", config=cfg)
+    try:
+        client = await mgr.get_or_create(spec)
+        with pytest.raises(AcpClientError) as exc_info:
+            await mgr.prompt(spec, "this will hang", timeout=1.0)
+        assert "timed out" in str(exc_info.value)
+        assert client.crashed is True
+        assert "slow-peer" not in mgr._clients  # type: ignore[attr-defined]
+
+        # A fresh prompt against a fresh stub (echo this time) should work,
+        # proving the manager evicted cleanly. Using the echo stub keeps the
+        # assertion strong without spending another full timeout.
+        echo_cfg = AcpPeerConfig(command=PYTHON, args=[str(STUB_PATH)], cwd=str(tmp_path))
+        r = await mgr.prompt(AcpPeerSpec(peer_id="slow-peer", config=echo_cfg), "alive")
+        assert r.text == "[echo] alive"
+    finally:
+        await mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_acp_complete_keeps_ask_open_when_asker_offline(tmp_path: Path) -> None:
+    """Codex BLOCKING #1: TransportError from notify must leave ask open.
+
+    Mirrors /ack's fail-loud contract: a successful ACP turn whose ack
+    notification can't be delivered (asker has no live WS) is NOT silently
+    dropped. The ask stays open so the reply can be redelivered on reconnect.
+
+    To reach the TransportError branch the asker peer must be registered (so
+    registry lookup succeeds) but its underlying transport.send must raise.
+    """
+    from repowire.daemon.routes.asks import _acp_complete
+    from repowire.daemon.websocket_transport import TransportError
+
+    cfg = Config()
+    cfg.experiments.acp_broker_client = True
+    transport = WebSocketTransport()
+    qt = QueryTracker()
+    at = AskTracker(ttl_hours=24.0)
+    router = MessageRouter(transport=transport, query_tracker=qt)
+    registry = PeerRegistry(
+        config=cfg,
+        message_router=router,
+        query_tracker=qt,
+        transport=transport,
+        persistence_path=tmp_path / "sessions.json",
+    )
+    registry._events_path = tmp_path / "events.json"
+    registry._last_repair = time.monotonic() + 3600
+
+    # Register both peers so registry lookups succeed; we want the TransportError
+    # to come from the wire layer, not from "unknown peer".
+    asker = Peer(
+        peer_id="asker-id", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%asker", circle="default",
+        status=PeerStatus.ONLINE,
+    )
+    answerer = Peer(
+        peer_id="answerer-id", display_name="answerer", path=str(tmp_path),
+        machine="localhost", pane_id="%answerer", circle="default",
+        status=PeerStatus.ONLINE,
+    )
+    await registry.register_peer(asker)
+    await registry.register_peer(answerer)
+
+    # Make the wire-level send raise TransportError (asker WS dead)
+    async def _boom(**_):
+        raise TransportError("no live ws")
+
+    router.send_notification = AsyncMock(side_effect=_boom)
+
+    cid = await at.register(
+        from_peer_id=asker.peer_id, from_peer_name=asker.display_name,
+        to_peer_id=answerer.peer_id, to_peer_name=answerer.display_name,
+        text="hi",
+    )
+
+    await _acp_complete(
+        correlation_id=cid,
+        reply="here is your answer",
+        error=None,
+        ask_tracker=at,
+        peer_registry=registry,
+    )
+
+    # Ask MUST still be open after a TransportError so the reply can retry.
+    ask = await at.get(cid)
+    assert ask is not None
+    assert ask.closed is False, "ask was closed despite asker being offline"
+
+
+@pytest.mark.asyncio
+async def test_acp_complete_closes_ask_on_success(tmp_path: Path) -> None:
+    """Happy path: successful notify closes the ask exactly once."""
+    from repowire.daemon.routes.asks import _acp_complete
+
+    cfg = Config()
+    transport = WebSocketTransport()
+    qt = QueryTracker()
+    at = AskTracker(ttl_hours=24.0)
+    router = MessageRouter(transport=transport, query_tracker=qt)
+    registry = PeerRegistry(
+        config=cfg,
+        message_router=router,
+        query_tracker=qt,
+        transport=transport,
+        persistence_path=tmp_path / "sessions.json",
+    )
+    registry._events_path = tmp_path / "events.json"
+    registry._last_repair = time.monotonic() + 3600
+    router.send_notification = AsyncMock()
+
+    cid = await at.register(
+        from_peer_id="asker-id", from_peer_name="asker",
+        to_peer_id="answerer-id", to_peer_name="answerer",
+        text="hi",
+    )
+    await _acp_complete(
+        correlation_id=cid, reply="answer", error=None,
+        ask_tracker=at, peer_registry=registry,
+    )
+    ask = await at.get(cid)
+    assert ask is not None and ask.closed is True

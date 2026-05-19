@@ -151,12 +151,29 @@ async def _acp_complete(
     ask_tracker: AskTracker,
     peer_registry: PeerRegistry,
 ) -> None:
-    """Deliver an ACP-routed ask result back to the asker and close the thread.
+    """Deliver an ACP-routed ask result back to the asker.
 
-    Mirrors the success path of the synchronous ``/ack`` handler: build a framed
-    `[ack #cid from @recipient] reply` notification, route via the asker's
-    existing transport, then close the ask. On error, surface a framed error
-    line instead so the asker is never silently dropped.
+    Mirrors the delivery semantics of the synchronous ``/ack`` handler exactly:
+
+      * Successful ACP turn + successful notify        → close (ack_with_msg)
+      * ACP error (subprocess crash, timeout, …)       → close (send_failed)
+                                                          with an error frame so
+                                                          the asker is not
+                                                          silently dropped
+      * ValueError on notify (asker evicted from
+        registry)                                       → close; nothing to retry
+                                                          against
+      * TransportError on notify (asker has no live
+        WS)                                             → LEAVE ASK OPEN. The
+                                                          asker will see the
+                                                          ack via the Stop-hook
+                                                          reminder loop once it
+                                                          reconnects, exactly
+                                                          like /ack does today.
+
+    The asymmetry between TransportError (retain) and the other failure modes
+    matches the existing fail-loud / no-queue contract: don't silently drop a
+    successful reply just because the asker is currently offline.
     """
     ask = await ask_tracker.get(correlation_id)
     if ask is None or ask.closed:
@@ -173,15 +190,25 @@ async def _acp_complete(
             text=framed,
             bypass_circle=True,
         )
-    except (ValueError, TransportError) as e:
+    except TransportError as e:
+        # Asker has no live WS. Leave the ask open so the reply can be
+        # redelivered on reconnect — matches /ack's fail-loud contract.
         logger.warning(
-            "ACP ack reply delivery failed for cid=%s: %s. Closing ask anyway.",
+            "ACP ack reply for cid=%s: asker offline (%s). Ask kept open.",
             correlation_id, e,
         )
-    finally:
-        await ask_tracker.close(
-            correlation_id, reason="ack_with_msg" if error is None else "send_failed",
+        return
+    except ValueError as e:
+        # Asker is gone from the registry; nothing to retry against.
+        logger.warning(
+            "ACP ack reply for cid=%s: asker missing (%s). Closing.",
+            correlation_id, e,
         )
+        await ask_tracker.close(correlation_id, reason="ack_with_msg")
+        return
+    await ask_tracker.close(
+        correlation_id, reason="ack_with_msg" if error is None else "send_failed",
+    )
 
 
 @router.post("/ask", response_model=AskResponse)

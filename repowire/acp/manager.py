@@ -60,9 +60,37 @@ class AcpClientManager:
         *,
         timeout: float = 120.0,
     ) -> AcpPromptResult:
-        """Route one ask to its ACP-routed peer and return the assistant turn."""
+        """Route one ask to its ACP-routed peer and return the assistant turn.
+
+        On any ``AcpClientError`` (timeout, transport failure, protocol error)
+        the cached client is dropped so the *next* ask for this peer respawns
+        a fresh subprocess. Without this, one crash would poison the cache:
+        ``AcpClient.prompt`` already closes itself on failure, so a retained
+        cache entry would just be a corpse.
+        """
         client = await self.get_or_create(spec)
-        return await client.prompt(text, timeout=timeout)
+        try:
+            result = await client.prompt(text, timeout=timeout)
+        except AcpClientError:
+            await self._drop_if_crashed(spec.peer_id, client)
+            raise
+        # Belt-and-braces: if the client decided it's crashed after a "successful"
+        # call (shouldn't happen today, but cheap to guard), evict it too.
+        if client.crashed:
+            await self._drop_if_crashed(spec.peer_id, client)
+        return result
+
+    async def _drop_if_crashed(self, peer_id: str, client: AcpClient) -> None:
+        """Drop ``peer_id`` from cache iff the cached entry is ``client``.
+
+        Guards against races where two prompts targeted the same peer, one
+        crashed, the other already started a fresh respawn — we don't want to
+        evict the fresh one.
+        """
+        async with self._lock:
+            if self._clients.get(peer_id) is client:
+                self._clients.pop(peer_id, None)
+        await client.close()
 
     async def drop(self, peer_id: str) -> None:
         """Tear down the client for ``peer_id`` if any. Used on peer eviction."""
