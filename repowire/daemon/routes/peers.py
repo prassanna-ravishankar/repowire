@@ -371,7 +371,13 @@ async def get_peer_transcript(
     name: str,
     limit: int = Query(50, ge=1, le=500, description="Max turns to return"),
     before: str | None = Query(
-        None, description="ISO-8601 cursor; return turns strictly older than this."
+        None,
+        description=(
+            "Opaque base64 cursor returned as `next_before` from a prior "
+            "page; return turns strictly older than this position. The "
+            "cursor encodes (timestamp, session_id, line_offset) for "
+            "stable pagination across same-timestamp boundaries."
+        ),
     ),
     circle: str | None = Query(None),
     _: str | None = Depends(require_auth),
