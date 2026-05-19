@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from repowire.acp import deliver_ask_via_acp, maybe_decide_acp_route
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
@@ -156,15 +158,82 @@ async def notify_peer(
 ) -> NotifyResponse:
     """Send a notification to a peer (fire-and-forget).
 
-    Direct WS send. 503 if the recipient has no live connection so the
-    caller knows to retry later. Returns ``status=sent`` when the recipient
-    was ONLINE at send-time, ``status=queued`` when the recipient was BUSY
-    (ws-hook holds the paste until the agent's current turn ends).
+    Routing is transport-agnostic:
+
+      * ACP-marked target peer + ``experiments.acp_broker_client`` flag on →
+        delivered as a fire-and-forget ACP prompt against the peer's
+        subprocess. There is no notify primitive in ACP; we map notify onto
+        prompt and discard the assembled reply so the call stays
+        fire-and-forget. Returns ``status=sent`` once the prompt is dispatched.
+      * All other peers → direct WS send. 503 if the recipient has no live
+        connection so the caller knows to retry. Returns ``status=sent`` when
+        the recipient was ONLINE at send-time, ``status=queued`` when BUSY
+        (ws-hook holds the paste until the current turn ends).
+
+    The ACP-first ordering is critical: an ACP peer never has a live WS
+    connection, so the WS-presence check would 503 every brokered peer if it
+    ran before the ACP decision (repowire#206).
     """
     from repowire.daemon.websocket_transport import TransportError
 
     peer_registry = get_peer_registry()
+    state = get_app_state()
     await peer_registry.lazy_repair()
+
+    # ACP routing decision happens before any WS dispatch so that ACP-marked
+    # peers (which have no WS by design) don't 503 in the route layer.
+    # check_access runs the same lookup + circle-boundary enforcement that
+    # peer_registry.notify would apply on the WS path — we must not let the
+    # ACP branch silently bypass circle gates.
+    try:
+        _from_obj, target = await peer_registry.check_access(
+            from_peer=request.from_peer,
+            to_peer=request.to_peer,
+            bypass_circle=request.bypass_circle,
+            circle=request.circle,
+        )
+    except ValueError as e:
+        msg = str(e)
+        if msg.startswith("Unknown peer"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=msg,
+            ) from e
+        if msg.startswith("Ambiguous peer name"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=msg,
+            ) from e
+        # Circle boundary violation → 403. This is the established "no
+        # cross-circle traffic" semantic; previously the WS path bubbled
+        # the same ValueError up to the catch-all 404 branch below, which
+        # masked the real error. Keep this path consistent for ACP + WS.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=msg,
+        ) from e
+
+    cfg = state.config
+    acp_manager = getattr(state, "acp_manager", None)
+    flag = bool(cfg.experiments.acp_broker_client) if cfg.experiments else False
+    decision = maybe_decide_acp_route(target, flag_enabled=flag, manager=acp_manager)
+    if decision is not None:
+        assert acp_manager is not None  # narrowed by maybe_decide_acp_route
+        assert decision.spec is not None
+
+        async def _drop_result(_cid: str, _reply: str | None, _err: str | None) -> None:
+            # Notify is fire-and-forget: any reply or error from the ACP turn
+            # is logged inside deliver_ask_via_acp; nothing to deliver back.
+            return None
+
+        # Synthesize a correlation_id for log/cancel correlation only. No
+        # ask_tracker registration: notify has no thread to close.
+        cid = f"notif-{uuid.uuid4().hex[:8]}"
+        await deliver_ask_via_acp(
+            manager=acp_manager,
+            spec=decision.spec,
+            correlation_id=cid,
+            text=request.text,
+            on_complete=_drop_result,
+        )
+        return NotifyResponse(status="sent")
 
     try:
         delivery_status = await peer_registry.notify(

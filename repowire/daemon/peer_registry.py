@@ -842,6 +842,57 @@ class PeerRegistry:
                 f"cannot access {to_obj.display_name} ({to_obj.circle})"
             )
 
+    async def check_circle_access(
+        self,
+        from_obj: Peer | None,
+        to_obj: Peer,
+        *,
+        bypass_circle: bool = False,
+    ) -> None:
+        """Public wrapper for the circle-access check.
+
+        Use from non-WS dispatch paths (ACP broker routing) that need to
+        enforce the same access semantics as the WS path without going
+        through the full ``notify`` / ``deliver_ask`` pipeline.
+
+        Raises ``ValueError`` on circle boundary violation.
+        """
+        async with self._lock:
+            self._check_circle_access_by_peers(from_obj, to_obj, bypass_circle)
+
+    async def check_access(
+        self,
+        *,
+        from_peer: str,
+        to_peer: str,
+        bypass_circle: bool = False,
+        circle: str | None = None,
+    ) -> tuple[Peer | None, Peer]:
+        """Resolve sender/target and enforce circle access for a non-WS dispatch.
+
+        Mirrors the lookup + circle-check that ``query``/``notify``/
+        ``deliver_ask`` run inline before sending. Use from route handlers
+        that dispatch outside the WS path (e.g. ACP-broker routing) so the
+        same access semantics apply — circle boundaries, ambiguity 409s,
+        and unknown-peer 404s should not depend on the transport.
+
+        Returns ``(from_obj, target)``. ``from_obj`` is ``None`` if the
+        sender display-name is unknown (matches existing notify behavior:
+        unresolved senders log + proceed, they don't fail the call).
+
+        Raises:
+            ValueError: target unknown / circle boundary violation /
+                ambiguous display-name lookup.
+        """
+        async with self._lock:
+            target = self._lookup_peer_unlocked(to_peer, circle=circle)
+            if not target:
+                raise ValueError(f"Unknown peer: {to_peer}")
+            from_obj = self._resolve_from_peer_unlocked(
+                from_peer, target, bypass_circle,
+            )
+            return from_obj, target
+
     # ------------------------------------------------------------------
     # Message routing (query / notify / broadcast)
     # ------------------------------------------------------------------
@@ -1477,14 +1528,26 @@ class PeerRegistry:
 
         Catches ghost peers that registered via HTTP but whose ws-hook
         never connected (e.g. pane died before ws-hook could start).
+
+        Peers carrying ``metadata["acp"]`` are exempt while the
+        ``experiments.acp_broker_client`` flag is on: brokered ACP peers are
+        live as long as their subprocess is, not their WebSocket. Demoting
+        them solely because no WS exists would silently take them offline
+        between asks and eventually reap them (repowire#206).
         """
         if not self._transport:
             return 0
+        acp_flag = (
+            bool(self._config.experiments.acp_broker_client)
+            if self._config.experiments
+            else False
+        )
         async with self._lock:
             ghosts = [
                 p for p in self._peers.values()
                 if p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
                 and not self._transport.is_connected(p.peer_id)
+                and not (acp_flag and p.metadata and p.metadata.get("acp"))
             ]
         count = 0
         for peer in ghosts:

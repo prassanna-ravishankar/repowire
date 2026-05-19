@@ -48,6 +48,28 @@ class AcpRouteDecision:
     reason: str = ""
 
 
+def maybe_decide_acp_route(
+    peer: Peer,
+    *,
+    flag_enabled: bool,
+    manager: AcpClientManager | None,
+) -> AcpRouteDecision | None:
+    """Return a positive route decision iff ACP routing should be used.
+
+    Thin convenience wrapper for HTTP route handlers: collapses the manager
+    presence check and the broker decision into a single "use ACP, yes/no"
+    answer. Returns ``None`` when the caller should fall through to the
+    WebSocket dispatch path; returns the decision (with ``spec`` populated)
+    when ACP routing applies.
+    """
+    if manager is None:
+        return None
+    decision = decide_acp_route(peer, flag_enabled=flag_enabled)
+    if decision.route and decision.spec is not None:
+        return decision
+    return None
+
+
 def decide_acp_route(peer: Peer, *, flag_enabled: bool) -> AcpRouteDecision:
     """Inspect a peer + the experiments flag to decide on ACP routing.
 

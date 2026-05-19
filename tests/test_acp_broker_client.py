@@ -296,6 +296,366 @@ async def test_ask_falls_back_to_ws_when_flag_off(
         cleanup_deps()
 
 
+# ----- public route-layer regression tests (repowire#206) -----
+
+
+class _StubAcpManager:
+    """In-process stand-in for ``AcpClientManager`` for route-layer tests.
+
+    Records every prompt routed through it and returns canned results — no
+    subprocess, no agent-client-protocol I/O. The route-layer tests only
+    care that the /ask and /notify handlers reach an ACP manager at all;
+    real subprocess plumbing is exercised by the existing end-to-end test.
+    """
+
+    def __init__(self) -> None:
+        self.prompts: list[tuple[str, str]] = []  # (peer_id, text)
+        self._clients: dict[str, object] = {}
+
+    async def prompt(self, spec, text, timeout=180.0):  # noqa: ARG002
+        from repowire.acp.client import AcpPromptResult
+        self.prompts.append((spec.peer_id, text))
+        return AcpPromptResult(stop_reason="end_turn", text=f"[stub] {text}")
+
+    async def get_or_create(self, spec):  # noqa: ARG002
+        return None  # unused in tests
+
+    async def close(self) -> None:
+        return None
+
+
+def _make_public_app(tmp_path: Path, *, flag: bool, skip_lazy_repair: bool = False):
+    """Mirror prod wiring: no peer-status fakery, no router-method mocks.
+
+    This is the minimum set of components needed for /peers + /ask + /notify
+    to behave like the real daemon. Notably:
+
+      * peers register via real ``POST /peers`` (status starts at ONLINE),
+      * no ``update_peer_status`` calls force ACP peers to look connected,
+      * the WS transport is real but has zero connections (which is exactly
+        the prod scenario for ACP peers),
+      * ``lazy_repair`` is NOT short-circuited by default — the route handlers
+        invoke it on entry just like prod. The audit on repowire#206 found
+        that the original test suite skipped lazy_repair entirely, which
+        hid the fact that ACP peers were being demoted/reaped for missing
+        their (intentionally absent) WebSocket. Pass
+        ``skip_lazy_repair=True`` only when you specifically want the
+        prod-skip behavior.
+
+    The asker-side reply notification will fail with TransportError (no WS
+    on the asker), which is the right behavior — these tests assert on the
+    /ask + /notify response only, not on the downstream ack delivery.
+    """
+    from repowire.daemon.routes import messages as messages_routes
+
+    cfg = Config()
+    cfg.experiments.acp_broker_client = flag
+
+    transport = WebSocketTransport()
+    qt = QueryTracker()
+    at = AskTracker(ttl_hours=24.0)
+    router = MessageRouter(transport=transport, query_tracker=qt)
+    registry = PeerRegistry(
+        config=cfg,
+        message_router=router,
+        query_tracker=qt,
+        transport=transport,
+        persistence_path=tmp_path / "sessions.json",
+    )
+    registry._events_path = tmp_path / "events.json"
+    registry._events.clear()
+    if skip_lazy_repair:
+        registry._last_repair = time.monotonic() + 3600
+
+    manager = _StubAcpManager()
+    state = SimpleNamespace(
+        config=cfg,
+        transport=transport,
+        query_tracker=qt,
+        ask_tracker=at,
+        message_router=router,
+        peer_registry=registry,
+        relay_mode=False,
+        acp_manager=manager,
+    )
+    init_deps(cfg, registry, state)
+
+    app = FastAPI()
+    app.include_router(peers.router)
+    app.include_router(asks.router)
+    app.include_router(messages_routes.router)
+    return app, registry, at, manager
+
+
+@pytest.mark.asyncio
+async def test_public_ask_route_does_not_503_for_acp_peer(
+    tmp_path: Path, acp_peer_config: AcpPeerConfig,
+) -> None:
+    """repowire#206: ``POST /ask`` against an ACP peer must not 503.
+
+    Mirrors the bug repro from the issue exactly: register an ACP peer via
+    HTTP, register an asker via HTTP, do not force any peer ONLINE, then
+    POST /ask. The route-layer ACP decision MUST fire before any
+    WS-presence check, otherwise the brokered peer 503s the public surface
+    (and MCP ``ask()`` along with it).
+    """
+    app, _registry, _at, manager = _make_public_app(tmp_path, flag=True)
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+        ) as http:
+            asker = await _register_plain_peer(http, name="asker")
+            answerer = await _register_acp_peer(
+                http, name="answerer", acp_config=acp_peer_config,
+            )
+
+            r = await http.post("/ask", json={
+                "from_peer": asker,
+                "to_peer": answerer,
+                "text": "ping",
+            })
+            assert r.status_code == 200, (
+                f"/ask 503'd for ACP peer (regression of repowire#206): {r.text}"
+            )
+            assert r.json()["correlation_id"]
+    finally:
+        # Cancel any background ACP tasks before closing the manager so the
+        # _run() coroutine doesn't see a closed manager mid-flight.
+        await asyncio.sleep(0)
+        await manager.close()
+        cleanup_deps()
+
+
+@pytest.mark.asyncio
+async def test_public_notify_route_does_not_503_for_acp_peer(
+    tmp_path: Path, acp_peer_config: AcpPeerConfig,
+) -> None:
+    """repowire#206 sibling: ``POST /notify`` toward an ACP peer must not 503.
+
+    Same route-layer issue as /ask — the WS-presence check inside
+    ``peer_registry.notify`` fires before any ACP decision unless the route
+    handler routes brokered targets to the ACP path explicitly. Asserts the
+    HTTP surface returns 200 with ``status=sent`` (fire-and-forget mapping
+    onto an ACP prompt).
+    """
+    app, _registry, _at, manager = _make_public_app(tmp_path, flag=True)
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+        ) as http:
+            asker = await _register_plain_peer(http, name="asker")
+            answerer = await _register_acp_peer(
+                http, name="answerer", acp_config=acp_peer_config,
+            )
+
+            r = await http.post("/notify", json={
+                "from_peer": asker,
+                "to_peer": answerer,
+                "text": "fyi",
+            })
+            assert r.status_code == 200, (
+                f"/notify 503'd for ACP peer (regression of repowire#206): {r.text}"
+            )
+            assert r.json()["status"] == "sent"
+    finally:
+        await asyncio.sleep(0)
+        await manager.close()
+        cleanup_deps()
+
+
+@pytest.mark.asyncio
+async def test_lazy_repair_does_not_demote_acp_peers_with_flag_on(
+    tmp_path: Path, acp_peer_config: AcpPeerConfig,
+) -> None:
+    """repowire#206 audit follow-up: lazy_repair must not demote ACP peers.
+
+    ``_demote_disconnected_peers`` marks any ONLINE peer without a WS
+    connection as OFFLINE. ACP-brokered peers have no WS by design, so the
+    original sweep silently took them offline ~30s after registration —
+    and the reaper then evicted them entirely after the TTL. The fix
+    exempts peers carrying ``metadata.acp`` while the
+    ``experiments.acp_broker_client`` flag is on.
+    """
+    app, registry, _at, manager = _make_public_app(
+        tmp_path, flag=True, skip_lazy_repair=True,
+    )
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+        ) as http:
+            answerer = await _register_acp_peer(
+                http, name="answerer", acp_config=acp_peer_config,
+            )
+            peer = await registry.get_peer(answerer)
+            assert peer is not None
+            assert peer.status == PeerStatus.ONLINE
+
+            demoted = await registry._demote_disconnected_peers()
+            assert demoted == 0, (
+                "ACP peer was demoted despite metadata.acp + flag on"
+            )
+            peer = await registry.get_peer(answerer)
+            assert peer is not None and peer.status == PeerStatus.ONLINE
+    finally:
+        await manager.close()
+        cleanup_deps()
+
+
+@pytest.mark.asyncio
+async def test_lazy_repair_still_demotes_acp_peers_when_flag_off(
+    tmp_path: Path, acp_peer_config: AcpPeerConfig,
+) -> None:
+    """Symmetric guard: the exemption is gated on the experiments flag.
+
+    With the flag off, ACP routing isn't engaged, so metadata.acp is a dead
+    annotation; brokered peers behave like any other paneless HTTP-registered
+    peer and the ghost sweep should still demote them. Otherwise turning the
+    flag off wouldn't be a clean way to disable the feature.
+    """
+    app, registry, _at, manager = _make_public_app(
+        tmp_path, flag=False, skip_lazy_repair=True,
+    )
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+        ) as http:
+            answerer = await _register_acp_peer(
+                http, name="answerer", acp_config=acp_peer_config,
+            )
+            demoted = await registry._demote_disconnected_peers()
+            assert demoted == 1, (
+                "flag-off ACP peer was unexpectedly exempted from demotion"
+            )
+            peer = await registry.get_peer(answerer)
+            assert peer is not None and peer.status == PeerStatus.OFFLINE
+    finally:
+        await manager.close()
+        cleanup_deps()
+
+
+@pytest.mark.asyncio
+async def test_acp_routing_enforces_circle_boundary(
+    tmp_path: Path, acp_peer_config: AcpPeerConfig,
+) -> None:
+    """Review BLOCKING: ACP branch must not bypass circle enforcement.
+
+    Pre-fix the ACP branch in /ask and /notify resolved the target peer
+    only — the sender resolution + circle gate that the WS path runs
+    inside ``peer_registry.notify`` / ``deliver_ask`` were silently
+    skipped. A peer in circle A could ask/notify an ACP peer in circle B
+    even without ``bypass_circle=True``. This test pins all three legs:
+
+      * cross-circle without bypass → 403 on both /ask and /notify,
+      * cross-circle WITH bypass → 200,
+      * same-circle without bypass → 200.
+    """
+    app, _registry, _at, _manager = _make_public_app(
+        tmp_path, flag=True, skip_lazy_repair=True,
+    )
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+        ) as http:
+            # Asker in circle "alpha", ACP target in circle "beta".
+            asker_resp = await http.post("/peers", json={
+                "name": "asker", "path": "/tmp/asker", "circle": "alpha",
+                "backend": AgentType.CLAUDE_CODE.value, "pane_id": "%fake-asker",
+            })
+            assert asker_resp.status_code == 200
+            asker = asker_resp.json()["display_name"]
+
+            target_resp = await http.post("/peers", json={
+                "name": "answerer", "path": "/tmp/answerer", "circle": "beta",
+                "backend": AgentType.CODEX.value, "pane_id": "%fake-answerer",
+                "metadata": {"acp": acp_peer_config.model_dump()},
+            })
+            assert target_resp.status_code == 200
+            answerer = target_resp.json()["display_name"]
+
+            # 1: cross-circle without bypass → 403 on /ask
+            r = await http.post("/ask", json={
+                "from_peer": asker, "to_peer": answerer,
+                "circle": "beta", "text": "x",
+            })
+            assert r.status_code == 403, r.text
+            assert "Circle boundary" in r.text
+
+            # 2: cross-circle without bypass → 403 on /notify
+            r = await http.post("/notify", json={
+                "from_peer": asker, "to_peer": answerer,
+                "circle": "beta", "text": "x",
+            })
+            assert r.status_code == 403, r.text
+            assert "Circle boundary" in r.text
+
+            # 3: cross-circle WITH bypass → 200 (both endpoints)
+            r = await http.post("/ask", json={
+                "from_peer": asker, "to_peer": answerer,
+                "circle": "beta", "text": "x", "bypass_circle": True,
+            })
+            assert r.status_code == 200, r.text
+            r = await http.post("/notify", json={
+                "from_peer": asker, "to_peer": answerer,
+                "circle": "beta", "text": "x", "bypass_circle": True,
+            })
+            assert r.status_code == 200, r.text
+
+            # 4: same-circle without bypass → 200. Register a same-circle
+            # ACP peer and confirm the gate isn't over-applied.
+            same_circle_resp = await http.post("/peers", json={
+                "name": "peer-in-alpha", "path": "/tmp/answerer2",
+                "circle": "alpha", "backend": AgentType.CODEX.value,
+                "pane_id": "%fake-answerer2",
+                "metadata": {"acp": acp_peer_config.model_dump()},
+            })
+            assert same_circle_resp.status_code == 200
+            same = same_circle_resp.json()["display_name"]
+            r = await http.post("/ask", json={
+                "from_peer": asker, "to_peer": same,
+                "circle": "alpha", "text": "x",
+            })
+            assert r.status_code == 200, r.text
+            r = await http.post("/notify", json={
+                "from_peer": asker, "to_peer": same,
+                "circle": "alpha", "text": "x",
+            })
+            assert r.status_code == 200, r.text
+    finally:
+        cleanup_deps()
+
+
+@pytest.mark.asyncio
+async def test_public_notify_flag_off_still_503s_acp_peer(
+    tmp_path: Path, acp_peer_config: AcpPeerConfig,
+) -> None:
+    """Guard: with the experiments flag off, ACP peers fall through to WS.
+
+    Locks in the contract that ACP routing is strictly opt-in. Without the
+    flag, brokered peers behave like any other peer with no live WS — the
+    route 503s, the manager stays empty.
+    """
+    app, _registry, _at, manager = _make_public_app(tmp_path, flag=False)
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+        ) as http:
+            asker = await _register_plain_peer(http, name="asker")
+            answerer = await _register_acp_peer(
+                http, name="answerer", acp_config=acp_peer_config,
+            )
+
+            r = await http.post("/notify", json={
+                "from_peer": asker,
+                "to_peer": answerer,
+                "text": "fyi",
+            })
+            assert r.status_code == 503, r.text
+            assert manager._clients == {}  # type: ignore[attr-defined]
+    finally:
+        await manager.close()
+        cleanup_deps()
+
+
 # ----- helpers -----
 
 

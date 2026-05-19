@@ -30,10 +30,8 @@ from pydantic import BaseModel, Field
 
 from repowire.acp import (
     AcpClientManager,
-    AcpRouteDecision,
-    decide_acp_route,
+    maybe_decide_acp_route,
 )
-from repowire.config.models import Config
 from repowire.daemon.ask_tracker import AskTracker, QuiescedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
@@ -122,25 +120,6 @@ async def _resolve_sender_for_target(from_peer: str, target: Peer) -> Peer | Non
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
-
-
-def _maybe_decide_acp_route(
-    peer: Peer,
-    config: Config,
-    manager: AcpClientManager | None,
-) -> AcpRouteDecision | None:
-    """Return a positive route decision iff ACP routing applies. Else ``None``.
-
-    Keeps the route handler readable: the only fact the caller needs is "use
-    ACP for this ask, yes/no". Reasons / diagnostics are logged inside.
-    """
-    if manager is None:
-        return None
-    flag = bool(config.experiments.acp_broker_client) if config.experiments else False
-    decision = decide_acp_route(peer, flag_enabled=flag)
-    if decision.route and decision.spec is not None:
-        return decision
-    return None
 
 
 async def _acp_complete(
@@ -255,6 +234,19 @@ async def open_ask(
     from_peer_id = from_peer_obj.peer_id if from_peer_obj else request.from_peer
     from_peer_name = from_peer_obj.display_name if from_peer_obj else request.from_peer
 
+    # Enforce circle access BEFORE registering the ask. On the WS path
+    # ``deliver_ask`` runs the same check inside ``_resolve_from_peer_unlocked``
+    # and a violation rolls the tracker registration back; the ACP branch
+    # never reaches ``deliver_ask``, so we front-load the check via the
+    # public ``check_circle_access`` helper so both transports apply the
+    # same gate.
+    try:
+        await peer_registry.check_circle_access(
+            from_peer_obj, peer, bypass_circle=request.bypass_circle,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+
     try:
         cid = await ask_tracker.register(
             from_peer_id=from_peer_id,
@@ -281,11 +273,12 @@ async def open_ask(
     # turn settles.
     cfg = state.config
     acp_manager = getattr(state, "acp_manager", None)
-    decision = _maybe_decide_acp_route(peer, cfg, acp_manager)
+    flag = bool(cfg.experiments.acp_broker_client) if cfg.experiments else False
+    decision = maybe_decide_acp_route(peer, flag_enabled=flag, manager=acp_manager)
     if decision is not None:
         from repowire.acp import deliver_ask_via_acp
 
-        assert acp_manager is not None  # narrowed by _maybe_decide_acp_route
+        assert acp_manager is not None  # narrowed by maybe_decide_acp_route
         assert decision.spec is not None
         spec = decision.spec
         manager: AcpClientManager = acp_manager

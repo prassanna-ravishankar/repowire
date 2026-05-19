@@ -17,6 +17,7 @@ from repowire.acp.broker import (
     AcpRouteDecision,
     decide_acp_route,
     deliver_ask_via_acp,
+    maybe_decide_acp_route,
 )
 from repowire.acp.client import AcpClient, AcpClientError, AcpPromptResult
 from repowire.acp.manager import AcpClientManager, AcpPeerSpec
@@ -33,4 +34,5 @@ __all__ = [
     "AcpRouteDecision",
     "decide_acp_route",
     "deliver_ask_via_acp",
+    "maybe_decide_acp_route",
 ]
