@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from repowire.acp import deliver_ask_via_acp, maybe_decide_acp_route
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.routes._shared import OkResponse
+from repowire.daemon.transport_router import (
+    NotifyEnvelope,
+    transport_router_from_state,
+)
 from repowire.protocol.peers import PeerStatus, TurnState
 
 router = APIRouter(tags=["messages"])
@@ -210,38 +212,22 @@ async def notify_peer(
             status_code=status.HTTP_403_FORBIDDEN, detail=msg,
         ) from e
 
-    cfg = state.config
-    acp_manager = getattr(state, "acp_manager", None)
-    flag = bool(cfg.experiments.acp_broker_client) if cfg.experiments else False
-    decision = maybe_decide_acp_route(target, flag_enabled=flag, manager=acp_manager)
-    if decision is not None:
-        assert acp_manager is not None  # narrowed by maybe_decide_acp_route
-        assert decision.spec is not None
-
-        async def _drop_result(_cid: str, _reply: str | None, _err: str | None) -> None:
-            # Notify is fire-and-forget: any reply or error from the ACP turn
-            # is logged inside deliver_ask_via_acp; nothing to deliver back.
-            return None
-
-        # Synthesize a correlation_id for log/cancel correlation only. No
-        # ask_tracker registration: notify has no thread to close.
-        cid = f"notif-{uuid.uuid4().hex[:8]}"
-        await deliver_ask_via_acp(
-            manager=acp_manager,
-            spec=decision.spec,
-            correlation_id=cid,
-            text=request.text,
-            on_complete=_drop_result,
-        )
-        return NotifyResponse(status="sent")
-
     try:
-        delivery_status = await peer_registry.notify(
-            from_peer=request.from_peer,
-            to_peer=request.to_peer,
-            text=request.text,
-            bypass_circle=request.bypass_circle,
-            circle=request.circle,
+        transport_router = transport_router_from_state(
+            config=state.config,
+            registry=peer_registry,
+            state=state,
+        )
+        from_peer_id = _from_obj.peer_id if _from_obj else None
+        from_peer_name = _from_obj.display_name if _from_obj else request.from_peer
+        delivery_status = await transport_router.send_notify(
+            NotifyEnvelope(
+                from_peer_id=from_peer_id,
+                from_peer_name=from_peer_name,
+                target=target,
+                text=request.text,
+                intended_recipient_name=request.to_peer,
+            )
         )
         return NotifyResponse(status=delivery_status)
     except ValueError as e:
