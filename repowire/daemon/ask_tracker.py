@@ -54,6 +54,13 @@ class Ask:
     """An open ask awaiting ack/reply.
 
     close_reason: 'ack' | 'ack_with_msg' | 'reply_to' | 'evicted' | 'send_failed'.
+
+    ``pending_reply`` is the durable home for a completed reply whose first
+    delivery attempt failed because the asker had no live transport. The
+    ACP-routed `/ask` path uses this to retain a successful ACP answer across
+    asker reconnects — the WS path doesn't need it because /ack's MCP caller
+    handles retry on 503. Cleared on successful redelivery (which also closes
+    the ask).
     """
 
     correlation_id: str
@@ -66,6 +73,7 @@ class Ask:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     closed: bool = False
     close_reason: str | None = None
+    pending_reply: str | None = None
 
 
 class AskTracker:
@@ -172,6 +180,38 @@ class AskTracker:
     async def get(self, correlation_id: str) -> Ask | None:
         """Look up an ask by corr_id."""
         return self._asks.get(correlation_id)
+
+    async def set_pending_reply(self, correlation_id: str, framed_reply: str) -> bool:
+        """Stash a completed reply on an open ask for later redelivery.
+
+        Used by the ACP-routed `/ask` path when notify fails with
+        TransportError: the assembled ACP answer is real and must not be
+        dropped just because the asker is currently offline. Returns True
+        if the ask exists and was still open, False otherwise.
+        """
+        async with self._lock:
+            ask = self._asks.get(correlation_id)
+            if not ask or ask.closed:
+                return False
+            ask.pending_reply = framed_reply
+            logger.debug("Stashed pending reply on ask %s", correlation_id)
+            return True
+
+    async def take_pending_replies_for_asker(self, peer_id: str) -> list[Ask]:
+        """Snapshot open asks targeting this asker that have a stashed reply.
+
+        Caller (peer_registry reconnect path) attempts redelivery for each;
+        on success it closes the ask via ``close`` and the reply will not
+        be re-driven. We snapshot rather than drain so a failed redelivery
+        leaves the reply in place for the next reconnect.
+        """
+        async with self._lock:
+            return [
+                ask for ask in self._asks.values()
+                if ask.from_peer_id == peer_id
+                and not ask.closed
+                and ask.pending_reply is not None
+            ]
 
     async def pending_for_peer(
         self,

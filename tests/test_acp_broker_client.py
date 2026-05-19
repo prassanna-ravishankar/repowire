@@ -460,15 +460,84 @@ async def test_acp_complete_keeps_ask_open_when_asker_offline(tmp_path: Path) ->
         peer_registry=registry,
     )
 
-    # Ask MUST still be open after a TransportError so the reply can retry.
+    # Ask MUST still be open after a TransportError so the reply can retry,
+    # AND the assembled reply must be stashed on the ask for redelivery.
     ask = await at.get(cid)
     assert ask is not None
     assert ask.closed is False, "ask was closed despite asker being offline"
+    assert ask.pending_reply is not None
+    assert "here is your answer" in ask.pending_reply
+    assert ask.pending_reply.startswith(f"[ack #{cid} from @{answerer.display_name}]")
+
+
+@pytest.mark.asyncio
+async def test_acp_complete_drops_error_frame_when_asker_offline(tmp_path: Path) -> None:
+    """Error-frame replies are not worth redelivering — close on TransportError.
+
+    The framed ``ACP error: ...`` body is ephemeral diagnostic text; the asker
+    can't act on a stale failure they didn't observe in real time. Surfacing
+    it on reconnect would just confuse the agent's later context. Codex's
+    review correctly flagged the success-vs-error asymmetry as worth making
+    explicit.
+    """
+    from repowire.daemon.routes.asks import _acp_complete
+    from repowire.daemon.websocket_transport import TransportError
+
+    cfg = Config()
+    transport = WebSocketTransport()
+    qt = QueryTracker()
+    at = AskTracker(ttl_hours=24.0)
+    router = MessageRouter(transport=transport, query_tracker=qt)
+    registry = PeerRegistry(
+        config=cfg, message_router=router, query_tracker=qt,
+        transport=transport, persistence_path=tmp_path / "sessions.json",
+    )
+    registry._events_path = tmp_path / "events.json"
+    registry._last_repair = time.monotonic() + 3600
+
+    asker = Peer(
+        peer_id="asker-id", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%asker", circle="default",
+        status=PeerStatus.ONLINE,
+    )
+    answerer = Peer(
+        peer_id="answerer-id", display_name="answerer", path=str(tmp_path),
+        machine="localhost", pane_id="%answerer", circle="default",
+        status=PeerStatus.ONLINE,
+    )
+    await registry.register_peer(asker)
+    await registry.register_peer(answerer)
+
+    async def _boom(**_):
+        raise TransportError("no live ws")
+
+    router.send_notification = AsyncMock(side_effect=_boom)
+
+    cid = await at.register(
+        from_peer_id=asker.peer_id, from_peer_name=asker.display_name,
+        to_peer_id=answerer.peer_id, to_peer_name=answerer.display_name,
+        text="hi",
+    )
+    await _acp_complete(
+        correlation_id=cid, reply=None, error="subprocess died",
+        ask_tracker=at, peer_registry=registry,
+    )
+    ask = await at.get(cid)
+    assert ask is not None
+    assert ask.closed is True
+    assert ask.close_reason == "send_failed"
+    assert ask.pending_reply is None
 
 
 @pytest.mark.asyncio
 async def test_acp_complete_closes_ask_on_success(tmp_path: Path) -> None:
-    """Happy path: successful notify closes the ask exactly once."""
+    """Happy path: successful notify closes the ask with ack_with_msg.
+
+    The earlier revision of this test did NOT register the asker/answerer in
+    the registry, so ``peer_registry.notify`` actually hit the ValueError
+    branch and closed the ask as 'unknown peer' — not as success. Codex's
+    re-review flagged that the test name was misleading because of this.
+    """
     from repowire.daemon.routes.asks import _acp_complete
 
     cfg = Config()
@@ -477,19 +546,29 @@ async def test_acp_complete_closes_ask_on_success(tmp_path: Path) -> None:
     at = AskTracker(ttl_hours=24.0)
     router = MessageRouter(transport=transport, query_tracker=qt)
     registry = PeerRegistry(
-        config=cfg,
-        message_router=router,
-        query_tracker=qt,
-        transport=transport,
-        persistence_path=tmp_path / "sessions.json",
+        config=cfg, message_router=router, query_tracker=qt,
+        transport=transport, persistence_path=tmp_path / "sessions.json",
     )
     registry._events_path = tmp_path / "events.json"
     registry._last_repair = time.monotonic() + 3600
     router.send_notification = AsyncMock()
 
+    asker = Peer(
+        peer_id="asker-id", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%asker", circle="default",
+        status=PeerStatus.ONLINE,
+    )
+    answerer = Peer(
+        peer_id="answerer-id", display_name="answerer", path=str(tmp_path),
+        machine="localhost", pane_id="%answerer", circle="default",
+        status=PeerStatus.ONLINE,
+    )
+    await registry.register_peer(asker)
+    await registry.register_peer(answerer)
+
     cid = await at.register(
-        from_peer_id="asker-id", from_peer_name="asker",
-        to_peer_id="answerer-id", to_peer_name="answerer",
+        from_peer_id=asker.peer_id, from_peer_name=asker.display_name,
+        to_peer_id=answerer.peer_id, to_peer_name=answerer.display_name,
         text="hi",
     )
     await _acp_complete(
@@ -497,4 +576,155 @@ async def test_acp_complete_closes_ask_on_success(tmp_path: Path) -> None:
         ask_tracker=at, peer_registry=registry,
     )
     ask = await at.get(cid)
-    assert ask is not None and ask.closed is True
+    assert ask is not None
+    assert ask.closed is True
+    assert ask.close_reason == "ack_with_msg"
+    # send_notification was actually invoked with our framed reply
+    router.send_notification.assert_called_once()
+    kwargs = router.send_notification.call_args.kwargs
+    assert "answer" in kwargs["text"]
+    assert kwargs["text"].startswith(f"[ack #{cid}")
+
+
+@pytest.mark.asyncio
+async def test_pending_reply_redelivered_on_asker_reconnect(tmp_path: Path) -> None:
+    """End-to-end of codex BLOCKING #1's durable fix.
+
+    1. ACP-routed ask completes successfully, but asker is offline
+       (TransportError on notify) → reply stashed on the ask.
+    2. Asker transitions OFFLINE → ONLINE via update_peer_status.
+    3. peer_registry kicks off _redeliver_pending_replies; on this second
+       notify attempt the transport succeeds → ask closed, stash cleared.
+
+    This is the contract codex held us to: the answer is durable across the
+    reconnect, not silently lost.
+    """
+    cfg = Config()
+    cfg.experiments.acp_broker_client = True
+    transport = WebSocketTransport()
+    qt = QueryTracker()
+    at = AskTracker(ttl_hours=24.0)
+    router = MessageRouter(transport=transport, query_tracker=qt)
+    registry = PeerRegistry(
+        config=cfg, message_router=router, query_tracker=qt,
+        transport=transport, persistence_path=tmp_path / "sessions.json",
+        ask_tracker=at,
+    )
+    registry._events_path = tmp_path / "events.json"
+    registry._last_repair = time.monotonic() + 3600
+
+    asker = Peer(
+        peer_id="asker-id", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%asker", circle="default",
+    )
+    answerer = Peer(
+        peer_id="answerer-id", display_name="answerer", path=str(tmp_path),
+        machine="localhost", pane_id="%answerer", circle="default",
+    )
+    await registry.register_peer(asker)
+    await registry.register_peer(answerer)
+    # register_peer always lands at ONLINE — drop the asker to OFFLINE so the
+    # next transition is a real OFFLINE → ONLINE bump.
+    await registry.update_peer_status(asker.peer_id, PeerStatus.OFFLINE)
+
+    from repowire.daemon.routes.asks import _acp_complete
+    from repowire.daemon.websocket_transport import TransportError
+
+    delivery_attempts: list[dict] = []
+    fail_first = {"count": 0}
+
+    async def _maybe_fail(**kwargs):
+        delivery_attempts.append(kwargs)
+        fail_first["count"] += 1
+        if fail_first["count"] == 1:
+            raise TransportError("asker not connected yet")
+
+    router.send_notification = AsyncMock(side_effect=_maybe_fail)
+
+    cid = await at.register(
+        from_peer_id=asker.peer_id, from_peer_name=asker.display_name,
+        to_peer_id=answerer.peer_id, to_peer_name=answerer.display_name,
+        text="what's the time",
+    )
+
+    # Step 1: ACP completes; first notify attempt fails → stash
+    await _acp_complete(
+        correlation_id=cid, reply="42 minutes past noon", error=None,
+        ask_tracker=at, peer_registry=registry,
+    )
+    ask = await at.get(cid)
+    assert ask is not None and not ask.closed
+    assert ask.pending_reply is not None
+
+    # Step 2: asker comes back online. update_peer_status schedules a redeliver
+    # background task; await it directly so we don't rely on event-loop timing.
+    await registry.update_peer_status(asker.peer_id, PeerStatus.ONLINE)
+    # Give the spawned redeliver task one tick to run.
+    await asyncio.sleep(0.05)
+
+    # Step 3: second notify attempt succeeded → ask closed, stash drained
+    ask = await at.get(cid)
+    assert ask is not None
+    assert ask.closed is True, "ask should be closed after successful redelivery"
+    assert ask.close_reason == "ack_with_msg"
+    assert len(delivery_attempts) == 2, f"expected 2 notify attempts, got {len(delivery_attempts)}"
+    assert "42 minutes past noon" in delivery_attempts[1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_pending_reply_kept_when_redelivery_still_fails(tmp_path: Path) -> None:
+    """Redelivery is best-effort: if it still fails, the stash stays put.
+
+    Future reconnects of the same asker will trigger another redelivery
+    attempt. We don't drop the reply just because one attempt was wasted.
+    """
+    cfg = Config()
+    transport = WebSocketTransport()
+    qt = QueryTracker()
+    at = AskTracker(ttl_hours=24.0)
+    router = MessageRouter(transport=transport, query_tracker=qt)
+    registry = PeerRegistry(
+        config=cfg, message_router=router, query_tracker=qt,
+        transport=transport, persistence_path=tmp_path / "sessions.json",
+        ask_tracker=at,
+    )
+    registry._events_path = tmp_path / "events.json"
+    registry._last_repair = time.monotonic() + 3600
+
+    asker = Peer(
+        peer_id="asker-id", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%asker", circle="default",
+    )
+    answerer = Peer(
+        peer_id="answerer-id", display_name="answerer", path=str(tmp_path),
+        machine="localhost", pane_id="%answerer", circle="default",
+    )
+    await registry.register_peer(asker)
+    await registry.register_peer(answerer)
+    # register_peer always lands at ONLINE — drop the asker to OFFLINE so the
+    # next transition is a real OFFLINE → ONLINE bump.
+    await registry.update_peer_status(asker.peer_id, PeerStatus.OFFLINE)
+
+    from repowire.daemon.routes.asks import _acp_complete
+    from repowire.daemon.websocket_transport import TransportError
+
+    async def _always_boom(**_):
+        raise TransportError("still offline")
+    router.send_notification = AsyncMock(side_effect=_always_boom)
+
+    cid = await at.register(
+        from_peer_id=asker.peer_id, from_peer_name=asker.display_name,
+        to_peer_id=answerer.peer_id, to_peer_name=answerer.display_name,
+        text="ping",
+    )
+    await _acp_complete(
+        correlation_id=cid, reply="pong", error=None,
+        ask_tracker=at, peer_registry=registry,
+    )
+    await registry.update_peer_status(asker.peer_id, PeerStatus.ONLINE)
+    await asyncio.sleep(0.05)
+
+    ask = await at.get(cid)
+    assert ask is not None
+    assert ask.closed is False, "ask kept open after failed redelivery"
+    assert ask.pending_reply is not None, "stash retained for next reconnect"

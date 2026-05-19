@@ -153,32 +153,40 @@ async def _acp_complete(
 ) -> None:
     """Deliver an ACP-routed ask result back to the asker.
 
-    Mirrors the delivery semantics of the synchronous ``/ack`` handler exactly:
+    Delivery semantics:
 
-      * Successful ACP turn + successful notify        → close (ack_with_msg)
-      * ACP error (subprocess crash, timeout, …)       → close (send_failed)
-                                                          with an error frame so
-                                                          the asker is not
-                                                          silently dropped
-      * ValueError on notify (asker evicted from
-        registry)                                       → close; nothing to retry
-                                                          against
-      * TransportError on notify (asker has no live
-        WS)                                             → LEAVE ASK OPEN. The
-                                                          asker will see the
-                                                          ack via the Stop-hook
-                                                          reminder loop once it
-                                                          reconnects, exactly
-                                                          like /ack does today.
+      * Successful ACP turn + successful notify   → close (ack_with_msg)
+      * ACP error (crash/timeout/…)               → close (send_failed) with
+                                                     an error frame so the
+                                                     asker is not silently
+                                                     dropped
+      * ValueError on notify (asker evicted)      → close; nothing to retry
+      * TransportError on notify, **success path**→ stash the assembled reply
+                                                     on the ask + leave it
+                                                     open. ``PeerRegistry``
+                                                     drains stashed replies
+                                                     when the asker comes back
+                                                     online (see
+                                                     ``_redeliver_pending_replies``).
+      * TransportError on notify, **error path**  → close (send_failed). The
+                                                     ACP error frame is
+                                                     ephemeral diagnostic
+                                                     text, not a real reply;
+                                                     redelivery would just
+                                                     spam the asker with a
+                                                     stale failure they can't
+                                                     act on.
 
-    The asymmetry between TransportError (retain) and the other failure modes
-    matches the existing fail-loud / no-queue contract: don't silently drop a
-    successful reply just because the asker is currently offline.
+    The stash-and-redeliver path is the ACP analogue of /ack's 503 retry
+    contract: /ack returns 503 so the MCP caller retries; ACP has no caller
+    to bounce the error to (the originating turn is gone), so the broker
+    holds the reply until the asker is reachable.
     """
     ask = await ask_tracker.get(correlation_id)
     if ask is None or ask.closed:
         return
-    if error is not None:
+    is_error = error is not None
+    if is_error:
         framed = f"[ack #{correlation_id} from @{ask.to_peer_name}] ACP error: {error}"
     else:
         body = reply or ""
@@ -191,15 +199,21 @@ async def _acp_complete(
             bypass_circle=True,
         )
     except TransportError as e:
-        # Asker has no live WS. Leave the ask open so the reply can be
-        # redelivered on reconnect — matches /ack's fail-loud contract.
+        if is_error:
+            logger.warning(
+                "ACP ack error-frame for cid=%s undeliverable (%s); closing.",
+                correlation_id, e,
+            )
+            await ask_tracker.close(correlation_id, reason="send_failed")
+            return
+        stashed = await ask_tracker.set_pending_reply(correlation_id, framed)
         logger.warning(
-            "ACP ack reply for cid=%s: asker offline (%s). Ask kept open.",
+            "ACP ack reply for cid=%s: asker offline (%s). %s; will redeliver on reconnect.",
             correlation_id, e,
+            "Reply stashed" if stashed else "Stash failed (ask closed)",
         )
         return
     except ValueError as e:
-        # Asker is gone from the registry; nothing to retry against.
         logger.warning(
             "ACP ack reply for cid=%s: asker missing (%s). Closing.",
             correlation_id, e,
@@ -207,7 +221,7 @@ async def _acp_complete(
         await ask_tracker.close(correlation_id, reason="ack_with_msg")
         return
     await ask_tracker.close(
-        correlation_id, reason="ack_with_msg" if error is None else "send_failed",
+        correlation_id, reason="ack_with_msg" if not is_error else "send_failed",
     )
 
 
