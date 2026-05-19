@@ -125,6 +125,9 @@ def create_app(
         )
         app.state.schedule_store = schedule_store
         app.state.scheduler = scheduler
+        from repowire.acp import AcpClientManager
+        acp_manager = AcpClientManager()
+        app.state.acp_manager = acp_manager
 
         lifecycle_handler = LifecycleHandler(
             peer_registry=peer_registry,
@@ -195,6 +198,7 @@ def create_app(
             logger.info("%s service stopped", name)
         if relay_client:
             await relay_client.stop()
+        await acp_manager.close()
         await scheduler.stop()
         peer_registry._save_events()
         peer_registry._persist_mappings()
@@ -360,6 +364,9 @@ def create_test_app(
         app.state.review_queue_store = ReviewQueueStore(rq_dir / "review_queue.json")
         app.state.schedule_store = schedule_store
         app.state.scheduler = scheduler
+        from repowire.acp import AcpClientManager
+        acp_manager = AcpClientManager()
+        app.state.acp_manager = acp_manager
 
         lh = LifecycleHandler(
             peer_registry=registry,
@@ -373,6 +380,7 @@ def create_test_app(
 
         yield
 
+        await acp_manager.close()
         await scheduler.stop()
         await registry.stop()
         cleanup_deps()

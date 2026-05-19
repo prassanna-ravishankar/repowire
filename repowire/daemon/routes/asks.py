@@ -28,9 +28,16 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from repowire.daemon.ask_tracker import QuiescedError
+from repowire.acp import (
+    AcpClientManager,
+    AcpRouteDecision,
+    decide_acp_route,
+)
+from repowire.config.models import Config
+from repowire.daemon.ask_tracker import AskTracker, QuiescedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
+from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.routes._shared import OkResponse
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.peers import Peer
@@ -117,6 +124,66 @@ async def _resolve_sender_for_target(from_peer: str, target: Peer) -> Peer | Non
         raise HTTPException(status_code=409, detail=str(e)) from e
 
 
+def _maybe_decide_acp_route(
+    peer: Peer,
+    config: Config,
+    manager: AcpClientManager | None,
+) -> AcpRouteDecision | None:
+    """Return a positive route decision iff ACP routing applies. Else ``None``.
+
+    Keeps the route handler readable: the only fact the caller needs is "use
+    ACP for this ask, yes/no". Reasons / diagnostics are logged inside.
+    """
+    if manager is None:
+        return None
+    flag = bool(config.experiments.acp_broker_client) if config.experiments else False
+    decision = decide_acp_route(peer, flag_enabled=flag)
+    if decision.route and decision.spec is not None:
+        return decision
+    return None
+
+
+async def _acp_complete(
+    *,
+    correlation_id: str,
+    reply: str | None,
+    error: str | None,
+    ask_tracker: AskTracker,
+    peer_registry: PeerRegistry,
+) -> None:
+    """Deliver an ACP-routed ask result back to the asker and close the thread.
+
+    Mirrors the success path of the synchronous ``/ack`` handler: build a framed
+    `[ack #cid from @recipient] reply` notification, route via the asker's
+    existing transport, then close the ask. On error, surface a framed error
+    line instead so the asker is never silently dropped.
+    """
+    ask = await ask_tracker.get(correlation_id)
+    if ask is None or ask.closed:
+        return
+    if error is not None:
+        framed = f"[ack #{correlation_id} from @{ask.to_peer_name}] ACP error: {error}"
+    else:
+        body = reply or ""
+        framed = f"[ack #{correlation_id} from @{ask.to_peer_name}] {body}"
+    try:
+        await peer_registry.notify(
+            from_peer=ask.to_peer_id,
+            to_peer=ask.from_peer_id,
+            text=framed,
+            bypass_circle=True,
+        )
+    except (ValueError, TransportError) as e:
+        logger.warning(
+            "ACP ack reply delivery failed for cid=%s: %s. Closing ask anyway.",
+            correlation_id, e,
+        )
+    finally:
+        await ask_tracker.close(
+            correlation_id, reason="ack_with_msg" if error is None else "send_failed",
+        )
+
+
 @router.post("/ask", response_model=AskResponse)
 async def open_ask(
     request: AskRequest,
@@ -165,6 +232,49 @@ async def open_ask(
                 "peer_id": e.peer_id,
             },
         ) from e
+
+    # ACP routing (experiments.acp_broker_client). When the flag is on and the
+    # target peer carries an `acp` metadata block, bypass the WS transport and
+    # drive a session/prompt against the peer's ACP subprocess. The reply is
+    # delivered back to the asker via the normal ack pipeline once the prompt
+    # turn settles.
+    cfg = state.config
+    acp_manager = getattr(state, "acp_manager", None)
+    decision = _maybe_decide_acp_route(peer, cfg, acp_manager)
+    if decision is not None:
+        from repowire.acp import deliver_ask_via_acp
+
+        assert acp_manager is not None  # narrowed by _maybe_decide_acp_route
+        assert decision.spec is not None
+        spec = decision.spec
+        manager: AcpClientManager = acp_manager
+
+        async def _on_complete(
+            correlation_id: str, reply: str | None, error: str | None,
+        ) -> None:
+            await _acp_complete(
+                correlation_id=correlation_id,
+                reply=reply,
+                error=error,
+                ask_tracker=ask_tracker,
+                peer_registry=peer_registry,
+            )
+
+        await deliver_ask_via_acp(
+            manager=manager,
+            spec=spec,
+            correlation_id=cid,
+            text=request.text,
+            on_complete=_on_complete,
+        )
+        if request.reply_to:
+            prior = await ask_tracker.close(request.reply_to, reason="reply_to")
+            if prior is None:
+                logger.debug(
+                    "ask reply_to=%s: prior ask not found or already closed",
+                    request.reply_to,
+                )
+        return AskResponse(correlation_id=cid)
 
     try:
         await peer_registry.deliver_ask(

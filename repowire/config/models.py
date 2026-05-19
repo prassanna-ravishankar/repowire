@@ -203,6 +203,28 @@ class SlackConfig(BaseModel):
     channel_id: str | None = Field(None, description="Slack channel ID (C...)")
 
 
+class ExperimentsConfig(BaseModel):
+    """Feature flags for experimental subsystems.
+
+    Each flag gates a code path that is not yet ready to be default-on.
+    Off-by-default; opt-in via `~/.repowire/config.yaml`:
+
+        experiments:
+          acp_broker_client: true
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    acp_broker_client: bool = Field(
+        default=False,
+        description=(
+            "Route asks to ACP-marked peers through a broker-side ACP client "
+            "(initialize / session/new / session/prompt) instead of the WS path. "
+            "Phase-3: codex-acp only."
+        ),
+    )
+
+
 class Config(BaseModel):
     """Main Repowire configuration."""
 
@@ -214,6 +236,7 @@ class Config(BaseModel):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     slack: SlackConfig = Field(default_factory=SlackConfig)
+    experiments: ExperimentsConfig = Field(default_factory=ExperimentsConfig)
 
     @classmethod
     def get_config_dir(cls) -> Path:

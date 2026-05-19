@@ -1,0 +1,86 @@
+"""Lifetime cache for broker-side ACP clients.
+
+One ``AcpClient`` per ACP-routed peer, lazily started on first use and torn
+down on shutdown. Keyed by ``peer_id`` so display-name reuse across circles
+doesn't collide.
+
+Phase-3 scope: ``ask`` only. Notify, broadcast, etc. continue to flow over the
+WS path even when the experiments flag is on.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass
+
+from repowire.acp.client import AcpClient, AcpClientError, AcpPromptResult
+from repowire.acp.models import AcpPeerConfig
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AcpPeerSpec:
+    """Resolved spec for spawning an ACP client on behalf of a peer."""
+
+    peer_id: str
+    config: AcpPeerConfig
+    fallback_cwd: str | None = None
+
+
+class AcpClientManager:
+    """Holds one ``AcpClient`` per ACP-routed peer.
+
+    Clients are started lazily on first ``prompt`` so registering a peer is
+    cheap even if no ask ever flows through ACP. ``close`` is idempotent and
+    safe to call from the daemon lifespan shutdown hook.
+    """
+
+    def __init__(self) -> None:
+        self._clients: dict[str, AcpClient] = {}
+        self._lock = asyncio.Lock()
+        self._closed = False
+
+    async def get_or_create(self, spec: AcpPeerSpec) -> AcpClient:
+        """Return the live ``AcpClient`` for ``spec.peer_id``, starting it if needed."""
+        if self._closed:
+            raise AcpClientError("AcpClientManager is closed")
+        async with self._lock:
+            client = self._clients.get(spec.peer_id)
+            if client is None:
+                client = AcpClient(spec.config, fallback_cwd=spec.fallback_cwd)
+                self._clients[spec.peer_id] = client
+        return client
+
+    async def prompt(
+        self,
+        spec: AcpPeerSpec,
+        text: str,
+        *,
+        timeout: float = 120.0,
+    ) -> AcpPromptResult:
+        """Route one ask to its ACP-routed peer and return the assistant turn."""
+        client = await self.get_or_create(spec)
+        return await client.prompt(text, timeout=timeout)
+
+    async def drop(self, peer_id: str) -> None:
+        """Tear down the client for ``peer_id`` if any. Used on peer eviction."""
+        async with self._lock:
+            client = self._clients.pop(peer_id, None)
+        if client is not None:
+            await client.close()
+
+    async def close(self) -> None:
+        """Tear down every live client. Safe to call multiple times."""
+        if self._closed:
+            return
+        self._closed = True
+        async with self._lock:
+            clients = list(self._clients.values())
+            self._clients.clear()
+        for c in clients:
+            try:
+                await c.close()
+            except Exception as e:  # noqa: BLE001 — best-effort shutdown
+                logger.warning("AcpClientManager: close error: %s", e)

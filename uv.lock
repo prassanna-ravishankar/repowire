@@ -1352,7 +1352,7 @@ wheels = [
 
 [[package]]
 name = "repowire"
-version = "0.13.20"
+version = "0.13.25"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -1369,10 +1369,14 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+acp = [
+    { name = "agent-client-protocol" },
+]
 acp-probe = [
     { name = "agent-client-protocol" },
 ]
 dev = [
+    { name = "agent-client-protocol" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-httpx" },
@@ -1393,7 +1397,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.10.0" },
     { name = "agent-client-protocol", marker = "extra == 'acp-probe'", specifier = ">=0.10.0" },
+    { name = "agent-client-protocol", marker = "extra == 'dev'", specifier = ">=0.10.0" },
     { name = "click", specifier = ">=8.1.7" },
     { name = "fastapi", specifier = ">=0.109.0" },
     { name = "httpx", specifier = ">=0.26.0" },
@@ -1414,7 +1420,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0" },
     { name = "websockets", specifier = ">=13.0" },
 ]
-provides-extras = ["relay", "dev", "docs", "acp-probe"]
+provides-extras = ["relay", "dev", "acp", "docs", "acp-probe"]
 
 [package.metadata.requires-dev]
 dev = [
