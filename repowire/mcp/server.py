@@ -412,14 +412,14 @@ def create_mcp_server() -> FastMCP:
     ) -> str:
         """[Repowire mesh] List peers, scoped to your circle by default.
 
-        By default shows only online/busy peers in your own circle and hides
-        the calling peer (you). Peers whose role bypasses circles (service,
-        orchestrator, human) are always visible regardless of the circle
-        filter. Pass `circle='*'` for a mesh-wide listing, or a concrete
-        circle name to scope to that circle.
+        By default, agent callers see only online/busy peers in their own
+        circle and hide the calling peer. Peers whose role bypasses circles
+        (service, orchestrator, human) are visible with concrete circle
+        filters. Pass `circle='*'` for a mesh-wide listing, or a concrete
+        circle name to inspect that circle plus bypass peers.
 
-        Callers with role=orchestrator default to mesh-wide (`*`) when no
-        explicit circle is passed — orchestrators need the full view.
+        Callers with role=orchestrator default to mesh-wide (`*`) when
+        `circle` is omitted.
 
         Set show_offline=True to include offline peers, or include_self=True
         to include yourself in the listing.
@@ -428,10 +428,10 @@ def create_mcp_server() -> FastMCP:
         machine, description, backend, last_seen, turn_state. The turn_state
         column is "" when unknown; otherwise idle, working, awaiting_input
         (peer is waiting on user input mid-turn), or pending_first_turn (peer
-        was spawn-seeded but the seed never reached the agent -- re-send via
-        notify_peer). Peers are reachable via ask/notify_peer. Do NOT
-        use SendMessage to contact them -- SendMessage is a Claude Code harness
-        tool for same-session teammates only.
+        was spawn-seeded but the seed never reached the agent -- send a
+        follow-up via ask or notify_peer). Use ask/notify_peer for repowire
+        peers; SendMessage is only for same-session Claude Code harness
+        teammates, not mesh peers.
         """
         await _ensure_registered()
         my_name, my_circle, my_role = await _get_my_identity()
@@ -470,6 +470,10 @@ def create_mcp_server() -> FastMCP:
     ) -> str:
         """[Repowire mesh] Open a non-blocking ask thread with a peer.
 
+        Use ask when you need a tracked thread that the recipient must close
+        with `ack`, such as a worker status check or reviewer checkpoint. Use
+        notify_peer for fire-and-forget updates, reminders, and nudges.
+
         Returns immediately with a correlation_id. The peer receives the
         ask, and when they respond they call `ack(correlation_id)` (bare
         close, "seen, no action") or `ack(correlation_id, message)` (close
@@ -479,14 +483,14 @@ def create_mcp_server() -> FastMCP:
         To chain a follow-up: call `ask(peer_name, query, reply_to=corr_id)`.
         That closes the prior thread AND opens a new one referencing it.
 
-        If you need a synchronous wait, write your own poll loop on the
-        notification stream — the MCP surface is non-blocking by design.
+        Ask is not a synchronous wait or delivery receipt. The MCP surface is
+        non-blocking by design; watch notifications for the eventual ack.
 
-        Do NOT use SendMessage to reach repowire peers. SendMessage is a
+        Do not use SendMessage to reach repowire peers. SendMessage is a
         Claude Code harness tool for same-session teammates only.
 
         Args:
-            peer_name: Name of the peer to ask
+            peer_name: Display name or peer_id of the peer to ask.
             query: The question or request to send
             reply_to: If set, closes that prior ask before opening this one
             circle: Circle to scope the lookup. Defaults to your own circle,
@@ -551,17 +555,19 @@ def create_mcp_server() -> FastMCP:
     async def notify_peer(peer_name: str, message: str, circle: str | None = None) -> str:
         """[Repowire mesh] Send a fire-and-forget notification to a peer in another project.
 
-        Use for status updates, announcements, or replying to notifications.
+        Use for status updates, announcements, replies to notifications,
+        reminders, self-wakes, and nudges that do not require closure.
         Special peers: 'telegram' sends to user's phone.
-        The dashboard sees your responses automatically via chat turns - no need to notify it.
+        The dashboard sees your responses automatically via chat turns - no
+        need to notify it.
         Fire-and-forget means daemon-side success does NOT guarantee agent receipt.
-        Use ask() when confirmed delivery matters.
+        Use ask() when the work needs a tracked thread and explicit ack.
 
-        Do NOT use SendMessage to reach repowire peers. SendMessage is a Claude
+        Do not use SendMessage to reach repowire peers. SendMessage is a Claude
         Code harness tool for same-session teammates only.
 
         Args:
-            peer_name: Name of the peer to notify
+            peer_name: Display name or peer_id of the peer to notify.
             message: The notification message
             circle: Circle to scope the lookup. Defaults to your own circle,
                     with fallback to peers whose role bypasses circles
@@ -591,9 +597,10 @@ def create_mcp_server() -> FastMCP:
         """[Repowire mesh] Broadcast to all online peers across the mesh.
 
         Use for announcements that affect everyone, like deployment updates
-        or breaking changes. Do NOT use for responses to queries.
+        or breaking changes. Do not use for replies or tracked work; use
+        ack/ask for ask threads and notify_peer for one peer.
 
-        Do NOT use SendMessage to reach repowire peers. SendMessage is a Claude
+        Do not use SendMessage to reach repowire peers. SendMessage is a Claude
         Code harness tool for same-session teammates only.
 
         Args:
@@ -711,16 +718,17 @@ def create_mcp_server() -> FastMCP:
         register with the mesh promptly; treated as a friendly opening prompt
         by other backends. If omitted, codex gets a short default warmup.
 
-        Do NOT use SendMessage to reach spawned peers. SendMessage is a Claude
-        Code harness tool for same-session teammates only. Use ask() or
-        notify_peer() instead.
+        After spawn, address the peer by the returned display name or by the
+        peer_id from list_peers. Use ask() for tracked work that requires ack,
+        or notify_peer() for fire-and-forget prompts. Do not use SendMessage;
+        it is a Claude Code harness tool for same-session teammates only.
 
         Args:
             path: Absolute path to the project directory
             command: Command to run (e.g. "claude", "claude --dangerously-skip-permissions")
             circle: Circle to spawn into (default: "default") -- maps to tmux session name
             message: Optional first-turn prompt for the spawned agent. Codex
-                     requires it (or a default) to fire its SessionStart hook.
+                     needs it (or the default warmup) to register promptly.
 
         Returns:
             Spawn confirmation with display_name and tmux_session
@@ -790,7 +798,7 @@ def create_mcp_server() -> FastMCP:
         if the pane survives.
 
         Args:
-            peer_identifier: Peer ID or display name from list_peers.
+            peer_identifier: peer_id or display name from list_peers.
             circle: Optional circle to disambiguate display names.
 
         Returns:
@@ -893,21 +901,24 @@ def create_mcp_server() -> FastMCP:
         """[Repowire mesh] Schedule a one-shot future message to a peer.
 
         At `fire_at` the daemon will deliver `text` to `to_peer` on your
-        behalf. `kind="notify"` is fire-and-forget; `kind="ask"` opens an
-        ask thread (recipient must `ack`). Recurring schedules are not
-        supported in the MVP.
+        behalf. Use `kind="notify"` (default) for fire-and-forget reminders,
+        self-wakes, nudges, and check-ins that do not need closure. Use
+        `kind="ask"` only when the future delivery should open a tracked ask
+        thread that requires `ack`/closure, such as a worker status check or
+        reviewer checkpoint.
 
-        Use this for self-wake reminders, post-stand-up nudges, or future
-        check-ins that don't need a live caller waiting.
+        Use schedule_cron for recurring peer messages, or schedule_self when
+        the recipient is your own peer.
 
         Args:
-            to_peer: Display name of the recipient. Use your own peer name
-                     to schedule a self-wake.
+            to_peer: Display name or peer_id of the recipient. Use your own
+                     peer name to schedule a self-wake.
             text: Message body to deliver.
             fire_at: ISO-8601 datetime (e.g. "2026-05-14T09:00:00Z" or
                      "2026-05-14T09:00:00+00:00"). Naive datetimes are
                      interpreted as UTC.
-            kind: "notify" (default) or "ask".
+            kind: "notify" (default) for reminders/self-wakes/nudges, or
+                  "ask" when delivery should open a tracked ask thread.
             circle: Circle to scope recipient lookup.
 
         Returns:
@@ -940,17 +951,20 @@ def create_mcp_server() -> FastMCP:
 
         Convenience wrapper around schedule_create for self-wake reminders.
         For one-time schedules, pass `fire_at`. For recurring schedules, pass
-        a five-field `cron` expression (or aliases like `@hourly`, `@daily`).
-        Use `kind="notify"` for a fire-and-forget reminder, or `kind="ask"`
-        when you want the future message to create an ask thread.
+        a five-field `cron` expression (or aliases like `@hourly`, `@daily`,
+        `@midnight`, `@weekly`, or `@monthly`).
+        Use `kind="notify"` (default) for fire-and-forget reminders,
+        self-wakes, and nudges. Use `kind="ask"` only when the future message
+        should create a tracked ask thread that requires `ack`/closure.
 
         Args:
             text: Message body to deliver to yourself.
             fire_at: ISO-8601 datetime (e.g. "2026-05-14T09:00:00Z" or
                      "2026-05-14T09:00:00+00:00"). Naive datetimes are
                      interpreted as UTC.
-            cron: Five-field cron expression for recurring delivery.
-            kind: "notify" (default) or "ask".
+            cron: Five-field cron expression or supported alias.
+            kind: "notify" (default) for reminders/self-wakes/nudges, or
+                  "ask" when delivery should open a tracked ask thread.
             circle: Circle to scope recipient lookup.
 
         Returns:
@@ -986,12 +1000,18 @@ def create_mcp_server() -> FastMCP:
     ) -> str:
         """[Repowire mesh] Schedule a recurring cron message to a peer.
 
+        Use `kind="notify"` (default) for recurring reminders, self-wakes,
+        nudges, and fire-and-forget check-ins. Use `kind="ask"` only when each
+        recurring delivery should open a tracked ask thread that requires
+        `ack`/closure, such as a worker status check or reviewer checkpoint.
+
         Args:
-            to_peer: Display name of the recipient.
+            to_peer: Display name or peer_id of the recipient.
             text: Message body to deliver.
             cron: Five-field cron expression, or alias such as `@hourly`,
-                  `@daily`, `@weekly`, or `@monthly`.
-            kind: "notify" (default) or "ask".
+                  `@daily`, `@midnight`, `@weekly`, or `@monthly`.
+            kind: "notify" (default) for reminders/self-wakes/nudges, or
+                  "ask" when delivery should open a tracked ask thread.
             circle: Circle to scope recipient lookup.
 
         Returns:
@@ -1016,9 +1036,9 @@ def create_mcp_server() -> FastMCP:
         """[Repowire mesh] List pending scheduled check-ins.
 
         Returns TSV with columns: schedule_id, from_peer, to_peer, kind,
-        fire_at, text. Schedules are sorted by fire_at ascending. Pass
-        include_cron=True to append a trailing cron column for recurring
-        schedules.
+        fire_at, text. Includes one-shot and recurring schedules, sorted by
+        next fire_at ascending. Pass include_cron=True to append a trailing
+        cron column for recurring schedules.
 
         Args:
             mine_only: If True (default), return only schedules you
@@ -1055,7 +1075,8 @@ def create_mcp_server() -> FastMCP:
         """[Repowire mesh] Cancel a pending scheduled check-in.
 
         Args:
-            schedule_id: ID returned by schedule_create.
+            schedule_id: ID returned by schedule_create, schedule_self, or
+                         schedule_cron.
 
         Returns:
             Confirmation message.
