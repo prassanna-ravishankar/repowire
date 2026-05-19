@@ -11,6 +11,7 @@ from pathlib import Path
 from repowire.hooks._tmux import get_pane_id
 from repowire.hooks.adapters import hook_output, normalize
 from repowire.hooks.ask_lifecycle import fetch_and_filter_pending, format_reminder_block
+from repowire.hooks.chat_delta_streamer import streamer_pid_path
 from repowire.hooks.utils import (
     daemon_post,
     get_display_name,
@@ -18,7 +19,29 @@ from repowire.hooks.utils import (
     update_status,
 )
 from repowire.hooks.ws_hook_supervisor import maybe_respawn
-from repowire.session.transcript import extract_last_turn_pair, extract_last_turn_tool_calls
+from repowire.session.transcript import (
+    extract_last_assistant_turn_id,
+    extract_last_turn_pair,
+    extract_last_turn_tool_calls,
+)
+
+
+def _stop_chat_delta_streamer(pane_id: str | None) -> None:
+    """Signal the per-turn streamer (if any) to exit by removing its pidfile.
+
+    Pidfile-driven shutdown rather than SIGTERM: the streamer is cooperatively
+    polling the pidfile inside its tight loop, so removal is the lowest-coupling
+    end-of-turn signal. Safe to no-op when streaming is disabled or the
+    streamer already exited on its own.
+    """
+    if not pane_id:
+        return
+    try:
+        streamer_pid_path(pane_id).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
 
 
 def _post_chat_turn(
@@ -27,13 +50,21 @@ def _post_chat_turn(
     text: str,
     tool_calls: list[dict[str, str]] | None = None,
     pane_id: str | None = None,
+    turn_id: str | None = None,
 ) -> None:
-    """Post a chat turn to the daemon for dashboard display. Best-effort."""
+    """Post a chat turn to the daemon for dashboard display. Best-effort.
+
+    ``turn_id`` is the assistant message uuid when known; it lets the dashboard
+    reconcile streaming-delta bubbles to their final turn deterministically and
+    lets the daemon reject late deltas server-side.
+    """
     payload: dict = {"peer": peer_name, "role": role, "text": text}
     if tool_calls:
         payload["tool_calls"] = tool_calls
     if pane_id:
         payload["pane_id"] = pane_id
+    if turn_id:
+        payload["turn_id"] = turn_id
     daemon_post("/events/chat", payload)
 
 
@@ -63,6 +94,7 @@ def main(backend: str = "claude-code") -> int:
     assistant_text = payload.response_text
     user_text = None
     tool_calls: list = []
+    turn_id: str | None = None
 
     if payload.transcript_path:
         transcript_path = Path(payload.transcript_path).expanduser().resolve()
@@ -70,6 +102,7 @@ def main(backend: str = "claude-code") -> int:
         if transcript_text:
             assistant_text = transcript_text
         tool_calls = extract_last_turn_tool_calls(transcript_path) if assistant_text else []
+        turn_id = extract_last_assistant_turn_id(transcript_path)
 
     # Strip whitespace-only texts to prevent empty chat bubbles
     if user_text and not user_text.strip():
@@ -77,11 +110,22 @@ def main(backend: str = "claude-code") -> int:
     if assistant_text and not assistant_text.strip():
         assistant_text = None
 
+    # Signal the per-turn delta streamer (if running) to exit before posting
+    # the final chat_turn. Order matters only weakly — the dashboard reconciles
+    # by replacing accumulated deltas with the final turn — but stopping the
+    # streamer first avoids a last-instant delta arriving after the final.
+    _stop_chat_delta_streamer(pane_id)
+
     if user_text:
         _post_chat_turn(peer_display, "user", user_text, pane_id=pane_id)
     if assistant_text:
         _post_chat_turn(
-            peer_display, "assistant", assistant_text, tool_calls or None, pane_id=pane_id,
+            peer_display,
+            "assistant",
+            assistant_text,
+            tool_calls or None,
+            pane_id=pane_id,
+            turn_id=turn_id,
         )
 
     # Deliver response to daemon for legacy /query future resolution.

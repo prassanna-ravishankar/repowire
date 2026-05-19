@@ -50,12 +50,16 @@ export function PeerView({
   const protectedNow = useIsPeerProtected(peer.peer_id);
   const liveThread = useMemo(() => {
     const id = peer.peer_id;
-    return events
-      .filter((event) => {
-        if (event.type === "chat_turn") return event.peer_id === id;
-        return event.from_peer_id === id || event.to_peer_id === id;
-      })
-      .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    return coalesceDeltas(
+      events
+        .filter((event) => {
+          if (event.type === "chat_turn" || event.type === "chat_turn_delta") {
+            return event.peer_id === id;
+          }
+          return event.from_peer_id === id || event.to_peer_id === id;
+        })
+        .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+    );
   }, [events, peer.peer_id]);
 
   // While the peer is protected (e.g. unsubmitted compose draft), freeze the
@@ -150,7 +154,13 @@ export function PeerView({
                 <span>send one to begin a query.</span>
               </div>
             ) : (
-              thread.map((event) => <ThreadItem key={event.id} event={event} peer={peer} />)
+              thread.map((event) =>
+                event.type === "chat_turn_delta_group" ? (
+                  <StreamingTurnItem key={`stream-${event.turn_id}`} group={event} peer={peer} />
+                ) : (
+                  <ThreadItem key={event.id} event={event as Event} peer={peer} />
+                )
+              )
             )}
             <div ref={bottomRef} />
           </div>
@@ -1177,6 +1187,111 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
           </option>
         ))}
       </select>
+    </div>
+  );
+}
+
+/** Pending-turn group built from chat_turn_delta events. Carries `type` so
+ * the thread renderer can branch without runtime probing. */
+interface ChatTurnDeltaGroup {
+  type: "chat_turn_delta_group";
+  id: string;
+  turn_id: string;
+  peer_id?: string;
+  timestamp: string;
+  text: string;
+  tool_calls: { name: string; input: string }[];
+}
+
+type ThreadItemEntry = Event | ChatTurnDeltaGroup;
+
+/** Coalesce chat_turn_delta events into one pending bubble per turn_id, then
+ * drop any group whose turn_id has a matching final `chat_turn`.
+ *
+ * Reconciliation rule: the final `chat_turn` carries the same `turn_id` as
+ * its deltas (assistant message uuid). Matching by id is order-independent —
+ * a late delta arriving after the final still gets dropped, fixing the
+ * "permanent streaming bubble" race that timestamp-based reconcile had.
+ * Falls back to the timestamp heuristic only for deltas whose turn_id never
+ * gets a matching final (network drop, agent crash mid-turn): a chat_turn
+ * for the same peer that came *after* the delta absorbs it. */
+function coalesceDeltas(sorted: Event[]): ThreadItemEntry[] {
+  const groups = new Map<string, ChatTurnDeltaGroup>();
+
+  // Final chat_turns carrying turn_id — exact match drops their deltas
+  // regardless of arrival order.
+  const finalizedTurnIds = new Set<string>();
+  // Fallback: per-peer last final-chat_turn timestamp, for turns where the
+  // final didn't carry turn_id (legacy or codex transcripts without uuid).
+  const peerLastChatTurnTs = new Map<string, string>();
+  for (const ev of sorted) {
+    if (ev.type !== "chat_turn" || ev.role !== "assistant") continue;
+    if (ev.turn_id) finalizedTurnIds.add(ev.turn_id);
+    if (ev.peer_id) {
+      const prev = peerLastChatTurnTs.get(ev.peer_id);
+      if (!prev || prev < ev.timestamp) peerLastChatTurnTs.set(ev.peer_id, ev.timestamp);
+    }
+  }
+
+  for (const ev of sorted) {
+    if (ev.type !== "chat_turn_delta" || !ev.turn_id) continue;
+    if (finalizedTurnIds.has(ev.turn_id)) continue;
+    const lastFinalTs = ev.peer_id ? peerLastChatTurnTs.get(ev.peer_id) : undefined;
+    if (lastFinalTs && ev.timestamp <= lastFinalTs) continue;
+
+    let group = groups.get(ev.turn_id);
+    if (!group) {
+      group = {
+        type: "chat_turn_delta_group",
+        id: `delta-group-${ev.turn_id}`,
+        turn_id: ev.turn_id,
+        peer_id: ev.peer_id,
+        timestamp: ev.timestamp,
+        text: "",
+        tool_calls: [],
+      };
+      groups.set(ev.turn_id, group);
+    }
+    if (ev.kind === "tool_use" && ev.tool_call) {
+      group.tool_calls.push(ev.tool_call);
+    } else if (ev.kind === "text" || ev.kind === undefined) {
+      // Adjacent text blocks within one turn are conceptually paragraphs.
+      group.text = group.text ? `${group.text}\n\n${ev.text}` : ev.text;
+    }
+    group.timestamp = ev.timestamp;
+  }
+
+  const out: ThreadItemEntry[] = [];
+  for (const ev of sorted) {
+    if (ev.type === "chat_turn_delta") continue;
+    out.push(ev);
+  }
+  for (const group of groups.values()) {
+    if (!group.text && group.tool_calls.length === 0) continue;
+    out.push(group);
+  }
+  out.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  return out;
+}
+
+function StreamingTurnItem({ group, peer }: { group: ChatTurnDeltaGroup; peer: Peer }) {
+  return (
+    <div className="mb-4 flex flex-col items-start">
+      <div className="mb-1 flex items-center gap-2 font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-outline">
+        <span>{peerLabel(peer)} · {formatTime(group.timestamp)}</span>
+        <span className="inline-flex items-center gap-1 rounded border border-primary/40 bg-primary/10 px-1.5 py-px text-[9px] text-primary">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+          streaming
+        </span>
+      </div>
+      {group.text && (
+        <div className="max-w-[82%] min-w-0 rounded border-l-2 border-primary/70 bg-surface-container-high p-3 font-mono text-[13px] leading-6 text-on-surface [overflow-wrap:anywhere]">
+          <div className="prose prose-invert prose-sm max-w-none break-words [&_pre]:overflow-x-auto">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{group.text}</ReactMarkdown>
+          </div>
+        </div>
+      )}
+      {group.tool_calls.length > 0 && <ToolCallBlock toolCalls={group.tool_calls} />}
     </div>
   );
 }

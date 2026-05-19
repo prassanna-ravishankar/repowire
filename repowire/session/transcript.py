@@ -7,6 +7,62 @@ from pathlib import Path
 from typing import Any
 
 
+def extract_last_assistant_turn_id(transcript_path: Path) -> str | None:
+    """Return the canonical ``turn_id`` for the current user-prompt turn.
+
+    Definition: the uuid of the *first* assistant entry in the chain following
+    the last real user prompt (a user entry whose content is not pure
+    tool_result). This matches what the per-pane streamer picks up — its
+    first-seen assistant uuid after the prompt fires — so deltas and the final
+    ``chat_turn`` always share the same id regardless of how many
+    assistant/tool_result hops happen mid-turn.
+
+    Returns None if the transcript is missing, empty, or has no assistant
+    entries (e.g. Codex-shaped JSONL).
+    """
+    if not transcript_path.exists():
+        return None
+
+    entries: list[dict[str, Any]] = []
+    with open(transcript_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    if not entries:
+        return None
+
+    # Walk backward to find the last real user prompt (skip user entries whose
+    # content is pure tool_result — those are the agent's own tool-call replies
+    # and don't open a new turn). The first assistant uuid after that boundary
+    # is the canonical turn_id.
+    boundary_index = -1
+    for idx in range(len(entries) - 1, -1, -1):
+        entry = entries[idx]
+        if entry.get("type") != "user":
+            continue
+        content = entry.get("message", {}).get("content", [])
+        if isinstance(content, list) and content and all(
+            isinstance(c, dict) and c.get("type") == "tool_result" for c in content
+        ):
+            continue
+        boundary_index = idx
+        break
+
+    for entry in entries[boundary_index + 1:]:
+        if entry.get("type") != "assistant":
+            continue
+        uuid = entry.get("uuid")
+        if isinstance(uuid, str) and uuid:
+            return uuid
+    return None
+
+
 def extract_last_turn_pair(transcript_path: Path) -> tuple[str | None, str | None]:
     """Single-pass extraction of last user prompt and last assistant response.
 

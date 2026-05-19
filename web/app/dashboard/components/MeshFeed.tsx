@@ -7,7 +7,10 @@ import { formatTime } from "./status";
 export function MeshFeed({ events, peers, onPickPeer }: { events: Event[]; peers: Peer[]; onPickPeer: (peer: Peer) => void }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const feedEvents = useMemo(
-    () => events.filter((event) => event.type !== "chat_turn").sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
+    () =>
+      events
+        .filter((event) => event.type !== "chat_turn" && event.type !== "chat_turn_delta")
+        .sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
     [events]
   );
 

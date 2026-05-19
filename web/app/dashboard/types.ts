@@ -40,7 +40,15 @@ export function peerLabel(peer: Peer): string {
 
 export interface Event {
   id: string;
-  type: "query" | "response" | "notification" | "broadcast" | "status_change" | "chat_turn" | "ask";
+  type:
+    | "query"
+    | "response"
+    | "notification"
+    | "broadcast"
+    | "status_change"
+    | "chat_turn"
+    | "chat_turn_delta"
+    | "ask";
   timestamp: string;
   from?: string;
   to?: string;
@@ -55,4 +63,10 @@ export interface Event {
   query_id?: string;
   correlation_id?: string;
   tool_calls?: { name: string; input: string }[];
+  // chat_turn_delta fields
+  turn_id?: string;
+  chunk_index?: number;
+  kind?: "text" | "tool_use";
+  tool_call?: { name: string; input: string };
+  is_final?: boolean;
 }

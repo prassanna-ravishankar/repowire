@@ -3,10 +3,88 @@ import tempfile
 from pathlib import Path
 
 from repowire.session.transcript import (
+    extract_last_assistant_turn_id,
     extract_last_turn_pair,
     extract_last_turn_raw_tool_calls,
     extract_last_turn_tool_calls,
 )
+
+
+class TestExtractLastAssistantTurnId:
+    def test_returns_first_assistant_uuid_after_last_real_user_prompt(self):
+        """Canonical turn_id is the first assistant uuid after the latest
+        non-tool_result user entry. This must match what the streamer picks
+        as its turn_id on the first assistant line it sees post-prompt."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write(json.dumps({
+                "type": "user", "uuid": "u1",
+                "message": {"content": [{"type": "text", "text": "prior prompt"}]},
+            }) + "\n")
+            f.write(json.dumps({
+                "type": "assistant", "uuid": "old",
+                "message": {"content": [{"type": "text", "text": "prior"}]},
+            }) + "\n")
+            # New user prompt (real, not tool_result).
+            f.write(json.dumps({
+                "type": "user", "uuid": "u2",
+                "message": {"content": [{"type": "text", "text": "new prompt"}]},
+            }) + "\n")
+            # Assistant tool_use entry — this is what the streamer sees first.
+            f.write(json.dumps({
+                "type": "assistant", "uuid": "a1",
+                "message": {"content": [
+                    {"type": "text", "text": "I'll check"},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+                ]},
+            }) + "\n")
+            # Tool result, framed as a user entry.
+            f.write(json.dumps({
+                "type": "user", "uuid": "u3",
+                "message": {"content": [{"type": "tool_result", "tool_use_id": "x"}]},
+            }) + "\n")
+            # Final assistant entry — different uuid, but the canonical turn_id
+            # must still be a1 so deltas and the final align.
+            f.write(json.dumps({
+                "type": "assistant", "uuid": "a2",
+                "message": {"content": [{"type": "text", "text": "done"}]},
+            }) + "\n")
+            path = Path(f.name)
+        try:
+            assert extract_last_assistant_turn_id(path) == "a1"
+        finally:
+            path.unlink()
+
+    def test_simple_text_turn(self):
+        """No tool use — only one assistant entry follows the user prompt."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write(json.dumps({
+                "type": "user", "uuid": "u1",
+                "message": {"content": [{"type": "text", "text": "hi"}]},
+            }) + "\n")
+            f.write(json.dumps({
+                "type": "assistant", "uuid": "only",
+                "message": {"content": [{"type": "text", "text": "hello"}]},
+            }) + "\n")
+            path = Path(f.name)
+        try:
+            assert extract_last_assistant_turn_id(path) == "only"
+        finally:
+            path.unlink()
+
+    def test_missing_file(self, tmp_path):
+        assert extract_last_assistant_turn_id(tmp_path / "missing.jsonl") is None
+
+    def test_no_assistant_entries(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write(json.dumps({
+                "type": "user", "uuid": "u1",
+                "message": {"content": [{"type": "text", "text": "hi"}]},
+            }) + "\n")
+            path = Path(f.name)
+        try:
+            assert extract_last_assistant_turn_id(path) is None
+        finally:
+            path.unlink()
 
 
 class TestExtractLastTurnPair:

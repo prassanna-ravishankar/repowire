@@ -313,8 +313,41 @@ class ChatTurnRequest(BaseModel):
     role: Literal["user", "assistant"]
     text: str
     tool_calls: list[ToolCallInfo] | None = None
+    turn_id: str | None = Field(
+        None,
+        description=(
+            "Assistant message uuid. When present, lets the dashboard reconcile "
+            "streaming chat_turn_delta bubbles to this final turn deterministically "
+            "and lets the daemon reject post-final late deltas."
+        ),
+    )
     peer_id: str | None = Field(None, description="Peer ID (if known)")
     pane_id: str | None = Field(None, description="Tmux pane ID (resolves peer_id server-side)")
+
+
+# Bounded set of turn_ids that have already received their final chat_turn.
+# Late chat_turn_delta posts for these ids are dropped — the dashboard would
+# render them as orphan streaming bubbles otherwise.
+#
+# Capacity caps memory growth; FIFO eviction means very old turns may shadow
+# new collisions but turn_ids are message-uuids so collisions don't occur in
+# practice. Process-local (deltas/finals always pass through the same daemon).
+_FINALIZED_TURN_IDS_CAPACITY: int = 4096
+_finalized_turn_ids: dict[str, None] = {}
+
+
+def _mark_turn_finalized(turn_id: str) -> None:
+    if turn_id in _finalized_turn_ids:
+        # Refresh recency so a finalized id stays in the set as long as deltas
+        # might still trickle in.
+        del _finalized_turn_ids[turn_id]
+    _finalized_turn_ids[turn_id] = None
+    while len(_finalized_turn_ids) > _FINALIZED_TURN_IDS_CAPACITY:
+        _finalized_turn_ids.pop(next(iter(_finalized_turn_ids)))
+
+
+def _is_turn_finalized(turn_id: str) -> bool:
+    return turn_id in _finalized_turn_ids
 
 
 @router.post("/events/chat", response_model=OkResponse)
@@ -332,7 +365,59 @@ async def ingest_chat_turn(
             data["peer_id"] = peer.peer_id
             data["peer"] = peer.display_name  # canonicalize to registered name
 
+    if request.turn_id and request.role == "assistant":
+        _mark_turn_finalized(request.turn_id)
+
     peer_registry.add_event("chat_turn", data)
+    return OkResponse()
+
+
+class ChatTurnDeltaRequest(BaseModel):
+    """Request to ingest a partial chat-turn block while it streams.
+
+    Block-level rather than token-level: each request carries one completed
+    assistant text block or tool_use, as written to the transcript JSONL.
+    The final ``chat_turn`` event remains authoritative for end-of-turn —
+    deltas are additive, clients that ignore them keep working.
+    """
+
+    peer: str
+    role: Literal["assistant"] = "assistant"
+    turn_id: str = Field(..., description="Stable id for the assistant turn (deltas group by this)")
+    chunk_index: int = Field(..., ge=0, description="Monotonic 0-based index within the turn")
+    kind: Literal["text", "tool_use"] = Field(default="text", description="Block kind")
+    text: str = Field("", description="Block content (full text block, or tool_use summary)")
+    tool_call: ToolCallInfo | None = Field(None, description="Set when kind=tool_use")
+    is_final: bool = Field(default=False, description="Hint: last delta in this turn")
+    peer_id: str | None = Field(None, description="Peer ID (if known)")
+    pane_id: str | None = Field(None, description="Tmux pane ID (resolves peer_id server-side)")
+
+
+@router.post("/events/chat_delta", response_model=OkResponse)
+async def ingest_chat_turn_delta(
+    request: ChatTurnDeltaRequest,
+    _: str | None = Depends(require_auth),
+) -> OkResponse:
+    """Ingest a streaming chat-turn delta from the per-pane transcript tailer.
+
+    Drops deltas whose ``turn_id`` has already received its final ``chat_turn``
+    — those would render as orphan streaming bubbles on the dashboard. Returns
+    200 on drop so the streamer's best-effort post doesn't retry into a
+    failure loop.
+    """
+    if _is_turn_finalized(request.turn_id):
+        return OkResponse()
+
+    peer_registry = get_peer_registry()
+    data = request.model_dump(exclude={"pane_id"})
+
+    if not request.peer_id and request.pane_id:
+        peer = await peer_registry.get_peer_by_pane(request.pane_id)
+        if peer:
+            data["peer_id"] = peer.peer_id
+            data["peer"] = peer.display_name
+
+    peer_registry.add_event("chat_turn_delta", data)
     return OkResponse()
 
 

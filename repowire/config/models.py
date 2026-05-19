@@ -211,6 +211,10 @@ class ExperimentsConfig(BaseModel):
 
         experiments:
           acp_broker_client: true
+          chat_turn_streaming: true
+
+    Promote to a stable surface or remove once an experiment concludes —
+    don't let entries linger.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -221,6 +225,15 @@ class ExperimentsConfig(BaseModel):
             "Route asks to ACP-marked peers through a broker-side ACP client "
             "(initialize / session/new / session/prompt) instead of the WS path. "
             "Phase-3: codex-acp only."
+        ),
+    )
+
+    chat_turn_streaming: bool = Field(
+        default=False,
+        description=(
+            "Stream block-level chat_turn_delta events as the assistant turn "
+            "is written to the transcript JSONL, in addition to the final "
+            "chat_turn at Stop. Claude Code transports only."
         ),
     )
 

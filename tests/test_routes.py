@@ -656,6 +656,212 @@ class TestEvents:
         assert len(events) == 1
         assert events[0].get("peer_id") is None
 
+    async def test_post_chat_turn_delta(self, client):
+        """A chat_turn_delta should land as a chat_turn_delta event with all fields."""
+        r = await client.post("/events/chat_delta", json={
+            "peer": "streampeer",
+            "role": "assistant",
+            "turn_id": "turn-abc",
+            "chunk_index": 0,
+            "kind": "text",
+            "text": "Hello, I'll start by",
+        })
+        assert r.status_code == 200
+
+        r = await client.get("/events")
+        events = r.json()
+        assert len(events) == 1
+        e = events[0]
+        assert e["type"] == "chat_turn_delta"
+        assert e["turn_id"] == "turn-abc"
+        assert e["chunk_index"] == 0
+        assert e["kind"] == "text"
+        assert e["text"] == "Hello, I'll start by"
+        assert e["is_final"] is False
+
+    async def test_chat_turn_delta_tool_use(self, client):
+        r = await client.post("/events/chat_delta", json={
+            "peer": "streampeer",
+            "role": "assistant",
+            "turn_id": "turn-xyz",
+            "chunk_index": 1,
+            "kind": "tool_use",
+            "text": "Bash: ls -la",
+            "tool_call": {"name": "Bash", "input": "ls -la"},
+        })
+        assert r.status_code == 200
+
+        r = await client.get("/events")
+        events = r.json()
+        assert events[0]["kind"] == "tool_use"
+        assert events[0]["tool_call"] == {"name": "Bash", "input": "ls -la"}
+
+    async def test_chat_turn_delta_resolves_peer_id_from_pane_id(self, client):
+        from repowire.config.models import AgentType
+        from repowire.daemon.deps import get_peer_registry
+        registry = get_peer_registry()
+        await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/streampane",
+            pane_id="%77",
+        )
+
+        r = await client.post("/events/chat_delta", json={
+            "peer": "streampane",
+            "role": "assistant",
+            "turn_id": "turn-1",
+            "chunk_index": 0,
+            "text": "partial",
+            "pane_id": "%77",
+        })
+        assert r.status_code == 200
+
+        events = (await client.get("/events")).json()
+        assert events[0]["peer_id"] is not None
+        assert events[0]["peer_id"].startswith("repow-")
+
+    async def test_chat_turn_delta_rejects_negative_chunk_index(self, client):
+        r = await client.post("/events/chat_delta", json={
+            "peer": "p",
+            "turn_id": "t",
+            "chunk_index": -1,
+            "text": "x",
+        })
+        assert r.status_code == 422
+
+    async def test_chat_turn_carries_turn_id(self, client):
+        r = await client.post("/events/chat", json={
+            "peer": "testpeer",
+            "role": "assistant",
+            "text": "final",
+            "turn_id": "msg-uuid-9",
+        })
+        assert r.status_code == 200
+        events = (await client.get("/events")).json()
+        assert events[0]["turn_id"] == "msg-uuid-9"
+
+    async def test_tool_use_turn_canonical_id_drops_deltas(self, client):
+        """Multi-assistant tool turn: streamer emits deltas under the *first*
+        assistant uuid (a1); Stop posts final with the same canonical turn_id.
+        Late deltas (e.g. arriving after Stop) must still be dropped."""
+        # Deltas under a1 (streamer's view).
+        r = await client.post("/events/chat_delta", json={
+            "peer": "toolpeer",
+            "role": "assistant",
+            "turn_id": "a1",
+            "chunk_index": 0,
+            "kind": "text",
+            "text": "I'll check",
+        })
+        assert r.status_code == 200
+        r = await client.post("/events/chat_delta", json={
+            "peer": "toolpeer",
+            "role": "assistant",
+            "turn_id": "a1",
+            "chunk_index": 1,
+            "kind": "tool_use",
+            "text": "Bash: ls",
+            "tool_call": {"name": "Bash", "input": "ls"},
+        })
+        assert r.status_code == 200
+        # Stop fires; transcript now has a1 (tool_use) then a2 (final text).
+        # Canonical turn_id is a1 — Stop must post a1, not a2.
+        r = await client.post("/events/chat", json={
+            "peer": "toolpeer",
+            "role": "assistant",
+            "text": "I'll check\nls -la output",
+            "turn_id": "a1",
+        })
+        assert r.status_code == 200
+        # Late delta after Stop — also under a1.
+        r = await client.post("/events/chat_delta", json={
+            "peer": "toolpeer",
+            "role": "assistant",
+            "turn_id": "a1",
+            "chunk_index": 2,
+            "kind": "text",
+            "text": "(racing)",
+        })
+        assert r.status_code == 200
+        events = (await client.get("/events")).json()
+        finals = [e for e in events if e["type"] == "chat_turn"]
+        deltas = [e for e in events if e["type"] == "chat_turn_delta"]
+        late_deltas = [d for d in deltas if d["chunk_index"] == 2]
+        assert len(finals) == 1
+        assert finals[0]["turn_id"] == "a1"
+        assert not late_deltas, "post-final delta with canonical turn_id must be dropped"
+
+    async def test_late_delta_dropped_after_final(self, client):
+        """A delta posted for a turn_id that already has a final chat_turn
+        must not land as a chat_turn_delta event."""
+        # Final arrives first (covers the race where Stop wins).
+        r = await client.post("/events/chat", json={
+            "peer": "racepeer",
+            "role": "assistant",
+            "text": "complete",
+            "turn_id": "race-turn-1",
+        })
+        assert r.status_code == 200
+        # Late delta for the same turn_id.
+        r = await client.post("/events/chat_delta", json={
+            "peer": "racepeer",
+            "role": "assistant",
+            "turn_id": "race-turn-1",
+            "chunk_index": 3,
+            "text": "stale block",
+        })
+        assert r.status_code == 200
+        events = (await client.get("/events")).json()
+        deltas = [e for e in events if e["type"] == "chat_turn_delta"]
+        finals = [e for e in events if e["type"] == "chat_turn"]
+        assert len(finals) == 1
+        assert deltas == [], "late delta for finalized turn must be dropped"
+
+    async def test_delta_before_final_is_kept(self, client):
+        """In-order delta then final: both events land, dashboard reconciles."""
+        r = await client.post("/events/chat_delta", json={
+            "peer": "p",
+            "role": "assistant",
+            "turn_id": "ordered-turn-1",
+            "chunk_index": 0,
+            "text": "streaming",
+        })
+        assert r.status_code == 200
+        r = await client.post("/events/chat", json={
+            "peer": "p",
+            "role": "assistant",
+            "text": "final",
+            "turn_id": "ordered-turn-1",
+        })
+        assert r.status_code == 200
+        events = (await client.get("/events")).json()
+        assert any(e["type"] == "chat_turn_delta" for e in events)
+        assert any(e["type"] == "chat_turn" for e in events)
+
+    async def test_finalized_set_capacity_bounded(self, client):
+        """The finalized turn_id set must not grow without bound."""
+        from repowire.daemon.routes import messages as msgs_mod
+
+        msgs_mod._finalized_turn_ids.clear()
+        msgs_mod._FINALIZED_TURN_IDS_CAPACITY = 5
+        try:
+            for i in range(20):
+                r = await client.post("/events/chat", json={
+                    "peer": "p",
+                    "role": "assistant",
+                    "text": "x",
+                    "turn_id": f"cap-{i}",
+                })
+                assert r.status_code == 200
+            assert len(msgs_mod._finalized_turn_ids) == 5
+            # Oldest evicted.
+            assert "cap-0" not in msgs_mod._finalized_turn_ids
+            assert "cap-19" in msgs_mod._finalized_turn_ids
+        finally:
+            msgs_mod._finalized_turn_ids.clear()
+            msgs_mod._FINALIZED_TURN_IDS_CAPACITY = 4096
+
 
 # -- Notify --
 
