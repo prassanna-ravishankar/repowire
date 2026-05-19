@@ -49,6 +49,23 @@ class QuiescedError(Exception):
         self.peer_id = peer_id
 
 
+@dataclass(frozen=True)
+class AskerIdentity:
+    """Snapshot of the asker's stable identity at stash time.
+
+    Captured only when the asker peer has *all* of these fields present and
+    non-default (notably ``machine != "unknown"`` and a non-empty normalized
+    path). Used by the registry's identity-tuple rebind pass to redeliver
+    stashed replies after the original peer_id has been pruned/reaped.
+    """
+
+    display_name: str
+    circle: str
+    backend: str  # AgentType.value
+    path: str  # normalized via os.path.normpath(os.path.realpath(...))
+    machine: str
+
+
 @dataclass
 class Ask:
     """An open ask awaiting ack/reply.
@@ -61,6 +78,11 @@ class Ask:
     asker reconnects — the WS path doesn't need it because /ack's MCP caller
     handles retry on 503. Cleared on successful redelivery (which also closes
     the ask).
+
+    ``asker_identity`` is populated alongside ``pending_reply`` when the asker
+    had a complete stable identity tuple at stash time. The registry uses it
+    to rebind redelivery to a new peer_id after a clean-takeover prune. When
+    None, only same-peer_id reconnect can redeliver.
     """
 
     correlation_id: str
@@ -74,6 +96,8 @@ class Ask:
     closed: bool = False
     close_reason: str | None = None
     pending_reply: str | None = None
+    asker_identity: AskerIdentity | None = None
+    pending_reply_at: datetime | None = None
 
 
 class AskTracker:
@@ -181,20 +205,35 @@ class AskTracker:
         """Look up an ask by corr_id."""
         return self._asks.get(correlation_id)
 
-    async def set_pending_reply(self, correlation_id: str, framed_reply: str) -> bool:
+    async def set_pending_reply(
+        self,
+        correlation_id: str,
+        framed_reply: str,
+        identity: AskerIdentity | None = None,
+    ) -> bool:
         """Stash a completed reply on an open ask for later redelivery.
 
         Used by the ACP-routed `/ask` path when notify fails with
         TransportError: the assembled ACP answer is real and must not be
         dropped just because the asker is currently offline. Returns True
         if the ask exists and was still open, False otherwise.
+
+        ``identity`` is the asker's full stable identity tuple at stash time,
+        captured by the route handler when the asker peer is resolvable and
+        has all required fields. When provided, it enables the registry's
+        pass-2 identity-tuple rebind on asker re-registration.
         """
         async with self._lock:
             ask = self._asks.get(correlation_id)
             if not ask or ask.closed:
                 return False
             ask.pending_reply = framed_reply
-            logger.debug("Stashed pending reply on ask %s", correlation_id)
+            ask.asker_identity = identity
+            ask.pending_reply_at = datetime.now(timezone.utc)
+            logger.debug(
+                "Stashed pending reply on ask %s (identity=%s)",
+                correlation_id, "yes" if identity else "no",
+            )
             return True
 
     async def clear_pending_reply(self, correlation_id: str) -> None:
@@ -207,6 +246,37 @@ class AskTracker:
             ask = self._asks.get(correlation_id)
             if ask is not None:
                 ask.pending_reply = None
+
+    async def rebind_and_close(
+        self,
+        correlation_id: str,
+        new_from_peer_id: str,
+        reason: str,
+    ) -> bool:
+        """Atomic rebind + close + clear under the tracker lock.
+
+        Called by the registry's pass-2 redelivery only after notify
+        succeeds. Rewrites ``from_peer_id`` to the rebound asker,
+        closes the ask, and clears the stash in a single critical
+        section so readers never observe a half-rebound state.
+
+        Returns True if the ask was open and the mutation applied,
+        False if the ask is missing or already closed (in which case
+        no mutation happened).
+        """
+        async with self._lock:
+            ask = self._asks.get(correlation_id)
+            if ask is None or ask.closed:
+                return False
+            ask.from_peer_id = new_from_peer_id
+            ask.closed = True
+            ask.close_reason = reason
+            ask.pending_reply = None
+            logger.debug(
+                "Rebound + closed ask %s -> %s (%s)",
+                correlation_id, new_from_peer_id, reason,
+            )
+            return True
 
     async def take_pending_replies_for_asker(self, peer_id: str) -> list[Ask]:
         """Snapshot open asks targeting this asker that have a stashed reply.
@@ -222,6 +292,81 @@ class AskTracker:
                 if ask.from_peer_id == peer_id
                 and not ask.closed
                 and ask.pending_reply is not None
+            ]
+
+    async def take_orphan_pending_replies_matching(
+        self,
+        *,
+        display_name: str,
+        circle: str,
+        backend: str,
+        path: str,
+        machine: str,
+        live_peer_ids: set[str],
+    ) -> list[Ask]:
+        """Pure filter for identity-tuple rebind.
+
+        Returns asks where:
+          * ``asker_identity`` is non-None
+          * every identity field matches the supplied tuple exactly
+          * ``from_peer_id not in live_peer_ids`` (the original asker peer_id
+            is no longer registered — only then is rebind in play)
+          * the ask is open and has a stashed reply
+
+        The tracker performs no liveness lookups and no uniqueness gating.
+        The caller (PeerRegistry) supplies ``live_peer_ids`` from its own
+        snapshot and applies any cross-peer ambiguity gate before
+        delivering.
+        """
+        async with self._lock:
+            out: list[Ask] = []
+            for ask in self._asks.values():
+                if ask.closed or ask.pending_reply is None:
+                    continue
+                ident = ask.asker_identity
+                if ident is None:
+                    continue
+                if (
+                    ident.display_name != display_name
+                    or ident.circle != circle
+                    or ident.backend != backend
+                    or ident.path != path
+                    or ident.machine != machine
+                ):
+                    continue
+                if ask.from_peer_id in live_peer_ids:
+                    continue
+                out.append(ask)
+            return out
+
+    async def snapshot_pending_replies_for_peer(self, peer_id: str) -> list[Ask]:
+        """Pure read: asks involving this peer that carry a stashed reply.
+
+        Used by ``PeerRegistry._reap_dangling_peers`` / ``_evict_stale_peers``
+        before they call ``forget_peer``, so the registry can emit one
+        ``pending_reply_lost`` event per doomed stash. Does not mutate.
+        """
+        async with self._lock:
+            return [
+                ask for ask in self._asks.values()
+                if ask.pending_reply is not None
+                and (ask.to_peer_id == peer_id or ask.from_peer_id == peer_id)
+            ]
+
+    async def snapshot_expired_pending_replies(self) -> list[Ask]:
+        """Pure read: TTL-expired asks that still carry a stashed reply.
+
+        Used by ``PeerRegistry.lazy_repair`` to emit ``pending_reply_lost``
+        events before ``evict_expired`` deletes the entries. Single owner of
+        TTL-loss emission. Does not mutate. Recipient-facing
+        ``pending_for_peer``'s lazy eviction skips stashed-expired asks so
+        the registry-driven path always wins.
+        """
+        cutoff = datetime.now(timezone.utc) - self._ttl
+        async with self._lock:
+            return [
+                ask for ask in self._asks.values()
+                if ask.created_at < cutoff and ask.pending_reply is not None
             ]
 
     async def pending_for_peer(
@@ -260,12 +405,20 @@ class AskTracker:
             return candidates[:max_results]
 
     async def _maybe_evict_expired(self) -> None:
-        """Run TTL eviction if enough wall time has passed since the last sweep."""
+        """Run TTL eviction if enough wall time has passed since the last sweep.
+
+        Skips asks that still carry a stashed pending reply: those are
+        owned exclusively by the registry's ``lazy_repair`` sweep, which
+        snapshots → emits ``pending_reply_lost`` → calls
+        ``evict_expired(include_stashed=True)`` in order. If this
+        Stop-hook-triggered path dropped stashed-expired asks first, the
+        loss would be silent.
+        """
         now = time.monotonic()
         if now - self._last_eviction < _EVICTION_INTERVAL_SECONDS:
             return
         self._last_eviction = now
-        await self.evict_expired()
+        await self.evict_expired(include_stashed=False)
 
     async def forget_peer(self, peer_id: str) -> int:
         """Drop any asks involving this peer.
@@ -288,17 +441,26 @@ class AskTracker:
                 del self._asks[cid]
             return len(doomed)
 
-    async def evict_expired(self) -> int:
+    async def evict_expired(self, *, include_stashed: bool = True) -> int:
         """Drop asks older than TTL. Returns count evicted.
 
         Closes them as 'evicted' before removal so any caller holding a
         reference can see why they vanished.
+
+        ``include_stashed`` controls whether TTL-expired asks that still
+        carry a stashed reply are dropped. Defaults to True for the
+        registry-driven sweep (which has already emitted
+        ``pending_reply_lost`` from the snapshot it took just before this
+        call). The recipient-facing lazy path (``_maybe_evict_expired``)
+        passes False so stashed-expired asks survive until the registry's
+        single-owner emission path runs.
         """
         cutoff = datetime.now(timezone.utc) - self._ttl
         async with self._lock:
             expired = [
                 cid for cid, ask in self._asks.items()
                 if ask.created_at < cutoff
+                and (include_stashed or ask.pending_reply is None)
             ]
             for cid in expired:
                 ask = self._asks[cid]

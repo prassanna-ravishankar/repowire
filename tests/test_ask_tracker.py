@@ -129,3 +129,148 @@ class TestEvictExpired:
         await tracker.register("a", "a", "b-id", "b", "x")
         evicted = await tracker.evict_expired()
         assert evicted == 0
+
+
+# ----------------------------------------------------------------------
+# #207 — identity-tuple rebind helpers
+# ----------------------------------------------------------------------
+
+from repowire.daemon.ask_tracker import AskerIdentity  # noqa: E402
+
+
+def _ident(
+    *,
+    display_name="asker",
+    circle="default",
+    backend="claude-code",
+    path="/repo/asker",
+    machine="localhost",
+) -> AskerIdentity:
+    return AskerIdentity(
+        display_name=display_name,
+        circle=circle,
+        backend=backend,
+        path=path,
+        machine=machine,
+    )
+
+
+class TestSetPendingReplyIdentity:
+    async def test_records_identity_when_passed(self, tracker):
+        cid = await tracker.register("a", "a", "b-id", "b", "x")
+        ok = await tracker.set_pending_reply(cid, "framed", identity=_ident())
+        assert ok is True
+        ask = await tracker.get(cid)
+        assert ask is not None
+        assert ask.asker_identity == _ident()
+        assert ask.pending_reply == "framed"
+        assert ask.pending_reply_at is not None
+
+    async def test_accepts_none_identity(self, tracker):
+        """Stash without identity is supported (pass-1 reconnect still works)."""
+        cid = await tracker.register("a", "a", "b-id", "b", "x")
+        ok = await tracker.set_pending_reply(cid, "framed", identity=None)
+        assert ok is True
+        ask = await tracker.get(cid)
+        assert ask is not None and ask.asker_identity is None
+
+    async def test_default_identity_is_none(self, tracker):
+        """Back-compat: set_pending_reply without identity kwarg still works."""
+        cid = await tracker.register("a", "a", "b-id", "b", "x")
+        ok = await tracker.set_pending_reply(cid, "framed")
+        assert ok is True
+        ask = await tracker.get(cid)
+        assert ask is not None and ask.asker_identity is None
+
+
+class TestTakeOrphanPendingRepliesMatching:
+    async def test_requires_all_fields(self, tracker):
+        cid = await tracker.register("asker-old-id", "asker", "b-id", "b", "x")
+        await tracker.set_pending_reply(cid, "framed", identity=_ident())
+        # Wrong machine → no match (every field must match exactly)
+        out = await tracker.take_orphan_pending_replies_matching(
+            display_name="asker", circle="default", backend="claude-code",
+            path="/repo/asker", machine="other-host",
+            live_peer_ids=set(),
+        )
+        assert out == []
+        # Right tuple AND original peer_id not in live set → match
+        out = await tracker.take_orphan_pending_replies_matching(
+            display_name="asker", circle="default", backend="claude-code",
+            path="/repo/asker", machine="localhost",
+            live_peer_ids=set(),
+        )
+        assert len(out) == 1 and out[0].correlation_id == cid
+
+    async def test_skipped_when_original_peer_still_live(self, tracker):
+        cid = await tracker.register("asker-old-id", "asker", "b-id", "b", "x")
+        await tracker.set_pending_reply(cid, "framed", identity=_ident())
+        out = await tracker.take_orphan_pending_replies_matching(
+            display_name="asker", circle="default", backend="claude-code",
+            path="/repo/asker", machine="localhost",
+            live_peer_ids={"asker-old-id"},  # original still alive ⇒ no orphan
+        )
+        assert out == []
+
+    async def test_no_identity_means_no_match(self, tracker):
+        cid = await tracker.register("asker-old-id", "asker", "b-id", "b", "x")
+        await tracker.set_pending_reply(cid, "framed")  # no identity captured
+        out = await tracker.take_orphan_pending_replies_matching(
+            display_name="asker", circle="default", backend="claude-code",
+            path="/repo/asker", machine="localhost",
+            live_peer_ids=set(),
+        )
+        assert out == []
+
+
+class TestSnapshotHelpers:
+    async def test_snapshot_pending_replies_for_peer_does_not_mutate(self, tracker):
+        cid = await tracker.register("asker-id", "asker", "b-id", "b", "x")
+        await tracker.set_pending_reply(cid, "framed", identity=_ident())
+        snap = await tracker.snapshot_pending_replies_for_peer("asker-id")
+        assert len(snap) == 1 and snap[0].correlation_id == cid
+        # Tracker still has the ask after snapshot
+        assert await tracker.get(cid) is not None
+
+    async def test_snapshot_pending_replies_for_peer_excludes_unstashed(self, tracker):
+        await tracker.register("asker-id", "asker", "b-id", "b", "x")  # no stash
+        snap = await tracker.snapshot_pending_replies_for_peer("asker-id")
+        assert snap == []
+
+    async def test_snapshot_expired_pending_replies_filters_by_ttl(self, tracker):
+        cid = await tracker.register("asker-id", "asker", "b-id", "b", "x")
+        await tracker.set_pending_reply(cid, "framed", identity=_ident())
+        # Not expired yet
+        snap = await tracker.snapshot_expired_pending_replies()
+        assert snap == []
+        # Backdate to past TTL
+        ask = await tracker.get(cid)
+        ask.created_at = datetime.now(timezone.utc) - timedelta(hours=25)
+        snap = await tracker.snapshot_expired_pending_replies()
+        assert len(snap) == 1 and snap[0].correlation_id == cid
+        # Snapshot is non-mutating
+        assert await tracker.get(cid) is not None
+
+    async def test_snapshot_expired_excludes_unstashed(self, tracker):
+        cid = await tracker.register("asker-id", "asker", "b-id", "b", "x")
+        ask = await tracker.get(cid)
+        ask.created_at = datetime.now(timezone.utc) - timedelta(hours=25)
+        snap = await tracker.snapshot_expired_pending_replies()
+        assert snap == []
+
+
+class TestEvictExpiredStashedFlag:
+    async def test_maybe_evict_skips_stashed(self, tracker):
+        cid = await tracker.register("asker-id", "asker", "b-id", "b", "x")
+        await tracker.set_pending_reply(cid, "framed", identity=_ident())
+        ask = await tracker.get(cid)
+        ask.created_at = datetime.now(timezone.utc) - timedelta(hours=25)
+        # Default include_stashed=True drops it
+        # but include_stashed=False (the path used by _maybe_evict_expired)
+        # leaves it.
+        evicted = await tracker.evict_expired(include_stashed=False)
+        assert evicted == 0
+        assert await tracker.get(cid) is not None
+        evicted = await tracker.evict_expired(include_stashed=True)
+        assert evicted == 1
+        assert await tracker.get(cid) is None

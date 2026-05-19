@@ -165,6 +165,9 @@ class TestLazyRepairReaper:
         transport.disconnect = AsyncMock(return_value=True)
         ask_tracker = MagicMock()
         ask_tracker.forget_peer = AsyncMock(return_value=1)
+        ask_tracker.snapshot_pending_replies_for_peer = AsyncMock(return_value=[])
+        ask_tracker.snapshot_expired_pending_replies = AsyncMock(return_value=[])
+        ask_tracker.evict_expired = AsyncMock(return_value=0)
         manager = _make_manager(
             transport=transport,
             ask_tracker=ask_tracker,

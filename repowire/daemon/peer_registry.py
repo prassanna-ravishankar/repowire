@@ -35,6 +35,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def normalize_identity_path(raw: str) -> str:
+    """Canonical path form for asker identity matching.
+
+    Used symmetrically at stash time (in routes/asks.py) and at rebind time
+    (in PeerRegistry._redeliver_pending_replies). Returns "" when ``raw`` is
+    empty so the strictness gate can refuse no-path stashes.
+    """
+    if not raw:
+        return ""
+    try:
+        return os.path.normpath(os.path.realpath(raw))
+    except (OSError, ValueError):
+        return os.path.normpath(raw)
+
+
 class PaneHijackRejectedError(Exception):
     """Raised by allocate_and_register when a fresh SessionStart claim is
     rejected because it appears to be a subprocess of the pane's existing
@@ -515,6 +530,11 @@ class PeerRegistry:
         If ``peer_id`` is provided and matches an existing peer, the peer is
         taken over in-place (WebSocket reconnect after HTTP pre-registration).
         """
+        # Captured inside the lock, used outside it to schedule redelivery.
+        result_peer_id: str | None = None
+        result_name: str | None = None
+        should_redeliver = False
+
         async with self._lock:
             # Reconnect: if caller provides a peer_id that exists, take over
             # only when it still describes the same peer identity. Stale pane
@@ -555,91 +575,109 @@ class PeerRegistry:
                             mapping.agent_pid = agent_pid
                             self._mappings_dirty = True
                     logger.info(f"Peer reconnected: {existing.display_name} ({peer_id})")
-                    return peer_id, existing.display_name
+                    result_peer_id = peer_id
+                    result_name = existing.display_name
+                    should_redeliver = True
 
-            # Pane-hijack guard: a fresh SessionStart claim for a pane that
-            # already has a live peer, where the new hook's parent_pid matches
-            # the existing peer's agent_pid, is almost certainly a subprocess
-            # agent (e.g. `gemini --yolo` run from inside a claude-code pane)
-            # inheriting TMUX_PANE from its parent and trying to register on
-            # the parent's pane. Reject — the original peer keeps the pane.
-            if pane_id and parent_pid is not None:
-                tolerance = self.heartbeat_tolerance()
-                now = datetime.now(timezone.utc)
-                for existing in self._peers.values():
-                    if existing.pane_id != pane_id:
-                        continue
-                    if existing.agent_pid is None or existing.agent_pid != parent_pid:
-                        continue
-                    if existing.last_seen is None:
-                        continue
-                    if (now - existing.last_seen).total_seconds() > tolerance:
-                        continue
-                    logger.error(
-                        "Rejecting pane-hijack SessionStart claim: "
-                        "hook_pid=%s parent_pid=%s existing_agent_pid=%s "
-                        "existing_peer_id=%s existing_display_name=%s pane_id=%s",
-                        agent_pid,
-                        parent_pid,
-                        existing.agent_pid,
-                        existing.peer_id,
-                        existing.display_name,
-                        pane_id,
-                    )
-                    raise PaneHijackRejectedError(
-                        f"pane {pane_id} held by {existing.display_name} "
-                        f"({existing.peer_id}); claimant parent_pid={parent_pid} "
-                        f"matches existing agent_pid={existing.agent_pid}"
-                    )
+            if result_peer_id is None:
+                # Pane-hijack guard: a fresh SessionStart claim for a pane that
+                # already has a live peer, where the new hook's parent_pid matches
+                # the existing peer's agent_pid, is almost certainly a subprocess
+                # agent (e.g. `gemini --yolo` run from inside a claude-code pane)
+                # inheriting TMUX_PANE from its parent and trying to register on
+                # the parent's pane. Reject — the original peer keeps the pane.
+                if pane_id and parent_pid is not None:
+                    tolerance = self.heartbeat_tolerance()
+                    now = datetime.now(timezone.utc)
+                    for existing in self._peers.values():
+                        if existing.pane_id != pane_id:
+                            continue
+                        if existing.agent_pid is None or existing.agent_pid != parent_pid:
+                            continue
+                        if existing.last_seen is None:
+                            continue
+                        if (now - existing.last_seen).total_seconds() > tolerance:
+                            continue
+                        logger.error(
+                            "Rejecting pane-hijack SessionStart claim: "
+                            "hook_pid=%s parent_pid=%s existing_agent_pid=%s "
+                            "existing_peer_id=%s existing_display_name=%s pane_id=%s",
+                            agent_pid,
+                            parent_pid,
+                            existing.agent_pid,
+                            existing.peer_id,
+                            existing.display_name,
+                            pane_id,
+                        )
+                        raise PaneHijackRejectedError(
+                            f"pane {pane_id} held by {existing.display_name} "
+                            f"({existing.peer_id}); claimant parent_pid={parent_pid} "
+                            f"matches existing agent_pid={existing.agent_pid}"
+                        )
 
-            # Fresh registration: daemon owns the name
-            assigned_name = self._build_display_name(path or "", circle, backend)
-            allocated_id = self._find_or_allocate_mapping(
-                assigned_name, circle, backend, path, role=role,
-                agent_pid=agent_pid,
+                # Fresh registration: daemon owns the name
+                assigned_name = self._build_display_name(path or "", circle, backend)
+                allocated_id = self._find_or_allocate_mapping(
+                    assigned_name, circle, backend, path, role=role,
+                    agent_pid=agent_pid,
+                )
+                if pane_id:
+                    self._release_pane(pane_id, allocated_id)
+
+                # Restore circle, role, and description from persisted mapping.
+                # The mapping is the durable source of truth for these fields;
+                # when _find_or_allocate_mapping adopted a prior session, its
+                # stored circle/role may differ from the caller-supplied
+                # defaults and should win.
+                restored = self._mappings.get(allocated_id)
+                effective_circle = restored.circle if restored else circle
+                effective_role = restored.role if restored else role
+                restored_description = restored.description if restored else ""
+                # Caller-supplied agent_pid wins (it's the live process); fall
+                # back to whatever the mapping persisted across daemon restart.
+                effective_agent_pid = (
+                    agent_pid
+                    if agent_pid is not None
+                    else (restored.agent_pid if restored else None)
+                )
+
+                # --- create and insert Peer ---
+                peer = Peer(
+                    peer_id=allocated_id,
+                    display_name=assigned_name,
+                    circle=effective_circle,
+                    backend=backend,
+                    role=effective_role,
+                    status=PeerStatus.ONLINE,
+                    last_seen=datetime.now(timezone.utc),
+                    pane_id=pane_id,
+                    tmux_session=tmux_session,
+                    path=path or "",
+                    machine=machine,
+                    metadata=metadata or {},
+                    description=restored_description,
+                    turn_state=turn_state,
+                    agent_pid=effective_agent_pid,
+                )
+                self._peers[allocated_id] = peer
+                logger.info(f"Peer registered: {assigned_name} ({allocated_id})")
+                result_peer_id = allocated_id
+                result_name = assigned_name
+                should_redeliver = True
+
+        # Out of the lock. Schedule pass-2 (identity-tuple) redelivery for
+        # both fresh allocations and same-id reconnects. The new peer is
+        # already ONLINE, so update_peer_status won't fire — this is the
+        # only redelivery hook on the SessionStart path. Gated on the
+        # acp_broker_client experiment so flag-off has zero new behaviour.
+        if should_redeliver and result_peer_id and self._acp_redelivery_enabled():
+            asyncio.create_task(
+                self._redeliver_pending_replies(result_peer_id),
+                name=f"redeliver-{result_peer_id[:12]}",
             )
-            if pane_id:
-                self._release_pane(pane_id, allocated_id)
 
-            # Restore circle, role, and description from persisted mapping. The
-            # mapping is the durable source of truth for these fields; when
-            # _find_or_allocate_mapping adopted a prior session, its stored
-            # circle/role may differ from the caller-supplied defaults and
-            # should win.
-            restored = self._mappings.get(allocated_id)
-            effective_circle = restored.circle if restored else circle
-            effective_role = restored.role if restored else role
-            restored_description = restored.description if restored else ""
-            # Caller-supplied agent_pid wins (it's the live process); fall
-            # back to whatever the mapping persisted across daemon restart.
-            effective_agent_pid = (
-                agent_pid
-                if agent_pid is not None
-                else (restored.agent_pid if restored else None)
-            )
-
-            # --- create and insert Peer ---
-            peer = Peer(
-                peer_id=allocated_id,
-                display_name=assigned_name,
-                circle=effective_circle,
-                backend=backend,
-                role=effective_role,
-                status=PeerStatus.ONLINE,
-                last_seen=datetime.now(timezone.utc),
-                pane_id=pane_id,
-                tmux_session=tmux_session,
-                path=path or "",
-                machine=machine,
-                metadata=metadata or {},
-                description=restored_description,
-                turn_state=turn_state,
-                agent_pid=effective_agent_pid,
-            )
-            self._peers[allocated_id] = peer
-            logger.info(f"Peer registered: {assigned_name} ({allocated_id})")
-
-            return allocated_id, assigned_name
+        assert result_peer_id is not None and result_name is not None
+        return result_peer_id, result_name
 
     # ------------------------------------------------------------------
     # register_peer (backward-compat for tests that build Peer objects)
@@ -1198,43 +1236,134 @@ class PeerRegistry:
     async def _redeliver_pending_replies(self, asker_peer_id: str) -> None:
         """Drain ACP-stashed replies for an asker that just came back online.
 
-        Best-effort: a failure here just leaves the reply stashed for the next
-        reconnect. Successful redelivery closes the ask (ack_with_msg) and
-        clears the stash so the Ask object isn't holding reply text it can
-        never use again.
+        Two passes:
+          1. ``take_pending_replies_for_asker`` — same peer_id reconnect
+             (original behaviour).
+          2. ``take_orphan_pending_replies_matching`` — full identity-tuple
+             rebind for asks whose original ``from_peer_id`` is no longer in
+             ``_peers`` (i.e. pruned by ``_build_display_name`` or reaped).
+             Guarded by a uniqueness gate over live peers so an ambiguous
+             tuple refuses rebind rather than misrouting.
+
+        Best-effort: a failure here just leaves the reply stashed for the
+        next reconnect / sweep. Successful redelivery closes the ask
+        (ack_with_msg) and clears the stash so the Ask object isn't holding
+        reply text it can never use again.
         """
         if self._ask_tracker is None:
             return
+        # --- Pass 1: same peer_id reconnect ---
         try:
             pending = await self._ask_tracker.take_pending_replies_for_asker(asker_peer_id)
         except Exception as e:  # noqa: BLE001
             logger.warning("redeliver: snapshot failed for %s: %s", asker_peer_id, e)
-            return
+            pending = []
         for ask in pending:
-            reply = ask.pending_reply
-            if reply is None:
-                continue
-            try:
-                await self.notify(
-                    from_peer=ask.to_peer_id,
-                    to_peer=ask.from_peer_id,
-                    text=reply,
-                    bypass_circle=True,
-                )
-            except (ValueError, TransportError) as e:
-                logger.info(
-                    "redeliver: %s still undeliverable to %s: %s",
-                    ask.correlation_id, asker_peer_id, e,
-                )
-                continue
-            await self._ask_tracker.close(ask.correlation_id, reason="ack_with_msg")
-            # Drop the stash from the closed Ask object so we're not
-            # retaining reply text past its useful life.
-            await self._ask_tracker.clear_pending_reply(ask.correlation_id)
-            logger.info(
-                "redeliver: delivered stashed reply for %s to %s",
-                ask.correlation_id, asker_peer_id,
+            await self._deliver_one_stashed(ask, asker_peer_id, rebind=False)
+
+        # --- Pass 2: identity-tuple rebind ---
+        async with self._lock:
+            new_peer = self._peers.get(asker_peer_id)
+            if new_peer is None:
+                return
+            if not (new_peer.display_name and new_peer.circle and new_peer.backend):
+                return
+            if not new_peer.machine or new_peer.machine == "unknown":
+                return
+            norm_path = normalize_identity_path(new_peer.path or "")
+            if not norm_path:
+                return
+            tuple_fields = (
+                new_peer.display_name,
+                new_peer.circle,
+                new_peer.backend.value,
+                norm_path,
+                new_peer.machine,
             )
+            # Uniqueness gate: refuse rebind if any other live peer matches
+            # the same full tuple. We compute matches under the lock so the
+            # live-peers snapshot we pass to the tracker is consistent with
+            # the gate decision.
+            matches = [
+                p for p in self._peers.values()
+                if p.display_name == new_peer.display_name
+                and p.circle == new_peer.circle
+                and p.backend == new_peer.backend
+                and (p.machine or "") == new_peer.machine
+                and normalize_identity_path(p.path or "") == norm_path
+            ]
+            live_peer_ids = set(self._peers.keys())
+
+        if len(matches) != 1 or matches[0].peer_id != asker_peer_id:
+            logger.debug(
+                "redeliver pass-2: ambiguous live tuple match for %s "
+                "(%d candidates); refusing rebind",
+                asker_peer_id, len(matches),
+            )
+            return
+
+        try:
+            orphans = await self._ask_tracker.take_orphan_pending_replies_matching(
+                display_name=tuple_fields[0],
+                circle=tuple_fields[1],
+                backend=tuple_fields[2],
+                path=tuple_fields[3],
+                machine=tuple_fields[4],
+                live_peer_ids=live_peer_ids,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "redeliver pass-2: orphan scan failed for %s: %s",
+                asker_peer_id, e,
+            )
+            return
+        for ask in orphans:
+            await self._deliver_one_stashed(ask, asker_peer_id, rebind=True)
+
+    async def _deliver_one_stashed(
+        self, ask: Any, asker_peer_id: str, *, rebind: bool,
+    ) -> None:
+        """Deliver a single stashed reply and close the ask on success.
+
+        The Ask object is **never mutated** outside ``AskTracker`` locks.
+        Notify targets ``asker_peer_id`` directly (the registry already
+        knows the live id from its own pass-1/pass-2 caller); only on
+        successful delivery do we ask the tracker to atomically rebind
+        + close + clear (rebind path) or close + clear (same-id path).
+        On notify failure the stash is left exactly as we found it.
+        """
+        reply = ask.pending_reply
+        if reply is None:
+            return
+        try:
+            await self.notify(
+                from_peer=ask.to_peer_id,
+                to_peer=asker_peer_id,
+                text=reply,
+                bypass_circle=True,
+            )
+        except (ValueError, TransportError) as e:
+            logger.info(
+                "redeliver: %s still undeliverable to %s: %s",
+                ask.correlation_id, asker_peer_id, e,
+            )
+            return
+        if self._ask_tracker is None:
+            return
+        if rebind:
+            await self._ask_tracker.rebind_and_close(
+                ask.correlation_id, asker_peer_id, reason="ack_with_msg",
+            )
+        else:
+            await self._ask_tracker.close(
+                ask.correlation_id, reason="ack_with_msg",
+            )
+            await self._ask_tracker.clear_pending_reply(ask.correlation_id)
+        logger.info(
+            "redeliver%s: delivered stashed reply for %s to %s",
+            " (rebound)" if rebind else "",
+            ask.correlation_id, asker_peer_id,
+        )
 
     async def update_peer_turn_state(
         self, identifier: str, turn_state: TurnState | None,
@@ -1520,6 +1649,7 @@ class PeerRegistry:
             await self._demote_unsafe_connected_peers()
             await self._reap_dangling_peers()
             await self._evict_stale_peers()
+            await self._emit_and_evict_expired_stashes()
             self._save_events()
             self._persist_mappings()
 
@@ -1617,6 +1747,21 @@ class PeerRegistry:
                 self._description_set_at.pop(peer.peer_id, None)
                 self._mappings_dirty = True
 
+        # Snapshot doomed-with-stash asks BEFORE any destructive cleanup
+        # so observers see the pending_reply_lost event before the ask
+        # disappears. Order: snapshot → emit → forget/evict.
+        doomed_stashes: list[tuple[Any, str]] = []
+        if self._ask_tracker is not None:
+            for peer in stale:
+                snap = await self._ask_tracker.snapshot_pending_replies_for_peer(
+                    peer.peer_id,
+                )
+                for ask in snap:
+                    doomed_stashes.append((ask, "offline_ttl_reap"))
+
+        for ask, reason in doomed_stashes:
+            self._emit_pending_reply_lost(ask, reason)
+
         for peer in stale:
             if self._transport is not None:
                 try:
@@ -1666,9 +1811,64 @@ class PeerRegistry:
                 self._mappings_dirty = True
                 logger.info("evicted %d stale offline peers", len(stale))
         if stale and self._ask_tracker is not None:
+            doomed_stashes: list[Any] = []
+            for pid in stale:
+                snap = await self._ask_tracker.snapshot_pending_replies_for_peer(pid)
+                doomed_stashes.extend(snap)
+            # snapshot → emit → forget so observers see the loss event
+            # before the ask disappears.
+            for ask in doomed_stashes:
+                self._emit_pending_reply_lost(ask, "stale_evict")
             for pid in stale:
                 await self._ask_tracker.forget_peer(pid)
         return len(stale)
+
+    async def _emit_and_evict_expired_stashes(self) -> None:
+        """Single owner for TTL-loss emission on stashed asks.
+
+        Snapshot expired stashes, emit pointer-only ``pending_reply_lost``
+        events, then call ``evict_expired(include_stashed=True)`` to delete.
+        The Stop-hook-triggered ``_maybe_evict_expired`` path skips
+        stashed asks specifically so this ordering can run.
+        """
+        if self._ask_tracker is None:
+            return
+        snap = await self._ask_tracker.snapshot_expired_pending_replies()
+        # snapshot → emit → evict so observers see the loss event before
+        # the ask disappears.
+        for ask in snap:
+            self._emit_pending_reply_lost(ask, "ttl_evicted")
+        await self._ask_tracker.evict_expired(include_stashed=True)
+
+    def _emit_pending_reply_lost(self, ask: Any, reason: str) -> None:
+        """Pointer-only ``pending_reply_lost`` event.
+
+        Carries enough to look up the lost correlation and the answerer
+        that produced the reply; deliberately omits reply text, asker
+        path, and asker machine.
+        """
+        ident = ask.asker_identity
+        self.add_event(
+            "pending_reply_lost",
+            {
+                "correlation_id": ask.correlation_id,
+                "answerer_peer_id": ask.to_peer_id,
+                "answerer_name": ask.to_peer_name,
+                # asker_name is always present on the Ask itself, even when
+                # asker_identity wasn't captured at stash time. Pointer-only:
+                # never the reply text, never path, never machine.
+                "asker_name": ask.from_peer_name,
+                "asker_display_name": ident.display_name if ident else None,
+                "asker_circle": ident.circle if ident else None,
+                "asker_backend": ident.backend if ident else None,
+                "asker_peer_id": ask.from_peer_id,
+                "reason": reason,
+                "pending_reply_at": (
+                    ask.pending_reply_at.isoformat()
+                    if ask.pending_reply_at else None
+                ),
+            },
+        )
 
     async def active_repair(self) -> None:
         """Full liveness sweep: ping ONLINE/BUSY peers, mark dead ones OFFLINE.

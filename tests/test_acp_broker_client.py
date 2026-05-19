@@ -1246,3 +1246,617 @@ def test_make_recorder_raises_clean_error_when_acp_sdk_missing(monkeypatch) -> N
     msg = str(exc_info.value)
     assert "agent-client-protocol" in msg
     assert "experiments.acp_broker_client" in msg
+
+
+# ----------------------------------------------------------------------
+# #207 — identity-tuple rebind, pointer-only loss events, TTL ordering
+# ----------------------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+
+def _make_registry_with_at(tmp_path: Path, *, flag: bool = True) -> tuple:
+    cfg = Config()
+    cfg.experiments.acp_broker_client = flag
+    transport = WebSocketTransport()
+    qt = QueryTracker()
+    at = AskTracker(ttl_hours=24.0)
+    router = MessageRouter(transport=transport, query_tracker=qt)
+    registry = PeerRegistry(
+        config=cfg, message_router=router, query_tracker=qt,
+        transport=transport, persistence_path=tmp_path / "sessions.json",
+        ask_tracker=at,
+    )
+    registry._events_path = tmp_path / "events.json"
+    registry._last_repair = time.monotonic() + 3600  # block auto lazy_repair
+    return cfg, registry, router, at
+
+
+@pytest.mark.asyncio
+async def test_pending_reply_rebinds_on_new_peer_id_after_clean_takeover(
+    tmp_path: Path,
+) -> None:
+    """#207 path A: clean-takeover prune leaves a stash; rebind via identity tuple.
+
+    Drives the bug through the real SessionStart entry point —
+    ``allocate_and_register`` — so we prove pass-2 redelivery is wired into
+    the path users actually hit (fresh ONLINE allocation), not just
+    update_peer_status's OFFLINE→ONLINE bump.
+
+    1. Asker A registered via allocate_and_register, goes OFFLINE with a
+       stashed reply (full identity captured).
+    2. Second allocate_and_register call with the same path/backend/circle
+       — _build_display_name prunes the OFFLINE A and a fresh peer_id is
+       allocated, ONLINE from birth.
+    3. allocate_and_register's post-lock scheduler kicks
+       _redeliver_pending_replies on the new id; pass-2 identity match
+       finds the orphan and delivers. Ask closes; no pending_reply_lost
+       event.
+    """
+    from repowire.daemon.routes.asks import _acp_complete
+
+    cfg, registry, router, at = _make_registry_with_at(tmp_path)
+
+    # Real path: allocate_and_register for both asker and answerer.
+    asker_a_id, asker_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(tmp_path),
+        pane_id="%a",
+        machine="localhost",
+    )
+    answerer_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(tmp_path / "answerer"),
+        pane_id="%ans",
+        machine="localhost",
+    )
+    await registry.update_peer_status(asker_a_id, PeerStatus.OFFLINE)
+
+    # Stash a reply via the real _acp_complete path so identity is captured.
+    fail_first = {"n": 0}
+
+    async def _maybe_fail(**kwargs):
+        fail_first["n"] += 1
+        if fail_first["n"] == 1:
+            from repowire.daemon.websocket_transport import TransportError
+            raise TransportError("asker offline")
+    router.send_notification = AsyncMock(side_effect=_maybe_fail)
+
+    cid = await at.register(
+        from_peer_id=asker_a_id, from_peer_name=asker_name,
+        to_peer_id=answerer_id, to_peer_name="answerer", text="q",
+    )
+    await _acp_complete(
+        correlation_id=cid, reply="42", error=None,
+        ask_tracker=at, peer_registry=registry,
+    )
+    ask = await at.get(cid)
+    assert ask is not None and ask.pending_reply is not None
+    assert ask.asker_identity is not None, "identity should have been captured"
+
+    # Real clean-takeover: a second allocate_and_register for the same
+    # name/circle/backend with the OFFLINE asker-A still present prunes A
+    # (via _build_display_name) and issues a brand new peer_id.
+    asker_b_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(tmp_path),
+        pane_id="%a",
+        machine="localhost",
+    )
+    assert asker_b_id != asker_a_id, "takeover should yield a fresh peer_id"
+    # Give the post-lock redelivery task a tick to run.
+    await asyncio.sleep(0.1)
+
+    ask = await at.get(cid)
+    assert ask is not None
+    assert ask.closed is True, "rebind should have delivered + closed the ask"
+    assert ask.close_reason == "ack_with_msg"
+    assert ask.pending_reply is None, "stash should be cleared after delivery"
+    assert ask.from_peer_id == asker_b_id, "from_peer_id should be rewritten on rebind"
+    # No loss event emitted
+    events = [e for e in registry.get_events() if e["type"] == "pending_reply_lost"]
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_pending_reply_rebind_refused_when_identity_incomplete(
+    tmp_path: Path,
+) -> None:
+    """If the stash was captured without identity (e.g. asker had machine=unknown
+    at stash time), pass-2 cannot rebind — reply stays stashed."""
+    cfg, registry, router, at = _make_registry_with_at(tmp_path)
+    notify_calls: list[dict] = []
+
+    async def _record(**kwargs):
+        notify_calls.append(kwargs)
+    router.send_notification = AsyncMock(side_effect=_record)
+
+    asker_a = Peer(
+        peer_id="asker-A", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%a", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    answerer = Peer(
+        peer_id="answerer", display_name="answerer", path=str(tmp_path),
+        machine="localhost", pane_id="%ans", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    await registry.register_peer(asker_a)
+    await registry.register_peer(answerer)
+
+    cid = await at.register(
+        from_peer_id="asker-A", from_peer_name="asker",
+        to_peer_id="answerer", to_peer_name="answerer", text="q",
+    )
+    # Stash without identity (simulating machine=unknown gate refusal at stash time)
+    await at.set_pending_reply(cid, "[ack #x from @answerer] 42", identity=None)
+
+    # Prune A; register B with same tuple
+    async with registry._lock:
+        del registry._peers["asker-A"]
+        registry._mappings.pop("asker-A", None)
+    asker_b = Peer(
+        peer_id="asker-B", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%a", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    await registry.register_peer(asker_b)
+    await registry.update_peer_status("asker-B", PeerStatus.OFFLINE)
+    await registry.update_peer_status("asker-B", PeerStatus.ONLINE)
+    await asyncio.sleep(0.1)
+
+    ask = await at.get(cid)
+    assert ask is not None and ask.closed is False
+    assert ask.pending_reply is not None
+    assert notify_calls == [], "no rebind should have fired without identity"
+
+
+@pytest.mark.asyncio
+async def test_pending_reply_rebind_refused_on_ambiguous_live_match(
+    tmp_path: Path,
+) -> None:
+    """True full-tuple collision: two live peers share every identity field.
+
+    Reachable only via the lower-level register_peer path because
+    allocate_and_register's name-builder suffixes collisions. The registry
+    uniqueness gate must refuse rebind rather than misroute.
+    """
+    cfg, registry, router, at = _make_registry_with_at(tmp_path)
+    notify_calls: list[dict] = []
+    async def _record(**kwargs):
+        notify_calls.append(kwargs)
+    router.send_notification = AsyncMock(side_effect=_record)
+
+    asker_a = Peer(
+        peer_id="asker-A", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%a", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    answerer = Peer(
+        peer_id="answerer", display_name="answerer", path=str(tmp_path),
+        machine="localhost", pane_id="%ans", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    await registry.register_peer(asker_a)
+    await registry.register_peer(answerer)
+    await registry.update_peer_status("asker-A", PeerStatus.OFFLINE)
+
+    cid = await at.register(
+        from_peer_id="asker-A", from_peer_name="asker",
+        to_peer_id="answerer", to_peer_name="answerer", text="q",
+    )
+    from repowire.daemon.ask_tracker import AskerIdentity
+    from repowire.daemon.peer_registry import normalize_identity_path
+    norm = normalize_identity_path(str(tmp_path))
+    ident = AskerIdentity(
+        display_name="asker", circle="default", backend="claude-code",
+        path=norm, machine="localhost",
+    )
+    await at.set_pending_reply(cid, "[ack #x from @answerer] 42", identity=ident)
+
+    # Construct the pathological state: two live peers, same full tuple,
+    # different peer_ids. (Use direct dict insertion to bypass the
+    # de-duplication path inside register_peer.)
+    async with registry._lock:
+        del registry._peers["asker-A"]
+        registry._mappings.pop("asker-A", None)
+    asker_b = Peer(
+        peer_id="asker-B", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%a", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    asker_c = Peer(
+        peer_id="asker-C", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id=None, circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    async with registry._lock:
+        registry._peers["asker-B"] = asker_b
+        registry._peers["asker-C"] = asker_c
+
+    await registry.update_peer_status("asker-B", PeerStatus.OFFLINE)
+    await registry.update_peer_status("asker-B", PeerStatus.ONLINE)
+    await asyncio.sleep(0.1)
+
+    ask = await at.get(cid)
+    assert ask is not None and ask.closed is False
+    assert ask.pending_reply is not None
+    assert notify_calls == [], "ambiguous tuple must refuse rebind"
+    events = [e for e in registry.get_events() if e["type"] == "pending_reply_lost"]
+    assert events == [], "no loss event yet — still recoverable on next sweep"
+
+
+@pytest.mark.asyncio
+async def test_pending_reply_lost_event_on_reap(tmp_path: Path) -> None:
+    """Reap-time pointer-only loss event with answerer fields."""
+    cfg, registry, router, at = _make_registry_with_at(tmp_path)
+    # Configure short reap TTL so we can backdate cheaply.
+    cfg.daemon.peer_reap_ttl_seconds = 60
+
+    asker = Peer(
+        peer_id="asker-A", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%a", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    answerer = Peer(
+        peer_id="answerer", display_name="answerer", path=str(tmp_path),
+        machine="localhost", pane_id="%ans", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    await registry.register_peer(asker)
+    await registry.register_peer(answerer)
+
+    from repowire.daemon.ask_tracker import AskerIdentity
+    cid = await at.register(
+        from_peer_id="asker-A", from_peer_name="asker",
+        to_peer_id="answerer", to_peer_name="answerer", text="q",
+    )
+    ident = AskerIdentity(
+        display_name="asker", circle="default", backend="claude-code",
+        path=str(tmp_path), machine="localhost",
+    )
+    await at.set_pending_reply(cid, "[ack #x from @answerer] secret answer", identity=ident)
+
+    # Backdate asker to past reap TTL and mark OFFLINE
+    async with registry._lock:
+        live = registry._peers["asker-A"]
+        live.status = PeerStatus.OFFLINE
+        live.last_seen = datetime.now(timezone.utc) - timedelta(seconds=120)
+
+    # Allow lazy_repair to run
+    registry._last_repair = 0.0
+    await registry.lazy_repair()
+
+    # Ask should be gone (forget_peer dropped it after the snapshot)
+    assert await at.get(cid) is None
+    # And we should have one pointer-only loss event
+    events = [e for e in registry.get_events() if e["type"] == "pending_reply_lost"]
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["correlation_id"] == cid
+    assert ev["answerer_peer_id"] == "answerer"
+    assert ev["answerer_name"] == "answerer"
+    # asker_name is always present (from Ask.from_peer_name)
+    assert ev["asker_name"] == "asker"
+    assert ev["asker_display_name"] == "asker"
+    assert ev["asker_circle"] == "default"
+    assert ev["asker_backend"] == "claude-code"
+    assert ev["asker_peer_id"] == "asker-A"
+    assert ev["reason"] == "offline_ttl_reap"
+    # Pointer-only: no reply text, no asker path, no asker machine
+    assert "reply" not in ev and "text" not in ev
+    assert "path" not in ev and "machine" not in ev
+
+
+@pytest.mark.asyncio
+async def test_pending_reply_lost_event_on_ttl_eviction(tmp_path: Path) -> None:
+    """24h TTL eviction emits a loss event via lazy_repair's single-owner path."""
+    cfg, registry, router, at = _make_registry_with_at(tmp_path)
+
+    asker = Peer(
+        peer_id="asker-A", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%a", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    answerer = Peer(
+        peer_id="answerer", display_name="answerer", path=str(tmp_path),
+        machine="localhost", pane_id="%ans", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    await registry.register_peer(asker)
+    await registry.register_peer(answerer)
+
+    cid = await at.register(
+        from_peer_id="asker-A", from_peer_name="asker",
+        to_peer_id="answerer", to_peer_name="answerer", text="q",
+    )
+    await at.set_pending_reply(cid, "[ack #x from @answerer] 42")
+
+    # Backdate created_at past 24h TTL
+    ask = await at.get(cid)
+    ask.created_at = datetime.now(timezone.utc) - timedelta(hours=25)
+
+    registry._last_repair = 0.0
+    await registry.lazy_repair()
+
+    assert await at.get(cid) is None
+    events = [e for e in registry.get_events() if e["type"] == "pending_reply_lost"]
+    assert len(events) == 1
+    assert events[0]["reason"] == "ttl_evicted"
+    assert events[0]["correlation_id"] == cid
+    assert events[0]["answerer_peer_id"] == "answerer"
+
+
+@pytest.mark.asyncio
+async def test_stop_hook_poll_does_not_silently_evict_stashed_ask(
+    tmp_path: Path,
+) -> None:
+    """The Stop-hook-driven pending_for_peer path must NOT drop stashed-expired
+    asks before the registry's lazy_repair gets a chance to emit the loss event.
+    """
+    cfg, registry, router, at = _make_registry_with_at(tmp_path)
+
+    asker = Peer(
+        peer_id="asker-A", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%a", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    answerer = Peer(
+        peer_id="answerer", display_name="answerer", path=str(tmp_path),
+        machine="localhost", pane_id="%ans", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    await registry.register_peer(asker)
+    await registry.register_peer(answerer)
+    cid = await at.register(
+        from_peer_id="asker-A", from_peer_name="asker",
+        to_peer_id="answerer", to_peer_name="answerer", text="q",
+    )
+    await at.set_pending_reply(cid, "[ack #x from @answerer] 42")
+    ask = await at.get(cid)
+    ask.created_at = datetime.now(timezone.utc) - timedelta(hours=25)
+
+    # Force _maybe_evict_expired to run on the next pending_for_peer call.
+    at._last_eviction = 0.0
+    _ = await at.pending_for_peer("answerer")
+
+    # Ask is still present; no loss event yet.
+    assert await at.get(cid) is not None
+    events = [e for e in registry.get_events() if e["type"] == "pending_reply_lost"]
+    assert events == []
+
+    # Registry sweep is the single owner — now it should emit + delete.
+    registry._last_repair = 0.0
+    await registry.lazy_repair()
+    assert await at.get(cid) is None
+    events = [e for e in registry.get_events() if e["type"] == "pending_reply_lost"]
+    assert len(events) == 1
+    assert events[0]["reason"] == "ttl_evicted"
+
+
+@pytest.mark.asyncio
+async def test_path_normalization_symmetry(tmp_path: Path) -> None:
+    """Stash with raw path; live peer normalized variant; rebind succeeds."""
+    cfg, registry, router, at = _make_registry_with_at(tmp_path)
+    notify_calls: list[dict] = []
+    async def _record(**kwargs):
+        notify_calls.append(kwargs)
+    router.send_notification = AsyncMock(side_effect=_record)
+
+    from repowire.daemon.ask_tracker import AskerIdentity
+    from repowire.daemon.peer_registry import normalize_identity_path
+
+    raw = str(tmp_path) + "/./"  # un-normalized
+    norm = normalize_identity_path(raw)
+
+    asker_a = Peer(
+        peer_id="asker-A", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%a", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    answerer = Peer(
+        peer_id="answerer", display_name="answerer", path=str(tmp_path),
+        machine="localhost", pane_id="%ans", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    await registry.register_peer(asker_a)
+    await registry.register_peer(answerer)
+    await registry.update_peer_status("asker-A", PeerStatus.OFFLINE)
+
+    cid = await at.register(
+        from_peer_id="asker-A", from_peer_name="asker",
+        to_peer_id="answerer", to_peer_name="answerer", text="q",
+    )
+    ident = AskerIdentity(
+        display_name="asker", circle="default", backend="claude-code",
+        path=norm, machine="localhost",
+    )
+    await at.set_pending_reply(cid, "[ack #x from @answerer] 42", identity=ident)
+
+    # Prune A, register B with the un-normalized variant. Registry's pass-2
+    # normalizes both sides, so the rebind tuple should match.
+    async with registry._lock:
+        del registry._peers["asker-A"]
+        registry._mappings.pop("asker-A", None)
+    asker_b = Peer(
+        peer_id="asker-B", display_name="asker", path=raw,
+        machine="localhost", pane_id="%a", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    await registry.register_peer(asker_b)
+    await registry.update_peer_status("asker-B", PeerStatus.OFFLINE)
+    await registry.update_peer_status("asker-B", PeerStatus.ONLINE)
+    await asyncio.sleep(0.1)
+
+    ask = await at.get(cid)
+    assert ask is not None and ask.closed is True
+    assert ask.pending_reply is None
+
+
+@pytest.mark.asyncio
+async def test_same_id_reconnect_via_allocate_and_register_redelivers(
+    tmp_path: Path,
+) -> None:
+    """Same-peer_id reconnect through allocate_and_register also triggers
+    redelivery — not just update_peer_status's OFFLINE→ONLINE bump.
+
+    HTTP /peers pre-registration followed by a WebSocket reconnect calls
+    allocate_and_register with the original peer_id; the peer takes over
+    in place (no new peer_id). Pass-1 (same-id) redelivery should fire.
+    """
+    from repowire.daemon.routes.asks import _acp_complete
+
+    cfg, registry, router, at = _make_registry_with_at(tmp_path)
+
+    asker_id, asker_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(tmp_path),
+        pane_id="%a",
+        machine="localhost",
+    )
+    answerer_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(tmp_path / "answerer"),
+        pane_id="%ans",
+        machine="localhost",
+    )
+    await registry.update_peer_status(asker_id, PeerStatus.OFFLINE)
+
+    fail_first = {"n": 0}
+
+    async def _maybe_fail(**kwargs):
+        fail_first["n"] += 1
+        if fail_first["n"] == 1:
+            from repowire.daemon.websocket_transport import TransportError
+            raise TransportError("asker offline")
+    router.send_notification = AsyncMock(side_effect=_maybe_fail)
+
+    cid = await at.register(
+        from_peer_id=asker_id, from_peer_name=asker_name,
+        to_peer_id=answerer_id, to_peer_name="answerer", text="q",
+    )
+    await _acp_complete(
+        correlation_id=cid, reply="42", error=None,
+        ask_tracker=at, peer_registry=registry,
+    )
+
+    # Same-id reconnect through allocate_and_register: peer_id carried in.
+    same_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(tmp_path),
+        pane_id="%a",
+        machine="localhost",
+        peer_id=asker_id,
+    )
+    assert same_id == asker_id, "reconnect must keep the original peer_id"
+    await asyncio.sleep(0.1)
+
+    ask = await at.get(cid)
+    assert ask is not None
+    assert ask.closed is True, "pass-1 redelivery should have closed the ask"
+    assert ask.pending_reply is None
+    assert ask.from_peer_id == asker_id  # unchanged, no rebind needed
+
+
+@pytest.mark.asyncio
+async def test_pending_reply_lost_includes_asker_name_without_identity(
+    tmp_path: Path,
+) -> None:
+    """Blocker #4: asker_name must be populated from Ask.from_peer_name
+    even when asker_identity is None (e.g. stash captured without identity
+    because machine=='unknown' at stash time)."""
+    cfg, registry, _, at = _make_registry_with_at(tmp_path)
+    cfg.daemon.peer_reap_ttl_seconds = 60
+
+    asker = Peer(
+        peer_id="asker-A", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%a", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    answerer = Peer(
+        peer_id="answerer", display_name="answerer", path=str(tmp_path),
+        machine="localhost", pane_id="%ans", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    await registry.register_peer(asker)
+    await registry.register_peer(answerer)
+
+    cid = await at.register(
+        from_peer_id="asker-A", from_peer_name="asker-display",
+        to_peer_id="answerer", to_peer_name="answerer", text="q",
+    )
+    # No identity captured (simulates pre-strictness-gate stash)
+    await at.set_pending_reply(cid, "[ack #x from @answerer] 42", identity=None)
+
+    async with registry._lock:
+        live = registry._peers["asker-A"]
+        live.status = PeerStatus.OFFLINE
+        live.last_seen = datetime.now(timezone.utc) - timedelta(seconds=120)
+
+    registry._last_repair = 0.0
+    await registry.lazy_repair()
+
+    events = [e for e in registry.get_events() if e["type"] == "pending_reply_lost"]
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["asker_name"] == "asker-display", "asker_name must come from Ask.from_peer_name"
+    assert ev["asker_display_name"] is None  # identity wasn't captured
+    assert ev["asker_circle"] is None
+    assert ev["asker_backend"] is None
+    # Pointer-only invariants still hold
+    assert "reply" not in ev and "text" not in ev
+    assert "path" not in ev and "machine" not in ev
+
+
+@pytest.mark.asyncio
+async def test_pending_reply_lost_emitted_before_destruction(
+    tmp_path: Path,
+) -> None:
+    """Blocker #3: snapshot → emit → forget ordering. Capture the event
+    payload at emit time AND confirm the ask is still present at that
+    moment, then absent after lazy_repair completes."""
+    cfg, registry, _, at = _make_registry_with_at(tmp_path)
+    cfg.daemon.peer_reap_ttl_seconds = 60
+
+    asker = Peer(
+        peer_id="asker-A", display_name="asker", path=str(tmp_path),
+        machine="localhost", pane_id="%a", circle="default",
+        backend=AgentType.CLAUDE_CODE,
+    )
+    await registry.register_peer(asker)
+    cid = await at.register(
+        from_peer_id="asker-A", from_peer_name="asker",
+        to_peer_id="answerer", to_peer_name="answerer", text="q",
+    )
+    await at.set_pending_reply(cid, "[ack #x from @answerer] 42")
+
+    async with registry._lock:
+        live = registry._peers["asker-A"]
+        live.status = PeerStatus.OFFLINE
+        live.last_seen = datetime.now(timezone.utc) - timedelta(seconds=120)
+
+    # Hook add_event so we can check the ask still exists at emission time.
+    seen_at_emit: dict = {}
+    original_add_event = registry.add_event
+
+    def _spy_add_event(name, payload):
+        if name == "pending_reply_lost":
+            # If ordering is wrong (delete first), the tracker would already
+            # have removed the ask by now.
+            seen_at_emit["ask_exists"] = cid in at._asks
+        return original_add_event(name, payload)
+    registry.add_event = _spy_add_event  # type: ignore[assignment]
+
+    registry._last_repair = 0.0
+    await registry.lazy_repair()
+
+    assert seen_at_emit.get("ask_exists") is True, (
+        "event must fire BEFORE the ask is forgotten — observed deleted at emit"
+    )
+    assert await at.get(cid) is None, "ask must be gone after lazy_repair completes"

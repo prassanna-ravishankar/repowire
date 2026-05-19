@@ -32,10 +32,10 @@ from repowire.acp import (
     AcpClientManager,
     maybe_decide_acp_route,
 )
-from repowire.daemon.ask_tracker import AskTracker, QuiescedError
+from repowire.daemon.ask_tracker import AskerIdentity, AskTracker, QuiescedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
-from repowire.daemon.peer_registry import PeerRegistry
+from repowire.daemon.peer_registry import PeerRegistry, normalize_identity_path
 from repowire.daemon.routes._shared import OkResponse
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.peers import Peer
@@ -122,6 +122,42 @@ async def _resolve_sender_for_target(from_peer: str, target: Peer) -> Peer | Non
         raise HTTPException(status_code=409, detail=str(e)) from e
 
 
+async def _capture_asker_identity(
+    peer_registry: PeerRegistry, asker_peer_id: str,
+) -> AskerIdentity | None:
+    """Snapshot the asker's full stable identity for stash-time rebind.
+
+    Returns None unless every field is present and non-default:
+      * display_name, circle, backend all non-empty
+      * path non-empty after normalization
+      * machine non-empty AND not "unknown"
+
+    Partial identity is deliberately refused — misrouting an ACP answer to
+    the wrong peer on rebind is worse than non-delivery + visible event.
+    """
+    try:
+        peer = await peer_registry.get_peer(asker_peer_id)
+    except ValueError:
+        return None
+    if peer is None:
+        return None
+    if not (peer.display_name and peer.circle and peer.backend):
+        return None
+    if not peer.machine or peer.machine == "unknown":
+        return None
+    raw_path = peer.path or ""
+    norm_path = normalize_identity_path(raw_path)
+    if not norm_path:
+        return None
+    return AskerIdentity(
+        display_name=peer.display_name,
+        circle=peer.circle,
+        backend=peer.backend.value,
+        path=norm_path,
+        machine=peer.machine,
+    )
+
+
 async def _acp_complete(
     *,
     correlation_id: str,
@@ -185,11 +221,16 @@ async def _acp_complete(
             )
             await ask_tracker.close(correlation_id, reason="send_failed")
             return
-        stashed = await ask_tracker.set_pending_reply(correlation_id, framed)
+        identity = await _capture_asker_identity(peer_registry, ask.from_peer_id)
+        stashed = await ask_tracker.set_pending_reply(
+            correlation_id, framed, identity=identity,
+        )
         logger.warning(
-            "ACP ack reply for cid=%s: asker offline (%s). %s; will redeliver on reconnect.",
+            "ACP ack reply for cid=%s: asker offline (%s). %s%s; "
+            "will redeliver on reconnect.",
             correlation_id, e,
             "Reply stashed" if stashed else "Stash failed (ask closed)",
+            " with identity tuple" if (stashed and identity) else "",
         )
         return
     except ValueError as e:
