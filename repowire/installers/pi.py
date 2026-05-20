@@ -392,6 +392,9 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
   const msgType = data.type as string;
 
   if (msgType === "connected") {
+    if (typeof data.display_name === "string" && data.display_name) {
+      conn.peerName = data.display_name;
+    }
     if (data.session_id) {
       conn.peerId = data.session_id as string;
       console.debug("[repowire] " + conn.peerName + " connected with peer_id: " + conn.peerId);
@@ -861,7 +864,8 @@ export default async function repowireExtension(pi: ExtensionAPI) {
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const me = callerPeer(ctx);
-      await daemon("/peers/" + encodeURIComponent(me.peerName) + "/description", { description: params.description });
+      const identifier = me.peerId || me.peerName;
+      await daemon("/peers/" + encodeURIComponent(identifier) + "/description", { description: params.description });
       return { content: [{ type: "text", text: "description updated: " + params.description }], details: undefined };
     },
   });

@@ -159,6 +159,22 @@ def test_reconnect_with_backoff():
     assert "MAX_RECONNECT_ATTEMPTS" in PLUGIN_CONTENT
 
 
+def test_connected_frame_adopts_daemon_identity():
+    """Pi must use the daemon-assigned identity after WebSocket registration.
+
+    The locally generated session name can differ from the registered display
+    name after reconnect/takeover; self tools must not keep targeting it.
+    """
+    assert 'typeof data.display_name === "string"' in PLUGIN_CONTENT
+    assert "conn.peerName = data.display_name" in PLUGIN_CONTENT
+
+
+def test_set_description_targets_peer_id_when_known():
+    """Self description updates should prefer canonical peer_id over generated name."""
+    assert "const identifier = me.peerId || me.peerName" in PLUGIN_CONTENT
+    assert 'encodeURIComponent(identifier) + "/description"' in PLUGIN_CONTENT
+
+
 def test_signal_handlers_exit():
     """SIGINT/SIGTERM handlers are one-shot and exit, mirroring opencode."""
     assert 'process.once("SIGINT"' in PLUGIN_CONTENT
