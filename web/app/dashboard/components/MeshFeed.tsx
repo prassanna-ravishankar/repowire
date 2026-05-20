@@ -1,10 +1,21 @@
 import { useEffect, useMemo, useRef } from "react";
+import { Paperclip } from "lucide-react";
 import { cn } from "../lib/utils";
-import type { Event, Peer } from "../types";
+import type { AttachmentRef, Event, Peer } from "../types";
 import { peerLabel } from "../types";
 import { formatTime } from "./status";
 
-export function MeshFeed({ events, peers, onPickPeer }: { events: Event[]; peers: Peer[]; onPickPeer: (peer: Peer) => void }) {
+export function MeshFeed({
+  events,
+  peers,
+  apiBase,
+  onPickPeer,
+}: {
+  events: Event[];
+  peers: Peer[];
+  apiBase: string;
+  onPickPeer: (peer: Peer) => void;
+}) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const feedEvents = useMemo(
     () =>
@@ -45,7 +56,12 @@ export function MeshFeed({ events, peers, onPickPeer }: { events: Event[]; peers
           </div>
         ) : (
           feedEvents.map((event) => (
-            <EventRow key={event.id} event={event} onPickPeer={pickPeerByName} />
+            <EventRow
+              key={event.id}
+              event={event}
+              apiBase={apiBase}
+              onPickPeer={pickPeerByName}
+            />
           ))
         )}
         <div ref={bottomRef} />
@@ -54,7 +70,15 @@ export function MeshFeed({ events, peers, onPickPeer }: { events: Event[]; peers
   );
 }
 
-function EventRow({ event, onPickPeer }: { event: Event; onPickPeer: (name?: string) => void }) {
+function EventRow({
+  event,
+  apiBase,
+  onPickPeer,
+}: {
+  event: Event;
+  apiBase: string;
+  onPickPeer: (name?: string) => void;
+}) {
   const route = event.type === "broadcast" ? "=>" : event.type === "response" ? "↳" : "->";
   const color =
     event.status === "error"
@@ -93,7 +117,39 @@ function EventRow({ event, onPickPeer }: { event: Event; onPickPeer: (name?: str
       </div>
       <span className={cn("mt-0.5 block min-w-0 break-words [overflow-wrap:anywhere] md:mt-0", event.status === "error" ? "text-error" : "text-on-surface-variant")}>
         {event.text}
+        <AttachmentChips attachments={event.attachments} apiBase={apiBase} />
       </span>
     </div>
+  );
+}
+
+function AttachmentChips({
+  attachments,
+  apiBase,
+}: {
+  attachments?: AttachmentRef[];
+  apiBase: string;
+}) {
+  if (!attachments || attachments.length === 0) return null;
+  return (
+    <span className="mt-1 flex flex-wrap gap-1.5">
+      {attachments.map((attachment, index) => {
+        const label = attachment.filename || attachment.path?.split("/").pop() || attachment.id || "attachment";
+        const href = attachment.id ? `${apiBase}/attachments/${encodeURIComponent(attachment.id)}` : undefined;
+        const chip = (
+          <span className="inline-flex max-w-56 items-center gap-1 truncate border border-border-faint bg-surface-container-low px-1.5 py-0.5 text-[10px] text-outline">
+            <Paperclip className="h-3 w-3 shrink-0" aria-hidden="true" />
+            <span className="truncate">{label}</span>
+          </span>
+        );
+        return href ? (
+          <a key={`${attachment.id}-${index}`} href={href} className="hover:text-on-surface">
+            {chip}
+          </a>
+        ) : (
+          <span key={`${label}-${index}`}>{chip}</span>
+        );
+      })}
+    </span>
   );
 }

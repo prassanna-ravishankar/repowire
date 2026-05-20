@@ -35,6 +35,7 @@ from repowire.daemon.peer_registry import PeerRegistry, normalize_identity_path
 from repowire.daemon.routes._shared import OkResponse
 from repowire.daemon.transport_router import AskEnvelope, transport_router_from_state
 from repowire.daemon.websocket_transport import TransportError
+from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import Peer
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,10 @@ class AskRequest(BaseModel):
     from_peer: str = Field(..., description="Display name of the sender")
     to_peer: str = Field(..., description="Display name of the recipient")
     text: str = Field(..., description="Ask content")
+    attachments: list[AttachmentRef] = Field(
+        default_factory=list,
+        description="Optional daemon attachment metadata to carry with the ask",
+    )
     reply_to: str | None = Field(
         None,
         description="If set, closes the referenced ask AND opens this new one",
@@ -67,6 +72,10 @@ class AckRequest(BaseModel):
 
     correlation_id: str
     message: str | None = None
+    attachments: list[AttachmentRef] = Field(
+        default_factory=list,
+        description="Optional daemon attachment metadata to carry with an ack reply",
+    )
     from_peer: str | None = Field(
         None,
         description=(
@@ -330,6 +339,7 @@ async def open_ask(
                 correlation_id=cid,
                 reply_to=request.reply_to,
                 intended_recipient_name=request.to_peer,
+                attachments=tuple(request.attachments),
             ),
             on_acp_complete=_on_acp_complete,
         )
@@ -388,7 +398,7 @@ async def ack_ask(
             status_code=404,
             detail=f"No open ask with correlation_id: {request.correlation_id}",
         )
-    if existing.closed and request.message:
+    if existing.closed and (request.message or request.attachments):
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
             detail=(
@@ -400,16 +410,20 @@ async def ack_ask(
         # Idempotent bare re-ack: already closed, nothing to do.
         return OkResponse()
 
-    if request.message:
+    if request.message or request.attachments:
         # bypass_circle=True: ack closes a thread already established at
         # ask-time; circle gate doesn't reapply.
-        framed = f"[ack #{request.correlation_id} from @{existing.to_peer_name}] {request.message}"
+        framed = (
+            f"[ack #{request.correlation_id} from @{existing.to_peer_name}] "
+            f"{request.message or ''}"
+        )
         try:
             await peer_registry.notify(
                 from_peer=existing.to_peer_id,
                 to_peer=existing.from_peer_id,
                 text=framed,
                 bypass_circle=True,
+                attachments=request.attachments,
             )
         except ValueError as e:
             # Asker peer no longer in registry. Close as best-effort and

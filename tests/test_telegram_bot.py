@@ -262,6 +262,27 @@ async def test_send_peer_message_uses_daemon_assigned_service_name(
     assert post.await_args.kwargs["json"]["to_peer"] == "agent"
 
 
+@pytest.mark.asyncio
+async def test_send_peer_message_includes_attachments(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    post = AsyncMock()
+    post.return_value = SimpleNamespace(status_code=200)
+    monkeypatch.setattr(telegram_bot._http, "post", post)
+
+    await telegram_bot._ask(
+        "agent",
+        "see image",
+        attachments=[{
+            "id": "att123",
+            "path": "/tmp/att123.png",
+            "filename": "diagram.png",
+        }],
+    )
+
+    assert post.await_args.kwargs["json"]["attachments"][0]["id"] == "att123"
+
+
 # -- PendingRetry TTL --
 
 

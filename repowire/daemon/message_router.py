@@ -10,8 +10,20 @@ from typing import Any
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.websocket_transport import TransportError, WebSocketTransport
+from repowire.protocol.messages import AttachmentRef
 
 logger = logging.getLogger(__name__)
+
+
+def _dump_attachments(
+    attachments: list[AttachmentRef] | list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if not attachments:
+        return []
+    return [
+        a.model_dump(exclude_none=True) if isinstance(a, AttachmentRef) else a
+        for a in attachments
+    ]
 
 
 class MessageRouter:
@@ -100,6 +112,7 @@ class MessageRouter:
         to_peer_name: str,
         text: str,
         intended_recipient_name: str | None = None,
+        attachments: list[AttachmentRef] | list[dict[str, Any]] | None = None,
     ) -> None:
         """Send a plain FYI notification (fire-and-forget, no lifecycle).
 
@@ -115,6 +128,8 @@ class MessageRouter:
             "to_peer": to_peer_name,
             "text": text,
         }
+        if attachments:
+            message["attachments"] = _dump_attachments(attachments)
         logger.info(
             "Notify delivery trace: sender_identity=%s intended_recipient_name=%s "
             "resolved_peer_id=%s frame.to_peer=%s actual_delivered_pane_id=%s",
@@ -136,6 +151,7 @@ class MessageRouter:
         text: str,
         reply_to: str | None = None,
         intended_recipient_name: str | None = None,
+        attachments: list[AttachmentRef] | list[dict[str, Any]] | None = None,
     ) -> None:
         """Send a first-class ask wire message.
 
@@ -159,6 +175,8 @@ class MessageRouter:
             "to_peer": to_peer_name,
             "text": hinted_text,
         }
+        if attachments:
+            message["attachments"] = _dump_attachments(attachments)
         if reply_to is not None:
             message["reply_to"] = reply_to
         logger.info(

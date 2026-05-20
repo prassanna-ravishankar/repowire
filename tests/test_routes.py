@@ -936,6 +936,41 @@ class TestNotify:
         assert body["ok"] is True
         assert body["status"] == "sent"
 
+    async def test_notify_carries_attachments_to_event_and_wire(self, client, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        registry = get_peer_registry()
+        _sender_id, sender_name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/sender-att",
+        )
+        _recipient_id, recipient_name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/recipient-att",
+        )
+        monkeypatch.setattr(
+            registry._router, "send_notification", AsyncMock(return_value=None),
+        )
+
+        r = await client.post("/notify", json={
+            "from_peer": sender_name,
+            "to_peer": recipient_name,
+            "text": "see file",
+            "attachments": [{
+                "id": "att123",
+                "path": "/tmp/att123.png",
+                "filename": "diagram.png",
+            }],
+        })
+
+        assert r.status_code == 200
+        kwargs = registry._router.send_notification.await_args.kwargs
+        assert kwargs["attachments"][0].id == "att123"
+        event = registry.get_events()[-1]
+        assert event["attachments"][0]["filename"] == "diagram.png"
+
     async def test_notify_busy_recipient_returns_queued(self, client, monkeypatch):
         from unittest.mock import AsyncMock
 

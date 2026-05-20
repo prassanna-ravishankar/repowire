@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from repowire.config.models import DEFAULT_DAEMON_URL
 from repowire.protocol.errors import DaemonConnectionError, DaemonHTTPError, DaemonTimeoutError
+from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import PeerRole
 
 
@@ -132,6 +133,7 @@ class AttachmentInfo(BaseModel):
     path: str
     filename: str
     size: int
+    content_type: str | None = None
 
 
 class OrchestratorStatus(BaseModel):
@@ -348,6 +350,7 @@ class AsyncRepowireClient:
         text: str,
         *,
         from_peer: str,
+        attachments: list[AttachmentRef | dict[str, Any]] | None = None,
         reply_to: str | None = None,
         bypass_circle: bool = False,
         circle: str | None = None,
@@ -361,15 +364,35 @@ class AsyncRepowireClient:
         }
         if reply_to is not None:
             payload["reply_to"] = reply_to
+        if attachments:
+            payload["attachments"] = [
+                a.model_dump(exclude_none=True) if isinstance(a, AttachmentRef) else a
+                for a in attachments
+            ]
         if circle is not None:
             payload["circle"] = circle
         return AskResult.model_validate(await self._request("POST", "/ask", json=payload))
 
-    async def ack(self, correlation_id: str, *, from_peer: str, message: str | None = None) -> None:
+    async def ack(
+        self,
+        correlation_id: str,
+        *,
+        from_peer: str,
+        message: str | None = None,
+        attachments: list[AttachmentRef | dict[str, Any]] | None = None,
+    ) -> None:
         """Close an ask, optionally delivering a reply message."""
-        payload = {"correlation_id": correlation_id, "from_peer": from_peer}
+        payload: dict[str, Any] = {
+            "correlation_id": correlation_id,
+            "from_peer": from_peer,
+        }
         if message is not None:
             payload["message"] = message
+        if attachments:
+            payload["attachments"] = [
+                a.model_dump(exclude_none=True) if isinstance(a, AttachmentRef) else a
+                for a in attachments
+            ]
         await self._request("POST", "/ack", json=payload)
 
     async def pending_asks(
@@ -389,6 +412,7 @@ class AsyncRepowireClient:
         text: str,
         *,
         from_peer: str,
+        attachments: list[AttachmentRef | dict[str, Any]] | None = None,
         bypass_circle: bool = False,
         circle: str | None = None,
     ) -> None:
@@ -401,6 +425,11 @@ class AsyncRepowireClient:
         }
         if circle is not None:
             payload["circle"] = circle
+        if attachments:
+            payload["attachments"] = [
+                a.model_dump(exclude_none=True) if isinstance(a, AttachmentRef) else a
+                for a in attachments
+            ]
         await self._request("POST", "/notify", json=payload)
 
     async def broadcast(

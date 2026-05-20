@@ -65,6 +65,10 @@ bc = await client.broadcast(
 print(bc)
 ```
 
+`ask`, `ack`, and `notify` also accept an optional `attachments=[...]` list using
+daemon attachment metadata (`id`, `path`, `filename`, `size`, `content_type`).
+Omit it for the text-only shape; existing callers do not need to change.
+
 ## Listing and inspection
 
 Pull current mesh state. `list_peers` accepts daemon-supported filters; `get_peer` resolves a single peer by name or id. `pending_asks` returns open asks targeting one pane or peer.

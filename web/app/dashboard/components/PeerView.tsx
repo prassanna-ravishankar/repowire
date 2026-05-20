@@ -5,7 +5,7 @@ import { AlertCircle, Check, Clock, Copy, Paperclip, RefreshCw, Send, X } from "
 import { cn, shortPath, statusDot } from "../lib/utils";
 import { registerSnapshotProvider, useFrozenThread, useIsPeerProtected } from "../lib/protection";
 import { clearDraft, setDraftFile, setDraftText, useDraftFile, useDraftText } from "../lib/drafts";
-import type { Event, Peer } from "../types";
+import type { AttachmentRef, Event, Peer } from "../types";
 import { peerLabel } from "../types";
 import { formatTime, StatusLabel } from "./status";
 
@@ -26,6 +26,7 @@ interface PendingAsk {
   state: "pending" | "delivered" | "timed_out";
   reply?: string;
   reply_from?: string;
+  attachments?: AttachmentRef[];
 }
 
 const ACK_FRAME_RE = /^\[ack #([^\]\s]+) from @([^\]\s]+)\]\s?([\s\S]*)$/;
@@ -341,7 +342,12 @@ export function PeerView({
                 ) : event.type === "history_turn" ? (
                   <HistoryTurn key={event.id} turn={event} peer={peer} />
                 ) : (
-                  <ThreadItem key={event.id} event={event as Event} peer={peer} />
+                  <ThreadItem
+                    key={event.id}
+                    event={event as Event}
+                    peer={peer}
+                    apiBase={apiBase}
+                  />
                 )
               )
             )}
@@ -359,7 +365,15 @@ export function PeerView({
   );
 }
 
-function ThreadItem({ event, peer }: { event: Event; peer: Peer }) {
+function ThreadItem({
+  event,
+  peer,
+  apiBase,
+}: {
+  event: Event;
+  peer: Peer;
+  apiBase: string;
+}) {
   if (event.type === "chat_turn") {
     const isUser = event.role === "user";
     return (
@@ -374,14 +388,15 @@ function ThreadItem({ event, peer }: { event: Event; peer: Peer }) {
               ? "border-r-2 border-primary bg-primary/10"
               : "border-l-2 border-primary/70 bg-surface-container-high"
           )}
-        >
-          {isUser ? (
-            <p className="whitespace-pre-wrap break-words">{event.text}</p>
+      >
+        {isUser ? (
+          <p className="whitespace-pre-wrap break-words">{event.text}</p>
           ) : (
             <div className="prose prose-invert prose-sm max-w-none break-words [&_pre]:overflow-x-auto">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{event.text}</ReactMarkdown>
             </div>
           )}
+          <AttachmentChips attachments={event.attachments} apiBase={apiBase} />
         </div>
         {!isUser && event.tool_calls && event.tool_calls.length > 0 && (
           <ToolCallBlock toolCalls={event.tool_calls} />
@@ -406,6 +421,41 @@ function ThreadItem({ event, peer }: { event: Event; peer: Peer }) {
       <span className="shrink-0 tabular-nums">{formatTime(event.timestamp)}</span>
       <span className="text-on-surface-variant">{label}</span>
       <span className="truncate">{event.text}</span>
+      <AttachmentChips attachments={event.attachments} apiBase={apiBase} compact />
+    </div>
+  );
+}
+
+function AttachmentChips({
+  attachments,
+  apiBase,
+  compact = false,
+}: {
+  attachments?: AttachmentRef[];
+  apiBase: string;
+  compact?: boolean;
+}) {
+  if (!attachments || attachments.length === 0) return null;
+  return (
+    <div className={cn("mt-2 flex flex-wrap gap-1.5", compact && "mt-0")}>
+      {attachments.map((attachment, index) => {
+        const label = attachment.filename || attachment.path?.split("/").pop() || attachment.id || "attachment";
+        const href = attachment.id ? `${apiBase}/attachments/${encodeURIComponent(attachment.id)}` : undefined;
+        const chip = (
+          <span className="inline-flex max-w-64 items-center gap-1.5 truncate rounded border border-border-faint bg-surface-container-low px-2 py-1 font-mono text-[11px] text-on-surface-variant">
+            <Paperclip className="h-3 w-3 shrink-0 text-outline" aria-hidden="true" />
+            <span className="truncate">{label}</span>
+            {attachment.size ? <span className="shrink-0 text-outline">{Math.ceil(attachment.size / 1024)}KB</span> : null}
+          </span>
+        );
+        return href ? (
+          <a key={`${attachment.id}-${index}`} href={href} className="hover:brightness-110">
+            {chip}
+          </a>
+        ) : (
+          <span key={`${label}-${index}`}>{chip}</span>
+        );
+      })}
     </div>
   );
 }
@@ -630,7 +680,7 @@ function ComposeBar({
   const dismissAsk = (cid: string) =>
     setPendingAsks((prev) => prev.filter((a) => a.correlation_id !== cid));
 
-  const uploadFile = async (upload: File): Promise<string | null> => {
+  const uploadFile = async (upload: File): Promise<AttachmentRef | null> => {
     const formData = new FormData();
     formData.append("file", upload);
     try {
@@ -641,7 +691,7 @@ function ComposeBar({
       });
       if (!res.ok) return null;
       const data = await res.json();
-      return data.path as string;
+      return data as AttachmentRef;
     } catch {
       return null;
     }
@@ -654,14 +704,20 @@ function ComposeBar({
 
     try {
       let msg = text.trim();
+      let attachments: AttachmentRef[] = [];
       const hint = "\n(from @dashboard - reply naturally, dashboard sees your response automatically)";
       if (file) {
-        const path = await uploadFile(file);
-        if (!path) {
+        const attachment = await uploadFile(file);
+        if (!attachment) {
           setError("Failed to upload file");
           return;
         }
-        msg = msg ? `${msg}\n[Attachment: ${path}]` : `[Attachment: ${path}]`;
+        attachments = [attachment];
+        if (attachment.path) {
+          msg = msg
+            ? `${msg}\n[Attachment: ${attachment.path}]`
+            : `[Attachment: ${attachment.path}]`;
+        }
       }
 
       const res = await fetch(`${apiBase}/ask`, {
@@ -671,6 +727,7 @@ function ComposeBar({
           from_peer: "dashboard",
           to_peer: peer.name,
           text: msg + hint,
+          attachments,
           bypass_circle: true,
         }),
       });
@@ -687,6 +744,7 @@ function ComposeBar({
             preview,
             sent_at: Date.now(),
             state: "pending",
+            attachments,
           },
         ]);
         clearDraft(peer.peer_id);
@@ -840,6 +898,9 @@ function ComposeBar({
                   {a.reply}
                 </div>
               )}
+              <div className="pl-5">
+                <AttachmentChips attachments={a.attachments} apiBase={apiBase} compact />
+              </div>
             </div>
           ))}
         </div>

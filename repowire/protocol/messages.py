@@ -10,6 +10,16 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 
+class AttachmentRef(BaseModel):
+    """Attachment metadata carried alongside mesh message text."""
+
+    id: str | None = Field(None, description="Daemon attachment ID, if uploaded")
+    path: str | None = Field(None, description="Daemon-local file path, if available")
+    filename: str | None = Field(None, description="Original or display filename")
+    size: int | None = Field(None, description="Size in bytes, if known")
+    content_type: str | None = Field(None, description="MIME type, if known")
+
+
 class MessageType(str, Enum):
     """Type of message in the mesh."""
 

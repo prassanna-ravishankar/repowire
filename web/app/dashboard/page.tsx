@@ -255,7 +255,12 @@ function DashboardInner() {
               onSent={refreshData}
             />
           ) : (
-            <MeshFeed events={events} peers={visiblePeers} onPickPeer={selectPeer} />
+            <MeshFeed
+              events={events}
+              peers={visiblePeers}
+              apiBase={API_BASE}
+              onPickPeer={selectPeer}
+            />
           )}
         </main>
 

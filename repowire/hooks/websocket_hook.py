@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import time
+from typing import cast
 
 try:
     import websockets
@@ -48,6 +49,23 @@ _consecutive_ping_unsafe = 0
 _CONSECUTIVE_PANE_UNSAFE_PINGS = 3
 _RECONNECT_WARNING_ATTEMPTS = 50
 _MAX_RECONNECT_DELAY_SECONDS = 30
+
+
+def _format_attachment_lines(attachments: object) -> str:
+    """Render attachment metadata into agent-readable fallback text."""
+    if not isinstance(attachments, list) or not attachments:
+        return ""
+    lines = ["", "Attachments:"]
+    for item in attachments:
+        if not isinstance(item, dict):
+            continue
+        attachment = cast(dict[str, object], item)
+        attachment_id = attachment.get("id")
+        path = attachment.get("path")
+        label = attachment.get("filename") or path or attachment_id or "attachment"
+        target = path or (f"/attachments/{attachment_id}" if attachment_id else "")
+        lines.append(f"- {label}: {target}" if target else f"- {label}")
+    return "\n".join(lines) if len(lines) > 2 else ""
 
 
 class PaneUnsafeError(RuntimeError):
@@ -377,7 +395,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         correlation_id = data.get("correlation_id", "")
         from_peer = data.get("from_peer", "unknown")
         to_peer = data.get("to_peer", "")
-        text = data.get("text", "")
+        text = data.get("text", "") + _format_attachment_lines(data.get("attachments"))
         # `to_peer` is included so a recipient can spot misroutes when two
         # peers share a display_name across circles (issue #136). Older
         # daemons may omit it — keep the legacy frame in that case.
@@ -396,7 +414,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         try:
             from_peer = data.get("from_peer", "unknown")
             to_peer = data.get("to_peer", "")
-            text = data.get("text", "")
+            text = data.get("text", "") + _format_attachment_lines(data.get("attachments"))
             to_label = f" → @{to_peer}" if to_peer else ""
             if await asyncio.to_thread(
                 _tmux_send_keys, pane_id, f"@{from_peer}{to_label}: {text}",

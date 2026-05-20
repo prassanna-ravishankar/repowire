@@ -18,6 +18,7 @@ from repowire.daemon.transport_router import (
     NotifyEnvelope,
     transport_router_from_state,
 )
+from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import PeerStatus, TurnState
 
 router = APIRouter(tags=["messages"])
@@ -48,6 +49,10 @@ class NotifyRequest(BaseModel):
     from_peer: str = Field(..., description="Name of the sending peer")
     to_peer: str = Field(..., description="Name of the target peer")
     text: str = Field(..., description="Notification text")
+    attachments: list[AttachmentRef] = Field(
+        default_factory=list,
+        description="Optional daemon attachment metadata to carry with the message",
+    )
     bypass_circle: bool = Field(default=False, description="Bypass circle restrictions (CLI mode)")
     circle: str | None = Field(None, description="Circle to scope target peer lookup")
 
@@ -227,6 +232,7 @@ async def notify_peer(
                 target=target,
                 text=request.text,
                 intended_recipient_name=request.to_peer,
+                attachments=tuple(request.attachments),
             )
         )
         return NotifyResponse(status=delivery_status)

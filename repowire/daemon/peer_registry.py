@@ -35,6 +35,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _serialize_attachments(attachments: list | None) -> list[dict[str, Any]]:
+    if not attachments:
+        return []
+    return [
+        item.model_dump(exclude_none=True) if hasattr(item, "model_dump") else item
+        for item in attachments
+    ]
+
+
 def normalize_identity_path(raw: str) -> str:
     """Canonical path form for asker identity matching.
 
@@ -1038,6 +1047,7 @@ class PeerRegistry:
         text: str,
         bypass_circle: bool = False,
         circle: str | None = None,
+        attachments: list | None = None,
     ) -> Literal["sent", "queued"]:
         """Send a notification to a peer (fire-and-forget).
 
@@ -1074,6 +1084,7 @@ class PeerRegistry:
                 "from": from_peer_name, "to": peer_name, "text": text,
                 "from_peer_id": from_peer_id, "to_peer_id": peer_id,
                 "delivery_status": delivery_status,
+                "attachments": _serialize_attachments(attachments),
             },
         )
 
@@ -1083,6 +1094,7 @@ class PeerRegistry:
             to_peer_name=peer_name,
             text=text,
             intended_recipient_name=to_peer,
+            attachments=attachments,
         )
         return delivery_status
 
@@ -1095,6 +1107,7 @@ class PeerRegistry:
         reply_to: str | None = None,
         bypass_circle: bool = False,
         circle: str | None = None,
+        attachments: list | None = None,
     ) -> None:
         """Inject an ask to a peer as a type=ask wire frame.
 
@@ -1125,6 +1138,7 @@ class PeerRegistry:
                 "correlation_id": correlation_id,
                 "reply_to": reply_to,
                 "self_target": from_peer_id == peer_id,
+                "attachments": _serialize_attachments(attachments),
             },
         )
 
@@ -1136,6 +1150,7 @@ class PeerRegistry:
             text=text,
             reply_to=reply_to,
             intended_recipient_name=to_peer,
+            attachments=attachments,
         )
 
     async def broadcast(

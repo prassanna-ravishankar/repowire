@@ -19,7 +19,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
@@ -69,6 +69,7 @@ class PendingRetry:
     text: str
     expires_at: float
     mode: Literal["ask", "notify"] = "ask"
+    attachments: list[dict[str, Any]] | None = None
 
     def is_active(self, now: float) -> bool:
         return now < self.expires_at
@@ -320,10 +321,12 @@ class TelegramPeer:
         t = msg.get("type", "")
         who = msg.get("from_peer", "?")
         text = msg.get("text", "")
+        attachments = msg.get("attachments", [])
 
         if t == "notify":
             self._touch_recent(who)
             await self._tg_send(f"*@{_esc(who)}*\n{_esc(text)}")
+            await self._tg_send_attachments(attachments)
         elif t == "query":
             self._touch_recent(who)
             await self._tg_send(f"❓ *@{_esc(who)}*\n{_esc(text)}")
@@ -336,9 +339,11 @@ class TelegramPeer:
                 f"❓ *@{_esc(who)}* `[ask #{_esc(short_cid)}]`\n{_esc(text)}",
                 markup=markup,
             )
+            await self._tg_send_attachments(attachments)
         elif t == "broadcast":
             self._touch_recent(who)
             await self._tg_send(f"📢 *@{_esc(who)}*\n{_esc(text)}")
+            await self._tg_send_attachments(attachments)
         elif t == "ping" and self._ws:
             await self._ws.send(json.dumps({"type": "pong"}))
 
@@ -550,6 +555,7 @@ class TelegramPeer:
                 retry.text,
                 message_id=message_id,
                 mode=retry.mode,
+                attachments=retry.attachments,
             )
             return
 
@@ -605,7 +611,12 @@ class TelegramPeer:
             msg = caption or "Photo attached"
             msg += f"\n[Attachment: {att['path']}]"
 
-            await self._ask(self._reply_target, msg, message_id=message_id)
+            await self._ask(
+                self._reply_target,
+                msg,
+                message_id=message_id,
+                attachments=[att],
+            )
         except Exception as e:
             await self._tg_send(f"Error: {_esc(str(e))}")
 
@@ -717,11 +728,27 @@ class TelegramPeer:
 
         await self._tg_send("\n".join(lines), markup=_kb(rows))
 
-    async def _ask(self, peer: str, message: str, message_id: int | None = None) -> None:
-        await self._send_peer_message(peer, message, message_id=message_id, mode="ask")
+    async def _ask(
+        self,
+        peer: str,
+        message: str,
+        message_id: int | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> None:
+        await self._send_peer_message(
+            peer, message, message_id=message_id, mode="ask", attachments=attachments,
+        )
 
-    async def _notify(self, peer: str, message: str, message_id: int | None = None) -> None:
-        await self._send_peer_message(peer, message, message_id=message_id, mode="notify")
+    async def _notify(
+        self,
+        peer: str,
+        message: str,
+        message_id: int | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> None:
+        await self._send_peer_message(
+            peer, message, message_id=message_id, mode="notify", attachments=attachments,
+        )
 
     async def _send_peer_message(
         self,
@@ -730,16 +757,20 @@ class TelegramPeer:
         message_id: int | None = None,
         *,
         mode: Literal["ask", "notify"],
+        attachments: list[dict[str, Any]] | None = None,
     ) -> None:
         endpoint = "ask" if mode == "ask" else "notify"
+        body: dict[str, Any] = {
+            "from_peer": self._display_name,
+            "to_peer": peer,
+            "text": message,
+        }
+        if attachments:
+            body["attachments"] = attachments
         try:
             r = await self._http.post(
                 f"{self._daemon_url}/{endpoint}",
-                json={
-                    "from_peer": self._display_name,
-                    "to_peer": peer,
-                    "text": message,
-                },
+                json=body,
             )
             if r.status_code == 200:
                 if message_id:
@@ -754,6 +785,7 @@ class TelegramPeer:
                     text=message,
                     expires_at=time.monotonic() + RETRY_WINDOW_S,
                     mode=mode,
+                    attachments=attachments,
                 )
                 await self._tg_send(
                     f"✗ Couldn't reach *@{_esc(peer)}*: {_esc(str(detail))}\n"
@@ -764,6 +796,7 @@ class TelegramPeer:
                 text=message,
                 expires_at=time.monotonic() + RETRY_WINDOW_S,
                 mode=mode,
+                attachments=attachments,
             )
             await self._tg_send(
                 f"⚠️ Daemon unreachable: {_esc(str(e))}\n"
@@ -800,6 +833,44 @@ class TelegramPeer:
             await self._http.post(f"{self._bot_path}/sendMessage", json=payload)
         except Exception:
             logger.warning("Telegram send failed", exc_info=True)
+
+    async def _tg_send_attachments(self, attachments: object) -> None:
+        if not isinstance(attachments, list):
+            return
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            attachment_data = cast(dict[str, Any], attachment)
+            path = attachment_data.get("path")
+            attachment_id = attachment_data.get("id")
+            filename = attachment_data.get("filename") or (
+                Path(path).name if isinstance(path, str) else "attachment"
+            )
+            content_type = str(attachment_data.get("content_type") or "")
+            try:
+                if isinstance(path, str) and Path(path).exists():
+                    method = "sendPhoto" if content_type.startswith("image/") else "sendDocument"
+                    field = "photo" if method == "sendPhoto" else "document"
+                    with open(path, "rb") as fh:
+                        await self._http.post(
+                            f"{self._bot_path}/{method}",
+                            data={"chat_id": self._chat_id},
+                            files={
+                                field: (
+                                    filename,
+                                    fh,
+                                    content_type or "application/octet-stream",
+                                )
+                            },
+                        )
+                    continue
+                if attachment_id:
+                    await self._tg_send(
+                        f"📎 {_esc(str(filename))}\n"
+                        f"{_esc(self._daemon_url + '/attachments/' + str(attachment_id))}"
+                    )
+            except Exception:
+                logger.warning("Telegram attachment send failed", exc_info=True)
 
     async def _current_reply_keyboard(self) -> dict:
         """Build the persistent keyboard from fresh peer data."""

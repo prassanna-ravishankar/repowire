@@ -8,7 +8,8 @@ The dashboard is a Next.js UI served by the daemon at `http://localhost:8377/das
 - **Live mesh log** — `mesh.log`, a chronological event stream of asks, acks, notifications, and broadcasts.
 - **Per-peer chat** — selecting a peer replaces the live log with that peer's selected-session timeline. For Claude Code peers, the chat view merges persisted transcript history with realtime `chat_turn` and `chat_turn_delta` events; other backends contribute realtime events. User and `@dashboard` messages align right; peer messages align left. Tool calls collapse behind a disclosure.
 - **Compose bar** — send a notification or ask to any peer. The dashboard registers as the `dashboard` peer so it shows up in `list_peers` and message routing.
-- **Attachments** — the compose bar has a file upload button. Files post to `POST /attachments` (10 MB limit, 24 h TTL) and the resulting path is included in the notification so the recipient agent can read it.
+- **Attachments** — the compose bar has a file upload button. Files post to `POST /attachments` (10 MB limit, 24 h TTL). The outgoing ask carries structured attachment metadata plus a text fallback with the local path so existing agents can still read it.
+- **Attachment chips** — mesh events and per-peer chat render attachment chips with download links when an attachment ID is available.
 
 ## Where chat turns come from
 

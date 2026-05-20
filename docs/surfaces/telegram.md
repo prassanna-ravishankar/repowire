@@ -48,7 +48,9 @@ notify_peer("telegram", "deploy finished, green across CI")
 
 ## Attachments
 
-The bot downloads photos sent in Telegram, uploads them to the daemon via `POST /attachments`, and includes the resulting local path in the outgoing ask. The recipient agent can then read the image via its multimodal tool — Claude's `Read` tool, for instance, accepts the local path directly.
+The bot downloads photos sent in Telegram, uploads them to the daemon via `POST /attachments`, and sends both the attachment metadata and a text fallback with the resulting local path in the outgoing ask. The recipient agent can then read the image via its multimodal tool — Claude's `Read` tool, for instance, accepts the local path directly.
+
+When messages arrive from Repowire with attachment metadata, the bot sends local image files as Telegram photos and other local files as documents when it can access the daemon-local path. If the file is not local to the bot, it falls back to a download link.
 
 Attachments live in `~/.repowire/attachments/` with a 24-hour TTL.
 

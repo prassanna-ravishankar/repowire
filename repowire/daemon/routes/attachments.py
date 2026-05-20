@@ -58,7 +58,7 @@ async def upload_attachment(
     file: UploadFile,
     _: str | None = Depends(require_auth),
 ) -> dict:
-    """Upload a file attachment. Returns {id, path, filename, size}."""
+    """Upload a file attachment. Returns metadata for mesh message references."""
     if file.size and file.size > MAX_FILE_SIZE:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -113,6 +113,7 @@ async def upload_attachment(
         "path": str(dest),
         "filename": file.filename or dest.name,
         "size": size,
+        "content_type": file.content_type,
     }
 
 

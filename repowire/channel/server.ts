@@ -34,6 +34,19 @@ let displayName: string = PROPOSED_NAME;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const pendingCorrelations = new Map<string, string>(); // correlation_id -> from_peer
 
+function attachmentText(attachments: unknown): string {
+  if (!Array.isArray(attachments) || attachments.length === 0) return "";
+  const lines = ["", "Attachments:"];
+  for (const item of attachments) {
+    if (!item || typeof item !== "object") continue;
+    const att = item as Record<string, unknown>;
+    const label = att.filename ?? att.path ?? att.id ?? "attachment";
+    const target = att.path ?? (att.id ? `/attachments/${att.id}` : "");
+    lines.push(target ? `- ${label}: ${target}` : `- ${label}`);
+  }
+  return lines.length > 2 ? lines.join("\n") : "";
+}
+
 function connectDaemon(mcp: Server): void {
   const url = `${DAEMON_URL.replace("http://", "ws://").replace("https://", "wss://")}/ws`;
 
@@ -95,7 +108,7 @@ function connectDaemon(mcp: Server): void {
       await mcp.notification({
         method: "notifications/claude/channel",
         params: {
-          content: msg.text ?? "",
+          content: `${msg.text ?? ""}${attachmentText(msg.attachments)}`,
           meta,
         },
       });

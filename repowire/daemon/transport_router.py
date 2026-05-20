@@ -16,7 +16,19 @@ from repowire.acp import AcpRouteDecision, deliver_ask_via_acp, maybe_decide_acp
 from repowire.config.models import Config
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
+from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import Peer, PeerStatus
+
+
+def _text_with_attachment_fallback(text: str, attachments: tuple[AttachmentRef, ...]) -> str:
+    if not attachments:
+        return text
+    lines = ["", "Attachments:"]
+    for attachment in attachments:
+        label = attachment.filename or attachment.path or attachment.id or "attachment"
+        target = attachment.path or (f"/attachments/{attachment.id}" if attachment.id else "")
+        lines.append(f"- {label}: {target}" if target else f"- {label}")
+    return text + "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -30,6 +42,7 @@ class AskEnvelope:
     correlation_id: str
     reply_to: str | None = None
     intended_recipient_name: str | None = None
+    attachments: tuple[AttachmentRef, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -41,6 +54,7 @@ class NotifyEnvelope:
     target: Peer
     text: str
     intended_recipient_name: str | None = None
+    attachments: tuple[AttachmentRef, ...] = ()
 
 
 class AskCompletion(Protocol):
@@ -71,6 +85,7 @@ class WebSocketPeerTransport:
                 "correlation_id": envelope.correlation_id,
                 "reply_to": envelope.reply_to,
                 "self_target": envelope.from_peer_id == envelope.target.peer_id,
+                "attachments": [a.model_dump(exclude_none=True) for a in envelope.attachments],
             },
         )
         await self._router.send_ask(
@@ -83,6 +98,7 @@ class WebSocketPeerTransport:
             intended_recipient_name=(
                 envelope.intended_recipient_name or envelope.target.display_name
             ),
+            attachments=list(envelope.attachments),
         )
 
     async def send_notify(
@@ -101,6 +117,7 @@ class WebSocketPeerTransport:
                 "from_peer_id": envelope.from_peer_id,
                 "to_peer_id": envelope.target.peer_id,
                 "delivery_status": delivery_status,
+                "attachments": [a.model_dump(exclude_none=True) for a in envelope.attachments],
             },
         )
         await self._router.send_notification(
@@ -111,6 +128,7 @@ class WebSocketPeerTransport:
             intended_recipient_name=(
                 envelope.intended_recipient_name or envelope.target.display_name
             ),
+            attachments=list(envelope.attachments),
         )
         return delivery_status
 
@@ -140,7 +158,7 @@ class AcpPeerTransport:
             manager=self._manager,
             spec=decision.spec,
             correlation_id=envelope.correlation_id,
-            text=envelope.text,
+            text=_text_with_attachment_fallback(envelope.text, envelope.attachments),
             on_complete=on_complete,
         )
 
@@ -166,7 +184,7 @@ class AcpPeerTransport:
             manager=self._manager,
             spec=decision.spec,
             correlation_id=cid,
-            text=envelope.text,
+            text=_text_with_attachment_fallback(envelope.text, envelope.attachments),
             on_complete=_drop_result,
         )
         return "sent"

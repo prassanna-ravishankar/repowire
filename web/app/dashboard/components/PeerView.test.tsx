@@ -290,6 +290,37 @@ describe("PeerView session protection", () => {
     expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it("uses apiBase for thread attachment download links", () => {
+    const event: Event = {
+      id: "att-event",
+      type: "notification",
+      timestamp: "2025-01-01T00:00:00Z",
+      from: "alice",
+      to: "dashboard",
+      from_peer_id: PEER.peer_id,
+      text: "attached",
+      attachments: [{
+        id: "att-123",
+        filename: "diagram.png",
+      }],
+    };
+
+    render(
+      <PeerView
+        peer={PEER}
+        events={[event]}
+        apiBase="http://daemon.test"
+        onClose={() => {}}
+        onSent={() => {}}
+      />
+    );
+
+    expect(screen.getByRole("link", { name: /diagram\.png/i })).toHaveAttribute(
+      "href",
+      "http://daemon.test/attachments/att-123",
+    );
+  });
+
   it("auto-scrolls on new events when not protected", () => {
     const initial: Event[] = [chatTurn("e1", "hello", "2025-01-01T00:00:00Z")];
     const { rerender } = render(

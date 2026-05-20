@@ -39,6 +39,27 @@ class TestSendNotification:
         assert msg["to_peer"] == "recipient"
         assert msg["text"] == "hello"
 
+    async def test_sends_attachments_to_transport(self, router, transport):
+        await router.send_notification(
+            "sender",
+            "sid-1",
+            "recipient",
+            "hello",
+            attachments=[{
+                "id": "att-1",
+                "path": "/tmp/a.png",
+                "filename": "a.png",
+                "content_type": "image/png",
+            }],
+        )
+        msg = transport.send.call_args[0][1]
+        assert msg["attachments"] == [{
+            "id": "att-1",
+            "path": "/tmp/a.png",
+            "filename": "a.png",
+            "content_type": "image/png",
+        }]
+
     async def test_transport_error_propagates(self, router, transport):
         transport.send.side_effect = TransportError("disconnected")
         with pytest.raises(TransportError):
@@ -183,3 +204,21 @@ class TestSendAsk:
         )
         msg = transport.send.call_args[0][1]
         assert msg["reply_to"] == "ask-prior"
+
+    async def test_includes_attachments(self, router, transport):
+        await router.send_ask(
+            from_peer="alice",
+            to_session_id="sid-bob",
+            to_peer_name="bob",
+            correlation_id="ask-new",
+            text="see file",
+            attachments=[{
+                "id": "att-1",
+                "path": "/tmp/a.png",
+                "filename": "a.png",
+                "content_type": "image/png",
+            }],
+        )
+        msg = transport.send.call_args[0][1]
+        assert msg["attachments"][0]["id"] == "att-1"
+        assert msg["attachments"][0]["path"] == "/tmp/a.png"

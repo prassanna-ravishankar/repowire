@@ -54,7 +54,7 @@ Lifecycle/admin tools such as spawn, kill, and schedule mutation are disabled fo
 ### `ask`
 
 ```python
-ask(peer_name: str, query: str, reply_to: str | None = None, circle: str | None = None) -> str
+ask(peer_name: str, query: str, reply_to: str | None = None, circle: str | None = None, attachments: list[dict] | None = None) -> str
 ```
 
 Open a non-blocking ask thread. Returns a `correlation_id` immediately. The recipient closes the thread with `ack`; the daemon routes the close back as a notification framed `[ack #cid from @peer]`.
@@ -71,7 +71,7 @@ ask("project-b", "What API endpoints do you expose?")
 ### `ack`
 
 ```python
-ack(correlation_id: str, message: str | None = None) -> str
+ack(correlation_id: str, message: str | None = None, attachments: list[dict] | None = None) -> str
 ```
 
 Close an open ask. Bare `ack(cid)` signals "seen, no action needed." A reply `ack(cid, message)` closes the thread and delivers the message back to the original asker. Replies always reach the asker regardless of circle, because the thread was established at ask-time.
@@ -84,7 +84,7 @@ ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")
 ### `notify_peer`
 
 ```python
-notify_peer(peer_name: str, message: str, circle: str | None = None) -> str
+notify_peer(peer_name: str, message: str, circle: str | None = None, attachments: list[dict] | None = None) -> str
 ```
 
 Fire-and-forget. No lifecycle, no expected response. Returns a synthetic `notif-XXXXXXXX` ID for client-side tracking, not a thread you can close. Use for status pings and announcements.
@@ -96,6 +96,11 @@ The special peer `telegram` routes to the user's phone. The `dashboard` already 
 ```python
 notify_peer("telegram", "deploy finished, green across CI")
 ```
+
+`ask`, reply `ack`, and `notify_peer` accept optional attachment metadata
+objects (`id`, `path`, `filename`, `size`, `content_type`). Text-only calls are
+unchanged; surfaces should still include a local path in text when targeting an
+older transport that may ignore the structured field.
 
 ### `broadcast`
 

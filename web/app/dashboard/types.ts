@@ -33,6 +33,14 @@ export interface OrchestratorStatus {
   stale_after?: string | null;
 }
 
+export interface AttachmentRef {
+  id?: string | null;
+  path?: string | null;
+  filename?: string | null;
+  size?: number | null;
+  content_type?: string | null;
+}
+
 /** Human-readable label: display_name is daemon-assigned and human-friendly. */
 export function peerLabel(peer: Peer): string {
   return peer.display_name || peer.name;
@@ -55,6 +63,7 @@ export interface Event {
   from_peer_id?: string;
   to_peer_id?: string;
   text: string;
+  attachments?: AttachmentRef[];
   status?: "pending" | "success" | "error" | "blocked";
   peer?: string;
   peer_id?: string;

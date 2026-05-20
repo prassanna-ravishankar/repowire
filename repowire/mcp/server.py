@@ -567,39 +567,22 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         query: str,
         reply_to: str | None = None,
         circle: str | None = None,
+        attachments: list[dict] | None = None,
     ) -> str:
         """[Repowire mesh] Open a non-blocking ask thread with a peer.
 
-        Use ask when you need a tracked thread that the recipient must close
-        with `ack`, such as a worker status check or reviewer checkpoint. Use
-        notify_peer for fire-and-forget updates, reminders, and nudges.
-        Asking yourself is valid for deliberate loopback checks, but use
-        notify_peer or schedule_self(kind="notify") for self-wakes/reminders
-        that do not need tracked closure.
-
-        Returns immediately with a correlation_id. The peer receives the
-        ask, and when they respond they call `ack(correlation_id)` (bare
-        close, "seen, no action") or `ack(correlation_id, message)` (close
-        with reply content delivered back to you as a notification framed
-        `[ack #correlation_id from @peer] message`).
-
-        To chain a follow-up: call `ask(peer_name, query, reply_to=corr_id)`.
-        That closes the prior thread AND opens a new one referencing it.
-
-        Ask is not a synchronous wait or delivery receipt. The MCP surface is
-        non-blocking by design; watch notifications for the eventual ack.
-
-        Do not use SendMessage to reach repowire peers. SendMessage is a
-        Claude Code harness tool for same-session teammates only.
+        Use for tracked work that the recipient must close with `ack`. The
+        call returns a correlation_id immediately; it is not a synchronous
+        wait or delivery receipt. Use notify_peer for fire-and-forget nudges.
+        Chain follow-ups with `reply_to`, which closes the prior thread and
+        opens a new one. Do not use SendMessage for mesh peers.
 
         Args:
             peer_name: Display name or peer_id of the peer to ask.
             query: The question or request to send
             reply_to: If set, closes that prior ask before opening this one
-            circle: Circle to scope the lookup. Defaults to your own circle,
-                    with fallback to peers whose role bypasses circles
-                    (service, orchestrator, human). Pass explicitly to target
-                    a peer in a different circle.
+            circle: Optional target lookup circle.
+            attachments: Optional daemon attachment metadata objects.
 
         Returns:
             correlation_id for tracking this ask thread
@@ -617,13 +600,19 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
             body["reply_to"] = reply_to
         if effective_circle is not None:
             body["circle"] = effective_circle
+        if attachments:
+            body["attachments"] = attachments
         result = await daemon_request("POST", "/ask", body)
         if result.get("error"):
             raise Exception(result["error"])
         return result.get("correlation_id", "")
 
     @mcp.tool()
-    async def ack(correlation_id: str, message: str | None = None) -> str:
+    async def ack(
+        correlation_id: str,
+        message: str | None = None,
+        attachments: list[dict] | None = None,
+    ) -> str:
         """[Repowire mesh] Close an open ask thread.
 
         Bare ack: `ack(corr_id)` — closes the thread, signals "seen, no
@@ -639,6 +628,8 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         Args:
             correlation_id: The ask's correlation_id
             message: Optional reply content. Omit for bare close.
+            attachments: Optional daemon attachment metadata objects to send
+                    with a reply.
 
         Returns:
             Confirmation message
@@ -651,11 +642,20 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         }
         if message is not None:
             body["message"] = message
+        if attachments:
+            body["attachments"] = attachments
         await daemon_request("POST", "/ack", body)
-        return f"acked #{correlation_id}" + (" with reply" if message else "")
+        return f"acked #{correlation_id}" + (
+            " with reply" if (message or attachments) else ""
+        )
 
     @mcp.tool()
-    async def notify_peer(peer_name: str, message: str, circle: str | None = None) -> str:
+    async def notify_peer(
+        peer_name: str,
+        message: str,
+        circle: str | None = None,
+        attachments: list[dict] | None = None,
+    ) -> str:
         """[Repowire mesh] Send a fire-and-forget notification to a peer in another project.
 
         Use for status updates, announcements, replies to notifications,
@@ -676,6 +676,8 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
                     with fallback to peers whose role bypasses circles
                     (service, orchestrator, human). Pass explicitly to target
                     a peer in a different circle.
+            attachments: Optional daemon attachment metadata objects. Existing
+                    text-only callers can omit this.
 
         Returns:
             Correlation ID (format: notif-XXXXXXXX) for tracking.
@@ -692,6 +694,8 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         }
         if effective_circle is not None:
             body["circle"] = effective_circle
+        if attachments:
+            body["attachments"] = attachments
         await daemon_request("POST", "/notify", body)
         return correlation_id
 

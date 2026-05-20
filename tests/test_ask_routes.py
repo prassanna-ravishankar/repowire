@@ -187,6 +187,30 @@ class TestAsk:
         assert event["to_peer_id"] == bob["peer_id"]
         assert event["self_target"] is False
 
+    async def test_ask_carries_attachments_to_event_and_wire(self, env):
+        client, registry, _, msg_router = env
+        alice = await _register_peer_info(client, "alice")
+        bob = await _register_peer_info(client, "bob")
+
+        r = await client.post("/ask", json={
+            "from_peer": alice["peer_id"],
+            "to_peer": bob["peer_id"],
+            "text": "see image",
+            "attachments": [{
+                "id": "att123",
+                "path": "/tmp/att123.png",
+                "filename": "diagram.png",
+                "size": 123,
+                "content_type": "image/png",
+            }],
+        })
+
+        assert r.status_code == 200
+        kwargs = msg_router.send_ask.await_args.kwargs
+        assert kwargs["attachments"][0].id == "att123"
+        event = registry.get_events()[-1]
+        assert event["attachments"][0]["filename"] == "diagram.png"
+
     async def test_self_ask_succeeds_with_diagnostic_event_marker(self, env):
         client, registry, at, msg_router = env
         alice = await _register_peer_info(client, "alice")
@@ -239,6 +263,34 @@ class TestAck:
         ask = await at.get(cid)
         assert ask.closed
         assert ask.close_reason == "ack_with_msg"
+
+    async def test_ack_reply_carries_attachments(self, env):
+        client, registry, at, msg_router = env
+        alice = await _register_peer_info(client, "alice")
+        bob = await _register_peer_info(client, "bob")
+        r = await client.post("/ask", json={
+            "from_peer": alice["peer_id"], "to_peer": bob["peer_id"], "text": "?",
+        })
+        cid = r.json()["correlation_id"]
+
+        r = await client.post("/ack", json={
+            "correlation_id": cid,
+            "from_peer": bob["display_name"],
+            "message": "attached",
+            "attachments": [{
+                "id": "att123",
+                "path": "/tmp/att123.png",
+                "filename": "diagram.png",
+            }],
+        })
+
+        assert r.status_code == 200
+        ask = await at.get(cid)
+        assert ask.closed
+        kwargs = msg_router.send_notification.await_args.kwargs
+        assert kwargs["attachments"][0].id == "att123"
+        event = registry.get_events()[-1]
+        assert event["attachments"][0]["filename"] == "diagram.png"
 
     async def test_ack_reply_uses_stored_peer_ids_not_reported_from_peer(self, env):
         client, registry, at, msg_router = env

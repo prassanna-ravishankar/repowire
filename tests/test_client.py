@@ -133,6 +133,40 @@ async def test_ask_ack_and_pending(client: AsyncRepowireClient):
     assert await client.pending_asks(peer_id=bob.peer_id) == []
 
 
+async def test_ask_notify_ack_accept_attachments(client: AsyncRepowireClient):
+    alice = await client.register_peer("alice", path="/tmp/alice", circle="default")
+    bob = await client.register_peer("bob", path="/tmp/bob", circle="default")
+    attachment = {
+        "id": "att123",
+        "path": "/tmp/att123.png",
+        "filename": "diagram.png",
+        "content_type": "image/png",
+    }
+
+    opened = await client.ask(
+        bob.display_name,
+        "see image",
+        from_peer=alice.display_name,
+        attachments=[attachment],
+    )
+    await client.ack(
+        opened.correlation_id,
+        from_peer=bob.display_name,
+        message="reply",
+        attachments=[attachment],
+    )
+    await client.notify(
+        bob.display_name,
+        "heads up",
+        from_peer=alice.display_name,
+        attachments=[attachment],
+    )
+
+    events = await client.events()
+    assert events[0].attachments[0]["filename"] == "diagram.png"
+    assert events[-1].attachments[0]["id"] == "att123"
+
+
 async def test_notify_broadcast_events_and_chat_ingest(client: AsyncRepowireClient):
     alice = await client.register_peer("alice", path="/tmp/alice", circle="default")
     bob = await client.register_peer("bob", path="/tmp/bob", circle="default")
