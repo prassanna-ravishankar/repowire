@@ -27,6 +27,7 @@ from repowire.daemon.ask_tracker import AskTracker
 from repowire.daemon.auth import require_localhost
 from repowire.daemon.deps import cleanup_deps, init_deps
 from repowire.daemon.event_bus import EventBus
+from repowire.daemon.event_log import EventLog
 from repowire.daemon.lifecycle_handler import LifecycleHandler
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
@@ -195,6 +196,7 @@ def create_app(
         transport = WebSocketTransport()
         query_tracker = QueryTracker()
         ask_tracker = AskTracker(ttl_hours=cfg.daemon.prune_max_age_hours)
+        event_log = EventLog(Path.home() / ".repowire" / "events.json")
         message_router = MessageRouter(
             transport=transport,
             query_tracker=query_tracker,
@@ -208,6 +210,7 @@ def create_app(
             persistence_path=Path.home() / ".repowire" / "sessions.json",
             ask_tracker=ask_tracker,
             event_bus=event_bus,
+            event_log=event_log,
         )
         peer_registry.prune_offline(max_age_hours=cfg.daemon.prune_max_age_hours)
 
@@ -234,6 +237,7 @@ def create_app(
         app.state.transport = transport
         app.state.query_tracker = query_tracker
         app.state.ask_tracker = ask_tracker
+        app.state.event_log = event_log
         app.state.message_router = message_router
         app.state.peer_registry = peer_registry
         app.state.event_bus = event_bus
@@ -338,7 +342,7 @@ def create_app(
         await scheduler.stop()
         if state_db is not None:
             state_db.close()
-        peer_registry._save_events()
+        event_log.save()
         peer_registry._persist_mappings()
         await peer_registry.stop()
         cleanup_deps()
@@ -466,6 +470,11 @@ def create_test_app(
         transport = WebSocketTransport()
         query_tracker = QueryTracker()
         ask_tracker = AskTracker(ttl_hours=cfg.daemon.prune_max_age_hours)
+        event_path = (
+            (persistence_path.parent if persistence_path else Path("/tmp"))
+            / "events.json"
+        )
+        event_log = EventLog(event_path)
         msg_router = message_router or MessageRouter(
             transport=transport,
             query_tracker=query_tracker,
@@ -480,6 +489,7 @@ def create_test_app(
             persistence_path=persistence_path,
             ask_tracker=ask_tracker,
             event_bus=event_bus,
+            event_log=event_log,
         )
 
         schedule_store = ScheduleStore(
@@ -496,6 +506,7 @@ def create_test_app(
         app.state.transport = transport
         app.state.query_tracker = query_tracker
         app.state.ask_tracker = ask_tracker
+        app.state.event_log = event_log
         app.state.message_router = msg_router
         app.state.peer_registry = registry
         app.state.event_bus = event_bus
@@ -532,6 +543,7 @@ def create_test_app(
 
         await acp_manager.close()
         await scheduler.stop()
+        event_log.save()
         await registry.stop()
         cleanup_deps()
 

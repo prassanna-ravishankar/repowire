@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
+from repowire.daemon.event_log import EventLog
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
 
@@ -129,6 +130,7 @@ class PeerRegistry:
         persistence_path: Path | None = None,
         ask_tracker: AskTracker | None = None,
         event_bus: EventBus | None = None,
+        event_log: EventLog | None = None,
     ) -> None:
         self._config = config
         self._router = message_router
@@ -136,6 +138,7 @@ class PeerRegistry:
         self._transport = transport
         self._ask_tracker = ask_tracker
         self._event_bus = event_bus
+        self._event_log = event_log or EventLog()
 
         # Peer registry: peer_id -> Peer (single source of truth)
         self._peers: dict[str, Peer] = {}
@@ -149,15 +152,8 @@ class PeerRegistry:
         self._load_mappings()
 
         self._lock = asyncio.Lock()
-        self._events: deque[dict[str, Any]] = deque(maxlen=500)
-        self._events_path = Config.get_config_dir() / "events.json"
-        self._events_dirty = False
-        self._load_events()
         self._last_repair: float = 0.0
         self._repair_lock = asyncio.Lock()
-        # Per-subscriber wakeup events for SSE streamers. add_event() sets
-        # all of them; each streamer clears and waits on its own.
-        self._event_subscribers: set[asyncio.Event] = set()
 
         # When each peer's current description was set. Used for clear-on-read
         # TTL — see config.daemon.description_ttl_seconds. Registry-internal
@@ -224,77 +220,68 @@ class PeerRegistry:
     # Event tracking
     # ------------------------------------------------------------------
 
+    @property
+    def _events(self) -> deque[dict[str, Any]]:
+        return self._event_log.events
+
+    @_events.setter
+    def _events(self, events: deque[dict[str, Any]]) -> None:
+        self._event_log.events = events
+
+    @property
+    def _events_path(self) -> Path:
+        return self._event_log.path
+
+    @_events_path.setter
+    def _events_path(self, path: Path) -> None:
+        self._event_log.path = path
+
+    @property
+    def _events_dirty(self) -> bool:
+        return self._event_log.dirty
+
+    @_events_dirty.setter
+    def _events_dirty(self, dirty: bool) -> None:
+        self._event_log.dirty = dirty
+
+    @property
+    def _event_subscribers(self) -> set[asyncio.Event]:
+        return self._event_log.subscribers
+
     def _load_events(self) -> None:
         """Load persisted events from disk."""
-        try:
-            if self._events_path.exists():
-                data = json.loads(self._events_path.read_text())
-                for event in data[-100:]:
-                    self._events.append(event)
-        except Exception:
-            logger.warning("Failed to load events from %s", self._events_path)
+        self._event_log.load()
 
     def _save_events(self) -> None:
         """Persist events to disk (called periodically, not on every write)."""
-        if not self._events_dirty:
-            return
-        try:
-            self._events_path.parent.mkdir(parents=True, exist_ok=True)
-            self._events_path.write_text(json.dumps(list(self._events)))
-            self._events_dirty = False
-        except Exception:
-            logger.warning("Failed to save events to %s", self._events_path)
+        self._event_log.save()
 
     def add_event(self, event_type: str, data: dict[str, Any]) -> str:
         """Add an event to the history. Returns event ID."""
-        event_id = str(uuid4())
-        self._events.append(
-            {
-                "id": event_id,
-                "type": event_type,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                **data,
-            }
-        )
-        self._events_dirty = True
-        for sub in self._event_subscribers:
-            sub.set()
-        return event_id
+        return self._event_log.add_event(event_type, data)
 
     def subscribe_events(self) -> asyncio.Event:
         """Register a wakeup Event fired on each add_event call.
 
         Caller must pair with unsubscribe_events on cleanup.
         """
-        evt = asyncio.Event()
-        self._event_subscribers.add(evt)
-        return evt
+        return self._event_log.subscribe()
 
     def unsubscribe_events(self, evt: asyncio.Event) -> None:
         """Remove a subscriber Event registered via subscribe_events."""
-        self._event_subscribers.discard(evt)
+        self._event_log.unsubscribe(evt)
 
     def events_since(self, event_id: str | None) -> list[dict[str, Any]]:
         """Return events after the given id. If id is None or evicted, return all."""
-        events = list(self._events)
-        if event_id is None:
-            return events
-        for i, event in enumerate(events):
-            if event["id"] == event_id:
-                return events[i + 1 :]
-        return events
+        return self._event_log.events_since(event_id)
 
     def _update_event(self, event_id: str, updates: dict[str, Any]) -> bool:
         """Update an existing event by ID."""
-        for event in self._events:
-            if event["id"] == event_id:
-                event.update(updates)
-                return True
-        return False
+        return self._event_log.update_event(event_id, updates)
 
     def get_events(self) -> list[dict[str, Any]]:
         """Get the last 100 events."""
-        return list(self._events)
+        return self._event_log.get_events()
 
     def _emit_status_change(
         self, peer: Peer, old_status: PeerStatus, new_status: PeerStatus,
