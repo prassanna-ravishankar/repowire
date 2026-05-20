@@ -1,63 +1,101 @@
 "use client";
 
-import { ArrowRight, Terminal } from "lucide-react";
+import { ArrowRight, Github, Terminal } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { motion } from "framer-motion";
 
 export default function Hero() {
   return (
-    <section className="relative overflow-hidden border-b border-border-faint pt-24 sm:min-h-[92svh] sm:pt-28">
+    <section className="relative overflow-hidden border-b border-border-faint pt-24 sm:pt-28">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_12%,rgba(199,123,61,0.18),transparent_28%),radial-gradient(circle_at_82%_20%,rgba(91,163,245,0.12),transparent_26%)]" />
       <Image
         src="/brand/repowire-arch.webp"
         alt=""
         width={1280}
         height={720}
         priority
-        className="pointer-events-none absolute bottom-0 right-0 w-[920px] max-w-none opacity-35 mix-blend-screen"
+        className="pointer-events-none absolute -right-40 bottom-0 hidden w-[820px] max-w-none opacity-25 mix-blend-screen lg:block"
       />
-      <div className="absolute inset-0 bg-surface/85" />
+      <div className="absolute inset-0 bg-surface/88" />
 
-      <div className="relative z-10 mx-auto flex max-w-7xl flex-col justify-center px-4 pb-14 sm:min-h-[calc(92svh-7rem)] sm:px-6 sm:pb-20 lg:px-8">
+      <div className="relative z-10 mx-auto grid max-w-7xl items-center gap-12 px-4 pb-16 sm:px-6 sm:pb-20 lg:grid-cols-[0.95fr_1.05fr] lg:px-8 lg:pb-24">
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4 }}
           className="max-w-3xl"
         >
-          <div className="mb-6 inline-flex items-center border border-primary/30 bg-primary/10 px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-primary-fixed">
-            Public beta available
+          <div className="mb-6 inline-flex items-center gap-2 border border-primary/30 bg-primary/10 px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-primary-fixed">
+            <span className="h-1.5 w-1.5 rounded-full bg-secondary" aria-hidden="true" />
+            Local-first agent team harness
           </div>
           <h1 className="font-headline text-4xl font-bold leading-tight tracking-normal text-on-surface sm:text-5xl lg:text-6xl">
-            Mesh network for AI coding agents
+            Run a team of coding agents without losing the thread.
           </h1>
           <p className="mt-5 max-w-2xl text-lg leading-8 text-on-surface-variant">
-            Stop the copy-paste dance. Repowire connects active coding agents into a local mesh so they can ask, notify, and broadcast across repositories.
+            Repowire gives Claude Code, Codex, Gemini CLI, OpenCode, and Pi sessions an address in one mesh so they can ask each other questions, send updates, schedule follow-ups, and stay steerable from your browser or phone.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <Link
               href="https://docs.repowire.io/quickstart/"
-              className="inline-flex items-center justify-center gap-2 rounded bg-primary px-5 py-3 font-mono text-xs font-bold uppercase tracking-[0.12em] text-on-primary transition-[filter,transform] hover:brightness-110 active:scale-[0.98]"
+              className="inline-flex items-center justify-center gap-2 rounded bg-primary px-5 py-3 font-mono text-xs font-bold uppercase tracking-[0.12em] text-on-primary transition-[filter,transform] hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-primary-fixed focus:ring-offset-2 focus:ring-offset-surface active:scale-[0.98]"
             >
-              Get started
+              Start in 5 minutes
               <ArrowRight className="h-4 w-4" />
             </Link>
             <Link
               href="https://github.com/prassanna-ravishankar/repowire"
               target="_blank"
-              className="inline-flex items-center justify-center gap-2 rounded border border-border bg-surface-container-low px-5 py-3 font-mono text-xs font-bold uppercase tracking-[0.12em] text-on-surface transition-colors hover:bg-surface-container-high"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center gap-2 rounded border border-border bg-surface-container-low px-5 py-3 font-mono text-xs font-bold uppercase tracking-[0.12em] text-on-surface transition-colors hover:bg-surface-container-high focus:outline-none focus:ring-2 focus:ring-primary-fixed focus:ring-offset-2 focus:ring-offset-surface"
             >
-              <Terminal className="h-4 w-4" />
-              View on GitHub
+              <Github className="h-4 w-4" />
+              View source
             </Link>
           </div>
+
+          <dl className="mt-10 grid max-w-3xl gap-3 font-mono text-xs text-outline sm:grid-cols-3">
+            <Metric label="Default" value="local daemon" />
+            <Metric label="Messages" value="ask / notify / schedule" />
+            <Metric label="Surfaces" value="dashboard / Telegram / Slack" />
+          </dl>
         </motion.div>
 
-        <div className="mt-14 grid max-w-4xl gap-2 font-mono text-xs text-outline sm:grid-cols-3">
-          <Metric label="transports" value="hooks / channel / relay" />
-          <Metric label="runtime" value="Claude Code / Codex / Gemini" />
-          <Metric label="default" value="local-first daemon" />
-        </div>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.45, delay: 0.08 }}
+          className="relative"
+        >
+          <div className="absolute -inset-4 bg-primary/10 blur-3xl" aria-hidden="true" />
+          <div className="relative overflow-hidden rounded-lg border border-border-strong bg-surface-container-low shadow-[var(--shadow-3)]">
+            <div className="flex items-center justify-between border-b border-border-faint bg-surface-container px-4 py-3">
+              <div className="flex items-center gap-2" aria-hidden="true">
+                <span className="h-2.5 w-2.5 rounded-full bg-error" />
+                <span className="h-2.5 w-2.5 rounded-full bg-tertiary" />
+                <span className="h-2.5 w-2.5 rounded-full bg-secondary" />
+              </div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-outline">dashboard</div>
+            </div>
+            <Image
+              src="/screenshots/dashboard-peer-overview.png"
+              alt="Repowire dashboard showing active peers and their recent work"
+              width={1440}
+              height={986}
+              className="h-auto w-full"
+              priority
+            />
+            <div className="grid border-t border-border-faint bg-surface/95 p-4 text-sm leading-6 text-on-surface-variant sm:grid-cols-[1fr_auto] sm:items-center sm:gap-4">
+              <p>
+                See peers, status, chat turns, tool calls, and routed messages from the same browser surface that can reach your local daemon or optional relay.
+              </p>
+              <div className="mt-3 inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em] text-primary-fixed sm:mt-0">
+                <Terminal className="h-3.5 w-3.5" /> real product surface
+              </div>
+            </div>
+          </div>
+        </motion.div>
       </div>
     </section>
   );
@@ -66,8 +104,8 @@ export default function Hero() {
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="border-l-2 border-primary/50 bg-surface-container-low/80 p-3">
-      <div className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-outline">{label}</div>
-      <div className="truncate text-on-surface-variant">{value}</div>
+      <dt className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-outline">{label}</dt>
+      <dd className="text-on-surface-variant">{value}</dd>
     </div>
   );
 }
