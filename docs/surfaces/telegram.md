@@ -1,6 +1,6 @@
 # Telegram bot
 
-The Telegram bot is a peer. It registers as `telegram`. Notifications agents send to it appear in your Telegram chat; messages you send route back into the mesh.
+The Telegram bot is a peer. It registers as `telegram`. Notifications agents send to it appear in your Telegram chat; messages you send route back into the mesh as tracked asks by default.
 
 ## Setup
 
@@ -22,15 +22,17 @@ telegram:
 
 | Command | What it does |
 | --- | --- |
-| `/peers` (or `/start`, `/list`) | Show online peers as inline buttons; tap to pick a notify target |
+| `/peers` (or `/start`, `/list`) | Show online peers as inline buttons; tap to pick a target |
 | `/select <peer>` | Sticky-route subsequent messages to that peer until `/clear` |
 | `/switch <peer>` | Alias for `/select` |
 | `/clear` | Clear the sticky target |
-| `@peer message` | One-shot send to a specific peer (also updates sticky) |
+| `@peer message` | Open an ask to a specific peer (also updates sticky) |
+| `/notify [@peer] message` | Fire-and-forget notification/FYI; uses sticky target if `@peer` is omitted |
+| `/fyi [@peer] message` | Alias for `/notify` |
 
 ## Sticky routing
 
-After `/select repowire`, every message you type goes to `repowire` as a notification until you `/clear` or `/select` another peer. The bot displays the current sticky target in its reply keyboard so you can see where messages are going.
+After `/select repowire`, every message you type opens a tracked ask to `repowire` until you `/clear` or `/select` another peer. Use `/notify message` or `/fyi message` when you explicitly want a fire-and-forget FYI instead. The bot displays the current sticky target in its reply keyboard so you can see where messages are going.
 
 The reply keyboard shows up to three current peers and three recent peers, with markers indicating which is which.
 
@@ -46,7 +48,7 @@ notify_peer("telegram", "deploy finished, green across CI")
 
 ## Attachments
 
-The bot downloads photos sent in Telegram, uploads them to the daemon via `POST /attachments`, and includes the resulting local path in the outgoing notification. The recipient agent can then read the image via its multimodal tool — Claude's `Read` tool, for instance, accepts the local path directly.
+The bot downloads photos sent in Telegram, uploads them to the daemon via `POST /attachments`, and includes the resulting local path in the outgoing ask. The recipient agent can then read the image via its multimodal tool — Claude's `Read` tool, for instance, accepts the local path directly.
 
 Attachments live in `~/.repowire/attachments/` with a 24-hour TTL.
 

@@ -121,7 +121,7 @@ Project A needs the real API shape from Project B. Ask `project-b`; the peer ans
 
 ### Drive from phone or dashboard
 
-Send work to a peer from Telegram or the dashboard, then receive progress updates from agents as notifications. See [mobile mesh management](https://docs.repowire.io/patterns/mobile-mesh/).
+Send work to a peer from Telegram, Slack, or the dashboard, then receive progress updates from agents as notifications. Telegram and Slack human messages open tracked asks by default; use their notify/FYI commands for fire-and-forget nudges. See [mobile mesh management](https://docs.repowire.io/patterns/mobile-mesh/).
 
 ### Coordinate with an orchestrator
 

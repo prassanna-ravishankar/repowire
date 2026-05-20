@@ -3,12 +3,12 @@
 The dashboard, Telegram bot, and Slack bot are peers too. They show up in `list_peers` alongside agents and use the same `ask` / `notify_peer` / `broadcast` primitives.
 
 - `dashboard` — Next.js UI at `localhost:8377/dashboard`, with a live mesh log and per-peer chat. See [web dashboard](../surfaces/dashboard.md).
-- `telegram` — bot you talk to from your phone. Sticky routing: `/select peer` sends subsequent messages to that peer until `/clear`. See [Telegram bot](../surfaces/telegram.md).
-- `slack` — Socket Mode bot. Same sticky-routing pattern with Block Kit peer pickers. See [Slack bot](../surfaces/slack.md).
+- `telegram` — bot you talk to from your phone. Sticky routing: `/select peer` sends subsequent messages as asks to that peer until `/clear`; `/notify` and `/fyi` remain fire-and-forget. See [Telegram bot](../surfaces/telegram.md).
+- `slack` — Socket Mode bot. Same sticky-routing pattern with Block Kit peer pickers; `notify` and `fyi` remain fire-and-forget. See [Slack bot](../surfaces/slack.md).
 
 ## Human framing
 
-Messages from `@telegram` and `@dashboard` are humans. Agents that receive messages from these peers treat them as direct user instructions, not as agent-to-agent traffic. This framing is injected by repowire at delivery time — agents do not need to special-case the names themselves.
+Messages from `@telegram`, `@slack`, and `@dashboard` are humans. Agents that receive messages from these peers treat them as direct user instructions, not as agent-to-agent traffic. Telegram and Slack human inbound messages open tracked ask threads by default, so the recipient is reminded until it acks or replies. This framing is injected by repowire at delivery time — agents do not need to special-case the names themselves.
 
 When an agent wants to reach the human, the move is `notify_peer("telegram", "...")` (or `notify_peer("dashboard", ...)`, though the dashboard already sees turns and rarely needs an explicit notification). These peers have the human role, which bypasses circle filtering — they resolve and appear in `list_peers` mesh-wide regardless of the caller's circle.
 

@@ -80,14 +80,14 @@ export default function Concepts() {
             <Mono>dashboard</Mono> — Next.js UI at <Mono>localhost:8377/dashboard</Mono> with a live mesh log and per-peer chat.
           </li>
           <li>
-            <Mono>telegram</Mono> — bot you talk to from your phone. Sticky routing: <Mono>/select peer</Mono> sends subsequent messages to that peer.
+            <Mono>telegram</Mono> — bot you talk to from your phone. Sticky routing: <Mono>/select peer</Mono> sends subsequent messages as asks to that peer; <Mono>/notify</Mono> and <Mono>/fyi</Mono> remain fire-and-forget.
           </li>
           <li>
-            <Mono>slack</Mono> — Socket Mode bot. Same sticky-routing pattern with Block Kit peer pickers.
+            <Mono>slack</Mono> — Socket Mode bot. Same sticky-routing pattern with Block Kit peer pickers; <Mono>notify</Mono> and <Mono>fyi</Mono> remain fire-and-forget.
           </li>
         </ul>
         <p className="mt-4">
-          Messages from <Mono>@telegram</Mono> and <Mono>@dashboard</Mono> are humans. Agents treat them as direct user instructions.
+          Messages from <Mono>@telegram</Mono>, <Mono>@slack</Mono>, and <Mono>@dashboard</Mono> are humans. Telegram and Slack inbound messages open tracked ask threads by default, and agents treat them as direct user instructions.
         </p>
       </Section>
     </article>

@@ -1,7 +1,7 @@
 """Telegram bot peer for the repowire mesh.
 
 Bridges Telegram <> repowire: notifications become Telegram messages,
-Telegram messages become peer notifications. A persistent ReplyKeyboard
+Telegram messages become peer asks by default. A persistent ReplyKeyboard
 below the compose bar lets the user switch target peers with one tap.
 
 Usage:
@@ -19,7 +19,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
@@ -68,6 +68,7 @@ def _ws_url(http_url: str) -> str:
 class PendingRetry:
     text: str
     expires_at: float
+    mode: Literal["ask", "notify"] = "ask"
 
     def is_active(self, now: float) -> bool:
         return now < self.expires_at
@@ -187,6 +188,27 @@ def parse_keyboard_tap(text: str) -> tuple[str, str | None]:
             if name:
                 return ("select", name)
     return ("text", None)
+
+
+def parse_notify_command(text: str) -> tuple[str | None, str] | None:
+    """Parse explicit fire-and-forget commands.
+
+    Supported forms:
+        /notify @peer message
+        /notify message       (uses sticky target)
+        /fyi @peer message
+        /fyi message          (uses sticky target)
+    """
+    m = re.match(r"^/(?:notify|fyi)(?:\s+(.+))?$", text, re.DOTALL | re.IGNORECASE)
+    if not m:
+        return None
+    body = (m.group(1) or "").strip()
+    if not body:
+        return (None, "")
+    target = re.match(r"^@(\S+)\s+(.+)", body, re.DOTALL)
+    if target:
+        return (target.group(1), target.group(2))
+    return (None, body)
 
 
 class TelegramPeer:
@@ -457,19 +479,38 @@ class TelegramPeer:
             peer = text.split(maxsplit=1)[1].strip().lstrip("@")
             await self._select_peer(peer, message_id=message_id)
             return
+        notify_cmd = parse_notify_command(text)
+        if notify_cmd is not None:
+            peer, message = notify_cmd
+            if not message:
+                await self._tg_send("Usage: `/notify [@peer] message` or `/fyi [@peer] message`")
+                return
+            target = peer or self._reply_target
+            if not target:
+                await self._tg_send(
+                    "No active peer\\. Use `/notify @peer message` "
+                    "or `/select peer` first\\."
+                )
+                return
+            if peer:
+                self._reply_target = peer
+            self._pending_retry = None  # typing cancels retry
+            await self._notify(target, message, message_id=message_id)
+            return
 
-        # @peer message — explicit target (also sets sticky)
+        # @peer message — explicit target (also sets sticky). Human inbound
+        # messages default to ask/ack so the agent is reminded until it replies.
         m = re.match(r"^@(\S+)\s+(.+)", text, re.DOTALL)
         if m:
             self._reply_target = m.group(1)
             self._pending_retry = None  # typing cancels retry
-            await self._notify(m.group(1), m.group(2), message_id=message_id)
+            await self._ask(m.group(1), m.group(2), message_id=message_id)
             return
 
-        # Sticky conversation — send to current peer
+        # Sticky conversation — ask current peer by default
         if self._reply_target:
             self._pending_retry = None  # typing cancels retry
-            await self._notify(self._reply_target, text, message_id=message_id)
+            await self._ask(self._reply_target, text, message_id=message_id)
             return
 
         # No conversation active
@@ -501,7 +542,12 @@ class TelegramPeer:
         if trigger_retry and retry and retry.is_active(time.monotonic()):
             self._reply_target = peer
             self._pending_retry = None
-            await self._notify(peer, retry.text, message_id=message_id)
+            await self._send_peer_message(
+                peer,
+                retry.text,
+                message_id=message_id,
+                mode=retry.mode,
+            )
             return
 
         self._reply_target = peer
@@ -509,7 +555,7 @@ class TelegramPeer:
         await self._tg_send(f"Now talking to *@{_esc(peer)}*\\.")
 
     async def _on_photo(self, photo: dict, caption: str, message_id: int | None = None) -> None:
-        """Handle incoming Telegram photo — upload to daemon, notify peer."""
+        """Handle incoming Telegram photo — upload to daemon, ask peer."""
         if not self._reply_target:
             orchestrator = await self._fetch_orchestrator_status()
             if not orchestrator.present:
@@ -556,7 +602,7 @@ class TelegramPeer:
             msg = caption or "Photo attached"
             msg += f"\n[Attachment: {att['path']}]"
 
-            await self._notify(self._reply_target, msg, message_id=message_id)
+            await self._ask(self._reply_target, msg, message_id=message_id)
         except Exception as e:
             await self._tg_send(f"Error: {_esc(str(e))}")
 
@@ -668,10 +714,24 @@ class TelegramPeer:
 
         await self._tg_send("\n".join(lines), markup=_kb(rows))
 
+    async def _ask(self, peer: str, message: str, message_id: int | None = None) -> None:
+        await self._send_peer_message(peer, message, message_id=message_id, mode="ask")
+
     async def _notify(self, peer: str, message: str, message_id: int | None = None) -> None:
+        await self._send_peer_message(peer, message, message_id=message_id, mode="notify")
+
+    async def _send_peer_message(
+        self,
+        peer: str,
+        message: str,
+        message_id: int | None = None,
+        *,
+        mode: Literal["ask", "notify"],
+    ) -> None:
+        endpoint = "ask" if mode == "ask" else "notify"
         try:
             r = await self._http.post(
-                f"{self._daemon_url}/notify",
+                f"{self._daemon_url}/{endpoint}",
                 json={
                     "from_peer": self._display_name,
                     "to_peer": peer,
@@ -683,10 +743,14 @@ class TelegramPeer:
                     await self._tg_react(message_id, emoji="👍")
                 # No text reply on success — reaction is the confirmation
             else:
-                detail = r.json().get("detail", r.text)
+                try:
+                    detail = r.json().get("detail", r.text)
+                except Exception:
+                    detail = r.text
                 self._pending_retry = PendingRetry(
                     text=message,
                     expires_at=time.monotonic() + RETRY_WINDOW_S,
+                    mode=mode,
                 )
                 await self._tg_send(
                     f"✗ Couldn't reach *@{_esc(peer)}*: {_esc(str(detail))}\n"
@@ -696,6 +760,7 @@ class TelegramPeer:
             self._pending_retry = PendingRetry(
                 text=message,
                 expires_at=time.monotonic() + RETRY_WINDOW_S,
+                mode=mode,
             )
             await self._tg_send(
                 f"⚠️ Daemon unreachable: {_esc(str(e))}\n"

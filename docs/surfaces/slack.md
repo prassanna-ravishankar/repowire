@@ -33,8 +33,10 @@ The bot watches one channel. In that channel:
 | Input | What happens |
 | --- | --- |
 | `select <peer>` or `switch <peer>` | Sticky-route messages to that peer |
-| `@peer message` | One-shot send |
-| Plain text after `select` | Routes to the sticky target |
+| `@peer message` | Open an ask to a specific peer |
+| Plain text after `select` | Opens an ask to the sticky target |
+| `notify [@peer] message` | Fire-and-forget notification/FYI; uses sticky target if `@peer` is omitted |
+| `fyi [@peer] message` | Alias for `notify` |
 | Tap a Block Kit peer button | Equivalent to `select` |
 
 The bot posts a Block Kit message with peer buttons on demand, similar to the Telegram inline keyboard.
@@ -45,7 +47,7 @@ Socket Mode means the bot opens an outbound WebSocket to Slack — Slack doesn't
 
 ## Human framing
 
-Messages from `@slack` are framed as human input to the receiving agent, exactly like `@telegram` and `@dashboard`. Agents treat them as direct user instructions.
+Messages from `@slack` are framed as human input to the receiving agent, exactly like `@telegram` and `@dashboard`. Human inbound Slack messages open tracked ask threads by default, so agents are reminded until they ack or reply. Use `notify` / `fyi` for fire-and-forget nudges.
 
 ## Differences from the Telegram bot
 

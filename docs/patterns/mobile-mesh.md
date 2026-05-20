@@ -23,7 +23,7 @@ Or one-shot without sticky routing:
 @project-a fix the failing CI on main, push when green
 ```
 
-The bot registers as the `telegram` peer. Agents on the receiving side see your message framed as a human instruction, not as agent-to-agent traffic.
+The bot registers as the `telegram` peer. Agents on the receiving side see your message framed as a human instruction, not as agent-to-agent traffic. Messages you type open tracked ask threads by default; use `/notify [@peer] message` or `/fyi [@peer] message` for fire-and-forget nudges.
 
 ## Dashboard
 
@@ -45,7 +45,7 @@ The Telegram bot is a real Telegram bot, so push notifications work out of the b
 
 ## Attachments
 
-Send a photo or document in the Telegram chat. The bot downloads it, uploads it to the daemon's `/attachments` endpoint (10 MB limit, 24 h TTL), and includes the local path in the resulting notification. The receiving agent reads the image via its multimodal tool (Claude `Read`, for example).
+Send a photo or document in the Telegram chat. The bot downloads it, uploads it to the daemon's `/attachments` endpoint (10 MB limit, 24 h TTL), and includes the local path in the resulting ask. The receiving agent reads the image via its multimodal tool (Claude `Read`, for example).
 
 ## When this isn't the right tool
 

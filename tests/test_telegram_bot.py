@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import time
+from unittest.mock import AsyncMock
+
+import pytest
 
 from repowire.telegram.bot import (
     CLEAR_LABEL,
@@ -12,9 +15,11 @@ from repowire.telegram.bot import (
     PEERS_LABEL,
     RECENT_MARK,
     PendingRetry,
+    TelegramPeer,
     build_reply_keyboard,
     compute_visible_recents,
     parse_keyboard_tap,
+    parse_notify_command,
 )
 
 # -- compute_visible_recents --
@@ -160,6 +165,83 @@ def test_parse_at_mention_is_text():
 def test_parse_marker_alone_without_name_is_text():
     assert parse_keyboard_tap(CURRENT_MARK) == ("text", None)
     assert parse_keyboard_tap(f"{CURRENT_MARK} ") == ("text", None)
+
+
+# -- explicit notify/FYI command parsing --
+
+
+def test_parse_notify_command_with_peer():
+    assert parse_notify_command("/notify @agent build passed") == ("agent", "build passed")
+
+
+def test_parse_fyi_command_without_peer_uses_sticky_target():
+    assert parse_notify_command("/fyi build passed") == (None, "build passed")
+
+
+def test_parse_notify_command_ignores_regular_text():
+    assert parse_notify_command("notify @agent build passed") is None
+
+
+# -- inbound routing --
+
+
+@pytest.fixture
+def telegram_bot() -> TelegramPeer:
+    return TelegramPeer(
+        bot_token="test-token",
+        chat_id="0",
+        daemon_url="http://127.0.0.1:0",
+        display_name="telegram",
+        circle="default",
+    )
+
+
+@pytest.mark.asyncio
+async def test_at_peer_text_opens_ask_by_default(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ask = AsyncMock()
+    notify = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "_ask", ask)
+    monkeypatch.setattr(telegram_bot, "_notify", notify)
+
+    await telegram_bot._on_text("@agent please check", message_id=42)
+
+    ask.assert_awaited_once_with("agent", "please check", message_id=42)
+    notify.assert_not_awaited()
+    assert telegram_bot._reply_target == "agent"
+
+
+@pytest.mark.asyncio
+async def test_sticky_text_opens_ask_by_default(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    telegram_bot._reply_target = "agent"
+    ask = AsyncMock()
+    notify = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "_ask", ask)
+    monkeypatch.setattr(telegram_bot, "_notify", notify)
+
+    await telegram_bot._on_text("please check", message_id=42)
+
+    ask.assert_awaited_once_with("agent", "please check", message_id=42)
+    notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notify_command_keeps_fire_and_forget(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ask = AsyncMock()
+    notify = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "_ask", ask)
+    monkeypatch.setattr(telegram_bot, "_notify", notify)
+
+    await telegram_bot._on_text("/notify @agent build passed", message_id=42)
+
+    notify.assert_awaited_once_with("agent", "build passed", message_id=42)
+    ask.assert_not_awaited()
+    assert telegram_bot._reply_target == "agent"
 
 
 # -- PendingRetry TTL --

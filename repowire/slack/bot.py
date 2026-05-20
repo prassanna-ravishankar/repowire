@@ -1,7 +1,7 @@
 """Slack bot peer for the repowire mesh.
 
 Bridges Slack <> repowire: notifications become Slack messages,
-Slack messages become peer notifications. Buttons for quick peer selection.
+Slack messages become peer asks by default. Buttons for quick peer selection.
 
 Usage:
     SLACK_BOT_TOKEN=xoxb-... SLACK_APP_TOKEN=xapp-... SLACK_CHANNEL_ID=C... repowire slack start
@@ -15,7 +15,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse, urlunparse
 
 import httpx
@@ -36,6 +36,27 @@ def _ws_url(http_url: str) -> str:
     """Convert http(s) URL to ws(s)."""
     p = urlparse(http_url)
     return urlunparse(p._replace(scheme="wss" if p.scheme == "https" else "ws"))
+
+
+def parse_notify_command(text: str) -> tuple[str | None, str] | None:
+    """Parse explicit fire-and-forget commands.
+
+    Supported forms:
+        notify @peer message
+        notify message       (uses sticky target)
+        fyi @peer message
+        fyi message          (uses sticky target)
+    """
+    m = re.match(r"^(?:notify|fyi)(?:\s+(.+))?$", text, re.DOTALL | re.IGNORECASE)
+    if not m:
+        return None
+    body = (m.group(1) or "").strip()
+    if not body:
+        return (None, "")
+    target = re.match(r"^@(\S+)\s+(.+)", body, re.DOTALL)
+    if target:
+        return (target.group(1), target.group(2))
+    return (None, body)
 
 
 class SlackPeer:
@@ -297,17 +318,35 @@ class SlackPeer:
                 await self._slack_send(f"Now talking to *@{_esc(peer)}*. All messages go there.")
             return
 
-        # @peer message — explicit target (also sets sticky)
+        notify_cmd = parse_notify_command(text)
+        if notify_cmd is not None:
+            peer, message = notify_cmd
+            if not message:
+                await self._slack_send("Usage: `notify [@peer] message` or `fyi [@peer] message`")
+                return
+            target = peer or self._reply_target
+            if not target:
+                await self._slack_send(
+                    "No active peer. Use `notify @peer message` or `select peer` first."
+                )
+                return
+            if peer:
+                self._reply_target = peer
+            await self._notify(target, message)
+            return
+
+        # @peer message — explicit target (also sets sticky). Human inbound
+        # messages default to ask/ack so the agent is reminded until it replies.
         m = re.match(r"^@(\S+)\s+(.+)", text, re.DOTALL)
         if m:
             peer = m.group(1)
             self._reply_target = peer
-            await self._notify(peer, m.group(2))
+            await self._ask(peer, m.group(2))
             return
 
-        # Sticky conversation
+        # Sticky conversation asks current peer by default.
         if self._reply_target:
-            await self._notify(self._reply_target, text)
+            await self._ask(self._reply_target, text)
             return
 
         # No conversation active
@@ -365,10 +404,23 @@ class SlackPeer:
             logger.warning("Failed to list peers", exc_info=True)
             await self._slack_send(f"Error listing peers: {e}")
 
+    async def _ask(self, peer: str, message: str) -> None:
+        await self._send_peer_message(peer, message, mode="ask")
+
     async def _notify(self, peer: str, message: str) -> None:
+        await self._send_peer_message(peer, message, mode="notify")
+
+    async def _send_peer_message(
+        self,
+        peer: str,
+        message: str,
+        *,
+        mode: Literal["ask", "notify"],
+    ) -> None:
+        endpoint = "/ask" if mode == "ask" else "/notify"
         try:
             r = await self._daemon_http.post(
-                "/notify",
+                endpoint,
                 json={
                     "from_peer": self._display_name,
                     "to_peer": peer,
@@ -377,15 +429,21 @@ class SlackPeer:
             )
             if r.status_code == 200:
                 try:
-                    delivery_status = r.json().get("status", "sent")
+                    data = r.json()
                 except Exception:
-                    delivery_status = "sent"
-                icon = (
-                    ":hourglass_flowing_sand:"
-                    if delivery_status == "queued"
-                    else ":white_check_mark:"
-                )
-                await self._slack_send(f"{icon} → *@{_esc(peer)}*")
+                    data = {}
+                if mode == "ask":
+                    cid = data.get("correlation_id")
+                    suffix = f" `#{_esc(str(cid)[:12])}`" if cid else ""
+                    await self._slack_send(f":question: → *@{_esc(peer)}*{suffix}")
+                else:
+                    delivery_status = data.get("status", "sent")
+                    icon = (
+                        ":hourglass_flowing_sand:"
+                        if delivery_status == "queued"
+                        else ":white_check_mark:"
+                    )
+                    await self._slack_send(f"{icon} → *@{_esc(peer)}*")
             else:
                 try:
                     detail = r.json().get("detail", r.text)
@@ -393,7 +451,7 @@ class SlackPeer:
                     detail = r.text
                 await self._slack_send(f":x: {_esc(detail)}")
         except Exception as e:
-            logger.warning("Failed to notify peer %s", peer, exc_info=True)
+            logger.warning("Failed to send %s to peer %s", mode, peer, exc_info=True)
             await self._slack_send(f"Error sending to {peer}: {e}")
 
     # -- Slack API --
