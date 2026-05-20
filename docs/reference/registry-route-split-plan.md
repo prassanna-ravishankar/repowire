@@ -2,7 +2,7 @@
 
 Project #2 item: `Architecture: split peer registry and route responsibilities`
 
-Status: architecture-first audit. No code extraction is included in this artifact.
+Status: architecture-first audit plus incremental implementation notes.
 
 ## Current Coupling
 
@@ -107,6 +107,13 @@ Tests to pin:
 ### PR 3: Move Legacy Query/Notify/Broadcast Service Out of Registry
 
 Goal: introduce `PeerDeliveryService` and migrate route and scheduler calls to it while leaving registry delivery methods as deprecated delegating wrappers for MCP/tests during the transition.
+
+Implementation note: the `arch/delivery-service` slice adds
+`repowire/daemon/peer_delivery.py`, wires `app.state.peer_delivery`, migrates
+message routes and open-ask delivery to the service, aligns scheduler ask/notify
+dispatch through it, and leaves registry delivery methods as WS-compatible
+delegating shims. It deliberately does not change repair, lifecycle, stale
+startup pruning, or the public `/notify` response contract.
 
 Likely touched:
 

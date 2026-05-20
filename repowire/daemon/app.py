@@ -30,6 +30,7 @@ from repowire.daemon.event_bus import EventBus
 from repowire.daemon.event_log import EventLog
 from repowire.daemon.lifecycle_handler import LifecycleHandler
 from repowire.daemon.message_router import MessageRouter
+from repowire.daemon.peer_delivery import PeerDeliveryService
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.relay_client import RelayClient
@@ -226,12 +227,6 @@ def create_app(
             schedule_store = ScheduleStore(
                 persistence_path=schedules_path,
             )
-        scheduler = Scheduler(
-            store=schedule_store,
-            peer_registry=peer_registry,
-            ask_tracker=ask_tracker,
-        )
-
         # Store in app state for route handlers
         app.state.config = cfg
         app.state.transport = transport
@@ -247,10 +242,29 @@ def create_app(
         )
         app.state.schedule_store = schedule_store
         app.state.state_db = state_db
-        app.state.scheduler = scheduler
         from repowire.acp import AcpClientManager
         acp_manager = AcpClientManager()
         app.state.acp_manager = acp_manager
+        from repowire.daemon.transport_router import transport_router_from_state
+        peer_delivery = PeerDeliveryService(
+            config=cfg,
+            registry=peer_registry,
+            message_router=message_router,
+            transport_router=transport_router_from_state(
+                config=cfg,
+                registry=peer_registry,
+                state=app.state,
+            ),
+            ask_tracker=ask_tracker,
+        )
+        app.state.peer_delivery = peer_delivery
+        scheduler = Scheduler(
+            store=schedule_store,
+            peer_registry=peer_registry,
+            ask_tracker=ask_tracker,
+            peer_delivery=peer_delivery,
+        )
+        app.state.scheduler = scheduler
 
         lifecycle_handler = LifecycleHandler(
             peer_registry=peer_registry,
@@ -496,12 +510,6 @@ def create_test_app(
             persistence_path=(persistence_path.parent if persistence_path else Path("/tmp"))
             / "schedules.json",
         )
-        scheduler = Scheduler(
-            store=schedule_store,
-            peer_registry=registry,
-            ask_tracker=ask_tracker,
-        )
-
         app.state.config = cfg
         app.state.transport = transport
         app.state.query_tracker = query_tracker
@@ -514,10 +522,29 @@ def create_test_app(
         rq_dir = persistence_path.parent if persistence_path else Path.home() / ".repowire"
         app.state.review_queue_store = ReviewQueueStore(rq_dir / "review_queue.json")
         app.state.schedule_store = schedule_store
-        app.state.scheduler = scheduler
         from repowire.acp import AcpClientManager
         acp_manager = AcpClientManager()
         app.state.acp_manager = acp_manager
+        from repowire.daemon.transport_router import transport_router_from_state
+        peer_delivery = PeerDeliveryService(
+            config=cfg,
+            registry=registry,
+            message_router=msg_router,
+            transport_router=transport_router_from_state(
+                config=cfg,
+                registry=registry,
+                state=app.state,
+            ),
+            ask_tracker=ask_tracker,
+        )
+        app.state.peer_delivery = peer_delivery
+        scheduler = Scheduler(
+            store=schedule_store,
+            peer_registry=registry,
+            ask_tracker=ask_tracker,
+            peer_delivery=peer_delivery,
+        )
+        app.state.scheduler = scheduler
 
         lh = LifecycleHandler(
             peer_registry=registry,

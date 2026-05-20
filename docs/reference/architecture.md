@@ -26,7 +26,7 @@ The daemon is the single routing hub. It does not care whether a peer arrived th
 | --- | --- | --- |
 | Daemon app | `repowire/daemon/app.py`, `repowire/daemon/deps.py` | FastAPI app factory, dependency wiring, dashboard/static serving |
 | Peer state | `repowire/daemon/peer_registry.py` | Registration, liveness, circles, roles, lazy repair |
-| Message routing | `repowire/daemon/message_router.py`, `repowire/daemon/websocket_transport.py` | `ask`, `notify`, `broadcast`, transport routing, and response delivery over connected peers |
+| Message routing | `repowire/daemon/peer_delivery.py`, `repowire/daemon/transport_router.py`, `repowire/daemon/message_router.py`, `repowire/daemon/websocket_transport.py` | Delivery orchestration, ACP-before-WebSocket transport selection, and wire delivery over connected peers |
 | Ask lifecycle | `repowire/daemon/ask_tracker.py`, `repowire/daemon/routes/asks.py` | Open ask state, pending reminders, close/ack handling |
 | Schedules | `repowire/daemon/scheduler.py`, `repowire/daemon/schedule_store.py`, `repowire/daemon/routes/schedules.py` | One-shot and recurring cron deliveries |
 | Hooks | `repowire/hooks/` | Runtime event adapters, tmux injection, transcript/chat extraction |
@@ -64,11 +64,11 @@ The current stable surface is peer-oriented, but the v0.13 architecture train is
 
 - Sessions become the durable unit of work.
 - Peers remain runtime executors.
-- Ask/notify delivery now goes through a transport router; WebSocket hooks, experimental ACP, relay, and future transports continue moving toward transport-neutral routing.
+- Ask/notify delivery now goes through a delivery service plus transport router; WebSocket hooks, experimental ACP, relay, and future transports continue moving toward transport-neutral routing.
 - The dashboard currently shows a selected peer/session timeline, merging Claude transcript history where available with realtime events.
 - Broader composer actions, scheduling, approval handling, resume, and backend/model controls move toward a shared session command surface.
 
-This is a roadmap. Current routes and tools still expose peers, circles, asks, notifications, and schedules. The ask/notify transport-router extraction has landed, but ACP remains experimental and not every route/control path is transport-neutral yet.
+This is a roadmap. Current routes and tools still expose peers, circles, asks, notifications, and schedules. The ask/notify delivery-service and transport-router extraction has landed, but ACP remains experimental and not every route/control path is transport-neutral yet.
 
 ## Knowledge graph
 

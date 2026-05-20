@@ -31,9 +31,9 @@ from pydantic import BaseModel, Field
 from repowire.daemon.ask_tracker import AskerIdentity, AskTracker, QuiescedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
+from repowire.daemon.peer_delivery import peer_delivery_from_state
 from repowire.daemon.peer_registry import PeerRegistry, normalize_identity_path
 from repowire.daemon.routes._shared import OkResponse
-from repowire.daemon.transport_router import AskEnvelope, transport_router_from_state
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import Peer
@@ -325,22 +325,19 @@ async def open_ask(
         )
 
     try:
-        transport_router = transport_router_from_state(
+        peer_delivery = peer_delivery_from_state(
             config=state.config,
             registry=peer_registry,
             state=state,
         )
-        await transport_router.send_ask(
-            AskEnvelope(
-                from_peer_id=from_peer_id,
-                from_peer_name=from_peer_name,
-                target=peer,
-                text=request.text,
-                correlation_id=cid,
-                reply_to=request.reply_to,
-                intended_recipient_name=request.to_peer,
-                attachments=tuple(request.attachments),
-            ),
+        await peer_delivery.deliver_ask(
+            from_peer=from_peer_id,
+            to_peer=peer.peer_id,
+            text=request.text,
+            correlation_id=cid,
+            reply_to=request.reply_to,
+            bypass_circle=True,
+            attachments=request.attachments,
             on_acp_complete=_on_acp_complete,
         )
     except ValueError as e:

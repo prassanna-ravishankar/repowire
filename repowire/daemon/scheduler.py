@@ -6,9 +6,8 @@ schedules are advanced to their next fire time. No polling: the wake event is
 only set when the schedule set changes (create/delete) or when something fires.
 Past-due schedules at startup fire immediately.
 
-Delivery reuses the existing peer-registry primitives:
-  - kind="notify" -> PeerRegistry.notify (fire-and-forget)
-  - kind="ask"    -> PeerRegistry.deliver_ask (registers in AskTracker first)
+Delivery reuses PeerDeliveryService so scheduled ask/notify traffic follows
+the same application delivery path as route-driven traffic.
 
 On delivery failure (peer missing or no live WS), one-shot schedules are
 dropped and recurring schedules advance to their next cron fire. We log loudly
@@ -28,6 +27,7 @@ from repowire.daemon.websocket_transport import TransportError
 
 if TYPE_CHECKING:
     from repowire.daemon.ask_tracker import AskTracker
+    from repowire.daemon.peer_delivery import PeerDeliveryService
     from repowire.daemon.peer_registry import PeerRegistry
 
 logger = logging.getLogger(__name__)
@@ -44,10 +44,12 @@ class Scheduler:
         store: ScheduleStoreProtocol,
         peer_registry: PeerRegistry,
         ask_tracker: AskTracker,
+        peer_delivery: PeerDeliveryService | None = None,
     ) -> None:
         self._store = store
         self._peer_registry = peer_registry
         self._ask_tracker = ask_tracker
+        self._peer_delivery = peer_delivery
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._stopped = False
@@ -102,37 +104,56 @@ class Scheduler:
     async def _fire(self, sched: Schedule) -> None:
         try:
             if sched.kind == "ask":
-                cid = f"ask-{uuid4().hex[:8]}"
-                await self._ask_tracker.register(
-                    from_peer_id=sched.from_peer,
-                    from_peer_name=sched.from_peer,
-                    to_peer_id=sched.to_peer,
-                    to_peer_name=sched.to_peer,
-                    text=sched.text,
-                    correlation_id=cid,
-                )
                 try:
-                    await self._peer_registry.deliver_ask(
-                        from_peer=sched.from_peer,
-                        to_peer=sched.to_peer,
-                        text=sched.text,
-                        correlation_id=cid,
-                        circle=sched.circle,
-                    )
+                    if self._peer_delivery is not None:
+                        await self._peer_delivery.open_scheduled_ask(
+                            from_peer=sched.from_peer,
+                            to_peer=sched.to_peer,
+                            text=sched.text,
+                            circle=sched.circle,
+                        )
+                    else:
+                        cid = f"ask-{uuid4().hex[:8]}"
+                        await self._ask_tracker.register(
+                            from_peer_id=sched.from_peer,
+                            from_peer_name=sched.from_peer,
+                            to_peer_id=sched.to_peer,
+                            to_peer_name=sched.to_peer,
+                            text=sched.text,
+                            correlation_id=cid,
+                        )
+                        try:
+                            await self._peer_registry.deliver_ask(
+                                from_peer=sched.from_peer,
+                                to_peer=sched.to_peer,
+                                text=sched.text,
+                                correlation_id=cid,
+                                circle=sched.circle,
+                            )
+                        except Exception:
+                            await self._ask_tracker.close(cid, reason="send_failed")
+                            raise
                 except (ValueError, TransportError) as e:
-                    await self._ask_tracker.close(cid, reason="send_failed")
                     logger.warning(
                         "Scheduled ask %s failed to deliver: %s",
                         sched.schedule_id, e,
                     )
             else:
                 try:
-                    await self._peer_registry.notify(
-                        from_peer=sched.from_peer,
-                        to_peer=sched.to_peer,
-                        text=sched.text,
-                        circle=sched.circle,
-                    )
+                    if self._peer_delivery is not None:
+                        await self._peer_delivery.notify(
+                            from_peer=sched.from_peer,
+                            to_peer=sched.to_peer,
+                            text=sched.text,
+                            circle=sched.circle,
+                        )
+                    else:
+                        await self._peer_registry.notify(
+                            from_peer=sched.from_peer,
+                            to_peer=sched.to_peer,
+                            text=sched.text,
+                            circle=sched.circle,
+                        )
                 except (ValueError, TransportError) as e:
                     logger.warning(
                         "Scheduled notify %s failed to deliver: %s",

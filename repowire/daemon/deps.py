@@ -6,6 +6,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from repowire.config.models import Config, load_config
 from repowire.daemon.lifecycle_handler import LifecycleHandler
+from repowire.daemon.peer_delivery import PeerDeliveryService
 from repowire.daemon.peer_registry import PeerRegistry
 
 
@@ -17,6 +18,7 @@ class AppState(Protocol):
     query_tracker: Any
     ask_tracker: Any
     peer_registry: PeerRegistry
+    peer_delivery: PeerDeliveryService
     config: Config
     schedule_store: Any
     scheduler: Any

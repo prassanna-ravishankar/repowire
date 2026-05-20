@@ -13,11 +13,8 @@ from pydantic import BaseModel, Field
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
+from repowire.daemon.peer_delivery import peer_delivery_from_state
 from repowire.daemon.routes._shared import OkResponse
-from repowire.daemon.transport_router import (
-    NotifyEnvelope,
-    transport_router_from_state,
-)
 from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import PeerStatus, TurnState
 
@@ -119,6 +116,7 @@ async def query_peer(
 ) -> QueryResponse:
     """Send a query to a peer and wait for response."""
     peer_registry = get_peer_registry()
+    state = get_app_state()
     await peer_registry.lazy_repair()
 
     # Check peer state before attempting query
@@ -141,7 +139,12 @@ async def query_peer(
     bypass = request.bypass_circle or request.from_peer is None
 
     try:
-        response_text = await peer_registry.query(
+        peer_delivery = peer_delivery_from_state(
+            config=state.config,
+            registry=peer_registry,
+            state=state,
+        )
+        response_text = await peer_delivery.query(
             from_peer=from_peer,
             to_peer=request.to_peer,
             text=request.text,
@@ -187,64 +190,31 @@ async def notify_peer(
     state = get_app_state()
     await peer_registry.lazy_repair()
 
-    # ACP routing decision happens before any WS dispatch so that ACP-marked
-    # peers (which have no WS by design) don't 503 in the route layer.
-    # check_access runs the same lookup + circle-boundary enforcement that
-    # peer_registry.notify would apply on the WS path — we must not let the
-    # ACP branch silently bypass circle gates.
     try:
-        _from_obj, target = await peer_registry.check_access(
-            from_peer=request.from_peer,
-            to_peer=request.to_peer,
-            bypass_circle=request.bypass_circle,
-            circle=request.circle,
-        )
-    except ValueError as e:
-        msg = str(e)
-        if msg.startswith("Unknown peer"):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail=msg,
-            ) from e
-        if msg.startswith("Ambiguous peer name"):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT, detail=msg,
-            ) from e
-        # Circle boundary violation → 403. This is the established "no
-        # cross-circle traffic" semantic; previously the WS path bubbled
-        # the same ValueError up to the catch-all 404 branch below, which
-        # masked the real error. Keep this path consistent for ACP + WS.
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail=msg,
-        ) from e
-
-    try:
-        transport_router = transport_router_from_state(
+        peer_delivery = peer_delivery_from_state(
             config=state.config,
             registry=peer_registry,
             state=state,
         )
-        from_peer_id = _from_obj.peer_id if _from_obj else None
-        from_peer_name = _from_obj.display_name if _from_obj else request.from_peer
-        delivery_status = await transport_router.send_notify(
-            NotifyEnvelope(
-                from_peer_id=from_peer_id,
-                from_peer_name=from_peer_name,
-                target=target,
-                text=request.text,
-                intended_recipient_name=request.to_peer,
-                attachments=tuple(request.attachments),
-            )
+        delivery_status = await peer_delivery.notify(
+            from_peer=request.from_peer,
+            to_peer=request.to_peer,
+            text=request.text,
+            bypass_circle=request.bypass_circle,
+            circle=request.circle,
+            attachments=request.attachments,
         )
         return NotifyResponse(status=delivery_status)
     except ValueError as e:
-        # Ambiguous-display-name lookups → 409 (matches peer/description/touch/ask
-        # paths). "Unknown peer" stays 404.
         msg = str(e)
-        is_ambiguous = msg.startswith("Ambiguous peer name")
+        if msg.startswith("Ambiguous peer name"):
+            code = status.HTTP_409_CONFLICT
+        elif msg.startswith("Unknown peer"):
+            code = status.HTTP_404_NOT_FOUND
+        else:
+            code = status.HTTP_403_FORBIDDEN
         raise HTTPException(
-            status_code=(
-                status.HTTP_409_CONFLICT if is_ambiguous else status.HTTP_404_NOT_FOUND
-            ),
+            status_code=code,
             detail=msg,
         )
     except TransportError as e:
@@ -266,9 +236,15 @@ async def broadcast_message(
 ) -> BroadcastResponse:
     """Broadcast a message to all eligible peers. Best-effort per-recipient."""
     peer_registry = get_peer_registry()
+    state = get_app_state()
     await peer_registry.lazy_repair()
 
-    sent_to, failed = await peer_registry.broadcast(
+    peer_delivery = peer_delivery_from_state(
+        config=state.config,
+        registry=peer_registry,
+        state=state,
+    )
+    sent_to, failed = await peer_delivery.broadcast(
         from_peer=request.from_peer,
         text=request.text,
         exclude=request.exclude,

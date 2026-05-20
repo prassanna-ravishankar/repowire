@@ -944,6 +944,23 @@ class PeerRegistry:
     # Message routing (query / notify / broadcast)
     # ------------------------------------------------------------------
 
+    def _compat_delivery_service(self):
+        """Build the WS-only delivery facade for legacy registry callers."""
+        from repowire.daemon.peer_delivery import PeerDeliveryService
+        from repowire.daemon.transport_router import PeerTransportRouter
+
+        return PeerDeliveryService(
+            config=self._config,
+            registry=self,
+            message_router=self._router,
+            transport_router=PeerTransportRouter(
+                config=self._config,
+                registry=self,
+                message_router=self._router,
+            ),
+            ask_tracker=self._ask_tracker,
+        )
+
     async def query(
         self,
         from_peer: str,
@@ -959,62 +976,14 @@ class PeerRegistry:
             ValueError: If peer not found or circle boundary violated
             TimeoutError: If no response within timeout
         """
-        async with self._lock:
-            peer = self._lookup_peer_unlocked(to_peer, circle=circle)
-            if not peer:
-                raise ValueError(f"Unknown peer: {to_peer}")
-            from_obj = self._resolve_from_peer_unlocked(from_peer, peer, bypass_circle)
-            peer_id = peer.peer_id
-            peer_name = peer.display_name
-            from_peer_id = from_obj.peer_id if from_obj else None
-
-        formatted_query = (
-            f"[Repowire Query from @{from_peer}]\n"
-            f"{text}\n\n"
-            f"IMPORTANT: Respond directly in your message. Do NOT use ask() to reply - "
-            f"your response is automatically captured and returned to {from_peer}."
+        return await self._compat_delivery_service().query(
+            from_peer=from_peer,
+            to_peer=to_peer,
+            text=text,
+            timeout=timeout,
+            bypass_circle=bypass_circle,
+            circle=circle,
         )
-
-        query_event_id = self.add_event(
-            "query",
-            {
-                "from": from_peer, "to": to_peer, "text": text,
-                "from_peer_id": from_peer_id, "to_peer_id": peer_id,
-                "status": "pending",
-            },
-        )
-
-        try:
-            response = await self._router.send_query(
-                from_peer=from_peer,
-                to_session_id=peer_id,
-                to_peer_name=peer_name,
-                text=formatted_query,
-                timeout=timeout,
-            )
-
-            self._update_event(query_event_id, {"status": "success"})
-            self.add_event(
-                "response",
-                {
-                    "from": to_peer, "to": from_peer,
-                    "from_peer_id": peer_id, "to_peer_id": from_peer_id,
-                    "text": response[:100] + "..." if len(response) > 100 else response,
-                    "correlation_id": query_event_id,
-                },
-            )
-
-            return response
-
-        except TimeoutError:
-            self._update_event(query_event_id, {"status": "timeout"})
-            # Fire-and-forget liveness check — don't block the error path
-            asyncio.ensure_future(self._check_peer_after_timeout(peer_id))
-            raise
-
-        except Exception as e:
-            self._update_event(query_event_id, {"status": "error", "error": str(e)})
-            raise
 
     async def _check_peer_after_timeout(self, peer_id: str) -> None:
         """Targeted liveness check after a query timeout. Runs in background."""
@@ -1052,38 +1021,14 @@ class PeerRegistry:
             ValueError: peer not found / circle boundary violated.
             TransportError: peer has no live WS.
         """
-        async with self._lock:
-            peer = self._lookup_peer_unlocked(to_peer, circle=circle)
-            if not peer:
-                raise ValueError(f"Unknown peer: {to_peer}")
-            from_obj = self._resolve_from_peer_unlocked(from_peer, peer, bypass_circle)
-            peer_id = peer.peer_id
-            peer_name = peer.display_name
-            from_peer_id = from_obj.peer_id if from_obj else None
-            from_peer_name = from_obj.display_name if from_obj else from_peer
-            delivery_status: Literal["sent", "queued"] = (
-                "queued" if peer.status == PeerStatus.BUSY else "sent"
-            )
-
-        self.add_event(
-            "notification",
-            {
-                "from": from_peer_name, "to": peer_name, "text": text,
-                "from_peer_id": from_peer_id, "to_peer_id": peer_id,
-                "delivery_status": delivery_status,
-                "attachments": _serialize_attachments(attachments),
-            },
-        )
-
-        await self._router.send_notification(
-            from_peer=from_peer_name,
-            to_session_id=peer_id,
-            to_peer_name=peer_name,
+        return await self._compat_delivery_service().notify(
+            from_peer=from_peer,
+            to_peer=to_peer,
             text=text,
-            intended_recipient_name=to_peer,
+            bypass_circle=bypass_circle,
+            circle=circle,
             attachments=attachments,
         )
-        return delivery_status
 
     async def deliver_ask(
         self,
@@ -1107,36 +1052,14 @@ class PeerRegistry:
             ValueError: peer not found / circle violation.
             TransportError: peer has no live WS.
         """
-        async with self._lock:
-            peer = self._lookup_peer_unlocked(to_peer, circle=circle)
-            if not peer:
-                raise ValueError(f"Unknown peer: {to_peer}")
-            from_obj = self._resolve_from_peer_unlocked(from_peer, peer, bypass_circle)
-            peer_id = peer.peer_id
-            peer_name = peer.display_name
-            from_peer_id = from_obj.peer_id if from_obj else None
-            from_peer_name = from_obj.display_name if from_obj else from_peer
-
-        self.add_event(
-            "ask",
-            {
-                "from": from_peer_name, "to": peer_name, "text": text,
-                "from_peer_id": from_peer_id, "to_peer_id": peer_id,
-                "correlation_id": correlation_id,
-                "reply_to": reply_to,
-                "self_target": from_peer_id == peer_id,
-                "attachments": _serialize_attachments(attachments),
-            },
-        )
-
-        await self._router.send_ask(
-            from_peer=from_peer_name,
-            to_session_id=peer_id,
-            to_peer_name=peer_name,
-            correlation_id=correlation_id,
+        await self._compat_delivery_service().deliver_ask(
+            from_peer=from_peer,
+            to_peer=to_peer,
             text=text,
+            correlation_id=correlation_id,
             reply_to=reply_to,
-            intended_recipient_name=to_peer,
+            bypass_circle=bypass_circle,
+            circle=circle,
             attachments=attachments,
         )
 
@@ -1152,49 +1075,12 @@ class PeerRegistry:
         Best-effort per-peer: a stale WS for one recipient doesn't fail the
         whole call. Returns ([sent_to_names], [{peer, error}, ...]).
         """
-        exclude_names = set(exclude or [])
-        exclude_names.add(from_peer)
-
-        exclude_session_ids: set[str] = set()
-        async with self._lock:
-            from_peer_obj: Peer | None = None
-            for name in exclude_names:
-                peer = self._lookup_peer_unlocked(name)
-                if peer:
-                    exclude_session_ids.add(peer.peer_id)
-                    if name == from_peer:
-                        from_peer_obj = peer
-
-            sender_bypasses = from_peer_obj and (bypass_circle or from_peer_obj.bypasses_circles)
-            if not sender_bypasses and from_peer_obj:
-                from_circle = from_peer_obj.circle
-                for sid, peer in self._peers.items():
-                    if peer.circle != from_circle and not peer.bypasses_circles:
-                        exclude_session_ids.add(sid)
-
-            from_peer_id = from_peer_obj.peer_id if from_peer_obj else None
-            id_to_name = {sid: p.display_name for sid, p in self._peers.items()}
-
-        self.add_event(
-            "broadcast",
-            {
-                "from": from_peer, "text": text, "exclude": exclude,
-                "from_peer_id": from_peer_id,
-            },
-        )
-
-        sent_ids, failed = await self._router.broadcast(
+        return await self._compat_delivery_service().broadcast(
             from_peer=from_peer,
             text=text,
-            exclude=exclude_session_ids,
+            exclude=exclude,
+            bypass_circle=bypass_circle,
         )
-
-        sent_names = [id_to_name[sid] for sid in sent_ids if sid in id_to_name]
-        failed_named = [
-            {"peer": id_to_name.get(f["session_id"], f["session_id"]), "error": f["error"]}
-            for f in failed
-        ]
-        return sent_names, failed_named
 
     # ------------------------------------------------------------------
     # Status / metadata mutations
