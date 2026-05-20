@@ -255,6 +255,41 @@ describe("PeerView session protection", () => {
     expect(screen.queryByText("other stream")).not.toBeInTheDocument();
   });
 
+  it("orders streaming delta blocks by chunk_index instead of timestamp", async () => {
+    const laterChunkFirstByTimestamp: Event = {
+      id: "delta-1",
+      type: "chat_turn_delta",
+      timestamp: "2025-01-01T00:00:00Z",
+      peer_id: PEER.peer_id,
+      session_id: "session-a",
+      turn_id: "turn-a",
+      chunk_index: 1,
+      kind: "text",
+      text: "second block",
+    };
+    const earlierChunkSecondByTimestamp: Event = {
+      ...laterChunkFirstByTimestamp,
+      id: "delta-0",
+      timestamp: "2025-01-01T00:00:01Z",
+      chunk_index: 0,
+      text: "first block",
+    };
+
+    render(
+      <PeerView
+        peer={{ ...PEER, metadata: { hook_session_id: "session-a" } }}
+        events={[laterChunkFirstByTimestamp, earlierChunkSecondByTimestamp]}
+        apiBase=""
+        onClose={() => {}}
+        onSent={() => {}}
+      />,
+    );
+
+    const first = await screen.findByText("first block");
+    const second = screen.getByText("second block");
+    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("auto-scrolls on new events when not protected", () => {
     const initial: Event[] = [chatTurn("e1", "hello", "2025-01-01T00:00:00Z")];
     const { rerender } = render(

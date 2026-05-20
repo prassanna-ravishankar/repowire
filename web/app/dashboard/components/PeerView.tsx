@@ -1438,7 +1438,13 @@ function mergeTimeline(
  * gets a matching final (network drop, agent crash mid-turn): a chat_turn
  * for the same peer that came *after* the delta absorbs it. */
 function coalesceDeltas(sorted: Event[]): ThreadItemEntry[] {
-  const groups = new Map<string, ChatTurnDeltaGroup>();
+  const groups = new Map<
+    string,
+    {
+      group: ChatTurnDeltaGroup;
+      deltas: Event[];
+    }
+  >();
 
   // Final chat_turns carrying turn_id — exact match drops their deltas
   // regardless of arrival order.
@@ -1464,27 +1470,25 @@ function coalesceDeltas(sorted: Event[]): ThreadItemEntry[] {
     if (lastFinalTs && ev.timestamp <= lastFinalTs) continue;
 
     const groupKey = key || `event:${ev.id}`;
-    let group = groups.get(groupKey);
-    if (!group) {
-      group = {
-        type: "chat_turn_delta_group",
-        id: `delta-group-${ev.turn_id}`,
-        session_id: ev.session_id,
-        turn_id: ev.turn_id,
-        peer_id: ev.peer_id,
-        timestamp: ev.timestamp,
-        text: "",
-        tool_calls: [],
+    let entry = groups.get(groupKey);
+    if (!entry) {
+      entry = {
+        deltas: [],
+        group: {
+          type: "chat_turn_delta_group",
+          id: `delta-group-${ev.turn_id}`,
+          session_id: ev.session_id,
+          turn_id: ev.turn_id,
+          peer_id: ev.peer_id,
+          timestamp: ev.timestamp,
+          text: "",
+          tool_calls: [],
+        },
       };
-      groups.set(groupKey, group);
+      groups.set(groupKey, entry);
     }
-    if (ev.kind === "tool_use" && ev.tool_call) {
-      group.tool_calls.push(ev.tool_call);
-    } else if (ev.kind === "text" || ev.kind === undefined) {
-      // Adjacent text blocks within one turn are conceptually paragraphs.
-      group.text = group.text ? `${group.text}\n\n${ev.text}` : ev.text;
-    }
-    group.timestamp = ev.timestamp;
+    entry.deltas.push(ev);
+    if (ev.timestamp > entry.group.timestamp) entry.group.timestamp = ev.timestamp;
   }
 
   const out: ThreadItemEntry[] = [];
@@ -1492,7 +1496,21 @@ function coalesceDeltas(sorted: Event[]): ThreadItemEntry[] {
     if (ev.type === "chat_turn_delta") continue;
     out.push(ev);
   }
-  for (const group of groups.values()) {
+  for (const { group, deltas } of groups.values()) {
+    const ordered = [...deltas].sort((a, b) => {
+      const aIndex = typeof a.chunk_index === "number" ? a.chunk_index : Number.MAX_SAFE_INTEGER;
+      const bIndex = typeof b.chunk_index === "number" ? b.chunk_index : Number.MAX_SAFE_INTEGER;
+      if (aIndex !== bIndex) return aIndex - bIndex;
+      return a.timestamp.localeCompare(b.timestamp);
+    });
+    for (const ev of ordered) {
+      if (ev.kind === "tool_use" && ev.tool_call) {
+        group.tool_calls.push(ev.tool_call);
+      } else if (ev.kind === "text" || ev.kind === undefined) {
+        // Adjacent text blocks within one turn are conceptually paragraphs.
+        group.text = group.text ? `${group.text}\n\n${ev.text}` : ev.text;
+      }
+    }
     if (!group.text && group.tool_calls.length === 0) continue;
     out.push(group);
   }
