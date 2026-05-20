@@ -41,10 +41,12 @@ def test_install_hooks_on_empty_writes_all_events(tmp_path, monkeypatch):
     data = _read(settings)
 
     assert set(data["hooks"]) == {
-        "Stop", "SessionStart", "SessionEnd", "UserPromptSubmit", "Notification",
+        "Stop", "StopFailure", "SessionStart", "SessionEnd",
+        "UserPromptSubmit", "Notification",
     }
     # All point at the repowire CLI.
     assert "repowire hook stop" in data["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert "repowire hook stop" in data["hooks"]["StopFailure"][0]["hooks"][0]["command"]
     assert "repowire hook session" in data["hooks"]["SessionStart"][0]["hooks"][0]["command"]
     assert "repowire hook prompt" in data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
     # Notification carries the idle_prompt matcher.
@@ -55,7 +57,7 @@ def test_install_hooks_channel_mode_only_writes_stop(tmp_path, monkeypatch):
     settings, _ = _retarget(tmp_path, monkeypatch)
     assert cc_mod.install_hooks(channel_mode=True) is True
     data = _read(settings)
-    assert set(data["hooks"]) == {"Stop"}
+    assert set(data["hooks"]) == {"Stop", "StopFailure"}
 
 
 def test_install_hooks_preserves_top_level_keys(tmp_path, monkeypatch):

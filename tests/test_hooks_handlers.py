@@ -44,6 +44,10 @@ class TestPromptHandler:
             "%42", "busy", use_pane_id=True, turn_state="working",
         )
 
+    def test_stop_failure_not_handled_by_prompt(self):
+        result = _run_with_input(prompt_main, {"hook_event_name": "StopFailure"})
+        assert result == 0
+
     @patch("repowire.hooks.prompt_handler.update_status")
     @patch("repowire.hooks.prompt_handler.get_pane_id", return_value=None)
     def test_no_pane_id(self, mock_pane, mock_status):

@@ -8,7 +8,10 @@ from pathlib import Path
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 CLAUDE_JSON = Path.home() / ".claude.json"
 
-HOOK_EVENTS = ["Stop", "SessionStart", "SessionEnd", "UserPromptSubmit", "Notification"]
+HOOK_EVENTS = [
+    "Stop", "StopFailure", "SessionStart", "SessionEnd",
+    "UserPromptSubmit", "Notification",
+]
 
 # Channel transport requires Claude Code v2.1.80+ with claude.ai login
 CHANNEL_MIN_VERSION = (2, 1, 80)
@@ -64,6 +67,7 @@ def install_hooks(channel_mode: bool = False) -> bool:
 
     # Stop hook always needed (dashboard chat_turns)
     settings["hooks"]["Stop"] = [_make_hook_config("repowire hook stop")]
+    settings["hooks"]["StopFailure"] = [_make_hook_config("repowire hook stop")]
 
     if not channel_mode:
         # Full hook set for tmux transport

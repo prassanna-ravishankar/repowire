@@ -24,7 +24,9 @@ def test_notifications_use_soft_inject():
 
 
 def test_query_correlation_via_pending_map():
-    """Pending queries are correlated by userMessageId (parent), with assistant ID discovered from message.updated parentID."""
+    """Pending queries correlate by userMessageId, with assistant ID discovered
+    from message.updated parentID.
+    """
     assert "pendingQueries" in PLUGIN_CONTENT
     assert "messageID: userMessageId" in PLUGIN_CONTENT
     assert "pendingByAssistantId" in PLUGIN_CONTENT
@@ -47,6 +49,7 @@ def test_query_correlation_via_pending_map():
 def test_authoritative_busy_idle_via_session_status():
     """session.status is the authoritative busy/idle source (not message.updated heuristic)."""
     assert '"session.status"' in PLUGIN_CONTENT
+    assert 'turn_state = status === "busy" ? "working"' in PLUGIN_CONTENT
 
 
 def test_permission_relay_uses_correct_field_names():
@@ -55,7 +58,7 @@ def test_permission_relay_uses_correct_field_names():
 
 
 def test_signal_handlers_exit():
-    """SIGINT/SIGTERM handlers are one-shot and exit the process (otherwise Node skips default termination)."""
+    """SIGINT/SIGTERM handlers are one-shot and exit the process."""
     assert "process.once(\"SIGINT\"" in PLUGIN_CONTENT
     assert "process.once(\"SIGTERM\"" in PLUGIN_CONTENT
     assert "process.exit(130)" in PLUGIN_CONTENT
@@ -85,6 +88,15 @@ def test_concurrency_guard_per_peer():
     """The plugin rejects concurrent promptAsync calls on the same session."""
     assert "Session busy" in PLUGIN_CONTENT
     assert "conn.busy" in PLUGIN_CONTENT
+
+
+def test_query_timeout_resets_busy():
+    """A timed-out query must not leave the plugin-side peer busy forever."""
+    assert "Query timed out waiting for OpenCode response" in PLUGIN_CONTENT
+    timeout_idx = PLUGIN_CONTENT.index("Query timed out waiting for OpenCode response")
+    reset_idx = PLUGIN_CONTENT.index("conn.busy = false", timeout_idx)
+    idle_idx = PLUGIN_CONTENT.index('sendStatus(conn, "idle")', reset_idx)
+    assert timeout_idx < reset_idx < idle_idx
 
 
 def test_per_session_peer_id_cache():

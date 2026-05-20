@@ -1780,6 +1780,7 @@ class PeerRegistry:
             self._last_repair = time.monotonic()
             await self._demote_disconnected_peers()
             await self._demote_unsafe_connected_peers()
+            await self._repair_stale_busy_peers()
             await self._reap_dangling_peers()
             await self._evict_stale_peers()
             await self._emit_and_evict_expired_stashes()
@@ -1854,6 +1855,37 @@ class PeerRegistry:
         if count:
             logger.info("demoted %d unsafe connected peers", count)
         return count
+
+    async def _repair_stale_busy_peers(self) -> int:
+        """Reset stale BUSY/working peers after missed terminal hooks.
+
+        This is a demand-driven fallback for user interrupts/cancels where a
+        backend does not emit Stop/AfterAgent. It intentionally ignores
+        awaiting_input and any peer with recent liveness progress.
+        """
+        timeout = self._config.daemon.stale_busy_timeout_seconds
+        if timeout <= 0:
+            return 0
+
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=timeout)
+        async with self._lock:
+            stale = [
+                p for p in self._peers.values()
+                if p.status == PeerStatus.BUSY
+                and p.turn_state == "working"
+                and p.last_seen is not None
+                and p.last_seen < cutoff
+            ]
+            for peer in stale:
+                old_status = peer.status
+                peer.status = PeerStatus.ONLINE
+                peer.turn_state = "idle"
+                peer.last_seen = datetime.now(timezone.utc)
+                self._emit_status_change(peer, old_status, PeerStatus.ONLINE)
+
+        if stale:
+            logger.info("repaired %d stale busy peers", len(stale))
+        return len(stale)
 
     async def _reap_dangling_peers(self) -> int:
         """Remove OFFLINE peers whose liveness TTL has expired.

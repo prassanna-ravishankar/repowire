@@ -12,6 +12,7 @@ Gemini CLI uses different event names than Claude Code or Codex:
 
 | Gemini event | Mapped to | What it does |
 | --- | --- | --- |
+| `SessionStart` | session hook | Registers the peer with the daemon |
 | `BeforeAgent` | prompt hook (`UserPromptSubmit` equivalent) | Marks peer `busy` |
 | `AfterAgent` | stop hook (`Stop` equivalent) | Captures response, fetches pending asks, marks peer `online` |
 
@@ -40,4 +41,4 @@ Open a Gemini session, send one message, watch `repowire peer list`. Gemini fire
 ## Troubleshooting
 
 - Hook errors visible in Gemini output → confirm `repowire` is on `PATH` for the shell Gemini was launched from. Gemini surfaces hook stderr; Claude Code and Codex tend to swallow it.
-- Peer stuck `busy` → the `AfterAgent` hook didn't fire or didn't return `{"decision": "allow"}`. See [Ghost peers and stuck busy state](../troubleshooting/ghost-peers.md).
+- Peer stuck `busy` → the `AfterAgent` hook didn't fire or didn't return `{"decision": "allow"}`. Lazy repair can reset stale `busy`/`working` state after `daemon.stale_busy_timeout_seconds`; see [Ghost peers and stuck busy state](../troubleshooting/ghost-peers.md).

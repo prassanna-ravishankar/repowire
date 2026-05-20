@@ -8,7 +8,7 @@ Hooks and MCP entries land in `~/.claude/settings.json`. Repowire owns these key
 
 ### Hooks
 
-Five lifecycle events are wired by default:
+Six lifecycle events are wired by default:
 
 | Event | What it does |
 | --- | --- |
@@ -16,6 +16,7 @@ Five lifecycle events are wired by default:
 | `UserPromptSubmit` | Marks the peer `busy` |
 | `Notification` | Resets the peer to `online` when Claude Code emits an idle prompt |
 | `Stop` | Extracts response + tool calls from the transcript, delivers any pending legacy `/query`, fetches `/asks/pending` and emits a reminder block if open asks exist, then marks the peer `online` |
+| `StopFailure` | Uses the same stop handler to repair status after API-level stop failures |
 | `SessionEnd` | Tears down the WebSocket hook supervisor, marks the peer `offline` |
 
 The hooks shell out to the `repowire` CLI: `repowire hook session`, `repowire hook prompt`, `repowire hook notification`, `repowire hook stop`, `repowire hook session-end`.
@@ -49,7 +50,7 @@ Requirements:
 - claude.ai login (not API/Console key auth).
 - [bun](https://bun.sh) on `PATH`.
 
-The channel transport only replaces the SessionStart / UserPromptSubmit / Notification hooks. The `Stop` hook is kept so the dashboard still sees chat turns and tool calls.
+The channel transport only replaces the SessionStart / UserPromptSubmit / Notification hooks. The `Stop` and `StopFailure` hooks are kept so the dashboard still sees chat turns and status repair still runs.
 
 If `repowire setup --experimental-channels` declines to install:
 

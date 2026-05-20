@@ -182,6 +182,14 @@ class DaemonConfig(BaseModel):
             "reaps it. Set to 0 to disable."
         ),
     )
+    stale_busy_timeout_seconds: float = Field(
+        default=1800,
+        description=(
+            "Seconds before lazy repair resets BUSY peers stuck in "
+            "turn_state=working to ONLINE/idle after no liveness progress. "
+            "Set to 0 to disable."
+        ),
+    )
 
     # HTTP MCP settings (opt-in)
     mcp_http: MCPHttpConfig = Field(default_factory=MCPHttpConfig)

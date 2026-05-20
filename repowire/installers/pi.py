@@ -240,7 +240,8 @@ function schedulePeerReconnect(conn: PeerConn) {
 
 function sendStatus(conn: PeerConn, status: "busy" | "idle" | "offline") {
   if (conn.ws?.readyState === WebSocket.OPEN) {
-    conn.ws.send(JSON.stringify({ type: "status", status }));
+    const turn_state = status === "busy" ? "working" : status === "idle" ? "idle" : undefined;
+    conn.ws.send(JSON.stringify({ type: "status", status, turn_state }));
   }
 }
 
@@ -513,6 +514,8 @@ async function handleIncomingQuery(conn: PeerConn, correlationId: string, _fromP
           conn.activeTurnCorrelationId = null;
         }
         sendError(conn, correlationId, "Query timed out waiting for pi response");
+        conn.busy = false;
+        sendStatus(conn, "idle");
       }
     }, QUERY_TIMEOUT_MS),
   };

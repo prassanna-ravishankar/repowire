@@ -9,14 +9,14 @@ import hmac
 import json
 import logging
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from repowire.config.models import AgentType
 from repowire.daemon.deps import get_app_state
 from repowire.daemon.routes._shared import is_valid_identifier
-from repowire.protocol.peers import PeerRole, PeerStatus
+from repowire.protocol.peers import PeerRole, PeerStatus, TurnState
 
 if TYPE_CHECKING:
     from repowire.daemon.peer_registry import PeerRegistry
@@ -35,7 +35,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     Protocol (Client -> Daemon):
     - connect: {type, display_name, circle, backend, path?, auth_token?}
     - response: {type, correlation_id, text}    (legacy /query reply)
-    - status: {type, status: busy|idle|online}
+    - status: {type, status: busy|idle|online, turn_state?}
     - error: {type, correlation_id, error}
 
     Protocol (Daemon -> Client):
@@ -253,7 +253,14 @@ async def _handle_message(
             "offline": PeerStatus.OFFLINE,
         }
         status = status_map.get(status_str, PeerStatus.ONLINE)
+        turn_state = data.get("turn_state")
+        if turn_state not in ("idle", "working", "awaiting_input", "pending_first_turn"):
+            turn_state = None
         await peer_registry.update_peer_status(session_id, status)
+        if turn_state is not None:
+            await peer_registry.update_peer_turn_state(
+                session_id, cast(TurnState, turn_state),
+            )
 
     elif msg_type == "set_circle":
         new_circle = data.get("circle")

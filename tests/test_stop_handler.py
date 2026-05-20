@@ -206,6 +206,20 @@ class TestStopHandler:
         assert payload["pane_id"] == "%42"
         assert payload["text"] == "I am finished."
 
+    @patch("repowire.hooks.stop_handler.daemon_post")
+    @patch("repowire.hooks.stop_handler.update_status", return_value=True)
+    @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
+    def test_stop_failure_marks_idle(self, mock_pane, mock_status, mock_post):
+        _run_hook({
+            "hook_event_name": "StopFailure",
+            "cwd": "/tmp/test",
+            "session_id": "abc12345-rest",
+        })
+
+        mock_status.assert_called_once_with(
+            "%42", "online", use_pane_id=True, turn_state="idle",
+        )
+
 
 class TestReminderStopOutput:
     """Stop hook emits decision=block + reason JSON when open asks exist (claude-code only)."""

@@ -47,6 +47,7 @@ def test_turn_end_flushes_pending():
     """turn_end is the canonical finalize event for pi pending queries."""
     assert "turn_end" in PLUGIN_CONTENT
     assert "flushPending" in PLUGIN_CONTENT
+    assert 'turn_state = status === "busy" ? "working"' in PLUGIN_CONTENT
 
 
 def test_message_update_buffers_text_deltas():
@@ -146,6 +147,15 @@ def test_concurrency_guard_per_peer():
     assert "Session busy" in PLUGIN_CONTENT
     assert "conn.busy" in PLUGIN_CONTENT
     assert "activeTurnCorrelationId" in PLUGIN_CONTENT
+
+
+def test_query_timeout_resets_busy():
+    """A timed-out query must not leave the extension-side peer busy forever."""
+    assert "Query timed out waiting for pi response" in PLUGIN_CONTENT
+    timeout_idx = PLUGIN_CONTENT.index("Query timed out waiting for pi response")
+    reset_idx = PLUGIN_CONTENT.index("conn.busy = false", timeout_idx)
+    idle_idx = PLUGIN_CONTENT.index('sendStatus(conn, "idle")', reset_idx)
+    assert timeout_idx < reset_idx < idle_idx
 
 
 def test_websocket_connect_carries_backend_pi():

@@ -14,7 +14,7 @@ If a runtime is detected but its hooks are marked missing, run `repowire setup` 
 
 ### Claude Code
 
-1. Open `~/.claude/settings.json`. The `hooks` key should contain entries for `SessionStart`, `UserPromptSubmit`, `Notification`, `Stop`, and `SessionEnd`, each pointing at `repowire hook ...`.
+1. Open `~/.claude/settings.json`. The `hooks` key should contain entries for `SessionStart`, `UserPromptSubmit`, `Notification`, `Stop`, `StopFailure`, and `SessionEnd`, each pointing at `repowire hook ...`.
 2. Confirm `repowire` is on `PATH` for the shell Claude Code was launched from. Hooks shell out, so a missing `repowire` in `PATH` silently no-ops.
 3. Start Claude Code in a tmux pane. After your first prompt, run `repowire peer list` in another shell. Peer should appear within a few seconds.
 
@@ -26,7 +26,7 @@ If a runtime is detected but its hooks are marked missing, run `repowire setup` 
 
 ### Gemini CLI
 
-1. Open `~/.gemini/settings.json`. The `hooks` key should contain `BeforeAgent` and `AfterAgent` entries pointing at `repowire hook ...`.
+1. Open `~/.gemini/settings.json`. The `hooks` key should contain `SessionStart`, `BeforeAgent`, and `AfterAgent` entries pointing at `repowire hook ...`.
 2. Gemini surfaces hook stderr — if the hook is failing, you'll see it in the Gemini output directly.
 3. The `AfterAgent` hook must return `{"decision": "allow"}` to let the agent continue. Repowire emits this by default; if you've patched the hook, make sure that field is still there.
 

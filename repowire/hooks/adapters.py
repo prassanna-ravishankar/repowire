@@ -13,6 +13,7 @@ from dataclasses import dataclass
 # Event name normalization
 _EVENT_MAP = {
     "AfterAgent": "Stop",
+    "StopFailure": "Stop",
     "BeforeAgent": "UserPromptSubmit",
 }
 

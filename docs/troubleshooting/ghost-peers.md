@@ -27,6 +27,14 @@ A peer shows `busy` long after the turn that triggered it has ended. The most co
 3. **`turn_state=awaiting_input`.** The peer is mid-turn waiting on user input (a permission prompt, a `read -p`, an MCP tool that suspended). This is not stuck — it's correctly reporting state. Send input to unblock it.
 4. **`turn_state=pending_first_turn`.** A spawn-seeded peer whose seed message never reached the agent. Re-send via `notify_peer`.
 
+Lazy repair also has a stale-state fallback for missed cancel/interrupt paths:
+on the next normal routing or peer-list request, it resets peers that are still
+`busy` with `turn_state=working` and have had no recent liveness progress for
+longer than `daemon.stale_busy_timeout_seconds` (default 1800 seconds). It does
+not touch `awaiting_input`, and it is not a guarantee that every backend emitted
+a cancel event — it only reconciles stale daemon state without adding a polling
+loop.
+
 ## Why no polling
 
 Repowire deliberately has no heartbeat or watchdog thread. State catches up on the next routing call. If a fully idle mesh is leaving you with stale state for too long, that's a sign you should reach for `repowire peer prune` rather than ask repowire to poll.

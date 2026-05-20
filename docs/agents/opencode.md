@@ -11,6 +11,11 @@ OpenCode integrates via a TypeScript plugin instead of shell hooks. The plugin h
 
 The plugin uses the OpenCode plugin API (`@opencode-ai/plugin`). It hooks into session lifecycle events from inside the OpenCode runtime — not via external shell hooks — and bridges them to the repowire daemon over WebSocket.
 
+OpenCode's `session.status` event is the authoritative status source:
+`busy` sends `status=busy, turn_state=working`, and `idle` sends
+`status=idle, turn_state=idle`. Query timeouts also clear the plugin's local
+busy flag so a failed injected prompt does not strand the peer.
+
 ## Why a plugin instead of hooks
 
 OpenCode does not expose Claude-style stdout hooks. The plugin model gives the integration:

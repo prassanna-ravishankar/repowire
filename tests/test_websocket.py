@@ -212,3 +212,37 @@ class TestWebSocketMessages:
                 assert r.json()["status"] == "busy"
 
         cleanup_deps()
+
+    async def test_status_update_accepts_turn_state(self, tmp_path):
+        app = _make_app(tmp_path)
+        async with AsyncClient(
+            transport=ASGIWebSocketTransport(app), base_url="http://test"
+        ) as client, aconnect_ws("/ws", client) as ws:
+            await ws.send_json({
+                "type": "connect",
+                "display_name": "statepeer",
+                "circle": "default",
+                "backend": "opencode",
+                "path": "/tmp/statepeer",
+            })
+            resp = json.loads(await ws.receive_text())
+            assert resp["type"] == "connected"
+            assigned_name = resp["display_name"]
+
+            await ws.send_json({
+                "type": "status",
+                "status": "busy",
+                "turn_state": "working",
+            })
+
+            import asyncio
+            await asyncio.sleep(0.1)
+
+            t = ASGITransport(app=app)
+            async with AsyncClient(transport=t, base_url="http://test") as c:
+                r = await c.get(f"/peers/{assigned_name}")
+                body = r.json()
+                assert body["status"] == "busy"
+                assert body["turn_state"] == "working"
+
+        cleanup_deps()

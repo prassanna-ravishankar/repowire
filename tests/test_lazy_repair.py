@@ -43,10 +43,13 @@ def _make_manager(
     ask_tracker: MagicMock | None = None,
     *,
     peer_reap_ttl_seconds: float | None = None,
+    stale_busy_timeout_seconds: float | None = None,
 ) -> PeerRegistry:
     config = Config()
     if peer_reap_ttl_seconds is not None:
         config.daemon.peer_reap_ttl_seconds = peer_reap_ttl_seconds
+    if stale_busy_timeout_seconds is not None:
+        config.daemon.stale_busy_timeout_seconds = stale_busy_timeout_seconds
     router = MagicMock()
     registry = PeerRegistry(
         config=config,
@@ -157,6 +160,60 @@ class TestLazyRepairDebounce:
         result = await manager.get_peer(peer.peer_id)
         assert result.status == PeerStatus.OFFLINE
         transport.ping.assert_awaited_once_with(peer.peer_id, timeout=1.0)
+
+    async def test_stale_busy_working_peer_repairs_to_idle(self):
+        manager = _make_manager(stale_busy_timeout_seconds=60)
+        old_seen = datetime.now(timezone.utc) - timedelta(seconds=61)
+        peer = _make_peer(status=PeerStatus.BUSY, last_seen=old_seen)
+        peer.turn_state = "working"
+        await manager.register_peer(peer)
+        async with manager._lock:
+            live = manager._peers[peer.peer_id]
+            live.status = PeerStatus.BUSY
+            live.turn_state = "working"
+            live.last_seen = old_seen
+
+        await manager.lazy_repair()
+
+        result = await manager.get_peer(peer.peer_id)
+        assert result.status == PeerStatus.ONLINE
+        assert result.turn_state == "idle"
+
+    async def test_recent_busy_working_peer_is_not_repaired(self):
+        manager = _make_manager(stale_busy_timeout_seconds=60)
+        recent_seen = datetime.now(timezone.utc) - timedelta(seconds=59)
+        peer = _make_peer(status=PeerStatus.BUSY, last_seen=recent_seen)
+        peer.turn_state = "working"
+        await manager.register_peer(peer)
+        async with manager._lock:
+            live = manager._peers[peer.peer_id]
+            live.status = PeerStatus.BUSY
+            live.turn_state = "working"
+            live.last_seen = recent_seen
+
+        await manager.lazy_repair()
+
+        result = await manager.get_peer(peer.peer_id)
+        assert result.status == PeerStatus.BUSY
+        assert result.turn_state == "working"
+
+    async def test_busy_awaiting_input_is_not_repaired(self):
+        manager = _make_manager(stale_busy_timeout_seconds=60)
+        old_seen = datetime.now(timezone.utc) - timedelta(seconds=61)
+        peer = _make_peer(status=PeerStatus.BUSY, last_seen=old_seen)
+        peer.turn_state = "awaiting_input"
+        await manager.register_peer(peer)
+        async with manager._lock:
+            live = manager._peers[peer.peer_id]
+            live.status = PeerStatus.BUSY
+            live.turn_state = "awaiting_input"
+            live.last_seen = old_seen
+
+        await manager.lazy_repair()
+
+        result = await manager.get_peer(peer.peer_id)
+        assert result.status == PeerStatus.BUSY
+        assert result.turn_state == "awaiting_input"
 
 
 class TestLazyRepairReaper:
