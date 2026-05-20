@@ -7,7 +7,7 @@ import { motion } from "framer-motion";
 
 export default function Hero() {
   return (
-    <section className="relative overflow-hidden border-b border-border-faint pt-24 sm:pt-28">
+    <section className="relative overflow-hidden border-b border-border-faint pt-20 sm:pt-22 lg:pt-24">
       <Image
         src="/brand/repowire-arch.webp"
         alt=""
@@ -18,7 +18,7 @@ export default function Hero() {
       />
       <div className="absolute inset-0 bg-surface/88" />
 
-      <div className="relative z-10 mx-auto grid max-w-7xl items-center gap-12 px-4 pb-16 sm:px-6 sm:pb-20 lg:grid-cols-[0.95fr_1.05fr] lg:px-8 lg:pb-24">
+      <div className="relative z-10 mx-auto grid max-w-7xl items-center gap-8 px-4 pb-10 sm:px-6 sm:pb-12 lg:grid-cols-[0.95fr_1.05fr] lg:px-8 lg:pb-14">
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
@@ -29,8 +29,8 @@ export default function Hero() {
             <span className="h-1.5 w-1.5 rounded-full bg-secondary" aria-hidden="true" />
             Local-first agent team harness
           </div>
-          <h1 className="font-headline text-4xl font-bold leading-tight tracking-normal text-on-surface sm:text-5xl lg:text-6xl">
-            Run a team of coding agents without losing the thread.
+          <h1 className="font-headline text-4xl font-bold leading-tight tracking-normal text-on-surface sm:text-5xl">
+            Coordinate agent teams locally.
           </h1>
           <p className="mt-5 max-w-2xl text-lg leading-8 text-on-surface-variant">
             Repowire gives Claude Code, Codex, Gemini CLI, OpenCode, and Pi sessions an address in one mesh so they can ask each other questions, send updates, schedule follow-ups, and stay steerable from your browser or phone.
@@ -80,7 +80,7 @@ export default function Hero() {
               alt="Repowire dashboard showing active peers and their recent work"
               width={1440}
               height={986}
-              className="h-auto w-full"
+              className="h-auto max-h-[360px] w-full object-cover object-top lg:max-h-[390px]"
               priority
             />
             <div className="grid border-t border-border-faint bg-surface/95 p-4 text-sm leading-6 text-on-surface-variant sm:grid-cols-[1fr_auto] sm:items-center sm:gap-4">
