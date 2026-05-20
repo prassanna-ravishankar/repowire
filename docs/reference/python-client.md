@@ -71,7 +71,7 @@ Omit it for the text-only shape; existing callers do not need to change.
 
 ## Listing and inspection
 
-Pull current mesh state. `list_peers` accepts daemon-supported filters; `get_peer` resolves a single peer by name or id. `pending_asks` returns open asks targeting one pane or peer.
+Pull current mesh state. `list_peers` accepts daemon-supported filters; `get_peer` resolves a single peer by name or id. `pending_asks` returns open asks for one pane or peer; pass `direction="outbound"` or `direction="both"` to inspect asks opened by that peer.
 
 ```python
 for peer in await client.list_peers(status="online"):
@@ -80,11 +80,12 @@ for peer in await client.list_peers(status="online"):
 peer = await client.get_peer("project-b")
 
 asks = await client.pending_asks(peer_id=peer.peer_id)
+outbound = await client.pending_asks(peer_id=peer.peer_id, direction="outbound")
 ```
 
 ## Spawning and lifecycle
 
-`spawn` launches a new agent session subject to `daemon.spawn.allowed_commands`. `spawn_config` reports what the daemon will accept without attempting a spawn. `kill_peer` terminates a peer cleanly.
+`spawn` launches a new agent session subject to `daemon.spawn.allowed_commands`. `spawn_config` reports what the daemon will accept without attempting a spawn. Omit `circle` to use the daemon default (`default`), or pass it explicitly for another circle. `kill_peer` terminates a peer cleanly.
 
 ```python
 info = await client.spawn_config()

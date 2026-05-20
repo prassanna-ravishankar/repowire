@@ -8,7 +8,7 @@ internals or duplicating route-specific request code.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
@@ -38,7 +38,7 @@ class ClientPeer(BaseModel):
     machine: str | None = None
     tmux_session: str | None = None
     backend: str = "claude-code"
-    circle: str = "global"
+    circle: str = "default"
     role: PeerRole = PeerRole.AGENT
     status: str
     last_seen: str | None = None
@@ -70,12 +70,14 @@ class AskResult(BaseModel):
 
 
 class PendingAsk(BaseModel):
-    """Open ask targeting a peer."""
+    """Open ask involving a peer."""
 
     correlation_id: str
     from_peer: str
+    to_peer: str
     text: str
     created_at: str
+    direction: Literal["inbound", "outbound"]
 
 
 class BroadcastResult(BaseModel):
@@ -163,7 +165,6 @@ class AsyncRepowireClient:
         self._auth_headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else None
         self._client = client or httpx.AsyncClient(
             base_url=self.base_url,
-            headers=self._auth_headers,
             timeout=timeout,
         )
 
@@ -400,9 +401,18 @@ class AsyncRepowireClient:
         *,
         pane_id: str | None = None,
         peer_id: str | None = None,
+        direction: Literal["inbound", "outbound", "both"] = "inbound",
     ) -> list[PendingAsk]:
         """List open asks for exactly one pane_id or peer_id."""
-        params = {k: v for k, v in {"pane_id": pane_id, "peer_id": peer_id}.items() if v}
+        params = {
+            k: v
+            for k, v in {
+                "pane_id": pane_id,
+                "peer_id": peer_id,
+                "direction": direction,
+            }.items()
+            if v
+        }
         data = await self._request("GET", "/asks/pending", params=params)
         return [PendingAsk.model_validate(a) for a in data.get("asks", [])]
 
@@ -487,11 +497,13 @@ class AsyncRepowireClient:
         path: str,
         command: str,
         *,
-        circle: str = "default",
+        circle: str | None = None,
         message: str | None = None,
     ) -> SpawnResult:
         """Spawn a new agent session via the daemon."""
-        payload = {"path": path, "command": command, "circle": circle}
+        payload = {"path": path, "command": command}
+        if circle is not None:
+            payload["circle"] = circle
         if message is not None:
             payload["message"] = message
         return SpawnResult.model_validate(await self._request("POST", "/spawn", json=payload))

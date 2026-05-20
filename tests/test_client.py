@@ -12,7 +12,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from repowire.client import AsyncRepowireClient, ToolCall
+from repowire.client import AsyncRepowireClient, ClientPeer, ToolCall
 from repowire.config.models import Config, DaemonConfig
 from repowire.daemon.ask_tracker import AskTracker
 from repowire.daemon.deps import cleanup_deps, init_deps
@@ -85,6 +85,19 @@ async def test_health_and_spawn_config(client: AsyncRepowireClient):
     assert spawn_config.allowed_commands == []
 
 
+def test_client_peer_defaults_to_daemon_default_circle():
+    peer = ClientPeer.model_validate(
+        {
+            "peer_id": "peer-1",
+            "name": "alice",
+            "display_name": "alice-claude-code",
+            "status": "online",
+        }
+    )
+
+    assert peer.circle == "default"
+
+
 async def test_peer_lifecycle(client: AsyncRepowireClient):
     registered = await client.register_peer(
         "alice",
@@ -128,6 +141,16 @@ async def test_ask_ack_and_pending(client: AsyncRepowireClient):
     assert len(pending) == 1
     assert pending[0].correlation_id == opened.correlation_id
     assert pending[0].from_peer == alice.display_name
+    assert pending[0].to_peer == bob.display_name
+    assert pending[0].direction == "inbound"
+
+    outbound = await client.pending_asks(peer_id=alice.peer_id, direction="outbound")
+    assert len(outbound) == 1
+    assert outbound[0].correlation_id == opened.correlation_id
+    assert outbound[0].direction == "outbound"
+
+    both = await client.pending_asks(peer_id=alice.peer_id, direction="both")
+    assert [ask.direction for ask in both] == ["outbound"]
 
     await client.ack(opened.correlation_id, from_peer=bob.display_name)
     assert await client.pending_asks(peer_id=bob.peer_id) == []
@@ -251,6 +274,30 @@ async def test_attachment_quota_allows_after_ttl_sweep(
         )
         assert uploaded.size == len(b"fresh upload")
     assert not stale.exists()
+
+
+async def test_owned_client_does_not_duplicate_auth_headers():
+    client = AsyncRepowireClient(auth_token="secret")
+    try:
+        assert "authorization" not in client._client.headers
+    finally:
+        await client.aclose()
+
+
+async def test_spawn_omits_default_circle_for_daemon_default():
+    client = AsyncRepowireClient(client=AsyncMock())
+    client._request = AsyncMock(  # type: ignore[method-assign]
+        return_value={"ok": True, "display_name": "proj-codex", "tmux_session": "default"}
+    )
+
+    result = await client.spawn("/tmp/proj", "codex", message="warm up")
+
+    assert result.display_name == "proj-codex"
+    client._request.assert_awaited_once_with(
+        "POST",
+        "/spawn",
+        json={"path": "/tmp/proj", "command": "codex", "message": "warm up"},
+    )
 
 
 async def test_auth_token_is_sent(tmp_path):

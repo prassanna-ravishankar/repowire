@@ -84,7 +84,7 @@ print(bc)`}
 
       <Section title="Listing and inspection">
         <p>
-          Pull current mesh state. <Mono>list_peers</Mono> accepts daemon-supported filters; <Mono>get_peer</Mono> resolves a single peer by name or id. <Mono>pending_asks</Mono> returns open asks targeting one pane or peer.
+          Pull current mesh state. <Mono>list_peers</Mono> accepts daemon-supported filters; <Mono>get_peer</Mono> resolves a single peer by name or id. <Mono>pending_asks</Mono> returns open asks for one pane or peer; pass <Mono>direction=&quot;outbound&quot;</Mono> or <Mono>direction=&quot;both&quot;</Mono> to inspect asks opened by that peer.
         </p>
         <Code>
 {`for peer in await client.list_peers(status="online"):
@@ -92,13 +92,14 @@ print(bc)`}
 
 peer = await client.get_peer("project-b")
 
-asks = await client.pending_asks(peer_id=peer.peer_id)`}
+asks = await client.pending_asks(peer_id=peer.peer_id)
+outbound = await client.pending_asks(peer_id=peer.peer_id, direction="outbound")`}
         </Code>
       </Section>
 
       <Section title="Spawning and lifecycle">
         <p>
-          <Mono>spawn</Mono> launches a new agent session subject to <Mono>daemon.spawn.allowed_commands</Mono>. <Mono>spawn_config</Mono> reports what the daemon will accept without attempting a spawn. <Mono>kill_peer</Mono> terminates a peer cleanly.
+          <Mono>spawn</Mono> launches a new agent session subject to <Mono>daemon.spawn.allowed_commands</Mono>. <Mono>spawn_config</Mono> reports what the daemon will accept without attempting a spawn. Omit <Mono>circle</Mono> to use the daemon default (<Mono>default</Mono>), or pass it explicitly for another circle. <Mono>kill_peer</Mono> terminates a peer cleanly.
         </p>
         <Code>
 {`info = await client.spawn_config()
