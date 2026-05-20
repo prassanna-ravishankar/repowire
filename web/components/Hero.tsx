@@ -8,7 +8,6 @@ import { motion } from "framer-motion";
 export default function Hero() {
   return (
     <section className="relative overflow-hidden border-b border-border-faint pt-24 sm:pt-28">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_12%,rgba(199,123,61,0.18),transparent_28%),radial-gradient(circle_at_82%_20%,rgba(91,163,245,0.12),transparent_26%)]" />
       <Image
         src="/brand/repowire-arch.webp"
         alt=""
@@ -66,10 +65,8 @@ export default function Hero() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.45, delay: 0.08 }}
-          className="relative"
         >
-          <div className="absolute -inset-4 bg-primary/10 blur-3xl" aria-hidden="true" />
-          <div className="relative overflow-hidden rounded-lg border border-border-strong bg-surface-container-low shadow-[var(--shadow-3)]">
+          <div className="overflow-hidden rounded-lg border border-border-strong bg-surface-container-low shadow-[var(--shadow-3)]">
             <div className="flex items-center justify-between border-b border-border-faint bg-surface-container px-4 py-3">
               <div className="flex items-center gap-2" aria-hidden="true">
                 <span className="h-2.5 w-2.5 rounded-full bg-error" />
