@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -242,6 +243,23 @@ async def test_notify_command_keeps_fire_and_forget(
     notify.assert_awaited_once_with("agent", "build passed", message_id=42)
     ask.assert_not_awaited()
     assert telegram_bot._reply_target == "agent"
+
+
+@pytest.mark.asyncio
+async def test_send_peer_message_uses_daemon_assigned_service_name(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ack replies need the real registered service name as from_peer."""
+    telegram_bot._display_name = "telegram-claude-code"
+    post = AsyncMock()
+    post.return_value = SimpleNamespace(status_code=200)
+    monkeypatch.setattr(telegram_bot._http, "post", post)
+
+    await telegram_bot._ask("agent", "please check")
+
+    post.assert_awaited_once()
+    assert post.await_args.kwargs["json"]["from_peer"] == "telegram-claude-code"
+    assert post.await_args.kwargs["json"]["to_peer"] == "agent"
 
 
 # -- PendingRetry TTL --

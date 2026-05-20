@@ -284,6 +284,9 @@ class TelegramPeer:
                         logger.error("Connect failed: %s", resp)
                         await asyncio.sleep(backoff)
                         continue
+                    assigned_name = resp.get("display_name")
+                    if isinstance(assigned_name, str) and assigned_name:
+                        self._display_name = assigned_name
                     logger.info("Connected: %s", resp.get("session_id"))
                     # Best-effort: route user messages to the orchestrator by
                     # default if one is registered. User can still /select.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -79,3 +80,24 @@ async def test_notify_command_keeps_fire_and_forget(
     notify.assert_awaited_once_with("agent", "build passed")
     ask.assert_not_awaited()
     assert slack_bot._reply_target == "agent"
+
+
+@pytest.mark.asyncio
+async def test_send_peer_message_uses_daemon_assigned_service_name(
+    slack_bot: SlackPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ack replies need the real registered service name as from_peer."""
+    slack_bot._display_name = "slack-claude-code"
+    post = AsyncMock()
+    post.return_value = SimpleNamespace(
+        status_code=200,
+        json=lambda: {"correlation_id": "ask-12345678"},
+    )
+    monkeypatch.setattr(slack_bot._daemon_http, "post", post)
+    monkeypatch.setattr(slack_bot, "_slack_send", AsyncMock())
+
+    await slack_bot._ask("agent", "please check")
+
+    post.assert_awaited_once()
+    assert post.await_args.kwargs["json"]["from_peer"] == "slack-claude-code"
+    assert post.await_args.kwargs["json"]["to_peer"] == "agent"
