@@ -105,8 +105,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await websocket.send_json(
                 {
                     "type": "error",
-                    "error": "Invalid backend: must be claude-code, opencode, codex, gemini, or pi",
+                    "error": (
+                        "Invalid backend: must be claude-code, opencode, codex, "
+                        "gemini, or pi"
+                    ),
                 }
+            )
+            await websocket.close(code=4002, reason="Invalid backend")
+            return
+        if backend == AgentType.MCP_HTTP:
+            # mcp-http is a daemon-owned peer identity for the HTTP MCP mount,
+            # not a WebSocket agent runtime.
+            await websocket.send_json(
+                {"type": "error", "error": "mcp-http is not a WebSocket backend"}
             )
             await websocket.close(code=4002, reason="Invalid backend")
             return

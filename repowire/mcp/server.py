@@ -38,6 +38,17 @@ _cached_my_role: str | None = None
 # Lazy registration: ensure peer is registered on first MCP tool use
 _registered: bool = False
 
+# HTTP MCP mode is configured only by the daemon-mounted Streamable HTTP app.
+# Stdio MCP leaves these unset and keeps the existing tmux/cwd identity flow.
+_http_mcp_mode: bool = False
+_http_mcp_auth_token: str | None = None
+_http_mcp_allow_dangerous_tools: bool = False
+_http_mcp_identity: dict[str, str] = {
+    "name": "mcp-http",
+    "circle": "global",
+    "role": "human",
+}
+
 
 _BYPASS_ROLES = {"service", "orchestrator", "human"}
 
@@ -125,6 +136,45 @@ async def _get_my_peer_identifier() -> str:
     return _cached_peer_id or await _get_my_peer_name()
 
 
+def reset_mcp_context() -> None:
+    """Reset process-global MCP identity/cache to stdio defaults."""
+    global _http_mcp_mode, _http_mcp_auth_token, _http_mcp_allow_dangerous_tools
+    global _registered, _cached_peer_name, _cached_peer_id, _cached_my_circle, _cached_my_role
+    _http_mcp_mode = False
+    _http_mcp_auth_token = None
+    _http_mcp_allow_dangerous_tools = False
+    _registered = False
+    _cached_peer_name = None
+    _cached_peer_id = None
+    _cached_my_circle = None
+    _cached_my_role = None
+
+
+def configure_http_mcp_context(
+    *,
+    auth_token: str | None,
+    allow_dangerous_tools: bool = False,
+    name: str = "mcp-http",
+    circle: str = "global",
+    role: str = "human",
+) -> None:
+    """Configure daemon-mounted HTTP MCP identity and internal daemon auth."""
+    global _http_mcp_mode, _http_mcp_auth_token, _http_mcp_allow_dangerous_tools
+    global _http_mcp_identity, _registered, _cached_peer_name, _cached_peer_id
+    global _cached_my_circle, _cached_my_role
+    _http_mcp_mode = True
+    _http_mcp_auth_token = auth_token
+    _http_mcp_allow_dangerous_tools = allow_dangerous_tools
+    _http_mcp_identity = {"name": name, "circle": circle, "role": role}
+    # The daemon may be rebuilt in tests or restarted in-process; do not carry
+    # stdio/cwd identity into the HTTP surface.
+    _registered = False
+    _cached_peer_name = None
+    _cached_peer_id = None
+    _cached_my_circle = None
+    _cached_my_role = None
+
+
 def _get_http_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None:
@@ -140,12 +190,15 @@ async def daemon_request(
     try:
         client = _get_http_client()
         url = f"{DAEMON_URL}{path}"
+        headers = None
+        if _http_mcp_auth_token:
+            headers = {"Authorization": f"Bearer {_http_mcp_auth_token}"}
         if method == "GET":
-            resp = await client.get(url, params=params)
+            resp = await client.get(url, params=params, headers=headers)
         elif method == "DELETE":
-            resp = await client.delete(url, params=params)
+            resp = await client.delete(url, params=params, headers=headers)
         else:
-            resp = await client.post(url, json=body or {})
+            resp = await client.post(url, json=body or {}, headers=headers)
         resp.raise_for_status()
         return resp.json()
     except httpx.ConnectError:
@@ -288,6 +341,44 @@ async def _ensure_registered(*, strict: bool = False) -> None:
     if _cached_peer_name is None:
         _cached_peer_id = None
 
+    if _http_mcp_mode:
+        try:
+            name = _http_mcp_identity.get("name") or "mcp-http"
+            circle = _http_mcp_identity.get("circle") or "global"
+            role = _http_mcp_identity.get("role") or "human"
+            result = await daemon_request(
+                "GET", f"/peers/{quote(_cached_peer_id or name, safe='')}",
+            )
+            _cache_identity(result)
+            _registered = True
+            await _touch_last_seen()
+            return
+        except Exception:
+            pass
+        try:
+            result = await daemon_request(
+                "POST",
+                "/peers",
+                {
+                    "name": name,
+                    "path": "",
+                    "machine": "localhost",
+                    "backend": "mcp-http",
+                    "circle": circle,
+                    "role": role,
+                    "metadata": {"surface": "http-mcp"},
+                },
+            )
+            _cache_identity(result)
+            _cached_my_circle = circle
+            _cached_my_role = role
+            _registered = True
+            await _touch_last_seen()
+        except Exception as e:
+            if strict:
+                raise RuntimeError(f"HTTP MCP identity registration failed: {e}") from e
+        return
+
     tmux_info = get_tmux_info()
     pane_id = tmux_info["pane_id"]
     if pane_id:
@@ -372,9 +463,18 @@ async def _ensure_registered(*, strict: bool = False) -> None:
         pass  # Best-effort -- daemon may be down
 
 
-def create_mcp_server() -> FastMCP:
+def _ensure_http_admin_tool_allowed(tool_name: str) -> None:
+    """Keep lifecycle/admin tools off the first HTTP MCP slice by default."""
+    if _http_mcp_mode and not _http_mcp_allow_dangerous_tools:
+        raise PermissionError(
+            f"{tool_name} is disabled for HTTP MCP by default; "
+            "enable daemon.mcp_http.allow_dangerous_tools to opt in"
+        )
+
+
+def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
     """Create the MCP server."""
-    mcp = FastMCP("repowire")
+    mcp = FastMCP("repowire", streamable_http_path=streamable_http_path)
 
     # New columns append at the end so positional-indexing TSV consumers
     # survive across releases (same rule that put last_seen at the tail in
@@ -646,7 +746,7 @@ def create_mcp_server() -> FastMCP:
         path, machine, description, backend, last_seen, turn_state
         """
         await _ensure_registered(strict=True)
-        pane_id = get_pane_id()
+        pane_id = None if _http_mcp_mode else get_pane_id()
         if pane_id:
             try:
                 result = await daemon_request("GET", f"/peers/by-pane/{quote(pane_id, safe='')}")
@@ -675,7 +775,7 @@ def create_mcp_server() -> FastMCP:
             Confirmation message
         """
         await _ensure_registered(strict=True)
-        pane_id = get_pane_id()
+        pane_id = None if _http_mcp_mode else get_pane_id()
         name = ""
         if pane_id:
             try:
@@ -733,6 +833,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Spawn confirmation with display_name and tmux_session
         """
+        _ensure_http_admin_tool_allowed("spawn_peer")
         body: dict = {"path": path, "command": command, "circle": circle}
         if message is not None:
             body["message"] = message
@@ -806,6 +907,7 @@ def create_mcp_server() -> FastMCP:
             pane outcome.
         """
         await _ensure_registered(strict=True)
+        _ensure_http_admin_tool_allowed("kill_peer")
         payload: dict[str, str] = {
             "peer_identifier": peer_identifier,
             "from_peer": await _get_my_peer_name(),
@@ -926,6 +1028,7 @@ def create_mcp_server() -> FastMCP:
             schedule_delete to cancel.
         """
         await _ensure_registered(strict=True)
+        _ensure_http_admin_tool_allowed("schedule_create")
         from_peer = await _get_my_peer_name()
         body: dict = {
             "from_peer": from_peer,
@@ -972,6 +1075,7 @@ def create_mcp_server() -> FastMCP:
             schedule_delete to cancel.
         """
         await _ensure_registered(strict=True)
+        _ensure_http_admin_tool_allowed("schedule_self")
         if (fire_at is None) == (cron is None):
             raise ValueError("provide exactly one of fire_at or cron")
         from_peer = await _get_my_peer_name()
@@ -1018,6 +1122,7 @@ def create_mcp_server() -> FastMCP:
             schedule_id (format: sched-XXXXXXXX). Use schedule_delete to cancel.
         """
         await _ensure_registered(strict=True)
+        _ensure_http_admin_tool_allowed("schedule_cron")
         from_peer = await _get_my_peer_name()
         body: dict = {
             "from_peer": from_peer,
@@ -1082,6 +1187,7 @@ def create_mcp_server() -> FastMCP:
             Confirmation message.
         """
         await _ensure_registered(strict=True)
+        _ensure_http_admin_tool_allowed("schedule_delete")
         await daemon_request("DELETE", f"/schedules/{quote(schedule_id, safe='')}")
         return f"deleted schedule {schedule_id}"
 
@@ -1090,5 +1196,6 @@ def create_mcp_server() -> FastMCP:
 
 async def run_mcp_server() -> None:
     """Run the MCP server."""
+    reset_mcp_context()
     mcp = create_mcp_server()
     await mcp.run_stdio_async()

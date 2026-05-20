@@ -8,13 +8,17 @@ import os
 import signal
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from repowire import __version__
 from repowire.config.models import Config, load_config
@@ -45,6 +49,90 @@ from repowire.daemon.scheduler import Scheduler
 from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
+
+
+_LOCALHOST_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+class _MCPAuthASGIWrapper:
+    """Bearer-auth wrapper for the mounted Streamable HTTP MCP app."""
+
+    def __init__(self, app: ASGIApp, token: str | None, require_auth: bool) -> None:
+        self.app = app
+        self.token = token
+        self.require_auth = require_auth
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in {"http", "websocket"}:
+            await self.app(scope, receive, send)
+            return
+        if self.require_auth:
+            if not self.token:
+                await self._reject(send, 503, b"HTTP MCP requires daemon.auth_token")
+                return
+            headers = {k.lower(): v for k, v in scope.get("headers", [])}
+            expected = f"Bearer {self.token}".encode()
+            if headers.get(b"authorization") != expected:
+                await self._reject(send, 401, b"Missing or invalid bearer token")
+                return
+        if scope.get("path") == "":
+            scope = dict(scope)
+            scope["path"] = "/"
+        await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _reject(send: Send, status: int, body: bytes) -> None:
+        await send({
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"text/plain; charset=utf-8"),
+                (b"www-authenticate", b"Bearer"),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+
+def _mount_http_mcp(app: FastAPI, cfg: Config) -> None:
+    """Mount the opt-in localhost Streamable HTTP MCP endpoint."""
+    mcp_cfg = cfg.daemon.mcp_http
+    if not mcp_cfg.enabled:
+        try:
+            from repowire.mcp.server import reset_mcp_context
+
+            reset_mcp_context()
+        except Exception:
+            logger.debug("Could not reset MCP context", exc_info=True)
+        return
+    if mcp_cfg.expose_via_relay:
+        logger.warning("Ignoring daemon.mcp_http.expose_via_relay=true; /mcp is local-only")
+    if mcp_cfg.bind != "localhost-only" or cfg.daemon.host not in _LOCALHOST_HOSTS:
+        logger.warning("HTTP MCP not mounted: daemon.mcp_http is localhost-only")
+        return
+    require_auth = mcp_cfg.require_auth and not mcp_cfg.allow_unauthenticated_localhost
+    from repowire.mcp.server import configure_http_mcp_context, create_mcp_server
+
+    configure_http_mcp_context(
+        auth_token=cfg.daemon.auth_token,
+        allow_dangerous_tools=mcp_cfg.allow_dangerous_tools,
+    )
+    @app.middleware("http")
+    async def mcp_path_middleware(
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        """Route both /mcp and /mcp/ to the mounted MCP app without redirects."""
+        if request.scope.get("path") == "/mcp":
+            request.scope["path"] = "/mcp/"
+        return await call_next(request)
+
+    mcp = create_mcp_server(streamable_http_path="/")
+    app.mount(
+        "/mcp",
+        _MCPAuthASGIWrapper(mcp.streamable_http_app(), cfg.daemon.auth_token, require_auth),
+        name="mcp_http",
+    )
+    app.state.mcp_http_session_manager = mcp.session_manager
 
 
 def _cleanup_stale_artifacts(max_age_hours: float = 72) -> None:
@@ -203,7 +291,18 @@ def create_app(
 
         logger.info("Unified WebSocket backend initialized")
 
-        yield
+        mcp_session_manager = getattr(app.state, "mcp_http_session_manager", None)
+        async with AsyncExitStack() as stack:
+            if mcp_session_manager is not None:
+                await stack.enter_async_context(mcp_session_manager.run())
+                logger.info("HTTP MCP session manager started")
+
+            yield
+
+        if mcp_session_manager is not None:
+            from repowire.mcp.server import reset_mcp_context
+
+            reset_mcp_context()
 
         for name, svc in reversed(services):
             await svc.stop()  # type: ignore[union-attr]
@@ -257,6 +356,8 @@ def create_app(
     app.include_router(attachments.router)
     app.include_router(lifecycle.router)
     app.include_router(schedules.router)
+
+    _mount_http_mcp(app, _config or load_config())
 
     # --- Static File Serving (Dashboard) ---
     web_out = _find_web_output_dir()
@@ -390,7 +491,17 @@ def create_test_app(
         await scheduler.start()
         init_deps(cfg, registry, app.state, lifecycle_handler=lh)
 
-        yield
+        mcp_session_manager = getattr(app.state, "mcp_http_session_manager", None)
+        async with AsyncExitStack() as stack:
+            if mcp_session_manager is not None:
+                await stack.enter_async_context(mcp_session_manager.run())
+
+            yield
+
+        if mcp_session_manager is not None:
+            from repowire.mcp.server import reset_mcp_context
+
+            reset_mcp_context()
 
         await acp_manager.close()
         await scheduler.stop()
@@ -413,6 +524,8 @@ def create_test_app(
     app.include_router(attachments.router)
     app.include_router(lifecycle.router)
     app.include_router(schedules.router)
+
+    _mount_http_mcp(app, config or Config())
 
     return app
 

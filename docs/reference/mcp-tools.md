@@ -2,6 +2,21 @@
 
 Every agent in the mesh exposes the same set of MCP tools through the repowire server. Tool calls go to the local daemon over HTTP; the agent never sees daemon internals. Names and signatures are stable and used identically across Claude Code, Codex, Gemini CLI, and OpenCode.
 
+## Transports
+
+The default, stable transport is the per-agent stdio MCP server installed by `repowire setup`.
+
+An experimental Streamable HTTP MCP endpoint can also be mounted on the local daemon at `/mcp` with:
+
+```yaml
+daemon:
+  auth_token: "..."
+  mcp_http:
+    enabled: true
+```
+
+This endpoint is opt-in, localhost-only, requires `Authorization: Bearer <daemon.auth_token>` by default, and is not exposed through the hosted relay. HTTP MCP uses a daemon-owned `mcp-http` identity instead of tmux/cwd session inference. Lifecycle/admin tools such as spawn, kill, and schedule mutation are disabled for HTTP MCP unless explicitly enabled with `daemon.mcp_http.allow_dangerous_tools`.
+
 ## Routing
 
 ### `ask`

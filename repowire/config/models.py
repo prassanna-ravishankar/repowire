@@ -29,6 +29,7 @@ class AgentType(str, Enum):
     CODEX = "codex"
     GEMINI = "gemini"
     PI = "pi"
+    MCP_HTTP = "mcp-http"
 
 
 class RelayConfig(BaseModel):
@@ -107,6 +108,25 @@ class PeerConfig(BaseModel):
         return f"legacy-{self.name}"
 
 
+class MCPHttpConfig(BaseModel):
+    """Opt-in Streamable HTTP MCP endpoint settings."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = Field(default=False, description="Mount Streamable HTTP MCP at /mcp")
+    bind: str = Field(default="localhost-only", description="Only localhost-only is supported")
+    require_auth: bool = Field(default=True, description="Require daemon.auth_token bearer auth")
+    expose_via_relay: bool = Field(default=False, description="Reserved; /mcp is never relayed")
+    allow_unauthenticated_localhost: bool = Field(
+        default=False,
+        description="Development-only escape hatch when require_auth is disabled",
+    )
+    allow_dangerous_tools: bool = Field(
+        default=False,
+        description="Allow lifecycle/admin tools over HTTP MCP",
+    )
+
+
 class SpawnSettings(BaseModel):
     """Settings controlling which commands and paths agents are allowed to spawn into.
 
@@ -162,6 +182,9 @@ class DaemonConfig(BaseModel):
             "reaps it. Set to 0 to disable."
         ),
     )
+
+    # HTTP MCP settings (opt-in)
+    mcp_http: MCPHttpConfig = Field(default_factory=MCPHttpConfig)
 
     # Spawn settings
     spawn: SpawnSettings = Field(default_factory=SpawnSettings)
