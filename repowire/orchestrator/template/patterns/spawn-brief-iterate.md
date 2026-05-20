@@ -1,3 +1,11 @@
+---
+name: spawn-brief-iterate
+description: Default dispatch loop for new work handed to a peer.
+triggers: [new-work, peer-dispatch, review]
+risk: medium
+surfaces: [mcp, dashboard, telegram]
+---
+
 # Pattern: spawn → brief → iterate
 
 The default dispatch loop. Use this for any new piece of work you're handing to a peer.

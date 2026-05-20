@@ -1,3 +1,11 @@
+---
+name: post-merge-cleanup
+description: Clean up peer/session, terminal state, worktree, and branch after a PR merges.
+triggers: [post-merge, worktree-prune, peer-cleanup]
+risk: high
+surfaces: [mcp, cli]
+---
+
 # Pattern: post-merge cleanup
 
 After a PR merges and the work is complete: clean up the registered peer/session, verify the terminal/process is actually gone, prune the worktree/branch/artifacts, and update local main.

@@ -10,10 +10,24 @@ The v0.13 architecture train is moving toward a **session-native mesh**. This is
 - **Transport-neutral routing.** Ask/notify delivery now goes through a transport router. WebSocket hooks, experimental ACP, relay, and future transports continue moving toward the same message/control boundary.
 - **Timeline-centered dashboard.** Persisted history and realtime events converge into one session timeline instead of separate live/history views.
 - **Shared command surface.** Controls such as send message, switch backend/model, resume, schedule, and approvals target sessions and can be reused from dashboard, MCP, Telegram, and other surfaces.
+- **Search as large recall.** SQLite-backed session/timeline search should carry detailed historical recall, while orchestrator markdown memory remains a small curated procedure layer.
 - **Compatible v0.13.x slices.** The architecture changes land incrementally while preserving current hooks, MCP tools, HTTP routes, and dashboard workflows.
 - **Human approval path.** Permission and plan approval events become first-class timeline/control events instead of transport-specific callbacks.
 
 The ask/notify transport-router extraction has landed. The remaining planned sequence adds a session/timeline store, updates the dashboard to render persisted and realtime conversation state together, moves composer/control actions onto session commands, and centralizes runtime lifecycle plus approval events.
+
+## Memory and audit hooks
+
+Session-native storage should make orchestrator learning auditable without bloating prompt memory. Future session records should be able to point at the memory/pattern snapshot used when a session started or resumed, and memory/procedure changes should appear as timeline events when proposed or applied.
+
+This keeps the layers distinct:
+
+- **SQLite/session search:** long-tail recall for past discussions, asks/acks, releases, logs, transcript-derived chat turns, and why a decision happened.
+- **Orchestrator markdown memory:** compact user/comms preferences, operational lessons, and dispatch procedures that should affect future coordination.
+
+Do not treat markdown memory as a diary or complete recall system. It should hold only curated rules and procedures that change future behavior.
+
+Do not treat orchestrator memory as global peer memory. Project peers should receive relevant context through explicit briefs, project-local agent files, native runtime skills, or future session/timeline lookup where appropriate.
 
 ## What is shipped today
 

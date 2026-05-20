@@ -1,3 +1,11 @@
+---
+name: release-bundle-decision
+description: Decide whether merged main work should be tagged now or held for a bundle.
+triggers: [release, tag-decision, changelog]
+risk: high
+surfaces: [cli, github]
+---
+
 # Pattern: release bundle decision
 
 Given N merged commits on main, decide tag-now-or-hold + version + changelog shape.

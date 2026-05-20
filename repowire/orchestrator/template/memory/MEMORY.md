@@ -2,6 +2,17 @@
 
 Persistent operational memory. Each entry below points to a file in this directory.
 
+This is the curated procedural layer, not the long-term recall layer. Use it for lessons that should change future orchestration behavior. Use session history/search, issue notes, or commit messages for detailed history, status, and "what happened when" recall.
+
+User communication and routing preferences belong in `../comms.md`. Active project scope belongs in `../projects.md`.
+
+## Budget
+
+- Keep this index compact and scannable; soft limit: about 150 lines.
+- Keep each memory file focused; soft limit: about 1200 characters.
+- Consolidate when two memories overlap or when the index stops being easy to scan.
+- Prefer patch-style updates with a short rationale over full rewrites.
+
 ## Format
 
 Each memory file should be self-contained, with this structure:

@@ -1,3 +1,11 @@
+---
+name: two-model-critique
+description: Use a different-model peer to critique an architectural-but-bounded plan before code.
+triggers: [architecture-plan, cross-model-review, plan-before-code]
+risk: medium
+surfaces: [mcp]
+---
+
 # Pattern: two-model critique cycle
 
 When a peer proposes an architectural-but-bounded plan, spawn a *different-model* peer in the same worktree to critique the plan **before** code is written.

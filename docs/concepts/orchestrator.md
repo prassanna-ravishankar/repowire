@@ -14,6 +14,16 @@ A typical orchestrator runs a loop like:
 4. **Review** completed work. `review_queue()` surfaces PRs the peer has touched that you still owe a review on; `mark_reviewed(pr_url)` clears them.
 5. **Release** when a batch lands. Tag, push, notify.
 
+## Memory and procedures
+
+The orchestrator workspace is a curated procedure layer, not a complete history store. Keep user communication preferences in `comms.md`, active project scope in `projects.md`, durable operational lessons in `memory/*.md`, and reusable dispatch/review/release procedures in `patterns/*.md`.
+
+Use markdown memory only for rules that should change future behavior. Detailed recall belongs in session history and, as the v0.13 session-native train lands, SQLite-backed session/timeline search. That split keeps prompt context bounded while preserving the ability to audit past decisions.
+
+This memory is orchestrator-scoped. Other peers do not inherit it implicitly; give them the relevant context through explicit briefs, project-local agent files, native runtime skills, or future session/timeline lookup when that is the right surface.
+
+Pattern files are loaded on demand. The top-level orchestrator instructions should act as an index; the full pattern file carries the procedure and may include optional frontmatter such as `name`, `description`, `triggers`, `risk`, and `surfaces` for future tooling.
+
 ## Co-orchestrators
 
 A second orchestrator peer can co-exist as an observer or learner without colliding. Use [`orchestrator_status`](../reference/mcp-tools.md#orchestrator_status) before dispatching long-running work to confirm a live orchestrator is present in the target circle. The call returns presence, name, peer id, last-seen timestamp, and the staleness threshold — *not* a snapshot of mesh state.

@@ -2,6 +2,8 @@
 
 Per-user communication routing preferences. Edit when the user signals a preference (most signals come in as corrections — "stop doing X", "I prefer Y").
 
+This file is for user/comms memory only: channels, escalation rules, tone, formatting, availability, and notification preferences. Operational lessons belong in `memory/*.md`; active project scope belongs in `projects.md`.
+
 ## Primary channel
 
 <!-- Set by BOOTSTRAP.md ritual: Telegram (phone-only) / Dashboard / Both -->

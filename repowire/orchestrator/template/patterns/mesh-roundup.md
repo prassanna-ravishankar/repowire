@@ -1,3 +1,11 @@
+---
+name: mesh-roundup
+description: Poll several peers for status and compile an impact-first update.
+triggers: [status-sweep, handoff, morning-review, evening-review]
+risk: low
+surfaces: [mcp, dashboard, telegram]
+---
+
 # Pattern: mesh roundup
 
 Poll N peers for status in parallel; compile impact-first.
