@@ -87,7 +87,7 @@ function Step({ n, title, children }: { n: string; title: string; children: Reac
 
 function CodeBlock({ children }: { children: React.ReactNode }) {
   return (
-    <pre className="overflow-x-auto border border-border-faint bg-surface-container-low p-4 font-mono text-xs leading-6 text-on-surface">
+    <pre className="overflow-x-auto whitespace-pre-wrap break-words border border-border-faint bg-surface-container-low p-4 font-mono text-[11px] leading-6 text-on-surface sm:text-xs">
       <code>{children}</code>
     </pre>
   );

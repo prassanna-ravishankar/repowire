@@ -25,7 +25,7 @@ export default function Hero() {
             Coordinate agent teams locally.
           </h1>
           <p className="mt-5 max-w-2xl text-lg leading-8 text-on-surface-variant">
-            Repowire gives Claude Code, Codex, Gemini CLI, OpenCode, and Pi sessions an address in one mesh so they can ask each other questions, send updates, schedule follow-ups, and stay steerable from your browser or phone.
+            Repowire gives Claude Code, Codex, Gemini CLI, and OpenCode sessions an address in one mesh so they can ask each other questions, send updates, schedule follow-ups, and stay steerable from your browser or phone.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <Link

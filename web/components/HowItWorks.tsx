@@ -4,7 +4,7 @@ const steps = [
   {
     label: "01",
     title: "Sessions register as peers",
-    description: "Setup wires supported agents into the mesh. Each live Claude Code, Codex, Gemini, OpenCode, or Pi session gets a routable identity.",
+    description: "Setup wires supported agents into the mesh. Each live Claude Code, Codex, Gemini CLI, or OpenCode session gets a routable identity.",
   },
   {
     label: "02",
@@ -56,13 +56,16 @@ export default function HowItWorks() {
             <div className="mb-4 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-outline">
               Architecture, simplified
             </div>
-            <Image
-              src="/brand/repowire-arch.webp"
-              alt="Repowire architecture: a local daemon routes messages between hooks, channel transport, relay, and peers"
-              width={1000}
-              height={700}
-              className="h-auto w-full rounded border border-border-faint bg-surface opacity-90"
-            />
+            <div className="rounded border border-border-faint bg-paper p-2">
+              <Image
+                src="/brand/repowire-arch.webp"
+                alt="Repowire architecture: a local daemon routes messages between hooks, channel transport, relay, and peers"
+                width={1000}
+                height={700}
+                className="h-auto w-full rounded bg-paper"
+                loading="eager"
+              />
+            </div>
             <div className="mt-4 rounded border-l-2 border-primary bg-surface-dim/95 p-4">
               <p className="font-mono text-xs leading-6 text-on-surface-variant">
                 local daemon → transport router → agent session → ack or timeline event
