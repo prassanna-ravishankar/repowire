@@ -168,6 +168,7 @@ https://repowire.io/dashboard
 
 ```bash
 repowire setup                         # install hooks/MCP/plugin/service for detected agents
+repowire setup --http-mcp              # opt in to localhost Streamable HTTP MCP at /mcp
 repowire status                        # show installed components and daemon status
 repowire doctor                        # run diagnostics
 repowire service restart               # restart the installed daemon service
@@ -188,7 +189,12 @@ Config lives at `~/.repowire/config.yaml`.
 daemon:
   host: "127.0.0.1"
   port: 8377
-  auth_token: "optional-secret"
+  auth_token: "rw_local_..."
+  mcp_http:
+    enabled: false
+    bind: "localhost-only"
+    require_auth: true
+    allow_dangerous_tools: false
   spawn:
     allowed_commands: [claude, codex, gemini]
     allowed_paths: [~/git, ~/projects]
@@ -203,7 +209,8 @@ Security defaults:
 
 - Local daemon binds to `127.0.0.1`.
 - Relay is opt-in and uses outbound WebSocket.
-- WebSocket auth is available through `daemon.auth_token`.
+- WebSocket and local HTTP auth are available through `daemon.auth_token`.
+- Experimental HTTP MCP is opt-in, localhost-only, bearer-authenticated by default, and not exposed through the hosted relay.
 - Spawn requires explicit command and path allowlists.
 - Experimental channel/ACP transport is opt-in.
 

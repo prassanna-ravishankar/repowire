@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import anyio
 import pytest
@@ -64,6 +65,18 @@ class TestHttpMCPMount:
             async with await _client(app) as client:
                 r = await client.post("/mcp", headers={"Authorization": "Bearer wrong"})
                 assert r.status_code == 401
+                assert "localhost HTTP MCP" in r.text
+            cleanup_deps()
+
+        anyio.run(run)
+
+    def test_mcp_enabled_with_auth_requires_configured_token(self):
+        async def run():
+            app = create_test_app(_cfg(enabled=True, token=None))
+            async with await _client(app) as client:
+                r = await client.post("/mcp")
+                assert r.status_code == 503
+                assert "daemon.auth_token is not set" in r.text
             cleanup_deps()
 
         anyio.run(run)
@@ -161,5 +174,44 @@ def test_http_mcp_identity_does_not_use_daemon_cwd(monkeypatch):
         assert register_body["path"] == ""
         assert register_body["backend"] == "mcp-http"
         assert register_body["role"] == "human"
+
+    anyio.run(run)
+
+
+def test_http_mcp_dangerous_tools_disabled_by_default():
+    async def run():
+        import repowire.mcp.server as server
+
+        server.configure_http_mcp_context(auth_token="secret")
+        mcp = server.create_mcp_server()
+        spawn_tool = mcp._tool_manager._tools["spawn_peer"].fn
+
+        with pytest.raises(PermissionError) as exc:
+            await spawn_tool(path="/tmp/project", command="claude")
+
+        assert "spawn_peer is disabled for HTTP MCP by default" in str(exc.value)
+
+    anyio.run(run)
+
+
+def test_http_mcp_can_opt_into_dangerous_tools():
+    async def run():
+        import repowire.mcp.server as server
+
+        server.configure_http_mcp_context(
+            auth_token="secret",
+            allow_dangerous_tools=True,
+        )
+        mcp = server.create_mcp_server()
+        spawn_tool = mcp._tool_manager._tools["spawn_peer"].fn
+
+        with patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock) as request:
+            request.return_value = {
+                "display_name": "project",
+                "tmux_session": "default:project",
+            }
+            result = await spawn_tool(path="/tmp/project", command="claude")
+
+        assert "Spawned project" in result
 
     anyio.run(run)

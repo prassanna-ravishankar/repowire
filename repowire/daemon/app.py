@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 import signal
 import time
 from collections.abc import AsyncIterator
@@ -70,12 +71,24 @@ class _MCPAuthASGIWrapper:
             return
         if self.require_auth:
             if not self.token:
-                await self._reject(send, 503, b"HTTP MCP requires daemon.auth_token")
+                await self._reject(
+                    send,
+                    503,
+                    (
+                        b"HTTP MCP auth is enabled but daemon.auth_token is not set; "
+                        b"run `repowire setup --http-mcp` or set daemon.auth_token"
+                    ),
+                )
                 return
             headers = {k.lower(): v for k, v in scope.get("headers", [])}
-            expected = f"Bearer {self.token}".encode()
-            if headers.get(b"authorization") != expected:
-                await self._reject(send, 401, b"Missing or invalid bearer token")
+            expected = f"Bearer {self.token}"
+            provided = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
+            if not secrets.compare_digest(provided, expected):
+                await self._reject(
+                    send,
+                    401,
+                    b"Missing or invalid bearer token for localhost HTTP MCP",
+                )
                 return
         if scope.get("path") == "":
             scope = dict(scope)

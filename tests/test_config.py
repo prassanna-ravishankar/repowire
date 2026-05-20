@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from click.testing import CliRunner
 from pydantic import ValidationError
 
 from repowire.config.models import (
@@ -75,6 +76,47 @@ class TestConfig:
                     assert config.relay.url == "wss://custom.relay.io"
                     assert config.relay.api_key == "rw_test123"
                     assert config.relay.enabled is True
+
+    def test_setup_http_mcp_helper_generates_local_token(self):
+        from repowire.cli import _enable_http_mcp
+
+        config = Config()
+        changed = _enable_http_mcp(config)
+
+        assert changed is True
+        assert config.daemon.mcp_http.enabled is True
+        assert config.daemon.auth_token is not None
+        assert config.daemon.auth_token.startswith("rw_local_")
+        assert len(config.daemon.auth_token) > 40
+
+    def test_setup_http_mcp_helper_preserves_existing_token(self):
+        from repowire.cli import _enable_http_mcp
+
+        config = Config(daemon=DaemonConfig(auth_token="existing-secret"))
+        _enable_http_mcp(config)
+
+        assert config.daemon.mcp_http.enabled is True
+        assert config.daemon.auth_token == "existing-secret"
+
+    def test_setup_http_mcp_flag_writes_config_without_detected_agents(self, tmp_path, monkeypatch):
+        from repowire.cli import main
+
+        config_path = tmp_path / "config.yaml"
+        monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr(Config, "get_config_path", classmethod(lambda cls: config_path))
+        monkeypatch.setattr("repowire.cli._cleanup_legacy_artifacts", lambda: None)
+        monkeypatch.setattr("shutil.which", lambda _name: None)
+
+        result = CliRunner().invoke(
+            main,
+            ["setup", "--http-mcp", "--non-interactive", "--no-service"],
+        )
+
+        assert result.exit_code == 0
+        loaded = load_config()
+        assert loaded.daemon.mcp_http.enabled is True
+        assert loaded.daemon.auth_token is not None
+        assert loaded.daemon.auth_token.startswith("rw_local_")
 
 
 class TestRelayConfig:

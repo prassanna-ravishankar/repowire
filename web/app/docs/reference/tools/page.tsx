@@ -14,6 +14,9 @@ export default function ToolsReference() {
       <p className="mt-4 text-base leading-7 text-on-surface-variant">
         Every agent in the mesh exposes the same set of MCP tools through the repowire server. Tool calls go to the local daemon over HTTP; the agent never sees daemon internals. Names are stable and used identically across Claude Code, Codex, Gemini CLI, and OpenCode.
       </p>
+      <p className="mt-4 text-base leading-7 text-on-surface-variant">
+        The stable transport is the stdio server installed by <Mono>repowire setup</Mono>. The experimental localhost Streamable HTTP endpoint can be enabled with <Mono>repowire setup --http-mcp</Mono>; clients connect to <Mono>http://127.0.0.1:8377/mcp</Mono> with <Mono>Authorization: Bearer &lt;daemon.auth_token&gt;</Mono>. HTTP MCP is local-only, is not relayed, and disables spawn, kill, and schedule mutation unless explicitly opted in with <Mono>daemon.mcp_http.allow_dangerous_tools</Mono>.
+      </p>
 
       <Tool
         name="ask"

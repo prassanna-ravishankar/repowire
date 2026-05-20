@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -147,6 +148,24 @@ def _prompt_bot_config(
         console.print(f"[green]✓[/] {name} configured")
 
 
+def _generate_daemon_auth_token() -> str:
+    """Generate a local bearer token suitable for daemon HTTP/WebSocket auth."""
+    return "rw_local_" + secrets.token_urlsafe(32)
+
+
+def _enable_http_mcp(config: object) -> bool:
+    """Enable localhost HTTP MCP and create a bearer token if missing."""
+    daemon = getattr(config, "daemon")
+    changed = False
+    if not getattr(daemon.mcp_http, "enabled", False):
+        daemon.mcp_http.enabled = True
+        changed = True
+    if not daemon.auth_token:
+        daemon.auth_token = _generate_daemon_auth_token()
+        changed = True
+    return changed
+
+
 @main.command()
 @click.option("--no-service", is_flag=True, help="Skip daemon service installation")
 @click.option("--relay", is_flag=True, help="Enable hosted relay via repowire.io")
@@ -154,9 +173,18 @@ def _prompt_bot_config(
     "--experimental-channels", is_flag=True,
     help="Use channel transport (experimental, requires claude.ai login and bun)",
 )
+@click.option(
+    "--http-mcp",
+    is_flag=True,
+    help="Enable the experimental localhost Streamable HTTP MCP endpoint at /mcp",
+)
 @click.option("--non-interactive", is_flag=True, help="Skip prompts, use flags only")
 def setup(
-    no_service: bool, relay: bool, experimental_channels: bool, non_interactive: bool
+    no_service: bool,
+    relay: bool,
+    experimental_channels: bool,
+    http_mcp: bool,
+    non_interactive: bool,
 ) -> None:
     """One-time setup: install hooks/plugins, MCP server, and daemon service."""
     import shutil
@@ -205,9 +233,10 @@ def setup(
     if not agents_setup:
         console.print("[yellow]No agent types detected.[/]")
         console.print("Install claude, codex, gemini, opencode, or pi first.")
-        return
-
-    console.print(f"[green]✓[/] Configured agents: {', '.join(agents_setup)}")
+        if not (http_mcp or relay or interactive):
+            return
+    else:
+        console.print(f"[green]✓[/] Configured agents: {', '.join(agents_setup)}")
 
     # Install tmux lifecycle hooks if tmux is available
     try:
@@ -239,6 +268,24 @@ def setup(
             config.relay.ensure_api_key()
             console.print("[green]✓[/] Relay enabled")
             console.print(f"  Dashboard: {config.relay.dashboard_url}")
+
+    if config.daemon.mcp_http.enabled:
+        if not config.daemon.auth_token:
+            _enable_http_mcp(config)
+            console.print("[green]✓[/] HTTP MCP bearer token generated")
+        else:
+            console.print("[green]✓[/] HTTP MCP enabled (existing config)")
+    elif http_mcp:
+        _enable_http_mcp(config)
+        console.print("[green]✓[/] HTTP MCP enabled at http://127.0.0.1:8377/mcp")
+        console.print(f"  Bearer token: {_mask_token(config.daemon.auth_token or '')}")
+    elif interactive and click.confirm(
+        "Enable experimental localhost HTTP MCP endpoint?",
+        default=False,
+    ):
+        _enable_http_mcp(config)
+        console.print("[green]✓[/] HTTP MCP enabled at http://127.0.0.1:8377/mcp")
+        console.print(f"  Bearer token: {_mask_token(config.daemon.auth_token or '')}")
 
     # Bot integrations: show existing config or prompt
     if config.telegram.bot_token:

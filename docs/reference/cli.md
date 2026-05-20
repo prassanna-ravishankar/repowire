@@ -5,13 +5,14 @@ The `repowire` command is a thin wrapper around setup, the daemon, and the bot p
 ## `repowire setup`
 
 ```bash
-repowire setup [--relay] [--experimental-channels] [--non-interactive]
+repowire setup [--relay] [--experimental-channels] [--http-mcp] [--non-interactive]
 ```
 
-One-time install. Detects every agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode, Pi), wires the appropriate Repowire transport for each, and installs the daemon as a user service.
+One-time install. Detects every supported agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires the appropriate Repowire transport for each, and installs the daemon as a user service.
 
 - `--relay` opts in to the hosted relay at `repowire.io`.
 - `--experimental-channels` enables the experimental MCP channel / ACP transport for Claude Code (v2.1.80+, claude.ai login, bun).
+- `--http-mcp` enables the experimental localhost Streamable HTTP MCP endpoint at `http://127.0.0.1:8377/mcp` and generates `daemon.auth_token` if needed.
 - `--non-interactive` skips prompts and uses flag values only.
 
 ## `repowire serve`

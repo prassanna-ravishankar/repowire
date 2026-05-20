@@ -8,14 +8,46 @@ The default, stable transport is the per-agent stdio MCP server installed by `re
 
 An experimental Streamable HTTP MCP endpoint can also be mounted on the local daemon at `/mcp` with:
 
+```bash
+repowire setup --http-mcp
+repowire service restart
+```
+
+Or by editing `~/.repowire/config.yaml`:
+
 ```yaml
 daemon:
-  auth_token: "..."
+  auth_token: "rw_local_..."
   mcp_http:
     enabled: true
 ```
 
-This endpoint is opt-in, localhost-only, requires `Authorization: Bearer <daemon.auth_token>` by default, and is not exposed through the hosted relay. HTTP MCP uses a daemon-owned `mcp-http` identity instead of tmux/cwd session inference. Lifecycle/admin tools such as spawn, kill, and schedule mutation are disabled for HTTP MCP unless explicitly enabled with `daemon.mcp_http.allow_dangerous_tools`.
+`repowire setup --http-mcp` generates `daemon.auth_token` if one is not already set. This endpoint is opt-in, localhost-only, requires `Authorization: Bearer <daemon.auth_token>` by default, and is not exposed through the hosted relay. HTTP MCP uses a daemon-owned `mcp-http` identity instead of tmux/cwd session inference, so it is useful for local MCP clients that cannot run the stdio server in an agent session.
+
+Client registration examples:
+
+```json
+{
+  "mcpServers": {
+    "repowire": {
+      "type": "http",
+      "url": "http://127.0.0.1:8377/mcp",
+      "headers": {
+        "Authorization": "Bearer rw_local_..."
+      }
+    }
+  }
+}
+```
+
+For Claude Code, the equivalent CLI shape is:
+
+```bash
+claude mcp add --transport http repowire http://127.0.0.1:8377/mcp \
+  --header "Authorization: Bearer rw_local_..."
+```
+
+Lifecycle/admin tools such as spawn, kill, and schedule mutation are disabled for HTTP MCP unless explicitly enabled with `daemon.mcp_http.allow_dangerous_tools`. The stdio server installed by `repowire setup` remains the stable default and still runs as `repowire mcp`.
 
 ## Routing
 
