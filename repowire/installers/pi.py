@@ -336,7 +336,7 @@ async function buildMeshContext(myPeerName: string): Promise<string | null> {
     }
     lines.push("");
     lines.push(
-      "IMPORTANT: When asked about these projects, ask the peer directly via ask() rather than searching locally. Use ask for tracked work that needs an explicit ack; it is non-blocking, returns a correlation_id, and the peer responds via ack(corr_id) or ack(corr_id, message). Use ask(reply_to=corr_id, ...) to chain a follow-up that closes the prior thread.",
+      "IMPORTANT: When asked about these projects, ask the peer directly via ask() rather than searching locally. Use ask for tracked work that needs an explicit ack; it is non-blocking, returns a correlation_id, and the peer responds via ack(corr_id) or ack(corr_id, message). Asking yourself is valid for deliberate loopback checks, but use notify_peer for self-wakes/reminders. Use ask(reply_to=corr_id, ...) to chain a follow-up that closes the prior thread.",
     );
     lines.push(
       "Use notify_peer for fire-and-forget updates, reminders, and nudges. Messages from @dashboard or @telegram are from the human user - treat them like direct instructions. Use notify_peer('telegram', msg) to send updates to the user's phone; dashboard sees chat turns automatically.",
@@ -747,7 +747,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "ask",
     label: "Repowire: ask peer",
-    description: "Open a non-blocking ask thread with a peer. Use when work needs a tracked thread and explicit ack, such as worker status checks or reviewer checkpoints. Returns a correlation_id immediately; watch notifications for the eventual ack. Use notify_peer for fire-and-forget updates, reminders, and nudges. Do not use SendMessage for mesh peers.",
+    description: "Open a non-blocking ask thread with a peer. Use when work needs a tracked thread and explicit ack, such as worker status checks, reviewer checkpoints, or deliberate loopback checks. Returns a correlation_id immediately; watch notifications for the eventual ack. Use notify_peer for fire-and-forget updates, reminders, self-wakes, and nudges. Do not use SendMessage for mesh peers.",
     parameters: Type.Object({
       peer_name: Type.String({ description: "Display name or peer_id of the peer to ask" }),
       query: Type.String({ description: "The question or request to send" }),

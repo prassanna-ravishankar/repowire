@@ -178,10 +178,13 @@ def format_peers_context(peers: list[dict], my_name: str) -> str:
     lines.append("")
     lines.append(
         "IMPORTANT: When asked about these projects, ask the peer directly "
-        "via ask() rather than searching locally. ask() is non-blocking and "
+        "via ask() rather than searching locally. Use ask() for tracked work "
+        "that needs explicit ack. ask() is non-blocking and "
         "returns a correlation_id; the peer responds via ack(corr_id) or "
         "ack(corr_id, message). Use ask(reply_to=corr_id, ...) to chain a "
-        "follow-up that closes the prior thread."
+        "follow-up that closes the prior thread. Asking yourself is valid "
+        "for deliberate loopback checks, but use notify_peer for "
+        "self-wakes/reminders."
     )
     lines.append(
         "Messages from @dashboard or @telegram are from the human user "

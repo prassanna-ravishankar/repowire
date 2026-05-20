@@ -70,6 +70,7 @@ class WebSocketPeerTransport:
                 "to_peer_id": envelope.target.peer_id,
                 "correlation_id": envelope.correlation_id,
                 "reply_to": envelope.reply_to,
+                "self_target": envelope.from_peer_id == envelope.target.peer_id,
             },
         )
         await self._router.send_ask(

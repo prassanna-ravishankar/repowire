@@ -1124,6 +1124,7 @@ class PeerRegistry:
                 "from_peer_id": from_peer_id, "to_peer_id": peer_id,
                 "correlation_id": correlation_id,
                 "reply_to": reply_to,
+                "self_target": from_peer_id == peer_id,
             },
         )
 

@@ -473,6 +473,9 @@ def create_mcp_server() -> FastMCP:
         Use ask when you need a tracked thread that the recipient must close
         with `ack`, such as a worker status check or reviewer checkpoint. Use
         notify_peer for fire-and-forget updates, reminders, and nudges.
+        Asking yourself is valid for deliberate loopback checks, but use
+        notify_peer or schedule_self(kind="notify") for self-wakes/reminders
+        that do not need tracked closure.
 
         Returns immediately with a correlation_id. The peer receives the
         ask, and when they respond they call `ack(correlation_id)` (bare

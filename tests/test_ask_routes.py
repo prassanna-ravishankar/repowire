@@ -185,6 +185,24 @@ class TestAsk:
         assert event["to"] == bob["display_name"]
         assert event["from_peer_id"] == alice["peer_id"]
         assert event["to_peer_id"] == bob["peer_id"]
+        assert event["self_target"] is False
+
+    async def test_self_ask_succeeds_with_diagnostic_event_marker(self, env):
+        client, registry, at, msg_router = env
+        alice = await _register_peer_info(client, "alice")
+
+        r = await client.post("/ask", json={
+            "from_peer": alice["peer_id"], "to_peer": alice["peer_id"], "text": "loopback?",
+        })
+
+        assert r.status_code == 200
+        assert at.open_count() == 1
+        msg_router.send_ask.assert_awaited_once()
+        event = registry.get_events()[-1]
+        assert event["type"] == "ask"
+        assert event["from_peer_id"] == alice["peer_id"]
+        assert event["to_peer_id"] == alice["peer_id"]
+        assert event["self_target"] is True
 
 
 class TestAck:
