@@ -114,6 +114,24 @@ class TestPeers:
         assert r.status_code == 200
         assert r.json()["display_name"] == "panepeer-claude-code"
 
+    async def test_get_peer_ambiguous_display_name_returns_409(self, client):
+        for circle in ("team-a", "team-b"):
+            r = await client.post("/peers", json={
+                "name": "shared",
+                "path": "/tmp/shared",
+                "circle": circle,
+                "backend": "claude-code",
+            })
+            assert r.status_code == 200
+            assert r.json()["display_name"] == "shared-claude-code"
+
+        r = await client.get("/peers/shared-claude-code")
+        assert r.status_code == 409
+        detail = r.json()["detail"]
+        assert "Ambiguous peer name" in detail
+        assert "Specify a circle=" in detail
+        assert "peer_id" in detail
+
     async def test_get_peer_by_name(self, client):
         r = await client.post("/peers", json={
             "name": "mypeer",

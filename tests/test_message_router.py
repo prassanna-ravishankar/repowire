@@ -193,6 +193,26 @@ class TestSendAsk:
             '↳ ack("ask-ws") or ack("ask-ws", "reply")'
         )
 
+    async def test_logs_delivery_trace(self, router, transport, caplog):
+        caplog.set_level(logging.INFO, logger="repowire.daemon.message_router")
+        transport.get_connection_pane_id.return_value = "%8"
+
+        await router.send_ask(
+            from_peer="alice",
+            to_session_id="sid-bob",
+            to_peer_name="bob",
+            correlation_id="ask-trace",
+            text="ping?",
+            intended_recipient_name="requested-bob",
+        )
+
+        assert "Ask delivery trace" in caplog.text
+        assert "sender_identity=alice" in caplog.text
+        assert "intended_recipient_name=requested-bob" in caplog.text
+        assert "resolved_peer_id=sid-bob" in caplog.text
+        assert "frame.to_peer=bob" in caplog.text
+        assert "actual_delivered_pane_id=%8" in caplog.text
+
     async def test_includes_reply_to(self, router, transport):
         await router.send_ask(
             from_peer="alice",

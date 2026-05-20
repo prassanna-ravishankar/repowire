@@ -42,6 +42,15 @@ export default function Concepts() {
         </p>
       </Section>
 
+      <Section title="Peer identity lifecycle">
+        <p>
+          The daemon routes by immutable <Mono>peer_id</Mono>, not by display name alone. Display names are human-facing and can collide across circles, so ambiguous name lookups refuse to guess unless you pass an explicit <Mono>circle</Mono> or use a <Mono>peer_id</Mono>.
+        </p>
+        <p>
+          Reconnects may reclaim a peer id only when the claim still matches the registered backend and path. Stale task descriptions are bounded by a clear-on-read TTL, and routing events record resolved peer ids so misroutes can be diagnosed without ad hoc logs.
+        </p>
+      </Section>
+
       <Section title="Message types">
         <p>The daemon routes four message types. Pick by lifecycle, not by content.</p>
         <dl className="mt-4 grid gap-px overflow-hidden border border-border-faint bg-border-faint">

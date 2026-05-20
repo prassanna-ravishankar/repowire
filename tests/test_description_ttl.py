@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from repowire.config.models import Config
+from repowire.config.models import AgentType, Config
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.protocol.peers import Peer, PeerStatus
@@ -134,3 +134,45 @@ async def test_clearing_description_drops_set_at(mock_router):
 
     await registry.update_description("dev", "")
     assert "repow-test-dev" not in registry._description_set_at
+
+
+@pytest.mark.asyncio
+async def test_restored_description_gets_bounded_ttl_window(tmp_path, mock_router):
+    """Descriptions restored from sessions.json are stamped on first read.
+
+    The first read preserves the restored description because the daemon cannot
+    know when it was set, but that read starts a bounded TTL window so the stale
+    task state clears on a later read instead of living forever.
+    """
+    path = tmp_path / "sessions.json"
+    restored_dir = tmp_path / "restored-desc"
+    restored_dir.mkdir()
+    cfg = _make_config(60)
+    registry = PeerRegistry(config=cfg, message_router=mock_router, persistence_path=path)
+    peer_id, _ = await registry.allocate_and_register(
+        circle="team-a",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(restored_dir),
+    )
+    await registry.update_description(peer_id, "old task")
+    registry._persist_mappings()
+
+    restarted = PeerRegistry(config=cfg, message_router=mock_router, persistence_path=path)
+    new_id, _ = await restarted.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(restored_dir),
+    )
+    assert new_id == peer_id
+
+    first_read = await restarted.get_peer(peer_id)
+    assert first_read is not None
+    assert first_read.description == "old task"
+    assert peer_id in restarted._description_set_at
+
+    restarted._description_set_at[peer_id] = (
+        datetime.now(timezone.utc) - timedelta(seconds=120)
+    )
+    second_read = await restarted.get_peer(peer_id)
+    assert second_read is not None
+    assert second_read.description == ""

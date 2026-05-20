@@ -330,6 +330,27 @@ class TestAmbiguousDisplayNameNoSilentWinner:
         _, kwargs = mock_message_router.send_notification.call_args
         assert kwargs["to_session_id"] == "sid-b"
 
+    async def test_notify_and_ask_events_record_resolved_peer_ids(
+        self, mock_message_router):
+        """Routing observability stores names plus resolved immutable ids."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-sender", "sender", "teamA")
+        await self._register(pm, "sid-target", "target", "teamA")
+        mock_message_router.send_ask = AsyncMock()
+
+        await pm.notify("sender", "target", "hi")
+        await pm.deliver_ask("sender", "target", "question", correlation_id="ask-ids")
+
+        events = pm.get_events()
+        notify_event, ask_event = events[-2], events[-1]
+        assert notify_event["type"] == "notification"
+        assert ask_event["type"] == "ask"
+        assert notify_event["from_peer_id"] == "sid-sender"
+        assert notify_event["to_peer_id"] == "sid-target"
+        assert ask_event["from_peer_id"] == "sid-sender"
+        assert ask_event["to_peer_id"] == "sid-target"
+        assert ask_event["correlation_id"] == "ask-ids"
+
 
 # ---------------------------------------------------------------------------
 # from_peer circle-preferred lookup (Fix 3 regression)

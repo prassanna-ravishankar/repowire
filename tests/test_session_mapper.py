@@ -490,6 +490,12 @@ async def test_reconnect_with_same_peer_id_bypasses_hijack_guard(tmp_path):
         agent_pid=88888,
     )
 
+    peer = await registry.get_peer(peer_id)
+    assert peer is not None and peer.last_seen is not None
+    before_reconnect = peer.last_seen
+    peer.status = PeerStatus.OFFLINE
+    peer.last_seen = before_reconnect - timedelta(seconds=30)
+
     reclaimed_id, reclaimed_name = await registry.allocate_and_register(
         circle="default",
         backend=AgentType.CLAUDE_CODE,
@@ -501,6 +507,11 @@ async def test_reconnect_with_same_peer_id_bypasses_hijack_guard(tmp_path):
     )
     assert reclaimed_id == peer_id
     assert reclaimed_name == name
+    reconnected = await registry.get_peer(peer_id)
+    assert reconnected is not None
+    assert reconnected.status == PeerStatus.ONLINE
+    assert reconnected.last_seen is not None
+    assert reconnected.last_seen > before_reconnect - timedelta(seconds=30)
 
 
 @pytest.mark.asyncio
