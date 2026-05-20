@@ -237,6 +237,14 @@ class ExperimentsConfig(BaseModel):
         ),
     )
 
+    sqlite_state: bool = Field(
+        default=False,
+        description=(
+            "Use the experimental SQLite daemon state store for migrated "
+            "domains. Currently limited to schedule persistence."
+        ),
+    )
+
 
 class Config(BaseModel):
     """Main Repowire configuration."""

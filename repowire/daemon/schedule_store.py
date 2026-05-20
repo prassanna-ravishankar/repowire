@@ -16,6 +16,7 @@ import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Protocol
 from uuid import uuid4
 
 from repowire.daemon.schedule_cron import next_fire_after, validate_cron
@@ -44,6 +45,45 @@ class Schedule:
 
     def fire_at_dt(self) -> datetime:
         return datetime.fromisoformat(self.fire_at)
+
+
+class ScheduleStoreProtocol(Protocol):
+    """Persistence adapter interface used by the scheduler and routes."""
+
+    def persist(self) -> None: ...
+
+    def create(
+        self,
+        from_peer: str,
+        to_peer: str,
+        text: str,
+        fire_at: datetime,
+        kind: ScheduleKind = "notify",
+        circle: str | None = None,
+        cron: str | None = None,
+    ) -> Schedule: ...
+
+    def create_cron(
+        self,
+        from_peer: str,
+        to_peer: str,
+        text: str,
+        cron: str,
+        *,
+        kind: ScheduleKind = "notify",
+        circle: str | None = None,
+        now: datetime | None = None,
+    ) -> Schedule: ...
+
+    def reschedule_next(self, schedule_id: str, after: datetime | None = None) -> bool: ...
+
+    def delete(self, schedule_id: str) -> Schedule | None: ...
+
+    def get(self, schedule_id: str) -> Schedule | None: ...
+
+    def list_all(self, from_peer: str | None = None) -> list[Schedule]: ...
+
+    def next_due(self) -> Schedule | None: ...
 
 
 class ScheduleStore:

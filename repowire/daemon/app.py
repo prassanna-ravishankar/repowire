@@ -42,6 +42,8 @@ from repowire.daemon.routes import (
 from repowire.daemon.routes import spawn as spawn_routes
 from repowire.daemon.schedule_store import ScheduleStore
 from repowire.daemon.scheduler import Scheduler
+from repowire.daemon.state import StateDatabase
+from repowire.daemon.state.schedules import SQLiteScheduleStore
 from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
@@ -108,9 +110,18 @@ def create_app(
         )
         peer_registry.prune_offline(max_age_hours=cfg.daemon.prune_max_age_hours)
 
-        schedule_store = ScheduleStore(
-            persistence_path=Path.home() / ".repowire" / "schedules.json",
-        )
+        state_db: StateDatabase | None = None
+        schedules_path = Path.home() / ".repowire" / "schedules.json"
+        if cfg.experiments.sqlite_state:
+            state_db = StateDatabase(Path.home() / ".repowire" / "state.db")
+            schedule_store = SQLiteScheduleStore(
+                db=state_db,
+                legacy_path=schedules_path,
+            )
+        else:
+            schedule_store = ScheduleStore(
+                persistence_path=schedules_path,
+            )
         scheduler = Scheduler(
             store=schedule_store,
             peer_registry=peer_registry,
@@ -130,6 +141,7 @@ def create_app(
             Path.home() / ".repowire" / "review_queue.json"
         )
         app.state.schedule_store = schedule_store
+        app.state.state_db = state_db
         app.state.scheduler = scheduler
         from repowire.acp import AcpClientManager
         acp_manager = AcpClientManager()
@@ -212,6 +224,8 @@ def create_app(
             await relay_client.stop()
         await acp_manager.close()
         await scheduler.stop()
+        if state_db is not None:
+            state_db.close()
         peer_registry._save_events()
         peer_registry._persist_mappings()
         await peer_registry.stop()

@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from repowire.daemon.schedule_store import Schedule, ScheduleStore
+from repowire.daemon.schedule_store import Schedule, ScheduleStoreProtocol
 from repowire.daemon.websocket_transport import TransportError
 
 if TYPE_CHECKING:
@@ -41,7 +41,7 @@ class Scheduler:
 
     def __init__(
         self,
-        store: ScheduleStore,
+        store: ScheduleStoreProtocol,
         peer_registry: PeerRegistry,
         ask_tracker: AskTracker,
     ) -> None:
