@@ -26,6 +26,31 @@ Or simply work in a session named `orchestrator` — by convention other peers w
 4. **Review** completed work. `review_queue()` surfaces PRs you owe a look. `mark_reviewed(pr_url)` clears them after the pass.
 5. **Release** when a batch lands. Tag, push, notify the team channel.
 
+## Active fan-out
+
+When items are independent, split them into parallel lanes rather than waiting
+for one peer to finish before dispatching the next. A good split has one owner,
+one worktree, and one clear reporting path per lane. Use separate review or
+plan-critique lanes when they can run without touching the same files.
+
+For each fan-out, schedule a watchdog wake before the lane can go stale:
+
+```text
+schedule_self(
+  text="watchdog: check project-a auth refactor lane and update board only if state changed",
+  fire_at="2026-05-20T15:30:00Z",
+  kind="notify",
+)
+```
+
+Keep durable writes quiet. The board owns item state, peer descriptions own
+current focus, session timelines or reports own detailed history, and memory
+owns only lessons that should change future behavior.
+
+One-off external shortcuts are a local policy choice, not a universal
+orchestrator rule. Configure that in the workspace instructions for your team;
+do not bake a generic ban into the pattern.
+
 ## Before dispatching
 
 Call `orchestrator_status(circle="...")` first to confirm a live orchestrator (you) is present in the target circle. Returns `present, peer_name, peer_id, last_seen, stale_after_seconds`. This is a presence check, not a mesh snapshot.

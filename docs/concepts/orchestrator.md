@@ -14,6 +14,11 @@ A typical orchestrator runs a loop like:
 4. **Review** completed work. `review_queue()` surfaces PRs the peer has touched that you still owe a review on; `mark_reviewed(pr_url)` clears them.
 5. **Release** when a batch lands. Tag, push, notify.
 
+For independent work, the orchestrator should fan out instead of serializing
+everything through one session. Split board items by owner and worktree, dispatch
+plan/review lanes in parallel where useful, schedule watchdog wakes for
+long-running lanes, and keep the board as the single source of truth.
+
 ## Memory and procedures
 
 The orchestrator workspace is a curated procedure layer, not a complete history store. Keep user communication preferences in `comms.md`, active project scope in `projects.md`, durable operational lessons in `memory/*.md`, and reusable dispatch/review/release procedures in `patterns/*.md`.
@@ -33,6 +38,11 @@ Pair runtimes: a `claude-code` orchestrator alongside a `codex` or `gemini` one 
 ## Scheduled check-ins
 
 `schedule_create(to_peer, text, fire_at, kind="notify")` defers a single future message — fire-and-forget if `kind="notify"`, or an opened ask thread if `kind="ask"`. `schedule_cron(to_peer, text, cron, kind="notify")` adds recurring check-ins, and `schedule_self(text, fire_at=...|cron=...)` is the convenience form for self-wake reminders.
+
+Scheduled background work should stay quiet by default. Use it for watchdogs,
+summaries, cleanup, and review nudges, with a clear owner and cancellation path.
+Durable board or memory writes should happen only for real state transitions or
+forward-applicable lessons, not just because a hook fired.
 
 ## When *not* to orchestrate
 

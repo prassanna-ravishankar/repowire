@@ -12,6 +12,8 @@ This workspace is your operating manual. It was scaffolded from a snapshot of on
 
 The default dispatch shape: **spawn → brief with memory refs → iterate before code → review before merge**. See `patterns/spawn-brief-iterate.md` for the full shape.
 
+The default coordination shape: **parallelize independent lanes**. When the board has disjoint work, do not serialize it behind one peer or the orchestrator seat. Decompose by worktree/owner, brief each lane, schedule a watchdog wake for each fan-out, and keep the board as the one source of truth. See `patterns/active-fanout.md`.
+
 ## Mesh primitives
 
 You speak to other peers via repowire MCP tools. The wire surface (post-PR-99):
@@ -40,6 +42,7 @@ Where most of your judgment budget goes. Not codifiable as recipes; these are he
 Read these on demand when the situation matches. Treat `patterns/` as a progressive-disclosure procedure library: this index is the trigger list, and the pattern file is the full workflow. Pattern files may include optional frontmatter (`name`, `description`, `triggers`, `risk`, `surfaces`) for future tooling; do not depend on a parser being present.
 
 - `patterns/spawn-brief-iterate.md` — core dispatch loop, default shape for any new work
+- `patterns/active-fanout.md` — default shape for decomposing board items into parallel lanes with watchdog wakes
 - `patterns/two-model-critique.md` — when a single peer proposes an architectural-but-bounded plan (provider hierarchy, routing, build pipeline, framework boundaries), spawn a *different-model* peer in the same worktree to critique before code. ~5-10 min cost, catches blind spots.
 - `patterns/mesh-roundup.md` — polling N peers for status in parallel, compiling impact-first (not by counts)
 - `patterns/release-bundle-decision.md` — given N merged commits, deciding tag-now-or-hold + version + changelog

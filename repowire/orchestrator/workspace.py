@@ -35,6 +35,7 @@ SOURCE_FILE = "AGENTS.md"
 # offers per-file diff prompts for these.
 REPOWIRE_OWNED_FILES = (
     "AGENTS.md",
+    "patterns/active-fanout.md",
     "patterns/mesh-roundup.md",
     "patterns/two-model-critique.md",
     "patterns/release-bundle-decision.md",
