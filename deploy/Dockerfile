@@ -16,7 +16,7 @@ ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 
 # Dependency cache layer
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md hatch_build.py ./
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-install-project --no-dev
 
 # App code layer
