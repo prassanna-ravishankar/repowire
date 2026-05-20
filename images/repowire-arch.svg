@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-labelledby="title desc">
+  <title id="title">Repowire architecture</title>
+  <desc id="desc">Three column Repowire architecture diagram: agents connect to a local daemon, with optional relay services for remote access.</desc>
+  <defs>
+    <marker id="arrow-ink" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#393A36"/>
+    </marker>
+    <marker id="arrow-muted" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#727068"/>
+    </marker>
+    <filter id="soft-shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#3A2E21" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .bg { fill: #f7f2e7; }
+      .rule { stroke: #cfc5b5; stroke-width: 2; }
+      .split { stroke: #c5b9a7; stroke-width: 2; stroke-dasharray: 8 10; }
+      .head { font: 700 24px "JetBrains Mono", "SFMono-Regular", ui-monospace, monospace; fill: #383832; letter-spacing: 1.5px; }
+      .label { font: 700 19px "IBM Plex Sans", "Inter", system-ui, sans-serif; fill: #fffdf8; }
+      .dark-label { font: 700 18px "IBM Plex Sans", "Inter", system-ui, sans-serif; fill: #3a3933; }
+      .small { font: 600 14px "IBM Plex Sans", "Inter", system-ui, sans-serif; fill: #4b4a43; }
+      .tiny { font: 600 14px "IBM Plex Sans", "Inter", system-ui, sans-serif; fill: #555249; }
+      .tag-text { font: 700 15.5px "IBM Plex Sans", "Inter", system-ui, sans-serif; fill: #4f4c44; }
+      .caption { font: 700 17px "IBM Plex Sans", "Inter", system-ui, sans-serif; fill: #403f38; }
+      .note { font: 500 13px "IBM Plex Sans", "Inter", system-ui, sans-serif; fill: #6a665d; }
+      .agent { fill: #ee9728; stroke: #d27b17; stroke-width: 1.5; }
+      .surface { fill: #e7dfd0; stroke: #c8bdab; stroke-width: 1.5; }
+      .tag { fill: #dfdbd1; stroke: #cbc2b3; stroke-width: 1; }
+      .daemon { fill: #4e83a0; stroke: #38677f; stroke-width: 2; }
+      .layer { fill: #91bd78; stroke: #7baa65; stroke-width: 1.5; }
+      .local { fill: #ead0a0; stroke: #d7b474; stroke-width: 1.5; }
+      .relay { fill: #ead0a0; stroke: #d6b678; stroke-width: 1.5; }
+      .remote { fill: #eeebe4; stroke: #d7d0c4; stroke-width: 1.5; }
+      .dash { stroke: #d9b882; stroke-width: 2; stroke-dasharray: 7 7; fill: none; }
+      .arrow { stroke: #393A36; stroke-width: 2.3; fill: none; marker-end: url(#arrow-ink); }
+      .arrow-muted { stroke: #727068; stroke-width: 2; stroke-dasharray: 7 7; fill: none; marker-end: url(#arrow-muted); }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1200" height="800"/>
+
+  <line class="split" x1="312" y1="150" x2="312" y2="560"/>
+  <line class="split" x1="842" y1="150" x2="842" y2="560"/>
+
+  <text class="head" x="160" y="192" text-anchor="middle">AGENTS</text>
+  <line class="rule" x1="63" y1="204" x2="257" y2="204"/>
+
+  <text class="head" x="577" y="192" text-anchor="middle">DAEMON (LOCAL-FIRST)</text>
+  <line class="rule" x1="347" y1="204" x2="807" y2="204"/>
+
+  <text class="head" x="1012" y="192" text-anchor="middle">RELAY (OPTIONAL)</text>
+  <line class="rule" x1="879" y1="204" x2="1145" y2="204"/>
+
+  <g filter="url(#soft-shadow)">
+    <rect class="agent" x="66" y="235" width="170" height="40" rx="8"/>
+    <text class="label" x="151" y="261" text-anchor="middle">Claude Code</text>
+    <rect class="tag" x="243" y="240" width="112" height="30" rx="4"/>
+    <text class="tag-text" x="299" y="260" text-anchor="middle">hooks + MCP</text>
+
+    <rect class="agent" x="66" y="294" width="170" height="40" rx="8"/>
+    <text class="label" x="151" y="320" text-anchor="middle">Codex</text>
+    <rect class="tag" x="243" y="299" width="112" height="30" rx="4"/>
+    <text class="tag-text" x="299" y="319" text-anchor="middle">hooks + MCP</text>
+
+    <rect class="agent" x="66" y="353" width="170" height="40" rx="8"/>
+    <text class="label" x="151" y="379" text-anchor="middle">Gemini CLI</text>
+    <rect class="tag" x="243" y="358" width="112" height="30" rx="4"/>
+    <text class="tag-text" x="299" y="378" text-anchor="middle">hooks + MCP</text>
+
+    <rect class="agent" x="66" y="412" width="170" height="40" rx="8"/>
+    <text class="label" x="151" y="438" text-anchor="middle">OpenCode</text>
+    <rect class="tag" x="243" y="417" width="112" height="30" rx="4"/>
+    <text class="tag-text" x="299" y="437" text-anchor="middle">plugin + WS</text>
+
+    <rect class="agent" x="66" y="471" width="170" height="40" rx="8"/>
+    <text class="label" x="151" y="497" text-anchor="middle">Pi</text>
+    <rect class="tag" x="243" y="476" width="112" height="30" rx="4"/>
+    <text class="tag-text" x="299" y="496" text-anchor="middle">extension</text>
+
+    <rect class="surface" x="66" y="538" width="263" height="50" rx="8"/>
+    <text class="dark-label" x="198" y="561" text-anchor="middle">Human surfaces</text>
+    <text class="tiny" x="198" y="580" text-anchor="middle">Dashboard, Telegram, Slack</text>
+  </g>
+
+  <path class="arrow" d="M 355 255 L 387 255"/>
+  <path class="arrow" d="M 355 314 L 387 314"/>
+  <path class="arrow" d="M 355 373 L 387 373"/>
+  <path class="arrow" d="M 355 432 L 387 432"/>
+  <path class="arrow" d="M 355 491 L 387 491"/>
+  <path class="arrow" d="M 329 563 C 358 563, 358 505, 387 505"/>
+
+  <g filter="url(#soft-shadow)">
+    <rect class="daemon" x="387" y="230" width="380" height="285" rx="24"/>
+    <text class="label" x="577" y="270" text-anchor="middle" style="font-size:28px">Daemon :8377</text>
+    <line x1="421" y1="289" x2="733" y2="289" stroke="#2e5367" stroke-width="2"/>
+
+    <rect class="layer" x="469" y="306" width="216" height="39" rx="7"/>
+    <text class="label" x="577" y="331" text-anchor="middle">Registry</text>
+
+    <rect class="layer" x="469" y="359" width="216" height="39" rx="7"/>
+    <text class="label" x="577" y="384" text-anchor="middle">Ask / Notify Router</text>
+
+    <rect class="layer" x="469" y="412" width="216" height="39" rx="7"/>
+    <text class="label" x="577" y="437" text-anchor="middle">Transport Router</text>
+
+    <rect class="layer" x="431" y="465" width="130" height="39" rx="7"/>
+    <text class="label" x="496" y="490" text-anchor="middle">Scheduler</text>
+    <rect class="layer" x="593" y="465" width="130" height="39" rx="7"/>
+    <text class="label" x="658" y="490" text-anchor="middle">Timeline</text>
+  </g>
+
+  <g filter="url(#soft-shadow)">
+    <rect class="local" x="406" y="555" width="170" height="62" rx="8"/>
+    <text class="dark-label" x="491" y="582" text-anchor="middle">Dashboard</text>
+    <text class="tiny" x="491" y="602" text-anchor="middle">localhost:8377</text>
+
+    <rect class="surface" x="604" y="555" width="170" height="62" rx="8"/>
+    <text class="dark-label" x="689" y="582" text-anchor="middle">Chat bots</text>
+    <text class="tiny" x="689" y="602" text-anchor="middle">Telegram, Slack</text>
+  </g>
+
+  <path class="arrow" d="M 491 515 L 491 548"/>
+  <path class="arrow" d="M 689 515 L 689 548"/>
+
+  <path class="arrow-muted" d="M 767 276 L 910 276"/>
+  <path class="arrow-muted" d="M 767 370 L 910 370"/>
+  <path class="arrow-muted" d="M 767 464 L 910 464"/>
+
+  <g filter="url(#soft-shadow)">
+    <rect class="dash" x="914" y="235" width="188" height="70" rx="11"/>
+    <rect class="relay" x="925" y="246" width="166" height="48" rx="8"/>
+    <text class="dark-label" x="1008" y="269" text-anchor="middle">Relay</text>
+    <text class="tiny" x="1008" y="288" text-anchor="middle">repowire.io</text>
+
+    <rect class="remote" x="914" y="338" width="188" height="62" rx="8"/>
+    <text class="dark-label" x="1008" y="375" text-anchor="middle">Remote Dashboard</text>
+
+    <rect class="remote" x="914" y="432" width="188" height="62" rx="8"/>
+    <text class="dark-label" x="1008" y="469" text-anchor="middle">Cross-machine Mesh</text>
+  </g>
+
+  <line class="rule" x1="58" y1="675" x2="1142" y2="675"/>
+  <text class="caption" x="160" y="703" text-anchor="middle">local agents + humans</text>
+  <text class="caption" x="577" y="703" text-anchor="middle">local-first routing hub</text>
+  <text class="caption" x="1012" y="703" text-anchor="middle">optional remote access</text>
+
+  <text class="note" x="600" y="744" text-anchor="middle">Peers connect through hooks, MCP, WebSocket, plugins, or experimental ACP; relay is optional.</text>
+</svg>
