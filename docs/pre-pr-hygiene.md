@@ -8,9 +8,21 @@ python3 scripts/pre_pr_hygiene.py
 ```
 
 The script compares your branch with `origin/main`, includes staged and unstaged changes, and
-prints the documentation and repo-instruction surfaces that deserve review. It is intentionally
-not a mandatory hook. Use judgement, keep the PR focused, and explain any intentional docs deferral
-in the handoff.
+prints the documentation and repo-instruction surfaces that deserve review. It also fails fast when
+tracked Beads JSONL ledgers (`.beads/issues.jsonl` or root `issues.jsonl`) appear in the committed,
+staged, or unstaged diff, because those files are mutable issue state and should not ride along in
+feature PRs.
+
+To clean local-only ledger churn before opening a PR, run:
+
+```bash
+python3 scripts/pre_pr_hygiene.py --restore-beads-ledgers
+```
+
+That command backs up the local ledger contents under `.beads/backup/pre-pr-hygiene/` and restores
+the tracked files from git. Committed ledger changes are reported only; amend or rebase those out.
+The docs checklist remains advisory and is not a mandatory hook. Use judgement, keep the PR focused,
+and explain any intentional docs deferral in the handoff.
 
 ## Tool-Surface Matrix
 

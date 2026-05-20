@@ -261,7 +261,7 @@ Before opening a PR, run the advisory pre-PR hygiene check:
 python3 scripts/pre_pr_hygiene.py
 ```
 
-This is a lightweight opt-in checklist, not a mandatory hook. It compares the branch with `origin/main`, includes staged and unstaged changes, and points at README, reference docs, mirrored web docs, `CLAUDE.md` / `AGENTS.md`, and graphify follow-ups that may need review. Keep the final decision product-repo focused and document intentional deferrals in the PR handoff.
+This is a lightweight opt-in checklist, not a mandatory hook. It compares the branch with `origin/main`, includes staged and unstaged changes, points at README, reference docs, mirrored web docs, `CLAUDE.md` / `AGENTS.md`, and graphify follow-ups that may need review, and fails if Beads JSONL ledger churn (`.beads/issues.jsonl` or root `issues.jsonl`) is present. Use `--restore-beads-ledgers` for local-only ledger churn. Keep the final decision product-repo focused and document intentional deferrals in the PR handoff.
 
 See `docs/pre-pr-hygiene.md` for the tool-surface matrix.
 

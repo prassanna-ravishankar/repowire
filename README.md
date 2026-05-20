@@ -263,7 +263,7 @@ python3 scripts/pre_pr_hygiene.py
 ```
 
 It is an opt-in prompt for docs, README, agent-instruction, and graphify follow-ups, not a
-mandatory hook.
+mandatory hook. It also flags Beads JSONL ledger churn before it can leak into PR diffs.
 
 ## License
 
