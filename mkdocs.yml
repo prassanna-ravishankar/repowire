@@ -158,5 +158,6 @@ nav:
   - About:
       - about/index.md
       - Versioning: about/versioning.md
+      - Pre-PR hygiene: pre-pr-hygiene.md
       - License: about/license.md
       - Contributing: about/contributing.md

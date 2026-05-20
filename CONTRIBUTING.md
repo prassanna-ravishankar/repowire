@@ -70,6 +70,16 @@ git commit -m "short description of what and why"
 git push origin your-branch-name
 ```
 
+Before opening the PR, run the advisory repo-hygiene checklist:
+```bash
+python3 scripts/pre_pr_hygiene.py
+```
+
+This is not a mandatory hook. It compares your branch with `origin/main` and reminds you which
+public surfaces to check: README, reference docs, mirrored web docs, `CLAUDE.md` / `AGENTS.md`,
+and graphify for architecture-level changes. See [`docs/pre-pr-hygiene.md`](docs/pre-pr-hygiene.md)
+for the tool-surface matrix.
+
 ## Where to Find Things
 
 `CLAUDE.md` has the full architecture overview, worth reading before diving in. Here's a quick map of the main areas:

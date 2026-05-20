@@ -255,6 +255,16 @@ Feature work that changes public behavior must update public docs in the same PR
 
 When adding features, explicitly check docs impact before closing the issue. If docs are intentionally deferred, file a Beads follow-up and say why in the PR handoff.
 
+Before opening a PR, run the advisory pre-PR hygiene check:
+
+```bash
+python3 scripts/pre_pr_hygiene.py
+```
+
+This is a lightweight opt-in checklist, not a mandatory hook. It compares the branch with `origin/main`, includes staged and unstaged changes, and points at README, reference docs, mirrored web docs, `CLAUDE.md` / `AGENTS.md`, and graphify follow-ups that may need review. Keep the final decision product-repo focused and document intentional deferrals in the PR handoff.
+
+See `docs/pre-pr-hygiene.md` for the tool-surface matrix.
+
 Third-party extension context:
 
 - Vercel Labs `skills` (`npx skills add ...`) installs reusable `SKILL.md` packages across agents. Repowire does not install these today.

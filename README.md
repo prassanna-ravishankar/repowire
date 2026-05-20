@@ -248,7 +248,15 @@ uv tool uninstall repowire
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Before opening a PR, run the advisory repo-hygiene
+checklist:
+
+```bash
+python3 scripts/pre_pr_hygiene.py
+```
+
+It is an opt-in prompt for docs, README, agent-instruction, and graphify follow-ups, not a
+mandatory hook.
 
 ## License
 
