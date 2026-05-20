@@ -1,9 +1,6 @@
-"use client";
-
 import { ArrowRight, Github, Terminal } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
-import { motion } from "framer-motion";
 
 export default function Hero() {
   return (
@@ -19,12 +16,7 @@ export default function Hero() {
       <div className="absolute inset-0 bg-surface/88" />
 
       <div className="relative z-10 mx-auto grid max-w-7xl items-center gap-8 px-4 pb-10 sm:px-6 sm:pb-12 lg:grid-cols-[0.95fr_1.05fr] lg:px-8 lg:pb-14">
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4 }}
-          className="max-w-3xl"
-        >
+        <div className="max-w-3xl">
           <div className="mb-6 inline-flex items-center gap-2 border border-primary/30 bg-primary/10 px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-primary-fixed">
             <span className="h-1.5 w-1.5 rounded-full bg-secondary" aria-hidden="true" />
             Local-first agent team harness
@@ -59,13 +51,9 @@ export default function Hero() {
             <Metric label="Messages" value="ask / notify / schedule" />
             <Metric label="Surfaces" value="dashboard / Telegram / Slack" />
           </dl>
-        </motion.div>
+        </div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.45, delay: 0.08 }}
-        >
+        <div>
           <div className="overflow-hidden rounded-lg border border-border-strong bg-surface-container-low shadow-[var(--shadow-3)]">
             <div className="flex items-center justify-between border-b border-border-faint bg-surface-container px-4 py-3">
               <div className="flex items-center gap-2" aria-hidden="true">
@@ -92,7 +80,7 @@ export default function Hero() {
               </div>
             </div>
           </div>
-        </motion.div>
+        </div>
       </div>
     </section>
   );
