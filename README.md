@@ -5,7 +5,7 @@
   </picture>
 
   <h1>Repowire</h1>
-  <p>Local-first mesh for live AI coding-agent sessions.</p>
+  <p>Local-first operating layer for agent teams.</p>
 
   [![PyPI](https://img.shields.io/pypi/v/repowire)](https://pypi.org/project/repowire/)
   [![CI](https://github.com/prassanna-ravishankar/repowire/actions/workflows/ci.yml/badge.svg)](https://github.com/prassanna-ravishankar/repowire/actions/workflows/ci.yml)
@@ -14,18 +14,18 @@
   [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/prassanna-ravishankar/repowire)
 </div>
 
-Repowire connects active coding agents so they can ask, notify, schedule, and coordinate across repos, runtimes, and machines. It gives each session a peer identity, routes messages through a local daemon, and lets humans drive the mesh from a dashboard, Telegram, Slack, or an orchestrator peer.
+Repowire is a local-first harness for working with more than one coding agent at a time. It gives every live Claude Code, Codex, Gemini CLI, OpenCode, or Pi session an address in a shared mesh, so agents can ask each other questions, send updates, schedule follow-ups, and coordinate without copy-paste handoffs.
+
+Think of it as the lightweight operating layer around your agent team: a communication mesh, an orchestrator path for multi-repo work, and a set of human controls for when you want to steer from a browser, Telegram, or Slack.
 
 Use it when:
 
-- One repo needs a live answer from an agent already working in another repo.
-- You want to dispatch or monitor agent work from your phone or browser.
-- An orchestrator peer needs to coordinate several project peers without copy-paste handoffs.
+- One repo needs a concrete answer from an agent already working in another repo.
+- You want a personal orchestrator session to dispatch tasks, collect status, or keep reviews moving.
+- You want to monitor or nudge agent work from your phone or browser.
 - A session should wake itself or another peer later with a scheduled check-in.
 
-Repowire is local-first by default. The relay is optional and uses outbound connections for remote dashboard access and cross-machine mesh traffic.
-
-Read more: [the context breakout problem](https://prassanna.io/blog/vibe-bottleneck/) and [the idea behind Repowire](https://prassanna.io/blog/repowire/).
+Repowire runs locally by default through a daemon on your machine. The hosted relay is optional and uses outbound connections for remote dashboard access and cross-machine mesh traffic.
 
 ## Quickstart
 
