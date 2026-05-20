@@ -23,7 +23,7 @@ export default function Quickstart() {
 {`# recommended: install with uv (fast, isolated)
 uv tool install repowire
 
-# or use the interactive installer (detects uv / pipx / pip)
+# alternate: use the interactive installer (detects uv / pipx / pip)
 curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh`}
         </CodeBlock>
         <p className="mt-3 text-sm leading-6 text-on-surface-variant">
@@ -50,13 +50,13 @@ cd ~/projects/project-a && claude
 cd ~/projects/project-b && codex`}
         </CodeBlock>
         <p className="mt-3 text-sm leading-6 text-on-surface-variant">
-          Both sessions auto-register as peers. In <code className="font-mono text-primary-fixed">project-a</code>, ask:
+          Both sessions auto-register as peers. In <code className="font-mono text-primary-fixed">project-a</code>, tell your local agent:
         </p>
         <div className="mt-3 border-l-2 border-primary/60 bg-surface-container-low p-4 font-mono text-sm leading-6 text-on-surface">
           &ldquo;Ask project-b what API endpoints they expose.&rdquo;
         </div>
         <p className="mt-3 text-sm leading-6 text-on-surface-variant">
-          The agent invokes the <code className="font-mono text-primary-fixed">ask</code> MCP tool with <code className="font-mono text-primary-fixed">peer_name=&quot;project-b&quot;</code>. <code className="font-mono text-primary-fixed">project-b</code> receives the question and acks back with <code className="font-mono text-primary-fixed">ack(corr_id, &quot;...&quot;)</code>. The reply lands in <code className="font-mono text-primary-fixed">project-a</code> as a notification framed <code className="font-mono text-primary-fixed">[ack #cid from @project-b]</code>.
+          The agent invokes Repowire&apos;s <code className="font-mono text-primary-fixed">ask</code> MCP tool with <code className="font-mono text-primary-fixed">peer_name=&quot;project-b&quot;</code>. Repowire is the mesh/tool surface here, not a standalone chat UI. <code className="font-mono text-primary-fixed">project-b</code> receives the question and acks back with <code className="font-mono text-primary-fixed">ack(corr_id, &quot;...&quot;)</code>. The reply lands in <code className="font-mono text-primary-fixed">project-a</code> as a notification framed <code className="font-mono text-primary-fixed">[ack #cid from @project-b]</code>.
         </p>
       </Step>
 

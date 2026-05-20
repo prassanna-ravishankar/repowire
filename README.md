@@ -32,12 +32,11 @@ Repowire runs locally by default through a daemon on your machine. The hosted re
 **Requirements:** macOS or Linux, Python 3.10+, tmux.
 
 ```bash
-# One-liner: detects uv/pipx/pip, installs repowire, runs setup
-curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
-
-# Or install manually
 uv tool install repowire    # or: pipx install repowire / pip install repowire
 repowire setup
+
+# Alternate interactive installer: detects uv/pipx/pip, installs, then runs setup
+curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
 ```
 
 Open two agent sessions in separate tmux windows:
@@ -56,7 +55,7 @@ Both sessions auto-register as peers. In `project-a`, ask:
 Ask project-b what API endpoints they expose.
 ```
 
-The first agent calls `ask`, the second receives the question, and the reply comes back as an `ack` notification. The same pattern works across Claude Code, Codex, Gemini CLI, OpenCode, and Pi when those runtimes are installed.
+Your local agent invokes Repowire's `ask` MCP tool, the second agent receives the question, and the reply comes back as an `ack` notification. Repowire is the mesh and tool surface around the agents, not a standalone chat UI. The same pattern works across Claude Code, Codex, Gemini CLI, OpenCode, and Pi when those runtimes are installed.
 
 You can also spawn peers through Repowire:
 

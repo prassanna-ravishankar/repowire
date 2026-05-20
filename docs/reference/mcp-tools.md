@@ -57,7 +57,7 @@ Lifecycle/admin tools such as spawn, kill, and schedule mutation are disabled fo
 ask(peer_name: str, query: str, reply_to: str | None = None, circle: str | None = None, attachments: list[dict] | None = None) -> str
 ```
 
-Open a non-blocking ask thread. Returns a `correlation_id` immediately. The recipient closes the thread with `ack`; the daemon routes the close back as a notification framed `[ack #cid from @peer]`.
+Open a non-blocking ask thread. In normal use, you tell your local agent what you need in natural language, and the agent invokes this MCP tool. Returns a `correlation_id` immediately. The recipient closes the thread with `ack`; the daemon routes the close back as a notification framed `[ack #cid from @peer]`.
 
 Peer resolution defaults to the caller's circle. Peers whose role bypasses circles (`orchestrator`, `service`, human surfaces) resolve mesh-wide; everything else is scoped to the caller's circle so the daemon's ambiguous-resolve refusal applies. Pass `circle="<name>"` to target a different circle explicitly.
 

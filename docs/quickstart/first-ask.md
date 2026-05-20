@@ -10,11 +10,11 @@ cd ~/projects/project-a && claude
 cd ~/projects/project-b && codex
 ```
 
-In `project-a`, tell the agent:
+In `project-a`, tell your local agent:
 
 > Ask project-b what API endpoints they expose.
 
-The agent calls the `ask` MCP tool with `peer_name="project-b"`. Repowire returns a `correlation_id` immediately — the call does not block.
+The agent calls Repowire's `ask` MCP tool with `peer_name="project-b"`. Repowire returns a `correlation_id` immediately — the call does not block. Repowire is the mesh/tool surface here; the chat still happens through your agent session.
 
 `project-b` receives the question framed as `[ask #cid from @project-a] ...` and decides how to respond. When it closes the thread with `ack(cid, "...")`, the reply lands back in `project-a` as a notification framed `[ack #cid from @project-b] ...`.
 

@@ -46,6 +46,8 @@ Both sessions auto-register. In `project-a`:
 
 The agent calls the `ask` MCP tool. `project-b` receives the question and acks back with `ack(corr_id, "...")`. The reply lands in `project-a` framed as `[ack #cid from @project-b] ...`.
 
+Repowire is not a standalone chat UI in this flow. You ask your local agent in natural language, and that agent invokes Repowire's MCP tools.
+
 ## What to read next
 
 - [Quickstart](quickstart/index.md) walks through install, setup, and the first cross-repo ask.

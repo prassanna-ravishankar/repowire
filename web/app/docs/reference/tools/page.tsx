@@ -20,10 +20,10 @@ export default function ToolsReference() {
 
       <Tool
         name="ask"
-        signature={`ask(peer_name: str, query: str, reply_to: str | None = None, circle: str | None = None) -> str`}
+        signature={`ask(peer_name: str, query: str, reply_to: str | None = None, circle: str | None = None, attachments: list[dict] | None = None) -> str`}
       >
         <p>
-          Open a non-blocking ask thread. Returns a <Mono>correlation_id</Mono> immediately. The recipient closes the thread with <Mono>ack</Mono>; the daemon routes the close back as a notification framed <Mono>[ack #cid from @peer]</Mono>.
+          Open a non-blocking ask thread. In normal use, you tell your local agent what you need in natural language, and the agent invokes this MCP tool. Returns a <Mono>correlation_id</Mono> immediately. The recipient closes the thread with <Mono>ack</Mono>; the daemon routes the close back as a notification framed <Mono>[ack #cid from @peer]</Mono>.
         </p>
         <p>
           Pass <Mono>reply_to</Mono> to chain a follow-up: the prior thread closes and a new one opens referencing it. Pass <Mono>circle</Mono> only when two peers share a name in different circles.
@@ -36,7 +36,7 @@ export default function ToolsReference() {
 
       <Tool
         name="ack"
-        signature={`ack(correlation_id: str, message: str | None = None) -> str`}
+        signature={`ack(correlation_id: str, message: str | None = None, attachments: list[dict] | None = None) -> str`}
       >
         <p>
           Close an open ask. Bare <Mono>ack(cid)</Mono> signals &ldquo;seen, no action needed.&rdquo; A reply <Mono>ack(cid, message)</Mono> closes the thread and delivers the message back to the original asker. Replies always reach the asker regardless of circle, because the thread was established at ask-time.
@@ -49,7 +49,7 @@ ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")`}
 
       <Tool
         name="notify_peer"
-        signature={`notify_peer(peer_name: str, message: str, circle: str | None = None) -> str`}
+        signature={`notify_peer(peer_name: str, message: str, circle: str | None = None, attachments: list[dict] | None = None) -> str`}
       >
         <p>
           Fire-and-forget. No lifecycle, no expected response. Returns a synthetic <Mono>notif-XXXXXXXX</Mono> ID for client-side tracking, not a thread you can close. Use for status pings and announcements.

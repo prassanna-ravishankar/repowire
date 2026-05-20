@@ -21,6 +21,8 @@ Use `pipx` if you want isolation without uv. Use plain `pip` only inside a virtu
 
 ## Interactive installer
 
+Use this when you want setup to choose the available package manager for you.
+
 ```bash
 curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
 ```
