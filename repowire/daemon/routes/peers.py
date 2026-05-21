@@ -22,6 +22,7 @@ from repowire.daemon.peer_registry import (
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
 from repowire.session.history import load_peer_turns, page_turns
+from repowire.session.timeline import TimelineItem, build_session_timeline
 
 router = APIRouter(tags=["peers"])
 
@@ -452,6 +453,89 @@ class TranscriptTurn(BaseModel):
 class TranscriptResponse(BaseModel):
     turns: list[TranscriptTurn]
     next_before: str | None = None
+
+
+class SessionTimelineItem(BaseModel):
+    id: str
+    kind: str
+    source: str
+    timestamp: str
+    session_id: str
+    turn_id: str
+    role: str
+    text: str
+    tool_calls: list[dict[str, str]] = Field(default_factory=list)
+    peer_id: str | None = None
+    peer: str | None = None
+    event_ids: list[str] = Field(default_factory=list)
+
+
+class SessionTimelineResponse(BaseModel):
+    peer_id: str
+    peer_name: str
+    session_id: str | None = None
+    items: list[SessionTimelineItem]
+
+
+def _timeline_item_response(item: TimelineItem) -> SessionTimelineItem:
+    return SessionTimelineItem(
+        id=item.id,
+        kind=item.kind,
+        source=item.source,
+        timestamp=item.timestamp,
+        session_id=item.session_id,
+        turn_id=item.turn_id,
+        role=item.role,
+        text=item.text,
+        tool_calls=item.tool_calls,
+        peer_id=item.peer_id,
+        peer=item.peer,
+        event_ids=item.event_ids,
+    )
+
+
+@router.get("/peers/{name}/timeline", response_model=SessionTimelineResponse)
+async def get_peer_timeline(
+    name: str,
+    limit: int = Query(100, ge=1, le=500, description="Max timeline items to return"),
+    session_id: str | None = Query(
+        None,
+        description="Optional hook/runtime transcript session id used for timeline scoping.",
+    ),
+    circle: str | None = Query(None),
+    _: str | None = Depends(require_auth),
+) -> SessionTimelineResponse:
+    """Merged session timeline for dashboard/control callers.
+
+    v0.13-compatible slice: persisted Claude transcript turns and buffered
+    realtime ``chat_turn``/``chat_turn_delta`` events are normalized to one
+    session/turn identity model. Existing transcript and event endpoints remain
+    unchanged.
+    """
+    peer_registry = get_peer_registry()
+    peer = await peer_registry.get_peer(name, circle=circle)
+    if peer is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Peer not found: {name}",
+        )
+
+    history_turns = await asyncio.to_thread(load_peer_turns, peer.path, peer.backend)
+    items = build_session_timeline(
+        history_turns=history_turns,
+        events=peer_registry.get_events(),
+        peer_id=peer.peer_id,
+        peer_names={peer.display_name, peer.peer_id, name},
+        session_id=session_id,
+    )
+    if len(items) > limit:
+        items = items[-limit:]
+    return SessionTimelineResponse(
+        peer_id=peer.peer_id,
+        peer_name=peer.display_name,
+        session_id=session_id,
+        items=[_timeline_item_response(item) for item in items],
+    )
 
 
 @router.get("/peers/{name}/transcript", response_model=TranscriptResponse)

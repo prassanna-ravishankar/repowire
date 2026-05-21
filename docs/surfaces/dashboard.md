@@ -20,6 +20,8 @@ The dashboard does not poll. The stop hook of every Claude Code, Codex, and Gemi
 
 The v0.13 dashboard direction is a timeline-centered view. The current slice merges Claude transcript history and realtime stream events for the selected peer/session. Peers remain the runtime executors, and broader controls such as model/backend switching, resume, scheduling, approval handling, and plan-mode decisions remain roadmap items that should attach to shared session commands as those features land.
 
+`GET /peers/{name}/timeline` is the first daemon-side session timeline read model. It returns normalized items with explicit `session_id`, `turn_id`, `source` (`history` or `realtime`), and `kind` (`turn` or `delta_group`) by merging Claude transcript turns with the daemon's buffered realtime `chat_turn` and `chat_turn_delta` events. This route is additive; existing `/peers/{name}/transcript`, `/events`, and dashboard SSE behavior are unchanged.
+
 ## Mobile
 
 The dashboard is mobile-responsive: hamburger menu for the peer list, touch-friendly compose bar, sticky bottom switcher between peer roster and mesh log. You don't need the Telegram or Slack bot to drive the mesh from a phone — though those surfaces are often more convenient than the mobile dashboard.
