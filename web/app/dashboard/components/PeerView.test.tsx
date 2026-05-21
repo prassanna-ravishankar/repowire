@@ -511,3 +511,107 @@ describe("PeerView session protection", () => {
     expect(screen.queryByText("racing event")).not.toBeInTheDocument();
   });
 });
+
+describe("PeerView MCP config scope", () => {
+  it("labels Codex MCP edits as global backend config before adding", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/peers/alice/mcp")) {
+        return new Response(
+          JSON.stringify({
+            servers: [],
+            config_scope: {
+              backend: "codex",
+              owner: "backend",
+              effective_scope: "backend_global",
+              label: "Codex global backend config",
+              description: "Codex MCP edits target the user-level Codex config shared by Codex sessions on this host.",
+              supported_scopes: ["user"],
+              default_scope: "user",
+              is_global: true,
+              peer_id: PEER.peer_id,
+              peer_name: "alice",
+              project_path: "/tmp/alice",
+              peer_machine: "host",
+              self_machine: "host",
+              same_host: true,
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Promise<Response>(() => {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <PeerView
+        peer={{ ...PEER, backend: "codex" }}
+        events={[]}
+        apiBase=""
+        onClose={() => {}}
+        onSent={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "mcp" }));
+
+    expect(await screen.findByText("Codex global backend config")).toBeInTheDocument();
+    fireEvent.click(await screen.findByText("+ add server"));
+
+    expect(screen.getByText("editing Codex global backend config")).toBeInTheDocument();
+    expect(screen.getByText("scope: user")).toBeInTheDocument();
+    expect(screen.queryByText("project scope")).not.toBeInTheDocument();
+  });
+
+  it("shows cross-host scope metadata without crashing", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/peers/alice/mcp")) {
+        return new Response(
+          JSON.stringify({
+            detail: {
+              error: "cross_host",
+              peer_machine: "remote-host",
+              self_machine: "local-host",
+              config_scope: {
+                backend: "gemini",
+                owner: "backend",
+                effective_scope: "backend_global",
+                label: "Gemini global backend config",
+                description: "Gemini MCP edits target the user-level Gemini settings shared by Gemini sessions on this host.",
+                supported_scopes: ["user"],
+                default_scope: "user",
+                is_global: true,
+                peer_id: PEER.peer_id,
+                peer_name: "alice",
+                project_path: "/tmp/alice",
+                peer_machine: "remote-host",
+                self_machine: "local-host",
+                same_host: false,
+              },
+            },
+          }),
+          { status: 409 },
+        );
+      }
+      return new Promise<Response>(() => {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <PeerView
+        peer={{ ...PEER, backend: "gemini", machine: "remote-host" }}
+        events={[]}
+        apiBase=""
+        onClose={() => {}}
+        onSent={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "mcp" }));
+
+    expect(await screen.findByText("Gemini global backend config")).toBeInTheDocument();
+    expect(screen.getByText("remote host")).toBeInTheDocument();
+  });
+});

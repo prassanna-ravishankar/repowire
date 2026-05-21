@@ -959,32 +959,96 @@ interface McpServerEntry {
   env_keys: string[];
 }
 
+interface McpConfigScope {
+  backend: string;
+  owner: string;
+  effective_scope: string;
+  label: string;
+  description: string;
+  supported_scopes: string[];
+  default_scope: string;
+  is_global: boolean;
+  peer_id: string;
+  peer_name: string;
+  project_path: string | null;
+  peer_machine: string | null;
+  self_machine: string;
+  same_host: boolean;
+}
+
+function fallbackMcpScope(peer: Peer): McpConfigScope {
+  const backend = peer.backend || "unknown";
+  const isGlobal = backend === "codex" || backend === "gemini";
+  return {
+    backend,
+    owner: isGlobal ? "backend" : "peer/project",
+    effective_scope: isGlobal ? "backend_global" : "peer_project",
+    label: isGlobal ? `${backend} global backend config` : `${backend} peer/project config`,
+    description: isGlobal
+      ? `${backend} MCP edits target the user-level backend config shared by sessions on this host.`
+      : `${backend} MCP edits target this peer and may support project/worktree scope.`,
+    supported_scopes: backend === "claude-code" ? ["user", "project"] : ["user"],
+    default_scope: "user",
+    is_global: isGlobal,
+    peer_id: peer.peer_id,
+    peer_name: peer.display_name || peer.name,
+    project_path: peer.path || null,
+    peer_machine: peer.machine || null,
+    self_machine: "",
+    same_host: true,
+  };
+}
+
+function McpScopeBanner({ scope }: { scope: McpConfigScope }) {
+  return (
+    <div className="mb-3 rounded border border-border-faint bg-surface-container-low px-3 py-2 font-mono text-xs text-outline">
+      <div className="font-semibold text-on-surface-variant">{scope.label}</div>
+      <div className="mt-1">{scope.description}</div>
+      <div className="mt-1 text-[10px] uppercase tracking-wider">
+        owner: {scope.owner} · scope: {scope.effective_scope}
+        {scope.project_path ? ` · worktree: ${scope.project_path}` : ""}
+      </div>
+    </div>
+  );
+}
+
 function McpPanel({ peer, apiBase }: { peer: Peer; apiBase: string }) {
   const [servers, setServers] = useState<McpServerEntry[] | null>(null);
+  const [configScope, setConfigScope] = useState<McpConfigScope | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [crossHost, setCrossHost] = useState(false);
   const [unsupported, setUnsupported] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
+  const peerScopeFallback = useMemo(() => fallbackMcpScope(peer), [peer]);
 
   useEffect(() => {
     let cancelled = false;
-    setServers(null);
-    setError(null);
-    setCrossHost(false);
-    setUnsupported(false);
     (async () => {
+      await Promise.resolve();
+      if (cancelled) return;
+      setServers(null);
+      setConfigScope(null);
+      setError(null);
+      setCrossHost(false);
+      setUnsupported(false);
       try {
         const r = await fetch(`${apiBase}/peers/${encodeURIComponent(peer.name)}/mcp`);
         if (r.status === 409) {
           const body = await r.json().catch(() => ({}));
           if (body?.detail?.error === "cross_host") {
-            if (!cancelled) setCrossHost(true);
+            if (!cancelled) {
+              setConfigScope(body.detail.config_scope || peerScopeFallback);
+              setCrossHost(true);
+            }
             return;
           }
         }
         if (r.status === 501) {
-          if (!cancelled) setUnsupported(true);
+          if (!cancelled) {
+            setConfigScope(peerScopeFallback);
+            setUnsupported(true);
+          }
           return;
         }
         if (!r.ok) {
@@ -993,7 +1057,10 @@ function McpPanel({ peer, apiBase }: { peer: Peer; apiBase: string }) {
           return;
         }
         const data = await r.json();
-        if (!cancelled) setServers(data.servers || []);
+        if (!cancelled) {
+          setConfigScope(data.config_scope || peerScopeFallback);
+          setServers(data.servers || []);
+        }
       } catch (e) {
         if (!cancelled) setError(String(e));
       }
@@ -1001,7 +1068,7 @@ function McpPanel({ peer, apiBase }: { peer: Peer; apiBase: string }) {
     return () => {
       cancelled = true;
     };
-  }, [peer.name, apiBase, refreshTick]);
+  }, [peer.name, apiBase, refreshTick, peerScopeFallback]);
 
   async function handleRemove(name: string) {
     if (!confirm(`Remove MCP server "${name}"?`)) return;
@@ -1020,6 +1087,7 @@ function McpPanel({ peer, apiBase }: { peer: Peer; apiBase: string }) {
   if (crossHost) {
     return (
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 md:px-6">
+        {configScope && <McpScopeBanner scope={configScope} />}
         <div className="rounded border border-border-faint bg-surface-container-low p-4 font-mono text-xs text-outline">
           <div className="mb-1 font-semibold text-on-surface-variant">remote host</div>
           Per-peer MCP config is same-host only in v1. Peer runs on{" "}
@@ -1032,6 +1100,7 @@ function McpPanel({ peer, apiBase }: { peer: Peer; apiBase: string }) {
   if (unsupported) {
     return (
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 md:px-6">
+        {configScope && <McpScopeBanner scope={configScope} />}
         <div className="rounded border border-border-faint bg-surface-container-low p-4 font-mono text-xs text-outline">
           Backend <span className="text-on-surface">{peer.backend}</span> does not support MCP config in v1.
         </div>
@@ -1041,6 +1110,8 @@ function McpPanel({ peer, apiBase }: { peer: Peer; apiBase: string }) {
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
+      {configScope && <McpScopeBanner scope={configScope} />}
+
       {error && (
         <div className="mb-3 rounded border border-error/30 bg-error/10 px-3 py-2 font-mono text-xs text-on-surface">
           {error}
@@ -1103,6 +1174,7 @@ function McpPanel({ peer, apiBase }: { peer: Peer; apiBase: string }) {
           <AddMcpForm
             peer={peer}
             apiBase={apiBase}
+            configScope={configScope || peerScopeFallback}
             onCancel={() => setShowAdd(false)}
             onAdded={() => {
               setShowAdd(false);
@@ -1126,12 +1198,14 @@ function McpPanel({ peer, apiBase }: { peer: Peer; apiBase: string }) {
 function AddMcpForm({
   peer,
   apiBase,
+  configScope,
   onCancel,
   onAdded,
   onError,
 }: {
   peer: Peer;
   apiBase: string;
+  configScope: McpConfigScope;
   onCancel: () => void;
   onAdded: () => void;
   onError: (msg: string) => void;
@@ -1148,6 +1222,9 @@ function AddMcpForm({
   async function submit() {
     if (!name.trim()) {
       onError("server name is required");
+      return;
+    }
+    if (configScope.is_global && !confirm(`Add "${name.trim()}" to ${configScope.label}? This backend config is shared beyond this peer.`)) {
       return;
     }
     const env: Record<string, string> = {};
@@ -1190,6 +1267,9 @@ function AddMcpForm({
 
   return (
     <div className="space-y-2 rounded border border-border-faint bg-surface-container-low p-3 font-mono text-xs">
+      <div className="rounded border border-border-faint bg-surface px-2 py-1 text-[10px] uppercase tracking-wider text-outline">
+        editing {configScope.label}
+      </div>
       <input
         placeholder="name"
         value={name}
@@ -1206,7 +1286,7 @@ function AddMcpForm({
           <option value="http">http</option>
           <option value="sse">sse</option>
         </select>
-        {peer.backend === "claude-code" && (
+        {configScope.supported_scopes.length > 1 ? (
           <select
             value={scope}
             onChange={(e) => setScope(e.target.value as typeof scope)}
@@ -1215,6 +1295,10 @@ function AddMcpForm({
             <option value="user">user scope</option>
             <option value="project">project scope</option>
           </select>
+        ) : (
+          <div className="border border-border-faint bg-surface px-2 py-1 text-outline">
+            scope: {configScope.default_scope}
+          </div>
         )}
       </div>
       {type === "stdio" ? (

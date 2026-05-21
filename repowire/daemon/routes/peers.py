@@ -585,8 +585,30 @@ class McpServerResponse(BaseModel):
     env_keys: list[str] = Field(default_factory=list)
 
 
+class McpConfigScopeResponse(BaseModel):
+    backend: str
+    owner: str
+    effective_scope: str
+    label: str
+    description: str
+    supported_scopes: list[str] = Field(default_factory=list)
+    default_scope: str = "user"
+    is_global: bool = False
+    peer_id: str
+    peer_name: str
+    project_path: str | None = None
+    peer_machine: str | None = None
+    self_machine: str
+    same_host: bool
+
+
 class McpListResponse(BaseModel):
     servers: list[McpServerResponse]
+    config_scope: McpConfigScopeResponse | None = None
+
+
+class McpMutationResponse(OkResponse):
+    config_scope: McpConfigScopeResponse | None = None
 
 
 class McpAddRequest(BaseModel):
@@ -609,6 +631,71 @@ async def _resolve_peer_or_404(name: str, circle: str | None) -> Peer:
     return peer
 
 
+def _mcp_scope_metadata(peer: Peer) -> McpConfigScopeResponse:
+    self_machine = socket.gethostname()
+    backend = peer.backend
+    if backend == AgentType.CLAUDE_CODE:
+        scope = {
+            "backend": backend.value,
+            "owner": "peer/project",
+            "effective_scope": "peer_project",
+            "label": "Claude Code peer/project config",
+            "description": (
+                "Claude Code MCP edits can target user/global config or the peer's "
+                "project/worktree via the selected add scope."
+            ),
+            "supported_scopes": ["user", "project"],
+            "default_scope": "user",
+            "is_global": False,
+        }
+    elif backend == AgentType.CODEX:
+        scope = {
+            "backend": backend.value,
+            "owner": "backend",
+            "effective_scope": "backend_global",
+            "label": "Codex global backend config",
+            "description": (
+                "Codex MCP edits target the user-level Codex config shared by "
+                "Codex sessions on this host."
+            ),
+            "supported_scopes": ["user"],
+            "default_scope": "user",
+            "is_global": True,
+        }
+    elif backend == AgentType.GEMINI:
+        scope = {
+            "backend": backend.value,
+            "owner": "backend",
+            "effective_scope": "backend_global",
+            "label": "Gemini global backend config",
+            "description": (
+                "Gemini MCP edits target the user-level Gemini settings shared by "
+                "Gemini sessions on this host."
+            ),
+            "supported_scopes": ["user"],
+            "default_scope": "user",
+            "is_global": True,
+        }
+    else:
+        raise peer_mcp.NotSupportedError(f"MCP config not supported for backend {backend.value}")
+    return McpConfigScopeResponse(
+        **scope,
+        peer_id=peer.peer_id,
+        peer_name=peer.display_name,
+        project_path=peer.path,
+        peer_machine=peer.machine,
+        self_machine=self_machine,
+        same_host=not peer.machine or peer.machine == self_machine,
+    )
+
+
+def _optional_mcp_scope_metadata(peer: Peer) -> dict[str, Any] | None:
+    try:
+        return _mcp_scope_metadata(peer).model_dump()
+    except peer_mcp.PeerMcpError:
+        return None
+
+
 def _enforce_local(peer: Peer) -> None:
     """Reject cross-host operations until ACP transport is wired (issue #183)."""
     self_machine = socket.gethostname()
@@ -623,6 +710,7 @@ def _enforce_local(peer: Peer) -> None:
                 ),
                 "peer_machine": peer.machine,
                 "self_machine": self_machine,
+                "config_scope": _optional_mcp_scope_metadata(peer),
             },
         )
 
@@ -654,13 +742,17 @@ async def list_peer_mcp(
     peer = await _resolve_peer_or_404(name, circle)
     _enforce_local(peer)
     try:
+        config_scope = _mcp_scope_metadata(peer)
         entries = await asyncio.to_thread(peer_mcp.list_servers, peer)
     except peer_mcp.PeerMcpError as e:
         raise _map_peer_mcp_error(e) from e
-    return McpListResponse(servers=[McpServerResponse(**e.to_dict()) for e in entries])
+    return McpListResponse(
+        servers=[McpServerResponse(**e.to_dict()) for e in entries],
+        config_scope=config_scope,
+    )
 
 
-@router.post("/peers/{name}/mcp", response_model=OkResponse)
+@router.post("/peers/{name}/mcp", response_model=McpMutationResponse)
 async def add_peer_mcp(
     name: str,
     request: McpAddRequest,
@@ -671,6 +763,24 @@ async def add_peer_mcp(
     """Add an MCP server to the peer's backend config."""
     peer = await _resolve_peer_or_404(name, circle)
     _enforce_local(peer)
+    try:
+        config_scope = _mcp_scope_metadata(peer)
+    except peer_mcp.PeerMcpError as e:
+        raise _map_peer_mcp_error(e) from e
+    if scope not in config_scope.supported_scopes:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "unsupported_scope",
+                "hint": (
+                    f"Backend {peer.backend.value} supports MCP scopes: "
+                    f"{', '.join(config_scope.supported_scopes)}"
+                ),
+                "requested_scope": scope,
+                "supported_scopes": config_scope.supported_scopes,
+                "config_scope": config_scope.model_dump(),
+            },
+        )
     spec = peer_mcp.McpServerSpec(
         name=request.name,
         type=request.type,
@@ -684,10 +794,10 @@ async def add_peer_mcp(
         await asyncio.to_thread(peer_mcp.add_server, peer, spec)
     except peer_mcp.PeerMcpError as e:
         raise _map_peer_mcp_error(e) from e
-    return OkResponse()
+    return McpMutationResponse(config_scope=config_scope)
 
 
-@router.delete("/peers/{name}/mcp/{server_name}", response_model=OkResponse)
+@router.delete("/peers/{name}/mcp/{server_name}", response_model=McpMutationResponse)
 async def remove_peer_mcp(
     name: str,
     server_name: str,
@@ -698,10 +808,11 @@ async def remove_peer_mcp(
     peer = await _resolve_peer_or_404(name, circle)
     _enforce_local(peer)
     try:
+        config_scope = _mcp_scope_metadata(peer)
         await asyncio.to_thread(peer_mcp.remove_server, peer, server_name)
     except peer_mcp.PeerMcpError as e:
         raise _map_peer_mcp_error(e) from e
-    return OkResponse()
+    return McpMutationResponse(config_scope=config_scope)
 
 
 # Legacy endpoints for backward compatibility

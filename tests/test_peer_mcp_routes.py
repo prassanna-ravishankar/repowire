@@ -95,7 +95,12 @@ class TestMcpRoutes:
 
         r = await client.get(f"/peers/{name}/mcp")
         assert r.status_code == 200
-        assert r.json()["servers"] == []
+        body = r.json()
+        assert body["servers"] == []
+        assert body["config_scope"]["backend"] == "codex"
+        assert body["config_scope"]["effective_scope"] == "backend_global"
+        assert body["config_scope"]["is_global"] is True
+        assert body["config_scope"]["supported_scopes"] == ["user"]
 
         r = await client.post(f"/peers/{name}/mcp", json={
             "name": "repowire",
@@ -103,6 +108,7 @@ class TestMcpRoutes:
             "args": ["mcp"],
         })
         assert r.status_code == 200
+        assert r.json()["config_scope"]["effective_scope"] == "backend_global"
 
         r = await client.get(f"/peers/{name}/mcp")
         assert r.status_code == 200
@@ -119,6 +125,7 @@ class TestMcpRoutes:
         # Remove
         r = await client.delete(f"/peers/{name}/mcp/repowire")
         assert r.status_code == 200
+        assert r.json()["config_scope"]["backend"] == "codex"
 
         # Remove again -> 404
         r = await client.delete(f"/peers/{name}/mcp/repowire")
@@ -137,6 +144,23 @@ class TestMcpRoutes:
         assert r.status_code == 400
         assert "server name" in r.json()["detail"]
         assert not cfg.exists()
+
+    async def test_codex_rejects_project_scope_with_metadata(self, client, tmp_path, monkeypatch):
+        cfg = tmp_path / "config.toml"
+        monkeypatch.setattr(peer_mcp, "CODEX_CONFIG_PATH", cfg)
+
+        name = await _register(client, name="codexscope", backend="codex")
+
+        r = await client.post(f"/peers/{name}/mcp?scope=project", json={
+            "name": "repowire",
+            "command": "repowire",
+        })
+        assert r.status_code == 409
+        detail = r.json()["detail"]
+        assert detail["error"] == "unsupported_scope"
+        assert detail["requested_scope"] == "project"
+        assert detail["supported_scopes"] == ["user"]
+        assert detail["config_scope"]["effective_scope"] == "backend_global"
 
     async def test_unsupported_backend_returns_501(self, client):
         name = await _register(client, name="pipeer", backend="claude-code")
