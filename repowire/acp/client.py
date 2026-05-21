@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from repowire.acp.models import AcpPeerConfig
+from repowire.acp.permissions import ApprovalBroker, PermissionDecision
 from repowire.acp.transport import spawn_acp_subprocess
 
 if TYPE_CHECKING:
@@ -54,7 +55,11 @@ _ACP_INSTALL_HINT = (
 )
 
 
-def _make_recorder() -> Any:
+def _make_recorder(
+    *,
+    peer_id: str | None = None,
+    approval_broker: ApprovalBroker | None = None,
+) -> Any:
     """Build a fresh ``acp.Client`` instance that records updates for one peer.
 
     Defined as a factory rather than a top-level class so the ``acp`` import
@@ -73,8 +78,8 @@ def _make_recorder() -> Any:
     class _BrokerRecorder(acp.Client):
         """Records ``session/update`` notifications for the broker.
 
-        Auto-allows permission requests for phase-3. Later phases will surface
-        permission UX to the dashboard or telegram peer.
+        Permission requests are routed through the daemon-side approval broker.
+        When no broker is configured, requests fail closed.
         """
 
         def __init__(self) -> None:
@@ -92,8 +97,19 @@ def _make_recorder() -> Any:
             tool_call: Any,
             **_: Any,
         ) -> Any:
-            del session_id, tool_call
-            chosen = options[0] if options else None
+            if approval_broker is None or peer_id is None:
+                return acp.RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+            decision = await approval_broker.request_permission(
+                peer_id=peer_id,
+                session_id=session_id,
+                tool_call=tool_call,
+                options=options,
+            )
+            if decision.outcome != "allowed":
+                return acp.RequestPermissionResponse(
+                    outcome=DeniedOutcome(outcome="cancelled"),
+                )
+            chosen = _select_allowed_option(options, decision)
             if chosen is None:
                 return acp.RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
             return acp.RequestPermissionResponse(
@@ -132,10 +148,17 @@ class AcpClient:
     or via ``AcpClientManager`` which handles the lifetime.
     """
 
-    def __init__(self, config: AcpPeerConfig, *, fallback_cwd: str | None = None) -> None:
+    def __init__(
+        self,
+        config: AcpPeerConfig,
+        *,
+        fallback_cwd: str | None = None,
+        peer_id: str | None = None,
+        approval_broker: ApprovalBroker | None = None,
+    ) -> None:
         self._config = config
         self._fallback_cwd = fallback_cwd
-        self._recorder = _make_recorder()
+        self._recorder = _make_recorder(peer_id=peer_id, approval_broker=approval_broker)
         self._connection: ClientSideConnection | None = None
         self._session_id: str | None = None
         self._exit_stack: Any = None
@@ -358,3 +381,13 @@ def _assemble_agent_text(updates: list[Any]) -> str:
         if text:
             parts.append(text)
     return "".join(parts)
+
+
+def _select_allowed_option(options: list[Any], decision: PermissionDecision) -> Any | None:
+    """Return the ACP option selected by a broker decision."""
+    if not decision.option_id:
+        return options[0] if options else None
+    for option in options:
+        if getattr(option, "option_id", None) == decision.option_id:
+            return option
+    return None

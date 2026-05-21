@@ -36,6 +36,7 @@ from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.relay_client import RelayClient
 from repowire.daemon.review_queue_store import ReviewQueueStore
 from repowire.daemon.routes import (
+    acp_permissions,
     asks,
     attachments,
     health,
@@ -242,8 +243,10 @@ def create_app(
         )
         app.state.schedule_store = schedule_store
         app.state.state_db = state_db
-        from repowire.acp import AcpClientManager
-        acp_manager = AcpClientManager()
+        from repowire.acp import AcpClientManager, ApprovalBroker
+        acp_permission_broker = ApprovalBroker(emit_event=peer_registry.add_event)
+        app.state.acp_permission_broker = acp_permission_broker
+        acp_manager = AcpClientManager(approval_broker=acp_permission_broker)
         app.state.acp_manager = acp_manager
         from repowire.daemon.transport_router import transport_router_from_state
         peer_delivery = PeerDeliveryService(
@@ -392,6 +395,7 @@ def create_app(
 
     # Include routers
     app.include_router(health.router)
+    app.include_router(acp_permissions.router)
     app.include_router(peers.router)
     app.include_router(messages.router)
     app.include_router(asks.router)
@@ -522,8 +526,10 @@ def create_test_app(
         rq_dir = persistence_path.parent if persistence_path else Path.home() / ".repowire"
         app.state.review_queue_store = ReviewQueueStore(rq_dir / "review_queue.json")
         app.state.schedule_store = schedule_store
-        from repowire.acp import AcpClientManager
-        acp_manager = AcpClientManager()
+        from repowire.acp import AcpClientManager, ApprovalBroker
+        acp_permission_broker = ApprovalBroker(emit_event=registry.add_event)
+        app.state.acp_permission_broker = acp_permission_broker
+        acp_manager = AcpClientManager(approval_broker=acp_permission_broker)
         app.state.acp_manager = acp_manager
         from repowire.daemon.transport_router import transport_router_from_state
         peer_delivery = PeerDeliveryService(
@@ -581,6 +587,7 @@ def create_test_app(
     )
 
     app.include_router(health.router)
+    app.include_router(acp_permissions.router)
     app.include_router(peers.router)
     app.include_router(messages.router)
     app.include_router(asks.router)

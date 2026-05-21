@@ -22,6 +22,7 @@ from repowire.acp.broker import (
 from repowire.acp.client import AcpClient, AcpClientError, AcpPromptResult
 from repowire.acp.manager import AcpClientManager, AcpPeerSpec
 from repowire.acp.models import AcpPeerConfig
+from repowire.acp.permissions import ApprovalBroker, PermissionDecision
 
 __all__ = [
     "AcpAckCallback",
@@ -32,6 +33,8 @@ __all__ = [
     "AcpPeerSpec",
     "AcpPromptResult",
     "AcpRouteDecision",
+    "ApprovalBroker",
+    "PermissionDecision",
     "decide_acp_route",
     "deliver_ask_via_acp",
     "maybe_decide_acp_route",

@@ -16,6 +16,8 @@ The dashboard is a Next.js UI served by the daemon at `http://localhost:8377/das
 
 The dashboard does not poll. The stop hook of every Claude Code, Codex, and Gemini session extracts the response and tool calls from the transcript or runtime output, then posts them to `POST /events/chat` on the daemon. Claude Code can also stream block-level `chat_turn_delta` events while a turn is in progress. The dashboard streams events over Server-Sent Events and merges them with Claude transcript history for the selected peer/session. OpenCode bridges the same realtime shape via its plugin.
 
+ACP-routed permission prompts emit `acp_permission_request` and `acp_permission_decision` events into the same daemon event stream. Human control surfaces can resolve a pending prompt with `POST /acp/permissions/{request_id}/decision`; if no decision arrives before the broker timeout, the daemon records a timed-out decision and denies by default. This v0.13 slice exposes the event/route contract only; the dashboard approval UI remains planned work.
+
 ## Roadmap: session timeline
 
 The v0.13 dashboard direction is a timeline-centered view. The current slice merges Claude transcript history and realtime stream events for the selected peer/session. Peers remain the runtime executors, and broader controls such as model/backend switching, resume, scheduling, approval handling, and plan-mode decisions remain roadmap items that should attach to shared session commands as those features land.

@@ -19,6 +19,7 @@ class AppState(Protocol):
     ask_tracker: Any
     peer_registry: PeerRegistry
     peer_delivery: PeerDeliveryService
+    acp_permission_broker: Any
     config: Config
     schedule_store: Any
     scheduler: Any

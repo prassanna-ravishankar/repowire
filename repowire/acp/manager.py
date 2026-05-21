@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from repowire.acp.client import AcpClient, AcpClientError, AcpPromptResult
 from repowire.acp.models import AcpPeerConfig
+from repowire.acp.permissions import ApprovalBroker
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +38,11 @@ class AcpClientManager:
     safe to call from the daemon lifespan shutdown hook.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, approval_broker: ApprovalBroker | None = None) -> None:
         self._clients: dict[str, AcpClient] = {}
         self._lock = asyncio.Lock()
         self._closed = False
+        self._approval_broker = approval_broker
 
     async def get_or_create(self, spec: AcpPeerSpec) -> AcpClient:
         """Return the live ``AcpClient`` for ``spec.peer_id``, starting it if needed."""
@@ -49,7 +51,12 @@ class AcpClientManager:
         async with self._lock:
             client = self._clients.get(spec.peer_id)
             if client is None:
-                client = AcpClient(spec.config, fallback_cwd=spec.fallback_cwd)
+                client = AcpClient(
+                    spec.config,
+                    fallback_cwd=spec.fallback_cwd,
+                    peer_id=spec.peer_id,
+                    approval_broker=self._approval_broker,
+                )
                 self._clients[spec.peer_id] = client
         return client
 
