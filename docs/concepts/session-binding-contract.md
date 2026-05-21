@@ -248,6 +248,17 @@ If a session has no reliable runtime source locator, resume should fail with a
 clear capability error rather than guessing from display name or current
 working directory alone.
 
+Current compatible slice:
+
+- `POST /sessions/{repowire_session_id}/controls/notify` resolves an active
+  executor from the binding and uses the existing notify delivery path.
+- `POST /sessions/{repowire_session_id}/controls/resume` reports
+  `active_executor`, `resume_available`, or `unsupported` capability status.
+  It does not execute backend-specific resume yet.
+
+Peer-targeted controls remain the compatibility surface while session-targeted
+routes harden.
+
 ## SQLite fit
 
 Session bindings fit the daemon-owned SQLite boundary better than raw

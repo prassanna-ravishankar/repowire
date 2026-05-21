@@ -15,3 +15,22 @@ When an agent wants to reach the human, the move is `notify_peer("telegram", "..
 ## What surfaces don't do
 
 Control surfaces are clients of the routing API, not part of it. The daemon is the single source of truth for peer state and message routing. A surface that crashes does not lose mesh state; reopening it picks back up from the daemon.
+
+## Session-targeted controls
+
+The first session-native control API targets durable `repowire_session_id`
+bindings rather than display names:
+
+- `POST /sessions/{repowire_session_id}/controls/notify` resolves the binding
+  to its current active executor and sends through the existing notify delivery
+  path. If no active executor is attached, it returns
+  `session_executor_unavailable` instead of guessing from path or display name.
+- `POST /sessions/{repowire_session_id}/controls/resume` reports the current
+  resume capability for the binding. Active sessions return
+  `status=active_executor`; detached sessions return `status=resume_available`
+  only when backend resume metadata is already recorded, otherwise
+  `status=unsupported`.
+
+These routes require the SQLite session binding store. Existing peer-targeted
+`ask`, `notify_peer`, and dashboard routes remain compatible and continue to
+route by peer identity.

@@ -45,6 +45,7 @@ from repowire.daemon.routes import (
     peers,
     reviews,
     schedules,
+    sessions,
     websocket,
 )
 from repowire.daemon.routes import spawn as spawn_routes
@@ -409,6 +410,7 @@ def create_app(
     app.include_router(attachments.router)
     app.include_router(lifecycle.router)
     app.include_router(schedules.router)
+    app.include_router(sessions.router)
 
     _mount_http_mcp(app, _config or load_config())
 
@@ -616,6 +618,7 @@ def create_test_app(
     app.include_router(attachments.router)
     app.include_router(lifecycle.router)
     app.include_router(schedules.router)
+    app.include_router(sessions.router)
 
     _mount_http_mcp(app, config or Config())
 
