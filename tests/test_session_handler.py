@@ -114,6 +114,37 @@ class TestSessionMain:
             call_args = mock_register.call_args
             # First positional arg is now path (cwd), not display_name
             assert call_args[0][0] == str(tmp_path)
+            assert call_args.kwargs["circle_source"] == "tmux"
+
+    @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
+    @patch(
+        "repowire.hooks.session_handler._register_peer_http",
+        return_value=("repow-default-abc12345", "test-claude-code", False),
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={
+            "pane_id": "%1",
+            "session_name": None,
+            "window_name": "test",
+        },
+    )
+    @patch("repowire.hooks.session_handler.subprocess.Popen")
+    @patch("repowire.hooks.session_handler.compute_git_status", return_value=None)
+    @patch("repowire.hooks.session_handler.get_git_branch", return_value=None)
+    def test_session_start_marks_missing_tmux_default_as_fallback(
+        self, mock_branch, mock_status, mock_popen, mock_tmux, mock_register, mock_fetch, tmp_path,
+    ):
+        with patch("repowire.config.models.CACHE_DIR", tmp_path):
+            result = _run_with_input({
+                "hook_event_name": "SessionStart",
+                "cwd": str(tmp_path),
+                "session_id": "abc12345-rest",
+            })
+            assert result == 0
+            call_args = mock_register.call_args
+            assert call_args[0][1] == "default"
+            assert call_args.kwargs["circle_source"] == "fallback"
 
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(

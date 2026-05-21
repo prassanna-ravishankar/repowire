@@ -253,6 +253,7 @@ class AsyncRepowireClient:
         pane_id: str | None = None,
         backend: str = "claude-code",
         circle: str | None = None,
+        circle_source: str | None = None,
         role: str = "agent",
         metadata: dict[str, Any] | None = None,
     ) -> RegisterPeerResult:
@@ -269,6 +270,7 @@ class AsyncRepowireClient:
             "tmux_session": tmux_session,
             "pane_id": pane_id,
             "circle": circle,
+            "circle_source": circle_source,
         }.items():
             if value is not None:
                 payload[key] = value

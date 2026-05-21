@@ -487,7 +487,9 @@ async def main() -> int:
         logger.error("TMUX_PANE not set")
         return 1
 
-    circle = get_tmux_info()["session_name"] or "default"
+    tmux_session_name = get_tmux_info()["session_name"]
+    circle = tmux_session_name or "default"
+    circle_source = "tmux" if tmux_session_name else "fallback"
     display_name = get_display_name()
     backend_str = os.environ.get("REPOWIRE_BACKEND", "claude-code")
     try:
@@ -542,6 +544,7 @@ async def main() -> int:
                     "backend": backend,
                     "path": path,
                     "pane_id": pane_id,
+                    "circle_source": circle_source,
                 }
                 peer_id = os.environ.get("REPOWIRE_PEER_ID")
                 if peer_id:

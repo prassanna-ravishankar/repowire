@@ -284,6 +284,74 @@ async def test_circle_and_description_persist_across_restart(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fallback_default_adopts_prior_non_default_circle(tmp_path):
+    """Missing tmux context still restores the prior non-default circle.
+
+    This is the intended compatibility path for restarts such as
+    ``claude --continue`` where registration can only say circle="default"
+    because tmux provenance was unavailable.
+    """
+    registry = _make_registry(tmp_path)
+    workdir = tmp_path / "torale"
+    workdir.mkdir()
+
+    original_id, original_name = await registry.allocate_and_register(
+        circle="5",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(workdir),
+        circle_source="tmux",
+    )
+
+    restarted_id, restarted_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(workdir),
+        circle_source="fallback",
+    )
+
+    assert restarted_id == original_id
+    assert restarted_name == original_name
+    peer = await registry.get_peer(restarted_id)
+    assert peer is not None
+    assert peer.circle == "5"
+
+
+@pytest.mark.asyncio
+async def test_explicit_tmux_default_does_not_adopt_prior_non_default_circle(tmp_path):
+    """A real tmux session named "default" must stay in circle "default".
+
+    Regression coverage for the observed bug: ws-hook logged an explicit
+    ``torale-claude-code@default`` registration, but persisted session
+    ``repow-5-043bcace`` for the same path/name/backend remapped it back to
+    circle "5". The tmux provenance makes "default" intentional here.
+    """
+    registry = _make_registry(tmp_path)
+    workdir = tmp_path / "torale"
+    workdir.mkdir()
+
+    old_id, old_name = await registry.allocate_and_register(
+        circle="5",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(workdir),
+        circle_source="tmux",
+    )
+    await registry.mark_offline(old_id)
+
+    explicit_default_id, explicit_default_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(workdir),
+        circle_source="tmux",
+    )
+
+    assert explicit_default_id != old_id
+    assert explicit_default_name == old_name
+    peer = await registry.get_peer(explicit_default_id)
+    assert peer is not None
+    assert peer.circle == "default"
+
+
+@pytest.mark.asyncio
 async def test_role_persists_across_restart_adoption(tmp_path):
     """A restarted daemon must not downgrade an adopted peer's persisted role."""
     path = tmp_path / "sessions.json"

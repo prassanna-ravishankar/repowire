@@ -618,6 +618,7 @@ class TestMcpRegistration:
                 "path": str(cwd),
                 "circle": "0",
                 "backend": "codex",
+                "circle_source": "tmux",
                 "pane_id": "%1",
             },
         )

@@ -15,6 +15,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from repowire.config.models import AgentType
 from repowire.daemon.deps import get_app_state
+from repowire.daemon.peer_registry import CircleSource
 from repowire.daemon.routes._shared import is_valid_identifier
 from repowire.protocol.peers import PeerRole, PeerStatus, TurnState
 
@@ -91,6 +92,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         path = data.get("path")
         tmux_session = data.get("tmux_session")
         pane_id = data.get("pane_id")
+        circle_source = data.get("circle_source")
+        if circle_source not in (None, "tmux", "spawn_hint", "fallback"):
+            await websocket.send_json({"type": "error", "error": "Invalid circle_source"})
+            await websocket.close(code=4002, reason="Invalid circle_source")
+            return
 
         # Validate display_name
         if not display_name or not is_valid_identifier(display_name):
@@ -158,6 +164,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             machine=os.environ.get("HOSTNAME", "unknown"),
             role=role,
             peer_id=claimed_peer_id,
+            circle_source=cast(CircleSource | None, circle_source),
         )
         session_id = peer_id
 

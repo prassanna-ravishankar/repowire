@@ -63,6 +63,7 @@ def _register_peer_http(
     circle: str,
     backend: AgentType,
     *,
+    circle_source: str | None = None,
     pane_id: str | None = None,
     metadata: dict | None = None,
     role: str | None = None,
@@ -84,6 +85,8 @@ def _register_peer_http(
         "circle": circle,
         "backend": backend,
     }
+    if circle_source:
+        payload["circle_source"] = circle_source
     if pane_id:
         payload["pane_id"] = pane_id
     if metadata:
@@ -272,11 +275,15 @@ def main(backend: str = "claude-code") -> int:
         # Codex strips tmux env from hook subprocesses, so fall back to the
         # spawn hint before defaulting.
         hint = consume_hint_full(cwd, backend)
-        circle = (
-            tmux_info["session_name"]
-            or (hint["circle"] if hint else None)
-            or "default"
-        )
+        if tmux_info["session_name"]:
+            circle = tmux_info["session_name"]
+            circle_source = "tmux"
+        elif hint:
+            circle = hint["circle"]
+            circle_source = "spawn_hint"
+        else:
+            circle = "default"
+            circle_source = "fallback"
         hint_role = hint.get("role") if hint else None
         # Spawn-seed-drop guard: if the daemon spawned this peer with a seed
         # message, mark turn_state=pending_first_turn so orchestrators can
@@ -308,6 +315,7 @@ def main(backend: str = "claude-code") -> int:
             cwd,
             circle,
             backend_type,
+            circle_source=circle_source,
             pane_id=pane_id,
             metadata=metadata,
             role=hint_role,

@@ -14,7 +14,11 @@ from repowire import peer_mcp
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_peer_registry
-from repowire.daemon.peer_registry import PaneHijackRejectedError, RoleClaimConflictError
+from repowire.daemon.peer_registry import (
+    CircleSource,
+    PaneHijackRejectedError,
+    RoleClaimConflictError,
+)
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
 from repowire.session.history import load_peer_turns, page_turns
@@ -98,6 +102,10 @@ class RegisterPeerRequest(BaseModel):
     pane_id: str | None = Field(None, description="Tmux pane ID")
     backend: AgentType = Field(default=AgentType.CLAUDE_CODE, description="Agent type")
     circle: str | None = Field(None, description="Circle (logical subnet)")
+    circle_source: CircleSource | None = Field(
+        None,
+        description="How the caller resolved circle: tmux, spawn_hint, or fallback",
+    )
     role: PeerRole = Field(default=PeerRole.AGENT, description="Peer role")
     turn_state: TurnState | None = Field(
         None, description="Initial per-turn progress (optional)"
@@ -307,6 +315,7 @@ async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str]:
             ),
             agent_pid=request.agent_pid,
             parent_pid=request.parent_pid,
+            circle_source=request.circle_source,
         )
     except PaneHijackRejectedError as exc:
         raise HTTPException(

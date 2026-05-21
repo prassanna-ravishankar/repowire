@@ -36,6 +36,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+CircleSource = Literal["tmux", "spawn_hint", "fallback"]
+
 
 def _serialize_attachments(attachments: list | None) -> list[dict[str, Any]]:
     if not attachments:
@@ -436,6 +438,7 @@ class PeerRegistry:
         path: str | None = None,
         role: PeerRole = PeerRole.AGENT,
         agent_pid: int | None = None,
+        circle_source: CircleSource | None = None,
     ) -> str:
         """Find existing mapping or allocate a new session_id. Must hold lock.
 
@@ -456,12 +459,15 @@ class PeerRegistry:
                 return sid
 
         # Cross-circle adoption: when the caller supplied the fallback circle
-        # ("default") but a prior mapping exists for the same (name, backend,
-        # path), reuse it so the peer's prior circle and description survive
-        # restarts where the tmux session name didn't propagate (e.g. claude
-        # --continue). Strictly gated on circle == "default" to avoid
-        # collapsing genuinely separate same-path peers in different circles.
-        if circle == "default" and path:
+        # ("default") because tmux context was missing, but a prior mapping
+        # exists for the same (name, backend, path), reuse it so the peer's
+        # prior circle and description survive restarts where the tmux session
+        # name didn't propagate (e.g. claude --continue). Explicit provenance
+        # matters: a real tmux session named "default" or a spawn hint for
+        # "default" is intentional and must not be remapped to an old
+        # non-default circle.
+        can_cross_circle_adopt = circle_source in (None, "fallback")
+        if circle == "default" and path and can_cross_circle_adopt:
             for sid, mapping in self._mappings.items():
                 if (
                     mapping.display_name == display_name
@@ -531,6 +537,7 @@ class PeerRegistry:
         initial_status: PeerStatus = PeerStatus.ONLINE,
         agent_pid: int | None = None,
         parent_pid: int | None = None,
+        circle_source: CircleSource | None = None,
     ) -> tuple[str, str]:
         """Allocate a peer_id and register the peer atomically.
 
@@ -630,7 +637,7 @@ class PeerRegistry:
                 assigned_name = self._build_display_name(path or "", circle, backend)
                 allocated_id = self._find_or_allocate_mapping(
                     assigned_name, circle, backend, path, role=role,
-                    agent_pid=agent_pid,
+                    agent_pid=agent_pid, circle_source=circle_source,
                 )
                 if pane_id:
                     self._release_pane(pane_id, allocated_id)

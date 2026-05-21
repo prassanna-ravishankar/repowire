@@ -15,7 +15,7 @@ from repowire.config.models import DEFAULT_DAEMON_URL
 from repowire.hooks._tmux import get_pane_id, get_tmux_info
 from repowire.hooks.utils import get_display_name, read_pane_runtime_metadata
 from repowire.protocol.errors import DaemonConnectionError, DaemonHTTPError, DaemonTimeoutError
-from repowire.spawn_hints import consume_hint
+from repowire.spawn_hints import consume_hint_full
 
 logger = logging.getLogger(__name__)
 
@@ -440,8 +440,18 @@ async def _ensure_registered(*, strict: bool = False) -> None:
 
     # Tmux env is stripped by codex's MCP sandbox, so session_name is None
     # there. Fall back to the spawn hint dropped by the daemon's /spawn route
-    # before defaulting to "default".
-    circle = tmux_info["session_name"] or consume_hint(str(cwd), backend) or "default"
+    # before defaulting to "default". Carry the source so the daemon can
+    # distinguish an explicit tmux session named "default" from a true fallback.
+    hint = consume_hint_full(str(cwd), backend)
+    if tmux_info["session_name"]:
+        circle = tmux_info["session_name"]
+        circle_source = "tmux"
+    elif hint:
+        circle = hint["circle"]
+        circle_source = "spawn_hint"
+    else:
+        circle = "default"
+        circle_source = "fallback"
 
     try:
         body: dict = {
@@ -449,6 +459,7 @@ async def _ensure_registered(*, strict: bool = False) -> None:
             "path": str(cwd),
             "circle": circle,
             "backend": backend,
+            "circle_source": circle_source,
         }
         if pane_id:
             body["pane_id"] = pane_id

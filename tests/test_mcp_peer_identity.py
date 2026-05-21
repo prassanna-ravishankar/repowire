@@ -236,9 +236,10 @@ async def test_ensure_registered_does_not_claim_when_multiple_candidates():
         {"display_name": "agentbox-2-codex", "peer_id": "p2"},
     ]
     posted_name = "agentbox-3-codex"
+    posted_body = {}
 
     async def daemon_router(method, url, body=None, params=None):  # noqa: ARG001
-        del body, params
+        del params
         if method == "GET" and url.startswith("/peers/by-pane/"):
             raise RuntimeError("no pane_id passed in this scenario")
         if method == "GET" and url == "/peers":
@@ -246,6 +247,7 @@ async def test_ensure_registered_does_not_claim_when_multiple_candidates():
         if method == "GET" and url.startswith("/peers/"):
             raise RuntimeError("name lookup miss")
         if method == "POST" and url == "/peers":
+            posted_body.update(body or {})
             return {"peer_id": "p3", "display_name": posted_name}
         raise AssertionError(f"unexpected request: {method} {url}")
 
@@ -262,6 +264,44 @@ async def test_ensure_registered_does_not_claim_when_multiple_candidates():
         "not claim one arbitrarily"
     )
     assert mcp_server._cached_peer_name not in {c["display_name"] for c in candidates}
+    assert posted_body["circle"] == "default"
+    assert posted_body["circle_source"] == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_ensure_registered_marks_explicit_tmux_default_as_tmux():
+    """MCP lazy registration must not let explicit tmux "default" look legacy.
+
+    Without circle_source="tmux", PeerRegistry may cross-adopt an old persisted
+    non-default mapping for the same path/name/backend.
+    """
+    posted_body = {}
+
+    async def daemon_router(method, url, body=None, params=None):  # noqa: ARG001
+        del params
+        if method == "GET" and url.startswith("/peers/by-pane/"):
+            raise RuntimeError("pane lookup miss")
+        if method == "GET" and url == "/peers":
+            return {"peers": []}
+        if method == "GET" and url.startswith("/peers/"):
+            raise RuntimeError("name lookup miss")
+        if method == "POST" and url == "/peers":
+            posted_body.update(body or {})
+            return {"peer_id": "p3", "display_name": "agentbox-codex"}
+        if method == "POST" and url.endswith("/touch"):
+            return {"ok": True}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    with patch.object(
+            mcp_server, "get_tmux_info", return_value={"pane_id": "%42", "session_name": "default"},
+         ), \
+         patch.object(mcp_server, "get_pane_id", return_value=None), \
+         patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_router)), \
+         patch.object(mcp_server, "get_display_name", return_value="agentbox"):
+        await mcp_server._ensure_registered()
+
+    assert posted_body["circle"] == "default"
+    assert posted_body["circle_source"] == "tmux"
 
 
 @pytest.mark.asyncio
