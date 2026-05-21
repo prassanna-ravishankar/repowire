@@ -1,9 +1,11 @@
 # Session binding contract
 
-Status: architecture contract for the v0.13 session-native train. This document
-defines the boundary future implementation slices should preserve; it does not
-claim the persistence table, route rewrites, dashboard controls, approvals, or
-resume flows are shipped.
+Status: architecture contract for the v0.13 session-native train, updated after
+the compatible SQLite binding-store, binding lookup, and session-control slices
+landed. This document defines the boundary current and future implementation
+slices should preserve; it does not claim dashboard controls, approval UI,
+backend-specific resume execution, or full transport-neutral routing are
+shipped.
 
 ## Problem
 
@@ -140,8 +142,9 @@ Rules:
 - `repowire/session/history.py` discovers and replays backend-owned history for
   Claude Code and Codex by project path and runtime metadata.
 - `repowire/daemon/routes/peers.py` exposes `/peers/{name}/timeline` and
-  `/peers/{name}/transcript`, scoped today by peer/path/backend plus optional
-  runtime `session_id`.
+  `/peers/{name}/transcript`, resolving through an unambiguous session binding
+  when available and otherwise preserving peer/path/backend compatibility plus
+  optional runtime `session_id` filtering.
 - `repowire/daemon/routes/messages.py` ingests live `chat_turn` and
   `chat_turn_delta` events using runtime `session_id` and `turn_id` for
   dashboard reconciliation.
@@ -151,9 +154,12 @@ Rules:
 - `repowire/daemon/peer_delivery.py` coordinates ask/notify delivery and
   already exposes explicit delivered/queued outcomes for some paths.
 - `repowire/daemon/state/database.py` is the experimental daemon SQLite wrapper
-  currently used by schedules. The existing
+  currently used by schedules and session bindings. The existing
   `docs/reference/sqlite-state-expansion-plan.md` recommends expanding SQLite
   carefully and keeping raw transcripts outside SQLite.
+- `repowire/daemon/state/session_bindings.py` persists binding metadata,
+  source locators, cursors, provenance, resume capability, and lifecycle
+  status without storing raw runtime transcript bodies.
 
 ## Migration path
 
@@ -262,20 +268,19 @@ routes harden.
 ## SQLite fit
 
 Session bindings fit the daemon-owned SQLite boundary better than raw
-transcripts because they are control/provenance state. A future implementation
-can add a binding table under the existing `StateDatabase` lifecycle, gated the
-same way other experimental state is gated.
+transcripts because they are control/provenance state. The current binding table
+lives under the existing `StateDatabase` lifecycle and remains distinct from
+`PeerRegistry.SessionMapping` so peer identity restart behavior and downgrade
+compatibility are preserved.
 
-Do not add the binding table opportunistically while changing timeline,
-delivery, or dashboard behavior. The persistence slice should define a store
-interface, migration tests, JSON downgrade/backcompat behavior, and failure
-policy separately.
+Do not use the binding table as a reason to remove peer/path compatibility,
+rewrite delivery semantics, or persist raw runtime transcript bodies. Further
+SQLite expansion should define store interfaces, migration tests, JSON
+downgrade/backcompat behavior, and failure policy separately.
 
 ## Non-goals for this contract
 
-- No full persistence table is required by this document.
 - No dashboard UI changes.
-- No route behavior changes.
 - No changes to ask reminder, pending reply, TTL, or approval semantics.
 - No model switching or production-ready ACP claim.
 - No background polling. Binding repair should follow the existing lazy-repair

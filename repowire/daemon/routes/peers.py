@@ -559,7 +559,7 @@ def _timeline_item_response(item: TimelineItem) -> SessionTimelineItem:
 
 
 def _resolve_history_binding(peer: Peer, session_id: str | None) -> SessionBinding | None:
-    """Return an unambiguous binding for compatibility history routes."""
+    """Return an unambiguous binding for peer compatibility history routes."""
     binding_store = getattr(get_app_state(), "session_binding_store", None)
     if binding_store is None:
         return None
@@ -609,6 +609,8 @@ def _load_history_for_peer(
             metadata={**peer.metadata, **binding.metadata},
         )
         return history, binding
+    # Keep peer/path discovery as the downgrade-compatible route behavior when
+    # no binding is available or the observed bindings are ambiguous.
     return load_peer_history(peer.path, peer.backend, peer.metadata), None
 
 

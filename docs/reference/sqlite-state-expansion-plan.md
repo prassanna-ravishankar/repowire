@@ -1,6 +1,6 @@
 # SQLite state expansion plan
 
-Status: architecture recommendation for v0.13.x review. Do not implement schema migration from this document without a follow-up implementation review.
+Status: architecture recommendation for v0.13.x review, updated after the session-binding slices landed. Do not implement additional schema migration from this document without a follow-up implementation review.
 
 ## Current state
 
@@ -9,17 +9,17 @@ Repowire currently has two persistence styles:
 - Experimental SQLite state under `~/.repowire/state.db`, gated by `experiments.sqlite_state`.
 - JSON files under `~/.repowire/`, usually loaded into daemon memory and flushed by lazy repair or explicit mutation paths.
 
-The SQLite path is currently limited to schedules. `StateDatabase` owns WAL mode, `synchronous=NORMAL`, foreign keys, busy timeout, schema versioning, and the `legacy_imports` audit table. `SQLiteScheduleStore` is adapter-compatible with `ScheduleStore`, imports `schedules.json` once when the SQL table is empty, and leaves the JSON file untouched for downgrade and backcompat.
+The SQLite path currently covers schedules and session bindings. `StateDatabase` owns WAL mode, `synchronous=NORMAL`, foreign keys, busy timeout, schema versioning, and the `legacy_imports` audit table. `SQLiteScheduleStore` is adapter-compatible with `ScheduleStore`, imports `schedules.json` once when the SQL table is empty, and leaves the JSON file untouched for downgrade and backcompat. `SQLiteSessionBindingStore` persists binding identifiers, runtime source locators, cursors, provenance, resume capability metadata, and lifecycle status. It deliberately does not persist raw transcript bodies.
 
 Other state remains JSON or in-memory:
 
-- `sessions.json`: persistent peer/session mappings inside `PeerRegistry`.
+- `sessions.json`: persistent peer/session mappings inside `PeerRegistry`; still retained for peer identity reuse, daemon restart behavior, and downgrade/backcompat while the binding store hardens.
 - `events.json`: dashboard event ring buffer persisted from `PeerRegistry`.
 - `AskTracker`: in-memory ask/ack lifecycle with TTL eviction and in-memory pending ACP reply stashes.
 - Agent transcripts: source-of-truth JSONL files owned by Claude Code or other agent runtimes, parsed on demand for history routes.
 - `review_queue.json`: small low-frequency review queue state.
 
-## Before and after
+## Before and current
 
 Before:
 
@@ -29,13 +29,13 @@ Before:
 - Peer mappings are restored from `sessions.json`.
 - Open asks and pending replies are lost on daemon restart.
 
-After the recommended first slice:
+Current compatible SQLite slices:
 
 - Schedules stay on the existing experimental SQLite adapter.
-- Dashboard/session events are appended to SQLite as an event journal behind `experiments.sqlite_state`.
-- The in-memory event deque and SSE wakeups remain the live delivery path.
-- `events.json` remains in place for downgrade and is imported once into SQLite when the event table is empty.
 - Peer mappings, asks, query futures, transport state, and raw transcripts keep their current ownership.
+- Session bindings are stored in SQLite as control/provenance metadata and are used by compatible timeline/transcript and session-control slices when an unambiguous binding exists.
+- Dashboard/session events remain a 500-item in-memory deque plus `events.json`.
+- `events.json` remains in place for downgrade/backcompat.
 
 ## Recommendation
 
@@ -61,9 +61,9 @@ Indexes should support newest-first timeline reads and session-scoped dashboard 
 - `(peer_id, timestamp)`
 - `(type, timestamp)` if route usage needs it
 
-Keep payload JSON as the compatibility envelope in the first slice. Typed columns should be limited to query keys that are already stable.
+Keep payload JSON as the compatibility envelope in the event-journal slice. Typed columns should be limited to query keys that are already stable.
 
-## First safe v0.13 slice
+## Next safe v0.13 slice
 
 Implement a `SQLiteEventStore` behind `experiments.sqlite_state`:
 
@@ -78,9 +78,9 @@ This slice intentionally does not change dashboard API semantics. It only adds a
 
 ## Deferred state
 
-Defer peer/session mappings.
+Keep peer identity mappings separate from session bindings for now.
 
-Peer mappings affect peer ID reuse, display-name collision handling, circle restoration, role claims, description persistence, pane hijack protection, and clean takeover behavior. They are a good SQLite candidate, but moving them first would couple the database migration to routing-sensitive behavior. Move them only after the event journal proves the database lifecycle and after a dedicated mapping-store interface exists.
+Peer mappings affect peer ID reuse, display-name collision handling, circle restoration, role claims, description persistence, pane hijack protection, and clean takeover behavior. The landed binding table does not replace `PeerRegistry.SessionMapping` or `sessions.json`; it records durable workstream/runtime provenance for timeline and control surfaces. Moving peer identity mappings into SQLite should remain a separate review with an explicit downgrade/backcompat plan.
 
 Defer asks and pending replies.
 
