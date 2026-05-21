@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
@@ -161,6 +163,89 @@ class TestLazyRepairDebounce:
         assert result.status == PeerStatus.OFFLINE
         transport.ping.assert_awaited_once_with(peer.peer_id, timeout=1.0)
 
+    async def test_disconnected_pane_peer_with_live_runtime_stays_live(self):
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.is_connected = MagicMock(return_value=False)
+        qt = MagicMock()
+        qt.cancel_queries_to_peer = AsyncMock(return_value=0)
+        manager = _make_manager(transport=transport, query_tracker=qt)
+
+        peer = _make_peer(
+            pane_id="%5",
+            status=PeerStatus.BUSY,
+        )
+        peer.agent_pid = os.getpid()
+        await manager.register_peer(peer)
+        async with manager._lock:
+            live = manager._peers[peer.peer_id]
+            live.status = PeerStatus.BUSY
+            live.agent_pid = os.getpid()
+
+        await manager.lazy_repair()
+
+        result = await manager.get_peer(peer.peer_id)
+        assert result.status == PeerStatus.BUSY
+        qt.cancel_queries_to_peer.assert_not_called()
+
+    async def test_disconnected_pane_peer_without_runtime_evidence_is_demoted(
+        self, monkeypatch,
+    ):
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.is_connected = MagicMock(return_value=False)
+        qt = MagicMock()
+        qt.cancel_queries_to_peer = AsyncMock(return_value=0)
+        manager = _make_manager(transport=transport, query_tracker=qt)
+
+        peer = _make_peer(pane_id="%5", status=PeerStatus.ONLINE)
+        peer.agent_pid = 999_999_999
+        await manager.register_peer(peer)
+        async with manager._lock:
+            live = manager._peers[peer.peer_id]
+            live.agent_pid = 999_999_999
+
+        monkeypatch.setattr(
+            "repowire.daemon.peer_registry.os.kill",
+            lambda _pid, _sig: (_ for _ in ()).throw(ProcessLookupError()),
+        )
+
+        await manager.lazy_repair()
+
+        result = await manager.get_peer(peer.peer_id)
+        assert result.status == PeerStatus.OFFLINE
+        qt.cancel_queries_to_peer.assert_awaited_once_with(peer.peer_id)
+
+    async def test_disconnected_pane_peer_with_stale_pid_and_live_pane_stays_live(
+        self, monkeypatch,
+    ):
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.is_connected = MagicMock(return_value=False)
+        qt = MagicMock()
+        qt.cancel_queries_to_peer = AsyncMock(return_value=0)
+        manager = _make_manager(transport=transport, query_tracker=qt)
+
+        peer = _make_peer(pane_id="%5", status=PeerStatus.ONLINE)
+        peer.agent_pid = 999_999_999
+        await manager.register_peer(peer)
+        async with manager._lock:
+            manager._peers[peer.peer_id].agent_pid = 999_999_999
+
+        monkeypatch.setattr(
+            "repowire.daemon.peer_registry.os.kill",
+            lambda _pid, _sig: (_ for _ in ()).throw(ProcessLookupError()),
+        )
+        monkeypatch.setattr(
+            "repowire.daemon.peer_registry.subprocess.run",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                args=["tmux"], returncode=0, stdout="123\n", stderr="",
+            ),
+        )
+
+        await manager.lazy_repair()
+
+        result = await manager.get_peer(peer.peer_id)
+        assert result.status == PeerStatus.ONLINE
+        qt.cancel_queries_to_peer.assert_not_called()
+
     async def test_stale_busy_working_peer_repairs_to_idle(self):
         manager = _make_manager(stale_busy_timeout_seconds=60)
         old_seen = datetime.now(timezone.utc) - timedelta(seconds=61)
@@ -301,7 +386,7 @@ class TestLazyRepairReaper:
 
 class TestActiveRepairLiveness:
     async def test_no_ws_marks_offline(self):
-        """Peer with no WebSocket connection is marked OFFLINE."""
+        """Peer with no WebSocket or runtime evidence is marked OFFLINE."""
         transport = MagicMock(spec=WebSocketTransport)
         transport.is_connected = MagicMock(return_value=False)
         qt = MagicMock()
@@ -315,6 +400,28 @@ class TestActiveRepairLiveness:
 
         result = await manager.get_peer(peer.peer_id)
         assert result.status == PeerStatus.OFFLINE
+
+    async def test_no_ws_with_live_pane_runtime_stays_online(self):
+        """Active repair separates inbound transport loss from runtime liveness."""
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.is_connected = MagicMock(return_value=False)
+        transport.ping = AsyncMock(side_effect=AssertionError("should not ping without WS"))
+        qt = MagicMock()
+        qt.cancel_queries_to_peer = AsyncMock(return_value=0)
+        manager = _make_manager(transport=transport, query_tracker=qt)
+
+        peer = _make_peer(pane_id="%5", status=PeerStatus.ONLINE)
+        peer.agent_pid = os.getpid()
+        await manager.register_peer(peer)
+        async with manager._lock:
+            manager._peers[peer.peer_id].agent_pid = os.getpid()
+
+        await manager.active_repair()
+
+        result = await manager.get_peer(peer.peer_id)
+        assert result.status == PeerStatus.ONLINE
+        transport.ping.assert_not_awaited()
+        qt.cancel_queries_to_peer.assert_not_called()
 
     async def test_pong_alive_stays_online(self):
         """Peer that responds to ping stays ONLINE."""

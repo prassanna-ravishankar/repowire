@@ -1,6 +1,8 @@
 """Tests for the WebSocket endpoint."""
 
+import asyncio
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -167,6 +169,107 @@ class TestWebSocketConnect:
                 peers_list = r.json()["peers"]
                 names = [p["display_name"] for p in peers_list]
                 assert assigned_name in names
+
+        cleanup_deps()
+
+    async def test_disconnect_does_not_mark_pane_runtime_offline(self, tmp_path):
+        """A dropped ws-hook socket is transport loss, not proof the pane died."""
+        app = _make_app(tmp_path)
+
+        t = ASGITransport(app=app)
+        async with AsyncClient(transport=t, base_url="http://test") as c:
+            reg = await c.post("/peers", json={
+                "name": "codexpeer",
+                "path": "/tmp/codexpeer",
+                "circle": "default",
+                "backend": "codex",
+                "pane_id": "%codex",
+                "agent_pid": os.getpid(),
+                "metadata": {"hook_session_id": "codex-session"},
+            })
+            peer_id = reg.json()["peer_id"]
+
+        async with AsyncClient(
+            transport=ASGIWebSocketTransport(app), base_url="http://test"
+        ) as client:
+            async with aconnect_ws("/ws", client) as ws:
+                await ws.send_json({
+                    "type": "connect",
+                    "display_name": "codexpeer",
+                    "circle": "default",
+                    "backend": "codex",
+                    "path": "/tmp/codexpeer",
+                    "pane_id": "%codex",
+                    "peer_id": peer_id,
+                })
+                resp = json.loads(await ws.receive_text())
+                assert resp["type"] == "connected"
+                assigned_name = resp["display_name"]
+                await ws.send_json({
+                    "type": "status",
+                    "status": "busy",
+                    "turn_state": "working",
+                })
+
+            await asyncio.sleep(0.1)
+
+            t = ASGITransport(app=app)
+            async with AsyncClient(transport=t, base_url="http://test") as c:
+                r = await c.get(f"/peers/{assigned_name}")
+                body = r.json()
+                assert body["status"] == "busy"
+                assert body["turn_state"] == "working"
+
+                r = await c.post("/notify", json={
+                    "from_peer": "cli",
+                    "to_peer": assigned_name,
+                    "text": "still explicit",
+                })
+                assert r.status_code == 503
+                assert "no live connection" in r.json()["detail"]
+
+        cleanup_deps()
+
+    async def test_ws_connect_revives_http_pane_preregistration(self, tmp_path):
+        app = _make_app(tmp_path)
+
+        t = ASGITransport(app=app)
+        async with AsyncClient(transport=t, base_url="http://test") as c:
+            reg = await c.post("/peers", json={
+                "name": "prepeer",
+                "path": "/tmp/prepeer",
+                "circle": "default",
+                "backend": "codex",
+                "pane_id": "%pre",
+                "metadata": {"hook_session_id": "pre-session"},
+            })
+            assert reg.status_code == 200
+            peer_id = reg.json()["peer_id"]
+            assigned_name = reg.json()["display_name"]
+
+            r = await c.get(f"/peers/{peer_id}")
+            assert r.json()["status"] == "offline"
+
+        async with AsyncClient(
+            transport=ASGIWebSocketTransport(app), base_url="http://test"
+        ) as client, aconnect_ws("/ws", client) as ws:
+            await ws.send_json({
+                "type": "connect",
+                "display_name": "prepeer",
+                "circle": "default",
+                "backend": "codex",
+                "path": "/tmp/prepeer",
+                "pane_id": "%pre",
+                "peer_id": peer_id,
+            })
+            resp = json.loads(await ws.receive_text())
+            assert resp["type"] == "connected"
+            assert resp["session_id"] == peer_id
+
+            t = ASGITransport(app=app)
+            async with AsyncClient(transport=t, base_url="http://test") as c:
+                r = await c.get(f"/peers/{assigned_name}")
+                assert r.json()["status"] == "online"
 
         cleanup_deps()
 

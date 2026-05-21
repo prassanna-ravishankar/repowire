@@ -214,7 +214,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             removed = await transport.disconnect(session_id, websocket)
             if removed:
                 await query_tracker.cancel_queries_to_peer(session_id)
-                await peer_registry.update_peer_status(session_id, PeerStatus.OFFLINE)
 
 
 async def _handle_message(

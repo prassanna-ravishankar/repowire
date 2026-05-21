@@ -300,6 +300,11 @@ async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str]:
             machine=request.machine or socket.gethostname(),
             role=request.role,
             turn_state=request.turn_state,
+            initial_status=(
+                PeerStatus.OFFLINE
+                if request.pane_id and request.metadata.get("hook_session_id")
+                else PeerStatus.ONLINE
+            ),
             agent_pid=request.agent_pid,
             parent_pid=request.parent_pid,
         )

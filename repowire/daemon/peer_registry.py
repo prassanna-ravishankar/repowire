@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import time
 from collections import deque
 from dataclasses import asdict, dataclass
@@ -527,6 +528,7 @@ class PeerRegistry:
         role: PeerRole = PeerRole.AGENT,
         peer_id: str | None = None,
         turn_state: TurnState | None = None,
+        initial_status: PeerStatus = PeerStatus.ONLINE,
         agent_pid: int | None = None,
         parent_pid: int | None = None,
     ) -> tuple[str, str]:
@@ -565,11 +567,11 @@ class PeerRegistry:
                     )
                 else:
                     old_status = existing.status
-                    existing.status = PeerStatus.ONLINE
+                    existing.status = initial_status
                     existing.last_seen = datetime.now(timezone.utc)
                     if turn_state is not None:
                         existing.turn_state = turn_state
-                    self._emit_status_change(existing, old_status, PeerStatus.ONLINE)
+                    self._emit_status_change(existing, old_status, initial_status)
                     if pane_id:
                         self._release_pane(pane_id, peer_id)
                         existing.pane_id = pane_id
@@ -657,7 +659,7 @@ class PeerRegistry:
                     circle=effective_circle,
                     backend=backend,
                     role=effective_role,
-                    status=PeerStatus.ONLINE,
+                    status=initial_status,
                     last_seen=datetime.now(timezone.utc),
                     pane_id=pane_id,
                     tmux_session=tmux_session,
@@ -669,7 +671,12 @@ class PeerRegistry:
                     agent_pid=effective_agent_pid,
                 )
                 self._peers[allocated_id] = peer
-                logger.info(f"Peer registered: {assigned_name} ({allocated_id})")
+                logger.info(
+                    "Peer registered: %s (%s, status=%s)",
+                    assigned_name,
+                    allocated_id,
+                    initial_status.value,
+                )
                 result_peer_id = allocated_id
                 result_name = assigned_name
                 should_redeliver = True
@@ -1674,10 +1681,16 @@ class PeerRegistry:
             self._persist_mappings()
 
     async def _demote_disconnected_peers(self) -> int:
-        """Mark ONLINE/BUSY peers without a WebSocket connection as OFFLINE.
+        """Mark ONLINE/BUSY transport-owned peers without a WebSocket as OFFLINE.
 
         Catches ghost peers that registered via HTTP but whose ws-hook
         never connected (e.g. pane died before ws-hook could start).
+
+        Pane-backed runtimes are preserved only when the daemon can still see
+        runtime evidence (the recorded agent PID is alive or tmux still has
+        the pane). A dropped ws-hook alone only means inbound transport is
+        unavailable; absence of both socket and runtime evidence is a dead
+        peer and should go OFFLINE.
 
         Peers carrying ``metadata["acp"]`` are exempt while the
         ``experiments.acp_broker_client`` flag is on: brokered ACP peers are
@@ -1693,19 +1706,70 @@ class PeerRegistry:
             else False
         )
         async with self._lock:
-            ghosts = [
+            candidates = [
                 p for p in self._peers.values()
                 if p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
                 and not self._transport.is_connected(p.peer_id)
+                and not p.pane_id
                 and not (acp_flag and p.metadata and p.metadata.get("acp"))
             ]
+            pane_candidates = [
+                p for p in self._peers.values()
+                if p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
+                and not self._transport.is_connected(p.peer_id)
+                and p.pane_id
+                and not (acp_flag and p.metadata and p.metadata.get("acp"))
+            ]
+
+        checks = await asyncio.gather(
+            *(
+                asyncio.to_thread(self._has_runtime_evidence, peer)
+                for peer in pane_candidates
+            ),
+            return_exceptions=True,
+        )
+        for peer, has_evidence in zip(pane_candidates, checks, strict=True):
+            if has_evidence is True:
+                continue
+            candidates.append(peer)
+
         count = 0
-        for peer in ghosts:
+        for peer in candidates:
             await self.mark_offline(peer.peer_id)
             count += 1
         if count:
-            logger.info("demoted %d ghost peers (no WebSocket)", count)
+            logger.info("demoted %d ghost peers (no WebSocket/runtime evidence)", count)
         return count
+
+    @staticmethod
+    def _has_runtime_evidence(peer: Peer) -> bool:
+        """Best-effort runtime proof for a disconnected pane-backed peer.
+
+        This is demand-driven lazy repair, not polling. It intentionally
+        checks only local process/tmux evidence and does not attempt any
+        WebSocket recovery.
+        """
+        if peer.agent_pid is not None:
+            try:
+                os.kill(peer.agent_pid, 0)
+                return True
+            except PermissionError:
+                return True
+            except OSError:
+                pass
+
+        if not peer.pane_id:
+            return False
+        try:
+            result = subprocess.run(
+                ["tmux", "display-message", "-t", peer.pane_id, "-p", "#{pane_pid}"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0 and bool(result.stdout.strip())
 
     async def _demote_unsafe_connected_peers(self) -> int:
         """Mark connected tmux peers OFFLINE if their pane is no longer safe."""
@@ -1940,18 +2004,19 @@ class PeerRegistry:
 
         async with self._lock:
             targets = [
-                (p.peer_id, p.backend, p.circle)
+                p
                 for p in self._peers.values()
                 if p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
             ]
 
-        async def check_peer(
-            peer_id: str, backend, circle: str,
-        ) -> tuple[str, str | None] | None:
+        async def check_peer(peer: Peer) -> tuple[str, str | None] | None:
             """Returns (peer_id, circle) if alive, None if dead."""
+            peer_id = peer.peer_id
+            circle = peer.circle
             if not transport.is_connected(peer_id):
-                return None
-            if backend == AgentType.OPENCODE:
+                has_evidence = await asyncio.to_thread(self._has_runtime_evidence, peer)
+                return (peer_id, circle) if has_evidence else None
+            if peer.backend == AgentType.OPENCODE:
                 return (peer_id, circle)
             try:
                 pong = await transport.ping(peer_id, timeout=5.0)
@@ -1961,14 +2026,14 @@ class PeerRegistry:
                 return None
 
         results = await asyncio.gather(
-            *(check_peer(pid, backend, circle) for pid, backend, circle in targets),
+            *(check_peer(peer) for peer in targets),
             return_exceptions=True,
         )
 
         alive_peers = [r for r in results if isinstance(r, tuple)]
-        dead_peer_ids = {t[0] for t in targets} - {r[0] for r in alive_peers}
+        dead_peer_ids = {p.peer_id for p in targets} - {r[0] for r in alive_peers}
 
-        targets_map = {pid: c for pid, _, c in targets}
+        targets_map = {p.peer_id: p.circle for p in targets}
         for peer_id, new_circle in alive_peers:
             current = targets_map.get(peer_id)
             if current and new_circle and new_circle != current:

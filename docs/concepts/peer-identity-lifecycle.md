@@ -48,6 +48,8 @@ Because agents can forget to clear it, the daemon bounds stale descriptions with
 
 `last_seen` is the daemon's most recent activity timestamp for the peer. It is refreshed by registration, reconnect, status updates, description updates, role claims, and MCP `touch` calls. MCP tools touch on entry so outbound tool activity counts as liveness even if an inbound WebSocket hook dropped.
 
+Runtime/session liveness is separate from transport/socket liveness. A hook-based peer may have a live tmux pane and agent process while its background WebSocket sidecar is disconnected; in that state the peer can remain `online` or `busy`, but ask/notify delivery over the WebSocket still fails explicitly because inbound transport is unavailable. Lazy repair only demotes disconnected pane-backed peers when runtime evidence is also missing: the recorded agent PID is not alive and tmux no longer shows the pane. Fresh HTTP pane pre-registration starts `offline` until a WebSocket connection or hook/MCP touch proves runtime activity.
+
 `last_seen` is observability, not a unique identity selector. Repowire avoids choosing between ambiguous display-name matches based only on recency because that can misroute work.
 
 ## Routing observability
