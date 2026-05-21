@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import socket
 from typing import Any
@@ -13,7 +14,7 @@ from pydantic import BaseModel, Field, field_validator
 from repowire import peer_mcp
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
-from repowire.daemon.deps import get_peer_registry
+from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.peer_registry import (
     CircleSource,
     PaneHijackRejectedError,
@@ -25,6 +26,29 @@ from repowire.session.history import load_peer_history, page_turns
 from repowire.session.timeline import TimelineItem, build_session_timeline
 
 router = APIRouter(tags=["peers"])
+logger = logging.getLogger(__name__)
+
+
+def _metadata_source_uri(metadata: dict[str, Any] | None) -> str | None:
+    if not metadata:
+        return None
+    for key in ("runtime_source_uri", "source_uri", "transcript_source_uri"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _binding_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if not metadata:
+        return {}
+    allowed_keys = (
+        "hook_session_id",
+        "runtime_source_uri",
+        "source_uri",
+        "transcript_source_uri",
+    )
+    return {key: metadata[key] for key in allowed_keys if metadata.get(key) is not None}
 
 
 class PeerInfo(BaseModel):
@@ -323,6 +347,26 @@ async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str]:
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         ) from exc
+    binding_store = getattr(get_app_state(), "session_binding_store", None)
+    if binding_store is not None:
+        try:
+            binding_store.upsert_observation(
+                peer_id=peer_id,
+                backend=request.backend,
+                project_path=request.path,
+                runtime_session_id=request.metadata.get("hook_session_id"),
+                runtime_source_uri=_metadata_source_uri(request.metadata),
+                provenance={
+                    "source_kind": "runtime_hook",
+                    "backend": request.backend.value,
+                    "runtime_session_id": request.metadata.get("hook_session_id"),
+                    "observed_by_peer_id": peer_id,
+                },
+                status="active",
+                metadata=_binding_metadata(request.metadata),
+            )
+        except Exception:
+            logger.warning("Failed to persist session binding for peer registration", exc_info=True)
     return peer_id, display_name
 
 

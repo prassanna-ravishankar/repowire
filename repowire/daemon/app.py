@@ -52,6 +52,7 @@ from repowire.daemon.schedule_store import ScheduleStore
 from repowire.daemon.scheduler import Scheduler
 from repowire.daemon.state import StateDatabase
 from repowire.daemon.state.schedules import SQLiteScheduleStore
+from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
 from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
@@ -224,10 +225,12 @@ def create_app(
                 db=state_db,
                 legacy_path=schedules_path,
             )
+            session_binding_store = SQLiteSessionBindingStore(state_db)
         else:
             schedule_store = ScheduleStore(
                 persistence_path=schedules_path,
             )
+            session_binding_store = None
         # Store in app state for route handlers
         app.state.config = cfg
         app.state.transport = transport
@@ -243,6 +246,7 @@ def create_app(
         )
         app.state.schedule_store = schedule_store
         app.state.state_db = state_db
+        app.state.session_binding_store = session_binding_store
         from repowire.acp import AcpClientManager, ApprovalBroker
         acp_permission_broker = ApprovalBroker(emit_event=peer_registry.add_event)
         app.state.acp_permission_broker = acp_permission_broker
@@ -510,10 +514,21 @@ def create_test_app(
             event_log=event_log,
         )
 
-        schedule_store = ScheduleStore(
-            persistence_path=(persistence_path.parent if persistence_path else Path("/tmp"))
-            / "schedules.json",
-        )
+        state_db: StateDatabase | None = None
+        state_dir = persistence_path.parent if persistence_path else Path("/tmp")
+        schedules_path = state_dir / "schedules.json"
+        if cfg.experiments.sqlite_state:
+            state_db = StateDatabase(state_dir / "state.db")
+            schedule_store = SQLiteScheduleStore(
+                db=state_db,
+                legacy_path=schedules_path,
+            )
+            session_binding_store = SQLiteSessionBindingStore(state_db)
+        else:
+            schedule_store = ScheduleStore(
+                persistence_path=schedules_path,
+            )
+            session_binding_store = None
         app.state.config = cfg
         app.state.transport = transport
         app.state.query_tracker = query_tracker
@@ -526,6 +541,8 @@ def create_test_app(
         rq_dir = persistence_path.parent if persistence_path else Path.home() / ".repowire"
         app.state.review_queue_store = ReviewQueueStore(rq_dir / "review_queue.json")
         app.state.schedule_store = schedule_store
+        app.state.state_db = state_db
+        app.state.session_binding_store = session_binding_store
         from repowire.acp import AcpClientManager, ApprovalBroker
         acp_permission_broker = ApprovalBroker(emit_event=registry.add_event)
         app.state.acp_permission_broker = acp_permission_broker
@@ -576,6 +593,8 @@ def create_test_app(
 
         await acp_manager.close()
         await scheduler.stop()
+        if state_db is not None:
+            state_db.close()
         event_log.save()
         await registry.stop()
         cleanup_deps()

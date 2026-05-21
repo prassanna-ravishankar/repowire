@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -19,6 +20,17 @@ from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import PeerStatus, TurnState
 
 router = APIRouter(tags=["messages"])
+logger = logging.getLogger(__name__)
+
+
+def _metadata_source_uri(metadata: dict | None) -> str | None:
+    if not metadata:
+        return None
+    for key in ("runtime_source_uri", "source_uri", "transcript_source_uri"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 class QueryRequest(BaseModel):
@@ -460,16 +472,54 @@ async def ingest_chat_turn(
 ) -> OkResponse:
     """Ingest a chat turn from the stop hook for dashboard display."""
     peer_registry = get_peer_registry()
+    resolved_peer = None
     data = request.model_dump(exclude={"pane_id"})
 
     if not request.peer_id and request.pane_id:
         peer = await peer_registry.get_peer_by_pane(request.pane_id)
         if peer:
+            resolved_peer = peer
             data["peer_id"] = peer.peer_id
             data["peer"] = peer.display_name  # canonicalize to registered name
+    elif request.peer_id:
+        try:
+            resolved_peer = await peer_registry.get_peer(request.peer_id)
+        except ValueError:
+            resolved_peer = None
+    else:
+        try:
+            resolved_peer = await peer_registry.get_peer(request.peer)
+        except ValueError:
+            resolved_peer = None
 
     if request.turn_id and request.role == "assistant":
         _mark_turn_finalized(request.turn_id, request.session_id)
+
+    state = get_app_state()
+    binding_store = getattr(state, "session_binding_store", None)
+    if binding_store is not None and resolved_peer is not None:
+        try:
+            binding_store.upsert_observation(
+                peer_id=resolved_peer.peer_id,
+                backend=resolved_peer.backend,
+                project_path=resolved_peer.path,
+                runtime_session_id=request.session_id,
+                runtime_source_uri=_metadata_source_uri(resolved_peer.metadata),
+                provenance={
+                    "source_kind": "runtime_transcript"
+                    if request.session_id else "runtime_unavailable",
+                    "backend": resolved_peer.backend.value,
+                    "runtime_session_id": request.session_id,
+                    "source_event_id": request.turn_id,
+                    "observed_by_peer_id": resolved_peer.peer_id,
+                },
+                metadata={
+                    "last_turn_id": request.turn_id,
+                    "last_role": request.role,
+                },
+            )
+        except Exception:
+            logger.warning("Failed to persist session binding for chat turn", exc_info=True)
 
     peer_registry.add_event("chat_turn", data)
     return OkResponse()

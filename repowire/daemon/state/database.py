@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class StateDatabase:
@@ -83,10 +83,61 @@ class StateDatabase:
             )
             self.conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS session_bindings (
+                    repowire_session_id TEXT PRIMARY KEY,
+                    peer_id TEXT,
+                    current_executor_peer_id TEXT,
+                    backend TEXT NOT NULL,
+                    project_path TEXT NOT NULL,
+                    runtime_session_id TEXT,
+                    runtime_source_uri TEXT,
+                    source_cursor TEXT,
+                    provenance TEXT NOT NULL DEFAULT '{}',
+                    resume_capability TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL,
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL
+                )
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_session_bindings_peer
+                ON session_bindings(peer_id)
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_session_bindings_runtime
+                ON session_bindings(backend, runtime_session_id)
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_session_bindings_backend_project
+                ON session_bindings(backend, project_path)
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_session_bindings_source_uri
+                ON session_bindings(runtime_source_uri)
+                """,
+            )
+            self.conn.execute(
+                """
                 INSERT OR IGNORE INTO schema_migrations(version, description)
                 VALUES (?, ?)
                 """,
-                (SCHEMA_VERSION, "initial daemon state schema with schedules"),
+                (1, "initial daemon state schema with schedules"),
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, description)
+                VALUES (?, ?)
+                """,
+                (2, "session bindings for runtime provenance metadata"),
             )
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

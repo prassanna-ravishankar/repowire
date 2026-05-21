@@ -7,10 +7,13 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from httpx import ASGITransport, AsyncClient
+
 from repowire.config.models import Config
 from repowire.daemon.schedule_store import Schedule, ScheduleStore
 from repowire.daemon.state.database import SCHEMA_VERSION, StateDatabase
 from repowire.daemon.state.schedules import SQLiteScheduleStore
+from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
 
 
 def _ts(seconds_from_now: float = 60.0) -> datetime:
@@ -25,14 +28,21 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
         assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert db.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert db.conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
-        assert db.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
+        assert db.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
+        tables = {
+            row[0]
+            for row in db.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'",
+            ).fetchall()
+        }
+        assert "session_bindings" in tables
     finally:
         db.close()
 
     db2 = StateDatabase(db_path)
     try:
         assert db2.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert db2.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
+        assert db2.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
     finally:
         db2.close()
 
@@ -149,6 +159,57 @@ def test_sqlite_schedule_store_imports_existing_legacy_shape(tmp_path: Path) -> 
         db.close()
 
 
+def test_sqlite_session_binding_store_upsert_and_lookup_fields(tmp_path: Path) -> None:
+    db = StateDatabase(tmp_path / "state.db")
+    try:
+        store = SQLiteSessionBindingStore(db)
+        binding = store.upsert_observation(
+            peer_id="repow-default-a1",
+            backend="claude-code",
+            project_path="/repo",
+            runtime_session_id="hook-session-1",
+            runtime_source_uri="claude-jsonl:repo/hook-session-1.jsonl",
+            source_cursor={"line_offset": 7},
+            provenance={"source_kind": "runtime_transcript"},
+            metadata={"hook_session_id": "hook-session-1"},
+        )
+
+        updated = store.upsert_observation(
+            peer_id="repow-default-a1",
+            backend="claude-code",
+            project_path="/repo",
+            runtime_session_id="hook-session-1",
+            metadata={"last_turn_id": "turn-9"},
+        )
+
+        assert updated.repowire_session_id == binding.repowire_session_id
+        assert updated.current_executor_peer_id == "repow-default-a1"
+        assert updated.runtime_source_uri == "claude-jsonl:repo/hook-session-1.jsonl"
+        assert updated.source_cursor == {"line_offset": 7}
+        assert updated.metadata["hook_session_id"] == "hook-session-1"
+        assert updated.metadata["last_turn_id"] == "turn-9"
+        assert store.get(binding.repowire_session_id) is not None
+        assert store.list_by_peer("repow-default-a1")[0].runtime_session_id == "hook-session-1"
+        assert (
+            store.get_by_runtime_session(
+                "hook-session-1",
+                backend="claude-code",
+                project_path="/repo",
+            )
+            is not None
+        )
+        assert (
+            store.list_by_backend_project(backend="claude-code", project_path="/repo")[0]
+            .repowire_session_id
+            == binding.repowire_session_id
+        )
+        by_source = store.get_by_source_uri("claude-jsonl:repo/hook-session-1.jsonl")
+        assert by_source is not None
+        assert by_source.repowire_session_id == binding.repowire_session_id
+    finally:
+        db.close()
+
+
 async def test_create_app_uses_sqlite_schedule_store_and_imports_legacy_json(
     monkeypatch,
     tmp_path: Path,
@@ -182,3 +243,62 @@ async def test_create_app_uses_sqlite_schedule_store_and_imports_legacy_json(
         assert reopened.conn.execute("SELECT row_count FROM legacy_imports").fetchone()[0] == 1
     finally:
         reopened.close()
+
+
+async def test_test_app_wires_session_binding_store_and_observes_hooks(tmp_path: Path) -> None:
+    from repowire.daemon import app as app_mod
+
+    cfg = Config(experiments={"sqlite_state": True})
+    app = app_mod.create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
+    async with app.router.lifespan_context(app):
+        assert isinstance(app.state.session_binding_store, SQLiteSessionBindingStore)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            reg = await client.post(
+                "/peers",
+                json={
+                    "name": "worker",
+                    "path": "/repo",
+                    "circle": "default",
+                    "backend": "claude-code",
+                    "pane_id": "%77",
+                    "metadata": {
+                        "hook_session_id": "hook-session-1",
+                        "runtime_source_uri": "claude-jsonl:repo/hook-session-1.jsonl",
+                    },
+                },
+            )
+            assert reg.status_code == 200
+            peer_id = reg.json()["peer_id"]
+
+            binding = app.state.session_binding_store.get_by_runtime_session(
+                "hook-session-1",
+                backend="claude-code",
+                project_path="/repo",
+            )
+            assert binding is not None
+            assert binding.peer_id == peer_id
+            assert binding.metadata["hook_session_id"] == "hook-session-1"
+
+            chat = await client.post(
+                "/events/chat",
+                json={
+                    "peer": "worker-claude-code",
+                    "role": "assistant",
+                    "text": "done",
+                    "session_id": "hook-session-1",
+                    "turn_id": "turn-1",
+                    "pane_id": "%77",
+                },
+            )
+            assert chat.status_code == 200
+
+            updated = app.state.session_binding_store.get_by_runtime_session(
+                "hook-session-1",
+                backend="claude-code",
+                project_path="/repo",
+            )
+            assert updated is not None
+            assert updated.repowire_session_id == binding.repowire_session_id
+            assert updated.metadata["last_turn_id"] == "turn-1"
+            assert updated.provenance["source_event_id"] == "turn-1"
