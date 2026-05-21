@@ -59,25 +59,55 @@ def _make_notification_hook_config(command: str, matcher: str) -> dict:
     }
 
 
+def _is_repowire_hook_entry(entry: dict) -> bool:
+    for hook in entry.get("hooks", []):
+        if "repowire" in hook.get("command", ""):
+            return True
+    return False
+
+
+def _replace_repowire_hook(settings: dict, event: str, entry: dict | None) -> None:
+    hooks = settings.setdefault("hooks", {})
+    existing = hooks.get(event, [])
+    if not isinstance(existing, list):
+        existing = []
+    existing = [item for item in existing if not _is_repowire_hook_entry(item)]
+    if entry is not None:
+        existing.append(entry)
+    if existing:
+        hooks[event] = existing
+    else:
+        hooks.pop(event, None)
+
+
 def install_hooks(channel_mode: bool = False) -> bool:
     """Install hooks. In channel_mode, only install Stop hook for dashboard chat_turns."""
     settings = _load_claude_settings()
-    if "hooks" not in settings:
-        settings["hooks"] = {}
 
     # Stop hook always needed (dashboard chat_turns)
-    settings["hooks"]["Stop"] = [_make_hook_config("repowire hook stop")]
-    settings["hooks"]["StopFailure"] = [_make_hook_config("repowire hook stop")]
+    _replace_repowire_hook(settings, "Stop", _make_hook_config("repowire hook stop"))
+    _replace_repowire_hook(settings, "StopFailure", _make_hook_config("repowire hook stop"))
 
     if not channel_mode:
         # Full hook set for tmux transport
-        settings["hooks"]["SessionStart"] = [_make_hook_config("repowire hook session")]
-        settings["hooks"]["SessionEnd"] = [_make_hook_config("repowire hook session")]
-        settings["hooks"]["UserPromptSubmit"] = [_make_hook_config("repowire hook prompt")]
-        settings["hooks"]["Notification"] = [
-            _make_notification_hook_config("repowire hook notification", "idle_prompt")
-        ]
+        _replace_repowire_hook(
+            settings, "SessionStart", _make_hook_config("repowire hook session")
+        )
+        _replace_repowire_hook(settings, "SessionEnd", _make_hook_config("repowire hook session"))
+        _replace_repowire_hook(
+            settings, "UserPromptSubmit", _make_hook_config("repowire hook prompt")
+        )
+        _replace_repowire_hook(
+            settings,
+            "Notification",
+            _make_notification_hook_config("repowire hook notification", "idle_prompt"),
+        )
+    else:
+        for event in ("SessionStart", "SessionEnd", "UserPromptSubmit", "Notification"):
+            _replace_repowire_hook(settings, event, None)
 
+    if not settings.get("hooks"):
+        settings.pop("hooks", None)
     _save_claude_settings(settings)
     return True
 
@@ -91,9 +121,16 @@ def uninstall_hooks() -> bool:
 
     removed_any = False
     for event in HOOK_EVENTS:
-        if event in settings["hooks"]:
-            del settings["hooks"][event]
+        entries = settings["hooks"].get(event, [])
+        if not isinstance(entries, list):
+            continue
+        filtered = [entry for entry in entries if not _is_repowire_hook_entry(entry)]
+        if len(filtered) < len(entries):
             removed_any = True
+            if filtered:
+                settings["hooks"][event] = filtered
+            else:
+                del settings["hooks"][event]
 
     if not settings["hooks"]:
         del settings["hooks"]
@@ -108,7 +145,10 @@ def check_hooks_installed() -> bool:
     if "hooks" not in settings:
         return False
 
-    return all(event in settings["hooks"] for event in HOOK_EVENTS)
+    return all(
+        any(_is_repowire_hook_entry(entry) for entry in settings["hooks"].get(event, []))
+        for event in HOOK_EVENTS
+    )
 
 
 # -- Channel transport --

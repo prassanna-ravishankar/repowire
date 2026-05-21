@@ -49,7 +49,7 @@ cd ~/projects/project-a && claude
 cd ~/projects/project-b && codex
 ```
 
-Both sessions auto-register as peers. In `project-a`, ask:
+Claude Code registers on session start. Codex registers after its first interaction, so send a short warmup prompt in `project-b`, then confirm both peers with `repowire peer list`. In `project-a`, ask:
 
 ```text
 Ask project-b what API endpoints they expose.
@@ -195,7 +195,10 @@ daemon:
     require_auth: true
     allow_dangerous_tools: false
   spawn:
-    allowed_commands: [claude, codex, gemini]
+    commands:
+      claude-code: "claude --dangerously-skip-permissions"
+      codex: "codex --dangerously-bypass-approvals-and-sandbox"
+      gemini: "gemini --yolo"
     allowed_paths: [~/git, ~/projects]
 
 relay:

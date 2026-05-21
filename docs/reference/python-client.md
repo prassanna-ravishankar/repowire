@@ -85,14 +85,14 @@ outbound = await client.pending_asks(peer_id=peer.peer_id, direction="outbound")
 
 ## Spawning and lifecycle
 
-`spawn` launches a new agent session subject to `daemon.spawn.allowed_commands`. `spawn_config` reports what the daemon will accept without attempting a spawn. Omit `circle` to use the daemon default (`default`), or pass it explicitly for another circle. `kill_peer` terminates a peer cleanly.
+`spawn` launches a new agent session subject to `daemon.spawn.commands` and `daemon.spawn.allowed_paths`. `spawn_config` reports which backend launch profiles are configured. Omit `circle` to use the daemon default (`default`), or pass it explicitly for another circle. `kill_peer` terminates a peer cleanly.
 
 ```python
 info = await client.spawn_config()
-if "claude" in info.allowed_commands:
+if "claude-code" in info.commands:
     spawn = await client.spawn(
         path="/home/me/projects/project-c",
-        command="claude",
+        backend="claude-code",
         circle="docs",
         message="help me draft a reference page",
     )

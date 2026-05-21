@@ -181,10 +181,10 @@ This is a *presence check*, not a snapshot of mesh state.
 ### `spawn_peer`
 
 ```python
-spawn_peer(path: str, command: str, circle: str = "default", message: str | None = None) -> str
+spawn_peer(path: str, backend: str, circle: str = "default", message: str | None = None) -> str
 ```
 
-Spawn a new agent session in a project directory. `command` must exactly match an entry in `daemon.spawn.allowed_commands` in `~/.repowire/config.yaml`; spawn is off by default until you allowlist something. `circle` maps to the tmux session name and cannot be reassigned after spawn.
+Spawn a new agent session in a project directory. `backend` must have a launch profile in `daemon.spawn.commands` in `~/.repowire/config.yaml`; spawn is off by default until you configure at least one backend and one allowed path. `circle` maps to the tmux session name and cannot be reassigned after spawn. `command` remains accepted as a deprecated compatibility selector for one release.
 
 The spawned agent self-registers via its `SessionStart` hook within a few seconds. The `message` seeds first-turn context. Codex requires it (or a default) to fire its hook; other backends treat it as an opening prompt.
 

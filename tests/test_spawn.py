@@ -201,7 +201,9 @@ class TestSpawnPeer:
 
         assert result.display_name == "test"
         assert result.tmux_session == "dev:test"
-        mock_pane.send_keys.assert_called_once_with("claude", enter=True)
+        mock_pane.send_keys.assert_called_once_with(
+            "claude --dangerously-skip-permissions", enter=True,
+        )
 
     @patch("repowire.spawn._get_or_create_session")
     @patch("repowire.spawn.libtmux.Server")
@@ -273,7 +275,9 @@ class TestSpawnPeer:
         config = SpawnConfig(path="/tmp/test", circle="dev", backend=AgentType.CODEX)
         spawn_peer(config)
 
-        mock_pane.send_keys.assert_called_once_with("codex", enter=True)
+        mock_pane.send_keys.assert_called_once_with(
+            "codex --dangerously-bypass-approvals-and-sandbox", enter=True,
+        )
 
     @patch("repowire.spawn._get_or_create_session")
     @patch("repowire.spawn.libtmux.Server")
@@ -499,7 +503,7 @@ class TestMcpSpawnPeerReturn:
         tools = {name: fn for name, fn in mcp._tool_manager._tools.items()}
         spawn_tool = tools["spawn_peer"]
         result = await spawn_tool.fn(
-            path="/tmp/alpha-svc", command="claude", circle="prod",
+            path="/tmp/alpha-svc", backend="claude-code", circle="prod",
         )
 
         # Must mention both display_name and tmux_session distinctly
@@ -734,38 +738,6 @@ class TestMcpRegistration:
         post_calls = [c for c in mock_request.await_args_list if c.args[0] == "POST"]
         assert post_calls == []
         assert mcp_server._cached_peer_name == "repowire-codex"
-
-
-class TestSpawnRouteBackendFromCommand:
-    """The spawn HTTP route derives the AgentType from the command string."""
-
-    def test_codex_command_resolves_to_codex_backend(self) -> None:
-        from repowire.config.models import AgentType
-        from repowire.daemon.routes.spawn import _backend_from_command
-
-        assert _backend_from_command("codex") is AgentType.CODEX
-
-    def test_command_with_flags_resolves_on_first_token(self) -> None:
-        from repowire.config.models import AgentType
-        from repowire.daemon.routes.spawn import _backend_from_command
-
-        assert (
-            _backend_from_command("claude --dangerously-skip-permissions")
-            is AgentType.CLAUDE_CODE
-        )
-        assert _backend_from_command("gemini --yolo") is AgentType.GEMINI
-
-    def test_unknown_command_falls_back_to_claude_code(self) -> None:
-        from repowire.config.models import AgentType
-        from repowire.daemon.routes.spawn import _backend_from_command
-
-        assert _backend_from_command("some-other-cli") is AgentType.CLAUDE_CODE
-
-    def test_empty_command_falls_back_to_claude_code(self) -> None:
-        from repowire.config.models import AgentType
-        from repowire.daemon.routes.spawn import _backend_from_command
-
-        assert _backend_from_command("") is AgentType.CLAUDE_CODE
 
 
 class TestMcpListPeersSelfFilter:

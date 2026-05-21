@@ -35,14 +35,24 @@ fi
 
 # Install via uv > pipx > pip
 if command -v uv >/dev/null 2>&1; then
-    echo "Installing via uv..."
-    uv tool install repowire
+    if command -v repowire >/dev/null 2>&1; then
+        echo "Upgrading via uv..."
+        uv tool upgrade repowire || uv tool install repowire --force
+    else
+        echo "Installing via uv..."
+        uv tool install repowire
+    fi
 elif command -v pipx >/dev/null 2>&1; then
-    echo "Installing via pipx..."
-    pipx install repowire
+    if command -v repowire >/dev/null 2>&1; then
+        echo "Upgrading via pipx..."
+        pipx upgrade repowire || pipx install --force repowire
+    else
+        echo "Installing via pipx..."
+        pipx install repowire
+    fi
 elif "$python_cmd" -m pip --version >/dev/null 2>&1; then
-    echo "Installing via pip..."
-    "$python_cmd" -m pip install --user repowire
+    echo "Installing/upgrading via pip..."
+    "$python_cmd" -m pip install --user -U repowire
     echo ""
     echo "Note: ensure ~/.local/bin is in your PATH"
 else

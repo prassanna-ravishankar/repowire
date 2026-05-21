@@ -136,16 +136,22 @@ class TestRelayConfig:
 class TestSpawnSettings:
     def test_defaults_empty(self):
         spawn = SpawnSettings()
+        assert spawn.commands == {}
         assert spawn.allowed_commands == []
         assert spawn.allowed_paths == []
 
     def test_with_values(self):
         spawn = SpawnSettings(
-            allowed_commands=["claude", "opencode"],
+            commands={AgentType.CLAUDE_CODE: "claude", AgentType.OPENCODE: "opencode"},
             allowed_paths=["~/git"],
         )
-        assert len(spawn.allowed_commands) == 2
+        assert len(spawn.commands) == 2
         assert "~/git" in spawn.allowed_paths
+
+    def test_legacy_allowed_commands_bootstrap_commands(self):
+        spawn = SpawnSettings(allowed_commands=["claude --model opus", "codex"])
+        assert spawn.commands[AgentType.CLAUDE_CODE] == "claude --model opus"
+        assert spawn.commands[AgentType.CODEX] == "codex"
 
 
 class TestAgentType:

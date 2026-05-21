@@ -23,13 +23,16 @@ from repowire.daemon.routes import spawn as spawn_routes
 from repowire.daemon.websocket_transport import WebSocketTransport
 
 
-def _make_test_app(tmp_path: Path, allowed_commands: list[str] | None = None):
+def _make_test_app(
+    tmp_path: Path,
+    commands: dict[AgentType, str] | None = None,
+):
     cfg = Config()
-    cfg.daemon.spawn.allowed_commands = (
-        allowed_commands
-        if allowed_commands is not None
-        else ["claude", "codex", "gemini"]
-    )
+    cfg.daemon.spawn.commands = commands or {
+        AgentType.CLAUDE_CODE: "claude",
+        AgentType.CODEX: "codex",
+        AgentType.GEMINI: "gemini",
+    }
     cfg.daemon.spawn.allowed_paths = ["/"]
     transport = WebSocketTransport()
     tracker = QueryTracker()
@@ -136,9 +139,10 @@ class TestSwitchBackendRoute:
         assert r.json()["detail"]["error"] == "same_backend"
 
     async def test_missing_command_returns_422(self, tmp_path):
-        # Build an app whose allowed_commands has no entry for gemini.
+        # Build an app whose configured commands have no entry for gemini.
         app, _registry, _ask_tracker = _make_test_app(
-            tmp_path, allowed_commands=["claude", "codex"],
+            tmp_path,
+            commands={AgentType.CLAUDE_CODE: "claude", AgentType.CODEX: "codex"},
         )
         try:
             transport = ASGITransport(app=app)
@@ -152,7 +156,7 @@ class TestSwitchBackendRoute:
             assert r.status_code == 422
             body = r.json()
             assert body["detail"]["error"] == "command_unavailable"
-            assert "allowed_commands" in body["detail"]["hint"]
+            assert "daemon.spawn.commands" in body["detail"]["hint"]
             assert body["detail"]["new_backend"] == "gemini"
         finally:
             cleanup_deps()
@@ -401,10 +405,13 @@ class TestAskTrackerQuiesceBarrier:
 
 
 class TestCommandForBackend:
-    def test_returns_first_matching_allowed_command(self, tmp_path):
+    def test_returns_configured_backend_command(self, tmp_path):
         _app, _r, _a = _make_test_app(
             tmp_path,
-            allowed_commands=["claude --dangerously-skip-permissions", "codex"],
+            commands={
+                AgentType.CLAUDE_CODE: "claude --dangerously-skip-permissions",
+                AgentType.CODEX: "codex",
+            },
         )
         try:
             assert (

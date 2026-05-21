@@ -37,7 +37,7 @@ Branch: `feat/docs-site`. Target: `docs.repowire.io`.
 - **Orchestrator pattern.** Mentioned in README as a one-line collapsed pattern; mentioned in `concepts` as a workflow. No how-to.
 - **Troubleshooting.** Zero coverage. Hooks not firing, daemon not reachable, ws-hook dedup, ghost peers, relay key rotation, channel-mode auth, MCP server identity drift on Codex.
 - **Comparisons.** README has the small Gastown / Claude Squad / Memory Bank table. No standalone pages.
-- **Configuration deep-dive.** README dumps a YAML example. No per-key reference (spawn allowlist semantics, prune_max_age_hours, auth_token effect on local-only vs relay).
+- **Configuration deep-dive.** README dumps a YAML example. No per-key reference (spawn runtime profile semantics, prune_max_age_hours, auth_token effect on local-only vs relay).
 - **Architecture deep-dive.** README has an image and a paragraph. Daemon module map (PeerRegistry, MessageRouter, AskTracker, QueryTracker, WebSocketTransport), transport layer (hooks vs channel), lazy-repair tradeoffs.
 
 ### Critical IA decision the brief should choose between

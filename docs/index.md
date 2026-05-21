@@ -40,7 +40,7 @@ cd ~/projects/project-a && claude
 cd ~/projects/project-b && codex
 ```
 
-Both sessions auto-register. In `project-a`:
+Claude Code registers on session start. Codex registers after its first interaction, so send a short warmup prompt in `project-b`, then confirm both peers with `repowire peer list`. In `project-a`:
 
 > Ask project-b what API endpoints they expose.
 

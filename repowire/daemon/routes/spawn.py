@@ -7,7 +7,7 @@ import socket
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from repowire.config.models import AgentType
 from repowire.daemon.ask_tracker import QuiesceFailedError
@@ -15,17 +15,7 @@ from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_config, get_peer_registry
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.installers.post_spawn import post_spawn_warmup
-from repowire.spawn import (
-    AGENT_COMMANDS,
-    SpawnConfig,
-    SpawnResult,
-    kill_pane,
-    spawn_peer,
-)
-
-_COMMAND_TO_BACKEND: dict[str, AgentType] = {
-    cmd: backend for backend, cmd in AGENT_COMMANDS.items()
-}
+from repowire.spawn import SpawnConfig, SpawnResult, kill_pane, spawn_peer
 
 # Strong references to background warmup tasks. asyncio holds only weak refs to
 # tasks, so without this set a long-sleeping warmup can be GC'd mid-flight.
@@ -54,10 +44,70 @@ def forget_spawned_pane(pane_id: str) -> None:
     _SPAWNED_PANE_IDS.discard(pane_id)
 
 
-def _backend_from_command(command: str) -> AgentType:
-    """Derive AgentType from the first token of the command string."""
-    head = command.split(None, 1)[0] if command else ""
-    return _COMMAND_TO_BACKEND.get(head, AgentType.CLAUDE_CODE)
+def _coerce_backend(value: str) -> AgentType | None:
+    try:
+        return AgentType(value)
+    except ValueError:
+        return None
+
+
+def _runtime_commands() -> dict[AgentType, str]:
+    return get_config().daemon.spawn.commands
+
+
+def _resolve_spawn_command(
+    *,
+    backend: AgentType | None = None,
+    legacy_command: str | None = None,
+) -> tuple[AgentType, str]:
+    """Resolve a runtime profile to its launch command.
+
+    ``backend`` is the preferred path. ``legacy_command`` is accepted for one
+    compatibility release: if it matches a backend/profile name, resolve that;
+    otherwise it may match a configured command value from /spawn/config.
+    """
+    commands = _runtime_commands()
+    if backend is not None:
+        command = commands.get(backend)
+        if command:
+            return backend, command
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "command_unavailable",
+                "hint": (
+                    f"No daemon.spawn.commands entry for {backend.value!r}. "
+                    "Add it to ~/.repowire/config.yaml."
+                ),
+                "backend": backend.value,
+            },
+        )
+
+    if legacy_command:
+        alias_backend = _coerce_backend(legacy_command)
+        if alias_backend is not None and alias_backend in commands:
+            return alias_backend, commands[alias_backend]
+
+        for candidate_backend, candidate_command in commands.items():
+            if legacy_command == candidate_command:
+                return candidate_backend, candidate_command
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "command_unavailable",
+                "hint": (
+                    f"Command/profile not configured: {legacy_command!r}. "
+                    "Use daemon.spawn.commands keyed by backend."
+                ),
+                "command": legacy_command,
+            },
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="Either backend or legacy command is required.",
+    )
 
 router = APIRouter(tags=["spawn"])
 
@@ -66,8 +116,9 @@ class SpawnConfigResponse(BaseModel):
     """Spawn configuration for UI discovery."""
 
     enabled: bool
-    allowed_commands: list[str] = []
-    allowed_paths: list[str] = []
+    commands: dict[AgentType, str] = Field(default_factory=dict)
+    allowed_commands: list[str] = Field(default_factory=list)
+    allowed_paths: list[str] = Field(default_factory=list)
 
 
 @router.get("/spawn/config", response_model=SpawnConfigResponse)
@@ -76,11 +127,12 @@ async def get_spawn_config(
 ) -> SpawnConfigResponse:
     """Return spawn configuration so the UI can offer spawn controls."""
     cfg = get_config()
-    cmds = cfg.daemon.spawn.allowed_commands
+    cmds = cfg.daemon.spawn.commands
     paths = cfg.daemon.spawn.allowed_paths
     return SpawnConfigResponse(
         enabled=bool(cmds and paths),
-        allowed_commands=cmds,
+        commands=cmds,
+        allowed_commands=list(cmds.values()),
         allowed_paths=paths,
     )
 
@@ -89,7 +141,10 @@ class SpawnRequest(BaseModel):
     """Request to spawn a new agent session."""
 
     path: str = Field(..., description="Absolute path to the project directory")
-    command: str = Field(..., description="Command to run — must be in allowed_commands")
+    backend: AgentType | None = Field(None, description="Backend/runtime profile to spawn")
+    command: str | None = Field(
+        None, description="Deprecated: command/profile name for compatibility",
+    )
     circle: str = Field(default="default", description="Circle to spawn into")
     message: str | None = Field(
         default=None,
@@ -99,6 +154,14 @@ class SpawnRequest(BaseModel):
             "Other backends ignore it. Default: a short branded warmup."
         ),
     )
+
+    @model_validator(mode="after")
+    def _single_runtime_selector(self) -> SpawnRequest:
+        if self.backend is not None and self.command is not None:
+            raise ValueError("Pass backend or command, not both")
+        if self.backend is None and self.command is None:
+            raise ValueError("Pass backend or command")
+        return self
 
 
 class SpawnResponse(BaseModel):
@@ -141,29 +204,23 @@ async def _authorize_kill(registry: PeerRegistry, from_peer: str | None) -> None
     """Hook for future role-based authorization (e.g. orchestrator-only kill)."""
 
 
-def _validate_spawn_request(path: str, command: str) -> None:
-    """Validate path and command against the spawn allowlists.
+def _validate_spawn_path(path: str) -> None:
+    """Validate path against configured spawn roots.
 
-    Raises HTTPException 403 if spawn is disabled or either value is not allowed.
+    Raises HTTPException 403 if spawn is disabled or the path is not allowed.
     Raises HTTPException 404 if the path does not exist on disk.
     """
     cfg = get_config()
-    allowed_commands = cfg.daemon.spawn.allowed_commands
     allowed_paths = cfg.daemon.spawn.allowed_paths
+    commands = cfg.daemon.spawn.commands
 
-    if not allowed_commands or not allowed_paths:
+    if not commands or not allowed_paths:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "Spawn is disabled. Set daemon.spawn.allowed_commands and"
-                " daemon.spawn.allowed_paths in ~/.repowire/config.yaml"
+                "Spawn is disabled. Set daemon.spawn.commands and "
+                "daemon.spawn.allowed_paths in ~/.repowire/config.yaml"
             ),
-        )
-
-    if command not in allowed_commands:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Command not in allowed_commands: {command!r}",
         )
 
     resolved = Path(path).expanduser().resolve()
@@ -188,14 +245,17 @@ async def spawn(
 ) -> SpawnResponse:
     """Spawn a new agent coding session.
 
-    Both the command and the path must be explicitly allowed in
-    daemon.spawn.allowed_commands / allowed_paths in ~/.repowire/config.yaml.
+    The backend command and path must be configured in daemon.spawn.commands /
+    allowed_paths in ~/.repowire/config.yaml.
     The spawned agent self-registers via its SessionStart hook once it starts.
     """
-    _validate_spawn_request(request.path, request.command)
+    _validate_spawn_path(request.path)
+    backend, command = _resolve_spawn_command(
+        backend=request.backend,
+        legacy_command=request.command,
+    )
 
     resolved_path = str(Path(request.path).expanduser().resolve())
-    backend = _backend_from_command(request.command)
 
     try:
         result: SpawnResult = spawn_peer(
@@ -203,7 +263,7 @@ async def spawn(
                 path=resolved_path,
                 circle=request.circle,
                 backend=backend,
-                command=request.command,
+                command=command,
                 message=request.message,
             )
         )
@@ -308,19 +368,12 @@ class SwitchBackendResponse(BaseModel):
     tmux_session: str
     old_backend: AgentType
     new_backend: AgentType
-    command: str = Field(
-        ..., description="The allowed_commands entry actually used to spawn",
-    )
+    command: str = Field(..., description="The configured backend command used to spawn")
 
 
 def _command_for_backend(new_backend: AgentType) -> str | None:
-    """Return the first allowed_commands entry whose first token maps to new_backend."""
-    cfg = get_config()
-    for cmd in cfg.daemon.spawn.allowed_commands:
-        head = cmd.split(None, 1)[0] if cmd else ""
-        if _COMMAND_TO_BACKEND.get(head) is new_backend:
-            return cmd
-    return None
+    """Return the configured command for a backend/runtime profile."""
+    return _runtime_commands().get(new_backend)
 
 
 @router.post("/peers/{name}/switch-backend", response_model=SwitchBackendResponse)
@@ -356,7 +409,7 @@ async def switch_peer_backend(
     - 409 same_backend: new_backend equals current backend (no-op)
     - 409 cross_host: peer runs on a different machine
     - 409 in_flight_asks: peer has open asks; caller must retry after they close
-    - 422 command_unavailable: no entry in daemon.spawn.allowed_commands maps to
+    - 422 command_unavailable: no entry in daemon.spawn.commands maps to
       new_backend — operator must add one to ~/.repowire/config.yaml
     - 500 kill_failed: the daemon-owned tmux pane could not be killed; the old
       runtime may still be alive. Investigate with `tmux list-panes -a`.
@@ -412,17 +465,18 @@ async def switch_peer_backend(
             detail={
                 "error": "command_unavailable",
                 "hint": (
-                    f"No entry in daemon.spawn.allowed_commands maps to "
-                    f"{request.new_backend.value!r}. Add one to "
-                    f"~/.repowire/config.yaml (e.g. {request.new_backend.value!r})."
+                    f"No entry in daemon.spawn.commands maps to "
+                    f"{request.new_backend.value!r}. Add "
+                    f"daemon.spawn.commands.{request.new_backend.value} to "
+                    "~/.repowire/config.yaml."
                 ),
                 "new_backend": request.new_backend.value,
             },
         )
 
-    # Validate the resolved command + peer's existing path against allowlists so
+    # Validate the resolved command + peer's existing path against config so
     # operators can't bypass /spawn's guardrails via a backend switch.
-    _validate_spawn_request(peer.path, command)
+    _validate_spawn_path(peer.path)
 
     # Acquire the ask-tracker quiesce barrier atomically: this both verifies no
     # open asks exist for the peer AND blocks new /ask registrations targeting

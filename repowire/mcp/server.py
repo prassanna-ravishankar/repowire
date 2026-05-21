@@ -869,15 +869,17 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
     @mcp.tool()
     async def spawn_peer(
         path: str,
-        command: str,
+        backend: str | None = None,
+        command: str | None = None,
         circle: str = "default",
         message: str | None = None,
     ) -> str:
         """[Repowire mesh] Spawn a new coding session in a different project directory.
 
-        The command must exactly match an entry in daemon.spawn.allowed_commands
-        in ~/.repowire/config.yaml. If no allowed_commands are configured, spawn
-        is disabled and this will return an error.
+        Prefer `backend` (claude-code, codex, gemini, opencode, pi). The backend
+        must have a command configured in daemon.spawn.commands in
+        ~/.repowire/config.yaml. `command` is retained as a one-release
+        compatibility alias for older callers.
 
         The spawned agent self-registers into the mesh via its SessionStart hook
         within a few seconds. Use list_peers() to confirm registration and get
@@ -898,7 +900,8 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
 
         Args:
             path: Absolute path to the project directory
-            command: Command to run (e.g. "claude", "claude --dangerously-skip-permissions")
+            backend: Runtime profile to spawn (e.g. "claude-code", "codex")
+            command: Deprecated compatibility command/profile selector
             circle: Circle to spawn into (default: "default") -- maps to tmux session name
             message: Optional first-turn prompt for the spawned agent. Codex
                      needs it (or the default warmup) to register promptly.
@@ -907,7 +910,15 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
             Spawn confirmation with display_name and tmux_session
         """
         _ensure_http_admin_tool_allowed("spawn_peer")
-        body: dict = {"path": path, "command": command, "circle": circle}
+        if backend is not None and command is not None:
+            raise ValueError("Pass backend or command, not both")
+        if backend is None and command is None:
+            raise ValueError("Pass backend or command")
+        body: dict = {"path": path, "circle": circle}
+        if backend is not None:
+            body["backend"] = backend
+        if command is not None:
+            body["command"] = command
         if message is not None:
             body["message"] = message
         result = await daemon_request("POST", "/spawn", body)

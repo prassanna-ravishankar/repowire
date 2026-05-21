@@ -50,7 +50,7 @@ cd ~/projects/project-a && claude
 cd ~/projects/project-b && codex`}
         </CodeBlock>
         <p className="mt-3 text-sm leading-6 text-on-surface-variant">
-          Both sessions auto-register as peers. In <code className="font-mono text-primary-fixed">project-a</code>, tell your local agent:
+          Claude Code registers on session start. Codex registers after its first interaction, so send a short warmup prompt in <code className="font-mono text-primary-fixed">project-b</code>, then confirm both peers with <code className="font-mono text-primary-fixed">repowire peer list</code>. In <code className="font-mono text-primary-fixed">project-a</code>, tell your local agent:
         </p>
         <div className="mt-3 border-l-2 border-primary/60 bg-surface-container-low p-4 font-mono text-sm leading-6 text-on-surface">
           &ldquo;Ask project-b what API endpoints they expose.&rdquo;

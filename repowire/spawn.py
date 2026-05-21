@@ -9,17 +9,11 @@ from pathlib import Path
 import libtmux
 from libtmux.exc import LibTmuxException, ObjectDoesNotExist
 
-from repowire.config.models import AgentType
+from repowire.config.models import DEFAULT_SPAWN_COMMANDS, AgentType
 from repowire.spawn_hints import write_hint
 
 # Default commands for each agent type
-AGENT_COMMANDS: dict[AgentType, str] = {
-    AgentType.CLAUDE_CODE: "claude",
-    AgentType.OPENCODE: "opencode",
-    AgentType.CODEX: "codex",
-    AgentType.GEMINI: "gemini",
-    AgentType.PI: "pi",
-}
+AGENT_COMMANDS: dict[AgentType, str] = dict(DEFAULT_SPAWN_COMMANDS)
 
 
 @dataclass

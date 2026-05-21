@@ -14,7 +14,12 @@ daemon:
     allow_unauthenticated_localhost: false
     allow_dangerous_tools: false
   spawn:
-    allowed_commands: []
+    commands:
+      claude-code: "claude --dangerously-skip-permissions"
+      codex: "codex --dangerously-bypass-approvals-and-sandbox"
+      gemini: "gemini --yolo"
+      opencode: "opencode"
+      pi: "pi"
     allowed_paths: []
 ```
 
@@ -33,3 +38,9 @@ Experimental Streamable HTTP MCP endpoint mounted at `http://127.0.0.1:8377/mcp`
 - `allow_dangerous_tools`: allow lifecycle/admin MCP tools over HTTP MCP. Default: `false`; spawn, kill, and schedule mutation stay disabled.
 
 HTTP MCP is never exposed through the hosted relay. The default stdio MCP server installed by `repowire setup` is unchanged and remains the stable path for agents.
+
+## `daemon.spawn`
+
+Spawn is disabled until `allowed_paths` and at least one runtime command are configured. `commands` is keyed by backend (`claude-code`, `codex`, `gemini`, `opencode`, `pi`) and is the single launch profile used by MCP `spawn_peer`, dashboard spawn, backend switching, and `repowire orchestrator start`.
+
+`allowed_commands` is a deprecated compatibility field. When present in an older config, Repowire normalizes it into `commands` while loading config; new configs should not add it.

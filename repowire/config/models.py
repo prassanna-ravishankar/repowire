@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DEFAULT_QUERY_TIMEOUT: float = 300.0
 """Default timeout in seconds for peer-to-peer queries (5 minutes)."""
@@ -30,6 +30,15 @@ class AgentType(str, Enum):
     GEMINI = "gemini"
     PI = "pi"
     MCP_HTTP = "mcp-http"
+
+
+DEFAULT_SPAWN_COMMANDS: dict[AgentType, str] = {
+    AgentType.CLAUDE_CODE: "claude --dangerously-skip-permissions",
+    AgentType.OPENCODE: "opencode",
+    AgentType.CODEX: "codex --dangerously-bypass-approvals-and-sandbox",
+    AgentType.GEMINI: "gemini --yolo",
+    AgentType.PI: "pi",
+}
 
 
 class RelayConfig(BaseModel):
@@ -128,20 +137,46 @@ class MCPHttpConfig(BaseModel):
 
 
 class SpawnSettings(BaseModel):
-    """Settings controlling which commands and paths agents are allowed to spawn into.
+    """Settings controlling which runtimes and paths agents are allowed to spawn into.
 
-    Both allowed_commands and allowed_paths must be non-empty for spawn to be enabled.
-    A spawn request must match an entry in each list to proceed.
+    New configs should use ``commands`` keyed by AgentType value. ``allowed_commands``
+    is retained as a one-release compatibility path for older clients/configs.
+    ``allowed_paths`` must be non-empty for spawn to be enabled.
     """
 
+    commands: dict[AgentType, str] = Field(
+        default_factory=dict,
+        description="Spawn command per backend/runtime (empty = spawn disabled)",
+    )
     allowed_commands: list[str] = Field(
         default_factory=list,
-        description="Allowed spawn commands (empty = spawn disabled)",
+        description="Deprecated legacy allowed spawn commands",
     )
     allowed_paths: list[str] = Field(
         default_factory=list,
         description="Allowed root directories for spawned sessions (empty = spawn disabled)",
     )
+
+    @model_validator(mode="after")
+    def _bootstrap_legacy_allowed_commands(self) -> SpawnSettings:
+        """Migrate legacy allowed_commands into runtime command profiles on load."""
+        if self.commands or not self.allowed_commands:
+            return self
+        inferred: dict[AgentType, str] = {}
+        command_to_backend = {
+            "claude": AgentType.CLAUDE_CODE,
+            "opencode": AgentType.OPENCODE,
+            "codex": AgentType.CODEX,
+            "gemini": AgentType.GEMINI,
+            "pi": AgentType.PI,
+        }
+        for command in self.allowed_commands:
+            head = command.split(None, 1)[0] if command else ""
+            backend = command_to_backend.get(head)
+            if backend and backend not in inferred:
+                inferred[backend] = command
+        self.commands = inferred
+        return self
 
 
 class DaemonConfig(BaseModel):
@@ -307,7 +342,7 @@ class Config(BaseModel):
 
         config_path = self.get_config_path()
         tmp_path = config_path.with_suffix(".yaml.tmp")
-        data = self.model_dump()
+        data = self.model_dump(mode="json")
 
         with open(tmp_path, "w") as f:
             yaml.safe_dump(data, f, default_flow_style=False)

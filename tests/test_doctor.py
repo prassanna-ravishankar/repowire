@@ -138,7 +138,7 @@ class TestRuntimes:
         assert claude_result.status is Status.OK
 
 
-class TestSpawnAllowlist:
+class TestSpawnConfig:
     def test_unconfigured_skip(self):
         config = Config()
         r = check_spawn_allowlist(config)
@@ -148,7 +148,7 @@ class TestSpawnAllowlist:
         config = Config(
             daemon=DaemonConfig(
                 spawn=SpawnSettings(
-                    allowed_commands=["ls"],
+                    commands={"claude-code": "ls"},
                     allowed_paths=[str(tmp_path)],
                 ),
             ),
@@ -160,7 +160,7 @@ class TestSpawnAllowlist:
         config = Config(
             daemon=DaemonConfig(
                 spawn=SpawnSettings(
-                    allowed_commands=["definitely-not-a-real-command-xyzzy"],
+                    commands={"claude-code": "definitely-not-a-real-command-xyzzy"},
                     allowed_paths=["/nonexistent/path/xyzzy"],
                 ),
             ),
@@ -172,7 +172,7 @@ class TestSpawnAllowlist:
         config = Config(
             daemon=DaemonConfig(
                 spawn=SpawnSettings(
-                    allowed_commands=["ls --color"],
+                    commands={"claude-code": "ls --color"},
                     allowed_paths=[str(tmp_path)],
                 ),
             ),
@@ -307,7 +307,7 @@ class TestRunAll:
         names = [r.name for r in results]
         assert "Daemon reachable" in names
         assert "Agent runtimes" in names
-        assert "Spawn allowlist" in names
+        assert "Spawn config" in names
 
 
 def test_repowire_version_check():

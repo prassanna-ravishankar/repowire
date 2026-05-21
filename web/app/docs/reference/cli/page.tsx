@@ -15,9 +15,9 @@ export default function CliReference() {
         The <Mono>repowire</Mono> command is a thin wrapper around setup, the daemon, and the bot peers. Most users only ever need <Mono>setup</Mono>. Everything else is for operators running their own daemon or control surfaces.
       </p>
 
-      <Cmd name="repowire setup" usage="repowire setup [--relay] [--experimental-channels] [--http-mcp] [--non-interactive]">
+      <Cmd name="repowire setup" usage="repowire setup [--relay] [--experimental-channels] [--http-mcp] [--no-service] [--non-interactive]">
         <p>
-          One-time install. Detects every supported agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires the appropriate Repowire transport for each, and installs the daemon as a user service. <Mono>--relay</Mono> opts in to the hosted relay at <Mono>repowire.io</Mono>. <Mono>--experimental-channels</Mono> enables the experimental MCP channel / ACP transport for Claude Code. <Mono>--http-mcp</Mono> enables localhost Streamable HTTP MCP at <Mono>/mcp</Mono> and generates a bearer token if needed. <Mono>--non-interactive</Mono> skips prompts and uses flag values only.
+          One-time install. Detects every supported agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires the appropriate Repowire transport for each, and installs the daemon as a user service. <Mono>--relay</Mono> opts in to the hosted relay at <Mono>repowire.io</Mono>. <Mono>--experimental-channels</Mono> enables the experimental MCP channel / ACP transport for Claude Code. <Mono>--http-mcp</Mono> enables localhost Streamable HTTP MCP at <Mono>/mcp</Mono> and generates a bearer token if needed. <Mono>--no-service</Mono> skips daemon service installation. <Mono>--non-interactive</Mono> skips prompts and uses flag values only.
         </p>
       </Cmd>
 

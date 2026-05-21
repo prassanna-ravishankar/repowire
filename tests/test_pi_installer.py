@@ -252,11 +252,11 @@ def test_agent_type_pi_registered():
 
 
 def test_command_to_backend_includes_pi():
-    """Spawn route's command->backend map auto-derives pi entry."""
-    from repowire.config.models import AgentType
-    from repowire.daemon.routes.spawn import _COMMAND_TO_BACKEND
+    """Spawn settings accepts pi as a runtime command profile."""
+    from repowire.config.models import AgentType, SpawnSettings
 
-    assert _COMMAND_TO_BACKEND.get("pi") == AgentType.PI
+    spawn = SpawnSettings(commands={AgentType.PI: "pi"})
+    assert spawn.commands[AgentType.PI] == "pi"
 
 
 # -- Parity surface: spawn_peer, kill_peer, mesh primer, ask reminder -------

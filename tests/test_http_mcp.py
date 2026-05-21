@@ -187,7 +187,7 @@ def test_http_mcp_dangerous_tools_disabled_by_default():
         spawn_tool = mcp._tool_manager._tools["spawn_peer"].fn
 
         with pytest.raises(PermissionError) as exc:
-            await spawn_tool(path="/tmp/project", command="claude")
+            await spawn_tool(path="/tmp/project", backend="claude-code")
 
         assert "spawn_peer is disabled for HTTP MCP by default" in str(exc.value)
 
@@ -210,7 +210,7 @@ def test_http_mcp_can_opt_into_dangerous_tools():
                 "display_name": "project",
                 "tmux_session": "default:project",
             }
-            result = await spawn_tool(path="/tmp/project", command="claude")
+            result = await spawn_tool(path="/tmp/project", backend="claude-code")
 
         assert "Spawned project" in result
 

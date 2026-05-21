@@ -1,6 +1,6 @@
 # First ask
 
-Open two agents in separate tmux windows. They register on session start and discover each other.
+Open two agents in separate tmux windows. Claude Code registers on session start; Codex registers after its first interaction.
 
 ```bash
 # window 1
@@ -8,6 +8,12 @@ cd ~/projects/project-a && claude
 
 # window 2
 cd ~/projects/project-b && codex
+```
+
+Send a short warmup prompt in `project-b`, then verify both peers:
+
+```bash
+repowire peer list
 ```
 
 In `project-a`, tell your local agent:

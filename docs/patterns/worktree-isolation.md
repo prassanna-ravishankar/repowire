@@ -39,7 +39,7 @@ Orchestrators commonly spawn peers on worktrees. The flow:
 ```python
 spawn_peer(
     path="/home/me/projects/project-feat-c",
-    command="claude",
+    backend="claude-code",
     circle="features",
     message="implement feat/c per spec at docs/spec-c.md, commit as you go",
 )
@@ -64,5 +64,5 @@ Or use the [`worktrunk` skill](https://github.com/AtomBeings/worktrunk) if you w
 
 ## See also
 
-- [`spawn_peer`](../reference/mcp-tools.md#spawn_peer) and the spawn allowlist in [configuration](../reference/configuration.md).
+- [`spawn_peer`](../reference/mcp-tools.md#spawn_peer) and the spawn runtime profiles in [configuration](../reference/configuration.md).
 - [Orchestrator coordination](orchestrator-coordination.md) for the dispatch side.

@@ -106,7 +106,7 @@ Installed binaries, long-running services/daemons, agent tool servers, and sourc
 
 ## Spawn flags per runtime
 
-When calling `spawn_peer(command=...)`:
+When calling `spawn_peer(backend=...)`, Repowire resolves the launch command from `daemon.spawn.commands`:
 
 - **pi**: bare `pi` (no flag needed)
 - **codex**: `codex --dangerously-bypass-approvals-and-sandbox` (bare codex hits approval prompts that block warmup)

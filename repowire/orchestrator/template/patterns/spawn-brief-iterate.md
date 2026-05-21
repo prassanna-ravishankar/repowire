@@ -19,13 +19,13 @@ Any time you're about to dispatch work. This is the baseline shape; other patter
 1. **Spawn or reuse a peer.**
    - Default: reuse if the work is continuous with their prior turn (same worktree, same concern).
    - Spawn fresh when: independent review needed, cross-model critique needed, decoupled concern, or the peer's context is already too long.
-   - MCP signature: `spawn_peer(path, command, circle="default", message=None)`. The `command` string carries the runtime choice — match to the work shape:
+   - MCP signature: `spawn_peer(path, backend, circle="default", message=None)`. The `backend` carries the runtime choice — match to the work shape:
      - **pi**: `"pi"` — orchestrator-shaped, conversational
      - **codex**: `"codex --dangerously-bypass-approvals-and-sandbox"` — bare codex blocks on approval prompts during warmup
      - **claude-code**: `"claude --dangerously-skip-permissions"`
      - **gemini**: `"gemini --yolo"`
      - **opencode**: `"opencode"`
-   - The command must be in `daemon.spawn.allowed_commands` in `~/.repowire/config.yaml` or spawn is rejected. `circle` maps to the tmux session name and can't be reassigned after spawn. `message` seeds first-turn context (task brief); required for codex peers (others ignore it).
+   - The backend must be configured in `daemon.spawn.commands` in `~/.repowire/config.yaml` or spawn is rejected. `circle` maps to the tmux session name and can't be reassigned after spawn. `message` seeds first-turn context (task brief); required for codex peers (others ignore it).
 
 2. **Brief with memory refs and stakes calibration.**
    - **Typo / one-line fix:** one-sentence brief. "Fix X at file:line per Y."

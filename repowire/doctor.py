@@ -240,23 +240,28 @@ def _check_pi() -> CheckResult:
 
 def check_spawn_allowlist(config: Config) -> CheckResult:
     spawn = config.daemon.spawn
-    if not spawn.allowed_commands and not spawn.allowed_paths:
+    commands = spawn.commands
+    if not commands and not spawn.allowed_paths:
         return CheckResult(
-            "Spawn allowlist",
+            "Spawn config",
             Status.SKIP,
             "not configured (spawn disabled)",
         )
 
     children: list[CheckResult] = []
-    for cmd in spawn.allowed_commands:
+    for backend, cmd in commands.items():
         # Allowed commands may have flags ("claude --dangerously-skip-permissions");
         # resolve the leading binary only.
         bin_name = cmd.split()[0] if cmd else cmd
         if shutil.which(bin_name):
-            children.append(CheckResult(f"command: {cmd}", Status.OK))
+            children.append(CheckResult(f"command: {backend.value} -> {cmd}", Status.OK))
         else:
             children.append(
-                CheckResult(f"command: {cmd}", Status.WARN, f"{bin_name} not on PATH"),
+                CheckResult(
+                    f"command: {backend.value} -> {cmd}",
+                    Status.WARN,
+                    f"{bin_name} not on PATH",
+                ),
             )
     for path_str in spawn.allowed_paths:
         path = Path(path_str).expanduser()
@@ -268,12 +273,12 @@ def check_spawn_allowlist(config: Config) -> CheckResult:
             )
 
     if not children:
-        return CheckResult("Spawn allowlist", Status.SKIP, "empty")
+        return CheckResult("Spawn config", Status.SKIP, "empty")
     worst = _worst(children)
     summary = (
-        f"{len(spawn.allowed_commands)} command(s), {len(spawn.allowed_paths)} path(s)"
+        f"{len(commands)} command(s), {len(spawn.allowed_paths)} path(s)"
     )
-    return CheckResult("Spawn allowlist", worst, summary, children=children)
+    return CheckResult("Spawn config", worst, summary, children=children)
 
 
 def check_auth_token(config: Config) -> CheckResult:

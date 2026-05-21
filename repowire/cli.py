@@ -95,17 +95,24 @@ def _is_interactive(non_interactive: bool) -> bool:
 
 def _detect_package_manager() -> str | None:
     """Detect how repowire was installed: 'uv', 'pipx', or 'pip'."""
+    import os
     import shutil
+    import sys
 
     repowire_bin = shutil.which("repowire")
     if not repowire_bin:
         return None
-    rp = str(Path(repowire_bin).resolve())
-    if "uv" in rp and shutil.which("uv"):
+    paths = [
+        str(Path(repowire_bin).resolve()),
+        str(Path(sys.executable).resolve()),
+        os.environ.get("VIRTUAL_ENV", ""),
+    ]
+    normalized = [path.replace("\\", "/") for path in paths if path]
+    if any("/uv/tools/repowire/" in path for path in normalized) and shutil.which("uv"):
         return "uv"
-    if "pipx" in rp and shutil.which("pipx"):
+    if any("/pipx/venvs/repowire/" in path for path in normalized) and shutil.which("pipx"):
         return "pipx"
-    if shutil.which("pip"):
+    if shutil.which("pip") or shutil.which("pip3"):
         return "pip"
     return None
 
@@ -166,6 +173,24 @@ def _enable_http_mcp(config: object) -> bool:
     return changed
 
 
+def _daemon_health_ok(host: str, port: int, *, attempts: int = 10) -> bool:
+    """Briefly poll daemon health after service install/restart."""
+    import time
+
+    import httpx
+
+    url = f"http://{host}:{port}/health"
+    for _ in range(attempts):
+        try:
+            response = httpx.get(url, timeout=0.5)
+            if response.status_code == 200:
+                return True
+        except httpx.HTTPError:
+            pass
+        time.sleep(0.2)
+    return False
+
+
 @main.command()
 @click.option("--no-service", is_flag=True, help="Skip daemon service installation")
 @click.option("--relay", is_flag=True, help="Enable hosted relay via repowire.io")
@@ -189,7 +214,7 @@ def setup(
     """One-time setup: install hooks/plugins, MCP server, and daemon service."""
     import shutil
 
-    from repowire.config.models import load_config
+    from repowire.config.models import DEFAULT_SPAWN_COMMANDS, AgentType, load_config
 
     interactive = _is_interactive(non_interactive)
     config = load_config()
@@ -209,26 +234,41 @@ def setup(
             )
         _setup_claude_code(use_channels=use_channels)
         agents_setup.append("claude-code")
+        config.daemon.spawn.commands.setdefault(
+            AgentType.CLAUDE_CODE, DEFAULT_SPAWN_COMMANDS[AgentType.CLAUDE_CODE],
+        )
 
     # Detect and set up OpenCode if opencode CLI or config exists
     if shutil.which("opencode") or (Path.home() / ".config" / "opencode").exists():
         _setup_opencode()
         agents_setup.append("opencode")
+        config.daemon.spawn.commands.setdefault(
+            AgentType.OPENCODE, DEFAULT_SPAWN_COMMANDS[AgentType.OPENCODE],
+        )
 
     # Detect and set up Codex if codex CLI available
     if shutil.which("codex"):
         _setup_codex()
         agents_setup.append("codex")
+        config.daemon.spawn.commands.setdefault(
+            AgentType.CODEX, DEFAULT_SPAWN_COMMANDS[AgentType.CODEX],
+        )
 
     # Detect and set up Gemini if gemini CLI available
     if shutil.which("gemini"):
         _setup_gemini()
         agents_setup.append("gemini")
+        config.daemon.spawn.commands.setdefault(
+            AgentType.GEMINI, DEFAULT_SPAWN_COMMANDS[AgentType.GEMINI],
+        )
 
     # Detect and set up Pi if pi CLI or config exists
     if shutil.which("pi") or (Path.home() / ".pi").exists():
         _setup_pi()
         agents_setup.append("pi")
+        config.daemon.spawn.commands.setdefault(
+            AgentType.PI, DEFAULT_SPAWN_COMMANDS[AgentType.PI],
+        )
 
     if not agents_setup:
         console.print("[yellow]No agent types detected.[/]")
@@ -308,27 +348,8 @@ def setup(
     # Save config
     config.save()
 
-    # Orchestrator workspace: prompt to scaffold (opt-in, skip if already installed)
-    try:
-        from repowire.orchestrator.workspace import init_workspace, is_installed
-
-        if not is_installed() and interactive:
-            if click.confirm(
-                "Set up the orchestrator workspace at ~/.repowire/orchestrator/?",
-                default=False,
-            ):
-                rendered, msg = init_workspace()
-                if rendered:
-                    console.print(f"[green]✓[/] {msg}")
-                    console.print(
-                        "[dim]  Launch with[/] [cyan]repowire orchestrator start[/]"
-                    )
-                else:
-                    console.print(f"[yellow]![/] {msg}")
-    except Exception as e:
-        console.print(f"[dim]Orchestrator scaffold skipped: {e}[/]")
-
     # Install daemon as system service
+    daemon_running = False
     if not no_service:
         from repowire.service.installer import get_platform, install_service
 
@@ -337,6 +358,12 @@ def setup(
             success, message = install_service()
             if success:
                 console.print(f"[green]✓[/] Daemon service installed ({platform})")
+                daemon_running = _daemon_health_ok(config.daemon.host, config.daemon.port)
+                if not daemon_running:
+                    console.print(
+                        "[yellow]![/] Service installed, but daemon health did not respond yet."
+                    )
+                    console.print("    Run 'repowire doctor' or 'repowire serve' to inspect.")
             else:
                 console.print(f"[yellow]![/] Service install failed: {message}")
                 console.print("    You can run 'repowire serve' manually instead.")
@@ -347,8 +374,10 @@ def setup(
     console.print("[green]Setup complete![/]")
     if no_service:
         console.print("Run 'repowire serve' to start the daemon manually.")
-    else:
+    elif daemon_running:
         console.print("Daemon is running. Restart your IDE to use Repowire.")
+    else:
+        console.print("Daemon service was installed, but health was not confirmed.")
 
     # Hints for optional features not yet configured
     hints = []
@@ -562,34 +591,48 @@ def _uninstall_pi() -> None:
 
 
 @main.command()
-def update() -> None:
+@click.option("--post-upgrade", is_flag=True, hidden=True)
+def update(post_upgrade: bool) -> None:
     """Update repowire to the latest version, reinstall hooks, restart daemon."""
+    import os
     import shutil
     import subprocess
 
     from repowire.installers.claude_code import check_channel_installed
 
-    old_version = __version__
+    if not post_upgrade:
+        old_version = __version__
+        pkg_mgr = _detect_package_manager()
+        if not pkg_mgr:
+            console.print("[red]Cannot detect how repowire was installed.[/]")
+            console.print("Update manually: uv tool upgrade repowire / pip install -U repowire")
+            return
 
-    pkg_mgr = _detect_package_manager()
-    if not pkg_mgr:
-        console.print("[red]Cannot detect how repowire was installed.[/]")
-        console.print("Update manually: uv tool upgrade repowire / pip install -U repowire")
-        return
+        # Upgrade package first, then exec the upgraded CLI for hook/service work.
+        console.print(f"[cyan]Upgrading via {pkg_mgr}...[/]")
+        result = subprocess.run(
+            _PKG_COMMANDS[pkg_mgr]["upgrade"], capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            console.print(f"[red]Upgrade failed:[/] {result.stderr[:200]}")
+            return
+        console.print(f"[green]✓[/] Upgraded (was {old_version})")
 
-    # Upgrade package
-    console.print(f"[cyan]Upgrading via {pkg_mgr}...[/]")
-    result = subprocess.run(
-        _PKG_COMMANDS[pkg_mgr]["upgrade"], capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        console.print(f"[red]Upgrade failed:[/] {result.stderr[:200]}")
-        return
-    console.print(f"[green]✓[/] Upgraded (was {old_version})")
+        repowire_bin = shutil.which("repowire")
+        if not repowire_bin:
+            console.print(
+                "[yellow]![/] repowire is no longer on PATH; "
+                "run repowire setup manually."
+            )
+            return
+        console.print("[dim]Continuing with upgraded repowire...[/]")
+        os.execv(repowire_bin, [repowire_bin, "update", "--post-upgrade"])
 
     # Reinstall hooks (non-interactive, preserving current channel mode)
     if shutil.which("claude"):
         _setup_claude_code(use_channels=check_channel_installed())
+    if shutil.which("opencode") or (Path.home() / ".config" / "opencode").exists():
+        _setup_opencode()
     if shutil.which("codex"):
         _setup_codex()
     if shutil.which("gemini"):
@@ -605,6 +648,13 @@ def update() -> None:
         success, msg = restart_service()
         if success:
             console.print("[green]✓[/] Daemon service restarted")
+            from repowire.config.models import load_config
+
+            config = load_config()
+            if _daemon_health_ok(config.daemon.host, config.daemon.port):
+                console.print("[green]✓[/] Daemon health confirmed")
+            else:
+                console.print("[yellow]![/] Daemon restart requested, but health was not confirmed")
         else:
             console.print(f"[yellow]![/] Service restart: {msg}")
 
@@ -816,12 +866,15 @@ def _setup_claude_code(use_channels: bool = False) -> None:
         install_hooks()
         console.print("[green]✓[/] Claude Code hooks installed")
 
-    # Remove existing repowire MCP server if present
-    subprocess.run(["claude", "mcp", "remove", "repowire"], capture_output=True)
+    try:
+        # Remove existing repowire MCP server if present
+        subprocess.run(["claude", "mcp", "remove", "repowire"], capture_output=True)
 
-    cmd = ["claude", "mcp", "add", "-s", "user", "repowire", "--", "repowire", "mcp"]
-    subprocess.run(cmd, check=True)
-    console.print("[green]✓[/] MCP server added to Claude")
+        cmd = ["claude", "mcp", "add", "-s", "user", "repowire", "--", "repowire", "mcp"]
+        subprocess.run(cmd, check=True)
+        console.print("[green]✓[/] MCP server added to Claude")
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Failed to configure Claude MCP server: {e}[/]")
 
 
 def _setup_opencode() -> None:
@@ -1129,6 +1182,17 @@ _ORCHESTRATOR_RUNTIME_COMMANDS = {
 }
 
 
+def _configured_spawn_command(backend: str) -> str | None:
+    """Return the configured spawn command for a backend/runtime profile."""
+    from repowire.config.models import AgentType, load_config
+
+    try:
+        backend_type = AgentType(backend)
+    except ValueError:
+        return None
+    return load_config().daemon.spawn.commands.get(backend_type)
+
+
 def _detect_runtime_for_orchestrator() -> str | None:
     """Pick a runtime in preference order. Returns name or None if none found.
 
@@ -1324,7 +1388,18 @@ def orchestrator_start(runtime: str | None, service: bool) -> None:
 
     circle = yaml_config.get("circle") or "default"
     backend = AgentType(selected_runtime)
-    command = yaml_config.get("command") or _ORCHESTRATOR_RUNTIME_COMMANDS[selected_runtime]
+    command = yaml_config.get("command") or _configured_spawn_command(selected_runtime)
+    if not command:
+        suggested = _ORCHESTRATOR_RUNTIME_COMMANDS[selected_runtime]
+        console.print(
+            "[red]✗[/] Orchestrator runtime is not configured in "
+            "daemon.spawn.commands."
+        )
+        console.print(
+            f"Add [cyan]daemon.spawn.commands.{selected_runtime}: "
+            f"{suggested!r}[/] to ~/.repowire/config.yaml."
+        )
+        return
 
     console.print(
         f"[cyan]Spawning orchestrator[/] "
@@ -1848,9 +1923,9 @@ def _render_peer_snapshot(snapshot: object) -> None:
 @click.argument("path", type=click.Path(exists=True), default=".")
 @click.option(
     "--backend", "-b", default="claude-code",
-    type=click.Choice(["claude-code", "opencode", "codex", "gemini"])
+    type=click.Choice(["claude-code", "opencode", "codex", "gemini", "pi"])
 )
-@click.option("--command", "-c", "cmd", help="Command to run (default: claude or opencode)")
+@click.option("--command", "-c", "cmd", help="Deprecated: explicit command override")
 @click.option("--circle", help="Circle (defaults to 'default')")
 def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> None:  # noqa: ARG001
     """Spawn a new peer in a tmux window.
@@ -1859,7 +1934,7 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
 
         repowire peer new ~/git/myproject
 
-        repowire peer new . --command="claude --dangerously-skip-permissions"
+        repowire peer new . --backend=claude-code
 
         repowire peer new ~/git/api --backend=opencode --circle=backend
     """
@@ -1868,7 +1943,13 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
 
     actual_path = str(Path(path).resolve())
     actual_circle = circle or "default"
-    actual_cmd = cmd or ""
+    actual_cmd = cmd or _configured_spawn_command(backend)
+    if not actual_cmd:
+        console.print(
+            f"[red]No daemon.spawn.commands entry for {backend!r}.[/] "
+            "Configure it in ~/.repowire/config.yaml or pass --command."
+        )
+        return
     backend_type = AgentType(backend)
 
     config = SpawnConfig(
@@ -2258,7 +2339,7 @@ def slack_start() -> None:
 # =============================================================================
 
 
-@main.group(hidden=True)
+@main.group()
 def service() -> None:
     """Manage repowire daemon as a system service."""
     pass

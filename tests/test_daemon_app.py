@@ -80,7 +80,7 @@ class TestAppFactory:
         assert r.status_code == 200
         data = r.json()
         assert "enabled" in data
-        assert data["enabled"] is False  # default: no allowed_commands
+        assert data["enabled"] is False  # default: no spawn commands
 
 
 class TestSpawnConfig:
@@ -92,10 +92,10 @@ class TestSpawnConfig:
             assert r.json()["enabled"] is False
         cleanup_deps()
 
-    async def test_spawn_requires_both_lists(self, tmp_path):
-        """Spawn is only enabled if BOTH allowed_commands and allowed_paths are set."""
+    async def test_spawn_requires_commands_and_paths(self, tmp_path):
+        """Spawn is only enabled if commands and allowed_paths are set."""
         cfg = Config(daemon=DaemonConfig(
-            spawn={"allowed_commands": ["claude"], "allowed_paths": []},
+            spawn={"commands": {"claude-code": "claude"}, "allowed_paths": []},
         ))
         app = _make_app(tmp_path, config=cfg)
         t = ASGITransport(app=app)

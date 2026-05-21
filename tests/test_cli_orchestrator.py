@@ -116,6 +116,7 @@ def test_start_spawns_with_role_orchestrator(
     monkeypatch.setattr(
         "repowire.cli._detect_runtime_for_orchestrator", lambda: "pi"
     )
+    monkeypatch.setattr("repowire.cli._configured_spawn_command", lambda backend: "pi")
 
     result = runner.invoke(main, ["orchestrator", "start"])
     assert result.exit_code == 0, result.output
@@ -142,6 +143,16 @@ def _stub_start_deps(monkeypatch: pytest.MonkeyPatch, runtime: str) -> MagicMock
     )
     monkeypatch.setattr("httpx.Client", httpx_get_mock)
     monkeypatch.setattr("repowire.cli._detect_runtime_for_orchestrator", lambda: runtime)
+    monkeypatch.setattr(
+        "repowire.cli._configured_spawn_command",
+        lambda backend: {
+            "pi": "pi",
+            "claude-code": "claude --dangerously-skip-permissions",
+            "codex": "codex --dangerously-bypass-approvals-and-sandbox",
+            "gemini": "gemini --yolo",
+            "opencode": "opencode",
+        }.get(backend),
+    )
     return spawn_mock
 
 

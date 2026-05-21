@@ -82,6 +82,7 @@ async def test_health_and_spawn_config(client: AsyncRepowireClient):
 
     spawn_config = await client.spawn_config()
     assert spawn_config.enabled is False
+    assert spawn_config.commands == {}
     assert spawn_config.allowed_commands == []
 
 
@@ -290,13 +291,13 @@ async def test_spawn_omits_default_circle_for_daemon_default():
         return_value={"ok": True, "display_name": "proj-codex", "tmux_session": "default"}
     )
 
-    result = await client.spawn("/tmp/proj", "codex", message="warm up")
+    result = await client.spawn("/tmp/proj", backend="codex", message="warm up")
 
     assert result.display_name == "proj-codex"
     client._request.assert_awaited_once_with(
         "POST",
         "/spawn",
-        json={"path": "/tmp/proj", "command": "codex", "message": "warm up"},
+        json={"path": "/tmp/proj", "backend": "codex", "message": "warm up"},
     )
 
 

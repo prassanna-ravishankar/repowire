@@ -1405,21 +1405,8 @@ function OpenInEditorButton({ path }: { path: string }) {
   );
 }
 
-const BACKEND_BY_COMMAND_HEAD: Record<string, string> = {
-  claude: "claude-code",
-  opencode: "opencode",
-  codex: "codex",
-  gemini: "gemini",
-  pi: "pi",
-};
-
-function backendForCommand(cmd: string): string | null {
-  const head = cmd.trim().split(/\s+/)[0] ?? "";
-  return BACKEND_BY_COMMAND_HEAD[head] ?? null;
-}
-
 function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }) {
-  const [allowedCommands, setAllowedCommands] = useState<string[] | null>(null);
+  const [configuredBackends, setConfiguredBackends] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1429,31 +1416,32 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled || !data) return;
-        setAllowedCommands(Array.isArray(data.allowed_commands) ? data.allowed_commands : []);
+        setConfiguredBackends(
+          data.commands && typeof data.commands === "object" ? Object.keys(data.commands) : []
+        );
       })
       .catch(() => {
-        if (!cancelled) setAllowedCommands([]);
+        if (!cancelled) setConfiguredBackends([]);
       });
     return () => {
       cancelled = true;
     };
   }, [apiBase]);
 
-  // Map allowed_commands → unique backends, filter out current backend.
+  // Map configured runtimes → unique backends, filter out current backend.
   const options = useMemo(() => {
-    if (!allowedCommands) return [];
+    if (!configuredBackends) return [];
     const seen = new Set<string>();
     const out: string[] = [];
-    for (const cmd of allowedCommands) {
-      const backend = backendForCommand(cmd);
+    for (const backend of configuredBackends) {
       if (!backend || backend === peer.backend || seen.has(backend)) continue;
       seen.add(backend);
       out.push(backend);
     }
     return out;
-  }, [allowedCommands, peer.backend]);
+  }, [configuredBackends, peer.backend]);
 
-  if (allowedCommands === null || options.length === 0) return null;
+  if (configuredBackends === null || options.length === 0) return null;
 
   async function onChange(event: React.ChangeEvent<HTMLSelectElement>) {
     const newBackend = event.target.value;

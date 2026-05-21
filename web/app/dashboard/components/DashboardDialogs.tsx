@@ -7,8 +7,13 @@ import { StatusLabel } from "./status";
 
 interface SpawnConfig {
   enabled: boolean;
-  allowed_commands: string[];
+  commands?: Record<string, string>;
   allowed_paths: string[];
+}
+
+function backendOptions(config: SpawnConfig | null): string[] {
+  if (!config) return [];
+  return Object.keys(config.commands ?? {});
 }
 
 const inputClass = "w-full rounded border border-border-faint bg-surface-container-lowest px-3 py-2 font-mono text-base text-on-surface outline-none placeholder:text-outline focus:border-primary focus:ring-1 focus:ring-primary md:text-sm";
@@ -17,7 +22,7 @@ export function SpawnDialog({ apiBase, onClose, onSpawned }: { apiBase: string; 
   const [config, setConfig] = useState<SpawnConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [path, setPath] = useState("");
-  const [command, setCommand] = useState("");
+  const [backend, setBackend] = useState("");
   const [circle, setCircle] = useState("default");
   const [error, setError] = useState<string | null>(null);
   const [spawning, setSpawning] = useState(false);
@@ -30,24 +35,25 @@ export function SpawnDialog({ apiBase, onClose, onSpawned }: { apiBase: string; 
       })
       .then((data: SpawnConfig) => {
         setConfig(data);
-        if (data.allowed_commands.length > 0) setCommand(data.allowed_commands[0]);
+        const options = backendOptions(data);
+        if (options.length > 0) setBackend(options[0]);
         setLoading(false);
       })
       .catch(() => {
-        setConfig({ enabled: false, allowed_commands: [], allowed_paths: [] });
+        setConfig({ enabled: false, commands: {}, allowed_paths: [] });
         setLoading(false);
       });
   }, [apiBase]);
 
   const handleSpawn = async () => {
-    if (!path.trim() || !command || spawning) return;
+    if (!path.trim() || !backend || spawning) return;
     setError(null);
     setSpawning(true);
     try {
       const res = await fetch(`${apiBase}/spawn`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: path.trim(), command, circle }),
+        body: JSON.stringify({ path: path.trim(), backend, circle }),
       });
       const data = await res.json();
       if (!res.ok) setError(data.detail || `Error ${res.status}`);
@@ -71,16 +77,16 @@ export function SpawnDialog({ apiBase, onClose, onSpawned }: { apiBase: string; 
       ) : config && !config.enabled ? (
         <div className="space-y-2 py-4 text-sm text-outline">
           <p className="text-on-surface-variant">Spawn is disabled.</p>
-          <p className="font-mono text-xs">Set daemon.spawn.allowed_commands and daemon.spawn.allowed_paths in ~/.repowire/config.yaml</p>
+          <p className="font-mono text-xs">Set daemon.spawn.commands and daemon.spawn.allowed_paths in ~/.repowire/config.yaml</p>
         </div>
       ) : (
         <div className="space-y-4">
           <Field label="Project path">
             <input value={path} onChange={(event) => setPath(event.target.value)} placeholder="~/git/my-project" className={inputClass} />
           </Field>
-          <Field label="Command">
-            <select value={command} onChange={(event) => setCommand(event.target.value)} className={inputClass}>
-              {config?.allowed_commands.map((cmd) => <option key={cmd} value={cmd}>{cmd}</option>)}
+          <Field label="Backend">
+            <select value={backend} onChange={(event) => setBackend(event.target.value)} className={inputClass}>
+              {backendOptions(config).map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
           </Field>
           <Field label="Circle">
@@ -96,7 +102,7 @@ export function SpawnDialog({ apiBase, onClose, onSpawned }: { apiBase: string; 
         <div className="mt-5 flex justify-end">
           <button
             onClick={handleSpawn}
-            disabled={!path.trim() || !command || spawning}
+            disabled={!path.trim() || !backend || spawning}
             className="inline-flex items-center gap-2 rounded bg-primary px-4 py-2 font-mono text-xs font-bold uppercase tracking-[0.12em] text-on-primary transition-[filter,transform] hover:brightness-110 active:scale-[0.98] disabled:opacity-40"
           >
             {spawning ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
