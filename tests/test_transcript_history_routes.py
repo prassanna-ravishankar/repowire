@@ -89,7 +89,13 @@ async def test_peer_with_no_transcripts_returns_empty(tmp_path: Path):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
                 res = await ac.get(f"/peers/{name}/transcript")
         assert res.status_code == 200
-        assert res.json() == {"turns": [], "next_before": None}
+        assert res.json() == {
+            "turns": [],
+            "next_before": None,
+            "history_status": "unavailable",
+            "history_backend": "claude-code",
+            "history_message": "No Claude Code transcript history found for this peer path.",
+        }
     finally:
         cleanup_deps()
 

@@ -58,6 +58,15 @@ def _write_session(projects_root: Path, peer_path: str, entries: list[dict]) -> 
             f.write(json.dumps(entry) + "\n")
 
 
+def _write_codex_session(sessions_root: Path, entries: list[dict]) -> None:
+    session_dir = sessions_root / "2026" / "05" / "21"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    out = session_dir / "rollout-2026-05-21T08-00-00-codex-session.jsonl"
+    with open(out, "w") as f:
+        for entry in entries:
+            f.write(json.dumps(entry) + "\n")
+
+
 @pytest.mark.anyio
 async def test_timeline_merges_history_and_realtime_events(tmp_path: Path) -> None:
     app, registry = _make_app(tmp_path)
@@ -132,6 +141,67 @@ async def test_timeline_merges_history_and_realtime_events(tmp_path: Path) -> No
         ]
         assert body["items"][1]["session_id"] == "s1"
         assert body["items"][1]["turn_id"] == "assistant-turn"
+    finally:
+        cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_timeline_loads_codex_history_with_status(tmp_path: Path) -> None:
+    app, registry = _make_app(tmp_path)
+    sessions_root = tmp_path / "codex-sessions"
+    peer_path = "/peer/work"
+    try:
+        _peer_id, name = await registry.allocate_and_register(
+            circle="global",
+            backend=AgentType.CODEX,
+            path=peer_path,
+            pane_id=None,
+            tmux_session=None,
+            metadata={},
+            machine="test",
+        )
+        _write_codex_session(
+            sessions_root,
+            [
+                {
+                    "type": "session_meta",
+                    "payload": {"id": "codex-session", "cwd": peer_path},
+                },
+                {
+                    "type": "response_item",
+                    "timestamp": "2026-05-21T08:00:01Z",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "codex prompt"}],
+                    },
+                },
+                {
+                    "type": "turn_context",
+                    "payload": {"turn_id": "codex-turn", "cwd": peer_path},
+                },
+                {
+                    "type": "response_item",
+                    "timestamp": "2026-05-21T08:00:02Z",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "codex answer"}],
+                    },
+                },
+            ],
+        )
+
+        with patch("repowire.session.history._codex_sessions_dir", return_value=sessions_root):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+                res = await ac.get(f"/peers/{name}/timeline")
+
+        assert res.status_code == 200
+        body = res.json()
+        assert body["history_status"] == "available"
+        assert body["history_backend"] == "codex"
+        assert [item["text"] for item in body["items"]] == ["codex prompt", "codex answer"]
+        assert body["items"][1]["turn_id"] == "codex-turn"
     finally:
         cleanup_deps()
 

@@ -15,7 +15,9 @@ from repowire.session.history import (
     _encode_cwd,
     decode_cursor,
     discover_claude_sessions,
+    discover_codex_sessions,
     encode_cursor,
+    load_peer_history,
     load_peer_turns,
     page_turns,
 )
@@ -246,11 +248,136 @@ class TestLoadPeerTurnsClaude:
 
 
 class TestLoadPeerTurnsBackends:
-    def test_codex_returns_empty_in_v1(self):
-        assert load_peer_turns("/any/path", "codex") == []
-
     def test_gemini_returns_empty(self):
         assert load_peer_turns("/any/path", "gemini") == []
+
+    def test_gemini_history_reports_unsupported(self):
+        result = load_peer_history("/any/path", "gemini")
+        assert result.status == "unsupported"
+        assert result.turns == []
+
+
+class TestLoadPeerTurnsCodex:
+    def _setup(self, tmp_path: Path, entries: list[dict]) -> tuple[str, Path]:
+        peer_path = "/peer/work"
+        sessions_root = tmp_path / "sessions"
+        session_dir = sessions_root / "2026" / "05" / "21"
+        session_dir.mkdir(parents=True)
+        _write_jsonl(session_dir / "rollout-2026-05-21T08-00-00-codex-session.jsonl", entries)
+        return peer_path, sessions_root
+
+    def test_discovers_rollouts_by_session_meta_cwd(self, tmp_path: Path):
+        peer_path = "/peer/work"
+        peer_path, sessions_root = self._setup(
+            tmp_path,
+            [
+                {
+                    "type": "session_meta",
+                    "payload": {"id": "codex-session", "cwd": peer_path},
+                },
+            ],
+        )
+
+        with patch("repowire.session.history._codex_sessions_dir", return_value=sessions_root):
+            found = discover_codex_sessions(peer_path)
+
+        assert [path.name for path in found] == [
+            "rollout-2026-05-21T08-00-00-codex-session.jsonl"
+        ]
+
+    def test_basic_codex_replay_newest_first(self, tmp_path: Path):
+        peer_path = "/peer/work"
+        peer_path, sessions_root = self._setup(
+            tmp_path,
+            [
+                {
+                    "type": "session_meta",
+                    "timestamp": "2026-05-21T08:00:00Z",
+                    "payload": {"id": "codex-session", "cwd": peer_path},
+                },
+                {
+                    "type": "response_item",
+                    "timestamp": "2026-05-21T08:00:01Z",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "first q"}],
+                    },
+                },
+                {
+                    "type": "turn_context",
+                    "timestamp": "2026-05-21T08:00:01Z",
+                    "payload": {"turn_id": "turn-1", "cwd": peer_path},
+                },
+                {
+                    "type": "response_item",
+                    "timestamp": "2026-05-21T08:00:02Z",
+                    "payload": {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "arguments": json.dumps({"cmd": "pytest tests/test_x.py"}),
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "timestamp": "2026-05-21T08:00:03Z",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "first a"}],
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "timestamp": "2026-05-21T08:01:01Z",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "second q"}],
+                    },
+                },
+                {
+                    "type": "turn_context",
+                    "timestamp": "2026-05-21T08:01:01Z",
+                    "payload": {"turn_id": "turn-2", "cwd": peer_path},
+                },
+                {
+                    "type": "response_item",
+                    "timestamp": "2026-05-21T08:01:03Z",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "second a"}],
+                    },
+                },
+            ],
+        )
+
+        with patch("repowire.session.history._codex_sessions_dir", return_value=sessions_root):
+            result = load_peer_history(peer_path, "codex")
+
+        assert result.status == "available"
+        assert result.backend == "codex"
+        assert [t.text for t in result.turns] == ["second a", "second q", "first a", "first q"]
+        assert result.turns[0].turn_id == "turn-2"
+        first_assistant = next(t for t in result.turns if t.text == "first a")
+        assert first_assistant.tool_calls == [
+            {"name": "exec_command", "input": "pytest tests/test_x.py"}
+        ]
+
+    def test_codex_acp_reports_degraded_when_no_rollout_matches(self, tmp_path: Path):
+        sessions_root = tmp_path / "sessions"
+        sessions_root.mkdir()
+        with patch("repowire.session.history._codex_sessions_dir", return_value=sessions_root):
+            result = load_peer_history(
+                "/peer/work",
+                "codex",
+                metadata={"acp": {"command": "codex-acp", "cwd": "/peer/work"}},
+            )
+
+        assert result.status == "unavailable"
+        assert result.backend == "codex-acp"
+        assert result.turns == []
 
 
 def _t(ts: str, session_id: str = "s", line_offset: int = 0, text: str | None = None) -> Turn:

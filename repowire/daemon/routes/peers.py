@@ -21,7 +21,7 @@ from repowire.daemon.peer_registry import (
 )
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
-from repowire.session.history import load_peer_turns, page_turns
+from repowire.session.history import load_peer_history, page_turns
 from repowire.session.timeline import TimelineItem, build_session_timeline
 
 router = APIRouter(tags=["peers"])
@@ -453,6 +453,9 @@ class TranscriptTurn(BaseModel):
 class TranscriptResponse(BaseModel):
     turns: list[TranscriptTurn]
     next_before: str | None = None
+    history_status: str = "available"
+    history_backend: str = "claude-code"
+    history_message: str = ""
 
 
 class SessionTimelineItem(BaseModel):
@@ -474,6 +477,9 @@ class SessionTimelineResponse(BaseModel):
     peer_id: str
     peer_name: str
     session_id: str | None = None
+    history_status: str = "available"
+    history_backend: str = "claude-code"
+    history_message: str = ""
     items: list[SessionTimelineItem]
 
 
@@ -507,10 +513,9 @@ async def get_peer_timeline(
 ) -> SessionTimelineResponse:
     """Merged session timeline for dashboard/control callers.
 
-    v0.13-compatible slice: persisted Claude transcript turns and buffered
+    v0.13-compatible slice: persisted backend history turns and buffered
     realtime ``chat_turn``/``chat_turn_delta`` events are normalized to one
-    session/turn identity model. Existing transcript and event endpoints remain
-    unchanged.
+    session/turn identity model. Existing event endpoints remain unchanged.
     """
     peer_registry = get_peer_registry()
     peer = await peer_registry.get_peer(name, circle=circle)
@@ -520,9 +525,9 @@ async def get_peer_timeline(
             detail=f"Peer not found: {name}",
         )
 
-    history_turns = await asyncio.to_thread(load_peer_turns, peer.path, peer.backend)
+    history = await asyncio.to_thread(load_peer_history, peer.path, peer.backend, peer.metadata)
     items = build_session_timeline(
-        history_turns=history_turns,
+        history_turns=history.turns,
         events=peer_registry.get_events(),
         peer_id=peer.peer_id,
         peer_names={peer.display_name, peer.peer_id, name},
@@ -534,6 +539,9 @@ async def get_peer_timeline(
         peer_id=peer.peer_id,
         peer_name=peer.display_name,
         session_id=session_id,
+        history_status=history.status,
+        history_backend=history.backend,
+        history_message=history.message,
         items=[_timeline_item_response(item) for item in items],
     )
 
@@ -564,9 +572,8 @@ async def get_peer_transcript(
 ) -> TranscriptResponse:
     """Paginated newest-first transcript for a peer's working directory.
 
-    v1 reads Claude Code JSONLs under ~/.claude/projects/<encoded-cwd>/.
-    Codex peers return an empty list (follow-up: rollout header scan).
-    Returns 200 with empty turns when no transcript files exist.
+    Reads supported backend-local history and returns explicit unsupported or
+    unavailable status when no compatible history source exists.
     """
     peer_registry = get_peer_registry()
     peer = await peer_registry.get_peer(name, circle=circle)
@@ -576,7 +583,8 @@ async def get_peer_transcript(
             detail=f"Peer not found: {name}",
         )
 
-    turns = await asyncio.to_thread(load_peer_turns, peer.path, peer.backend)
+    history = await asyncio.to_thread(load_peer_history, peer.path, peer.backend, peer.metadata)
+    turns = history.turns
     if session_id:
         turns = [turn for turn in turns if turn.session_id == session_id]
     page, next_before = page_turns(turns, limit, before)
@@ -593,6 +601,9 @@ async def get_peer_transcript(
             for t in page
         ],
         next_before=next_before,
+        history_status=history.status,
+        history_backend=history.backend,
+        history_message=history.message,
     )
 
 
