@@ -106,9 +106,10 @@ async def test_notify_routes_to_acp_and_discards_reply() -> None:
         message_router=ws_router,
         acp_manager=acp_manager,
     )
-    status = await router.send_notify(_notify_envelope(target))
+    result = await router.send_notify(_notify_envelope(target))
 
-    assert status == "sent"
+    assert result.status == "sent"
+    assert result.hook_delivery is None
     await _wait_for_await(acp_manager.prompt)
     acp_manager.prompt.assert_awaited_once()
     ws_router.send_notification.assert_not_awaited()
@@ -130,9 +131,9 @@ async def test_flag_off_acp_peer_falls_through_to_websocket() -> None:
     )
 
     await router.send_ask(_ask_envelope(target), on_acp_complete=AsyncMock())
-    status = await router.send_notify(_notify_envelope(target))
+    result = await router.send_notify(_notify_envelope(target))
 
-    assert status == "sent"
+    assert result.status == "sent"
     acp_manager.prompt.assert_not_awaited()
     ws_router.send_ask.assert_awaited_once()
     ws_router.send_notification.assert_awaited_once()

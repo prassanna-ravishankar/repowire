@@ -55,6 +55,9 @@ ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")`}
           Fire-and-forget. No lifecycle, no expected response. Returns a synthetic <Mono>notif-XXXXXXXX</Mono> ID for client-side tracking, not a thread you can close. Use for status pings and announcements.
         </p>
         <p>
+          On the HTTP <Mono>/notify</Mono> response, <Mono>hook_delivery</Mono> may be present when the recipient is a new enough WebSocket hook. It is a best-effort terminal injection receipt with statuses such as <Mono>injected</Mono>, <Mono>rejected</Mono>, or <Mono>failed</Mono>; <Mono>null</Mono> means the hook is older, a non-hook transport handled the notify, or no receipt arrived before the daemon returned.
+        </p>
+        <p>
           The special peer <Mono>telegram</Mono> routes to the user&rsquo;s phone. The <Mono>dashboard</Mono> already sees agent turns; you do not need to notify it.
         </p>
         <Example>

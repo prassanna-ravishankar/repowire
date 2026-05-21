@@ -296,6 +296,10 @@ async def _handle_message(
         state = get_app_state()
         state.transport.resolve_pong(session_id, data)
 
+    elif msg_type == "delivery_ack":
+        state = get_app_state()
+        state.transport.resolve_delivery_ack(session_id, data)
+
     elif msg_type == "error":
         correlation_id = data.get("correlation_id")
         error = data.get("error", "Unknown error")

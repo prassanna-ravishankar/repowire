@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from subprocess import CompletedProcess
 from unittest.mock import AsyncMock, patch
@@ -55,6 +56,32 @@ class TestHandleAskAndNotify:
         mock_send.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_notify_with_delivery_id_acks_injected(self):
+        websocket = AsyncMock()
+        with (
+            patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=True),
+            patch("repowire.hooks.websocket_hook._tmux_send_keys", return_value=True),
+        ):
+            await websocket_hook.handle_message(
+                {
+                    "type": "notify",
+                    "delivery_id": "notif-delivery-1",
+                    "from_peer": "alice",
+                    "text": "fyi",
+                },
+                "%5",
+                websocket,
+            )
+
+        frame = json.loads(websocket.send.await_args.args[0])
+        assert frame == {
+            "type": "delivery_ack",
+            "delivery_id": "notif-delivery-1",
+            "message_type": "notify",
+            "status": "injected",
+        }
+
+    @pytest.mark.asyncio
     async def test_notify_tmux_failure_logs_drop_without_daemon_error(self, caplog):
         websocket = AsyncMock()
         with (
@@ -79,6 +106,32 @@ class TestHandleAskAndNotify:
         assert "to=bob" in caplog.text
 
     @pytest.mark.asyncio
+    async def test_notify_with_delivery_id_acks_tmux_failure(self):
+        websocket = AsyncMock()
+        with (
+            patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=True),
+            patch("repowire.hooks.websocket_hook._tmux_send_keys", return_value=False),
+        ):
+            await websocket_hook.handle_message(
+                {
+                    "type": "notify",
+                    "delivery_id": "notif-delivery-2",
+                    "from_peer": "alice",
+                    "to_peer": "bob",
+                    "text": "fyi",
+                },
+                "%5",
+                websocket,
+            )
+
+        frame = json.loads(websocket.send.await_args.args[0])
+        assert frame["type"] == "delivery_ack"
+        assert frame["delivery_id"] == "notif-delivery-2"
+        assert frame["message_type"] == "notify"
+        assert frame["status"] == "failed"
+        assert "Failed to send keys" in frame["detail"]
+
+    @pytest.mark.asyncio
     async def test_notify_pane_safety_drop_has_no_daemon_error_frame(self, caplog):
         websocket = AsyncMock()
         with patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=False):
@@ -98,6 +151,30 @@ class TestHandleAskAndNotify:
         assert "Inbound delivery dropped: pane %5 not safe for notify injection" in caplog.text
         assert "from=alice" in caplog.text
         assert "to=bob" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_notify_with_delivery_id_acks_pane_rejection(self):
+        websocket = AsyncMock()
+        with patch("repowire.hooks.websocket_hook._is_pane_safe", return_value=False):
+            with pytest.raises(websocket_hook.PaneUnsafeError):
+                await websocket_hook.handle_message(
+                    {
+                        "type": "notify",
+                        "delivery_id": "notif-delivery-3",
+                        "from_peer": "alice",
+                        "to_peer": "bob",
+                        "text": "fyi",
+                    },
+                    "%5",
+                    websocket,
+                )
+
+        frame = json.loads(websocket.send.await_args.args[0])
+        assert frame["type"] == "delivery_ack"
+        assert frame["delivery_id"] == "notif-delivery-3"
+        assert frame["message_type"] == "notify"
+        assert frame["status"] == "rejected"
+        assert "not safe for injection" in frame["detail"]
 
     @pytest.mark.asyncio
     async def test_notify_injection_includes_recipient_when_provided(self):

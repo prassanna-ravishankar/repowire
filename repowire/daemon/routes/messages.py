@@ -78,6 +78,13 @@ class NotifyResponse(BaseModel):
     from_peer_name: str | None = None
     to_peer_id: str | None = None
     to_peer_name: str | None = None
+    hook_delivery: dict | None = Field(
+        None,
+        description=(
+            "Optional ws-hook terminal injection receipt. Missing means the "
+            "recipient hook is older or did not ack before the daemon returned."
+        ),
+    )
 
 
 class BroadcastRequest(BaseModel):
@@ -224,6 +231,7 @@ async def notify_peer(
             from_peer_name=delivery.from_peer_name,
             to_peer_id=delivery.to_peer_id,
             to_peer_name=delivery.to_peer_name,
+            hook_delivery=delivery.hook_delivery,
         )
     except ValueError as e:
         msg = str(e)

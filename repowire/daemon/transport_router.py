@@ -57,6 +57,14 @@ class NotifyEnvelope:
     attachments: tuple[AttachmentRef, ...] = ()
 
 
+@dataclass(frozen=True)
+class NotifyTransportResult:
+    """Transport handoff plus optional hook-level delivery receipt."""
+
+    status: Literal["sent", "queued"]
+    hook_delivery: dict[str, Any] | None = None
+
+
 class AskCompletion(Protocol):
     def __call__(
         self,
@@ -104,7 +112,7 @@ class WebSocketPeerTransport:
     async def send_notify(
         self,
         envelope: NotifyEnvelope,
-    ) -> Literal["sent", "queued"]:
+    ) -> NotifyTransportResult:
         delivery_status: Literal["sent", "queued"] = (
             "queued" if envelope.target.status == PeerStatus.BUSY else "sent"
         )
@@ -120,7 +128,7 @@ class WebSocketPeerTransport:
                 "attachments": [a.model_dump(exclude_none=True) for a in envelope.attachments],
             },
         )
-        await self._router.send_notification(
+        hook_delivery = await self._router.send_notification(
             from_peer=envelope.from_peer_name,
             to_session_id=envelope.target.peer_id,
             to_peer_name=envelope.target.display_name,
@@ -130,7 +138,9 @@ class WebSocketPeerTransport:
             ),
             attachments=list(envelope.attachments),
         )
-        return delivery_status
+        if not isinstance(hook_delivery, dict):
+            hook_delivery = None
+        return NotifyTransportResult(status=delivery_status, hook_delivery=hook_delivery)
 
 
 class AcpPeerTransport:
@@ -166,7 +176,7 @@ class AcpPeerTransport:
         self,
         envelope: NotifyEnvelope,
         decision: AcpRouteDecision,
-    ) -> Literal["sent"]:
+    ) -> NotifyTransportResult:
         if decision is None or decision.spec is None:
             raise RuntimeError("ACP transport selected without an ACP route")
 
@@ -187,7 +197,7 @@ class AcpPeerTransport:
             text=_text_with_attachment_fallback(envelope.text, envelope.attachments),
             on_complete=_drop_result,
         )
-        return "sent"
+        return NotifyTransportResult(status="sent")
 
 
 class PeerTransportRouter:
@@ -225,7 +235,7 @@ class PeerTransportRouter:
             return
         await self._ws.send_ask(envelope)
 
-    async def send_notify(self, envelope: NotifyEnvelope) -> Literal["sent", "queued"]:
+    async def send_notify(self, envelope: NotifyEnvelope) -> NotifyTransportResult:
         decision = self._acp_decision(envelope.target)
         if decision is not None:
             assert self._acp is not None

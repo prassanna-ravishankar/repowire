@@ -6,6 +6,7 @@ Routes messages via WebSocket transport.
 import asyncio
 import logging
 from typing import Any
+from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.query_tracker import QueryTracker
@@ -113,17 +114,20 @@ class MessageRouter:
         text: str,
         intended_recipient_name: str | None = None,
         attachments: list[AttachmentRef] | list[dict[str, Any]] | None = None,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         """Send a plain FYI notification (fire-and-forget, no lifecycle).
 
-        Wire shape: {type: notify, from_peer, text}. Use send_ask for
-        ask-lifecycle messages.
+        Wire shape: {type: notify, delivery_id, from_peer, text}. Newer hooks
+        may return an optional delivery_ack frame describing terminal injection
+        (injected/rejected/failed). Older hooks ignore delivery_id, so a missing
+        ack is not an error.
 
         Raises:
             TransportError: If send fails
         """
         message: dict[str, Any] = {
             "type": "notify",
+            "delivery_id": f"notif-delivery-{uuid4().hex[:8]}",
             "from_peer": from_peer,
             "to_peer": to_peer_name,
             "text": text,
@@ -139,8 +143,20 @@ class MessageRouter:
             message["to_peer"],
             self._transport.get_connection_pane_id(to_session_id),
         )
-        await self._transport.send(to_session_id, message)
-        logger.info(f"Notification sent: {from_peer} -> {to_peer_name}")
+        delivery_ack = await self._transport.send_and_wait_delivery_ack(
+            to_session_id,
+            message,
+        )
+        if delivery_ack is None:
+            logger.info(f"Notification sent: {from_peer} -> {to_peer_name}")
+        else:
+            logger.info(
+                "Notification sent: %s -> %s (hook_delivery=%s)",
+                from_peer,
+                to_peer_name,
+                delivery_ack.get("status"),
+            )
+        return delivery_ack
 
     async def send_ask(
         self,

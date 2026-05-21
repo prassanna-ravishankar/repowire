@@ -40,6 +40,7 @@ class WebSocketTransport:
         self._connections: dict[str, ConnectionInfo] = {}
         self._lock = asyncio.Lock()
         self._pong_futures: dict[str, asyncio.Future[dict]] = {}
+        self._delivery_ack_futures: dict[tuple[str, str], asyncio.Future[dict]] = {}
 
     async def connect(
         self,
@@ -110,6 +111,40 @@ class WebSocketTransport:
             logger.error(f"Failed to send message to {session_id}: {e}")
             raise TransportError(f"Send failed: {e}") from e
 
+    async def send_and_wait_delivery_ack(
+        self,
+        session_id: str,
+        message: dict[str, Any],
+        *,
+        timeout: float = 0.75,
+    ) -> dict[str, Any] | None:
+        """Send a message and wait briefly for an optional hook delivery ack.
+
+        The ack is best-effort and only supported by newer hooks. A timeout
+        returns ``None`` so legacy fire-and-forget notify behavior is preserved.
+        """
+        delivery_id = message.get("delivery_id")
+        if not isinstance(delivery_id, str) or not delivery_id:
+            await self.send(session_id, message)
+            return None
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict] = loop.create_future()
+        key = (session_id, delivery_id)
+        self._delivery_ack_futures[key] = future
+        try:
+            await self.send(session_id, message)
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.debug(
+                "Timed out waiting for delivery ack from %s (%s)",
+                session_id,
+                delivery_id,
+            )
+            return None
+        finally:
+            self._delivery_ack_futures.pop(key, None)
+
     def is_connected(self, session_id: str) -> bool:
         """Check if session has active connection."""
         return session_id in self._connections
@@ -154,5 +189,15 @@ class WebSocketTransport:
             data: Pong message data
         """
         future = self._pong_futures.pop(session_id, None)
+        if future and not future.done():
+            future.set_result(data)
+
+    def resolve_delivery_ack(self, session_id: str, data: dict[str, Any]) -> None:
+        """Resolve a pending hook delivery ack future, if one exists."""
+        delivery_id = data.get("delivery_id")
+        if not isinstance(delivery_id, str):
+            logger.warning("Delivery ack from %s missing delivery_id, dropping", session_id)
+            return
+        future = self._delivery_ack_futures.pop((session_id, delivery_id), None)
         if future and not future.done():
             future.set_result(data)

@@ -89,6 +89,12 @@ notify_peer(peer_name: str, message: str, circle: str | None = None, attachments
 
 Fire-and-forget. No lifecycle, no expected response. Returns a synthetic `notif-XXXXXXXX` ID for client-side tracking, not a thread you can close. Use for status pings and announcements.
 
+On the HTTP `/notify` response, `hook_delivery` may be present when the
+recipient is a new enough WebSocket hook. It is a best-effort terminal injection
+receipt with statuses such as `injected`, `rejected`, or `failed`; `null` means
+the hook is older, a non-hook transport handled the notify, or no receipt
+arrived before the daemon returned.
+
 Peer resolution mirrors `ask`: defaults to the caller's circle, except for peers whose role bypasses circles (`orchestrator`, `service`, human surfaces) which resolve mesh-wide. Pass `circle="<name>"` to target a different circle.
 
 The special peer `telegram` routes to the user's phone. The `dashboard` already sees agent turns; you do not need to notify it. Both are human-role peers and resolve mesh-wide regardless of your circle.

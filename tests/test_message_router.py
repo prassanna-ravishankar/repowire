@@ -14,8 +14,10 @@ from repowire.daemon.websocket_transport import TransportError, WebSocketTranspo
 def transport():
     t = MagicMock(spec=WebSocketTransport)
     t.send = AsyncMock()
+    t.send_and_wait_delivery_ack = AsyncMock(return_value=None)
     t.is_connected = MagicMock(return_value=True)
     t.get_all_sessions = MagicMock(return_value=[])
+    t.get_connection_pane_id = MagicMock(return_value=None)
     return t
 
 
@@ -32,9 +34,10 @@ def router(transport, tracker):
 class TestSendNotification:
     async def test_sends_to_transport(self, router, transport):
         await router.send_notification("sender", "sid-1", "recipient", "hello")
-        transport.send.assert_called_once()
-        msg = transport.send.call_args[0][1]
+        transport.send_and_wait_delivery_ack.assert_called_once()
+        msg = transport.send_and_wait_delivery_ack.call_args[0][1]
         assert msg["type"] == "notify"
+        assert msg["delivery_id"].startswith("notif-delivery-")
         assert msg["from_peer"] == "sender"
         assert msg["to_peer"] == "recipient"
         assert msg["text"] == "hello"
@@ -52,7 +55,7 @@ class TestSendNotification:
                 "content_type": "image/png",
             }],
         )
-        msg = transport.send.call_args[0][1]
+        msg = transport.send_and_wait_delivery_ack.call_args[0][1]
         assert msg["attachments"] == [{
             "id": "att-1",
             "path": "/tmp/a.png",
@@ -60,8 +63,20 @@ class TestSendNotification:
             "content_type": "image/png",
         }]
 
+    async def test_returns_hook_delivery_ack_when_available(self, router, transport):
+        transport.send_and_wait_delivery_ack.return_value = {
+            "type": "delivery_ack",
+            "delivery_id": "notif-delivery-abc",
+            "message_type": "notify",
+            "status": "injected",
+        }
+
+        result = await router.send_notification("sender", "sid-1", "recipient", "hello")
+
+        assert result["status"] == "injected"
+
     async def test_transport_error_propagates(self, router, transport):
-        transport.send.side_effect = TransportError("disconnected")
+        transport.send_and_wait_delivery_ack.side_effect = TransportError("disconnected")
         with pytest.raises(TransportError):
             await router.send_notification("sender", "sid-1", "recipient", "hello")
 
@@ -83,6 +98,55 @@ class TestSendNotification:
         assert "resolved_peer_id=sid-1" in caplog.text
         assert "frame.to_peer=recipient" in caplog.text
         assert "actual_delivered_pane_id=%7" in caplog.text
+
+
+class TestWebSocketTransportDeliveryAck:
+    async def test_send_waits_for_matching_delivery_ack(self):
+        transport = WebSocketTransport()
+        websocket = AsyncMock()
+        await transport.connect("sid-1", websocket)
+
+        async def resolve_after_send(_message):
+            transport.resolve_delivery_ack(
+                "sid-1",
+                {
+                    "type": "delivery_ack",
+                    "delivery_id": "notif-delivery-abc",
+                    "message_type": "notify",
+                    "status": "injected",
+                },
+            )
+
+        websocket.send_json.side_effect = resolve_after_send
+
+        ack = await transport.send_and_wait_delivery_ack(
+            "sid-1",
+            {
+                "type": "notify",
+                "delivery_id": "notif-delivery-abc",
+                "text": "hello",
+            },
+        )
+
+        assert ack is not None
+        assert ack["status"] == "injected"
+
+    async def test_send_returns_none_when_hook_does_not_ack(self):
+        transport = WebSocketTransport()
+        websocket = AsyncMock()
+        await transport.connect("sid-1", websocket)
+
+        ack = await transport.send_and_wait_delivery_ack(
+            "sid-1",
+            {
+                "type": "notify",
+                "delivery_id": "notif-delivery-missing",
+                "text": "hello",
+            },
+            timeout=0.01,
+        )
+
+        assert ack is None
 
 
 class TestSendQuery:

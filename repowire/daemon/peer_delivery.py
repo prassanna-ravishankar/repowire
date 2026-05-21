@@ -45,6 +45,7 @@ class NotifyDeliveryResult:
     from_peer_name: str
     to_peer_id: str
     to_peer_name: str
+    hook_delivery: dict | None = None
 
     @property
     def delivered(self) -> bool:
@@ -181,7 +182,7 @@ class PeerDeliveryService:
             circle=circle,
         )
         attachment_tuple = tuple(attachments or ())
-        delivery_status = await self._router().send_notify(
+        transport_result = await self._router().send_notify(
             NotifyEnvelope(
                 from_peer_id=from_obj.peer_id if from_obj else None,
                 from_peer_name=from_obj.display_name if from_obj else from_peer,
@@ -191,6 +192,7 @@ class PeerDeliveryService:
                 attachments=attachment_tuple,
             )
         )
+        delivery_status = transport_result.status
         delivery_state: Literal["delivered", "queued"] = (
             "queued" if delivery_status == "queued" else "delivered"
         )
@@ -205,6 +207,7 @@ class PeerDeliveryService:
             from_peer_name=from_obj.display_name if from_obj else from_peer,
             to_peer_id=target.peer_id,
             to_peer_name=target.display_name,
+            hook_delivery=transport_result.hook_delivery,
         )
 
     async def deliver_ask(

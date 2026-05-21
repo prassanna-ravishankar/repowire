@@ -318,9 +318,27 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
     """
     msg_type = data.get("type")
 
+    async def _send_delivery_ack(status: str, detail: str | None = None) -> None:
+        delivery_id = data.get("delivery_id")
+        if msg_type != "notify" or not websocket or not isinstance(delivery_id, str):
+            return
+        frame = {
+            "type": "delivery_ack",
+            "delivery_id": delivery_id,
+            "message_type": "notify",
+            "status": status,
+        }
+        if detail:
+            frame["detail"] = detail
+        try:
+            await websocket.send(json.dumps(frame))
+        except Exception:
+            pass
+
     # Safety: verify agent is still running in the pane before injecting text
     needs_safety = msg_type in ("query", "ask", "notify", "broadcast")
     if needs_safety and not await asyncio.to_thread(_is_pane_safe, pane_id):
+        detail = f"Pane {pane_id} not safe for injection"
         logger.error(
             "Inbound delivery dropped: pane %s not safe for %s injection "
             "(from=%s to=%s correlation_id=%s)",
@@ -330,6 +348,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
             data.get("to_peer", ""),
             data.get("correlation_id", ""),
         )
+        await _send_delivery_ack("rejected", detail)
         if msg_type in ("query", "ask") and websocket:
             correlation_id = data.get("correlation_id", "")
             try:
@@ -338,7 +357,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                         {
                             "type": "error",
                             "correlation_id": correlation_id,
-                            "error": f"Pane {pane_id} not safe for injection",
+                            "error": detail,
                         }
                     )
                 )
@@ -420,7 +439,9 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 _tmux_send_keys, pane_id, f"@{from_peer}{to_label}: {text}",
             ):
                 logger.info(f"Injected notification from {from_peer}")
+                await _send_delivery_ack("injected")
             else:
+                error_msg = f"Failed to send keys to pane {pane_id}"
                 logger.error(
                     "Inbound notification dropped: tmux send-keys failed "
                     "(pane=%s from=%s to=%s)",
@@ -428,6 +449,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                     from_peer,
                     to_peer,
                 )
+                await _send_delivery_ack("failed", error_msg)
         except Exception as e:
             logger.exception(
                 "Inbound notification dropped: injection error "
@@ -437,6 +459,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 data.get("to_peer", ""),
                 e,
             )
+            await _send_delivery_ack("failed", str(e))
 
     elif msg_type == "broadcast":
         try:

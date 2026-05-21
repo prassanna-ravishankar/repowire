@@ -1006,6 +1006,50 @@ class TestNotify:
         assert body["to_peer_id"] == recipient_id
         assert body["to_peer_name"] == recipient_name
 
+    async def test_notify_preserves_legacy_response_with_hook_delivery_ack(
+        self, client, monkeypatch,
+    ):
+        from unittest.mock import AsyncMock
+
+        from repowire.protocol.peers import PeerStatus
+
+        registry = get_peer_registry()
+        _sender_id, sender_name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/sender-hook-delivery",
+        )
+        _recipient_id, recipient_name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/recipient-hook-delivery",
+        )
+        registry._peers[_recipient_id].status = PeerStatus.ONLINE
+        hook_ack = {
+            "type": "delivery_ack",
+            "delivery_id": "notif-delivery-abc",
+            "message_type": "notify",
+            "status": "injected",
+        }
+        monkeypatch.setattr(
+            registry._router, "send_notification", AsyncMock(return_value=hook_ack),
+        )
+
+        r = await client.post("/notify", json={
+            "from_peer": sender_name,
+            "to_peer": recipient_name,
+            "text": "hello",
+        })
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["status"] == "sent"
+        assert body["delivery_state"] == "delivered"
+        assert body["delivered"] is True
+        assert body["reason"] == "transport_delivered"
+        assert body["hook_delivery"] == hook_ack
+
     async def test_notify_carries_attachments_to_event_and_wire(self, client, monkeypatch):
         from unittest.mock import AsyncMock
 
