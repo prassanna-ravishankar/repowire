@@ -456,7 +456,8 @@ class TestMcpToolDescriptions:
         mcp = create_mcp_server()
         mesh_tools = ["list_peers", "ask", "ack", "notify_peer", "broadcast",
                        "spawn_peer", "kill_peer", "whoami", "set_description",
-                       "schedule_create", "schedule_self", "schedule_cron",
+                       "claim_orchestrator_role", "schedule_create", "schedule_self",
+                       "schedule_cron",
                        "schedule_list", "schedule_delete"]
         for name in mesh_tools:
             tool = mcp._tool_manager._tools.get(name)

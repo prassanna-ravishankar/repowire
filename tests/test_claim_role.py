@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from click.testing import CliRunner
@@ -18,6 +18,7 @@ from repowire.daemon.peer_registry import PeerRegistry, RoleClaimConflictError
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.routes import peers
 from repowire.daemon.websocket_transport import WebSocketTransport
+from repowire.mcp import server as mcp_server
 from repowire.protocol.peers import PeerRole, PeerStatus
 
 
@@ -232,3 +233,88 @@ def test_cli_claim_role_reports_live_holder_conflict(monkeypatch: pytest.MonkeyP
     assert result.exit_code == 1
     assert "Cannot claim role" in result.output
     assert "Use --force" in result.output
+
+
+@pytest.mark.asyncio
+async def test_mcp_self_claim_reclaims_orchestrator_after_restart(
+    client: tuple[AsyncClient, PeerRegistry],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http_client, registry = client
+    orch_dir = registry._mappings_path.parent / "orchestrator"
+    orch_dir.mkdir()
+    active_id = await _register(registry, path=str(orch_dir), circle="default")
+    mcp_server.reset_mcp_context()
+    mcp_server._registered = True
+    mcp_server._cached_peer_id = active_id
+    mcp_server._cached_peer_name = "orchestrator-codex"
+    mcp_server._cached_my_circle = "default"
+    mcp_server._cached_my_role = "agent"
+
+    async def local_daemon_request(
+        method: str,
+        path: str,
+        body: dict | None = None,
+        params: dict | None = None,
+    ) -> dict:
+        response = await http_client.request(method, path, json=body, params=params)
+        response.raise_for_status()
+        return response.json()
+
+    monkeypatch.setattr(mcp_server, "daemon_request", local_daemon_request)
+    monkeypatch.setattr(mcp_server, "_touch_last_seen", AsyncMock())
+    claim = mcp_server.create_mcp_server()._tool_manager._tools["claim_orchestrator_role"].fn
+
+    result = await claim()
+
+    assert "claimed role=orchestrator" in result
+    peer = await registry.get_peer(active_id)
+    assert peer is not None
+    assert peer.role == PeerRole.ORCHESTRATOR
+    assert registry.get_mapping(active_id).role == PeerRole.ORCHESTRATOR
+
+    # Simulate daemon restart: persisted mapping must restore the reclaimed role.
+    registry._persist_mappings()
+    restarted = _make_registry(registry._mappings_path.parent)
+    peer_id, _name = await restarted.allocate_and_register(
+        circle="default",
+        backend=AgentType.CODEX,
+        path=str(orch_dir),
+        role=PeerRole.AGENT,
+        machine="m",
+    )
+    restarted_peer = await restarted.get_peer(peer_id)
+    assert restarted_peer is not None
+    assert restarted_peer.role == PeerRole.ORCHESTRATOR
+
+
+@pytest.mark.asyncio
+async def test_mcp_self_claim_rejects_non_orchestrator_session(
+    client: tuple[AsyncClient, PeerRegistry],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http_client, _registry = client
+    active_id = await _register(_registry, path="/tmp/project", circle="default")
+    mcp_server.reset_mcp_context()
+    mcp_server._registered = True
+    mcp_server._cached_peer_id = active_id
+    mcp_server._cached_peer_name = "project-codex"
+    mcp_server._cached_my_circle = "default"
+    mcp_server._cached_my_role = "agent"
+
+    async def local_daemon_request(
+        method: str,
+        path: str,
+        body: dict | None = None,
+        params: dict | None = None,
+    ) -> dict:
+        response = await http_client.request(method, path, json=body, params=params)
+        response.raise_for_status()
+        return response.json()
+
+    monkeypatch.setattr(mcp_server, "daemon_request", local_daemon_request)
+    monkeypatch.setattr(mcp_server, "_touch_last_seen", AsyncMock())
+    claim = mcp_server.create_mcp_server()._tool_manager._tools["claim_orchestrator_role"].fn
+
+    with pytest.raises(PermissionError, match="orchestrator workspace"):
+        await claim()

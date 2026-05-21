@@ -58,13 +58,20 @@ def _cache_identity(result: dict) -> None:
     global _cached_peer_id, _cached_peer_name, _cached_my_circle, _cached_my_role
     if result.get("peer_id"):
         _cached_peer_id = result["peer_id"]
-    name = result.get("display_name") or result.get("name")
+    name = result.get("display_name") or result.get("peer_name") or result.get("name")
     if name:
         _cached_peer_name = name
     if result.get("circle"):
         _cached_my_circle = result.get("circle")
     if result.get("role"):
         _cached_my_role = result.get("role")
+
+
+def _orchestrator_self_claim_allowed(peer: dict) -> bool:
+    """Return whether this peer is eligible to reclaim the orchestrator role."""
+    display_name = str(peer.get("display_name") or peer.get("name") or "").lower()
+    path_name = Path(str(peer.get("path") or "")).name.lower()
+    return display_name == "orchestrator" or path_name == "orchestrator"
 
 
 async def _resolve_circle_for_send(
@@ -810,6 +817,54 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
             {"description": description},
         )
         return f"description updated: {description}"
+
+    @mcp.tool()
+    async def claim_orchestrator_role(force: bool = False) -> str:
+        """[Repowire mesh] Reclaim this session's role=orchestrator.
+
+        Use from the orchestrator workspace after a daemon restart if list_peers
+        shows this session as role=agent. This is self-only: it targets the
+        caller's current peer_id and cannot claim the role for another peer.
+
+        Args:
+            force: Demote an existing fresh orchestrator holder in this circle.
+
+        Returns:
+            Confirmation message
+        """
+        _ensure_http_admin_tool_allowed("claim_orchestrator_role")
+        await _ensure_registered(strict=True)
+        name, circle, _role = await _get_my_identity()
+        identifier = _cached_peer_id or name
+        if not identifier:
+            raise RuntimeError("Cannot resolve current peer identity")
+
+        current = await daemon_request("GET", f"/peers/{quote(identifier, safe='')}")
+        _cache_identity(current)
+        if not _orchestrator_self_claim_allowed(current):
+            raise PermissionError(
+                "claim_orchestrator_role can only be used by the orchestrator "
+                "workspace/session"
+            )
+
+        target = _cached_peer_id or identifier
+        result = await daemon_request(
+            "POST",
+            "/peers/claim-role",
+            {
+                "role": "orchestrator",
+                "peer_name": target,
+                "circle": current.get("circle") or circle,
+                "force": force,
+            },
+        )
+        _cache_identity(result)
+        holders = result.get("previous_holders") or []
+        suffix = f"; demoted {len(holders)} previous holder(s)" if holders else ""
+        return (
+            f"claimed role=orchestrator for {result.get('peer_name') or target} "
+            f"in circle {result.get('circle')}{suffix}"
+        )
 
     @mcp.tool()
     async def spawn_peer(

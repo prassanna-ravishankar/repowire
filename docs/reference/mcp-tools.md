@@ -150,6 +150,14 @@ Update the free-form description visible in `list_peers`. Call this at the start
 set_description("rebuilding docs slice B")
 ```
 
+### `claim_orchestrator_role`
+
+```python
+claim_orchestrator_role(force: bool = False) -> str
+```
+
+Self-repair tool for the orchestrator workspace. Use it after a daemon restart when `list_peers(include_self=True)` shows the orchestrator session as `role=agent`. It targets the caller's current peer id, persists `role=orchestrator` into the session mapping, and refuses non-orchestrator workspace/session names. Pass `force=True` only when an existing fresh orchestrator holder in the same circle should be demoted.
+
 ### `orchestrator_status`
 
 ```python

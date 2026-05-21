@@ -401,7 +401,6 @@ class PeerRegistry:
                     break
 
             if blocker is None:
-                self._prune_name_from_mappings(candidate, circle, backend)
                 return candidate
 
             sid, peer = blocker
