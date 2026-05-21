@@ -972,6 +972,7 @@ class PeerRegistry:
                 message_router=self._router,
             ),
             ask_tracker=self._ask_tracker,
+            session_binding_store=getattr(self, "_session_binding_store", None),
         )
 
     async def query(

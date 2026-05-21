@@ -293,3 +293,56 @@ class SQLiteSessionBindingStore:
             "SELECT * FROM session_bindings ORDER BY last_seen_at DESC",
         ).fetchall()
         return [binding for row in rows if (binding := self._row_to_binding(row)) is not None]
+
+
+def resolve_repowire_session_id(
+    store: SQLiteSessionBindingStore | None,
+    *,
+    peer: Any | None = None,
+    peer_id: str | None = None,
+    backend: AgentType | str | None = None,
+    project_path: str | None = None,
+    runtime_session_id: str | None = None,
+) -> str | None:
+    """Best-effort existing binding lookup for control-event annotations.
+
+    This intentionally never creates a binding. Control events should carry a
+    session pointer only when the daemon can resolve an already-observed
+    binding without changing routing or lifecycle state.
+    """
+    if store is None:
+        return None
+
+    if peer is not None:
+        peer_id = peer_id or getattr(peer, "peer_id", None)
+        backend = backend or getattr(peer, "backend", None)
+        project_path = project_path or getattr(peer, "path", None)
+        metadata = getattr(peer, "metadata", None)
+        if runtime_session_id is None and isinstance(metadata, dict):
+            value = metadata.get("hook_session_id") or metadata.get("session_id")
+            if isinstance(value, str) and value:
+                runtime_session_id = value
+
+    if runtime_session_id:
+        binding = store.get_by_runtime_session(
+            runtime_session_id,
+            backend=backend,
+            project_path=project_path,
+        )
+        if binding is not None:
+            return binding.repowire_session_id
+
+    if peer_id:
+        bindings = store.list_by_peer(peer_id)
+        if bindings:
+            return bindings[0].repowire_session_id
+
+    if backend is not None and project_path:
+        bindings = store.list_by_backend_project(
+            backend=backend,
+            project_path=project_path,
+        )
+        if len(bindings) == 1:
+            return bindings[0].repowire_session_id
+
+    return None

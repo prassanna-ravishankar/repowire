@@ -34,6 +34,7 @@ from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.peer_delivery import peer_delivery_from_state
 from repowire.daemon.peer_registry import PeerRegistry, normalize_identity_path
 from repowire.daemon.routes._shared import OkResponse
+from repowire.daemon.state.session_bindings import resolve_repowire_session_id
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import Peer
@@ -164,6 +165,44 @@ async def _capture_asker_identity(
     )
 
 
+def _binding_id_for_peer(state: object, peer: Peer | None) -> str | None:
+    return resolve_repowire_session_id(
+        getattr(state, "session_binding_store", None),
+        peer=peer,
+    )
+
+
+def _emit_ack_event(
+    *,
+    peer_registry: PeerRegistry,
+    ask: object,
+    reason: str,
+    delivered: bool,
+    has_message: bool,
+    has_attachments: bool,
+) -> None:
+    from repowire.daemon.ask_tracker import Ask
+
+    assert isinstance(ask, Ask)
+    peer_registry.add_event(
+        "ack",
+        {
+            "from": ask.to_peer_name,
+            "to": ask.from_peer_name,
+            "from_peer_id": ask.to_peer_id,
+            "to_peer_id": ask.from_peer_id,
+            "correlation_id": ask.correlation_id,
+            "status": reason,
+            "delivered": delivered,
+            "has_message": has_message,
+            "has_attachments": has_attachments,
+            "repowire_session_id": ask.from_repowire_session_id,
+            "from_repowire_session_id": ask.to_repowire_session_id,
+            "to_repowire_session_id": ask.from_repowire_session_id,
+        },
+    )
+
+
 async def _acp_complete(
     *,
     correlation_id: str,
@@ -226,6 +265,14 @@ async def _acp_complete(
                 correlation_id, e,
             )
             await ask_tracker.close(correlation_id, reason="send_failed")
+            _emit_ack_event(
+                peer_registry=peer_registry,
+                ask=ask,
+                reason="send_failed",
+                delivered=False,
+                has_message=True,
+                has_attachments=False,
+            )
             return
         identity = await _capture_asker_identity(peer_registry, ask.from_peer_id)
         stashed = await ask_tracker.set_pending_reply(
@@ -245,9 +292,25 @@ async def _acp_complete(
             correlation_id, e,
         )
         await ask_tracker.close(correlation_id, reason="ack_with_msg")
+        _emit_ack_event(
+            peer_registry=peer_registry,
+            ask=ask,
+            reason="ack_with_msg",
+            delivered=False,
+            has_message=not is_error,
+            has_attachments=False,
+        )
         return
     await ask_tracker.close(
         correlation_id, reason="ack_with_msg" if not is_error else "send_failed",
+    )
+    _emit_ack_event(
+        peer_registry=peer_registry,
+        ask=ask,
+        reason="ack_with_msg" if not is_error else "send_failed",
+        delivered=True,
+        has_message=not is_error,
+        has_attachments=False,
     )
 
 
@@ -280,6 +343,8 @@ async def open_ask(
         )
     from_peer_id = from_peer_obj.peer_id if from_peer_obj else request.from_peer
     from_peer_name = from_peer_obj.display_name if from_peer_obj else request.from_peer
+    from_repowire_session_id = _binding_id_for_peer(state, from_peer_obj)
+    to_repowire_session_id = _binding_id_for_peer(state, peer)
 
     # Enforce circle access BEFORE registering the ask. On the WS path
     # ``deliver_ask`` runs the same check inside ``_resolve_from_peer_unlocked``
@@ -302,6 +367,8 @@ async def open_ask(
             to_peer_name=peer.display_name,
             text=request.text,
             reply_to=request.reply_to,
+            from_repowire_session_id=from_repowire_session_id,
+            to_repowire_session_id=to_repowire_session_id,
         )
     except QuiescedError as e:
         raise HTTPException(
@@ -415,7 +482,12 @@ async def ack_ask(
             f"{request.message or ''}"
         )
         try:
-            await peer_registry.notify(
+            peer_delivery = peer_delivery_from_state(
+                config=state.config,
+                registry=peer_registry,
+                state=state,
+            )
+            await peer_delivery.notify(
                 from_peer=existing.to_peer_id,
                 to_peer=existing.from_peer_id,
                 text=framed,
@@ -430,6 +502,14 @@ async def ack_ask(
                 request.correlation_id, e,
             )
             await ask_tracker.close(request.correlation_id, reason="ack_with_msg")
+            _emit_ack_event(
+                peer_registry=peer_registry,
+                ask=existing,
+                reason="ack_with_msg",
+                delivered=False,
+                has_message=True,
+                has_attachments=bool(request.attachments),
+            )
             return OkResponse()
         except TransportError as e:
             # Asker has no live WS. Leave the ask open so the recipient can
@@ -454,6 +534,14 @@ async def ack_ask(
 
         await ask_tracker.close(request.correlation_id, reason="ack_with_msg")
     else:
+        _emit_ack_event(
+            peer_registry=peer_registry,
+            ask=existing,
+            reason="ack",
+            delivered=False,
+            has_message=False,
+            has_attachments=False,
+        )
         await ask_tracker.close(request.correlation_id, reason="ack")
 
     return OkResponse()

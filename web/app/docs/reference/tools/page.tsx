@@ -26,6 +26,9 @@ export default function ToolsReference() {
           Open a non-blocking ask thread. In normal use, you tell your local agent what you need in natural language, and the agent invokes this MCP tool. Returns a <Mono>correlation_id</Mono> immediately. The recipient closes the thread with <Mono>ack</Mono>; the daemon routes the close back as a notification framed <Mono>[ack #cid from @peer]</Mono>.
         </p>
         <p>
+          Daemon events for asks and acks include nullable <Mono>repowire_session_id</Mono>, <Mono>from_repowire_session_id</Mono>, and <Mono>to_repowire_session_id</Mono> fields when an existing session binding can be resolved. Peer IDs remain the routing authority.
+        </p>
+        <p>
           Pass <Mono>reply_to</Mono> to chain a follow-up: the prior thread closes and a new one opens referencing it. Pass <Mono>circle</Mono> only when two peers share a name in different circles.
         </p>
         <Example>
@@ -55,7 +58,7 @@ ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")`}
           Fire-and-forget. No lifecycle, no expected response. Returns a synthetic <Mono>notif-XXXXXXXX</Mono> ID for client-side tracking, not a thread you can close. Use for status pings and announcements.
         </p>
         <p>
-          On the HTTP <Mono>/notify</Mono> response, <Mono>hook_delivery</Mono> may be present when the recipient is a new enough WebSocket hook. It is a best-effort terminal injection receipt with statuses such as <Mono>injected</Mono>, <Mono>rejected</Mono>, or <Mono>failed</Mono>; <Mono>null</Mono> means the hook is older, a non-hook transport handled the notify, or no receipt arrived before the daemon returned.
+          On the HTTP <Mono>/notify</Mono> response, <Mono>hook_delivery</Mono> may be present when the recipient is a new enough WebSocket hook. It is a best-effort terminal injection receipt with statuses such as <Mono>injected</Mono>, <Mono>rejected</Mono>, or <Mono>failed</Mono>; <Mono>null</Mono> means the hook is older, a non-hook transport handled the notify, or no receipt arrived before the daemon returned. When a session binding is known, notify responses and hook receipts may include nullable <Mono>repowire_session_id</Mono>, <Mono>from_repowire_session_id</Mono>, and <Mono>to_repowire_session_id</Mono> fields for grouping.
         </p>
         <p>
           The special peer <Mono>telegram</Mono> routes to the user&rsquo;s phone. The <Mono>dashboard</Mono> already sees agent turns; you do not need to notify it.

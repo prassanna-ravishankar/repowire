@@ -90,6 +90,9 @@ class NotifyResponse(BaseModel):
     from_peer_name: str | None = None
     to_peer_id: str | None = None
     to_peer_name: str | None = None
+    repowire_session_id: str | None = None
+    from_repowire_session_id: str | None = None
+    to_repowire_session_id: str | None = None
     hook_delivery: dict | None = Field(
         None,
         description=(
@@ -243,6 +246,9 @@ async def notify_peer(
             from_peer_name=delivery.from_peer_name,
             to_peer_id=delivery.to_peer_id,
             to_peer_name=delivery.to_peer_name,
+            repowire_session_id=delivery.repowire_session_id,
+            from_repowire_session_id=delivery.from_repowire_session_id,
+            to_repowire_session_id=delivery.to_repowire_session_id,
             hook_delivery=delivery.hook_delivery,
         )
     except ValueError as e:

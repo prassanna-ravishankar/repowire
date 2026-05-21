@@ -53,13 +53,29 @@ from repowire.daemon.schedule_store import ScheduleStore
 from repowire.daemon.scheduler import Scheduler
 from repowire.daemon.state import StateDatabase
 from repowire.daemon.state.schedules import SQLiteScheduleStore
-from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
+from repowire.daemon.state.session_bindings import (
+    SQLiteSessionBindingStore,
+    resolve_repowire_session_id,
+)
 from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
 
 
 _LOCALHOST_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _make_acp_session_resolver(
+    session_binding_store: SQLiteSessionBindingStore | None,
+):
+    def _resolve(peer_id: str, runtime_session_id: str) -> str | None:
+        return resolve_repowire_session_id(
+            session_binding_store,
+            peer_id=peer_id,
+            runtime_session_id=runtime_session_id,
+        )
+
+    return _resolve
 
 
 class _MCPAuthASGIWrapper:
@@ -249,7 +265,10 @@ def create_app(
         app.state.state_db = state_db
         app.state.session_binding_store = session_binding_store
         from repowire.acp import AcpClientManager, ApprovalBroker
-        acp_permission_broker = ApprovalBroker(emit_event=peer_registry.add_event)
+        acp_permission_broker = ApprovalBroker(
+            emit_event=peer_registry.add_event,
+            resolve_repowire_session_id=_make_acp_session_resolver(session_binding_store),
+        )
         app.state.acp_permission_broker = acp_permission_broker
         acp_manager = AcpClientManager(approval_broker=acp_permission_broker)
         app.state.acp_manager = acp_manager
@@ -264,6 +283,7 @@ def create_app(
                 state=app.state,
             ),
             ask_tracker=ask_tracker,
+            session_binding_store=session_binding_store,
         )
         app.state.peer_delivery = peer_delivery
         scheduler = Scheduler(
@@ -546,7 +566,10 @@ def create_test_app(
         app.state.state_db = state_db
         app.state.session_binding_store = session_binding_store
         from repowire.acp import AcpClientManager, ApprovalBroker
-        acp_permission_broker = ApprovalBroker(emit_event=registry.add_event)
+        acp_permission_broker = ApprovalBroker(
+            emit_event=registry.add_event,
+            resolve_repowire_session_id=_make_acp_session_resolver(session_binding_store),
+        )
         app.state.acp_permission_broker = acp_permission_broker
         acp_manager = AcpClientManager(approval_broker=acp_permission_broker)
         app.state.acp_manager = acp_manager
@@ -561,6 +584,7 @@ def create_test_app(
                 state=app.state,
             ),
             ask_tracker=ask_tracker,
+            session_binding_store=session_binding_store,
         )
         app.state.peer_delivery = peer_delivery
         scheduler = Scheduler(

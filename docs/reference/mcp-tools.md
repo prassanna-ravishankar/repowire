@@ -59,6 +59,8 @@ ask(peer_name: str, query: str, reply_to: str | None = None, circle: str | None 
 
 Open a non-blocking ask thread. In normal use, you tell your local agent what you need in natural language, and the agent invokes this MCP tool. Returns a `correlation_id` immediately. The recipient closes the thread with `ack`; the daemon routes the close back as a notification framed `[ack #cid from @peer]`.
 
+Daemon events for asks and acks include nullable `repowire_session_id`, `from_repowire_session_id`, and `to_repowire_session_id` fields when an existing session binding can be resolved. Peer IDs remain the routing authority.
+
 Peer resolution defaults to the caller's circle. Peers whose role bypasses circles (`orchestrator`, `service`, human surfaces) resolve mesh-wide; everything else is scoped to the caller's circle so the daemon's ambiguous-resolve refusal applies. Pass `circle="<name>"` to target a different circle explicitly.
 
 Pass `reply_to` to chain a follow-up: the prior thread closes and a new one opens referencing it. See [misroute refusal](../concepts/message-types.md#misroute-refusal) for what happens when names collide within the resolution scope.
@@ -93,7 +95,9 @@ On the HTTP `/notify` response, `hook_delivery` may be present when the
 recipient is a new enough WebSocket hook. It is a best-effort terminal injection
 receipt with statuses such as `injected`, `rejected`, or `failed`; `null` means
 the hook is older, a non-hook transport handled the notify, or no receipt
-arrived before the daemon returned.
+arrived before the daemon returned. When a session binding is known, `/notify`
+responses and hook receipts may include nullable `repowire_session_id`,
+`from_repowire_session_id`, and `to_repowire_session_id` fields for grouping.
 
 Peer resolution mirrors `ask`: defaults to the caller's circle, except for peers whose role bypasses circles (`orchestrator`, `service`, human surfaces) which resolve mesh-wide. Pass `circle="<name>"` to target a different circle.
 

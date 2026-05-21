@@ -91,6 +91,8 @@ class Ask:
     to_peer_id: str
     to_peer_name: str
     text: str
+    from_repowire_session_id: str | None = None
+    to_repowire_session_id: str | None = None
     reply_to: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     closed: bool = False
@@ -160,6 +162,8 @@ class AskTracker:
         text: str,
         reply_to: str | None = None,
         correlation_id: str | None = None,
+        from_repowire_session_id: str | None = None,
+        to_repowire_session_id: str | None = None,
     ) -> str:
         """Register a new open ask. Returns the correlation_id.
 
@@ -185,6 +189,8 @@ class AskTracker:
                 to_peer_id=to_peer_id,
                 to_peer_name=to_peer_name,
                 text=text,
+                from_repowire_session_id=from_repowire_session_id,
+                to_repowire_session_id=to_repowire_session_id,
                 reply_to=reply_to,
             )
             logger.debug("Registered ask %s: %s -> %s", cid, from_peer_name, to_peer_name)

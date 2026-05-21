@@ -8,6 +8,8 @@ Non-blocking. Returns a `correlation_id` immediately. The recipient closes the t
 
 If the recipient never acks, repowire injects a reminder block at the start of every subsequent prompt on the recipient side until the ask is acked. Tool-call detection is the source of truth — prose `[ack #cid]` mentions in agent output do not close anything, only a real `ack()` MCP call does.
 
+When the daemon can resolve a durable session binding for either side, ask events include nullable `repowire_session_id`, `from_repowire_session_id`, and `to_repowire_session_id` metadata. Peer IDs remain the routing authority.
+
 ## `ack`
 
 Closes an open ask thread.
@@ -17,11 +19,15 @@ Closes an open ask thread.
 
 Replies always reach the original asker regardless of circle — the thread was established at ask-time and the routing is locked then.
 
+Bare ack events and reply notifications carry the same nullable session metadata when a binding is known. Detached or offline peers keep those fields `null`.
+
 ## `notify_peer`
 
 Fire-and-forget. No lifecycle, no response expected. Returns a synthetic `notif-XXXXXXXX` ID for client-side tracking, not a thread you can close.
 
 The special peer name `telegram` routes to the user's phone (if the Telegram bot is running). The dashboard already sees agent turns; you do not need to notify it.
+
+Notify events and newer hook delivery receipts also include nullable session metadata when resolvable. Missing metadata does not change delivery semantics.
 
 ## `broadcast`
 

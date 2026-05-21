@@ -10,13 +10,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, Config
 from repowire.daemon.ask_tracker import AskerIdentity, AskTracker
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry, normalize_identity_path
+from repowire.daemon.state.session_bindings import resolve_repowire_session_id
 from repowire.daemon.transport_router import (
     AskCompletion,
     AskEnvelope,
@@ -46,6 +47,9 @@ class NotifyDeliveryResult:
     to_peer_id: str
     to_peer_name: str
     hook_delivery: dict | None = None
+    repowire_session_id: str | None = None
+    from_repowire_session_id: str | None = None
+    to_repowire_session_id: str | None = None
 
     @property
     def delivered(self) -> bool:
@@ -67,12 +71,17 @@ class PeerDeliveryService:
         message_router: MessageRouter,
         transport_router: PeerTransportRouter | None = None,
         ask_tracker: AskTracker | None = None,
+        session_binding_store: Any | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
         self._message_router = message_router
         self._transport_router = transport_router
         self._ask_tracker = ask_tracker
+        self._session_binding_store = session_binding_store
+
+    def _session_id_for_peer(self, peer: Any | None) -> str | None:
+        return resolve_repowire_session_id(self._session_binding_store, peer=peer)
 
     async def query(
         self,
@@ -181,6 +190,8 @@ class PeerDeliveryService:
             bypass_circle=bypass_circle,
             circle=circle,
         )
+        from_session_id = self._session_id_for_peer(from_obj)
+        to_session_id = self._session_id_for_peer(target)
         attachment_tuple = tuple(attachments or ())
         transport_result = await self._router().send_notify(
             NotifyEnvelope(
@@ -190,8 +201,23 @@ class PeerDeliveryService:
                 text=text,
                 intended_recipient_name=to_peer,
                 attachments=attachment_tuple,
+                from_repowire_session_id=from_session_id,
+                to_repowire_session_id=to_session_id,
             )
         )
+        hook_delivery = transport_result.hook_delivery
+        if isinstance(hook_delivery, dict):
+            additions = {
+                key: value
+                for key, value in {
+                    "repowire_session_id": transport_result.repowire_session_id,
+                    "from_repowire_session_id": transport_result.from_repowire_session_id,
+                    "to_repowire_session_id": transport_result.to_repowire_session_id,
+                }.items()
+                if value is not None
+            }
+            if additions:
+                hook_delivery = {**hook_delivery, **additions}
         delivery_status = transport_result.status
         delivery_state: Literal["delivered", "queued"] = (
             "queued" if delivery_status == "queued" else "delivered"
@@ -207,7 +233,10 @@ class PeerDeliveryService:
             from_peer_name=from_obj.display_name if from_obj else from_peer,
             to_peer_id=target.peer_id,
             to_peer_name=target.display_name,
-            hook_delivery=transport_result.hook_delivery,
+            hook_delivery=hook_delivery,
+            repowire_session_id=transport_result.repowire_session_id,
+            from_repowire_session_id=transport_result.from_repowire_session_id,
+            to_repowire_session_id=transport_result.to_repowire_session_id,
         )
 
     async def deliver_ask(
@@ -233,6 +262,8 @@ class PeerDeliveryService:
         from_peer_id = from_obj.peer_id if from_obj else from_peer
         from_peer_name = from_obj.display_name if from_obj else from_peer
         completion = on_acp_complete or self._default_acp_completion()
+        from_session_id = self._session_id_for_peer(from_obj)
+        to_session_id = self._session_id_for_peer(target)
 
         await self._router().send_ask(
             AskEnvelope(
@@ -244,6 +275,8 @@ class PeerDeliveryService:
                 reply_to=reply_to,
                 intended_recipient_name=to_peer,
                 attachments=tuple(attachments or ()),
+                from_repowire_session_id=from_session_id,
+                to_repowire_session_id=to_session_id,
             ),
             on_acp_complete=completion,
         )
@@ -470,4 +503,5 @@ def peer_delivery_from_state(
         message_router=getattr(state, "message_router"),
         transport_router=transport_router,
         ask_tracker=getattr(state, "ask_tracker", None),
+        session_binding_store=getattr(state, "session_binding_store", None),
     )

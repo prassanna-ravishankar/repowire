@@ -43,9 +43,11 @@ class ApprovalBroker:
         self,
         *,
         emit_event: Callable[[str, dict[str, Any]], str],
+        resolve_repowire_session_id: Callable[[str, str], str | None] | None = None,
         timeout_seconds: float = 60.0,
     ) -> None:
         self._emit_event = emit_event
+        self._resolve_repowire_session_id = resolve_repowire_session_id
         self._timeout_seconds = timeout_seconds
         self._pending: dict[str, _PendingPermission] = {}
         self._lock = asyncio.Lock()
@@ -76,12 +78,14 @@ class ApprovalBroker:
         async with self._lock:
             self._pending[pending.request_id] = pending
 
+        repowire_session_id = self._resolve_session_id(peer_id, session_id)
         self._emit_event(
             "acp_permission_request",
             {
                 "request_id": pending.request_id,
                 "peer_id": peer_id,
                 "session_id": session_id,
+                "repowire_session_id": repowire_session_id,
                 "tool_call": pending.tool_call,
                 "options": normalized_options,
                 "status": "pending",
@@ -150,18 +154,28 @@ class ApprovalBroker:
         decision: PermissionDecision,
     ) -> None:
         status = "timed_out" if decision.timed_out else "decided"
+        repowire_session_id = self._resolve_session_id(pending.peer_id, pending.session_id)
         self._emit_event(
             "acp_permission_decision",
             {
                 "request_id": pending.request_id,
                 "peer_id": pending.peer_id,
                 "session_id": pending.session_id,
+                "repowire_session_id": repowire_session_id,
                 "outcome": decision.outcome,
                 "option_id": decision.option_id,
                 "message": decision.message,
                 "status": status,
             },
         )
+
+    def _resolve_session_id(self, peer_id: str, session_id: str) -> str | None:
+        if self._resolve_repowire_session_id is None:
+            return None
+        try:
+            return self._resolve_repowire_session_id(peer_id, session_id)
+        except Exception:
+            return None
 
 
 def _first_option_id(options: list[dict[str, Any]]) -> str | None:

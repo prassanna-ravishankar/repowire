@@ -43,6 +43,8 @@ class AskEnvelope:
     reply_to: str | None = None
     intended_recipient_name: str | None = None
     attachments: tuple[AttachmentRef, ...] = ()
+    from_repowire_session_id: str | None = None
+    to_repowire_session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,8 @@ class NotifyEnvelope:
     text: str
     intended_recipient_name: str | None = None
     attachments: tuple[AttachmentRef, ...] = ()
+    from_repowire_session_id: str | None = None
+    to_repowire_session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,9 @@ class NotifyTransportResult:
 
     status: Literal["sent", "queued"]
     hook_delivery: dict[str, Any] | None = None
+    repowire_session_id: str | None = None
+    from_repowire_session_id: str | None = None
+    to_repowire_session_id: str | None = None
 
 
 class AskCompletion(Protocol):
@@ -94,6 +101,9 @@ class WebSocketPeerTransport:
                 "reply_to": envelope.reply_to,
                 "self_target": envelope.from_peer_id == envelope.target.peer_id,
                 "attachments": [a.model_dump(exclude_none=True) for a in envelope.attachments],
+                "repowire_session_id": envelope.to_repowire_session_id,
+                "from_repowire_session_id": envelope.from_repowire_session_id,
+                "to_repowire_session_id": envelope.to_repowire_session_id,
             },
         )
         await self._router.send_ask(
@@ -126,6 +136,9 @@ class WebSocketPeerTransport:
                 "to_peer_id": envelope.target.peer_id,
                 "delivery_status": delivery_status,
                 "attachments": [a.model_dump(exclude_none=True) for a in envelope.attachments],
+                "repowire_session_id": envelope.to_repowire_session_id,
+                "from_repowire_session_id": envelope.from_repowire_session_id,
+                "to_repowire_session_id": envelope.to_repowire_session_id,
             },
         )
         hook_delivery = await self._router.send_notification(
@@ -140,7 +153,13 @@ class WebSocketPeerTransport:
         )
         if not isinstance(hook_delivery, dict):
             hook_delivery = None
-        return NotifyTransportResult(status=delivery_status, hook_delivery=hook_delivery)
+        return NotifyTransportResult(
+            status=delivery_status,
+            hook_delivery=hook_delivery,
+            repowire_session_id=envelope.to_repowire_session_id,
+            from_repowire_session_id=envelope.from_repowire_session_id,
+            to_repowire_session_id=envelope.to_repowire_session_id,
+        )
 
 
 class AcpPeerTransport:
@@ -197,7 +216,12 @@ class AcpPeerTransport:
             text=_text_with_attachment_fallback(envelope.text, envelope.attachments),
             on_complete=_drop_result,
         )
-        return NotifyTransportResult(status="sent")
+        return NotifyTransportResult(
+            status="sent",
+            repowire_session_id=envelope.to_repowire_session_id,
+            from_repowire_session_id=envelope.from_repowire_session_id,
+            to_repowire_session_id=envelope.to_repowire_session_id,
+        )
 
 
 class PeerTransportRouter:
@@ -212,6 +236,7 @@ class PeerTransportRouter:
         acp_manager: Any | None = None,
     ) -> None:
         self._config = config
+        self._registry = registry
         self._ws = WebSocketPeerTransport(registry, message_router)
         self._acp = AcpPeerTransport(acp_manager) if acp_manager is not None else None
 
@@ -231,6 +256,25 @@ class PeerTransportRouter:
         decision = self._acp_decision(envelope.target)
         if decision is not None:
             assert self._acp is not None
+            self._registry.add_event(
+                "ask",
+                {
+                    "from": envelope.from_peer_name,
+                    "to": envelope.target.display_name,
+                    "text": envelope.text,
+                    "from_peer_id": envelope.from_peer_id,
+                    "to_peer_id": envelope.target.peer_id,
+                    "correlation_id": envelope.correlation_id,
+                    "reply_to": envelope.reply_to,
+                    "self_target": envelope.from_peer_id == envelope.target.peer_id,
+                    "attachments": [
+                        a.model_dump(exclude_none=True) for a in envelope.attachments
+                    ],
+                    "repowire_session_id": envelope.to_repowire_session_id,
+                    "from_repowire_session_id": envelope.from_repowire_session_id,
+                    "to_repowire_session_id": envelope.to_repowire_session_id,
+                },
+            )
             await self._acp.send_ask(envelope, on_acp_complete, decision)
             return
         await self._ws.send_ask(envelope)
@@ -239,6 +283,23 @@ class PeerTransportRouter:
         decision = self._acp_decision(envelope.target)
         if decision is not None:
             assert self._acp is not None
+            self._registry.add_event(
+                "notification",
+                {
+                    "from": envelope.from_peer_name,
+                    "to": envelope.target.display_name,
+                    "text": envelope.text,
+                    "from_peer_id": envelope.from_peer_id,
+                    "to_peer_id": envelope.target.peer_id,
+                    "delivery_status": "sent",
+                    "attachments": [
+                        a.model_dump(exclude_none=True) for a in envelope.attachments
+                    ],
+                    "repowire_session_id": envelope.to_repowire_session_id,
+                    "from_repowire_session_id": envelope.from_repowire_session_id,
+                    "to_repowire_session_id": envelope.to_repowire_session_id,
+                },
+            )
             return await self._acp.send_notify(envelope, decision)
         return await self._ws.send_notify(envelope)
 
