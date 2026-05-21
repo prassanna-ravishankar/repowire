@@ -174,11 +174,52 @@ class TestCodex:
         assert "[other]" in body
         assert "[mcp_servers.new]" in body
 
+    def test_add_uses_atomic_replace(self, codex_config, monkeypatch):
+        peer = _peer(AgentType.CODEX)
+        calls: list[tuple[Path, Path]] = []
+        original_replace = peer_mcp.os.replace
+
+        def spy_replace(src, dst):
+            calls.append((Path(src), Path(dst)))
+            original_replace(src, dst)
+
+        monkeypatch.setattr(peer_mcp.os, "replace", spy_replace)
+
+        peer_mcp.add_server(peer, peer_mcp.McpServerSpec(name="new", command="x"))
+
+        assert calls
+        assert calls[0][0].parent == codex_config.parent
+        assert calls[0][0] != codex_config
+        assert calls[0][1] == codex_config
+
     def test_remove_unknown(self, codex_config):
         codex_config.write_text("")
         peer = _peer(AgentType.CODEX)
         with pytest.raises(peer_mcp.ServerNotFoundError):
             peer_mcp.remove_server(peer, "nope")
+
+    @pytest.mark.parametrize("name", ["bad.name", "bad space", "bad]name", "__proto__"])
+    def test_rejects_unsafe_server_names(self, codex_config, name):
+        peer = _peer(AgentType.CODEX)
+        with pytest.raises(peer_mcp.ValidationError):
+            peer_mcp.add_server(peer, peer_mcp.McpServerSpec(name=name, command="x"))
+        assert not codex_config.exists()
+
+    def test_rejects_unsafe_env_keys(self, codex_config):
+        peer = _peer(AgentType.CODEX)
+        with pytest.raises(peer_mcp.ValidationError):
+            peer_mcp.add_server(
+                peer,
+                peer_mcp.McpServerSpec(name="safe", command="x", env={"BAD-KEY": "value"}),
+            )
+        assert not codex_config.exists()
+
+    def test_remove_rejects_unsafe_server_name(self, codex_config):
+        codex_config.write_text("[other]\nkey = \"val\"\n")
+        peer = _peer(AgentType.CODEX)
+        with pytest.raises(peer_mcp.ValidationError):
+            peer_mcp.remove_server(peer, "bad.name")
+        assert codex_config.read_text() == "[other]\nkey = \"val\"\n"
 
 
 # ---------------------------------------------------------------------------
@@ -223,8 +264,25 @@ class TestGemini:
 
     def test_empty_name_rejected(self, gemini_config):
         peer = _peer(AgentType.GEMINI)
-        with pytest.raises(peer_mcp.BackendError):
+        with pytest.raises(peer_mcp.ValidationError):
             peer_mcp.add_server(peer, peer_mcp.McpServerSpec(name="", command="x"))
+
+    @pytest.mark.parametrize("name", ["bad.name", "constructor", "prototype"])
+    def test_rejects_reserved_or_unsafe_names(self, gemini_config, name):
+        peer = _peer(AgentType.GEMINI)
+        with pytest.raises(peer_mcp.ValidationError):
+            peer_mcp.add_server(peer, peer_mcp.McpServerSpec(name=name, command="x"))
+        assert not gemini_config.exists()
+
+    def test_add_rejects_non_object_mcp_servers_without_clobbering(self, gemini_config):
+        original = {"theme": "dark", "mcpServers": ["not", "an", "object"]}
+        gemini_config.write_text(json.dumps(original))
+        peer = _peer(AgentType.GEMINI)
+
+        with pytest.raises(peer_mcp.BackendError, match="mcpServers must be an object"):
+            peer_mcp.add_server(peer, peer_mcp.McpServerSpec(name="safe", command="x"))
+
+        assert json.loads(gemini_config.read_text()) == original
 
 
 # ---------------------------------------------------------------------------

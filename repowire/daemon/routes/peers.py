@@ -628,6 +628,8 @@ def _enforce_local(peer: Peer) -> None:
 
 
 def _map_peer_mcp_error(e: peer_mcp.PeerMcpError) -> HTTPException:
+    if isinstance(e, peer_mcp.ValidationError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     if isinstance(e, peer_mcp.NotSupportedError):
         return HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e))
     if isinstance(e, peer_mcp.DuplicateServerError):

@@ -124,6 +124,20 @@ class TestMcpRoutes:
         r = await client.delete(f"/peers/{name}/mcp/repowire")
         assert r.status_code == 404
 
+    async def test_add_invalid_name_returns_400(self, client, tmp_path, monkeypatch):
+        cfg = tmp_path / "config.toml"
+        monkeypatch.setattr(peer_mcp, "CODEX_CONFIG_PATH", cfg)
+        name = await _register(client, name="codexlocal", backend="codex")
+
+        r = await client.post(f"/peers/{name}/mcp", json={
+            "name": "bad.name",
+            "command": "repowire",
+        })
+
+        assert r.status_code == 400
+        assert "server name" in r.json()["detail"]
+        assert not cfg.exists()
+
     async def test_unsupported_backend_returns_501(self, client):
         name = await _register(client, name="pipeer", backend="claude-code")
         # Force registry to report opencode

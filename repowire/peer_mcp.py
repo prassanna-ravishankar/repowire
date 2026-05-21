@@ -18,9 +18,11 @@ map them to consistent HTTP status codes (404, 409, 501, 504).
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -103,9 +105,70 @@ class BackendError(PeerMcpError):
     """Backend CLI returned non-zero or unparseable output."""
 
 
+class ValidationError(PeerMcpError):
+    """MCP server input is unsafe or malformed."""
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
+
+
+_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RESERVED_SERVER_NAMES = {"__proto__", "constructor", "prototype"}
+
+
+def _validate_server_name(name: str) -> None:
+    if not name or not name.strip():
+        raise ValidationError("server name is required")
+    if name in _RESERVED_SERVER_NAMES:
+        raise ValidationError(f"server name {name!r} is reserved")
+    if not _SERVER_NAME_RE.fullmatch(name):
+        raise ValidationError(
+            "server name must contain only letters, numbers, underscores, or hyphens"
+        )
+
+
+def _validate_env_keys(env: dict[str, str]) -> None:
+    for key in env:
+        if not _ENV_KEY_RE.fullmatch(key):
+            raise ValidationError(
+                "env keys must start with a letter or underscore and contain only "
+                "letters, numbers, or underscores"
+            )
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            tmp.write(text)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        tmp_path.chmod(mode)
+        os.replace(tmp_path, path)
+        try:
+            dir_fd = os.open(path.parent, os.O_DIRECTORY)
+        except OSError:
+            return
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
 
 
 def list_servers(peer: Peer) -> list[McpServerEntry]:
@@ -120,8 +183,8 @@ def list_servers(peer: Peer) -> list[McpServerEntry]:
 
 
 def add_server(peer: Peer, spec: McpServerSpec) -> None:
-    if not spec.name or not spec.name.strip():
-        raise BackendError("server name is required")
+    _validate_server_name(spec.name)
+    _validate_env_keys(spec.env)
     existing = {s.name for s in list_servers(peer)}
     if spec.name in existing:
         raise DuplicateServerError(f"server {spec.name!r} already exists")
@@ -138,6 +201,7 @@ def add_server(peer: Peer, spec: McpServerSpec) -> None:
 
 
 def remove_server(peer: Peer, name: str) -> None:
+    _validate_server_name(name)
     existing = {s.name for s in list_servers(peer)}
     if name not in existing:
         raise ServerNotFoundError(f"server {name!r} not configured")
@@ -334,7 +398,7 @@ def _codex_list() -> list[McpServerEntry]:
 
 
 def _toml_quote(s: str) -> str:
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return json.dumps(s)
 
 
 def _codex_render_section(spec: McpServerSpec) -> str:
@@ -353,14 +417,13 @@ def _codex_render_section(spec: McpServerSpec) -> str:
 
 
 def _codex_add(spec: McpServerSpec) -> None:
-    CODEX_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     section = _codex_render_section(spec)
     if CODEX_CONFIG_PATH.exists():
         existing = CODEX_CONFIG_PATH.read_text()
         sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
-        CODEX_CONFIG_PATH.write_text(existing + sep + section)
+        _atomic_write_text(CODEX_CONFIG_PATH, existing + sep + section)
     else:
-        CODEX_CONFIG_PATH.write_text(section)
+        _atomic_write_text(CODEX_CONFIG_PATH, section)
 
 
 def _codex_remove(name: str) -> None:
@@ -379,7 +442,7 @@ def _codex_remove(name: str) -> None:
             skipping = False
         if not skipping:
             out.append(line)
-    CODEX_CONFIG_PATH.write_text("".join(out))
+    _atomic_write_text(CODEX_CONFIG_PATH, "".join(out))
 
 
 # ---------------------------------------------------------------------------
@@ -399,11 +462,7 @@ def _gemini_load() -> dict[str, Any]:
 
 
 def _gemini_save(data: dict[str, Any]) -> None:
-    GEMINI_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = GEMINI_SETTINGS_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    tmp.chmod(0o600)
-    tmp.replace(GEMINI_SETTINGS_PATH)
+    _atomic_write_text(GEMINI_SETTINGS_PATH, json.dumps(data, indent=2))
 
 
 def _gemini_list() -> list[McpServerEntry]:
@@ -435,10 +494,10 @@ def _gemini_list() -> list[McpServerEntry]:
 
 def _gemini_add(spec: McpServerSpec) -> None:
     data = _gemini_load()
-    servers = data.setdefault("mcpServers", {})
+    servers = data.get("mcpServers", {})
     if not isinstance(servers, dict):
-        servers = {}
-        data["mcpServers"] = servers
+        raise BackendError("gemini settings mcpServers must be an object")
+    data["mcpServers"] = servers
     entry: dict[str, Any] = {}
     if spec.command:
         entry["command"] = spec.command
