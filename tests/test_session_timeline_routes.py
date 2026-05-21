@@ -17,11 +17,13 @@ from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.routes import peers
+from repowire.daemon.state.database import StateDatabase
+from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
 from repowire.daemon.websocket_transport import WebSocketTransport
 from repowire.session.history import _encode_cwd
 
 
-def _make_app(tmp_path: Path):
+def _make_app(tmp_path: Path, *, with_bindings: bool = False):
     cfg = Config()
     transport = WebSocketTransport()
     tracker = QueryTracker()
@@ -43,10 +45,14 @@ def _make_app(tmp_path: Path):
         peer_registry=registry,
         relay_mode=False,
     )
+    if with_bindings:
+        db = StateDatabase(tmp_path / "state.db")
+        app_state.state_db = db
+        app_state.session_binding_store = SQLiteSessionBindingStore(db)
     init_deps(cfg, registry, app_state)
     app = FastAPI()
     app.include_router(peers.router)
-    return app, registry
+    return app, registry, getattr(app_state, "session_binding_store", None)
 
 
 def _write_session(projects_root: Path, peer_path: str, entries: list[dict]) -> None:
@@ -69,7 +75,7 @@ def _write_codex_session(sessions_root: Path, entries: list[dict]) -> None:
 
 @pytest.mark.anyio
 async def test_timeline_merges_history_and_realtime_events(tmp_path: Path) -> None:
-    app, registry = _make_app(tmp_path)
+    app, registry, _ = _make_app(tmp_path)
     projects_root = tmp_path / "projects"
     peer_path = "/peer/work"
     try:
@@ -147,7 +153,7 @@ async def test_timeline_merges_history_and_realtime_events(tmp_path: Path) -> No
 
 @pytest.mark.anyio
 async def test_timeline_loads_codex_history_with_status(tmp_path: Path) -> None:
-    app, registry = _make_app(tmp_path)
+    app, registry, _ = _make_app(tmp_path)
     sessions_root = tmp_path / "codex-sessions"
     peer_path = "/peer/work"
     try:
@@ -208,7 +214,7 @@ async def test_timeline_loads_codex_history_with_status(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_timeline_session_filter_and_limit(tmp_path: Path) -> None:
-    app, registry = _make_app(tmp_path)
+    app, registry, _ = _make_app(tmp_path)
     projects_root = tmp_path / "projects"
     peer_path = "/peer/work"
     try:
@@ -274,10 +280,148 @@ async def test_timeline_session_filter_and_limit(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_timeline_unknown_peer_returns_404(tmp_path: Path) -> None:
-    app, _ = _make_app(tmp_path)
+    app, _, _ = _make_app(tmp_path)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             res = await ac.get("/peers/ghost/timeline")
         assert res.status_code == 404
+    finally:
+        cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_timeline_resolves_claude_history_from_session_binding(tmp_path: Path) -> None:
+    app, registry, binding_store = _make_app(tmp_path, with_bindings=True)
+    assert binding_store is not None
+    projects_root = tmp_path / "projects"
+    peer_path = "/peer/work"
+    try:
+        peer_id, name = await registry.allocate_and_register(
+            circle="global",
+            backend=AgentType.CLAUDE_CODE,
+            path=peer_path,
+            pane_id=None,
+            tmux_session=None,
+            metadata={},
+            machine="test",
+        )
+        _write_session(
+            projects_root,
+            peer_path,
+            [
+                {
+                    "type": "user",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "sessionId": "bound-s1",
+                    "message": {"content": "bound prompt"},
+                },
+                {
+                    "type": "assistant",
+                    "uuid": "bound-turn",
+                    "timestamp": "2026-01-01T00:00:01Z",
+                    "sessionId": "bound-s1",
+                    "message": {"content": [{"type": "text", "text": "bound answer"}]},
+                },
+            ],
+        )
+        binding = binding_store.upsert_observation(
+            peer_id=peer_id,
+            backend=AgentType.CLAUDE_CODE,
+            project_path=peer_path,
+            runtime_session_id="bound-s1",
+            runtime_source_uri=f"claude-jsonl:{_encode_cwd(peer_path)}/session.jsonl",
+            provenance={"source_kind": "runtime_transcript"},
+        )
+
+        with patch("repowire.session.history._claude_projects_dir", return_value=projects_root):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+                res = await ac.get(
+                    f"/peers/{name}/timeline",
+                    params={"session_id": "bound-s1"},
+                )
+
+        assert res.status_code == 200
+        body = res.json()
+        assert [item["text"] for item in body["items"]] == ["bound prompt", "bound answer"]
+        assert body["history_source"] == "session_binding"
+        assert body["repowire_session_id"] == binding.repowire_session_id
+        assert body["binding_status"] == "active"
+        assert body["runtime_session_id"] == "bound-s1"
+    finally:
+        cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_timeline_resolves_codex_history_from_session_binding(tmp_path: Path) -> None:
+    app, registry, binding_store = _make_app(tmp_path, with_bindings=True)
+    assert binding_store is not None
+    sessions_root = tmp_path / "codex-sessions"
+    peer_path = "/peer/work"
+    try:
+        peer_id, name = await registry.allocate_and_register(
+            circle="global",
+            backend=AgentType.CODEX,
+            path=peer_path,
+            pane_id=None,
+            tmux_session=None,
+            metadata={},
+            machine="test",
+        )
+        _write_codex_session(
+            sessions_root,
+            [
+                {
+                    "type": "session_meta",
+                    "payload": {"id": "codex-bound-s1", "cwd": peer_path},
+                },
+                {
+                    "type": "response_item",
+                    "timestamp": "2026-05-21T08:00:01Z",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "codex bound prompt"}],
+                    },
+                },
+                {
+                    "type": "turn_context",
+                    "payload": {"turn_id": "codex-bound-turn", "cwd": peer_path},
+                },
+                {
+                    "type": "response_item",
+                    "timestamp": "2026-05-21T08:00:02Z",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "codex bound answer"}],
+                    },
+                },
+            ],
+        )
+        binding = binding_store.upsert_observation(
+            peer_id=peer_id,
+            backend=AgentType.CODEX,
+            project_path=peer_path,
+            runtime_session_id="codex-bound-s1",
+            runtime_source_uri="codex-rollout:2026/05/21/rollout-2026-05-21T08-00-00-codex-session.jsonl",
+            provenance={"source_kind": "runtime_transcript"},
+        )
+
+        with patch("repowire.session.history._codex_sessions_dir", return_value=sessions_root):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+                res = await ac.get(
+                    f"/peers/{name}/timeline",
+                    params={"session_id": "codex-bound-s1"},
+                )
+
+        assert res.status_code == 200
+        body = res.json()
+        assert [item["text"] for item in body["items"]] == [
+            "codex bound prompt",
+            "codex bound answer",
+        ]
+        assert body["history_source"] == "session_binding"
+        assert body["repowire_session_id"] == binding.repowire_session_id
+        assert body["runtime_session_id"] == "codex-bound-s1"
     finally:
         cleanup_deps()

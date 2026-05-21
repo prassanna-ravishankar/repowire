@@ -21,8 +21,14 @@ from repowire.daemon.peer_registry import (
     RoleClaimConflictError,
 )
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
+from repowire.daemon.state.session_bindings import SessionBinding
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
-from repowire.session.history import load_peer_history, page_turns
+from repowire.session.history import (
+    HistoryLoadResult,
+    load_bound_history,
+    load_peer_history,
+    page_turns,
+)
 from repowire.session.timeline import TimelineItem, build_session_timeline
 
 router = APIRouter(tags=["peers"])
@@ -500,6 +506,10 @@ class TranscriptResponse(BaseModel):
     history_status: str = "available"
     history_backend: str = "claude-code"
     history_message: str = ""
+    history_source: str = "peer_path"
+    repowire_session_id: str | None = None
+    binding_status: str | None = None
+    runtime_session_id: str | None = None
 
 
 class SessionTimelineItem(BaseModel):
@@ -524,6 +534,10 @@ class SessionTimelineResponse(BaseModel):
     history_status: str = "available"
     history_backend: str = "claude-code"
     history_message: str = ""
+    history_source: str = "peer_path"
+    repowire_session_id: str | None = None
+    binding_status: str | None = None
+    runtime_session_id: str | None = None
     items: list[SessionTimelineItem]
 
 
@@ -542,6 +556,60 @@ def _timeline_item_response(item: TimelineItem) -> SessionTimelineItem:
         peer=item.peer,
         event_ids=item.event_ids,
     )
+
+
+def _resolve_history_binding(peer: Peer, session_id: str | None) -> SessionBinding | None:
+    """Return an unambiguous binding for compatibility history routes."""
+    binding_store = getattr(get_app_state(), "session_binding_store", None)
+    if binding_store is None:
+        return None
+
+    backend = peer.backend.value
+    project_path = peer.path or None
+    if session_id:
+        binding = binding_store.get_by_runtime_session(
+            session_id,
+            backend=backend,
+            project_path=project_path,
+        )
+        if binding is not None:
+            return binding
+
+        # Some early observations may lack a project path; keep the runtime
+        # session boundary useful without treating display name as durable.
+        return binding_store.get_by_runtime_session(session_id, backend=backend)
+
+    bindings = binding_store.list_by_peer(peer.peer_id)
+    usable = [
+        binding for binding in bindings
+        if binding.backend == backend and binding.project_path == (peer.path or "")
+    ]
+    if len(usable) == 1:
+        return usable[0]
+
+    hook_session_id = peer.metadata.get("hook_session_id")
+    if isinstance(hook_session_id, str) and hook_session_id:
+        for binding in usable:
+            if binding.runtime_session_id == hook_session_id:
+                return binding
+    return None
+
+
+def _load_history_for_peer(
+    peer: Peer,
+    session_id: str | None,
+) -> tuple[HistoryLoadResult, SessionBinding | None]:
+    binding = _resolve_history_binding(peer, session_id)
+    if binding is not None:
+        history = load_bound_history(
+            peer_path=binding.project_path or peer.path,
+            backend=binding.backend,
+            runtime_session_id=binding.runtime_session_id or session_id,
+            runtime_source_uri=binding.runtime_source_uri,
+            metadata={**peer.metadata, **binding.metadata},
+        )
+        return history, binding
+    return load_peer_history(peer.path, peer.backend, peer.metadata), None
 
 
 @router.get("/peers/{name}/timeline", response_model=SessionTimelineResponse)
@@ -569,7 +637,7 @@ async def get_peer_timeline(
             detail=f"Peer not found: {name}",
         )
 
-    history = await asyncio.to_thread(load_peer_history, peer.path, peer.backend, peer.metadata)
+    history, binding = await asyncio.to_thread(_load_history_for_peer, peer, session_id)
     items = build_session_timeline(
         history_turns=history.turns,
         events=peer_registry.get_events(),
@@ -586,6 +654,10 @@ async def get_peer_timeline(
         history_status=history.status,
         history_backend=history.backend,
         history_message=history.message,
+        history_source="session_binding" if binding is not None else "peer_path",
+        repowire_session_id=binding.repowire_session_id if binding else None,
+        binding_status=binding.status if binding else None,
+        runtime_session_id=binding.runtime_session_id if binding else session_id,
         items=[_timeline_item_response(item) for item in items],
     )
 
@@ -627,7 +699,7 @@ async def get_peer_transcript(
             detail=f"Peer not found: {name}",
         )
 
-    history = await asyncio.to_thread(load_peer_history, peer.path, peer.backend, peer.metadata)
+    history, binding = await asyncio.to_thread(_load_history_for_peer, peer, session_id)
     turns = history.turns
     if session_id:
         turns = [turn for turn in turns if turn.session_id == session_id]
@@ -648,6 +720,10 @@ async def get_peer_transcript(
         history_status=history.status,
         history_backend=history.backend,
         history_message=history.message,
+        history_source="session_binding" if binding is not None else "peer_path",
+        repowire_session_id=binding.repowire_session_id if binding else None,
+        binding_status=binding.status if binding else None,
+        runtime_session_id=binding.runtime_session_id if binding else session_id,
     )
 
 

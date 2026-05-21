@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from repowire.session.transcript import _summarize_tool_input
 
@@ -121,6 +122,126 @@ def discover_codex_sessions(peer_path: str | None) -> list[Path]:
         for path in root.glob("**/rollout-*.jsonl")
         if _codex_file_matches_peer(path, peer_path)
     )
+
+
+def _path_from_source_uri(runtime_source_uri: str | None, backend: str) -> Path | None:
+    """Resolve known runtime source locators to local backend-owned files.
+
+    Source URIs remain opaque at the route boundary. This helper only teaches
+    history replay about the locators documented in the session binding
+    contract, plus file/plain-path forms used by tests and local adapters.
+    """
+    if not runtime_source_uri:
+        return None
+    backend_value = getattr(backend, "value", backend)
+    parsed = urlparse(runtime_source_uri)
+    if parsed.scheme == "claude-jsonl":
+        return _claude_projects_dir() / unquote(parsed.path.lstrip("/"))
+    if parsed.scheme == "codex-rollout":
+        return _codex_sessions_dir() / unquote(parsed.path.lstrip("/"))
+    if parsed.scheme == "file":
+        return Path(unquote(parsed.path)).expanduser()
+    if not parsed.scheme:
+        return Path(runtime_source_uri).expanduser()
+
+    # Compatibility for source locators that encode only backend type in the
+    # scheme but still carry a path payload.
+    if backend_value == "claude-code" and parsed.scheme.startswith("claude"):
+        return _claude_projects_dir() / unquote(parsed.path.lstrip("/"))
+    if backend_value == "codex" and parsed.scheme.startswith("codex"):
+        return _codex_sessions_dir() / unquote(parsed.path.lstrip("/"))
+    return None
+
+
+def _session_file_candidates(
+    peer_path: str | None,
+    backend: str,
+    runtime_session_id: str | None,
+) -> list[Path]:
+    if not runtime_session_id:
+        return []
+    backend_value = getattr(backend, "value", backend)
+    if backend_value == "claude-code" and peer_path:
+        direct = _claude_projects_dir() / _encode_cwd(peer_path) / f"{runtime_session_id}.jsonl"
+        discovered = discover_claude_sessions(peer_path)
+        return [direct, *[path for path in discovered if path != direct]]
+    if backend_value == "codex":
+        return discover_codex_sessions(peer_path)
+    return []
+
+
+def _load_paths(
+    paths: list[Path],
+    backend: str,
+    runtime_session_id: str | None,
+) -> list[Turn]:
+    backend_value = getattr(backend, "value", backend)
+    turns: list[Turn] = []
+    seen: set[Path] = set()
+    for path in paths:
+        try:
+            resolved = path.expanduser().resolve()
+        except OSError:
+            resolved = path.expanduser()
+        if resolved in seen or not resolved.is_file():
+            continue
+        seen.add(resolved)
+        if backend_value == "claude-code":
+            turns.extend(_iter_claude_turns(resolved))
+        elif backend_value == "codex":
+            turns.extend(_iter_codex_turns(resolved))
+    if runtime_session_id:
+        turns = [turn for turn in turns if turn.session_id == runtime_session_id]
+    return turns
+
+
+def load_bound_history(
+    *,
+    peer_path: str | None,
+    backend: str,
+    runtime_session_id: str | None,
+    runtime_source_uri: str | None,
+    metadata: dict[str, Any] | None = None,
+) -> HistoryLoadResult:
+    """Load history through a session binding's runtime source boundary."""
+    backend_value = getattr(backend, "value", backend)
+    history_backend = (
+        "codex-acp"
+        if backend_value == "codex" and metadata and metadata.get("acp")
+        else backend_value
+    )
+    if backend_value not in {"claude-code", "codex"}:
+        return HistoryLoadResult(
+            turns=[],
+            status="unsupported",
+            backend=history_backend,
+            message=f"{history_backend} local history is not supported.",
+        )
+
+    paths: list[Path] = []
+    source_path = _path_from_source_uri(runtime_source_uri, backend_value)
+    if source_path is not None:
+        paths.append(source_path)
+    paths.extend(_session_file_candidates(peer_path, backend_value, runtime_session_id))
+    turns = _load_paths(paths, backend_value, runtime_session_id)
+
+    if turns:
+        return HistoryLoadResult(
+            turns=_sort_newest_first(turns),
+            status="available",
+            backend=history_backend,
+            message=f"{history_backend} history loaded from session binding.",
+        )
+
+    if runtime_source_uri or runtime_session_id:
+        return HistoryLoadResult(
+            turns=[],
+            status="unavailable",
+            backend=history_backend,
+            message=f"No {history_backend} history found for this session binding.",
+        )
+
+    return load_peer_history(peer_path, backend_value, metadata)
 
 
 def _extract_text(content: Any) -> str:
