@@ -896,6 +896,14 @@ class TestNotify:
             "text": "hello",
         })
         assert r.status_code == 404
+        body = r.json()
+        assert body["detail"] == "Unknown peer: nonexistent"
+        assert body["ok"] is False
+        assert body["status"] == "not_found"
+        assert body["delivery_state"] == "unknown_peer"
+        assert body["reason"] == "unknown_peer"
+        assert body["delivered"] is False
+        assert body["queued"] is False
 
     async def test_notify_ambiguous_peer_returns_409(self, client):
         """When two peers share a display_name across circles, /notify must
@@ -920,7 +928,43 @@ class TestNotify:
             "text": "hello",
         })
         assert r.status_code == 409
-        assert "Ambiguous peer name" in r.json()["detail"]
+        body = r.json()
+        assert "Ambiguous peer name" in body["detail"]
+        assert body["ok"] is False
+        assert body["status"] == "ambiguous_peer"
+        assert body["delivery_state"] == "failed"
+        assert body["reason"] == "ambiguous_peer"
+        assert body["delivered"] is False
+        assert body["queued"] is False
+
+    async def test_notify_cross_circle_forbidden_returns_403_shape(self, client):
+        registry = get_peer_registry()
+        _sender_id, sender_name = await registry.allocate_and_register(
+            circle="alpha",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/alpha-sender",
+        )
+        _recipient_id, recipient_name = await registry.allocate_and_register(
+            circle="beta",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/beta-recipient",
+        )
+
+        r = await client.post("/notify", json={
+            "from_peer": sender_name,
+            "to_peer": recipient_name,
+            "text": "hello",
+        })
+
+        assert r.status_code == 403
+        body = r.json()
+        assert "Circle boundary" in body["detail"]
+        assert body["ok"] is False
+        assert body["status"] == "forbidden"
+        assert body["delivery_state"] == "failed"
+        assert body["reason"] == "forbidden"
+        assert body["delivered"] is False
+        assert body["queued"] is False
 
     async def test_notify_online_recipient_returns_sent(self, client, monkeypatch):
         from unittest.mock import AsyncMock
@@ -953,6 +997,14 @@ class TestNotify:
         body = r.json()
         assert body["ok"] is True
         assert body["status"] == "sent"
+        assert body["delivery_state"] == "delivered"
+        assert body["delivered"] is True
+        assert body["queued"] is False
+        assert body["reason"] == "transport_delivered"
+        assert body["from_peer_id"] == _sender_id
+        assert body["from_peer_name"] == sender_name
+        assert body["to_peer_id"] == recipient_id
+        assert body["to_peer_name"] == recipient_name
 
     async def test_notify_carries_attachments_to_event_and_wire(self, client, monkeypatch):
         from unittest.mock import AsyncMock
@@ -1019,6 +1071,52 @@ class TestNotify:
         body = r.json()
         assert body["ok"] is True
         assert body["status"] == "queued"
+        assert body["delivery_state"] == "queued"
+        assert body["delivered"] is False
+        assert body["queued"] is True
+        assert body["reason"] == "recipient_busy"
+        assert body["from_peer_id"] == _sender_id
+        assert body["from_peer_name"] == sender_name
+        assert body["to_peer_id"] == recipient_id
+        assert body["to_peer_name"] == recipient_name
+
+    async def test_notify_no_live_transport_returns_503_shape(self, client, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from repowire.daemon.websocket_transport import TransportError
+
+        registry = get_peer_registry()
+        _sender_id, sender_name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/sender3",
+        )
+        _recipient_id, recipient_name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/recipient3",
+        )
+        monkeypatch.setattr(
+            registry._router,
+            "send_notification",
+            AsyncMock(side_effect=TransportError("No connection")),
+        )
+
+        r = await client.post("/notify", json={
+            "from_peer": sender_name,
+            "to_peer": recipient_name,
+            "text": "hello",
+        })
+
+        assert r.status_code == 503
+        body = r.json()
+        assert "no live connection" in body["detail"]
+        assert body["ok"] is False
+        assert body["status"] == "unavailable"
+        assert body["delivery_state"] == "no_live_transport"
+        assert body["reason"] == "no_live_transport"
+        assert body["delivered"] is False
+        assert body["queued"] is False
 
 
 # -- Broadcast --

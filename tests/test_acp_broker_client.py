@@ -456,7 +456,14 @@ async def test_public_notify_route_does_not_503_for_acp_peer(
             assert r.status_code == 200, (
                 f"/notify 503'd for ACP peer (regression of repowire#206): {r.text}"
             )
-            assert r.json()["status"] == "sent"
+            body = r.json()
+            assert body["status"] == "sent"
+            assert body["delivery_state"] == "delivered"
+            assert body["delivered"] is True
+            assert body["queued"] is False
+            assert body["reason"] == "transport_delivered"
+            assert body["from_peer_name"] == asker
+            assert body["to_peer_name"] == answerer
     finally:
         await asyncio.sleep(0)
         await manager.close()

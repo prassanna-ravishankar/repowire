@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Literal, cast
 from uuid import uuid4
 
@@ -26,6 +27,32 @@ from repowire.daemon.transport_router import (
 from repowire.protocol.messages import AttachmentRef
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class NotifyDeliveryResult:
+    """Structured notify outcome for HTTP clients.
+
+    ``status`` is the legacy compact value returned by older call sites.
+    ``delivery_state`` and ``reason`` make the same outcome explicit so
+    clients do not need to infer BUSY queueing or transport success.
+    """
+
+    status: Literal["sent", "queued"]
+    delivery_state: Literal["delivered", "queued"]
+    reason: Literal["transport_delivered", "recipient_busy"]
+    from_peer_id: str | None
+    from_peer_name: str
+    to_peer_id: str
+    to_peer_name: str
+
+    @property
+    def delivered(self) -> bool:
+        return self.delivery_state == "delivered"
+
+    @property
+    def queued(self) -> bool:
+        return self.delivery_state == "queued"
 
 
 class PeerDeliveryService:
@@ -126,6 +153,27 @@ class PeerDeliveryService:
         attachments: list[AttachmentRef] | tuple[AttachmentRef, ...] | None = None,
     ) -> Literal["sent", "queued"]:
         """Send a fire-and-forget notification using ACP-before-WS routing."""
+        result = await self.notify_result(
+            from_peer=from_peer,
+            to_peer=to_peer,
+            text=text,
+            bypass_circle=bypass_circle,
+            circle=circle,
+            attachments=attachments,
+        )
+        return result.status
+
+    async def notify_result(
+        self,
+        *,
+        from_peer: str,
+        to_peer: str,
+        text: str,
+        bypass_circle: bool = False,
+        circle: str | None = None,
+        attachments: list[AttachmentRef] | tuple[AttachmentRef, ...] | None = None,
+    ) -> NotifyDeliveryResult:
+        """Send a notification and return an explicit delivery outcome."""
         from_obj, target = await self._registry.check_access(
             from_peer=from_peer,
             to_peer=to_peer,
@@ -133,7 +181,7 @@ class PeerDeliveryService:
             circle=circle,
         )
         attachment_tuple = tuple(attachments or ())
-        return await self._router().send_notify(
+        delivery_status = await self._router().send_notify(
             NotifyEnvelope(
                 from_peer_id=from_obj.peer_id if from_obj else None,
                 from_peer_name=from_obj.display_name if from_obj else from_peer,
@@ -142,6 +190,21 @@ class PeerDeliveryService:
                 intended_recipient_name=to_peer,
                 attachments=attachment_tuple,
             )
+        )
+        delivery_state: Literal["delivered", "queued"] = (
+            "queued" if delivery_status == "queued" else "delivered"
+        )
+        reason: Literal["transport_delivered", "recipient_busy"] = (
+            "recipient_busy" if delivery_status == "queued" else "transport_delivered"
+        )
+        return NotifyDeliveryResult(
+            status=delivery_status,
+            delivery_state=delivery_state,
+            reason=reason,
+            from_peer_id=from_obj.peer_id if from_obj else None,
+            from_peer_name=from_obj.display_name if from_obj else from_peer,
+            to_peer_id=target.peer_id,
+            to_peer_name=target.display_name,
         )
 
     async def deliver_ask(

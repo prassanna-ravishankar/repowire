@@ -7,7 +7,7 @@ import json
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT
@@ -59,7 +59,9 @@ class NotifyResponse(BaseModel):
 
     ``status`` reflects the recipient's state at send-time: ``sent`` means
     ONLINE (immediate paste), ``queued`` means BUSY (ws-hook holds the paste
-    until the current turn ends). Wire format otherwise unchanged.
+    until the current turn ends). ``delivery_state`` is the explicit client
+    semantic: ``delivered`` for transport handoff, ``queued`` for BUSY
+    handoff.
 
     Notify is fire-and-forget: daemon-side success means the frame was handed
     to the recipient WebSocket, not that the agent received or processed it.
@@ -68,6 +70,14 @@ class NotifyResponse(BaseModel):
 
     ok: bool = True
     status: Literal["sent", "queued"] = "sent"
+    delivery_state: Literal["delivered", "queued"] = "delivered"
+    delivered: bool = True
+    queued: bool = False
+    reason: Literal["transport_delivered", "recipient_busy"] = "transport_delivered"
+    from_peer_id: str | None = None
+    from_peer_name: str | None = None
+    to_peer_id: str | None = None
+    to_peer_name: str | None = None
 
 
 class BroadcastRequest(BaseModel):
@@ -165,7 +175,7 @@ async def query_peer(
 async def notify_peer(
     request: NotifyRequest,
     _: str | None = Depends(require_auth),
-) -> NotifyResponse:
+) -> NotifyResponse | JSONResponse:
     """Send a notification to a peer (fire-and-forget).
 
     Routing is transport-agnostic:
@@ -196,7 +206,7 @@ async def notify_peer(
             registry=peer_registry,
             state=state,
         )
-        delivery_status = await peer_delivery.notify(
+        delivery = await peer_delivery.notify_result(
             from_peer=request.from_peer,
             to_peer=request.to_peer,
             text=request.text,
@@ -204,23 +214,62 @@ async def notify_peer(
             circle=request.circle,
             attachments=request.attachments,
         )
-        return NotifyResponse(status=delivery_status)
+        return NotifyResponse(
+            status=delivery.status,
+            delivery_state=delivery.delivery_state,
+            delivered=delivery.delivered,
+            queued=delivery.queued,
+            reason=delivery.reason,
+            from_peer_id=delivery.from_peer_id,
+            from_peer_name=delivery.from_peer_name,
+            to_peer_id=delivery.to_peer_id,
+            to_peer_name=delivery.to_peer_name,
+        )
     except ValueError as e:
         msg = str(e)
         if msg.startswith("Ambiguous peer name"):
             code = status.HTTP_409_CONFLICT
+            error_status = "ambiguous_peer"
+            delivery_state = "failed"
+            reason = "ambiguous_peer"
         elif msg.startswith("Unknown peer"):
             code = status.HTTP_404_NOT_FOUND
+            error_status = "not_found"
+            delivery_state = "unknown_peer"
+            reason = "unknown_peer"
         else:
             code = status.HTTP_403_FORBIDDEN
-        raise HTTPException(
+            error_status = "forbidden"
+            delivery_state = "failed"
+            reason = "forbidden"
+        return JSONResponse(
             status_code=code,
-            detail=msg,
+            content={
+                "ok": False,
+                "status": error_status,
+                "delivery_state": delivery_state,
+                "delivered": False,
+                "queued": False,
+                "reason": reason,
+                "detail": msg,
+                "from_peer_name": request.from_peer,
+                "to_peer_name": request.to_peer,
+            },
         )
     except TransportError as e:
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Peer {request.to_peer} has no live connection: {e}",
+            content={
+                "ok": False,
+                "status": "unavailable",
+                "delivery_state": "no_live_transport",
+                "delivered": False,
+                "queued": False,
+                "reason": "no_live_transport",
+                "detail": f"Peer {request.to_peer} has no live connection: {e}",
+                "from_peer_name": request.from_peer,
+                "to_peer_name": request.to_peer,
+            },
         )
     except Exception as e:
         raise HTTPException(
