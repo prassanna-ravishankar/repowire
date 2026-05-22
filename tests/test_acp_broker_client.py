@@ -717,10 +717,15 @@ async def test_manager_drops_client_when_subprocess_crashes(tmp_path: Path) -> N
             await mgr.prompt(spec, "second")
         assert "crash-peer" not in mgr._clients  # type: ignore[attr-defined]
         assert first_client.crashed is True
+        health = mgr.health_snapshot()
+        assert health["last_error_peer_id"] == "crash-peer"
+        assert "prompt failed" in health["last_error"]
+        assert health["active_clients"] == 0
 
         # 3: a fresh client is spawned; we should get a normal echo again
         r3 = await mgr.prompt(spec, "third")
         assert r3.text == "[ok] third"
+        assert mgr.health_snapshot()["last_error"] is None
         respawned = await mgr.get_or_create(spec)
         assert respawned is not first_client
         assert isinstance(respawned, AcpClient)

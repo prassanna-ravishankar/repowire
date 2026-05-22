@@ -12,6 +12,7 @@ Status semantics:
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import subprocess
@@ -19,6 +20,7 @@ import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -103,10 +105,12 @@ def check_daemon(daemon_url: str, timeout: float = 2.0) -> CheckResult:
 
     version = payload.get("version", "?")
     relay_mode = " (relay mode)" if payload.get("relay_mode") else ""
+    children = _daemon_health_children(payload)
     return CheckResult(
         "Daemon reachable",
-        Status.OK,
+        _worst(children) if children else Status.OK,
         f"{daemon_url} — v{version}{relay_mode}",
+        children=children,
     )
 
 
@@ -386,13 +390,13 @@ def check_relay(config: Config, timeout: float = 5.0) -> CheckResult:
     return CheckResult("Relay", Status.OK, f"reachable at {url} — {key_state}")
 
 
-def check_channel_transport() -> CheckResult:
+def check_channel_transport(config: Config | None = None) -> CheckResult:
     """Channel transport is opt-in; only inspect if claude-code is detected."""
     if not shutil.which("claude"):
         return CheckResult(
             "Channel transport (experimental)", Status.SKIP, "claude-code not detected",
         )
-    from repowire.installers.claude_code import check_channel_installed
+    from repowire.installers.claude_code import CLAUDE_JSON, check_channel_installed
 
     if not check_channel_installed():
         return CheckResult(
@@ -401,18 +405,105 @@ def check_channel_transport() -> CheckResult:
             "not configured (default hooks transport)",
         )
 
+    children: list[CheckResult] = []
     bun = shutil.which("bun")
     if not bun:
-        return CheckResult(
-            "Channel transport (experimental)",
-            Status.FAIL,
-            "configured but `bun` not on PATH",
-        )
+        children.append(CheckResult("bun runtime", Status.FAIL, "not found on PATH"))
+    else:
+        children.append(CheckResult("bun runtime", Status.OK, bun))
+
+    auth_result = _check_channel_auth(config or Config(), CLAUDE_JSON)
+    children.append(auth_result)
+    children.append(
+        CheckResult(
+            "Stop hook fallback",
+            Status.OK,
+            "installed hooks keep Stop fallback for dashboard chat_turns/reminders",
+        ),
+    )
+    worst = _worst(children)
+    if worst is Status.OK:
+        detail = f"configured, bun at {bun}"
+    else:
+        detail = "configured but degraded; see child checks"
     return CheckResult(
         "Channel transport (experimental)",
-        Status.OK,
-        f"configured, bun at {bun}",
+        worst,
+        detail,
+        children=children,
     )
+
+
+def _daemon_health_children(payload: dict[str, Any]) -> list[CheckResult]:
+    children: list[CheckResult] = []
+    channel = payload.get("channel")
+    if isinstance(channel, dict):
+        status = str(channel.get("status") or "unknown")
+        last_error = channel.get("last_error")
+        configured = bool(channel.get("configured"))
+        runtime = bool(channel.get("runtime_available"))
+        if status == "degraded":
+            result_status = Status.FAIL
+        elif status == "ready":
+            result_status = Status.OK
+        else:
+            result_status = Status.SKIP
+        detail = f"status={status}, configured={configured}, bun={runtime}"
+        if last_error:
+            detail += f", last_error={last_error}"
+        children.append(CheckResult("Channel broker health", result_status, detail))
+
+    acp = payload.get("acp_broker")
+    if isinstance(acp, dict):
+        status = str(acp.get("status") or "unknown")
+        last_error = acp.get("last_error")
+        enabled = bool(acp.get("enabled"))
+        peers = int(acp.get("configured_peers") or 0)
+        in_flight = int(acp.get("in_flight") or 0)
+        if status == "degraded":
+            result_status = Status.FAIL
+        elif status in {"ready", "busy"}:
+            result_status = Status.OK
+        else:
+            result_status = Status.SKIP
+        detail = (
+            f"status={status}, enabled={enabled}, configured_peers={peers}, "
+            f"in_flight={in_flight}"
+        )
+        if last_error:
+            detail += f", last_error={last_error}"
+        children.append(CheckResult("ACP broker health", result_status, detail))
+    return children
+
+
+def _check_channel_auth(config: Config, claude_json: Path) -> CheckResult:
+    expected = config.daemon.auth_token
+    try:
+        raw = json.loads(claude_json.read_text())
+    except FileNotFoundError:
+        return CheckResult("Channel auth", Status.FAIL, f"{claude_json} missing")
+    except json.JSONDecodeError as exc:
+        return CheckResult("Channel auth", Status.FAIL, f"{claude_json} invalid JSON: {exc}")
+
+    entry = raw.get("mcpServers", {}).get("repowire-channel")
+    if not isinstance(entry, dict):
+        return CheckResult("Channel auth", Status.FAIL, "repowire-channel entry missing")
+    env = entry.get("env")
+    configured = env.get("REPOWIRE_AUTH_TOKEN") if isinstance(env, dict) else None
+    if expected and configured != expected:
+        return CheckResult(
+            "Channel auth",
+            Status.FAIL,
+            "stale token in ~/.claude.json; rerun `repowire setup --experimental-channels`",
+        )
+    if not expected and configured:
+        return CheckResult(
+            "Channel auth",
+            Status.WARN,
+            "token is set in ~/.claude.json but daemon auth is disabled",
+        )
+    detail = "matches daemon auth token" if expected else "daemon auth disabled"
+    return CheckResult("Channel auth", Status.OK, detail)
 
 
 def check_repowire_version() -> CheckResult:
@@ -446,7 +537,7 @@ def run_all(config: Config, daemon_url: str) -> list[CheckResult]:
         check_auth_token(config),
         check_state_database(config),
         check_relay(config),
-        check_channel_transport(),
+        check_channel_transport(config),
     ]
 
 

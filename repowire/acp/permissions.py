@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -51,6 +52,8 @@ class ApprovalBroker:
         self._timeout_seconds = timeout_seconds
         self._pending: dict[str, _PendingPermission] = {}
         self._lock = asyncio.Lock()
+        self._last_error: str | None = None
+        self._last_error_at: str | None = None
 
     async def request_permission(
         self,
@@ -101,6 +104,8 @@ class ApprovalBroker:
                 message="permission request timed out",
                 timed_out=True,
             )
+            self._last_error = "permission request timed out"
+            self._last_error_at = _utc_now()
         finally:
             async with self._lock:
                 self._pending.pop(pending.request_id, None)
@@ -132,6 +137,8 @@ class ApprovalBroker:
                 message=message,
             )
             pending.future.set_result(decision)
+            self._last_error = None
+            self._last_error_at = None
             return decision
 
     async def get_pending(self, request_id: str) -> dict[str, Any] | None:
@@ -177,6 +184,15 @@ class ApprovalBroker:
         except Exception:
             return None
 
+    def health_snapshot(self) -> dict[str, Any]:
+        """Return passive permission relay state for /health and doctor."""
+        return {
+            "pending": len(self._pending),
+            "timeout_seconds": self._timeout_seconds,
+            "last_error": self._last_error,
+            "last_error_at": self._last_error_at,
+        }
+
 
 def _first_option_id(options: list[dict[str, Any]]) -> str | None:
     for option in options:
@@ -210,3 +226,7 @@ def _normalize_payload(value: Any) -> dict[str, Any]:
         if attr is not None:
             out[name] = attr
     return out or {"repr": repr(value)}
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()

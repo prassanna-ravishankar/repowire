@@ -72,7 +72,58 @@ class TestHealth:
     async def test_health(self, client):
         r = await client.get("/health")
         assert r.status_code == 200
-        assert r.json()["status"] == "ok"
+        body = r.json()
+        assert body["status"] == "ok"
+        assert "channel" in body
+        assert "acp_broker" in body
+        assert body["acp_broker"]["status"] == "inactive"
+
+    async def test_health_reports_acp_broker_snapshot(self, monkeypatch):
+        monkeypatch.setattr("repowire.daemon.routes.health.shutil.which", lambda _tool: None)
+        monkeypatch.setattr(
+            "repowire.daemon.routes.health.importlib.util.find_spec",
+            lambda _name: object(),
+        )
+        cfg = Config()
+        cfg.experiments.acp_broker_client = True
+
+        class FakeManager:
+            def health_snapshot(self):
+                return {
+                    "manager_initialized": True,
+                    "active_clients": 1,
+                    "in_flight": 2,
+                    "last_error": None,
+                }
+
+        class FakePermissionBroker:
+            def health_snapshot(self):
+                return {"pending": 1, "timeout_seconds": 60.0, "last_error": None}
+
+        class FakeRegistry:
+            async def get_all_peers(self):
+                return [
+                    SimpleNamespace(metadata={"acp": {"command": "codex-acp"}}),
+                    SimpleNamespace(metadata={}),
+                ]
+
+        app = FastAPI()
+        app.state.config = cfg
+        app.state.peer_registry = FakeRegistry()
+        app.state.acp_manager = FakeManager()
+        app.state.acp_permission_broker = FakePermissionBroker()
+        app.include_router(health.router)
+
+        t = ASGITransport(app=app)
+        async with AsyncClient(transport=t, base_url="http://test") as c:
+            r = await c.get("/health")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["acp_broker"]["status"] == "busy"
+        assert body["acp_broker"]["configured_peers"] == 1
+        assert body["acp_broker"]["active_clients"] == 1
+        assert body["acp_broker"]["in_flight"] == 2
+        assert body["acp_broker"]["permissions"]["pending"] == 1
 
 
 # -- Peers --

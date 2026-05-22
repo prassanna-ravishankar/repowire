@@ -12,6 +12,7 @@ from repowire.client import AsyncRepowireClient
 async with AsyncRepowireClient() as client:
     health = await client.health()
     print(health.version)
+    print(health.channel.status, health.acp_broker.status)
 
 # with auth and a custom base
 async with AsyncRepowireClient(
@@ -23,6 +24,11 @@ async with AsyncRepowireClient(
 ```
 
 You can also inject your own `httpx.AsyncClient` via the `client=` kwarg, in which case ownership stays with you and `aclose()` becomes a no-op.
+
+`health.channel` and `health.acp_broker` are passive readiness snapshots. They
+do not spawn ACP subprocesses or probe agents; they report daemon-known state
+such as channel runtime/auth readiness, configured ACP peers, in-flight broker
+prompts, permission-relay pending count, and the last recorded error.
 
 ## Identity
 

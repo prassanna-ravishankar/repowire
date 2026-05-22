@@ -20,12 +20,50 @@ from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import PeerRole
 
 
+class ChannelHealth(BaseModel):
+    """Passive Claude Code channel transport health."""
+
+    status: str = "inactive"
+    configured: bool = False
+    runtime_available: bool = False
+    stop_hook_fallback: bool = True
+    last_error: str | None = None
+
+
+class AcpPermissionHealth(BaseModel):
+    """Passive ACP permission relay health."""
+
+    pending: int = 0
+    timeout_seconds: float | None = None
+    last_error: str | None = None
+    last_error_at: str | None = None
+
+
+class AcpBrokerHealth(BaseModel):
+    """Passive broker-side ACP health."""
+
+    status: str = "inactive"
+    enabled: bool = False
+    sdk_available: bool = False
+    manager_initialized: bool = False
+    configured_peers: int = 0
+    active_clients: int = 0
+    in_flight: int = 0
+    last_error: str | None = None
+    last_error_peer_id: str | None = None
+    last_error_at: str | None = None
+    last_success_at: str | None = None
+    permissions: AcpPermissionHealth = Field(default_factory=AcpPermissionHealth)
+
+
 class Health(BaseModel):
     """Daemon health response."""
 
     status: str
     version: str
     relay_mode: bool = False
+    channel: ChannelHealth = Field(default_factory=ChannelHealth)
+    acp_broker: AcpBrokerHealth = Field(default_factory=AcpBrokerHealth)
 
 
 class ClientPeer(BaseModel):

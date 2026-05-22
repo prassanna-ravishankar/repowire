@@ -25,6 +25,7 @@ export default function ClientReference() {
 async with AsyncRepowireClient() as client:
     health = await client.health()
     print(health.version)
+    print(health.channel.status, health.acp_broker.status)
 
 # with auth and a custom base
 async with AsyncRepowireClient(
@@ -36,6 +37,9 @@ async with AsyncRepowireClient(
         </Code>
         <p>
           You can also inject your own <Mono>httpx.AsyncClient</Mono> via the <Mono>client=</Mono> kwarg, in which case ownership stays with you and <Mono>aclose()</Mono> becomes a no-op.
+        </p>
+        <p>
+          <Mono>health.channel</Mono> and <Mono>health.acp_broker</Mono> are passive readiness snapshots for channel runtime/auth state, ACP broker prompts, permission relay state, and the daemon&rsquo;s last recorded broker error.
         </p>
       </Section>
 

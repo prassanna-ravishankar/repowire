@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
 
 from repowire.acp.client import AcpClient, AcpClientError, AcpPromptResult
 from repowire.acp.models import AcpPeerConfig
@@ -43,6 +45,11 @@ class AcpClientManager:
         self._lock = asyncio.Lock()
         self._closed = False
         self._approval_broker = approval_broker
+        self._in_flight = 0
+        self._last_error: str | None = None
+        self._last_error_peer_id: str | None = None
+        self._last_error_at: str | None = None
+        self._last_success_at: str | None = None
 
     async def get_or_create(self, spec: AcpPeerSpec) -> AcpClient:
         """Return the live ``AcpClient`` for ``spec.peer_id``, starting it if needed."""
@@ -76,16 +83,46 @@ class AcpClientManager:
         cache entry would just be a corpse.
         """
         client = await self.get_or_create(spec)
+        self._in_flight += 1
         try:
             result = await client.prompt(text, timeout=timeout)
-        except AcpClientError:
+        except AcpClientError as e:
+            self._record_error(spec.peer_id, e)
             await self._drop_if_crashed(spec.peer_id, client)
             raise
+        finally:
+            self._in_flight = max(0, self._in_flight - 1)
         # Belt-and-braces: if the client decided it's crashed after a "successful"
         # call (shouldn't happen today, but cheap to guard), evict it too.
         if client.crashed:
             await self._drop_if_crashed(spec.peer_id, client)
+        self._last_error = None
+        self._last_error_peer_id = None
+        self._last_error_at = None
+        self._last_success_at = _utc_now()
         return result
+
+    def _record_error(self, peer_id: str, error: BaseException | None = None) -> None:
+        self._last_error = str(error) if error is not None else "ACP prompt failed"
+        self._last_error_peer_id = peer_id
+        self._last_error_at = _utc_now()
+
+    def health_snapshot(self) -> dict[str, Any]:
+        """Return passive ACP broker state for /health and doctor.
+
+        This intentionally does not spawn clients or probe subprocesses; it only
+        reports what the broker already knows from prior delivery attempts.
+        """
+        return {
+            "manager_initialized": True,
+            "closed": self._closed,
+            "active_clients": len(self._clients),
+            "in_flight": self._in_flight,
+            "last_error": self._last_error,
+            "last_error_peer_id": self._last_error_peer_id,
+            "last_error_at": self._last_error_at,
+            "last_success_at": self._last_success_at,
+        }
 
     async def _drop_if_crashed(self, peer_id: str, client: AcpClient) -> None:
         """Drop ``peer_id`` from cache iff the cached entry is ``client``.
@@ -119,3 +156,7 @@ class AcpClientManager:
                 await c.close()
             except Exception as e:  # noqa: BLE001 — best-effort shutdown
                 logger.warning("AcpClientManager: close error: %s", e)
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()

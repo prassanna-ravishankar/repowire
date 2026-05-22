@@ -97,6 +97,30 @@ class TestDaemon:
         assert r.status is Status.OK
         assert "9.9.9" in r.detail
 
+    def test_reachable_reports_degraded_acp_child(self):
+        def handler(_request):
+            return httpx.Response(
+                200,
+                json={
+                    "status": "ok",
+                    "version": "9.9.9",
+                    "acp_broker": {
+                        "status": "degraded",
+                        "enabled": True,
+                        "configured_peers": 1,
+                        "in_flight": 0,
+                        "last_error": "agent-client-protocol SDK not installed",
+                    },
+                },
+            )
+
+        with patch("repowire.doctor.httpx.Client", _mock_client_factory(handler)):
+            r = check_daemon("http://localhost:8377")
+        assert r.status is Status.FAIL
+        child = next(c for c in r.children if c.name == "ACP broker health")
+        assert child.status is Status.FAIL
+        assert "last_error=agent-client-protocol SDK not installed" in child.detail
+
     def test_connect_error_fails(self):
         def handler(_request):
             raise httpx.ConnectError("nope")
@@ -279,23 +303,50 @@ class TestChannelTransport:
             r = check_channel_transport()
         assert r.status is Status.SKIP
 
-    def test_configured_no_bun_fails(self):
+    def test_configured_no_bun_fails(self, tmp_path: Path):
+        claude_json = tmp_path / ".claude.json"
+        claude_json.write_text('{"mcpServers":{"repowire-channel":{}}}')
+
         def which(tool):
             if tool == "claude":
                 return "/p/claude"
             return None
         with patch("repowire.doctor.shutil.which", side_effect=which), \
-             patch("repowire.installers.claude_code.check_channel_installed", return_value=True):
+             patch("repowire.installers.claude_code.check_channel_installed", return_value=True), \
+             patch("repowire.installers.claude_code.CLAUDE_JSON", claude_json):
             r = check_channel_transport()
         assert r.status is Status.FAIL
 
-    def test_configured_with_bun_ok(self):
+    def test_configured_with_bun_ok(self, tmp_path: Path):
+        claude_json = tmp_path / ".claude.json"
+        claude_json.write_text('{"mcpServers":{"repowire-channel":{}}}')
+
         def which(tool):
             return f"/p/{tool}" if tool in ("claude", "bun") else None
         with patch("repowire.doctor.shutil.which", side_effect=which), \
-             patch("repowire.installers.claude_code.check_channel_installed", return_value=True):
+             patch("repowire.installers.claude_code.check_channel_installed", return_value=True), \
+             patch("repowire.installers.claude_code.CLAUDE_JSON", claude_json):
             r = check_channel_transport()
         assert r.status is Status.OK
+
+    def test_configured_stale_auth_fails(self, tmp_path: Path):
+        claude_json = tmp_path / ".claude.json"
+        claude_json.write_text(
+            '{"mcpServers":{"repowire-channel":{"env":{"REPOWIRE_AUTH_TOKEN":"old"}}}}',
+        )
+
+        def which(tool):
+            return f"/p/{tool}" if tool in ("claude", "bun") else None
+
+        config = Config(daemon=DaemonConfig(auth_token="new"))
+        with patch("repowire.doctor.shutil.which", side_effect=which), \
+             patch("repowire.installers.claude_code.check_channel_installed", return_value=True), \
+             patch("repowire.installers.claude_code.CLAUDE_JSON", claude_json):
+            r = check_channel_transport(config)
+        assert r.status is Status.FAIL
+        auth = next(c for c in r.children if c.name == "Channel auth")
+        assert auth.status is Status.FAIL
+        assert "stale token" in auth.detail
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,19 @@ Shows:
 
 First stop for any "did the install actually work?" question.
 
+## `repowire doctor`
+
+```bash
+repowire doctor
+```
+
+Runs concrete health checks and includes daemon-reported channel/ACP broker
+state when the daemon is reachable. The channel check reports whether the
+experimental Claude Code channel is configured, whether `bun` is available, and
+whether the token in `~/.claude.json` matches the daemon auth token. The ACP
+broker check reports readiness, configured ACP peers, in-flight prompts, and
+the last broker or permission-relay error seen by the daemon.
+
 ## `repowire peer list`
 
 ```bash
