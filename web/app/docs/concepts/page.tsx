@@ -76,6 +76,9 @@ export default function Concepts() {
         <p>
           <Mono>timeline</Mono> and <Mono>result</Mono> are views over existing peer, ask, schedule, event, and session-history data until a separate tracked-work lifecycle exists. ACP/channel broker health is reserved for the channel health work rather than claimed by this command contract.
         </p>
+        <p>
+          Future Claude Code marketplace plugin packaging may expose these commands as slash commands, skills, docs, and an MCP bootstrap, but it remains optional. The plugin manifest should map to the same command ids and check drift against the installed Repowire package, <Mono>repowire mcp</Mono>, hook snippets, Claude Code version, and the declared compatible Repowire range. It does not replace <Mono>repowire setup</Mono> or install a second daemon.
+        </p>
       </Section>
 
       <Section title="Tracked work lifecycle">

@@ -6,6 +6,7 @@ from repowire.mcp.server import create_mcp_server
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "docs" / "concepts" / "mesh-command-ux.md"
+PLUGIN_PACKAGING = ROOT / "docs" / "concepts" / "claude-code-plugin-packaging.md"
 WEB_CONCEPTS = ROOT / "web" / "app" / "docs" / "concepts" / "page.tsx"
 
 
@@ -94,6 +95,7 @@ def test_mesh_command_contract_keeps_related_work_out_of_scope() -> None:
     assert "ACP/channel broker readiness" in text
     assert "should not claim those states are implemented" in one_line
     assert "a plugin is a convenience package, not a replacement for setup" in one_line
+    assert "check drift against the installed Repowire package" in one_line
 
 
 def test_web_docs_mirror_core_command_contract() -> None:
@@ -113,8 +115,48 @@ def test_web_docs_mirror_core_command_contract() -> None:
         "SendMessage",
         "tracked-work lifecycle",
         "ACP/channel broker health",
+        "Claude Code marketplace plugin packaging",
+        "repowire setup",
     ):
         assert token in text
+
+
+def test_claude_code_plugin_packaging_spec_preserves_setup_boundary() -> None:
+    text = PLUGIN_PACKAGING.read_text()
+    one_line = _one_line(text)
+
+    for token in (
+        "Do not replace `repowire setup`.",
+        "Do not install or manage the daemon service from the plugin.",
+        "Do not redefine ask/ack/notify lifecycle rules.",
+        "This bootstrap is valid only when `repowire` is already installed on `PATH`.",
+    ):
+        assert token in text
+
+    assert (
+        "Do not make tracked-work lifecycle, ACP/channel health, SQLite cleanup, or graphify claims"
+        in one_line
+    )
+
+    for command in (
+        "status",
+        "peers",
+        "pending-asks",
+        "ask",
+        "notify",
+        "schedule",
+        "timeline",
+        "result",
+        "doctor",
+    ):
+        assert f"`{command}`" in text
+
+    assert "repowire-claude-code-plugin/" in text
+    assert ".claude-plugin/" in text
+    assert "plugin.json" in text
+    assert "manifest compatible Repowire range vs local package version" in text
+    assert "plugin manifest version vs installed `repowire --version`" in text
+    assert "Plugin uninstall and Repowire uninstall are separate operations." in one_line
 
 
 def test_mcp_tool_instructions_match_command_contract() -> None:

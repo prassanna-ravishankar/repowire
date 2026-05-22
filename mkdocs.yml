@@ -104,6 +104,9 @@ nav:
       - concepts/index.md
       - Peers and circles: concepts/peers-and-circles.md
       - Message types: concepts/message-types.md
+      - Mesh command UX contract: concepts/mesh-command-ux.md
+      - Tracked work lifecycle: concepts/tracked-work-lifecycle.md
+      - Claude Code plugin packaging: concepts/claude-code-plugin-packaging.md
       - Lazy repair: concepts/lazy-repair.md
       - Control surfaces: concepts/control-surfaces.md
       - Orchestrator pattern: concepts/orchestrator.md

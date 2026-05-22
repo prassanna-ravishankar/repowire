@@ -36,6 +36,8 @@ You can still use those surfaces alongside Repowire:
 
 Treat these as capability packaging layers. Repowire's Claude Code integration remains the hooks + MCP transport described above.
 
+A future optional Repowire marketplace plugin should package Claude Code-facing commands, skills, docs, and an MCP bootstrap around the existing `repowire mcp` command. It must not replace `repowire setup`, install a second daemon, own `~/.repowire/config.yaml`, or redefine ask/ack/notify behavior. See [Claude Code plugin packaging](../concepts/claude-code-plugin-packaging.md) for the proposed layout, version/manifest drift checks, and install/update/uninstall docs impact.
+
 ## Channel transport (experimental)
 
 ```bash

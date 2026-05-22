@@ -155,7 +155,13 @@ claim those states are implemented.
 ## Plugin packaging boundary
 
 Future Claude Code plugin packaging may ship these commands as slash commands,
-skills, hooks, MCP bootstrap, or documentation. Packaging must consume this
-contract rather than redefine command semantics. Repowire setup remains the core
-daemon and multi-runtime install path; a plugin is a convenience package, not a
-replacement for setup.
+skills, MCP bootstrap, hook documentation, or documentation. Packaging must
+consume this contract rather than redefine command semantics. Repowire setup
+remains the core daemon and multi-runtime install path; a plugin is a
+convenience package, not a replacement for setup.
+
+A plugin manifest should map every packaged command to one command id from this
+contract and should check drift against the installed Repowire package, MCP
+bootstrap command, hook snippets, Claude Code version, and declared compatible
+Repowire version range. The detailed packaging boundary lives in
+[Claude Code plugin packaging](claude-code-plugin-packaging.md).
