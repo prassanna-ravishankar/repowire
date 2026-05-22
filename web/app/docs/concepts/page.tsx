@@ -62,6 +62,22 @@ export default function Concepts() {
         </dl>
       </Section>
 
+      <Section title="Mesh command UX">
+        <p>
+          Repowire&rsquo;s command layer has a stable contract for common mesh operations:
+          <Mono>status</Mono>, <Mono>peers</Mono>, <Mono>pending-asks</Mono>, <Mono>ask</Mono>, <Mono>notify</Mono>, <Mono>schedule</Mono>, <Mono>timeline</Mono>, <Mono>result</Mono>, and <Mono>doctor</Mono>.
+        </p>
+        <p>
+          Every command should have a human rendering for steering the mesh and a JSON rendering for agents, plugins, tests, and scripts. The JSON envelope carries <Mono>command</Mono>, <Mono>status</Mono>, <Mono>schema_version</Mono>, <Mono>data</Mono>, plus optional <Mono>target</Mono>, <Mono>warnings</Mono>, and <Mono>next_actions</Mono>.
+        </p>
+        <p>
+          Agents use Repowire tools for mesh peers: <Mono>ask</Mono> for tracked work, <Mono>notify_peer</Mono> for fire-and-forget updates, and <Mono>ack</Mono> to close inbound asks. <Mono>SendMessage</Mono> is only for same-session harness teammates.
+        </p>
+        <p>
+          <Mono>timeline</Mono> and <Mono>result</Mono> are views over existing peer, ask, schedule, event, and session-history data until a separate tracked-work lifecycle exists. ACP/channel broker health is reserved for the channel health work rather than claimed by this command contract.
+        </p>
+      </Section>
+
       <Section title="Lazy repair">
         <p>
           Repowire avoids polling. Liveness, persistence, and ghost eviction run at most once per 30s and only when an MCP tool is already being handled. Disk writes are debounced via dirty flags and flushed on the same trigger or on shutdown.

@@ -24,7 +24,7 @@ export const docsNav: DocsNavSection[] = [
         slug: "concepts",
         href: "/docs/concepts",
         label: "Concepts",
-        summary: "Peers, circles, message types, control surfaces, and session roadmap.",
+        summary: "Peers, circles, message types, command UX, and session roadmap.",
       },
     ],
   },

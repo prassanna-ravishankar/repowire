@@ -51,7 +51,7 @@ Repowire is not a standalone chat UI in this flow. You ask your local agent in n
 ## What to read next
 
 - [Quickstart](quickstart/index.md) walks through install, setup, and the first cross-repo ask.
-- [Concepts](concepts/index.md) covers peers, circles, message types, and the orchestrator pattern.
+- [Concepts](concepts/index.md) covers peers, circles, message types, the mesh command UX contract, and the orchestrator pattern.
 - [Control surfaces](surfaces/index.md) explains dashboard, Telegram, Slack, and relay control paths.
 - [Patterns](patterns/index.md) covers multi-repo asks, mobile dispatch, worktree isolation, scheduled wake-ups, and orchestrator coordination.
 - [MCP tools reference](reference/mcp-tools.md) is the source of truth for the agent API.
