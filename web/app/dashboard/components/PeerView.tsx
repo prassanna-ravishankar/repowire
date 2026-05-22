@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Check, Clock, Copy, Paperclip, RefreshCw, Send, X } from "lucide-react";
+import { AlertCircle, Bell, Check, Clock, Copy, Paperclip, RefreshCw, RotateCcw, Send, X } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
 import { registerSnapshotProvider, useFrozenThread, useIsPeerProtected } from "../lib/protection";
 import { clearDraft, setDraftFile, setDraftText, useDraftFile, useDraftText } from "../lib/drafts";
@@ -27,6 +27,27 @@ interface PendingAsk {
   reply?: string;
   reply_from?: string;
   attachments?: AttachmentRef[];
+}
+
+interface SessionResumeControlResponse {
+  ok: boolean;
+  repowire_session_id: string;
+  session_status: string;
+  status: "active_executor" | "resume_available" | "unsupported" | "binding_unavailable";
+  capability: "active_executor" | "supported" | "unsupported" | "unavailable";
+  message: string;
+  backend: string;
+  runtime_session_id?: string | null;
+  runtime_source_uri?: string | null;
+  executor_peer_id?: string | null;
+  executor_peer_name?: string | null;
+  resume_capability: Record<string, unknown>;
+}
+
+interface SessionNotifyControlResponse {
+  ok: boolean;
+  delivery_state: "delivered" | "queued";
+  reason: string;
 }
 
 const ACK_FRAME_RE = /^\[ack #([^\]\s]+) from @([^\]\s]+)\]\s?([\s\S]*)$/;
@@ -354,6 +375,12 @@ export function PeerView({
             <div ref={bottomRef} />
           </div>
 
+          <SessionCommandPanel
+            peer={peer}
+            apiBase={apiBase}
+            activeSessionId={activeSessionId}
+            onSent={onSent}
+          />
           <ComposeBar peer={peer} apiBase={apiBase} events={events} onSent={onSent} />
         </>
       ) : activeTab === "history" ? (
@@ -592,6 +619,214 @@ function HistoryTurn({ turn, peer }: { turn: TranscriptTurn; peer: Peer }) {
         )}
       </div>
       {!isUser && turn.tool_calls.length > 0 && <ToolCallBlock toolCalls={turn.tool_calls} />}
+    </div>
+  );
+}
+
+function SessionCommandPanel({
+  peer,
+  apiBase,
+  activeSessionId,
+  onSent,
+}: {
+  peer: Peer;
+  apiBase: string;
+  activeSessionId: string | null;
+  onSent?: () => void;
+}) {
+  const [resumeState, setResumeState] = useState<SessionResumeControlResponse | null>(null);
+  const [loadingCapability, setLoadingCapability] = useState(false);
+  const [capabilityError, setCapabilityError] = useState<string | null>(null);
+  const [notifyText, setNotifyText] = useState("");
+  const [notifyPending, setNotifyPending] = useState(false);
+  const [notifyStatus, setNotifyStatus] = useState<string | null>(null);
+  const [notifyError, setNotifyError] = useState<string | null>(null);
+
+  const loadCapability = useCallback(async () => {
+    if (!activeSessionId) {
+      setResumeState(null);
+      setCapabilityError(null);
+      setLoadingCapability(false);
+      return;
+    }
+    setLoadingCapability(true);
+    setCapabilityError(null);
+    try {
+      const res = await fetch(
+        `${apiBase}/sessions/${encodeURIComponent(activeSessionId)}/controls/resume`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ from_peer: "dashboard", dry_run: true }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = data?.detail;
+        setResumeState(null);
+        setCapabilityError(
+          typeof detail === "string"
+            ? detail
+            : detail?.message || detail?.error || `Error ${res.status}`,
+        );
+        return;
+      }
+      setResumeState(data as SessionResumeControlResponse);
+    } catch (e) {
+      setResumeState(null);
+      setCapabilityError(e instanceof Error ? e.message : "Request failed");
+    } finally {
+      setLoadingCapability(false);
+    }
+  }, [activeSessionId, apiBase]);
+
+  useEffect(() => {
+    setNotifyText("");
+    setNotifyStatus(null);
+    setNotifyError(null);
+    void loadCapability();
+  }, [loadCapability]);
+
+  const canNotifySession = Boolean(activeSessionId && resumeState?.capability === "active_executor");
+  const resumeLabel = !activeSessionId
+    ? "no session selected"
+    : loadingCapability
+    ? "checking session..."
+    : resumeState?.capability === "active_executor"
+    ? "active executor"
+    : resumeState?.capability === "supported"
+    ? "resume metadata ready"
+    : resumeState
+    ? "resume unsupported"
+    : "session controls unavailable";
+  const controlMessage = !activeSessionId
+    ? "Controls appear after a session is selected from live or persisted history."
+    : resumeState?.message || capabilityError || "Session capability is loading.";
+
+  async function submitNotify() {
+    const text = notifyText.trim();
+    if (!activeSessionId || !text || notifyPending || !canNotifySession) return;
+    setNotifyPending(true);
+    setNotifyStatus(null);
+    setNotifyError(null);
+    try {
+      const res = await fetch(
+        `${apiBase}/sessions/${encodeURIComponent(activeSessionId)}/controls/notify`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            from_peer: "dashboard",
+            text,
+            attachments: [],
+            bypass_circle: true,
+          }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = data?.detail;
+        setNotifyError(
+          typeof detail === "string"
+            ? detail
+            : detail?.message || detail?.error || `Error ${res.status}`,
+        );
+        return;
+      }
+      const body = data as SessionNotifyControlResponse;
+      setNotifyText("");
+      setNotifyStatus(body.delivery_state === "queued" ? "queued for active session" : "delivered to active session");
+      onSent?.();
+    } catch (e) {
+      setNotifyError(e instanceof Error ? e.message : "Request failed");
+    } finally {
+      setNotifyPending(false);
+    }
+  }
+
+  return (
+    <div className="border-t border-border-faint bg-surface px-3 py-2 md:px-4">
+      <div className="rounded border border-border-faint bg-surface-container-low p-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-outline">
+            session controls
+          </span>
+          <span
+            className={cn(
+              "inline-flex items-center rounded border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em]",
+              canNotifySession
+                ? "border-primary/40 bg-primary/10 text-primary"
+                : "border-border-faint text-outline",
+            )}
+          >
+            {resumeLabel}
+          </span>
+          <button
+            type="button"
+            onClick={loadCapability}
+            disabled={!activeSessionId || loadingCapability}
+            title="Refresh session capability"
+            aria-label="Refresh session capability"
+            className="ml-auto flex h-7 w-7 items-center justify-center rounded text-outline hover:bg-surface-container-high hover:text-on-surface disabled:opacity-40"
+          >
+            <RotateCcw className={cn("h-3.5 w-3.5", loadingCapability && "animate-spin")} />
+          </button>
+        </div>
+        <div className="mt-1.5 line-clamp-2 font-mono text-[11px] leading-4 text-outline">
+          {controlMessage}
+        </div>
+
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {[
+            "Please send a quick status update.",
+            "Checkpoint your current diff and next step.",
+            "Continue with the active task and report blockers.",
+          ].map((template) => (
+            <button
+              key={template}
+              type="button"
+              onClick={() => setNotifyText(template)}
+              disabled={!canNotifySession}
+              className="rounded border border-border-faint px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-outline hover:bg-surface-container-high hover:text-on-surface disabled:opacity-40"
+            >
+              {template.split(" ").slice(0, 2).join(" ")}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-2 flex items-end gap-2">
+          <textarea
+            value={notifyText}
+            onChange={(event) => setNotifyText(event.target.value)}
+            disabled={!canNotifySession || notifyPending}
+            rows={1}
+            placeholder={canNotifySession ? `notify active ${peerLabel(peer)} session...` : "session notify unavailable"}
+            className="max-h-20 min-h-8 flex-1 resize-none rounded border border-border-faint bg-surface-container-lowest px-2.5 py-1.5 font-mono text-xs text-on-surface outline-none placeholder:text-outline focus:border-primary focus:ring-1 focus:ring-primary disabled:opacity-50"
+          />
+          <button
+            type="button"
+            onClick={submitNotify}
+            disabled={!canNotifySession || !notifyText.trim() || notifyPending}
+            aria-label="Notify active session"
+            className={cn(
+              "flex h-8 w-8 shrink-0 items-center justify-center rounded transition-[filter,transform] active:scale-[0.98]",
+              canNotifySession && notifyText.trim()
+                ? "bg-primary text-on-primary hover:brightness-110"
+                : "bg-surface-container-high text-outline",
+            )}
+          >
+            {notifyPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Bell className="h-4 w-4" />}
+          </button>
+        </div>
+        {(notifyStatus || notifyError) && (
+          <div className={cn("mt-2 flex items-center gap-2 font-mono text-xs", notifyError ? "text-error" : "text-primary")}>
+            {notifyError ? <AlertCircle className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
+            <span>{notifyError || notifyStatus}</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

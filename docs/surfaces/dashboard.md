@@ -7,7 +7,8 @@ The dashboard is a Next.js UI served by the daemon at `http://localhost:8377/das
 - **Peer overview** — every peer's status (`online` / `busy` / `offline`), description, project path, circle, backend.
 - **Live mesh log** — `mesh.log`, a chronological event stream of asks, acks, notifications, and broadcasts.
 - **Per-peer chat** — selecting a peer replaces the live log with that peer's selected-session timeline. For Claude Code, Codex, and Codex ACP peers, the chat view merges supported persisted local history with realtime `chat_turn` and `chat_turn_delta` events; backends without a supported local history source contribute realtime events and report that degraded state in the timeline response. User and `@dashboard` messages align right; peer messages align left. Tool calls collapse behind a disclosure.
-- **Compose bar** — send a notification or ask to any peer. The dashboard registers as the `dashboard` peer so it shows up in `list_peers` and message routing.
+- **Compose bar** — send a plain-text ask to any peer. The dashboard registers as the `dashboard` peer so it shows up in `list_peers` and message routing. This remains the default path for conversational requests and attachments.
+- **Session controls** — when the selected chat has a Repowire session binding, a compact command surface can inspect resume capability and send fire-and-forget notifications to the active executor with `POST /sessions/{repowire_session_id}/controls/notify`. Sessions without an active executor, without a selected binding, or with unsupported resume metadata show disabled controls with the daemon-provided capability message.
 - **Spawn and backend controls** — spawn a peer or switch a peer backend using the runtime profiles from `daemon.spawn.commands` and the roots from `daemon.spawn.allowed_paths`.
 - **MCP config tab** — supported peers can list, add, and remove MCP servers. The tab labels whether edits affect peer/project config or backend user-global config before showing edit controls.
 - **Attachments** — the compose bar has a file upload button. Files post to `POST /attachments` (10 MB limit, 24 h TTL). The outgoing ask carries structured attachment metadata plus a text fallback with the local path so existing agents can still read it.
@@ -19,13 +20,15 @@ The dashboard does not poll. The stop hook of every Claude Code, Codex, and Gemi
 
 ACP-routed permission prompts emit `acp_permission_request` and `acp_permission_decision` events into the same daemon event stream. Human control surfaces can resolve a pending prompt with `POST /acp/permissions/{request_id}/decision`; if no decision arrives before the broker timeout, the daemon records a timed-out decision and denies by default. This v0.13 slice exposes the event/route contract only; the dashboard approval UI remains planned work.
 
-## Roadmap: session timeline
+## Session command direction
 
 The v0.13 dashboard direction is a timeline-centered view. The current slice merges supported persisted history and realtime stream events for the selected peer/session. Peers remain the runtime executors, and broader controls such as model/backend switching, resume, scheduling, approval handling, and plan-mode decisions remain roadmap items that should attach to shared session commands as those features land.
 
 `GET /peers/{name}/timeline` is the first daemon-side session timeline read model. It returns normalized items with explicit `session_id`, `turn_id`, `source` (`history` or `realtime`), and `kind` (`turn` or `delta_group`) by merging supported local history turns with the daemon's buffered realtime `chat_turn` and `chat_turn_delta` events. The response also includes `history_status`, `history_backend`, and `history_message` so callers can distinguish loaded history from unsupported or unavailable backend history. When a session binding is available, history lookup resolves through that binding's runtime session/source locator and reports `history_source`, `repowire_session_id`, `binding_status`, and `runtime_session_id`; otherwise it falls back to the peer/path discovery used by earlier v0.13 slices. Claude Code history is loaded from project transcripts, Codex and Codex ACP history is loaded from rollout JSONLs matched by runtime cwd or binding source locator, and Gemini/OpenCode/Pi currently report unsupported local history while retaining realtime timeline events. This route is additive; existing `/events` and dashboard SSE behavior are unchanged.
 
 `GET /peers/{name}/transcript` uses the same binding-backed history resolution and fallback behavior, while preserving its existing paginated transcript fields.
+
+`POST /sessions/{repowire_session_id}/controls/resume` is used by the dashboard as a dry-run capability probe. It reports whether the selected binding already has an active executor, has backend resume metadata available for future callers, or is unsupported/unavailable. In this v0.13 slice the dashboard only executes active-executor notify controls; backend-specific resume execution, scheduling controls, approval handling, and plan-mode decisions remain roadmap items for the shared session command surface.
 
 ## Mobile
 

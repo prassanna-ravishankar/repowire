@@ -144,7 +144,9 @@ function DashboardInner() {
   }, [fetchEvents, fetchPeers]);
 
   useEffect(() => {
-    void Promise.all([fetchPeers(), fetchEvents()]);
+    queueMicrotask(() => {
+      void Promise.all([fetchPeers(), fetchEvents()]);
+    });
   }, [fetchEvents, fetchPeers]);
 
   const selectedPeer = useMemo(

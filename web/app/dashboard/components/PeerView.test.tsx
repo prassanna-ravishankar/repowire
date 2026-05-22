@@ -615,3 +615,180 @@ describe("PeerView MCP config scope", () => {
     expect(screen.getByText("remote host")).toBeInTheDocument();
   });
 });
+
+describe("PeerView session controls", () => {
+  it("notifies the active session through the session control endpoint", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
+      if (url.includes("/transcript")) {
+        return new Response(JSON.stringify({ turns: [], next_before: null }), { status: 200 });
+      }
+      if (url.includes("/controls/resume")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            repowire_session_id: "session-a",
+            session_status: "active",
+            status: "active_executor",
+            capability: "active_executor",
+            message: "Session already has an active executor; send controls to that peer.",
+            backend: "codex",
+            executor_peer_id: PEER.peer_id,
+            executor_peer_name: "alice",
+            resume_capability: {},
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/controls/notify")) {
+        return new Response(
+          JSON.stringify({ ok: true, delivery_state: "delivered", reason: "sent" }),
+          { status: 200 },
+        );
+      }
+      return new Promise<Response>(() => {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <PeerView
+        peer={{ ...PEER, backend: "codex", metadata: { hook_session_id: "session-a" } }}
+        events={[]}
+        apiBase=""
+        onClose={() => {}}
+        onSent={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("active executor")).toBeInTheDocument();
+    const input = screen.getByPlaceholderText("notify active alice session...");
+    fireEvent.change(input, { target: { value: "status please" } });
+    fireEvent.click(screen.getByLabelText("Notify active session"));
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/sessions/session-a/controls/notify"))).toBe(true);
+    });
+    const notifyCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/controls/notify"));
+    expect(notifyCall?.[1]).toMatchObject({ method: "POST" });
+    expect(JSON.parse(String((notifyCall?.[1] as RequestInit).body))).toMatchObject({
+      from_peer: "dashboard",
+      text: "status please",
+      bypass_circle: true,
+    });
+    expect(await screen.findByText("delivered to active session")).toBeInTheDocument();
+  });
+
+  it("keeps the plain ask composer on /ask alongside session controls", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
+      if (url.includes("/transcript")) {
+        return new Response(JSON.stringify({ turns: [], next_before: null }), { status: 200 });
+      }
+      if (url.includes("/controls/resume")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            repowire_session_id: "session-a",
+            session_status: "active",
+            status: "active_executor",
+            capability: "active_executor",
+            message: "Session already has an active executor.",
+            backend: "codex",
+            resume_capability: {},
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "/ask") {
+        return new Response(JSON.stringify({ correlation_id: "ask-12345678" }), { status: 200 });
+      }
+      return new Promise<Response>(() => {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <PeerView
+        peer={{ ...PEER, metadata: { hook_session_id: "session-a" } }}
+        events={[]}
+        apiBase=""
+        onClose={() => {}}
+        onSent={() => {}}
+      />,
+    );
+
+    const askComposer = screen.getByTestId("compose-textarea");
+    fireEvent.change(askComposer, { target: { value: "normal ask" } });
+    fireEvent.click(screen.getByLabelText("Ask peer"));
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((call) => String(call[0]) === "/ask")).toBe(true);
+    });
+    const askCall = fetchMock.mock.calls.find((call) => String(call[0]) === "/ask");
+    expect(JSON.parse(String((askCall?.[1] as RequestInit).body))).toMatchObject({
+      from_peer: "dashboard",
+      to_peer: "alice",
+      bypass_circle: true,
+    });
+  });
+
+  it("shows unsupported and no-session controls as disabled states", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
+      if (url.includes("/transcript")) {
+        return new Response(JSON.stringify({ turns: [], next_before: null }), { status: 200 });
+      }
+      if (url.includes("/controls/resume")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            repowire_session_id: "session-a",
+            session_status: "detached",
+            status: "unsupported",
+            capability: "unsupported",
+            message: "No compatible backend resume capability is recorded for this session.",
+            backend: "opencode",
+            resume_capability: {},
+          }),
+          { status: 200 },
+        );
+      }
+      return new Promise<Response>(() => {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(
+      <PeerView
+        peer={{ ...PEER, backend: "opencode", metadata: { hook_session_id: "session-a" } }}
+        events={[]}
+        apiBase=""
+        onClose={() => {}}
+        onSent={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("resume unsupported")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("session notify unavailable")).toBeDisabled();
+    expect(screen.getByLabelText("Notify active session")).toBeDisabled();
+    expect(await screen.findByText(/no messages with alice/i)).toBeInTheDocument();
+
+    await act(async () => {
+      rerender(
+        <PeerView
+          peer={{ ...PEER, peer_id: "peer-no-session", metadata: {} }}
+          events={[]}
+          apiBase=""
+          onClose={() => {}}
+          onSent={() => {}}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("no session selected")).toBeInTheDocument();
+    expect(screen.getByText("Controls appear after a session is selected from live or persisted history.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("session notify unavailable")).toBeDisabled();
+  });
+});
