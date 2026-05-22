@@ -49,7 +49,7 @@ OpenCode does not expose the same hook shape, so Repowire installs a TypeScript 
 
 ### Channel / ACP transport
 
-`repowire setup --experimental-channels` installs Claude Code's experimental channel/ACP transport. Messages arrive as `<channel source="repowire">` tags, while replies route through a channel reply tool. This requires Claude Code support, claude.ai login, and `bun`. Treat this path as experimental; hooks + MCP remain the default.
+`repowire setup --experimental-channels` installs Claude Code's experimental channel/ACP transport. Messages arrive as `<channel source="repowire">` tags, while legacy query replies route through a channel reply tool. The normal `repowire mcp` server remains installed for stable tools such as `ask`, `ack`, `notify_peer`, schedules, and peer listing. This requires Claude Code support, claude.ai login, and `bun`. Treat this path as experimental; hooks + MCP remain the default.
 
 ### Relay
 

@@ -4,7 +4,7 @@
 
 ## What gets installed
 
-Hooks and MCP entries land in `~/.claude/settings.json`. Repowire owns these keys; user-defined hooks in the same file are preserved.
+Hooks land in `~/.claude/settings.json`. The normal Repowire MCP server is added by the Claude CLI. In experimental channel mode, the channel server entry is written to `~/.claude.json`.
 
 ### Hooks
 
@@ -23,7 +23,7 @@ The hooks shell out to the `repowire` CLI: `repowire hook session`, `repowire ho
 
 ### MCP server
 
-The repowire MCP server is added under `mcpServers.repowire` in the same settings file. It runs as `repowire mcp` over stdio.
+The normal Repowire MCP server is added as `repowire`. It runs as `repowire mcp` over stdio and provides the stable tool surface: `ask`, `ack`, `notify_peer`, `broadcast`, peer listing, schedules, and related commands.
 
 ## Plugins and skills
 
@@ -44,13 +44,15 @@ repowire setup --experimental-channels
 
 Replaces tmux-injection delivery with direct MCP-channel delivery. When a message arrives, Claude sees a `<channel source="repowire">` tag in its context instead of a `[ask #cid from @peer] ...` line injected into the terminal.
 
+Channel setup adds a separate `repowire-channel` MCP server entry in `~/.claude.json`. The normal `repowire` MCP server remains installed; use its stable tools, including `ack`, for ask lifecycle and parity with the default transport. The channel server itself only handles channel delivery and legacy query replies.
+
 Requirements:
 
 - Claude Code v2.1.80 or newer.
 - claude.ai login (not API/Console key auth).
 - [bun](https://bun.sh) on `PATH`.
 
-The channel transport only replaces the SessionStart / UserPromptSubmit / Notification hooks. The `Stop` and `StopFailure` hooks are kept so the dashboard still sees chat turns and status repair still runs.
+The channel transport only replaces the SessionStart / UserPromptSubmit / Notification hooks. The `Stop` and `StopFailure` hooks are kept so the dashboard still sees chat turns and status repair still runs. If the daemon has `daemon.auth_token` configured, setup passes it to the channel server as `REPOWIRE_AUTH_TOKEN` so the WebSocket registration can authenticate.
 
 If `repowire setup --experimental-channels` declines to install:
 

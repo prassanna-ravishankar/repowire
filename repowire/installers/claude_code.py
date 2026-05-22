@@ -5,6 +5,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from repowire.config.models import load_config
+
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 CLAUDE_JSON = Path.home() / ".claude.json"
 
@@ -237,10 +239,15 @@ def install_channel() -> tuple[bool, str]:
         config = {}
     config.setdefault("mcpServers", {})
 
-    config["mcpServers"]["repowire-channel"] = {
+    channel_entry: dict[str, object] = {
         "command": "bun",
         "args": [str(server_path)],
     }
+    auth_token = load_config().daemon.auth_token
+    if auth_token:
+        channel_entry["env"] = {"REPOWIRE_AUTH_TOKEN": auth_token}
+
+    config["mcpServers"]["repowire-channel"] = channel_entry
 
     CLAUDE_JSON.write_text(json.dumps(config, indent=2))
 

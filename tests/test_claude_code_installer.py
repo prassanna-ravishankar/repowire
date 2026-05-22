@@ -24,6 +24,14 @@ def _retarget(tmp_path, monkeypatch):
     claude_json = tmp_path / ".claude.json"
     monkeypatch.setattr(cc_mod, "CLAUDE_SETTINGS", settings)
     monkeypatch.setattr(cc_mod, "CLAUDE_JSON", claude_json)
+
+    class Daemon:
+        auth_token = None
+
+    class Config:
+        daemon = Daemon()
+
+    monkeypatch.setattr(cc_mod, "load_config", lambda: Config())
     return settings, claude_json
 
 
@@ -196,6 +204,29 @@ def test_install_channel_on_empty_writes_mcp_entry(tmp_path, monkeypatch):
     assert data["mcpServers"]["repowire-channel"] == {
         "command": "bun",
         "args": [str(server)],
+    }
+
+
+def test_install_channel_passes_daemon_auth_token_to_channel_env(tmp_path, monkeypatch):
+    _, claude_json = _retarget(tmp_path, monkeypatch)
+    server = _stub_channel_prereqs(monkeypatch, tmp_path)
+
+    class Daemon:
+        auth_token = "secret-token"
+
+    class Config:
+        daemon = Daemon()
+
+    monkeypatch.setattr(cc_mod, "load_config", lambda: Config())
+
+    ok, _msg = cc_mod.install_channel()
+    assert ok is True
+
+    data = _read(claude_json)
+    assert data["mcpServers"]["repowire-channel"] == {
+        "command": "bun",
+        "args": [str(server)],
+        "env": {"REPOWIRE_AUTH_TOKEN": "secret-token"},
     }
 
 

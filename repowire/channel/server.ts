@@ -21,6 +21,7 @@ import WebSocket from "ws";
 // -- Config --
 
 const DAEMON_URL = process.env.REPOWIRE_DAEMON_URL ?? "ws://127.0.0.1:8377";
+const AUTH_TOKEN = process.env.REPOWIRE_AUTH_TOKEN ?? "";
 // Proposed name for initial connect; daemon assigns the canonical display_name
 const PROPOSED_NAME = process.env.REPOWIRE_DISPLAY_NAME ?? "channel";
 const CIRCLE = process.env.REPOWIRE_CIRCLE ?? "default";
@@ -60,6 +61,7 @@ function connectDaemon(mcp: Server): void {
         circle: CIRCLE,
         backend: "claude-code",
         path: PROJECT_PATH,
+        ...(AUTH_TOKEN ? { auth_token: AUTH_TOKEN } : {}),
       })
     );
   });
