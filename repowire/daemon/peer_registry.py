@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from repowire.daemon.event_bus import EventBus
     from repowire.daemon.message_router import MessageRouter
     from repowire.daemon.query_tracker import QueryTracker
+    from repowire.daemon.state import StateDatabase
     from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,10 @@ class SessionMapping:
     agent_pid: int | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.backend, AgentType):
+            self.backend = AgentType(self.backend)
+        if not isinstance(self.role, PeerRole):
+            self.role = PeerRole(self.role)
         if self.updated_at is None:
             self.updated_at = datetime.now(timezone.utc).isoformat()
 
@@ -134,6 +139,7 @@ class PeerRegistry:
         ask_tracker: AskTracker | None = None,
         event_bus: EventBus | None = None,
         event_log: EventLog | None = None,
+        state_db: StateDatabase | None = None,
     ) -> None:
         self._config = config
         self._router = message_router
@@ -152,6 +158,11 @@ class PeerRegistry:
             Config.get_config_dir() / "sessions.json"
         )
         self._mappings_dirty = False
+        self._state_db = state_db
+        self._sqlite_mappings_enabled = bool(
+            state_db is not None
+            and getattr(getattr(config, "experiments", None), "sqlite_state", False)
+        )
         self._load_mappings()
 
         self._lock = asyncio.Lock()
@@ -168,7 +179,11 @@ class PeerRegistry:
     # ------------------------------------------------------------------
 
     def _load_mappings(self) -> None:
-        """Load session mappings from disk."""
+        """Load session mappings from the configured persistence backend."""
+        if self._sqlite_mappings_enabled:
+            self._import_legacy_mappings_once()
+            self._load_mappings_from_sqlite()
+            return
         if not self._mappings_path.exists():
             return
         try:
@@ -196,11 +211,14 @@ class PeerRegistry:
             logger.error(f"Failed to read session mappings file: {e}")
 
     def _persist_mappings(self) -> None:
-        """Save session mappings to disk atomically (debounced via dirty flag).
+        """Save session mappings to the configured backend.
 
         Called from lazy_repair and shutdown, not on every mutation.
         """
         if not self._mappings_dirty:
+            return
+        if self._sqlite_mappings_enabled:
+            self._persist_mappings_to_sqlite()
             return
         tmp_path = self._mappings_path.with_suffix(".json.tmp")
         try:
@@ -218,6 +236,142 @@ class PeerRegistry:
                 tmp_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+    def _mapping_to_sql_params(self, mapping: SessionMapping) -> tuple[Any, ...]:
+        backend = (
+            mapping.backend.value
+            if isinstance(mapping.backend, AgentType)
+            else str(mapping.backend)
+        )
+        role = mapping.role.value if isinstance(mapping.role, PeerRole) else str(mapping.role)
+        return (
+            mapping.session_id,
+            mapping.display_name,
+            mapping.circle,
+            backend,
+            mapping.path,
+            role,
+            mapping.updated_at,
+            mapping.description,
+            mapping.agent_pid,
+        )
+
+    @staticmethod
+    def _row_to_mapping(row: Any) -> SessionMapping:
+        return SessionMapping(
+            session_id=row["session_id"],
+            display_name=row["display_name"],
+            circle=row["circle"],
+            backend=AgentType(row["backend"]),
+            path=row["path"],
+            role=PeerRole(row["role"]),
+            updated_at=row["updated_at"],
+            description=row["description"] or "",
+            agent_pid=row["agent_pid"],
+        )
+
+    def _load_mappings_from_sqlite(self) -> None:
+        if self._state_db is None:
+            return
+        rows = self._state_db.conn.execute(
+            "SELECT * FROM peer_session_mappings",
+        ).fetchall()
+        skipped = 0
+        self._mappings.clear()
+        for row in rows:
+            try:
+                mapping = self._row_to_mapping(row)
+            except (TypeError, ValueError, KeyError) as e:
+                skipped += 1
+                logger.warning("Skipping invalid SQLite session mapping row: %s", e)
+                continue
+            if mapping.path and not Path(mapping.path).exists():
+                skipped += 1
+                continue
+            self._mappings[mapping.session_id] = mapping
+        if skipped:
+            logger.info("Skipped %d SQLite session mappings", skipped)
+        logger.info("Loaded %d SQLite session mappings", len(self._mappings))
+
+    def _persist_mappings_to_sqlite(self) -> None:
+        if self._state_db is None:
+            return
+        try:
+            with self._state_db.conn:
+                self._state_db.conn.execute("DELETE FROM peer_session_mappings")
+                self._state_db.conn.executemany(
+                    """
+                    INSERT INTO peer_session_mappings(
+                        session_id, display_name, circle, backend, path, role,
+                        updated_at, description, agent_pid
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [self._mapping_to_sql_params(mapping) for mapping in self._mappings.values()],
+                )
+            self._mappings_dirty = False
+        except Exception as e:  # noqa: BLE001
+            logger.error("Failed to save SQLite session mappings: %s", e)
+
+    def _import_legacy_mappings_once(self) -> None:
+        """Import legacy sessions.json into SQLite once per source file."""
+        if self._state_db is None or not self._mappings_path.exists():
+            return
+        source_path = str(self._mappings_path)
+        stat = self._mappings_path.stat()
+        imported = self._state_db.conn.execute(
+            "SELECT 1 FROM legacy_imports WHERE source_path = ?",
+            (source_path,),
+        ).fetchone()
+        if imported is not None:
+            return
+
+        row_count = 0
+        status = "ok"
+        error: str | None = None
+        try:
+            data = json.loads(self._mappings_path.read_text())
+            if not isinstance(data, dict):
+                raise ValueError("legacy sessions.json root must be an object")
+            mappings: list[SessionMapping] = []
+            for session_id, mapping_data in data.items():
+                if not isinstance(mapping_data, dict):
+                    continue
+                payload = dict(mapping_data)
+                payload.setdefault("session_id", session_id)
+                mapping = SessionMapping(**payload)
+                mappings.append(mapping)
+            with self._state_db.conn:
+                self._state_db.conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO peer_session_mappings(
+                        session_id, display_name, circle, backend, path, role,
+                        updated_at, description, agent_pid
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [self._mapping_to_sql_params(mapping) for mapping in mappings],
+                )
+                row_count = len(mappings)
+                self._state_db.conn.execute(
+                    """
+                    INSERT INTO legacy_imports(
+                        source_path, source_mtime, source_size, row_count, status, error
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (source_path, stat.st_mtime, stat.st_size, row_count, status, error),
+                )
+        except Exception as e:  # noqa: BLE001
+            status = "error"
+            error = str(e)
+            with self._state_db.conn:
+                self._state_db.conn.execute(
+                    """
+                    INSERT INTO legacy_imports(
+                        source_path, source_mtime, source_size, row_count, status, error
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (source_path, stat.st_mtime, stat.st_size, row_count, status, error),
+                )
+            logger.error("Failed to import legacy session mappings from %s: %s", source_path, e)
 
     # ------------------------------------------------------------------
     # Event tracking

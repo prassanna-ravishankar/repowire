@@ -132,8 +132,10 @@ Rules:
 - `repowire/protocol/peers.py` defines live peer identity, backend, path,
   machine, metadata, status, and turn state.
 - `repowire/daemon/peer_registry.py` persists `SessionMapping` in
-  `sessions.json` and owns peer ID reuse, display-name collision handling,
-  role claims, descriptions, pane hijack evidence, and ghost eviction.
+  `sessions.json` when `experiments.sqlite_state` is off and in
+  `StateDatabase` when the flag is on. It owns peer ID reuse, display-name
+  collision handling, role claims, descriptions, pane hijack evidence, and
+  ghost eviction.
 - `repowire/hooks/session_handler.py` registers peers on `SessionStart` with
   backend, path, pane, role, turn state, agent PID, and metadata such as
   `hook_session_id`.
@@ -196,10 +198,9 @@ Rules:
 
 ### PeerRegistry metadata
 
-`SessionMapping` remains the compatibility source for peer reuse until a
-dedicated binding store exists. A future binding store should not remove
-`sessions.json` in the first migration; it should import or mirror enough data
-to support downgrade and existing daemon startup behavior.
+`SessionMapping` remains the compatibility source for peer reuse. It is stored
+in SQLite when `experiments.sqlite_state` is on, with one-time import from
+legacy `sessions.json`; JSON mode remains the downgrade/off-flag path.
 
 Peer metadata may temporarily carry `repowire_session_id`, `runtime_session_id`,
 or source locator hints. Treat metadata as an ingress/compatibility envelope,

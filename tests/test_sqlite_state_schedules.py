@@ -28,7 +28,13 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
         assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert db.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert db.conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
-        assert db.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
+        versions = {
+            row[0]
+            for row in db.conn.execute(
+                "SELECT version FROM schema_migrations",
+            ).fetchall()
+        }
+        assert versions == {1, 2, 3, 4}
         tables = {
             row[0]
             for row in db.conn.execute(
@@ -37,13 +43,20 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
         }
         assert "session_bindings" in tables
         assert "events" in tables
+        assert "peer_session_mappings" in tables
     finally:
         db.close()
 
     db2 = StateDatabase(db_path)
     try:
         assert db2.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert db2.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
+        versions = {
+            row[0]
+            for row in db2.conn.execute(
+                "SELECT version FROM schema_migrations",
+            ).fetchall()
+        }
+        assert versions == {1, 2, 3, 4}
     finally:
         db2.close()
 

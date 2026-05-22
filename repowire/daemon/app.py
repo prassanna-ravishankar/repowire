@@ -243,6 +243,7 @@ def create_app(
             ask_tracker=ask_tracker,
             event_bus=event_bus,
             event_log=event_log,
+            state_db=state_db,
         )
         peer_registry.prune_offline(max_age_hours=cfg.daemon.prune_max_age_hours)
 
@@ -541,6 +542,7 @@ def create_test_app(
         )
 
         event_bus = EventBus()
+        schedules_path = state_dir / "schedules.json"
         registry = PeerRegistry(
             config=cfg,
             message_router=msg_router,
@@ -550,9 +552,8 @@ def create_test_app(
             ask_tracker=ask_tracker,
             event_bus=event_bus,
             event_log=event_log,
+            state_db=state_db,
         )
-
-        schedules_path = state_dir / "schedules.json"
         if cfg.experiments.sqlite_state:
             assert state_db is not None
             schedule_store = SQLiteScheduleStore(

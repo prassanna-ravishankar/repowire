@@ -8,6 +8,7 @@ import pytest
 
 from repowire.config.models import AgentType
 from repowire.daemon.peer_registry import PeerRegistry
+from repowire.daemon.state import StateDatabase
 from repowire.protocol.peers import PeerRole, PeerStatus
 
 
@@ -22,6 +23,20 @@ def _make_registry(tmp_path: Path, mappings: dict | None = None) -> PeerRegistry
     )
 
 
+def _make_sqlite_registry(tmp_path: Path, mappings: dict | None = None) -> PeerRegistry:
+    path = tmp_path / "sessions.json"
+    if mappings:
+        path.write_text(json.dumps(mappings, indent=2))
+    cfg = __import__("repowire.config.models", fromlist=["Config"]).Config()
+    cfg.experiments.sqlite_state = True
+    return PeerRegistry(
+        config=cfg,
+        message_router=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(),
+        persistence_path=path,
+        state_db=StateDatabase(tmp_path / "state.db"),
+    )
+
+
 def _ts(hours_ago: float) -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
 
@@ -32,14 +47,14 @@ def test_prune_removes_old_mappings(tmp_path):
             "session_id": "repow-dev-old1",
             "display_name": "old1",
             "circle": "dev",
-            "backend": AgentType.CLAUDE_CODE,
+            "backend": AgentType.CLAUDE_CODE.value,
             "updated_at": _ts(100),
         },
         "repow-dev-recent": {
             "session_id": "repow-dev-recent",
             "display_name": "recent",
             "circle": "dev",
-            "backend": AgentType.CLAUDE_CODE,
+            "backend": AgentType.CLAUDE_CODE.value,
             "updated_at": _ts(1),
         },
     }
@@ -56,7 +71,7 @@ def test_prune_removes_entries_with_no_timestamp(tmp_path):
             "session_id": "repow-dev-notimestamp",
             "display_name": "notimestamp",
             "circle": "dev",
-            "backend": AgentType.CLAUDE_CODE,
+            "backend": AgentType.CLAUDE_CODE.value,
             "updated_at": None,
         },
     }
@@ -77,7 +92,7 @@ def test_prune_persists_to_disk(tmp_path):
             "session_id": "repow-dev-stale",
             "display_name": "stale",
             "circle": "dev",
-            "backend": AgentType.CLAUDE_CODE,
+            "backend": AgentType.CLAUDE_CODE.value,
             "updated_at": _ts(200),
         },
     }
@@ -97,7 +112,7 @@ def test_prune_removes_entries_with_bad_timestamp(tmp_path):
             "session_id": "repow-dev-badtimestamp",
             "display_name": "badtimestamp",
             "circle": "dev",
-            "backend": AgentType.CLAUDE_CODE,
+            "backend": AgentType.CLAUDE_CODE.value,
             "updated_at": "not-a-valid-iso-timestamp",
         },
     }
@@ -112,7 +127,7 @@ def test_prune_noop_when_nothing_stale(tmp_path):
             "session_id": "repow-dev-fresh",
             "display_name": "fresh",
             "circle": "dev",
-            "backend": AgentType.CLAUDE_CODE,
+            "backend": AgentType.CLAUDE_CODE.value,
             "updated_at": _ts(1),
         },
     }
@@ -668,3 +683,133 @@ async def test_reconnect_updates_agent_pid_on_live_peer_and_mapping(tmp_path):
     assert peer.agent_pid == 20002
     m1 = registry.get_mapping(peer_id)
     assert m1 is not None and m1.agent_pid == 20002
+
+
+def test_sqlite_mode_imports_legacy_sessions_json_once(tmp_path):
+    mappings = {
+        "repow-dev-existing": {
+            "session_id": "repow-dev-existing",
+            "display_name": "proj-claude-code",
+            "circle": "dev",
+            "backend": AgentType.CLAUDE_CODE.value,
+            "path": str(tmp_path),
+            "role": PeerRole.ORCHESTRATOR.value,
+            "updated_at": _ts(1),
+            "description": "legacy role holder",
+            "agent_pid": 4242,
+        },
+    }
+
+    registry = _make_sqlite_registry(tmp_path, mappings)
+
+    mapping = registry.get_mapping("repow-dev-existing")
+    assert mapping is not None
+    assert mapping.display_name == "proj-claude-code"
+    assert mapping.circle == "dev"
+    assert mapping.role == PeerRole.ORCHESTRATOR
+    assert mapping.description == "legacy role holder"
+    assert mapping.agent_pid == 4242
+    row = registry._state_db.conn.execute(
+        "SELECT row_count, status FROM legacy_imports WHERE source_path = ?",
+        (str(tmp_path / "sessions.json"),),
+    ).fetchone()
+    assert row is not None
+    assert row["row_count"] == 1
+    assert row["status"] == "ok"
+
+    # A later downgrade/off-flag write to sessions.json must not be re-imported
+    # after the first audited import.
+    (tmp_path / "sessions.json").write_text(json.dumps({}))
+    restarted = _make_sqlite_registry(tmp_path)
+    assert restarted.get_mapping("repow-dev-existing") is not None
+
+
+@pytest.mark.asyncio
+async def test_sqlite_mode_reuses_peer_id_and_restores_metadata_across_restart(tmp_path):
+    registry = _make_sqlite_registry(tmp_path)
+    workdir = tmp_path / "orchproj"
+    workdir.mkdir()
+
+    peer_id, name = await registry.allocate_and_register(
+        circle="ops",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(workdir),
+        role=PeerRole.ORCHESTRATOR,
+        agent_pid=51515,
+        circle_source="tmux",
+    )
+    await registry.update_description(peer_id, "watching sqlite mappings")
+    registry._persist_mappings()
+
+    restarted = _make_sqlite_registry(tmp_path)
+    new_id, new_name = await restarted.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=str(workdir),
+        role=PeerRole.AGENT,
+        circle_source="fallback",
+    )
+
+    assert new_id == peer_id
+    assert new_name == name
+    peer = await restarted.get_peer(new_id)
+    assert peer is not None
+    assert peer.circle == "ops"
+    assert peer.role == PeerRole.ORCHESTRATOR
+    assert peer.description == "watching sqlite mappings"
+    assert peer.agent_pid == 51515
+
+
+@pytest.mark.asyncio
+async def test_sqlite_mode_syncs_mapping_mutations_without_sessions_json_writes(tmp_path):
+    registry = _make_sqlite_registry(tmp_path)
+    peer_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CODEX,
+        path=str(tmp_path),
+        agent_pid=10001,
+    )
+    await registry.set_peer_circle(peer_id, "mesh")
+    assert await registry.update_peer_display_name(peer_id, "renamed-codex")
+    await registry.update_description(peer_id, "sqlite-backed")
+    await registry.claim_special_role(peer_id, PeerRole.ORCHESTRATOR)
+    registry._persist_mappings()
+
+    assert not (tmp_path / "sessions.json").exists()
+    restarted = _make_sqlite_registry(tmp_path)
+    mapping = restarted.get_mapping(peer_id)
+    assert mapping is not None
+    assert mapping.circle == "mesh"
+    assert mapping.display_name == "renamed-codex"
+    assert mapping.description == "sqlite-backed"
+    assert mapping.role == PeerRole.ORCHESTRATOR
+    assert mapping.agent_pid == 10001
+
+
+def test_sqlite_mode_prune_persists_to_state_database(tmp_path):
+    registry = _make_sqlite_registry(
+        tmp_path,
+        {
+            "repow-dev-stale": {
+                "session_id": "repow-dev-stale",
+                "display_name": "stale",
+                "circle": "dev",
+                "backend": AgentType.CLAUDE_CODE.value,
+                "updated_at": _ts(200),
+            },
+            "repow-dev-fresh": {
+                "session_id": "repow-dev-fresh",
+                "display_name": "fresh",
+                "circle": "dev",
+                "backend": AgentType.CLAUDE_CODE.value,
+                "updated_at": _ts(1),
+            },
+        },
+    )
+
+    assert registry.prune_offline(max_age_hours=72) == 1
+    registry._persist_mappings()
+
+    restarted = _make_sqlite_registry(tmp_path)
+    assert restarted.get_mapping("repow-dev-stale") is None
+    assert restarted.get_mapping("repow-dev-fresh") is not None

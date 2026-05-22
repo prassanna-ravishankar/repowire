@@ -9,11 +9,11 @@ Repowire currently has two persistence styles:
 - Experimental SQLite state under `~/.repowire/state.db`, gated by `experiments.sqlite_state`.
 - JSON files under `~/.repowire/`, usually loaded into daemon memory and flushed by lazy repair or explicit mutation paths.
 
-The SQLite path currently covers schedules, session bindings, and dashboard/session events when `experiments.sqlite_state` is enabled. `StateDatabase` owns WAL mode, `synchronous=NORMAL`, foreign keys, busy timeout, schema versioning, and the `legacy_imports` audit table. `SQLiteScheduleStore` is adapter-compatible with `ScheduleStore`, imports `schedules.json` once when the SQL table is empty, and leaves the JSON file untouched for downgrade and backcompat. `SQLiteSessionBindingStore` persists binding identifiers, runtime source locators, cursors, provenance, resume capability metadata, and lifecycle status. It deliberately does not persist raw transcript bodies. `SQLiteEventStore` imports legacy `events.json` once, appends/updates event payloads in SQLite, and seeds the bounded in-memory event window at daemon startup.
+The SQLite path currently covers schedules, session bindings, dashboard/session events, and peer session mappings when `experiments.sqlite_state` is enabled. `StateDatabase` owns WAL mode, `synchronous=NORMAL`, foreign keys, busy timeout, schema versioning, and the `legacy_imports` audit table. `SQLiteScheduleStore` is adapter-compatible with `ScheduleStore`, imports `schedules.json` once when the SQL table is empty, and leaves the JSON file untouched for downgrade and backcompat. `SQLiteSessionBindingStore` persists binding identifiers, runtime source locators, cursors, provenance, resume capability metadata, and lifecycle status. It deliberately does not persist raw transcript bodies. `SQLiteEventStore` imports legacy `events.json` once, appends/updates event payloads in SQLite, and seeds the bounded in-memory event window at daemon startup. `PeerRegistry` imports legacy `sessions.json` once into `peer_session_mappings` and stops writing new `sessions.json` state.
 
 Other state remains JSON or in-memory:
 
-- `sessions.json`: persistent peer/session mappings inside `PeerRegistry`; still retained for peer identity reuse, daemon restart behavior, and downgrade/backcompat while the binding store hardens.
+- `sessions.json`: persistent peer/session mappings inside `PeerRegistry` only when `experiments.sqlite_state` is false; retained untouched in SQLite mode for downgrade/backcompat.
 - `events.json`: dashboard event ring buffer persistence when `sqlite_state` is disabled; retained untouched for downgrade/backcompat when SQLite event persistence is enabled.
 - `AskTracker`: in-memory ask/ack lifecycle with TTL eviction and in-memory pending ACP reply stashes.
 - Agent transcripts: source-of-truth JSONL files owned by Claude Code or other agent runtimes, parsed on demand for history routes.
@@ -32,7 +32,8 @@ Before:
 Current compatible SQLite slices:
 
 - Schedules stay on the existing experimental SQLite adapter.
-- Peer mappings, asks, query futures, transport state, and raw transcripts keep their current ownership.
+- Peer mappings move to SQLite when `experiments.sqlite_state` is enabled; JSON mode keeps `sessions.json`.
+- Asks, query futures, transport state, and raw transcripts keep their current ownership.
 - Session bindings are stored in SQLite as control/provenance metadata and are used by compatible timeline/transcript and session-control slices when an unambiguous binding exists.
 - Dashboard/session events remain a bounded in-memory deque for route/SSE compatibility; with `sqlite_state` enabled, persistence is backed by SQLite instead of new `events.json` writes.
 - `events.json` remains in place for downgrade/backcompat and one-time import.
@@ -78,9 +79,9 @@ This slice intentionally does not change dashboard API semantics. It only adds a
 
 ## Deferred state
 
-Keep peer identity mappings separate from session bindings for now.
+Keep peer identity mappings separate from session bindings.
 
-Peer mappings affect peer ID reuse, display-name collision handling, circle restoration, role claims, description persistence, pane hijack protection, and clean takeover behavior. The landed binding table does not replace `PeerRegistry.SessionMapping` or `sessions.json`; it records durable workstream/runtime provenance for timeline and control surfaces. Moving peer identity mappings into SQLite should remain a separate review with an explicit downgrade/backcompat plan.
+Peer mappings affect peer ID reuse, display-name collision handling, circle restoration, role claims, description persistence, pane hijack protection, and clean takeover behavior. Their SQLite table is deliberately separate from session bindings: peer mappings record live peer identity state, while session bindings record durable workstream/runtime provenance for timeline and control surfaces.
 
 Defer asks and pending replies.
 
@@ -120,6 +121,12 @@ For the event journal specifically:
 - If SQLite append fails, log and keep the in-memory event path working.
 - If SQLite import fails, start with an empty SQL event table and keep serving from the current in-memory behavior.
 - Avoid eager background migration work. Import during store initialization only, then rely on normal event appends.
+
+For peer mappings specifically:
+
+- Do not write `sessions.json` while `experiments.sqlite_state` is enabled.
+- Leave any existing `sessions.json` file in place so disabling the flag can downgrade to the last JSON-mode snapshot.
+- With the flag disabled, keep the historical JSON load and lazy-repair/shutdown write behavior unchanged.
 
 ## Failure modes
 

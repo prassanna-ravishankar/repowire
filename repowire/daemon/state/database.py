@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class StateDatabase:
@@ -162,6 +162,33 @@ class StateDatabase:
             )
             self.conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS peer_session_mappings (
+                    session_id TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    circle TEXT NOT NULL,
+                    backend TEXT NOT NULL,
+                    path TEXT,
+                    role TEXT NOT NULL,
+                    updated_at TEXT,
+                    description TEXT NOT NULL DEFAULT '',
+                    agent_pid INTEGER
+                )
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_peer_session_mappings_identity
+                ON peer_session_mappings(display_name, circle, backend)
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_peer_session_mappings_path
+                ON peer_session_mappings(backend, path)
+                """,
+            )
+            self.conn.execute(
+                """
                 INSERT OR IGNORE INTO schema_migrations(version, description)
                 VALUES (?, ?)
                 """,
@@ -180,6 +207,13 @@ class StateDatabase:
                 VALUES (?, ?)
                 """,
                 (3, "dashboard event journal"),
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, description)
+                VALUES (?, ?)
+                """,
+                (4, "peer session mappings for PeerRegistry identity state"),
             )
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

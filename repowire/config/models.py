@@ -307,7 +307,7 @@ class ExperimentsConfig(BaseModel):
         default=False,
         description=(
             "Use the experimental SQLite daemon state store for migrated "
-            "domains. Currently used for schedule persistence and session bindings."
+            "domains. Currently used for schedules, peer mappings, and session bindings."
         ),
     )
 
