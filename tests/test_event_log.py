@@ -94,16 +94,23 @@ async def test_subscribers_are_woken_and_can_unsubscribe(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_create_test_app_persists_events_on_shutdown(tmp_path):
+async def test_create_test_app_uses_sqlite_even_when_legacy_flag_is_false(tmp_path):
     cfg = Config(experiments={"sqlite_state": False})
     app = create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
 
     async with app.router.lifespan_context(app):
         app.state.event_log.add_event("shutdown", {"text": "persist me"})
 
-    data = json.loads((tmp_path / "events.json").read_text())
-    assert len(data) == 1
-    assert data[0]["type"] == "shutdown"
+    assert not (tmp_path / "events.json").exists()
+    db = StateDatabase(tmp_path / "state.db")
+    try:
+        row = db.conn.execute("SELECT payload_json FROM events").fetchone()
+        assert row is not None
+        event = json.loads(row["payload_json"])
+        assert event["type"] == "shutdown"
+        assert event["text"] == "persist me"
+    finally:
+        db.close()
 
 
 def test_sqlite_event_store_imports_legacy_events_once(tmp_path):

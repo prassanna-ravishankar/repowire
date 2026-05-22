@@ -178,11 +178,12 @@ repowire telegram start                # run Telegram service peer
 repowire slack start                   # run Slack service peer
 ```
 
-The daemon uses `~/.repowire/state.db` for durable local state by default.
-On first startup after install or update, it applies SQLite migrations and
-imports legacy `schedules.json`, `events.json`, and `sessions.json` once while
-leaving those files in place for downgrade compatibility. `repowire doctor`
-reports the SQLite schema, integrity, and import status.
+The daemon uses `~/.repowire/state.db` for durable local state. On first startup
+after install or update, it applies SQLite migrations and imports legacy
+`schedules.json`, `events.json`, and `sessions.json` once while leaving those
+files in place for downgrade/export compatibility. Migrated state is written to
+SQLite, and `repowire doctor` reports the SQLite schema, integrity, and import
+status.
 
 See the full [CLI reference](https://docs.repowire.io/reference/cli/) and [MCP tools reference](https://docs.repowire.io/reference/mcp-tools/).
 

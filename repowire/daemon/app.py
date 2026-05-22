@@ -49,7 +49,6 @@ from repowire.daemon.routes import (
     websocket,
 )
 from repowire.daemon.routes import spawn as spawn_routes
-from repowire.daemon.schedule_store import ScheduleStore
 from repowire.daemon.scheduler import Scheduler
 from repowire.daemon.state import StateDatabase
 from repowire.daemon.state.events import SQLiteEventStore
@@ -217,17 +216,14 @@ def create_app(
         transport = WebSocketTransport()
         query_tracker = QueryTracker()
         ask_tracker = AskTracker(ttl_hours=cfg.daemon.prune_max_age_hours)
-        state_db: StateDatabase | None = None
         state_dir = Path.home() / ".repowire"
         events_path = state_dir / "events.json"
         schedules_path = state_dir / "schedules.json"
-        event_store: SQLiteEventStore | None = None
-        if cfg.experiments.sqlite_state:
-            state_db = StateDatabase(state_dir / "state.db")
-            event_store = SQLiteEventStore(
-                db=state_db,
-                legacy_path=events_path,
-            )
+        state_db = StateDatabase(state_dir / "state.db")
+        event_store = SQLiteEventStore(
+            db=state_db,
+            legacy_path=events_path,
+        )
         event_log = EventLog(events_path, store=event_store)
         message_router = MessageRouter(
             transport=transport,
@@ -247,18 +243,11 @@ def create_app(
         )
         peer_registry.prune_offline(max_age_hours=cfg.daemon.prune_max_age_hours)
 
-        if cfg.experiments.sqlite_state:
-            assert state_db is not None
-            schedule_store = SQLiteScheduleStore(
-                db=state_db,
-                legacy_path=schedules_path,
-            )
-            session_binding_store = SQLiteSessionBindingStore(state_db)
-        else:
-            schedule_store = ScheduleStore(
-                persistence_path=schedules_path,
-            )
-            session_binding_store = None
+        schedule_store = SQLiteScheduleStore(
+            db=state_db,
+            legacy_path=schedules_path,
+        )
+        session_binding_store = SQLiteSessionBindingStore(state_db)
         # Store in app state for route handlers
         app.state.config = cfg
         app.state.transport = transport
@@ -394,9 +383,8 @@ def create_app(
         await acp_manager.close()
         await scheduler.stop()
         event_log.save()
-        if state_db is not None:
-            state_db.close()
         peer_registry._persist_mappings()
+        state_db.close()
         await peer_registry.stop()
         cleanup_deps()
 
@@ -525,16 +513,13 @@ def create_test_app(
         transport = WebSocketTransport()
         query_tracker = QueryTracker()
         ask_tracker = AskTracker(ttl_hours=cfg.daemon.prune_max_age_hours)
-        state_db: StateDatabase | None = None
         state_dir = persistence_path.parent if persistence_path else Path("/tmp")
         event_path = state_dir / "events.json"
-        event_store: SQLiteEventStore | None = None
-        if cfg.experiments.sqlite_state:
-            state_db = StateDatabase(state_dir / "state.db")
-            event_store = SQLiteEventStore(
-                db=state_db,
-                legacy_path=event_path,
-            )
+        state_db = StateDatabase(state_dir / "state.db")
+        event_store = SQLiteEventStore(
+            db=state_db,
+            legacy_path=event_path,
+        )
         event_log = EventLog(event_path, store=event_store)
         msg_router = message_router or MessageRouter(
             transport=transport,
@@ -554,18 +539,11 @@ def create_test_app(
             event_log=event_log,
             state_db=state_db,
         )
-        if cfg.experiments.sqlite_state:
-            assert state_db is not None
-            schedule_store = SQLiteScheduleStore(
-                db=state_db,
-                legacy_path=schedules_path,
-            )
-            session_binding_store = SQLiteSessionBindingStore(state_db)
-        else:
-            schedule_store = ScheduleStore(
-                persistence_path=schedules_path,
-            )
-            session_binding_store = None
+        schedule_store = SQLiteScheduleStore(
+            db=state_db,
+            legacy_path=schedules_path,
+        )
+        session_binding_store = SQLiteSessionBindingStore(state_db)
         app.state.config = cfg
         app.state.transport = transport
         app.state.query_tracker = query_tracker
@@ -635,8 +613,8 @@ def create_test_app(
         await acp_manager.close()
         await scheduler.stop()
         event_log.save()
-        if state_db is not None:
-            state_db.close()
+        registry._persist_mappings()
+        state_db.close()
         await registry.stop()
         cleanup_deps()
 

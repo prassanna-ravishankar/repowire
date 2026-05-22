@@ -171,7 +171,7 @@ async def test_session_notify_targets_active_executor(tmp_path):
     ]
 
 
-async def test_session_controls_require_binding_store(tmp_path):
+async def test_session_controls_report_missing_session_with_legacy_flag_false(tmp_path):
     cfg = Config(experiments={"sqlite_state": False})
     app = app_mod.create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
 
@@ -180,5 +180,5 @@ async def test_session_controls_require_binding_store(tmp_path):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post("/sessions/rw-session-missing/controls/resume", json={})
 
-    assert response.status_code == 422
-    assert response.json()["detail"]["error"] == "session_bindings_unavailable"
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"] == "session_not_found"

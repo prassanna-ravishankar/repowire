@@ -159,10 +159,7 @@ class PeerRegistry:
         )
         self._mappings_dirty = False
         self._state_db = state_db
-        self._sqlite_mappings_enabled = bool(
-            state_db is not None
-            and getattr(getattr(config, "experiments", None), "sqlite_state", False)
-        )
+        self._sqlite_mappings_enabled = state_db is not None
         self._load_mappings()
 
         self._lock = asyncio.Lock()

@@ -295,13 +295,6 @@ def check_auth_token(config: Config) -> CheckResult:
 
 def check_state_database(config: Config) -> CheckResult:
     """Inspect the daemon SQLite state database without applying migrations."""
-    if not config.experiments.sqlite_state:
-        return CheckResult(
-            "State database",
-            Status.WARN,
-            "disabled; using legacy JSON state paths",
-        )
-
     path = Config.get_config_dir() / "state.db"
     if not path.exists():
         return CheckResult(

@@ -16,7 +16,7 @@ A live peer has these identity and lifecycle fields:
 - `description` — short task state set by `set_description` and shown in peer lists.
 - `status`, `turn_state`, and `last_seen` — liveness and per-turn observability.
 
-The in-memory `Peer` is the live routing record. The durable `SessionMapping` preserves fields that should survive daemon restart, including display name, circle, backend, path, role, description, and the last known agent pid when available. With `experiments.sqlite_state: true`, those mappings live in `~/.repowire/state.db` and legacy `sessions.json` is imported once for downgrade compatibility. With the flag off, `sessions.json` remains the mapping store.
+The in-memory `Peer` is the live routing record. The durable `SessionMapping` preserves fields that should survive daemon restart, including display name, circle, backend, path, role, description, and the last known agent pid when available. Those mappings live in `~/.repowire/state.db`; legacy `sessions.json` is imported once and then left untouched for downgrade/export compatibility.
 
 ## Registration and reconnect
 

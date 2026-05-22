@@ -306,8 +306,8 @@ class ExperimentsConfig(BaseModel):
     sqlite_state: bool = Field(
         default=True,
         description=(
-            "Use the SQLite daemon state store for migrated domains. "
-            "Currently used for schedules, peer mappings, events, and session bindings."
+            "Deprecated compatibility knob. The daemon state store is SQLite-backed; "
+            "legacy JSON files are import-only sources for migrated domains."
         ),
     )
 

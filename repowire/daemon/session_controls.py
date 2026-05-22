@@ -42,7 +42,7 @@ def get_session_binding_store(state: object) -> SQLiteSessionBindingStore:
     store = getattr(state, "session_binding_store", None)
     if store is None:
         raise SessionBindingStoreUnavailableError(
-            "Session bindings require experiments.sqlite_state"
+            "Session bindings require the daemon SQLite state store"
         )
     return store
 

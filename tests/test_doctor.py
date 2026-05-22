@@ -195,11 +195,12 @@ class TestAuthToken:
 
 
 class TestStateDatabase:
-    def test_disabled_warns(self):
+    def test_legacy_flag_false_still_checks_sqlite_database(self, tmp_path: Path):
         config = Config(experiments={"sqlite_state": False})
-        r = check_state_database(config)
+        with patch.object(Config, "get_config_dir", return_value=tmp_path):
+            r = check_state_database(config)
         assert r.status is Status.WARN
-        assert "legacy JSON" in r.detail
+        assert "not initialized" in r.detail
 
     def test_missing_warns(self, tmp_path: Path):
         with patch.object(Config, "get_config_dir", return_value=tmp_path):

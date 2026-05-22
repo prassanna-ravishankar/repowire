@@ -10,10 +10,11 @@ repowire setup [--relay] [--experimental-channels] [--http-mcp] [--no-service] [
 
 One-time install. Detects every supported agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires the appropriate Repowire transport for each, and installs the daemon as a user service.
 
-Setup enables the SQLite daemon state store by default. The daemon applies
-idempotent migrations on startup, imports legacy `schedules.json`,
-`events.json`, and `sessions.json` once, and leaves those JSON files in place
-for downgrade compatibility.
+Setup uses the SQLite daemon state store. The daemon applies idempotent
+migrations on startup, imports legacy `schedules.json`, `events.json`, and
+`sessions.json` once, and leaves those JSON files in place for downgrade/export
+compatibility. Migrated state is written to `state.db`, not back to those JSON
+files.
 
 - `--relay` opts in to the hosted relay at `repowire.io`.
 - `--experimental-channels` enables the experimental MCP channel / ACP transport for Claude Code (v2.1.80+, claude.ai login, bun).

@@ -3,8 +3,8 @@
 Scope: typed publisher/subscriber for peer status/liveness transitions.
 No persistence, no external transport — handlers run in the daemon process.
 
-The existing PeerRegistry event surface (deque + events.json) is unchanged;
-this bus is additive. Subscribers are isolated: one bad handler does not
+The existing PeerRegistry event surface is unchanged; this bus is additive.
+Subscribers are isolated: one bad handler does not
 break delivery to others, and publish never raises.
 """
 

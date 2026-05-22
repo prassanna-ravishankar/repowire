@@ -189,7 +189,8 @@ Hosted at repowire.io. Daemon connects outbound via WSS. Cookie-based auth for d
 ## Dashboard
 
 - Next.js static export at `localhost:8377/dashboard`, remote at `repowire.io/dashboard`
-- Events: 500-item circular buffer, persisted to `~/.repowire/events.json`
+- Events: 500-item circular buffer in memory, persisted to `~/.repowire/state.db`
+  with legacy `events.json` imported once.
 - Tool calls: stop hook extracts from transcript JSONL, included in `chat_turn` events
 - File uploads: 📎 button in compose bar, uploads to `POST /attachments`, path included in notification
 - Build: `repowire build-ui` or `cd web && npm run dev`

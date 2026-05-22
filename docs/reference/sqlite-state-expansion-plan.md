@@ -4,17 +4,21 @@ Status: current storage architecture and migration notes for v0.13.x. Do not imp
 
 ## Current state
 
-Repowire currently has two persistence styles:
+Repowire currently has one active daemon persistence style plus legacy import
+helpers:
 
-- SQLite state under `~/.repowire/state.db`, enabled by default.
-- JSON files under `~/.repowire/`, usually loaded into daemon memory and flushed by lazy repair or explicit mutation paths.
+- SQLite state under `~/.repowire/state.db`.
+- Legacy JSON files under `~/.repowire/`, kept as one-time import sources and
+  downgrade artifacts, not active daemon write targets for migrated domains.
 
 The SQLite path currently covers schedules, session bindings, dashboard/session events, and peer session mappings. `StateDatabase` owns WAL mode, `synchronous=NORMAL`, foreign keys, busy timeout, schema versioning, and the `legacy_imports` audit table. `SQLiteScheduleStore` is adapter-compatible with `ScheduleStore`, imports `schedules.json` once when the SQL table is empty, and leaves the JSON file untouched for downgrade and backcompat. `SQLiteSessionBindingStore` persists binding identifiers, runtime source locators, cursors, provenance, resume capability metadata, and lifecycle status. It deliberately does not persist raw transcript bodies. `SQLiteEventStore` imports legacy `events.json` once, appends/updates event payloads in SQLite, and seeds the bounded in-memory event window at daemon startup. `PeerRegistry` imports legacy `sessions.json` once into `peer_session_mappings` and stops writing new `sessions.json` state.
 
 Other state remains JSON or in-memory:
 
-- `sessions.json`: persistent peer/session mappings inside `PeerRegistry` only when `experiments.sqlite_state` is false; retained untouched in SQLite mode for downgrade/backcompat.
-- `events.json`: dashboard event ring buffer persistence when `sqlite_state` is disabled; retained untouched for downgrade/backcompat when SQLite event persistence is enabled.
+- `sessions.json`: legacy peer/session mapping import source; retained untouched
+  for downgrade/export compatibility.
+- `events.json`: legacy dashboard event import source; retained untouched for
+  downgrade/export compatibility.
 - `AskTracker`: in-memory ask/ack lifecycle with TTL eviction and in-memory pending ACP reply stashes.
 - Agent transcripts: source-of-truth JSONL files owned by Claude Code or other agent runtimes, parsed on demand for history routes.
 - `review_queue.json`: small low-frequency review queue state.
@@ -31,12 +35,13 @@ Before:
 
 Current SQLite slices:
 
-- Schedules use the SQLite adapter by default.
-- Peer mappings use SQLite by default; JSON mode keeps `sessions.json` only when explicitly disabled.
+- Schedules use the SQLite adapter.
+- Peer mappings use SQLite; `sessions.json` is not written by the daemon app.
 - Asks, query futures, transport state, and raw transcripts keep their current ownership.
 - Session bindings are stored in SQLite as control/provenance metadata and are used by compatible timeline/transcript and session-control slices when an unambiguous binding exists.
-- Dashboard/session events remain a bounded in-memory deque for route/SSE compatibility; with `sqlite_state` enabled, persistence is backed by SQLite instead of new `events.json` writes.
-- `events.json` remains in place for downgrade/backcompat and one-time import.
+- Dashboard/session events remain a bounded in-memory deque for route/SSE compatibility;
+  persistence is backed by SQLite instead of new `events.json` writes.
+- `events.json` remains in place for downgrade/export compatibility and one-time import.
 
 ## Event journal slice
 
@@ -81,8 +86,10 @@ The review queue is small, low-frequency, and already has atomic rewrite behavio
 
 Use the existing migration pattern:
 
-- Keep the `experiments.sqlite_state` flag as an explicit opt-out while the compatibility path exists.
-- Keep JSON files intact while the opt-out/downgrade path exists.
+- Treat `~/.repowire/state.db` as the active daemon store for migrated domains.
+- Keep the legacy `experiments.sqlite_state` config key accepted but deprecated;
+  it no longer selects active JSON persistence in the daemon app.
+- Keep JSON files intact while import/downgrade/export compatibility exists.
 - Import legacy JSON once only when the corresponding SQL table is empty.
 - Record import success or failure in `legacy_imports`.
 - Treat corrupt legacy JSON as a logged import error, not a daemon startup failure.
@@ -98,23 +105,29 @@ For the event journal specifically:
 
 For peer mappings specifically:
 
-- Do not write `sessions.json` while `experiments.sqlite_state` is enabled.
-- Leave any existing `sessions.json` file in place so disabling the flag can downgrade to the last JSON-mode snapshot.
-- With the flag disabled, keep the historical JSON load and lazy-repair/shutdown write behavior unchanged.
+- Do not write `sessions.json` from the daemon app.
+- Leave any existing `sessions.json` file in place as the legacy import/export
+  snapshot.
+- Lower-level JSON adapters may remain for explicit compatibility tests, but
+  app startup should not select them for migrated domains.
 
 ## Failure modes
 
-Current JSON failure modes:
+Legacy JSON failure modes:
 
-- `sessions.json` corruption is backed up and mappings start empty.
-- `events.json` load failure logs a warning and the event deque starts empty.
-- `schedules.json` corruption with the JSON store starts schedules empty and marks the store dirty.
+- `sessions.json` import failure is recorded in `legacy_imports` and mappings
+  start from SQLite.
+- `events.json` import failure is recorded in `legacy_imports` and the event
+  deque starts from SQLite.
+- `schedules.json` import failure is recorded in `legacy_imports` and schedules
+  start from SQLite.
 - `review_queue.json` corruption logs and starts empty.
 - In-memory asks and pending replies vanish on daemon restart.
 
-SQLite event store failure policy:
+SQLite state failure policy:
 
-- Database open or migration failure should disable the SQLite event store for that daemon lifetime and preserve current in-memory behavior.
+- Database open or migration failure is a daemon startup failure for migrated
+  state. Run `repowire doctor` and restart after fixing the state path.
 - Per-event append failure should not break `/events/chat`, `/events/chat_delta`, SSE, or peer registry event emission.
 - Legacy import failure should be visible in `legacy_imports` and logs, but should not block daemon startup.
 - Startup seeding from SQLite should tolerate bad payload rows by skipping them and logging a warning.
@@ -131,6 +144,7 @@ Required tests for the first slice:
 - Daemon restart with SQLite enabled seeds the in-memory event window from SQL newest-first data.
 - `/events?since=...` keeps the current gap behavior.
 - Event ordering is stable across same-timestamp events, using insertion order or an explicit sequence.
-- No behavior changes when `experiments.sqlite_state` is false.
+- The legacy `experiments.sqlite_state` flag no longer changes daemon app
+  storage ownership.
 
 Implementation tests should avoid touching `.beads` or `uv.lock`.
