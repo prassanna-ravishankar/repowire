@@ -29,7 +29,12 @@ from repowire.session.history import (
     load_peer_history,
     page_turns,
 )
-from repowire.session.timeline import TimelineItem, build_session_timeline
+from repowire.session.timeline import (
+    TimelineItem,
+    TimelineSearchResult,
+    build_session_timeline,
+    search_timeline,
+)
 
 router = APIRouter(tags=["peers"])
 logger = logging.getLogger(__name__)
@@ -541,6 +546,36 @@ class SessionTimelineResponse(BaseModel):
     items: list[SessionTimelineItem]
 
 
+class SessionTimelineSearchMatch(BaseModel):
+    start: int
+    end: int
+    snippet: str
+
+
+class SessionTimelineSearchResult(BaseModel):
+    cursor: str
+    target_id: str
+    item: SessionTimelineItem
+    match: SessionTimelineSearchMatch
+
+
+class SessionTimelineSearchResponse(BaseModel):
+    peer_id: str
+    peer_name: str
+    query: str
+    session_id: str | None = None
+    history_status: str = "available"
+    history_backend: str = "claude-code"
+    history_message: str = ""
+    history_source: str = "peer_path"
+    degraded: bool = False
+    degradation_message: str = ""
+    repowire_session_id: str | None = None
+    binding_status: str | None = None
+    runtime_session_id: str | None = None
+    results: list[SessionTimelineSearchResult]
+
+
 def _timeline_item_response(item: TimelineItem) -> SessionTimelineItem:
     return SessionTimelineItem(
         id=item.id,
@@ -555,6 +590,19 @@ def _timeline_item_response(item: TimelineItem) -> SessionTimelineItem:
         peer_id=item.peer_id,
         peer=item.peer,
         event_ids=item.event_ids,
+    )
+
+
+def _timeline_search_result_response(result: TimelineSearchResult) -> SessionTimelineSearchResult:
+    return SessionTimelineSearchResult(
+        cursor=result.cursor,
+        target_id=result.target_id,
+        item=_timeline_item_response(result.item),
+        match=SessionTimelineSearchMatch(
+            start=result.match.start,
+            end=result.match.end,
+            snippet=result.match.snippet,
+        ),
     )
 
 
@@ -614,6 +662,18 @@ def _load_history_for_peer(
     return load_peer_history(peer.path, peer.backend, peer.metadata), None
 
 
+def _history_degradation_message(history: HistoryLoadResult, items: list[TimelineItem]) -> str:
+    if history.status == "available":
+        return ""
+    realtime_count = sum(1 for item in items if item.source == "realtime")
+    if realtime_count:
+        return (
+            f"{history.message} Search is limited to {realtime_count} realtime "
+            "timeline item(s) still present in the dashboard event ring."
+        )
+    return f"{history.message} No normalized persisted timeline is available to search."
+
+
 @router.get("/peers/{name}/timeline", response_model=SessionTimelineResponse)
 async def get_peer_timeline(
     name: str,
@@ -661,6 +721,57 @@ async def get_peer_timeline(
         binding_status=binding.status if binding else None,
         runtime_session_id=binding.runtime_session_id if binding else session_id,
         items=[_timeline_item_response(item) for item in items],
+    )
+
+
+@router.get("/peers/{name}/timeline/search", response_model=SessionTimelineSearchResponse)
+async def search_peer_timeline(
+    name: str,
+    q: str = Query(..., min_length=1, max_length=200, description="Case-insensitive text query"),
+    limit: int = Query(20, ge=1, le=100, description="Max search results to return"),
+    session_id: str | None = Query(
+        None,
+        description="Optional hook/runtime transcript session id used for timeline scoping.",
+    ),
+    circle: str | None = Query(None),
+    _: str | None = Depends(require_auth),
+) -> SessionTimelineSearchResponse:
+    """Search the normalized peer timeline and return stable jump targets."""
+    peer_registry = get_peer_registry()
+    peer = await peer_registry.get_peer(name, circle=circle)
+    if peer is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Peer not found: {name}",
+        )
+
+    history, binding = await asyncio.to_thread(_load_history_for_peer, peer, session_id)
+    items = build_session_timeline(
+        history_turns=history.turns,
+        events=peer_registry.get_events(),
+        peer_id=peer.peer_id,
+        peer_names={peer.display_name, peer.peer_id, name},
+        session_id=session_id,
+    )
+    degradation_message = _history_degradation_message(history, items)
+    return SessionTimelineSearchResponse(
+        peer_id=peer.peer_id,
+        peer_name=peer.display_name,
+        query=q,
+        session_id=session_id,
+        history_status=history.status,
+        history_backend=history.backend,
+        history_message=history.message,
+        history_source="session_binding" if binding is not None else "peer_path",
+        degraded=bool(degradation_message),
+        degradation_message=degradation_message,
+        repowire_session_id=binding.repowire_session_id if binding else None,
+        binding_status=binding.status if binding else None,
+        runtime_session_id=binding.runtime_session_id if binding else session_id,
+        results=[
+            _timeline_search_result_response(result)
+            for result in search_timeline(items, query=q, limit=limit)
+        ],
     )
 
 

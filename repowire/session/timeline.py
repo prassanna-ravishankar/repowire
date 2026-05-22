@@ -35,6 +35,25 @@ class TimelineItem:
     event_ids: list[str] = field(default_factory=list)
 
 
+@dataclass
+class TimelineSearchMatch:
+    """One text match inside a normalized timeline item."""
+
+    start: int
+    end: int
+    snippet: str
+
+
+@dataclass
+class TimelineSearchResult:
+    """Search result with stable timeline jump coordinates."""
+
+    item: TimelineItem
+    match: TimelineSearchMatch
+    cursor: str
+    target_id: str
+
+
 def timeline_key(session_id: str | None, turn_id: str | None) -> str | None:
     """Return the stable session/turn reconciliation key."""
     if not turn_id:
@@ -206,3 +225,43 @@ def build_session_timeline(
     items.extend(_coalesce_delta_groups(peer_events, hidden_keys=history_keys | realtime_keys))
     items.sort(key=lambda item: (item.timestamp, item.session_id, item.turn_id, item.source))
     return items
+
+
+def search_timeline(
+    items: list[TimelineItem],
+    *,
+    query: str,
+    limit: int,
+    snippet_radius: int = 80,
+) -> list[TimelineSearchResult]:
+    """Search normalized timeline text and return newest-first jump targets."""
+    needle = query.casefold().strip()
+    if not needle:
+        return []
+
+    results: list[TimelineSearchResult] = []
+    for item in reversed(items):
+        haystack = item.text or ""
+        index = haystack.casefold().find(needle)
+        if index < 0:
+            continue
+        start = max(0, index - snippet_radius)
+        end = min(len(haystack), index + len(query.strip()) + snippet_radius)
+        prefix = "..." if start > 0 else ""
+        suffix = "..." if end < len(haystack) else ""
+        cursor = f"{item.session_id}:{item.turn_id}"
+        results.append(
+            TimelineSearchResult(
+                item=item,
+                match=TimelineSearchMatch(
+                    start=index,
+                    end=index + len(query.strip()),
+                    snippet=f"{prefix}{haystack[start:end]}{suffix}",
+                ),
+                cursor=cursor,
+                target_id=f"turn-{item.session_id}-{item.turn_id}",
+            )
+        )
+        if len(results) >= limit:
+            break
+    return results

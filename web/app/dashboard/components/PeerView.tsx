@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Bell, Check, Clock, Copy, Paperclip, RefreshCw, RotateCcw, Send, X } from "lucide-react";
+import { AlertCircle, Bell, Check, Clock, Copy, Paperclip, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
 import { registerSnapshotProvider, useFrozenThread, useIsPeerProtected } from "../lib/protection";
 import { clearDraft, setDraftFile, setDraftText, useDraftFile, useDraftText } from "../lib/drafts";
@@ -48,6 +48,33 @@ interface SessionNotifyControlResponse {
   ok: boolean;
   delivery_state: "delivered" | "queued";
   reason: string;
+}
+
+interface TimelineSearchResult {
+  cursor: string;
+  target_id: string;
+  item: {
+    id: string;
+    kind: "turn" | "delta_group";
+    source: "history" | "realtime";
+    timestamp: string;
+    session_id: string;
+    turn_id: string;
+    role: "user" | "assistant";
+    text: string;
+    tool_calls: { name: string; input: string }[];
+  };
+  match: {
+    start: number;
+    end: number;
+    snippet: string;
+  };
+}
+
+interface TimelineSearchResponse {
+  degraded: boolean;
+  degradation_message: string;
+  results: TimelineSearchResult[];
 }
 
 const ACK_FRAME_RE = /^\[ack #([^\]\s]+) from @([^\]\s]+)\]\s?([\s\S]*)$/;
@@ -109,7 +136,15 @@ export function PeerView({
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [timelineError, setTimelineError] = useState<string | null>(null);
   const [timelineInitialized, setTimelineInitialized] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<TimelineSearchResult[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchDegradation, setSearchDegradation] = useState<string | null>(null);
+  const [highlightTarget, setHighlightTarget] = useState<string | null>(null);
+  const [pinnedSearchTurn, setPinnedSearchTurn] = useState<TranscriptTurn | null>(null);
   const timelineTopSentinelRef = useRef<HTMLDivElement>(null);
+  const timelineItemRefs = useRef(new Map<string, HTMLDivElement>());
   const lastMetadataSessionRef = useRef<string | null>(metadataSession);
   const protectedNow = useIsPeerProtected(peer.peer_id);
   useEffect(() => {
@@ -140,8 +175,57 @@ export function PeerView({
         return event.from_peer_id === id || event.to_peer_id === id;
       })
       .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-    return mergeTimeline(timelineTurns, scopedEvents, activeSessionId);
-  }, [activeSessionId, events, peer.peer_id, timelineTurns]);
+    const turns = pinnedSearchTurn ? [...timelineTurns, pinnedSearchTurn] : timelineTurns;
+    return mergeTimeline(turns, scopedEvents, activeSessionId);
+  }, [activeSessionId, events, peer.peer_id, pinnedSearchTurn, timelineTurns]);
+
+  const runSearch = useCallback(async () => {
+    const q = searchQuery.trim();
+    if (!q || searchLoading) return;
+    setSearchLoading(true);
+    setSearchError(null);
+    setSearchDegradation(null);
+    try {
+      const url = new URL(
+        `${apiBase}/peers/${encodeURIComponent(peer.name)}/timeline/search`,
+        window.location.origin,
+      );
+      url.searchParams.set("q", q);
+      url.searchParams.set("limit", "20");
+      const res = await fetch(url.toString().replace(window.location.origin, ""), {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        setSearchError(`Error ${res.status}`);
+        return;
+      }
+      const data = (await res.json()) as TimelineSearchResponse;
+      setSearchResults(data.results);
+      setSearchDegradation(data.degraded ? data.degradation_message : null);
+    } catch (e) {
+      setSearchError(e instanceof Error ? e.message : "Request failed");
+    } finally {
+      setSearchLoading(false);
+    }
+  }, [apiBase, peer.name, searchLoading, searchQuery]);
+
+  const jumpToSearchResult = useCallback((result: TimelineSearchResult) => {
+    const targetKey = timelineKey(result.item.session_id, result.item.turn_id);
+    if (!targetKey || result.item.kind !== "turn") return;
+    setActiveTab("chat");
+    setPinnedSearchTurn({
+      role: result.item.role,
+      text: result.item.text,
+      timestamp: result.item.timestamp,
+      session_id: result.item.session_id,
+      turn_id: result.item.turn_id,
+      tool_calls: result.item.tool_calls,
+    });
+    setHighlightTarget(targetKey);
+    if (activeSessionRef.current.sessionId !== result.item.session_id) {
+      setActiveSessionState({ peerId: peer.peer_id, sessionId: result.item.session_id });
+    }
+  }, [peer.peer_id]);
 
   const fetchTimelinePage = useCallback(
     async (before: string | null, sessionId: string | null) => {
@@ -202,9 +286,15 @@ export function PeerView({
     lastMetadataSessionRef.current = metadataSession;
     setActiveSessionState({ peerId: peer.peer_id, sessionId: metadataSession });
     setTimelineTurns([]);
+    setPinnedSearchTurn(null);
     setTimelineNextBefore(null);
     setTimelineError(null);
     setTimelineInitialized(false);
+    setSearchQuery("");
+    setSearchResults([]);
+    setSearchError(null);
+    setSearchDegradation(null);
+    setHighlightTarget(null);
     // Sticky selection resets only on peer changes; metadata changes are handled below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [peer.peer_id]);
@@ -214,6 +304,7 @@ export function PeerView({
     lastMetadataSessionRef.current = metadataSession;
     setActiveSessionState({ peerId: peer.peer_id, sessionId: metadataSession });
     setTimelineTurns([]);
+    setPinnedSearchTurn(null);
     setTimelineNextBefore(null);
     setTimelineError(null);
     setTimelineInitialized(false);
@@ -280,6 +371,15 @@ export function PeerView({
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [thread.length, protectedNow]);
 
+  useEffect(() => {
+    if (!highlightTarget) return;
+    const timeout = window.setTimeout(() => {
+      const el = timelineItemRefs.current.get(highlightTarget);
+      el?.scrollIntoView({ block: "center" });
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [highlightTarget, thread]);
+
   // Reset to chat when switching peers so the tab choice doesn't leak across selections.
   useEffect(() => {
     setActiveTab("chat");
@@ -345,6 +445,16 @@ export function PeerView({
                 <span>{timelineError}</span>
               </div>
             )}
+            <TimelineSearch
+              query={searchQuery}
+              results={searchResults}
+              loading={searchLoading}
+              error={searchError}
+              degradation={searchDegradation}
+              onQueryChange={setSearchQuery}
+              onSearch={runSearch}
+              onJump={jumpToSearchResult}
+            />
             {thread.length === 0 ? (
               <div className="py-10 font-mono text-xs leading-6 text-outline">
                 {timelineLoading && !timelineInitialized ? (
@@ -357,20 +467,37 @@ export function PeerView({
                 )}
               </div>
             ) : (
-              thread.map((event) =>
-                event.type === "chat_turn_delta_group" ? (
-                  <StreamingTurnItem key={`stream-${event.session_id || "legacy"}-${event.turn_id}`} group={event} peer={peer} />
-                ) : event.type === "history_turn" ? (
-                  <HistoryTurn key={event.id} turn={event} peer={peer} />
-                ) : (
-                  <ThreadItem
+              thread.map((event) => {
+                const targetKey = entryTargetKey(event);
+                const isHighlighted = targetKey !== null && targetKey === highlightTarget;
+                return (
+                  <div
                     key={event.id}
-                    event={event as Event}
-                    peer={peer}
-                    apiBase={apiBase}
-                  />
-                )
-              )
+                    ref={(node) => {
+                      if (!targetKey) return;
+                      if (node) timelineItemRefs.current.set(targetKey, node);
+                      else timelineItemRefs.current.delete(targetKey);
+                    }}
+                    data-testid={targetKey ? `timeline-${targetKey}` : undefined}
+                    className={cn(
+                      "rounded-sm transition-shadow",
+                      isHighlighted && "ring-2 ring-primary/70 ring-offset-2 ring-offset-surface-dim",
+                    )}
+                  >
+                    {event.type === "chat_turn_delta_group" ? (
+                      <StreamingTurnItem group={event} peer={peer} />
+                    ) : event.type === "history_turn" ? (
+                      <HistoryTurn turn={event} peer={peer} />
+                    ) : (
+                      <ThreadItem
+                        event={event as Event}
+                        peer={peer}
+                        apiBase={apiBase}
+                      />
+                    )}
+                  </div>
+                );
+              })
             )}
             <div ref={bottomRef} />
           </div>
@@ -389,6 +516,79 @@ export function PeerView({
         <McpPanel peer={peer} apiBase={apiBase} />
       )}
     </>
+  );
+}
+
+function TimelineSearch({
+  query,
+  results,
+  loading,
+  error,
+  degradation,
+  onQueryChange,
+  onSearch,
+  onJump,
+}: {
+  query: string;
+  results: TimelineSearchResult[];
+  loading: boolean;
+  error: string | null;
+  degradation: string | null;
+  onQueryChange: (value: string) => void;
+  onSearch: () => void;
+  onJump: (result: TimelineSearchResult) => void;
+}) {
+  return (
+    <div className="mb-4 border border-border-faint bg-surface-container-lowest p-2.5">
+      <form
+        className="flex items-center gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSearch();
+        }}
+      >
+        <Search className="h-4 w-4 shrink-0 text-outline" aria-hidden="true" />
+        <input
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="search conversation..."
+          aria-label="Search conversation"
+          className="min-w-0 flex-1 bg-transparent font-mono text-xs text-on-surface outline-none placeholder:text-outline"
+        />
+        <button
+          type="submit"
+          disabled={!query.trim() || loading}
+          className="flex h-7 shrink-0 items-center rounded border border-border-faint px-2 font-mono text-[10px] uppercase tracking-[0.14em] text-outline hover:bg-surface-container-high hover:text-on-surface disabled:opacity-40"
+        >
+          {loading ? "searching" : "search"}
+        </button>
+      </form>
+      {(error || degradation) && (
+        <div className={cn("mt-2 flex items-start gap-2 font-mono text-[11px]", error ? "text-error" : "text-outline")}>
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{error || degradation}</span>
+        </div>
+      )}
+      {results.length > 0 && (
+        <div className="mt-2 max-h-44 overflow-y-auto border-t border-border-faint pt-2">
+          {results.map((result) => (
+            <button
+              key={`${result.cursor}-${result.item.source}-${result.item.id}`}
+              type="button"
+              onClick={() => onJump(result)}
+              className="mb-1 block w-full rounded border border-transparent px-2 py-1.5 text-left font-mono text-xs hover:border-border-faint hover:bg-surface-container-high"
+            >
+              <span className="block text-[10px] uppercase tracking-[0.14em] text-outline">
+                {result.item.session_id} / {result.item.role} / {formatTime(result.item.timestamp)}
+              </span>
+              <span className="mt-0.5 line-clamp-2 block text-on-surface-variant">
+                {result.match.snippet}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1747,6 +1947,16 @@ function timelineKey(sessionId?: string, turnId?: string): string | null {
   return `${sessionId || "legacy"}:${turnId}`;
 }
 
+function entryTargetKey(entry: ThreadItemEntry): string | null {
+  if (entry.type === "history_turn" || entry.type === "chat_turn_delta_group") {
+    return timelineKey(entry.session_id, entry.turn_id);
+  }
+  if (entry.type === "chat_turn") {
+    return timelineKey(entry.session_id, entry.turn_id);
+  }
+  return null;
+}
+
 function mergeTimeline(
   historyTurns: TranscriptTurn[],
   sortedEvents: Event[],
@@ -1760,9 +1970,15 @@ function mergeTimeline(
       id: `history-${turn.session_id}-${turn.turn_id}`,
     }));
   const historyByKey = new Map<string, HistoryTimelineTurn>();
+  const dedupedHistoryItems: HistoryTimelineTurn[] = [];
   for (const turn of historyItems) {
     const key = timelineKey(turn.session_id, turn.turn_id);
-    if (key) historyByKey.set(key, turn);
+    if (!key) {
+      dedupedHistoryItems.push(turn);
+      continue;
+    }
+    if (!historyByKey.has(key)) dedupedHistoryItems.push(turn);
+    historyByKey.set(key, turn);
   }
 
   const liveItems = coalesceDeltas(sortedEvents);
@@ -1785,10 +2001,10 @@ function mergeTimeline(
     out.push(item);
   }
 
-  for (const item of historyItems) {
+  for (const item of dedupedHistoryItems) {
     const key = timelineKey(item.session_id, item.turn_id);
     if (key && replacedHistoryKeys.has(key)) continue;
-    out.push(item);
+    out.push(key ? historyByKey.get(key) || item : item);
   }
 
   out.sort((a, b) => a.timestamp.localeCompare(b.timestamp));

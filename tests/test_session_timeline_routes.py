@@ -290,6 +290,107 @@ async def test_timeline_unknown_peer_returns_404(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_timeline_search_returns_jump_targets_from_normalized_timeline(
+    tmp_path: Path,
+) -> None:
+    app, registry, _ = _make_app(tmp_path)
+    projects_root = tmp_path / "projects"
+    peer_path = "/peer/work"
+    try:
+        _peer_id, name = await registry.allocate_and_register(
+            circle="global",
+            backend=AgentType.CLAUDE_CODE,
+            path=peer_path,
+            pane_id=None,
+            tmux_session=None,
+            metadata={},
+            machine="test",
+        )
+        _write_session(
+            projects_root,
+            peer_path,
+            [
+                {
+                    "type": "user",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "sessionId": "s1",
+                    "message": {"content": "prompt about the dashboard"},
+                },
+                {
+                    "type": "assistant",
+                    "uuid": "assistant-turn",
+                    "timestamp": "2026-01-01T00:00:01Z",
+                    "sessionId": "s1",
+                    "message": {
+                        "content": [{"type": "text", "text": "normalized timeline search answer"}]
+                    },
+                },
+            ],
+        )
+
+        with patch("repowire.session.history._claude_projects_dir", return_value=projects_root):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+                res = await ac.get(
+                    f"/peers/{name}/timeline/search",
+                    params={"q": "timeline search"},
+                )
+
+        assert res.status_code == 200
+        body = res.json()
+        assert body["degraded"] is False
+        assert body["results"][0]["cursor"] == "s1:assistant-turn"
+        assert body["results"][0]["target_id"] == "turn-s1-assistant-turn"
+        assert body["results"][0]["item"]["session_id"] == "s1"
+        assert body["results"][0]["item"]["turn_id"] == "assistant-turn"
+        assert body["results"][0]["match"]["snippet"] == "normalized timeline search answer"
+    finally:
+        cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_timeline_search_degrades_to_event_ring_when_history_unavailable(
+    tmp_path: Path,
+) -> None:
+    app, registry, _ = _make_app(tmp_path)
+    try:
+        peer_id, name = await registry.allocate_and_register(
+            circle="global",
+            backend=AgentType.GEMINI,
+            path="/peer/work",
+            pane_id=None,
+            tmux_session=None,
+            metadata={},
+            machine="test",
+        )
+        registry.add_event(
+            "chat_turn",
+            {
+                "peer": name,
+                "peer_id": peer_id,
+                "role": "assistant",
+                "text": "event ring only result",
+                "session_id": "legacy",
+                "turn_id": "event-turn",
+            },
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+            res = await ac.get(
+                f"/peers/{name}/timeline/search",
+                params={"q": "event ring"},
+            )
+
+        assert res.status_code == 200
+        body = res.json()
+        assert body["history_status"] == "unsupported"
+        assert body["degraded"] is True
+        assert "event ring" in body["degradation_message"]
+        assert [result["cursor"] for result in body["results"]] == ["legacy:event-turn"]
+    finally:
+        cleanup_deps()
+
+
+@pytest.mark.anyio
 async def test_timeline_resolves_claude_history_from_session_binding(tmp_path: Path) -> None:
     app, registry, binding_store = _make_app(tmp_path, with_bindings=True)
     assert binding_store is not None

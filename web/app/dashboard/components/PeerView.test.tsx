@@ -290,6 +290,93 @@ describe("PeerView session protection", () => {
     expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it("searches the normalized timeline and jumps to a result", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/timeline/search")) {
+        return new Response(
+          JSON.stringify({
+            degraded: false,
+            degradation_message: "",
+            results: [
+              {
+                cursor: "session-b:turn-b",
+                target_id: "turn-session-b-turn-b",
+                item: {
+                  id: "history:session-b:turn-b",
+                  kind: "turn",
+                  source: "history",
+                  timestamp: "2025-01-01T00:00:02Z",
+                  session_id: "session-b",
+                  turn_id: "turn-b",
+                  role: "assistant",
+                  text: "search target answer",
+                  tool_calls: [],
+                },
+                match: {
+                  start: 0,
+                  end: 6,
+                  snippet: "search target answer",
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("session_id=session-b")) {
+        return new Response(JSON.stringify({ turns: [], next_before: null }), { status: 200 });
+      }
+      if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
+      return new Response(JSON.stringify({ turns: [], next_before: null }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+
+    fireEvent.change(screen.getByLabelText("Search conversation"), {
+      target: { value: "search" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "search" }));
+
+    const result = await screen.findByRole("button", { name: /search target answer/i });
+    fireEvent.click(result);
+
+    expect(await screen.findByTestId("timeline-session-b:turn-b")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("session_id=session-b"))).toBe(true);
+    });
+    expect(scrollSpy).toHaveBeenCalledWith({ block: "center" });
+  });
+
+  it("shows search degradation when only event-ring data is searchable", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/timeline/search")) {
+        return new Response(
+          JSON.stringify({
+            degraded: true,
+            degradation_message: "Search is limited to realtime timeline item(s) still present in the dashboard event ring.",
+            results: [],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
+      return new Response(JSON.stringify({ turns: [], next_before: null }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+
+    fireEvent.change(screen.getByLabelText("Search conversation"), {
+      target: { value: "legacy" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "search" }));
+
+    expect(await screen.findByText(/event ring/i)).toBeInTheDocument();
+  });
+
   it("uses apiBase for thread attachment download links", () => {
     const event: Event = {
       id: "att-event",
