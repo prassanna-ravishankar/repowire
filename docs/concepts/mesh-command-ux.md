@@ -133,7 +133,8 @@ Human output should be brief and scannable:
 
 `timeline` and `result` are views over existing peer, ask, schedule, event, and
 session-history data. They must not imply a daemon-backed job lifecycle unless
-the tracked-work design is implemented separately.
+the [tracked-work lifecycle](tracked-work-lifecycle.md) is implemented
+separately.
 
 Until durable tracked work exists:
 

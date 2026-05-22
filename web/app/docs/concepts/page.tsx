@@ -78,6 +78,15 @@ export default function Concepts() {
         </p>
       </Section>
 
+      <Section title="Tracked work lifecycle">
+        <p>
+          Durable tracked work is a separate daemon-backed lifecycle from conversational <Mono>ask</Mono>/<Mono>ack</Mono>. The design reserves <Mono>work_id</Mono> records with states such as <Mono>queued</Mono>, <Mono>delivered</Mono>, <Mono>running</Mono>, <Mono>awaiting_input</Mono>, <Mono>completed</Mono>, <Mono>failed</Mono>, <Mono>cancelled</Mono>, <Mono>blocked</Mono>, <Mono>expired</Mono>, and <Mono>unavailable</Mono>.
+        </p>
+        <p>
+          Status, result, and cancel semantics belong to that work lifecycle. Acks may close related conversation threads, but they do not complete work. Session and circle visibility should resolve by exact ids where possible, and protocol cancel should be attempted before transport teardown when a live backend connection can still accept it.
+        </p>
+      </Section>
+
       <Section title="Lazy repair">
         <p>
           Repowire avoids polling. Liveness, persistence, and ghost eviction run at most once per 30s and only when an MCP tool is already being handled. Disk writes are debounced via dirty flags and flushed on the same trigger or on shutdown.
