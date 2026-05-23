@@ -121,6 +121,33 @@ class TestAsk:
         # No phantom open ask should remain
         assert at.open_count() == 0
 
+    async def test_cli_polling_peer_keeps_ask_when_transport_absent(self, env):
+        client, _, at, msg_router = env
+        await _register_peer(client, "alice")
+        r = await client.post("/peers", json={
+            "name": "agy",
+            "path": "/tmp/agy",
+            "circle": "default",
+            "backend": "antigravity",
+            "metadata": {"repowire_cli_fallback": True},
+        })
+        assert r.status_code == 200, r.text
+        agy = r.json()["display_name"]
+        msg_router.send_ask.side_effect = TransportError("No connection")
+
+        r = await client.post("/ask", json={
+            "from_peer": "alice", "to_peer": agy, "text": "?",
+        })
+
+        assert r.status_code == 200, r.text
+        cid = r.json()["correlation_id"]
+        ask = await at.get(cid)
+        assert ask is not None
+        assert not ask.closed
+        pending = await client.get("/asks/pending", params={"peer_id": ask.to_peer_id})
+        assert pending.status_code == 200
+        assert pending.json()["asks"][0]["correlation_id"] == cid
+
     async def test_reply_to_closes_prior(self, env):
         client, _, at, _ = env
         await _register_peer(client, "alice")

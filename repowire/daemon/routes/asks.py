@@ -172,6 +172,11 @@ def _binding_id_for_peer(state: object, peer: Peer | None) -> str | None:
     )
 
 
+def _uses_cli_polling_fallback(peer: Peer) -> bool:
+    """Whether asks can be opened for a peer that polls /asks/pending itself."""
+    return bool(peer.metadata.get("repowire_cli_fallback"))
+
+
 def _emit_ack_event(
     *,
     peer_registry: PeerRegistry,
@@ -411,6 +416,22 @@ async def open_ask(
         await ask_tracker.close(cid, reason="evicted")
         raise HTTPException(status_code=404, detail=str(e))
     except TransportError as e:
+        if _uses_cli_polling_fallback(peer):
+            logger.info(
+                "Ask %s queued for CLI-polling peer %s (%s): %s",
+                cid,
+                peer.display_name,
+                peer.peer_id,
+                e,
+            )
+            if request.reply_to:
+                prior = await ask_tracker.close(request.reply_to, reason="reply_to")
+                if prior is None:
+                    logger.debug(
+                        "ask reply_to=%s: prior ask not found or already closed",
+                        request.reply_to,
+                    )
+            return AskResponse(correlation_id=cid)
         await ask_tracker.close(cid, reason="send_failed")
         raise HTTPException(
             status_code=503,

@@ -87,7 +87,12 @@ repowire peer list                          # god-view list (all circles, includ
 repowire peer describe NAME_OR_ID [--circle C]  # full state for one peer
 repowire peer claim-role orchestrator [--peer NAME_OR_ID] [--circle C] [--force]
 repowire peer prune                         # remove offline peers from the registry
+repowire peer whoami [--register --backend B --name NAME --circle C --path P]  # read-only identity, or self-register
+repowire peer asks [--peer-id ID | --pane-id PANE | --peer NAME] [--direction inbound|outbound|both] [--json]
+repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 ```
+
+`peer whoami`, `peer asks`, and `peer ack` are the shellable mesh primitives intended for agents whose hooks don't fire today (notably [Antigravity `agy`](../agents/antigravity.md)). They wrap existing daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/ack`) with no new daemon surface and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`. Use `peer whoami --register --backend antigravity` once at session start to self-onboard.
 
 `peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP [`list_peers`](mcp-tools.md#list_peers) tool defaults to a peer-facing view (online only, caller hidden).
 

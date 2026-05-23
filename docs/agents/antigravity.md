@@ -30,6 +30,24 @@ The Antigravity CLI plugin layout validates cleanly, but two pieces of end-to-en
 
 When upstream lands hook/MCP support, the installer will be tightened to write the verified shapes and `doctor` will flip from `WARN` to `OK` without changes to the surrounding integration.
 
+## CLI fallback (while hooks are pending)
+
+Until `agy` fires plugin hooks, an agy session can still participate in the mesh by shelling out to the daemon over HTTP. Three commands cover the lifecycle:
+
+```bash
+# 1. Self-register the running agy session as a peer (one-time per session).
+repowire peer whoami --register --backend antigravity \
+    --name agy-demo --circle default
+
+# 2. List inbound asks for the current pane (defaults to $TMUX_PANE).
+repowire peer asks
+
+# 3. Close an ask, optionally with a reply.
+repowire peer ack ask-abc123 -m "pong"
+```
+
+All three resolve identity in this order: explicit `--peer-id` / `--pane-id`, `$TMUX_PANE`, then `--peer NAME`. `peer whoami` (no flags) is a read-only check that prints the registered identity for the current pane. See [CLI reference](../reference/cli.md) for full flag listings.
+
 ## Spawn
 
 Default spawn command: `agy --dangerously-skip-permissions`.

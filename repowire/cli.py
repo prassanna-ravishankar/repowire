@@ -2263,6 +2263,278 @@ def peer_prune(force: bool, dry_run: bool) -> None:
     console.print(f"\n[bold green]Pruned {removed} peer(s)[/]")
 
 
+def _auth_headers() -> dict[str, str]:
+    """Return Authorization headers from daemon.auth_token if configured.
+
+    Reads `~/.repowire/config.yaml` via `load_config()`. Returns an empty dict
+    when no token is set (so callers can always splat `**_auth_headers()`).
+    Swallows config-load errors silently — the daemon will return 401 if auth
+    is actually required, which is a clearer signal than a CLI-side traceback.
+    """
+    try:
+        from repowire.config.models import load_config
+        token = load_config().daemon.auth_token
+    except Exception:
+        return {}
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _resolve_peer_id_for_asks(
+    client: Any,
+    *,
+    peer_id: str | None,
+    pane_id: str | None,
+    peer_name: str | None,
+) -> tuple[str | None, str | None]:
+    """Resolve a peer_id for /asks/pending lookup.
+
+    Order: explicit peer_id → explicit pane_id → TMUX_PANE → --peer NAME.
+    Returns (peer_id, error_message). On success error_message is None.
+    """
+    import os
+    from urllib.parse import quote
+
+    daemon = _get_daemon_url()
+    headers = _auth_headers()
+
+    if peer_id:
+        return peer_id, None
+
+    pane = pane_id or os.environ.get("TMUX_PANE")
+    if pane:
+        resp = client.get(f"{daemon}/peers/by-pane/{quote(pane, safe='')}", headers=headers)
+        if resp.status_code == 200:
+            body = resp.json()
+            resolved = body.get("peer_id")
+            if resolved:
+                return resolved, None
+        if not peer_name:
+            return None, (
+                f"No peer registered for pane {pane}. "
+                "Run `repowire peer whoami --register --backend <type>` first."
+            )
+
+    if peer_name:
+        resp = client.get(f"{daemon}/peers/{quote(peer_name, safe='')}", headers=headers)
+        if resp.status_code == 404:
+            return None, f"Peer '{peer_name}' not found"
+        resp.raise_for_status()
+        return resp.json().get("peer_id"), None
+
+    return None, "No peer identity (set TMUX_PANE, or pass --peer-id/--pane-id/--peer)"
+
+
+@peer.command(name="whoami")
+@click.option("--register", is_flag=True, help="Register a new peer instead of read-only lookup")
+@click.option("--name", help="Display name (defaults to current folder name)")
+@click.option(
+    "--backend",
+    type=click.Choice(["claude-code", "codex", "gemini", "antigravity", "opencode", "pi"]),
+    help="Agent backend type (required with --register)",
+)
+@click.option("--circle", "-c", default=None, help="Circle (default: 'default')")
+@click.option("--path", "-p", default=None, help="Working directory (defaults to cwd)")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of formatted text")
+def peer_whoami(
+    register: bool,
+    name: str | None,
+    backend: str | None,
+    circle: str | None,
+    path: str | None,
+    as_json: bool,
+) -> None:
+    """Print current peer identity, or register a new peer with --register.
+
+    Read-only mode (default): uses TMUX_PANE → /peers/by-pane, or --name → /peers/{name}.
+    Register mode: POSTs /peers with backend/circle/path (and TMUX_PANE if present).
+    Designed as the bootstrap entry point for agents whose hooks don't fire (e.g. agy).
+    """
+    import json as _json
+    import os
+    import sys
+    from urllib.parse import quote
+
+    import httpx
+
+    daemon = _get_daemon_url()
+    headers = _auth_headers()
+    pane_id = os.environ.get("TMUX_PANE")
+
+    def _emit(info: dict) -> None:
+        if as_json:
+            click.echo(_json.dumps(info, indent=2))
+        else:
+            console.print(f"[cyan]peer_id:[/] {info.get('peer_id', '')}")
+            display = info.get("display_name") or info.get("name", "")
+            console.print(f"[cyan]display_name:[/] {display}")
+            if info.get("backend"):
+                console.print(f"[cyan]backend:[/] {info['backend']}")
+            if info.get("circle"):
+                console.print(f"[cyan]circle:[/] {info['circle']}")
+            if info.get("status"):
+                console.print(f"[cyan]status:[/] {info['status']}")
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            if register:
+                if not backend:
+                    console.print("[red]--register requires --backend[/]")
+                    sys.exit(2)
+                actual_path = path or str(Path.cwd())
+                actual_name = name or Path(actual_path).name
+                body: dict = {
+                    "name": actual_name,
+                    "path": actual_path,
+                    "backend": backend,
+                    "metadata": {"repowire_cli_fallback": True},
+                }
+                if circle:
+                    body["circle"] = circle
+                if pane_id:
+                    body["pane_id"] = pane_id
+                resp = client.post(f"{daemon}/peers", json=body, headers=headers)
+                if resp.status_code >= 400:
+                    console.print(f"[red]Register failed: {resp.status_code} {resp.text}[/]")
+                    sys.exit(1)
+                data = resp.json()
+                _emit({
+                    "peer_id": data.get("peer_id"),
+                    "display_name": data.get("display_name"),
+                    "backend": backend,
+                    "circle": circle or "default",
+                })
+                return
+
+            # Read-only lookup
+            if pane_id and not name:
+                resp = client.get(
+                    f"{daemon}/peers/by-pane/{quote(pane_id, safe='')}", headers=headers,
+                )
+                if resp.status_code == 200:
+                    _emit(resp.json())
+                    return
+            if name:
+                resp = client.get(f"{daemon}/peers/{quote(name, safe='')}", headers=headers)
+                if resp.status_code == 404:
+                    console.print(f"[red]Peer '{name}' not found[/]")
+                    sys.exit(1)
+                resp.raise_for_status()
+                _emit(resp.json())
+                return
+            console.print(
+                "[yellow]No registered peer for this pane.[/] "
+                "Pass --name to look up by name, or --register to create one."
+            )
+            sys.exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
+        sys.exit(1)
+
+
+@peer.command(name="asks")
+@click.option("--peer-id", "peer_id", default=None, help="Explicit peer_id to query")
+@click.option("--pane-id", "pane_id", default=None, help="Tmux pane id (overrides $TMUX_PANE)")
+@click.option("--peer", "peer_name", default=None, help="Resolve peer_id via display name")
+@click.option(
+    "--direction",
+    type=click.Choice(["inbound", "outbound", "both"]),
+    default="inbound",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of table")
+def peer_asks(
+    peer_id: str | None,
+    pane_id: str | None,
+    peer_name: str | None,
+    direction: str,
+    as_json: bool,
+) -> None:
+    """List pending asks for this peer (CLI fallback for agents without hooks)."""
+    import json as _json
+    import sys
+
+    import httpx
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resolved, err = _resolve_peer_id_for_asks(
+                client, peer_id=peer_id, pane_id=pane_id, peer_name=peer_name,
+            )
+            if err:
+                console.print(f"[red]{err}[/]")
+                sys.exit(1)
+
+            resp = client.get(
+                f"{_get_daemon_url()}/asks/pending",
+                params={"peer_id": resolved, "direction": direction},
+                headers=_auth_headers(),
+            )
+            if resp.status_code >= 400:
+                console.print(f"[red]/asks/pending failed: {resp.status_code} {resp.text}[/]")
+                sys.exit(1)
+            asks = resp.json().get("asks", [])
+    except httpx.ConnectError:
+        console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
+        sys.exit(1)
+
+    if as_json:
+        click.echo(_json.dumps(asks, indent=2))
+        return
+
+    if not asks:
+        console.print("[dim]No pending asks[/]")
+        return
+
+    for a in asks:
+        cid = a.get("correlation_id", "")
+        frm = a.get("from_peer", "?")
+        to = a.get("to_peer", "?")
+        text = (a.get("text") or "").replace("\n", " ")
+        if len(text) > 100:
+            text = text[:97] + "..."
+        console.print(f"[cyan]{cid}[/]  {frm} → {to}  {text}")
+
+
+@peer.command(name="ack")
+@click.argument("correlation_id")
+@click.option("-m", "--message", default=None, help="Optional reply message (closes the thread)")
+@click.option("--from-peer", "from_peer", default=None, help="Acking peer identity (compat-only)")
+def peer_ack(correlation_id: str, message: str | None, from_peer: str | None) -> None:
+    """Close an open ask. With -m, delivers the message as a reply."""
+    import sys
+
+    import httpx
+
+    body: dict = {"correlation_id": correlation_id}
+    if message is not None:
+        body["message"] = message
+    if from_peer:
+        body["from_peer"] = from_peer
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(f"{_get_daemon_url()}/ack", json=body, headers=_auth_headers())
+    except httpx.ConnectError:
+        console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
+        sys.exit(1)
+
+    if resp.status_code == 200:
+        console.print(
+            f"[green]Acked #{correlation_id}{' with reply' if message else ''}[/]"
+        )
+        return
+    if resp.status_code == 404:
+        console.print(f"[red]No open ask with correlation_id: {correlation_id}[/]")
+        sys.exit(1)
+    if resp.status_code == 410:
+        console.print(f"[red]Ask {correlation_id} is already closed; reply not delivered[/]")
+        sys.exit(1)
+    if resp.status_code == 503:
+        console.print("[red]Reply delivery failed (asker has no live transport); ask still open[/]")
+        sys.exit(1)
+    console.print(f"[red]/ack failed: {resp.status_code} {resp.text}[/]")
+    sys.exit(1)
+
+
 # =============================================================================
 # hooks command group - backward compatibility alias for claude
 # =============================================================================

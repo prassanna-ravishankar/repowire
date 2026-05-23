@@ -53,10 +53,16 @@ repowire service uninstall`}
         usage={`repowire peer list
 repowire peer describe NAME_OR_ID [--circle C]
 repowire peer claim-role orchestrator [--peer NAME_OR_ID] [--circle C] [--force]
-repowire peer prune`}
+repowire peer prune
+repowire peer whoami [--register --backend B --name NAME --circle C --path P]
+repowire peer asks [--peer-id ID | --pane-id PANE | --peer NAME]
+repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]`}
       >
         <p>
           Inspect and repair registered peers. <Mono>peer list</Mono> is an operator view across all circles. <Mono>peer describe</Mono> shows one peer&apos;s identity, role, liveness, open asks, and recent events. <Mono>peer claim-role orchestrator</Mono> is a narrow repair command for an existing peer whose durable session mapping lost the orchestrator role after daemon restart; it refuses to demote a fresh online or busy holder unless <Mono>--force</Mono> is passed.
+        </p>
+        <p>
+          <Mono>peer whoami</Mono>, <Mono>peer asks</Mono>, and <Mono>peer ack</Mono> are shellable mesh primitives for runtimes whose hooks do not fire yet. They use the local daemon token automatically and let an Antigravity <Mono>agy</Mono> session self-register, poll pending asks, and close them from a shell.
         </p>
       </Cmd>
 
