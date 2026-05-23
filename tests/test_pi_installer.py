@@ -165,13 +165,13 @@ def test_connected_frame_adopts_daemon_identity():
     The locally generated session name can differ from the registered display
     name after reconnect/takeover; self tools must not keep targeting it.
     """
-    assert 'typeof data.display_name === "string"' in PLUGIN_CONTENT
+    assert 'typeof data.display_name === "string" && data.display_name' in PLUGIN_CONTENT
     assert "conn.peerName = data.display_name" in PLUGIN_CONTENT
 
 
 def test_set_description_targets_peer_id_when_known():
     """Self description updates should prefer canonical peer_id over generated name."""
-    assert "const identifier = me.peerId || me.peerName" in PLUGIN_CONTENT
+    assert PLUGIN_CONTENT.count("const identifier = me.peerId || me.peerName") >= 2
     assert 'encodeURIComponent(identifier) + "/description"' in PLUGIN_CONTENT
 
 
