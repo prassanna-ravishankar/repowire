@@ -133,6 +133,41 @@ _PKG_COMMANDS: dict[str, dict[str, list[str]]] = {
 }
 
 
+def _enabled_package_extras(config: object) -> list[str]:
+    """Return optional package extras required by the current config."""
+    experiments = getattr(config, "experiments", None)
+    extras: list[str] = []
+    if bool(getattr(experiments, "acp_broker_client", False)):
+        extras.append("acp")
+    return extras
+
+
+def _repowire_package_spec(config: object) -> str:
+    extras = _enabled_package_extras(config)
+    if not extras:
+        return "repowire"
+    return f"repowire[{','.join(extras)}]"
+
+
+def _upgrade_command(pkg_mgr: str, config: object) -> list[str]:
+    """Build the package-manager command for `repowire update`.
+
+    Package-manager upgrade commands do not all preserve extras. When an
+    enabled config requires extras, reinstall the tool with the explicit
+    package spec so the upgraded environment still has optional dependencies.
+    """
+    package_spec = _repowire_package_spec(config)
+    if package_spec == "repowire":
+        return _PKG_COMMANDS[pkg_mgr]["upgrade"]
+    if pkg_mgr == "uv":
+        return ["uv", "tool", "install", package_spec, "--upgrade", "--force"]
+    if pkg_mgr == "pipx":
+        return ["pipx", "install", package_spec, "--force"]
+    if pkg_mgr == "pip":
+        return ["pip", "install", "-U", package_spec]
+    return _PKG_COMMANDS[pkg_mgr]["upgrade"]
+
+
 def _prompt_bot_config(
     name: str,
     config_section: object,
@@ -195,6 +230,14 @@ def _daemon_health_ok(host: str, port: int, *, attempts: int = 10) -> bool:
 @click.option("--no-service", is_flag=True, help="Skip daemon service installation")
 @click.option("--relay", is_flag=True, help="Enable hosted relay via repowire.io")
 @click.option(
+    "--update-checks/--no-update-checks",
+    default=None,
+    help=(
+        "Opt status/doctor into checking for newer Repowire releases. "
+        "Updates are never auto-applied."
+    ),
+)
+@click.option(
     "--experimental-channels", is_flag=True,
     help="Use channel transport (experimental, requires claude.ai login and bun)",
 )
@@ -207,6 +250,7 @@ def _daemon_health_ok(host: str, port: int, *, attempts: int = 10) -> bool:
 def setup(
     no_service: bool,
     relay: bool,
+    update_checks: bool | None,
     experimental_channels: bool,
     http_mcp: bool,
     non_interactive: bool,
@@ -273,7 +317,7 @@ def setup(
     if not agents_setup:
         console.print("[yellow]No agent types detected.[/]")
         console.print("Install claude, codex, gemini, opencode, or pi first.")
-        if not (http_mcp or relay or interactive):
+        if not (http_mcp or relay or update_checks is not None or interactive):
             return
     else:
         console.print(f"[green]✓[/] Configured agents: {', '.join(agents_setup)}")
@@ -326,6 +370,18 @@ def setup(
         _enable_http_mcp(config)
         console.print("[green]✓[/] HTTP MCP enabled at http://127.0.0.1:8377/mcp")
         console.print(f"  Bearer token: {_mask_token(config.daemon.auth_token or '')}")
+
+    if update_checks is not None:
+        config.updates.check_enabled = update_checks
+        state = "enabled" if update_checks else "disabled"
+        console.print(f"[green]✓[/] Update checks {state}")
+    elif interactive:
+        config.updates.check_enabled = click.confirm(
+            "Check for Repowire updates in status/doctor?",
+            default=config.updates.check_enabled,
+        )
+        if config.updates.check_enabled:
+            console.print("[green]✓[/] Update checks enabled")
 
     # Bot integrations: show existing config or prompt
     if config.telegram.bot_token:
@@ -389,6 +445,8 @@ def setup(
         hints.append("Telegram bot (mobile control): repowire setup (interactive)")
     if not config.slack.bot_token:
         hints.append("Slack bot: repowire setup (interactive)")
+    if not config.updates.check_enabled:
+        hints.append("Update availability checks: repowire setup --update-checks")
     if hints:
         console.print("")
         console.print("[dim]Optional:[/]")
@@ -600,9 +658,11 @@ def update(post_upgrade: bool) -> None:
     import shutil
     import subprocess
 
+    from repowire.config.models import load_config
     from repowire.installers.claude_code import check_channel_installed
 
     if not post_upgrade:
+        config = load_config()
         old_version = __version__
         pkg_mgr = _detect_package_manager()
         if not pkg_mgr:
@@ -611,9 +671,10 @@ def update(post_upgrade: bool) -> None:
             return
 
         # Upgrade package first, then exec the upgraded CLI for hook/service work.
-        console.print(f"[cyan]Upgrading via {pkg_mgr}...[/]")
+        package_spec = _repowire_package_spec(config)
+        console.print(f"[cyan]Upgrading {package_spec} via {pkg_mgr}...[/]")
         result = subprocess.run(
-            _PKG_COMMANDS[pkg_mgr]["upgrade"], capture_output=True, text=True,
+            _upgrade_command(pkg_mgr, config), capture_output=True, text=True,
         )
         if result.returncode != 0:
             console.print(f"[red]Upgrade failed:[/] {result.stderr[:200]}")
@@ -641,8 +702,6 @@ def update(post_upgrade: bool) -> None:
         _setup_gemini()
     if shutil.which("pi") or (Path.home() / ".pi").exists():
         _setup_pi()
-
-    from repowire.config.models import load_config
 
     config = load_config()
     config.save()
@@ -674,11 +733,21 @@ def status() -> None:
 
     import httpx
 
+    from repowire.config.models import load_config
+    from repowire.doctor import Status, check_update_availability
     from repowire.installers.claude_code import check_hooks_installed
     from repowire.service.installer import get_platform, get_service_status
 
+    config = load_config()
     console.print("[cyan]Mode:[/] unified WebSocket")
     console.print(f"[cyan]Platform:[/] {get_platform()}")
+    console.print("")
+
+    update_result = check_update_availability(config)
+    if update_result.status is Status.WARN:
+        console.print(f"[yellow]![/] {update_result.name}: {update_result.detail}")
+    elif update_result.status is Status.OK:
+        console.print(f"[green]✓[/] {update_result.name}: {update_result.detail}")
     console.print("")
 
     # Check available agent types

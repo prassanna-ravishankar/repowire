@@ -14,6 +14,7 @@ from repowire.config.models import (
     PeerConfig,
     RelayConfig,
     SpawnSettings,
+    UpdatesConfig,
     load_config,
 )
 
@@ -25,6 +26,7 @@ class TestConfig:
         assert config.relay.enabled is False
         assert config.relay.url == "wss://repowire.io"
         assert len(config.peers) == 0
+        assert config.updates.check_enabled is False
         assert config.experiments.sqlite_state is True
 
     def test_get_peer(self):
@@ -118,6 +120,67 @@ class TestConfig:
         assert loaded.daemon.mcp_http.enabled is True
         assert loaded.daemon.auth_token is not None
         assert loaded.daemon.auth_token.startswith("rw_local_")
+
+    def test_setup_update_checks_flag_writes_config_without_detected_agents(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from repowire.cli import main
+
+        config_path = tmp_path / "config.yaml"
+        monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr(Config, "get_config_path", classmethod(lambda cls: config_path))
+        monkeypatch.setattr("repowire.cli._cleanup_legacy_artifacts", lambda: None)
+        monkeypatch.setattr("shutil.which", lambda _name: None)
+
+        result = CliRunner().invoke(
+            main,
+            ["setup", "--update-checks", "--non-interactive", "--no-service"],
+        )
+
+        assert result.exit_code == 0
+        loaded = load_config()
+        assert loaded.updates.check_enabled is True
+
+
+class TestUpdatesConfig:
+    def test_default_off(self):
+        assert UpdatesConfig().check_enabled is False
+
+    def test_can_enable_update_checks(self):
+        assert UpdatesConfig(check_enabled=True).check_enabled is True
+
+
+class TestUpdateCommandHelpers:
+    def test_package_spec_without_extras(self):
+        from repowire.cli import _repowire_package_spec
+
+        assert _repowire_package_spec(Config()) == "repowire"
+
+    def test_package_spec_includes_acp_extra_when_experiment_enabled(self):
+        from repowire.cli import _repowire_package_spec
+
+        config = Config(experiments={"acp_broker_client": True})
+        assert _repowire_package_spec(config) == "repowire[acp]"
+
+    def test_upgrade_command_preserves_acp_extra_for_uv(self):
+        from repowire.cli import _upgrade_command
+
+        config = Config(experiments={"acp_broker_client": True})
+        assert _upgrade_command("uv", config) == [
+            "uv",
+            "tool",
+            "install",
+            "repowire[acp]",
+            "--upgrade",
+            "--force",
+        ]
+
+    def test_upgrade_command_uses_normal_upgrade_without_extras(self):
+        from repowire.cli import _upgrade_command
+
+        assert _upgrade_command("pipx", Config()) == ["pipx", "upgrade", "repowire"]
 
 
 class TestRelayConfig:

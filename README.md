@@ -168,6 +168,8 @@ https://repowire.io/dashboard
 ```bash
 repowire setup                         # install hooks/MCP/plugin/service for detected agents
 repowire setup --http-mcp              # opt in to localhost Streamable HTTP MCP at /mcp
+repowire setup --update-checks         # let status/doctor report available updates
+repowire update                        # explicit package upgrade + hook reinstall + daemon restart
 repowire status                        # show installed components and daemon status
 repowire doctor                        # run diagnostics
 repowire service restart               # restart the installed daemon service
@@ -207,12 +209,16 @@ daemon:
       codex: "codex --dangerously-bypass-approvals-and-sandbox"
       gemini: "gemini --yolo"
     allowed_paths: [~/git, ~/projects]
+updates:
+  check_enabled: false
 
 relay:
   enabled: true
   url: "wss://repowire.io"
   api_key: "rw_..."
 ```
+
+Update checks are off by default. If enabled with `repowire setup --update-checks`, `repowire status` and `repowire doctor` may report that a newer release is available, but they do not upgrade packages, rewrite hooks, or restart services. Use `repowire update` when you want to upgrade explicitly; it preserves enabled package extras such as `repowire[acp]` where practical.
 
 Security defaults:
 

@@ -22,6 +22,7 @@ from repowire.doctor import (
     check_spawn_allowlist,
     check_state_database,
     check_tmux,
+    check_update_availability,
     exit_code,
     run_all,
 )
@@ -410,3 +411,33 @@ def test_repowire_version_check():
     r = check_repowire_version()
     assert r.status is Status.OK
     assert r.detail  # should have a version string
+
+
+class TestUpdateAvailability:
+    def test_disabled_skips_without_network(self):
+        with patch("repowire.doctor.httpx.Client") as client:
+            r = check_update_availability(Config())
+        assert r.status is Status.SKIP
+        client.assert_not_called()
+
+    def test_enabled_warns_when_newer_release_exists(self):
+        config = Config(updates={"check_enabled": True})
+
+        def handler(_request):
+            return httpx.Response(200, json={"info": {"version": "999.0.0"}})
+
+        with patch("repowire.doctor.httpx.Client", _mock_client_factory(handler)):
+            r = check_update_availability(config)
+        assert r.status is Status.WARN
+        assert "999.0.0 available" in r.detail
+        assert "repowire update" in r.detail
+
+    def test_enabled_ok_when_current(self):
+        config = Config(updates={"check_enabled": True})
+
+        def handler(_request):
+            return httpx.Response(200, json={"info": {"version": "0.0.1"}})
+
+        with patch("repowire.doctor.httpx.Client", _mock_client_factory(handler)):
+            r = check_update_availability(config)
+        assert r.status is Status.OK

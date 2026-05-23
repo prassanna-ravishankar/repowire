@@ -21,6 +21,8 @@ daemon:
       opencode: "opencode"
       pi: "pi"
     allowed_paths: []
+updates:
+  check_enabled: false
 ```
 
 ## `daemon.auth_token`
@@ -44,3 +46,9 @@ HTTP MCP is never exposed through the hosted relay. The default stdio MCP server
 Spawn is disabled until `allowed_paths` and at least one runtime command are configured. `commands` is keyed by backend (`claude-code`, `codex`, `gemini`, `opencode`, `pi`) and is the single launch profile used by MCP `spawn_peer`, dashboard spawn, backend switching, and `repowire orchestrator start`.
 
 `allowed_commands` is a deprecated compatibility field. When present in an older config, Repowire normalizes it into `commands` while loading config; new configs should not add it.
+
+## `updates.check_enabled`
+
+Opt-in release availability checks for `repowire status` and `repowire doctor`. Default: `false`.
+
+When enabled, those commands may query PyPI and report that a newer Repowire release is available. They never install packages, rewrite hooks, restart services, or mutate daemon routing. `repowire update` remains the explicit upgrade path.

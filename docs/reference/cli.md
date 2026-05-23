@@ -5,7 +5,7 @@ The `repowire` command is a thin wrapper around setup, the daemon, and the bot p
 ## `repowire setup`
 
 ```bash
-repowire setup [--relay] [--experimental-channels] [--http-mcp] [--no-service] [--non-interactive]
+repowire setup [--relay] [--experimental-channels] [--http-mcp] [--update-checks|--no-update-checks] [--no-service] [--non-interactive]
 ```
 
 One-time install. Detects every supported agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires the appropriate Repowire transport for each, and installs the daemon as a user service.
@@ -19,6 +19,7 @@ files.
 - `--relay` opts in to the hosted relay at `repowire.io`.
 - `--experimental-channels` enables the experimental MCP channel / ACP transport for Claude Code (v2.1.80+, claude.ai login, bun).
 - `--http-mcp` enables the experimental localhost Streamable HTTP MCP endpoint at `http://127.0.0.1:8377/mcp` and generates `daemon.auth_token` if needed.
+- `--update-checks` lets `repowire status` and `repowire doctor` check PyPI for newer Repowire releases and suggest `repowire update`. Checks are disabled by default and updates are never auto-applied. Use `--no-update-checks` to turn the check off again.
 - `--no-service` skips daemon service installation; run `repowire serve` manually.
 - `--non-interactive` skips prompts and uses flag values only.
 
@@ -37,6 +38,8 @@ repowire status
 ```
 
 Show what's installed, which agents were detected, and whether the daemon is running.
+
+When `updates.check_enabled` is true, status also reports whether a newer Repowire release is available. It does not upgrade anything.
 
 ## `repowire service`
 
@@ -67,6 +70,7 @@ Checks include:
 - Daemon reachable (`GET /health`, prints version)
 - Per-runtime hook + MCP install state (claude-code, codex, gemini, opencode, pi)
 - `tmux`, Python, and package-manager (`uv`/`pipx`/`pip`) availability
+- Update availability when opted in with `repowire setup --update-checks`
 - Spawn allowlist resolves (commands on `PATH`, paths exist as directories)
 - WebSocket auth token state
 - SQLite state database integrity, schema version, import audit, event count, and peer mapping count
@@ -135,9 +139,20 @@ repowire update
 ```
 
 Re-install repowire via the same package manager that installed it. Use after pulling a new release.
-After reinstalling hooks/plugins, `update` restarts the daemon service when it
-is running. SQLite state migrations run during that daemon restart; verify with
+When config enables optional runtime support such as ACP, `update` upgrades the
+matching package extra so the service runtime keeps the dependency. After
+reinstalling hooks/plugins, `update` restarts the daemon service when it is
+running. SQLite state migrations run during that daemon restart; verify with
 `repowire doctor`.
+
+`repowire update` is the only command that upgrades the installed package.
+Hooks, MCP calls, daemon routing, `status`, and `doctor` never auto-update
+Repowire.
+
+When config enables an optional runtime surface that requires package extras,
+such as `experiments.acp_broker_client`, `update` uses an explicit package spec
+like `repowire[acp]` where the package manager supports it so optional
+dependencies are preserved.
 
 ## `repowire uninstall`
 

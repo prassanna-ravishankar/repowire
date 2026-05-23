@@ -20,6 +20,7 @@ When setup finishes, the daemon is listening on `127.0.0.1:8377`. Open a new age
 repowire setup --relay                  # also connect to the hosted relay at repowire.io
 repowire setup --experimental-channels  # use the MCP channel transport (Claude Code v2.1.80+, claude.ai login, bun)
 repowire setup --http-mcp               # enable localhost Streamable HTTP MCP at /mcp
+repowire setup --update-checks          # let status/doctor report new Repowire releases
 repowire setup --non-interactive        # take flag values only, no prompts
 ```
 
@@ -28,6 +29,8 @@ repowire setup --non-interactive        # take flag values only, no prompts
 `--experimental-channels` replaces tmux-injection delivery with direct MCP-channel / ACP delivery for Claude Code only. It is experimental. See [Claude Code setup](../agents/claude-code.md).
 
 `--http-mcp` is a local-only experimental MCP endpoint for clients that need Streamable HTTP instead of the default stdio server. It generates a `daemon.auth_token` if needed and requires clients to send `Authorization: Bearer <token>`. The normal `repowire mcp` stdio server remains the default setup path.
+
+`--update-checks` opts this machine into update availability checks from `repowire status` and `repowire doctor`. It only reports that a newer release exists; `repowire update` remains the explicit command that upgrades the installed package, reinstalls hooks/plugins, and restarts the daemon service when needed.
 
 ## Verifying
 

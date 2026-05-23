@@ -510,6 +510,53 @@ def check_repowire_version() -> CheckResult:
     return CheckResult("repowire version", Status.OK, __version__)
 
 
+def _version_parts(version: str) -> tuple[int, ...]:
+    """Parse a simple release version for comparison without adding a dependency."""
+    base = version.split("+", 1)[0].split("-", 1)[0]
+    parts: list[int] = []
+    for part in base.split("."):
+        try:
+            parts.append(int(part))
+        except ValueError:
+            break
+    return tuple(parts)
+
+
+def check_update_availability(
+    config: Config,
+    *,
+    timeout: float = 2.0,
+    package_url: str = "https://pypi.org/pypi/repowire/json",
+) -> CheckResult:
+    """Report release availability only when update checks are explicitly enabled."""
+    if not config.updates.check_enabled:
+        return CheckResult(
+            "Update availability",
+            Status.SKIP,
+            "disabled; opt in with `repowire setup --update-checks`",
+        )
+
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.get(package_url)
+            resp.raise_for_status()
+            payload = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult("Update availability", Status.WARN, f"check failed: {exc}")
+
+    latest = str(payload.get("info", {}).get("version") or "").strip()
+    if not latest:
+        return CheckResult("Update availability", Status.WARN, "PyPI response missing version")
+
+    if _version_parts(latest) > _version_parts(__version__):
+        return CheckResult(
+            "Update availability",
+            Status.WARN,
+            f"{latest} available; run `repowire update` to upgrade",
+        )
+    return CheckResult("Update availability", Status.OK, f"current ({__version__})")
+
+
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
@@ -531,6 +578,7 @@ def run_all(config: Config, daemon_url: str) -> list[CheckResult]:
         check_python_version(),
         check_tmux(),
         check_package_manager(),
+        check_update_availability(config),
         check_daemon(daemon_url),
         check_runtimes(),
         check_spawn_allowlist(config),

@@ -15,9 +15,9 @@ export default function CliReference() {
         The <Mono>repowire</Mono> command is a thin wrapper around setup, the daemon, and the bot peers. Most users only ever need <Mono>setup</Mono>. Everything else is for operators running their own daemon or control surfaces.
       </p>
 
-      <Cmd name="repowire setup" usage="repowire setup [--relay] [--experimental-channels] [--http-mcp] [--no-service] [--non-interactive]">
+      <Cmd name="repowire setup" usage="repowire setup [--relay] [--experimental-channels] [--http-mcp] [--update-checks|--no-update-checks] [--no-service] [--non-interactive]">
         <p>
-          One-time install. Detects every supported agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires the appropriate Repowire transport for each, and installs the daemon as a user service. <Mono>--relay</Mono> opts in to the hosted relay at <Mono>repowire.io</Mono>. <Mono>--experimental-channels</Mono> enables the experimental MCP channel / ACP transport for Claude Code. <Mono>--http-mcp</Mono> enables localhost Streamable HTTP MCP at <Mono>/mcp</Mono> and generates a bearer token if needed. <Mono>--no-service</Mono> skips daemon service installation. <Mono>--non-interactive</Mono> skips prompts and uses flag values only.
+          One-time install. Detects every supported agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires the appropriate Repowire transport for each, and installs the daemon as a user service. <Mono>--relay</Mono> opts in to the hosted relay at <Mono>repowire.io</Mono>. <Mono>--experimental-channels</Mono> enables the experimental MCP channel / ACP transport for Claude Code. <Mono>--http-mcp</Mono> enables localhost Streamable HTTP MCP at <Mono>/mcp</Mono> and generates a bearer token if needed. <Mono>--update-checks</Mono> lets <Mono>status</Mono> and <Mono>doctor</Mono> check PyPI for newer releases; <Mono>--no-update-checks</Mono> disables it again. <Mono>--no-service</Mono> skips daemon service installation. <Mono>--non-interactive</Mono> skips prompts and uses flag values only.
         </p>
         <p>
           Repowire uses SQLite state. On first daemon startup after install or update, it applies migrations and imports legacy <Mono>schedules.json</Mono>, <Mono>events.json</Mono>, and <Mono>sessions.json</Mono> once while leaving those files in place for downgrade/export compatibility. Migrated state is written to <Mono>state.db</Mono>.
@@ -86,7 +86,7 @@ repowire schedule delete SCHEDULE_ID`}
 
       <Cmd name="repowire update" usage="repowire update">
         <p>
-          Re-install repowire via the same package manager that installed it. Use after pulling a new release. After reinstalling hooks/plugins, <Mono>update</Mono> restarts the daemon service when it is running. SQLite state migrations run during that daemon restart; verify with <Mono>repowire doctor</Mono>.
+          Re-install repowire via the same package manager that installed it. Use after pulling a new release. When config enables optional runtime support such as ACP, <Mono>update</Mono> upgrades the matching package extra so the service runtime keeps the dependency. After reinstalling hooks/plugins, <Mono>update</Mono> restarts the daemon service when it is running. SQLite state migrations run during that daemon restart; verify with <Mono>repowire doctor</Mono>. This is the only command that upgrades the installed package; hooks, MCP calls, daemon routing, <Mono>status</Mono>, and <Mono>doctor</Mono> never auto-update Repowire.
         </p>
       </Cmd>
 

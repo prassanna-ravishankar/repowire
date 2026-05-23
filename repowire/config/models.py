@@ -269,6 +269,26 @@ class SlackConfig(BaseModel):
     channel_id: str | None = Field(None, description="Slack channel ID (C...)")
 
 
+class UpdatesConfig(BaseModel):
+    """Update-check preferences.
+
+    Repowire never mutates its installed package from hooks, MCP calls, daemon
+    routing, or background service work. This config only allows explicit
+    status/doctor checks to report that a newer package is available.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    check_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, status/doctor may check PyPI for a newer Repowire "
+            "release and suggest running `repowire update`. Updates are still "
+            "explicit and are never auto-applied."
+        ),
+    )
+
+
 class ExperimentsConfig(BaseModel):
     """Feature flags for experimental subsystems.
 
@@ -323,6 +343,7 @@ class Config(BaseModel):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     slack: SlackConfig = Field(default_factory=SlackConfig)
+    updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
     experiments: ExperimentsConfig = Field(default_factory=ExperimentsConfig)
 
     @classmethod
