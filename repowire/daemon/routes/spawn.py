@@ -361,20 +361,32 @@ def _has_spawn_ownership(peer: Peer) -> bool:
 
 
 def _effective_ownership_validation(peer: Peer) -> OwnershipValidation:
-    """Validate explicit ownership, adopting by identity when pane fields are absent."""
+    """Validate explicit ownership, falling back to unique identity proof.
 
+    After a daemon restart, a rehydrated peer can have no pane id or a stale pane
+    id from old runtime metadata. A direct valid pane proof wins, but failed
+    direct validation may fall back to a unique durable proof for the exact peer
+    identity plus live tmux evidence.
+    """
+
+    direct: OwnershipValidation | None = None
     if peer.pane_id:
-        return validate_spawn_ownership(peer)
-    return find_spawn_ownership_for_peer(peer)
+        direct = validate_spawn_ownership(peer)
+        if direct.ok:
+            return direct
+    adopted = find_spawn_ownership_for_peer(peer)
+    if adopted.ok or direct is None or adopted.error == "ambiguous_ownership":
+        return adopted
+    return direct
 
 
 def _peer_with_adopted_ownership(peer: Peer) -> Peer:
     """Return a peer copy with durable pane proof adopted when uniquely valid."""
 
-    if peer.pane_id:
-        return peer
-    validation = find_spawn_ownership_for_peer(peer)
+    validation = _effective_ownership_validation(peer)
     if not validation.ok or validation.record is None:
+        return peer
+    if peer.pane_id == validation.record.pane_id:
         return peer
     return peer.model_copy(
         update={
