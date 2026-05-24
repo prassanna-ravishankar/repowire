@@ -98,6 +98,22 @@ repowire orchestrator persona clear`}
         </p>
       </Cmd>
 
+      <Cmd
+        name="repowire memory"
+        usage={`repowire memory path [--scope SCOPE] [--project NAME] [--persona NAME]
+repowire memory list [--scope SCOPE] [--project NAME] [--persona NAME]
+repowire memory show SLUG [--scope SCOPE] [--project NAME] [--persona NAME]
+repowire memory search QUERY [--scope SCOPE] [--project NAME] [--persona NAME] [--all]
+repowire memory write SLUG --body BODY [--scope SCOPE] [--project NAME] [--persona NAME] [--type TYPE] [--description TEXT] [--append|--force]`}
+      >
+        <p>
+          Inspect and explicitly write filesystem-backed mesh memory under <Mono>~/.repowire/memory/</Mono>. The first slice resolves scope directories, lists Markdown memories, prints a memory by slug, searches text, and writes one curated memory at a time.
+        </p>
+        <p>
+          Scopes are <Mono>global</Mono>, <Mono>user</Mono>, <Mono>project</Mono>, <Mono>persona</Mono>, and <Mono>orchestrator</Mono>. Writes never happen from hooks, transcripts, schedules, or daemon side effects. Existing memories are protected unless <Mono>--force</Mono> overwrites or <Mono>--append</Mono> adds to the current body.
+        </p>
+      </Cmd>
+
       <Cmd name="repowire telegram start" usage="repowire telegram start">
         <p>
           Run the Telegram bot peer. Reads <Mono>TELEGRAM_BOT_TOKEN</Mono> and <Mono>TELEGRAM_CHAT_ID</Mono> from the environment. The bot registers as the <Mono>telegram</Mono> peer; messages from it are framed as human input.

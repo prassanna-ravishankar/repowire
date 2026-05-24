@@ -1709,6 +1709,181 @@ def orchestrator_persona_path(name: str | None) -> None:
     console.print(f"{path} [dim]({source})[/]")
 
 
+_MEMORY_SCOPE_CHOICES = [
+    "global",
+    "user",
+    "project",
+    "projects",
+    "persona",
+    "personas",
+    "orchestrator",
+]
+
+
+def _memory_scope_options(fn: Any) -> Any:
+    fn = click.option(
+        "--persona",
+        help="Persona name for --scope persona (defaults to active persona)",
+    )(fn)
+    fn = click.option(
+        "--project",
+        help="Project name for project scope",
+    )(fn)
+    fn = click.option(
+        "--scope",
+        default=None,
+        type=click.Choice(_MEMORY_SCOPE_CHOICES),
+        help="Memory scope. Defaults to orchestrator in that workspace, otherwise user.",
+    )(fn)
+    return fn
+
+
+def _resolve_memory_scope(
+    scope: str | None,
+    project: str | None,
+    persona: str | None,
+) -> Any:
+    from repowire.memory import resolve_scope_path
+
+    return resolve_scope_path(scope, project=project, persona=persona)
+
+
+@main.group()
+def memory() -> None:
+    """Inspect and write explicit filesystem-backed mesh memory."""
+    pass
+
+
+@memory.command(name="path")
+@_memory_scope_options
+def memory_path(scope: str | None, project: str | None, persona: str | None) -> None:
+    """Print the resolved memory directory for a scope."""
+    try:
+        label, path = _resolve_memory_scope(scope, project, persona)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    console.print(f"{path} [dim]({label})[/]")
+
+
+@memory.command(name="list")
+@_memory_scope_options
+def memory_list(scope: str | None, project: str | None, persona: str | None) -> None:
+    """List memory entries in a scope."""
+    from repowire.memory import list_memories, resolve_scope_path
+
+    try:
+        label, path = resolve_scope_path(scope, project=project, persona=persona)
+        rows = list_memories(scope, project=project, persona=persona)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    if not rows:
+        console.print(f"[dim]No memories found in {label} ({path}).[/]")
+        return
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Slug")
+    table.add_column("Type")
+    table.add_column("Description")
+    table.add_column("Updated")
+    for row in rows:
+        table.add_row(row.slug, row.type, row.description, row.updated_at)
+    console.print(table)
+
+
+@memory.command(name="show")
+@click.argument("slug")
+@_memory_scope_options
+def memory_show(
+    slug: str,
+    scope: str | None,
+    project: str | None,
+    persona: str | None,
+) -> None:
+    """Show a memory Markdown file by slug."""
+    from repowire.memory import read_memory
+
+    try:
+        content, path = read_memory(slug, scope, project=project, persona=persona)
+    except (FileNotFoundError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    console.print(f"[dim]{path}[/]")
+    console.print()
+    console.print(content.rstrip())
+
+
+@memory.command(name="search")
+@click.argument("query")
+@click.option("--all", "all_scopes_flag", is_flag=True, help="Search every scope")
+@_memory_scope_options
+def memory_search(
+    query: str,
+    all_scopes_flag: bool,
+    scope: str | None,
+    project: str | None,
+    persona: str | None,
+) -> None:
+    """Search memory files by text."""
+    from repowire.memory import search_memories
+
+    try:
+        rows = search_memories(
+            query,
+            scope,
+            project=project,
+            persona=persona,
+            all_scopes=all_scopes_flag,
+        )
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    if not rows:
+        console.print("[dim]No memory matches found.[/]")
+        return
+    for row in rows:
+        console.print(f"[cyan]{row.scope}/{row.slug}:{row.line}[/] {row.snippet}")
+
+
+@memory.command(name="write")
+@click.argument("slug")
+@click.option("--body", required=True, help="Markdown body to write")
+@click.option("--type", "memory_type", default="reference", show_default=True)
+@click.option("--description", default="", help="One-line memory summary")
+@click.option("--append", "append", is_flag=True, help="Append to an existing memory")
+@click.option("--force", is_flag=True, help="Overwrite an existing memory")
+@_memory_scope_options
+def memory_write(
+    slug: str,
+    body: str,
+    memory_type: str,
+    description: str,
+    append: bool,
+    force: bool,
+    scope: str | None,
+    project: str | None,
+    persona: str | None,
+) -> None:
+    """Write one memory Markdown file explicitly."""
+    from repowire.memory import write_memory
+
+    if append and force:
+        raise click.ClickException("--append and --force are mutually exclusive")
+    try:
+        path = write_memory(
+            slug,
+            body,
+            scope,
+            project=project,
+            persona=persona,
+            memory_type=memory_type,
+            description=description,
+            append=append,
+            overwrite=force,
+        )
+    except FileExistsError as e:
+        raise click.ClickException(f"memory already exists: {e.filename}") from e
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    console.print(f"[green]Wrote[/] {path}")
+
+
 @main.group()
 def peer() -> None:
     """Manage peers in the mesh."""

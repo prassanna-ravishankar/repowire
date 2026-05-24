@@ -141,6 +141,33 @@ and the orchestrator `SessionStart` hook injects the active persona with its
 source path and SHA-256 short hash. Persona context is identity guidance, not a
 permission policy.
 
+## `repowire memory`
+
+```bash
+repowire memory path [--scope SCOPE] [--project NAME] [--persona NAME]
+repowire memory list [--scope SCOPE] [--project NAME] [--persona NAME]
+repowire memory show SLUG [--scope SCOPE] [--project NAME] [--persona NAME]
+repowire memory search QUERY [--scope SCOPE] [--project NAME] [--persona NAME] [--all]
+repowire memory write SLUG --body BODY [--scope SCOPE] [--project NAME] [--persona NAME] [--type TYPE] [--description TEXT] [--append|--force]
+```
+
+Inspect and explicitly write filesystem-backed mesh memory under
+`~/.repowire/memory/`. The CLI resolves scope directories, lists Markdown memory
+files, prints a memory by slug, searches memory text, and writes one curated
+memory at a time. It never auto-writes from hooks, transcripts, scheduler jobs,
+or daemon side effects.
+
+Scopes are `global`, `user`, `project`/`projects`, `persona`/`personas`, and
+`orchestrator`. When omitted, the default is `orchestrator` inside the
+orchestrator workspace and `user` elsewhere. Project scope defaults to the
+current directory name unless `--project NAME` is passed. Persona scope uses the
+active orchestrator persona when one is set, or `--persona NAME`.
+
+`write` creates `<slug>.md` with frontmatter (`name`, `description`,
+`metadata.type`, `metadata.updated_at`) and refreshes the scope `MEMORY.md`
+index. Existing memories are protected by default; pass `--force` to overwrite
+or `--append` to add to the current body.
+
 ## `repowire build-ui`
 
 ```bash

@@ -1,8 +1,9 @@
 # Mesh memory
 
-> **Status:** design proposal. No code shipped under this name yet. Builds on the
-> orchestrator memory layer described in [orchestrator.md](orchestrator.md) and
-> the persona/SOUL surface described in [personas.md](personas.md).
+> **Status:** first CLI slice shipped; MCP, hook injection, edit/rm commands,
+> and migration helpers remain design proposal. Builds on the orchestrator
+> memory layer described in [orchestrator.md](orchestrator.md) and the
+> persona/SOUL surface described in [personas.md](personas.md).
 
 Repowire today only ships one curated memory surface: the orchestrator
 workspace at `~/.repowire/orchestrator/memory/`. Every other peer either keeps
@@ -23,7 +24,7 @@ without changing the orchestrator's existing role.
 - Deliberate writes only. Hooks and prompts may *suggest* a memory write but
   must never silently mutate memory state.
 - A small CLI/MCP read+write surface that any peer can use without depending on
-  the host agent's own memory implementation.
+  the host agent's own memory implementation. Today this is CLI-only.
 - Composable with the existing
   [orchestrator memory](orchestrator.md#memory-and-procedures) and
   [persona SOUL](personas.md) layers rather than replacing them.
@@ -124,9 +125,9 @@ repowire memory list   [--scope <scope>] [--project <name>] [--persona <name>]
 repowire memory show   <slug> [--scope ...]
 repowire memory search <query> [--scope ...] [--all]
 repowire memory write  <slug> --body "..." [--scope ...] [--type ...] [--description ...]
-repowire memory append <slug> --body "..." [--scope ...]
-repowire memory edit   <slug> [--scope ...]      # opens $EDITOR
-repowire memory rm     <slug> [--scope ...]
+repowire memory write  <slug> --body "..." [--scope ...] --append
+repowire memory edit   <slug> [--scope ...]      # proposed
+repowire memory rm     <slug> [--scope ...]      # proposed
 repowire memory path   [--scope ...]             # print resolved directory
 ```
 
@@ -134,13 +135,17 @@ Scope defaults:
 
 - Inside an orchestrator workspace → `orchestrator`.
 - Inside a registered project peer's CWD → `projects/<auto-detected-name>`.
-- Otherwise → `user` for read commands, refuse with a hint for write commands.
+- Otherwise → `user`.
+
+The first shipped slice writes one Markdown file at a time, protects existing
+files unless `--force` or `--append` is passed, and refreshes the scope
+`MEMORY.md` index. It does not implement MCP tools yet.
 
 `--all` on search walks every scope and prefixes results with their scope path.
 
 ### MCP
 
-Three new tools on the existing MCP server:
+Proposed tools on the existing MCP server:
 
 - `memory_list(scope?, project?, persona?) -> TSV(slug, type, description, updated_at)`
 - `memory_read(slug, scope?, project?, persona?) -> str` — returns the file body
@@ -209,12 +214,13 @@ metadata:
 
 ## Implementation phasing
 
-Docs-only first (this file). Suggested follow-up beads:
+First CLI-only filesystem slice has landed. Suggested follow-up beads:
 
-1. `repowire memory` CLI subcommand with filesystem-only read/write.
-2. MCP `memory_read` / `memory_write` / `memory_list` / `memory_search` tools
+1. MCP `memory_read` / `memory_write` / `memory_list` / `memory_search` tools
    wrapping the same filesystem layer.
-3. SessionStart context injection block (read-only summary).
+2. SessionStart context injection block (read-only summary).
+3. `repowire memory edit` / `repowire memory rm` with user-visible diffs or
+   confirmations.
 4. Migration helper: `repowire memory adopt` to symlink the orchestrator dir
    under `~/.repowire/memory/orchestrator`.
 
