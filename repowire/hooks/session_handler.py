@@ -63,6 +63,7 @@ def _register_peer_http(
     circle: str,
     backend: AgentType,
     *,
+    peer_id: str | None = None,
     circle_source: str | None = None,
     pane_id: str | None = None,
     metadata: dict | None = None,
@@ -85,6 +86,8 @@ def _register_peer_http(
         "circle": circle,
         "backend": backend,
     }
+    if peer_id:
+        payload["peer_id"] = peer_id
     if circle_source:
         payload["circle_source"] = circle_source
     if pane_id:
@@ -389,6 +392,9 @@ def main(backend: str = "claude-code") -> int:
             circle = "default"
             circle_source = "fallback"
         hint_role = hint.get("role") if hint else None
+        hint_peer_id = hint.get("peer_id") if hint else None
+        if not isinstance(hint_peer_id, str):
+            hint_peer_id = None
         # Spawn-seed-drop guard: if the daemon spawned this peer with a seed
         # message, mark turn_state=pending_first_turn so orchestrators can
         # see the brief never landed and re-send via notify_peer. The first
@@ -419,6 +425,7 @@ def main(backend: str = "claude-code") -> int:
             cwd,
             circle,
             backend_type,
+            peer_id=hint_peer_id,
             circle_source=circle_source,
             pane_id=pane_id,
             metadata=metadata,

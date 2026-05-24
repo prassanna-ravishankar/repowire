@@ -53,6 +53,7 @@ repowire service uninstall`}
         usage={`repowire peer list
 repowire peer describe NAME_OR_ID [--circle C]
 repowire peer claim-role orchestrator [--peer NAME_OR_ID] [--circle C] [--force]
+repowire peer restart NAME_OR_ID [--circle C] [--dry-run] [-m MESSAGE]
 repowire peer prune
 repowire peer whoami [--register --backend B --name NAME --circle C --path P]
 repowire peer asks [--peer-id ID | --pane-id PANE | --peer NAME]
@@ -63,6 +64,9 @@ repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]`}
         </p>
         <p>
           <Mono>peer whoami</Mono>, <Mono>peer asks</Mono>, and <Mono>peer ack</Mono> are shellable mesh primitives for runtimes whose hooks do not fire yet. They use the local daemon token automatically and let an Antigravity <Mono>agy</Mono> session self-register, poll pending asks, and close them from a shell.
+        </p>
+        <p>
+          <Mono>peer restart</Mono> intentionally restarts a daemon-spawned peer on the same backend, path, circle, role, and mesh identity. It is for reloading startup context such as <Mono>AGENTS.md</Mono> or an orchestrator <Mono>SOUL.md</Mono>. It refuses cross-host peers and panes the daemon cannot prove it spawned. The restart mode is <Mono>fresh_runtime_context</Mono>: startup context is reloaded, but transcript replay and exact backend conversation resume are not guaranteed.
         </p>
       </Cmd>
 

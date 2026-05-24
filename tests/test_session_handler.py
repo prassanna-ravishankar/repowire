@@ -312,6 +312,44 @@ class TestSessionMain:
         "repowire.hooks.session_handler.get_tmux_info",
         return_value={
             "pane_id": "%1",
+            "session_name": None,
+            "window_name": "test",
+        },
+    )
+    @patch("repowire.hooks.session_handler.subprocess.Popen")
+    @patch("repowire.hooks.session_handler.compute_git_status", return_value=None)
+    @patch("repowire.hooks.session_handler.get_git_branch", return_value=None)
+    def test_session_start_uses_restart_peer_id_hint(
+        self, mock_branch, mock_status, mock_popen, mock_tmux, mock_register, mock_fetch, tmp_path,
+    ):
+        from repowire.spawn_hints import write_hint
+
+        with patch("repowire.config.models.CACHE_DIR", tmp_path):
+            write_hint(
+                str(tmp_path),
+                "claude-code",
+                "default",
+                peer_id="repow-default-restart1",
+            )
+            result = _run_with_input({
+                "hook_event_name": "SessionStart",
+                "cwd": str(tmp_path),
+                "session_id": "abc12345-rest",
+            })
+            assert result == 0
+            call_args = mock_register.call_args
+            assert call_args.kwargs["peer_id"] == "repow-default-restart1"
+            assert call_args.kwargs["circle_source"] == "spawn_hint"
+
+    @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
+    @patch(
+        "repowire.hooks.session_handler._register_peer_http",
+        return_value=("repow-default-abc12345", "test-claude-code", False),
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={
+            "pane_id": "%1",
             "session_name": "default",
             "window_name": "test",
         },

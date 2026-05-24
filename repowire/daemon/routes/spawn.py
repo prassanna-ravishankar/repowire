@@ -371,9 +371,248 @@ class SwitchBackendResponse(BaseModel):
     command: str = Field(..., description="The configured backend command used to spawn")
 
 
+class RestartPeerRequest(BaseModel):
+    """Request to intentionally restart a peer on the same backend."""
+
+    circle: str | None = Field(None, description="Circle to scope display-name lookup")
+    from_peer: str | None = Field(
+        None, description="Caller peer_id or display_name — used for future authorization"
+    )
+    dry_run: bool = Field(False, description="Validate restart capability without killing")
+    message: str | None = Field(
+        None,
+        description=(
+            "Optional seed message delivered to the restarted runtime after boot. "
+            "Does not imply backend transcript resume."
+        ),
+    )
+
+
+class RestartPeerResponse(BaseModel):
+    """Result of a peer restart request."""
+
+    ok: bool = True
+    status: str
+    restarted: bool = False
+    peer_id: str
+    display_name: str
+    backend: AgentType
+    path: str
+    circle: str
+    tmux_session: str | None = None
+    resume_mode: str = "fresh_runtime_context"
+    unsupported_reason: str | None = None
+    command: str | None = None
+
+
 def _command_for_backend(new_backend: AgentType) -> str | None:
     """Return the configured command for a backend/runtime profile."""
     return _runtime_commands().get(new_backend)
+
+
+@router.post("/peers/{name}/restart", response_model=RestartPeerResponse)
+async def restart_peer(
+    name: str,
+    request: RestartPeerRequest,
+    _: str | None = Depends(require_auth),
+) -> RestartPeerResponse:
+    """Restart a daemon-spawned peer while preserving mesh identity.
+
+    This is intentionally narrower than transcript resume. It kills a
+    daemon-owned local pane, respawns the same backend/path/circle, and passes
+    the existing peer_id through the spawn hint so the new SessionStart can
+    reconnect to the same mesh identity. Backends reload their normal runtime
+    context on startup; exact conversation resume is backend-specific and not
+    claimed here.
+    """
+    peer_registry = get_peer_registry()
+    await peer_registry.lazy_repair()
+    await _authorize_kill(peer_registry, request.from_peer)
+    resolved = await peer_registry.resolve_peer_strict(name, circle=request.circle)
+
+    if isinstance(resolved, list):
+        if not resolved:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Peer not found: {name}",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": f"Ambiguous peer identifier: {name}",
+                "candidates": [
+                    {
+                        "peer_id": p.peer_id,
+                        "display_name": p.display_name,
+                        "circle": p.circle,
+                        "tmux_session": p.tmux_session,
+                    }
+                    for p in resolved
+                ],
+            },
+        )
+
+    peer = resolved
+    self_machine = socket.gethostname()
+    if peer.machine and peer.machine != self_machine:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "cross_host",
+                "hint": "Peer restart is same-host only in this slice.",
+                "peer_machine": peer.machine,
+                "self_machine": self_machine,
+            },
+        )
+
+    if not peer.path:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "missing_path",
+                "hint": "Peer has no recorded working directory; cannot restart.",
+            },
+        )
+
+    command = _command_for_backend(peer.backend)
+    if command is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "command_unavailable",
+                "hint": (
+                    f"No entry in daemon.spawn.commands maps to {peer.backend.value!r}. "
+                    f"Add daemon.spawn.commands.{peer.backend.value} to ~/.repowire/config.yaml."
+                ),
+                "backend": peer.backend.value,
+            },
+        )
+
+    _validate_spawn_path(peer.path)
+
+    if not peer.pane_id or peer.pane_id not in _SPAWNED_PANE_IDS:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "unsupported_pane_ownership",
+                "hint": (
+                    "Restart only supports daemon-spawned peers in this slice. "
+                    "Externally attached peers are left untouched."
+                ),
+                "pane_id": peer.pane_id,
+            },
+        )
+
+    spawn_circle = peer.circle or "default"
+    resolved_path = str(Path(peer.path).expanduser().resolve())
+    if request.dry_run:
+        return RestartPeerResponse(
+            status="restart_available",
+            restarted=False,
+            peer_id=peer.peer_id,
+            display_name=peer.display_name,
+            backend=peer.backend,
+            path=resolved_path,
+            circle=spawn_circle,
+            tmux_session=peer.tmux_session,
+            command=command,
+        )
+
+    state = get_app_state()
+    ask_tracker = state.ask_tracker
+    try:
+        await ask_tracker.begin_quiesce(peer.peer_id)
+    except QuiesceFailedError as e:
+        if not e.open_cids:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "restart_in_progress",
+                    "hint": "Another restart/switch is in progress for this peer. Retry shortly.",
+                },
+            ) from e
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "in_flight_asks",
+                "hint": (
+                    "Peer has open asks; restart would orphan them. "
+                    "Retry after they're acked or evicted."
+                ),
+                "open_asks": e.open_cids,
+            },
+        ) from e
+
+    try:
+        pane_id = peer.pane_id
+        if not pane_id or pane_id not in _SPAWNED_PANE_IDS:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "unsupported_pane_ownership",
+                    "hint": "Peer pane ownership changed before restart could begin.",
+                    "pane_id": pane_id,
+                },
+            )
+        if not kill_pane(pane_id):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error": "kill_failed",
+                    "hint": (
+                        "tmux kill-pane failed for the peer's pane; the old runtime may "
+                        "still be alive. Aborting restart to avoid duplicate runtimes."
+                    ),
+                    "pane_id": pane_id,
+                },
+            )
+        _SPAWNED_PANE_IDS.discard(pane_id)
+        await peer_registry.mark_offline(peer.peer_id)
+
+        try:
+            result: SpawnResult = spawn_peer(
+                SpawnConfig(
+                    path=resolved_path,
+                    circle=spawn_circle,
+                    backend=peer.backend,
+                    command=command,
+                    message=request.message,
+                    role=peer.role.value,
+                    peer_id=peer.peer_id,
+                )
+            )
+        except (ValueError, RuntimeError) as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e),
+            ) from e
+
+        if result.pane_id:
+            _SPAWNED_PANE_IDS.add(result.pane_id)
+            task = asyncio.create_task(
+                post_spawn_warmup(
+                    peer.backend,
+                    result.pane_id,
+                    path=resolved_path,
+                    circle=spawn_circle,
+                    message=result.message,
+                )
+            )
+            _BACKGROUND_TASKS.add(task)
+            task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+        return RestartPeerResponse(
+            status="restarted",
+            restarted=True,
+            peer_id=peer.peer_id,
+            display_name=peer.display_name,
+            backend=peer.backend,
+            path=resolved_path,
+            circle=spawn_circle,
+            tmux_session=result.tmux_session,
+            command=command,
+        )
+    finally:
+        await ask_tracker.end_quiesce(peer.peer_id)
 
 
 @router.post("/peers/{name}/switch-backend", response_model=SwitchBackendResponse)

@@ -93,6 +93,8 @@ outbound = await client.pending_asks(peer_id=peer.peer_id, direction="outbound")
 
 `spawn` launches a new agent session subject to `daemon.spawn.commands` and `daemon.spawn.allowed_paths`. `spawn_config` reports which backend launch profiles are configured. Omit `circle` to use the daemon default (`default`), or pass it explicitly for another circle. `kill_peer` terminates a peer cleanly.
 
+`restart_peer` intentionally restarts a daemon-spawned peer on the same backend, path, circle, role, and mesh identity. It refuses cross-host peers and panes the daemon cannot prove it spawned. The response includes `resume_mode`; the first mode is `fresh_runtime_context`, which reloads startup context but does not guarantee transcript replay or exact backend conversation resume.
+
 ```python
 info = await client.spawn_config()
 if "claude-code" in info.commands:
@@ -103,6 +105,9 @@ if "claude-code" in info.commands:
         message="help me draft a reference page",
     )
     print(spawn.display_name, spawn.tmux_session)
+
+restart = await client.restart_peer("project-c-claude-code", dry_run=True)
+print(restart.status, restart.resume_mode)
 ```
 
 ## Errors

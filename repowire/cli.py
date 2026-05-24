@@ -2285,6 +2285,65 @@ def peer_unregister(name: str) -> None:
         console.print(f"[red]Failed to unregister peer: {e}[/]")
 
 
+@peer.command(name="restart")
+@click.argument("name")
+@click.option("--circle", "-c", help="Circle to scope display-name lookup")
+@click.option("--from-peer", help="Caller peer identity for future authorization")
+@click.option("--dry-run", is_flag=True, help="Check restart capability without killing")
+@click.option("--message", "-m", help="Optional seed message for the restarted runtime")
+def peer_restart(
+    name: str,
+    circle: str | None,
+    from_peer: str | None,
+    dry_run: bool,
+    message: str | None,
+) -> None:
+    """Restart a daemon-spawned peer while preserving mesh identity."""
+    from urllib.parse import quote
+
+    import httpx
+
+    body: dict[str, object] = {"dry_run": dry_run}
+    if circle:
+        body["circle"] = circle
+    if from_peer:
+        body["from_peer"] = from_peer
+    if message:
+        body["message"] = message
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(
+                f"{_get_daemon_url()}/peers/{quote(name, safe='')}/restart",
+                json=body,
+            )
+            if resp.status_code == 404:
+                raise click.ClickException(f"Peer '{name}' not found")
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.ConnectError:
+        raise click.ClickException(
+            "Cannot connect to daemon. Run 'repowire serve' first."
+        ) from None
+    except httpx.HTTPStatusError as e:
+        detail = e.response.text
+        try:
+            detail = e.response.json().get("detail", detail)
+        except ValueError:
+            pass
+        raise click.ClickException(f"Failed to restart peer: {detail}") from e
+
+    action = "Restart available" if dry_run else "Restarted"
+    console.print(
+        f"[green]✓[/] {action} for [cyan]{data.get('display_name')}[/] "
+        f"([dim]{data.get('peer_id')}[/])"
+    )
+    console.print(f"  backend: {data.get('backend')}")
+    console.print(f"  mode: {data.get('resume_mode')}")
+    if data.get("tmux_session"):
+        console.print(f"  tmux: {data.get('tmux_session')}")
+
+
 @peer.command(name="ask")
 @click.argument("name")
 @click.argument("query")

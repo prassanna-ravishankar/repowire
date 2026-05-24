@@ -167,6 +167,23 @@ class KillPeerResult(BaseModel):
     tmux_killed: bool | None = None
 
 
+class RestartPeerResult(BaseModel):
+    """Result of restarting a registered peer."""
+
+    ok: bool = True
+    status: str
+    restarted: bool = False
+    peer_id: str
+    display_name: str
+    backend: str
+    path: str
+    circle: str
+    tmux_session: str | None = None
+    resume_mode: str = "fresh_runtime_context"
+    unsupported_reason: str | None = None
+    command: str | None = None
+
+
 class AttachmentInfo(BaseModel):
     """Uploaded attachment metadata."""
 
@@ -575,6 +592,31 @@ class AsyncRepowireClient:
             await self._request("POST", "/kill-peer", json=payload)
         )
 
+    async def restart_peer(
+        self,
+        peer_identifier: str,
+        *,
+        circle: str | None = None,
+        from_peer: str | None = None,
+        dry_run: bool = False,
+        message: str | None = None,
+    ) -> RestartPeerResult:
+        """Restart a registered daemon-spawned peer on the same backend."""
+        payload: dict[str, Any] = {"dry_run": dry_run}
+        if circle is not None:
+            payload["circle"] = circle
+        if from_peer is not None:
+            payload["from_peer"] = from_peer
+        if message is not None:
+            payload["message"] = message
+        return RestartPeerResult.model_validate(
+            await self._request(
+                "POST",
+                f"/peers/{quote(peer_identifier, safe='')}/restart",
+                json=payload,
+            )
+        )
+
     async def upload_attachment(
         self,
         file: bytes | str | Path,
@@ -621,6 +663,7 @@ __all__ = [
     "PendingAsk",
     "QueryResult",
     "RegisterPeerResult",
+    "RestartPeerResult",
     "SpawnConfigInfo",
     "SpawnResult",
     "ToolCall",

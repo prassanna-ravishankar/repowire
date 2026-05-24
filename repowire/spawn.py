@@ -26,6 +26,7 @@ class SpawnConfig:
     command: str = ""  # Full command to run (e.g., "claude --model opus")
     message: str | None = None  # Optional warmup intent passed to post_spawn_warmup
     role: str | None = None  # Optional peer role (e.g. "orchestrator"); default agent
+    peer_id: str | None = None  # Optional same-id reconnect hint for durable restart
 
     @property
     def display_name(self) -> str:
@@ -90,6 +91,7 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
         config.backend.value,
         config.circle,
         role=config.role,
+        peer_id=config.peer_id,
         pending_first_turn=bool(config.message),
     )
 

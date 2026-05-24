@@ -131,6 +131,10 @@ class ClaimRoleResponse(BaseModel):
 class RegisterPeerRequest(BaseModel):
     """Request to register a peer."""
 
+    peer_id: str | None = Field(
+        None,
+        description="Optional daemon-assigned peer_id for same-identity reconnect",
+    )
     name: str = Field(..., min_length=1, pattern=r"^[a-zA-Z0-9._-]+$", description="Peer name")
     path: str | None = Field(None, description="Working directory path")
     machine: str | None = Field(None, description="Machine hostname")
@@ -343,6 +347,7 @@ async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str]:
             metadata=request.metadata,
             machine=request.machine or socket.gethostname(),
             role=request.role,
+            peer_id=request.peer_id,
             turn_state=request.turn_state,
             initial_status=(
                 PeerStatus.OFFLINE

@@ -57,6 +57,7 @@ def write_hint(
     circle: str,
     *,
     role: str | None = None,
+    peer_id: str | None = None,
     pending_first_turn: bool = False,
 ) -> None:
     """Record spawn intent so a peer registering from this path+backend can
@@ -75,6 +76,8 @@ def write_hint(
     }
     if role:
         payload["role"] = role
+    if peer_id:
+        payload["peer_id"] = peer_id
     if pending_first_turn:
         payload["pending_first_turn"] = True
     target = _hint_path(path, backend)
@@ -102,8 +105,8 @@ def consume_hint(path: str, backend: str) -> str | None:
 def consume_hint_full(path: str, backend: str) -> dict | None:
     """Read and delete the spawn hint for (path, backend), returning the full payload.
 
-    Returns a dict with at least 'circle' (str), and optionally 'role' (str).
-    None when no fresh hint exists.
+    Returns a dict with at least 'circle' (str), and optionally 'role' (str)
+    and 'peer_id' (str). None when no fresh hint exists.
     """
     target = _hint_path(path, backend)
     queue = _read_hint_queue(target)
@@ -141,6 +144,9 @@ def consume_hint_full(path: str, backend: str) -> dict | None:
     role = selected.get("role")
     if isinstance(role, str) and role:
         out["role"] = role
+    peer_id = selected.get("peer_id")
+    if isinstance(peer_id, str) and peer_id:
+        out["peer_id"] = peer_id
     if selected.get("pending_first_turn") is True:
         out["pending_first_turn"] = True
     return out

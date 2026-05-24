@@ -86,6 +86,7 @@ repowire peer new PATH [--circle CIRCLE]   # spawn a new peer in tmux
 repowire peer list                          # god-view list (all circles, includes caller)
 repowire peer describe NAME_OR_ID [--circle C]  # full state for one peer
 repowire peer claim-role orchestrator [--peer NAME_OR_ID] [--circle C] [--force]
+repowire peer restart NAME_OR_ID [--circle C] [--dry-run] [-m MESSAGE]
 repowire peer prune                         # remove offline peers from the registry
 repowire peer whoami [--register --backend B --name NAME --circle C --path P]  # read-only identity, or self-register
 repowire peer asks [--peer-id ID | --pane-id PANE | --peer NAME] [--direction inbound|outbound|both] [--json]
@@ -99,6 +100,10 @@ repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 `peer describe` accepts either a display name (`clitcoin-claude-code`) or a peer id (`repow-5-abd4d21e`). Pass `--circle` when a display name is ambiguous across circles — without it, the command refuses to guess and prints the same misroute-style refusal the daemon emits internally. Output includes identity (project, circle, role, backend), liveness (status, path, machine, last-seen), open ask threads in both directions, and the last few communication events involving the peer. Reads `GET /peers`, `GET /peers/{id}`, `GET /asks/pending?direction=both`, and `GET /events` — no new daemon endpoints.
 
 `peer claim-role orchestrator` repairs an existing registered peer when the durable session mapping has the wrong role after daemon restart. It updates the live peer and its persisted session mapping, demoting offline or stale orchestrator holders in the same circle. It refuses to demote a fresh online/busy holder unless `--force` is passed. Omit `--peer` only from inside a registered peer shell where Repowire can discover the current peer.
+
+`peer restart` intentionally restarts a daemon-spawned peer on the same backend, path, circle, role, and mesh identity. It is for reloading runtime startup context such as `AGENTS.md` or an orchestrator `SOUL.md` without changing the address other peers use. The daemon only preserves the same `peer_id` through the normal exact backend+path reconnect path; it does not force-rebind arbitrary peer IDs. Restart is same-host and daemon-owned-pane only. If the peer was attached manually, the daemon cannot prove it is safe to kill and the command refuses instead of touching the pane. Use `--dry-run` to check whether a peer is restartable.
+
+Restart uses `resume_mode=fresh_runtime_context`. That means the new runtime loads its normal startup context and mesh primer again; it does not guarantee transcript replay or exact backend conversation resume. Any deeper resume behavior is backend capability-specific and should be treated as best effort.
 
 ## `repowire schedule`
 

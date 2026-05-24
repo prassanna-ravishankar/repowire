@@ -15,7 +15,7 @@ from httpx import ASGITransport, AsyncClient
 from repowire.client import AsyncRepowireClient, ClientPeer, ToolCall
 from repowire.config.models import Config, DaemonConfig
 from repowire.daemon.ask_tracker import AskTracker
-from repowire.daemon.deps import cleanup_deps, init_deps
+from repowire.daemon.deps import cleanup_deps, get_config, init_deps
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
@@ -84,6 +84,45 @@ async def test_health_and_spawn_config(client: AsyncRepowireClient):
     assert spawn_config.enabled is False
     assert spawn_config.commands == {}
     assert spawn_config.allowed_commands == []
+
+
+async def test_restart_peer_client_posts_payload(client: AsyncRepowireClient, tmp_path: Path):
+    cfg = get_config()
+    cfg.daemon.spawn.commands[spawn_routes.AgentType.CLAUDE_CODE] = "claude"
+    cfg.daemon.spawn.allowed_paths = ["/"]
+    registered = await client.register_peer(
+        "proj",
+        path=str(tmp_path),
+        circle="default",
+        pane_id="%77",
+    )
+    spawn_routes._SPAWNED_PANE_IDS.add("%77")
+    try:
+        with patch.object(spawn_routes, "kill_pane", return_value=True), \
+            patch.object(
+                spawn_routes,
+                "spawn_peer",
+                return_value=spawn_routes.SpawnResult(
+                    display_name="proj",
+                    tmux_session="default:proj",
+                    pane_id="%88",
+                ),
+            ), \
+            patch.object(spawn_routes, "post_spawn_warmup", new_callable=AsyncMock):
+            result = await client.restart_peer(
+                registered.peer_id,
+                circle="default",
+                from_peer="dashboard",
+                message="reload context",
+            )
+    finally:
+        spawn_routes._SPAWNED_PANE_IDS.discard("%77")
+        spawn_routes._SPAWNED_PANE_IDS.discard("%88")
+
+    assert result.status == "restarted"
+    assert result.restarted is True
+    assert result.peer_id == registered.peer_id
+    assert result.resume_mode == "fresh_runtime_context"
 
 
 def test_client_peer_defaults_to_daemon_default_circle():

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from repowire import spawn_hints
-from repowire.spawn_hints import consume_hint, write_hint
+from repowire.spawn_hints import consume_hint, consume_hint_full, write_hint
 
 
 @pytest.fixture
@@ -38,6 +38,21 @@ def test_hints_keyed_by_path_and_backend(tmp_cache: Path) -> None:
     write_hint("/tmp/proj", "claude-code", "7")
     assert consume_hint("/tmp/proj", "codex") == "5"
     assert consume_hint("/tmp/proj", "claude-code") == "7"
+
+
+def test_hint_preserves_restart_peer_id(tmp_cache: Path) -> None:
+    write_hint(
+        "/tmp/proj",
+        "codex",
+        "agentbox",
+        role="orchestrator",
+        peer_id="repow-agentbox-abc12345",
+    )
+    assert consume_hint_full("/tmp/proj", "codex") == {
+        "circle": "agentbox",
+        "role": "orchestrator",
+        "peer_id": "repow-agentbox-abc12345",
+    }
 
 
 def test_hints_for_same_path_and_backend_are_fifo(tmp_cache: Path) -> None:

@@ -37,6 +37,16 @@ def _response(status: int = 200, json_body: dict | list | None = None, text: str
     return resp
 
 
+def _http_status_error(response: MagicMock):
+    import httpx
+
+    request = httpx.Request("POST", "http://127.0.0.1:8377/test")
+    raw = httpx.Response(response.status_code, request=request, text=response.text)
+    raw._json = response.json.return_value  # type: ignore[attr-defined]
+    raw.json = response.json
+    return httpx.HTTPStatusError("error", request=request, response=raw)
+
+
 # --- peer whoami ---------------------------------------------------------------
 
 
@@ -121,6 +131,103 @@ def test_whoami_no_pane_no_name_exits_nonzero(monkeypatch) -> None:
 
     assert result.exit_code == 1
     assert "No registered peer" in result.output
+
+
+# --- peer asks -----------------------------------------------------------------
+
+
+def test_peer_restart_posts_request_and_prints_response(monkeypatch) -> None:
+    client = _make_client(monkeypatch)
+    client.post.return_value = _response(
+        200,
+        {
+            "ok": True,
+            "status": "restarted",
+            "restarted": True,
+            "peer_id": "repow-default-abc12345",
+            "display_name": "proj-claude-code",
+            "backend": "claude-code",
+            "path": "/tmp/proj",
+            "circle": "default",
+            "tmux_session": "default:proj",
+            "resume_mode": "fresh_runtime_context",
+            "command": "claude",
+        },
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "peer",
+            "restart",
+            "proj-claude-code",
+            "--circle",
+            "default",
+            "--from-peer",
+            "dashboard",
+            "--message",
+            "reload context",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert client.post.call_args.args[0].endswith("/peers/proj-claude-code/restart")
+    assert client.post.call_args.kwargs["json"] == {
+        "dry_run": False,
+        "circle": "default",
+        "from_peer": "dashboard",
+        "message": "reload context",
+    }
+    assert "Restarted" in result.output
+    assert "fresh_runtime_context" in result.output
+    assert "default:proj" in result.output
+
+
+def test_peer_restart_dry_run_output(monkeypatch) -> None:
+    client = _make_client(monkeypatch)
+    client.post.return_value = _response(
+        200,
+        {
+            "ok": True,
+            "status": "restart_available",
+            "restarted": False,
+            "peer_id": "repow-default-abc12345",
+            "display_name": "proj-claude-code",
+            "backend": "claude-code",
+            "path": "/tmp/proj",
+            "circle": "default",
+            "tmux_session": "default:proj",
+            "resume_mode": "fresh_runtime_context",
+        },
+    )
+
+    result = CliRunner().invoke(main, ["peer", "restart", "proj-claude-code", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert client.post.call_args.kwargs["json"] == {"dry_run": True}
+    assert "Restart available" in result.output
+
+
+def test_peer_restart_prints_http_error_detail(monkeypatch) -> None:
+    client = _make_client(monkeypatch)
+    response = _response(
+        409,
+        {
+            "detail": {
+                "error": "unsupported_pane_ownership",
+                "hint": "Restart only supports daemon-spawned peers in this slice.",
+            }
+        },
+        text="conflict",
+    )
+    response.raise_for_status.side_effect = _http_status_error(response)
+    client.post.return_value = response
+
+    result = CliRunner().invoke(main, ["peer", "restart", "proj-claude-code"])
+
+    assert result.exit_code != 0
+    assert "Failed to restart peer" in result.output
+    assert "unsupported_pane_ownership" in result.output
 
 
 # --- peer asks -----------------------------------------------------------------
