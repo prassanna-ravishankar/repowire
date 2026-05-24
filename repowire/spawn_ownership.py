@@ -24,6 +24,7 @@ OWNERSHIP_PATH = Config.get_config_dir() / "spawn_ownership.json"
 
 OwnershipError = Literal[
     "missing_ownership",
+    "ambiguous_ownership",
     "ownership_machine_mismatch",
     "ownership_peer_mismatch",
     "ownership_identity_mismatch",
@@ -127,6 +128,81 @@ def get_spawn_ownership(pane_id: str) -> SpawnOwnershipRecord | None:
     return _load_records().get(pane_id)
 
 
+def find_spawn_ownership_for_peer(peer: Peer) -> OwnershipValidation:
+    """Find unique durable pane ownership proof for a peer identity.
+
+    Used after daemon restart when the live runtime may still be in tmux but did
+    not re-run SessionStart, so the rehydrated peer record lacks pane fields.
+    This never infers ownership from mappings alone: a matching durable proof
+    must also have live tmux evidence for its recorded pane.
+    """
+
+    self_machine = socket.gethostname()
+    matches: list[OwnershipValidation] = []
+    saw_identity_match = False
+    saw_dead_pane = False
+    saw_mismatch = False
+
+    for record in _load_records().values():
+        if record.machine and record.machine != self_machine:
+            continue
+        if record.peer_id and record.peer_id != peer.peer_id:
+            continue
+        if not _record_matches_peer_identity(record, peer):
+            continue
+
+        saw_identity_match = True
+        evidence = probe_tmux_pane(record.pane_id)
+        if evidence is None:
+            saw_dead_pane = True
+            continue
+        if (
+            evidence.tmux_session != record.tmux_session
+            or _norm_path(evidence.current_path) != _norm_path(record.path)
+        ):
+            saw_mismatch = True
+            continue
+        matches.append(OwnershipValidation(ok=True, record=record, evidence=evidence))
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        return OwnershipValidation(
+            ok=False,
+            error="ambiguous_ownership",
+            hint=(
+                "Multiple durable Repowire spawn ownership proofs match this peer "
+                "identity; refusing to guess which pane to kill."
+            ),
+        )
+    if saw_dead_pane:
+        return OwnershipValidation(
+            ok=False,
+            error="pane_not_live",
+            hint="The recorded pane is not visible in tmux; refusing to use stale proof.",
+        )
+    if saw_mismatch:
+        return OwnershipValidation(
+            ok=False,
+            error="pane_identity_mismatch",
+            hint="Live tmux pane evidence does not match the ownership proof.",
+        )
+    if saw_identity_match:
+        return OwnershipValidation(
+            ok=False,
+            error="missing_ownership",
+            hint="No live durable Repowire spawn ownership proof matches this peer.",
+        )
+    return OwnershipValidation(
+        ok=False,
+        error="missing_ownership",
+        hint=(
+            "No durable Repowire spawn ownership proof exists for this peer identity. "
+            "Manual peers and pre-proof spawns are left untouched."
+        ),
+    )
+
+
 def validate_spawn_ownership(peer: Peer) -> OwnershipValidation:
     """Validate that ``peer`` still corresponds to a daemon-spawned live pane."""
 
@@ -201,6 +277,15 @@ def validate_spawn_ownership(peer: Peer) -> OwnershipValidation:
         )
 
     return OwnershipValidation(ok=True, record=record, evidence=evidence)
+
+
+def _record_matches_peer_identity(record: SpawnOwnershipRecord, peer: Peer) -> bool:
+    return (
+        record.backend == _enum_value(peer.backend)
+        and record.circle == (peer.circle or "default")
+        and record.role == _enum_value(peer.role)
+        and _norm_path(record.path) == _norm_path(peer.path)
+    )
 
 
 def probe_tmux_pane(pane_id: str) -> TmuxPaneEvidence | None:

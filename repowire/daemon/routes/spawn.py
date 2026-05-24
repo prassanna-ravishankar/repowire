@@ -18,6 +18,8 @@ from repowire.installers.post_spawn import post_spawn_warmup
 from repowire.protocol.peers import Peer, PeerRole
 from repowire.spawn import SpawnConfig, SpawnResult, kill_pane, spawn_peer
 from repowire.spawn_ownership import (
+    OwnershipValidation,
+    find_spawn_ownership_for_peer,
     forget_spawn_ownership,
     record_spawn_ownership,
     validate_spawn_ownership,
@@ -338,7 +340,7 @@ async def spawn(
 
 
 def _durable_ownership_error_detail(peer: Peer) -> dict[str, object]:
-    validation = validate_spawn_ownership(peer)
+    validation = _effective_ownership_validation(peer)
     return {
         "error": validation.error or "unsupported_pane_ownership",
         "hint": validation.hint
@@ -355,7 +357,32 @@ def _has_spawn_ownership(peer: Peer) -> bool:
 
     if peer.pane_id and peer.pane_id in _SPAWNED_PANE_IDS:
         return True
-    return validate_spawn_ownership(peer).ok
+    return _effective_ownership_validation(peer).ok
+
+
+def _effective_ownership_validation(peer: Peer) -> OwnershipValidation:
+    """Validate explicit ownership, adopting by identity when pane fields are absent."""
+
+    if peer.pane_id:
+        return validate_spawn_ownership(peer)
+    return find_spawn_ownership_for_peer(peer)
+
+
+def _peer_with_adopted_ownership(peer: Peer) -> Peer:
+    """Return a peer copy with durable pane proof adopted when uniquely valid."""
+
+    if peer.pane_id:
+        return peer
+    validation = find_spawn_ownership_for_peer(peer)
+    if not validation.ok or validation.record is None:
+        return peer
+    return peer.model_copy(
+        update={
+            "pane_id": validation.record.pane_id,
+            "tmux_session": validation.record.tmux_session,
+            "machine": validation.record.machine,
+        }
+    )
 
 
 @router.post("/kill-peer", response_model=KillResponse)
@@ -397,7 +424,7 @@ async def kill_registered_peer(
             },
         )
 
-    peer = resolved
+    peer = _peer_with_adopted_ownership(resolved)
     # Only kill the pane if the daemon spawned it. We track spawned pane_ids
     # in _SPAWNED_PANE_IDS at /spawn time. tmux_session is NOT a reliable
     # ownership signal — the OpenCode plugin sends it from any user-attached
@@ -516,7 +543,7 @@ async def restart_peer(
             },
         )
 
-    peer = resolved
+    peer = _peer_with_adopted_ownership(resolved)
     self_machine = socket.gethostname()
     if peer.machine and peer.machine != "unknown" and peer.machine != self_machine:
         raise HTTPException(

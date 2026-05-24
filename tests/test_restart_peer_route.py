@@ -86,21 +86,20 @@ async def _register(
     path: str,
     backend: str = "claude-code",
     role: str = "agent",
-    pane_id: str = "%101",
+    pane_id: str | None = "%101",
     machine: str | None = None,
 ) -> str:
-    response = await client.post(
-        "/peers",
-        json={
-            "name": Path(path).name,
-            "path": path,
-            "circle": "default",
-            "backend": backend,
-            "machine": machine or socket.gethostname(),
-            "role": role,
-            "pane_id": pane_id,
-        },
-    )
+    payload = {
+        "name": Path(path).name,
+        "path": path,
+        "circle": "default",
+        "backend": backend,
+        "machine": machine or socket.gethostname(),
+        "role": role,
+    }
+    if pane_id is not None:
+        payload["pane_id"] = pane_id
+    response = await client.post("/peers", json=payload)
     assert response.status_code == 200, response.text
     return response.json()["display_name"]
 
@@ -241,6 +240,163 @@ class TestRestartPeerRoute:
         assert body["peer_id"] == peer.peer_id
         mock_kill.assert_not_called()
         mock_spawn.assert_not_called()
+
+    async def test_dry_run_adopts_unique_durable_ownership_for_paneless_peer(
+        self, env, tmp_path, monkeypatch,
+    ):
+        name = await _register(
+            env.client,
+            path=str(tmp_path),
+            pane_id=None,
+            machine="unknown",
+        )
+        peer = await env.registry.get_peer(name)
+        assert peer is not None
+        assert peer.pane_id is None
+        record_spawn_ownership(
+            pane_id="%614",
+            path=str(tmp_path),
+            backend=AgentType.CLAUDE_CODE,
+            circle="default",
+            role=PeerRole.AGENT,
+            display_name=name,
+            tmux_session="default:proj",
+            peer_id=peer.peer_id,
+        )
+
+        monkeypatch.setattr(
+            "repowire.spawn_ownership.probe_tmux_pane",
+            lambda pane_id: TmuxPaneEvidence(
+                pane_id=pane_id,
+                tmux_session="default:proj",
+                current_path=str(tmp_path),
+                pane_pid="12345",
+            ),
+        )
+
+        with patch.object(spawn_routes, "kill_pane") as mock_kill, \
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            response = await env.client.post(
+                f"/peers/{name}/restart",
+                json={"dry_run": True},
+            )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["status"] == "restart_available"
+        assert body["tmux_session"] == "default:proj"
+        mock_kill.assert_not_called()
+        mock_spawn.assert_not_called()
+
+    async def test_restart_refuses_ambiguous_durable_ownership_for_paneless_peer(
+        self, env, tmp_path, monkeypatch,
+    ):
+        name = await _register(env.client, path=str(tmp_path), pane_id=None)
+        record_spawn_ownership(
+            pane_id="%614",
+            path=str(tmp_path),
+            backend=AgentType.CLAUDE_CODE,
+            circle="default",
+            role=PeerRole.AGENT,
+            display_name=name,
+            tmux_session="default:proj",
+        )
+        record_spawn_ownership(
+            pane_id="%615",
+            path=str(tmp_path),
+            backend=AgentType.CLAUDE_CODE,
+            circle="default",
+            role=PeerRole.AGENT,
+            display_name=name,
+            tmux_session="default:proj-2",
+        )
+
+        def fake_probe(pane_id: str) -> TmuxPaneEvidence:
+            return TmuxPaneEvidence(
+                pane_id=pane_id,
+                tmux_session="default:proj" if pane_id == "%614" else "default:proj-2",
+                current_path=str(tmp_path),
+                pane_pid="12345",
+            )
+
+        monkeypatch.setattr("repowire.spawn_ownership.probe_tmux_pane", fake_probe)
+
+        with patch.object(spawn_routes, "kill_pane") as mock_kill, \
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            response = await env.client.post(
+                f"/peers/{name}/restart",
+                json={"dry_run": True},
+            )
+
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["error"] == "unsupported_pane_ownership"
+        assert "Multiple durable Repowire spawn ownership proofs" in detail["hint"]
+        mock_kill.assert_not_called()
+        mock_spawn.assert_not_called()
+
+    async def test_restart_refuses_stale_durable_ownership_for_paneless_peer(
+        self, env, tmp_path, monkeypatch,
+    ):
+        name = await _register(env.client, path=str(tmp_path), pane_id=None)
+        record_spawn_ownership(
+            pane_id="%614",
+            path=str(tmp_path),
+            backend=AgentType.CLAUDE_CODE,
+            circle="default",
+            role=PeerRole.AGENT,
+            display_name=name,
+            tmux_session="default:proj",
+        )
+        monkeypatch.setattr("repowire.spawn_ownership.probe_tmux_pane", lambda _pane_id: None)
+
+        with patch.object(spawn_routes, "kill_pane") as mock_kill, \
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            response = await env.client.post(
+                f"/peers/{name}/restart",
+                json={"dry_run": True},
+            )
+
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["error"] == "unsupported_pane_ownership"
+        assert "not visible in tmux" in detail["hint"]
+        mock_kill.assert_not_called()
+        mock_spawn.assert_not_called()
+
+    async def test_kill_peer_adopts_durable_ownership_for_paneless_peer(
+        self, env, tmp_path, monkeypatch,
+    ):
+        name = await _register(env.client, path=str(tmp_path), pane_id=None)
+        peer = await env.registry.get_peer(name)
+        assert peer is not None
+        record_spawn_ownership(
+            pane_id="%614",
+            path=str(tmp_path),
+            backend=AgentType.CLAUDE_CODE,
+            circle="default",
+            role=PeerRole.AGENT,
+            display_name=name,
+            tmux_session="default:proj",
+            peer_id=peer.peer_id,
+        )
+        monkeypatch.setattr(
+            "repowire.spawn_ownership.probe_tmux_pane",
+            lambda pane_id: TmuxPaneEvidence(
+                pane_id=pane_id,
+                tmux_session="default:proj",
+                current_path=str(tmp_path),
+                pane_pid="12345",
+            ),
+        )
+
+        with patch.object(spawn_routes, "kill_pane", return_value=True) as mock_kill:
+            response = await env.client.post("/kill-peer", json={"peer_identifier": name})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["tmux_killed"] is True
+        mock_kill.assert_called_once_with("%614")
+        assert await env.registry.get_peer(peer.peer_id) is None
 
     async def test_stale_durable_ownership_is_refused_when_pane_not_live(
         self, env, tmp_path, monkeypatch,
