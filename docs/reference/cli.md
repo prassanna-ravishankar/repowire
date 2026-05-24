@@ -113,6 +113,23 @@ Create one-shot or recurring scheduled mesh messages. Without `--cron`, `WHEN_OR
 
 `schedule self` targets the current CLI peer identity by default and is the easiest way to wake the same session later. `schedule create` targets another peer and requires `--from-peer` so the daemon knows who the scheduled message is from. `--kind ask` opens an ask thread when the schedule fires; `notify` is fire-and-forget.
 
+## `repowire orchestrator persona`
+
+```bash
+repowire orchestrator persona list
+repowire orchestrator persona show [NAME]
+repowire orchestrator persona path [NAME]
+repowire orchestrator persona use NAME
+repowire orchestrator persona clear
+```
+
+Manage orchestrator persona `SOUL.md` files. Repowire resolves personas from
+`~/.repowire/orchestrator/personas/<name>/SOUL.md` first, then
+`~/.repowire/personas/<name>/SOUL.md`. `use` writes the workspace active marker,
+and the orchestrator `SessionStart` hook injects the active persona with its
+source path and SHA-256 short hash. Persona context is identity guidance, not a
+permission policy.
+
 ## `repowire build-ui`
 
 ```bash

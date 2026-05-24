@@ -108,6 +108,15 @@ export default function Concepts() {
         </p>
       </Section>
 
+      <Section title="Personas">
+        <p>
+          Orchestrator personas are local <Mono>SOUL.md</Mono> files that define identity, voice, and standing preferences. Repowire resolves workspace personas from <Mono>~/.repowire/orchestrator/personas/&lt;name&gt;/SOUL.md</Mono> before global personas in <Mono>~/.repowire/personas/&lt;name&gt;/SOUL.md</Mono>.
+        </p>
+        <p>
+          <Mono>repowire orchestrator persona use &lt;name&gt;</Mono> marks the active persona. On SessionStart, orchestrator peers receive a persona context block with the resolved source and SHA-256 short hash. This is identity guidance, not a permission policy.
+        </p>
+      </Section>
+
       <Section title="Control surfaces">
         <p>
           The dashboard, Telegram bot, and Slack bot are peers too. They show up in <Mono>list_peers</Mono> alongside agents and can ask, notify, and broadcast.

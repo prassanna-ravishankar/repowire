@@ -1554,6 +1554,118 @@ def orchestrator_start(runtime: str | None, service: bool) -> None:
     console.print(f"[green]✓[/] Orchestrator spawned at [cyan]{result.tmux_session}[/]")
     console.print(f"  Attach: [cyan]tmux attach -t {circle}[/]")
     console.print(f"  Dashboard: {daemon_url}/dashboard")
+    try:
+        from repowire.orchestrator import load_active_soul
+
+        soul = load_active_soul()
+        if soul is not None:
+            console.print(
+                f"  Persona: [cyan]{soul.name}[/] "
+                f"([dim]{soul.source}[/], sha256:{soul.short_hash})"
+            )
+    except Exception:
+        pass
+
+
+# -- orchestrator persona subgroup -------------------------------------------
+
+
+@orchestrator.group(name="persona")
+def orchestrator_persona() -> None:
+    """Manage orchestrator persona SOUL.md files (experimental)."""
+    pass
+
+
+@orchestrator_persona.command(name="list")
+def orchestrator_persona_list() -> None:
+    """List discoverable personas in workspace + global persona dirs."""
+    from repowire.orchestrator import list_personas
+
+    rows = list_personas()
+    if not rows:
+        console.print("[dim]No personas found.[/]")
+        console.print(
+            "Drop a SOUL.md at "
+            "[cyan]~/.repowire/personas/<name>/SOUL.md[/] to get started."
+        )
+        return
+    for row in rows:
+        marker = "[green]*[/]" if row.active else " "
+        console.print(
+            f"{marker} [cyan]{row.name}[/] "
+            f"[dim]({row.source}, sha256:{row.short_hash})[/]\n"
+            f"    {row.path}"
+        )
+
+
+@orchestrator_persona.command(name="show")
+@click.argument("name", required=False)
+def orchestrator_persona_show(name: str | None) -> None:
+    """Show resolved SOUL.md for NAME (or the active persona)."""
+    from repowire.orchestrator import get_active_persona, load_soul
+
+    target = name or get_active_persona()
+    if not target:
+        console.print("[yellow]No persona named and no active persona set.[/]")
+        return
+    soul = load_soul(target)
+    if soul is None:
+        console.print(f"[red]✗[/] No SOUL.md found for persona {target!r}")
+        return
+    console.print(
+        f"[cyan]{soul.name}[/] [dim]({soul.source}, sha256:{soul.short_hash})[/]"
+    )
+    console.print(f"[dim]{soul.path}[/]")
+    console.print()
+    console.print(soul.content.strip())
+
+
+@orchestrator_persona.command(name="use")
+@click.argument("name")
+def orchestrator_persona_use(name: str) -> None:
+    """Mark NAME as the active workspace persona."""
+    from repowire.orchestrator import set_active_persona
+
+    try:
+        soul = set_active_persona(name)
+    except FileNotFoundError as e:
+        console.print(f"[red]✗[/] {e}")
+        return
+    except ValueError as e:
+        console.print(f"[red]✗[/] {e}")
+        return
+    console.print(
+        f"[green]✓[/] Active persona set to [cyan]{soul.name}[/] "
+        f"[dim](source={soul.source}, sha256:{soul.short_hash})[/]"
+    )
+
+
+@orchestrator_persona.command(name="clear")
+def orchestrator_persona_clear() -> None:
+    """Remove the active persona marker."""
+    from repowire.orchestrator import clear_active_persona
+
+    if clear_active_persona():
+        console.print("[green]✓[/] Active persona cleared.")
+    else:
+        console.print("[dim]No active persona was set.[/]")
+
+
+@orchestrator_persona.command(name="path")
+@click.argument("name", required=False)
+def orchestrator_persona_path(name: str | None) -> None:
+    """Print resolved SOUL.md path for NAME (or active persona)."""
+    from repowire.orchestrator import find_soul_path, get_active_persona
+
+    target = name or get_active_persona()
+    if not target:
+        console.print("[yellow]No persona named and no active persona set.[/]")
+        return
+    path, source = find_soul_path(target)
+    if path is None:
+        console.print(f"[red]✗[/] No SOUL.md found for persona {target!r}")
+        return
+    console.print(f"{path} [dim]({source})[/]")
 
 
 @main.group()

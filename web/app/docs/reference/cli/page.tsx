@@ -78,6 +78,22 @@ repowire schedule delete SCHEDULE_ID`}
         </p>
       </Cmd>
 
+      <Cmd
+        name="repowire orchestrator persona"
+        usage={`repowire orchestrator persona list
+repowire orchestrator persona show [NAME]
+repowire orchestrator persona path [NAME]
+repowire orchestrator persona use NAME
+repowire orchestrator persona clear`}
+      >
+        <p>
+          Manage orchestrator persona <Mono>SOUL.md</Mono> files. Repowire resolves workspace personas from <Mono>~/.repowire/orchestrator/personas/&lt;name&gt;/SOUL.md</Mono> first, then global personas from <Mono>~/.repowire/personas/&lt;name&gt;/SOUL.md</Mono>. <Mono>use</Mono> writes the workspace active marker.
+        </p>
+        <p>
+          On SessionStart, orchestrator peers receive the active persona with its source path and SHA-256 short hash. Persona context is identity guidance, not a permission policy.
+        </p>
+      </Cmd>
+
       <Cmd name="repowire telegram start" usage="repowire telegram start">
         <p>
           Run the Telegram bot peer. Reads <Mono>TELEGRAM_BOT_TOKEN</Mono> and <Mono>TELEGRAM_CHAT_ID</Mono> from the environment. The bot registers as the <Mono>telegram</Mono> peer; messages from it are framed as human input.

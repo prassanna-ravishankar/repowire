@@ -11,4 +11,5 @@ The mental model behind repowire. Read once, refer rarely.
 - [Lazy repair](lazy-repair.md) — why repowire has no polling loops.
 - [Control surfaces](control-surfaces.md) — dashboard, Telegram, Slack as peers.
 - [Orchestrator pattern](orchestrator.md) — a peer whose job is coordinating other peers.
+- [Personas](personas.md) — SOUL.md identity files for orchestrator and persona sessions.
 - [Session-native roadmap](session-native-roadmap.md) — where the v0.14 architecture train is headed.

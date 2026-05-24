@@ -44,6 +44,10 @@ summaries, cleanup, and review nudges, with a clear owner and cancellation path.
 Durable board or memory writes should happen only for real state transitions or
 forward-applicable lessons, not just because a hook fired.
 
+## Persona (SOUL.md)
+
+The orchestrator can carry a persistent identity through a `SOUL.md` file. The active persona is injected into the agent's context at every `SessionStart`, sitting below user/orchestrator directives and above untrusted retrieved content. See [personas](./personas.md) for layout, CLI, and precedence.
+
 ## When *not* to orchestrate
 
 - Two peers, ad-hoc work. Talk directly.

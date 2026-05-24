@@ -525,7 +525,25 @@ def main(backend: str = "claude-code") -> int:
 
         peers_context = format_peers_context(peers, display_name) if peers else ""
 
-        sections = [s for s in (self_context, peers_context) if s]
+        persona_context = ""
+        effective_role = (self_peer or {}).get("role") or hint_role
+        if effective_role == "orchestrator":
+            try:
+                from repowire.orchestrator import (
+                    build_soul_context,
+                    load_active_soul,
+                )
+
+                soul = load_active_soul()
+                if soul is not None:
+                    persona_context = build_soul_context(soul)
+            except Exception as e:  # noqa: BLE001 - never block SessionStart
+                print(
+                    f"repowire: persona injection skipped: {e}",
+                    file=sys.stderr,
+                )
+
+        sections = [s for s in (self_context, peers_context, persona_context) if s]
         if sections:
             output = {
                 "hookSpecificOutput": {
