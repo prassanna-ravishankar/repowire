@@ -327,12 +327,17 @@ class RegisterResponse(BaseModel):
     ok: bool = True
     peer_id: str
     display_name: str
+    pane_assigned: bool = True
 
 
-async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str]:
+async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str, bool]:
     """Shared implementation for peer registration endpoints.
 
-    Returns (peer_id, assigned_display_name).
+    Returns (peer_id, assigned_display_name, pane_assigned). ``pane_assigned``
+    is True iff the caller requested a pane_id and the registered peer ended
+    up owning it; False when the daemon's sticky-orchestrator branch refused
+    to displace a live orchestrator. When no pane_id was requested,
+    pane_assigned defaults to True (vacuously: nothing to assign).
     """
     circle = request.circle or "global"
 
@@ -383,7 +388,11 @@ async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str]:
             )
         except Exception:
             logger.warning("Failed to persist session binding for peer registration", exc_info=True)
-    return peer_id, display_name
+    pane_assigned = True
+    if request.pane_id:
+        registered = await peer_registry.get_peer(peer_id)
+        pane_assigned = bool(registered and registered.pane_id == request.pane_id)
+    return peer_id, display_name, pane_assigned
 
 
 @router.post("/peers", response_model=RegisterResponse)
@@ -392,8 +401,10 @@ async def create_peer(
     _: str | None = Depends(require_auth),
 ) -> RegisterResponse:
     """Register a new peer (CLI-friendly endpoint)."""
-    peer_id, display_name = await _register_peer_impl(request)
-    return RegisterResponse(peer_id=peer_id, display_name=display_name)
+    peer_id, display_name, pane_assigned = await _register_peer_impl(request)
+    return RegisterResponse(
+        peer_id=peer_id, display_name=display_name, pane_assigned=pane_assigned,
+    )
 
 
 async def _unregister_peer_impl(name: str, circle: str | None = None) -> None:
@@ -1157,8 +1168,10 @@ async def register_peer(
     _: str | None = Depends(require_auth),
 ) -> RegisterResponse:
     """Register a new peer in the mesh (legacy endpoint)."""
-    peer_id, display_name = await _register_peer_impl(request)
-    return RegisterResponse(peer_id=peer_id, display_name=display_name)
+    peer_id, display_name, pane_assigned = await _register_peer_impl(request)
+    return RegisterResponse(
+        peer_id=peer_id, display_name=display_name, pane_assigned=pane_assigned,
+    )
 
 
 @router.post("/peer/unregister", response_model=OkResponse)

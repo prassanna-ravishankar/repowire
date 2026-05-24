@@ -776,22 +776,30 @@ class TestMcpRegistration:
         mcp_server._cached_peer_name = None
 
     @pytest.mark.asyncio
+    @patch("repowire.mcp.server.read_pane_runtime_metadata")
+    @patch("repowire.mcp.server.os.getppid", return_value=12345)
     @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
     @patch(
         "repowire.mcp.server.get_tmux_info",
         return_value={"pane_id": "%1", "session_name": "0", "window_name": "repowire"},
     )
     async def test_existing_pane_peer_skips_registration(
-        self, _mock_tmux, mock_request: AsyncMock,
+        self, _mock_tmux, mock_request: AsyncMock, _mock_getppid, mock_meta,
     ) -> None:
         """If the pane already has a peer, MCP should not create a duplicate."""
         import repowire.mcp.server as mcp_server
 
         mcp_server._registered = False
         mcp_server._cached_peer_name = None
+        mock_meta.return_value = {
+            "peer_id": "repow-0-abc12345",
+            "display_name": "repowire-codex",
+            "backend": mcp_server._detect_backend(),
+            "agent_pid": 12345,
+        }
         mock_request.side_effect = [
-            {"display_name": "repowire-codex"},  # GET /peers/by-pane
-            {"ok": True},  # POST /peers/repowire-codex/touch
+            {"peer_id": "repow-0-abc12345", "display_name": "repowire-codex"},
+            {"ok": True},  # POST /peers/repow-0-abc12345/touch
         ]
 
         await mcp_server._ensure_registered()
@@ -799,7 +807,7 @@ class TestMcpRegistration:
         assert mock_request.await_count == 2
         assert mock_request.await_args_list[0].args == ("GET", "/peers/by-pane/%251")
         assert mock_request.await_args_list[1].args == (
-            "POST", "/peers/repowire-codex/touch",
+            "POST", "/peers/repow-0-abc12345/touch",
         )
         assert mcp_server._cached_peer_name == "repowire-codex"
 
@@ -808,6 +816,7 @@ class TestMcpRegistration:
 
     @pytest.mark.asyncio
     @patch("repowire.mcp.server.read_pane_runtime_metadata")
+    @patch("repowire.mcp.server.os.getppid", return_value=12345)
     @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
     @patch(
         "repowire.mcp.server.get_tmux_info",
@@ -817,6 +826,7 @@ class TestMcpRegistration:
         self,
         _mock_tmux,
         mock_request: AsyncMock,
+        _mock_getppid,
         mock_meta,
     ) -> None:
         """Hook-managed tmux peers should not silently re-register over HTTP."""
@@ -828,6 +838,8 @@ class TestMcpRegistration:
         mock_meta.return_value = {
             "peer_id": "repow-0-abc12345",
             "display_name": "repowire-codex",
+            "backend": mcp_server._detect_backend(),
+            "agent_pid": 12345,
         }
 
         with pytest.raises(RuntimeError, match="inbound transport is disconnected"):

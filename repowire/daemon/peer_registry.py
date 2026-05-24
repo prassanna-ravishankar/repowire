@@ -648,6 +648,30 @@ class PeerRegistry:
         self._mappings_dirty = True
         return session_id
 
+    def _is_fresh_orchestrator_pane(self, pane_id: str) -> Peer | None:
+        """Return the live orchestrator peer holding ``pane_id``, or None.
+
+        "Live" matches ``get_orchestrator`` semantics: role=ORCHESTRATOR,
+        status ONLINE/BUSY, last_seen within heartbeat tolerance. Must hold
+        lock. Used by ``allocate_and_register`` to make orchestrator pane
+        ownership sticky against same-pane displacement by temporary peers.
+        """
+        tolerance = self.heartbeat_tolerance()
+        now = datetime.now(timezone.utc)
+        for peer in self._peers.values():
+            if peer.pane_id != pane_id:
+                continue
+            if peer.role != PeerRole.ORCHESTRATOR:
+                continue
+            if peer.status not in (PeerStatus.ONLINE, PeerStatus.BUSY):
+                continue
+            if peer.last_seen is None:
+                continue
+            if (now - peer.last_seen).total_seconds() > tolerance:
+                continue
+            return peer
+        return None
+
     def _release_pane(self, pane_id: str, new_peer_id: str) -> None:
         """Clear pane_id from any peer that currently owns it, except new_peer_id.
 
@@ -659,13 +683,35 @@ class PeerRegistry:
         ws-hook is no longer the live owner of that tmux pane, so the peer's
         inbound transport is gone. Leaving it ONLINE with pane_id=None creates
         zombie peers that future sessions may incorrectly claim.
+
+        Exception: a fresh role=ORCHESTRATOR holder is never flipped OFFLINE
+        or detached from the pane by this path. Pane ownership is sticky for
+        the orchestrator; a temporary same-pane claimant must not silently
+        demote or orphan the orchestrator's transport.
         """
+        tolerance = self.heartbeat_tolerance()
+        now = datetime.now(timezone.utc)
         for sid, peer in self._peers.items():
-            if peer.pane_id == pane_id and sid != new_peer_id:
-                old_status = peer.status
-                peer.pane_id = None
-                peer.status = PeerStatus.OFFLINE
-                self._emit_status_change(peer, old_status, PeerStatus.OFFLINE)
+            if peer.pane_id != pane_id or sid == new_peer_id:
+                continue
+            is_fresh_orch = (
+                peer.role == PeerRole.ORCHESTRATOR
+                and peer.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
+                and peer.last_seen is not None
+                and (now - peer.last_seen).total_seconds() <= tolerance
+            )
+            if is_fresh_orch:
+                logger.warning(
+                    "_release_pane: preserving fresh orchestrator liveness "
+                    "and pane ownership for %s (%s); status untouched",
+                    peer.display_name,
+                    peer.peer_id,
+                )
+                continue
+            old_status = peer.status
+            peer.pane_id = None
+            peer.status = PeerStatus.OFFLINE
+            self._emit_status_change(peer, old_status, PeerStatus.OFFLINE)
 
     # ------------------------------------------------------------------
     # Allocate + register (atomic, the preferred public API)
@@ -783,14 +829,38 @@ class PeerRegistry:
                             f"matches existing agent_pid={existing.agent_pid}"
                         )
 
+                # Sticky orchestrator pane: if pane_id is held by a fresh
+                # role=ORCHESTRATOR peer and this isn't a same-id reconnect,
+                # do not displace it. Register the new peer pane-less so its
+                # outbound MCP/HTTP path still works, but pane bookkeeping
+                # stays bound to the orchestrator. Without this a sibling-
+                # shell SessionStart in the orchestrator workspace silently
+                # tears down the orchestrator's transport and leaves it
+                # unrecoverable when the temp peer exits.
+                effective_pane_id = pane_id
+                if pane_id:
+                    sticky_holder = self._is_fresh_orchestrator_pane(pane_id)
+                    if sticky_holder is not None:
+                        logger.warning(
+                            "Sticky orchestrator pane: not displacing %s (%s) "
+                            "on pane %s; new peer registers without pane ownership "
+                            "(claim_path=%s claim_backend=%s)",
+                            sticky_holder.display_name,
+                            sticky_holder.peer_id,
+                            pane_id,
+                            path,
+                            backend.value,
+                        )
+                        effective_pane_id = None
+
                 # Fresh registration: daemon owns the name
                 assigned_name = self._build_display_name(path or "", circle, backend)
                 allocated_id = self._find_or_allocate_mapping(
                     assigned_name, circle, backend, path, role=role,
                     agent_pid=agent_pid, circle_source=circle_source,
                 )
-                if pane_id:
-                    self._release_pane(pane_id, allocated_id)
+                if effective_pane_id:
+                    self._release_pane(effective_pane_id, allocated_id)
 
                 # Restore circle, role, and description from persisted mapping.
                 # The mapping is the durable source of truth for these fields;
@@ -818,7 +888,7 @@ class PeerRegistry:
                     role=effective_role,
                     status=initial_status,
                     last_seen=datetime.now(timezone.utc),
-                    pane_id=pane_id,
+                    pane_id=effective_pane_id,
                     tmux_session=tmux_session,
                     path=path or "",
                     machine=machine,

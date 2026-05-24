@@ -235,6 +235,25 @@ def test_cli_claim_role_reports_live_holder_conflict(monkeypatch: pytest.MonkeyP
     assert "Use --force" in result.output
 
 
+def test_mcp_orchestrator_claim_ignores_display_name_shortcut(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A peer named orchestrator is not eligible unless its path is canonical."""
+    from repowire.orchestrator import workspace as orch_workspace
+
+    canonical = tmp_path / "real-orchestrator"
+    canonical.mkdir()
+    impostor = tmp_path / "some-other-orchestrator"
+    impostor.mkdir()
+    monkeypatch.setattr(orch_workspace, "workspace_path", lambda: canonical)
+
+    assert not mcp_server._orchestrator_self_claim_allowed({
+        "display_name": "orchestrator",
+        "path": str(impostor),
+    })
+
+
 @pytest.mark.asyncio
 async def test_mcp_self_claim_reclaims_orchestrator_after_restart(
     client: tuple[AsyncClient, PeerRegistry],
@@ -250,6 +269,13 @@ async def test_mcp_self_claim_reclaims_orchestrator_after_restart(
     mcp_server._cached_peer_name = "orchestrator-codex"
     mcp_server._cached_my_circle = "default"
     mcp_server._cached_my_role = "agent"
+
+    # Point the canonical orchestrator workspace at the test's orch_dir so
+    # _orchestrator_self_claim_allowed's resolved-path check succeeds. The
+    # basename loophole was removed -- "any folder named orchestrator" no
+    # longer qualifies.
+    from repowire.orchestrator import workspace as orch_workspace
+    monkeypatch.setattr(orch_workspace, "workspace_path", lambda: orch_dir)
 
     async def local_daemon_request(
         method: str,

@@ -68,10 +68,25 @@ def _cache_identity(result: dict) -> None:
 
 
 def _orchestrator_self_claim_allowed(peer: dict) -> bool:
-    """Return whether this peer is eligible to reclaim the orchestrator role."""
-    display_name = str(peer.get("display_name") or peer.get("name") or "").lower()
-    path_name = Path(str(peer.get("path") or "")).name.lower()
-    return display_name == "orchestrator" or path_name == "orchestrator"
+    """Return whether this peer is eligible to reclaim the orchestrator role.
+
+    Eligibility is the resolved canonical orchestrator workspace path
+    (``repowire.orchestrator.workspace_path()``), not the basename. A loose
+    basename or display-name match would let any peer rooted at
+    ``/tmp/orchestrator`` or named ``orchestrator`` self-claim the role,
+    which during a pane-displacement window could let a temporary peer seize
+    role from the real orchestrator.
+    """
+    raw_path = peer.get("path")
+    if not raw_path:
+        return False
+    try:
+        from repowire.orchestrator.workspace import workspace_path
+        canonical = workspace_path().resolve()
+        claimed = Path(str(raw_path)).resolve()
+    except (OSError, RuntimeError):
+        return False
+    return claimed == canonical
 
 
 async def _resolve_circle_for_send(
@@ -222,22 +237,41 @@ def _metadata_matches_current_process(pane_meta: dict) -> bool:
 
     Pane metadata can outlive the session that wrote it (no daemon
     process owns the file; cleanup is best-effort via clear_pane_runtime_state).
-    If a daemon restart races with pane reuse, we could read stale metadata
-    pointing at a previous tenant's display_name.
+    If a daemon restart races with pane reuse, we could read stale metadata or
+    a daemon by-pane result pointing at a previous tenant's display_name.
 
-    Reject metadata whose cwd or backend mismatches what we observe now.
+    The durable proof is the agent process that owns this MCP process, not the
+    path. SessionStart writes its observed agent_pid into pane metadata; the
+    MCP server accepts it only when it matches this process' parent.
     """
-    meta_cwd = pane_meta.get("cwd")
     meta_backend = pane_meta.get("backend")
-    if not meta_cwd or not meta_backend:
+    meta_agent_pid = pane_meta.get("agent_pid")
+    if not meta_backend or meta_agent_pid is None:
+        return False
+    if meta_backend != _detect_backend():
         return False
     try:
-        current_cwd = str(Path.cwd())
-    except OSError:
+        return int(meta_agent_pid) == os.getppid()
+    except (TypeError, ValueError):
         return False
-    if str(meta_cwd) != current_cwd:
+
+
+def _peer_result_matches_current_process(peer: dict, pane_meta: dict) -> bool:
+    """Verify a daemon by-pane result describes the current MCP process.
+
+    A pane can stay bound to a live incumbent while a temporary same-pane
+    process starts its own MCP server. In that case /peers/by-pane correctly
+    returns the incumbent, but the temporary process must not cache that
+    identity and impersonate it. Require the daemon peer_id to match validated
+    local pane runtime metadata owned by the current agent process.
+    """
+    if not _metadata_matches_current_process(pane_meta):
         return False
-    return meta_backend == _detect_backend()
+    peer_id = peer.get("peer_id")
+    meta_peer_id = pane_meta.get("peer_id")
+    if not peer_id or not meta_peer_id:
+        return False
+    return str(peer_id) == str(meta_peer_id)
 
 
 async def _get_my_peer_name() -> str:
@@ -259,15 +293,15 @@ async def _get_my_peer_name() -> str:
         return _cached_peer_name
     pane_id = get_pane_id()
     if pane_id:
+        pane_meta = read_pane_runtime_metadata(pane_id)
         try:
             result = await daemon_request("GET", f"/peers/by-pane/{quote(pane_id, safe='')}")
             name = result.get("display_name") or result.get("peer_id")
-            if name:
+            if name and _peer_result_matches_current_process(result, pane_meta):
                 _cache_identity(result)
                 return name
         except Exception:
             pass
-        pane_meta = read_pane_runtime_metadata(pane_id)
         if _metadata_matches_current_process(pane_meta):
             name = pane_meta.get("display_name") or pane_meta.get("peer_id")
             if name:
@@ -393,22 +427,37 @@ async def _ensure_registered(*, strict: bool = False) -> None:
 
     tmux_info = get_tmux_info()
     pane_id = tmux_info["pane_id"]
+    skip_path_backend_fallback = False
     if pane_id:
+        pane_meta = read_pane_runtime_metadata(pane_id)
         try:
             result = await daemon_request("GET", f"/peers/by-pane/{quote(pane_id, safe='')}")
             name = result.get("display_name") or result.get("peer_id")
-            if name:
+            if name and _peer_result_matches_current_process(result, pane_meta):
                 _cache_identity(result)
-            _registered = True
-            await _touch_last_seen()
-            return
+                _registered = True
+                await _touch_last_seen()
+                return
+            if name:
+                # A live pane owner exists, but this process cannot prove it is
+                # that owner. Do not fall through to path+backend adoption: a
+                # same-cwd same-backend temp process would otherwise claim the
+                # incumbent through the generic lookup.
+                skip_path_backend_fallback = True
         except Exception:
             pass
 
-        pane_meta = read_pane_runtime_metadata(pane_id)
-        if pane_meta.get("display_name") and _cached_peer_name is None:
+        if (
+            _metadata_matches_current_process(pane_meta)
+            and pane_meta.get("display_name")
+            and _cached_peer_name is None
+        ):
             _cached_peer_name = pane_meta["display_name"]
-        if strict and (pane_meta.get("peer_id") or pane_meta.get("display_name")):
+        if (
+            strict
+            and _metadata_matches_current_process(pane_meta)
+            and (pane_meta.get("peer_id") or pane_meta.get("display_name"))
+        ):
             raise RuntimeError(_hook_disconnect_message(pane_id))
     else:
         name = await _get_my_peer_name()
@@ -429,26 +478,27 @@ async def _ensure_registered(*, strict: bool = False) -> None:
         logger.warning("Cannot resolve cwd for MCP registration: %s", e)
         return
 
-    # Last-resort identity resolution: find hook-registered peer by path+backend.
-    # Only claim when there is exactly one online candidate — multiple matches
-    # are ambiguous and inheriting an arbitrary peer's identity causes
-    # cross-session impersonation (see repowire-c6z).
-    try:
-        result = await daemon_request("GET", "/peers", params={
-            "path": str(cwd),
-            "backend": backend,
-            "status": "online",
-        })
-        candidates = result.get("peers", [])
-        if len(candidates) == 1:
-            assigned = candidates[0].get("display_name")
-            if assigned:
-                _cache_identity(candidates[0])
-                _registered = True
-                await _touch_last_seen()
-                return
-    except (DaemonConnectionError, DaemonHTTPError, DaemonTimeoutError) as e:
-        logger.debug("Path+backend peer lookup failed: %s", e)
+    if not skip_path_backend_fallback:
+        # Last-resort identity resolution: find hook-registered peer by path+backend.
+        # Only claim when there is exactly one online candidate — multiple matches
+        # are ambiguous and inheriting an arbitrary peer's identity causes
+        # cross-session impersonation (see repowire-c6z).
+        try:
+            result = await daemon_request("GET", "/peers", params={
+                "path": str(cwd),
+                "backend": backend,
+                "status": "online",
+            })
+            candidates = result.get("peers", [])
+            if len(candidates) == 1:
+                assigned = candidates[0].get("display_name")
+                if assigned:
+                    _cache_identity(candidates[0])
+                    _registered = True
+                    await _touch_last_seen()
+                    return
+        except (DaemonConnectionError, DaemonHTTPError, DaemonTimeoutError) as e:
+            logger.debug("Path+backend peer lookup failed: %s", e)
 
     # Tmux env is stripped by codex's MCP sandbox, so session_name is None
     # there. Fall back to the spawn hint dropped by the daemon's /spawn route

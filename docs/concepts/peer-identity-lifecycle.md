@@ -10,7 +10,7 @@ A live peer has these identity and lifecycle fields:
 - `display_name` / `name` — human-facing name. It can collide across circles, so it is not globally unique.
 - `circle` — routing scope. Peers normally message peers in the same circle unless the caller passes an explicit circle or has a role that bypasses circles.
 - `backend` — agent runtime, such as `claude-code`, `codex`, `gemini`, `antigravity`, `opencode`, or `pi`.
-- `path` — working directory used for name allocation and reconnect checks.
+- `path` — working directory used for name allocation, filtering, and operator context. It is not sufficient by itself to prove peer identity.
 - `pane_id` / WebSocket binding — local delivery endpoint for hook-based peers.
 - `role` — `agent` by default; service, human, and orchestrator roles can bypass normal circle visibility.
 - `description` — short task state set by `set_description` and shown in peer lists.
@@ -32,7 +32,11 @@ A reconnect may reclaim an existing `peer_id` only when the claim still describe
 
 If the check fails, the stale `peer_id` claim is ignored and the daemon allocates or adopts a different identity. This prevents an old environment variable or stale pane metadata from binding a different session's WebSocket to the wrong peer.
 
-When a new peer claims a pane already held by another peer, the old peer loses that pane binding and is marked offline. Pane lookup should then resolve to the current live owner, not a zombie registration.
+When a new peer claims a pane already held by another peer, the old peer normally loses that pane binding and is marked offline. Pane lookup should then resolve to the current live owner, not a zombie registration.
+
+There is one protected case: a fresh live `orchestrator` peer keeps sticky ownership of its tmux pane. If a temporary same-pane session starts in a split terminal, the daemon can register that session without assigning the pane (`pane_assigned=false`). The temporary peer can still use outbound MCP/HTTP tools, but it does not get inbound hook transport and must not clear the incumbent orchestrator's pane metadata or WebSocket hook.
+
+MCP lazy registration treats tmux pane lookup as a locator, not as identity proof. A by-pane daemon result is accepted only when local pane runtime metadata proves the same daemon peer id, backend, and owning agent process. If that proof is missing or belongs to another process, MCP registers or resolves its own peer instead of adopting the incumbent. This keeps path and display name as useful context while avoiding path-based identity takeover.
 
 ## Display-name ambiguity
 

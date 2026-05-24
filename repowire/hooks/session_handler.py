@@ -71,13 +71,22 @@ def _register_peer_http(
     turn_state: str | None = None,
     agent_pid: int | None = None,
     parent_pid: int | None = None,
-) -> tuple[str | None, str | None, bool]:
+) -> tuple[str | None, str | None, bool, bool]:
     """Register peer via HTTP POST /peers.
 
-    Returns (peer_id, display_name, hijack_rejected). hijack_rejected is True
-    iff the daemon returned 409 because the pane-hijack guard rejected this
-    fresh SessionStart claim (a subprocess agent inheriting its parent's
-    TMUX_PANE). The caller should abort registration cleanly in that case.
+    Returns (peer_id, display_name, hijack_rejected, pane_assigned).
+
+    ``hijack_rejected`` is True iff the daemon returned 409 because the
+    pane-hijack guard rejected this fresh SessionStart claim (a subprocess
+    agent inheriting its parent's TMUX_PANE). The caller should abort
+    registration cleanly in that case.
+
+    ``pane_assigned`` is True when this peer owns ``pane_id`` after
+    registration, False when the daemon's sticky-orchestrator branch
+    refused to displace a live orchestrator. A pane-less peer must skip
+    the destructive takeover block (no incumbent ws-hook kill, no prior-
+    peer offline mark, no pane runtime metadata rewrite) and must not
+    spawn its own ws-hook -- the pane belongs to someone else.
     """
     folder = Path(path).name
     payload: dict = {
@@ -109,10 +118,12 @@ def _register_peer_http(
             f"repowire: SessionStart rejected by daemon pane-hijack guard: {detail}",
             file=sys.stderr,
         )
-        return None, None, True
+        return None, None, True, False
     if status_code is not None and 200 <= status_code < 300 and result:
-        return result.get("peer_id"), result.get("display_name"), False
-    return None, None, False
+        # pane_assigned defaults True for older daemons that don't return it.
+        pane_assigned = bool(result.get("pane_assigned", True))
+        return result.get("peer_id"), result.get("display_name"), False, pane_assigned
+    return None, None, False, False
 
 
 def get_peer_name(cwd: str) -> str:
@@ -421,7 +432,7 @@ def main(backend: str = "claude-code") -> int:
         #     and trip the guard.
         agent_pid_val = os.getppid()
         parent_pid_val = _read_ppid_of(agent_pid_val)
-        peer_id, display_name, hijack_rejected = _register_peer_http(
+        peer_id, display_name, hijack_rejected, pane_assigned = _register_peer_http(
             cwd,
             circle,
             backend_type,
@@ -456,6 +467,22 @@ def main(backend: str = "claude-code") -> int:
             return 0
         if not display_name:
             display_name = folder_name  # fallback if daemon unreachable
+
+        # Sticky orchestrator pane: the daemon registered this peer but
+        # refused to give it pane ownership because a live orchestrator
+        # holds the pane. Do not touch the incumbent ws-hook, prior-peer
+        # status, or pane runtime metadata. The new peer remains usable
+        # outbound (MCP/HTTP) but does not own this pane and gets no
+        # ws-hook of its own; inbound hook delivery stays with the incumbent.
+        if pane_id and not pane_assigned:
+            print(
+                "repowire: pane "
+                f"{pane_id} held by live orchestrator; registered as "
+                f"{display_name} ({peer_id}) without pane ownership",
+                file=sys.stderr,
+            )
+            lock_fd.close()
+            return 0
 
         # Daemon accepted our claim. NOW perform the destructive takeover
         # steps: evict the incumbent ws-hook, mark its peer offline, clear
@@ -492,6 +519,8 @@ def main(backend: str = "claude-code") -> int:
                 "display_name": display_name,
                 "hook_session_id": hook_session_id,
                 "peer_id": peer_id,
+                "agent_pid": agent_pid_val,
+                "parent_pid": parent_pid_val,
             },
         )
 

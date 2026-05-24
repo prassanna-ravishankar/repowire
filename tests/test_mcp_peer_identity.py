@@ -28,11 +28,25 @@ def reset_cache():
 
 
 def _matching_meta(extra: dict | None = None) -> dict:
-    """Build a metadata dict whose cwd+backend match the current process."""
+    """Build pane metadata owned by the current mocked agent process."""
     base = {
         "display_name": "proj-2-claude-code",
         "peer_id": "p-2",
         "cwd": str(Path.cwd()),
+        "backend": mcp_server._detect_backend(),
+        "agent_pid": 12345,
+    }
+    if extra:
+        base.update(extra)
+    return base
+
+
+def _matching_peer(extra: dict | None = None) -> dict:
+    """Build a daemon peer dict whose peer_id matches _matching_meta()."""
+    base = {
+        "display_name": "proj-2-claude-code",
+        "peer_id": "p-2",
+        "path": str(Path.cwd()),
         "backend": mcp_server._detect_backend(),
     }
     if extra:
@@ -44,13 +58,41 @@ def _matching_meta(extra: dict | None = None) -> dict:
 async def test_resolves_via_daemon_by_pane():
     """Primary path: daemon /peers/by-pane returns the display_name."""
     with patch.object(mcp_server, "get_pane_id", return_value="%42"), \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
+         patch.object(mcp_server, "read_pane_runtime_metadata", return_value=_matching_meta()), \
          patch.object(
              mcp_server, "daemon_request", new=AsyncMock(
-                 return_value={"display_name": "proj-2-claude-code", "peer_id": "p-2"}
+                 return_value=_matching_peer()
              )
          ):
         name = await mcp_server._get_my_peer_name()
     assert name == "proj-2-claude-code"
+
+
+@pytest.mark.asyncio
+async def test_rejects_daemon_by_pane_backend_mismatch():
+    """A temp same-pane process must not cache the incumbent's daemon identity."""
+    incumbent = _matching_peer({
+        "display_name": "orchestrator-codex",
+        "peer_id": "repow-orch",
+        "backend": "codex",
+    })
+
+    with patch.object(mcp_server, "get_pane_id", return_value="%42"), \
+         patch.object(mcp_server, "_detect_backend", return_value="claude-code"), \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
+         patch.object(mcp_server, "daemon_request", new=AsyncMock(return_value=incumbent)), \
+         patch.object(mcp_server, "read_pane_runtime_metadata", return_value={
+             "display_name": "orchestrator-codex",
+             "peer_id": "repow-orch",
+             "backend": "codex",
+             "agent_pid": 77777,
+         }), \
+         patch.object(mcp_server, "get_display_name", return_value="temp-claude-code"):
+        name = await mcp_server._get_my_peer_name()
+
+    assert name == "temp-claude-code"
+    assert mcp_server._cached_peer_id is None
 
 
 @pytest.mark.asyncio
@@ -62,6 +104,7 @@ async def test_falls_back_to_pane_metadata_when_daemon_misses():
         raise RuntimeError("daemon unreachable / pane not registered yet")
 
     with patch.object(mcp_server, "get_pane_id", return_value="%42"), \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
          patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_miss)), \
          patch.object(
              mcp_server,
@@ -73,16 +116,15 @@ async def test_falls_back_to_pane_metadata_when_daemon_misses():
 
 
 @pytest.mark.asyncio
-async def test_rejects_stale_metadata_with_cwd_mismatch():
-    """Pane metadata can outlive the session that wrote it (daemon restart
-    + pane reuse). Reject metadata pointing at a different cwd — fall
-    through to cwd-folder fallback rather than mis-claiming identity."""
+async def test_rejects_stale_metadata_with_agent_pid_mismatch():
+    """Reject metadata owned by a different agent process."""
     async def daemon_miss(*_args, **_kw):
         raise RuntimeError("nope")
 
-    stale = _matching_meta({"cwd": "/some/other/abandoned/path"})
+    stale = _matching_meta({"agent_pid": 77777})
 
     with patch.object(mcp_server, "get_pane_id", return_value="%42"), \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
          patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_miss)), \
          patch.object(mcp_server, "read_pane_runtime_metadata", return_value=stale), \
          patch.object(mcp_server, "get_display_name", return_value="current-folder"):
@@ -100,6 +142,7 @@ async def test_rejects_stale_metadata_with_backend_mismatch():
     stale = _matching_meta({"backend": "some-other-backend"})
 
     with patch.object(mcp_server, "get_pane_id", return_value="%42"), \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
          patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_miss)), \
          patch.object(mcp_server, "read_pane_runtime_metadata", return_value=stale), \
          patch.object(mcp_server, "get_display_name", return_value="current-folder"):
@@ -108,12 +151,13 @@ async def test_rejects_stale_metadata_with_backend_mismatch():
 
 
 @pytest.mark.asyncio
-async def test_rejects_metadata_missing_cwd_or_backend():
-    """Metadata without cwd+backend fields can't be validated — reject it."""
+async def test_rejects_metadata_missing_backend_or_agent_pid():
+    """Metadata without backend+agent_pid fields can't be validated."""
     async def daemon_miss(*_args, **_kw):
         raise RuntimeError("nope")
 
     with patch.object(mcp_server, "get_pane_id", return_value="%42"), \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
          patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_miss)), \
          patch.object(
              mcp_server,
@@ -141,12 +185,17 @@ async def test_cwd_fallback_not_cached():
 
     # Daemon comes back; second call resolves to suffixed name via daemon
     with patch.object(mcp_server, "get_pane_id", return_value="%42"), \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
+         patch.object(mcp_server, "read_pane_runtime_metadata", return_value=_matching_meta({
+             "display_name": "proj-2",
+             "peer_id": "p",
+         })), \
          patch.object(
              mcp_server,
              "daemon_request",
-             new=AsyncMock(return_value={"display_name": "proj-2", "peer_id": "p"}),
+             new=AsyncMock(return_value=_matching_peer({"display_name": "proj-2", "peer_id": "p"})),
          ):
-        name = await mcp_server._get_my_peer_name()
+            name = await mcp_server._get_my_peer_name()
     assert name == "proj-2"
 
 
@@ -166,6 +215,7 @@ async def test_two_peers_same_cwd_resolve_distinctly():
     async def resolve_for_pane(pane_id: str) -> str:
         mcp_server._cached_peer_name = None
         with patch.object(mcp_server, "get_pane_id", return_value=pane_id), \
+             patch.object(mcp_server.os, "getppid", return_value=12345), \
              patch.object(
                  mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_miss)
              ), \
@@ -305,6 +355,114 @@ async def test_ensure_registered_marks_explicit_tmux_default_as_tmux():
 
 
 @pytest.mark.asyncio
+async def test_ensure_registered_ignores_by_pane_incumbent_backend_mismatch():
+    """Pane lookup may return the live incumbent, not the current MCP process.
+
+    When a temporary same-pane process starts, it should register fresh instead
+    of caching the incumbent's peer_id and sending MCP calls as that peer.
+    """
+    posted_body = {}
+    incumbent = {
+        "display_name": "orchestrator-codex",
+        "peer_id": "repow-orch",
+        "path": str(Path.cwd()),
+        "backend": "codex",
+    }
+
+    async def daemon_router(method, url, body=None, params=None):  # noqa: ARG001
+        del params
+        if method == "GET" and url.startswith("/peers/by-pane/"):
+            return incumbent
+        if method == "GET" and url == "/peers":
+            return {"peers": []}
+        if method == "GET" and url.startswith("/peers/"):
+            raise RuntimeError("name lookup miss")
+        if method == "POST" and url == "/peers":
+            posted_body.update(body or {})
+            return {
+                "peer_id": "repow-temp",
+                "display_name": "project-claude-code",
+                "path": str(Path.cwd()),
+                "backend": "claude-code",
+            }
+        if method == "POST" and url.endswith("/touch"):
+            return {"ok": True}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    with patch.object(
+            mcp_server, "get_tmux_info", return_value={"pane_id": "%42", "session_name": None},
+         ), \
+         patch.object(mcp_server, "_detect_backend", return_value="claude-code"), \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
+         patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_router)), \
+         patch.object(mcp_server, "read_pane_runtime_metadata", return_value={
+             "display_name": "orchestrator-codex",
+             "peer_id": "repow-orch",
+             "backend": "codex",
+             "agent_pid": 77777,
+         }), \
+         patch.object(mcp_server, "get_display_name", return_value="project"):
+        await mcp_server._ensure_registered()
+
+    assert mcp_server._cached_peer_id == "repow-temp"
+    assert mcp_server._cached_peer_name == "project-claude-code"
+    assert posted_body["backend"] == "claude-code"
+    assert posted_body["pane_id"] == "%42"
+
+
+@pytest.mark.asyncio
+async def test_ensure_registered_skips_path_backend_after_failed_pane_proof():
+    """A failed pane proof must block path+backend adoption in the same call."""
+    posted_body = {}
+    incumbent = {
+        "display_name": "orchestrator-codex",
+        "peer_id": "repow-orch",
+        "path": str(Path.cwd()),
+        "backend": "codex",
+    }
+
+    async def daemon_router(method, url, body=None, params=None):  # noqa: ARG001
+        del params
+        if method == "GET" and url.startswith("/peers/by-pane/"):
+            return incumbent
+        if method == "GET" and url == "/peers":
+            raise AssertionError("path+backend fallback must be skipped")
+        if method == "GET" and url.startswith("/peers/"):
+            raise RuntimeError("name lookup miss")
+        if method == "POST" and url == "/peers":
+            posted_body.update(body or {})
+            return {
+                "peer_id": "repow-temp",
+                "display_name": "project-codex",
+                "path": str(Path.cwd()),
+                "backend": "codex",
+            }
+        if method == "POST" and url.endswith("/touch"):
+            return {"ok": True}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    with patch.object(
+            mcp_server, "get_tmux_info", return_value={"pane_id": "%42", "session_name": None},
+         ), \
+         patch.object(mcp_server, "_detect_backend", return_value="codex"), \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
+         patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_router)), \
+         patch.object(mcp_server, "read_pane_runtime_metadata", return_value={
+             "display_name": "orchestrator-codex",
+             "peer_id": "repow-orch",
+             "backend": "codex",
+             "agent_pid": 77777,
+         }), \
+         patch.object(mcp_server, "get_display_name", return_value="project"):
+        await mcp_server._ensure_registered()
+
+    assert mcp_server._cached_peer_id == "repow-temp"
+    assert mcp_server._cached_peer_name == "project-codex"
+    assert posted_body["backend"] == "codex"
+    assert posted_body["pane_id"] == "%42"
+
+
+@pytest.mark.asyncio
 async def test_ensure_registered_claims_when_exactly_one_candidate():
     """The single-candidate case is the legitimate use of path+backend
     fallback: hook-registered peer exists, MCP subprocess started without
@@ -334,10 +492,15 @@ async def test_ensure_registered_claims_when_exactly_one_candidate():
 @pytest.mark.asyncio
 async def test_caches_after_first_resolution():
     with patch.object(mcp_server, "get_pane_id", return_value="%42") as mock_pane, \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
+         patch.object(mcp_server, "read_pane_runtime_metadata", return_value=_matching_meta({
+             "display_name": "p",
+             "peer_id": "x",
+         })), \
          patch.object(
              mcp_server,
              "daemon_request",
-             new=AsyncMock(return_value={"display_name": "p", "peer_id": "x"}),
+             new=AsyncMock(return_value=_matching_peer({"display_name": "p", "peer_id": "x"})),
          ):
         await mcp_server._get_my_peer_name()
         await mcp_server._get_my_peer_name()
@@ -430,12 +593,17 @@ async def test_ensure_registered_re_resolves_in_same_call_after_touch_404():
                 raise mcp_server.DaemonHTTPError(404, "Peer not found")
             return {"ok": True}
         if method == "GET" and path.startswith("/peers/by-pane/"):
-            return {"display_name": "fresh-name", "peer_id": "fresh-id"}
+            return _matching_peer({"display_name": "fresh-name", "peer_id": "fresh-id"})
         raise AssertionError(f"unexpected request: {method} {path}")
 
     tmux_info = {"pane_id": "%99", "session_name": None}
     with patch.object(mcp_server, "get_tmux_info", return_value=tmux_info), \
          patch.object(mcp_server, "get_pane_id", return_value="%99"), \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
+         patch.object(mcp_server, "read_pane_runtime_metadata", return_value=_matching_meta({
+             "display_name": "fresh-name",
+             "peer_id": "fresh-id",
+         })), \
          patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_router)):
         await mcp_server._ensure_registered()
 

@@ -244,7 +244,7 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
         "repowire.hooks.session_handler._register_peer_http",
-        return_value=("repow-default-abc12345", "test-claude-code", False),
+        return_value=("repow-default-abc12345", "test-claude-code", False, True),
     )
     @patch(
         "repowire.hooks.session_handler.get_tmux_info",
@@ -276,7 +276,7 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
         "repowire.hooks.session_handler._register_peer_http",
-        return_value=("repow-default-abc12345", "test-claude-code", False),
+        return_value=("repow-default-abc12345", "test-claude-code", False, True),
     )
     @patch(
         "repowire.hooks.session_handler.get_tmux_info",
@@ -306,7 +306,7 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
         "repowire.hooks.session_handler._register_peer_http",
-        return_value=("repow-default-abc12345", "test-claude-code", False),
+        return_value=("repow-default-abc12345", "test-claude-code", False, True),
     )
     @patch(
         "repowire.hooks.session_handler.get_tmux_info",
@@ -387,7 +387,7 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
         "repowire.hooks.session_handler._register_peer_http",
-        return_value=("repow-default-abc12345", "newproj-claude-code", False),
+        return_value=("repow-default-abc12345", "newproj-claude-code", False, True),
     )
     @patch(
         "repowire.hooks.session_handler.get_tmux_info",
@@ -442,7 +442,7 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
         "repowire.hooks.session_handler._register_peer_http",
-        return_value=("repow-default-abc12345", "test-claude-code", False),
+        return_value=("repow-default-abc12345", "test-claude-code", False, True),
     )
     @patch(
         "repowire.hooks.session_handler.get_tmux_info",
@@ -495,7 +495,7 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
         "repowire.hooks.session_handler._register_peer_http",
-        return_value=("repow-default-abc12345", "test-claude-code", False),
+        return_value=("repow-default-abc12345", "test-claude-code", False, True),
     )
     @patch(
         "repowire.hooks.session_handler.get_tmux_info",
@@ -549,7 +549,7 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
         "repowire.hooks.session_handler._register_peer_http",
-        return_value=(None, None, True),  # hijack_rejected=True
+        return_value=(None, None, True, False),  # hijack_rejected=True
     )
     @patch(
         "repowire.hooks.session_handler.get_tmux_info",
@@ -621,7 +621,7 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
         "repowire.hooks.session_handler._register_peer_http",
-        return_value=(None, None, False),  # transport failure / 5xx: no accept, no 409
+        return_value=(None, None, False, False),  # transport failure / 5xx: no accept, no 409
     )
     @patch(
         "repowire.hooks.session_handler.get_tmux_info",
@@ -687,4 +687,77 @@ class TestSessionMain:
             assert meta_path.exists()
             assert json.loads(meta_path.read_text()) == incumbent_meta
             assert pid_path.exists()
+            assert pid_path.read_text() == "12345"
+
+    @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
+    @patch(
+        "repowire.hooks.session_handler._register_peer_http",
+        return_value=(
+            "repow-default-temp",
+            "temp-claude-code",
+            False,
+            False,
+        ),
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={
+            "pane_id": "%1",
+            "session_name": "default",
+            "window_name": "test",
+        },
+    )
+    @patch("repowire.hooks.session_handler.compute_git_status", return_value=None)
+    @patch("repowire.hooks.session_handler.get_git_branch", return_value=None)
+    @patch("repowire.hooks.session_handler._read_ppid_of", return_value=99999)
+    def test_pane_unassigned_registration_leaves_incumbent_untouched(
+        self,
+        mock_read_ppid,
+        mock_branch,
+        mock_status,
+        mock_tmux,
+        mock_register,
+        mock_fetch,
+        tmp_path,
+    ):
+        """pane_assigned=False is a non-destructive sticky-pane refusal."""
+        with patch("repowire.config.models.CACHE_DIR", tmp_path), \
+             patch("repowire.hooks.session_handler._mark_peer_offline") as mock_offline, \
+             patch("repowire.hooks.session_handler.clear_pane_runtime_state") as mock_clear, \
+             patch("repowire.hooks.session_handler.spawn_ws_hook") as mock_spawn, \
+             patch("repowire.hooks.session_handler.write_pane_runtime_metadata") as mock_write:
+            log_dir = tmp_path / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            incumbent_meta = {
+                "backend": "codex",
+                "cwd": "/incumbent/orchestrator",
+                "hook_session_id": "orchestrator-session",
+                "peer_id": "repow-default-orchestrator",
+                "display_name": "orchestrator-codex",
+            }
+            meta_path = log_dir / "ws-hook-1.meta.json"
+            pid_path = log_dir / "ws-hook-1.pid"
+            meta_path.write_text(json.dumps(incumbent_meta))
+            pid_path.write_text("12345")
+
+            with patch("repowire.hooks.session_handler.fcntl") as mock_fcntl, \
+                 patch("repowire.hooks.session_handler.os.kill") as mock_kill:
+                mock_fcntl.LOCK_EX = 2
+                mock_fcntl.LOCK_NB = 4
+                mock_fcntl.flock.side_effect = OSError("Resource temporarily unavailable")
+
+                result = _run_with_input({
+                    "hook_event_name": "SessionStart",
+                    "cwd": "/temp/project",
+                    "session_id": "temp-session",
+                })
+
+            assert result == 0
+            mock_register.assert_called_once()
+            mock_kill.assert_not_called()
+            mock_offline.assert_not_called()
+            mock_clear.assert_not_called()
+            mock_spawn.assert_not_called()
+            mock_write.assert_not_called()
+            assert json.loads(meta_path.read_text()) == incumbent_meta
             assert pid_path.read_text() == "12345"
