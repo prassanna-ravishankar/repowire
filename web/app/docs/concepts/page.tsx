@@ -117,6 +117,15 @@ export default function Concepts() {
         </p>
       </Section>
 
+      <Section title="Mesh memory">
+        <p>
+          Mesh memory is a proposed curated memory layer for the whole mesh, not shipped runtime behavior yet. It keeps deliberate notes under <Mono>~/.repowire/memory/</Mono> with scopes for <Mono>global</Mono>, <Mono>user</Mono>, projects, personas, and the orchestrator.
+        </p>
+        <p>
+          The key rule is no auto-writes. Hooks and peers may suggest something is worth remembering, but only an explicit CLI or MCP memory command should mutate the files.
+        </p>
+      </Section>
+
       <Section title="Control surfaces">
         <p>
           The dashboard, Telegram bot, and Slack bot are peers too. They show up in <Mono>list_peers</Mono> alongside agents and can ask, notify, and broadcast.
