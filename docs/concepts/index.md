@@ -7,6 +7,7 @@ The mental model behind repowire. Read once, refer rarely.
 - [Message types](message-types.md) — `ask`, `ack`, `notify`, `broadcast`.
 - [Mesh command UX contract](mesh-command-ux.md) — command ids, JSON and human rendering, and agent-facing invocation rules.
 - [Tracked work lifecycle](tracked-work-lifecycle.md) — future daemon-backed work state, status/result/cancel semantics, and boundaries from ask/ack.
+- [Anya routing](anya-routing.md) — design contract for choosing direct answers, peer asks, spawned peers, schedules, jobs, or user clarification.
 - [Claude Code plugin packaging](claude-code-plugin-packaging.md) — optional marketplace plugin boundaries, layout, and drift checks.
 - [Lazy repair](lazy-repair.md) — why repowire has no polling loops.
 - [Control surfaces](control-surfaces.md) — dashboard, Telegram, Slack as peers.

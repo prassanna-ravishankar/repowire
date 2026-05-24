@@ -90,6 +90,18 @@ export default function Concepts() {
         </p>
       </Section>
 
+      <Section title="Anya routing">
+        <p>
+          Anya routing is a product/design contract for the personal-assistant layer above the mesh. It is not shipped daemon behavior yet. The router decides whether Anya should answer directly, ask an existing peer, spawn a full peer, use a future ACP persona, schedule a reminder or watchdog, use an existing future job, create a new job, or ask the user for clarification.
+        </p>
+        <p>
+          Inputs include the request, requester, intent, scope, visible peers, schedules, persona context, memory references, policy, and future tracked-work records. Outputs carry a route, confidence, reason, target, concrete action, approval requirement, fallback, and provenance links.
+        </p>
+        <p>
+          Jobs are the spine for durable assistant work once the tracked-work lifecycle exists. Until then, route plans must say when they are falling back to current primitives such as <Mono>ask</Mono>, <Mono>spawn_peer</Mono>, or <Mono>schedule</Mono> instead of claiming durable job semantics.
+        </p>
+      </Section>
+
       <Section title="Lazy repair">
         <p>
           Repowire avoids polling. Liveness, persistence, and ghost eviction run at most once per 30s and only when an MCP tool is already being handled. Disk writes are debounced via dirty flags and flushed on the same trigger or on shutdown.
