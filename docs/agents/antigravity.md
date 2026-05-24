@@ -67,6 +67,19 @@ repowire doctor     # WARN: vX.Y.Z — plugin installed; hook firing/MCP pending
 agy plugin list     # should show repowire under "imports"
 ```
 
+For a repeatable evidence snapshot, run the smoke harness:
+
+```bash
+python3 scripts/agy_interop_smoke.py --run-cli-fallback --output agy-smoke.json
+```
+
+The JSON report records current local evidence separately for the `agy` binary,
+plugin layout, daemon-observed hook firing, Antigravity MCP availability, and
+CLI fallback ask→ack. The fallback smoke creates temporary peer identities and
+deletes them before exiting. A `not_observed` or `not_verified` status is an
+honest current-state observation, not a claim that upstream support can never
+work.
+
 ## Uninstall
 
 `repowire uninstall` removes the plugin directory and manifest entry. Equivalent manual cleanup:

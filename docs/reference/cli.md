@@ -95,6 +95,8 @@ repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 
 `peer whoami`, `peer asks`, and `peer ack` are the shellable mesh primitives intended for agents whose hooks don't fire today (notably [Antigravity `agy`](../agents/antigravity.md)). They wrap existing daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/ack`) with no new daemon surface and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`. Use `peer whoami --register --backend antigravity` once at session start to self-onboard.
 
+For Antigravity interop checks, `python3 scripts/agy_interop_smoke.py --run-cli-fallback` writes a JSON evidence report covering observed hook evidence, MCP availability state, and CLI fallback ask→ack. It records current behaviour only; hook or MCP support is not treated as verified unless the report observes matching daemon evidence.
+
 `peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP [`list_peers`](mcp-tools.md#list_peers) tool defaults to a peer-facing view (online only, caller hidden).
 
 `peer new` spawns a tmux-backed peer using the configured `daemon.spawn.commands.<backend>` command. Pass `--profile NAME` to append args from `daemon.spawn.profiles.<backend>.<name>`, such as a faster or more capable model selection. `--command` remains accepted as a deprecated explicit override and bypasses profile resolution.
