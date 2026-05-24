@@ -987,11 +987,11 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         """[Repowire mesh] Kill a registered local coding session.
 
         The peer is always deregistered from the mesh. The tmux pane behind
-        it is only killed if the daemon spawned the peer via spawn_peer in
-        the current daemon lifetime. Externally attached peers, or peers
-        whose ownership was lost across a daemon restart, are deregistered
-        without touching tmux — verify and follow up with `tmux kill-pane`
-        if the pane survives.
+        it is only killed if the daemon can prove Repowire spawned it, either
+        from current in-memory ownership or durable spawn ownership plus live
+        tmux evidence. Externally attached peers and stale/mismatched pane
+        records are deregistered without touching tmux — verify and follow up
+        with `tmux kill-pane` if the pane survives.
 
         Args:
             peer_identifier: peer_id or display name from list_peers.
@@ -1019,7 +1019,7 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         else:
             tmux_note = (
                 "tmux pane kill skipped (daemon ownership not proven — "
-                "externally attached, or daemon restarted since spawn). "
+                "externally attached, stale, or mismatched pane evidence). "
                 "Verify with `tmux list-panes` and manually `tmux kill-pane` if needed."
             )
         return f"Killed peer {peer_identifier}{scoped}: {tmux_note}"

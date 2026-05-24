@@ -106,7 +106,7 @@ outbound = await client.pending_asks(peer_id=peer.peer_id, direction="outbound")
           <Mono>spawn</Mono> launches a new agent session subject to <Mono>daemon.spawn.commands</Mono> and <Mono>daemon.spawn.allowed_paths</Mono>. <Mono>spawn_config</Mono> reports which backend launch profiles are configured. Omit <Mono>circle</Mono> to use the daemon default (<Mono>default</Mono>), or pass it explicitly for another circle. <Mono>kill_peer</Mono> terminates a peer cleanly.
         </p>
         <p>
-          <Mono>restart_peer</Mono> intentionally restarts a daemon-spawned peer on the same backend, path, circle, role, and mesh identity. It refuses cross-host peers and panes the daemon cannot prove it spawned. The response includes <Mono>resume_mode</Mono>; <Mono>fresh_runtime_context</Mono> reloads startup context but does not guarantee transcript replay or exact backend conversation resume.
+          <Mono>restart_peer</Mono> intentionally restarts a daemon-spawned peer on the same backend, path, circle, role, and mesh identity. It refuses cross-host peers and panes the daemon cannot prove it spawned with explicit ownership proof plus live tmux evidence. Manually attached peers, stale pane records, and mismatched live pane evidence are refused instead of killed. Restart is same-window/name first, not same-pane; tmux allocates a fresh pane through the normal spawn path. The response includes <Mono>resume_mode</Mono>; <Mono>fresh_runtime_context</Mono> reloads startup context but does not guarantee transcript replay or exact backend conversation resume.
         </p>
         <Code>
 {`info = await client.spawn_config()

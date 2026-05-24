@@ -1457,8 +1457,6 @@ def orchestrator_start(runtime: str | None, service: bool) -> None:
         validate_workspace,
         workspace_path,
     )
-    from repowire.spawn import SpawnConfig, spawn_peer
-
     if service:
         console.print(
             "[yellow]--service mode is planned for v2; "
@@ -1522,7 +1520,8 @@ def orchestrator_start(runtime: str | None, service: bool) -> None:
 
     circle = yaml_config.get("circle") or "default"
     backend = AgentType(selected_runtime)
-    command = yaml_config.get("command") or _configured_spawn_command(selected_runtime)
+    yaml_command = yaml_config.get("command")
+    command = yaml_command or _configured_spawn_command(selected_runtime)
     if not command:
         suggested = _ORCHESTRATOR_RUNTIME_COMMANDS[selected_runtime]
         console.print(
@@ -1540,18 +1539,28 @@ def orchestrator_start(runtime: str | None, service: bool) -> None:
         f"(runtime={selected_runtime}, circle={circle}, role=orchestrator)..."
     )
     try:
-        result = spawn_peer(SpawnConfig(
-            path=str(ws),
-            circle=circle,
-            backend=backend,
-            command=command,
-            role="orchestrator",
-        ))
+        with httpx.Client(timeout=30.0) as client:
+            body: dict[str, object] = {
+                "path": str(ws),
+                "circle": circle,
+                "role": "orchestrator",
+            }
+            if yaml_command:
+                body["command"] = command
+            else:
+                body["backend"] = backend.value
+            resp = client.post(
+                f"{daemon_url}/spawn",
+                json=body,
+                headers=_auth_headers(),
+            )
+            resp.raise_for_status()
+            result = resp.json()
     except Exception as e:
         console.print(f"[red]✗[/] Spawn failed: {e}")
         return
 
-    console.print(f"[green]✓[/] Orchestrator spawned at [cyan]{result.tmux_session}[/]")
+    console.print(f"[green]✓[/] Orchestrator spawned at [cyan]{result['tmux_session']}[/]")
     console.print(f"  Attach: [cyan]tmux attach -t {circle}[/]")
     console.print(f"  Dashboard: {daemon_url}/dashboard")
     try:

@@ -901,7 +901,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "kill_peer",
     label: "Repowire: kill peer",
-    description: "Kill a registered local coding session. The peer is always deregistered from the mesh. The tmux pane behind it is only killed if the daemon spawned the peer via spawn_peer in the current daemon lifetime. Externally attached peers, or peers whose ownership was lost across a daemon restart, are deregistered without touching tmux — verify and follow up with `tmux kill-pane` if the pane survives.",
+    description: "Kill a registered local coding session. The peer is always deregistered from the mesh. The tmux pane behind it is only killed if the daemon can prove Repowire spawned it, either from current in-memory ownership or durable spawn ownership plus live tmux evidence. Externally attached peers and stale/mismatched pane records are deregistered without touching tmux — verify and follow up with `tmux kill-pane` if the pane survives.",
     parameters: Type.Object({
       peer_identifier: Type.String({ description: "Peer ID or display name from list_peers" }),
       circle: Type.Optional(Type.String({ description: "Optional circle to disambiguate display names" })),
@@ -922,7 +922,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
       } else if (tmuxKilled === false) {
         tmuxNote = "tmux pane kill attempted but failed (verify with `tmux list-panes`)";
       } else {
-        tmuxNote = "tmux pane kill skipped (daemon ownership not proven — externally attached, or daemon restarted since spawn). Verify with `tmux list-panes` and manually `tmux kill-pane` if needed.";
+        tmuxNote = "tmux pane kill skipped (daemon ownership not proven — externally attached, stale, or mismatched pane evidence). Verify with `tmux list-panes` and manually `tmux kill-pane` if needed.";
       }
       const text = "Killed peer " + params.peer_identifier + scoped + ": " + tmuxNote;
       return { content: [{ type: "text", text }], details: undefined };

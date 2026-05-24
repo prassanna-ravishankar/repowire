@@ -15,7 +15,13 @@ from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_config, get_peer_registry
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.installers.post_spawn import post_spawn_warmup
+from repowire.protocol.peers import Peer, PeerRole
 from repowire.spawn import SpawnConfig, SpawnResult, kill_pane, spawn_peer
+from repowire.spawn_ownership import (
+    forget_spawn_ownership,
+    record_spawn_ownership,
+    validate_spawn_ownership,
+)
 
 # Strong references to background warmup tasks. asyncio holds only weak refs to
 # tasks, so without this set a long-sleeping warmup can be GC'd mid-flight.
@@ -42,6 +48,7 @@ def forget_spawned_pane(pane_id: str) -> None:
     from matching reused pane ids after a tmux server restart.
     """
     _SPAWNED_PANE_IDS.discard(pane_id)
+    forget_spawn_ownership(pane_id)
 
 
 def _coerce_backend(value: str) -> AgentType | None:
@@ -154,6 +161,7 @@ class SpawnRequest(BaseModel):
             "Other backends ignore it. Default: a short branded warmup."
         ),
     )
+    role: PeerRole = Field(default=PeerRole.AGENT, description="Peer role to seed")
 
     @model_validator(mode="after")
     def _single_runtime_selector(self) -> SpawnRequest:
@@ -202,6 +210,31 @@ class KillPeerRequest(BaseModel):
 
 async def _authorize_kill(registry: PeerRegistry, from_peer: str | None) -> None:
     """Hook for future role-based authorization (e.g. orchestrator-only kill)."""
+
+
+def _record_daemon_spawn_ownership(
+    result: SpawnResult,
+    *,
+    path: str,
+    backend: AgentType,
+    circle: str,
+    role: PeerRole | str,
+    peer_id: str | None = None,
+) -> None:
+    """Record explicit ownership for panes created by daemon spawn/restart."""
+
+    if not result.pane_id:
+        return
+    record_spawn_ownership(
+        pane_id=result.pane_id,
+        path=path,
+        backend=backend,
+        circle=circle,
+        role=role,
+        display_name=result.display_name,
+        tmux_session=result.tmux_session,
+        peer_id=peer_id,
+    )
 
 
 def _validate_spawn_path(path: str) -> None:
@@ -265,6 +298,7 @@ async def spawn(
                 backend=backend,
                 command=command,
                 message=request.message,
+                role=request.role.value,
             )
         )
     except (ValueError, RuntimeError) as e:
@@ -275,6 +309,13 @@ async def spawn(
     # so tmux_session alone is NOT a daemon-spawn signal — pane_id ownership is.
     if result.pane_id:
         _SPAWNED_PANE_IDS.add(result.pane_id)
+        _record_daemon_spawn_ownership(
+            result,
+            path=resolved_path,
+            backend=backend,
+            circle=request.circle,
+            role=request.role,
+        )
 
     # Schedule post-spawn warmup in the background -- the codex case sleeps
     # ~10s and would otherwise stall the /spawn response. claude/opencode/gemini
@@ -294,6 +335,27 @@ async def spawn(
         task.add_done_callback(_BACKGROUND_TASKS.discard)
 
     return SpawnResponse(display_name=result.display_name, tmux_session=result.tmux_session)
+
+
+def _durable_ownership_error_detail(peer: Peer) -> dict[str, object]:
+    validation = validate_spawn_ownership(peer)
+    return {
+        "error": validation.error or "unsupported_pane_ownership",
+        "hint": validation.hint
+        or (
+            "Restart only supports panes Repowire can prove it spawned. "
+            "Externally attached peers are left untouched."
+        ),
+        "pane_id": peer.pane_id,
+    }
+
+
+def _has_spawn_ownership(peer: Peer) -> bool:
+    """Return whether Repowire can prove it spawned this peer's pane."""
+
+    if peer.pane_id and peer.pane_id in _SPAWNED_PANE_IDS:
+        return True
+    return validate_spawn_ownership(peer).ok
 
 
 @router.post("/kill-peer", response_model=KillResponse)
@@ -342,9 +404,11 @@ async def kill_registered_peer(
     # pane (installers/opencode.py:213-216), and any HTTP /peers caller could
     # too. Pane-id-set membership is the single source of truth.
     tmux_killed: bool | None = None
-    if peer.pane_id and peer.pane_id in _SPAWNED_PANE_IDS:
-        tmux_killed = kill_pane(peer.pane_id)
-        _SPAWNED_PANE_IDS.discard(peer.pane_id)
+    if _has_spawn_ownership(peer):
+        pane_id = peer.pane_id
+        assert pane_id is not None
+        tmux_killed = kill_pane(pane_id)
+        forget_spawned_pane(pane_id)
     await peer_registry.unregister_peer(peer.peer_id)
     return KillResponse(tmux_killed=tmux_killed)
 
@@ -454,7 +518,7 @@ async def restart_peer(
 
     peer = resolved
     self_machine = socket.gethostname()
-    if peer.machine and peer.machine != self_machine:
+    if peer.machine and peer.machine != "unknown" and peer.machine != self_machine:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
@@ -490,17 +554,12 @@ async def restart_peer(
 
     _validate_spawn_path(peer.path)
 
-    if not peer.pane_id or peer.pane_id not in _SPAWNED_PANE_IDS:
+    if not _has_spawn_ownership(peer):
+        detail = _durable_ownership_error_detail(peer)
+        detail["error"] = "unsupported_pane_ownership"
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "error": "unsupported_pane_ownership",
-                "hint": (
-                    "Restart only supports daemon-spawned peers in this slice. "
-                    "Externally attached peers are left untouched."
-                ),
-                "pane_id": peer.pane_id,
-            },
+            detail=detail,
         )
 
     spawn_circle = peer.circle or "default"
@@ -545,15 +604,14 @@ async def restart_peer(
 
     try:
         pane_id = peer.pane_id
-        if not pane_id or pane_id not in _SPAWNED_PANE_IDS:
+        if not _has_spawn_ownership(peer):
+            detail = _durable_ownership_error_detail(peer)
+            detail["error"] = "unsupported_pane_ownership"
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "error": "unsupported_pane_ownership",
-                    "hint": "Peer pane ownership changed before restart could begin.",
-                    "pane_id": pane_id,
-                },
+                detail=detail,
             )
+        assert pane_id is not None
         if not kill_pane(pane_id):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -566,7 +624,7 @@ async def restart_peer(
                     "pane_id": pane_id,
                 },
             )
-        _SPAWNED_PANE_IDS.discard(pane_id)
+        forget_spawned_pane(pane_id)
         await peer_registry.mark_offline(peer.peer_id)
 
         try:
@@ -588,6 +646,14 @@ async def restart_peer(
 
         if result.pane_id:
             _SPAWNED_PANE_IDS.add(result.pane_id)
+            _record_daemon_spawn_ownership(
+                result,
+                path=resolved_path,
+                backend=peer.backend,
+                circle=spawn_circle,
+                role=peer.role,
+                peer_id=peer.peer_id,
+            )
             task = asyncio.create_task(
                 post_spawn_warmup(
                     peer.backend,

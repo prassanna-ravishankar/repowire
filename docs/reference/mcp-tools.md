@@ -198,7 +198,7 @@ The spawned agent self-registers via its `SessionStart` hook within a few second
 kill_peer(peer_identifier: str, circle: str | None = None) -> str
 ```
 
-Terminate a peer by name or `peer_id`. The peer is always deregistered from the mesh. The tmux pane is killed only if the daemon spawned the peer via `spawn_peer` in the current daemon lifetime; externally attached peers or peers whose ownership was lost across a daemon restart are deregistered without touching tmux. Verify with `tmux list-panes` and follow up with `tmux kill-pane` if the pane survives.
+Terminate a peer by name or `peer_id`. The peer is always deregistered from the mesh. The tmux pane is killed only if the daemon can prove Repowire spawned it, either from current in-memory ownership or durable spawn ownership plus live tmux evidence. Externally attached peers, stale pane records, and mismatched live pane evidence are deregistered without touching tmux. Verify with `tmux list-panes` and follow up with `tmux kill-pane` if the pane survives.
 
 ## Review queue
 

@@ -23,6 +23,11 @@ from repowire.daemon.routes import spawn as spawn_routes
 from repowire.daemon.websocket_transport import WebSocketTransport
 from repowire.protocol.peers import PeerRole
 from repowire.spawn import SpawnResult
+from repowire.spawn_ownership import (
+    TmuxPaneEvidence,
+    get_spawn_ownership,
+    record_spawn_ownership,
+)
 
 
 def _make_test_app(tmp_path: Path):
@@ -64,8 +69,9 @@ def _make_test_app(tmp_path: Path):
 
 
 @pytest.fixture
-async def env(tmp_path):
+async def env(tmp_path, monkeypatch):
     spawn_routes._SPAWNED_PANE_IDS.clear()
+    monkeypatch.setattr("repowire.spawn_ownership.OWNERSHIP_PATH", tmp_path / "ownership.json")
     app, registry, ask_tracker = _make_test_app(tmp_path)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -108,6 +114,32 @@ def _spawn_result(pane_id: str = "%202") -> SpawnResult:
 
 
 class TestRestartPeerRoute:
+    async def test_daemon_spawn_records_durable_ownership(self, env, tmp_path):
+        result = SpawnResult(
+            display_name=tmp_path.name,
+            tmux_session=f"default:{tmp_path.name}",
+            pane_id="%101",
+        )
+
+        with patch.object(spawn_routes, "spawn_peer", return_value=result), \
+            patch.object(spawn_routes, "post_spawn_warmup", new_callable=AsyncMock):
+            response = await env.client.post(
+                "/spawn",
+                json={
+                    "path": str(tmp_path),
+                    "backend": "claude-code",
+                    "role": "orchestrator",
+                },
+            )
+
+        assert response.status_code == 200, response.text
+        record = get_spawn_ownership("%101")
+        assert record is not None
+        assert record.path == str(tmp_path.resolve())
+        assert record.backend == "claude-code"
+        assert record.role == "orchestrator"
+        assert record.tmux_session == f"default:{tmp_path.name}"
+
     async def test_daemon_owned_success_preserves_peer_id_and_role(self, env, tmp_path):
         name = await _register(
             env.client,
@@ -161,6 +193,82 @@ class TestRestartPeerRoute:
         assert response.status_code == 200, response.text
         assert response.json()["status"] == "restart_available"
         assert response.json()["restarted"] is False
+        mock_kill.assert_not_called()
+        mock_spawn.assert_not_called()
+
+    async def test_dry_run_uses_durable_ownership_after_daemon_restart(
+        self, env, tmp_path, monkeypatch,
+    ):
+        name = await _register(
+            env.client,
+            path=str(tmp_path),
+            pane_id="%101",
+            machine="unknown",
+        )
+        peer = await env.registry.get_peer(name)
+        assert peer is not None
+        record_spawn_ownership(
+            pane_id="%101",
+            path=str(tmp_path),
+            backend=AgentType.CLAUDE_CODE,
+            circle="default",
+            role=PeerRole.AGENT,
+            display_name=name,
+            tmux_session="default:proj",
+        )
+        spawn_routes._SPAWNED_PANE_IDS.clear()
+
+        monkeypatch.setattr(
+            "repowire.spawn_ownership.probe_tmux_pane",
+            lambda pane_id: TmuxPaneEvidence(
+                pane_id=pane_id,
+                tmux_session="default:proj",
+                current_path=str(tmp_path),
+                pane_pid="12345",
+            ),
+        )
+
+        with patch.object(spawn_routes, "kill_pane") as mock_kill, \
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            response = await env.client.post(
+                f"/peers/{name}/restart",
+                json={"dry_run": True},
+            )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["status"] == "restart_available"
+        assert body["peer_id"] == peer.peer_id
+        mock_kill.assert_not_called()
+        mock_spawn.assert_not_called()
+
+    async def test_stale_durable_ownership_is_refused_when_pane_not_live(
+        self, env, tmp_path, monkeypatch,
+    ):
+        name = await _register(env.client, path=str(tmp_path), pane_id="%101")
+        record_spawn_ownership(
+            pane_id="%101",
+            path=str(tmp_path),
+            backend=AgentType.CLAUDE_CODE,
+            circle="default",
+            role=PeerRole.AGENT,
+            display_name=name,
+            tmux_session="default:proj",
+        )
+        spawn_routes._SPAWNED_PANE_IDS.clear()
+        monkeypatch.setattr("repowire.spawn_ownership.probe_tmux_pane", lambda _pane_id: None)
+
+        with patch.object(spawn_routes, "kill_pane") as mock_kill, \
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            response = await env.client.post(
+                f"/peers/{name}/restart",
+                json={"dry_run": True},
+            )
+
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["error"] == "unsupported_pane_ownership"
+        assert "not visible in tmux" in detail["hint"]
         mock_kill.assert_not_called()
         mock_spawn.assert_not_called()
 

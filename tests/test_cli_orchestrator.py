@@ -92,26 +92,23 @@ def test_start_runtime_choice_validation(tmp_workspace: Path) -> None:
 def test_start_spawns_with_role_orchestrator(
     tmp_workspace: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify SpawnConfig is built with role='orchestrator'."""
+    """Verify daemon spawn is called with role='orchestrator'."""
     runner = CliRunner()
     runner.invoke(main, ["orchestrator", "init"])
 
-    spawn_mock = MagicMock()
-    spawn_mock.return_value = MagicMock(
-        display_name="orchestrator",
-        tmux_session="default:orchestrator",
-        pane_id="%99",
-    )
-    monkeypatch.setattr("repowire.spawn.spawn_peer", spawn_mock)
-    # Stub daemon health
     monkeypatch.setattr(
         "repowire.cli._get_daemon_url", lambda: "http://127.0.0.1:8377"
     )
-    httpx_get_mock = MagicMock()
-    httpx_get_mock.return_value.__enter__.return_value.get.return_value = MagicMock(
+    httpx_mock = MagicMock()
+    client = httpx_mock.return_value.__enter__.return_value
+    client.get.return_value = MagicMock(
         raise_for_status=lambda: None,
     )
-    monkeypatch.setattr("httpx.Client", httpx_get_mock)
+    client.post.return_value = MagicMock(
+        raise_for_status=lambda: None,
+        json=lambda: {"display_name": "orchestrator", "tmux_session": "default:orchestrator"},
+    )
+    monkeypatch.setattr("httpx.Client", httpx_mock)
     # Force pi detection
     monkeypatch.setattr(
         "repowire.cli._detect_runtime_for_orchestrator", lambda: "pi"
@@ -120,28 +117,25 @@ def test_start_spawns_with_role_orchestrator(
 
     result = runner.invoke(main, ["orchestrator", "start"])
     assert result.exit_code == 0, result.output
-    spawn_mock.assert_called_once()
-    config = spawn_mock.call_args[0][0]
-    assert config.role == "orchestrator"
-    assert config.backend.value == "pi"
-    assert config.command == "pi"
+    client.post.assert_called_once()
+    body = client.post.call_args.kwargs["json"]
+    assert body["role"] == "orchestrator"
+    assert body["backend"] == "pi"
 
 
 def _stub_start_deps(monkeypatch: pytest.MonkeyPatch, runtime: str) -> MagicMock:
     """Stub daemon health, runtime detection, and spawn for orchestrator start."""
-    spawn_mock = MagicMock()
-    spawn_mock.return_value = MagicMock(
-        display_name="orchestrator",
-        tmux_session="default:orchestrator",
-        pane_id="%99",
-    )
-    monkeypatch.setattr("repowire.spawn.spawn_peer", spawn_mock)
     monkeypatch.setattr("repowire.cli._get_daemon_url", lambda: "http://127.0.0.1:8377")
-    httpx_get_mock = MagicMock()
-    httpx_get_mock.return_value.__enter__.return_value.get.return_value = MagicMock(
+    httpx_mock = MagicMock()
+    client = httpx_mock.return_value.__enter__.return_value
+    client.get.return_value = MagicMock(
         raise_for_status=lambda: None,
     )
-    monkeypatch.setattr("httpx.Client", httpx_get_mock)
+    client.post.return_value = MagicMock(
+        raise_for_status=lambda: None,
+        json=lambda: {"display_name": "orchestrator", "tmux_session": "default:orchestrator"},
+    )
+    monkeypatch.setattr("httpx.Client", httpx_mock)
     monkeypatch.setattr("repowire.cli._detect_runtime_for_orchestrator", lambda: runtime)
     monkeypatch.setattr(
         "repowire.cli._configured_spawn_command",
@@ -153,7 +147,7 @@ def _stub_start_deps(monkeypatch: pytest.MonkeyPatch, runtime: str) -> MagicMock
             "opencode": "opencode",
         }.get(backend),
     )
-    return spawn_mock
+    return client.post
 
 
 def test_start_uses_default_command_when_yaml_omits_it(
@@ -166,8 +160,9 @@ def test_start_uses_default_command_when_yaml_omits_it(
 
     result = runner.invoke(main, ["orchestrator", "start"])
     assert result.exit_code == 0, result.output
-    config = spawn_mock.call_args[0][0]
-    assert config.command == "claude --dangerously-skip-permissions"
+    body = spawn_mock.call_args.kwargs["json"]
+    assert body["backend"] == "claude-code"
+    assert "command" not in body
 
 
 def test_start_honors_command_override_from_yaml(
@@ -183,5 +178,6 @@ def test_start_honors_command_override_from_yaml(
 
     result = runner.invoke(main, ["orchestrator", "start"])
     assert result.exit_code == 0, result.output
-    config = spawn_mock.call_args[0][0]
-    assert config.command == "claude --dangerously-skip-permissions --model opus"
+    body = spawn_mock.call_args.kwargs["json"]
+    assert body["command"] == "claude --dangerously-skip-permissions --model opus"
+    assert "backend" not in body
