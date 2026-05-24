@@ -101,10 +101,10 @@ ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")`}
 
       <Tool
         name="spawn_peer"
-        signature={`spawn_peer(path: str, backend: str, circle: str | None = None, message: str | None = None) -> str`}
+        signature={`spawn_peer(path: str, backend: str, profile: str | None = None, circle: str | None = None, message: str | None = None) -> str`}
       >
         <p>
-          Spawn a new agent session in a project directory. The <Mono>backend</Mono> must have a launch profile in <Mono>daemon.spawn.commands</Mono> in <Mono>~/.repowire/config.yaml</Mono>; spawn is off by default until you configure a backend and allowed path.
+          Spawn a new agent session in a project directory. The <Mono>backend</Mono> must have a launch profile in <Mono>daemon.spawn.commands</Mono> in <Mono>~/.repowire/config.yaml</Mono>; spawn is off by default until you configure a backend and allowed path. Pass <Mono>profile</Mono> to append args from <Mono>daemon.spawn.profiles</Mono> for model/profile selection.
         </p>
         <p>
           If <Mono>circle</Mono> is omitted, the tool uses the caller&apos;s current circle. Pass <Mono>circle=&quot;default&quot;</Mono> explicitly to target the <Mono>default</Mono> tmux session.

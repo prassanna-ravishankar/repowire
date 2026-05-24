@@ -86,6 +86,22 @@ async def test_health_and_spawn_config(client: AsyncRepowireClient):
     assert spawn_config.allowed_commands == []
 
 
+async def test_spawn_config_includes_profiles(client: AsyncRepowireClient):
+    cfg = get_config()
+    cfg.daemon.spawn.commands[spawn_routes.AgentType.CODEX] = "codex"
+    cfg.daemon.spawn.profiles = {
+        spawn_routes.AgentType.CODEX: {
+            "fast": {"args": ["--model", "gpt-5-mini"], "description": "Fast Codex"}
+        }
+    }
+    cfg.daemon.spawn.allowed_paths = ["/"]
+
+    spawn_config = await client.spawn_config()
+
+    assert spawn_config.enabled is True
+    assert spawn_config.profiles["codex"]["fast"]["args"] == ["--model", "gpt-5-mini"]
+
+
 async def test_restart_peer_client_posts_payload(client: AsyncRepowireClient, tmp_path: Path):
     cfg = get_config()
     cfg.daemon.spawn.commands[spawn_routes.AgentType.CLAUDE_CODE] = "claude"
@@ -337,6 +353,21 @@ async def test_spawn_omits_default_circle_for_daemon_default():
         "POST",
         "/spawn",
         json={"path": "/tmp/proj", "backend": "codex", "message": "warm up"},
+    )
+
+
+async def test_spawn_posts_profile():
+    client = AsyncRepowireClient(client=AsyncMock())
+    client._request = AsyncMock(  # type: ignore[method-assign]
+        return_value={"ok": True, "display_name": "proj-codex", "tmux_session": "default"}
+    )
+
+    await client.spawn("/tmp/proj", backend="codex", profile="fast")
+
+    client._request.assert_awaited_once_with(
+        "POST",
+        "/spawn",
+        json={"path": "/tmp/proj", "backend": "codex", "profile": "fast"},
     )
 
 

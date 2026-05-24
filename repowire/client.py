@@ -148,6 +148,7 @@ class SpawnConfigInfo(BaseModel):
 
     enabled: bool
     commands: dict[str, str] = Field(default_factory=dict)
+    profiles: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
     allowed_commands: list[str] = Field(default_factory=list)
     allowed_paths: list[str] = Field(default_factory=list)
 
@@ -556,6 +557,7 @@ class AsyncRepowireClient:
         command: str | None = None,
         *,
         backend: str | None = None,
+        profile: str | None = None,
         circle: str | None = None,
         message: str | None = None,
     ) -> SpawnResult:
@@ -564,9 +566,13 @@ class AsyncRepowireClient:
             raise ValueError("Pass backend or command, not both")
         if backend is None and command is None:
             raise ValueError("Pass backend or command")
+        if profile is not None and backend is None:
+            raise ValueError("Pass backend with profile")
         payload = {"path": path}
         if backend is not None:
             payload["backend"] = backend
+        if profile is not None:
+            payload["profile"] = profile
         if command is not None:
             payload["command"] = command
         if circle is not None:

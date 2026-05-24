@@ -875,6 +875,7 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
     async def spawn_peer(
         path: str,
         backend: str | None = None,
+        profile: str | None = None,
         command: str | None = None,
         circle: str | None = None,
         message: str | None = None,
@@ -884,8 +885,9 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         Prefer `backend` (claude-code, codex, gemini, antigravity, opencode, pi).
         The backend
         must have a command configured in daemon.spawn.commands in
-        ~/.repowire/config.yaml. `command` is retained as a one-release
-        compatibility alias for older callers.
+        ~/.repowire/config.yaml. Pass `profile` to append configured
+        daemon.spawn.profiles args for that backend. `command` is retained as a
+        one-release compatibility alias for older callers.
 
         The spawned agent self-registers into the mesh via its SessionStart hook
         within a few seconds. Use list_peers() to confirm registration and get
@@ -907,6 +909,7 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         Args:
             path: Absolute path to the project directory
             backend: Runtime profile to spawn (e.g. "claude-code", "codex")
+            profile: Optional named spawn model/profile for the backend
             command: Deprecated compatibility command/profile selector
             circle: Circle to spawn into (default: caller's current circle)
                     -- maps to tmux session name
@@ -921,6 +924,8 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
             raise ValueError("Pass backend or command, not both")
         if backend is None and command is None:
             raise ValueError("Pass backend or command")
+        if profile is not None and backend is None:
+            raise ValueError("Pass backend with profile")
         if circle is None:
             await _ensure_registered(strict=True)
             _name, my_circle, _role = await _get_my_identity()
@@ -928,6 +933,8 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         body: dict = {"path": path, "circle": circle}
         if backend is not None:
             body["backend"] = backend
+        if profile is not None:
+            body["profile"] = profile
         if command is not None:
             body["command"] = command
         if message is not None:

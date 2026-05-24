@@ -20,6 +20,14 @@ daemon:
       gemini: "gemini --yolo"
       opencode: "opencode"
       pi: "pi"
+    profiles:
+      codex:
+        fast:
+          args: ["--model", "gpt-5-mini"]
+          description: "Lower-latency Codex peer"
+        capable:
+          args: ["--model", "gpt-5"]
+          description: "More capable Codex peer"
     allowed_paths: []
 updates:
   check_enabled: false
@@ -44,6 +52,10 @@ HTTP MCP is never exposed through the hosted relay. The default stdio MCP server
 ## `daemon.spawn`
 
 Spawn is disabled until `allowed_paths` and at least one runtime command are configured. `commands` is keyed by backend (`claude-code`, `codex`, `gemini`, `antigravity`, `opencode`, `pi`) and is the single launch profile used by MCP `spawn_peer`, dashboard spawn, backend switching, `repowire peer restart`, and `repowire orchestrator start`.
+
+`profiles` is optional and keyed first by backend, then by a user-defined profile name. Each profile appends structured `args` to the configured backend command; Repowire does not hardcode provider model names. For example, spawning `codex` with profile `fast` runs the configured `daemon.spawn.commands.codex` command plus the profile args. Profile descriptions are informational and may be shown by UIs.
+
+Explicit command overrides still win over profiles. `repowire peer restart` preserves the peer's backend, path, circle, role, and mesh identity, but this slice does not persist the selected profile in peer state. Restart therefore uses the current configured backend command unless a future lane records spawn profile metadata.
 
 `allowed_commands` is a deprecated compatibility field. When present in an older config, Repowire normalizes it into `commands` while loading config; new configs should not add it.
 

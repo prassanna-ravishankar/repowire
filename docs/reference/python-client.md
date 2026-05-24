@@ -91,11 +91,11 @@ outbound = await client.pending_asks(peer_id=peer.peer_id, direction="outbound")
 
 ## Spawning and lifecycle
 
-`spawn` launches a new agent session subject to `daemon.spawn.commands` and `daemon.spawn.allowed_paths`. `spawn_config` reports which backend launch profiles are configured. Omit `circle` to use the daemon default (`default`), or pass it explicitly for another circle. `kill_peer` terminates a peer cleanly.
+`spawn` launches a new agent session subject to `daemon.spawn.commands` and `daemon.spawn.allowed_paths`. `spawn_config` reports which backend launch profiles and optional model profiles are configured. Pass `profile` to append args from `daemon.spawn.profiles.<backend>.<profile>`. Omit `circle` to use the daemon default (`default`), or pass it explicitly for another circle. `kill_peer` terminates a peer cleanly.
 
 `restart_peer` intentionally restarts a daemon-spawned peer on the same backend, path, circle, role, and mesh identity. It refuses cross-host peers and panes the daemon cannot prove it spawned with explicit ownership proof plus live tmux evidence. Manually attached peers, stale pane records, and mismatched live pane evidence are refused instead of killed.
 
-Restart is same-window/name first, not same-pane: tmux allocates a fresh pane through the normal spawn path after the old proven pane is killed. The response includes `resume_mode`; `fresh_runtime_context` reloads startup context but does not guarantee transcript replay or exact backend conversation resume, even if the configured backend command happens to include its own native resume flags.
+Restart is same-window/name first, not same-pane: tmux allocates a fresh pane through the normal spawn path after the old proven pane is killed. The response includes `resume_mode`; `fresh_runtime_context` reloads startup context but does not guarantee transcript replay, selected spawn profile, or exact backend conversation resume, even if the configured backend command happens to include its own native resume flags.
 
 ```python
 info = await client.spawn_config()
@@ -103,6 +103,7 @@ if "claude-code" in info.commands:
     spawn = await client.spawn(
         path="/home/me/projects/project-c",
         backend="claude-code",
+        profile="fast",
         circle="docs",
         message="help me draft a reference page",
     )

@@ -8,12 +8,18 @@ import { StatusLabel } from "./status";
 interface SpawnConfig {
   enabled: boolean;
   commands?: Record<string, string>;
+  profiles?: Record<string, Record<string, { args?: string[]; description?: string | null }>>;
   allowed_paths: string[];
 }
 
 function backendOptions(config: SpawnConfig | null): string[] {
   if (!config) return [];
   return Object.keys(config.commands ?? {});
+}
+
+function profileOptions(config: SpawnConfig | null, backend: string): string[] {
+  if (!config || !backend) return [];
+  return Object.keys(config.profiles?.[backend] ?? {});
 }
 
 const inputClass = "w-full rounded border border-border-faint bg-surface-container-lowest px-3 py-2 font-mono text-base text-on-surface outline-none placeholder:text-outline focus:border-primary focus:ring-1 focus:ring-primary md:text-sm";
@@ -23,6 +29,7 @@ export function SpawnDialog({ apiBase, onClose, onSpawned }: { apiBase: string; 
   const [loading, setLoading] = useState(true);
   const [path, setPath] = useState("");
   const [backend, setBackend] = useState("");
+  const [profile, setProfile] = useState("");
   const [circle, setCircle] = useState("default");
   const [error, setError] = useState<string | null>(null);
   const [spawning, setSpawning] = useState(false);
@@ -53,7 +60,7 @@ export function SpawnDialog({ apiBase, onClose, onSpawned }: { apiBase: string; 
       const res = await fetch(`${apiBase}/spawn`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: path.trim(), backend, circle }),
+        body: JSON.stringify({ path: path.trim(), backend, profile: profile || undefined, circle }),
       });
       const data = await res.json();
       if (!res.ok) setError(data.detail || `Error ${res.status}`);
@@ -85,10 +92,23 @@ export function SpawnDialog({ apiBase, onClose, onSpawned }: { apiBase: string; 
             <input value={path} onChange={(event) => setPath(event.target.value)} placeholder="~/git/my-project" className={inputClass} />
           </Field>
           <Field label="Backend">
-            <select value={backend} onChange={(event) => setBackend(event.target.value)} className={inputClass}>
+            <select value={backend} onChange={(event) => {
+              setBackend(event.target.value);
+              setProfile("");
+            }} className={inputClass}>
               {backendOptions(config).map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
           </Field>
+          {profileOptions(config, backend).length > 0 && (
+            <Field label="Profile">
+              <select value={profile} onChange={(event) => setProfile(event.target.value)} className={inputClass}>
+                <option value="">default</option>
+                {profileOptions(config, backend).map((name) => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+            </Field>
+          )}
           <Field label="Circle">
             <input value={circle} onChange={(event) => setCircle(event.target.value)} placeholder="default" className={inputClass} />
           </Field>

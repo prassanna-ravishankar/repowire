@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -102,6 +103,68 @@ class TestSpawnConfig:
         async with AsyncClient(transport=t, base_url="http://test") as c:
             r = await c.get("/spawn/config")
             assert r.json()["enabled"] is False
+        cleanup_deps()
+
+    async def test_spawn_applies_profile_args(self, tmp_path):
+        """POST /spawn appends configured profile args to backend command."""
+        cfg = Config(daemon=DaemonConfig(
+            spawn={
+                "commands": {"codex": "codex --dangerously-bypass-approvals-and-sandbox"},
+                "profiles": {
+                    "codex": {
+                        "fast": {
+                            "args": ["--model", "gpt-5-mini"],
+                            "description": "Fast Codex",
+                        }
+                    }
+                },
+                "allowed_paths": [str(tmp_path)],
+            },
+        ))
+        app = _make_app(tmp_path, config=cfg)
+        t = ASGITransport(app=app)
+        with patch.object(
+            spawn_routes,
+            "spawn_peer",
+            return_value=spawn_routes.SpawnResult(
+                display_name=tmp_path.name,
+                tmux_session=f"default:{tmp_path.name}",
+                pane_id="%42",
+            ),
+        ) as mock_spawn, patch.object(
+            spawn_routes, "post_spawn_warmup", new_callable=AsyncMock,
+        ):
+            async with AsyncClient(transport=t, base_url="http://test") as c:
+                r = await c.post(
+                    "/spawn",
+                    json={"path": str(tmp_path), "backend": "codex", "profile": "fast"},
+                )
+
+        assert r.status_code == 200
+        spawn_cfg = mock_spawn.call_args.args[0]
+        assert spawn_cfg.command == (
+            "codex --dangerously-bypass-approvals-and-sandbox --model gpt-5-mini"
+        )
+        cleanup_deps()
+
+    async def test_spawn_rejects_unknown_profile(self, tmp_path):
+        cfg = Config(daemon=DaemonConfig(
+            spawn={
+                "commands": {"codex": "codex"},
+                "profiles": {"codex": {"fast": {"args": ["--model", "gpt-5-mini"]}}},
+                "allowed_paths": [str(tmp_path)],
+            },
+        ))
+        app = _make_app(tmp_path, config=cfg)
+        t = ASGITransport(app=app)
+        async with AsyncClient(transport=t, base_url="http://test") as c:
+            r = await c.post(
+                "/spawn",
+                json={"path": str(tmp_path), "backend": "codex", "profile": "capable"},
+            )
+
+        assert r.status_code == 422
+        assert r.json()["detail"]["error"] == "profile_unavailable"
         cleanup_deps()
 
 

@@ -185,10 +185,10 @@ This is a *presence check*, not a snapshot of mesh state.
 ### `spawn_peer`
 
 ```python
-spawn_peer(path: str, backend: str, circle: str | None = None, message: str | None = None) -> str
+spawn_peer(path: str, backend: str, profile: str | None = None, circle: str | None = None, message: str | None = None) -> str
 ```
 
-Spawn a new agent session in a project directory. `backend` must have a launch profile in `daemon.spawn.commands` in `~/.repowire/config.yaml`; spawn is off by default until you configure at least one backend and one allowed path. `circle` maps to the tmux session name and cannot be reassigned after spawn. If `circle` is omitted, the MCP tool uses the caller's current circle; pass `circle="default"` explicitly to target the `default` tmux session. `command` remains accepted as a deprecated compatibility selector for one release.
+Spawn a new agent session in a project directory. `backend` must have a launch profile in `daemon.spawn.commands` in `~/.repowire/config.yaml`; spawn is off by default until you configure at least one backend and one allowed path. Pass `profile` to append args from `daemon.spawn.profiles.<backend>.<profile>` for model/profile selection. `circle` maps to the tmux session name and cannot be reassigned after spawn. If `circle` is omitted, the MCP tool uses the caller's current circle; pass `circle="default"` explicitly to target the `default` tmux session. `command` remains accepted as a deprecated compatibility selector for one release and bypasses profile resolution.
 
 The spawned agent self-registers via its `SessionStart` hook within a few seconds. The `message` seeds first-turn context. Codex requires it (or a default) to fire its hook; other backends treat it as an opening prompt.
 

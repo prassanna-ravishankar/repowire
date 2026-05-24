@@ -82,7 +82,7 @@ Exits 0 if all checks pass (or only warn/skip). Exits 1 if any check fails — s
 ## `repowire peer`
 
 ```bash
-repowire peer new PATH [--circle CIRCLE]   # spawn a new peer in tmux
+repowire peer new PATH [--backend BACKEND] [--profile PROFILE] [--circle CIRCLE]
 repowire peer list                          # god-view list (all circles, includes caller)
 repowire peer describe NAME_OR_ID [--circle C]  # full state for one peer
 repowire peer claim-role orchestrator [--peer NAME_OR_ID] [--circle C] [--force]
@@ -97,6 +97,8 @@ repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 
 `peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP [`list_peers`](mcp-tools.md#list_peers) tool defaults to a peer-facing view (online only, caller hidden).
 
+`peer new` spawns a tmux-backed peer using the configured `daemon.spawn.commands.<backend>` command. Pass `--profile NAME` to append args from `daemon.spawn.profiles.<backend>.<name>`, such as a faster or more capable model selection. `--command` remains accepted as a deprecated explicit override and bypasses profile resolution.
+
 `peer describe` accepts either a display name (`clitcoin-claude-code`) or a peer id (`repow-5-abd4d21e`). Pass `--circle` when a display name is ambiguous across circles — without it, the command refuses to guess and prints the same misroute-style refusal the daemon emits internally. Output includes identity (project, circle, role, backend), liveness (status, path, machine, last-seen), open ask threads in both directions, and the last few communication events involving the peer. Reads `GET /peers`, `GET /peers/{id}`, `GET /asks/pending?direction=both`, and `GET /events` — no new daemon endpoints.
 
 `peer claim-role orchestrator` repairs an existing registered peer when the durable session mapping has the wrong role after daemon restart. It updates the live peer and its persisted session mapping, demoting offline or stale orchestrator holders in the same circle. It refuses to demote a fresh online/busy holder unless `--force` is passed. Omit `--peer` only from inside a registered peer shell where Repowire can discover the current peer.
@@ -105,7 +107,7 @@ repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 
 Restart is same-window/name first, not same-pane. Killing a tmux pane destroys that pane, so this slice respawns through the normal Repowire spawn path and lets tmux allocate a fresh pane/window name using the existing naming rules. The response may include the new `tmux_session`, but it does not promise the same pane id.
 
-Restart uses `resume_mode=fresh_runtime_context`. That means the new runtime loads its normal startup context and mesh primer again; it does not guarantee transcript replay or exact backend conversation resume. If your configured backend command includes native resume flags, Repowire still reports `fresh_runtime_context` unless Repowire deliberately selected and verified a backend-specific resume mode.
+Restart uses `resume_mode=fresh_runtime_context`. That means the new runtime loads its normal startup context and mesh primer again; it does not guarantee transcript replay or exact backend conversation resume. This slice also does not persist the originally selected spawn profile, so restart uses the current configured backend command. If your configured backend command includes native resume flags, Repowire still reports `fresh_runtime_context` unless Repowire deliberately selected and verified a backend-specific resume mode.
 
 ## `repowire schedule`
 

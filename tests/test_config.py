@@ -13,8 +13,10 @@ from repowire.config.models import (
     LoggingConfig,
     PeerConfig,
     RelayConfig,
+    SpawnProfile,
     SpawnSettings,
     UpdatesConfig,
+    apply_spawn_profile,
     load_config,
 )
 
@@ -216,6 +218,27 @@ class TestSpawnSettings:
         spawn = SpawnSettings(allowed_commands=["claude --model opus", "codex"])
         assert spawn.commands[AgentType.CLAUDE_CODE] == "claude --model opus"
         assert spawn.commands[AgentType.CODEX] == "codex"
+
+    def test_profiles_can_extend_backend_commands(self):
+        spawn = SpawnSettings(
+            commands={AgentType.CODEX: "codex --dangerously-bypass-approvals-and-sandbox"},
+            profiles={
+                AgentType.CODEX: {
+                    "fast": SpawnProfile(args=["--model", "gpt-5-mini"]),
+                },
+            },
+        )
+
+        assert apply_spawn_profile(
+            spawn.commands[AgentType.CODEX],
+            spawn.profiles[AgentType.CODEX]["fast"],
+        ) == "codex --dangerously-bypass-approvals-and-sandbox --model gpt-5-mini"
+
+    def test_profile_args_are_shell_quoted(self):
+        assert apply_spawn_profile(
+            "claude --dangerously-skip-permissions",
+            SpawnProfile(args=["--model", "claude sonnet"]),
+        ) == "claude --dangerously-skip-permissions --model 'claude sonnet'"
 
 
 class TestAgentType:

@@ -214,6 +214,13 @@ def test_peer_new_cli_choice_includes_antigravity():
     assert "antigravity" in backend_param.type.choices
 
 
+def test_peer_new_cli_exposes_profile_option():
+    """`repowire peer new` should expose named spawn profiles."""
+    from repowire.cli import peer_new
+
+    assert any(p.name == "profile" for p in peer_new.params)
+
+
 # -- Round-trip -------------------------------------------------------------
 
 

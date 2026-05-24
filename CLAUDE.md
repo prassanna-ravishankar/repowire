@@ -167,7 +167,13 @@ daemon:
   auth_token: "optional"
   prune_max_age_hours: 24
   spawn:
-    allowed_commands: [claude, claude --dangerously-skip-permissions]
+    commands:
+      claude-code: "claude --dangerously-skip-permissions"
+      codex: "codex --dangerously-bypass-approvals-and-sandbox"
+    profiles:
+      codex:
+        fast:
+          args: ["--model", "gpt-5-mini"]
     allowed_paths: [~/git, ~/projects]
 
 relay:

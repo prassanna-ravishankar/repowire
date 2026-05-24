@@ -82,7 +82,7 @@ You can also spawn peers through Repowire:
 
 ```bash
 repowire peer new ~/projects/project-a
-repowire peer new ~/projects/project-b
+repowire peer new ~/projects/project-b --backend codex --profile fast
 ```
 
 Full docs: [docs.repowire.io](https://docs.repowire.io).
@@ -207,7 +207,7 @@ repowire status                        # show installed components and daemon st
 repowire doctor                        # run diagnostics
 repowire service restart               # restart the installed daemon service
 repowire peer list                     # list mesh peers
-repowire peer new PATH                 # spawn a peer in tmux
+repowire peer new PATH [--profile P]   # spawn a peer in tmux
 repowire schedule self 10m "check CI"  # wake this peer later
 repowire telegram start                # run Telegram service peer
 repowire slack start                   # run Slack service peer
@@ -241,6 +241,10 @@ daemon:
       claude-code: "claude --dangerously-skip-permissions"
       codex: "codex --dangerously-bypass-approvals-and-sandbox"
       gemini: "gemini --yolo"
+    profiles:
+      codex:
+        fast:
+          args: ["--model", "gpt-5-mini"]
     allowed_paths: [~/git, ~/projects]
 updates:
   check_enabled: false

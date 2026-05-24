@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 
-from repowire.config.models import AgentType
+from repowire.config.models import AgentType, SpawnProfile, apply_spawn_profile
 from repowire.daemon.ask_tracker import QuiesceFailedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_config, get_peer_registry
@@ -64,10 +64,15 @@ def _runtime_commands() -> dict[AgentType, str]:
     return get_config().daemon.spawn.commands
 
 
+def _runtime_profiles() -> dict[AgentType, dict[str, SpawnProfile]]:
+    return get_config().daemon.spawn.profiles
+
+
 def _resolve_spawn_command(
     *,
     backend: AgentType | None = None,
     legacy_command: str | None = None,
+    profile: str | None = None,
 ) -> tuple[AgentType, str]:
     """Resolve a runtime profile to its launch command.
 
@@ -76,9 +81,26 @@ def _resolve_spawn_command(
     otherwise it may match a configured command value from /spawn/config.
     """
     commands = _runtime_commands()
+    profiles = _runtime_profiles()
     if backend is not None:
         command = commands.get(backend)
         if command:
+            if profile:
+                selected_profile = profiles.get(backend, {}).get(profile)
+                if selected_profile is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "error": "profile_unavailable",
+                            "hint": (
+                                f"No daemon.spawn.profiles.{backend.value}.{profile} "
+                                "entry in ~/.repowire/config.yaml."
+                            ),
+                            "backend": backend.value,
+                            "profile": profile,
+                        },
+                    )
+                command = apply_spawn_profile(command, selected_profile)
             return backend, command
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -93,6 +115,11 @@ def _resolve_spawn_command(
         )
 
     if legacy_command:
+        if profile:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Pass backend with profile; command is a compatibility selector.",
+            )
         alias_backend = _coerce_backend(legacy_command)
         if alias_backend is not None and alias_backend in commands:
             return alias_backend, commands[alias_backend]
@@ -126,6 +153,7 @@ class SpawnConfigResponse(BaseModel):
 
     enabled: bool
     commands: dict[AgentType, str] = Field(default_factory=dict)
+    profiles: dict[AgentType, dict[str, SpawnProfile]] = Field(default_factory=dict)
     allowed_commands: list[str] = Field(default_factory=list)
     allowed_paths: list[str] = Field(default_factory=list)
 
@@ -137,10 +165,12 @@ async def get_spawn_config(
     """Return spawn configuration so the UI can offer spawn controls."""
     cfg = get_config()
     cmds = cfg.daemon.spawn.commands
+    profiles = cfg.daemon.spawn.profiles
     paths = cfg.daemon.spawn.allowed_paths
     return SpawnConfigResponse(
         enabled=bool(cmds and paths),
         commands=cmds,
+        profiles=profiles,
         allowed_commands=list(cmds.values()),
         allowed_paths=paths,
     )
@@ -151,6 +181,7 @@ class SpawnRequest(BaseModel):
 
     path: str = Field(..., description="Absolute path to the project directory")
     backend: AgentType | None = Field(None, description="Backend/runtime profile to spawn")
+    profile: str | None = Field(None, description="Optional named model/profile for backend")
     command: str | None = Field(
         None, description="Deprecated: command/profile name for compatibility",
     )
@@ -171,6 +202,8 @@ class SpawnRequest(BaseModel):
             raise ValueError("Pass backend or command, not both")
         if self.backend is None and self.command is None:
             raise ValueError("Pass backend or command")
+        if self.profile is not None and self.backend is None:
+            raise ValueError("Pass backend with profile")
         return self
 
 
@@ -288,6 +321,7 @@ async def spawn(
     backend, command = _resolve_spawn_command(
         backend=request.backend,
         legacy_command=request.command,
+        profile=request.profile,
     )
 
     resolved_path = str(Path(request.path).expanduser().resolve())

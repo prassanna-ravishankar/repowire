@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from enum import Enum
 from pathlib import Path
 
@@ -41,6 +42,26 @@ DEFAULT_SPAWN_COMMANDS: dict[AgentType, str] = {
     AgentType.ANTIGRAVITY: "agy --dangerously-skip-permissions",
     AgentType.PI: "pi",
 }
+
+
+class SpawnProfile(BaseModel):
+    """Named spawn command extension for a backend runtime."""
+
+    args: list[str] = Field(
+        default_factory=list,
+        description="Additional command arguments appended to the backend command",
+    )
+    description: str | None = Field(
+        None,
+        description="Human-facing profile description for UIs and docs",
+    )
+
+
+def apply_spawn_profile(base_command: str, profile: SpawnProfile | None) -> str:
+    """Return a backend command with profile args appended."""
+    if profile is None or not profile.args:
+        return base_command
+    return f"{base_command} {shlex.join(profile.args)}"
 
 
 class RelayConfig(BaseModel):
@@ -157,6 +178,10 @@ class SpawnSettings(BaseModel):
     allowed_paths: list[str] = Field(
         default_factory=list,
         description="Allowed root directories for spawned sessions (empty = spawn disabled)",
+    )
+    profiles: dict[AgentType, dict[str, SpawnProfile]] = Field(
+        default_factory=dict,
+        description="Optional named spawn profiles per backend",
     )
 
     @model_validator(mode="after")

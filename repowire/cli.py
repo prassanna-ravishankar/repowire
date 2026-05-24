@@ -1316,15 +1316,24 @@ _ORCHESTRATOR_RUNTIME_COMMANDS = {
 }
 
 
-def _configured_spawn_command(backend: str) -> str | None:
+def _configured_spawn_command(backend: str, profile: str | None = None) -> str | None:
     """Return the configured spawn command for a backend/runtime profile."""
-    from repowire.config.models import AgentType, load_config
+    from repowire.config.models import AgentType, apply_spawn_profile, load_config
 
     try:
         backend_type = AgentType(backend)
     except ValueError:
         return None
-    return load_config().daemon.spawn.commands.get(backend_type)
+    spawn_cfg = load_config().daemon.spawn
+    command = spawn_cfg.commands.get(backend_type)
+    if command is None:
+        return None
+    if not profile:
+        return command
+    selected_profile = spawn_cfg.profiles.get(backend_type, {}).get(profile)
+    if selected_profile is None:
+        return None
+    return apply_spawn_profile(command, selected_profile)
 
 
 def _detect_runtime_for_orchestrator() -> str | None:
@@ -1442,12 +1451,13 @@ def orchestrator_diff() -> None:
     default=None,
     help="Override the auto-detected runtime",
 )
+@click.option("--profile", help="Named spawn profile to apply to the runtime command")
 @click.option(
     "--service",
     is_flag=True,
     help="(v2) Install as launchd/systemd service. Currently a placeholder.",
 )
-def orchestrator_start(runtime: str | None, service: bool) -> None:
+def orchestrator_start(runtime: str | None, profile: str | None, service: bool) -> None:
     """Spawn the orchestrator peer in its workspace."""
     import httpx
 
@@ -1521,22 +1531,42 @@ def orchestrator_start(runtime: str | None, service: bool) -> None:
     circle = yaml_config.get("circle") or "default"
     backend = AgentType(selected_runtime)
     yaml_command = yaml_config.get("command")
-    command = yaml_command or _configured_spawn_command(selected_runtime)
+    selected_profile = profile or yaml_config.get("profile")
+    command = yaml_command or _configured_spawn_command(
+        selected_runtime,
+        selected_profile,
+    )
     if not command:
         suggested = _ORCHESTRATOR_RUNTIME_COMMANDS[selected_runtime]
-        console.print(
-            "[red]✗[/] Orchestrator runtime is not configured in "
-            "daemon.spawn.commands."
-        )
-        console.print(
-            f"Add [cyan]daemon.spawn.commands.{selected_runtime}: "
-            f"{suggested!r}[/] to ~/.repowire/config.yaml."
-        )
+        if selected_profile:
+            console.print(
+                "[red]✗[/] Orchestrator spawn profile is not configured for "
+                f"{selected_runtime!r}."
+            )
+            console.print(
+                f"Add [cyan]daemon.spawn.profiles.{selected_runtime}.{selected_profile}[/] "
+                "to ~/.repowire/config.yaml or omit --profile."
+            )
+        else:
+            console.print(
+                "[red]✗[/] Orchestrator runtime is not configured in "
+                "daemon.spawn.commands."
+            )
+            console.print(
+                f"Add [cyan]daemon.spawn.commands.{selected_runtime}: "
+                f"{suggested!r}[/] to ~/.repowire/config.yaml."
+            )
         return
 
+    profile_label = (
+        "n/a (command override)"
+        if yaml_command
+        else selected_profile or "default"
+    )
     console.print(
         f"[cyan]Spawning orchestrator[/] "
-        f"(runtime={selected_runtime}, circle={circle}, role=orchestrator)..."
+        f"(runtime={selected_runtime}, circle={circle}, "
+        f"profile={profile_label}, role=orchestrator)..."
     )
     try:
         with httpx.Client(timeout=30.0) as client:
@@ -1549,6 +1579,8 @@ def orchestrator_start(runtime: str | None, service: bool) -> None:
                 body["command"] = command
             else:
                 body["backend"] = backend.value
+                if selected_profile:
+                    body["profile"] = selected_profile
             resp = client.post(
                 f"{daemon_url}/spawn",
                 json=body,
@@ -2181,8 +2213,15 @@ def _render_peer_snapshot(snapshot: object) -> None:
     type=click.Choice(["claude-code", "opencode", "codex", "gemini", "antigravity", "pi"])
 )
 @click.option("--command", "-c", "cmd", help="Deprecated: explicit command override")
+@click.option("--profile", help="Named spawn profile to apply to the backend command")
 @click.option("--circle", help="Circle (defaults to 'default')")
-def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> None:  # noqa: ARG001
+def peer_new(
+    path: str,
+    backend: str,
+    cmd: str | None,
+    profile: str | None,
+    circle: str | None,
+) -> None:  # noqa: ARG001
     """Spawn a new peer in a tmux window.
 
     Examples:
@@ -2198,12 +2237,18 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
 
     actual_path = str(Path(path).resolve())
     actual_circle = circle or "default"
-    actual_cmd = cmd or _configured_spawn_command(backend)
+    actual_cmd = cmd or _configured_spawn_command(backend, profile)
     if not actual_cmd:
-        console.print(
-            f"[red]No daemon.spawn.commands entry for {backend!r}.[/] "
-            "Configure it in ~/.repowire/config.yaml or pass --command."
-        )
+        if profile:
+            console.print(
+                f"[red]No daemon.spawn.profiles entry for {backend!r}/{profile!r}.[/] "
+                "Configure it in ~/.repowire/config.yaml or omit --profile."
+            )
+        else:
+            console.print(
+                f"[red]No daemon.spawn.commands entry for {backend!r}.[/] "
+                "Configure it in ~/.repowire/config.yaml or pass --command."
+            )
         return
     backend_type = AgentType(backend)
 
@@ -2222,6 +2267,8 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
         )
         console.print(f"  tmux: {result.tmux_session}")
         console.print(f"  command: {actual_cmd}")
+        if profile and not cmd:
+            console.print(f"  profile: {profile}")
         console.print("[dim]  (will auto-register via WebSocket)[/]")
 
     except ValueError as e:

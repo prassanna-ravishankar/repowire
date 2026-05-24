@@ -576,6 +576,43 @@ class TestMcpSpawnPeerReturn:
 
     @pytest.mark.asyncio
     @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    async def test_spawn_peer_posts_profile(
+        self, mock_request: AsyncMock, mock_register: AsyncMock,
+    ) -> None:
+        """spawn_peer MCP tool should forward model/profile selection."""
+        mock_request.return_value = {
+            "ok": True,
+            "display_name": "alpha-svc",
+            "tmux_session": "default:alpha-svc",
+        }
+
+        from repowire.mcp.server import create_mcp_server
+
+        mcp = create_mcp_server()
+        spawn_tool = mcp._tool_manager._tools["spawn_peer"]
+        result = await spawn_tool.fn(
+            path="/tmp/alpha-svc",
+            backend="codex",
+            profile="fast",
+            circle="default",
+        )
+
+        mock_register.assert_not_awaited()
+        mock_request.assert_awaited_once_with(
+            "POST",
+            "/spawn",
+            {
+                "path": "/tmp/alpha-svc",
+                "circle": "default",
+                "backend": "codex",
+                "profile": "fast",
+            },
+        )
+        assert "default:alpha-svc" in result
+
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
     @patch("repowire.mcp.server._get_my_peer_name", new_callable=AsyncMock)
     @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
     async def test_kill_peer_uses_peer_identifier_not_tmux_session(

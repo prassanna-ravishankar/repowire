@@ -113,7 +113,10 @@ def test_start_spawns_with_role_orchestrator(
     monkeypatch.setattr(
         "repowire.cli._detect_runtime_for_orchestrator", lambda: "pi"
     )
-    monkeypatch.setattr("repowire.cli._configured_spawn_command", lambda backend: "pi")
+    monkeypatch.setattr(
+        "repowire.cli._configured_spawn_command",
+        lambda backend, profile=None: "pi",
+    )
 
     result = runner.invoke(main, ["orchestrator", "start"])
     assert result.exit_code == 0, result.output
@@ -139,7 +142,7 @@ def _stub_start_deps(monkeypatch: pytest.MonkeyPatch, runtime: str) -> MagicMock
     monkeypatch.setattr("repowire.cli._detect_runtime_for_orchestrator", lambda: runtime)
     monkeypatch.setattr(
         "repowire.cli._configured_spawn_command",
-        lambda backend: {
+        lambda backend, profile=None: {
             "pi": "pi",
             "claude-code": "claude --dangerously-skip-permissions",
             "codex": "codex --dangerously-bypass-approvals-and-sandbox",
@@ -181,3 +184,28 @@ def test_start_honors_command_override_from_yaml(
     body = spawn_mock.call_args.kwargs["json"]
     assert body["command"] == "claude --dangerously-skip-permissions --model opus"
     assert "backend" not in body
+
+
+def test_start_honors_profile_from_yaml(
+    tmp_workspace: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = CliRunner()
+    runner.invoke(main, ["orchestrator", "init"])
+    (tmp_workspace / "orchestrator.yaml").write_text('profile: "fast"\n')
+    spawn_mock = _stub_start_deps(monkeypatch, "codex")
+    monkeypatch.setattr(
+        "repowire.cli._configured_spawn_command",
+        lambda backend, profile=None: (
+            "codex --dangerously-bypass-approvals-and-sandbox --model gpt-5-mini"
+            if backend == "codex" and profile == "fast"
+            else None
+        ),
+    )
+
+    result = runner.invoke(main, ["orchestrator", "start"])
+
+    assert result.exit_code == 0, result.output
+    body = spawn_mock.call_args.kwargs["json"]
+    assert body["backend"] == "codex"
+    assert body["profile"] == "fast"
+    assert "command" not in body
