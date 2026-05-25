@@ -143,6 +143,30 @@ class AcpClientManager:
         if client is not None:
             await client.close()
 
+    async def cancel_existing(self, peer_id: str) -> dict[str, Any]:
+        """Best-effort ``session/cancel`` for an already-live ACP client.
+
+        This never starts a subprocess. It is used by tracked-work cancel to
+        honor protocol-cancel ordering only when the daemon already has a live
+        ACP session for the assigned peer.
+        """
+        async with self._lock:
+            client = self._clients.get(peer_id)
+        if client is None:
+            return {
+                "attempted": False,
+                "status": "unavailable",
+                "reason": "no_active_acp_client",
+                "peer_id": peer_id,
+            }
+        await client.cancel()
+        return {
+            "attempted": True,
+            "status": "sent",
+            "reason": "session_cancel_sent",
+            "peer_id": peer_id,
+        }
+
     async def close(self) -> None:
         """Tear down every live client. Safe to call multiple times."""
         if self._closed:

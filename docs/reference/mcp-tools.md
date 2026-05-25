@@ -186,6 +186,55 @@ This is a *presence check*, not a snapshot of mesh state.
 
 ## Lifecycle
 
+### `job_create`
+
+```python
+job_create(title: str = "", kind: str = "general", assigned_peer_id: str | None = None, owner_peer_id: str | None = None, repowire_session_id: str | None = None, correlation_id: str | None = None, circle: str | None = None, source_kind: str | None = None, source_id: str | None = None, scope: str | None = None, visibility: str = "circle", request: dict | None = None, deadline_at: str | None = None, expires_at: str | None = None, provenance: dict | None = None) -> str
+```
+
+Create a durable tracked work job through the daemon `/jobs` API. Returns the daemon response as a JSON string with `job_id`, `work_id`, and `status`. The MCP caller's peer ID is sent as `created_by_peer_id` when available.
+
+### `job_list`
+
+```python
+job_list(state: str | None = None, owner_peer_id: str | None = None, created_by_peer_id: str | None = None, repowire_session_id: str | None = None, circle: str | None = None) -> str
+```
+
+List durable jobs through `/jobs`. Returns a JSON string shaped like `{"work": [status, ...]}`. Filters mirror the HTTP API.
+
+### `job_status` / `job_show`
+
+```python
+job_status(job_id: str) -> str
+job_show(job_id: str) -> str
+```
+
+Return one job's current status JSON. `job_show` is an alias for `job_status`.
+
+### `job_update`
+
+```python
+job_update(job_id: str, state: str, state_reason: str | None = None, phase: str | None = None, progress: dict | None = None, progress_note: str | None = None, result_summary: str | None = None, result_data: dict | None = None, error: dict | None = None, artifacts: list | None = None, provenance: dict | None = None) -> str
+```
+
+Update a job lifecycle state through `PATCH /jobs/{job_id}`. Returns the updated status JSON. Terminal jobs cannot move back to non-terminal states; same-terminal updates may add bounded metadata.
+
+### `job_result`
+
+```python
+job_result(job_id: str) -> str
+```
+
+Return terminal result JSON for a job, or `result_state="not_ready"` with the current status while the job is non-terminal.
+
+### `job_cancel`
+
+```python
+job_cancel(job_id: str, reason: str = "cancel_requested") -> str
+```
+
+Request cancellation for a tracked work job. Returns status JSON. Queued jobs move directly to `cancelled`; running, delivered, awaiting-input, or blocked jobs record `cancel_requested` and remain pending until an executor reports a terminal state. When the daemon already owns a live ACP session for the job's assigned peer, it attempts a bounded protocol `session/cancel` and reports the result in `status.protocol_cancel`. If there is no live session/execution link, `protocol_cancel` reports `unavailable` rather than claiming runtime cancellation.
+
 ### `spawn_peer`
 
 ```python

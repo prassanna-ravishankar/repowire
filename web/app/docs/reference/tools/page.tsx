@@ -106,6 +106,58 @@ ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")`}
       </Tool>
 
       <Tool
+        name="job_create"
+        signature={`job_create(title: str = "", kind: str = "general", assigned_peer_id: str | None = None, owner_peer_id: str | None = None, repowire_session_id: str | None = None, correlation_id: str | None = None, circle: str | None = None, source_kind: str | None = None, source_id: str | None = None, scope: str | None = None, visibility: str = "circle", request: dict | None = None, deadline_at: str | None = None, expires_at: str | None = None, provenance: dict | None = None) -> str`}
+      >
+        <p>
+          Create a durable tracked work job through the daemon <Mono>/jobs</Mono> API. Returns JSON with <Mono>job_id</Mono>, <Mono>work_id</Mono>, and <Mono>status</Mono>. The caller&rsquo;s peer ID is sent as <Mono>created_by_peer_id</Mono> when available.
+        </p>
+      </Tool>
+
+      <Tool
+        name="job_list"
+        signature={`job_list(state: str | None = None, owner_peer_id: str | None = None, created_by_peer_id: str | None = None, repowire_session_id: str | None = None, circle: str | None = None) -> str`}
+      >
+        <p>
+          List durable jobs through <Mono>/jobs</Mono>. Returns JSON shaped like <Mono>{`{"work": [status, ...]}`}</Mono>. Filters mirror the HTTP API.
+        </p>
+      </Tool>
+
+      <Tool
+        name="job_status / job_show"
+        signature={`job_status(job_id: str) -> str
+job_show(job_id: str) -> str`}
+      >
+        <p>
+          Return one job&rsquo;s current status JSON. <Mono>job_show</Mono> is an alias for <Mono>job_status</Mono>.
+        </p>
+      </Tool>
+
+      <Tool
+        name="job_update"
+        signature={`job_update(job_id: str, state: str, state_reason: str | None = None, phase: str | None = None, progress: dict | None = None, progress_note: str | None = None, result_summary: str | None = None, result_data: dict | None = None, error: dict | None = None, artifacts: list | None = None, provenance: dict | None = None) -> str`}
+      >
+        <p>
+          Update a job lifecycle state through <Mono>PATCH /jobs/{"{job_id}"}</Mono>. Returns the updated status JSON. Terminal jobs cannot move back to non-terminal states.
+        </p>
+      </Tool>
+
+      <Tool name="job_result" signature={`job_result(job_id: str) -> str`}>
+        <p>
+          Return terminal result JSON for a job, or <Mono>result_state=&quot;not_ready&quot;</Mono> with the current status while the job is non-terminal.
+        </p>
+      </Tool>
+
+      <Tool name="job_cancel" signature={`job_cancel(job_id: str, reason: str = "cancel_requested") -> str`}>
+        <p>
+          Request cancellation for a tracked work job. Queued jobs move directly to <Mono>cancelled</Mono>; running, delivered, awaiting-input, or blocked jobs record <Mono>cancel_requested</Mono> and remain pending until an executor reports a terminal state.
+        </p>
+        <p>
+          When the daemon already owns a live ACP session for the job&rsquo;s assigned peer, it attempts a bounded protocol <Mono>session/cancel</Mono> and reports the result in <Mono>status.protocol_cancel</Mono>. If there is no live session or execution link, <Mono>protocol_cancel</Mono> reports <Mono>unavailable</Mono> rather than claiming runtime cancellation.
+        </p>
+      </Tool>
+
+      <Tool
         name="spawn_peer"
         signature={`spawn_peer(path: str, backend: str, profile: str | None = None, circle: str | None = None, message: str | None = None) -> str`}
       >

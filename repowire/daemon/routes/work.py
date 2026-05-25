@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -83,6 +84,75 @@ def _store():
     if store is None:
         raise RuntimeError("work_store not initialized")
     return store
+
+
+async def _attempt_protocol_cancel(work: TrackedWork) -> dict[str, Any]:
+    """Try a bounded runtime-level cancel for the current architecture slice.
+
+    Tracked work does not yet have a durable execution/session binding for
+    every transport. ACP is the only runtime with a daemon-owned live session
+    handle today, so this function only targets an existing ACP client for the
+    assigned peer and otherwise records an explicit unavailable/skipped result.
+    """
+    if work.terminal:
+        return {
+            "attempted": False,
+            "status": "skipped",
+            "reason": "terminal_work",
+        }
+    if not work.assigned_peer_id:
+        return {
+            "attempted": False,
+            "status": "unavailable",
+            "reason": "no_assigned_peer",
+        }
+    state = get_app_state()
+    manager = getattr(state, "acp_manager", None)
+    if manager is None or not hasattr(manager, "cancel_existing"):
+        return {
+            "attempted": False,
+            "status": "unavailable",
+            "reason": "no_protocol_cancel_adapter",
+            "peer_id": work.assigned_peer_id,
+        }
+    try:
+        result = await asyncio.wait_for(
+            manager.cancel_existing(work.assigned_peer_id),
+            timeout=2.0,
+        )
+        return result if isinstance(result, dict) else {
+            "attempted": True,
+            "status": "sent",
+            "reason": "session_cancel_sent",
+            "peer_id": work.assigned_peer_id,
+        }
+    except TimeoutError:
+        return {
+            "attempted": True,
+            "status": "timeout",
+            "reason": "protocol_cancel_timeout",
+            "peer_id": work.assigned_peer_id,
+        }
+    except Exception as e:  # noqa: BLE001 - cancel remains audit-visible
+        return {
+            "attempted": True,
+            "status": "failed",
+            "reason": "protocol_cancel_failed",
+            "peer_id": work.assigned_peer_id,
+            "error": str(e),
+        }
+
+
+def _merge_protocol_cancel(
+    work: TrackedWork,
+    protocol_cancel: dict[str, Any],
+) -> dict[str, Any]:
+    provenance = dict(work.provenance)
+    attempts = list(provenance.get("protocol_cancel_attempts") or [])
+    attempts.append(protocol_cancel)
+    provenance["protocol_cancel"] = protocol_cancel
+    provenance["protocol_cancel_attempts"] = attempts[-10:]
+    return provenance
 
 
 @router.post("/work", response_model=WorkCreateResponse)
@@ -197,6 +267,7 @@ async def cancel_work(
     request: WorkCancelRequest,
     _: str | None = Depends(require_auth),
 ) -> WorkStatusResponse:
+    existing = _store().get(work_id)
     work = _store().cancel(
         work_id,
         requested_by_peer_id=request.requested_by_peer_id,
@@ -204,4 +275,17 @@ async def cancel_work(
     )
     if work is None:
         raise HTTPException(status_code=404, detail=f"No work: {work_id}")
+    if existing is not None and not existing.terminal and existing.state != "queued":
+        protocol_cancel = await _attempt_protocol_cancel(work)
+        provenance = _merge_protocol_cancel(work, protocol_cancel)
+        updated = _store().update_state(
+            work.work_id,
+            state=work.state,
+            state_reason=work.state_reason,
+            phase=work.phase,
+            progress=work.progress,
+            provenance=provenance,
+        )
+        if updated is not None:
+            work = updated
     return WorkStatusResponse.from_work(work)

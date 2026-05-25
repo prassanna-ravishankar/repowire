@@ -462,7 +462,9 @@ class TestMcpToolDescriptions:
                        "spawn_peer", "kill_peer", "whoami", "set_description",
                        "claim_orchestrator_role", "schedule_create", "schedule_self",
                        "schedule_cron",
-                       "schedule_list", "schedule_delete"]
+                       "schedule_list", "schedule_delete", "job_create", "job_list",
+                       "job_status", "job_show", "job_update", "job_result",
+                       "job_cancel"]
         for name in mesh_tools:
             tool = mcp._tool_manager._tools.get(name)
             assert tool is not None, f"Tool {name} not found"

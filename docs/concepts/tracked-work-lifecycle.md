@@ -3,8 +3,8 @@
 Status: architecture contract plus first daemon skeleton for tracked work. The
 daemon now has a durable tracked-work store and HTTP status/result/cancel
 surface separately from conversational `ask`/`ack`. Executor delivery,
-dashboard workflows, ACP/channel health handling, transport cancel, and backend
-resume execution are still future slices.
+dashboard workflows, ACP/channel health handling beyond the narrow cancel hook,
+and backend resume execution are still future slices.
 
 ## Problem
 
@@ -55,13 +55,16 @@ specific backend.
   `result_state=not_ready` plus status while work is non-terminal.
 - `POST /jobs/{job_id}/cancel` / `POST /work/{work_id}/cancel` records an
   audit-visible cancel request.
+- MCP tools `job_create`, `job_list`, `job_status` / `job_show`, `job_update`,
+  `job_result`, and `job_cancel` wrap the same `/jobs` API and return JSON
+  strings for agent callers.
 
 The record includes job-facing and owner/source/scope fields such as `title`,
 `kind`, `created_by_peer_id`, `owner_peer_id`, `assigned_peer_id`,
 `source_kind`, `source_id`, `correlation_id`, `scope`, `circle`,
 `repowire_session_id`, `visibility`, and progress events. This API is a
 lifecycle foundation: it does not select executors, deliver work to transports,
-cancel live runtime sessions, expose MCP job tools, or update
+cancel live runtime sessions outside the explicit ACP-client case, or update
 dashboard/Telegram/Slack UI yet.
 
 Use jobs when work needs durable status, progress history, result metadata, or
@@ -166,7 +169,9 @@ Expected behavior:
   without contacting a transport.
 - If work is `delivered`, `running`, `awaiting_input`, or `blocked`, the daemon
   should send the runtime/backend cancel instruction when the transport exposes
-  one.
+  one. The current implementation attempts this only for an already-live
+  daemon-owned ACP client for `assigned_peer_id`; it does not spawn a client or
+  infer a runtime session from display name, path, or circle.
 - A work item should report a pending cancel reason while cancellation is in
   flight, rather than claiming `cancelled` immediately.
 - Terminal states win over late cancel requests. Cancelling `completed`,
@@ -174,6 +179,13 @@ Expected behavior:
   and return the existing terminal status.
 - Cancel requests must be audit-visible even when best-effort transport cancel
   fails.
+
+Status includes `protocol_cancel` when a non-queued cancel request reaches the
+protocol-cancel adapter. Values such as `status=sent` mean a bounded ACP
+`session/cancel` was attempted. Values such as `status=unavailable` mean the
+daemon had no live execution/session link to cancel and the work remains in the
+pending-cancel contract until a later executor update or follow-up slice adds a
+real execution binding.
 
 ## Protocol cancel before transport teardown
 

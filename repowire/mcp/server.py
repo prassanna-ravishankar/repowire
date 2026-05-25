@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -223,6 +224,8 @@ async def daemon_request(
             resp = await client.get(url, params=params, headers=headers)
         elif method == "DELETE":
             resp = await client.delete(url, params=params, headers=headers)
+        elif method == "PATCH":
+            resp = await client.patch(url, json=body or {}, headers=headers)
         else:
             resp = await client.post(url, json=body or {}, headers=headers)
         resp.raise_for_status()
@@ -697,6 +700,147 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         for p in peers:
             rows.append(_peer_to_tsv_row(p))
         return "\n".join(rows)
+
+    @mcp.tool()
+    async def job_create(
+        title: str = "",
+        kind: str = "general",
+        assigned_peer_id: str | None = None,
+        owner_peer_id: str | None = None,
+        repowire_session_id: str | None = None,
+        correlation_id: str | None = None,
+        circle: str | None = None,
+        source_kind: str | None = None,
+        source_id: str | None = None,
+        scope: str | None = None,
+        visibility: str = "circle",
+        request: dict | None = None,
+        deadline_at: str | None = None,
+        expires_at: str | None = None,
+        provenance: dict | None = None,
+    ) -> str:
+        """[Repowire mesh] Create a durable tracked work job.
+
+        Returns the daemon JSON response as a string. The caller's peer_id is
+        sent as created_by_peer_id when available.
+        """
+        await _ensure_registered(strict=True)
+        created_by = await _get_my_peer_identifier()
+        body: dict = {
+            "title": title,
+            "kind": kind,
+            "created_by_peer_id": created_by,
+            "visibility": visibility,
+            "request": request or {},
+        }
+        optional = {
+            "assigned_peer_id": assigned_peer_id,
+            "owner_peer_id": owner_peer_id,
+            "repowire_session_id": repowire_session_id,
+            "correlation_id": correlation_id,
+            "circle": circle,
+            "source_kind": source_kind,
+            "source_id": source_id,
+            "scope": scope,
+            "deadline_at": deadline_at,
+            "expires_at": expires_at,
+            "provenance": provenance,
+        }
+        body.update({key: value for key, value in optional.items() if value is not None})
+        result = await daemon_request("POST", "/jobs", body)
+        return json.dumps(result, sort_keys=True)
+
+    @mcp.tool()
+    async def job_list(
+        state: str | None = None,
+        owner_peer_id: str | None = None,
+        created_by_peer_id: str | None = None,
+        repowire_session_id: str | None = None,
+        circle: str | None = None,
+    ) -> str:
+        """[Repowire mesh] List durable tracked work jobs as JSON."""
+        await _ensure_registered()
+        params = {
+            key: value
+            for key, value in {
+                "state": state,
+                "owner_peer_id": owner_peer_id,
+                "created_by_peer_id": created_by_peer_id,
+                "repowire_session_id": repowire_session_id,
+                "circle": circle,
+            }.items()
+            if value is not None
+        }
+        result = await daemon_request("GET", "/jobs", params=params or None)
+        return json.dumps(result, sort_keys=True)
+
+    @mcp.tool()
+    async def job_status(job_id: str) -> str:
+        """[Repowire mesh] Return one tracked work job status as JSON."""
+        await _ensure_registered()
+        result = await daemon_request("GET", f"/jobs/{quote(job_id, safe='')}/status")
+        return json.dumps(result, sort_keys=True)
+
+    @mcp.tool()
+    async def job_show(job_id: str) -> str:
+        """[Repowire mesh] Alias for job_status."""
+        return await job_status(job_id)
+
+    @mcp.tool()
+    async def job_update(
+        job_id: str,
+        state: str,
+        state_reason: str | None = None,
+        phase: str | None = None,
+        progress: dict | None = None,
+        progress_note: str | None = None,
+        result_summary: str | None = None,
+        result_data: dict | None = None,
+        error: dict | None = None,
+        artifacts: list | None = None,
+        provenance: dict | None = None,
+    ) -> str:
+        """[Repowire mesh] Update a tracked work job lifecycle state as JSON."""
+        await _ensure_registered(strict=True)
+        body = {
+            key: value
+            for key, value in {
+                "state": state,
+                "state_reason": state_reason,
+                "phase": phase,
+                "progress": progress,
+                "progress_note": progress_note,
+                "result_summary": result_summary,
+                "result_data": result_data,
+                "error": error,
+                "artifacts": artifacts,
+                "provenance": provenance,
+            }.items()
+            if value is not None
+        }
+        result = await daemon_request("PATCH", f"/jobs/{quote(job_id, safe='')}", body)
+        return json.dumps(result, sort_keys=True)
+
+    @mcp.tool()
+    async def job_result(job_id: str) -> str:
+        """[Repowire mesh] Return a tracked work job result as JSON."""
+        await _ensure_registered()
+        result = await daemon_request("GET", f"/jobs/{quote(job_id, safe='')}/result")
+        return json.dumps(result, sort_keys=True)
+
+    @mcp.tool()
+    async def job_cancel(job_id: str, reason: str = "cancel_requested") -> str:
+        """[Repowire mesh] Request cancellation for a tracked work job as JSON."""
+        await _ensure_registered(strict=True)
+        result = await daemon_request(
+            "POST",
+            f"/jobs/{quote(job_id, safe='')}/cancel",
+            {
+                "requested_by_peer_id": await _get_my_peer_identifier(),
+                "reason": reason,
+            },
+        )
+        return json.dumps(result, sort_keys=True)
 
     @mcp.tool()
     async def ask(

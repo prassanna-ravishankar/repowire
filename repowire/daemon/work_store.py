@@ -144,6 +144,7 @@ class TrackedWork:
             "cancel_requested_at": self.cancel_requested_at,
             "cancel_requested_by_peer_id": self.cancel_requested_by_peer_id,
             "cancellation_reason": self.cancellation_reason,
+            "protocol_cancel": self.provenance.get("protocol_cancel"),
             "links": self.provenance.get("links", {}),
         }
 

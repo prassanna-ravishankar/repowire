@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -200,6 +201,63 @@ async def test_cancel_queued_work_returns_cancelled_status(env) -> None:
     assert status["state_reason"] == "cancel_requested"
     assert status["cancel_requested_by_peer_id"] == "creator"
     assert status["cancellation_reason"] == "cancel_requested"
+    assert status["protocol_cancel"] is None
+
+
+async def test_cancel_running_work_attempts_existing_protocol_cancel(env) -> None:
+    created = await env.post(
+        "/work",
+        json={"assigned_peer_id": "repow-default-worker"},
+    )
+    work_id = created.json()["work_id"]
+    await env.patch(f"/work/{work_id}", json={"state": "running"})
+    state = work_routes.get_app_state()
+    state.acp_manager = SimpleNamespace(
+        cancel_existing=AsyncMock(
+            return_value={
+                "attempted": True,
+                "status": "sent",
+                "reason": "session_cancel_sent",
+                "peer_id": "repow-default-worker",
+            },
+        ),
+    )
+
+    r = await env.post(
+        f"/work/{work_id}/cancel",
+        json={"requested_by_peer_id": "creator", "reason": "user_requested"},
+    )
+
+    assert r.status_code == 200
+    state.acp_manager.cancel_existing.assert_awaited_once_with("repow-default-worker")
+    status = r.json()["status"]
+    assert status["state"] == "running"
+    assert status["state_reason"] == "user_requested"
+    assert status["cancel_requested"] is True
+    assert status["protocol_cancel"] == {
+        "attempted": True,
+        "status": "sent",
+        "reason": "session_cancel_sent",
+        "peer_id": "repow-default-worker",
+    }
+
+
+async def test_cancel_running_work_without_protocol_link_stays_pending(env) -> None:
+    created = await env.post("/work", json={"owner_peer_id": "owner"})
+    work_id = created.json()["work_id"]
+    await env.patch(f"/work/{work_id}", json={"state": "running"})
+
+    r = await env.post(f"/work/{work_id}/cancel", json={})
+
+    assert r.status_code == 200
+    status = r.json()["status"]
+    assert status["state"] == "running"
+    assert status["cancel_requested"] is True
+    assert status["protocol_cancel"] == {
+        "attempted": False,
+        "status": "unavailable",
+        "reason": "no_assigned_peer",
+    }
 
 
 async def test_unknown_work_returns_404(env) -> None:
