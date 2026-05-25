@@ -74,7 +74,7 @@ export default function Concepts() {
           Agents use Repowire tools for mesh peers: <Mono>ask</Mono> for tracked work, <Mono>notify_peer</Mono> for fire-and-forget updates, and <Mono>ack</Mono> to close inbound asks. <Mono>SendMessage</Mono> is only for same-session harness teammates.
         </p>
         <p>
-          <Mono>timeline</Mono> and <Mono>result</Mono> are views over existing peer, ask, schedule, event, and session-history data until a separate tracked-work lifecycle exists. ACP/channel broker health is reserved for the channel health work rather than claimed by this command contract.
+          <Mono>timeline</Mono> and general mesh <Mono>result</Mono> views still draw from existing peer, ask, schedule, event, session-history, and tracked-work data. ACP/channel broker health is reserved for the channel health work rather than claimed by this command contract.
         </p>
         <p>
           Future Claude Code marketplace plugin packaging may expose these commands as slash commands, skills, docs, and an MCP bootstrap, but it remains optional. The plugin manifest should map to the same command ids and check drift against the installed Repowire package, <Mono>repowire mcp</Mono>, hook snippets, Claude Code version, and the declared compatible Repowire range. It does not replace <Mono>repowire setup</Mono> or install a second daemon.
@@ -83,10 +83,16 @@ export default function Concepts() {
 
       <Section title="Tracked work lifecycle">
         <p>
-          Durable tracked work is a separate daemon-backed lifecycle from conversational <Mono>ask</Mono>/<Mono>ack</Mono>. The design reserves <Mono>work_id</Mono> records with states such as <Mono>queued</Mono>, <Mono>delivered</Mono>, <Mono>running</Mono>, <Mono>awaiting_input</Mono>, <Mono>completed</Mono>, <Mono>failed</Mono>, <Mono>cancelled</Mono>, <Mono>blocked</Mono>, <Mono>expired</Mono>, and <Mono>unavailable</Mono>.
+          Durable tracked work is a separate daemon-backed lifecycle from conversational <Mono>ask</Mono>/<Mono>ack</Mono>. The daemon has a first HTTP and CLI skeleton for durable <Mono>job_id</Mono>/<Mono>work_id</Mono> records with states such as <Mono>queued</Mono>, <Mono>delivered</Mono>, <Mono>running</Mono>, <Mono>awaiting_input</Mono>, <Mono>completed</Mono>, <Mono>failed</Mono>, <Mono>cancelled</Mono>, <Mono>blocked</Mono>, <Mono>expired</Mono>, and <Mono>unavailable</Mono>.
         </p>
         <p>
           Status, result, and cancel semantics belong to that work lifecycle. Acks may close related conversation threads, but they do not complete work. Session and circle visibility should resolve by exact ids where possible, and protocol cancel should be attempted before transport teardown when a live backend connection can still accept it.
+        </p>
+        <p>
+          The current slice covers <Mono>POST /jobs</Mono>, <Mono>GET /jobs</Mono>, <Mono>GET /jobs/:id</Mono>, <Mono>PATCH /jobs/:id</Mono>, <Mono>GET /jobs/:id/result</Mono>, <Mono>POST /jobs/:id/cancel</Mono>, and matching <Mono>repowire jobs</Mono> commands. Use jobs for durable status/progress/result/cancel, ask for closeable conversations, and schedule for future delivery. Executor selection, transport delivery, live runtime cancel, and dashboard controls remain future work.
+        </p>
+        <p>
+          Terminal jobs cannot be moved back to non-terminal states. Same-terminal updates may add bounded metadata or progress notes without clearing omitted result fields. MCP job tools remain a follow-up.
         </p>
       </Section>
 

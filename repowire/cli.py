@@ -1957,6 +1957,287 @@ def _current_cli_peer_name(client: Any | None = None) -> str:
 
 
 @main.group()
+def jobs() -> None:
+    """Create and inspect durable tracked work jobs."""
+    pass
+
+
+@jobs.command(name="create")
+@click.argument("title")
+@click.option("--kind", default="general", show_default=True)
+@click.option("--created-by", "created_by_peer_id", help="Creator/requester peer id")
+@click.option("--owner", "owner_peer_id", help="Owning peer or operator id")
+@click.option("--assigned-peer", "assigned_peer_id", help="Assigned executor peer id")
+@click.option("--session", "repowire_session_id", help="Related Repowire session id")
+@click.option("--correlation-id", help="Related ask/query correlation id")
+@click.option("--circle", "-c", help="Visibility/routing circle")
+@click.option("--source-kind", default="cli", show_default=True)
+@click.option("--source-id", help="Source-local identifier")
+@click.option("--scope", help="Small routing/display scope label")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON status instead of text")
+def jobs_create_cmd(
+    title: str,
+    kind: str,
+    created_by_peer_id: str | None,
+    owner_peer_id: str | None,
+    assigned_peer_id: str | None,
+    repowire_session_id: str | None,
+    correlation_id: str | None,
+    circle: str | None,
+    source_kind: str,
+    source_id: str | None,
+    scope: str | None,
+    as_json: bool,
+) -> None:
+    """Create a durable job without dispatching it to an executor."""
+    import httpx
+
+    body = {
+        "title": title,
+        "kind": kind,
+        "source_kind": source_kind,
+    }
+    for key, value in {
+        "created_by_peer_id": created_by_peer_id,
+        "owner_peer_id": owner_peer_id,
+        "assigned_peer_id": assigned_peer_id,
+        "repowire_session_id": repowire_session_id,
+        "correlation_id": correlation_id,
+        "circle": circle,
+        "source_id": source_id,
+        "scope": scope,
+    }.items():
+        if value:
+            body[key] = value
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.post(f"{_get_daemon_url()}/jobs", json=body)
+            resp.raise_for_status()
+            status = resp.json()["status"]
+            if as_json:
+                console.print_json(data=status)
+            else:
+                _print_job_status(status, created=True)
+    except httpx.ConnectError:
+        raise click.ClickException("Cannot connect to daemon. Run 'repowire serve' first.")
+    except httpx.HTTPStatusError as e:
+        raise click.ClickException(f"Failed to create job: {_http_error_detail(e)}") from e
+
+
+@jobs.command(name="list")
+@click.option("--state", help="Filter by lifecycle state")
+@click.option("--owner", "owner_peer_id", help="Filter by owner peer id")
+@click.option("--created-by", "created_by_peer_id", help="Filter by creator peer id")
+@click.option("--session", "repowire_session_id", help="Filter by Repowire session id")
+@click.option("--circle", "-c", help="Filter by circle")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON list instead of table")
+def jobs_list_cmd(
+    state: str | None,
+    owner_peer_id: str | None,
+    created_by_peer_id: str | None,
+    repowire_session_id: str | None,
+    circle: str | None,
+    as_json: bool,
+) -> None:
+    """List durable jobs."""
+    import httpx
+
+    params = {
+        key: value
+        for key, value in {
+            "state": state,
+            "owner_peer_id": owner_peer_id,
+            "created_by_peer_id": created_by_peer_id,
+            "repowire_session_id": repowire_session_id,
+            "circle": circle,
+        }.items()
+        if value
+    }
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{_get_daemon_url()}/jobs", params=params or None)
+            resp.raise_for_status()
+            items = resp.json().get("work", [])
+    except httpx.ConnectError:
+        raise click.ClickException("Cannot connect to daemon. Run 'repowire serve' first.")
+    except httpx.HTTPStatusError as e:
+        raise click.ClickException(f"Failed to list jobs: {_http_error_detail(e)}") from e
+
+    if as_json:
+        console.print_json(data={"work": items})
+        return
+
+    if not items:
+        console.print("[yellow]No jobs.[/]")
+        return
+    table = Table(title="Repowire Jobs")
+    table.add_column("ID", style="cyan")
+    table.add_column("State")
+    table.add_column("Title")
+    table.add_column("Kind")
+    table.add_column("Owner")
+    table.add_column("Updated")
+    for item in items:
+        table.add_row(
+            item.get("job_id") or item.get("work_id", ""),
+            item.get("state", ""),
+            item.get("title", ""),
+            item.get("kind", ""),
+            item.get("owner_peer_id") or "-",
+            item.get("updated_at", ""),
+        )
+    console.print(table)
+
+
+@jobs.command(name="show")
+@click.argument("job_id")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON status instead of text")
+def jobs_show_cmd(job_id: str, as_json: bool) -> None:
+    """Show a job status record."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{_get_daemon_url()}/jobs/{job_id}/status")
+            if resp.status_code == 404:
+                raise click.ClickException(f"No job: {job_id}")
+            resp.raise_for_status()
+            status = resp.json()["status"]
+            if as_json:
+                console.print_json(data=status)
+            else:
+                _print_job_status(status)
+    except httpx.ConnectError:
+        raise click.ClickException("Cannot connect to daemon. Run 'repowire serve' first.")
+    except httpx.HTTPStatusError as e:
+        raise click.ClickException(f"Failed to show job: {_http_error_detail(e)}") from e
+
+
+@jobs.command(name="update")
+@click.argument("job_id")
+@click.option("--state", required=True, help="New lifecycle state")
+@click.option("--reason", "state_reason", help="Machine-readable state reason")
+@click.option("--phase", help="Display phase")
+@click.option("--note", "progress_note", help="Append a progress note")
+@click.option("--result-summary", help="Terminal result summary")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON status instead of text")
+def jobs_update_cmd(
+    job_id: str,
+    state: str,
+    state_reason: str | None,
+    phase: str | None,
+    progress_note: str | None,
+    result_summary: str | None,
+    as_json: bool,
+) -> None:
+    """Update job lifecycle status and optionally append a progress note."""
+    import httpx
+
+    body = {"state": state}
+    for key, value in {
+        "state_reason": state_reason,
+        "phase": phase,
+        "progress_note": progress_note,
+        "result_summary": result_summary,
+    }.items():
+        if value:
+            body[key] = value
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.patch(f"{_get_daemon_url()}/jobs/{job_id}", json=body)
+            if resp.status_code == 404:
+                raise click.ClickException(f"No job: {job_id}")
+            resp.raise_for_status()
+            status = resp.json()["status"]
+            if as_json:
+                console.print_json(data=status)
+            else:
+                _print_job_status(status)
+    except httpx.ConnectError:
+        raise click.ClickException("Cannot connect to daemon. Run 'repowire serve' first.")
+    except httpx.HTTPStatusError as e:
+        raise click.ClickException(f"Failed to update job: {_http_error_detail(e)}") from e
+
+
+@jobs.command(name="cancel")
+@click.argument("job_id")
+@click.option("--requested-by", "requested_by_peer_id", help="Peer id requesting cancel")
+@click.option("--reason", default="cancel_requested", show_default=True)
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON status instead of text")
+def jobs_cancel_cmd(
+    job_id: str,
+    requested_by_peer_id: str | None,
+    reason: str,
+    as_json: bool,
+) -> None:
+    """Request cancellation for a job."""
+    import httpx
+
+    body = {"reason": reason}
+    if requested_by_peer_id:
+        body["requested_by_peer_id"] = requested_by_peer_id
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.post(f"{_get_daemon_url()}/jobs/{job_id}/cancel", json=body)
+            if resp.status_code == 404:
+                raise click.ClickException(f"No job: {job_id}")
+            resp.raise_for_status()
+            status = resp.json()["status"]
+            if as_json:
+                console.print_json(data=status)
+            else:
+                _print_job_status(status)
+    except httpx.ConnectError:
+        raise click.ClickException("Cannot connect to daemon. Run 'repowire serve' first.")
+    except httpx.HTTPStatusError as e:
+        raise click.ClickException(f"Failed to cancel job: {_http_error_detail(e)}") from e
+
+
+@jobs.command(name="result")
+@click.argument("job_id")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON result")
+def jobs_result_cmd(job_id: str, as_json: bool) -> None:
+    """Show terminal job result, or current status if not ready."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{_get_daemon_url()}/jobs/{job_id}/result")
+            if resp.status_code == 404:
+                raise click.ClickException(f"No job: {job_id}")
+            resp.raise_for_status()
+            result = resp.json()["result"]
+            if as_json:
+                console.print_json(data=result)
+            elif result.get("result_state") == "not_ready":
+                _print_job_status(result.get("status", {}))
+            else:
+                console.print(f"[green]Job {result.get('job_id') or result.get('work_id')}[/]")
+                console.print(f"  state: {result.get('state')}")
+                if result.get("summary"):
+                    console.print(f"  summary: {result.get('summary')}")
+    except httpx.ConnectError:
+        raise click.ClickException("Cannot connect to daemon. Run 'repowire serve' first.")
+    except httpx.HTTPStatusError as e:
+        raise click.ClickException(f"Failed to get job result: {_http_error_detail(e)}") from e
+
+
+def _print_job_status(status: dict[str, Any], *, created: bool = False) -> None:
+    prefix = "Created job" if created else "Job"
+    console.print(f"[green]{prefix} {status.get('job_id') or status.get('work_id')}[/]")
+    console.print(f"  title: [cyan]{status.get('title') or ''}[/]")
+    console.print(f"  state: {status.get('state')}")
+    console.print(f"  kind:  {status.get('kind')}")
+    if status.get("owner_peer_id"):
+        console.print(f"  owner: {status.get('owner_peer_id')}")
+    if status.get("result_summary"):
+        console.print(f"  result: {status.get('result_summary')}")
+    if status.get("cancellation_reason"):
+        console.print(f"  cancel: {status.get('cancellation_reason')}")
+
+
+@main.group()
 def schedule() -> None:
     """Schedule one-time or recurring mesh messages."""
     pass

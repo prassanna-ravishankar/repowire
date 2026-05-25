@@ -1,10 +1,10 @@
 # Tracked work lifecycle
 
-Status: architecture contract for future daemon-backed tracked work. This
-document defines the lifecycle Repowire should implement separately from
-conversational `ask`/`ack`. It does not claim that a durable job store, new
-dashboard workflow, ACP/channel health model, or backend resume execution is
-shipped today.
+Status: architecture contract plus first daemon skeleton for tracked work. The
+daemon now has a durable tracked-work store and HTTP status/result/cancel
+surface separately from conversational `ask`/`ack`. Executor delivery,
+dashboard workflows, ACP/channel health handling, transport cancel, and backend
+resume execution are still future slices.
 
 ## Problem
 
@@ -35,6 +35,43 @@ Tracked work and ask/ack must remain separate primitives:
   state.
 - Ask reminder, pending reply, TTL, and reply-routing behavior remain owned by
   `AskTracker`.
+
+## Current daemon skeleton
+
+The first shipped daemon slice provides a neutral tracked-work record and HTTP
+API. It is intentionally not tied to Anya, a default orchestrator persona, or a
+specific backend.
+
+- `POST /jobs` / `POST /work` creates a durable work record and returns a
+  `job_id` / `work_id` with initial `queued` status.
+- `GET /jobs` / `GET /work` lists status records with optional filters for
+  state, owner, creator, Repowire session, and circle.
+- `GET /jobs/{job_id}` / `GET /work/{work_id}/status` returns the current
+  status read model.
+- `PATCH /jobs/{job_id}` / `PATCH /work/{work_id}` updates lifecycle state and
+  can append a progress note.
+- `GET /jobs/{job_id}/result` / `GET /work/{work_id}/result` returns terminal
+  result data, or
+  `result_state=not_ready` plus status while work is non-terminal.
+- `POST /jobs/{job_id}/cancel` / `POST /work/{work_id}/cancel` records an
+  audit-visible cancel request.
+
+The record includes job-facing and owner/source/scope fields such as `title`,
+`kind`, `created_by_peer_id`, `owner_peer_id`, `assigned_peer_id`,
+`source_kind`, `source_id`, `correlation_id`, `scope`, `circle`,
+`repowire_session_id`, `visibility`, and progress events. This API is a
+lifecycle foundation: it does not select executors, deliver work to transports,
+cancel live runtime sessions, expose MCP job tools, or update
+dashboard/Telegram/Slack UI yet.
+
+Use jobs when work needs durable status, progress history, result metadata, or
+cancellation. Use `ask` for a conversational request that another peer should
+close with `ack`. Use `schedule` for future delivery of a notify or ask.
+
+Terminal jobs cannot be moved back to non-terminal states in this slice. A
+terminal job may be updated with the same terminal state to add bounded
+metadata or progress notes, and omitted result fields preserve their existing
+values.
 
 ## State model
 
@@ -67,13 +104,18 @@ Recommended fields:
 
 | Field | Purpose |
 | --- | --- |
-| `work_id` | Daemon-generated stable identifier. |
+| `job_id` / `work_id` | Daemon-generated stable identifier. |
+| `title` | Short human-readable job title. |
+| `kind` | Small type label such as `verification`, `research`, or `handoff`. |
 | `state` | One state from the lifecycle table. |
 | `state_reason` | Short machine-readable reason such as `executor_busy`, `permission_required`, `deadline_elapsed`, `capability_missing`, or `cancel_requested`. |
 | `phase` | Optional executor-defined phase label for display. |
 | `progress` | Optional bounded progress object, for example `{"current": 2, "total": 5, "unit": "checks"}`. |
+| `progress_events` | Bounded operator history of progress notes and state observations. |
 | `owner_peer_id` | Peer that owns or last owned execution, when known. |
+| `assigned_peer_id` | Peer assigned to execute the job, when known. |
 | `repowire_session_id` | Durable session/workstream binding when known. |
+| `correlation_id` | Related ask/query correlation id, when known. |
 | `circle` | Visibility and routing scope. |
 | `created_by_peer_id` | Peer or service that created the work. |
 | `created_at` | Daemon acceptance time. |

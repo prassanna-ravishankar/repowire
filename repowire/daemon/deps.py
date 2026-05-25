@@ -23,6 +23,7 @@ class AppState(Protocol):
     config: Config
     schedule_store: Any
     scheduler: Any
+    work_store: Any
 
 
 # Global state - initialized by lifespan

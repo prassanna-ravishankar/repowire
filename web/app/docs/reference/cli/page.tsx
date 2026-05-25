@@ -84,6 +84,26 @@ repowire schedule delete SCHEDULE_ID`}
       </Cmd>
 
       <Cmd
+        name="repowire jobs"
+        usage={`repowire jobs create TITLE [--kind KIND] [--owner PEER_ID] [--assigned-peer PEER_ID] [--session SESSION_ID] [--json]
+repowire jobs list [--state STATE] [--owner PEER_ID] [--created-by PEER_ID] [--session SESSION_ID] [--json]
+repowire jobs show JOB_ID [--json]
+repowire jobs update JOB_ID --state STATE [--reason REASON] [--phase PHASE] [--note NOTE] [--result-summary TEXT] [--json]
+repowire jobs cancel JOB_ID [--requested-by PEER_ID] [--reason REASON] [--json]
+repowire jobs result JOB_ID [--json]`}
+      >
+        <p>
+          Create and inspect daemon-owned tracked work records. Jobs are durable control state in <Mono>state.db</Mono>; they can exist without a live peer, ask thread, schedule, or session. Creating a job does not dispatch work to an agent.
+        </p>
+        <p>
+          Use jobs for durable status, progress notes, result metadata, and cancellation. Use <Mono>ask</Mono> for a conversational request that another peer closes with <Mono>ack</Mono>. Use <Mono>schedule</Mono> for future delivery of a notify or ask.
+        </p>
+        <p>
+          Jobs commands exit non-zero on daemon connection failures, missing jobs, and HTTP errors. Pass <Mono>--json</Mono> for scriptable status, list, and result output.
+        </p>
+      </Cmd>
+
+      <Cmd
         name="repowire orchestrator persona"
         usage={`repowire orchestrator persona list
 repowire orchestrator persona show [NAME]

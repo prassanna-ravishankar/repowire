@@ -127,6 +127,30 @@ Create one-shot or recurring scheduled mesh messages. Without `--cron`, `WHEN_OR
 
 `schedule self` targets the current CLI peer identity by default and is the easiest way to wake the same session later. `schedule create` targets another peer and requires `--from-peer` so the daemon knows who the scheduled message is from. `--kind ask` opens an ask thread when the schedule fires; `notify` is fire-and-forget.
 
+## `repowire jobs`
+
+```bash
+repowire jobs create TITLE [--kind KIND] [--owner PEER_ID] [--assigned-peer PEER_ID] [--session SESSION_ID] [--correlation-id CORR_ID] [--circle CIRCLE] [--json]
+repowire jobs list [--state STATE] [--owner PEER_ID] [--created-by PEER_ID] [--session SESSION_ID] [--circle CIRCLE] [--json]
+repowire jobs show JOB_ID [--json]
+repowire jobs update JOB_ID --state STATE [--reason REASON] [--phase PHASE] [--note NOTE] [--result-summary TEXT] [--json]
+repowire jobs cancel JOB_ID [--requested-by PEER_ID] [--reason REASON] [--json]
+repowire jobs result JOB_ID [--json]
+```
+
+Create and inspect daemon-owned tracked work records. Jobs are durable control
+state in `state.db`; they can exist without a live peer, ask thread, schedule,
+or session. This first slice is an operator surface and API skeleton, not an
+execution engine: creating a job does not dispatch work to an agent.
+
+Use jobs when work needs durable status, progress notes, result metadata, or
+cancellation. Use `ask` for a conversational request that another peer should
+close with `ack`. Use `schedule` for future delivery of a notify or ask.
+
+Jobs commands are script-safe: daemon connection failures, missing jobs, and
+HTTP errors exit non-zero. Pass `--json` when scripts need the status, list, or
+result payload.
+
 ## `repowire orchestrator persona`
 
 ```bash

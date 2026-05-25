@@ -47,6 +47,7 @@ from repowire.daemon.routes import (
     schedules,
     sessions,
     websocket,
+    work,
 )
 from repowire.daemon.routes import spawn as spawn_routes
 from repowire.daemon.scheduler import Scheduler
@@ -58,6 +59,7 @@ from repowire.daemon.state.session_bindings import (
     SQLiteSessionBindingStore,
     resolve_repowire_session_id,
 )
+from repowire.daemon.state.work import SQLiteWorkStore
 from repowire.daemon.websocket_transport import WebSocketTransport
 
 logger = logging.getLogger(__name__)
@@ -254,6 +256,7 @@ def create_app(
             ttl_seconds=cfg.daemon.delivery_queue_ttl_seconds,
             max_per_peer=cfg.daemon.delivery_queue_max_per_peer,
         )
+        work_store = SQLiteWorkStore(state_db)
         # Store in app state for route handlers
         app.state.config = cfg
         app.state.transport = transport
@@ -268,6 +271,7 @@ def create_app(
             Path.home() / ".repowire" / "review_queue.json"
         )
         app.state.schedule_store = schedule_store
+        app.state.work_store = work_store
         app.state.state_db = state_db
         app.state.session_binding_store = session_binding_store
         app.state.queued_delivery_store = queued_delivery_store
@@ -438,6 +442,7 @@ def create_app(
     app.include_router(lifecycle.router)
     app.include_router(schedules.router)
     app.include_router(sessions.router)
+    app.include_router(work.router)
 
     _mount_http_mcp(app, _config or load_config())
 
@@ -557,6 +562,7 @@ def create_test_app(
             ttl_seconds=cfg.daemon.delivery_queue_ttl_seconds,
             max_per_peer=cfg.daemon.delivery_queue_max_per_peer,
         )
+        work_store = SQLiteWorkStore(state_db)
         app.state.config = cfg
         app.state.transport = transport
         app.state.query_tracker = query_tracker
@@ -569,6 +575,7 @@ def create_test_app(
         rq_dir = persistence_path.parent if persistence_path else Path.home() / ".repowire"
         app.state.review_queue_store = ReviewQueueStore(rq_dir / "review_queue.json")
         app.state.schedule_store = schedule_store
+        app.state.work_store = work_store
         app.state.state_db = state_db
         app.state.session_binding_store = session_binding_store
         app.state.queued_delivery_store = queued_delivery_store
@@ -651,6 +658,7 @@ def create_test_app(
     app.include_router(lifecycle.router)
     app.include_router(schedules.router)
     app.include_router(sessions.router)
+    app.include_router(work.router)
 
     _mount_http_mcp(app, config or Config())
 

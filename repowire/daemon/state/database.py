@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class StateDatabase:
@@ -238,6 +238,45 @@ class StateDatabase:
             )
             self.conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS tracked_work (
+                    work_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    kind TEXT NOT NULL DEFAULT 'general',
+                    state TEXT NOT NULL,
+                    state_reason TEXT,
+                    phase TEXT,
+                    progress_json TEXT NOT NULL DEFAULT '{}',
+                    progress_events_json TEXT NOT NULL DEFAULT '[]',
+                    owner_peer_id TEXT,
+                    assigned_peer_id TEXT,
+                    repowire_session_id TEXT,
+                    correlation_id TEXT,
+                    circle TEXT,
+                    created_by_peer_id TEXT,
+                    source_kind TEXT,
+                    source_id TEXT,
+                    scope TEXT,
+                    visibility TEXT NOT NULL DEFAULT 'circle',
+                    request_json TEXT NOT NULL DEFAULT '{}',
+                    deadline_at TEXT,
+                    expires_at TEXT,
+                    result_summary TEXT,
+                    result_data_json TEXT NOT NULL DEFAULT '{}',
+                    error_json TEXT NOT NULL DEFAULT '{}',
+                    artifacts_json TEXT NOT NULL DEFAULT '[]',
+                    provenance_json TEXT NOT NULL DEFAULT '{}',
+                    cancel_requested INTEGER NOT NULL DEFAULT 0,
+                    cancel_requested_at TEXT,
+                    cancel_requested_by_peer_id TEXT,
+                    cancellation_reason TEXT,
+                    completed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """,
+            )
+            self.conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_queued_deliveries_peer_created
                 ON queued_deliveries(peer_id, created_at)
                 """,
@@ -246,6 +285,27 @@ class StateDatabase:
                 """
                 CREATE INDEX IF NOT EXISTS idx_queued_deliveries_expires
                 ON queued_deliveries(expires_at)
+                """,
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tracked_work_state ON tracked_work(state)",
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_tracked_work_owner_updated
+                ON tracked_work(owner_peer_id, updated_at)
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_tracked_work_session_updated
+                ON tracked_work(repowire_session_id, updated_at)
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_tracked_work_circle_updated
+                ON tracked_work(circle, updated_at)
                 """,
             )
             self.conn.execute(
@@ -289,6 +349,13 @@ class StateDatabase:
                 VALUES (?, ?)
                 """,
                 (6, "queued deliveries for polling peers"),
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, description)
+                VALUES (?, ?)
+                """,
+                (7, "tracked work lifecycle records"),
             )
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
