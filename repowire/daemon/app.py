@@ -28,6 +28,7 @@ from repowire.daemon.auth import require_localhost
 from repowire.daemon.deps import cleanup_deps, init_deps
 from repowire.daemon.event_bus import EventBus
 from repowire.daemon.event_log import EventLog
+from repowire.daemon.job_runner import JobRunner
 from repowire.daemon.lifecycle_handler import LifecycleHandler
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_delivery import PeerDeliveryService
@@ -51,6 +52,7 @@ from repowire.daemon.routes import (
 )
 from repowire.daemon.routes import spawn as spawn_routes
 from repowire.daemon.scheduler import Scheduler
+from repowire.daemon.spawn_service import SpawnService
 from repowire.daemon.state import StateDatabase
 from repowire.daemon.state.events import SQLiteEventStore
 from repowire.daemon.state.queued_deliveries import SQLiteQueuedDeliveryStore
@@ -298,6 +300,20 @@ def create_app(
             queued_delivery_store=queued_delivery_store,
         )
         app.state.peer_delivery = peer_delivery
+        spawn_service = SpawnService(
+            config=cfg,
+            spawned_pane_ids=spawn_routes._SPAWNED_PANE_IDS,
+            background_tasks=spawn_routes._BACKGROUND_TASKS,
+        )
+        app.state.spawn_service = spawn_service
+        job_runner = JobRunner(
+            config=cfg,
+            work_store=work_store,
+            peer_registry=peer_registry,
+            peer_delivery=peer_delivery,
+            spawn_service=spawn_service,
+        )
+        app.state.job_runner = job_runner
         scheduler = Scheduler(
             store=schedule_store,
             peer_registry=peer_registry,
@@ -314,6 +330,7 @@ def create_app(
 
         await peer_registry.start()
         await scheduler.start()
+        await job_runner.start()
         init_deps(
             cfg, peer_registry, app.state,
             lifecycle_handler=lifecycle_handler,
@@ -393,6 +410,7 @@ def create_app(
         if relay_client:
             await relay_client.stop()
         await acp_manager.close()
+        await job_runner.stop()
         await scheduler.stop()
         event_log.save()
         peer_registry._persist_mappings()

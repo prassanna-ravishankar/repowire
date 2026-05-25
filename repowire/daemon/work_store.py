@@ -10,6 +10,7 @@ from uuid import uuid4
 
 WorkState = Literal[
     "queued",
+    "dispatching",
     "delivered",
     "running",
     "awaiting_input",
@@ -25,6 +26,7 @@ TerminalWorkState = Literal["completed", "failed", "cancelled", "expired", "unav
 WORK_STATES: frozenset[str] = frozenset(
     {
         "queued",
+        "dispatching",
         "delivered",
         "running",
         "awaiting_input",
@@ -145,6 +147,11 @@ class TrackedWork:
             "cancel_requested_by_peer_id": self.cancel_requested_by_peer_id,
             "cancellation_reason": self.cancellation_reason,
             "protocol_cancel": self.provenance.get("protocol_cancel"),
+            "request": self.request,
+            "provenance": self.provenance,
+            "execution": self.request.get("execution", {}),
+            "runner": self.provenance.get("runner", {}),
+            "due_at": ((self.request.get("execution", {}).get("schedule", {}) or {}).get("due_at")),
             "links": self.provenance.get("links", {}),
         }
 
@@ -205,6 +212,39 @@ class WorkStoreProtocol(Protocol):
         circle: str | None = None,
     ) -> list[TrackedWork]: ...
 
+    def acquire_for_dispatch(
+        self,
+        work_id: str,
+        *,
+        runner_owner_id: str,
+        lease_until: str,
+        attempt_id: str | None = None,
+        ignore_due_at: bool = False,
+        retry: bool = False,
+    ) -> TrackedWork | None: ...
+
+    def recover_stale_dispatching(
+        self,
+        *,
+        now: str,
+        runner_owner_id: str | None = None,
+    ) -> list[TrackedWork]: ...
+
+    def update_attempt(
+        self,
+        work_id: str,
+        *,
+        attempt_id: str,
+        status: str | None = None,
+        phase: str | None = None,
+        assigned_peer_id: str | None = None,
+        assigned_peer_info: dict[str, Any] | None = None,
+        tmux: dict[str, Any] | None = None,
+        correlation_id: str | None = None,
+        delivery_state: str | None = None,
+        error: dict[str, Any] | None = None,
+    ) -> TrackedWork | None: ...
+
     def update_state(
         self,
         work_id: str,
@@ -219,6 +259,7 @@ class WorkStoreProtocol(Protocol):
         error: dict[str, Any] | None = None,
         artifacts: list[Any] | None = None,
         provenance: dict[str, Any] | None = None,
+        attempt_id: str | None = None,
     ) -> TrackedWork | None: ...
 
     def cancel(

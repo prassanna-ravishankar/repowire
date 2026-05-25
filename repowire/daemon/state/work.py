@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from repowire.daemon.state.database import StateDatabase
 from repowire.daemon.work_store import (
@@ -17,6 +18,30 @@ from repowire.daemon.work_store import (
     now_iso,
     validate_state,
 )
+
+
+def _runner_provenance(work: TrackedWork) -> dict[str, Any]:
+    provenance = dict(work.provenance)
+    runner = dict(provenance.get("runner") or {})
+    runner.setdefault("attempt_count", len(runner.get("attempts") or []))
+    runner.setdefault("attempts", [])
+    provenance["runner"] = runner
+    return provenance
+
+
+def _runner_current_attempt(work: TrackedWork) -> str | None:
+    runner = (work.provenance or {}).get("runner") or {}
+    current = runner.get("current_attempt_id")
+    return current if isinstance(current, str) and current else None
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 class SQLiteWorkStore:
@@ -210,6 +235,266 @@ class SQLiteWorkStore:
         ).fetchall()
         return [work for row in rows if (work := self._row_to_work(row)) is not None]
 
+    def _replace_work_json(
+        self,
+        work_id: str,
+        *,
+        state: str,
+        state_reason: str | None,
+        phase: str | None,
+        assigned_peer_id: str | None,
+        correlation_id: str | None,
+        provenance: dict[str, Any],
+        error: dict[str, Any] | None = None,
+        completed_at: str | None = None,
+    ) -> None:
+        now = now_iso()
+        self._conn.execute(
+            """
+            UPDATE tracked_work SET
+                state = ?, state_reason = ?, phase = ?, assigned_peer_id = ?,
+                correlation_id = ?, provenance_json = ?, error_json = ?,
+                completed_at = ?, updated_at = ?
+            WHERE work_id = ?
+            """,
+            (
+                state,
+                state_reason,
+                phase,
+                assigned_peer_id,
+                correlation_id,
+                json_dumps(provenance),
+                json_dumps(error or {}),
+                completed_at,
+                now,
+                work_id,
+            ),
+        )
+
+    def acquire_for_dispatch(
+        self,
+        work_id: str,
+        *,
+        runner_owner_id: str,
+        lease_until: str,
+        attempt_id: str | None = None,
+        ignore_due_at: bool = False,
+        retry: bool = False,
+    ) -> TrackedWork | None:
+        now = now_iso()
+        attempt_id = attempt_id or f"attempt-{uuid4().hex[:12]}"
+        with self._conn:
+            existing = self.get(work_id)
+            if existing is None or existing.cancel_requested:
+                return None
+            allowed = (
+                {"queued", "failed", "unavailable"}
+                if not retry
+                else {"failed", "unavailable", "delivered"}
+            )
+            if existing.state not in allowed:
+                return None
+            if retry and existing.state not in {"failed", "unavailable", "delivered"}:
+                return None
+            due_at = (((existing.request or {}).get("execution") or {}).get("schedule") or {}).get(
+                "due_at"
+            )
+            due = _parse_iso(due_at)
+            if due and not ignore_due_at and due > datetime.now(timezone.utc):
+                return None
+            provenance = _runner_provenance(existing)
+            runner = provenance["runner"]
+            attempts = list(runner.get("attempts") or [])
+            attempt = {
+                "attempt_id": attempt_id,
+                "status": "dispatching",
+                "phase": "acquired",
+                "started_at": now,
+                "completed_at": None,
+                "runner_owner_id": runner_owner_id,
+                "lease_until": lease_until,
+                "assigned_peer_id": existing.assigned_peer_id,
+                "assigned_peer_info": {},
+                "tmux": {},
+                "correlation_id": None,
+                "delivery_state": None,
+                "error": {},
+            }
+            attempts.append(attempt)
+            runner.update(
+                {
+                    "attempt_count": len(attempts),
+                    "current_attempt_id": attempt_id,
+                    "runner_owner_id": runner_owner_id,
+                    "acquired_at": now,
+                    "lease_until": lease_until,
+                    "attempts": attempts,
+                }
+            )
+            provenance["runner"] = runner
+            self._replace_work_json(
+                work_id,
+                state="dispatching",
+                state_reason="dispatching",
+                phase="acquired",
+                assigned_peer_id=existing.assigned_peer_id,
+                correlation_id=existing.correlation_id,
+                provenance=provenance,
+            )
+        return self.get(work_id)
+
+    def recover_stale_dispatching(
+        self,
+        *,
+        now: str,
+        runner_owner_id: str | None = None,
+    ) -> list[TrackedWork]:
+        recovered: list[TrackedWork] = []
+        rows = self._conn.execute(
+            "SELECT * FROM tracked_work WHERE state IN ('dispatching', 'delivered')"
+        ).fetchall()
+        with self._conn:
+            for row in rows:
+                work = self._row_to_work(row)
+                if work is None:
+                    continue
+                provenance = _runner_provenance(work)
+                runner = provenance["runner"]
+                lease_until = runner.get("lease_until")
+                lease = _parse_iso(lease_until)
+                current_time = _parse_iso(now) or datetime.now(timezone.utc)
+                if lease and lease > current_time:
+                    continue
+                attempt_id = runner.get("current_attempt_id")
+                attempts = list(runner.get("attempts") or [])
+                for attempt in attempts:
+                    if attempt.get("attempt_id") == attempt_id:
+                        attempt.update(
+                            {
+                                "status": "unavailable",
+                                "phase": "runner_interrupted",
+                                "completed_at": now,
+                                "error": {"reason": "runner_interrupted"},
+                            }
+                        )
+                        break
+                runner.update(
+                    {
+                        "attempts": attempts,
+                        "last_error": {"reason": "runner_interrupted"},
+                        "current_attempt_id": attempt_id,
+                    }
+                )
+                provenance["runner"] = runner
+                self._replace_work_json(
+                    work.work_id,
+                    state="unavailable",
+                    state_reason="runner_interrupted",
+                    phase="runner_interrupted",
+                    assigned_peer_id=work.assigned_peer_id,
+                    correlation_id=work.correlation_id,
+                    provenance=provenance,
+                    error={"reason": "runner_interrupted"},
+                    completed_at=now,
+                )
+                refreshed = self.get(work.work_id)
+                if refreshed is not None:
+                    recovered.append(refreshed)
+        return recovered
+
+    def update_attempt(
+        self,
+        work_id: str,
+        *,
+        attempt_id: str,
+        status: str | None = None,
+        phase: str | None = None,
+        assigned_peer_id: str | None = None,
+        assigned_peer_info: dict[str, Any] | None = None,
+        tmux: dict[str, Any] | None = None,
+        correlation_id: str | None = None,
+        delivery_state: str | None = None,
+        error: dict[str, Any] | None = None,
+    ) -> TrackedWork | None:
+        with self._conn:
+            existing = self.get(work_id)
+            if existing is None:
+                return None
+            provenance = _runner_provenance(existing)
+            runner = provenance["runner"]
+            attempts = list(runner.get("attempts") or [])
+            found = False
+            completed_at = existing.completed_at
+            for attempt in attempts:
+                if attempt.get("attempt_id") != attempt_id:
+                    continue
+                found = True
+                if status is not None:
+                    attempt["status"] = status
+                if phase is not None:
+                    attempt["phase"] = phase
+                if assigned_peer_id is not None:
+                    attempt["assigned_peer_id"] = assigned_peer_id
+                if assigned_peer_info is not None:
+                    attempt["assigned_peer_info"] = assigned_peer_info
+                if tmux is not None:
+                    attempt["tmux"] = tmux
+                if correlation_id is not None:
+                    attempt["correlation_id"] = correlation_id
+                if delivery_state is not None:
+                    attempt["delivery_state"] = delivery_state
+                if error is not None:
+                    attempt["error"] = error
+                if status in {"delivered", "failed", "unavailable", "interrupted", "cancelled"}:
+                    attempt["completed_at"] = now_iso()
+                break
+            if not found:
+                return None
+            runner["attempts"] = attempts
+            if error:
+                runner["last_error"] = error
+            provenance["runner"] = runner
+            is_current = runner.get("current_attempt_id") == attempt_id
+            if not is_current:
+                self._conn.execute(
+                    """
+                    UPDATE tracked_work SET provenance_json = ?, updated_at = ?
+                    WHERE work_id = ?
+                    """,
+                    (json_dumps(provenance), now_iso(), work_id),
+                )
+                return self.get(work_id)
+            state = existing.state
+            reason = existing.state_reason
+            new_phase = phase if phase is not None else existing.phase
+            if status == "delivered":
+                state, reason = "delivered", "ask_delivered"
+            elif status == "failed":
+                state, reason = "failed", (error or {}).get("reason", "dispatch_failed")
+                completed_at = completed_at or now_iso()
+            elif status == "unavailable":
+                state, reason = "unavailable", (error or {}).get("reason", "unavailable")
+                completed_at = completed_at or now_iso()
+            elif status == "cancelled":
+                state, reason = "cancelled", "cancel_requested"
+                completed_at = completed_at or now_iso()
+            self._replace_work_json(
+                work_id,
+                state=state,
+                state_reason=reason,
+                phase=new_phase,
+                assigned_peer_id=assigned_peer_id
+                if assigned_peer_id is not None
+                else existing.assigned_peer_id,
+                correlation_id=correlation_id
+                if correlation_id is not None
+                else existing.correlation_id,
+                provenance=provenance,
+                error=error if error is not None else existing.error,
+                completed_at=completed_at,
+            )
+        return self.get(work_id)
+
     def update_state(
         self,
         work_id: str,
@@ -224,11 +509,18 @@ class SQLiteWorkStore:
         error: dict[str, Any] | None = None,
         artifacts: list[Any] | None = None,
         provenance: dict[str, Any] | None = None,
+        attempt_id: str | None = None,
     ) -> TrackedWork | None:
         validate_state(state)
         existing = self.get(work_id)
         if existing is None:
             return None
+        current_attempt_id = _runner_current_attempt(existing)
+        if current_attempt_id and state in {"completed", "failed", "cancelled"}:
+            if not attempt_id:
+                raise ValueError("attempt_id is required for runner-managed job updates")
+            if attempt_id != current_attempt_id:
+                raise RuntimeError("stale_attempt")
         if existing.terminal and state != existing.state:
             raise ValueError(
                 f"terminal work {work_id} is already {existing.state}; "

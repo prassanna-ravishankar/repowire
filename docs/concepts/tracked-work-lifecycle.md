@@ -1,10 +1,12 @@
 # Tracked work lifecycle
 
-Status: architecture contract plus first daemon skeleton for tracked work. The
-daemon now has a durable tracked-work store and HTTP status/result/cancel
-surface separately from conversational `ask`/`ack`. Executor delivery,
-dashboard workflows, ACP/channel health handling beyond the narrow cancel hook,
-and backend resume execution are still future slices.
+Status: architecture contract plus first durable job-runner slice. The daemon
+now has a durable tracked-work store and lifecycle surface separately from
+conversational `ask`/`ack`, persisted execution spec, HTTP/CLI
+create-run-retry-cancel surfaces, and a daemon `JobRunner` that dispatches work
+via `ask`. Dashboard workflows, MCP mirroring of run/retry, ACP/channel health
+handling beyond the narrow cancel hook, and backend resume execution remain
+future slices.
 
 ## Problem
 
@@ -36,20 +38,28 @@ Tracked work and ask/ack must remain separate primitives:
 - Ask reminder, pending reply, TTL, and reply-routing behavior remain owned by
   `AskTracker`.
 
-## Current daemon skeleton
+## Current daemon slice
 
-The first shipped daemon slice provides a neutral tracked-work record and HTTP
-API. It is intentionally not tied to Anya, a default orchestrator persona, or a
-specific backend.
+The current daemon slice provides a neutral tracked-work record, HTTP API, CLI,
+and daemon runner. It is intentionally not tied to Anya, a default orchestrator
+persona, or a specific backend.
 
-- `POST /jobs` / `POST /work` creates a durable work record and returns a
-  `job_id` / `work_id` with initial `queued` status.
+- `POST /jobs` / `POST /work` creates a durable work record, persists
+  `request.execution`, and returns a `job_id` / `work_id` with initial
+  `queued` status.
 - `GET /jobs` / `GET /work` lists status records with optional filters for
   state, owner, creator, Repowire session, and circle.
 - `GET /jobs/{job_id}` / `GET /work/{work_id}/status` returns the current
   status read model.
+- `POST /jobs/{job_id}/run` ignores `due_at` and manually dispatches queued,
+  failed, or unavailable work.
+- `POST /jobs/{job_id}/retry` dispatches failed, unavailable, or delivered
+  work and preserves previous attempt records. Delivered retry is an explicit
+  operator recovery path for a worker that received the ask but died before
+  reporting status.
 - `PATCH /jobs/{job_id}` / `PATCH /work/{work_id}` updates lifecycle state and
-  can append a progress note.
+  can append a progress note. Runner-managed terminal updates must include the
+  current `attempt_id`; stale attempt ids return conflict.
 - `GET /jobs/{job_id}/result` / `GET /work/{work_id}/result` returns terminal
   result data, or
   `result_state=not_ready` plus status while work is non-terminal.
@@ -62,10 +72,22 @@ specific backend.
 The record includes job-facing and owner/source/scope fields such as `title`,
 `kind`, `created_by_peer_id`, `owner_peer_id`, `assigned_peer_id`,
 `source_kind`, `source_id`, `correlation_id`, `scope`, `circle`,
-`repowire_session_id`, `visibility`, and progress events. This API is a
-lifecycle foundation: it does not select executors, deliver work to transports,
-cancel live runtime sessions outside the explicit ACP-client case, or update
-dashboard/Telegram/Slack UI yet.
+`repowire_session_id`, `visibility`, and progress events. Execution metadata is
+persisted under `request.execution` with prompt, target, schedule, and delivery
+subkeys. Runner provenance is persisted under `provenance.runner`, including the
+current attempt id, lease, attempt count, and bounded attempt records. The
+runner uses wake-on-create plus sleep-until-next-due behavior; it does not scan
+continuously when no job is due.
+
+Executor selection is deliberately small: an exact assigned peer id wins; an
+ambiguous display name is rejected before create/run; otherwise `path` +
+`backend` + optional `profile` spawns a new peer through the shared spawn
+guardrails. Delivery uses `ask` and records a correlation id. Ack confirms only receipt.
+The worker prompt requires an immediate `state=running` update with the current
+attempt id before longer work, then a terminal lifecycle update with the same
+attempt id on completion. If a delivered job never sends that start heartbeat
+before its dispatch lease expires, the runner may mark it unavailable so it can
+be retried or inspected.
 
 Use jobs when work needs durable status, progress history, result metadata, or
 cancellation. Use `ask` for a conversational request that another peer should
@@ -83,6 +105,7 @@ The daemon should expose these states as the canonical tracked-work lifecycle:
 | State | Meaning | Terminal |
 | --- | --- | --- |
 | `queued` | The daemon accepted the work, stored it, and has not yet selected or reached an executor. | No |
+| `dispatching` | A runner atomically acquired the work and is within its visible dispatch lease. | No |
 | `delivered` | The daemon delivered the work request to the selected peer/session/transport, but the executor has not reported active execution. | No |
 | `running` | The executor has accepted the work and is actively working. | No |
 | `awaiting_input` | Execution is paused waiting for user, peer, approval, credential, or external input. | No |

@@ -1,4 +1,5 @@
 """Tests for repowire.peer_describe (pure-function module + resolver)."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -162,22 +163,29 @@ class TestFetchPendingAsks:
             assert request.url.path == "/asks/pending"
             assert request.url.params["peer_id"] == "p-1"
             assert request.url.params["direction"] == "both"
-            return httpx.Response(200, json={
-                "asks": [
-                    {
-                        "correlation_id": "ask-a",
-                        "from_peer": "alice", "to_peer": "bob",
-                        "text": "hello", "created_at": "2026-05-15T14:53:00+00:00",
-                        "direction": "inbound",
-                    },
-                    {
-                        "correlation_id": "ask-b",
-                        "from_peer": "bob", "to_peer": "carol",
-                        "text": "out", "created_at": "2026-05-15T14:54:00+00:00",
-                        "direction": "outbound",
-                    },
-                ],
-            })
+            return httpx.Response(
+                200,
+                json={
+                    "asks": [
+                        {
+                            "correlation_id": "ask-a",
+                            "from_peer": "alice",
+                            "to_peer": "bob",
+                            "text": "hello",
+                            "created_at": "2026-05-15T14:53:00+00:00",
+                            "direction": "inbound",
+                        },
+                        {
+                            "correlation_id": "ask-b",
+                            "from_peer": "bob",
+                            "to_peer": "carol",
+                            "text": "out",
+                            "created_at": "2026-05-15T14:54:00+00:00",
+                            "direction": "outbound",
+                        },
+                    ],
+                },
+            )
 
         with _client(handler) as client:
             asks = fetch_pending_asks(client, "http://test", "p-1")
@@ -202,32 +210,44 @@ class TestFetchPendingAsks:
 class TestFetchRecentActivity:
     def test_filters_by_peer_id_or_name(self):
         def handler(_request):
-            return httpx.Response(200, json=[
-                # Inbound (notification to p-1)
-                {
-                    "id": "1", "type": "notification",
-                    "timestamp": "2026-05-15T14:50:00+00:00",
-                    "from": "alice", "to": "bob",
-                    "from_peer_id": "p-a", "to_peer_id": "p-1",
-                    "text": "hi bob",
-                },
-                # Outbound (p-1 -> someone)
-                {
-                    "id": "2", "type": "notification",
-                    "timestamp": "2026-05-15T14:51:00+00:00",
-                    "from": "bob", "to": "carol",
-                    "from_peer_id": "p-1", "to_peer_id": "p-c",
-                    "text": "bye carol",
-                },
-                # Irrelevant
-                {
-                    "id": "3", "type": "notification",
-                    "timestamp": "2026-05-15T14:52:00+00:00",
-                    "from": "alice", "to": "carol",
-                    "from_peer_id": "p-a", "to_peer_id": "p-c",
-                    "text": "nope",
-                },
-            ])
+            return httpx.Response(
+                200,
+                json=[
+                    # Inbound (notification to p-1)
+                    {
+                        "id": "1",
+                        "type": "notification",
+                        "timestamp": "2026-05-15T14:50:00+00:00",
+                        "from": "alice",
+                        "to": "bob",
+                        "from_peer_id": "p-a",
+                        "to_peer_id": "p-1",
+                        "text": "hi bob",
+                    },
+                    # Outbound (p-1 -> someone)
+                    {
+                        "id": "2",
+                        "type": "notification",
+                        "timestamp": "2026-05-15T14:51:00+00:00",
+                        "from": "bob",
+                        "to": "carol",
+                        "from_peer_id": "p-1",
+                        "to_peer_id": "p-c",
+                        "text": "bye carol",
+                    },
+                    # Irrelevant
+                    {
+                        "id": "3",
+                        "type": "notification",
+                        "timestamp": "2026-05-15T14:52:00+00:00",
+                        "from": "alice",
+                        "to": "carol",
+                        "from_peer_id": "p-a",
+                        "to_peer_id": "p-c",
+                        "text": "nope",
+                    },
+                ],
+            )
 
         with _client(handler) as client:
             events = fetch_recent_activity(client, "http://test", "p-1", "bob")
@@ -249,16 +269,22 @@ class TestFetchRecentActivity:
 
     def test_limit_caps_results(self):
         def handler(_request):
-            return httpx.Response(200, json=[
-                {
-                    "id": str(i), "type": "notification",
-                    "timestamp": f"2026-05-15T14:{50 + i:02d}:00+00:00",
-                    "from": "alice", "to": "bob",
-                    "from_peer_id": "p-a", "to_peer_id": "p-1",
-                    "text": f"msg {i}",
-                }
-                for i in range(10)
-            ])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": str(i),
+                        "type": "notification",
+                        "timestamp": f"2026-05-15T14:{50 + i:02d}:00+00:00",
+                        "from": "alice",
+                        "to": "bob",
+                        "from_peer_id": "p-a",
+                        "to_peer_id": "p-1",
+                        "text": f"msg {i}",
+                    }
+                    for i in range(10)
+                ],
+            )
 
         with _client(handler) as client:
             events = fetch_recent_activity(client, "http://test", "p-1", "bob", limit=3)
@@ -277,26 +303,37 @@ class TestBuildSnapshot:
         def handler(request):
             path = request.url.path
             if path == "/asks/pending":
-                return httpx.Response(200, json={
-                    "asks": [
+                return httpx.Response(
+                    200,
+                    json={
+                        "asks": [
+                            {
+                                "correlation_id": "ask-in",
+                                "from_peer": "alice",
+                                "to_peer": "bob",
+                                "text": "?",
+                                "created_at": "2026-05-15T14:53:00+00:00",
+                                "direction": "inbound",
+                            },
+                        ],
+                    },
+                )
+            if path == "/events":
+                return httpx.Response(
+                    200,
+                    json=[
                         {
-                            "correlation_id": "ask-in",
-                            "from_peer": "alice", "to_peer": "bob",
-                            "text": "?", "created_at": "2026-05-15T14:53:00+00:00",
-                            "direction": "inbound",
+                            "id": "1",
+                            "type": "notification",
+                            "timestamp": "2026-05-15T14:54:00+00:00",
+                            "from": "alice",
+                            "to": "bob",
+                            "from_peer_id": "p-a",
+                            "to_peer_id": "p-1",
+                            "text": "hi",
                         },
                     ],
-                })
-            if path == "/events":
-                return httpx.Response(200, json=[
-                    {
-                        "id": "1", "type": "notification",
-                        "timestamp": "2026-05-15T14:54:00+00:00",
-                        "from": "alice", "to": "bob",
-                        "from_peer_id": "p-a", "to_peer_id": "p-1",
-                        "text": "hi",
-                    },
-                ])
+                )
             return httpx.Response(404)
 
         with _client(handler) as client:
@@ -373,14 +410,21 @@ class TestHumanizeLastSeen:
 
 def test_dataclass_construct_smoke():
     a = PendingAsk(
-        correlation_id="ask-1", direction="inbound",
-        from_peer="alice", to_peer="bob", text="?", created_at="now",
+        correlation_id="ask-1",
+        direction="inbound",
+        from_peer="alice",
+        to_peer="bob",
+        text="?",
+        created_at="now",
     )
     assert a.direction == "inbound"
 
     e = ActivityEvent(
-        event_type="notification", timestamp="now",
-        direction="outbound", counterparty="alice", text="hi",
+        event_type="notification",
+        timestamp="now",
+        direction="outbound",
+        counterparty="alice",
+        text="hi",
     )
     assert e.event_type == "notification"
 
@@ -473,6 +517,7 @@ def test_compute_git_status_non_git_dir(tmp_path):
 
 def _git(cwd, *args):
     import subprocess
+
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
 
@@ -493,9 +538,9 @@ def test_compute_git_status_dirty_and_untracked(tmp_path):
     _git(tmp_path, "add", "a.txt")
     _git(tmp_path, "commit", "-m", "init")
     (tmp_path / "a.txt").write_text("changed")  # unstaged
-    (tmp_path / "b.txt").write_text("new")       # untracked
+    (tmp_path / "b.txt").write_text("new")  # untracked
     (tmp_path / "c.txt").write_text("staged")
-    _git(tmp_path, "add", "c.txt")               # staged
+    _git(tmp_path, "add", "c.txt")  # staged
     res = compute_git_status(str(tmp_path))
     assert res is not None
     assert res["dirty"] == 2  # a.txt modified + b.txt untracked
@@ -504,11 +549,18 @@ def test_compute_git_status_dirty_and_untracked(tmp_path):
 
 def test_compute_git_status_ahead(tmp_path):
     import subprocess
+
     # Create a bare upstream, clone, commit ahead.
     upstream = tmp_path / "upstream.git"
     work = tmp_path / "work"
-    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(upstream)], check=True, capture_output=True)
-    subprocess.run(["git", "clone", "-q", str(upstream), str(work)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main", str(upstream)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "clone", "-q", str(upstream), str(work)], check=True, capture_output=True
+    )
     _git(work, "config", "user.email", "t@t")
     _git(work, "config", "user.name", "t")
     _git(work, "commit", "--allow-empty", "-m", "first")
@@ -522,16 +574,25 @@ def test_compute_git_status_ahead(tmp_path):
 
 def test_compute_git_status_behind(tmp_path):
     import subprocess
+
     upstream = tmp_path / "upstream.git"
     work_a = tmp_path / "a"
     work_b = tmp_path / "b"
-    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(upstream)], check=True, capture_output=True)
-    subprocess.run(["git", "clone", "-q", str(upstream), str(work_a)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main", str(upstream)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "clone", "-q", str(upstream), str(work_a)], check=True, capture_output=True
+    )
     _git(work_a, "config", "user.email", "t@t")
     _git(work_a, "config", "user.name", "t")
     _git(work_a, "commit", "--allow-empty", "-m", "first")
     _git(work_a, "push", "-q", "origin", "main")
-    subprocess.run(["git", "clone", "-q", str(upstream), str(work_b)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", "-q", str(upstream), str(work_b)], check=True, capture_output=True
+    )
     _git(work_b, "config", "user.email", "t@t")
     _git(work_b, "config", "user.name", "t")
     # Now push more from A so B is behind.
@@ -545,16 +606,25 @@ def test_compute_git_status_behind(tmp_path):
 
 def test_compute_git_status_ahead_and_behind(tmp_path):
     import subprocess
+
     upstream = tmp_path / "upstream.git"
     work_a = tmp_path / "a"
     work_b = tmp_path / "b"
-    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(upstream)], check=True, capture_output=True)
-    subprocess.run(["git", "clone", "-q", str(upstream), str(work_a)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main", str(upstream)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "clone", "-q", str(upstream), str(work_a)], check=True, capture_output=True
+    )
     _git(work_a, "config", "user.email", "t@t")
     _git(work_a, "config", "user.name", "t")
     _git(work_a, "commit", "--allow-empty", "-m", "first")
     _git(work_a, "push", "-q", "origin", "main")
-    subprocess.run(["git", "clone", "-q", str(upstream), str(work_b)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", "-q", str(upstream), str(work_b)], check=True, capture_output=True
+    )
     _git(work_b, "config", "user.email", "t@t")
     _git(work_b, "config", "user.name", "t")
     # A pushes ahead by 1.

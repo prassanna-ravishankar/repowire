@@ -81,8 +81,9 @@ async def test_job_status_show_result_update_and_cancel_wrap_jobs_api() -> None:
         await _tool("job_show")("work-abc123")
         await _tool("job_update")(
             "work-abc123",
-            state="running",
+            state="completed",
             progress_note="started",
+            attempt_id="attempt-1",
         )
         await _tool("job_result")("work-abc123")
         cancel_result = await _tool("job_cancel")("work-abc123", reason="stale")
@@ -93,7 +94,7 @@ async def test_job_status_show_result_update_and_cancel_wrap_jobs_api() -> None:
         (
             "PATCH",
             "/jobs/work-abc123",
-            {"state": "running", "progress_note": "started"},
+            {"state": "completed", "progress_note": "started", "attempt_id": "attempt-1"},
             None,
         ),
         ("GET", "/jobs/work-abc123/result", None, None),

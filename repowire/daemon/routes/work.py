@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state
 from repowire.daemon.work_store import TrackedWork
@@ -32,6 +33,15 @@ class WorkCreateRequest(BaseModel):
     deadline_at: str | None = None
     expires_at: str | None = None
     provenance: dict[str, Any] = Field(default_factory=dict)
+    prompt: str | None = Field(None, description="Inline durable job prompt")
+    prompt_file: str | None = Field(None, description="Read durable job prompt from file")
+    path: str | None = Field(None, description="Target working directory for spawned peer")
+    backend: AgentType | None = Field(
+        None, description="Backend to spawn when assigned_peer_id is absent"
+    )
+    profile: str | None = Field(None, description="Optional backend profile")
+    due_at: str | None = Field(None, description="Optional scheduled due time")
+    result_surface: str | None = Field(None, description="Metadata-only result surface")
 
 
 class WorkCancelRequest(BaseModel):
@@ -39,8 +49,13 @@ class WorkCancelRequest(BaseModel):
     reason: str = "cancel_requested"
 
 
+class WorkRunRequest(BaseModel):
+    requested_by_peer_id: str | None = None
+
+
 class WorkUpdateRequest(BaseModel):
     state: str
+    attempt_id: str | None = None
     state_reason: str | None = None
     phase: str | None = None
     progress: dict[str, Any] | None = None
@@ -86,6 +101,87 @@ def _store():
     return store
 
 
+def _job_runner():
+    state = get_app_state()
+    runner = getattr(state, "job_runner", None)
+    if runner is None:
+        raise RuntimeError("job_runner not initialized")
+    return runner
+
+
+def _read_prompt_file(path: str) -> str:
+    from pathlib import Path
+
+    return Path(path).expanduser().read_text(encoding="utf-8")
+
+
+def _merge_execution_request(
+    request: WorkCreateRequest, assigned_peer_id: str | None
+) -> dict[str, Any]:
+    body = dict(request.request)
+    execution = dict(body.get("execution") or {})
+    prompt = dict(execution.get("prompt") or {})
+    if request.prompt_file:
+        prompt.update(
+            {
+                "body": _read_prompt_file(request.prompt_file),
+                "source": "file",
+                "source_path": request.prompt_file,
+            }
+        )
+    elif request.prompt is not None:
+        prompt.update({"body": request.prompt, "source": "inline"})
+    elif not prompt:
+        prompt.update({"body": request.title, "source": "title"})
+    target = dict(execution.get("target") or {})
+    if request.path is not None:
+        target["path"] = request.path
+    if request.backend is not None:
+        target["backend"] = request.backend.value
+    if request.profile is not None:
+        target["profile"] = request.profile
+    if assigned_peer_id is not None:
+        target["assigned_peer_id"] = assigned_peer_id
+    schedule = dict(execution.get("schedule") or {})
+    if request.due_at is not None:
+        schedule["due_at"] = request.due_at
+    delivery = dict(execution.get("delivery") or {})
+    delivery.setdefault("kind", "ask")
+    if request.result_surface is not None:
+        delivery["result_surface"] = request.result_surface
+    execution.update(
+        {"prompt": prompt, "target": target, "schedule": schedule, "delivery": delivery}
+    )
+    body["execution"] = execution
+    return body
+
+
+async def _canonical_assigned_peer(identifier: str | None, circle: str | None) -> str | None:
+    if not identifier:
+        return None
+    if identifier.startswith("repow-"):
+        return identifier
+    registry = get_app_state().peer_registry
+    resolved = await registry.resolve_peer_strict(identifier, circle=circle)
+    if isinstance(resolved, list):
+        if not resolved:
+            raise HTTPException(
+                status_code=404, detail={"error": "assigned_peer_not_found", "peer": identifier}
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "ambiguous_assigned_peer",
+                "peer": identifier,
+                "candidates": [
+                    {"peer_id": p.peer_id, "display_name": p.display_name, "circle": p.circle}
+                    for p in resolved
+                ],
+            },
+        )
+    return resolved.peer_id
+
+
 async def _attempt_protocol_cancel(work: TrackedWork) -> dict[str, Any]:
     """Try a bounded runtime-level cancel for the current architecture slice.
 
@@ -120,12 +216,16 @@ async def _attempt_protocol_cancel(work: TrackedWork) -> dict[str, Any]:
             manager.cancel_existing(work.assigned_peer_id),
             timeout=2.0,
         )
-        return result if isinstance(result, dict) else {
-            "attempted": True,
-            "status": "sent",
-            "reason": "session_cancel_sent",
-            "peer_id": work.assigned_peer_id,
-        }
+        return (
+            result
+            if isinstance(result, dict)
+            else {
+                "attempted": True,
+                "status": "sent",
+                "reason": "session_cancel_sent",
+                "peer_id": work.assigned_peer_id,
+            }
+        )
     except TimeoutError:
         return {
             "attempted": True,
@@ -162,12 +262,14 @@ async def create_work(
     _: str | None = Depends(require_auth),
 ) -> WorkCreateResponse:
     store = _store()
+    assigned_peer_id = await _canonical_assigned_peer(request.assigned_peer_id, request.circle)
+    merged_request = _merge_execution_request(request, assigned_peer_id)
     work = store.create(
         title=request.title,
         kind=request.kind,
         created_by_peer_id=request.created_by_peer_id,
         owner_peer_id=request.owner_peer_id,
-        assigned_peer_id=request.assigned_peer_id,
+        assigned_peer_id=assigned_peer_id,
         repowire_session_id=request.repowire_session_id,
         correlation_id=request.correlation_id,
         circle=request.circle,
@@ -175,11 +277,14 @@ async def create_work(
         source_id=request.source_id,
         scope=request.scope,
         visibility=request.visibility,
-        request=request.request,
+        request=merged_request,
         deadline_at=request.deadline_at,
         expires_at=request.expires_at,
         provenance=request.provenance,
     )
+    runner = getattr(get_app_state(), "job_runner", None)
+    if runner is not None and hasattr(runner, "wake"):
+        runner.wake()
     return WorkCreateResponse.from_work(work)
 
 
@@ -240,9 +345,58 @@ async def update_work(
             error=request.error,
             artifacts=request.artifacts,
             provenance=request.provenance,
+            attempt_id=request.attempt_id,
         )
+    except RuntimeError as e:
+        if str(e) == "stale_attempt":
+            raise HTTPException(status_code=409, detail="stale attempt_id") from e
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    if work is None:
+        raise HTTPException(status_code=404, detail=f"No work: {work_id}")
+    return WorkStatusResponse.from_work(work)
+
+
+@router.post("/work/{work_id}/run", response_model=WorkStatusResponse)
+@router.post("/jobs/{work_id}/run", response_model=WorkStatusResponse)
+async def run_work(
+    work_id: str,
+    request: WorkRunRequest | None = None,
+    _: str | None = Depends(require_auth),
+) -> WorkStatusResponse:
+    existing = _store().get(work_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"No work: {work_id}")
+    if existing.state not in {"queued", "failed", "unavailable"}:
+        raise HTTPException(
+            status_code=409, detail=f"Job cannot be run from state {existing.state}"
+        )
+    work = await _job_runner().run_job(work_id, ignore_due_at=True)
+    if work is None:
+        work = _store().get(work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail=f"No work: {work_id}")
+    return WorkStatusResponse.from_work(work)
+
+
+@router.post("/work/{work_id}/retry", response_model=WorkStatusResponse)
+@router.post("/jobs/{work_id}/retry", response_model=WorkStatusResponse)
+async def retry_work(
+    work_id: str,
+    request: WorkRunRequest | None = None,
+    _: str | None = Depends(require_auth),
+) -> WorkStatusResponse:
+    existing = _store().get(work_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"No work: {work_id}")
+    if existing.state not in {"failed", "unavailable", "delivered"}:
+        raise HTTPException(
+            status_code=409, detail=f"Job cannot be retried from state {existing.state}"
+        )
+    work = await _job_runner().run_job(work_id, ignore_due_at=True, retry=True)
+    if work is None:
+        work = _store().get(work_id)
     if work is None:
         raise HTTPException(status_code=404, detail=f"No work: {work_id}")
     return WorkStatusResponse.from_work(work)

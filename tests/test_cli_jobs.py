@@ -138,13 +138,23 @@ def test_jobs_update_patches_status(monkeypatch) -> None:
 
     result = CliRunner().invoke(
         main,
-        ["jobs", "update", "work-abc123", "--state", "running", "--note", "started"],
+        [
+            "jobs",
+            "update",
+            "work-abc123",
+            "--state",
+            "completed",
+            "--note",
+            "started",
+            "--attempt-id",
+            "attempt-1",
+        ],
     )
 
     assert result.exit_code == 0, result.output
     client.patch.assert_called_once_with(
         "http://127.0.0.1:8377/jobs/work-abc123",
-        json={"state": "running", "progress_note": "started"},
+        json={"state": "completed", "progress_note": "started", "attempt_id": "attempt-1"},
     )
 
 

@@ -64,7 +64,10 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
         config.save()
 
     env_disable = os.environ.get("REPOWIRE_DISABLE_HOOK_INSTALL", "").strip().lower() in (
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     )
     install_hooks = not (no_install_hooks or env_disable)
     app = create_app(config=config, install_tmux_hooks=install_hooks)
@@ -184,9 +187,14 @@ def _prompt_bot_config(
     if not has_config and click.confirm(f"Configure {name} bot?", default=False):
         for field_name, prompt_text in fields:
             hide = "token" in field_name
-            setattr(config_section, field_name, click.prompt(
-                f"  {prompt_text}", hide_input=hide,
-            ))
+            setattr(
+                config_section,
+                field_name,
+                click.prompt(
+                    f"  {prompt_text}",
+                    hide_input=hide,
+                ),
+            )
         console.print(f"[green]✓[/] {name} configured")
 
 
@@ -238,7 +246,8 @@ def _daemon_health_ok(host: str, port: int, *, attempts: int = 10) -> bool:
     ),
 )
 @click.option(
-    "--experimental-channels", is_flag=True,
+    "--experimental-channels",
+    is_flag=True,
     help="Use channel transport (experimental, requires claude.ai login and bun)",
 )
 @click.option(
@@ -279,7 +288,8 @@ def setup(
         _setup_claude_code(use_channels=use_channels)
         agents_setup.append("claude-code")
         config.daemon.spawn.commands.setdefault(
-            AgentType.CLAUDE_CODE, DEFAULT_SPAWN_COMMANDS[AgentType.CLAUDE_CODE],
+            AgentType.CLAUDE_CODE,
+            DEFAULT_SPAWN_COMMANDS[AgentType.CLAUDE_CODE],
         )
 
     # Detect and set up OpenCode if opencode CLI or config exists
@@ -287,7 +297,8 @@ def setup(
         _setup_opencode()
         agents_setup.append("opencode")
         config.daemon.spawn.commands.setdefault(
-            AgentType.OPENCODE, DEFAULT_SPAWN_COMMANDS[AgentType.OPENCODE],
+            AgentType.OPENCODE,
+            DEFAULT_SPAWN_COMMANDS[AgentType.OPENCODE],
         )
 
     # Detect and set up Codex if codex CLI available
@@ -295,7 +306,8 @@ def setup(
         _setup_codex()
         agents_setup.append("codex")
         config.daemon.spawn.commands.setdefault(
-            AgentType.CODEX, DEFAULT_SPAWN_COMMANDS[AgentType.CODEX],
+            AgentType.CODEX,
+            DEFAULT_SPAWN_COMMANDS[AgentType.CODEX],
         )
 
     # Detect and set up Gemini if gemini CLI available
@@ -303,7 +315,8 @@ def setup(
         _setup_gemini()
         agents_setup.append("gemini")
         config.daemon.spawn.commands.setdefault(
-            AgentType.GEMINI, DEFAULT_SPAWN_COMMANDS[AgentType.GEMINI],
+            AgentType.GEMINI,
+            DEFAULT_SPAWN_COMMANDS[AgentType.GEMINI],
         )
 
     # Detect and set up Antigravity CLI (`agy`) if installed
@@ -311,7 +324,8 @@ def setup(
         _setup_antigravity()
         agents_setup.append("antigravity")
         config.daemon.spawn.commands.setdefault(
-            AgentType.ANTIGRAVITY, DEFAULT_SPAWN_COMMANDS[AgentType.ANTIGRAVITY],
+            AgentType.ANTIGRAVITY,
+            DEFAULT_SPAWN_COMMANDS[AgentType.ANTIGRAVITY],
         )
 
     # Detect and set up Pi if pi CLI or config exists
@@ -319,7 +333,8 @@ def setup(
         _setup_pi()
         agents_setup.append("pi")
         config.daemon.spawn.commands.setdefault(
-            AgentType.PI, DEFAULT_SPAWN_COMMANDS[AgentType.PI],
+            AgentType.PI,
+            DEFAULT_SPAWN_COMMANDS[AgentType.PI],
         )
 
     if not agents_setup:
@@ -336,7 +351,8 @@ def setup(
 
         if is_tmux_available():
             installed = install_hooks(
-                config.daemon.host, config.daemon.port,
+                config.daemon.host,
+                config.daemon.port,
             )
             if installed:
                 console.print(f"[green]✓[/] Tmux lifecycle hooks ({len(installed)} hooks)")
@@ -395,19 +411,27 @@ def setup(
     if config.telegram.bot_token:
         console.print("[green]✓[/] Telegram configured (existing config)")
     elif interactive:
-        _prompt_bot_config("Telegram", config.telegram, [
-            ("bot_token", "Bot token"),
-            ("chat_id", "Chat ID"),
-        ])
+        _prompt_bot_config(
+            "Telegram",
+            config.telegram,
+            [
+                ("bot_token", "Bot token"),
+                ("chat_id", "Chat ID"),
+            ],
+        )
 
     if config.slack.bot_token:
         console.print("[green]✓[/] Slack configured (existing config)")
     elif interactive:
-        _prompt_bot_config("Slack", config.slack, [
-            ("bot_token", "Bot token (xoxb-...)"),
-            ("app_token", "App token (xapp-...)"),
-            ("channel_id", "Channel ID (C...)"),
-        ])
+        _prompt_bot_config(
+            "Slack",
+            config.slack,
+            [
+                ("bot_token", "Bot token (xoxb-...)"),
+                ("app_token", "App token (xapp-...)"),
+                ("channel_id", "Channel ID (C...)"),
+            ],
+        )
 
     # Save config
     console.print("[green]✓[/] SQLite state enabled")
@@ -696,7 +720,9 @@ def update(post_upgrade: bool) -> None:
         package_spec = _repowire_package_spec(config)
         console.print(f"[cyan]Upgrading {package_spec} via {pkg_mgr}...[/]")
         result = subprocess.run(
-            _upgrade_command(pkg_mgr, config), capture_output=True, text=True,
+            _upgrade_command(pkg_mgr, config),
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             console.print(f"[red]Upgrade failed:[/] {result.stderr[:200]}")
@@ -706,8 +732,7 @@ def update(post_upgrade: bool) -> None:
         repowire_bin = shutil.which("repowire")
         if not repowire_bin:
             console.print(
-                "[yellow]![/] repowire is no longer on PATH; "
-                "run repowire setup manually."
+                "[yellow]![/] repowire is no longer on PATH; run repowire setup manually."
             )
             return
         console.print("[dim]Continuing with upgraded repowire...[/]")
@@ -791,6 +816,7 @@ def status() -> None:
 
     if shutil.which("codex") or (Path.home() / ".codex").exists():
         from repowire.installers.codex import check_hooks_installed as check_codex_hooks
+
         if check_codex_hooks():
             console.print("  [green]✓[/] codex (hooks installed)")
         else:
@@ -802,6 +828,7 @@ def status() -> None:
         from repowire.installers.antigravity import (
             check_hooks_installed as check_agy_hooks,
         )
+
         if check_agy_hooks():
             console.print(
                 "  [green]✓[/] antigravity (plugin installed; hook firing pending upstream)"
@@ -813,6 +840,7 @@ def status() -> None:
 
     if shutil.which("pi") or (Path.home() / ".pi").exists():
         from repowire.installers.pi import check_extension_installed as check_pi_ext
+
         if check_pi_ext():
             console.print("  [green]✓[/] pi (extension installed)")
         else:
@@ -1430,18 +1458,20 @@ def orchestrator_diff() -> None:
             # differs — show a short diff
             local_lines = local.read_text().splitlines(keepends=True)
             shipped_lines = shipped.read_text().splitlines(keepends=True)
-            diff = list(difflib.unified_diff(
-                local_lines, shipped_lines,
-                fromfile=f"local:{rel}", tofile=f"shipped:{rel}", n=2,
-            ))
+            diff = list(
+                difflib.unified_diff(
+                    local_lines,
+                    shipped_lines,
+                    fromfile=f"local:{rel}",
+                    tofile=f"shipped:{rel}",
+                    n=2,
+                )
+            )
             for line in diff[:30]:
                 console.print(line.rstrip(), highlight=False)
             if len(diff) > 30:
                 console.print(f"  [dim]... {len(diff) - 30} more lines; diff truncated[/]")
-            console.print(
-                "  [dim]To accept upstream: cp the file from "
-                f"{shipped} → {local}[/]"
-            )
+            console.print(f"  [dim]To accept upstream: cp the file from {shipped} → {local}[/]")
 
 
 @orchestrator.command(name="start")
@@ -1467,10 +1497,10 @@ def orchestrator_start(runtime: str | None, profile: str | None, service: bool) 
         validate_workspace,
         workspace_path,
     )
+
     if service:
         console.print(
-            "[yellow]--service mode is planned for v2; "
-            "falling back to manual tmux launch.[/]"
+            "[yellow]--service mode is planned for v2; falling back to manual tmux launch.[/]"
         )
 
     ws = workspace_path()
@@ -1478,8 +1508,7 @@ def orchestrator_start(runtime: str | None, profile: str | None, service: bool) 
     # Preflight 1: workspace
     if not (ws / "AGENTS.md").exists():
         console.print(
-            "[yellow]Workspace not initialized at "
-            f"{ws}.[/] Running [cyan]orchestrator init[/]..."
+            f"[yellow]Workspace not initialized at {ws}.[/] Running [cyan]orchestrator init[/]..."
         )
         rendered, msg = init_workspace()
         if rendered:
@@ -1500,9 +1529,7 @@ def orchestrator_start(runtime: str | None, profile: str | None, service: bool) 
         console.print("[red]Workspace validation failed:[/]")
         for e in errors:
             console.print(f"  [red]✗[/] {e}")
-        console.print(
-            "Try [cyan]repowire orchestrator init --force[/] to recreate."
-        )
+        console.print("Try [cyan]repowire orchestrator init --force[/] to recreate.")
         return
 
     # Preflight 2: daemon reachable
@@ -1547,8 +1574,7 @@ def orchestrator_start(runtime: str | None, profile: str | None, service: bool) 
         suggested = _ORCHESTRATOR_RUNTIME_COMMANDS[selected_runtime]
         if selected_profile:
             console.print(
-                "[red]✗[/] Orchestrator spawn profile is not configured for "
-                f"{selected_runtime!r}."
+                f"[red]✗[/] Orchestrator spawn profile is not configured for {selected_runtime!r}."
             )
             console.print(
                 f"Add [cyan]daemon.spawn.profiles.{selected_runtime}.{selected_profile}[/] "
@@ -1556,8 +1582,7 @@ def orchestrator_start(runtime: str | None, profile: str | None, service: bool) 
             )
         else:
             console.print(
-                "[red]✗[/] Orchestrator runtime is not configured in "
-                "daemon.spawn.commands."
+                "[red]✗[/] Orchestrator runtime is not configured in daemon.spawn.commands."
             )
             console.print(
                 f"Add [cyan]daemon.spawn.commands.{selected_runtime}: "
@@ -1565,11 +1590,7 @@ def orchestrator_start(runtime: str | None, profile: str | None, service: bool) 
             )
         return
 
-    profile_label = (
-        "n/a (command override)"
-        if yaml_command
-        else selected_profile or "default"
-    )
+    profile_label = "n/a (command override)" if yaml_command else selected_profile or "default"
     console.print(
         f"[cyan]Spawning orchestrator[/] "
         f"(runtime={selected_runtime}, circle={circle}, "
@@ -1608,8 +1629,7 @@ def orchestrator_start(runtime: str | None, profile: str | None, service: bool) 
         soul = load_active_soul()
         if soul is not None:
             console.print(
-                f"  Persona: [cyan]{soul.name}[/] "
-                f"([dim]{soul.source}[/], sha256:{soul.short_hash})"
+                f"  Persona: [cyan]{soul.name}[/] ([dim]{soul.source}[/], sha256:{soul.short_hash})"
             )
     except Exception:
         pass
@@ -1633,8 +1653,7 @@ def orchestrator_persona_list() -> None:
     if not rows:
         console.print("[dim]No personas found.[/]")
         console.print(
-            "Drop a SOUL.md at "
-            "[cyan]~/.repowire/personas/<name>/SOUL.md[/] to get started."
+            "Drop a SOUL.md at [cyan]~/.repowire/personas/<name>/SOUL.md[/] to get started."
         )
         return
     for row in rows:
@@ -1660,9 +1679,7 @@ def orchestrator_persona_show(name: str | None) -> None:
     if soul is None:
         console.print(f"[red]✗[/] No SOUL.md found for persona {target!r}")
         return
-    console.print(
-        f"[cyan]{soul.name}[/] [dim]({soul.source}, sha256:{soul.short_hash})[/]"
-    )
+    console.print(f"[cyan]{soul.name}[/] [dim]({soul.source}, sha256:{soul.short_hash})[/]")
     console.print(f"[dim]{soul.path}[/]")
     console.print()
     console.print(soul.content.strip())
@@ -1981,6 +1998,13 @@ def jobs() -> None:
 @click.option("--source-kind", default="cli", show_default=True)
 @click.option("--source-id", help="Source-local identifier")
 @click.option("--scope", help="Small routing/display scope label")
+@click.option("--prompt", help="Inline prompt to dispatch")
+@click.option("--prompt-file", help="Read prompt from file")
+@click.option("--path", help="Target project path for spawned peer")
+@click.option("--backend", help="Backend to spawn when no assigned peer is provided")
+@click.option("--profile", help="Spawn profile")
+@click.option("--due-at", help="Schedule due time (ISO-8601)")
+@click.option("--result-surface", help="Metadata-only result surface")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON status instead of text")
 def jobs_create_cmd(
     title: str,
@@ -1994,6 +2018,13 @@ def jobs_create_cmd(
     source_kind: str,
     source_id: str | None,
     scope: str | None,
+    prompt: str | None,
+    prompt_file: str | None,
+    path: str | None,
+    backend: str | None,
+    profile: str | None,
+    due_at: str | None,
+    result_surface: str | None,
     as_json: bool,
 ) -> None:
     """Create a durable job without dispatching it to an executor."""
@@ -2013,6 +2044,13 @@ def jobs_create_cmd(
         "circle": circle,
         "source_id": source_id,
         "scope": scope,
+        "prompt": prompt,
+        "prompt_file": prompt_file,
+        "path": path,
+        "backend": backend,
+        "profile": profile,
+        "due_at": due_at,
+        "result_surface": result_surface,
     }.items():
         if value:
             body[key] = value
@@ -2084,6 +2122,7 @@ def jobs_list_cmd(
     table.add_column("Title")
     table.add_column("Kind")
     table.add_column("Owner")
+    table.add_column("Due")
     table.add_column("Updated")
     for item in items:
         table.add_row(
@@ -2092,6 +2131,7 @@ def jobs_list_cmd(
             item.get("title", ""),
             item.get("kind", ""),
             item.get("owner_peer_id") or "-",
+            item.get("due_at") or "-",
             item.get("updated_at", ""),
         )
     console.print(table)
@@ -2128,6 +2168,7 @@ def jobs_show_cmd(job_id: str, as_json: bool) -> None:
 @click.option("--phase", help="Display phase")
 @click.option("--note", "progress_note", help="Append a progress note")
 @click.option("--result-summary", help="Terminal result summary")
+@click.option("--attempt-id", help="Current runner attempt id for runner-managed jobs")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON status instead of text")
 def jobs_update_cmd(
     job_id: str,
@@ -2136,6 +2177,7 @@ def jobs_update_cmd(
     phase: str | None,
     progress_note: str | None,
     result_summary: str | None,
+    attempt_id: str | None,
     as_json: bool,
 ) -> None:
     """Update job lifecycle status and optionally append a progress note."""
@@ -2147,6 +2189,7 @@ def jobs_update_cmd(
         "phase": phase,
         "progress_note": progress_note,
         "result_summary": result_summary,
+        "attempt_id": attempt_id,
     }.items():
         if value:
             body[key] = value
@@ -2165,6 +2208,42 @@ def jobs_update_cmd(
         raise click.ClickException("Cannot connect to daemon. Run 'repowire serve' first.")
     except httpx.HTTPStatusError as e:
         raise click.ClickException(f"Failed to update job: {_http_error_detail(e)}") from e
+
+
+def _post_job_action(job_id: str, action: str, *, as_json: bool) -> None:
+    import httpx
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.post(f"{_get_daemon_url()}/jobs/{job_id}/{action}", json={})
+            if resp.status_code == 404:
+                raise click.ClickException(f"No job: {job_id}")
+            resp.raise_for_status()
+            status = resp.json()["status"]
+            if as_json:
+                console.print_json(data=status)
+            else:
+                _print_job_status(status)
+    except httpx.ConnectError:
+        raise click.ClickException("Cannot connect to daemon. Run 'repowire serve' first.")
+    except httpx.HTTPStatusError as e:
+        raise click.ClickException(f"Failed to {action} job: {_http_error_detail(e)}") from e
+
+
+@jobs.command(name="run")
+@click.argument("job_id")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON status instead of text")
+def jobs_run_cmd(job_id: str, as_json: bool) -> None:
+    """Run a queued/future or failed/unavailable job immediately."""
+    _post_job_action(job_id, "run", as_json=as_json)
+
+
+@jobs.command(name="retry")
+@click.argument("job_id")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON status instead of text")
+def jobs_retry_cmd(job_id: str, as_json: bool) -> None:
+    """Retry a failed or unavailable job with a new attempt."""
+    _post_job_action(job_id, "retry", as_json=as_json)
 
 
 @jobs.command(name="cancel")
@@ -2238,6 +2317,13 @@ def _print_job_status(status: dict[str, Any], *, created: bool = False) -> None:
     console.print(f"  kind:  {status.get('kind')}")
     if status.get("owner_peer_id"):
         console.print(f"  owner: {status.get('owner_peer_id')}")
+    if status.get("assigned_peer_id"):
+        console.print(f"  assigned: {status.get('assigned_peer_id')}")
+    if status.get("due_at"):
+        console.print(f"  due_at: {status.get('due_at')}")
+    runner = status.get("runner") or {}
+    if runner.get("current_attempt_id"):
+        console.print(f"  attempt: {runner.get('current_attempt_id')}")
     if status.get("result_summary"):
         console.print(f"  result: {status.get('result_summary')}")
     if status.get("cancellation_reason"):
@@ -2504,7 +2590,9 @@ def peer_list(show_offline: bool) -> None:
 @peer.command(name="describe")
 @click.argument("identifier")
 @click.option(
-    "--circle", "-c", default=None,
+    "--circle",
+    "-c",
+    default=None,
     help="Circle to scope lookup when a display_name is ambiguous across circles.",
 )
 def peer_describe(identifier: str, circle: str | None) -> None:
@@ -2542,8 +2630,7 @@ def peer_describe(identifier: str, circle: str | None) -> None:
             snapshot = build_snapshot(client, daemon_url, outcome)
     except httpx.ConnectError:
         console.print(
-            f"[red]Cannot connect to daemon at {daemon_url}.[/] "
-            "Run 'repowire serve' first.",
+            f"[red]Cannot connect to daemon at {daemon_url}.[/] Run 'repowire serve' first.",
         )
         sys.exit(1)
     except httpx.HTTPStatusError as e:
@@ -2580,8 +2667,7 @@ def peer_claim_role(role: str, peer_name: str | None, circle: str | None, force:
             if resp.status_code == 404:
                 console.print(f"[red]Peer not found:[/] {target}")
                 console.print(
-                    "[dim]Pass --peer with an existing peer from "
-                    "`repowire peer list -a`.[/]"
+                    "[dim]Pass --peer with an existing peer from `repowire peer list -a`.[/]"
                 )
                 sys.exit(1)
             if resp.status_code == 409:
@@ -2643,14 +2729,14 @@ def _render_peer_snapshot(snapshot: object) -> None:
         snippet = a.text if len(a.text) <= 60 else a.text[:57] + "..."
         console.print(
             f"  [green]inbound[/]   {a.correlation_id}  from [cyan]@{a.from_peer}[/]  "
-            f"{when}  [dim]\"{snippet}\"[/]",
+            f'{when}  [dim]"{snippet}"[/]',
         )
     for a in snapshot.outbound_asks:
         when = humanize_last_seen(a.created_at)
         snippet = a.text if len(a.text) <= 60 else a.text[:57] + "..."
         console.print(
             f"  [yellow]outbound[/]  {a.correlation_id}  to [cyan]@{a.to_peer}[/]  "
-            f"{when}  [dim]\"{snippet}\"[/]",
+            f'{when}  [dim]"{snippet}"[/]',
         )
 
     console.print("")
@@ -2665,15 +2751,17 @@ def _render_peer_snapshot(snapshot: object) -> None:
         snippet = ev.text if len(ev.text) <= 60 else ev.text[:57] + "..."
         line = f"  [dim]{ts}[/]  {arrow} [cyan]{ev.event_type}[/] {cp}"
         if snippet:
-            line += f"  [dim]\"{snippet}\"[/]"
+            line += f'  [dim]"{snippet}"[/]'
         console.print(line)
 
 
 @peer.command(name="new")
 @click.argument("path", type=click.Path(exists=True), default=".")
 @click.option(
-    "--backend", "-b", default="claude-code",
-    type=click.Choice(["claude-code", "opencode", "codex", "gemini", "antigravity", "pi"])
+    "--backend",
+    "-b",
+    default="claude-code",
+    type=click.Choice(["claude-code", "opencode", "codex", "gemini", "antigravity", "pi"]),
 )
 @click.option("--command", "-c", "cmd", help="Deprecated: explicit command override")
 @click.option("--profile", help="Named spawn profile to apply to the backend command")
@@ -2963,6 +3051,7 @@ def _auth_headers() -> dict[str, str]:
     """
     try:
         from repowire.config.models import load_config
+
         token = load_config().daemon.auth_token
     except Exception:
         return {}
@@ -3087,18 +3176,21 @@ def peer_whoami(
                     console.print(f"[red]Register failed: {resp.status_code} {resp.text}[/]")
                     sys.exit(1)
                 data = resp.json()
-                _emit({
-                    "peer_id": data.get("peer_id"),
-                    "display_name": data.get("display_name"),
-                    "backend": backend,
-                    "circle": circle or "default",
-                })
+                _emit(
+                    {
+                        "peer_id": data.get("peer_id"),
+                        "display_name": data.get("display_name"),
+                        "backend": backend,
+                        "circle": circle or "default",
+                    }
+                )
                 return
 
             # Read-only lookup
             if pane_id and not name:
                 resp = client.get(
-                    f"{daemon}/peers/by-pane/{quote(pane_id, safe='')}", headers=headers,
+                    f"{daemon}/peers/by-pane/{quote(pane_id, safe='')}",
+                    headers=headers,
                 )
                 if resp.status_code == 200:
                     _emit(resp.json())
@@ -3147,7 +3239,10 @@ def peer_asks(
     try:
         with httpx.Client(timeout=5.0) as client:
             resolved, err = _resolve_peer_id_for_asks(
-                client, peer_id=peer_id, pane_id=pane_id, peer_name=peer_name,
+                client,
+                peer_id=peer_id,
+                pane_id=pane_id,
+                peer_name=peer_name,
             )
             if err:
                 console.print(f"[red]{err}[/]")
@@ -3204,7 +3299,10 @@ def peer_deliveries(
     try:
         with httpx.Client(timeout=5.0) as client:
             resolved, err = _resolve_peer_id_for_asks(
-                client, peer_id=peer_id, pane_id=pane_id, peer_name=peer_name,
+                client,
+                peer_id=peer_id,
+                pane_id=pane_id,
+                peer_name=peer_name,
             )
             if err:
                 console.print(f"[red]{err}[/]")
@@ -3215,9 +3313,7 @@ def peer_deliveries(
                 headers=_auth_headers(),
             )
             if resp.status_code >= 400:
-                console.print(
-                    f"[red]/deliveries/pending failed: {resp.status_code} {resp.text}[/]"
-                )
+                console.print(f"[red]/deliveries/pending failed: {resp.status_code} {resp.text}[/]")
                 sys.exit(1)
             deliveries = resp.json().get("deliveries", [])
     except httpx.ConnectError:
@@ -3267,9 +3363,7 @@ def peer_ack(correlation_id: str, message: str | None, from_peer: str | None) ->
         sys.exit(1)
 
     if resp.status_code == 200:
-        console.print(
-            f"[green]Acked #{correlation_id}{' with reply' if message else ''}[/]"
-        )
+        console.print(f"[green]Acked #{correlation_id}{' with reply' if message else ''}[/]")
         return
     if resp.status_code == 404:
         console.print(f"[red]No open ask with correlation_id: {correlation_id}[/]")

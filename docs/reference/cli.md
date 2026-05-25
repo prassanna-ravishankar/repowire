@@ -130,22 +130,29 @@ Create one-shot or recurring scheduled mesh messages. Without `--cron`, `WHEN_OR
 ## `repowire jobs`
 
 ```bash
-repowire jobs create TITLE [--kind KIND] [--owner PEER_ID] [--assigned-peer PEER_ID] [--session SESSION_ID] [--correlation-id CORR_ID] [--circle CIRCLE] [--json]
+repowire jobs create TITLE [--kind KIND] [--prompt TEXT | --prompt-file PATH] [--assigned-peer PEER] [--path PATH --backend BACKEND] [--profile NAME] [--due-at ISO_TIME] [--result-surface NAME] [--json]
+repowire jobs run JOB_ID [--json]
+repowire jobs retry JOB_ID [--json]
 repowire jobs list [--state STATE] [--owner PEER_ID] [--created-by PEER_ID] [--session SESSION_ID] [--circle CIRCLE] [--json]
 repowire jobs show JOB_ID [--json]
-repowire jobs update JOB_ID --state STATE [--reason REASON] [--phase PHASE] [--note NOTE] [--result-summary TEXT] [--json]
+repowire jobs update JOB_ID --state STATE [--attempt-id ATTEMPT_ID] [--reason REASON] [--phase PHASE] [--note NOTE] [--result-summary TEXT] [--json]
 repowire jobs cancel JOB_ID [--requested-by PEER_ID] [--reason REASON] [--json]
 repowire jobs result JOB_ID [--json]
 ```
 
-Create and inspect daemon-owned tracked work records. Jobs are durable control
-state in `state.db`; they can exist without a live peer, ask thread, schedule,
-or session. This first slice is an operator surface and API skeleton, not an
-execution engine: creating a job does not dispatch work to an agent.
+Create, run, retry, and inspect daemon-owned tracked work records. Jobs are
+durable control state in `state.db`; they can exist without a live peer, ask
+thread, schedule, or session. Creating a job persists an execution spec but does
+not dispatch it until the daemon runner reaches `due_at` or you call
+`repowire jobs run JOB_ID`.
 
-Use jobs when work needs durable status, progress notes, result metadata, or
-cancellation. Use `ask` for a conversational request that another peer should
-close with `ack`. Use `schedule` for future delivery of a notify or ask.
+Use `--assigned-peer` for an exact peer id/name. Ambiguous display names are
+rejected before persistence. Without an assigned peer, pass `--path` and
+`--backend` (plus optional `--profile`) so the daemon can spawn a worker through
+the same guardrails as `/spawn`. Delivery is an `ask`; ack is only receipt, and
+workers should first mark receipt/start with the current attempt id, for example
+`repowire jobs update JOB_ID --state running --attempt-id ATTEMPT_ID`, then
+complete with a terminal update using the same attempt id.
 
 Jobs commands are script-safe: daemon connection failures, missing jobs, and
 HTTP errors exit non-zero. Pass `--json` when scripts need the status, list, or

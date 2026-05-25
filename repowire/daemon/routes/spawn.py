@@ -14,6 +14,7 @@ from repowire.daemon.ask_tracker import QuiesceFailedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_config, get_peer_registry
 from repowire.daemon.peer_registry import PeerRegistry
+from repowire.daemon.spawn_service import SpawnService
 from repowire.installers.post_spawn import post_spawn_warmup
 from repowire.protocol.peers import Peer, PeerRole
 from repowire.spawn import SpawnConfig, SpawnResult, kill_pane, spawn_peer
@@ -145,6 +146,7 @@ def _resolve_spawn_command(
         detail="Either backend or legacy command is required.",
     )
 
+
 router = APIRouter(tags=["spawn"])
 
 
@@ -183,7 +185,8 @@ class SpawnRequest(BaseModel):
     backend: AgentType | None = Field(None, description="Backend/runtime profile to spawn")
     profile: str | None = Field(None, description="Optional named model/profile for backend")
     command: str | None = Field(
-        None, description="Deprecated: command/profile name for compatibility",
+        None,
+        description="Deprecated: command/profile name for compatibility",
     )
     circle: str = Field(default="default", description="Circle to spawn into")
     message: str | None = Field(
@@ -317,59 +320,29 @@ async def spawn(
     allowed_paths in ~/.repowire/config.yaml.
     The spawned agent self-registers via its SessionStart hook once it starts.
     """
-    _validate_spawn_path(request.path)
-    backend, command = _resolve_spawn_command(
-        backend=request.backend,
-        legacy_command=request.command,
-        profile=request.profile,
+    if request.backend is None:
+        backend, _command = _resolve_spawn_command(
+            backend=request.backend,
+            legacy_command=request.command,
+            profile=request.profile,
+        )
+    else:
+        backend = request.backend
+    service = getattr(get_app_state(), "spawn_service", None) or SpawnService(
+        config=get_config(),
+        spawned_pane_ids=_SPAWNED_PANE_IDS,
+        background_tasks=_BACKGROUND_TASKS,
+        spawn_impl=spawn_peer,
+        warmup_impl=post_spawn_warmup,
     )
-
-    resolved_path = str(Path(request.path).expanduser().resolve())
-
-    try:
-        result: SpawnResult = spawn_peer(
-            SpawnConfig(
-                path=resolved_path,
-                circle=request.circle,
-                backend=backend,
-                command=command,
-                message=request.message,
-                role=request.role.value,
-            )
-        )
-    except (ValueError, RuntimeError) as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-    # Record that we own this pane so /kill-peer can safely kill it later.
-    # Externally-attached agents (notably OpenCode) also report tmux_session,
-    # so tmux_session alone is NOT a daemon-spawn signal — pane_id ownership is.
-    if result.pane_id:
-        _SPAWNED_PANE_IDS.add(result.pane_id)
-        _record_daemon_spawn_ownership(
-            result,
-            path=resolved_path,
-            backend=backend,
-            circle=request.circle,
-            role=request.role,
-        )
-
-    # Schedule post-spawn warmup in the background -- the codex case sleeps
-    # ~10s and would otherwise stall the /spawn response. claude/opencode/gemini
-    # warmups are no-ops and return immediately. Hold a strong ref to the task
-    # in a module-level set so asyncio doesn't GC it mid-sleep.
-    if result.pane_id:
-        task = asyncio.create_task(
-            post_spawn_warmup(
-                backend,
-                result.pane_id,
-                path=resolved_path,
-                circle=request.circle,
-                message=result.message,
-            )
-        )
-        _BACKGROUND_TASKS.add(task)
-        task.add_done_callback(_BACKGROUND_TASKS.discard)
-
+    result = service.spawn(
+        path=request.path,
+        backend=backend,
+        profile=request.profile,
+        circle=request.circle,
+        message=request.message,
+        role=request.role,
+    )
     return SpawnResponse(display_name=result.display_name, tmux_session=result.tmux_session)
 
 
@@ -445,7 +418,8 @@ async def kill_registered_peer(
     await peer_registry.lazy_repair()
     await _authorize_kill(peer_registry, request.from_peer)
     resolved = await peer_registry.resolve_peer_strict(
-        request.peer_identifier, circle=request.circle,
+        request.peer_identifier,
+        circle=request.circle,
     )
 
     if isinstance(resolved, list):
@@ -714,7 +688,8 @@ async def restart_peer(
             )
         except (ValueError, RuntimeError) as e:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e),
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(e),
             ) from e
 
         if result.pane_id:
@@ -873,10 +848,7 @@ async def switch_peer_backend(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "switch_in_progress",
-                    "hint": (
-                        "Another switch is in progress for this peer. "
-                        "Retry shortly."
-                    ),
+                    "hint": ("Another switch is in progress for this peer. Retry shortly."),
                 },
             ) from e
         raise HTTPException(
@@ -931,7 +903,8 @@ async def switch_peer_backend(
             )
         except (ValueError, RuntimeError) as e:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e),
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(e),
             ) from e
 
         if result.pane_id:

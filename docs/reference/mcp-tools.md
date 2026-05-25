@@ -214,10 +214,10 @@ Return one job's current status JSON. `job_show` is an alias for `job_status`.
 ### `job_update`
 
 ```python
-job_update(job_id: str, state: str, state_reason: str | None = None, phase: str | None = None, progress: dict | None = None, progress_note: str | None = None, result_summary: str | None = None, result_data: dict | None = None, error: dict | None = None, artifacts: list | None = None, provenance: dict | None = None) -> str
+job_update(job_id: str, state: str, state_reason: str | None = None, phase: str | None = None, progress: dict | None = None, progress_note: str | None = None, result_summary: str | None = None, result_data: dict | None = None, error: dict | None = None, artifacts: list | None = None, provenance: dict | None = None, attempt_id: str | None = None) -> str
 ```
 
-Update a job lifecycle state through `PATCH /jobs/{job_id}`. Returns the updated status JSON. Terminal jobs cannot move back to non-terminal states; same-terminal updates may add bounded metadata.
+Update a job lifecycle state through `PATCH /jobs/{job_id}`. Returns the updated status JSON. Terminal jobs cannot move back to non-terminal states; same-terminal updates may add bounded metadata. Runner-managed updates should include the current `attempt_id` from the job prompt/status. Workers should immediately mark `state="running"` with that attempt id before longer work, then send the terminal update with the same attempt id.
 
 ### `job_result`
 

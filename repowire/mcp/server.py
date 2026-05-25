@@ -799,8 +799,13 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         error: dict | None = None,
         artifacts: list | None = None,
         provenance: dict | None = None,
+        attempt_id: str | None = None,
     ) -> str:
-        """[Repowire mesh] Update a tracked work job lifecycle state as JSON."""
+        """[Repowire mesh] Update a tracked work job lifecycle state as JSON.
+
+        Runner-managed terminal updates must pass the current attempt_id from
+        the job prompt/status so stale attempts cannot complete newer work.
+        """
         await _ensure_registered(strict=True)
         body = {
             key: value
@@ -815,6 +820,7 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
                 "error": error,
                 "artifacts": artifacts,
                 "provenance": provenance,
+                "attempt_id": attempt_id,
             }.items()
             if value is not None
         }
