@@ -561,7 +561,8 @@ class TelegramPeer:
 
         self._reply_target = peer
         self._pending_retry = None
-        await self._tg_send(f"Now talking to *@{_esc(peer)}*\\.")
+        label = await self._peer_label_for_target(peer)
+        await self._tg_send(f"Now talking to *@{_esc(label)}*\\.")
 
     async def _on_photo(self, photo: dict, caption: str, message_id: int | None = None) -> None:
         """Handle incoming Telegram photo — upload to daemon, ask peer."""
@@ -710,15 +711,19 @@ class TelegramPeer:
             folder = Path(path).name or name
             desc = p.get("description", "")
             branch = p.get("metadata", {}).get("branch", "")
+            circle = p.get("circle", "")
             icon = "🟢" if p.get("status") == "online" else "🟡"
+            target = self._peer_target(p)
 
             line = f"{icon} *{_esc(folder)}* `{_esc(name)}`"
+            if circle:
+                line += f" `{_esc(circle)}`"
             if branch:
                 line += f" `{_esc(branch)}`"
             if desc:
                 line += f"\n  _{_esc(desc)}_"
             lines.append(line)
-            buttons.append(("💬 " + folder, f"target:{name}"))
+            buttons.append(("💬 " + self._peer_button_label(p), f"target:{target}"))
 
         # 2-column grid when >4 peers; 1-column otherwise.
         if len(buttons) > 4:
@@ -727,6 +732,43 @@ class TelegramPeer:
             rows = [[b] for b in buttons]
 
         await self._tg_send("\n".join(lines), markup=_kb(rows))
+
+    def _peer_target(self, peer: dict[str, Any]) -> str:
+        target = peer.get("peer_id") or peer.get("display_name") or peer.get("name") or "?"
+        return str(target)
+
+    def _peer_button_label(self, peer: dict[str, Any]) -> str:
+        name = str(peer.get("display_name") or peer.get("name") or "?")
+        path = str(peer.get("path") or "")
+        folder = Path(path).name or name
+        circle = peer.get("circle")
+        return f"{folder} · {circle}" if circle else folder
+
+    async def _peer_label_for_target(self, target: str) -> str:
+        peers = await self._fetch_online_peers()
+        for peer in peers:
+            identifiers = {
+                str(peer.get("peer_id") or ""),
+                str(peer.get("display_name") or ""),
+                str(peer.get("name") or ""),
+            }
+            if target in identifiers:
+                name = str(peer.get("display_name") or peer.get("name") or target)
+                circle = peer.get("circle")
+                return f"{name} ({circle})" if circle else name
+        return target
+
+    async def _peer_retry_markup(self) -> dict | None:
+        peers = await self._fetch_online_peers(use_cache=False)
+        active = [p for p in peers if p.get("status") in ("online", "busy")]
+        if not active:
+            return None
+        buttons = [
+            ("💬 " + self._peer_button_label(peer), f"target:{self._peer_target(peer)}")
+            for peer in active
+        ]
+        rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+        return _kb(rows)
 
     async def _ask(
         self,
@@ -787,9 +829,11 @@ class TelegramPeer:
                     mode=mode,
                     attachments=attachments,
                 )
+                markup = await self._peer_retry_markup()
                 await self._tg_send(
                     f"✗ Couldn't reach *@{_esc(peer)}*: {_esc(str(detail))}\n"
-                    f"Tap a peer to resend, or type a new message to cancel\\."
+                    f"Tap a peer to resend, or type a new message to cancel\\.",
+                    markup=markup,
                 )
         except Exception as e:
             self._pending_retry = PendingRetry(
@@ -798,9 +842,11 @@ class TelegramPeer:
                 mode=mode,
                 attachments=attachments,
             )
+            markup = await self._peer_retry_markup()
             await self._tg_send(
                 f"⚠️ Daemon unreachable: {_esc(str(e))}\n"
-                f"Tap a peer to retry, or type a new message to cancel\\."
+                f"Tap a peer to retry, or type a new message to cancel\\.",
+                markup=markup,
             )
 
     # -- Telegram API --

@@ -1,20 +1,24 @@
-# Anya routing
+# Persona routing
 
-Status: product/design contract for the Anya personal-assistant layer. This is
-not a daemon runtime implementation, a permissions model, a durable job store,
-or an ACP micro-persona contract. It defines how Anya should decide which
+Status: product/design contract for an orchestrator persona routing layer. This
+is not a daemon runtime implementation, a permissions model, a durable job
+store, or an ACP micro-persona contract. "Anya" is Prass's personal
+instantiation of this pattern, not a default Repowire persona or a product name.
+The contract defines how a persona-backed orchestrator should decide which
 Repowire primitive or future job surface to use for a request.
 
 ## Problem
 
-Anya sits above the mesh. A user should be able to ask one assistant for help
-without deciding whether the next action is a direct answer, a peer ask, a new
-worker session, a scheduled reminder, a durable job, or a clarification prompt.
+A persona-backed orchestrator sits above the mesh. A user should be able to ask
+one assistant for help without deciding whether the next action is a direct
+answer, a peer ask, a new worker session, a scheduled reminder, a durable job,
+or a clarification prompt.
 
 The router is the decision layer for that handoff. It consumes the user's
 request, visible mesh state, persona context, memory hints, and future job
-state, then returns one explicit route plan. The plan may be executed by Anya
-or shown to the user for approval depending on confidence, scope, and risk.
+state, then returns one explicit route plan. The plan may be executed by the
+active orchestrator persona or shown to the user for approval depending on
+confidence, scope, and risk.
 
 ## Boundaries
 
@@ -25,12 +29,12 @@ or shown to the user for approval depending on confidence, scope, and risk.
   job.
 - Persona SOUL.md guides identity, voice, and standing preferences. It is not a
   permission policy and must not override current user instructions.
-- Mesh memory and Anya memory remain deliberate-write systems. Routing may
+- Mesh memory and persona memory remain deliberate-write systems. Routing may
   propose a memory write only through the memory approval path; it must never
   write memory as a side effect.
-- Permissions and scopes are deferred to the Anya scopes model. Until then,
-  routes that would read private data, write state, execute tools, spend money,
-  or delegate broad authority must ask the user.
+- Permissions and scopes are deferred to a future persona scopes model. Until
+  then, routes that would read private data, write state, execute tools, spend
+  money, or delegate broad authority must ask the user.
 - The router should not add polling loops. Watchdogs and delayed follow-ups use
   Repowire schedules or future job deadlines.
 
@@ -76,9 +80,9 @@ names are acceptable in prose but must not be the only routing key when a
 
 ### Answer directly
 
-Use `answer_direct` when Anya can satisfy the request from current context,
-stable product knowledge, or a small bounded inspection that does not require a
-different executor.
+Use `answer_direct` when the active persona can satisfy the request from
+current context, stable product knowledge, or a small bounded inspection that
+does not require a different executor.
 
 Good fits:
 
@@ -88,7 +92,8 @@ Good fits:
 - producing a short plan that the user explicitly asked for.
 
 Do not answer directly when the request needs live project state from another
-peer, private data Anya is not scoped to read, or durable follow-through.
+peer, private data the active persona is not scoped to read, or durable
+follow-through.
 
 ### Ask a peer
 
@@ -145,8 +150,8 @@ Prefer `use_acp_persona` when:
 - cancellation can be represented through the tracked-work cancel contract;
 - failure can fall back to a full peer or user clarification.
 
-Until the ACP micro-persona contract exists, Anya must not claim this route is
-available. It may return `create_job` with
+Until the ACP micro-persona contract exists, the active persona must not claim
+this route is available. It may return `create_job` with
 `preferred_executor="acp_persona:<name>"` as design intent, or fall back to
 `ask_user`, `ask_peer`, or `spawn_peer`.
 
@@ -200,10 +205,10 @@ The job request should carry:
 - deadline, TTL, retry policy, and schedule hints;
 - initial progress note and provenance links.
 
-Until the jobs contract is implemented, this route is design-only. Anya may
-explain that the task should become a job later and use an `ask_peer`,
-`spawn_peer`, or `schedule` fallback only if that fallback is acceptable without
-durable job semantics.
+Until the jobs contract is implemented, this route is design-only. The active
+persona may explain that the task should become a job later and use an
+`ask_peer`, `spawn_peer`, or `schedule` fallback only if that fallback is
+acceptable without durable job semantics.
 
 ### Ask the user
 
@@ -259,9 +264,9 @@ Fallback behavior:
 Request: "Track the release checklist and tell me when it is ready."
 
 Route: `create_job` once jobs exist. The job owns the checklist, progress,
-result, and cancellation path. Today, Anya should explain that durable jobs are
-not available and can schedule a self-wake or ask an orchestrator peer only as a
-weaker fallback.
+result, and cancellation path. Today, the active persona should explain that
+durable jobs are not available and can schedule a self-wake or ask an
+orchestrator peer only as a weaker fallback.
 
 ### Investigate
 
@@ -290,10 +295,10 @@ guessing from old chat.
 
 ### Remind
 
-Request: "Remind me tomorrow morning to review the Anya spec."
+Request: "Remind me tomorrow morning to review the persona routing spec."
 
-Route: `schedule` with `kind="notify"` to the requested user surface or Anya's
-orchestrator session. Include the schedule id and cancellation path.
+Route: `schedule` with `kind="notify"` to the requested user surface or the
+active orchestrator session. Include the schedule id and cancellation path.
 
 ### Cancel
 

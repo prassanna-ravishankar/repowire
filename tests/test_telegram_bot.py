@@ -283,6 +283,97 @@ async def test_send_peer_message_includes_attachments(
     assert post.await_args.kwargs["json"]["attachments"][0]["id"] == "att123"
 
 
+@pytest.mark.asyncio
+async def test_peer_picker_targets_peer_id_for_duplicate_names(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    send = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "_tg_send", send)
+    monkeypatch.setattr(
+        telegram_bot,
+        "_fetch_online_peers",
+        AsyncMock(return_value=[
+            {
+                "peer_id": "repow-default",
+                "display_name": "repowire-codex",
+                "status": "busy",
+                "circle": "default",
+                "path": "/projects/repowire",
+            },
+            {
+                "peer_id": "repow-66",
+                "display_name": "repowire-codex",
+                "status": "online",
+                "circle": "66",
+                "path": "/projects/repowire",
+            },
+        ]),
+    )
+
+    await telegram_bot._cmd_peers()
+
+    markup = send.await_args.kwargs["markup"]
+    buttons = [button for row in markup["inline_keyboard"] for button in row]
+    assert {button["callback_data"] for button in buttons} == {
+        "target:repow-default",
+        "target:repow-66",
+    }
+    assert {button["text"] for button in buttons} == {
+        "💬 repowire · default",
+        "💬 repowire · 66",
+    }
+
+
+@pytest.mark.asyncio
+async def test_retry_error_offers_peer_id_buttons(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    post = AsyncMock()
+    post.return_value = SimpleNamespace(
+        status_code=409,
+        json=lambda: {
+            "detail": (
+                "Ambiguous peer name 'repowire-codex': matches in circles "
+                "['66', 'default']."
+            ),
+        },
+        text="ambiguous",
+    )
+    send = AsyncMock()
+    monkeypatch.setattr(telegram_bot._http, "post", post)
+    monkeypatch.setattr(telegram_bot, "_tg_send", send)
+    monkeypatch.setattr(
+        telegram_bot,
+        "_fetch_online_peers",
+        AsyncMock(return_value=[
+            {
+                "peer_id": "repow-default",
+                "display_name": "repowire-codex",
+                "status": "busy",
+                "circle": "default",
+                "path": "/projects/repowire",
+            },
+            {
+                "peer_id": "repow-66",
+                "display_name": "repowire-codex",
+                "status": "online",
+                "circle": "66",
+                "path": "/projects/repowire",
+            },
+        ]),
+    )
+
+    await telegram_bot._ask("repowire-codex", "ping")
+
+    markup = send.await_args.kwargs["markup"]
+    buttons = [button for row in markup["inline_keyboard"] for button in row]
+    assert {button["callback_data"] for button in buttons} == {
+        "target:repow-default",
+        "target:repow-66",
+    }
+    assert telegram_bot._pending_retry is not None
+
+
 # -- PendingRetry TTL --
 
 

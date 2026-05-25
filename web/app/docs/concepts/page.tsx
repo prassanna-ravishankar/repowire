@@ -90,9 +90,12 @@ export default function Concepts() {
         </p>
       </Section>
 
-      <Section title="Anya routing">
+      <Section title="Persona routing">
         <p>
-          Anya routing is a product/design contract for the personal-assistant layer above the mesh. It is not shipped daemon behavior yet. The router decides whether Anya should answer directly, ask an existing peer, spawn a full peer, use a future ACP persona, schedule a reminder or watchdog, use an existing future job, create a new job, or ask the user for clarification.
+          Persona routing is a design contract for an orchestrator persona layer above the mesh. It is not shipped daemon behavior yet, and no persona is enabled by default. Anya is Prass&apos;s personal instantiation of this pattern, not the Repowire product default.
+        </p>
+        <p>
+          The router decides whether the active persona should answer directly, ask an existing peer, spawn a full peer, use a future ACP persona, schedule a reminder or watchdog, use an existing future job, create a new job, or ask the user for clarification.
         </p>
         <p>
           Inputs include the request, requester, intent, scope, visible peers, schedules, persona context, memory references, policy, and future tracked-work records. Outputs carry a route, confidence, reason, target, concrete action, approval requirement, fallback, and provenance links.
