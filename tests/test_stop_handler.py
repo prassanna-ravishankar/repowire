@@ -94,6 +94,31 @@ class TestStopHandler:
     @patch("repowire.hooks.stop_handler.daemon_post")
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)
     @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
+    def test_writes_handoff_summary(self, mock_pane, mock_status, mock_post, tmp_path, monkeypatch):
+        monkeypatch.setattr("repowire.config.models.CACHE_DIR", tmp_path / "cache")
+        tp = _make_transcript(tmp_path, [
+            {"type": "user", "message": {"content": "Continue the parser work"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Parser tests are green."},
+            ]}},
+        ])
+
+        _run_hook({
+            "cwd": str(tmp_path),
+            "session_id": "abc12345-rest",
+            "transcript_path": str(tp),
+        })
+
+        handoff_files = list((tmp_path / "cache" / "handoffs").glob("*.json"))
+        assert len(handoff_files) == 1
+        payload = json.loads(handoff_files[0].read_text())
+        assert payload["session_id"] == "abc12345-rest"
+        assert "Continue the parser work" in payload["summary"]
+        assert "Parser tests are green" in payload["summary"]
+
+    @patch("repowire.hooks.stop_handler.daemon_post")
+    @patch("repowire.hooks.stop_handler.update_status", return_value=True)
+    @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
     @patch("repowire.hooks.stop_handler.get_display_name", return_value="myproject-claude-code")
     def test_uses_display_name_as_peer_name(
         self, mock_name, mock_pane, mock_status, mock_post, tmp_path,

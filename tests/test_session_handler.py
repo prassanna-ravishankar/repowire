@@ -1,10 +1,13 @@
 """Tests for the session hook handler."""
 
+import io
 import json
 import signal
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from repowire.hooks.handoff import write_handoff_summary
 from repowire.hooks.session_handler import (
     _find_self_peer,
     format_peers_context,
@@ -272,6 +275,91 @@ class TestSessionMain:
             # First positional arg is now path (cwd), not display_name
             assert call_args[0][0] == str(tmp_path)
             assert call_args.kwargs["circle_source"] == "tmux"
+
+    @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
+    @patch(
+        "repowire.hooks.session_handler._register_peer_http",
+        return_value=("repow-default-abc12345", "test-claude-code", False, True),
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={
+            "pane_id": "%1",
+            "session_name": "default",
+            "window_name": "test",
+        },
+    )
+    @patch("repowire.hooks.session_handler.spawn_ws_hook")
+    @patch("repowire.hooks.session_handler.compute_git_status", return_value=None)
+    @patch("repowire.hooks.session_handler.get_git_branch", return_value=None)
+    def test_session_start_injects_matching_handoff(
+        self, mock_branch, mock_status, mock_spawn, mock_tmux, mock_register, mock_fetch, tmp_path,
+    ):
+        with patch("repowire.config.models.CACHE_DIR", tmp_path / "cache"):
+            write_handoff_summary(
+                cwd=str(tmp_path),
+                backend="claude-code",
+                session_id="abc12345-rest",
+                user_text="Finish session handoff tests",
+                assistant_text="Stop hook writes the bounded handoff.",
+            )
+            buf = io.StringIO()
+            with patch("sys.stdin") as mock_stdin, redirect_stdout(buf):
+                mock_stdin.read.return_value = json.dumps({
+                    "hook_event_name": "SessionStart",
+                    "cwd": str(tmp_path),
+                    "session_id": "abc12345-rest",
+                })
+                result = main()
+
+        assert result == 0
+        output = json.loads(buf.getvalue())
+        context = output["hookSpecificOutput"]["additionalContext"]
+        assert "[Repowire Session Handoff]" in context
+        assert "Finish session handoff tests" in context
+        assert "bounded handoff" in context
+
+    @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
+    @patch(
+        "repowire.hooks.session_handler._register_peer_http",
+        return_value=("repow-default-abc12345", "test-claude-code", False, True),
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={
+            "pane_id": "%1",
+            "session_name": "default",
+            "window_name": "test",
+        },
+    )
+    @patch("repowire.hooks.session_handler.spawn_ws_hook")
+    @patch("repowire.hooks.session_handler.compute_git_status", return_value=None)
+    @patch("repowire.hooks.session_handler.get_git_branch", return_value=None)
+    def test_session_start_does_not_inject_mismatched_handoff(
+        self, mock_branch, mock_status, mock_spawn, mock_tmux, mock_register, mock_fetch, tmp_path,
+    ):
+        with patch("repowire.config.models.CACHE_DIR", tmp_path / "cache"):
+            write_handoff_summary(
+                cwd=str(tmp_path),
+                backend="claude-code",
+                session_id="old-session",
+                user_text="Do not inject this",
+                assistant_text="Wrong session identity.",
+            )
+            buf = io.StringIO()
+            with patch("sys.stdin") as mock_stdin, redirect_stdout(buf):
+                mock_stdin.read.return_value = json.dumps({
+                    "hook_event_name": "SessionStart",
+                    "cwd": str(tmp_path),
+                    "session_id": "new-session",
+                })
+                result = main()
+
+        assert result == 0
+        output = json.loads(buf.getvalue())
+        context = output["hookSpecificOutput"]["additionalContext"]
+        assert "[Repowire Session Handoff]" not in context
+        assert "Do not inject this" not in context
 
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(

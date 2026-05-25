@@ -17,6 +17,7 @@ from repowire.hooks.ask_lifecycle import (
     format_reminder_block,
 )
 from repowire.hooks.chat_delta_streamer import streamer_pid_path
+from repowire.hooks.handoff import write_handoff_summary
 from repowire.hooks.utils import (
     daemon_post,
     get_display_name,
@@ -117,6 +118,18 @@ def main(backend: str = "claude-code") -> int:
         user_text = None
     if assistant_text and not assistant_text.strip():
         assistant_text = None
+
+    write_handoff_summary(
+        cwd=payload.cwd or input_data.get("cwd"),
+        backend=backend,
+        session_id=payload.session_id or None,
+        transcript_path=(
+            Path(payload.transcript_path).expanduser().resolve()
+            if payload.transcript_path else None
+        ),
+        user_text=user_text,
+        assistant_text=assistant_text,
+    )
 
     # Signal the per-turn delta streamer (if running) to exit before posting
     # the final chat_turn. Order matters only weakly — the dashboard reconciles

@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 from repowire.config.models import AgentType
 from repowire.hooks._tmux import get_tmux_info
+from repowire.hooks.handoff import load_handoff_context, write_handoff_summary
 from repowire.hooks.utils import (
     clear_pane_runtime_state,
     daemon_get,
@@ -593,7 +594,15 @@ def main(backend: str = "claude-code") -> int:
                     file=sys.stderr,
                 )
 
-        sections = [s for s in (self_context, peers_context, persona_context) if s]
+        handoff_context = load_handoff_context(
+            cwd=cwd,
+            backend=backend,
+            session_id=hook_session_id or None,
+        )
+
+        sections = [
+            s for s in (self_context, peers_context, handoff_context, persona_context) if s
+        ]
         if sections:
             output = {
                 "hookSpecificOutput": {
@@ -606,7 +615,16 @@ def main(backend: str = "claude-code") -> int:
     elif event == "SessionEnd":
         # Don't mark peer offline here - SessionEnd fires frequently during
         # agentic loops and tool use cycles, not just at true session end.
-        pass
+        transcript_path = input_data.get("transcript_path")
+        write_handoff_summary(
+            cwd=cwd,
+            backend=backend,
+            session_id=hook_session_id or None,
+            transcript_path=(
+                Path(transcript_path).expanduser().resolve()
+                if isinstance(transcript_path, str) and transcript_path else None
+            ),
+        )
 
     return 0
 
