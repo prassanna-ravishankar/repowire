@@ -134,10 +134,10 @@ export default function Concepts() {
 
       <Section title="Mesh memory">
         <p>
-          Mesh memory is a proposed curated memory layer for the whole mesh, not shipped runtime behavior yet. It keeps deliberate notes under <Mono>~/.repowire/memory/</Mono> with scopes for <Mono>global</Mono>, <Mono>user</Mono>, projects, personas, and the orchestrator.
+          Mesh memory is a curated memory layer for the whole mesh. The first slice ships explicit CLI-backed reads and writes under <Mono>~/.repowire/memory/</Mono>, with scopes for <Mono>global</Mono>, <Mono>user</Mono>, projects, personas, and the orchestrator.
         </p>
         <p>
-          The key rule is no auto-writes. Hooks and peers may suggest something is worth remembering, but only an explicit CLI or MCP memory command should mutate the files.
+          The key rule is no auto-writes. Hooks, peers, and future jobs may suggest something is worth remembering, but proposed writes must show a user-visible diff and receive explicit approval before a CLI or future MCP memory command mutates files.
         </p>
       </Section>
 

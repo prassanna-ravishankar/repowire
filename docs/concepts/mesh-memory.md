@@ -98,15 +98,15 @@ A persona's name comes from the active persona marker described in
 `--persona` flag. When no persona is active, persona-scoped reads return empty
 and writes require an explicit `--persona <name>`.
 
-## No auto-writes
+## Approval and write path
 
 Mesh memory is a deliberate-action store. The contract is:
 
 - No hook, scheduler, or background task writes memory files.
 - Stop hooks, prompts, and session events MAY emit a *proposed memory*
   notification (e.g. "consider remembering: X") but the agent or operator must
-  invoke an explicit `repowire memory write` (or MCP `memory_write`) call to
-  persist it.
+  invoke an explicit `repowire memory write` (or future MCP `memory_write`) call
+  to persist it.
 - Memory writes always go through the public CLI/MCP surface, never via direct
   daemon side effects. This keeps an audit trail and a single chokepoint.
 - The daemon does not own memory state. Storage is plain filesystem under
@@ -115,6 +115,48 @@ Mesh memory is a deliberate-action store. The contract is:
 
 This is the same rule the orchestrator memory layer already implies, lifted to
 the whole mesh.
+
+The approval lifecycle is intentionally simple in the first product slice:
+
+1. **Propose.** A peer may present a proposed memory with target scope, slug,
+   type, description, body, and provenance. Provenance should point at the ask,
+   session, job, or human instruction that made the memory useful.
+2. **Diff.** Before any write, the operator sees the exact file-level change.
+   New memories show the full file. Appends and overwrites show a unified diff
+   against the existing file. Silent "learned" facts are not valid input.
+3. **Decide.** The operator can approve, reject, or edit. Rejecting closes the
+   proposal without changing disk. Editing creates a new diff and requires the
+   same explicit approval.
+4. **Write.** Only after approval does Repowire call `repowire memory write`
+   (or the future MCP equivalent). Existing files still require `--append` or
+   `--force`, so approval does not bypass collision protection.
+5. **Record.** The write refreshes the scope `MEMORY.md` index. A future
+   approval broker or jobs integration may also emit timeline/job events, but
+   those records are evidence of a decision, not an alternate memory store.
+
+The first shipped CLI slice covers the explicit write operation. It does not
+yet provide a proposal queue, approval UI, or MCP approval tool. Until those
+surfaces exist, the safe manual path is: draft the target Markdown, show the
+diff in chat or terminal, get explicit user approval, then run
+`repowire memory write`.
+
+### Proposal shape
+
+Future proposal surfaces should preserve these fields:
+
+```yaml
+scope: user | global | projects/<name> | personas/<name> | orchestrator
+slug: short-kebab-case
+type: feedback | project | user | reference | global
+description: one-line summary
+body: markdown body to write
+provenance:
+  source: ask | session | job | human | import
+  ref: stable id or human-readable pointer
+```
+
+The proposal object is not itself memory. It is a pending decision. Dropping or
+rejecting it must leave all memory files unchanged.
 
 ## Surfaces
 
@@ -189,13 +231,29 @@ metadata:
 
 - **Orchestrator memory** keeps its workspace path and template. The new
   `~/.repowire/memory/orchestrator` is just a symlink for discovery.
+- **User memory** stores stable preferences about the human operator that should
+  influence the whole mesh. It should stay compact and behavioral, not become a
+  profile dump or private diary.
+- **Global memory** stores cross-mesh operating rules that are not about the
+  user personally, such as preferred commit style or escalation norms.
+- **Project memory** stores durable project facts or decisions for one repo or
+  workspace. Peers in other projects do not inherit it unless an orchestrator or
+  human includes it in a brief.
 - **Persona SOUL.md** stays as identity context, not memory. Personas may also
   accumulate memory in `personas/<name>/`, which is curated lessons distinct
-  from the persona's voice/identity.
+  from the persona's voice/identity. Persona memory can tune how a persona works;
+  it must not override user instructions, approval requirements, or permissions.
 - **Host-agent memory** (Claude Code's per-project `memory/`, etc.) is
   unaffected. Operators who want a single source of truth can symlink their
   agent's memory dir into `~/.repowire/memory/projects/<name>/` themselves; the
   product does not enforce this.
+- **Obsidian and vault notes** remain the right place for rich personal
+  knowledge, source material, and long-form notes. Mesh memory may link or
+  summarize a vault-backed decision, but approved mesh memory should contain
+  only the compact rule needed by future agents.
+- **Jobs** may propose memory as part of completion or review, especially when a
+  job produces a durable preference or project lesson. Jobs must not write memory
+  directly; they feed the same proposal, diff, approval, and explicit write path.
 - **Session-native search** ([roadmap](session-native-roadmap.md)) covers
   detailed recall. Mesh memory remains the curated layer.
 
@@ -210,18 +268,22 @@ metadata:
 3. Conflict resolution between scopes when a peer reads from multiple. Initial
    answer: the CLI lists all matches; the agent decides. No automatic merge.
 4. Whether `memory_propose` (a read-only "I noticed something worth saving"
-   stream) should be its own MCP tool. Deferred until a real hook needs it.
+   stream) should be its own MCP tool, or whether proposals should live inside a
+   general approval broker. Deferred until a real hook or job needs it.
 
 ## Implementation phasing
 
 First CLI-only filesystem slice has landed. Suggested follow-up beads:
 
-1. MCP `memory_read` / `memory_write` / `memory_list` / `memory_search` tools
+1. Diff-first approval helper for proposed writes. It should render the target
+   scope/path and unified diff, then require explicit approve/reject/edit before
+   calling `write_memory`.
+2. MCP `memory_read` / `memory_write` / `memory_list` / `memory_search` tools
    wrapping the same filesystem layer.
-2. SessionStart context injection block (read-only summary).
-3. `repowire memory edit` / `repowire memory rm` with user-visible diffs or
+3. SessionStart context injection block (read-only summary).
+4. `repowire memory edit` / `repowire memory rm` with user-visible diffs or
    confirmations.
-4. Migration helper: `repowire memory adopt` to symlink the orchestrator dir
+5. Migration helper: `repowire memory adopt` to symlink the orchestrator dir
    under `~/.repowire/memory/orchestrator`.
 
 Each phase is independently shippable; nothing depends on auto-write or daemon

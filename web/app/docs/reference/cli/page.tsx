@@ -112,6 +112,9 @@ repowire memory write SLUG --body BODY [--scope SCOPE] [--project NAME] [--perso
         <p>
           Scopes are <Mono>global</Mono>, <Mono>user</Mono>, <Mono>project</Mono>, <Mono>persona</Mono>, and <Mono>orchestrator</Mono>. Writes never happen from hooks, transcripts, schedules, or daemon side effects. Existing memories are protected unless <Mono>--force</Mono> overwrites or <Mono>--append</Mono> adds to the current body.
         </p>
+        <p>
+          Proposed memory writes must show a full-file or unified diff before someone runs <Mono>repowire memory write</Mono>. Rejections leave files unchanged; edited proposals need a fresh diff before write.
+        </p>
       </Cmd>
 
       <Cmd name="repowire telegram start" usage="repowire telegram start">

@@ -13,5 +13,5 @@ The mental model behind repowire. Read once, refer rarely.
 - [Control surfaces](control-surfaces.md) — dashboard, Telegram, Slack as peers.
 - [Orchestrator pattern](orchestrator.md) — a peer whose job is coordinating other peers.
 - [Personas](personas.md) — SOUL.md identity files for orchestrator and persona sessions.
-- [Mesh memory](mesh-memory.md) — design proposal for a mesh-wide curated memory primitive (no code yet).
+- [Mesh memory](mesh-memory.md) — explicit CLI-backed memory writes plus the proposed approval path.
 - [Session-native roadmap](session-native-roadmap.md) — where the v0.14 architecture train is headed.

@@ -168,6 +168,11 @@ active orchestrator persona when one is set, or `--persona NAME`.
 index. Existing memories are protected by default; pass `--force` to overwrite
 or `--append` to add to the current body.
 
+Approval is a product contract, not extra CLI magic in this slice: proposed
+memory writes must show a user-visible full-file or unified diff before someone
+runs `repowire memory write`. Rejections leave files unchanged; edited
+proposals need a fresh diff before write.
+
 ## `repowire build-ui`
 
 ```bash
