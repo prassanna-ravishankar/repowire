@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -13,6 +14,7 @@ from repowire.config.models import AgentType
 from repowire.daemon.state.database import StateDatabase
 
 BindingStatus = Literal["active", "detached", "resumable", "archived", "lost", "superseded"]
+DEFAULT_CERTIFICATE_TTL_SECONDS = 24 * 60 * 60
 
 
 @dataclass
@@ -33,6 +35,40 @@ class SessionBinding:
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
     last_seen_at: str = ""
+
+
+@dataclass
+class RuntimeIdentityCertificate:
+    """Daemon-minted proof that binds a live runtime to a peer identity."""
+
+    nonce: str
+    peer_id: str
+    display_name: str
+    backend: str
+    project_path: str
+    runtime_session_id: str | None
+    pane_id: str | None
+    agent_pid: int | None
+    parent_pid: int | None
+    issued_at: str
+    expires_at: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def as_envelope(self) -> dict[str, Any]:
+        return {
+            "nonce": self.nonce,
+            "peer_id": self.peer_id,
+            "display_name": self.display_name,
+            "backend": self.backend,
+            "project_path": self.project_path,
+            "runtime_session_id": self.runtime_session_id,
+            "pane_id": self.pane_id,
+            "agent_pid": self.agent_pid,
+            "parent_pid": self.parent_pid,
+            "issued_at": self.issued_at,
+            "expires_at": self.expires_at,
+            "metadata": self.metadata,
+        }
 
 
 def _now() -> str:
@@ -94,6 +130,142 @@ class SQLiteSessionBindingStore:
             created_at=row["created_at"],
             last_seen_at=row["last_seen_at"],
         )
+
+    @staticmethod
+    def _row_to_certificate(row: sqlite3.Row | None) -> RuntimeIdentityCertificate | None:
+        if row is None:
+            return None
+        return RuntimeIdentityCertificate(
+            nonce=row["nonce"],
+            peer_id=row["peer_id"],
+            display_name=row["display_name"],
+            backend=row["backend"],
+            project_path=row["project_path"],
+            runtime_session_id=row["runtime_session_id"],
+            pane_id=row["pane_id"],
+            agent_pid=row["agent_pid"],
+            parent_pid=row["parent_pid"],
+            issued_at=row["issued_at"],
+            expires_at=row["expires_at"],
+            metadata=_json_loads(row["metadata"]),
+        )
+
+    def mint_birth_certificate(
+        self,
+        *,
+        peer_id: str,
+        display_name: str,
+        backend: AgentType | str,
+        project_path: str | None,
+        runtime_session_id: str | None,
+        pane_id: str | None,
+        agent_pid: int | None,
+        parent_pid: int | None,
+        metadata: dict[str, Any] | None = None,
+        ttl_seconds: int = DEFAULT_CERTIFICATE_TTL_SECONDS,
+        issued_at: str | None = None,
+    ) -> RuntimeIdentityCertificate:
+        """Persist and return an unguessable runtime identity certificate."""
+        now = issued_at or _now()
+        issued = datetime.fromisoformat(now)
+        expires = issued + timedelta(seconds=ttl_seconds)
+        cert = RuntimeIdentityCertificate(
+            nonce=secrets.token_urlsafe(32),
+            peer_id=peer_id,
+            display_name=display_name,
+            backend=_backend_value(backend),
+            project_path=project_path or "",
+            runtime_session_id=runtime_session_id,
+            pane_id=pane_id,
+            agent_pid=agent_pid,
+            parent_pid=parent_pid,
+            issued_at=now,
+            expires_at=expires.isoformat(),
+            metadata=metadata or {},
+        )
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO runtime_identity_certificates(
+                    nonce, peer_id, display_name, backend, project_path,
+                    runtime_session_id, pane_id, agent_pid, parent_pid,
+                    issued_at, expires_at, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cert.nonce,
+                    cert.peer_id,
+                    cert.display_name,
+                    cert.backend,
+                    cert.project_path,
+                    cert.runtime_session_id,
+                    cert.pane_id,
+                    cert.agent_pid,
+                    cert.parent_pid,
+                    cert.issued_at,
+                    cert.expires_at,
+                    _json_dumps(cert.metadata),
+                ),
+            )
+        return cert
+
+    def validate_birth_certificate(
+        self,
+        envelope: dict[str, Any],
+        *,
+        backend: AgentType | str,
+        project_path: str | None,
+        pane_id: str | None = None,
+        agent_pid: int | None = None,
+    ) -> RuntimeIdentityCertificate | None:
+        """Return the persisted certificate when the caller proves the same runtime.
+
+        This is deliberately stricter than path lookup: the nonce must match
+        daemon state, backend/path must match the current process, optional
+        pane evidence must not contradict, pid evidence must match when both
+        sides have it, and expired envelopes fail closed.
+        """
+        nonce = envelope.get("nonce")
+        if not isinstance(nonce, str) or not nonce:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM runtime_identity_certificates WHERE nonce = ?",
+            (nonce,),
+        ).fetchone()
+        cert = self._row_to_certificate(row)
+        if cert is None:
+            return None
+        try:
+            if datetime.fromisoformat(cert.expires_at) <= datetime.now(timezone.utc):
+                return None
+        except (TypeError, ValueError):
+            return None
+        normalized_backend = _backend_value(backend)
+        if cert.backend != normalized_backend:
+            return None
+        if cert.project_path != (project_path or ""):
+            return None
+        if envelope.get("peer_id") != cert.peer_id:
+            return None
+        if envelope.get("display_name") != cert.display_name:
+            return None
+        if envelope.get("backend") != cert.backend:
+            return None
+        if envelope.get("project_path") != cert.project_path:
+            return None
+        if envelope.get("runtime_session_id") != cert.runtime_session_id:
+            return None
+        if cert.pane_id and pane_id and cert.pane_id != pane_id:
+            return None
+        if envelope.get("pane_id") != cert.pane_id:
+            return None
+        if cert.agent_pid is not None and agent_pid is not None and cert.agent_pid != agent_pid:
+            return None
+        if envelope.get("agent_pid") != cert.agent_pid:
+            return None
+        if envelope.get("parent_pid") != cert.parent_pid:
+            return None
+        return cert
 
     def _find_existing(
         self,

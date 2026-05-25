@@ -589,11 +589,33 @@ class PeerRegistry:
         role: PeerRole = PeerRole.AGENT,
         agent_pid: int | None = None,
         circle_source: CircleSource | None = None,
+        preferred_session_id: str | None = None,
     ) -> str:
         """Find existing mapping or allocate a new session_id. Must hold lock.
 
         Returns the session_id (existing or new).
         """
+        if preferred_session_id:
+            mapping = self._mappings.get(preferred_session_id)
+            if (
+                mapping is not None
+                and mapping.display_name == display_name
+                and mapping.circle == circle
+                and mapping.backend == backend
+            ):
+                mapping.path = path
+                mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                if agent_pid is not None:
+                    mapping.agent_pid = agent_pid
+                self._mappings_dirty = True
+                logger.info(
+                    "Reusing preferred session %s for %s@%s",
+                    preferred_session_id,
+                    display_name,
+                    circle,
+                )
+                return preferred_session_id
+
         for sid, mapping in self._mappings.items():
             if (
                 mapping.display_name == display_name
@@ -858,6 +880,7 @@ class PeerRegistry:
                 allocated_id = self._find_or_allocate_mapping(
                     assigned_name, circle, backend, path, role=role,
                     agent_pid=agent_pid, circle_source=circle_source,
+                    preferred_session_id=peer_id,
                 )
                 if effective_pane_id:
                     self._release_pane(effective_pane_id, allocated_id)

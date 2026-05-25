@@ -120,6 +120,16 @@ def ws_hook_meta_path(pane_id: str | None) -> Path:
     return pane_logs_dir() / f"ws-hook-{get_pane_file(pane_id)}.meta.json"
 
 
+def runtime_birth_certificate_path(
+    *, backend: str, agent_pid: int | str | None, pane_id: str | None = None
+) -> Path:
+    """Path for the daemon-minted identity certificate owned by an agent pid."""
+    pid = str(agent_pid or "unknown")
+    pane = get_pane_file(pane_id)
+    safe_backend = backend.replace("/", "-").replace("\\", "-")
+    return pane_logs_dir() / f"birth-{safe_backend}-{pid}-{pane}.json"
+
+
 def ws_hook_legacy_cwd_path(pane_id: str | None) -> Path:
     """Legacy cwd file retained for backward compatibility with older hooks/tests."""
     return pane_logs_dir() / f"ws-hook-{get_pane_file(pane_id)}.cwd"
@@ -151,6 +161,33 @@ def write_pane_runtime_metadata(pane_id: str | None, metadata: dict) -> None:
     cwd = metadata.get("cwd")
     if cwd:
         ws_hook_legacy_cwd_path(pane_id).write_text(str(cwd))
+
+    cert = metadata.get("birth_certificate")
+    backend = metadata.get("backend")
+    agent_pid = metadata.get("agent_pid")
+    if isinstance(cert, dict) and backend and agent_pid is not None:
+        runtime_birth_certificate_path(
+            backend=str(backend),
+            agent_pid=agent_pid,
+            pane_id=pane_id,
+        ).write_text(json.dumps(cert))
+
+
+def read_runtime_birth_certificates(*, backend: str, agent_pid: int | None) -> list[dict]:
+    """Read local daemon-minted certificate candidates for the current runtime."""
+    if agent_pid is None:
+        return []
+    safe_backend = backend.replace("/", "-").replace("\\", "-")
+    pattern = f"birth-{safe_backend}-{agent_pid}-*.json"
+    certificates: list[dict] = []
+    for path in pane_logs_dir().glob(pattern):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            certificates.append(data)
+    return certificates
 
 
 def clear_pending_cids(pane_id: str | None) -> None:

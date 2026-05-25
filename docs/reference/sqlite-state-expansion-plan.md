@@ -11,7 +11,7 @@ helpers:
 - Legacy JSON files under `~/.repowire/`, kept as one-time import sources and
   downgrade artifacts, not active daemon write targets for migrated domains.
 
-The SQLite path currently covers schedules, session bindings, dashboard/session events, and peer session mappings. `StateDatabase` owns WAL mode, `synchronous=NORMAL`, foreign keys, busy timeout, schema versioning, and the `legacy_imports` audit table. `SQLiteScheduleStore` is adapter-compatible with `ScheduleStore`, imports `schedules.json` once when the SQL table is empty, and leaves the JSON file untouched for downgrade and backcompat. `SQLiteSessionBindingStore` persists binding identifiers, runtime source locators, cursors, provenance, resume capability metadata, and lifecycle status. It deliberately does not persist raw transcript bodies. `SQLiteEventStore` imports legacy `events.json` once, appends/updates event payloads in SQLite, and seeds the bounded in-memory event window at daemon startup. `PeerRegistry` imports legacy `sessions.json` once into `peer_session_mappings` and stops writing new `sessions.json` state.
+The SQLite path currently covers schedules, session bindings, runtime identity certificates, dashboard/session events, and peer session mappings. `StateDatabase` owns WAL mode, `synchronous=NORMAL`, foreign keys, busy timeout, schema versioning, and the `legacy_imports` audit table. `SQLiteScheduleStore` is adapter-compatible with `ScheduleStore`, imports `schedules.json` once when the SQL table is empty, and leaves the JSON file untouched for downgrade and backcompat. `SQLiteSessionBindingStore` persists binding identifiers, runtime source locators, cursors, provenance, resume capability metadata, lifecycle status, and daemon-minted runtime birth certificates. It deliberately does not persist raw transcript bodies. `SQLiteEventStore` imports legacy `events.json` once, appends/updates event payloads in SQLite, and seeds the bounded in-memory event window at daemon startup. `PeerRegistry` imports legacy `sessions.json` once into `peer_session_mappings` and stops writing new `sessions.json` state.
 
 Other state remains JSON or in-memory:
 
@@ -39,6 +39,9 @@ Current SQLite slices:
 - Peer mappings use SQLite; `sessions.json` is not written by the daemon app.
 - Asks, query futures, transport state, and raw transcripts keep their current ownership.
 - Session bindings are stored in SQLite as control/provenance metadata and are used by compatible timeline/transcript and session-control slices when an unambiguous binding exists.
+- Runtime identity certificates are stored in SQLite as short-lived nonce-backed
+  envelopes for MCP identity adoption and daemon-restart rehydration. They are
+  peer identity proof, not pane kill/restart ownership proof.
 - Dashboard/session events remain a bounded in-memory deque for route/SSE compatibility;
   persistence is backed by SQLite instead of new `events.json` writes.
 - `events.json` remains in place for downgrade/export compatibility and one-time import.

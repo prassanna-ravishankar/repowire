@@ -27,7 +27,7 @@ order is:
 | Level | Signal | Authority | Notes |
 | --- | --- | --- | --- |
 | 1 | Daemon-minted `peer_id` in the live registry | Authoritative routing identity | Exact key for asks, acks, notifications, and peer lookup. |
-| 2 | Daemon-minted runtime identity envelope | Authoritative handoff proof | Planned birth certificate for SessionStart/channel connect to hand MCP a peer identity without path search. |
+| 2 | Daemon-minted runtime identity envelope | Authoritative handoff proof | Birth certificate minted during SessionStart registration so MCP can adopt a peer identity without path search. |
 | 3 | Local pane runtime metadata plus process proof | Local adoption proof | Valid only when backend, daemon peer id, and owning agent process match the current MCP process. |
 | 4 | Durable `SessionMapping` / session binding records | Compatibility and provenance | Useful for restoring circle, role, description, runtime session pointers, and history relationships; not pane ownership proof. |
 | 5 | Durable spawn ownership plus live tmux evidence | Destructive-action proof | Authorizes kill/restart of a daemon-spawned pane. It does not prove caller identity for MCP tools. |
@@ -66,40 +66,42 @@ There is one protected case: a fresh live `orchestrator` peer keeps sticky owner
 
 MCP lazy registration treats tmux pane lookup as a locator, not as identity proof. A by-pane daemon result is accepted only when local pane runtime metadata proves the same daemon peer id, backend, and owning agent process. If that proof is missing or belongs to another process, MCP registers or resolves its own peer instead of adopting the incumbent. This keeps path and display name as useful context while avoiding path-based identity takeover.
 
-The remaining compatibility fallback is path+backend lookup when MCP starts
-without pane context, no local metadata is available, and exactly one online
-candidate matches. This is a narrow bridge for stripped tmux environments, not
-an identity source of truth. The daemon-minted birth certificate described below
-is the intended replacement.
+MCP lazy registration checks a daemon-minted birth certificate before the
+remaining compatibility fallback. That fallback is path+backend lookup when MCP
+starts without pane context, no local metadata is available, and exactly one
+online candidate matches. This is a narrow bridge for stripped tmux
+environments, not an identity source of truth.
 
-## Runtime birth certificate direction
+## Runtime birth certificates
 
-Future SessionStart and channel-connect paths should mint a short-lived runtime
-identity envelope after daemon registration. The envelope should be created by
-the daemon or contain daemon-unguessable proof, then be written where the local
-runtime and MCP server can read it.
+Hook-based `SessionStart` registration mints a short-lived runtime identity
+envelope after daemon registration. The envelope is persisted in SQLite with an
+unguessable nonce and written into local hook metadata where the MCP server can
+read it.
 
-Minimum envelope fields:
+Current envelope fields:
 
 - `peer_id`
 - `display_name`
 - `backend`
-- `circle`
+- `project_path`
 - `runtime_session_id` or hook `session_id` when known
 - `pane_id` when the runtime is pane-local
 - `agent_pid` / process proof when available
 - `issued_at` and `expires_at`
-- an unguessable nonce or daemon-verifiable token
+- an unguessable nonce
+- small metadata such as circle and role
 
-MCP lazy registration should eventually consult this envelope before pane,
-metadata, or path lookup. Validation should reject expired envelopes, backend
-mismatches, pane reuse, process mismatches, and daemon peer ids that no longer
-exist or no longer match the envelope. When the envelope is absent or invalid,
-MCP may register a fresh peer or fail closed for strict outbound tools; it
-should not silently adopt identity from path alone.
+MCP lazy registration validates this envelope through the daemon before
+path+backend lookup. Validation rejects expired envelopes, backend mismatches,
+pane reuse, process mismatches, and envelope fields that do not match persisted
+daemon state. If the daemon restarted and no in-memory peer exists, a valid
+certificate can rehydrate the peer from persisted identity evidence. When the
+envelope is absent or invalid, MCP may register a fresh peer or fail closed for
+strict outbound tools; it should not silently adopt identity from path alone.
 
-This direction does not make the daemon the owner of raw transcript history and
-does not authorize destructive pane actions. Runtime session ids remain source
+Birth certificates do not make the daemon the owner of raw transcript history
+and do not authorize destructive pane actions. Runtime session ids remain source
 history/provenance. Spawn ownership remains the kill/restart proof.
 
 ## Display-name ambiguity

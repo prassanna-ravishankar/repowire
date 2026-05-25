@@ -13,7 +13,11 @@ from mcp.server.fastmcp import FastMCP
 
 from repowire.config.models import DEFAULT_DAEMON_URL
 from repowire.hooks._tmux import get_pane_id, get_tmux_info
-from repowire.hooks.utils import get_display_name, read_pane_runtime_metadata
+from repowire.hooks.utils import (
+    get_display_name,
+    read_pane_runtime_metadata,
+    read_runtime_birth_certificates,
+)
 from repowire.protocol.errors import DaemonConnectionError, DaemonHTTPError, DaemonTimeoutError
 from repowire.spawn_hints import consume_hint_full
 
@@ -274,6 +278,62 @@ def _peer_result_matches_current_process(peer: dict, pane_meta: dict) -> bool:
     return str(peer_id) == str(meta_peer_id)
 
 
+def read_runtime_birth_certificate() -> list[dict]:
+    """Read local daemon-minted certificate candidates for this MCP process."""
+    backend = _detect_backend()
+    agent_pid = os.getppid()
+    candidates: list[dict] = []
+    pane_id = get_pane_id()
+    if pane_id:
+        pane_meta = read_pane_runtime_metadata(pane_id)
+        cert = pane_meta.get("birth_certificate")
+        if isinstance(cert, dict):
+            candidates.append(cert)
+    candidates.extend(read_runtime_birth_certificates(backend=backend, agent_pid=agent_pid))
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for cert in candidates:
+        nonce = cert.get("nonce")
+        key = str(nonce) if nonce else repr(sorted(cert.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(cert)
+    return deduped
+
+
+async def _try_birth_certificate_identity(
+    *,
+    pane_id: str | None,
+    backend: str,
+    cwd: Path,
+) -> bool:
+    """Validate a daemon-minted certificate and cache its peer identity."""
+    for certificate in read_runtime_birth_certificate():
+        try:
+            result = await daemon_request(
+                "POST",
+                "/peers/identity/validate",
+                {
+                    "birth_certificate": certificate,
+                    "backend": backend,
+                    "path": str(cwd),
+                    "pane_id": pane_id,
+                    "agent_pid": os.getppid(),
+                },
+            )
+        except (DaemonConnectionError, DaemonHTTPError, DaemonTimeoutError) as e:
+            logger.debug("Runtime birth certificate validation failed: %s", e)
+            continue
+        peer_payload = result.get("peer")
+        peer = peer_payload if isinstance(peer_payload, dict) else result
+        if not isinstance(peer, dict):
+            continue
+        _cache_identity(peer)
+        return True
+    return False
+
+
 async def _get_my_peer_name() -> str:
     """Get own peer name. Cached after first successful resolution.
 
@@ -427,6 +487,18 @@ async def _ensure_registered(*, strict: bool = False) -> None:
 
     tmux_info = get_tmux_info()
     pane_id = tmux_info["pane_id"]
+    backend = _detect_backend()
+    try:
+        cwd = Path.cwd()
+    except OSError as e:
+        logger.warning("Cannot resolve cwd for MCP registration: %s", e)
+        return
+
+    if await _try_birth_certificate_identity(pane_id=pane_id, backend=backend, cwd=cwd):
+        _registered = True
+        await _touch_last_seen()
+        return
+
     skip_path_backend_fallback = False
     if pane_id:
         pane_meta = read_pane_runtime_metadata(pane_id)
@@ -469,14 +541,6 @@ async def _ensure_registered(*, strict: bool = False) -> None:
             return
         except Exception:
             pass
-
-    backend = _detect_backend()
-
-    try:
-        cwd = Path.cwd()
-    except OSError as e:
-        logger.warning("Cannot resolve cwd for MCP registration: %s", e)
-        return
 
     if not skip_path_backend_fallback:
         # Last-resort identity resolution: find hook-registered peer by path+backend.

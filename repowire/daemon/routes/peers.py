@@ -328,16 +328,39 @@ class RegisterResponse(BaseModel):
     peer_id: str
     display_name: str
     pane_assigned: bool = True
+    birth_certificate: dict[str, Any] | None = None
 
 
-async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str, bool]:
+class ValidateBirthCertificateRequest(BaseModel):
+    """Request to validate a daemon-minted runtime identity certificate."""
+
+    birth_certificate: dict[str, Any] = Field(..., min_length=1)
+    backend: AgentType
+    path: str | None = None
+    pane_id: str | None = None
+    agent_pid: int | None = None
+
+
+class ValidateBirthCertificateResponse(BaseModel):
+    """Validated peer identity from a runtime birth certificate."""
+
+    ok: bool = True
+    peer_id: str
+    display_name: str
+    peer: PeerInfo
+
+
+async def _register_peer_impl(
+    request: RegisterPeerRequest,
+) -> tuple[str, str, bool, dict[str, Any] | None]:
     """Shared implementation for peer registration endpoints.
 
-    Returns (peer_id, assigned_display_name, pane_assigned). ``pane_assigned``
-    is True iff the caller requested a pane_id and the registered peer ended
-    up owning it; False when the daemon's sticky-orchestrator branch refused
-    to displace a live orchestrator. When no pane_id was requested,
-    pane_assigned defaults to True (vacuously: nothing to assign).
+    Returns (peer_id, assigned_display_name, pane_assigned, birth_certificate).
+    ``pane_assigned`` is True iff the caller requested a pane_id and the
+    registered peer ended up owning it; False when the daemon's
+    sticky-orchestrator branch refused to displace a live orchestrator. When no
+    pane_id was requested, pane_assigned defaults to True (vacuously: nothing
+    to assign).
     """
     circle = request.circle or "global"
 
@@ -369,6 +392,7 @@ async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str, b
             detail=str(exc),
         ) from exc
     binding_store = getattr(get_app_state(), "session_binding_store", None)
+    birth_certificate: dict[str, Any] | None = None
     if binding_store is not None:
         try:
             binding_store.upsert_observation(
@@ -386,13 +410,32 @@ async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str, b
                 status="active",
                 metadata=_binding_metadata(request.metadata),
             )
+            cert = binding_store.mint_birth_certificate(
+                peer_id=peer_id,
+                display_name=display_name,
+                backend=request.backend,
+                project_path=request.path,
+                runtime_session_id=request.metadata.get("hook_session_id"),
+                pane_id=request.pane_id,
+                agent_pid=request.agent_pid,
+                parent_pid=request.parent_pid,
+                metadata={
+                    **_binding_metadata(request.metadata),
+                    "circle": circle,
+                    "role": request.role.value,
+                },
+            )
+            birth_certificate = cert.as_envelope()
         except Exception:
-            logger.warning("Failed to persist session binding for peer registration", exc_info=True)
+            logger.warning(
+                "Failed to persist session binding/certificate for peer registration",
+                exc_info=True,
+            )
     pane_assigned = True
     if request.pane_id:
         registered = await peer_registry.get_peer(peer_id)
         pane_assigned = bool(registered and registered.pane_id == request.pane_id)
-    return peer_id, display_name, pane_assigned
+    return peer_id, display_name, pane_assigned, birth_certificate
 
 
 @router.post("/peers", response_model=RegisterResponse)
@@ -401,9 +444,81 @@ async def create_peer(
     _: str | None = Depends(require_auth),
 ) -> RegisterResponse:
     """Register a new peer (CLI-friendly endpoint)."""
-    peer_id, display_name, pane_assigned = await _register_peer_impl(request)
+    peer_id, display_name, pane_assigned, birth_certificate = await _register_peer_impl(request)
     return RegisterResponse(
-        peer_id=peer_id, display_name=display_name, pane_assigned=pane_assigned,
+        peer_id=peer_id,
+        display_name=display_name,
+        pane_assigned=pane_assigned,
+        birth_certificate=birth_certificate,
+    )
+
+
+@router.post(
+    "/peers/identity/validate",
+    response_model=ValidateBirthCertificateResponse,
+)
+async def validate_runtime_identity(
+    request: ValidateBirthCertificateRequest,
+    _: str | None = Depends(require_auth),
+) -> ValidateBirthCertificateResponse:
+    """Validate a daemon-minted runtime birth certificate for MCP adoption."""
+    state = get_app_state()
+    binding_store = getattr(state, "session_binding_store", None)
+    if binding_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Runtime identity certificate store is unavailable",
+        )
+    cert = binding_store.validate_birth_certificate(
+        request.birth_certificate,
+        backend=request.backend,
+        project_path=request.path,
+        pane_id=request.pane_id,
+        agent_pid=request.agent_pid,
+    )
+    if cert is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Runtime identity certificate is invalid or expired",
+        )
+
+    peer_registry = get_peer_registry()
+    peer = await peer_registry.get_peer(cert.peer_id)
+    if peer is None:
+        circle = cert.metadata.get("circle") if isinstance(cert.metadata, dict) else None
+        role = cert.metadata.get("role") if isinstance(cert.metadata, dict) else None
+        try:
+            peer_id, _display_name = await peer_registry.allocate_and_register(
+                circle=circle or "default",
+                backend=AgentType(cert.backend),
+                path=cert.project_path,
+                pane_id=cert.pane_id,
+                metadata={
+                    "hook_session_id": cert.runtime_session_id,
+                    "birth_certificate_nonce": cert.nonce,
+                },
+                role=PeerRole(role or PeerRole.AGENT.value),
+                peer_id=cert.peer_id,
+                initial_status=PeerStatus.ONLINE,
+                agent_pid=cert.agent_pid,
+                parent_pid=cert.parent_pid,
+                circle_source="fallback",
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Runtime identity certificate could not rehydrate peer: {exc}",
+            ) from exc
+        peer = await peer_registry.get_peer(peer_id)
+    if peer is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Peer not found after runtime identity validation",
+        )
+    return ValidateBirthCertificateResponse(
+        peer_id=peer.peer_id,
+        display_name=peer.display_name,
+        peer=_peer_to_info(peer),
     )
 
 
@@ -1168,9 +1283,12 @@ async def register_peer(
     _: str | None = Depends(require_auth),
 ) -> RegisterResponse:
     """Register a new peer in the mesh (legacy endpoint)."""
-    peer_id, display_name, pane_assigned = await _register_peer_impl(request)
+    peer_id, display_name, pane_assigned, birth_certificate = await _register_peer_impl(request)
     return RegisterResponse(
-        peer_id=peer_id, display_name=display_name, pane_assigned=pane_assigned,
+        peer_id=peer_id,
+        display_name=display_name,
+        pane_assigned=pane_assigned,
+        birth_certificate=birth_certificate,
     )
 
 

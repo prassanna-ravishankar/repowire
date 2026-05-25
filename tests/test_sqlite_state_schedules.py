@@ -34,7 +34,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
                 "SELECT version FROM schema_migrations",
             ).fetchall()
         }
-        assert versions == {1, 2, 3, 4}
+        assert versions == {1, 2, 3, 4, 5}
         tables = {
             row[0]
             for row in db.conn.execute(
@@ -44,6 +44,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
         assert "session_bindings" in tables
         assert "events" in tables
         assert "peer_session_mappings" in tables
+        assert "runtime_identity_certificates" in tables
     finally:
         db.close()
 
@@ -56,7 +57,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
                 "SELECT version FROM schema_migrations",
             ).fetchall()
         }
-        assert versions == {1, 2, 3, 4}
+        assert versions == {1, 2, 3, 4, 5}
     finally:
         db2.close()
 
@@ -224,6 +225,60 @@ def test_sqlite_session_binding_store_upsert_and_lookup_fields(tmp_path: Path) -
         db.close()
 
 
+def test_sqlite_session_binding_store_mints_and_validates_birth_certificate(
+    tmp_path: Path,
+) -> None:
+    db = StateDatabase(tmp_path / "state.db")
+    try:
+        store = SQLiteSessionBindingStore(db)
+        cert = store.mint_birth_certificate(
+            peer_id="repow-default-a1",
+            display_name="repo-claude-code",
+            backend="claude-code",
+            project_path="/repo",
+            runtime_session_id="runtime-1",
+            pane_id="%77",
+            agent_pid=12345,
+            parent_pid=1,
+            metadata={"circle": "default"},
+            issued_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        validated = store.validate_birth_certificate(
+            cert.as_envelope(),
+            backend="claude-code",
+            project_path="/repo",
+            pane_id="%77",
+            agent_pid=12345,
+        )
+        assert validated is not None
+        assert validated.peer_id == "repow-default-a1"
+
+        assert store.validate_birth_certificate(
+            {**cert.as_envelope(), "backend": "codex"},
+            backend="codex",
+            project_path="/repo",
+            pane_id="%77",
+            agent_pid=12345,
+        ) is None
+        assert store.validate_birth_certificate(
+            cert.as_envelope(),
+            backend="claude-code",
+            project_path="/repo",
+            pane_id="%99",
+            agent_pid=12345,
+        ) is None
+        assert store.validate_birth_certificate(
+            cert.as_envelope(),
+            backend="claude-code",
+            project_path="/repo",
+            pane_id="%77",
+            agent_pid=99999,
+        ) is None
+    finally:
+        db.close()
+
+
 async def test_create_app_uses_sqlite_schedule_store_and_imports_legacy_json(
     monkeypatch,
     tmp_path: Path,
@@ -283,7 +338,12 @@ async def test_test_app_wires_session_binding_store_and_observes_hooks(tmp_path:
                 },
             )
             assert reg.status_code == 200
-            peer_id = reg.json()["peer_id"]
+            reg_body = reg.json()
+            peer_id = reg_body["peer_id"]
+            birth_certificate = reg_body["birth_certificate"]
+            assert birth_certificate["peer_id"] == peer_id
+            assert birth_certificate["runtime_session_id"] == "hook-session-1"
+            assert birth_certificate["pane_id"] == "%77"
 
             binding = app.state.session_binding_store.get_by_runtime_session(
                 "hook-session-1",
@@ -293,6 +353,32 @@ async def test_test_app_wires_session_binding_store_and_observes_hooks(tmp_path:
             assert binding is not None
             assert binding.peer_id == peer_id
             assert binding.metadata["hook_session_id"] == "hook-session-1"
+
+            validated = await client.post(
+                "/peers/identity/validate",
+                json={
+                    "birth_certificate": birth_certificate,
+                    "backend": "claude-code",
+                    "path": "/repo",
+                    "pane_id": "%77",
+                },
+            )
+            assert validated.status_code == 200
+            assert validated.json()["peer_id"] == peer_id
+
+            app.state.peer_registry._peers.clear()
+            rehydrated = await client.post(
+                "/peers/identity/validate",
+                json={
+                    "birth_certificate": birth_certificate,
+                    "backend": "claude-code",
+                    "path": "/repo",
+                    "pane_id": "%77",
+                },
+            )
+            assert rehydrated.status_code == 200
+            assert rehydrated.json()["peer_id"] == peer_id
+            assert rehydrated.json()["peer"]["display_name"] == "repo-claude-code"
 
             chat = await client.post(
                 "/events/chat",

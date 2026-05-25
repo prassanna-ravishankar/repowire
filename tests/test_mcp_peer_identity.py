@@ -361,20 +361,64 @@ async def test_ensure_registered_treats_single_path_backend_candidate_as_compati
     assert ("POST", "/peers") not in calls
 
 
-@pytest.mark.xfail(
-    reason="repowire-0ml birth-certificate implementation is not shipped yet",
-    strict=True,
-)
 @pytest.mark.asyncio
 async def test_ensure_registered_uses_daemon_minted_birth_certificate_before_path_lookup():
-    """Future contract: daemon-minted identity proof replaces path adoption.
+    """Daemon-minted identity proof is authoritative before path adoption."""
+    certificate = {
+        "nonce": "nonce-1",
+        "peer_id": "repow-default-cert",
+        "display_name": "agentbox-codex",
+        "backend": "codex",
+        "project_path": str(Path.cwd()),
+        "runtime_session_id": "runtime-1",
+        "pane_id": None,
+        "agent_pid": 12345,
+        "parent_pid": 1,
+        "issued_at": "2026-05-25T10:00:00+00:00",
+        "expires_at": "2026-05-26T10:00:00+00:00",
+        "metadata": {},
+    }
+    calls: list[tuple[str, str]] = []
 
-    Once the runtime birth certificate exists, MCP should validate it before
-    any path+backend lookup. The certificate path is intentionally not modeled
-    in production code yet, so this xfail is an executable marker for the next
-    implementation slice.
-    """
-    assert hasattr(mcp_server, "read_runtime_birth_certificate")
+    async def daemon_router(method, url, body=None, params=None):  # noqa: ARG001
+        del params
+        calls.append((method, url))
+        if method == "POST" and url == "/peers/identity/validate":
+            assert body["birth_certificate"] == certificate
+            assert body["backend"] == "codex"
+            return {
+                "peer_id": "repow-default-cert",
+                "display_name": "agentbox-codex",
+                "peer": {
+                    "peer_id": "repow-default-cert",
+                    "display_name": "agentbox-codex",
+                    "circle": "default",
+                    "role": "agent",
+                    "path": str(Path.cwd()),
+                    "backend": "codex",
+                },
+            }
+        if method == "POST" and url.endswith("/touch"):
+            return {"ok": True}
+        if method == "GET" and url == "/peers":
+            raise AssertionError("path+backend lookup must not run before certificate")
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    with patch.object(
+            mcp_server, "get_tmux_info", return_value={"pane_id": None, "session_name": None},
+         ), \
+         patch.object(mcp_server, "get_pane_id", return_value=None), \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
+         patch.object(mcp_server, "_detect_backend", return_value="codex"), \
+         patch.object(
+             mcp_server, "read_runtime_birth_certificate", return_value=[certificate],
+         ), \
+         patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_router)):
+        await mcp_server._ensure_registered()
+
+    assert mcp_server._cached_peer_id == "repow-default-cert"
+    assert mcp_server._cached_peer_name == "agentbox-codex"
+    assert ("GET", "/peers") not in calls
 
 
 @pytest.mark.asyncio

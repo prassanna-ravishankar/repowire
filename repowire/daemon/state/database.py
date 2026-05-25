@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class StateDatabase:
@@ -189,6 +189,36 @@ class StateDatabase:
             )
             self.conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS runtime_identity_certificates (
+                    nonce TEXT PRIMARY KEY,
+                    peer_id TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    backend TEXT NOT NULL,
+                    project_path TEXT NOT NULL,
+                    runtime_session_id TEXT,
+                    pane_id TEXT,
+                    agent_pid INTEGER,
+                    parent_pid INTEGER,
+                    issued_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    metadata TEXT NOT NULL DEFAULT '{}'
+                )
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_runtime_identity_certificates_peer
+                ON runtime_identity_certificates(peer_id)
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_runtime_identity_certificates_runtime
+                ON runtime_identity_certificates(backend, runtime_session_id)
+                """,
+            )
+            self.conn.execute(
+                """
                 INSERT OR IGNORE INTO schema_migrations(version, description)
                 VALUES (?, ?)
                 """,
@@ -214,6 +244,13 @@ class StateDatabase:
                 VALUES (?, ?)
                 """,
                 (4, "peer session mappings for PeerRegistry identity state"),
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, description)
+                VALUES (?, ?)
+                """,
+                (5, "daemon-minted runtime identity birth certificates"),
             )
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

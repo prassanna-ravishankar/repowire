@@ -71,7 +71,7 @@ def _register_peer_http(
     turn_state: str | None = None,
     agent_pid: int | None = None,
     parent_pid: int | None = None,
-) -> tuple[str | None, str | None, bool, bool]:
+) -> tuple[str | None, str | None, bool, bool, dict | None]:
     """Register peer via HTTP POST /peers.
 
     Returns (peer_id, display_name, hijack_rejected, pane_assigned).
@@ -118,12 +118,19 @@ def _register_peer_http(
             f"repowire: SessionStart rejected by daemon pane-hijack guard: {detail}",
             file=sys.stderr,
         )
-        return None, None, True, False
+        return None, None, True, False, None
     if status_code is not None and 200 <= status_code < 300 and result:
         # pane_assigned defaults True for older daemons that don't return it.
         pane_assigned = bool(result.get("pane_assigned", True))
-        return result.get("peer_id"), result.get("display_name"), False, pane_assigned
-    return None, None, False, False
+        birth_certificate = result.get("birth_certificate")
+        return (
+            result.get("peer_id"),
+            result.get("display_name"),
+            False,
+            pane_assigned,
+            birth_certificate if isinstance(birth_certificate, dict) else None,
+        )
+    return None, None, False, False, None
 
 
 def get_peer_name(cwd: str) -> str:
@@ -432,7 +439,7 @@ def main(backend: str = "claude-code") -> int:
         #     and trip the guard.
         agent_pid_val = os.getppid()
         parent_pid_val = _read_ppid_of(agent_pid_val)
-        peer_id, display_name, hijack_rejected, pane_assigned = _register_peer_http(
+        registration_result = _register_peer_http(
             cwd,
             circle,
             backend_type,
@@ -444,6 +451,12 @@ def main(backend: str = "claude-code") -> int:
             turn_state=initial_turn_state,
             agent_pid=agent_pid_val,
             parent_pid=parent_pid_val,
+        )
+        peer_id, display_name, hijack_rejected, pane_assigned = registration_result[:4]
+        birth_certificate = (
+            registration_result[4]
+            if len(registration_result) > 4 and isinstance(registration_result[4], dict)
+            else None
         )
         if hijack_rejected:
             # Daemon rejected this pane claim. Don't touch the incumbent's
@@ -521,6 +534,7 @@ def main(backend: str = "claude-code") -> int:
                 "peer_id": peer_id,
                 "agent_pid": agent_pid_val,
                 "parent_pid": parent_pid_val,
+                "birth_certificate": birth_certificate,
             },
         )
 
