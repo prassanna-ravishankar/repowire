@@ -10,7 +10,12 @@ from pathlib import Path
 
 from repowire.hooks._tmux import get_pane_id
 from repowire.hooks.adapters import hook_output, normalize
-from repowire.hooks.ask_lifecycle import fetch_and_filter_pending, format_reminder_block
+from repowire.hooks.ask_lifecycle import (
+    fetch_and_filter_pending,
+    fetch_queued_deliveries,
+    format_queued_delivery_block,
+    format_reminder_block,
+)
 from repowire.hooks.chat_delta_streamer import streamer_pid_path
 from repowire.hooks.utils import (
     daemon_post,
@@ -162,9 +167,15 @@ def main(backend: str = "claude-code") -> int:
             Path(payload.transcript_path).expanduser().resolve()
             if payload.transcript_path else None
         )
+        deliveries = fetch_queued_deliveries(pane_id)
         due = fetch_and_filter_pending(pane_id, transcript_path)
+        blocks = []
+        if deliveries:
+            blocks.append(format_queued_delivery_block(deliveries))
         if due:
-            reminder_text = format_reminder_block(due)
+            blocks.append(format_reminder_block(due))
+        if blocks:
+            reminder_text = "\n\n".join(block for block in blocks if block)
 
     # Mark peer online and turn_state=idle (turn finished cleanly).
     if pane_id:

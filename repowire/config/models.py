@@ -253,6 +253,20 @@ class DaemonConfig(BaseModel):
             "Set to 0 to disable."
         ),
     )
+    delivery_queue_ttl_seconds: float = Field(
+        default=86400,
+        description=(
+            "Seconds a queued delivery for a polling peer remains drainable. "
+            "Set to 0 to disable queued delivery."
+        ),
+    )
+    delivery_queue_max_per_peer: int = Field(
+        default=100,
+        description=(
+            "Maximum queued deliveries retained per peer. Oldest rows are "
+            "evicted when the cap is exceeded. Set to 0 to disable."
+        ),
+    )
 
     # HTTP MCP settings (opt-in)
     mcp_http: MCPHttpConfig = Field(default_factory=MCPHttpConfig)

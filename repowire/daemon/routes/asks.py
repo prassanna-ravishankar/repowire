@@ -105,6 +105,22 @@ class PendingAsksResponse(BaseModel):
     asks: list[PendingAsk]
 
 
+class PendingDelivery(BaseModel):
+    delivery_id: str
+    kind: str
+    from_peer: str
+    to_peer: str
+    text: str
+    created_at: str
+    expires_at: str
+    correlation_id: str | None = None
+    attachments: list[dict] = Field(default_factory=list)
+
+
+class PendingDeliveriesResponse(BaseModel):
+    deliveries: list[PendingDelivery]
+
+
 async def _get_peer_or_http(identifier: str, *, circle: str | None = None) -> Peer:
     """Resolve a peer id/display name and convert ambiguity to HTTP errors."""
     peer_registry = get_peer_registry()
@@ -175,6 +191,10 @@ def _binding_id_for_peer(state: object, peer: Peer | None) -> str | None:
 def _uses_cli_polling_fallback(peer: Peer) -> bool:
     """Whether asks can be opened for a peer that polls /asks/pending itself."""
     return bool(peer.metadata.get("repowire_cli_fallback"))
+
+
+def _dump_attachments(attachments: list[AttachmentRef]) -> list[dict]:
+    return [a.model_dump(exclude_none=True) for a in attachments]
 
 
 def _emit_ack_event(
@@ -417,6 +437,19 @@ async def open_ask(
         raise HTTPException(status_code=404, detail=str(e))
     except TransportError as e:
         if _uses_cli_polling_fallback(peer):
+            queue = getattr(state, "queued_delivery_store", None)
+            if queue is not None:
+                queue.enqueue(
+                    peer_id=peer.peer_id,
+                    repowire_session_id=to_repowire_session_id,
+                    kind="ask",
+                    from_peer_id=from_peer_id,
+                    from_peer_name=from_peer_name,
+                    to_peer_name=peer.display_name,
+                    correlation_id=cid,
+                    text=request.text,
+                    attachments=_dump_attachments(request.attachments),
+                )
             logger.info(
                 "Ask %s queued for CLI-polling peer %s (%s): %s",
                 cid,
@@ -664,5 +697,61 @@ async def pending_asks(
                 direction=_direction_for(ask),
             )
             for ask in pending
+        ],
+    )
+
+
+@router.get("/deliveries/pending", response_model=PendingDeliveriesResponse)
+async def pending_deliveries(
+    pane_id: str | None = None,
+    peer_id: str | None = None,
+    max_results: int = 50,
+    _: str | None = Depends(require_auth),
+) -> PendingDeliveriesResponse:
+    """Drain queued deliveries for a polling peer.
+
+    This is delete-on-drain: once a delivery is returned to a Stop hook or CLI
+    polling client, it is removed from the durable queue so the same notify/ask
+    paste is not replayed indefinitely. Ask lifecycle reminders remain governed
+    by `/asks/pending` until the ask is acked.
+    """
+    if not pane_id and not peer_id:
+        raise HTTPException(status_code=400, detail="Must provide pane_id or peer_id")
+    if pane_id and peer_id:
+        raise HTTPException(status_code=400, detail="Provide only one of pane_id or peer_id")
+
+    peer_registry = get_peer_registry()
+    state = get_app_state()
+    queue = getattr(state, "queued_delivery_store", None)
+    if queue is None:
+        return PendingDeliveriesResponse(deliveries=[])
+
+    if pane_id:
+        peer = await peer_registry.get_peer_by_pane(pane_id)
+        if not peer:
+            raise HTTPException(status_code=404, detail=f"No peer for pane: {pane_id}")
+        resolved_peer_id = peer.peer_id
+    else:
+        assert peer_id is not None
+        peer = await peer_registry.get_peer(peer_id)
+        if not peer:
+            raise HTTPException(status_code=404, detail=f"No peer with id: {peer_id}")
+        resolved_peer_id = peer.peer_id
+
+    drained = queue.drain_for_peer(resolved_peer_id, max_results=max_results)
+    return PendingDeliveriesResponse(
+        deliveries=[
+            PendingDelivery(
+                delivery_id=d.delivery_id,
+                kind=d.kind,
+                from_peer=d.from_peer_name,
+                to_peer=d.to_peer_name,
+                correlation_id=d.correlation_id,
+                text=d.text,
+                attachments=d.attachments or [],
+                created_at=d.created_at,
+                expires_at=d.expires_at,
+            )
+            for d in drained
         ],
     )

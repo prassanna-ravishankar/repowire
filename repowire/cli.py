@@ -2896,6 +2896,65 @@ def peer_asks(
         console.print(f"[cyan]{cid}[/]  {frm} → {to}  {text}")
 
 
+@peer.command(name="deliveries")
+@click.option("--peer-id", "peer_id", default=None, help="Explicit peer_id to drain")
+@click.option("--pane-id", "pane_id", default=None, help="Tmux pane id (overrides $TMUX_PANE)")
+@click.option("--peer", "peer_name", default=None, help="Resolve peer_id via display name")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of formatted text")
+def peer_deliveries(
+    peer_id: str | None,
+    pane_id: str | None,
+    peer_name: str | None,
+    as_json: bool,
+) -> None:
+    """Drain queued deliveries for this peer (CLI fallback for polling agents)."""
+    import json as _json
+    import sys
+
+    import httpx
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resolved, err = _resolve_peer_id_for_asks(
+                client, peer_id=peer_id, pane_id=pane_id, peer_name=peer_name,
+            )
+            if err:
+                console.print(f"[red]{err}[/]")
+                sys.exit(1)
+            resp = client.get(
+                f"{_get_daemon_url()}/deliveries/pending",
+                params={"peer_id": resolved},
+                headers=_auth_headers(),
+            )
+            if resp.status_code >= 400:
+                console.print(
+                    f"[red]/deliveries/pending failed: {resp.status_code} {resp.text}[/]"
+                )
+                sys.exit(1)
+            deliveries = resp.json().get("deliveries", [])
+    except httpx.ConnectError:
+        console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
+        sys.exit(1)
+
+    if as_json:
+        click.echo(_json.dumps(deliveries, indent=2))
+        return
+
+    if not deliveries:
+        console.print("[dim]No queued deliveries[/]")
+        return
+
+    for delivery in deliveries:
+        kind = delivery.get("kind", "notify")
+        cid = delivery.get("correlation_id")
+        frm = delivery.get("from_peer", "?")
+        text = (delivery.get("text") or "").replace("\n", " ")
+        if len(text) > 120:
+            text = text[:117] + "..."
+        label = f"{kind} #{cid}" if cid else kind
+        console.print(f"[cyan]{label}[/]  from {frm}  {text}")
+
+
 @peer.command(name="ack")
 @click.argument("correlation_id")
 @click.option("-m", "--message", default=None, help="Optional reply message (closes the thread)")

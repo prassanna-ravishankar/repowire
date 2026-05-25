@@ -17,6 +17,7 @@ from repowire.config.models import DEFAULT_QUERY_TIMEOUT, Config
 from repowire.daemon.ask_tracker import AskerIdentity, AskTracker
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry, normalize_identity_path
+from repowire.daemon.state.queued_deliveries import SQLiteQueuedDeliveryStore
 from repowire.daemon.state.session_bindings import resolve_repowire_session_id
 from repowire.daemon.transport_router import (
     AskCompletion,
@@ -25,6 +26,7 @@ from repowire.daemon.transport_router import (
     PeerTransportRouter,
     transport_router_from_state,
 )
+from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.messages import AttachmentRef
 
 logger = logging.getLogger(__name__)
@@ -41,7 +43,7 @@ class NotifyDeliveryResult:
 
     status: Literal["sent", "queued"]
     delivery_state: Literal["delivered", "queued"]
-    reason: Literal["transport_delivered", "recipient_busy"]
+    reason: Literal["transport_delivered", "recipient_busy", "queued_delivery"]
     from_peer_id: str | None
     from_peer_name: str
     to_peer_id: str
@@ -72,6 +74,7 @@ class PeerDeliveryService:
         transport_router: PeerTransportRouter | None = None,
         ask_tracker: AskTracker | None = None,
         session_binding_store: Any | None = None,
+        queued_delivery_store: SQLiteQueuedDeliveryStore | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -79,6 +82,7 @@ class PeerDeliveryService:
         self._transport_router = transport_router
         self._ask_tracker = ask_tracker
         self._session_binding_store = session_binding_store
+        self._queued_delivery_store = queued_delivery_store
 
     def _session_id_for_peer(self, peer: Any | None) -> str | None:
         return resolve_repowire_session_id(self._session_binding_store, peer=peer)
@@ -193,18 +197,64 @@ class PeerDeliveryService:
         from_session_id = self._session_id_for_peer(from_obj)
         to_session_id = self._session_id_for_peer(target)
         attachment_tuple = tuple(attachments or ())
-        transport_result = await self._router().send_notify(
-            NotifyEnvelope(
-                from_peer_id=from_obj.peer_id if from_obj else None,
-                from_peer_name=from_obj.display_name if from_obj else from_peer,
-                target=target,
+        envelope = NotifyEnvelope(
+            from_peer_id=from_obj.peer_id if from_obj else None,
+            from_peer_name=from_obj.display_name if from_obj else from_peer,
+            target=target,
+            text=text,
+            intended_recipient_name=to_peer,
+            attachments=attachment_tuple,
+            from_repowire_session_id=from_session_id,
+            to_repowire_session_id=to_session_id,
+        )
+        try:
+            transport_result = await self._router().send_notify(envelope)
+        except TransportError:
+            if self._queued_delivery_store is None:
+                raise
+            queued = self._queued_delivery_store.enqueue(
+                peer_id=target.peer_id,
+                repowire_session_id=to_session_id,
+                kind="notify",
+                from_peer_id=envelope.from_peer_id,
+                from_peer_name=envelope.from_peer_name,
+                to_peer_name=target.display_name,
                 text=text,
-                intended_recipient_name=to_peer,
-                attachments=attachment_tuple,
+                attachments=[a.model_dump(exclude_none=True) for a in envelope.attachments],
+            )
+            if queued is None:
+                raise
+            self._registry.add_event(
+                "notification",
+                {
+                    "from": envelope.from_peer_name,
+                    "to": target.display_name,
+                    "text": text,
+                    "from_peer_id": envelope.from_peer_id,
+                    "to_peer_id": target.peer_id,
+                    "delivery_status": "queued",
+                    "delivery_state": "queued",
+                    "queue_delivery_id": queued.delivery_id,
+                    "attachments": [
+                        a.model_dump(exclude_none=True) for a in envelope.attachments
+                    ],
+                    "repowire_session_id": to_session_id,
+                    "from_repowire_session_id": from_session_id,
+                    "to_repowire_session_id": to_session_id,
+                },
+            )
+            return NotifyDeliveryResult(
+                status="queued",
+                delivery_state="queued",
+                reason="queued_delivery",
+                from_peer_id=envelope.from_peer_id,
+                from_peer_name=envelope.from_peer_name,
+                to_peer_id=target.peer_id,
+                to_peer_name=target.display_name,
+                repowire_session_id=to_session_id,
                 from_repowire_session_id=from_session_id,
                 to_repowire_session_id=to_session_id,
             )
-        )
         hook_delivery = transport_result.hook_delivery
         if isinstance(hook_delivery, dict):
             additions = {
@@ -222,7 +272,7 @@ class PeerDeliveryService:
         delivery_state: Literal["delivered", "queued"] = (
             "queued" if delivery_status == "queued" else "delivered"
         )
-        reason: Literal["transport_delivered", "recipient_busy"] = (
+        reason: Literal["transport_delivered", "recipient_busy", "queued_delivery"] = (
             "recipient_busy" if delivery_status == "queued" else "transport_delivered"
         )
         return NotifyDeliveryResult(
@@ -504,4 +554,5 @@ def peer_delivery_from_state(
         transport_router=transport_router,
         ask_tracker=getattr(state, "ask_tracker", None),
         session_binding_store=getattr(state, "session_binding_store", None),
+        queued_delivery_store=getattr(state, "queued_delivery_store", None),
     )

@@ -92,6 +92,15 @@ def fetch_and_filter_pending(
     return pending
 
 
+def fetch_queued_deliveries(pane_id: str) -> list[dict[str, Any]]:
+    """Drain one-shot queued deliveries for this pane."""
+    result = daemon_get(f"/deliveries/pending?pane_id={quote(pane_id, safe='')}")
+    if not result:
+        return []
+    deliveries = result.get("deliveries", [])
+    return deliveries if isinstance(deliveries, list) else []
+
+
 _BODY_SNIPPET_CHARS = 150
 
 
@@ -118,4 +127,22 @@ def format_reminder_block(asks: list[dict[str, Any]]) -> str:
             body = body[: _BODY_SNIPPET_CHARS - 1] + "…"
         head = f"  - #{cid} from @{from_peer}"
         lines.append(f"{head}: {body}" if body else head)
+    return "\n".join(lines)
+
+
+def format_queued_delivery_block(deliveries: list[dict[str, Any]]) -> str:
+    """Render one-shot queued deliveries as inbound mesh messages."""
+    if not deliveries:
+        return ""
+    lines = [f"[repowire] {len(deliveries)} queued delivery(s) received while offline:"]
+    for delivery in deliveries:
+        kind = delivery.get("kind", "notify")
+        cid = delivery.get("correlation_id")
+        from_peer = delivery.get("from_peer", "?")
+        text = (delivery.get("text") or "").strip()
+        if kind == "ask" and cid:
+            lines.append(f"@{from_peer} [ask #{cid}]: {text}")
+            lines.append(f'  ack("{cid}") or ack("{cid}", "reply")')
+        else:
+            lines.append(f"@{from_peer} [notify]: {text}")
     return "\n".join(lines)

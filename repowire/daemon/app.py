@@ -52,6 +52,7 @@ from repowire.daemon.routes import spawn as spawn_routes
 from repowire.daemon.scheduler import Scheduler
 from repowire.daemon.state import StateDatabase
 from repowire.daemon.state.events import SQLiteEventStore
+from repowire.daemon.state.queued_deliveries import SQLiteQueuedDeliveryStore
 from repowire.daemon.state.schedules import SQLiteScheduleStore
 from repowire.daemon.state.session_bindings import (
     SQLiteSessionBindingStore,
@@ -248,6 +249,11 @@ def create_app(
             legacy_path=schedules_path,
         )
         session_binding_store = SQLiteSessionBindingStore(state_db)
+        queued_delivery_store = SQLiteQueuedDeliveryStore(
+            state_db,
+            ttl_seconds=cfg.daemon.delivery_queue_ttl_seconds,
+            max_per_peer=cfg.daemon.delivery_queue_max_per_peer,
+        )
         # Store in app state for route handlers
         app.state.config = cfg
         app.state.transport = transport
@@ -264,6 +270,7 @@ def create_app(
         app.state.schedule_store = schedule_store
         app.state.state_db = state_db
         app.state.session_binding_store = session_binding_store
+        app.state.queued_delivery_store = queued_delivery_store
         from repowire.acp import AcpClientManager, ApprovalBroker
         acp_permission_broker = ApprovalBroker(
             emit_event=peer_registry.add_event,
@@ -284,6 +291,7 @@ def create_app(
             ),
             ask_tracker=ask_tracker,
             session_binding_store=session_binding_store,
+            queued_delivery_store=queued_delivery_store,
         )
         app.state.peer_delivery = peer_delivery
         scheduler = Scheduler(
@@ -544,6 +552,11 @@ def create_test_app(
             legacy_path=schedules_path,
         )
         session_binding_store = SQLiteSessionBindingStore(state_db)
+        queued_delivery_store = SQLiteQueuedDeliveryStore(
+            state_db,
+            ttl_seconds=cfg.daemon.delivery_queue_ttl_seconds,
+            max_per_peer=cfg.daemon.delivery_queue_max_per_peer,
+        )
         app.state.config = cfg
         app.state.transport = transport
         app.state.query_tracker = query_tracker
@@ -558,6 +571,7 @@ def create_test_app(
         app.state.schedule_store = schedule_store
         app.state.state_db = state_db
         app.state.session_binding_store = session_binding_store
+        app.state.queued_delivery_store = queued_delivery_store
         from repowire.acp import AcpClientManager, ApprovalBroker
         acp_permission_broker = ApprovalBroker(
             emit_event=registry.add_event,
@@ -578,6 +592,7 @@ def create_test_app(
             ),
             ask_tracker=ask_tracker,
             session_binding_store=session_binding_store,
+            queued_delivery_store=queued_delivery_store,
         )
         app.state.peer_delivery = peer_delivery
         scheduler = Scheduler(

@@ -7,6 +7,8 @@ daemon:
   host: "127.0.0.1"
   port: 8377
   auth_token: "rw_local_..."
+  delivery_queue_ttl_seconds: 86400
+  delivery_queue_max_per_peer: 100
   mcp_http:
     enabled: false
     bind: "localhost-only"
@@ -48,6 +50,15 @@ Experimental Streamable HTTP MCP endpoint mounted at `http://127.0.0.1:8377/mcp`
 - `allow_dangerous_tools`: allow lifecycle/admin MCP tools over HTTP MCP. Default: `false`; spawn, kill, and schedule mutation stay disabled.
 
 HTTP MCP is never exposed through the hosted relay. The default stdio MCP server installed by `repowire setup` is unchanged and remains the stable path for agents.
+
+## `daemon.delivery_queue_*`
+
+Repowire keeps a small SQLite-backed delivery queue for peers that miss a live WebSocket delivery and later poll from a Stop hook or CLI fallback. Live delivery is always attempted first. If the live transport is unavailable, notifications are queued; asks to CLI-fallback peers are queued for one-shot delivery while the open ask thread remains visible through `/asks/pending` until `ack`.
+
+- `delivery_queue_ttl_seconds`: how long a queued delivery remains drainable. Default: `86400` (24 h). Set `0` to disable queued delivery.
+- `delivery_queue_max_per_peer`: maximum queued rows retained per peer. Default: `100`. Oldest rows are evicted when the cap is exceeded. Set `0` to disable queued delivery.
+
+Draining is delete-on-read through the Stop hook or `repowire peer deliveries`, so the same queued paste is not replayed indefinitely. Ask reminders are separate: open asks continue to appear through `/asks/pending` until closed.
 
 ## `daemon.spawn`
 

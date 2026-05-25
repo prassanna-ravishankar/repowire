@@ -29,6 +29,9 @@ export default function ToolsReference() {
           Daemon events for asks and acks include nullable <Mono>repowire_session_id</Mono>, <Mono>from_repowire_session_id</Mono>, and <Mono>to_repowire_session_id</Mono> fields when an existing session binding can be resolved. Peer IDs remain the routing authority.
         </p>
         <p>
+          Live delivery is attempted first. If a CLI-fallback or polling peer has no live transport, the ask stays open and a one-shot SQLite queued delivery is stored for its next Stop-hook or CLI drain. The queued delivery is deleted after drain; the ask itself continues to appear in <Mono>/asks/pending</Mono> until <Mono>ack</Mono>.
+        </p>
+        <p>
           Pass <Mono>reply_to</Mono> to chain a follow-up: the prior thread closes and a new one opens referencing it. Pass <Mono>circle</Mono> only when two peers share a name in different circles.
         </p>
         <Example>
@@ -59,6 +62,9 @@ ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")`}
         </p>
         <p>
           On the HTTP <Mono>/notify</Mono> response, <Mono>hook_delivery</Mono> may be present when the recipient is a new enough WebSocket hook. It is a best-effort terminal injection receipt with statuses such as <Mono>injected</Mono>, <Mono>rejected</Mono>, or <Mono>failed</Mono>; <Mono>null</Mono> means the hook is older, a non-hook transport handled the notify, or no receipt arrived before the daemon returned. When a session binding is known, notify responses and hook receipts may include nullable <Mono>repowire_session_id</Mono>, <Mono>from_repowire_session_id</Mono>, and <Mono>to_repowire_session_id</Mono> fields for grouping.
+        </p>
+        <p>
+          If the live transport is unavailable but the daemon can resolve the target peer, <Mono>/notify</Mono> may return <Mono>delivery_state=&quot;queued&quot;</Mono> and <Mono>reason=&quot;queued_delivery&quot;</Mono>. The notification is then stored for one Stop-hook or <Mono>repowire peer deliveries</Mono> drain, subject to the configured TTL and per-peer cap.
         </p>
         <p>
           The special peer <Mono>telegram</Mono> routes to the user&rsquo;s phone. The <Mono>dashboard</Mono> already sees agent turns; you do not need to notify it.

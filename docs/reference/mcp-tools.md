@@ -61,6 +61,8 @@ Open a non-blocking ask thread. In normal use, you tell your local agent what yo
 
 Daemon events for asks and acks include nullable `repowire_session_id`, `from_repowire_session_id`, and `to_repowire_session_id` fields when an existing session binding can be resolved. Peer IDs remain the routing authority.
 
+Live delivery is attempted first. If a CLI-fallback/polling peer has no live transport, the ask stays open and a one-shot queued delivery is stored in SQLite for its next Stop-hook or CLI drain. The queued delivery is deleted after drain; the ask itself still appears in `/asks/pending` until `ack`.
+
 Peer resolution defaults to the caller's circle. Peers whose role bypasses circles (`orchestrator`, `service`, human surfaces) resolve mesh-wide; everything else is scoped to the caller's circle so the daemon's ambiguous-resolve refusal applies. Pass `circle="<name>"` to target a different circle explicitly.
 
 Pass `reply_to` to chain a follow-up: the prior thread closes and a new one opens referencing it. See [misroute refusal](../concepts/message-types.md#misroute-refusal) for what happens when names collide within the resolution scope.
@@ -98,6 +100,8 @@ the hook is older, a non-hook transport handled the notify, or no receipt
 arrived before the daemon returned. When a session binding is known, `/notify`
 responses and hook receipts may include nullable `repowire_session_id`,
 `from_repowire_session_id`, and `to_repowire_session_id` fields for grouping.
+
+If the live transport is unavailable but the daemon can resolve the target peer, `/notify` may return `delivery_state="queued"` and `reason="queued_delivery"`. That means the notification was stored in the SQLite queued-delivery table for the target peer/session and will be delivered once through the recipient's Stop hook or `repowire peer deliveries`, subject to the configured TTL and per-peer cap.
 
 Peer resolution mirrors `ask`: defaults to the caller's circle, except for peers whose role bypasses circles (`orchestrator`, `service`, human surfaces) which resolve mesh-wide. Pass `circle="<name>"` to target a different circle.
 

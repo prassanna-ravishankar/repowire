@@ -90,10 +90,13 @@ repowire peer restart NAME_OR_ID [--circle C] [--dry-run] [-m MESSAGE]
 repowire peer prune                         # remove offline peers from the registry
 repowire peer whoami [--register --backend B --name NAME --circle C --path P]  # read-only identity, or self-register
 repowire peer asks [--peer-id ID | --pane-id PANE | --peer NAME] [--direction inbound|outbound|both] [--json]
+repowire peer deliveries [--peer-id ID | --pane-id PANE | --peer NAME] [--json]
 repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 ```
 
-`peer whoami`, `peer asks`, and `peer ack` are the shellable mesh primitives intended for agents whose hooks don't fire today (notably [Antigravity `agy`](../agents/antigravity.md)). They wrap existing daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/ack`) with no new daemon surface and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`. Use `peer whoami --register --backend antigravity` once at session start to self-onboard.
+`peer whoami`, `peer asks`, `peer deliveries`, and `peer ack` are the shellable mesh primitives intended for agents whose hooks don't fire today (notably [Antigravity `agy`](../agents/antigravity.md)). They wrap daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/deliveries/pending`, `/ack`) and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`. Use `peer whoami --register --backend antigravity` once at session start to self-onboard.
+
+`peer deliveries` drains one-shot queued deliveries for a peer. Draining deletes the queued rows to avoid duplicate paste/replay. For queued asks, `peer deliveries` shows the original ask text once, while `peer asks` continues to show the open ask until the agent closes it with `peer ack` or the MCP `ack` tool.
 
 For Antigravity interop checks, `python3 scripts/agy_interop_smoke.py --run-cli-fallback` writes a JSON evidence report covering observed hook evidence, MCP availability state, and CLI fallback ask→ack. It records current behaviour only; hook or MCP support is not treated as verified unless the report observes matching daemon evidence.
 

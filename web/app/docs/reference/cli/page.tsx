@@ -57,13 +57,14 @@ repowire peer restart NAME_OR_ID [--circle C] [--dry-run] [-m MESSAGE]
 repowire peer prune
 repowire peer whoami [--register --backend B --name NAME --circle C --path P]
 repowire peer asks [--peer-id ID | --pane-id PANE | --peer NAME]
+repowire peer deliveries [--peer-id ID | --pane-id PANE | --peer NAME]
 repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]`}
       >
         <p>
           Inspect and repair registered peers. <Mono>peer list</Mono> is an operator view across all circles. <Mono>peer describe</Mono> shows one peer&apos;s identity, role, liveness, open asks, and recent events. <Mono>peer claim-role orchestrator</Mono> is a narrow repair command for an existing peer whose durable session mapping lost the orchestrator role after daemon restart; it refuses to demote a fresh online or busy holder unless <Mono>--force</Mono> is passed.
         </p>
         <p>
-          <Mono>peer whoami</Mono>, <Mono>peer asks</Mono>, and <Mono>peer ack</Mono> are shellable mesh primitives for runtimes whose hooks do not fire yet. They use the local daemon token automatically and let an Antigravity <Mono>agy</Mono> session self-register, poll pending asks, and close them from a shell.
+          <Mono>peer whoami</Mono>, <Mono>peer asks</Mono>, <Mono>peer deliveries</Mono>, and <Mono>peer ack</Mono> are shellable mesh primitives for runtimes whose hooks do not fire yet. They use the local daemon token automatically and let an Antigravity <Mono>agy</Mono> session self-register, poll pending asks, drain one-shot queued deliveries, and close asks from a shell. Draining deliveries deletes those queued rows; open asks still appear through <Mono>peer asks</Mono> until acked.
         </p>
         <p>
           <Mono>peer new</Mono> accepts <Mono>--profile</Mono> to append configured <Mono>daemon.spawn.profiles</Mono> args to the backend command. <Mono>peer restart</Mono> intentionally restarts a daemon-spawned peer on the same backend, path, circle, role, and mesh identity. It is for reloading startup context such as <Mono>AGENTS.md</Mono> or an orchestrator <Mono>SOUL.md</Mono>. It requires explicit spawn ownership proof plus live tmux evidence, so manually attached peers and stale or mismatched pane records are refused instead of killed. Restart is same-window/name first, not same-pane; tmux allocates a fresh pane through the normal spawn path. The restart mode is <Mono>fresh_runtime_context</Mono>: startup context is reloaded, but transcript replay, selected spawn profile, and exact backend conversation resume are not guaranteed unless Repowire deliberately selects and reports a backend-specific mode.

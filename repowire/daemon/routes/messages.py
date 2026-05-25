@@ -85,7 +85,9 @@ class NotifyResponse(BaseModel):
     delivery_state: Literal["delivered", "queued"] = "delivered"
     delivered: bool = True
     queued: bool = False
-    reason: Literal["transport_delivered", "recipient_busy"] = "transport_delivered"
+    reason: Literal[
+        "transport_delivered", "recipient_busy", "queued_delivery",
+    ] = "transport_delivered"
     from_peer_id: str | None = None
     from_peer_name: str | None = None
     to_peer_id: str | None = None

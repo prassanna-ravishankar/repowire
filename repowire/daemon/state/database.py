@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class StateDatabase:
@@ -219,6 +219,37 @@ class StateDatabase:
             )
             self.conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS queued_deliveries (
+                    delivery_id TEXT PRIMARY KEY,
+                    peer_id TEXT NOT NULL,
+                    repowire_session_id TEXT,
+                    kind TEXT NOT NULL,
+                    from_peer_id TEXT,
+                    from_peer_name TEXT NOT NULL,
+                    to_peer_name TEXT NOT NULL,
+                    correlation_id TEXT,
+                    text TEXT NOT NULL,
+                    attachments_json TEXT NOT NULL DEFAULT '[]',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                )
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_queued_deliveries_peer_created
+                ON queued_deliveries(peer_id, created_at)
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_queued_deliveries_expires
+                ON queued_deliveries(expires_at)
+                """,
+            )
+            self.conn.execute(
+                """
                 INSERT OR IGNORE INTO schema_migrations(version, description)
                 VALUES (?, ?)
                 """,
@@ -251,6 +282,13 @@ class StateDatabase:
                 VALUES (?, ?)
                 """,
                 (5, "daemon-minted runtime identity birth certificates"),
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, description)
+                VALUES (?, ?)
+                """,
+                (6, "queued deliveries for polling peers"),
             )
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
