@@ -148,6 +148,7 @@ nav:
       - CLI: reference/cli.md
       - Configuration: reference/configuration.md
       - Architecture: reference/architecture.md
+      - Adding a backend: reference/adding-a-backend.md
   - Troubleshooting:
       - troubleshooting/index.md
       - Hooks not firing: troubleshooting/hooks.md

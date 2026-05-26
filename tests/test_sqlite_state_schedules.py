@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from repowire.config.models import Config
 from repowire.daemon.schedule_store import Schedule, ScheduleStore
 from repowire.daemon.state.database import SCHEMA_VERSION, StateDatabase
+from repowire.daemon.state.operations import SQLiteOperationStore
 from repowire.daemon.state.schedules import SQLiteScheduleStore
 from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
 
@@ -34,7 +35,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
                 "SELECT version FROM schema_migrations",
             ).fetchall()
         }
-        assert versions == {1, 2, 3, 4, 5, 6, 7, 8}
+        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9}
         tables = {
             row[0]
             for row in db.conn.execute(
@@ -48,6 +49,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
         assert "queued_deliveries" in tables
         assert "tracked_work" in tables
         assert "calendar_entries" in tables
+        assert "operations" in tables
     finally:
         db.close()
 
@@ -60,9 +62,42 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
                 "SELECT version FROM schema_migrations",
             ).fetchall()
         }
-        assert versions == {1, 2, 3, 4, 5, 6, 7, 8}
+        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9}
     finally:
         db2.close()
+
+
+def test_sqlite_operation_store_records_lifecycle(tmp_path: Path) -> None:
+    db = StateDatabase(tmp_path / "state.db")
+    try:
+        store = SQLiteOperationStore(db)
+        operation = store.create(
+            kind="session.acquire_executor",
+            target={"work_id": "work-1"},
+            provenance={"requested_by": "runner"},
+        )
+
+        running = store.start_attempt(
+            operation.operation_id,
+            strategy="backend_resume",
+            detail={"backend": "codex"},
+        )
+        assert running is not None
+        assert running.state == "running"
+        assert running.strategy == "backend_resume"
+        assert running.attempts[-1]["state"] == "running"
+
+        completed = store.complete(
+            operation.operation_id,
+            result={"peer_id": "repow-default-worker"},
+        )
+        assert completed is not None
+        assert completed.state == "completed"
+        assert completed.result["peer_id"] == "repow-default-worker"
+        assert completed.attempts[-1]["state"] == "completed"
+        assert completed.completed_at is not None
+    finally:
+        db.close()
 
 
 def test_sqlite_schedule_store_create_list_delete_parity(tmp_path: Path) -> None:

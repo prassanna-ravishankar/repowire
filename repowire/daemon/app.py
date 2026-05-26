@@ -52,10 +52,12 @@ from repowire.daemon.routes import (
 )
 from repowire.daemon.routes import spawn as spawn_routes
 from repowire.daemon.scheduler import Scheduler
+from repowire.daemon.session_control import SessionControlService
 from repowire.daemon.spawn_service import SpawnService
 from repowire.daemon.state import StateDatabase
 from repowire.daemon.state.calendar import SQLiteCalendarStore
 from repowire.daemon.state.events import SQLiteEventStore
+from repowire.daemon.state.operations import SQLiteOperationStore
 from repowire.daemon.state.queued_deliveries import SQLiteQueuedDeliveryStore
 from repowire.daemon.state.schedules import SQLiteScheduleStore
 from repowire.daemon.state.session_bindings import (
@@ -261,6 +263,7 @@ def create_app(
         )
         work_store = SQLiteWorkStore(state_db)
         calendar_store = SQLiteCalendarStore(state_db, work_store)
+        operation_store = SQLiteOperationStore(state_db)
         # Store in app state for route handlers
         app.state.config = cfg
         app.state.transport = transport
@@ -277,6 +280,7 @@ def create_app(
         app.state.schedule_store = schedule_store
         app.state.work_store = work_store
         app.state.calendar_store = calendar_store
+        app.state.operation_store = operation_store
         app.state.state_db = state_db
         app.state.session_binding_store = session_binding_store
         app.state.queued_delivery_store = queued_delivery_store
@@ -309,6 +313,14 @@ def create_app(
             background_tasks=spawn_routes._BACKGROUND_TASKS,
         )
         app.state.spawn_service = spawn_service
+        session_control = SessionControlService(
+            peer_registry=peer_registry,
+            spawn_service=spawn_service,
+            operation_store=operation_store,
+            session_binding_store=session_binding_store,
+            calendar_store=calendar_store,
+        )
+        app.state.session_control = session_control
         job_runner = JobRunner(
             config=cfg,
             work_store=work_store,
@@ -317,6 +329,7 @@ def create_app(
             peer_delivery=peer_delivery,
             spawn_service=spawn_service,
             session_binding_store=session_binding_store,
+            session_control=session_control,
         )
         app.state.job_runner = job_runner
         scheduler = Scheduler(
@@ -587,6 +600,7 @@ def create_test_app(
         )
         work_store = SQLiteWorkStore(state_db)
         calendar_store = SQLiteCalendarStore(state_db, work_store)
+        operation_store = SQLiteOperationStore(state_db)
         app.state.config = cfg
         app.state.transport = transport
         app.state.query_tracker = query_tracker
@@ -601,6 +615,7 @@ def create_test_app(
         app.state.schedule_store = schedule_store
         app.state.work_store = work_store
         app.state.calendar_store = calendar_store
+        app.state.operation_store = operation_store
         app.state.state_db = state_db
         app.state.session_binding_store = session_binding_store
         app.state.queued_delivery_store = queued_delivery_store
@@ -627,6 +642,31 @@ def create_test_app(
             queued_delivery_store=queued_delivery_store,
         )
         app.state.peer_delivery = peer_delivery
+        spawn_service = SpawnService(
+            config=cfg,
+            spawned_pane_ids=spawn_routes._SPAWNED_PANE_IDS,
+            background_tasks=spawn_routes._BACKGROUND_TASKS,
+        )
+        app.state.spawn_service = spawn_service
+        session_control = SessionControlService(
+            peer_registry=registry,
+            spawn_service=spawn_service,
+            operation_store=operation_store,
+            session_binding_store=session_binding_store,
+            calendar_store=calendar_store,
+        )
+        app.state.session_control = session_control
+        job_runner = JobRunner(
+            config=cfg,
+            work_store=work_store,
+            calendar_store=calendar_store,
+            peer_registry=registry,
+            peer_delivery=peer_delivery,
+            spawn_service=spawn_service,
+            session_binding_store=session_binding_store,
+            session_control=session_control,
+        )
+        app.state.job_runner = job_runner
         scheduler = Scheduler(
             store=schedule_store,
             peer_registry=registry,

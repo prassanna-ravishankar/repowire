@@ -2,6 +2,7 @@
 
 from repowire.daemon.state.calendar import CalendarEntry, SQLiteCalendarStore
 from repowire.daemon.state.database import StateDatabase
+from repowire.daemon.state.operations import Operation, SQLiteOperationStore
 from repowire.daemon.state.queued_deliveries import (
     QueuedDelivery,
     SQLiteQueuedDeliveryStore,
@@ -11,7 +12,9 @@ from repowire.daemon.state.work import SQLiteWorkStore
 
 __all__ = [
     "QueuedDelivery",
+    "Operation",
     "CalendarEntry",
+    "SQLiteOperationStore",
     "SQLiteQueuedDeliveryStore",
     "SQLiteCalendarStore",
     "SQLiteWorkStore",

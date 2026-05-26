@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
+from repowire.agent_backends import can_resume_backend
+from repowire.config.models import AgentType
 from repowire.daemon.state.session_bindings import SessionBinding, SQLiteSessionBindingStore
 from repowire.protocol.peers import Peer, PeerStatus
 
@@ -86,12 +88,23 @@ def resume_capability_for(resolution: SessionResolution) -> tuple[ResumeStatus, 
             f"Session binding status is {binding.status}; resume is not available.",
         )
 
-    capability = binding.resume_capability or {}
-    if _capability_supported(capability):
+    try:
+        backend = AgentType(binding.backend)
+    except ValueError:
+        backend = None
+    can_resume = (
+        can_resume_backend(
+            backend,
+            runtime_session_id=binding.runtime_session_id,
+        )
+        if backend is not None
+        else False
+    )
+    if can_resume:
         return (
             "resume_available",
             "supported",
-            "Backend resume metadata is present; callers can use this capability record.",
+            "Backend resume is available for this runtime session.",
         )
 
     return (
@@ -99,10 +112,3 @@ def resume_capability_for(resolution: SessionResolution) -> tuple[ResumeStatus, 
         "unsupported",
         "No compatible backend resume capability is recorded for this session.",
     )
-
-
-def _capability_supported(capability: dict[str, Any]) -> bool:
-    if capability.get("supported") is True or capability.get("can_resume") is True:
-        return True
-    status = capability.get("status")
-    return isinstance(status, str) and status in {"supported", "available", "resume_available"}

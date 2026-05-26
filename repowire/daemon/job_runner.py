@@ -10,10 +10,15 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from repowire.agent_backends import AgentResumePlan, can_resume_backend
 from repowire.config.models import AgentType, Config
 from repowire.daemon.peer_delivery import PeerDeliveryService
 from repowire.daemon.peer_registry import PeerRegistry
-from repowire.daemon.spawn_service import RuntimeResumePlan, SpawnService
+from repowire.daemon.session_control import (
+    ExecutorAcquisitionUnavailableError,
+    SessionControlService,
+)
+from repowire.daemon.spawn_service import SpawnService
 from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
 from repowire.daemon.work_store import TrackedWork, now_iso
 from repowire.protocol.peers import Peer, PeerStatus
@@ -49,6 +54,7 @@ class JobRunner:
         peer_delivery: PeerDeliveryService,
         spawn_service: SpawnService,
         session_binding_store: SQLiteSessionBindingStore | None = None,
+        session_control: SessionControlService | None = None,
         runner_owner_id: str = "daemon-job-runner",
         lease_seconds: int = 300,
         poll_interval: float | None = None,
@@ -60,6 +66,7 @@ class JobRunner:
         self._delivery = peer_delivery
         self._spawn = spawn_service
         self._session_bindings = session_binding_store
+        self._session_control = session_control
         self._runner_owner_id = runner_owner_id
         self._lease_seconds = lease_seconds
         self._task: asyncio.Task | None = None
@@ -271,6 +278,48 @@ class JobRunner:
     async def _resolve_or_spawn_peer(self, work: TrackedWork, attempt_id: str) -> Peer | None:
         execution = (work.request or {}).get("execution") or {}
         target = execution.get("target") or {}
+        if self._session_control is not None:
+            try:
+                acquisition = await self._session_control.acquire_executor_for_work(
+                    work,
+                    target=target,
+                    runner_owner_id=self._runner_owner_id,
+                )
+            except ExecutorAcquisitionUnavailableError as e:
+                self._store.update_attempt(
+                    work.work_id,
+                    attempt_id=attempt_id,
+                    status=e.status,
+                    phase=e.phase,
+                    assigned_peer_id=e.assigned_peer_id,
+                    operation_id=e.operation_id,
+                    error=e.error,
+                )
+                return None
+            peer = acquisition.peer
+            phase_by_strategy = {
+                "assigned_peer": "resolved_peer",
+                "reused_peer": "reused_peer",
+                "backend_resume": "resumed_peer_registered",
+                "spawned_peer": "spawned_peer_registered",
+            }
+            self._store.update_attempt(
+                work.work_id,
+                attempt_id=attempt_id,
+                phase=phase_by_strategy.get(acquisition.strategy, "resolved_peer"),
+                assigned_peer_id=peer.peer_id,
+                assigned_peer_info=self._peer_info(peer, work=work),
+                tmux={"tmux_session": peer.tmux_session, "pane_id": peer.pane_id},
+                resume_plan=self._resume_plan_info(acquisition.resume_plan),
+                operation_id=acquisition.operation_id,
+                acquisition_strategy=acquisition.strategy,
+                acquisition={
+                    "operation_id": acquisition.operation_id,
+                    "strategy": acquisition.strategy,
+                    "runtime_binding": acquisition.runtime_binding,
+                },
+            )
+            return peer
         assigned = target.get("assigned_peer_id") or work.assigned_peer_id
         if assigned:
             resolved = await self._registry.resolve_peer_strict(str(assigned), circle=work.circle)
@@ -472,7 +521,7 @@ class JobRunner:
         *,
         path: str,
         backend: AgentType,
-    ) -> RuntimeResumePlan | None:
+    ) -> AgentResumePlan | None:
         if self._calendar is None or work.source_kind != "calendar" or not work.source_id:
             return None
         entry = self._calendar.get(work.source_id)
@@ -492,10 +541,12 @@ class JobRunner:
         if not isinstance(runtime_session_id, str) or not runtime_session_id:
             return None
         capability = binding.get("resume_capability") or {}
-        if not self._can_resume_backend(backend, capability):
+        if isinstance(capability, dict) and capability.get("supported") is False:
+            return None
+        if not can_resume_backend(backend, runtime_session_id=runtime_session_id):
             return None
         repowire_session_id = binding.get("repowire_session_id")
-        return RuntimeResumePlan(
+        return AgentResumePlan(
             backend=backend,
             runtime_session_id=runtime_session_id,
             repowire_session_id=(
@@ -505,17 +556,7 @@ class JobRunner:
         )
 
     @staticmethod
-    def _can_resume_backend(backend: AgentType, capability: Any) -> bool:
-        if backend != AgentType.CODEX or not isinstance(capability, dict):
-            return False
-        if capability.get("strategy") == "codex_resume":
-            return True
-        if capability.get("supported") is True or capability.get("can_resume") is True:
-            return True
-        return capability.get("status") in {"supported", "available", "resume_available"}
-
-    @staticmethod
-    def _resume_plan_info(plan: RuntimeResumePlan | None) -> dict[str, Any] | None:
+    def _resume_plan_info(plan: AgentResumePlan | None) -> dict[str, Any] | None:
         if plan is None:
             return None
         return {

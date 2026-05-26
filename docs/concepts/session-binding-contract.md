@@ -161,6 +161,13 @@ Rules:
 - `repowire/daemon/state/session_bindings.py` persists binding metadata,
   source locators, cursors, provenance, resume capability, and lifecycle
   status without storing raw runtime transcript bodies.
+- `repowire/daemon/session_control.py` is the first session-acquisition service
+  used by durable jobs. It records a `session.acquire_executor` operation,
+  then resolves a live peer, backend-native resume, or fresh spawn.
+- `repowire/daemon/state/operations.py` stores internal operation lifecycle
+  records for acquisition attempts, strategies, results, and structured
+  failures. Operations are audit/control records; they do not replace peer,
+  session, or job identity.
 
 ## Migration path
 

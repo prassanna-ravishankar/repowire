@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from repowire.config.models import AgentType
+from repowire.agent_backends import agent_backend_for
 from repowire.protocol.peers import Peer
 
 # Subprocess timeout for `claude mcp` calls. Surfaces as 504 in the route.
@@ -172,14 +172,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 def list_servers(peer: Peer) -> list[McpServerEntry]:
-    backend = peer.backend
-    if backend == AgentType.CLAUDE_CODE:
-        return _claude_list(peer)
-    if backend == AgentType.CODEX:
-        return _codex_list()
-    if backend == AgentType.GEMINI:
-        return _gemini_list()
-    raise NotSupportedError(f"MCP config not supported for backend {backend.value}")
+    return agent_backend_for(peer.backend).list_mcp_servers(peer)
 
 
 def add_server(peer: Peer, spec: McpServerSpec) -> None:
@@ -189,15 +182,7 @@ def add_server(peer: Peer, spec: McpServerSpec) -> None:
     if spec.name in existing:
         raise DuplicateServerError(f"server {spec.name!r} already exists")
 
-    backend = peer.backend
-    if backend == AgentType.CLAUDE_CODE:
-        _claude_add(peer, spec)
-    elif backend == AgentType.CODEX:
-        _codex_add(spec)
-    elif backend == AgentType.GEMINI:
-        _gemini_add(spec)
-    else:
-        raise NotSupportedError(f"MCP config not supported for backend {backend.value}")
+    agent_backend_for(peer.backend).add_mcp_server(peer, spec)
 
 
 def remove_server(peer: Peer, name: str) -> None:
@@ -206,15 +191,7 @@ def remove_server(peer: Peer, name: str) -> None:
     if name not in existing:
         raise ServerNotFoundError(f"server {name!r} not configured")
 
-    backend = peer.backend
-    if backend == AgentType.CLAUDE_CODE:
-        _claude_remove(peer, name)
-    elif backend == AgentType.CODEX:
-        _codex_remove(name)
-    elif backend == AgentType.GEMINI:
-        _gemini_remove(name)
-    else:
-        raise NotSupportedError(f"MCP config not supported for backend {backend.value}")
+    agent_backend_for(peer.backend).remove_mcp_server(peer, name)
 
 
 # ---------------------------------------------------------------------------

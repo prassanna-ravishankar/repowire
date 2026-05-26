@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import os
 import shlex
-from enum import Enum
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from repowire.agent_backends import DEFAULT_SPAWN_COMMANDS as _DEFAULT_SPAWN_COMMANDS
+from repowire.agent_types import AgentType
+
+DEFAULT_SPAWN_COMMANDS = _DEFAULT_SPAWN_COMMANDS
 
 DEFAULT_QUERY_TIMEOUT: float = 300.0
 """Default timeout in seconds for peer-to-peer queries (5 minutes)."""
@@ -20,28 +24,6 @@ DEFAULT_HOST: str = "127.0.0.1"
 DEFAULT_PORT: int = 8377
 DEFAULT_DAEMON_URL: str = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
 """Default daemon URL used by hooks and MCP server."""
-
-
-class AgentType(str, Enum):
-    """Type of AI coding agent a peer is running."""
-
-    CLAUDE_CODE = "claude-code"
-    OPENCODE = "opencode"
-    CODEX = "codex"
-    GEMINI = "gemini"
-    ANTIGRAVITY = "antigravity"
-    PI = "pi"
-    MCP_HTTP = "mcp-http"
-
-
-DEFAULT_SPAWN_COMMANDS: dict[AgentType, str] = {
-    AgentType.CLAUDE_CODE: "claude --dangerously-skip-permissions",
-    AgentType.OPENCODE: "opencode",
-    AgentType.CODEX: "codex --dangerously-bypass-approvals-and-sandbox",
-    AgentType.GEMINI: "gemini --yolo",
-    AgentType.ANTIGRAVITY: "agy --dangerously-skip-permissions",
-    AgentType.PI: "pi",
-}
 
 
 class SpawnProfile(BaseModel):
@@ -189,14 +171,13 @@ class SpawnSettings(BaseModel):
         """Migrate legacy allowed_commands into runtime command profiles on load."""
         if self.commands or not self.allowed_commands:
             return self
+        from repowire.agent_backends import AGENT_BACKENDS
+
         inferred: dict[AgentType, str] = {}
         command_to_backend = {
-            "claude": AgentType.CLAUDE_CODE,
-            "opencode": AgentType.OPENCODE,
-            "codex": AgentType.CODEX,
-            "gemini": AgentType.GEMINI,
-            "agy": AgentType.ANTIGRAVITY,
-            "pi": AgentType.PI,
+            cli_name: backend_type
+            for backend_type, backend in AGENT_BACKENDS.items()
+            for cli_name in backend.cli_names
         }
         for command in self.allowed_commands:
             head = command.split(None, 1)[0] if command else ""

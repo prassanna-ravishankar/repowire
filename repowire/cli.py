@@ -265,77 +265,18 @@ def setup(
     non_interactive: bool,
 ) -> None:
     """One-time setup: install hooks/plugins, MCP server, and daemon service."""
-    import shutil
-
-    from repowire.config.models import DEFAULT_SPAWN_COMMANDS, AgentType, load_config
+    from repowire.config.models import load_config
 
     interactive = _is_interactive(non_interactive)
     config = load_config()
 
     _cleanup_legacy_artifacts()
 
-    agents_setup: list[str] = []
-
-    # Detect and set up Claude Code if claude CLI available
-    if shutil.which("claude"):
-        # Channel transport: flag or interactive prompt
-        use_channels = experimental_channels
-        if not use_channels and interactive:
-            use_channels = click.confirm(
-                "Use experimental channel transport? (claude.ai login + bun)",
-                default=False,
-            )
-        _setup_claude_code(use_channels=use_channels)
-        agents_setup.append("claude-code")
-        config.daemon.spawn.commands.setdefault(
-            AgentType.CLAUDE_CODE,
-            DEFAULT_SPAWN_COMMANDS[AgentType.CLAUDE_CODE],
-        )
-
-    # Detect and set up OpenCode if opencode CLI or config exists
-    if shutil.which("opencode") or (Path.home() / ".config" / "opencode").exists():
-        _setup_opencode()
-        agents_setup.append("opencode")
-        config.daemon.spawn.commands.setdefault(
-            AgentType.OPENCODE,
-            DEFAULT_SPAWN_COMMANDS[AgentType.OPENCODE],
-        )
-
-    # Detect and set up Codex if codex CLI available
-    if shutil.which("codex"):
-        _setup_codex()
-        agents_setup.append("codex")
-        config.daemon.spawn.commands.setdefault(
-            AgentType.CODEX,
-            DEFAULT_SPAWN_COMMANDS[AgentType.CODEX],
-        )
-
-    # Detect and set up Gemini if gemini CLI available
-    if shutil.which("gemini"):
-        _setup_gemini()
-        agents_setup.append("gemini")
-        config.daemon.spawn.commands.setdefault(
-            AgentType.GEMINI,
-            DEFAULT_SPAWN_COMMANDS[AgentType.GEMINI],
-        )
-
-    # Detect and set up Antigravity CLI (`agy`) if installed
-    if shutil.which("agy") or (Path.home() / ".gemini" / "antigravity-cli").exists():
-        _setup_antigravity()
-        agents_setup.append("antigravity")
-        config.daemon.spawn.commands.setdefault(
-            AgentType.ANTIGRAVITY,
-            DEFAULT_SPAWN_COMMANDS[AgentType.ANTIGRAVITY],
-        )
-
-    # Detect and set up Pi if pi CLI or config exists
-    if shutil.which("pi") or (Path.home() / ".pi").exists():
-        _setup_pi()
-        agents_setup.append("pi")
-        config.daemon.spawn.commands.setdefault(
-            AgentType.PI,
-            DEFAULT_SPAWN_COMMANDS[AgentType.PI],
-        )
+    agents_setup = _install_detected_backends(
+        config,
+        interactive=interactive,
+        experimental_channels=experimental_channels,
+    )
 
     if not agents_setup:
         console.print("[yellow]No agent types detected.[/]")
@@ -705,7 +646,6 @@ def update(post_upgrade: bool) -> None:
     import subprocess
 
     from repowire.config.models import load_config
-    from repowire.installers.claude_code import check_channel_installed
 
     if not post_upgrade:
         config = load_config()
@@ -738,21 +678,14 @@ def update(post_upgrade: bool) -> None:
         console.print("[dim]Continuing with upgraded repowire...[/]")
         os.execv(repowire_bin, [repowire_bin, "update", "--post-upgrade"])
 
-    # Reinstall hooks (non-interactive, preserving current channel mode)
-    if shutil.which("claude"):
-        _setup_claude_code(use_channels=check_channel_installed())
-    if shutil.which("opencode") or (Path.home() / ".config" / "opencode").exists():
-        _setup_opencode()
-    if shutil.which("codex"):
-        _setup_codex()
-    if shutil.which("gemini"):
-        _setup_gemini()
-    if shutil.which("agy") or (Path.home() / ".gemini" / "antigravity-cli").exists():
-        _setup_antigravity()
-    if shutil.which("pi") or (Path.home() / ".pi").exists():
-        _setup_pi()
-
+    # Reinstall hooks/plugins non-interactively, preserving current channel mode.
     config = load_config()
+    _install_detected_backends(
+        config,
+        interactive=False,
+        experimental_channels=False,
+        preserve_channel_mode=True,
+    )
     config.save()
     console.print("[green]✓[/] SQLite state enabled")
     console.print("  State migrations run automatically when the daemon restarts.")
@@ -987,112 +920,50 @@ def _cleanup_legacy_artifacts() -> None:
             console.print(f"[green]\u2713[/] Removed legacy {dirname}/ directory")
 
 
-def _setup_claude_code(use_channels: bool = False) -> None:
-    """Setup for Claude Code agent type."""
-    import subprocess
-
-    from repowire.installers.claude_code import install_channel, install_hooks
-
-    if use_channels:
-        channel_ok, channel_msg = install_channel()
-        if channel_ok:
-            install_hooks(channel_mode=True)  # minimal Stop hook for dashboard
-            console.print(f"[green]✓[/] {channel_msg}")
-        else:
-            install_hooks()
-            console.print(f"[yellow]![/] {channel_msg}")
-            console.print("[green]✓[/] Claude Code hooks installed (fallback)")
-    else:
-        install_hooks()
-        console.print("[green]✓[/] Claude Code hooks installed")
-
-    try:
-        # Remove existing repowire MCP server if present
-        subprocess.run(["claude", "mcp", "remove", "repowire"], capture_output=True)
-
-        cmd = ["claude", "mcp", "add", "-s", "user", "repowire", "--", "repowire", "mcp"]
-        subprocess.run(cmd, check=True)
-        console.print("[green]✓[/] MCP server added to Claude")
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]Failed to configure Claude MCP server: {e}[/]")
-
-
-def _setup_opencode() -> None:
-    """Setup for OpenCode agent type."""
-    from repowire.installers.opencode import install_plugin
-
-    try:
-        install_plugin()
-        console.print("[green]✓[/] OpenCode plugin installed")
-    except Exception as e:
-        console.print(f"[red]Failed to install OpenCode plugin: {e}[/]")
-
-
-def _setup_codex() -> None:
-    """Setup for OpenAI Codex agent type."""
-    from repowire.installers.codex import install_hooks, install_mcp
-
-    try:
-        install_hooks()
-        console.print("[green]✓[/] Codex hooks installed")
-    except Exception as e:
-        console.print(f"[red]Failed to install Codex hooks: {e}[/]")
-
-    try:
-        install_mcp()
-        console.print("[green]✓[/] Codex MCP server configured")
-    except Exception as e:
-        console.print(f"[red]Failed to configure Codex MCP: {e}[/]")
-
-
-def _setup_gemini() -> None:
-    """Setup for Google Gemini CLI agent type."""
-    from repowire.installers.gemini import install_hooks, install_mcp
-
-    try:
-        install_hooks()
-        console.print("[green]✓[/] Gemini hooks installed")
-    except Exception as e:
-        console.print(f"[red]Failed to install Gemini hooks: {e}[/]")
-
-    try:
-        install_mcp()
-        console.print("[green]✓[/] Gemini MCP server configured")
-    except Exception as e:
-        console.print(f"[red]Failed to configure Gemini MCP: {e}[/]")
-
-
-def _setup_antigravity() -> None:
-    """Setup for Antigravity CLI (`agy`) agent type.
-
-    Installs a Repowire plugin into the Antigravity plugins directory. The
-    plugin layout (plugin.json + hooks/hooks.json) is verified via
-    `agy plugin validate`. End-to-end hook firing and MCP registration via
-    the plugin system are pending upstream verification — `repowire status`
-    and `repowire doctor` report that gap explicitly.
-    """
-    from repowire.installers.antigravity import install_hooks
-
-    try:
-        install_hooks()
-        console.print("[green]✓[/] Antigravity plugin installed")
-        console.print(
-            "  [dim]Hook firing and MCP registration via `agy` plugins are"
-            " pending upstream verification.[/]"
+def _print_backend_install_messages(messages) -> None:
+    for message in messages:
+        style = {"success": "green", "warning": "yellow", "error": "red"}.get(
+            message.level,
+            "dim",
         )
-    except Exception as e:
-        console.print(f"[red]Failed to install Antigravity plugin: {e}[/]")
+        marker = {"success": "✓", "warning": "!", "error": "✗"}.get(message.level, " ")
+        console.print(f"[{style}]{marker}[/] {message.text}")
 
 
-def _setup_pi() -> None:
-    """Setup for Pi (pi.dev) agent type."""
-    from repowire.installers.pi import install_extension
+def _install_detected_backends(
+    config,
+    *,
+    interactive: bool,
+    experimental_channels: bool,
+    preserve_channel_mode: bool = False,
+) -> list[str]:
+    from repowire.agent_backends import AGENT_BACKENDS, BackendInstallOptions
+    from repowire.agent_types import AgentType
 
-    try:
-        install_extension()
-        console.print("[green]✓[/] Pi extension installed")
-    except Exception as e:
-        console.print(f"[red]Failed to install Pi extension: {e}[/]")
+    agents_setup: list[str] = []
+    for backend_type, backend in AGENT_BACKENDS.items():
+        if not backend.supports_local_spawn or not backend.detect_installed():
+            continue
+        use_channels = False
+        if backend_type is AgentType.CLAUDE_CODE:
+            if preserve_channel_mode:
+                from repowire.installers.claude_code import check_channel_installed
+
+                use_channels = check_channel_installed()
+            else:
+                use_channels = experimental_channels
+                if not use_channels and interactive:
+                    use_channels = click.confirm(
+                        "Use experimental channel transport? (claude.ai login + bun)",
+                        default=False,
+                    )
+        _print_backend_install_messages(
+            backend.install(BackendInstallOptions(use_channels=use_channels))
+        )
+        agents_setup.append(backend_type.value)
+        if backend.default_command is not None:
+            config.daemon.spawn.commands.setdefault(backend_type, backend.default_command)
+    return agents_setup
 
 
 @main.command()
@@ -2210,7 +2081,7 @@ def agents_create_cmd(
             "  [yellow]note:[/] this path is not under daemon.spawn.allowed_paths; "
             "add an allowed path before daemon-spawned jobs can run it"
         )
-    console.print(f"  job: [cyan]{suggested}[/]")
+    click.echo(f"  job: {suggested}")
 
 
 @main.group()

@@ -115,9 +115,9 @@ async def test_session_resume_reports_unsupported_fallback(tmp_path):
     async with app.router.lifespan_context(app):
         binding = app.state.session_binding_store.upsert_observation(
             peer_id=None,
-            backend="gemini",
+            backend="mcp-http",
             project_path="/repo",
-            runtime_session_id="gemini-runtime-1",
+            runtime_session_id="mcp-http-runtime-1",
             status="detached",
         )
         transport = ASGITransport(app=app)

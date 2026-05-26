@@ -8,3 +8,7 @@
 - [Antigravity CLI (`agy`)](antigravity.md) — plugin-based; hook firing and MCP pending upstream verification.
 - [OpenCode](opencode.md) — TypeScript plugin with persistent WebSocket.
 - Pi — extension path installed when the `pi` CLI or config is detected.
+
+Contributor note: backend behavior is centralized in the agent backend registry.
+See [Adding a backend](../reference/adding-a-backend.md) before adding another
+runtime or changing spawn/resume/setup behavior.

@@ -10,6 +10,13 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from repowire.agent_backends import (
+    AGENT_BACKENDS,
+    DEFAULT_SPAWN_COMMANDS,
+    AgentResumePlan,
+    can_resume_backend,
+    resume_capability_for_registration,
+)
 from repowire.config.models import AgentType, Config
 from repowire.daemon.ask_tracker import AskTracker
 from repowire.daemon.deps import cleanup_deps, init_deps
@@ -18,9 +25,11 @@ from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.routes import work as work_routes
-from repowire.daemon.spawn_service import RuntimeResumePlan, SpawnService, SpawnServiceResult
+from repowire.daemon.session_control import SessionControlService
+from repowire.daemon.spawn_service import SpawnService, SpawnServiceResult
 from repowire.daemon.state.calendar import SQLiteCalendarStore
 from repowire.daemon.state.database import StateDatabase
+from repowire.daemon.state.operations import SQLiteOperationStore
 from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
 from repowire.daemon.state.work import SQLiteWorkStore
 from repowire.daemon.websocket_transport import WebSocketTransport
@@ -77,9 +86,17 @@ def _env(tmp_path: Path):
     db = StateDatabase(tmp_path / "state.db")
     store = SQLiteWorkStore(db)
     calendar = SQLiteCalendarStore(db, store)
+    operations = SQLiteOperationStore(db)
     session_bindings = SQLiteSessionBindingStore(db)
     delivery = FakeDelivery()
     spawn = FakeSpawn()
+    session_control = SessionControlService(
+        peer_registry=registry,
+        spawn_service=spawn,  # type: ignore[arg-type]
+        operation_store=operations,
+        session_binding_store=session_bindings,
+        calendar_store=calendar,
+    )
     runner = JobRunner(
         config=cfg,
         work_store=store,
@@ -88,6 +105,7 @@ def _env(tmp_path: Path):
         peer_delivery=delivery,  # type: ignore[arg-type]
         spawn_service=spawn,  # type: ignore[arg-type]
         session_binding_store=session_bindings,
+        session_control=session_control,
         poll_interval=0.01,
     )
     state = SimpleNamespace(
@@ -99,7 +117,9 @@ def _env(tmp_path: Path):
         peer_registry=registry,
         work_store=store,
         calendar_store=calendar,
+        operation_store=operations,
         session_binding_store=session_bindings,
+        session_control=session_control,
         job_runner=runner,
         relay_mode=False,
     )
@@ -909,6 +929,48 @@ async def test_recurring_job_uses_recorded_codex_resume_binding(tmp_path):
     cleanup_deps()
 
 
+def test_recurring_job_does_not_resume_when_binding_marks_resume_unsupported(tmp_path):
+    _cfg, _registry, db, store, calendar, _session_bindings, _delivery, _spawn, runner = _env(
+        tmp_path
+    )
+    worker_path = str(tmp_path / "daily-email-brief")
+    calendar.create(
+        title="daily brief",
+        kind="brief",
+        cron="*/2 * * * *",
+        circle="default",
+        request={"execution": {"target": {"path": worker_path, "backend": "codex"}}},
+        provenance={
+            "runtime_binding": {
+                "peer_id": "repow-default-old",
+                "backend": "codex",
+                "path": worker_path,
+                "circle": "default",
+                "runtime_session_id": "codex-runtime-old",
+                "resume_capability": {
+                    "supported": False,
+                    "strategy": "codex_resume",
+                    "reason": "runtime_marked_unresumable",
+                },
+            }
+        },
+        now=datetime(2026, 5, 25, 8, 0, tzinfo=timezone.utc),
+    )
+    [child] = calendar.materialize_due(now=datetime(2026, 5, 25, 8, 2, tzinfo=timezone.utc))
+
+    assert runner._resume_plan_for(child, path=worker_path, backend=AgentType.CODEX) is None
+    assert (
+        runner._session_control._resume_plan_for(
+            child,
+            path=worker_path,
+            backend=AgentType.CODEX,
+        )
+        is None
+    )
+    db.close()
+    cleanup_deps()
+
+
 def _parse_iso_for_test(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
@@ -920,7 +982,7 @@ def test_spawn_service_builds_codex_resume_command() -> None:
     command = SpawnService.resume_command(
         "codex --dangerously-bypass-approvals-and-sandbox",
         backend=AgentType.CODEX,
-        resume_plan=RuntimeResumePlan(
+        resume_plan=AgentResumePlan(
             backend=AgentType.CODEX,
             runtime_session_id="codex-runtime-1",
             capability={"supported": True, "strategy": "codex_resume"},
@@ -928,6 +990,88 @@ def test_spawn_service_builds_codex_resume_command() -> None:
     )
 
     assert command == "codex --dangerously-bypass-approvals-and-sandbox resume codex-runtime-1"
+
+
+def test_agent_backend_registry_covers_every_agent_type() -> None:
+    assert set(AGENT_BACKENDS) == set(AgentType)
+    for backend_type, backend in AGENT_BACKENDS.items():
+        assert backend.agent_type == backend_type
+        if backend.supports_local_spawn:
+            assert backend.default_command
+            assert DEFAULT_SPAWN_COMMANDS[backend_type] == backend.default_command
+
+
+def test_agent_backends_make_codex_resume_first_class() -> None:
+    capability = resume_capability_for_registration(AgentType.CODEX, "runtime-123")
+
+    assert capability == {
+        "supported": True,
+        "strategy": "codex_resume",
+        "runtime_session_id_arg": "runtime-123",
+    }
+    assert can_resume_backend(AgentType.CODEX, runtime_session_id="runtime-123")
+    assert not can_resume_backend(AgentType.CODEX, runtime_session_id=None)
+
+
+@pytest.mark.parametrize(
+    ("backend", "base_command", "expected"),
+    [
+        (
+            AgentType.CLAUDE_CODE,
+            "claude --dangerously-skip-permissions",
+            "claude --dangerously-skip-permissions --resume runtime-123",
+        ),
+        (
+            AgentType.GEMINI,
+            "gemini --yolo",
+            "gemini --yolo --resume runtime-123",
+        ),
+        (
+            AgentType.OPENCODE,
+            "opencode",
+            "opencode --session runtime-123",
+        ),
+        (
+            AgentType.ANTIGRAVITY,
+            "agy --dangerously-skip-permissions",
+            "agy --dangerously-skip-permissions --conversation runtime-123",
+        ),
+        (
+            AgentType.PI,
+            "pi",
+            "pi --session runtime-123",
+        ),
+    ],
+)
+def test_agent_backends_build_resume_commands_for_cli_backends(
+    backend: AgentType,
+    base_command: str,
+    expected: str,
+) -> None:
+    capability = resume_capability_for_registration(backend, "runtime-123")
+
+    assert capability["supported"] is True
+    assert can_resume_backend(backend, runtime_session_id="runtime-123")
+    assert (
+        SpawnService.resume_command(
+            base_command,
+            backend=backend,
+            resume_plan=AgentResumePlan(
+                backend=backend,
+                runtime_session_id="runtime-123",
+                capability=capability,
+            ),
+        )
+        == expected
+    )
+
+
+def test_agent_backends_cover_unsupported_mcp_http_explicitly() -> None:
+    capability = resume_capability_for_registration(AgentType.MCP_HTTP, "runtime-123")
+
+    assert capability["supported"] is False
+    assert capability["reason"] == "backend_resume_not_implemented"
+    assert not can_resume_backend(AgentType.MCP_HTTP, runtime_session_id="runtime-123")
 
 
 @pytest.mark.anyio
@@ -961,7 +1105,7 @@ async def test_spawn_service_passes_codex_resume_command_to_spawn(tmp_path, monk
         path=str(tmp_path),
         backend=AgentType.CODEX,
         message="warm",
-        resume_plan=RuntimeResumePlan(
+        resume_plan=AgentResumePlan(
             backend=AgentType.CODEX,
             runtime_session_id="codex-runtime-1",
             capability={"supported": True, "strategy": "codex_resume"},

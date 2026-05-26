@@ -19,7 +19,8 @@ import asyncio
 import logging
 import shutil
 
-from repowire.config.models import AgentType
+from repowire.agent_backends import agent_backend_for
+from repowire.agent_types import AgentType
 
 logger = logging.getLogger(__name__)
 
@@ -50,18 +51,12 @@ async def post_spawn_warmup(
     block the spawn flow or any other peer's work.
     """
     try:
-        if backend == AgentType.CODEX:
-            text = message or DEFAULT_WARMUP_TEMPLATE.format(path=path, circle=circle)
-            await _codex_warmup(pane_id, text)
-        elif message:
-            # claude-code, opencode, gemini: SessionStart fires at boot so the
-            # peer self-registers without a nudge, but the per-spawn seed
-            # message was previously dropped on the floor. Deliver it via
-            # tmux send-keys after a short settle delay so the agent has a
-            # prompt to receive into. This closes the
-            # `pending_first_turn` drop where spawn brief silently vanished.
-            await _claude_code_family_seed(pane_id, message)
-        # else: no seed message — registration via SessionStart is enough.
+        await agent_backend_for(backend).post_spawn_warmup(
+            pane_id,
+            path=path,
+            circle=circle,
+            message=message,
+        )
     except Exception as e:
         logger.warning("post_spawn_warmup failed for %s pane %s: %s", backend, pane_id, e)
 

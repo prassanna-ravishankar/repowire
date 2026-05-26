@@ -415,6 +415,9 @@ class SQLiteWorkStore:
         correlation_id: str | None = None,
         delivery_state: str | None = None,
         resume_plan: dict[str, Any] | None = None,
+        operation_id: str | None = None,
+        acquisition_strategy: str | None = None,
+        acquisition: dict[str, Any] | None = None,
         error: dict[str, Any] | None = None,
     ) -> TrackedWork | None:
         with self._conn:
@@ -446,6 +449,12 @@ class SQLiteWorkStore:
                     attempt["delivery_state"] = delivery_state
                 if resume_plan is not None:
                     attempt["resume_plan"] = resume_plan
+                if operation_id is not None:
+                    attempt["operation_id"] = operation_id
+                if acquisition_strategy is not None:
+                    attempt["acquisition_strategy"] = acquisition_strategy
+                if acquisition is not None:
+                    attempt["acquisition"] = acquisition
                 if error is not None:
                     attempt["error"] = error
                 if status in {"delivered", "failed", "unavailable", "interrupted", "cancelled"}:

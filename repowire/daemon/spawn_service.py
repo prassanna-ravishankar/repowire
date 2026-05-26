@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from fastapi import HTTPException, status
 
+from repowire.agent_backends import AgentResumePlan, build_resume_command
 from repowire.config.models import AgentType, Config, apply_spawn_profile
 from repowire.installers.post_spawn import post_spawn_warmup
 from repowire.protocol.peers import PeerRole
@@ -24,14 +23,6 @@ class SpawnServiceResult:
     tmux_session: str
     pane_id: str | None
     message: str | None
-
-
-@dataclass(frozen=True)
-class RuntimeResumePlan:
-    backend: AgentType
-    runtime_session_id: str
-    repowire_session_id: str | None = None
-    capability: dict[str, Any] | None = None
 
 
 class SpawnService:
@@ -118,7 +109,7 @@ class SpawnService:
         message: str | None = None,
         role: PeerRole = PeerRole.AGENT,
         peer_id: str | None = None,
-        resume_plan: RuntimeResumePlan | None = None,
+        resume_plan: AgentResumePlan | None = None,
     ) -> SpawnServiceResult:
         resolved_path = self.validate_path(path)
         command = self.resolve_command(backend, profile)
@@ -176,20 +167,9 @@ class SpawnService:
         command: str,
         *,
         backend: AgentType,
-        resume_plan: RuntimeResumePlan,
+        resume_plan: AgentResumePlan,
     ) -> str:
         """Return a backend-native resume command for a recorded runtime session."""
-        # The configured Codex command is expected to be the binary plus global
-        # flags only; the backend subcommand and session id are appended here.
-        if backend != AgentType.CODEX:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail={
-                    "error": "backend_resume_unavailable",
-                    "backend": backend.value,
-                    "hint": "Backend-native resume is currently implemented for Codex only.",
-                },
-            )
         if resume_plan.backend != backend:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -199,4 +179,14 @@ class SpawnService:
                     "resume_backend": resume_plan.backend.value,
                 },
             )
-        return f"{command} resume {shlex.quote(resume_plan.runtime_session_id)}"
+        try:
+            return build_resume_command(command, resume_plan)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "error": "backend_resume_unavailable",
+                    "backend": backend.value,
+                    "hint": str(e),
+                },
+            ) from e

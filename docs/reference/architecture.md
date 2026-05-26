@@ -24,11 +24,13 @@ The daemon is the single routing hub. It does not care whether a peer arrived th
 
 | Area | Files | Responsibility |
 | --- | --- | --- |
+| Agent backends | `repowire/agent_types.py`, `repowire/agent_backends.py` | Serialized backend identity plus setup, spawn, resume, MCP config, and post-spawn behavior dispatch |
 | Daemon app | `repowire/daemon/app.py`, `repowire/daemon/deps.py` | FastAPI app factory, dependency wiring, dashboard/static serving |
 | Peer state | `repowire/daemon/peer_registry.py` | Registration, liveness, circles, roles, lazy repair |
 | Message routing | `repowire/daemon/peer_delivery.py`, `repowire/daemon/transport_router.py`, `repowire/daemon/message_router.py`, `repowire/daemon/websocket_transport.py` | Delivery orchestration, ACP-before-WebSocket transport selection, and wire delivery over connected peers |
 | Ask lifecycle | `repowire/daemon/ask_tracker.py`, `repowire/daemon/routes/asks.py` | Open ask state, pending reminders, close/ack handling |
 | Session controls | `repowire/daemon/session_controls.py`, `repowire/daemon/routes/sessions.py` | Session-binding resolution and session-targeted control capability routes |
+| Session acquisition | `repowire/daemon/session_control.py`, `repowire/daemon/state/operations.py` | Durable operation records and live-executor acquisition for session/job work |
 | Schedules | `repowire/daemon/scheduler.py`, `repowire/daemon/schedule_store.py`, `repowire/daemon/routes/schedules.py` | One-shot and recurring cron deliveries |
 | Jobs | `repowire/daemon/job_runner.py`, `repowire/daemon/state/work.py`, `repowire/daemon/state/calendar.py`, `repowire/daemon/routes/work.py` | Durable tracked work, recurring calendar templates, and spawned job dispatch |
 | Hooks | `repowire/hooks/` | Runtime event adapters, tmux injection, transcript/chat extraction |

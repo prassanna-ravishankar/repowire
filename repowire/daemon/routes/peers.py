@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
 from repowire import peer_mcp
+from repowire.agent_backends import agent_backend_for, resume_capability_for_registration
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
@@ -62,22 +63,16 @@ def _binding_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     return {key: metadata[key] for key in allowed_keys if metadata.get(key) is not None}
 
 
-def _resume_capability_for_registration(
+def _resume_capability_from_metadata(
     backend: AgentType,
     metadata: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    if backend != AgentType.CODEX:
-        return {}
     if not metadata:
         return {}
     runtime_session_id = metadata.get("hook_session_id")
     if not isinstance(runtime_session_id, str) or not runtime_session_id:
         return {}
-    return {
-        "supported": True,
-        "strategy": "codex_resume",
-        "runtime_session_id_arg": runtime_session_id,
-    }
+    return resume_capability_for_registration(backend, runtime_session_id)
 
 
 class PeerInfo(BaseModel):
@@ -425,7 +420,7 @@ async def _register_peer_impl(
                     "runtime_session_id": request.metadata.get("hook_session_id"),
                     "observed_by_peer_id": peer_id,
                 },
-                resume_capability=_resume_capability_for_registration(
+                resume_capability=_resume_capability_from_metadata(
                     request.backend,
                     request.metadata,
                 ),
@@ -1114,53 +1109,13 @@ async def _resolve_peer_or_404(name: str, circle: str | None) -> Peer:
 
 def _mcp_scope_metadata(peer: Peer) -> McpConfigScopeResponse:
     self_machine = socket.gethostname()
-    backend = peer.backend
-    if backend == AgentType.CLAUDE_CODE:
-        scope = {
-            "backend": backend.value,
-            "owner": "peer/project",
-            "effective_scope": "peer_project",
-            "label": "Claude Code peer/project config",
-            "description": (
-                "Claude Code MCP edits can target user/global config or the peer's "
-                "project/worktree via the selected add scope."
-            ),
-            "supported_scopes": ["user", "project"],
-            "default_scope": "user",
-            "is_global": False,
-        }
-    elif backend == AgentType.CODEX:
-        scope = {
-            "backend": backend.value,
-            "owner": "backend",
-            "effective_scope": "backend_global",
-            "label": "Codex global backend config",
-            "description": (
-                "Codex MCP edits target the user-level Codex config shared by "
-                "Codex sessions on this host."
-            ),
-            "supported_scopes": ["user"],
-            "default_scope": "user",
-            "is_global": True,
-        }
-    elif backend == AgentType.GEMINI:
-        scope = {
-            "backend": backend.value,
-            "owner": "backend",
-            "effective_scope": "backend_global",
-            "label": "Gemini global backend config",
-            "description": (
-                "Gemini MCP edits target the user-level Gemini settings shared by "
-                "Gemini sessions on this host."
-            ),
-            "supported_scopes": ["user"],
-            "default_scope": "user",
-            "is_global": True,
-        }
-    else:
-        raise peer_mcp.NotSupportedError(f"MCP config not supported for backend {backend.value}")
+    backend = agent_backend_for(peer.backend)
+    if backend.mcp_config_scope is None:
+        raise peer_mcp.NotSupportedError(
+            f"MCP config not supported for backend {peer.backend.value}"
+        )
     return McpConfigScopeResponse(
-        **scope,
+        **backend.mcp_config_scope.as_dict(peer.backend),
         peer_id=peer.peer_id,
         peer_name=peer.display_name,
         project_path=peer.path,

@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 class StateDatabase:
@@ -348,6 +348,36 @@ class StateDatabase:
             )
             self.conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS operations (
+                    operation_id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    target_json TEXT NOT NULL DEFAULT '{}',
+                    strategy TEXT,
+                    attempts_json TEXT NOT NULL DEFAULT '[]',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    error_json TEXT NOT NULL DEFAULT '{}',
+                    provenance_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT
+                )
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_operations_kind_updated
+                ON operations(kind, updated_at)
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_operations_state_updated
+                ON operations(state, updated_at)
+                """,
+            )
+            self.conn.execute(
+                """
                 INSERT OR IGNORE INTO schema_migrations(version, description)
                 VALUES (?, ?)
                 """,
@@ -401,6 +431,13 @@ class StateDatabase:
                 VALUES (?, ?)
                 """,
                 (8, "recurring durable job calendar entries"),
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, description)
+                VALUES (?, ?)
+                """,
+                (9, "durable operation lifecycle records"),
             )
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

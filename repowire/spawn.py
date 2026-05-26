@@ -9,7 +9,8 @@ from pathlib import Path
 import libtmux
 from libtmux.exc import LibTmuxException, ObjectDoesNotExist
 
-from repowire.config.models import DEFAULT_SPAWN_COMMANDS, AgentType
+from repowire.agent_backends import DEFAULT_SPAWN_COMMANDS
+from repowire.agent_types import AgentType
 from repowire.spawn_hints import write_hint
 
 # Default commands for each agent type
