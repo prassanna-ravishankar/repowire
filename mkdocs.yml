@@ -142,6 +142,7 @@ nav:
       - Multi-repo coordination: patterns/multi-repo.md
       - Cross-agent review: patterns/cross-agent-review.md
       - Orchestrator coordination: patterns/orchestrator-coordination.md
+      - Divergent ideation: patterns/divergent-ideation.md
       - Worktree isolation: patterns/worktree-isolation.md
       - Mobile mesh management: patterns/mobile-mesh.md
       - Infrastructure-as-peer: patterns/infra-as-peer.md

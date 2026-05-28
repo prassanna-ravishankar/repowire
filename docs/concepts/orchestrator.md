@@ -27,7 +27,7 @@ Use markdown memory only for rules that should change future behavior. Detailed 
 
 This memory is orchestrator-scoped. Other peers do not inherit it implicitly; give them the relevant context through explicit briefs, project-local agent files, native runtime skills, or future session/timeline lookup when that is the right surface.
 
-Local skills are the on-demand procedure layer. `.agents/skills/` is the canonical cross-runtime location; Claude Code also sees the same skills through `.claude/skills/` symlinks. The top-level orchestrator instructions stay compact and always-loaded. Shipped skills cover general mechanics such as coordination, delegation, durable jobs, agent folders, skill creation, memory, handover, review cycles, worktree isolation, and cleanup; user- or project-specific preferences belong in local workspace files, not the product template.
+Local skills are the on-demand procedure layer. `.agents/skills/` is the canonical cross-runtime location; Claude Code also sees the same skills through `.claude/skills/` symlinks. The top-level orchestrator instructions stay compact and always-loaded. Shipped skills cover general mechanics such as coordination, delegation, durable jobs, agent folders, skill creation, memory, handover, review cycles, worktree isolation, cleanup, and divergent ideation (adhd skill); user- or project-specific preferences belong in local workspace files, not the product template.
 
 ## Co-orchestrators
 
