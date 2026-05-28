@@ -44,9 +44,7 @@ acp = [
     "agent-client-protocol>=0.10.0",
 ]
 docs = [
-    "mkdocs>=1.6.0",
-    "mkdocs-material>=9.5.0",
-    "pymdown-extensions>=10.7",
+    "zensical>=0.0.43",
 ]
 acp-probe = [
     "agent-client-protocol>=0.10.0",

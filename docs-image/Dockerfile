@@ -7,12 +7,11 @@ COPY pyproject.toml uv.lock README.md ./
 COPY docs ./docs
 COPY mkdocs.yml ./
 
-# --no-install-project: docs build only needs mkdocs + mkdocs-material +
-# pymdown-extensions from the [docs] extra. Skipping the project install
-# avoids pulling repowire's hatch build, which force-includes web/out
-# (a Next.js export artifact unrelated to the docs site).
+# --no-install-project: docs build only needs zensical from the [docs] extra.
+# Skipping the project install avoids pulling repowire's hatch build, which
+# force-includes web/out (a Next.js export artifact unrelated to the docs site).
 RUN uv sync --extra docs --frozen --no-install-project
-RUN .venv/bin/mkdocs build --strict
+RUN .venv/bin/zensical build --strict
 
 FROM nginx:alpine
 

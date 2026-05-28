@@ -156,7 +156,7 @@ Rules:
   already exposes explicit delivered/queued outcomes for some paths.
 - `repowire/daemon/state/database.py` is the experimental daemon SQLite wrapper
   currently used by schedules and session bindings. The existing
-  `docs/reference/sqlite-state-expansion-plan.md` recommends expanding SQLite
+  `rfcs/sqlite-state-expansion-plan.md` recommends expanding SQLite
   carefully and keeping raw transcripts outside SQLite.
 - `repowire/daemon/state/session_bindings.py` persists binding metadata,
   source locators, cursors, provenance, resume capability, and lifecycle

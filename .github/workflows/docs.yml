@@ -32,7 +32,7 @@ jobs:
         run: uv sync --no-install-project --extra docs
 
       - name: Build site
-        run: uv run --no-project mkdocs build --strict
+        run: uv run --no-project zensical build --strict
 
       - name: Upload site artifact
         uses: actions/upload-artifact@v4

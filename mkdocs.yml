@@ -12,17 +12,8 @@ site_dir: site
 # Fail the build on broken links, missing nav entries, or duplicate slugs.
 strict: true
 
-# Internal docs that live under docs/ but should not be published.
-exclude_docs: |
-  ia-proposal.md
-  reference/registry-route-split-plan.md
-  reference/sqlite-state-expansion-plan.md
-  overrides/
-
-
 theme:
   name: material
-  custom_dir: docs/overrides
   language: en
   font:
     text: IBM Plex Sans
