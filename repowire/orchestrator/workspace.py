@@ -31,6 +31,7 @@ RUNTIME_SYMLINKS = ("CLAUDE.md",)
 SOURCE_FILE = "AGENTS.md"
 
 SKILL_NAMES = (
+    "adhd",
     "cleanup",
     "coordination",
     "create-agent",
@@ -47,6 +48,7 @@ SKILL_NAMES = (
 # offers per-file diff prompts for these.
 REPOWIRE_OWNED_FILES = (
     "AGENTS.md",
+    ".agents/skills/adhd/SKILL.md",
     ".agents/skills/cleanup/SKILL.md",
     ".agents/skills/coordination/SKILL.md",
     ".agents/skills/create-agent/SKILL.md",
