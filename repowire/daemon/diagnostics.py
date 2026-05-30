@@ -170,7 +170,19 @@ def _agent_pid_alive(pid: int) -> bool:
 
 
 def is_local_machine(peer: Peer, *, hostname: str | None = None) -> bool:
-    return peer.machine == (hostname or socket.gethostname())
+    """Whether ``peer`` runs on the daemon's host (so local probes are valid).
+
+    Exact hostname match is the strong signal. As a fallback, a peer whose
+    machine is unknown/blank but which has a local pane id is treated as local:
+    older WebSocket registrations recorded ``machine="unknown"``, and refusing
+    to probe them would silently hide real local contradictions.
+    """
+    host = hostname or socket.gethostname()
+    if peer.machine == host:
+        return True
+    if peer.machine in (None, "", "unknown") and peer.pane_id:
+        return True
+    return False
 
 
 # --- report assembly ------------------------------------------------------

@@ -9,6 +9,7 @@ import hmac
 import json
 import logging
 import os
+import socket
 from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -168,7 +169,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             path=path,
             pane_id=pane_id,
             tmux_session=tmux_session,
-            machine=os.environ.get("HOSTNAME", "unknown"),
+            machine=os.environ.get("HOSTNAME") or socket.gethostname(),
             role=role,
             peer_id=claimed_peer_id,
             circle_source=cast(CircleSource | None, circle_source),

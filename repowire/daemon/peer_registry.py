@@ -24,6 +24,7 @@ from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
 from repowire.daemon import diagnostics as diag
+from repowire.daemon.delivery_trace import DeliveryTraceStore
 from repowire.daemon.event_log import EventLog
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
@@ -852,6 +853,11 @@ class PeerRegistry:
                         if mapping is not None and mapping.agent_pid != agent_pid:
                             mapping.agent_pid = agent_pid
                             self._mappings_dirty = True
+                    if metadata:
+                        # Merge fresh keys (e.g. ws-connect capabilities) onto the
+                        # existing peer's metadata without dropping prior keys
+                        # (e.g. project/branch from the HTTP SessionStart register).
+                        existing.metadata = {**existing.metadata, **metadata}
                     logger.info(f"Peer reconnected: {existing.display_name} ({peer_id})")
                     result_peer_id = peer_id
                     result_name = existing.display_name
@@ -2040,8 +2046,22 @@ class PeerRegistry:
             await self._reap_dangling_peers()
             await self._evict_stale_peers()
             await self._emit_and_evict_expired_stashes()
+            self._prune_delivery_traces()
             self._save_events()
             self._persist_mappings()
+
+    def _prune_delivery_traces(self) -> None:
+        """Drop delivery-trace rows older than prune_max_age_hours. Best-effort."""
+        if self._state_db is None:
+            return
+        max_age_hours = self._config.daemon.prune_max_age_hours
+        if not max_age_hours or max_age_hours <= 0:
+            return
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+            DeliveryTraceStore(self._state_db).prune(cutoff.isoformat())
+        except Exception:  # noqa: BLE001 - pruning must not break repair
+            logger.warning("Delivery trace prune failed", exc_info=True)
 
     async def _demote_disconnected_peers(self) -> int:
         """Mark ONLINE/BUSY transport-owned peers without a WebSocket as OFFLINE.

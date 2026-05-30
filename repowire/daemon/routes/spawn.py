@@ -15,12 +15,14 @@ from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_config, get_peer_registry
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.spawn_service import SpawnService
+from repowire.hooks.utils import read_pane_runtime_metadata
 from repowire.hooks.ws_hook_supervisor import maybe_respawn
 from repowire.installers.post_spawn import post_spawn_warmup
 from repowire.protocol.peers import Peer, PeerRole
 from repowire.spawn import SpawnConfig, SpawnResult, kill_pane, spawn_peer
 from repowire.spawn_ownership import (
     OwnershipValidation,
+    _norm_path,
     find_spawn_ownership_for_peer,
     forget_spawn_ownership,
     probe_tmux_pane,
@@ -816,18 +818,35 @@ async def rehook_peer(
             },
         )
 
-    # Ownership / pane-existence gate: prove the pane is real and ours before
-    # touching it. Accept either a durable spawn-ownership proof or live tmux
-    # evidence for the recorded pane.
+    # Ownership gate: prove the pane is real AND belongs to THIS peer before
+    # starting a hook that will inject future messages into it. Pane-exists
+    # alone is insufficient — a stale/reused pane_id would misroute. Accept:
+    #   (a) durable Repowire spawn-ownership proof, or
+    #   (b) live tmux evidence whose current_path matches the peer's path, or
+    #   (c) pane hook metadata whose peer_id/display_name matches this peer.
     pane_verified = _has_spawn_ownership(peer)
     if not pane_verified:
-        pane_verified = probe_tmux_pane(peer.pane_id) is not None
+        evidence = probe_tmux_pane(peer.pane_id)
+        if evidence is not None and peer.path and _norm_path(evidence.current_path) == _norm_path(
+            peer.path
+        ):
+            pane_verified = True
+        else:
+            meta = read_pane_runtime_metadata(peer.pane_id)
+            if meta.get("peer_id") == peer.peer_id or (
+                meta.get("display_name")
+                and meta.get("display_name") == peer.display_name
+            ):
+                pane_verified = True
     if not pane_verified:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "error": "pane_unverified",
-                "hint": "Could not verify the pane exists and belongs to this peer.",
+                "hint": (
+                    "Could not prove the pane belongs to this peer "
+                    "(no spawn ownership, pane path mismatch, and hook metadata mismatch)."
+                ),
                 "pane_id": peer.pane_id,
             },
         )

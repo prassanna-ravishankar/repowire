@@ -128,6 +128,45 @@ class TestRehookGating:
         assert r.json()["detail"]["error"] == "pane_unverified"
         mock_respawn.assert_not_called()
 
+    async def test_pane_path_mismatch_rejected(self, env, tmp_path):
+        # Pane exists but its current_path is NOT the peer's path, and no hook
+        # metadata match -> must NOT verify (would misroute injected messages).
+        from repowire.spawn_ownership import TmuxPaneEvidence
+
+        name = await _register(env.client, path=str(tmp_path), pane_id="%555")
+        wrong = TmuxPaneEvidence(
+            pane_id="%555",
+            tmux_session="default:other",
+            current_path="/some/other/path",
+            pane_pid="123",
+        )
+        with patch.object(spawn_routes, "probe_tmux_pane", return_value=wrong), \
+            patch.object(spawn_routes, "read_pane_runtime_metadata", return_value={}), \
+            patch.object(spawn_routes, "maybe_respawn", return_value=True) as mock_respawn:
+            r = await env.client.post(f"/peers/{name}/rehook", json={"apply": True})
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"]["error"] == "pane_unverified"
+        mock_respawn.assert_not_called()
+
+    async def test_pane_path_match_verifies(self, env, tmp_path):
+        # Pane exists AND current_path matches the peer's path -> verified.
+        from repowire.spawn_ownership import TmuxPaneEvidence
+
+        name = await _register(env.client, path=str(tmp_path), pane_id="%556")
+        match = TmuxPaneEvidence(
+            pane_id="%556",
+            tmux_session="default:proj",
+            current_path=str(tmp_path),
+            pane_pid="123",
+        )
+        with patch.object(spawn_routes, "probe_tmux_pane", return_value=match), \
+            patch.object(env.transport, "is_connected", return_value=False), \
+            patch.object(spawn_routes, "maybe_respawn", return_value=True) as mock_respawn:
+            r = await env.client.post(f"/peers/{name}/rehook", json={"apply": True})
+        assert r.status_code == 200, r.text
+        assert r.json()["acted"] is True
+        mock_respawn.assert_called_once()
+
     async def test_missing_pane_409(self, env, tmp_path):
         name = await _register(env.client, path=str(tmp_path), pane_id=None)
         r = await env.client.post(f"/peers/{name}/rehook", json={"apply": True})

@@ -100,3 +100,38 @@ def test_record_is_best_effort_on_error(tmp_path):
     # Close the underlying connection to force an error; record must not raise.
     store._conn.close()
     store.record(trace_id="ask-x", kind="ask", stage="created", peer_id="p1")
+
+
+async def test_lazy_repair_prunes_old_traces(tmp_path):
+    import time
+    from unittest.mock import MagicMock
+
+    from repowire.config.models import Config
+    from repowire.daemon.peer_registry import PeerRegistry
+    from repowire.daemon.state.database import StateDatabase
+
+    db = StateDatabase(tmp_path / "state.db")
+    store = DeliveryTraceStore(db)
+    store.record(trace_id="old", kind="ask", stage="created", peer_id="p1")
+    store.record(trace_id="new", kind="ask", stage="created", peer_id="p1")
+    store._conn.execute(
+        "UPDATE delivery_traces SET ts = ? WHERE trace_id = ?",
+        ("2000-01-01T00:00:00+00:00", "old"),
+    )
+    store._conn.commit()
+
+    cfg = Config()
+    cfg.daemon.prune_max_age_hours = 24
+    registry = PeerRegistry(
+        config=cfg,
+        message_router=MagicMock(),
+        query_tracker=None,
+        transport=None,
+        ask_tracker=None,
+        state_db=db,
+    )
+    registry._last_repair = time.monotonic() - 3600  # force the repair to run
+    await registry.lazy_repair()
+
+    assert store.stages_for("old") == []
+    assert len(store.stages_for("new")) == 1

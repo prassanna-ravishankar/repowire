@@ -106,6 +106,52 @@ class TestWebSocketConnect:
             assert "delivery_receipts" in meta.get("capabilities", [])
         cleanup_deps()
 
+    async def test_reconnect_preserves_http_metadata_caps_win(self, tmp_path):
+        # Regression (codex judgment B): WS reconnect must NOT drop metadata an
+        # HTTP SessionStart registered (project/branch); fresh WS caps win on overlap.
+        app = _make_app(tmp_path)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            reg = await http.post(
+                "/peers",
+                json={
+                    "name": "mergepeer",
+                    "path": "/tmp/merge",
+                    "circle": "default",
+                    "backend": "claude-code",
+                    "metadata": {"project": "merge", "branch": "feat/x"},
+                },
+            )
+            assert reg.status_code == 200, reg.text
+            peer_id = reg.json()["peer_id"]
+
+        async with AsyncClient(
+            transport=ASGIWebSocketTransport(app), base_url="http://test"
+        ) as client, aconnect_ws("/ws", client) as ws:
+            await ws.send_json({
+                "type": "connect",
+                "display_name": "mergepeer",
+                "circle": "default",
+                "backend": "claude-code",
+                "path": "/tmp/merge",
+                "peer_id": peer_id,
+                "hook_version": 1,
+                "capabilities": ["delivery_receipts"],
+            })
+            resp = json.loads(await ws.receive_text())
+            assert resp["type"] == "connected"
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            r = await http.get(f"/peers/{resp['session_id']}")
+            meta = r.json()["metadata"]
+            assert meta.get("project") == "merge"  # HTTP metadata survived
+            assert meta.get("branch") == "feat/x"
+            assert "delivery_receipts" in meta.get("capabilities", [])  # fresh caps added
+        cleanup_deps()
+
     async def test_connect_requires_display_name(self, tmp_path):
         app = _make_app(tmp_path)
         async with AsyncClient(

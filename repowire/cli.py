@@ -3130,34 +3130,13 @@ def peer_doctor(name: str, circle: str | None, json_out: bool, fix: bool) -> Non
     import json as _json
     from urllib.parse import quote
 
-    import httpx
-
-    params: dict[str, str] = {}
-    if circle:
-        params["circle"] = circle
-
-    try:
-        with httpx.Client(timeout=15.0) as client:
-            resp = client.get(
-                f"{_get_daemon_url()}/peers/{quote(name, safe='')}/doctor",
-                params=params,
-                headers={**_auth_headers()},
-            )
-            if resp.status_code == 404:
-                raise click.ClickException(f"Peer '{name}' not found")
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.ConnectError:
-        raise click.ClickException(
-            "Cannot connect to daemon. Run 'repowire serve' first."
-        ) from None
-    except httpx.HTTPStatusError as e:
-        detail = e.response.text
-        try:
-            detail = e.response.json().get("detail", detail)
-        except ValueError:
-            pass
-        raise click.ClickException(f"Failed to run doctor: {detail}") from e
+    data = _daemon_request_json(
+        "GET",
+        f"/peers/{quote(name, safe='')}/doctor",
+        params={"circle": circle} if circle else None,
+        not_found_msg=f"Peer '{name}' not found",
+        error_prefix="Failed to run doctor",
+    )
 
     if json_out:
         click.echo(_json.dumps(data, indent=2))
@@ -3177,33 +3156,17 @@ def _rehook_peer(name: str, *, circle: str | None, apply: bool) -> None:
     """Call the rehook endpoint and print the outcome. Shared by `peer rehook` + doctor --fix."""
     from urllib.parse import quote
 
-    import httpx
-
     body: dict[str, object] = {"apply": apply}
     if circle:
         body["circle"] = circle
-    try:
-        with httpx.Client(timeout=20.0) as client:
-            resp = client.post(
-                f"{_get_daemon_url()}/peers/{quote(name, safe='')}/rehook",
-                json=body,
-                headers={**_auth_headers()},
-            )
-            if resp.status_code == 404:
-                raise click.ClickException(f"Peer '{name}' not found")
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.ConnectError:
-        raise click.ClickException(
-            "Cannot connect to daemon. Run 'repowire serve' first."
-        ) from None
-    except httpx.HTTPStatusError as e:
-        detail = e.response.text
-        try:
-            detail = e.response.json().get("detail", detail)
-        except ValueError:
-            pass
-        raise click.ClickException(f"Failed to rehook: {detail}") from e
+    data = _daemon_request_json(
+        "POST",
+        f"/peers/{quote(name, safe='')}/rehook",
+        json_body=body,
+        not_found_msg=f"Peer '{name}' not found",
+        error_prefix="Failed to rehook",
+        timeout=20.0,
+    )
 
     acted = data.get("acted")
     mark = "[green]✓[/]" if acted else "[yellow]·[/]"
@@ -3276,29 +3239,13 @@ def trace_cmd(trace_id: str, json_out: bool) -> None:
     import json as _json
     from urllib.parse import quote
 
-    import httpx
-
-    try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.get(
-                f"{_get_daemon_url()}/traces/{quote(trace_id, safe='')}",
-                headers={**_auth_headers()},
-            )
-            if resp.status_code == 404:
-                raise click.ClickException(f"No delivery trace for '{trace_id}'")
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.ConnectError:
-        raise click.ClickException(
-            "Cannot connect to daemon. Run 'repowire serve' first."
-        ) from None
-    except httpx.HTTPStatusError as e:
-        detail = e.response.text
-        try:
-            detail = e.response.json().get("detail", detail)
-        except ValueError:
-            pass
-        raise click.ClickException(f"Failed to fetch trace: {detail}") from e
+    data = _daemon_request_json(
+        "GET",
+        f"/traces/{quote(trace_id, safe='')}",
+        not_found_msg=f"No delivery trace for '{trace_id}'",
+        error_prefix="Failed to fetch trace",
+        timeout=10.0,
+    )
 
     if json_out:
         click.echo(_json.dumps(data, indent=2))
@@ -3440,6 +3387,49 @@ def _auth_headers() -> dict[str, str]:
     except Exception:
         return {}
     return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _daemon_request_json(
+    method: str,
+    path: str,
+    *,
+    not_found_msg: str,
+    error_prefix: str,
+    json_body: dict | None = None,
+    params: dict | None = None,
+    timeout: float = 15.0,
+) -> dict:
+    """Call a daemon endpoint and return parsed JSON, raising ClickException on failure.
+
+    Centralizes the connect-error / 404 / HTTPStatusError-detail handling shared
+    by the diagnostic CLI commands (doctor, trace, rehook).
+    """
+    import httpx
+
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.request(
+                method,
+                f"{_get_daemon_url()}{path}",
+                json=json_body,
+                params=params,
+                headers={**_auth_headers()},
+            )
+            if resp.status_code == 404:
+                raise click.ClickException(not_found_msg)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise click.ClickException(
+            "Cannot connect to daemon. Run 'repowire serve' first."
+        ) from None
+    except httpx.HTTPStatusError as e:
+        detail = e.response.text
+        try:
+            detail = e.response.json().get("detail", detail)
+        except ValueError:
+            pass
+        raise click.ClickException(f"{error_prefix}: {detail}") from e
 
 
 def _resolve_peer_id_for_asks(
