@@ -68,6 +68,7 @@ class NotifyTransportResult:
     status: Literal["sent", "queued"]
     hook_delivery: dict[str, Any] | None = None
     delivery_id: str | None = None
+    transport: Literal["ws", "acp"] = "ws"
     repowire_session_id: str | None = None
     from_repowire_session_id: str | None = None
     to_repowire_session_id: str | None = None
@@ -178,6 +179,7 @@ class WebSocketPeerTransport:
             status=delivery_status,
             hook_delivery=hook_delivery,
             delivery_id=delivery_id,
+            transport="ws",
             repowire_session_id=envelope.to_repowire_session_id,
             from_repowire_session_id=envelope.from_repowire_session_id,
             to_repowire_session_id=envelope.to_repowire_session_id,
@@ -243,6 +245,7 @@ class AcpPeerTransport:
         return NotifyTransportResult(
             status="sent",
             delivery_id=delivery_id,
+            transport="acp",
             repowire_session_id=envelope.to_repowire_session_id,
             from_repowire_session_id=envelope.from_repowire_session_id,
             to_repowire_session_id=envelope.to_repowire_session_id,

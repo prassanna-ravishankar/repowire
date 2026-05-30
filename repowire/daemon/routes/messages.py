@@ -257,20 +257,24 @@ async def notify_peer(
                 stage="resolved_peer", peer_id=delivery.to_peer_id,
                 from_peer_id=delivery.from_peer_id,
             )
+            # A BUSY recipient queues the paste; record that, but do NOT let it
+            # suppress a real hook receipt — if the hook acked, the terminal
+            # outcome must still be traced.
             if delivery.queued:
                 trace.record(
                     trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
                     stage="pending", peer_id=delivery.to_peer_id,
                     detail={"reason": "recipient_busy"},
                 )
-            else:
-                # Truthful terminal stage from the hook receipt (not assumed).
+            if delivery.hook_delivery is not None or not delivery.queued:
+                # Truthful terminal stage from the hook receipt (not assumed),
+                # using the transport the router actually chose.
                 trace.record_outcome(
                     trace_id=delivery_id,
                     kind="notify",
                     peer_id=delivery.to_peer_id,
                     from_peer_id=delivery.from_peer_id,
-                    transport="ws" if delivery.hook_delivery is not None else "acp",
+                    transport=delivery.transport,
                     hook_delivery=delivery.hook_delivery,
                     delivery_id=delivery_id,
                 )

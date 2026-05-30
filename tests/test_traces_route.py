@@ -92,6 +92,61 @@ class TestAskStagesLand:
         assert "hook_received" in stages
         assert "pane_injected" in stages
 
+    async def test_ask_injection_failed_records_injection_failed_not_no_connection(self, env):
+        # The hook is reached but the pane rejects injection. The trace must say
+        # injection_failed (with hook_received), NOT no_connection.
+        from repowire.daemon.websocket_transport import DeliveryInjectionError
+
+        client, harness = env
+        await _register(client, "alice")
+        bob = await _register(client, "bob")
+        harness.message_router.send_ask.side_effect = DeliveryInjectionError(
+            "Ask injection failed: pane busy", hook_delivery={"status": "failed"}
+        )
+        r = await client.post("/ask", json={"to_peer": bob, "from_peer": "alice", "text": "hi"})
+        assert r.status_code == 503, r.text
+        # The 503 body doesn't carry the cid; inspect the single ask trace directly.
+        rows = harness.delivery_trace_store._conn.execute(
+            "SELECT stage FROM delivery_traces WHERE kind='ask' ORDER BY seq"
+        ).fetchall()
+        stages = [row["stage"] for row in rows]
+        assert "hook_received" in stages
+        assert "injection_failed" in stages
+        assert "no_connection" not in stages
+
+    async def test_busy_notify_with_injected_records_pending_and_pane_injected(self, env):
+        # A BUSY recipient queues the paste, but if the hook acked injected the
+        # terminal outcome must still be traced (pending must not suppress it).
+        from repowire.protocol.peers import PeerStatus
+
+        client, harness = env
+        await _register(client, "alice")
+        bob = await _register(client, "bob")
+        peer = await harness.registry.get_peer(bob)
+        peer.status = PeerStatus.BUSY
+        harness.message_router.send_notification.return_value = {"status": "injected"}
+        r = await client.post("/notify", json={"to_peer": bob, "from_peer": "alice", "text": "hi"})
+        assert r.status_code == 200, r.text
+        did = r.json()["delivery_id"]
+        stages = [row.stage for row in harness.delivery_trace_store.stages_for(did)]
+        assert "pending" in stages
+        assert "pane_injected" in stages
+
+    async def test_legacy_ws_notify_no_ack_records_transport_ws(self, env):
+        # Legacy WS hook returns no delivery_ack -> websocket_sent with transport=ws,
+        # NOT acp.
+        client, harness = env
+        await _register(client, "alice")
+        bob = await _register(client, "bob")
+        harness.message_router.send_notification.return_value = None
+        r = await client.post("/notify", json={"to_peer": bob, "from_peer": "alice", "text": "hi"})
+        assert r.status_code == 200, r.text
+        did = r.json()["delivery_id"]
+        rows = harness.delivery_trace_store.stages_for(did)
+        ws_sent = [row for row in rows if row.stage == "websocket_sent"]
+        assert ws_sent, "expected a websocket_sent stage"
+        assert ws_sent[0].detail.get("transport") == "ws"
+
     async def test_ack_records_closed(self, env):
         client, harness = env
         await _register(client, "alice")

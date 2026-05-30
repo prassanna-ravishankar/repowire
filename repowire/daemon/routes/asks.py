@@ -35,7 +35,7 @@ from repowire.daemon.peer_delivery import peer_delivery_from_state
 from repowire.daemon.peer_registry import PeerRegistry, normalize_identity_path
 from repowire.daemon.routes._shared import OkResponse
 from repowire.daemon.state.session_bindings import resolve_repowire_session_id
-from repowire.daemon.websocket_transport import TransportError
+from repowire.daemon.websocket_transport import DeliveryInjectionError, TransportError
 from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import Peer
 
@@ -456,6 +456,24 @@ async def open_ask(
             )
         await ask_tracker.close(cid, reason="evicted")
         raise HTTPException(status_code=404, detail=str(e))
+    except DeliveryInjectionError as e:
+        # The hook was reached but the pane rejected/failed injection. The
+        # connection is alive (not a CLI-queue case) — record the TRUTHFUL
+        # terminal outcome, close fail-loud, and surface 503.
+        if trace is not None:
+            trace.record_outcome(
+                trace_id=cid,
+                kind="ask",
+                peer_id=peer.peer_id,
+                from_peer_id=from_peer_id,
+                transport="ws",
+                hook_delivery=e.hook_delivery,
+            )
+        await ask_tracker.close(cid, reason="send_failed")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Ask injection failed for {request.to_peer}: {e}",
+        )
     except TransportError as e:
         if _uses_cli_polling_fallback(peer):
             queue = getattr(state, "queued_delivery_store", None)

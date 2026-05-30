@@ -10,7 +10,11 @@ from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.query_tracker import QueryTracker
-from repowire.daemon.websocket_transport import TransportError, WebSocketTransport
+from repowire.daemon.websocket_transport import (
+    DeliveryInjectionError,
+    TransportError,
+    WebSocketTransport,
+)
 from repowire.protocol.messages import AttachmentRef
 
 logger = logging.getLogger(__name__)
@@ -215,7 +219,10 @@ class MessageRouter:
             "rejected",
         }:
             detail = delivery_ack.get("detail") or delivery_ack.get("status")
-            raise TransportError(f"Ask injection {delivery_ack.get('status')}: {detail}")
+            raise DeliveryInjectionError(
+                f"Ask injection {delivery_ack.get('status')}: {detail}",
+                hook_delivery=delivery_ack,
+            )
         logger.info(f"Ask sent: {from_peer} -> {to_peer_name} ({correlation_id[:8]})")
         return delivery_ack if isinstance(delivery_ack, dict) else None
 

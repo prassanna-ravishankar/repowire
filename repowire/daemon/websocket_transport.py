@@ -18,6 +18,20 @@ class TransportError(Exception):
     """Transport error."""
 
 
+class DeliveryInjectionError(TransportError):
+    """Wire send reached the hook but injection failed/was rejected at the pane.
+
+    Carries the hook's terminal ``delivery_ack`` so callers can record a
+    truthful injection_failed trace stage before surfacing the failure. This
+    is distinct from a plain TransportError (no live connection), which should
+    trace as no_connection.
+    """
+
+    def __init__(self, message: str, hook_delivery: dict | None = None) -> None:
+        super().__init__(message)
+        self.hook_delivery = hook_delivery
+
+
 @dataclass
 class ConnectionInfo:
     """Connection metadata."""

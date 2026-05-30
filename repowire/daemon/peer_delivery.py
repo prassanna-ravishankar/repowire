@@ -27,7 +27,7 @@ from repowire.daemon.transport_router import (
     PeerTransportRouter,
     transport_router_from_state,
 )
-from repowire.daemon.websocket_transport import TransportError
+from repowire.daemon.websocket_transport import DeliveryInjectionError, TransportError
 from repowire.protocol.messages import AttachmentRef
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,7 @@ class NotifyDeliveryResult:
     to_peer_name: str
     hook_delivery: dict | None = None
     delivery_id: str | None = None
+    transport: Literal["ws", "acp"] = "ws"
     repowire_session_id: str | None = None
     from_repowire_session_id: str | None = None
     to_repowire_session_id: str | None = None
@@ -320,6 +321,7 @@ class PeerDeliveryService:
             to_peer_name=target.display_name,
             hook_delivery=hook_delivery,
             delivery_id=transport_result.delivery_id or delivery_id,
+            transport=transport_result.transport,
             repowire_session_id=transport_result.repowire_session_id,
             from_repowire_session_id=transport_result.from_repowire_session_id,
             to_repowire_session_id=transport_result.to_repowire_session_id,
@@ -371,6 +373,11 @@ class PeerDeliveryService:
                 ),
                 on_acp_complete=completion,
             )
+        except DeliveryInjectionError:
+            # The hook was reached but injection failed/was rejected at the pane.
+            # The connection is alive, so do NOT mark the peer unreachable;
+            # propagate so the route can record injection_failed + 503.
+            raise
         except TransportError as exc:
             await self._mark_transport_unreachable(
                 target,
