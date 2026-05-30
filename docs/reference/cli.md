@@ -126,7 +126,7 @@ Restart uses `resume_mode=fresh_runtime_context`. That means the new runtime loa
 repowire trace TRACE_ID [--json]
 ```
 
-Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`). Stages are ordered (`created → resolved_peer → routed → websocket_sent → hook_received → pane_injected → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). This reads the local delivery trace ledger (`GET /traces/{trace_id}`); no external tracing infrastructure is required. Currently covers ask and notify; query/broadcast pane stages are not yet traced. Exits non-zero if any stage failed.
+Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`, returned in the `/notify` response). Stages are ordered (`created → resolved_peer → routed → websocket_sent → hook_received → pane_injected → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). Terminal stages are recorded **truthfully** from the transport outcome: `pane_injected` only when the ws-hook returned an `injected` delivery receipt; `injection_failed` on a `failed`/`rejected` receipt; and `websocket_sent` (unverified) for ACP delivery or legacy hooks that don't acknowledge, rather than assuming injection. This reads the local delivery trace ledger (`GET /traces/{trace_id}`); no external tracing infrastructure is required, and rows older than `daemon.prune_max_age_hours` are pruned during lazy repair. Currently covers ask and notify; query/broadcast pane stages are not yet traced. Exits non-zero if any stage failed.
 
 ## `repowire schedule`
 
