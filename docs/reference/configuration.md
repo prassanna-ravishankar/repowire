@@ -35,6 +35,20 @@ updates:
   check_enabled: false
 ```
 
+## Environment variables
+
+Any field can be overridden by an environment variable. Nested fields use a `REPOWIRE_` prefix and `__` as the section delimiter:
+
+```bash
+REPOWIRE_DAEMON__PORT=9000
+REPOWIRE_DAEMON__AUTH_TOKEN=rw_...
+REPOWIRE_RELAY__URL=wss://repowire.io
+```
+
+Two legacy flat aliases are kept for the relay: `REPOWIRE_RELAY_URL` and `REPOWIRE_API_KEY` (setting `REPOWIRE_API_KEY` also flips `relay.enabled` to true).
+
+Resolution precedence, highest first: explicit constructor arguments, the flat relay aliases, `REPOWIRE_*` environment variables, `~/.repowire/config.yaml`, then built-in defaults. Environment variables take precedence over the config file, so an exported `REPOWIRE_DAEMON__PORT` overrides `daemon.port` in the YAML.
+
 ## `daemon.auth_token`
 
 Optional local bearer token for daemon HTTP routes, WebSocket connections, hooks, and the opt-in HTTP MCP endpoint. `repowire setup --http-mcp` generates one automatically if missing. Treat it as a local password; rotate it by replacing the value and restarting the daemon service.
