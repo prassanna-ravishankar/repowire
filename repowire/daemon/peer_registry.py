@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
+from repowire.daemon import diagnostics as diag
 from repowire.daemon.event_log import EventLog
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
@@ -165,6 +166,11 @@ class PeerRegistry:
         self._lock = asyncio.Lock()
         self._last_repair: float = 0.0
         self._repair_lock = asyncio.Lock()
+
+        # Transition-only dedup for fail-loud contradiction events: (peer_id, code)
+        # is emitted once on entry into the contradictory state and discarded on
+        # recovery or reap, so the 30s lazy_repair cadence doesn't spam events.
+        self._emitted_contradictions: set[tuple[str, str]] = set()
 
         # When each peer's current description was set. Used for clear-on-read
         # TTL — see config.daemon.description_ttl_seconds. Registry-internal
@@ -413,6 +419,41 @@ class PeerRegistry:
     def add_event(self, event_type: str, data: dict[str, Any]) -> str:
         """Add an event to the history. Returns event ID."""
         return self._event_log.add_event(event_type, data)
+
+    def _emit_contradiction(
+        self, peer: Peer, code: str, severity: str, detail: str,
+    ) -> None:
+        """Emit a fail-loud ``peer_contradiction`` event, once per transition.
+
+        Best-effort: a logging/event-store failure must never abort reconciliation.
+        """
+        key = (peer.peer_id, code)
+        if key in self._emitted_contradictions:
+            return
+        self._emitted_contradictions.add(key)
+        try:
+            self.add_event(
+                "peer_contradiction",
+                {
+                    "code": code,
+                    "severity": severity,
+                    "peer_id": peer.peer_id,
+                    "peer_name": peer.display_name,
+                    "detail": detail,
+                },
+            )
+        except Exception:  # noqa: BLE001 - reconciliation must not break on event errors
+            logger.warning("Failed to emit peer_contradiction %s", code, exc_info=True)
+
+    def _clear_contradiction(self, peer_id: str, code: str) -> None:
+        """Forget a contradiction so a future recurrence re-emits once."""
+        self._emitted_contradictions.discard((peer_id, code))
+
+    def _clear_all_contradictions(self, peer_id: str) -> None:
+        """Drop all contradiction state for a peer (e.g. on reap)."""
+        self._emitted_contradictions = {
+            (pid, code) for (pid, code) in self._emitted_contradictions if pid != peer_id
+        }
 
     def subscribe_events(self) -> asyncio.Event:
         """Register a wakeup Event fired on each add_event call.
@@ -2028,6 +2069,12 @@ class PeerRegistry:
             else False
         )
         async with self._lock:
+            # Recovery: any peer with a live socket clears its connection
+            # contradictions so a future recurrence re-emits exactly once.
+            for p in self._peers.values():
+                if self._transport.is_connected(p.peer_id):
+                    self._clear_contradiction(p.peer_id, diag.ONLINE_BUT_NO_WS)
+                    self._clear_contradiction(p.peer_id, diag.AGENT_PID_DEAD)
             candidates = [
                 p for p in self._peers.values()
                 if p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
@@ -2050,13 +2097,28 @@ class PeerRegistry:
             ),
             return_exceptions=True,
         )
+        pane_dead: set[str] = set()
         for peer, has_evidence in zip(pane_candidates, checks, strict=True):
             if has_evidence is True:
                 continue
             candidates.append(peer)
+            pane_dead.add(peer.peer_id)
 
         count = 0
         for peer in candidates:
+            self._emit_contradiction(
+                peer,
+                diag.ONLINE_BUT_NO_WS,
+                diag.SEVERITY_ERROR,
+                f"peer is {peer.status.value} but has no live WebSocket connection",
+            )
+            if peer.peer_id in pane_dead and peer.agent_pid is not None:
+                self._emit_contradiction(
+                    peer,
+                    diag.AGENT_PID_DEAD,
+                    diag.SEVERITY_ERROR,
+                    f"agent pid {peer.agent_pid} has no runtime evidence",
+                )
             await self.mark_offline(peer.peer_id)
             count += 1
         if count:
@@ -2119,7 +2181,17 @@ class PeerRegistry:
         count = 0
         for peer_id, pane_alive in results:
             if pane_alive:
+                # Recovered (or never broken): allow a future PANE_MISSING to re-emit.
+                self._clear_contradiction(peer_id, diag.PANE_MISSING)
                 continue
+            peer = self._peers.get(peer_id)
+            if peer is not None:
+                self._emit_contradiction(
+                    peer,
+                    diag.PANE_MISSING,
+                    diag.SEVERITY_ERROR,
+                    f"connected pane {peer.pane_id} is no longer alive",
+                )
             await self.mark_offline(peer_id)
             await transport.disconnect(peer_id)
             count += 1
@@ -2182,6 +2254,7 @@ class PeerRegistry:
                 self._peers.pop(peer.peer_id, None)
                 self._mappings.pop(peer.peer_id, None)
                 self._description_set_at.pop(peer.peer_id, None)
+                self._clear_all_contradictions(peer.peer_id)
                 self._mappings_dirty = True
 
         # Snapshot doomed-with-stash asks BEFORE any destructive cleanup
