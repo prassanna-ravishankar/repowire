@@ -58,6 +58,54 @@ STALE_PENDING_ASK = "STALE_PENDING_ASK"
 SEVERITY_ERROR = "error"
 SEVERITY_WARNING = "warning"
 
+# --- inbound status ---
+
+INBOUND_OFFLINE = "offline"
+INBOUND_PANE_UNSAFE = "pane_unsafe"
+INBOUND_NO_HOOK = "no_hook"
+INBOUND_LEGACY_UNVERIFIED = "legacy_unverified"
+INBOUND_DEGRADED = "inbound_degraded"
+INBOUND_ONLINE = "online"
+
+
+def compute_inbound_status(
+    *,
+    is_offline: bool,
+    ws_connected: bool,
+    hook_supports_receipts: bool,
+    pane_safe: bool | None = None,
+    last_success_at: str | None = None,
+    last_failure_at: str | None = None,
+) -> str:
+    """Classify a peer's inbound-delivery reachability.
+
+    Precedence (first match wins):
+      offline -> pane_unsafe -> no_hook -> legacy_unverified -> inbound_degraded -> online
+
+    - offline: the registry considers the peer down.
+    - pane_unsafe: asserted ONLY when pane safety was actually probed and failed
+      (pane_safe is False). pane_safe=None means "not probed" and is skipped.
+    - no_hook: no live ws connection at all (no inbound hook reachable).
+    - legacy_unverified: connected and can inject, but receipt capability is
+      neither advertised nor observed -- the hook works but is unverified.
+    - inbound_degraded: connected + receipt-capable, but the most recent
+      injection failed more recently than it succeeded.
+    - online: connected, receipt-capable, no fresher failure than success.
+    """
+    if is_offline:
+        return INBOUND_OFFLINE
+    if ws_connected and pane_safe is False:
+        return INBOUND_PANE_UNSAFE
+    if not ws_connected:
+        return INBOUND_NO_HOOK
+    if not hook_supports_receipts:
+        return INBOUND_LEGACY_UNVERIFIED
+    if last_failure_at is not None and (
+        last_success_at is None or last_failure_at > last_success_at
+    ):
+        return INBOUND_DEGRADED
+    return INBOUND_ONLINE
+
 
 class Contradiction(BaseModel):
     """A detected inconsistency between what the registry claims and reality."""

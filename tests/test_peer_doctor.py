@@ -200,3 +200,19 @@ class TestDoctorRoute:
         assert r.status_code == 200, r.text
         codes = {c["code"] for c in r.json()["contradictions"]}
         assert ONLINE_BUT_NO_WS in codes
+
+    async def test_get_peer_exposes_inbound_health(self, env):
+        client, harness = env
+        name = await self._register(client, "alice")
+        peer = await harness.registry.get_peer(name)
+        # Seed a successful injection in the ledger so receipts are observed.
+        harness.delivery_trace_store.record(
+            trace_id="ask-x", kind="ask", stage="pane_injected", peer_id=peer.peer_id,
+        )
+        r = await client.get(f"/peers/{name}")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "inbound_status" in body
+        assert body["hook_supports_receipts"] is True  # observed delivery_ack
+        assert body["last_successful_injection_at"] is not None
+        assert body["ws_connected"] is False  # HTTP-only registration
