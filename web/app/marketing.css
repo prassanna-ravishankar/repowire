@@ -402,6 +402,19 @@
   color: #efece4; background: transparent; overflow-x: auto;
 }
 .rw-marketing .term-body div { white-space: nowrap; }
+/* Lines are visible by default; the entrance is a pure-CSS progressive
+   enhancement so the terminal can never render blank (no JS/hydration/viewport
+   dependency, unlike the prior framer-motion approach). */
+.rw-marketing .term-line {
+  animation: term-line-in 0.28s ease-out both;
+}
+@keyframes term-line-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rw-marketing .term-line { animation: none; }
+}
 .rw-marketing .term-blank { height: 1.7em; }
 .rw-marketing .t-d { color: #807c74; }
 .rw-marketing .t-c { color: var(--cobalt-300); font-weight: 500; }

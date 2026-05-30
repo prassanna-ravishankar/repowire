@@ -1,7 +1,3 @@
-"use client";
-
-import { motion } from "framer-motion";
-
 const terminalLines = [
   { text: "$ claude", className: "t-c" },
   { text: "You: I just built the pricing card. Ask Codex to review the component.", className: "t-row" },
@@ -40,31 +36,17 @@ export default function CodeShowcase() {
             </div>
             <div className="term-title">claude ↔ repowire ↔ codex</div>
           </div>
-          <motion.div
-            className="term-body"
-            role="img"
-            aria-label="Animated terminal showing Claude asking Codex to review a React component and receiving an ack"
-            initial="hidden"
-            animate="shown"
-            variants={{
-              hidden: {},
-              shown: { transition: { staggerChildren: 0.12 } },
-            }}
-          >
-            {terminalLines.map((line) => (
-              <motion.div
+          <div className="term-body" role="img" aria-label="Animated terminal showing Claude asking Codex to review a React component and receiving an ack">
+            {terminalLines.map((line, index) => (
+              <div
                 key={line.text}
-                className={line.className}
-                variants={{
-                  hidden: { opacity: 0, y: 6 },
-                  shown: { opacity: 1, y: 0 },
-                }}
-                transition={{ duration: 0.28, ease: "easeOut" }}
+                className={`${line.className} term-line`}
+                style={{ animationDelay: `${index * 0.12}s` }}
               >
                 {line.text}
-              </motion.div>
+              </div>
             ))}
-          </motion.div>
+          </div>
         </div>
       </div>
     </section>
