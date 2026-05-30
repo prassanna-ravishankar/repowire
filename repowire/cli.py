@@ -3116,6 +3116,106 @@ def peer_restart(
         console.print(f"  tmux: {data.get('tmux_session')}")
 
 
+@peer.command(name="doctor")
+@click.argument("name")
+@click.option("--circle", "-c", help="Circle to scope display-name lookup")
+@click.option("--json", "json_out", is_flag=True, help="Emit the raw report as JSON")
+def peer_doctor(name: str, circle: str | None, json_out: bool) -> None:
+    """Deep diagnostic for a peer; exits nonzero on error-severity contradictions."""
+    import json as _json
+    from urllib.parse import quote
+
+    import httpx
+
+    params: dict[str, str] = {}
+    if circle:
+        params["circle"] = circle
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.get(
+                f"{_get_daemon_url()}/peers/{quote(name, safe='')}/doctor",
+                params=params,
+                headers={**_auth_headers()},
+            )
+            if resp.status_code == 404:
+                raise click.ClickException(f"Peer '{name}' not found")
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.ConnectError:
+        raise click.ClickException(
+            "Cannot connect to daemon. Run 'repowire serve' first."
+        ) from None
+    except httpx.HTTPStatusError as e:
+        detail = e.response.text
+        try:
+            detail = e.response.json().get("detail", detail)
+        except ValueError:
+            pass
+        raise click.ClickException(f"Failed to run doctor: {detail}") from e
+
+    if json_out:
+        click.echo(_json.dumps(data, indent=2))
+    else:
+        _render_doctor_report(data)
+
+    if any(c.get("severity") == "error" for c in data.get("contradictions", [])):
+        raise SystemExit(1)
+
+
+def _render_doctor_report(d: dict) -> None:
+    """Pretty-print a DoctorReport dict."""
+    console.print(
+        f"\n[bold]peer doctor:[/] [cyan]{d.get('display_name')}[/] "
+        f"([dim]{d.get('peer_id')}[/])\n"
+    )
+    console.print("[bold]Identity[/]")
+    console.print(f"  status      {d.get('status')}    turn_state  {d.get('turn_state') or '-'}")
+    console.print(f"  backend     {d.get('backend')}    circle      {d.get('circle')}")
+    console.print(f"  machine     {d.get('machine')}    role        {d.get('role')}")
+    console.print(f"  last_seen   {d.get('last_seen') or '-'}")
+    if d.get("pane_id"):
+        console.print(f"  pane_id     {d.get('pane_id')}")
+
+    locality = (
+        "local machine"
+        if d.get("is_local_machine")
+        else "remote machine - local probes unavailable"
+    )
+    console.print(f"\n[bold]Inbound reachability[/]   [dim]({locality})[/]")
+    console.print(f"  ws_connected      {'yes' if d.get('ws_connected') else 'no'}")
+    pane_exists = d.get("tmux_pane_exists")
+    pane_str = "unavailable" if pane_exists is None else ("yes" if pane_exists else "no")
+    ev = d.get("tmux_evidence")
+    if ev:
+        pane_str += f"   ({d.get('pane_id')} → {ev.get('tmux_session')}, pid {ev.get('pane_pid')})"
+    console.print(f"  tmux_pane_exists  {pane_str}")
+    if d.get("hook_meta_available"):
+        console.print(
+            f"  hook_meta         peer_id={d.get('hook_meta_peer_id')} "
+            f"name={d.get('hook_meta_display_name')}"
+        )
+    else:
+        console.print("  hook_meta         unavailable")
+    pid_alive = d.get("agent_pid_alive")
+    pid_str = "unavailable" if pid_alive is None else ("alive" if pid_alive else "DEAD")
+    console.print(f"  agent_pid         {d.get('agent_pid') or '-'}  ({pid_str})")
+
+    console.print("\n[bold]Asks[/]")
+    age = d.get("oldest_pending_age_seconds")
+    age_str = f"  oldest {int(age // 60)}m ago ({d.get('oldest_pending_cid')})" if age else ""
+    console.print(f"  pending inbound   {d.get('pending_inbound_count', 0)}{age_str}")
+
+    contradictions = d.get("contradictions", [])
+    if not contradictions:
+        console.print("\n[green]✓ No contradictions detected[/]")
+        return
+    console.print(f"\n[bold]Contradictions ({len(contradictions)})[/]")
+    for c in contradictions:
+        mark = "[red]✗[/]" if c.get("severity") == "error" else "[yellow]●[/]"
+        console.print(f"  {mark} {c.get('code')}   {c.get('detail')}")
+
+
 @peer.command(name="ask")
 @click.argument("name")
 @click.argument("query")

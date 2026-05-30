@@ -16,6 +16,7 @@ from repowire.agent_backends import agent_backend_for, resume_capability_for_reg
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
+from repowire.daemon.diagnostics import DoctorReport, build_doctor_report
 from repowire.daemon.peer_registry import (
     CircleSource,
     PaneHijackRejectedError,
@@ -342,6 +343,34 @@ async def get_peer(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"Peer not found: {identifier}",
     )
+
+
+@router.get("/peers/{identifier}/doctor", response_model=DoctorReport)
+async def peer_doctor(
+    identifier: str,
+    circle: str | None = Query(None),
+    _: str | None = Depends(require_auth),
+) -> DoctorReport:
+    """Operator-facing deep diagnostic for a peer.
+
+    Explicit, deeper counterpart to automatic lazy repair: runs lazy_repair
+    first to reconcile state, then re-resolves the peer (repair may have
+    demoted/reaped it) and assembles a read-only DoctorReport surfacing
+    inbound-reachability evidence and any contradictions.
+    """
+    peer_registry = get_peer_registry()
+    await peer_registry.lazy_repair()
+    try:
+        peer = await peer_registry.get_peer(identifier, circle=circle)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if peer is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Peer not found: {identifier}",
+        )
+    state = get_app_state()
+    return await build_doctor_report(peer, state.transport, state.ask_tracker)
 
 
 class RegisterResponse(BaseModel):
