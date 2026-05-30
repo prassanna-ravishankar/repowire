@@ -3216,6 +3216,57 @@ def _render_doctor_report(d: dict) -> None:
         console.print(f"  {mark} {c.get('code')}   {c.get('detail')}")
 
 
+@main.command(name="trace")
+@click.argument("trace_id")
+@click.option("--json", "json_out", is_flag=True, help="Emit the raw trace as JSON")
+def trace_cmd(trace_id: str, json_out: bool) -> None:
+    """Show the delivery stages for an ask (correlation_id) or notify (delivery_id)."""
+    import json as _json
+    from urllib.parse import quote
+
+    import httpx
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(
+                f"{_get_daemon_url()}/traces/{quote(trace_id, safe='')}",
+                headers={**_auth_headers()},
+            )
+            if resp.status_code == 404:
+                raise click.ClickException(f"No delivery trace for '{trace_id}'")
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.ConnectError:
+        raise click.ClickException(
+            "Cannot connect to daemon. Run 'repowire serve' first."
+        ) from None
+    except httpx.HTTPStatusError as e:
+        detail = e.response.text
+        try:
+            detail = e.response.json().get("detail", detail)
+        except ValueError:
+            pass
+        raise click.ClickException(f"Failed to fetch trace: {detail}") from e
+
+    if json_out:
+        click.echo(_json.dumps(data, indent=2))
+    else:
+        console.print(
+            f"\n[bold]trace:[/] [cyan]{data.get('trace_id')}[/] "
+            f"([dim]{data.get('kind')}[/])\n"
+        )
+        for s in data.get("stages", []):
+            mark = "[red]✗[/]" if s.get("status") == "fail" else "[green]·[/]"
+            peer_str = f"  → {s.get('peer_id')}" if s.get("peer_id") else ""
+            stage_name = s.get("stage", "")
+            console.print(
+                f"  {mark} [{s.get('seq')}] {stage_name:<16} {s.get('ts')}{peer_str}"
+            )
+
+    if any(s.get("status") == "fail" for s in data.get("stages", [])):
+        raise SystemExit(1)
+
+
 @peer.command(name="ask")
 @click.argument("name")
 @click.argument("query")

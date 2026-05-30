@@ -353,6 +353,7 @@ async def open_ask(
     peer_registry = get_peer_registry()
     state = get_app_state()
     ask_tracker = state.ask_tracker
+    trace = getattr(state, "delivery_trace_store", None)
     await peer_registry.lazy_repair()
 
     peer = await _get_peer_or_http(request.to_peer, circle=request.circle)
@@ -405,6 +406,16 @@ async def open_ask(
             },
         ) from e
 
+    if trace is not None:
+        trace.record(
+            trace_id=cid, kind="ask", stage="created",
+            peer_id=peer.peer_id, from_peer_id=from_peer_id,
+        )
+        trace.record(
+            trace_id=cid, kind="ask", stage="resolved_peer",
+            peer_id=peer.peer_id, from_peer_id=from_peer_id,
+        )
+
     async def _on_acp_complete(
         correlation_id: str, reply: str | None, error: str | None,
     ) -> None:
@@ -422,6 +433,11 @@ async def open_ask(
             registry=peer_registry,
             state=state,
         )
+        if trace is not None:
+            trace.record(
+                trace_id=cid, kind="ask", stage="routed",
+                peer_id=peer.peer_id, from_peer_id=from_peer_id,
+            )
         await peer_delivery.deliver_ask(
             from_peer=from_peer_id,
             to_peer=peer.peer_id,
@@ -433,6 +449,11 @@ async def open_ask(
             on_acp_complete=_on_acp_complete,
         )
     except ValueError as e:
+        if trace is not None:
+            trace.record(
+                trace_id=cid, kind="ask", stage="resolve_failed", status="fail",
+                peer_id=peer.peer_id, detail={"error": str(e)},
+            )
         await ask_tracker.close(cid, reason="evicted")
         raise HTTPException(status_code=404, detail=str(e))
     except TransportError as e:
@@ -457,6 +478,11 @@ async def open_ask(
                 peer.peer_id,
                 e,
             )
+            if trace is not None:
+                trace.record(
+                    trace_id=cid, kind="ask", stage="pending",
+                    peer_id=peer.peer_id, detail={"transport": "cli_polling_queue"},
+                )
             if request.reply_to:
                 prior = await ask_tracker.close(request.reply_to, reason="reply_to")
                 if prior is None:
@@ -465,10 +491,28 @@ async def open_ask(
                         request.reply_to,
                     )
             return AskResponse(correlation_id=cid)
+        if trace is not None:
+            trace.record(
+                trace_id=cid, kind="ask", stage="no_connection", status="fail",
+                peer_id=peer.peer_id, detail={"error": str(e)},
+            )
         await ask_tracker.close(cid, reason="send_failed")
         raise HTTPException(
             status_code=503,
             detail=f"Peer {request.to_peer} has no live connection: {e}",
+        )
+
+    # Send succeeded: the transport completed the wire send and (for ws peers)
+    # the ws-hook delivery_ack resolved inside deliver_ask.
+    if trace is not None:
+        trace.record(
+            trace_id=cid, kind="ask", stage="websocket_sent", peer_id=peer.peer_id,
+        )
+        trace.record(
+            trace_id=cid, kind="ask", stage="hook_received", peer_id=peer.peer_id,
+        )
+        trace.record(
+            trace_id=cid, kind="ask", stage="pane_injected", peer_id=peer.peer_id,
         )
 
     # Send succeeded: close any prior thread referenced by reply_to.
@@ -509,6 +553,7 @@ async def ack_ask(
     peer_registry = get_peer_registry()
     state = get_app_state()
     ask_tracker = state.ask_tracker
+    trace = getattr(state, "delivery_trace_store", None)
 
     existing = await ask_tracker.get(request.correlation_id)
     if existing is None:
@@ -597,6 +642,16 @@ async def ack_ask(
             has_attachments=False,
         )
         await ask_tracker.close(request.correlation_id, reason="ack")
+
+    if trace is not None:
+        trace.record(
+            trace_id=request.correlation_id, kind="ask", stage="acked",
+            peer_id=existing.to_peer_id, from_peer_id=existing.from_peer_id,
+        )
+        trace.record(
+            trace_id=request.correlation_id, kind="ask", stage="closed",
+            peer_id=existing.to_peer_id, from_peer_id=existing.from_peer_id,
+        )
 
     return OkResponse()
 

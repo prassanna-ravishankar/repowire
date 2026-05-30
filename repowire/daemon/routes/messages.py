@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from typing import Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -222,6 +223,8 @@ async def notify_peer(
 
     peer_registry = get_peer_registry()
     state = get_app_state()
+    trace = getattr(state, "delivery_trace_store", None)
+    delivery_id = f"notif-delivery-{uuid4().hex[:8]}"
     await peer_registry.lazy_repair()
 
     try:
@@ -230,6 +233,11 @@ async def notify_peer(
             registry=peer_registry,
             state=state,
         )
+        if trace is not None:
+            trace.record(
+                trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
+                stage="created", detail={"to_peer": request.to_peer},
+            )
         delivery = await peer_delivery.notify_result(
             from_peer=request.from_peer,
             to_peer=request.to_peer,
@@ -238,6 +246,26 @@ async def notify_peer(
             circle=request.circle,
             attachments=request.attachments,
         )
+        if trace is not None:
+            _stage = "pending" if delivery.queued else "pane_injected"
+            trace.record(
+                trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
+                stage="resolved_peer", peer_id=delivery.to_peer_id,
+                from_peer_id=delivery.from_peer_id,
+            )
+            if not delivery.queued:
+                trace.record(
+                    trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
+                    stage="websocket_sent", peer_id=delivery.to_peer_id,
+                )
+                trace.record(
+                    trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
+                    stage="hook_received", peer_id=delivery.to_peer_id,
+                )
+            trace.record(
+                trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
+                stage=_stage, peer_id=delivery.to_peer_id,
+            )
         return NotifyResponse(
             status=delivery.status,
             delivery_state=delivery.delivery_state,
@@ -285,6 +313,11 @@ async def notify_peer(
             },
         )
     except TransportError as e:
+        if trace is not None:
+            trace.record(
+                trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
+                stage="no_connection", status="fail", detail={"error": str(e)},
+            )
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={
