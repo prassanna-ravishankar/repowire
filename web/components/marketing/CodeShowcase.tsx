@@ -45,9 +45,11 @@ export default function CodeShowcase() {
             role="img"
             aria-label="Animated terminal showing Claude asking Codex to review a React component and receiving an ack"
             initial="hidden"
-            whileInView="shown"
-            viewport={{ once: true, amount: 0.2 }}
-            variants={{ shown: { transition: { staggerChildren: 0.12 } } }}
+            animate="shown"
+            variants={{
+              hidden: {},
+              shown: { transition: { staggerChildren: 0.12 } },
+            }}
           >
             {terminalLines.map((line) => (
               <motion.div
