@@ -166,8 +166,14 @@ async def _peer_to_info_with_health(
     last_success_at: str | None = None
     last_failure_at: str | None = None
     if trace_store is not None:
-        success = trace_store.latest_stage(peer_id=p.peer_id, stage="pane_injected")
-        failure = trace_store.latest_stage(peer_id=p.peer_id, stage="injection_failed")
+        # latest_stage hits SQLite synchronously; offload so listing peers
+        # doesn't block the event loop.
+        success = await asyncio.to_thread(
+            trace_store.latest_stage, peer_id=p.peer_id, stage="pane_injected"
+        )
+        failure = await asyncio.to_thread(
+            trace_store.latest_stage, peer_id=p.peer_id, stage="injection_failed"
+        )
         last_success_at = success.ts if success else None
         last_failure_at = failure.ts if failure else None
     # Observed delivery_ack (any pane_injected/injection_failed row) implies the

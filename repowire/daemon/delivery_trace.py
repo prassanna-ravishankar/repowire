@@ -85,24 +85,27 @@ class DeliveryTraceStore:
         try:
             ts = datetime.now(timezone.utc).isoformat()
             detail_json = json.dumps(detail or {}, separators=(",", ":"), sort_keys=True)
+            # Compute the per-trace seq inside the INSERT as a scalar subquery so
+            # the read and write are one atomic statement (no select-then-insert
+            # race for the next ordinal).
             with self._conn:
-                row = self._conn.execute(
-                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM delivery_traces WHERE trace_id = ?",
-                    (trace_id,),
-                ).fetchone()
-                seq = int(row[0]) if row is not None else 0
                 self._conn.execute(
                     """
                     INSERT INTO delivery_traces(
                         id, trace_id, delivery_id, seq, kind, stage, status,
                         peer_id, from_peer_id, ts, detail_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (
+                        ?, ?, ?,
+                        (SELECT COALESCE(MAX(seq), -1) + 1
+                         FROM delivery_traces WHERE trace_id = ?),
+                        ?, ?, ?, ?, ?, ?, ?
+                    )
                     """,
                     (
                         uuid4().hex,
                         trace_id,
                         delivery_id or trace_id,
-                        seq,
+                        trace_id,
                         kind,
                         stage,
                         status,

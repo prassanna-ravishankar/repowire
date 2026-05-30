@@ -826,7 +826,7 @@ async def rehook_peer(
     #   (c) pane hook metadata whose peer_id/display_name matches this peer.
     pane_verified = _has_spawn_ownership(peer)
     if not pane_verified:
-        evidence = probe_tmux_pane(peer.pane_id)
+        evidence = await asyncio.to_thread(probe_tmux_pane, peer.pane_id)
         if evidence is not None and peer.path and _norm_path(evidence.current_path) == _norm_path(
             peer.path
         ):

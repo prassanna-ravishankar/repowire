@@ -16,6 +16,7 @@ gracefully to ``unavailable`` rather than producing false contradictions.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import socket
@@ -227,7 +228,8 @@ async def build_doctor_report(
 
     # --- local-only evidence ---
     if local and peer.pane_id:
-        evidence = probe_tmux_pane(peer.pane_id)
+        # probe_tmux_pane shells out to tmux; offload so we don't block the loop.
+        evidence = await asyncio.to_thread(probe_tmux_pane, peer.pane_id)
         report.tmux_pane_exists = evidence is not None
         if evidence is not None:
             report.tmux_evidence = {

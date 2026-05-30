@@ -399,6 +399,14 @@ class StateDatabase:
                 ON delivery_traces(trace_id, seq)
                 """,
             )
+            # Supports latest_stage(peer_id, stage) lookups used to compute
+            # per-peer inbound health in list_peers without a full table scan.
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_delivery_traces_peer_stage
+                ON delivery_traces(peer_id, stage, ts DESC)
+                """,
+            )
             self.conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_delivery_traces_ts
