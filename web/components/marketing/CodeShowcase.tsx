@@ -40,20 +40,29 @@ export default function CodeShowcase() {
             </div>
             <div className="term-title">claude ↔ repowire ↔ codex</div>
           </div>
-          <div className="term-body" role="img" aria-label="Animated terminal showing Claude asking Codex to review a React component and receiving an ack">
-            {terminalLines.map((line, index) => (
+          <motion.div
+            className="term-body"
+            role="img"
+            aria-label="Animated terminal showing Claude asking Codex to review a React component and receiving an ack"
+            initial="hidden"
+            whileInView="shown"
+            viewport={{ once: true, amount: 0.2 }}
+            variants={{ shown: { transition: { staggerChildren: 0.12 } } }}
+          >
+            {terminalLines.map((line) => (
               <motion.div
                 key={line.text}
                 className={line.className}
-                initial={{ opacity: 0, y: 6 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true, amount: 0.8 }}
-                transition={{ delay: index * 0.12, duration: 0.28, ease: "easeOut" }}
+                variants={{
+                  hidden: { opacity: 0, y: 6 },
+                  shown: { opacity: 1, y: 0 },
+                }}
+                transition={{ duration: 0.28, ease: "easeOut" }}
               >
                 {line.text}
               </motion.div>
             ))}
-          </div>
+          </motion.div>
         </div>
       </div>
     </section>
