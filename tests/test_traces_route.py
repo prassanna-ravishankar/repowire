@@ -105,11 +105,8 @@ class TestAskStagesLand:
         )
         r = await client.post("/ask", json={"to_peer": bob, "from_peer": "alice", "text": "hi"})
         assert r.status_code == 503, r.text
-        # The 503 body doesn't carry the cid; inspect the single ask trace directly.
-        rows = harness.delivery_trace_store._conn.execute(
-            "SELECT stage FROM delivery_traces WHERE kind='ask' ORDER BY seq"
-        ).fetchall()
-        stages = [row["stage"] for row in rows]
+        cid = r.json()["detail"]["correlation_id"]
+        stages = [row.stage for row in harness.delivery_trace_store.stages_for(cid)]
         assert "hook_received" in stages
         assert "injection_failed" in stages
         assert "no_connection" not in stages

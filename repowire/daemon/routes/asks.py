@@ -472,7 +472,11 @@ async def open_ask(
         await ask_tracker.close(cid, reason="send_failed")
         raise HTTPException(
             status_code=503,
-            detail=f"Ask injection failed for {request.to_peer}: {e}",
+            detail={
+                "error": "injection_failed",
+                "hint": f"Ask injection failed for {request.to_peer}: {e}",
+                "correlation_id": cid,
+            },
         )
     except TransportError as e:
         if _uses_cli_polling_fallback(peer):
