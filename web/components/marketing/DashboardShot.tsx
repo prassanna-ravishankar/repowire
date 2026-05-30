@@ -18,7 +18,7 @@ export default function DashboardShot() {
             <span />
             <span />
           </div>
-          <span className="shot-url">repowire.io/dashboard</span>
+          <span className="shot-url">relay.repowire.io/dashboard</span>
         </div>
         <Image
           src="/screenshots/dashboard.png"

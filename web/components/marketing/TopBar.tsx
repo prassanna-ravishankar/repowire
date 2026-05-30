@@ -5,13 +5,14 @@ import Image from "next/image";
 import { Menu, X } from "lucide-react";
 import ThemeToggle from "./ThemeToggle";
 import GitHubMark from "./GitHubMark";
+import { RELAY_DASHBOARD_URL } from "./links";
 
 const GITHUB_URL = "https://github.com/prassanna-ravishankar/repowire";
 
 const NAV_LINKS = [
   { label: "Product", href: "#features" },
   { label: "Docs", href: "https://docs.repowire.io" },
-  { label: "Relay", href: "https://repowire.io/dashboard" },
+  { label: "Relay", href: RELAY_DASHBOARD_URL },
   { label: "Changelog", href: "https://github.com/prassanna-ravishankar/repowire/releases" },
 ];
 

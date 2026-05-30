@@ -1,4 +1,5 @@
 import Image from "next/image";
+import { RELAY_DASHBOARD_URL } from "./links";
 
 export default function Footer() {
   return (
@@ -22,7 +23,7 @@ export default function Footer() {
             <div className="footer-col-title">Developers</div>
             <a href="https://docs.repowire.io">Docs</a>
             <a href="https://docs.repowire.io/start/install/">Install</a>
-            <a href="https://repowire.io/dashboard">Relay dashboard</a>
+            <a href={RELAY_DASHBOARD_URL}>Relay dashboard</a>
             <a href="https://github.com/prassanna-ravishankar/repowire">GitHub</a>
             <a href="https://docs.repowire.io/reference/mcp-tools/">API reference</a>
           </div>

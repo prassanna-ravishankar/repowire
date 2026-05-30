@@ -1,6 +1,7 @@
 import { ArrowRight } from "lucide-react";
 import CopyButton from "./CopyButton";
 import MeshDemo from "./MeshDemo";
+import { RELAY_DASHBOARD_URL } from "./links";
 
 const INSTALL_CMD = "curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh";
 
@@ -21,7 +22,7 @@ export default function Hero() {
             Install Repowire
             <ArrowRight width={16} height={16} strokeWidth={1.75} />
           </a>
-          <a className="btn secondary" href="https://repowire.io/dashboard">Open relay</a>
+          <a className="btn secondary" href={RELAY_DASHBOARD_URL}>Open relay</a>
         </div>
         <div className="install-strip">
           <div className="install-cmd">
