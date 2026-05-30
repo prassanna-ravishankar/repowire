@@ -170,6 +170,45 @@ def _session_file_candidates(
     return []
 
 
+def runtime_session_resumable(
+    peer_path: str | None,
+    backend: str,
+    runtime_session_id: str | None,
+) -> bool:
+    """Whether a local backend session file exists for ``runtime_session_id``.
+
+    Both Claude (`--resume <id>`) and Codex (`resume <id>`) exit non-zero on an
+    unknown id -- they do NOT fall back to a fresh session. A resume-restart
+    that kills the pane first would leave the peer dead if the id is stale.
+    Callers must pre-validate with this before killing the pane.
+
+    Both backends' candidate lists can include OTHER sessions in the same cwd
+    (``_session_file_candidates`` returns the direct target plus all discovered
+    project files), so existence alone is not proof of THIS id. We require the
+    candidate filename to actually carry ``runtime_session_id``:
+    - Claude: stem == id (``<id>.jsonl``)
+    - Codex: id is a substring of the rollout filename (``rollout-...-<id>.jsonl``)
+    Without this, a stale id + any other session file in the cwd would falsely
+    pass, and the route would build ``--resume <stale-id>`` and kill the pane
+    before the backend exits hard.
+    """
+    if not runtime_session_id:
+        return False
+    backend_value = getattr(backend, "value", backend)
+    candidates = _session_file_candidates(peer_path, backend_value, runtime_session_id)
+    for path in candidates:
+        if backend_value == "claude-code" and path.stem != runtime_session_id:
+            continue
+        if backend_value == "codex" and runtime_session_id not in path.name:
+            continue
+        try:
+            if path.expanduser().is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def _load_paths(
     paths: list[Path],
     backend: str,

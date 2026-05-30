@@ -3111,7 +3111,11 @@ def peer_restart(
         f"([dim]{data.get('peer_id')}[/])"
     )
     console.print(f"  backend: {data.get('backend')}")
-    console.print(f"  mode: {data.get('resume_mode')}")
+    mode = data.get("resume_mode")
+    mode_label = "[green]resumed[/]" if mode == "resumed" else mode
+    console.print(f"  mode: {mode_label}")
+    if data.get("resume_warning"):
+        console.print(f"  [yellow]context not resumed:[/] {data.get('resume_warning')}")
     if data.get("tmux_session"):
         console.print(f"  tmux: {data.get('tmux_session')}")
 
