@@ -25,6 +25,7 @@ from repowire import __version__
 from repowire.config.models import Config, load_config
 from repowire.daemon.ask_tracker import AskTracker
 from repowire.daemon.auth import require_localhost
+from repowire.daemon.delivery_trace import DeliveryTraceStore
 from repowire.daemon.deps import cleanup_deps, init_deps
 from repowire.daemon.event_bus import EventBus
 from repowire.daemon.event_log import EventLog
@@ -264,6 +265,7 @@ def create_app(
         work_store = SQLiteWorkStore(state_db)
         calendar_store = SQLiteCalendarStore(state_db, work_store)
         operation_store = SQLiteOperationStore(state_db)
+        delivery_trace_store = DeliveryTraceStore(state_db)
         # Store in app state for route handlers
         app.state.config = cfg
         app.state.transport = transport
@@ -284,6 +286,7 @@ def create_app(
         app.state.state_db = state_db
         app.state.session_binding_store = session_binding_store
         app.state.queued_delivery_store = queued_delivery_store
+        app.state.delivery_trace_store = delivery_trace_store
         from repowire.acp import AcpClientManager, ApprovalBroker
         acp_permission_broker = ApprovalBroker(
             emit_event=peer_registry.add_event,
@@ -606,6 +609,7 @@ def create_test_app(
         work_store = SQLiteWorkStore(state_db)
         calendar_store = SQLiteCalendarStore(state_db, work_store)
         operation_store = SQLiteOperationStore(state_db)
+        delivery_trace_store = DeliveryTraceStore(state_db)
         app.state.config = cfg
         app.state.transport = transport
         app.state.query_tracker = query_tracker
@@ -624,6 +628,7 @@ def create_test_app(
         app.state.state_db = state_db
         app.state.session_binding_store = session_binding_store
         app.state.queued_delivery_store = queued_delivery_store
+        app.state.delivery_trace_store = delivery_trace_store
         from repowire.acp import AcpClientManager, ApprovalBroker
         acp_permission_broker = ApprovalBroker(
             emit_event=registry.add_event,

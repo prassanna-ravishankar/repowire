@@ -13,10 +13,12 @@ from httpx import ASGITransport, AsyncClient
 
 from repowire.config.models import Config
 from repowire.daemon.ask_tracker import AskTracker
+from repowire.daemon.delivery_trace import DeliveryTraceStore
 from repowire.daemon.deps import init_deps
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
+from repowire.daemon.state.database import StateDatabase
 from repowire.daemon.websocket_transport import WebSocketTransport
 
 
@@ -30,6 +32,7 @@ class DaemonAppHarness:
     query_tracker: QueryTracker
     ask_tracker: AskTracker
     message_router: MessageRouter
+    delivery_trace_store: DeliveryTraceStore
 
 
 def make_daemon_app(
@@ -62,6 +65,9 @@ def make_daemon_app(
     if disable_lazy_repair:
         registry._last_repair = time.monotonic() + 3600
 
+    state_db = StateDatabase(tmp_path / "state.db")
+    delivery_trace_store = DeliveryTraceStore(state_db)
+
     state_kwargs: dict[str, Any] = {
         "config": cfg,
         "transport": transport,
@@ -70,6 +76,7 @@ def make_daemon_app(
         "message_router": message_router,
         "peer_registry": registry,
         "relay_mode": cfg.relay.enabled,
+        "delivery_trace_store": delivery_trace_store,
     }
     if state_overrides:
         state_kwargs.update(state_overrides)
@@ -89,6 +96,7 @@ def make_daemon_app(
         query_tracker=query_tracker,
         ask_tracker=ask_tracker,
         message_router=message_router,
+        delivery_trace_store=delivery_trace_store,
     )
 
 

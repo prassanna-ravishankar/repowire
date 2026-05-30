@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 class StateDatabase:
@@ -378,6 +378,35 @@ class StateDatabase:
             )
             self.conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS delivery_traces (
+                    id TEXT PRIMARY KEY,
+                    trace_id TEXT NOT NULL,
+                    delivery_id TEXT,
+                    seq INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    peer_id TEXT,
+                    from_peer_id TEXT,
+                    ts TEXT NOT NULL,
+                    detail_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_delivery_traces_trace
+                ON delivery_traces(trace_id, seq)
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_delivery_traces_ts
+                ON delivery_traces(ts)
+                """,
+            )
+            self.conn.execute(
+                """
                 INSERT OR IGNORE INTO schema_migrations(version, description)
                 VALUES (?, ?)
                 """,
@@ -438,6 +467,13 @@ class StateDatabase:
                 VALUES (?, ?)
                 """,
                 (9, "durable operation lifecycle records"),
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, description)
+                VALUES (?, ?)
+                """,
+                (10, "delivery trace ledger"),
             )
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

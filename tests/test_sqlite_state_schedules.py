@@ -36,7 +36,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
                 "SELECT version FROM schema_migrations",
             ).fetchall()
         }
-        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9}
+        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
         tables = {
             row[0]
             for row in db.conn.execute(
@@ -51,6 +51,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
         assert "tracked_work" in tables
         assert "calendar_entries" in tables
         assert "operations" in tables
+        assert "delivery_traces" in tables
     finally:
         db.close()
 
@@ -63,7 +64,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
                 "SELECT version FROM schema_migrations",
             ).fetchall()
         }
-        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9}
+        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
     finally:
         db2.close()
 
