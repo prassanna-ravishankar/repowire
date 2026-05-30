@@ -3120,7 +3120,12 @@ def peer_restart(
 @click.argument("name")
 @click.option("--circle", "-c", help="Circle to scope display-name lookup")
 @click.option("--json", "json_out", is_flag=True, help="Emit the raw report as JSON")
-def peer_doctor(name: str, circle: str | None, json_out: bool) -> None:
+@click.option(
+    "--fix",
+    is_flag=True,
+    help="Attempt a non-destructive rehook when an inbound-down contradiction is found",
+)
+def peer_doctor(name: str, circle: str | None, json_out: bool, fix: bool) -> None:
     """Deep diagnostic for a peer; exits nonzero on error-severity contradictions."""
     import json as _json
     from urllib.parse import quote
@@ -3159,8 +3164,55 @@ def peer_doctor(name: str, circle: str | None, json_out: bool) -> None:
     else:
         _render_doctor_report(data)
 
+    codes = {c.get("code") for c in data.get("contradictions", [])}
+    if fix and ({"ONLINE_BUT_NO_WS", "PANE_MISSING"} & codes):
+        console.print("\n[dim]--fix: attempting non-destructive rehook...[/]")
+        _rehook_peer(name, circle=circle, apply=True)
+
     if any(c.get("severity") == "error" for c in data.get("contradictions", [])):
         raise SystemExit(1)
+
+
+def _rehook_peer(name: str, *, circle: str | None, apply: bool) -> None:
+    """Call the rehook endpoint and print the outcome. Shared by `peer rehook` + doctor --fix."""
+    from urllib.parse import quote
+
+    import httpx
+
+    body: dict[str, object] = {"apply": apply}
+    if circle:
+        body["circle"] = circle
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            resp = client.post(
+                f"{_get_daemon_url()}/peers/{quote(name, safe='')}/rehook",
+                json=body,
+                headers={**_auth_headers()},
+            )
+            if resp.status_code == 404:
+                raise click.ClickException(f"Peer '{name}' not found")
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.ConnectError:
+        raise click.ClickException(
+            "Cannot connect to daemon. Run 'repowire serve' first."
+        ) from None
+    except httpx.HTTPStatusError as e:
+        detail = e.response.text
+        try:
+            detail = e.response.json().get("detail", detail)
+        except ValueError:
+            pass
+        raise click.ClickException(f"Failed to rehook: {detail}") from e
+
+    acted = data.get("acted")
+    mark = "[green]✓[/]" if acted else "[yellow]·[/]"
+    console.print(
+        f"  {mark} rehook {data.get('display_name')}: "
+        f"reason={data.get('reason')} "
+        f"respawned={data.get('ws_hook_respawned')} "
+        f"acted={acted}"
+    )
 
 
 def _render_doctor_report(d: dict) -> None:
@@ -3265,6 +3317,22 @@ def trace_cmd(trace_id: str, json_out: bool) -> None:
 
     if any(s.get("status") == "fail" for s in data.get("stages", [])):
         raise SystemExit(1)
+
+
+@peer.command(name="rehook")
+@click.argument("name")
+@click.option("--circle", "-c", help="Circle to scope display-name lookup")
+@click.option("--apply", is_flag=True, help="Act instead of dry-run (default is dry-run)")
+def peer_rehook(name: str, circle: str | None, apply: bool) -> None:
+    """Re-establish a peer's inbound ws-hook without killing the pane.
+
+    Defaults to a dry-run report; pass --apply to act. A ping-healthy peer is
+    never disconnected. This is non-destructive — for a destructive restart use
+    `repowire peer restart`.
+    """
+    if not apply:
+        console.print("[dim](dry-run — pass --apply to act)[/]")
+    _rehook_peer(name, circle=circle, apply=apply)
 
 
 @peer.command(name="ask")
