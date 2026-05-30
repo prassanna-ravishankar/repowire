@@ -3,6 +3,7 @@ when a valid runtime_session_id is on disk, else fresh + warning."""
 
 from __future__ import annotations
 
+import json
 import socket
 import time
 from pathlib import Path
@@ -122,6 +123,80 @@ def _write_claude_session(home: Path, cwd: str, session_id: str) -> None:
     d = home / ".claude" / "projects" / enc
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{session_id}.jsonl").write_text('{"type":"summary"}\n')
+
+
+class TestBackendValidators:
+    """runtime_session_validation_status across all backends (fixture dirs)."""
+
+    def _status(self, monkeypatch, home, cwd, backend, sid):
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        from repowire.session.history import runtime_session_validation_status
+        return runtime_session_validation_status(cwd, backend, sid)
+
+    def test_missing_id(self, tmp_path, monkeypatch):
+        assert self._status(monkeypatch, tmp_path, "/x", "claude-code", None) == "missing_id"
+
+    def test_gemini_resumable_by_sessionid(self, tmp_path, monkeypatch):
+        home = tmp_path / "h"
+        cwd = "/Users/test/repo"
+        sid = "2ff4b004-a282-42c6-a54e-5cd12f126f3d"
+        chats = home / ".gemini/tmp/PROJHASH/chats"
+        chats.mkdir(parents=True)
+        (chats / f"session-2026-01-01T00-00-{sid[:8]}.json").write_text(
+            json.dumps({"sessionId": sid, "projectHash": "PROJHASH", "directory": cwd})
+        )
+        assert self._status(monkeypatch, home, cwd, "gemini", sid) == "resumable"
+        # mismatched cwd when directory recorded -> not for this peer
+        assert self._status(monkeypatch, home, "/other", "gemini", sid) == "stale_missing_file"
+        # unknown id
+        assert self._status(monkeypatch, home, cwd, "gemini", "no-such") == "stale_missing_file"
+
+    def test_unknown_backend_unvalidated(self, tmp_path, monkeypatch):
+        assert self._status(monkeypatch, tmp_path, "/x", "made-up", "abc") == "unvalidated_backend"
+
+    def test_opencode_resumable_and_stale(self, tmp_path, monkeypatch):
+        home = tmp_path / "h"
+        cwd = "/Users/test/proj"
+        sdir = home / ".local/share/opencode/storage/session/PROJHASH"
+        sdir.mkdir(parents=True)
+        sid = "ses_abc123"
+        (sdir / f"{sid}.json").write_text(json.dumps({"id": sid, "directory": cwd}))
+        assert self._status(monkeypatch, home, cwd, "opencode", sid) == "resumable"
+        # wrong cwd -> not for this peer
+        assert self._status(monkeypatch, home, "/other", "opencode", sid) == "stale_missing_file"
+        # unknown id
+        assert self._status(monkeypatch, home, cwd, "opencode", "ses_nope") == "stale_missing_file"
+
+    def test_pi_resumable_requires_live_sessionfile(self, tmp_path, monkeypatch):
+        home = tmp_path / "h"
+        cwd = str(tmp_path / "proj")
+        Path(cwd).mkdir(parents=True)
+        sfile = tmp_path / "sess.jsonl"
+        sfile.write_text("{}\n")
+        sid = "pi-sess-1"
+        mp = home / ".pi/pi-acp"
+        mp.mkdir(parents=True)
+        (mp / "session-map.json").write_text(json.dumps({
+            "version": 1,
+            "sessions": {sid: {"sessionId": sid, "cwd": cwd, "sessionFile": str(sfile)}},
+        }))
+        assert self._status(monkeypatch, home, cwd, "pi", sid) == "resumable"
+        # delete the session file -> stale
+        sfile.unlink()
+        assert self._status(monkeypatch, home, cwd, "pi", sid) == "stale_missing_file"
+
+    def test_antigravity_resumable_requires_pb_and_cwd_map(self, tmp_path, monkeypatch):
+        home = tmp_path / "h"
+        cwd = "/Users/test/repo"
+        cid = "conv-xyz"
+        cli = home / ".gemini/antigravity-cli"
+        (cli / "cache").mkdir(parents=True)
+        (cli / "conversations").mkdir(parents=True)
+        (cli / "cache" / "last_conversations.json").write_text(json.dumps({cwd: cid}))
+        (cli / "conversations" / f"{cid}.pb").write_text("x")
+        assert self._status(monkeypatch, home, cwd, "antigravity", cid) == "resumable"
+        # cwd maps to a different id -> conservative miss
+        assert self._status(monkeypatch, home, cwd, "antigravity", "other") == "stale_missing_file"
 
 
 class TestRestartResume:

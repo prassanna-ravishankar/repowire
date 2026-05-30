@@ -1026,9 +1026,20 @@ async def test_runner_materializes_and_dispatches_due_calendar_child(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_recurring_job_uses_recorded_codex_resume_binding(tmp_path):
+async def test_recurring_job_uses_recorded_codex_resume_binding(tmp_path, monkeypatch):
     _cfg, registry, db, store, calendar, _session_bindings, delivery, spawn, runner = _env(tmp_path)
     worker_path = str(tmp_path / "daily-email-brief")
+    # Resume now pre-validates the session id on disk (jobs share the restart
+    # safety seam). Create a matching codex rollout so the recorded binding is
+    # genuinely resumable, under a mocked HOME so we don't touch real state.
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    _codex_rollout_dir = fake_home / ".codex" / "sessions" / "2026" / "05" / "25"
+    _codex_rollout_dir.mkdir(parents=True, exist_ok=True)
+    (_codex_rollout_dir / "rollout-2026-05-25T08-00-00-codex-runtime-old.jsonl").write_text(
+        '{"type":"session_meta","payload":{"id":"codex-runtime-old","cwd":'
+        f'"{worker_path}"}}}}\n'
+    )
     entry = calendar.create(
         title="daily brief",
         kind="brief",

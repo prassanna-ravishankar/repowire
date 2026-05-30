@@ -10,10 +10,11 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from repowire.agent_backends import AgentResumePlan, can_resume_backend
+from repowire.agent_backends import AgentResumePlan
 from repowire.config.models import AgentType, Config
 from repowire.daemon.peer_delivery import PeerDeliveryService
 from repowire.daemon.peer_registry import PeerRegistry
+from repowire.daemon.resume_safety import resolve_resume_safety
 from repowire.daemon.session_control import (
     ExecutorAcquisitionUnavailableError,
     SessionControlService,
@@ -542,19 +543,24 @@ class JobRunner:
         if not isinstance(runtime_session_id, str) or not runtime_session_id:
             return None
         capability = binding.get("resume_capability") or {}
-        if isinstance(capability, dict) and capability.get("supported") is False:
-            return None
-        if not can_resume_backend(backend, runtime_session_id=runtime_session_id):
-            return None
         repowire_session_id = binding.get("repowire_session_id")
-        return AgentResumePlan(
+        # Shared resume-safety seam (same as restart + session_control): refuse
+        # to attach a plan unless the id is actually pre-validated on disk, so a
+        # stale id makes the executor start fresh instead of failing hard.
+        decision = resolve_resume_safety(
             backend=backend,
+            path=path,
             runtime_session_id=runtime_session_id,
             repowire_session_id=(
                 repowire_session_id if isinstance(repowire_session_id, str) else None
             ),
-            capability=capability if isinstance(capability, dict) else {},
+            capability=capability if isinstance(capability, dict) else None,
         )
+        if not decision.resumable and decision.warning:
+            logger.info(
+                "Job %s: not resuming backend session (%s)", work.work_id, decision.warning
+            )
+        return decision.plan
 
     @staticmethod
     def _resume_plan_info(plan: AgentResumePlan | None) -> dict[str, Any] | None:

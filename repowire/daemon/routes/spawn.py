@@ -10,22 +10,18 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 
-from repowire.agent_backends import (
-    AgentResumePlan,
-    build_resume_command,
-    can_resume_backend,
-)
+from repowire.agent_backends import build_resume_command
 from repowire.config.models import AgentType, SpawnProfile, apply_spawn_profile
 from repowire.daemon.ask_tracker import QuiesceFailedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_config, get_peer_registry
 from repowire.daemon.peer_registry import PeerRegistry
+from repowire.daemon.resume_safety import resolve_resume_safety
 from repowire.daemon.spawn_service import SpawnService
 from repowire.hooks.utils import read_pane_runtime_metadata
 from repowire.hooks.ws_hook_supervisor import maybe_respawn
 from repowire.installers.post_spawn import post_spawn_warmup
 from repowire.protocol.peers import Peer, PeerRole
-from repowire.session.history import runtime_session_resumable
 from repowire.spawn import SpawnConfig, SpawnResult, kill_pane, spawn_peer
 from repowire.spawn_ownership import (
     OwnershipValidation,
@@ -559,36 +555,31 @@ def _resolve_restart_resume(
     an explicit warning when no resumable session is available.
     """
     store = getattr(state, "session_binding_store", None)
-    if store is None:
-        return _RestartResume(base_command, "fresh_runtime_context", False,
-                              "session binding store unavailable")
-    # Newest binding for this peer, filtered to the same backend + project path
-    # so stale cross-path/identity-reuse state isn't selected (codex review B).
-    backend_value = peer.backend.value
     chosen_id: str | None = None
-    for binding in store.list_by_peer(peer.peer_id):  # ORDER BY last_seen_at DESC
-        if binding.runtime_session_id is None:
-            continue
-        if binding.backend and binding.backend != backend_value:
-            continue
-        if binding.project_path and _norm_path(binding.project_path) != _norm_path(resolved_path):
-            continue
-        chosen_id = binding.runtime_session_id
-        break
+    if store is not None:
+        # Newest binding for this peer, filtered to same backend + project path so
+        # stale cross-path/identity-reuse state isn't selected (codex review B).
+        backend_value = peer.backend.value
+        for binding in store.list_by_peer(peer.peer_id):  # ORDER BY last_seen_at DESC
+            if binding.runtime_session_id is None:
+                continue
+            if binding.backend and binding.backend != backend_value:
+                continue
+            if binding.project_path and _norm_path(binding.project_path) != _norm_path(
+                resolved_path
+            ):
+                continue
+            chosen_id = binding.runtime_session_id
+            break
 
-    if not chosen_id:
-        return _RestartResume(base_command, "fresh_runtime_context", False,
-                              "no captured backend session id for this peer")
-    if not can_resume_backend(peer.backend, runtime_session_id=chosen_id):
-        return _RestartResume(base_command, "fresh_runtime_context", False,
-                              f"backend {backend_value} does not support resume")
-    if not runtime_session_resumable(resolved_path, backend_value, chosen_id):
-        return _RestartResume(base_command, "fresh_runtime_context", False,
-                              "captured session id has no local session file (stale/expired); "
-                              "resuming would fail, so restarting fresh")
-    resume_cmd = build_resume_command(
-        base_command, AgentResumePlan(backend=peer.backend, runtime_session_id=chosen_id)
+    decision = resolve_resume_safety(
+        backend=peer.backend,
+        path=resolved_path,
+        runtime_session_id=chosen_id,
     )
+    if not decision.resumable or decision.plan is None:
+        return _RestartResume(base_command, "fresh_runtime_context", False, decision.warning)
+    resume_cmd = build_resume_command(base_command, decision.plan)
     return _RestartResume(resume_cmd, "resumed", True, None)
 
 

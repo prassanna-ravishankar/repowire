@@ -10,9 +10,10 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from repowire.agent_backends import AgentResumePlan, can_resume_backend
+from repowire.agent_backends import AgentResumePlan
 from repowire.config.models import AgentType
 from repowire.daemon.peer_registry import PeerRegistry
+from repowire.daemon.resume_safety import resolve_resume_safety
 from repowire.daemon.spawn_service import SpawnService
 from repowire.daemon.state.operations import SQLiteOperationStore
 from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
@@ -610,19 +611,19 @@ class SessionControlService:
         if not isinstance(runtime_session_id, str) or not runtime_session_id:
             return None
         capability = binding.get("resume_capability") or {}
-        if isinstance(capability, dict) and capability.get("supported") is False:
-            return None
-        if not can_resume_backend(backend, runtime_session_id=runtime_session_id):
-            return None
         repowire_session_id = binding.get("repowire_session_id")
-        return AgentResumePlan(
+        # Shared resume-safety seam (same as restart + job_runner): only attach a
+        # plan when the id is pre-validated on disk, else fall back to fresh.
+        decision = resolve_resume_safety(
             backend=backend,
+            path=path,
             runtime_session_id=runtime_session_id,
             repowire_session_id=(
                 repowire_session_id if isinstance(repowire_session_id, str) else None
             ),
-            capability=capability if isinstance(capability, dict) else {},
+            capability=capability if isinstance(capability, dict) else None,
         )
+        return decision.plan
 
     @staticmethod
     def resume_plan_info(plan: AgentResumePlan | None) -> dict[str, Any] | None:
