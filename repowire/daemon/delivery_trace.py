@@ -153,6 +153,44 @@ class DeliveryTraceStore:
             )
             return cur.rowcount or 0
 
+    def record_outcome(
+        self,
+        *,
+        trace_id: str,
+        kind: TraceKind,
+        peer_id: str | None,
+        transport: str,
+        hook_delivery: dict | None,
+        delivery_id: str | None = None,
+        from_peer_id: str | None = None,
+    ) -> None:
+        """Record the terminal delivery stage(s) from a transport outcome.
+
+        Data-driven so callers don't hand-assert injection. Truth table:
+          - ws + hook_delivery.status == injected -> hook_received, pane_injected
+          - ws + hook_delivery.status in {failed, rejected} -> hook_received, injection_failed
+          - ws + no hook_delivery (legacy hook, no ack) -> websocket_sent (unverified)
+          - acp (no ws hook) -> websocket_sent (delivered, unverified at pane)
+        """
+        def _rec(stage: TraceStage, status: TraceStatus = "ok", detail: dict | None = None) -> None:
+            self.record(
+                trace_id=trace_id, kind=kind, stage=stage, status=status,
+                delivery_id=delivery_id, peer_id=peer_id, from_peer_id=from_peer_id,
+                detail=detail,
+            )
+
+        hook_status = hook_delivery.get("status") if isinstance(hook_delivery, dict) else None
+        if hook_status == "injected":
+            _rec("hook_received")
+            _rec("pane_injected")
+        elif hook_status in ("failed", "rejected"):
+            _rec("hook_received")
+            _rec("injection_failed", status="fail", detail={"hook_status": hook_status})
+        else:
+            # No terminal hook receipt: ACP, or a legacy hook that never acks.
+            # Record handoff only; do NOT claim pane injection.
+            _rec("websocket_sent", detail={"transport": transport, "verified": False})
+
     @staticmethod
     def _row_to_trace(row) -> TraceRow:
         try:

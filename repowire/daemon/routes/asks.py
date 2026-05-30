@@ -438,7 +438,7 @@ async def open_ask(
                 trace_id=cid, kind="ask", stage="routed",
                 peer_id=peer.peer_id, from_peer_id=from_peer_id,
             )
-        await peer_delivery.deliver_ask(
+        ask_outcome = await peer_delivery.deliver_ask(
             from_peer=from_peer_id,
             to_peer=peer.peer_id,
             text=request.text,
@@ -502,17 +502,17 @@ async def open_ask(
             detail=f"Peer {request.to_peer} has no live connection: {e}",
         )
 
-    # Send succeeded: the transport completed the wire send and (for ws peers)
-    # the ws-hook delivery_ack resolved inside deliver_ask.
+    # Send succeeded: record the TRUTHFUL terminal stage from the transport
+    # outcome (pane_injected only on a real ws-hook injected receipt; otherwise
+    # websocket_sent/unverified for ACP or legacy no-ack hooks).
     if trace is not None:
-        trace.record(
-            trace_id=cid, kind="ask", stage="websocket_sent", peer_id=peer.peer_id,
-        )
-        trace.record(
-            trace_id=cid, kind="ask", stage="hook_received", peer_id=peer.peer_id,
-        )
-        trace.record(
-            trace_id=cid, kind="ask", stage="pane_injected", peer_id=peer.peer_id,
+        trace.record_outcome(
+            trace_id=cid,
+            kind="ask",
+            peer_id=peer.peer_id,
+            from_peer_id=from_peer_id,
+            transport=ask_outcome.transport,
+            hook_delivery=ask_outcome.hook_delivery,
         )
 
     # Send succeeded: close any prior thread referenced by reply_to.

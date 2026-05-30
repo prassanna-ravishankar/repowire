@@ -114,6 +114,7 @@ class MessageRouter:
         text: str,
         intended_recipient_name: str | None = None,
         attachments: list[AttachmentRef] | list[dict[str, Any]] | None = None,
+        delivery_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Send a plain FYI notification (fire-and-forget, no lifecycle).
 
@@ -127,7 +128,7 @@ class MessageRouter:
         """
         message: dict[str, Any] = {
             "type": "notify",
-            "delivery_id": f"notif-delivery-{uuid4().hex[:8]}",
+            "delivery_id": delivery_id or f"notif-delivery-{uuid4().hex[:8]}",
             "from_peer": from_peer,
             "to_peer": to_peer_name,
             "text": text,
@@ -168,7 +169,7 @@ class MessageRouter:
         reply_to: str | None = None,
         intended_recipient_name: str | None = None,
         attachments: list[AttachmentRef] | list[dict[str, Any]] | None = None,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         """Send a first-class ask wire message.
 
         Wire shape: {type: ask, correlation_id, from_peer, text, reply_to?}.
@@ -216,6 +217,7 @@ class MessageRouter:
             detail = delivery_ack.get("detail") or delivery_ack.get("status")
             raise TransportError(f"Ask injection {delivery_ack.get('status')}: {detail}")
         logger.info(f"Ask sent: {from_peer} -> {to_peer_name} ({correlation_id[:8]})")
+        return delivery_ack if isinstance(delivery_ack, dict) else None
 
     async def broadcast(
         self,

@@ -60,19 +60,36 @@ class TestTraceRoute:
 
 
 class TestAskStagesLand:
-    async def test_successful_ask_records_stages(self, env):
+    async def test_legacy_no_ack_does_not_record_pane_injected(self, env):
+        # send_ask is mocked (no real delivery_ack), modelling a legacy hook
+        # that never acks. The trace must NOT claim pane_injected — only the
+        # unverified websocket_sent handoff.
         client, harness = env
         await _register(client, "alice")
         bob = await _register(client, "bob")
         r = await client.post("/ask", json={"to_peer": bob, "from_peer": "alice", "text": "hi"})
         assert r.status_code == 200, r.text
         cid = r.json()["correlation_id"]
-        # The instrumented open_ask should have recorded the success-path stages.
         rows = harness.delivery_trace_store.stages_for(cid)
-        stages = [r.stage for r in rows]
+        stages = [row.stage for row in rows]
         assert "created" in stages
         assert "resolved_peer" in stages
         assert "routed" in stages
+        assert "websocket_sent" in stages
+        assert "pane_injected" not in stages  # the whole point of the fix
+        assert "hook_received" not in stages
+
+    async def test_injected_ack_records_pane_injected(self, env):
+        # send_ask returns an injected delivery_ack -> truthful pane_injected.
+        client, harness = env
+        await _register(client, "alice")
+        bob = await _register(client, "bob")
+        harness.message_router.send_ask.return_value = {"status": "injected"}
+        r = await client.post("/ask", json={"to_peer": bob, "from_peer": "alice", "text": "hi"})
+        assert r.status_code == 200, r.text
+        cid = r.json()["correlation_id"]
+        stages = [row.stage for row in harness.delivery_trace_store.stages_for(cid)]
+        assert "hook_received" in stages
         assert "pane_injected" in stages
 
     async def test_ack_records_closed(self, env):

@@ -103,6 +103,10 @@ class NotifyResponse(BaseModel):
             "recipient hook is older or did not ack before the daemon returned."
         ),
     )
+    delivery_id: str | None = Field(
+        None,
+        description="Wire delivery id; also the trace id for `repowire trace <id>`.",
+    )
 
 
 class BroadcastRequest(BaseModel):
@@ -245,27 +249,31 @@ async def notify_peer(
             bypass_circle=request.bypass_circle,
             circle=request.circle,
             attachments=request.attachments,
+            delivery_id=delivery_id,
         )
         if trace is not None:
-            _stage = "pending" if delivery.queued else "pane_injected"
             trace.record(
                 trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
                 stage="resolved_peer", peer_id=delivery.to_peer_id,
                 from_peer_id=delivery.from_peer_id,
             )
-            if not delivery.queued:
+            if delivery.queued:
                 trace.record(
                     trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
-                    stage="websocket_sent", peer_id=delivery.to_peer_id,
+                    stage="pending", peer_id=delivery.to_peer_id,
+                    detail={"reason": "recipient_busy"},
                 )
-                trace.record(
-                    trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
-                    stage="hook_received", peer_id=delivery.to_peer_id,
+            else:
+                # Truthful terminal stage from the hook receipt (not assumed).
+                trace.record_outcome(
+                    trace_id=delivery_id,
+                    kind="notify",
+                    peer_id=delivery.to_peer_id,
+                    from_peer_id=delivery.from_peer_id,
+                    transport="ws" if delivery.hook_delivery is not None else "acp",
+                    hook_delivery=delivery.hook_delivery,
+                    delivery_id=delivery_id,
                 )
-            trace.record(
-                trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
-                stage=_stage, peer_id=delivery.to_peer_id,
-            )
         return NotifyResponse(
             status=delivery.status,
             delivery_state=delivery.delivery_state,
@@ -280,6 +288,7 @@ async def notify_peer(
             from_repowire_session_id=delivery.from_repowire_session_id,
             to_repowire_session_id=delivery.to_repowire_session_id,
             hook_delivery=delivery.hook_delivery,
+            delivery_id=delivery.delivery_id or delivery_id,
         )
     except ValueError as e:
         msg = str(e)

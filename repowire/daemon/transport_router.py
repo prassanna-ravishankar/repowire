@@ -67,9 +67,24 @@ class NotifyTransportResult:
 
     status: Literal["sent", "queued"]
     hook_delivery: dict[str, Any] | None = None
+    delivery_id: str | None = None
     repowire_session_id: str | None = None
     from_repowire_session_id: str | None = None
     to_repowire_session_id: str | None = None
+
+
+@dataclass(frozen=True)
+class AskTransportResult:
+    """Ask transport handoff plus optional hook-level delivery receipt.
+
+    ``transport`` records which path delivered ("ws" | "acp"). ``hook_delivery``
+    carries the ws-hook's terminal injection receipt when one was returned;
+    None means no receipt (ACP, or a legacy hook that doesn't ack). Callers use
+    this to record truthful delivery-trace stages instead of assuming injection.
+    """
+
+    transport: Literal["ws", "acp"]
+    hook_delivery: dict[str, Any] | None = None
 
 
 class AskCompletion(Protocol):
@@ -88,7 +103,7 @@ class WebSocketPeerTransport:
         self._registry = registry
         self._router = router
 
-    async def send_ask(self, envelope: AskEnvelope) -> None:
+    async def send_ask(self, envelope: AskEnvelope) -> AskTransportResult:
         self._registry.add_event(
             "ask",
             {
@@ -106,7 +121,7 @@ class WebSocketPeerTransport:
                 "to_repowire_session_id": envelope.to_repowire_session_id,
             },
         )
-        await self._router.send_ask(
+        hook_delivery = await self._router.send_ask(
             from_peer=envelope.from_peer_name,
             to_session_id=envelope.target.peer_id,
             to_peer_name=envelope.target.display_name,
@@ -118,10 +133,15 @@ class WebSocketPeerTransport:
             ),
             attachments=list(envelope.attachments),
         )
+        return AskTransportResult(
+            transport="ws",
+            hook_delivery=hook_delivery if isinstance(hook_delivery, dict) else None,
+        )
 
     async def send_notify(
         self,
         envelope: NotifyEnvelope,
+        delivery_id: str | None = None,
     ) -> NotifyTransportResult:
         delivery_status: Literal["sent", "queued"] = (
             "queued" if envelope.target.status == PeerStatus.BUSY else "sent"
@@ -150,12 +170,14 @@ class WebSocketPeerTransport:
                 envelope.intended_recipient_name or envelope.target.display_name
             ),
             attachments=list(envelope.attachments),
+            delivery_id=delivery_id,
         )
         if not isinstance(hook_delivery, dict):
             hook_delivery = None
         return NotifyTransportResult(
             status=delivery_status,
             hook_delivery=hook_delivery,
+            delivery_id=delivery_id,
             repowire_session_id=envelope.to_repowire_session_id,
             from_repowire_session_id=envelope.from_repowire_session_id,
             to_repowire_session_id=envelope.to_repowire_session_id,
@@ -180,7 +202,7 @@ class AcpPeerTransport:
         envelope: AskEnvelope,
         on_complete: AskCompletion,
         decision: AcpRouteDecision,
-    ) -> None:
+    ) -> AskTransportResult:
         if decision is None or decision.spec is None:
             raise RuntimeError("ACP transport selected without an ACP route")
         await deliver_ask_via_acp(
@@ -190,11 +212,13 @@ class AcpPeerTransport:
             text=_text_with_attachment_fallback(envelope.text, envelope.attachments),
             on_complete=on_complete,
         )
+        return AskTransportResult(transport="acp", hook_delivery=None)
 
     async def send_notify(
         self,
         envelope: NotifyEnvelope,
         decision: AcpRouteDecision,
+        delivery_id: str | None = None,
     ) -> NotifyTransportResult:
         if decision is None or decision.spec is None:
             raise RuntimeError("ACP transport selected without an ACP route")
@@ -218,6 +242,7 @@ class AcpPeerTransport:
         )
         return NotifyTransportResult(
             status="sent",
+            delivery_id=delivery_id,
             repowire_session_id=envelope.to_repowire_session_id,
             from_repowire_session_id=envelope.from_repowire_session_id,
             to_repowire_session_id=envelope.to_repowire_session_id,
@@ -252,7 +277,7 @@ class PeerTransportRouter:
         envelope: AskEnvelope,
         *,
         on_acp_complete: AskCompletion,
-    ) -> None:
+    ) -> AskTransportResult:
         decision = self._acp_decision(envelope.target)
         if decision is not None:
             assert self._acp is not None
@@ -275,11 +300,12 @@ class PeerTransportRouter:
                     "to_repowire_session_id": envelope.to_repowire_session_id,
                 },
             )
-            await self._acp.send_ask(envelope, on_acp_complete, decision)
-            return
-        await self._ws.send_ask(envelope)
+            return await self._acp.send_ask(envelope, on_acp_complete, decision)
+        return await self._ws.send_ask(envelope)
 
-    async def send_notify(self, envelope: NotifyEnvelope) -> NotifyTransportResult:
+    async def send_notify(
+        self, envelope: NotifyEnvelope, delivery_id: str | None = None,
+    ) -> NotifyTransportResult:
         decision = self._acp_decision(envelope.target)
         if decision is not None:
             assert self._acp is not None
@@ -300,8 +326,8 @@ class PeerTransportRouter:
                     "to_repowire_session_id": envelope.to_repowire_session_id,
                 },
             )
-            return await self._acp.send_notify(envelope, decision)
-        return await self._ws.send_notify(envelope)
+            return await self._acp.send_notify(envelope, decision, delivery_id)
+        return await self._ws.send_notify(envelope, delivery_id)
 
 
 def transport_router_from_state(
