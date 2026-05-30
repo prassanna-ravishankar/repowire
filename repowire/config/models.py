@@ -8,6 +8,12 @@ from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    YamlConfigSettingsSource,
+)
 
 from repowire.agent_backends import DEFAULT_SPAWN_COMMANDS as _DEFAULT_SPAWN_COMMANDS
 from repowire.agent_types import AgentType
@@ -398,23 +404,76 @@ class Config(BaseModel):
         return self.peers.get(name)
 
 
+class _RelayEnvCompatSource(PydanticBaseSettingsSource):
+    """Relay env compatibility source: flat aliases + the ``enabled`` side-effect.
+
+    Before pydantic-settings, ``load_config`` read ``REPOWIRE_RELAY_URL`` and
+    ``REPOWIRE_API_KEY`` directly (only when no config file existed) and set
+    ``relay.enabled=True`` when an api_key was present. We keep those flat names
+    working (alongside the nested ``REPOWIRE_RELAY__URL`` form) as a dedicated
+    source rather than a model_validator, so plain ``Config(**data)`` stays
+    env-insensitive.
+
+    The ``enabled`` side-effect fires for *either* spelling of the api key: the
+    flat ``REPOWIRE_API_KEY`` or the canonical nested ``REPOWIRE_RELAY__API_KEY``.
+    The nested key's *value* is still supplied by ``env_settings``; this source
+    only contributes the ``enabled`` flag for it, so adopting the canonical env
+    spelling does not leave the relay configured-but-disabled.
+    """
+
+    def get_field_value(self, field, field_name):  # noqa: D102 - source protocol
+        return None, field_name, False
+
+    def __call__(self) -> dict[str, object]:
+        # This source ranks above env_settings, so a flat REPOWIRE_RELAY_URL wins
+        # over the nested REPOWIRE_RELAY__URL if both are set (legacy compat).
+        relay: dict[str, object] = {}
+        if url := os.environ.get("REPOWIRE_RELAY_URL"):
+            relay["url"] = url
+        if api_key := os.environ.get("REPOWIRE_API_KEY"):
+            relay["api_key"] = api_key
+        if os.environ.get("REPOWIRE_API_KEY") or os.environ.get("REPOWIRE_RELAY__API_KEY"):
+            relay["enabled"] = True
+        return {"relay": relay} if relay else {}
+
+
+class _LoadedConfig(Config, BaseSettings):
+    """Settings-resolving view of Config, used only by ``load_config()``.
+
+    ``Config`` itself stays a pure value object (deterministic, env/yaml-free) so
+    every ``Config(...)`` call site and test fixture is unaffected. This subclass
+    layers the resolution sources; ``load_config`` returns it typed as ``Config``.
+    Precedence (highest first): init kwargs > flat relay aliases > env
+    (``REPOWIRE_*``, nested via ``__``) > yaml file > model defaults.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="REPOWIRE_",
+        env_nested_delimiter="__",
+        extra="ignore",
+    )
+
+    @classmethod
+    def settings_customise_sources(
+        cls, settings_cls, init_settings, env_settings, dotenv_settings,
+        file_secret_settings,
+    ):
+        yaml_source = YamlConfigSettingsSource(settings_cls, yaml_file=Config.get_config_path())
+        return (
+            init_settings,
+            _RelayEnvCompatSource(settings_cls),
+            env_settings,
+            yaml_source,
+            file_secret_settings,
+        )
+
+
 def load_config() -> Config:
-    """Load configuration from file or create default."""
-    config_path = Config.get_config_path()
+    """Load configuration, layering env vars over the yaml file over defaults.
 
-    if config_path.exists():
-        with open(config_path) as f:
-            data = yaml.safe_load(f) or {}
-        return Config(**data)
-
-    # Create default config
-    config = Config()
-
-    # Check for environment overrides
-    if relay_url := os.environ.get("REPOWIRE_RELAY_URL"):
-        config.relay.url = relay_url
-    if api_key := os.environ.get("REPOWIRE_API_KEY"):
-        config.relay.api_key = api_key
-        config.relay.enabled = True
-
-    return config
+    Resolution (highest precedence first): env (flat ``REPOWIRE_RELAY_URL`` /
+    ``REPOWIRE_API_KEY`` aliases and nested ``REPOWIRE_*__*``) > the
+    ``~/.repowire/config.yaml`` file > model defaults. Note: env now *overrides*
+    the yaml file (previously env was applied only when no file existed).
+    """
+    return Config.model_validate(_LoadedConfig().model_dump())

@@ -1,3 +1,4 @@
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -81,6 +82,81 @@ class TestConfig:
                     assert config.relay.url == "wss://custom.relay.io"
                     assert config.relay.api_key == "rw_test123"
                     assert config.relay.enabled is True
+
+    def test_bare_config_is_env_and_yaml_insensitive(self):
+        # Critical invariant (codex review): Config() is a pure value object —
+        # constructing it must NOT read ambient env or the on-disk yaml file,
+        # so the 24 call sites + fixtures that build Configs in-memory are safe.
+        with patch.dict(
+            "os.environ",
+            {"REPOWIRE_RELAY_URL": "wss://leak.io", "REPOWIRE_DAEMON__PORT": "9999"},
+        ):
+            c = Config()
+            assert c.relay.url == "wss://repowire.io"  # default, not the env value
+            assert c.daemon.port == 8377
+
+    def test_load_config_nested_env_delimiter(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(Config, "get_config_path", return_value=Path(tmpdir) / "config.yaml"):
+                with patch.dict("os.environ", {"REPOWIRE_DAEMON__PORT": "9100"}):
+                    assert load_config().daemon.port == 9100
+
+    def test_nested_relay_api_key_enables_relay(self):
+        # codex review: the relay.enabled side-effect must fire for the canonical
+        # nested REPOWIRE_RELAY__API_KEY spelling, not just the flat alias —
+        # otherwise adopting nested env leaves the relay configured-but-disabled.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(Config, "get_config_path", return_value=Path(tmpdir) / "config.yaml"):
+                with patch.dict(
+                    "os.environ", {"REPOWIRE_RELAY__API_KEY": "nested-key"}, clear=True
+                ):
+                    config = load_config()
+                    assert config.relay.api_key == "nested-key"
+                    assert config.relay.enabled is True
+
+    def test_load_config_env_overrides_yaml(self):
+        # Intentional behavior change: env now overrides the yaml file (previously
+        # env was applied only when no config file existed).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfgp = Path(tmpdir) / "config.yaml"
+            with patch.object(Config, "get_config_dir", return_value=Path(tmpdir)), \
+                 patch.object(Config, "get_config_path", return_value=cfgp):
+                Config(daemon=DaemonConfig(port=7000), relay=RelayConfig(url="wss://yaml.io")).save()
+                # No env -> yaml wins
+                with patch.dict("os.environ", {}, clear=False):
+                    for k in [k for k in os.environ if k.startswith("REPOWIRE_")]:
+                        os.environ.pop(k)
+                    assert load_config().daemon.port == 7000
+                # Env present -> env wins over yaml
+                with patch.dict(
+                    "os.environ",
+                    {"REPOWIRE_DAEMON__PORT": "8500", "REPOWIRE_RELAY_URL": "wss://env.io"},
+                ):
+                    c = load_config()
+                    assert c.daemon.port == 8500
+                    assert c.relay.url == "wss://env.io"
+
+    def test_spawn_commands_profiles_roundtrip(self):
+        # codex review C: enum-keyed spawn commands/profiles must survive
+        # save() -> load() through the settings loader unchanged.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfgp = Path(tmpdir) / "config.yaml"
+            with patch.object(Config, "get_config_dir", return_value=Path(tmpdir)), \
+                 patch.object(Config, "get_config_path", return_value=cfgp):
+                cfg = Config(
+                    daemon=DaemonConfig(
+                        spawn=SpawnSettings(
+                            commands={AgentType.CODEX: "codex --x"},
+                            allowed_paths=["~/git"],
+                        )
+                    )
+                )
+                cfg.save()
+                for k in [k for k in os.environ if k.startswith("REPOWIRE_")]:
+                    os.environ.pop(k)
+                loaded = load_config()
+                assert loaded.daemon.spawn.commands.get(AgentType.CODEX) == "codex --x"
+                assert loaded.daemon.spawn.allowed_paths == ["~/git"]
 
     def test_setup_http_mcp_helper_generates_local_token(self):
         from repowire.cli import _enable_http_mcp
