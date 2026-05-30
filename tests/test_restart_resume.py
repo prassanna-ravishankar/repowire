@@ -259,6 +259,32 @@ class TestRestartResume:
         assert body["resume_warning"] is None
         assert f"--resume {sid}" in captured["command"]
 
+    async def test_empty_path_binding_not_selected(self, env, tmp_path, monkeypatch):
+        # gemini-review regression: a binding with an EMPTY project_path must not
+        # bypass the path filter and get picked for a peer that has a real path
+        # (would resume an unrelated/wrong session). It should fall back to fresh.
+        home = tmp_path / "home_ep"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        path = str(tmp_path / "projEP")
+        Path(path).mkdir(parents=True, exist_ok=True)
+        info = await _register(env.client, path=path, pane_id="%101")
+        sid = "33333333-4444-5555-6666-777777777777"
+        # session file exists on disk for the id...
+        _write_claude_session(home, str(Path(path).resolve()), sid)
+        # ...but the binding has NO project_path (empty) -> must be skipped.
+        env.binding_store.upsert_observation(
+            peer_id=info["peer_id"], backend="claude-code",
+            project_path="", runtime_session_id=sid,
+        )
+        spawn_routes._SPAWNED_PANE_IDS.add("%101")
+        with patch.object(spawn_routes, "kill_pane", return_value=True), \
+            patch.object(spawn_routes, "spawn_peer", return_value=_spawn_result()), \
+            patch.object(spawn_routes, "post_spawn_warmup"):
+            r = await env.client.post(f"/peers/{info['display_name']}/restart", json={})
+        assert r.status_code == 200, r.text
+        assert r.json()["resume_mode"] == "fresh_runtime_context"
+
     async def test_fresh_when_no_session_id(self, env, tmp_path):
         path = str(tmp_path / "proj2")
         Path(path).mkdir(parents=True, exist_ok=True)

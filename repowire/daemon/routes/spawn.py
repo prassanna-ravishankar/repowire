@@ -567,9 +567,11 @@ def _resolve_restart_resume(
                 continue
             if binding.backend and binding.backend != backend_value:
                 continue
-            if binding.project_path and _norm_path(binding.project_path) != _norm_path(
-                resolved_path
-            ):
+            # Compare normalized paths directly (no truthiness guard): _norm_path
+            # maps None/"" -> "", so a binding with an empty project_path won't
+            # bypass the path filter and get picked for a peer that has a real
+            # path. Matches the job_runner/session_control path-match pattern.
+            if _norm_path(binding.project_path) != _norm_path(resolved_path):
                 continue
             chosen_id = binding.runtime_session_id
             chosen_binding = binding
