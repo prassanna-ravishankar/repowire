@@ -1,316 +1,98 @@
 # CLAUDE.md
 
-## Build & Test
+Repowire is a mesh network for AI coding agents: Claude Code, Codex, Gemini, OpenCode, antigravity, and pi sessions get a mesh address and talk to each other (ask/ack, notify, broadcast), steerable from a browser, phone (Telegram/Slack), or other agents.
+
+This file is orientation, not a rulebook. It captures how the project thinks and the things that bite you in a long session. For the detailed per-feature reference, the `docs/` tree is the source of truth (and is mirrored into the graphify knowledge graph in `graphify-out/`).
+
+## Philosophies
+
+These are the load-bearing ideas. When a change feels off, it's usually because it fights one of these.
+
+- **Lazy repair, never poll.** Nothing runs on a timer. Liveness reconciliation, persistence flushes, and ghost eviction are deferred until a real request needs them, then piggy-backed on it (`lazy_repair()` runs at most ~1x/30s, triggered by endpoints; disk writes are debounced via dirty flags). If you're reaching for a polling loop or a periodic timer, look for the request you can hang the work off instead.
+- **Fail loud, don't paper over.** Delivery that can't happen should surface, not silently degrade. Recent work made `/ask` fail loudly when tmux injection fails, added delivery-trace truthfulness (only claim `pane_injected` when the hook actually acked), and emits `peer_contradiction` events when a peer is in a self-inconsistent state. Prefer a visible warning + safe fallback over a quiet wrong result.
+- **The daemon is the only hub; transports are client-side.** Every peer speaks the same WebSocket protocol to `daemon/app.py`. How a peer connects (hooks, channel/ACP, relay, bot) is a client concern. Routing, identity, and lifecycle live in the daemon and shouldn't learn about specific transports.
+- **Session-native is the direction, not the present.** Sessions are becoming the durable unit of work; peers stay live runtime executors. Ask/notify already route through a transport router; resume is captured per backend. Frame model-switching, plan approval, universal transport-neutral control, and production ACP as roadmap — don't claim them done.
+- **Identity is `peer_id`, addressing is `display_name`.** Display names collide (spawned same-path peers); the daemon canonicalizes routing-sensitive state to `peer_id`. When something misroutes or 500s intermittently, suspect a display-name lookup that should have been a peer_id.
+- **Leave it better-factored; prefer the simplest description.** Read before writing, extract before duplicating. Among comparable designs, the one with the shortest honest description usually wins (Schmidhuber). The recent resume work consolidated three near-duplicate `_resume_plan_for` implementations into one `resume_safety` seam — that's the move.
+- **Pre-validate destructive actions.** Resume-capable backends exit hard on a bad session id, so restart pre-validates the session file exists *before* killing the pane. Kill/rehook are gated on spawn-ownership. The pattern: prove the irreversible step is safe before taking it.
+
+## Long-running session notes
+
+Things that have cost time before. Not exhaustive, and some may drift — verify against the live system rather than trusting this blindly.
+
+- **Hooks run from the *installed* package.** After changing anything under `hooks/` (or daemon code you want live), `uv tool install . --force-reinstall`. Editing the source tree alone does nothing for a running agent.
+- **Restarting the daemon bounces the whole mesh.** `repowire service restart` re-registers every peer (including the session you're in and any spawned reviewers). Expected, but it interrupts in-flight work — sequence it deliberately. For a live test, spawn a *throwaway* peer rather than restarting yourself.
+- **Verify UI/behavior changes live, not just by green gates.** A passing build or a 200 response is not proof. A landing-page fix shipped "green" twice while still rendering blank in the browser; a `resume_mode=resumed` field meant nothing until a resumed peer actually recalled prior context. Use agent-browser for web, a real round-trip for delivery/resume.
+- **`gh pr edit` is broken on the installed `gh` (2.54.0)** — it queries deprecated Projects-classic GraphQL and 400s on any edit. Set the PR body/labels via REST instead: `gh api -X PATCH repos/OWNER/REPO/pulls/N -F body=@file`. `gh pr comment` works fine. (gh-pr-flow's "use gh api directly" is the general lesson.)
+- **`.beads/issues.jsonl` churns on every `bd` command** (auto-export). It's local noise — `git checkout .beads/issues.jsonl` before committing product changes; the pre-PR hygiene check fails on ledger churn by design.
+- **Two `test_spawn.py::TestMcpRegistration` tests fail on clean `main`** (backend `codex` vs `claude-code` at the assertion) — pre-existing and unrelated to most work. Verify by stashing if a suite shows them; don't chase them as your regression.
+- **Codex registers late** (after its first interaction, not at startup); its hook payload still carries the runtime `session_id` like Claude's. MCP lazy registration covers the gap.
+- **graphify finding (refresh periodically):** `Config` is the densest node — it bridges nearly every community, and much of its degree is inferred (model-guessed) edges. Treat it as the highest-blast-radius type; keep it lean and prefer depending on a narrow config slice over the whole object.
+
+## Build, test, release
 
 ```bash
-uv tool install . --force-reinstall     # install globally (hooks run from installed package!)
+uv tool install . --force-reinstall     # install globally (hooks run from installed package)
 uv sync --extra dev                     # dev deps (pytest, ruff, ty, httpx-ws)
-pytest                                  # 222 tests
+pytest                                  # full suite
 ruff check repowire/                    # lint
-uv run ty check repowire/              # type check
+uv run ty check repowire/               # type check
 ```
 
-CI runs: ruff check, ty check, pytest (`.github/workflows/ci.yml`).
+CI runs ruff + ty + pytest (`.github/workflows/ci.yml`). Channel server deps: `cd repowire/channel && bun install`.
 
-Channel server deps: `cd repowire/channel && bun install`
-
-## Releasing
-
-Update `version` in `pyproject.toml`, commit, tag, push:
+**Release:** bump `version` in `pyproject.toml` (and `uv.lock`), commit, tag, push — CI publishes to PyPI from the tag, and `relay.yml` redeploys the relay/web on any `web/**` change.
 ```bash
 git tag v0.X.Y && git push origin main --tags
 ```
-CI triggers PyPI publish from tags.
+Versioning: patch (0.x.Y) for fixes/cleanup/small additions, minor (0.X.0) for significant features or breaking changes. After 0.9.x → 0.10.0, 0.11.0… **never auto-bump to 1.0.0** — that's Prass's call. Merge PRs with `gh pr merge <N> --squash --delete-branch`, then checkout main, pull, release.
 
-**Versioning rules:**
-- Patch (0.x.Y): bug fixes, cleanup, small additions
-- Minor (0.X.0): significant new features or breaking changes
-- After 0.9.x → 0.10.0, 0.11.0, etc. **Never auto-increment to 1.0.0**
-- 1.0.0 is an intentional decision by Prass, not an automatic bump
-
-**Merging PRs:** squash-merge (`gh pr merge <N> --squash --delete-branch`), matching the existing PR history. Then checkout main, pull, and cut the release.
+**Testing idioms:** route tests use `httpx.AsyncClient` + `ASGITransport` with manually-initialized deps; WebSocket tests use `httpx-ws` + `ASGIWebSocketTransport`; mock `subprocess.Popen` in session-handler tests so a ws-hook doesn't leak to the live daemon. There's a conftest `make_daemon_app` harness for daemon route tests.
 
 ## Architecture
 
 ```
                     ┌─────────────────────────────┐
                     │   HTTP Daemon (daemon/app.py)│
-                    │   FastAPI, :8377              │
-                    │                              │
-                    │   PeerRegistry               │
-                    │   MessageRouter              │
-                    │   QueryTracker               │
-                    │   WebSocketTransport          │
+                    │   FastAPI, :8377             │
+                    │   PeerRegistry · MessageRouter│
+                    │   AskTracker · WebSocketTransport│
                     └──────────┬───────────────────┘
                                │ WebSocket /ws
             ┌──────────────────┼──────────────────┐
-            │                  │                  │
-   Hooks transport      Channel transport     Other peers
-   (default)            (experimental)       (OpenCode, Telegram, Slack)
-            │                  │                  │
-   hooks/ws-hook.py    channel/server.ts    telegram/bot.py
-   (tmux injection)    (MCP stdio)          slack/bot.py, opencode
+   Hooks transport      Channel/ACP transport   Other peers
+   (default)            (experimental)          (relay, Telegram, Slack, OpenCode)
+   hooks/ws-hook.py     channel/server.ts
+   (tmux injection)     (MCP stdio)
 ```
 
-The daemon is the single routing hub. It doesn't care how a peer connects — all peers speak the same WebSocket protocol. The transport layer is client-side only.
-
-### Key modules
-
-- `channel/server.ts` — **experimental** Claude Code transport: MCP channel with reply tool, permission relay
-- `daemon/peer_registry.py` — peer state, circle access, events, lazy_repair, ghost eviction
-- `daemon/message_router.py` — sends `type=ask` / `notify` / `broadcast` over WebSocket; legacy `send_query` for /query shim
-- `daemon/ask_tracker.py` — slim ask state store: register, close, get, pending_for_peer. Open asks reappear in every Stop hook poll until acked.
-- `daemon/query_tracker.py` — legacy /query correlation ID tracking, asyncio Futures (async-locked)
-- `daemon/routes/asks.py` — `/ask`, `/ack`, `/asks/pending`. `/asks/{cid}/picked_up` + `/asks/{cid}/mark_reminded` are deprecated no-op 200 endpoints kept for one release for transport compat.
-- `daemon/routes/schedules.py`, `daemon/scheduler.py`, `daemon/schedule_store.py`, `daemon/schedule_cron.py` — one-shot and recurring scheduled mesh messages.
-- `daemon/routes/` — other HTTP endpoints (peers, messages, websocket, spawn, health)
-- `mcp/server.py` — MCP tools (list_peers, ask, ack, notify_peer, broadcast, whoami, set_description, spawn_peer, kill_peer, review_queue, mark_reviewed, schedule_create, schedule_self, schedule_cron, schedule_list, schedule_delete)
-- `relay/server.py` — hosted relay at repowire.io (WS bridge + HTTP tunnel)
-- `telegram/bot.py` — mobile mesh control via Telegram inline buttons
-- `hooks/` — **default** Claude Code transport (session, stop, prompt, notification, websocket_hook)
-- `slack/bot.py` — Slack bot peer via Socket Mode
-
-### v0.14 session-native architecture
-
-Frame this as roadmap/current direction, not fully shipped behavior:
-
-- **Session-first/session-native mesh:** sessions are becoming the durable unit of work; peers remain live runtime executors.
-- **Transport-neutral routing:** ask/notify delivery now goes through a transport router. WebSocket hooks, experimental ACP, relay, and future transports continue moving toward the same message/control boundary.
-- **Session timeline:** dashboard direction is persisted history plus realtime events in one timeline, not separate live/history mental models.
-- **Shared command surface:** send message, resume, schedule, switch backend/model, plan mode, and approvals should become session commands reusable from dashboard, MCP, Telegram, and future surfaces.
-- **Compatible v0.14 slices:** preserve current hooks/MCP/HTTP behavior while internals harden.
-
-Avoid claiming model switching, plan approval, reliable delivery across every transport, production-ready ACP, or transport-neutral routes/control paths are complete today. The ask/notify transport-router extraction has landed, but ACP remains experimental and not every route/control path is transport-neutral yet.
-
-## Transports
-
-### Hooks (default)
-
-```
-Claude Code → hooks → websocket_hook.py ←WebSocket→ Daemon
-             → stop hook → transcript parse → HTTP /response (legacy /query)
-                                            → /asks/pending  (reminder fetch)
-```
-
-- **SessionStart** → registers peer, spawns ws-hook (flock dedup), injects peer context
-- **Stop** →
-  1. extracts response + tool calls from transcript, posts chat turns
-  2. delivers legacy /query response (single-purpose `pending-query-{pane}.json` FIFO)
-  3. fetches `/asks/pending` → if open asks present, emits `{"decision": "block", "reason": <reminder>}` so Claude continues with the reminder as context (Stop event doesn't accept additionalContext)
-  4. then `update_status(online)`
-- **UserPromptSubmit** → marks BUSY (Claude Code only)
-- **Notification** (idle_prompt) → resets ONLINE
-- **ws-hook** → on `type=ask` arrival, injects `[ask #cid]` framed text. Daemon doesn't track pickup; the Stop hook reminder is the only way an un-acked ask is resurfaced.
-
-In channel mode, only the Stop hook is kept (for dashboard chat_turn events).
-`install_hooks(channel_mode=True)` installs only the Stop hook when using channel transport.
-
-Key files: `session_handler.py`, `stop_handler.py`, `prompt_handler.py`, `notification_handler.py`, `websocket_hook.py`, `ask_lifecycle.py`, `utils.py`
-
-### Hook Adapter (`hooks/adapters.py`)
-
-Each agent runtime uses different hook event names and response fields. The adapter normalizes them so handlers are agent-agnostic:
-
-| Concept | Claude Code | Codex | Gemini |
-|---------|-------------|-------|--------|
-| Prompt event | `UserPromptSubmit` | `UserPromptSubmit` | `BeforeAgent` |
-| Stop event | `Stop` | `Stop` | `AfterAgent` |
-| Response field | transcript JSONL | `last_assistant_message` | `prompt_response` |
-| Hook output | empty | empty | `{"decision": "allow"}` |
-
-`adapters.normalize()` maps all variants to canonical names. `hook_output()` prints the required stdout.
-
-### MCP Server Identity (`mcp/server.py`)
-
-The MCP server needs to know its own peer_id for `from_peer` in tool calls. Key behaviors:
-- `_ensure_registered()` runs on every MCP tool call (lazy, idempotent)
-- Backend detection: explicit `REPOWIRE_BACKEND` and hook-written pane metadata win; runtime env markers such as `CLAUDECODE`, `GEMINI_CLI`, and Codex-specific hints are compatibility fallbacks.
-- Codex fires SessionStart late (after first interaction, not at startup). The MCP lazy registration covers this gap.
-- `_get_my_peer_name()` caches peer name from pane-based daemon lookup, falls back to cwd folder name
-- Cache and send the daemon-assigned `peer_id` for routing-sensitive MCP calls
-  (`ask`, `ack`, `notify_peer`) whenever available. Display names are
-  human-facing and can collide across spawned same-path peers; the daemon
-  canonicalizes ask state to peer IDs and ack replies route back to the
-  stored asker ID.
-- `whoami`, `set_description`, and `touch` should also prefer peer_id once
-  cached so ambiguous display-name lookups return a clean 409 instead of
-  misrouting or surfacing intermittent 500s.
-- Tmux pane fallback: `get_pane_id()` tries `TMUX_PANE` env var, then `tmux display-message` (guarded by `TMUX` env to prevent false positives from non-tmux terminals)
-
-### Channel (experimental - `repowire setup --experimental-channels`)
-
-```
-Claude Code <stdio> channel/server.ts <WebSocket> Daemon
-```
-
-- Messages arrive as `<channel source="repowire" from_peer="..." msg_type="...">` tags
-- Queries (legacy /query shim) include `correlation_id` — Claude calls the `reply` tool to respond
-- Asks (`msg_type=ask`) include `correlation_id` (and optional `reply_to`) — Claude calls the `ack(correlation_id, message?)` tool to close. Open asks reappear in every Stop hook reminder until acked.
-- Permission relay: forwards tool approval prompts to Telegram/dashboard
-- Requires claude.ai login (not API/Console key), Claude Code v2.1.80+, bun runtime
-- Opt-in only: `repowire setup --experimental-channels`
-
-## Design Philosophy: Lazy Repair
-
-Nothing polls. Work is deferred until needed, then piggy-backed on that request.
-
-- **Liveness:** `lazy_repair()` runs max 1x/30s, triggered by MCP endpoints
-- **Persistence:** Disk writes debounced via dirty flags, flushed during lazy_repair or shutdown
-- **Rule:** Never add polling loops, periodic timers, or eager disk writes
-
-## Config
-
-File: `~/.repowire/config.yaml`
-
-```yaml
-daemon:
-  host: "127.0.0.1"
-  port: 8377
-  auth_token: "optional"
-  prune_max_age_hours: 24
-  spawn:
-    commands:
-      claude-code: "claude --dangerously-skip-permissions"
-      codex: "codex --dangerously-bypass-approvals-and-sandbox"
-    profiles:
-      codex:
-        fast:
-          args: ["--model", "gpt-5-mini"]
-    allowed_paths: [~/git, ~/projects]
-
-relay:
-  enabled: true
-  url: "wss://repowire.io"
-  api_key: "rw_..."
-```
-
-Channel config: `~/.claude.json` (user-level MCP servers) — managed by `repowire setup`.
-
-## Relay
-
-Hosted at repowire.io. Daemon connects outbound via WSS. Cookie-based auth for dashboard.
-
-- `relay/server.py` — FastAPI relay (WS bridge + HTTP tunnel + SSE bridge)
-- `daemon/relay_client.py` — outbound WSS with auto-reconnect (strips proxy headers)
-- Deploy: `.github/workflows/relay.yml` → GCR → Helm → GKE
-
-## Dashboard
-
-- Next.js static export at `localhost:8377/dashboard`, remote at `repowire.io/dashboard`
-- Events: 500-item circular buffer in memory, persisted to `~/.repowire/state.db`
-  with legacy `events.json` imported once.
-- Tool calls: stop hook extracts from transcript JSONL, included in `chat_turn` events
-- File uploads: 📎 button in compose bar, uploads to `POST /attachments`, path included in notification
-- Build: `repowire build-ui` or `cd web && npm run dev`
-- Roadmap: merged session timeline (persisted history + realtime stream) and session-targeted command controls. Keep this framed as planned/current direction unless implementing the relevant product slice.
-
-### Dashboard Design System
-
-See [`docs/contributing/design-system.md`](docs/contributing/design-system.md) for the full spec (color tokens, Tailwind config, responsive layout, component patterns).
-
-## Attachments
-
-- `daemon/routes/attachments.py` — `POST /attachments` (upload, 10MB limit) + `GET /attachments/{id}` (download)
-- Storage: `~/.repowire/attachments/` with 24h TTL auto-cleanup
-- Telegram: bot downloads photos, uploads to daemon, includes path in notification
-- Dashboard: compose bar has file upload, tunneled through relay
-- Claude reads images via Read tool (multimodal) using the local file path
-- Relay tunnel: `/attachments` in `_TUNNEL_PREFIXES`, WS `max_size=16MB` for base64 payloads
-
-## Telegram Bot
-
-```bash
-TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... repowire telegram start
-```
-
-- `telegram/bot.py` - zero extra deps
-- Sticky routing: `/select peer` then all messages go there
-- `@telegram` and `@dashboard` are human - context injection tells agents
-
-## Slack Bot
-
-```bash
-SLACK_BOT_TOKEN=xoxb-... SLACK_APP_TOKEN=xapp-... SLACK_CHANNEL_ID=C... repowire slack start
-```
-
-- `slack/bot.py` - Socket Mode (no public URL), zero extra deps
-- Sticky routing, Block Kit buttons for peer selection
-
-## Agent Types
-
-Four supported runtimes, all use the same hooks + MCP pattern:
-
-| Agent | Backend enum | Installer | Hook config location |
-|-------|-------------|-----------|---------------------|
-| Claude Code | `claude-code` | `installers/claude_code.py` | `~/.claude/settings.json` |
-| Codex | `codex` | `installers/codex.py` | `~/.codex/hooks.json` + `config.toml` |
-| Gemini | `gemini` | `installers/gemini.py` | `~/.gemini/settings.json` |
-| OpenCode | `opencode` | `installers/opencode.py` | `~/.opencode/plugin/repowire.ts` |
-
-`repowire setup` auto-detects installed CLIs. Backend shows in `list_peers` TSV and peer context injection.
-
-## Public Docs Expectations
-
-Feature work that changes public behavior must update public docs in the same PR:
-
-- README when the install path, quickstart, supported agents, major features, screenshots, MCP tools, CLI commands, dashboard behavior, relay/security posture, or roadmap positioning changes.
-- `docs/reference/mcp-tools.md` when MCP signatures, return formats, defaults, routing semantics, or lifecycle behavior change.
-- `docs/reference/cli.md` when CLI commands, flags, examples, or output columns change.
-- `docs/guides/connect-*.md` and `docs/operations/transports.md` when per-runtime install/config/hook/plugin behavior changes.
-- `docs/capabilities/*`, `docs/guides/*`, and `docs/operations/relay.md` when dashboard, Telegram, Slack, attachments, relay, jobs, scheduling, spawning, or orchestration behavior changes.
-- `docs/concepts/*` and `docs/patterns/*` when the recommended workflow or architecture framing changes.
-- `docs/operations/*` when daemon, relay, transport, storage, deployment, or security behavior changes.
-- README screenshots under `images/` when dashboard UI changes materially; use browser-generated screenshots only, not AI-generated UI mockups.
-
-When adding features, explicitly check docs impact before closing the issue. If docs are intentionally deferred, file a Beads follow-up and say why in the PR handoff.
-
-Before opening a PR, run the advisory pre-PR hygiene check:
-
-```bash
-python3 scripts/pre_pr_hygiene.py
-```
-
-This is a lightweight opt-in checklist, not a mandatory hook. It compares the branch with `origin/main`, includes staged and unstaged changes, points at README, reference docs, `CLAUDE.md` / `AGENTS.md`, and graphify follow-ups that may need review, and fails if Beads JSONL ledger churn (`.beads/issues.jsonl` or root `issues.jsonl`) is present. Use `--restore-beads-ledgers` for local-only ledger churn. Keep the final decision product-repo focused and document intentional deferrals in the PR handoff.
-
-See `docs/pre-pr-hygiene.md` for the tool-surface matrix.
-
-Third-party extension context:
-
-- Vercel Labs `skills` (`npx skills add ...`) installs reusable `SKILL.md` packages across agents. Repowire does not install these today.
-- Claude Code plugin marketplaces can distribute plugins bundling skills, agents, hooks, MCP servers, LSP servers, and settings. Repowire does not currently ship a Claude marketplace plugin.
-- If Repowire adds first-class plugin/skills packaging later, update README, `docs/agents/claude-code.md`, install/setup docs, and uninstall docs together.
-
-## Memory
-
-Memory is stored in-repo at `.claude/memory/` (committed, shared across contributors).
-
-**Sanitization rules — memory here is public:**
-- Never store secrets, tokens, API keys, passwords, or auth credentials
-- Never store absolute or home-relative paths — only paths relative to the repowire repo root (e.g. `repowire/daemon/app.py`, not `~/git/repowire/...` or `/Users/.../`)
-- Never store IP addresses, internal hostnames, or private URLs
-- Never store personal identifiers (emails, chat IDs, user IDs)
-- Strip environment-specific details — keep memory portable across machines
-- When in doubt, omit it. The memory should be safe to push to a public repo.
-
-Use `.claude/memory/MEMORY.md` as the index. One file per memory, frontmatter format per the auto-memory system.
-
-## Testing Notes
-
-- Route tests: `httpx.AsyncClient` + `ASGITransport`, manually init deps
-- WebSocket tests: `httpx-ws` + `ASGIWebSocketTransport`
-- Hooks run from installed package - `uv tool install . --force-reinstall` after changes
-- Mock `subprocess.Popen` in session handler tests to prevent ws-hook leaking to live daemon
-- 231 tests covering routes, WebSocket, auth, query tracker, hooks, config, transcript
-
-## Knowledge Graph
-
-A graphify knowledge graph lives in `graphify-out/`. After significant code changes, run:
-
-```bash
-/graphify . --update   # incremental re-extraction (only changed files)
-```
-
-The generated report lives at `graphify-out/GRAPH_REPORT.md`. Use it as a navigation aid and summarize it when helpful; do not paste large generated JSON/cache artifacts into README or hand-written docs. Current major hubs include `AgentType`, `Config`, `PeerRegistry`, `MessageRouter`, and `WebSocketTransport`.
+Key modules (the graph in `graphify-out/` is the live map; these are the hubs):
+
+- `daemon/peer_registry.py` — peer state, circle access, events, `lazy_repair`, ghost eviction, contradiction events
+- `daemon/message_router.py` / `daemon/transport_router.py` — wire-level send + transport choice (ACP-before-WS); returns delivery outcomes
+- `daemon/peer_delivery.py` — ask/notify delivery service over the transport router
+- `daemon/ask_tracker.py` — slim ask lifecycle store; open asks reappear in every Stop-hook reminder until acked
+- `daemon/resume_safety.py` — shared resume decision (pre-validate session on disk) used by restart, jobs, and session_control
+- `daemon/session_control.py` / `daemon/job_runner.py` — executor acquisition for durable/recurring jobs
+- `daemon/routes/` — HTTP endpoints (peers, asks, messages, websocket, spawn, traces, schedules, work, health)
+- `daemon/state/` — SQLite state (events, session_bindings, queued deliveries, calendar, operations); schema-versioned
+- `mcp/server.py` — MCP tools (list_peers, ask, ack, notify_peer, broadcast, whoami, set_description, spawn_peer, kill_peer, review_queue, schedule_*, job_*)
+- `hooks/` — default Claude-Code-family transport (session/stop/prompt/notification handlers, websocket_hook, ask_lifecycle); `hooks/adapters.py` normalizes per-runtime hook event names/fields
+- `agent_backends.py` — per-backend capability/command/resume config (`build_resume_command`, `can_resume`)
+- `relay/server.py` + `daemon/relay_client.py` — hosted relay at repowire.io (WS bridge + HTTP tunnel + SSE); deploy via `relay.yml` → GCR → Helm → GKE
+- `telegram/bot.py`, `slack/bot.py` — bot peers (Socket Mode / inline buttons), zero extra deps, sticky routing; `@telegram`/`@dashboard` are the human
+
+### Transport mechanics worth knowing
+
+- **Hooks (default):** SessionStart registers the peer + spawns the ws-hook (flock-deduped) + injects context. Stop posts chat turns, delivers the legacy /query response, then fetches `/asks/pending` and emits `{"decision":"block","reason":<reminder>}` if open asks exist (Stop can't add context otherwise), then marks online. UserPromptSubmit → BUSY; Notification(idle_prompt) → ONLINE. The ws-hook injects `[ask #cid]` text on arrival; the Stop reminder is the *only* thing that resurfaces an un-acked ask.
+- **Channel (experimental, `repowire setup --experimental-channels`):** Claude Code ↔ `channel/server.ts` (MCP stdio) ↔ daemon. Messages arrive as `<channel>` tags; Claude replies via the `reply`/`ack` tools. Requires claude.ai login, Claude Code 2.1.80+, bun. Only the Stop hook is kept in channel mode (for dashboard chat turns).
+- **Config** lives at `~/.repowire/config.yaml` (`daemon`, `relay`, `telegram`, `slack`, `updates`, `experiments`, …), loaded by `config/models.py`. Channel/MCP config is in `~/.claude.json`, managed by `repowire setup`.
+
+## Docs, memory, graph
+
+- **Public docs (`docs/`) are part of the change.** Behavior changes update the relevant docs in the same PR — README for install/quickstart/major features, `docs/reference/*` for CLI/MCP/HTTP/config surfaces, `docs/guides|capabilities|concepts|patterns|operations/*` for the rest. If you intentionally defer, file a Beads follow-up and say so in the handoff. `python3 scripts/pre_pr_hygiene.py` is an advisory pre-PR check (points at docs surfaces, fails on beads-ledger churn). Screenshots: browser-generated only, never AI-mockups.
+- **Knowledge graph:** `graphify-out/` holds a graphify graph; refresh after significant changes with `/graphify . --update`. Useful for "what touches X / how does A reach B" questions grep can't answer. Don't paste generated JSON into hand-written docs.
+- **Memory** is project-local at `.claude/memory/` (committed, public) — and `bd remember` for beads-tracked knowledge. Public-repo sanitization: no secrets, no absolute/home paths (repo-relative only), no IPs/hostnames/personal identifiers. When in doubt, omit.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker
