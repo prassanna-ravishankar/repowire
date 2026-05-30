@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import HTTPException, status
 
 from repowire.agent_backends import AgentResumePlan, build_resume_command
-from repowire.config.models import AgentType, Config, apply_spawn_profile
+from repowire.config.models import AgentType, SpawnSettings, apply_spawn_profile
 from repowire.installers.post_spawn import post_spawn_warmup
 from repowire.protocol.peers import PeerRole
 from repowire.spawn import SpawnConfig, SpawnResult, spawn_peer
@@ -31,21 +31,21 @@ class SpawnService:
     def __init__(
         self,
         *,
-        config: Config,
+        spawn: SpawnSettings,
         spawned_pane_ids: set[str] | None = None,
         background_tasks: set[asyncio.Task] | None = None,
         spawn_impl: Callable[[SpawnConfig], SpawnResult] = spawn_peer,
         warmup_impl=post_spawn_warmup,
     ) -> None:
-        self._config = config
+        self._spawn = spawn
         self._spawned_pane_ids = spawned_pane_ids if spawned_pane_ids is not None else set()
         self._background_tasks = background_tasks if background_tasks is not None else set()
         self._spawn_impl = spawn_impl
         self._warmup_impl = warmup_impl
 
     def validate_path(self, path: str) -> str:
-        allowed_paths = self._config.daemon.spawn.allowed_paths
-        commands = self._config.daemon.spawn.commands
+        allowed_paths = self._spawn.allowed_paths
+        commands = self._spawn.commands
         if not commands or not allowed_paths:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -68,7 +68,7 @@ class SpawnService:
         return str(resolved)
 
     def resolve_command(self, backend: AgentType, profile: str | None = None) -> str:
-        command = self._config.daemon.spawn.commands.get(backend)
+        command = self._spawn.commands.get(backend)
         if not command:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -82,7 +82,7 @@ class SpawnService:
                 },
             )
         if profile:
-            selected_profile = self._config.daemon.spawn.profiles.get(backend, {}).get(profile)
+            selected_profile = self._spawn.profiles.get(backend, {}).get(profile)
             if selected_profile is None:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

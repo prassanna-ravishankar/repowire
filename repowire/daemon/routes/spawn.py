@@ -337,7 +337,7 @@ async def spawn(
     else:
         backend = request.backend
     service = getattr(get_app_state(), "spawn_service", None) or SpawnService(
-        config=get_config(),
+        spawn=get_config().daemon.spawn,
         spawned_pane_ids=_SPAWNED_PANE_IDS,
         background_tasks=_BACKGROUND_TASKS,
         spawn_impl=spawn_peer,

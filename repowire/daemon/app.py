@@ -312,7 +312,7 @@ def create_app(
         )
         app.state.peer_delivery = peer_delivery
         spawn_service = SpawnService(
-            config=cfg,
+            spawn=cfg.daemon.spawn,
             spawned_pane_ids=spawn_routes._SPAWNED_PANE_IDS,
             background_tasks=spawn_routes._BACKGROUND_TASKS,
         )
@@ -655,7 +655,7 @@ def create_test_app(
         )
         app.state.peer_delivery = peer_delivery
         spawn_service = SpawnService(
-            config=cfg,
+            spawn=cfg.daemon.spawn,
             spawned_pane_ids=spawn_routes._SPAWNED_PANE_IDS,
             background_tasks=spawn_routes._BACKGROUND_TASKS,
         )

@@ -1492,7 +1492,7 @@ async def test_spawn_service_passes_codex_resume_command_to_spawn(tmp_path, monk
         return None
 
     service = SpawnService(
-        config=cfg,
+        spawn=cfg.daemon.spawn,
         spawned_pane_ids=set(),
         background_tasks=tasks,
         spawn_impl=spawn_impl,
@@ -1536,7 +1536,7 @@ async def test_spawn_service_records_ownership_and_warmup(tmp_path, monkeypatch)
     spawn_impl = Mock(return_value=result_obj)
     monkeypatch.setattr("repowire.daemon.spawn_service.record_spawn_ownership", Mock())
     service = SpawnService(
-        config=cfg,
+        spawn=cfg.daemon.spawn,
         spawned_pane_ids=spawned,
         background_tasks=tasks,
         spawn_impl=spawn_impl,
