@@ -147,6 +147,31 @@ class DeliveryTraceStore:
         ).fetchone()
         return self._row_to_trace(row) if row is not None else None
 
+    def latest_stages_for_peers(
+        self,
+        peer_ids: list[str],
+        stages: tuple[str, ...] = ("pane_injected", "injection_failed"),
+    ) -> dict[tuple[str, str], str]:
+        """Return the newest ts per (peer_id, stage) for a set of peers, in one query.
+
+        Maps ``(peer_id, stage) -> ts`` (only present keys included). Used by
+        list_peers to compute inbound health without 2N per-peer round trips.
+        """
+        if not peer_ids or not stages:
+            return {}
+        peer_ph = ",".join("?" for _ in peer_ids)
+        stage_ph = ",".join("?" for _ in stages)
+        rows = self._conn.execute(
+            f"""
+            SELECT peer_id, stage, MAX(ts) AS ts
+            FROM delivery_traces
+            WHERE peer_id IN ({peer_ph}) AND stage IN ({stage_ph})
+            GROUP BY peer_id, stage
+            """,
+            (*peer_ids, *stages),
+        ).fetchall()
+        return {(r["peer_id"], r["stage"]): r["ts"] for r in rows if r["ts"] is not None}
+
     def prune(self, before_ts: str) -> int:
         """Delete rows older than ``before_ts`` (ISO8601). Returns rows removed."""
         with self._conn:

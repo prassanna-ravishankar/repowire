@@ -78,6 +78,35 @@ def test_latest_stage_returns_newest(tmp_path):
     assert store.latest_stage(peer_id="other", stage="pane_injected") is None
 
 
+def test_latest_stages_for_peers_batched(tmp_path):
+    store = _store(tmp_path)
+    # p1: two pane_injected (newest wins) + one injection_failed
+    store.record(trace_id="a1", kind="ask", stage="pane_injected", peer_id="p1")
+    store.record(trace_id="a2", kind="ask", stage="pane_injected", peer_id="p1")
+    store.record(trace_id="a3", kind="ask", stage="injection_failed", status="fail", peer_id="p1")
+    # p2: only pane_injected
+    store.record(trace_id="b1", kind="notify", stage="pane_injected", peer_id="p2")
+    # p3: a non-terminal stage only -> should not appear
+    store.record(trace_id="c1", kind="ask", stage="created", peer_id="p3")
+
+    result = store.latest_stages_for_peers(["p1", "p2", "p3", "absent"])
+    assert ("p1", "pane_injected") in result
+    assert ("p1", "injection_failed") in result
+    assert ("p2", "pane_injected") in result
+    assert ("p2", "injection_failed") not in result
+    assert not any(pid == "p3" for pid, _ in result)  # created not in default stages
+    assert not any(pid == "absent" for pid, _ in result)
+    # newest pane_injected ts for p1 is the MAX
+    p1_rows = store.stages_for("a2")  # a2 recorded after a1
+    assert result[("p1", "pane_injected")] >= p1_rows[0].ts
+
+
+def test_latest_stages_for_peers_empty_inputs(tmp_path):
+    store = _store(tmp_path)
+    assert store.latest_stages_for_peers([]) == {}
+    assert store.latest_stages_for_peers(["p1"], stages=()) == {}
+
+
 def test_prune_removes_only_old_rows(tmp_path):
     store = _store(tmp_path)
     # Insert with explicitly old + new timestamps by writing directly.

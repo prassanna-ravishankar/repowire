@@ -145,14 +145,16 @@ async def _peer_to_info_with_health(
     *,
     transport: Any,
     ask_tracker: Any,
-    trace_store: Any,
+    injection_times: dict[tuple[str, str], str] | None = None,
     pane_safe: bool | None = None,
 ) -> PeerInfo:
     """Convert a Peer to PeerInfo with derived inbound-health fields.
 
     Reads ws connection from transport, receipt capability from metadata
     (falling back to an observed delivery_ack in the trace ledger), last
-    injection success/failure from the trace ledger, and pending-ask state
+    injection success/failure from a pre-fetched ledger snapshot
+    (``injection_times`` maps ``(peer_id, stage) -> ts``; the caller fetches it
+    once off-thread to avoid per-peer DB round trips), and pending-ask state
     from the ask tracker. ``pane_safe`` is left None (unprobed) in list views;
     the single-peer / doctor paths may pass a real probe result.
     """
@@ -163,19 +165,9 @@ async def _peer_to_info_with_health(
     capabilities = p.metadata.get("capabilities") if isinstance(p.metadata, dict) else None
     advertises = isinstance(capabilities, list) and "delivery_receipts" in capabilities
 
-    last_success_at: str | None = None
-    last_failure_at: str | None = None
-    if trace_store is not None:
-        # latest_stage hits SQLite synchronously; offload so listing peers
-        # doesn't block the event loop.
-        success = await asyncio.to_thread(
-            trace_store.latest_stage, peer_id=p.peer_id, stage="pane_injected"
-        )
-        failure = await asyncio.to_thread(
-            trace_store.latest_stage, peer_id=p.peer_id, stage="injection_failed"
-        )
-        last_success_at = success.ts if success else None
-        last_failure_at = failure.ts if failure else None
+    times = injection_times or {}
+    last_success_at = times.get((p.peer_id, "pane_injected"))
+    last_failure_at = times.get((p.peer_id, "injection_failed"))
     # Observed delivery_ack (any pane_injected/injection_failed row) implies the
     # hook speaks the modern receipt protocol even if metadata is stale.
     observed_receipt = last_success_at is not None or last_failure_at is not None
@@ -337,13 +329,20 @@ async def list_peers(
     transport = getattr(state, "transport", None)
     ask_tracker = getattr(state, "ask_tracker", None)
     trace_store = getattr(state, "delivery_trace_store", None)
+    # Fetch all peers' injection-stage times in ONE off-thread query rather than
+    # 2 synchronous DB hits per peer.
+    injection_times: dict[tuple[str, str], str] = {}
+    if trace_store is not None and peers:
+        injection_times = await asyncio.to_thread(
+            trace_store.latest_stages_for_peers, [p.peer_id for p in peers]
+        )
     infos = await asyncio.gather(
         *(
             _peer_to_info_with_health(
                 p,
                 transport=transport,
                 ask_tracker=ask_tracker,
-                trace_store=trace_store,
+                injection_times=injection_times,
             )
             for p in peers
         )
@@ -436,11 +435,17 @@ async def get_peer(
         ) from exc
     if peer:
         state = get_app_state()
+        trace_store = getattr(state, "delivery_trace_store", None)
+        injection_times: dict[tuple[str, str], str] = {}
+        if trace_store is not None:
+            injection_times = await asyncio.to_thread(
+                trace_store.latest_stages_for_peers, [peer.peer_id]
+            )
         return await _peer_to_info_with_health(
             peer,
             transport=getattr(state, "transport", None),
             ask_tracker=getattr(state, "ask_tracker", None),
-            trace_store=getattr(state, "delivery_trace_store", None),
+            injection_times=injection_times,
         )
 
     raise HTTPException(
