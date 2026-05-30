@@ -6,6 +6,7 @@ import asyncio
 import socket
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
@@ -556,6 +557,7 @@ def _resolve_restart_resume(
     """
     store = getattr(state, "session_binding_store", None)
     chosen_id: str | None = None
+    chosen_binding: Any = None
     if store is not None:
         # Newest binding for this peer, filtered to same backend + project path so
         # stale cross-path/identity-reuse state isn't selected (codex review B).
@@ -570,12 +572,17 @@ def _resolve_restart_resume(
             ):
                 continue
             chosen_id = binding.runtime_session_id
+            chosen_binding = binding
             break
 
     decision = resolve_resume_safety(
         backend=peer.backend,
         path=resolved_path,
         runtime_session_id=chosen_id,
+        repowire_session_id=chosen_binding.repowire_session_id if chosen_binding else None,
+        # Honor a binding that recorded resume as unsupported, same as the job
+        # and session-control pathways (codex review item 3).
+        capability=chosen_binding.resume_capability if chosen_binding else None,
     )
     if not decision.resumable or decision.plan is None:
         return _RestartResume(base_command, "fresh_runtime_context", False, decision.warning)

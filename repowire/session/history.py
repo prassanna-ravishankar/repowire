@@ -14,6 +14,7 @@ metadata to map a transcript back to a peer path:
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -206,17 +207,20 @@ def _opencode_resumable(peer_path: str | None, runtime_session_id: str) -> bool:
     # Sessions: ~/.local/share/opencode/storage/session/<projectID>/ses_<id>.json
     # with JSON fields id + directory. The projectID dir is a hash (not derivable
     # from cwd), so scan and match the JSON id + directory rather than the path.
+    # Require an EXACT id match: build_resume_command passes the captured id
+    # verbatim to `opencode --session <id>`, so accepting a `ses_`-prefixed
+    # variant here would validate an id the resume command can't use -> a
+    # validated-then-hard-fail path (codex review). Match the JSON id exactly.
     root = _opencode_storage_dir()
     if not root.is_dir():
         return False
-    targets = {runtime_session_id, f"ses_{runtime_session_id}"}
     try:
         for path in root.glob("*/ses_*.json"):
             try:
                 data = json.loads(path.read_text())
             except (OSError, json.JSONDecodeError):
                 continue
-            if not isinstance(data, dict) or data.get("id") not in targets:
+            if not isinstance(data, dict) or data.get("id") != runtime_session_id:
                 continue
             if peer_path is None or _path_matches(data.get("directory"), peer_path):
                 return True
@@ -268,12 +272,18 @@ def _antigravity_resumable(peer_path: str | None, runtime_session_id: str) -> bo
 def _gemini_resumable(peer_path: str | None, runtime_session_id: str) -> bool:
     # gemini --resume accepts a full session UUID (per official docs). Sessions:
     # ~/.gemini/tmp/<projectHash>/chats/session-<ts>-<shortid>.json with JSON
-    # fields sessionId (UUID) + projectHash. The dir is a hash (not derivable
-    # from cwd), so scan and match sessionId; scope by directory when the JSON
-    # records it (older sessions may not), else accept the sessionId match.
+    # fields sessionId (UUID) + projectHash, where projectHash == sha256(abs cwd)
+    # (verified locally). The session JSON usually has NO directory/cwd, so we
+    # MUST scope by projectHash to avoid resuming a same-UUID session from a
+    # different project (which would kill the pane + resume the wrong project).
     root = _gemini_tmp_dir()
     if not root.is_dir():
         return False
+    expected_hash = (
+        hashlib.sha256(str(Path(peer_path).expanduser().resolve()).encode()).hexdigest()
+        if peer_path
+        else None
+    )
     try:
         for path in root.glob("*/chats/session-*.json"):
             try:
@@ -282,8 +292,15 @@ def _gemini_resumable(peer_path: str | None, runtime_session_id: str) -> bool:
                 continue
             if not isinstance(data, dict) or data.get("sessionId") != runtime_session_id:
                 continue
+            if peer_path is None:
+                return True
             directory = data.get("directory") or data.get("cwd")
-            if peer_path is None or directory is None or _path_matches(directory, peer_path):
+            if directory is not None:
+                if _path_matches(directory, peer_path):
+                    return True
+                continue
+            # No directory recorded: require projectHash to match this cwd.
+            if data.get("projectHash") == expected_hash:
                 return True
     except OSError:
         return False
@@ -300,8 +317,8 @@ def _safe_is_file(path: Path) -> bool:
 # Per-backend on-disk resume validators. Backends absent from this table declare
 # a resume invocation but have no mapped session store, so their status is
 # "unvalidated_backend" (the seam falls back to fresh+warning rather than risk a
-# resume that exits hard after the pane is already killed). Gemini is currently
-# unmapped (no clear per-id session contract found locally).
+# resume that exits hard after the pane is already killed). All six current
+# resume-capable backends are mapped below.
 _RESUME_VALIDATORS = {
     "claude-code": _claude_resumable,
     "codex": _codex_resumable,

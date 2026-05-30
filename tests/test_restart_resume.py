@@ -136,7 +136,7 @@ class TestBackendValidators:
     def test_missing_id(self, tmp_path, monkeypatch):
         assert self._status(monkeypatch, tmp_path, "/x", "claude-code", None) == "missing_id"
 
-    def test_gemini_resumable_by_sessionid(self, tmp_path, monkeypatch):
+    def test_gemini_resumable_with_directory(self, tmp_path, monkeypatch):
         home = tmp_path / "h"
         cwd = "/Users/test/repo"
         sid = "2ff4b004-a282-42c6-a54e-5cd12f126f3d"
@@ -148,8 +148,28 @@ class TestBackendValidators:
         assert self._status(monkeypatch, home, cwd, "gemini", sid) == "resumable"
         # mismatched cwd when directory recorded -> not for this peer
         assert self._status(monkeypatch, home, "/other", "gemini", sid) == "stale_missing_file"
-        # unknown id
         assert self._status(monkeypatch, home, cwd, "gemini", "no-such") == "stale_missing_file"
+
+    def test_gemini_no_directory_scopes_by_projecthash(self, tmp_path, monkeypatch):
+        # codex #2 regression: real Gemini session JSONs usually have NO directory
+        # field; same sessionId from a DIFFERENT project must not validate. We
+        # scope by projectHash == sha256(abs cwd).
+        import hashlib
+
+        home = tmp_path / "h"
+        sid = "shared-uuid-aaaa"
+        cwd_a = "/Users/test/projA"
+        ph_a = hashlib.sha256(cwd_a.encode()).hexdigest()
+        chats = home / ".gemini/tmp" / ph_a / "chats"
+        chats.mkdir(parents=True)
+        # No directory/cwd in the JSON, only projectHash for projA.
+        (chats / f"session-2026-01-01T00-00-{sid[:8]}.json").write_text(
+            json.dumps({"sessionId": sid, "projectHash": ph_a})
+        )
+        # peer at projA -> resumable; peer at a different project -> NOT.
+        assert self._status(monkeypatch, home, cwd_a, "gemini", sid) == "resumable"
+        assert self._status(monkeypatch, home, "/Users/test/projB", "gemini", sid) == \
+            "stale_missing_file"
 
     def test_unknown_backend_unvalidated(self, tmp_path, monkeypatch):
         assert self._status(monkeypatch, tmp_path, "/x", "made-up", "abc") == "unvalidated_backend"
@@ -166,6 +186,18 @@ class TestBackendValidators:
         assert self._status(monkeypatch, home, "/other", "opencode", sid) == "stale_missing_file"
         # unknown id
         assert self._status(monkeypatch, home, cwd, "opencode", "ses_nope") == "stale_missing_file"
+
+    def test_opencode_requires_exact_id_no_ses_prefix_tolerance(self, tmp_path, monkeypatch):
+        # codex #1: the JSON id is ses_abc; a captured id WITHOUT the ses_ prefix
+        # must NOT validate, because build_resume_command passes the captured id
+        # verbatim to `opencode --session <id>` (validated-then-hard-fail risk).
+        home = tmp_path / "h"
+        cwd = "/Users/test/proj"
+        sdir = home / ".local/share/opencode/storage/session/PROJHASH"
+        sdir.mkdir(parents=True)
+        (sdir / "ses_abc.json").write_text(json.dumps({"id": "ses_abc", "directory": cwd}))
+        assert self._status(monkeypatch, home, cwd, "opencode", "ses_abc") == "resumable"
+        assert self._status(monkeypatch, home, cwd, "opencode", "abc") == "stale_missing_file"
 
     def test_pi_resumable_requires_live_sessionfile(self, tmp_path, monkeypatch):
         home = tmp_path / "h"
