@@ -5,8 +5,9 @@ The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and client
 ## Primary route groups
 
 - `/health` and status routes for daemon checks.
-- `/peers` for peer registration, listing, lookup, and lifecycle operations.
+- `/peers` for peer registration, listing, lookup, and lifecycle operations. Includes `GET /peers/{id}/doctor` (read-only diagnostic report with contradiction detection) and `POST /peers/{id}/rehook` (non-destructive inbound ws-hook recovery, same-host, dry-run by default).
 - `/ask`, `/ack`, and `/asks/pending` for ask lifecycle.
+- `/traces/{trace_id}` returns the recorded delivery stages for an ask (`correlation_id`) or notify (`delivery_id`) from the local delivery trace ledger.
 - `/messages` and WebSocket routes for live delivery.
 - `/schedules` for one-shot and recurring scheduled messages.
 - `/jobs` / work routes for durable tracked work.

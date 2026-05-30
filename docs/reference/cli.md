@@ -87,6 +87,8 @@ repowire peer list                          # god-view list (all circles, includ
 repowire peer describe NAME_OR_ID [--circle C]  # full state for one peer
 repowire peer claim-role orchestrator [--peer NAME_OR_ID] [--circle C] [--force]
 repowire peer restart NAME_OR_ID [--circle C] [--dry-run] [-m MESSAGE]
+repowire peer doctor NAME_OR_ID [--circle C] [--json] [--fix]  # deep diagnostic + contradictions
+repowire peer rehook NAME_OR_ID [--circle C] [--apply]         # re-establish inbound ws-hook (non-destructive)
 repowire peer prune                         # remove offline peers from the registry
 repowire peer whoami [--register --backend B --name NAME --circle C --path P]  # read-only identity, or self-register
 repowire peer asks [--peer-id ID | --pane-id PANE | --peer NAME] [--direction inbound|outbound|both] [--json]
@@ -113,6 +115,18 @@ For Antigravity interop checks, `python3 scripts/agy_interop_smoke.py --run-cli-
 Restart is same-window/name first, not same-pane. Killing a tmux pane destroys that pane, so this slice respawns through the normal Repowire spawn path and lets tmux allocate a fresh pane/window name using the existing naming rules. The response may include the new `tmux_session`, but it does not promise the same pane id.
 
 Restart uses `resume_mode=fresh_runtime_context`. That means the new runtime loads its normal startup context and mesh primer again; it does not guarantee transcript replay or exact backend conversation resume. This slice also does not persist the originally selected spawn profile, so restart uses the current configured backend command. If your configured backend command includes native resume flags, Repowire still reports `fresh_runtime_context` unless Repowire deliberately selected and verified a backend-specific resume mode.
+
+`peer doctor` is the operator-facing counterpart to automatic lazy repair. It runs lazy repair first, re-resolves the peer, then reports registry identity, inbound reachability (WebSocket connection, tmux pane existence, pane hook metadata, agent pid liveness), pending ask state, and any detected contradictions. Contradiction codes: `ONLINE_BUT_NO_WS`, `PANE_MISSING`, `AGENT_PID_DEAD`, `HOOK_PEERID_MISMATCH`, `WS_PANE_MISMATCH` (warning), `STALE_PENDING_ASK` (warning). Local-only probes (tmux, hook metadata, pid) degrade to `unavailable` for peers on a different machine than the daemon. The command exits non-zero when any error-severity contradiction is present, so it is usable as a health gate. `--json` emits the raw report. `--fix` attempts a non-destructive `peer rehook --apply` when an inbound-down contradiction (`ONLINE_BUT_NO_WS` / `PANE_MISSING`) is found.
+
+`peer rehook` re-establishes a peer's inbound ws-hook **without killing the pane or the agent** — the non-destructive recovery for the "registered/online but inbound delivery is dead" case. It is same-host only (the daemon cannot spawn a ws-hook into a foreign pane) and gated by spawn-ownership proof or live tmux pane evidence. It pings an existing connection first and never disconnects a ping-healthy peer (reports `already_healthy`). It defaults to a dry-run report; pass `--apply` to act. When the prior ws-hook process is still alive by pid even though its WebSocket is dead, the underlying respawn is a no-op and the response reports `respawn_skipped_pid_alive_or_contested`. For a destructive restart use `peer restart`.
+
+## `repowire trace`
+
+```bash
+repowire trace TRACE_ID [--json]
+```
+
+Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`). Stages are ordered (`created → resolved_peer → routed → websocket_sent → hook_received → pane_injected → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). This reads the local delivery trace ledger (`GET /traces/{trace_id}`); no external tracing infrastructure is required. Currently covers ask and notify; query/broadcast pane stages are not yet traced. Exits non-zero if any stage failed.
 
 ## `repowire schedule`
 

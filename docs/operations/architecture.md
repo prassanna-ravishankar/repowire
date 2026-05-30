@@ -62,6 +62,8 @@ The daemon connects outbound to the hosted relay over WSS. The relay tunnels das
 
 Repowire avoids polling loops. Liveness repair, persistence flushes, and ghost cleanup are piggy-backed on user-visible requests, bounded by cooldowns. The design rule is: repair when needed, not on timers.
 
+When lazy repair detects a self-inconsistent peer (e.g. online but no live WebSocket, a missing pane, or a dead agent pid) it emits a `peer_contradiction` event once per transition, so silent failures surface in the dashboard stream. `repowire peer doctor <peer>` is the explicit, operator-triggered counterpart: it runs the same reconciliation, then reports identity, inbound reachability, pending asks, and contradictions on demand. `repowire peer rehook <peer>` is the non-destructive recovery (re-establish the inbound ws-hook without killing the pane). A delivery trace ledger (`repowire trace <id>`) records per-message ask/notify stages for post-hoc "where did it go" inspection, persisted in a dedicated SQLite table rather than the bounded dashboard event buffer.
+
 ## v0.14 session-native direction
 
 The current stable surface is peer-oriented, but the v0.14 architecture train is moving toward a session-first mesh:
