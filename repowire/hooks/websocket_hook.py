@@ -29,6 +29,7 @@ from repowire.hooks.utils import (
     read_pane_runtime_metadata,
     write_pane_runtime_metadata,
 )
+from repowire.protocol.capabilities import CURRENT_HOOK_CAPABILITIES, CURRENT_HOOK_VERSION
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -601,7 +602,7 @@ async def main() -> int:
                     )
                 consecutive_failures = 0
 
-                connect_msg: dict[str, str] = {
+                connect_msg: dict[str, object] = {
                     "type": "connect",
                     "display_name": display_name,
                     "circle": circle,
@@ -609,6 +610,8 @@ async def main() -> int:
                     "path": path,
                     "pane_id": pane_id,
                     "circle_source": circle_source,
+                    "hook_version": CURRENT_HOOK_VERSION,
+                    "capabilities": list(CURRENT_HOOK_CAPABILITIES),
                 }
                 peer_id = os.environ.get("REPOWIRE_PEER_ID")
                 if peer_id:

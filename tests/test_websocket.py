@@ -78,6 +78,34 @@ class TestWebSocketConnect:
 
         cleanup_deps()
 
+    async def test_connect_advertises_capabilities(self, tmp_path):
+        app = _make_app(tmp_path)
+        async with AsyncClient(
+            transport=ASGIWebSocketTransport(app), base_url="http://test"
+        ) as client, aconnect_ws("/ws", client) as ws:
+            await ws.send_json({
+                "type": "connect",
+                "display_name": "cappeer",
+                "circle": "default",
+                "backend": "claude-code",
+                "path": "/tmp/cap",
+                "hook_version": 1,
+                "capabilities": ["delivery_receipts"],
+            })
+            resp = json.loads(await ws.receive_text())
+            assert resp["type"] == "connected"
+            session_id = resp["session_id"]
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            r = await http.get(f"/peers/{session_id}")
+            assert r.status_code == 200, r.text
+            meta = r.json()["metadata"]
+            assert meta.get("hook_version") == 1
+            assert "delivery_receipts" in meta.get("capabilities", [])
+        cleanup_deps()
+
     async def test_connect_requires_display_name(self, tmp_path):
         app = _make_app(tmp_path)
         async with AsyncClient(

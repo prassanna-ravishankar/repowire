@@ -959,6 +959,14 @@ class PeerRegistry:
                     if agent_pid is not None
                     else (restored.agent_pid if restored else None)
                 )
+                # Preserve metadata from a prior registration of this peer
+                # (e.g. branch/project set at SessionStart HTTP register) while
+                # letting freshly-supplied keys (e.g. ws-connect capabilities)
+                # win on overlap.
+                prior_peer = self._peers.get(allocated_id)
+                effective_metadata = dict(prior_peer.metadata) if prior_peer else {}
+                if metadata:
+                    effective_metadata.update(metadata)
 
                 # --- create and insert Peer ---
                 peer = Peer(
@@ -973,7 +981,7 @@ class PeerRegistry:
                     tmux_session=tmux_session,
                     path=path or "",
                     machine=machine,
-                    metadata=metadata or {},
+                    metadata=effective_metadata,
                     description=restored_description,
                     turn_state=turn_state,
                     agent_pid=effective_agent_pid,

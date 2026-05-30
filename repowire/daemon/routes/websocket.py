@@ -155,6 +155,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # If the client provides a peer_id (ws-hook reconnecting after HTTP
         # pre-registration), the daemon takes over the existing peer.
         claimed_peer_id = data.get("peer_id")
+        connect_metadata: dict[str, object] = {}
+        hook_version = data.get("hook_version")
+        if isinstance(hook_version, int):
+            connect_metadata["hook_version"] = hook_version
+        capabilities = data.get("capabilities")
+        if isinstance(capabilities, list):
+            connect_metadata["capabilities"] = [c for c in capabilities if isinstance(c, str)]
         peer_id, assigned_name = await peer_registry.allocate_and_register(
             circle=circle,
             backend=backend,
@@ -165,6 +172,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             role=role,
             peer_id=claimed_peer_id,
             circle_source=cast(CircleSource | None, circle_source),
+            metadata=connect_metadata or None,
         )
         session_id = peer_id
 
