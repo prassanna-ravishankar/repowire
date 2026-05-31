@@ -294,6 +294,7 @@ def create_app(
         from repowire.acp import AcpClientManager, ApprovalBroker
         acp_permission_broker = ApprovalBroker(
             emit_event=peer_registry.add_event,
+            ask_tracker=ask_tracker,
             resolve_repowire_session_id=_make_acp_session_resolver(session_binding_store),
         )
         app.state.acp_permission_broker = acp_permission_broker
@@ -644,6 +645,7 @@ def create_test_app(
         from repowire.acp import AcpClientManager, ApprovalBroker
         acp_permission_broker = ApprovalBroker(
             emit_event=registry.add_event,
+            ask_tracker=ask_tracker,
             resolve_repowire_session_id=_make_acp_session_resolver(session_binding_store),
         )
         app.state.acp_permission_broker = acp_permission_broker

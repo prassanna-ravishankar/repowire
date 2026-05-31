@@ -16,7 +16,7 @@ from repowire.daemon.deps import cleanup_deps, init_deps
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
-from repowire.daemon.routes import acp_permissions
+from repowire.daemon.routes import acp_permissions, asks
 from repowire.daemon.websocket_transport import WebSocketTransport
 
 
@@ -28,7 +28,9 @@ async def test_approval_broker_timeout_emits_default_deny_events() -> None:
         events.append({"type": event_type, **data})
         return f"evt-{len(events)}"
 
-    broker = ApprovalBroker(emit_event=_emit, timeout_seconds=0.01)
+    broker = ApprovalBroker(
+        emit_event=_emit, ask_tracker=AskTracker(ttl_hours=24.0), timeout_seconds=0.01,
+    )
 
     decision = await broker.request_permission(
         peer_id="peer-1",
@@ -39,16 +41,21 @@ async def test_approval_broker_timeout_emits_default_deny_events() -> None:
 
     assert decision.outcome == "denied"
     assert decision.timed_out is True
-    assert events[0]["type"] == "acp_permission_request"
-    assert events[0]["peer_id"] == "peer-1"
-    assert events[0]["session_id"] == "session-1"
-    assert events[0]["tool_call"]["name"] == "shell"
-    assert events[0]["options"] == [{"option_id": "opt-allow", "title": "Allow"}]
-    assert events[0]["status"] == "pending"
-    assert events[1]["type"] == "acp_permission_decision"
-    assert events[1]["request_id"] == events[0]["request_id"]
-    assert events[1]["outcome"] == "denied"
-    assert events[1]["status"] == "timed_out"
+    # A normal ask event (for the dashboard/Telegram renderers) AND the
+    # back-compat ACP-specific aliases are emitted, keyed by the same request_id.
+    ask_evt = next(e for e in events if e["type"] == "ask")
+    assert ask_evt["to_peer_id"] == "__repowire_control__"
+    assert ask_evt["question"]["scope"] == "tool_permission"
+    req = next(e for e in events if e["type"] == "acp_permission_request")
+    assert req["peer_id"] == "peer-1"
+    assert req["session_id"] == "session-1"
+    assert req["tool_call"]["name"] == "shell"
+    assert req["options"] == [{"option_id": "opt-allow", "title": "Allow"}]
+    assert req["status"] == "pending"
+    dec = next(e for e in events if e["type"] == "acp_permission_decision")
+    assert dec["request_id"] == req["request_id"]
+    assert dec["outcome"] == "denied"
+    assert dec["status"] == "timed_out"
 
 
 @pytest.mark.asyncio
@@ -148,7 +155,7 @@ def _make_permission_app(tmp_path: Path) -> tuple[FastAPI, ApprovalBroker, PeerR
     registry._events.clear()
     registry._last_repair = time.monotonic() + 3600
 
-    broker = ApprovalBroker(emit_event=registry.add_event, timeout_seconds=5.0)
+    broker = ApprovalBroker(emit_event=registry.add_event, ask_tracker=at, timeout_seconds=5.0)
     state = SimpleNamespace(
         config=cfg,
         transport=transport,
@@ -163,6 +170,7 @@ def _make_permission_app(tmp_path: Path) -> tuple[FastAPI, ApprovalBroker, PeerR
 
     app = FastAPI()
     app.include_router(acp_permissions.router)
+    app.include_router(asks.router)  # for the generic /answer verb
     return app, broker, registry
 
 
@@ -174,3 +182,127 @@ async def _wait_for_event(registry: PeerRegistry, event_type: str) -> dict:
             return matches[-1]
         await asyncio.sleep(0.01)
     raise AssertionError(f"timed out waiting for {event_type}")
+
+
+@pytest.mark.asyncio
+async def test_acp_permission_resolves_via_generic_answer(tmp_path: Path) -> None:
+    # The keystone: an ACP permission request IS a question ask, so answering it
+    # through the generic /answer route (as a human/peer would) resolves the ACP
+    # PermissionDecision — no ACP-specific decide call needed.
+    app, broker, registry = _make_permission_app(tmp_path)
+    try:
+        task = asyncio.create_task(
+            broker.request_permission(
+                peer_id="peer-1", session_id="session-1",
+                tool_call={"name": "shell"},
+                options=[SimpleNamespace(option_id="opt-allow", title="Allow")],
+            )
+        )
+        req = await _wait_for_event(registry, "acp_permission_request")
+        cid = req["request_id"]
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+        ) as http:
+            # answer via the generic verb, picking the allow option
+            r = await http.post("/answer", json={"correlation_id": cid, "option_id": "opt-allow"})
+            assert r.status_code == 200, r.text
+
+        decision = await asyncio.wait_for(task, timeout=1.0)
+        assert decision.outcome == "allowed"
+        assert decision.option_id == "opt-allow"
+    finally:
+        cleanup_deps()
+
+
+@pytest.mark.asyncio
+async def test_acp_permission_answer_fails_closed_on_bare_ack(tmp_path: Path) -> None:
+    # Acknowledging a tool-permission question (no option selected) must DENY,
+    # never allow — fail closed.
+    app, broker, registry = _make_permission_app(tmp_path)
+    try:
+        task = asyncio.create_task(
+            broker.request_permission(
+                peer_id="peer-1", session_id="session-1",
+                tool_call={"name": "shell"},
+                options=[SimpleNamespace(option_id="opt-allow", title="Allow")],
+            )
+        )
+        req = await _wait_for_event(registry, "acp_permission_request")
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+        ) as http:
+            r = await http.post(
+                "/answer", json={"correlation_id": req["request_id"], "outcome": "acknowledged"},
+            )
+            assert r.status_code == 200, r.text
+        decision = await asyncio.wait_for(task, timeout=1.0)
+        assert decision.outcome == "denied"
+    finally:
+        cleanup_deps()
+
+
+@pytest.mark.asyncio
+async def test_acp_permission_denied_via_first_class_outcome(tmp_path: Path) -> None:
+    # POST /answer {outcome: "denied"} on a tool-permission → PermissionDecision(denied),
+    # without needing a deny OPTION (ACP options are allow-options).
+    app, broker, registry = _make_permission_app(tmp_path)
+    try:
+        task = asyncio.create_task(
+            broker.request_permission(
+                peer_id="peer-1", session_id="session-1", tool_call={"name": "shell"},
+                options=[SimpleNamespace(option_id="opt-allow", title="Allow")],
+            )
+        )
+        req = await _wait_for_event(registry, "acp_permission_request")
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+        ) as http:
+            r = await http.post(
+                "/answer", json={"correlation_id": req["request_id"], "outcome": "denied"},
+            )
+            assert r.status_code == 200, r.text
+        decision = await asyncio.wait_for(task, timeout=1.0)
+        assert decision.outcome == "denied"
+    finally:
+        cleanup_deps()
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_answer_does_not_notify_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Answering a tool-permission must NOT notify the ACP "asker" — the runtime
+    # already gets the decision via wait_for_answer; a notify would be a
+    # redundant/intrusive prompt (codex review).
+    from unittest.mock import AsyncMock
+
+    import repowire.daemon.routes.asks as asks_mod
+
+    app, broker, registry = _make_permission_app(tmp_path)
+    notify_spy = AsyncMock()
+    try:
+        task = asyncio.create_task(
+            broker.request_permission(
+                peer_id="peer-1", session_id="session-1", tool_call={"name": "shell"},
+                options=[SimpleNamespace(option_id="opt-allow", title="Allow")],
+            )
+        )
+        req = await _wait_for_event(registry, "acp_permission_request")
+        # patch peer_delivery so any notify attempt is observable
+        monkeypatch.setattr(
+            asks_mod, "peer_delivery_from_state",
+            lambda **_: SimpleNamespace(notify=notify_spy),
+        )
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+        ) as http:
+            r = await http.post(
+                "/answer", json={"correlation_id": req["request_id"], "option_id": "opt-allow"},
+            )
+            assert r.status_code == 200, r.text
+        decision = await asyncio.wait_for(task, timeout=1.0)
+        assert decision.outcome == "allowed"
+        notify_spy.assert_not_awaited()  # no runtime notify for a tool-permission answer
+    finally:
+        cleanup_deps()

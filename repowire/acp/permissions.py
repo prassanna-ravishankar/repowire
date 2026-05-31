@@ -1,15 +1,41 @@
-"""Human approval broker for ACP permission requests."""
+"""ACP tool-permission adapter over the shared mesh-questions primitive.
+
+This is no longer a parallel decision system: a ``RequestPermission`` from an
+ACP runtime is translated into a blocking *choice question* ask registered in
+the ``AskTracker`` (recipient = the virtual ``__repowire_control__`` surface, so
+human answer-paths — dashboard banner, Telegram buttons — render it like any
+other question, and a peer can answer it programmatically). The broker awaits
+``AskTracker.wait_for_answer`` and maps the typed ``Answer`` back to an ACP
+``PermissionDecision``. ``ask.answer`` is the source of truth; the broker keeps
+only a small per-request context map for the compat ``decide``/``get_pending``
+surface and the ACP-specific event aliases.
+
+Fail closed: only an explicit ``allowed`` outcome with a valid option becomes
+``PermissionDecision(outcome="allowed")``; timeout / acknowledge / no-option
+deny.
+"""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
+from repowire.protocol.questions import Answer, Question, QuestionOption
+
+if TYPE_CHECKING:
+    from repowire.daemon.ask_tracker import AskTracker
+
 PermissionOutcome = Literal["allowed", "denied", "cancelled"]
+
+# Virtual recipient for a tool-permission question. Not a real peer and never
+# delivered through MessageRouter — human surfaces answer it via /answer using
+# the ask cid; a future roles/capabilities recipient model can replace it.
+CONTROL_PEER_ID = "__repowire_control__"
+CONTROL_PEER_NAME = "human"
 
 
 @dataclass(frozen=True)
@@ -24,30 +50,33 @@ class PermissionDecision:
 
 @dataclass
 class _PendingPermission:
-    request_id: str
+    request_id: str  # == the ask correlation_id
     peer_id: str
     session_id: str
     tool_call: dict[str, Any]
     options: list[dict[str, Any]]
-    future: asyncio.Future[PermissionDecision] = field(repr=False)
 
 
 class ApprovalBroker:
-    """Small in-process broker for ACP tool permission decisions.
+    """ACP-protocol adapter: RequestPermission ↔ a blocking choice-question ask.
 
-    The broker emits dashboard event-log records for visibility, waits for a
-    human decision submitted through the daemon, and defaults to deny when the
-    decision does not arrive before the timeout.
+    Registers the question in the ``AskTracker`` and blocks on its answer waiter;
+    the answer (from a human surface or a peer) resolves it. Defaults to deny on
+    timeout. Emits the normal ask event (so the dashboard/Telegram renderers
+    surface it) plus ``acp_permission_request``/``acp_permission_decision``
+    aliases for back-compat/audit, keyed by the same request_id (= ask cid).
     """
 
     def __init__(
         self,
         *,
         emit_event: Callable[[str, dict[str, Any]], str],
+        ask_tracker: AskTracker | None = None,
         resolve_repowire_session_id: Callable[[str, str], str | None] | None = None,
         timeout_seconds: float = 60.0,
     ) -> None:
         self._emit_event = emit_event
+        self._ask_tracker = ask_tracker
         self._resolve_repowire_session_id = resolve_repowire_session_id
         self._timeout_seconds = timeout_seconds
         self._pending: dict[str, _PendingPermission] = {}
@@ -63,29 +92,78 @@ class ApprovalBroker:
         tool_call: Any,
         options: list[Any],
     ) -> PermissionDecision:
-        """Emit a permission request and wait for a decision.
+        """Translate an ACP RequestPermission into a blocking question + await it.
 
-        Timeout intentionally defaults to deny. This is safer than preserving
-        the prior auto-allow fallback, and keeps the ACP subprocess unblocked.
+        Registers a choice question ask (recipient = the virtual control surface)
+        and blocks on its AskTracker answer waiter; a human/dashboard/peer answer
+        resolves it. Timeout intentionally defaults to deny (fail closed), which
+        keeps the ACP subprocess unblocked.
         """
-        loop = asyncio.get_running_loop()
+        if self._ask_tracker is None:
+            # No tracker wired (e.g. a bare test harness): fail closed.
+            return PermissionDecision(outcome="denied", message="approval broker not wired")
+
         normalized_options = [_normalize_option(option) for option in options]
+        request_id = f"acpperm-{uuid4().hex[:12]}"
         pending = _PendingPermission(
-            request_id=f"acpperm-{uuid4().hex[:12]}",
+            request_id=request_id,
             peer_id=peer_id,
             session_id=session_id,
             tool_call=_normalize_payload(tool_call),
             options=normalized_options,
-            future=loop.create_future(),
         )
         async with self._lock:
-            self._pending[pending.request_id] = pending
+            self._pending[request_id] = pending
 
+        question = Question(
+            kind="choice",
+            prompt=_tool_prompt(pending.tool_call),
+            options=[_to_question_option(o) for o in normalized_options],
+            blocking=True,
+            timeout_seconds=self._timeout_seconds,
+            default_answer=Answer(outcome="timed_out", message="permission request timed out"),
+            scope="tool_permission",
+            metadata={
+                "acp_peer_id": peer_id,
+                "acp_session_id": session_id,
+                "tool_call": pending.tool_call,
+                "request_id": request_id,
+            },
+        )
         repowire_session_id = self._resolve_session_id(peer_id, session_id)
+        try:
+            await self._ask_tracker.register(
+                from_peer_id=peer_id,
+                from_peer_name=peer_id,
+                to_peer_id=CONTROL_PEER_ID,
+                to_peer_name=CONTROL_PEER_NAME,
+                text=question.prompt or "ACP tool permission request",
+                correlation_id=request_id,
+                question=question,
+            )
+        except Exception as e:  # noqa: BLE001 — registration must not hard-fail the ACP turn
+            async with self._lock:
+                self._pending.pop(request_id, None)
+            return PermissionDecision(outcome="denied", message=f"register failed: {e}")
+
+        # Normal ask event (so the dashboard banner + Telegram render it) + the
+        # back-compat ACP-specific alias, both keyed by the same request_id/cid.
+        ask_event = {
+            "from": peer_id,
+            "to": CONTROL_PEER_NAME,
+            "from_peer_id": peer_id,
+            "to_peer_id": CONTROL_PEER_ID,
+            "text": question.prompt or "ACP tool permission request",
+            "correlation_id": request_id,
+            "question": question.model_dump(exclude_none=True),
+            "repowire_session_id": repowire_session_id,
+            "from_repowire_session_id": repowire_session_id,
+        }
+        self._emit_event("ask", ask_event)
         self._emit_event(
             "acp_permission_request",
             {
-                "request_id": pending.request_id,
+                "request_id": request_id,
                 "peer_id": peer_id,
                 "session_id": session_id,
                 "repowire_session_id": repowire_session_id,
@@ -96,20 +174,17 @@ class ApprovalBroker:
             },
         )
 
-        try:
-            decision = await asyncio.wait_for(pending.future, timeout=self._timeout_seconds)
-        except asyncio.TimeoutError:
-            decision = PermissionDecision(
-                outcome="denied",
-                message="permission request timed out",
-                timed_out=True,
-            )
+        answer = await self._ask_tracker.wait_for_answer(
+            request_id,
+            timeout_seconds=self._timeout_seconds,
+            default_answer=question.default_answer,
+        )
+        decision = _answer_to_decision(answer)
+        if decision.timed_out:
             self._last_error = "permission request timed out"
             self._last_error_at = _utc_now()
-        finally:
-            async with self._lock:
-                self._pending.pop(pending.request_id, None)
-
+        async with self._lock:
+            self._pending.pop(request_id, None)
         self._emit_decision_event(pending, decision)
         return decision
 
@@ -121,25 +196,33 @@ class ApprovalBroker:
         option_id: str | None = None,
         message: str | None = None,
     ) -> PermissionDecision | None:
-        """Resolve a pending request.
+        """Back-compat resolver for POST /acp/permissions/{id}/decision.
 
-        Returns ``None`` when the request is unknown or already resolved.
+        Maps the legacy outcome onto an Answer and resolves the underlying
+        question ask. Returns ``None`` when the request is unknown/already
+        resolved. ``ask.answer`` remains the source of truth.
         """
         async with self._lock:
             pending = self._pending.get(request_id)
-            if pending is None or pending.future.done():
-                return None
-            if outcome == "allowed":
-                option_id = option_id or _first_option_id(pending.options)
-            decision = PermissionDecision(
-                outcome=outcome,
-                option_id=option_id,
-                message=message,
-            )
-            pending.future.set_result(decision)
-            self._last_error = None
-            self._last_error_at = None
-            return decision
+        if pending is None or self._ask_tracker is None:
+            return None
+        if outcome == "allowed":
+            option_id = option_id or _first_option_id(pending.options)
+            answer = Answer(option_id=option_id, outcome="answered", message=message)
+        elif outcome == "cancelled":
+            answer = Answer(outcome="cancelled", message=message)
+        else:
+            answer = Answer(outcome="denied", message=message)  # first-class deny
+        try:
+            await self._ask_tracker.answer(request_id, answer)
+        except self._ask_tracker.AlreadyAnsweredError:
+            return None
+        except (KeyError, ValueError):
+            return None
+        decision = PermissionDecision(outcome=outcome, option_id=option_id, message=message)
+        self._last_error = None
+        self._last_error_at = None
+        return decision
 
     async def get_pending(self, request_id: str) -> dict[str, Any] | None:
         """Return a pending request snapshot for validation/UI callers."""
@@ -192,6 +275,38 @@ class ApprovalBroker:
             "last_error": self._last_error,
             "last_error_at": self._last_error_at,
         }
+
+
+def _tool_prompt(tool_call: dict[str, Any]) -> str:
+    """A short human prompt for the tool-permission question."""
+    name = tool_call.get("title") or tool_call.get("name") or tool_call.get("kind") or "a tool"
+    return f"Allow {name}?"
+
+
+def _to_question_option(option: dict[str, Any]) -> QuestionOption:
+    oid = str(option.get("option_id") or option.get("id") or option.get("name") or "option")
+    title = str(option.get("name") or option.get("title") or oid)
+    return QuestionOption(id=oid, title=title)
+
+
+def _answer_to_decision(answer: Answer) -> PermissionDecision:
+    """Map a typed Answer back to an ACP PermissionDecision. Fail closed.
+
+    Only an explicit selected option becomes ``allowed``; timeout / acknowledge /
+    cancel / no-option deny so a tool can never run on an ambiguous answer.
+    """
+    if answer.outcome == "timed_out":
+        return PermissionDecision(outcome="denied", message=answer.message, timed_out=True)
+    if answer.outcome == "cancelled":
+        return PermissionDecision(outcome="cancelled", message=answer.message)
+    if answer.outcome == "denied":
+        return PermissionDecision(outcome="denied", message=answer.message)
+    if answer.outcome == "answered" and answer.option_id:
+        return PermissionDecision(
+            outcome="allowed", option_id=answer.option_id, message=answer.message,
+        )
+    # acknowledged, or answered with no option → fail closed.
+    return PermissionDecision(outcome="denied", option_id=answer.option_id, message=answer.message)
 
 
 def _first_option_id(options: list[dict[str, Any]]) -> str | None:

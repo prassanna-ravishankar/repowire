@@ -33,7 +33,7 @@ QuestionKind = Literal["acknowledge", "choice", "text"]
 QuestionScope = Literal["mesh_ask", "tool_permission", "user_question"]
 """Where the question originated — diagnostic/routing hint, not behavior."""
 
-AnswerOutcome = Literal["answered", "acknowledged", "timed_out", "cancelled"]
+AnswerOutcome = Literal["answered", "acknowledged", "denied", "timed_out", "cancelled"]
 
 
 class QuestionOption(BaseModel):
@@ -98,7 +98,7 @@ class Question(BaseModel):
         text/ack kinds are permissive. First-answer-wins + lifecycle is the
         tracker's job.
         """
-        if answer.outcome in ("timed_out", "cancelled", "acknowledged"):
+        if answer.outcome in ("timed_out", "cancelled", "acknowledged", "denied"):
             return None
         if self.kind == "choice":
             if answer.option_id is None:

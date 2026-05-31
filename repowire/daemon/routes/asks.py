@@ -800,8 +800,14 @@ async def _answer_question_core(request: AnswerRequest) -> OkResponse:
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    # Best-effort: deliver a readable form of the answer back to the asker.
-    body = _answer_reply_text(existing, answer)
+    # Best-effort: deliver a readable form of the answer back to the asker —
+    # EXCEPT for tool-permission questions, where the ACP runtime already
+    # receives the decision via wait_for_answer; a notify back into the runtime
+    # would be a redundant/intrusive prompt (codex review).
+    is_tool_permission = (
+        existing.question is not None and existing.question.scope == "tool_permission"
+    )
+    body = None if is_tool_permission else _answer_reply_text(existing, answer)
     delivery_success = False
     if body:
         framed = f"[ack #{request.correlation_id} from @{existing.to_peer_name}] {body}"
