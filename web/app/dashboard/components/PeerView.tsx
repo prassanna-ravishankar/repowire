@@ -1386,7 +1386,18 @@ function ComposeBar({
           data-testid="compose-textarea"
           data-dirty={isDirty ? "true" : "false"}
           value={text}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => {
+            // A user edit exits history navigation: once the value diverges
+            // from the recalled entry it's an owned draft, so Esc must not
+            // clear it and arrows return to native behavior.
+            if (historyIdx.current !== null) {
+              const entries = getHistory(peer.peer_id);
+              if (event.target.value !== entries[historyIdx.current]) {
+                historyIdx.current = null;
+              }
+            }
+            setText(event.target.value);
+          }}
           onKeyDown={onKeyDown}
           placeholder={`ask ${peerLabel(peer)} something...`}
           rows={1}

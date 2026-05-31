@@ -1016,4 +1016,28 @@ describe("PeerView composer command history", () => {
     fireEvent.keyDown(textarea(), { key: "ArrowUp" });
     expect(textarea().value).toBe("");
   });
+
+  it("Escape does NOT clear a recalled entry the user has edited", () => {
+    // Regression (codex review): recall → edit exits history navigation, so
+    // Escape must not wipe the now-owned draft.
+    pushHistory(PEER.peer_id, "keepme");
+    renderComposer();
+
+    fireEvent.keyDown(textarea(), { key: "ArrowUp" });
+    expect(textarea().value).toBe("keepme");
+    fireEvent.change(textarea(), { target: { value: "keepme now" } });
+    fireEvent.keyDown(textarea(), { key: "Escape" });
+    expect(textarea().value).toBe("keepme now"); // preserved
+  });
+
+  it("arrows go native again after editing a recalled entry", () => {
+    pushHistory(PEER.peer_id, "alpha");
+    pushHistory(PEER.peer_id, "beta");
+    renderComposer();
+
+    fireEvent.keyDown(textarea(), { key: "ArrowUp" }); // "beta"
+    fireEvent.change(textarea(), { target: { value: "beta edited" } });
+    fireEvent.keyDown(textarea(), { key: "ArrowUp" }); // no longer navigating
+    expect(textarea().value).toBe("beta edited");
+  });
 });
