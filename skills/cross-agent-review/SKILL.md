@@ -24,7 +24,7 @@ Pick the reviewer in this order:
 
 You can see who is available and on which backend:
 - MCP: `list_peers()`
-- CLI: `repowire list-peers` (or `repowire peer list`)
+- CLI: `repowire peer list`
 
 ## Run the review
 
@@ -32,7 +32,8 @@ You can see who is available and on which backend:
 2. Send it a review request with the concrete diff/PR/plan to review. Be specific
    about what to check.
    - MCP: `ask(peer_name, "Review this diff for correctness + bugs: <context>")`
-   - CLI: `repowire ask <peer> "..."`
+   - The tracked ask/ack lifecycle is MCP-only — there's no CLI equivalent for a
+     non-blocking ask (`repowire peer ask` is a synchronous test utility, not this).
 3. `ask` is non-blocking and returns a `correlation_id`. The reviewer closes the
    thread with `ack(corr_id, <their review>)` — that reply comes back to you.
 4. Apply the review; iterate with `ask(reply_to=corr_id, ...)` for follow-ups.

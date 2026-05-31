@@ -21,8 +21,12 @@ these patterns. It does not depend on those skills being installed.
 | See who's around | `list_peers()` | Returns names, backends, status |
 | Who am I | `whoami()` | Your peer identity/circle |
 
-Each MCP tool has a CLI equivalent (`repowire ask|ack|notify|broadcast|list-peers|whoami`)
-for agents that don't surface `mcp__repowire__*`.
+The tracked **ask/ack/notify/broadcast lifecycle is MCP-only** — use the
+`mcp__repowire__*` tools. There is no honest CLI equivalent for non-blocking ask
+(the `repowire peer ask` command is a synchronous testing utility, not the
+ask/ack lifecycle). For agents without MCP, the CLI offers these real fallbacks:
+`repowire peer list`, `repowire peer whoami`, `repowire peer ack <cid>`,
+`repowire peer asks` (list pending), `repowire peer new` (spawn).
 
 ## Rules that bite
 

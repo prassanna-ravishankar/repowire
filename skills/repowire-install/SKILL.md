@@ -55,9 +55,9 @@ Read one back with `repowire config get skills.default_reviewer_backend`.
 ## 4. Verify
 
 ```bash
-repowire whoami       # you're on the mesh
-repowire list-peers   # see other agents
-repowire doctor       # health + drift checks
+repowire peer whoami   # you're on the mesh
+repowire peer list     # see other agents
+repowire doctor        # health + drift checks
 ```
-If `whoami`/`list-peers` fail, run `repowire setup` and re-check — don't create
-an alternate local mesh.
+If `peer whoami` / `peer list` fail, run `repowire setup` and re-check — don't
+create an alternate local mesh.

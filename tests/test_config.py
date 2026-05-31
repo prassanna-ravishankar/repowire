@@ -439,3 +439,16 @@ class TestConfigGetCommand:
         result = self._invoke(monkeypatch, "daemon.port", Config())
         assert result.exit_code == 0
         assert result.output.strip() != ""  # daemon.port has a default
+
+    def test_skill_key_resolves_generic_default_backend(self, monkeypatch):
+        # Per-skill key unset but default_backend set → the seam resolves it
+        # (regression: raw attr traversal returned empty here).
+        cfg = Config(skills=SkillsConfig(default_backend="codex"))
+        result = self._invoke(monkeypatch, "skills.default_reviewer_backend", cfg)
+        assert result.exit_code == 0
+        assert result.output.strip() == "codex"
+
+    def test_skill_key_per_skill_wins_over_generic(self, monkeypatch):
+        cfg = Config(skills=SkillsConfig(default_backend="codex", default_planner_backend="gemini"))
+        result = self._invoke(monkeypatch, "skills.default_planner_backend", cfg)
+        assert result.output.strip() == "gemini"

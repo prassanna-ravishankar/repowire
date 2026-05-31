@@ -4181,8 +4181,24 @@ def config_get(key: str, as_json: bool) -> None:
 
     from repowire.config.models import load_config
 
-    node: object = load_config()
-    for part in key.split("."):
+    cfg = load_config()
+    # Skill backend keys resolve through SkillsConfig.resolve() so an operator who
+    # sets only skills.default_backend still gets it for every per-skill key.
+    skill_backend_keys = {
+        "default_reviewer_backend",
+        "default_planner_backend",
+        "default_delegate_backend",
+    }
+    parts = key.split(".")
+    if len(parts) == 2 and parts[0] == "skills" and parts[1] in skill_backend_keys:
+        resolved = cfg.skills.resolve(parts[1])
+        if resolved is None:
+            return
+        click.echo(json.dumps(resolved, default=str) if as_json else str(resolved))
+        return
+
+    node: object = cfg
+    for part in parts:
         if hasattr(node, part):
             node = getattr(node, part)
         else:

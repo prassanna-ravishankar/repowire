@@ -19,7 +19,7 @@ so the planning perspective is genuinely independent.
 3. **Safe fallback** — else pick an online peer on a backend *different from yours*,
    or ask the user. Never default to your own backend; never hardcode one.
 
-Discover peers/backends: `list_peers()` (MCP) or `repowire list-peers` (CLI).
+Discover peers/backends: `list_peers()` (MCP) or `repowire peer list` (CLI).
 
 ## Run the planning round
 
@@ -27,7 +27,8 @@ Discover peers/backends: `list_peers()` (MCP) or `repowire list-peers` (CLI).
    chosen backend.
 2. Send the task + constraints and ask for a concrete step-by-step plan.
    - MCP: `ask(peer_name, "Draft an implementation plan for: <task + constraints>")`
-   - CLI: `repowire ask <peer> "..."`
+   - Tracked ask is MCP-only (no CLI lifecycle equivalent — `repowire peer ask` is
+     a synchronous test utility, not this).
 3. `ask` returns a `correlation_id`; the peer replies via `ack(corr_id, <plan>)`.
 4. Critique/merge the returned plan with your own; chain follow-ups with
    `ask(reply_to=corr_id, ...)`.

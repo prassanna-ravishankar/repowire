@@ -23,18 +23,19 @@ ask/ack lifecycle.
 
 1. **Prefer an existing peer** on the chosen backend (idle if possible):
    - MCP: `list_peers()` → pick an online peer with the right backend.
-   - CLI: `repowire list-peers`.
+   - CLI: `repowire peer list`.
 2. **Spawn only if none exists AND the user is clearly delegating** (don't spawn
    silently). Confirm before spawning:
    - MCP: `spawn_peer(path, backend=<chosen>, circle=<skills.default_circle or current>)`
-   - CLI: `repowire peer spawn ...`
+   - CLI: `repowire peer new ...`
    Default circle: `repowire config get skills.default_circle` (else your current circle).
 
 ## Hand off + track
 
 1. Send a complete, self-contained brief (the peer doesn't share your context):
    - MCP: `ask(peer_name, "<full task brief + acceptance criteria>")`
-   - CLI: `repowire ask <peer> "..."`
+   - Tracked delegation is MCP-only (`repowire peer ask` is a synchronous test
+     utility, not the ask/ack lifecycle). To close from the CLI: `repowire peer ack <cid>`.
 2. `ask` returns a `correlation_id`; the peer reports back via `ack(corr_id, ...)`.
 3. Track to completion; chain follow-ups with `ask(reply_to=corr_id, ...)`.
 
