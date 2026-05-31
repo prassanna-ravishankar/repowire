@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+from repowire.protocol.questions import Answer, Question
+
 logger = logging.getLogger(__name__)
 
 _EVICTION_INTERVAL_SECONDS = 300.0
@@ -107,6 +109,11 @@ class Ask:
     parent_id: str | None = None
     reply_text: str | None = None
     replied_at: datetime | None = None
+    # Structured question/answer (mesh questions primitive). ``question`` is set
+    # when the ask is a structured question (approval / choice / text); ``answer``
+    # is the typed resolution. A plain ask leaves both None and behaves as today.
+    question: Question | None = None
+    answer: Answer | None = None
 
 
 class AskTracker:
@@ -121,6 +128,11 @@ class AskTracker:
         self._asks: dict[str, Ask] = {}
         self._ttl = timedelta(hours=ttl_hours)
         self._last_eviction: float = 0.0
+        # Live answer waiters for blocking-transport questions. The future is a
+        # convenience for transports that own a suspendable call (ACP, PreToolUse
+        # hook); ``ask.answer`` is the source of truth. Futures vanish on restart
+        # like any open ask.
+        self._answer_waiters: dict[str, asyncio.Future[Answer]] = {}
         # peer_ids currently mid-switch — new asks to/from them are refused so
         # the switch route can kill+respawn without orphaning correlation IDs.
         self._quiescing: set[str] = set()
@@ -172,6 +184,7 @@ class AskTracker:
         from_repowire_session_id: str | None = None,
         to_repowire_session_id: str | None = None,
         parent_id: str | None = None,
+        question: Question | None = None,
     ) -> str:
         """Register a new open ask. Returns the correlation_id.
 
@@ -180,6 +193,8 @@ class AskTracker:
         and the same id is returned. Auto-generated cids never collide.
 
         ``parent_id`` links this ask as a child of an ask-many parent.
+        ``question`` makes this ask a structured question (approval / choice /
+        text); a blocking transport then awaits :meth:`wait_for_answer`.
 
         Raises QuiescedError if either endpoint is mid-switch.
         """
@@ -203,6 +218,7 @@ class AskTracker:
                 to_repowire_session_id=to_repowire_session_id,
                 reply_to=reply_to,
                 parent_id=parent_id,
+                question=question,
             )
             logger.debug("Registered ask %s: %s -> %s", cid, from_peer_name, to_peer_name)
             return cid
@@ -225,6 +241,95 @@ class AskTracker:
         """Return all child asks for an ask-many parent (snapshot)."""
         return [a for a in self._asks.values() if a.parent_id == parent_id]
 
+    class AlreadyAnsweredError(Exception):
+        """Raised by :meth:`answer` when the question was already answered."""
+
+    def _cancel_waiter(self, correlation_id: str, *, message: str | None = None) -> None:
+        """Resolve a dangling answer waiter with a cancelled Answer. Hold lock.
+
+        Called when an ask reaches a terminal state (evict/forget/close/rebind)
+        while a blocking transport is still awaiting it, so the waiter doesn't
+        hang until its own timeout (or forever, if it had none). The waiter's
+        caller sees outcome="cancelled" (with the close reason as the message).
+        """
+        waiter = self._answer_waiters.pop(correlation_id, None)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(Answer(outcome="cancelled", message=message))
+
+    async def answer(self, correlation_id: str, answer: Answer) -> Ask:
+        """Record the typed answer to a question ask. First valid answer wins.
+
+        Stores ``ask.answer`` (the source of truth), closes the ask, and resolves
+        any live waiter future. Validates the answer against the question's
+        options. Raises ``KeyError`` for an unknown id, ``ValueError`` for an
+        invalid answer, and ``AlreadyAnsweredError`` if already resolved.
+        """
+        async with self._lock:
+            ask = self._asks.get(correlation_id)
+            if ask is None:
+                raise KeyError(correlation_id)
+            if ask.answer is not None:
+                raise self.AlreadyAnsweredError(correlation_id)
+            if ask.question is not None:
+                error = ask.question.validate_answer(answer)
+                if error is not None:
+                    raise ValueError(error)
+            ask.answer = answer
+            if answer.text is not None and ask.reply_text is None:
+                ask.reply_text = answer.text
+                ask.replied_at = datetime.now(timezone.utc)
+            ask.closed = True
+            ask.close_reason = "answered"
+            waiter = self._answer_waiters.pop(correlation_id, None)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(answer)
+        return ask
+
+    async def wait_for_answer(
+        self,
+        correlation_id: str,
+        *,
+        timeout_seconds: float | None,
+        default_answer: Answer | None,
+    ) -> Answer:
+        """Block until ``correlation_id`` is answered, or apply the default on timeout.
+
+        Only meaningful for a transport that owns a suspendable call (ACP, a
+        PreToolUse hook). The returned answer is also recorded on the ask via the
+        timeout path so the ledger stays truthful. If the ask was already
+        answered (race), returns that answer immediately.
+        """
+        resolved_default = default_answer or Answer(outcome="timed_out")
+        async with self._lock:
+            ask = self._asks.get(correlation_id)
+            if ask is None:
+                raise KeyError(correlation_id)
+            if ask.answer is not None:
+                return ask.answer
+            # Fail loud NOW if the default is invalid for this question, rather
+            # than silently returning an unrecorded answer at timeout (codex
+            # review): the timeout path must always go through answer().
+            if ask.question is not None:
+                error = ask.question.validate_answer(resolved_default)
+                if error is not None:
+                    raise ValueError(f"invalid default_answer: {error}")
+            waiter = self._answer_waiters.get(correlation_id)
+            if waiter is None:
+                waiter = asyncio.get_running_loop().create_future()
+                self._answer_waiters[correlation_id] = waiter
+        try:
+            return await asyncio.wait_for(asyncio.shield(waiter), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            try:
+                await self.answer(correlation_id, resolved_default)
+            except (self.AlreadyAnsweredError, KeyError):
+                # A real answer landed in the race window, or the ask was
+                # evicted (which already cancelled this waiter).
+                existing = await self.get(correlation_id)
+                if existing is not None and existing.answer is not None:
+                    return existing.answer
+            return resolved_default
+
     async def close(self, correlation_id: str, reason: str) -> Ask | None:
         """Close an ask. Returns the Ask if it existed and wasn't already closed."""
         async with self._lock:
@@ -233,6 +338,10 @@ class AskTracker:
                 return None
             ask.closed = True
             ask.close_reason = reason
+            # A structured question closed through a non-answer terminal path
+            # (ack/send_failed/reply_to) must not leave a blocking transport
+            # waiting forever (codex review). Resolve any waiter as cancelled.
+            self._cancel_waiter(correlation_id, message=reason)
             logger.debug("Closed ask %s: %s", correlation_id, reason)
             return ask
 
@@ -307,6 +416,7 @@ class AskTracker:
             ask.closed = True
             ask.close_reason = reason
             ask.pending_reply = None
+            self._cancel_waiter(correlation_id, message=reason)
             logger.debug(
                 "Rebound + closed ask %s -> %s (%s)",
                 correlation_id, new_from_peer_id, reason,
@@ -473,6 +583,7 @@ class AskTracker:
                 if not ask.closed:
                     ask.closed = True
                     ask.close_reason = "evicted"
+                self._cancel_waiter(cid)
                 del self._asks[cid]
             return len(doomed)
 
@@ -502,6 +613,7 @@ class AskTracker:
                 if not ask.closed:
                     ask.closed = True
                     ask.close_reason = "evicted"
+                self._cancel_waiter(cid)
                 del self._asks[cid]
             if expired:
                 logger.info("Evicted %d expired asks", len(expired))
