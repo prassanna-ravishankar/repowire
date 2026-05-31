@@ -134,6 +134,8 @@ Fan out to every online peer in your circle. No correlation, no reply. Use spari
 broadcast("rebasing main, hold pushes for ~5 min")
 ```
 
+ACP-brokered peers (experimental) are included in the fan-out: each receives the broadcast text as a fire-and-forget prompt through the broker (reply discarded), the same broker-accepted semantics as an ACP `notify_peer`. They appear in the response's `sent_to` on broker handoff, not on runtime completion.
+
 ## Inspection
 
 ### `list_peers`

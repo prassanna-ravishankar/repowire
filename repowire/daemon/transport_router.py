@@ -270,6 +270,30 @@ class AcpPeerTransport:
             to_repowire_session_id=envelope.to_repowire_session_id,
         )
 
+    async def send_broadcast(self, text: str, decision: AcpRouteDecision) -> None:
+        """Fire-and-forget broadcast text to one ACP peer (reply discarded).
+
+        Like notify, this returns after the prompt task is scheduled — it does
+        NOT await the runtime, so a slow ACP peer can't make broadcast block.
+        """
+        if decision is None or decision.spec is None:
+            raise RuntimeError("ACP transport selected without an ACP route")
+
+        async def _drop_result(
+            _cid: str, _reply: str | None, _err: str | None,
+        ) -> None:
+            return None
+
+        cid = f"bcast-{uuid.uuid4().hex[:8]}"
+        await deliver_ask_via_acp(
+            manager=self._manager,
+            spec=decision.spec,
+            correlation_id=cid,
+            text=text,
+            on_complete=_drop_result,
+            on_state=self._state_callback(decision.spec.peer_id),
+        )
+
 
 class PeerTransportRouter:
     """Choose ACP before WebSocket for peer delivery."""
@@ -296,6 +320,20 @@ class PeerTransportRouter:
         before dispatch without duplicating the flag/metadata decision.
         """
         return self._acp_decision(target)
+
+    async def broadcast_to_acp(self, target: Peer, text: str) -> bool:
+        """Fire-and-forget broadcast to ``target`` iff it routes over ACP.
+
+        Returns True when the prompt task was scheduled (the ACP analogue of a
+        WS broadcast send), False when the peer is not ACP-routed (the caller
+        leaves it to the WS fanout). Raises on a genuine ACP dispatch error so
+        the caller can record it as a per-recipient failure.
+        """
+        decision = self._acp_decision(target)
+        if decision is None or self._acp is None:
+            return False
+        await self._acp.send_broadcast(text, decision)
+        return True
 
     def _acp_decision(self, target: Peer) -> AcpRouteDecision | None:
         experiments = self._experiments

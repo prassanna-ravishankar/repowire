@@ -537,6 +537,103 @@ async def test_public_notify_route_does_not_503_for_acp_peer(
 
 
 @pytest.mark.asyncio
+async def test_broadcast_reaches_acp_peer_without_ws_session(
+    tmp_path: Path, acp_peer_config: AcpPeerConfig,
+) -> None:
+    # repowire-7bc: broadcast must reach ACP-routed peers (no WS session) via the
+    # broker, reporting them in sent_to and prompting the ACP manager.
+    app, _registry, _at, manager = _make_public_app(tmp_path, flag=True)
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+        ) as http:
+            sender = await _register_plain_peer(http, name="sender")
+            acp_peer = await _register_acp_peer(
+                http, name="answerer", acp_config=acp_peer_config,
+            )
+
+            r = await http.post("/broadcast", json={
+                "from_peer": sender,
+                "text": "all hands",
+            })
+            assert r.status_code == 200, r.text
+            assert acp_peer in r.json()["sent_to"]
+            # the broker actually received the broadcast text
+            await asyncio.sleep(0)
+            assert any(text == "all hands" for _pid, text in manager.prompts)
+    finally:
+        await asyncio.sleep(0)
+        await manager.close()
+        cleanup_deps()
+
+
+@pytest.mark.asyncio
+async def test_broadcast_excludes_named_acp_peer(
+    tmp_path: Path, acp_peer_config: AcpPeerConfig,
+) -> None:
+    # An explicitly-excluded ACP peer must not be prompted.
+    app, _registry, _at, manager = _make_public_app(tmp_path, flag=True)
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+        ) as http:
+            sender = await _register_plain_peer(http, name="sender")
+            acp_peer = await _register_acp_peer(
+                http, name="answerer", acp_config=acp_peer_config,
+            )
+
+            r = await http.post("/broadcast", json={
+                "from_peer": sender,
+                "text": "skip you",
+                "exclude": [acp_peer],
+            })
+            assert r.status_code == 200, r.text
+            assert acp_peer not in r.json()["sent_to"]
+            await asyncio.sleep(0)
+            assert manager.prompts == []
+    finally:
+        await asyncio.sleep(0)
+        await manager.close()
+        cleanup_deps()
+
+
+@pytest.mark.asyncio
+async def test_broadcast_skips_offline_acp_peer(
+    tmp_path: Path, acp_peer_config: AcpPeerConfig,
+) -> None:
+    # Broadcast must not resurrect an OFFLINE ACP peer (codex review): match WS
+    # broadcast semantics — only live peers are reached.
+    app, registry, _at, manager = _make_public_app(
+        tmp_path, flag=True, skip_lazy_repair=True,
+    )
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+        ) as http:
+            sender = await _register_plain_peer(http, name="sender")
+            acp_peer = await _register_acp_peer(
+                http, name="answerer", acp_config=acp_peer_config,
+            )
+            # Mark the ACP peer OFFLINE (e.g. reaped/disconnected).
+            for p in await registry.get_all_peers():
+                if p.display_name == acp_peer:
+                    p.status = PeerStatus.OFFLINE
+
+            r = await http.post("/broadcast", json={
+                "from_peer": sender,
+                "text": "anyone home",
+            })
+            assert r.status_code == 200, r.text
+            assert acp_peer not in r.json()["sent_to"]
+            await asyncio.sleep(0)
+            assert manager.prompts == []
+    finally:
+        await asyncio.sleep(0)
+        await manager.close()
+        cleanup_deps()
+
+
+@pytest.mark.asyncio
 async def test_lazy_repair_does_not_demote_acp_peers_with_flag_on(
     tmp_path: Path, acp_peer_config: AcpPeerConfig,
 ) -> None:

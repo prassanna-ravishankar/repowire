@@ -33,6 +33,7 @@ from repowire.daemon.transport_router import (
 )
 from repowire.daemon.websocket_transport import DeliveryInjectionError, TransportError
 from repowire.protocol.messages import AttachmentRef
+from repowire.protocol.peers import PeerStatus
 
 logger = logging.getLogger(__name__)
 
@@ -498,20 +499,46 @@ class PeerDeliveryService:
             },
         )
 
+        # ACP-routed recipients have no WS session, so MessageRouter.broadcast
+        # (which iterates live WS sessions) never reaches them. Fan out to the
+        # eligible ACP peers through the same ACP-before-WS router used for
+        # notify (fire-and-forget; reply discarded), and exclude them from the
+        # WS broadcast so a hybrid peer can't receive twice.
+        acp_sent: list[str] = []
+        acp_failed: list[dict[str, str]] = []
+        if self._transport_router is not None:
+            for peer in peers:
+                if peer.peer_id in exclude_session_ids:
+                    continue
+                # Match WS broadcast semantics: only reach live peers, never
+                # resurrect an OFFLINE one (codex review). ONLINE/BUSY are
+                # eligible; the ACP client lock serializes a BUSY peer's prompts.
+                if peer.status == PeerStatus.OFFLINE:
+                    continue
+                if self._router().acp_route(peer) is None:
+                    continue
+                exclude_session_ids.add(peer.peer_id)
+                try:
+                    if await self._router().broadcast_to_acp(peer, text):
+                        acp_sent.append(peer.display_name)
+                except Exception as e:  # noqa: BLE001 — one ACP failure must not abort fanout
+                    acp_failed.append({"peer": peer.display_name, "error": str(e)})
+
         sent_ids, failed = await self._message_router.broadcast(
             from_peer=from_peer,
             text=text,
             exclude=exclude_session_ids,
         )
         return (
-            [id_to_name[sid] for sid in sent_ids if sid in id_to_name],
+            [id_to_name[sid] for sid in sent_ids if sid in id_to_name] + acp_sent,
             [
                 {
                     "peer": id_to_name.get(f["session_id"], f["session_id"]),
                     "error": f["error"],
                 }
                 for f in failed
-            ],
+            ]
+            + acp_failed,
         )
 
     def _router(self) -> PeerTransportRouter:
