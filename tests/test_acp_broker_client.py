@@ -461,7 +461,8 @@ async def test_public_notify_route_does_not_503_for_acp_peer(
             assert body["delivery_state"] == "delivered"
             assert body["delivered"] is True
             assert body["queued"] is False
-            assert body["reason"] == "transport_delivered"
+            # ACP notify is broker-accepted, not a runtime receipt (must-fix #3).
+            assert body["reason"] == "broker_accepted"
             assert body["from_peer_name"] == asker
             assert body["to_peer_name"] == answerer
     finally:

@@ -14,6 +14,10 @@ from typing import Any, Literal, cast
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, Config
+from repowire.daemon.acp_reconcile import (
+    record_acp_ask_operation,
+    settle_acp_ask_operation,
+)
 from repowire.daemon.ask_tracker import AskerIdentity, AskTracker
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry, normalize_identity_path
@@ -90,6 +94,7 @@ class PeerDeliveryService:
         ask_tracker: AskTracker | None = None,
         session_binding_store: Any | None = None,
         queued_delivery_store: SQLiteQueuedDeliveryStore | None = None,
+        operation_store: Any | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -98,6 +103,7 @@ class PeerDeliveryService:
         self._ask_tracker = ask_tracker
         self._session_binding_store = session_binding_store
         self._queued_delivery_store = queued_delivery_store
+        self._operation_store = operation_store
 
     def _session_id_for_peer(self, peer: Any | None) -> str | None:
         return resolve_repowire_session_id(self._session_binding_store, peer=peer)
@@ -378,6 +384,20 @@ class PeerDeliveryService:
         from_session_id = self._session_id_for_peer(from_obj)
         to_session_id = self._session_id_for_peer(target)
 
+        # ACP asks are delivered by a daemon-owned background task whose closure
+        # is lost on restart. Record a durable operation BEFORE the task is
+        # scheduled so a startup sweep can fail it and notify the asker.
+        if self._operation_store is not None and self._router().acp_route(target) is not None:
+            operation_id = record_acp_ask_operation(
+                self._operation_store,
+                correlation_id=correlation_id,
+                from_peer_id=from_peer_id,
+                from_peer_name=from_peer_name,
+                to_peer_id=target.peer_id,
+                to_peer_name=target.display_name,
+            )
+            completion = self._settling_completion(completion, operation_id)
+
         try:
             return await self._router().send_ask(
                 AskEnvelope(
@@ -500,6 +520,27 @@ class PeerDeliveryService:
         if self._transport_router is None:
             raise RuntimeError("PeerTransportRouter not configured")
         return self._transport_router
+
+    def _settling_completion(
+        self, inner: AskCompletion, operation_id: str | None,
+    ) -> AskCompletion:
+        """Wrap an ACP completion so it settles the durable operation.
+
+        Runs the real completion first (deliver the ack/error), then marks the
+        ``acp_ask`` operation terminal. Settling never raises into delivery.
+        """
+        if operation_id is None:
+            return inner
+
+        async def _settle(
+            correlation_id: str, reply: str | None, error: str | None,
+        ) -> None:
+            try:
+                await inner(correlation_id, reply, error)
+            finally:
+                settle_acp_ask_operation(self._operation_store, operation_id, error=error)
+
+        return cast(AskCompletion, _settle)
 
     def _default_acp_completion(self) -> AskCompletion:
         if self._ask_tracker is None:
@@ -631,4 +672,5 @@ def peer_delivery_from_state(
         ask_tracker=getattr(state, "ask_tracker", None),
         session_binding_store=getattr(state, "session_binding_store", None),
         queued_delivery_store=getattr(state, "queued_delivery_store", None),
+        operation_store=getattr(state, "operation_store", None),
     )

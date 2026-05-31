@@ -289,6 +289,14 @@ class PeerTransportRouter:
             AcpPeerTransport(acp_manager, registry) if acp_manager is not None else None
         )
 
+    def acp_route(self, target: Peer) -> AcpRouteDecision | None:
+        """Public: would this target route over ACP? (None = WS fallback).
+
+        Lets callers (e.g. PeerDeliveryService) record a durable ACP operation
+        before dispatch without duplicating the flag/metadata decision.
+        """
+        return self._acp_decision(target)
+
     def _acp_decision(self, target: Peer) -> AcpRouteDecision | None:
         experiments = self._config.experiments
         flag = bool(experiments.acp_broker_client) if experiments else False

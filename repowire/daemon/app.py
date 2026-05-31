@@ -23,6 +23,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from repowire import __version__
 from repowire.config.models import Config, load_config
+from repowire.daemon.acp_reconcile import reconcile_acp_inflight
 from repowire.daemon.ask_tracker import AskTracker
 from repowire.daemon.auth import require_localhost
 from repowire.daemon.delivery_trace import DeliveryTraceStore
@@ -309,6 +310,7 @@ def create_app(
             ask_tracker=ask_tracker,
             session_binding_store=session_binding_store,
             queued_delivery_store=queued_delivery_store,
+            operation_store=operation_store,
         )
         app.state.peer_delivery = peer_delivery
         spawn_service = SpawnService(
@@ -357,6 +359,12 @@ def create_app(
             cfg, peer_registry, app.state,
             lifecycle_handler=lifecycle_handler,
         )
+
+        # Fail-loud: an ACP ask in flight when the daemon last stopped lost its
+        # background prompt task (and the in-memory AskTracker). Reconcile those
+        # durable acp_ask operations now so the asker gets a closure rather than
+        # waiting forever.
+        reconcile_acp_inflight(operation_store, queued_delivery_store)
 
         # Install tmux lifecycle hooks if tmux is available.
         # Skipped when the caller disables it (e.g. smoke daemons under a
@@ -652,6 +660,7 @@ def create_test_app(
             ask_tracker=ask_tracker,
             session_binding_store=session_binding_store,
             queued_delivery_store=queued_delivery_store,
+            operation_store=operation_store,
         )
         app.state.peer_delivery = peer_delivery
         spawn_service = SpawnService(
@@ -696,6 +705,7 @@ def create_test_app(
         await registry.start()
         await scheduler.start()
         init_deps(cfg, registry, app.state, lifecycle_handler=lh)
+        reconcile_acp_inflight(operation_store, queued_delivery_store)
 
         mcp_session_manager = getattr(app.state, "mcp_http_session_manager", None)
         async with AsyncExitStack() as stack:
