@@ -942,6 +942,80 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         return result.get("correlation_id", "")
 
     @mcp.tool()
+    async def ask_many(
+        peer_names: list[str],
+        query: str,
+        circle: str | None = None,
+        timeout_seconds: int = 300,
+    ) -> str:
+        """[Repowire mesh] Ask the same question to several peers in parallel.
+
+        Opens one parent ask-many and a child ask per peer. Each child is a
+        normal ask the recipient closes with `ack`/`ack(msg)`. Returns a parent
+        id; poll `ask_many_result(parent_id)` to see replies, pending peers, and
+        partial/timeout state. Best-effort per peer (a failed recipient does not
+        abort the rest). No quorum/retry — it's a fanout, not a vote.
+
+        Args:
+            peer_names: Recipient display names (deduped; bounded list).
+            query: The question sent to every recipient.
+            circle: Optional target lookup circle.
+            timeout_seconds: Lazy deadline for partial/timeout reporting.
+
+        Returns:
+            parent_id (askm-...) to pass to ask_many_result.
+        """
+        await _ensure_registered(strict=True)
+        from_peer_name, _my_circle, _ = await _get_my_identity()
+        from_peer = _cached_peer_id or from_peer_name
+        body: dict = {
+            "from_peer": from_peer,
+            "to_peers": peer_names,
+            "text": query,
+            "timeout_seconds": timeout_seconds,
+        }
+        if circle is not None:
+            body["circle"] = circle
+        result = await daemon_request("POST", "/ask-many", body)
+        parent_id = result.get("parent_id", "")
+        children = result.get("children", [])
+        delivered = sum(1 for c in children if c.get("delivered"))
+        return f"{parent_id} ({delivered}/{len(children)} delivered)"
+
+    @mcp.tool()
+    async def ask_many_result(parent_id: str) -> str:
+        """[Repowire mesh] Aggregate the current state of an ask-many fanout.
+
+        Shows per-peer status (pending/acked/replied/failed) + rollup +
+        partial/timeout state. Replies are captured from acked children. State
+        is current-at-read (no background timer).
+
+        Args:
+            parent_id: The askm-... id returned by ask_many.
+
+        Returns:
+            A human-readable rollup of the ask-many fanout.
+        """
+        await _ensure_registered(strict=True)
+        result = await daemon_request("GET", f"/ask-many/{quote(parent_id, safe='')}")
+        rollup = result.get("rollup", {})
+        lines = [
+            f"ask-many {result.get('parent_id')} — state={result.get('state')} "
+            f"({rollup.get('replied', 0)} replied, {rollup.get('acked', 0)} acked, "
+            f"{rollup.get('pending', 0)} pending, {rollup.get('failed', 0)} failed)"
+        ]
+        for child in result.get("children", []):
+            reply = child.get("reply")
+            if reply:
+                suffix = f": {reply}"
+            elif child.get("error"):
+                suffix = f" ({child['error']})"
+            else:
+                suffix = ""
+            lines.append(f"  {child['peer']} — {child['status']}{suffix}")
+        return "\n".join(lines)
+
+    @mcp.tool()
     async def ack(
         correlation_id: str,
         message: str | None = None,

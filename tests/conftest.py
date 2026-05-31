@@ -12,6 +12,7 @@ from fastapi import APIRouter, FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from repowire.config.models import Config
+from repowire.daemon.ask_many import AskManyTracker
 from repowire.daemon.ask_tracker import AskTracker
 from repowire.daemon.delivery_trace import DeliveryTraceStore
 from repowire.daemon.deps import init_deps
@@ -73,6 +74,7 @@ def make_daemon_app(
         "transport": transport,
         "query_tracker": query_tracker,
         "ask_tracker": ask_tracker,
+        "ask_many_tracker": AskManyTracker(ask_tracker),
         "message_router": message_router,
         "peer_registry": registry,
         "relay_mode": cfg.relay.enabled,

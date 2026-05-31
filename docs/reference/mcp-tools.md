@@ -136,6 +136,23 @@ broadcast("rebasing main, hold pushes for ~5 min")
 
 ACP-brokered peers (experimental) are included in the fan-out: each receives the broadcast text as a fire-and-forget prompt through the broker (reply discarded), the same broker-accepted semantics as an ACP `notify_peer`. They appear in the response's `sent_to` on broker handoff, not on runtime completion.
 
+### `ask_many` / `ask_many_result`
+
+```python
+ask_many(peer_names: list[str], query: str, circle: str | None = None, timeout_seconds: int = 300) -> str
+ask_many_result(parent_id: str) -> str
+```
+
+Ask the same question to several peers in parallel under one parent (`askm-...`). Each recipient gets a normal child ask it closes with `ack`/`ack(msg)` — `ask_many` is a fan-out, not a vote: no quorum, no retry, no aggregation logic beyond collecting replies. Best-effort per peer (a recipient that fails to resolve or deliver is recorded as a `failed` child and does not abort the rest; the peer list is deduped and bounded).
+
+`ask_many` returns the `parent_id`; poll `ask_many_result(parent_id)` for the current rollup — per-peer status (`pending` / `acked` / `replied` / `failed`), captured reply bodies, and a `state` of `complete` / `partial` / `pending`. Timeout is lazy: a parent past its `timeout_seconds` deadline with open children reports `partial` / `timed_out` at read time (no background timer). State is in-memory and does not survive a daemon restart.
+
+```python
+parent = ask_many(["reviewer-a", "reviewer-b"], "ready to merge #42?")
+# ... later ...
+ask_many_result(parent)  # shows who replied, who's still pending
+```
+
 ## Inspection
 
 ### `list_peers`

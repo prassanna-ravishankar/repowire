@@ -100,6 +100,13 @@ class Ask:
     pending_reply: str | None = None
     asker_identity: AskerIdentity | None = None
     pending_reply_at: datetime | None = None
+    # ask-many fanout: set on children of an askm- parent. ``reply_text`` is the
+    # captured ack message body (the normal ack path frames+notifies+closes but
+    # does not retain the body); populated only after the framed reply is
+    # delivered, so a 503'd reply leaves the child showing pending.
+    parent_id: str | None = None
+    reply_text: str | None = None
+    replied_at: datetime | None = None
 
 
 class AskTracker:
@@ -164,12 +171,15 @@ class AskTracker:
         correlation_id: str | None = None,
         from_repowire_session_id: str | None = None,
         to_repowire_session_id: str | None = None,
+        parent_id: str | None = None,
     ) -> str:
         """Register a new open ask. Returns the correlation_id.
 
         If correlation_id is supplied and already exists, this is treated as
         a retry: the existing entry is preserved (lifecycle state intact)
         and the same id is returned. Auto-generated cids never collide.
+
+        ``parent_id`` links this ask as a child of an ask-many parent.
 
         Raises QuiescedError if either endpoint is mid-switch.
         """
@@ -192,9 +202,28 @@ class AskTracker:
                 from_repowire_session_id=from_repowire_session_id,
                 to_repowire_session_id=to_repowire_session_id,
                 reply_to=reply_to,
+                parent_id=parent_id,
             )
             logger.debug("Registered ask %s: %s -> %s", cid, from_peer_name, to_peer_name)
             return cid
+
+    async def capture_child_reply(self, correlation_id: str, reply_text: str) -> None:
+        """Record an ack message body on an ask-many child after reply delivery.
+
+        The normal ack path frames + notifies + closes but does not retain the
+        body; ask-many aggregation needs it. No-op for non-child asks or when
+        already captured. Call only after the framed reply was delivered.
+        """
+        async with self._lock:
+            ask = self._asks.get(correlation_id)
+            if ask is None or ask.parent_id is None or ask.reply_text is not None:
+                return
+            ask.reply_text = reply_text
+            ask.replied_at = datetime.now(timezone.utc)
+
+    async def list_by_parent(self, parent_id: str) -> list[Ask]:
+        """Return all child asks for an ask-many parent (snapshot)."""
+        return [a for a in self._asks.values() if a.parent_id == parent_id]
 
     async def close(self, correlation_id: str, reason: str) -> Ask | None:
         """Close an ask. Returns the Ask if it existed and wasn't already closed."""

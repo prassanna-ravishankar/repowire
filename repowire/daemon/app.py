@@ -24,6 +24,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from repowire import __version__
 from repowire.config.models import Config, load_config
 from repowire.daemon.acp_reconcile import reconcile_acp_inflight
+from repowire.daemon.ask_many import AskManyTracker
 from repowire.daemon.ask_tracker import AskTracker
 from repowire.daemon.auth import require_localhost
 from repowire.daemon.delivery_trace import DeliveryTraceStore
@@ -273,6 +274,7 @@ def create_app(
         app.state.transport = transport
         app.state.query_tracker = query_tracker
         app.state.ask_tracker = ask_tracker
+        app.state.ask_many_tracker = AskManyTracker(ask_tracker)
         app.state.event_log = event_log
         app.state.message_router = message_router
         app.state.peer_registry = peer_registry
@@ -623,6 +625,7 @@ def create_test_app(
         app.state.transport = transport
         app.state.query_tracker = query_tracker
         app.state.ask_tracker = ask_tracker
+        app.state.ask_many_tracker = AskManyTracker(ask_tracker)
         app.state.event_log = event_log
         app.state.message_router = msg_router
         app.state.peer_registry = registry

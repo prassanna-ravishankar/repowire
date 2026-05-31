@@ -558,3 +558,88 @@ class TestDeprecatedNoOps:
             json={"correlation_id": "legacy-cid"},
         )
         assert r.status_code == 200
+
+
+class TestAskMany:
+    async def test_fanout_aggregates_replies_and_bare_acks(self, env):
+        # End-to-end: POST /ask-many to two peers, ack one with a message and
+        # one bare, then GET the aggregated result (acceptance: all-reply path +
+        # child-ack routing under a parent).
+        client, _, _, _ = env
+        asker = await _register_peer(client, "asker")
+        alice = await _register_peer(client, "alice")
+        bob = await _register_peer(client, "bob")
+
+        r = await client.post("/ask-many", json={
+            "from_peer": asker,
+            "to_peers": [alice, bob],
+            "text": "standup?",
+        })
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["parent_id"].startswith("askm-")
+        children = {c["peer"]: c for c in body["children"]}
+        assert set(children) == {alice, bob}
+        assert all(c["correlation_id"].startswith("ask-") for c in children.values())
+
+        # alice replies with a message, bob bare-acks
+        await client.post("/ack", json={
+            "correlation_id": children[alice]["correlation_id"],
+            "message": "done",
+        })
+        await client.post("/ack", json={
+            "correlation_id": children[bob]["correlation_id"],
+        })
+
+        res = await client.get(f"/ask-many/{body['parent_id']}")
+        assert res.status_code == 200, res.text
+        agg = res.json()
+        assert agg["state"] == "complete"
+        assert agg["rollup"] == {"total": 2, "acked": 1, "replied": 1, "pending": 0, "failed": 0}
+        by_peer = {c["peer"]: c for c in agg["children"]}
+        assert by_peer[alice]["status"] == "replied"
+        assert by_peer[alice]["reply"] == "done"
+        assert by_peer[bob]["status"] == "acked"
+
+    async def test_partial_when_one_peer_pending(self, env):
+        client, _, _, _ = env
+        asker = await _register_peer(client, "asker")
+        alice = await _register_peer(client, "alice")
+        bob = await _register_peer(client, "bob")
+        r = await client.post("/ask-many", json={
+            "from_peer": asker, "to_peers": [alice, bob], "text": "?",
+        })
+        children = {c["peer"]: c for c in r.json()["children"]}
+        await client.post("/ack", json={"correlation_id": children[alice]["correlation_id"]})
+
+        agg = (await client.get(f"/ask-many/{r.json()['parent_id']}")).json()
+        # bob still open, deadline not passed -> pending state, 1 pending child
+        assert agg["state"] == "pending"
+        assert agg["rollup"]["pending"] == 1
+        assert agg["rollup"]["acked"] == 1
+
+    async def test_unknown_peer_is_failed_child_not_fatal(self, env):
+        client, _, _, _ = env
+        asker = await _register_peer(client, "asker")
+        alice = await _register_peer(client, "alice")
+        r = await client.post("/ask-many", json={
+            "from_peer": asker, "to_peers": [alice, "ghost"], "text": "?",
+        })
+        assert r.status_code == 200, r.text
+        agg = (await client.get(f"/ask-many/{r.json()['parent_id']}")).json()
+        by_peer = {c["peer"]: c for c in agg["children"]}
+        assert by_peer["ghost"]["status"] == "failed"
+        assert by_peer[alice]["status"] in {"pending", "acked"}
+
+    async def test_empty_peer_list_422(self, env):
+        client, _, _, _ = env
+        asker = await _register_peer(client, "asker")
+        r = await client.post("/ask-many", json={
+            "from_peer": asker, "to_peers": [], "text": "?",
+        })
+        assert r.status_code == 422
+
+    async def test_unknown_parent_404(self, env):
+        client, _, _, _ = env
+        r = await client.get("/ask-many/askm-nope")
+        assert r.status_code == 404

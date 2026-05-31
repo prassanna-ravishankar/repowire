@@ -17,6 +17,7 @@ class AppState(Protocol):
     transport: Any
     query_tracker: Any
     ask_tracker: Any
+    ask_many_tracker: Any
     peer_registry: PeerRegistry
     peer_delivery: PeerDeliveryService
     acp_permission_broker: Any

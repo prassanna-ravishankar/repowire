@@ -28,6 +28,12 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from repowire.daemon.ask_many import (
+    DEFAULT_ASK_MANY_TIMEOUT_SECONDS,
+    MAX_ASK_MANY_PEERS,
+    AskManyChild,
+    AskManyTracker,
+)
 from repowire.daemon.ask_tracker import AskerIdentity, AskTracker, QuiescedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
@@ -326,6 +332,11 @@ async def _acp_complete(
             has_attachments=False,
         )
         return
+    # Reply delivered to the asker: capture the body for ask-many aggregation
+    # (no-op for non-child asks). Only here — the TransportError/ValueError/error
+    # paths above must NOT mark a child replied without proven delivery.
+    if not is_error and reply is not None:
+        await ask_tracker.capture_child_reply(correlation_id, reply)
     await ask_tracker.close(
         correlation_id, reason="ack_with_msg" if not is_error else "send_failed",
     )
@@ -337,6 +348,28 @@ async def _acp_complete(
         has_message=not is_error,
         has_attachments=False,
     )
+
+
+def _make_on_acp_complete(ask_tracker: AskTracker, peer_registry: PeerRegistry):
+    """Build the ACP completion callback used for ask + ask-many children.
+
+    Delegates to the shared _acp_complete, which captures the ask-many child
+    reply only after the framed reply is delivered to the asker (so a failed
+    delivery leaves the child pending, not replied).
+    """
+
+    async def _on_acp_complete(
+        correlation_id: str, reply: str | None, error: str | None,
+    ) -> None:
+        await _acp_complete(
+            correlation_id=correlation_id,
+            reply=reply,
+            error=error,
+            ask_tracker=ask_tracker,
+            peer_registry=peer_registry,
+        )
+
+    return _on_acp_complete
 
 
 @router.post("/ask", response_model=AskResponse)
@@ -549,6 +582,144 @@ async def open_ask(
     return AskResponse(correlation_id=cid)
 
 
+class AskManyRequest(BaseModel):
+    """Open a parent ask-many fanning out to a bounded peer list."""
+
+    from_peer: str = Field(..., description="Display name of the sender")
+    to_peers: list[str] = Field(..., description="Recipient display names (deduped)")
+    text: str = Field(..., description="Ask content sent to every recipient")
+    circle: str | None = Field(default=None)
+    bypass_circle: bool = Field(default=False)
+    timeout_seconds: int = Field(
+        default=DEFAULT_ASK_MANY_TIMEOUT_SECONDS,
+        description="Lazy deadline for partial/timeout reporting (no active timer)",
+    )
+
+
+class AskManyChildResponse(BaseModel):
+    peer: str
+    correlation_id: str | None = None
+    delivered: bool = False
+    error: str | None = None
+
+
+class AskManyResponse(BaseModel):
+    parent_id: str
+    children: list[AskManyChildResponse]
+
+
+@router.post("/ask-many", response_model=AskManyResponse)
+async def open_ask_many(
+    request: AskManyRequest,
+    _: str | None = Depends(require_auth),
+) -> AskManyResponse:
+    """Fan out one ask to many peers under a parent id, best-effort per child.
+
+    Each child is a normal ask (acked via the usual /ack); the parent is a
+    tracking anchor only. A child that fails to resolve/deliver is recorded as
+    a failed child and does not abort the rest. v1: no quorum/retry/map-reduce.
+    """
+    peer_registry = get_peer_registry()
+    state = get_app_state()
+    ask_tracker: AskTracker = state.ask_tracker
+    ask_many: AskManyTracker = state.ask_many_tracker
+    await peer_registry.lazy_repair()
+
+    if not request.to_peers:
+        raise HTTPException(status_code=422, detail="to_peers must not be empty")
+    if len(request.to_peers) > MAX_ASK_MANY_PEERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"to_peers exceeds the {MAX_ASK_MANY_PEERS}-peer limit",
+        )
+
+    parent = await ask_many.create(
+        from_peer_id=None,
+        from_peer_name=request.from_peer,
+        text=request.text,
+        timeout_seconds=request.timeout_seconds,
+    )
+
+    peer_delivery = peer_delivery_from_state(
+        config=state.config, registry=peer_registry, state=state,
+    )
+
+    children: list[AskManyChildResponse] = []
+    seen_peer_ids: set[str] = set()
+    for to_peer in dict.fromkeys(request.to_peers):  # de-dup by display name
+        try:
+            peer = await peer_registry.get_peer(to_peer, circle=request.circle)
+        except ValueError as e:
+            peer = None
+            resolve_error = str(e)
+        else:
+            resolve_error = None if peer else f"peer not found: {to_peer}"
+        if peer is None:
+            await ask_many.add_child(
+                parent.parent_id, AskManyChild(peer_name=to_peer, delivery_error=resolve_error),
+            )
+            children.append(AskManyChildResponse(peer=to_peer, error=resolve_error))
+            continue
+        if peer.peer_id in seen_peer_ids:
+            continue  # de-dup peers that resolve to the same identity
+        seen_peer_ids.add(peer.peer_id)
+
+        from_obj = await _resolve_sender_for_target(request.from_peer, peer)
+        from_peer_id = from_obj.peer_id if from_obj else request.from_peer
+        from_peer_name = from_obj.display_name if from_obj else request.from_peer
+        cid = await ask_tracker.register(
+            from_peer_id=from_peer_id,
+            from_peer_name=from_peer_name,
+            to_peer_id=peer.peer_id,
+            to_peer_name=peer.display_name,
+            text=request.text,
+            parent_id=parent.parent_id,
+        )
+        try:
+            await peer_delivery.deliver_ask(
+                from_peer=from_peer_id,
+                to_peer=peer.peer_id,
+                text=request.text,
+                correlation_id=cid,
+                bypass_circle=request.bypass_circle,
+                on_acp_complete=_make_on_acp_complete(ask_tracker, peer_registry),
+            )
+            delivered = True
+            err = None
+        except (TransportError, DeliveryInjectionError, ValueError) as e:
+            await ask_tracker.close(cid, reason="send_failed")
+            delivered = False
+            err = str(e)
+        await ask_many.add_child(
+            parent.parent_id,
+            AskManyChild(
+                peer_name=peer.display_name, correlation_id=cid, peer_id=peer.peer_id,
+                delivery_error=err,
+            ),
+        )
+        children.append(
+            AskManyChildResponse(
+                peer=peer.display_name, correlation_id=cid, delivered=delivered, error=err,
+            )
+        )
+
+    return AskManyResponse(parent_id=parent.parent_id, children=children)
+
+
+@router.get("/ask-many/{parent_id}")
+async def ask_many_result(
+    parent_id: str,
+    _: str | None = Depends(require_auth),
+) -> dict:
+    """Aggregate an ask-many parent's current state from its children."""
+    state = get_app_state()
+    ask_many: AskManyTracker = state.ask_many_tracker
+    result = await ask_many.status(parent_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"ask-many {parent_id} not found")
+    return result
+
+
 @router.post("/ack", response_model=OkResponse)
 async def ack_ask(
     request: AckRequest,
@@ -653,6 +824,11 @@ async def ack_ask(
                 detail=f"Reply delivery error: {e}",
             )
 
+        # Reply delivered: capture the body for ask-many aggregation (no-op for
+        # non-child asks) BEFORE closing, so a 503'd delivery above never marks
+        # the child replied.
+        if request.message and existing.parent_id is not None:
+            await ask_tracker.capture_child_reply(request.correlation_id, request.message)
         await ask_tracker.close(request.correlation_id, reason="ack_with_msg")
     else:
         _emit_ack_event(
