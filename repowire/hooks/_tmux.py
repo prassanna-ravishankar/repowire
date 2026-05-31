@@ -39,6 +39,69 @@ def is_tmux_available() -> bool:
         return False
 
 
+class PaneInfo(TypedDict):
+    """A single tmux pane, as reported by ``list_all_panes``."""
+
+    pane_id: str  # e.g. "%42"
+    pid: int  # pane_pid (the pane's shell pid)
+    command: str  # pane_current_command
+    cwd: str  # pane_current_path
+    session: str  # session_name
+    window: str  # window_index
+
+
+# Tab-delimited so a command/cwd containing spaces survives the split.
+_PANE_FORMAT = (
+    "#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t"
+    "#{pane_current_path}\t#{session_name}\t#{window_index}"
+)
+
+
+def list_all_panes() -> list[PaneInfo]:
+    """All tmux panes across every session, or [] if tmux is unreachable.
+
+    Best-effort discovery for orphan-pane adoption — a pane whose agent never
+    registered (hooks/MCP didn't fire) still shows up here. Malformed rows are
+    skipped rather than failing the whole listing.
+    """
+    if not shutil.which("tmux"):
+        return []
+    try:
+        result = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", _PANE_FORMAT],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+        logger.debug("list_all_panes: tmux list-panes failed: %s", e)
+        return []
+    if result.returncode != 0:
+        return []
+
+    panes: list[PaneInfo] = []
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 6:
+            continue
+        pane_id, pid_str, command, cwd, session, window = parts
+        try:
+            pid = int(pid_str)
+        except ValueError:
+            continue
+        panes.append(
+            PaneInfo(
+                pane_id=pane_id,
+                pid=pid,
+                command=command,
+                cwd=cwd,
+                session=session,
+                window=window,
+            )
+        )
+    return panes
+
+
 def _get_ppid_chain(max_depth: int = 16) -> list[int]:
     """Walk getppid() ancestry. Returns pids from immediate parent upward."""
     chain: list[int] = []

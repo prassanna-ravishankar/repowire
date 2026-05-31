@@ -130,7 +130,66 @@ export function SpawnDialog({ apiBase, onClose, onSpawned }: { apiBase: string; 
           </button>
         </div>
       )}
+      <OrphanPanesList apiBase={apiBase} />
     </Modal>
+  );
+}
+
+interface OrphanPane {
+  pane_id: string;
+  command: string;
+  cwd: string;
+  detected_backend: string;
+  confidence: string;
+}
+
+/** Read-only list of unregistered tmux panes + the `repowire link` command to
+ *  adopt each. Adoption itself is the explicit CLI step (no button in v1). */
+export function OrphanPanesList({ apiBase }: { apiBase: string }) {
+  const [panes, setPanes] = useState<OrphanPane[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${apiBase}/panes/orphans`)
+      .then((res) => (res.ok ? res.json() : { panes: [] }))
+      .then((data: { panes: OrphanPane[] }) => {
+        if (!cancelled) setPanes(data.panes ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setPanes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase]);
+
+  if (panes === null || panes.length === 0) return null;
+
+  return (
+    <div className="mt-6 border-t border-border-faint pt-4" data-testid="orphan-panes">
+      <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-outline">
+        Unlinked panes — adopt with the CLI
+      </p>
+      <div className="space-y-2">
+        {panes.map((p) => {
+          const backend = p.confidence === "hint" ? p.detected_backend : "<backend>";
+          return (
+            <div key={p.pane_id} className="font-mono text-[11px]">
+              <div className="flex items-center gap-2 text-on-surface-variant">
+                <span className="font-bold text-on-surface">{p.pane_id}</span>
+                <span className={p.confidence === "hint" ? "text-primary" : "text-outline"}>
+                  {p.detected_backend}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-outline">{p.command} · {p.cwd}</span>
+              </div>
+              <code className="mt-0.5 block select-all rounded bg-surface-container-lowest px-2 py-1 text-[10px] text-outline">
+                repowire link --pane {p.pane_id} --backend {backend}
+              </code>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

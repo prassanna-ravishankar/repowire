@@ -60,6 +60,12 @@ A reconnect may reclaim an existing `peer_id` only when the claim still describe
 
 If the check fails, the stale `peer_id` claim is ignored and the daemon allocates or adopts a different identity. This prevents an old environment variable or stale pane metadata from binding a different session's WebSocket to the wrong peer.
 
+## Linking an orphan pane (link vs spawn)
+
+When an agent is already running in a local tmux pane but never registered — hooks or MCP did not fire — the daemon cannot see it. `GET /panes/orphans` lists every unregistered local pane (with a display-only backend hint), and `repowire link --pane %NN --backend X` adopts one intentionally.
+
+Link is distinct from spawn: **spawn** starts a *new* agent in a working directory; **link** adopts an *existing* running agent the daemon missed. Link is fail-closed against ghosts — it registers the peer and then establishes the inbound ws-hook, and reports success only when a live WebSocket connection is observed. If the transport cannot be established, the registration is rolled back so no transportless peer is left in the roster, and a retry hint is returned. Linking is same-host only (the daemon cannot spawn a hook into a foreign pane). A linked peer has no runtime session id until its hooks report one, so resume stays unavailable until then — the daemon does not fabricate it.
+
 When a new peer claims a pane already held by another peer, the old peer normally loses that pane binding and is marked offline. Pane lookup should then resolve to the current live owner, not a zombie registration.
 
 There is one protected case: a fresh live `orchestrator` peer keeps sticky ownership of its tmux pane. If a temporary same-pane session starts in a split terminal, the daemon can register that session without assigning the pane (`pane_assigned=false`). The temporary peer can still use outbound MCP/HTTP tools, but it does not get inbound hook transport and must not clear the incumbent orchestrator's pane metadata or WebSocket hook.

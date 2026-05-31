@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SettingsDialog } from "./DashboardDialogs";
+import { OrphanPanesList, SettingsDialog } from "./DashboardDialogs";
 import type { DaemonHealth, Peer } from "../types";
 
 const SERVICE_PEER: Peer = {
@@ -85,5 +85,77 @@ describe("SettingsDialog", () => {
     expect(screen.getByText("Running")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("Unknown")).toBeInTheDocument());
     expect(screen.getByText("Error 500")).toBeInTheDocument();
+  });
+});
+
+describe("OrphanPanesList", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("renders unlinked panes with a copyable link command", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            panes: [
+              {
+                pane_id: "%5",
+                command: "claude",
+                cwd: "/tmp/proj",
+                detected_backend: "claude-code",
+                confidence: "hint",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    render(<OrphanPanesList apiBase="http://daemon.test" />);
+
+    expect(await screen.findByText("%5")).toBeInTheDocument();
+    expect(
+      screen.getByText("repowire link --pane %5 --backend claude-code"),
+    ).toBeInTheDocument();
+  });
+
+  it("renders nothing when there are no orphan panes", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ panes: [] }), { status: 200 })),
+    );
+
+    const { container } = render(<OrphanPanesList apiBase="http://daemon.test" />);
+    await waitFor(() => expect(container.querySelector('[data-testid="orphan-panes"]')).toBeNull());
+  });
+
+  it("uses a <backend> placeholder when detection is only a guess", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            panes: [
+              {
+                pane_id: "%6",
+                command: "zsh",
+                cwd: "/tmp/x",
+                detected_backend: "unknown",
+                confidence: "unknown",
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    render(<OrphanPanesList apiBase="http://daemon.test" />);
+    expect(
+      await screen.findByText("repowire link --pane %6 --backend <backend>"),
+    ).toBeInTheDocument();
   });
 });

@@ -849,6 +849,92 @@ def _render_result(result: object, indent: int = 0) -> None:
 
 
 @main.command()
+@click.option("--pane", "pane_id", default=None, help="tmux pane id to adopt (e.g. %42)")
+@click.option("--backend", default=None, help="Agent running in the pane (required to link)")
+@click.option("--name", default=None, help="Optional display name for the linked peer")
+@click.option("--circle", default=None, help="Circle to register the peer into")
+def link(pane_id: str | None, backend: str | None, name: str | None, circle: str | None) -> None:
+    """Adopt an unregistered local tmux pane into the mesh.
+
+    With no --pane: list candidate panes (those running an agent the daemon
+    never registered) plus the command to adopt each.
+
+    With --pane and --backend: register the pane AND establish its inbound
+    ws-hook. The link succeeds only if a live connection is observed; otherwise
+    it is rolled back (no half-registered ghost) and a retry hint is shown.
+    """
+    import sys
+
+    import httpx
+
+    daemon_url = _get_daemon_url()
+
+    if not pane_id:
+        try:
+            with httpx.Client(timeout=3.0) as client:
+                resp = client.get(f"{daemon_url}/panes/orphans")
+                resp.raise_for_status()
+                panes = resp.json().get("panes", [])
+        except httpx.HTTPError as e:
+            console.print(f"[red]✗[/] Could not reach daemon at {daemon_url}: {e}")
+            sys.exit(1)
+        if not panes:
+            console.print("[green]✓[/] No unlinked panes found.")
+            return
+        console.print("[cyan]Unlinked tmux panes:[/]")
+        for p in panes:
+            hint = p["detected_backend"]
+            tag = f"[green]{hint}[/]" if p["confidence"] == "hint" else "[dim]unknown[/]"
+            console.print(
+                f"  {p['pane_id']}  {tag}  [dim]{p['command']}  {p['cwd']}[/]"
+            )
+            console.print(
+                f"    [dim]repowire link --pane {p['pane_id']} --backend "
+                f"{hint if p['confidence'] == 'hint' else '<backend>'}[/]"
+            )
+        return
+
+    if not backend:
+        console.print(
+            "[red]✗[/] --backend is required to link a pane "
+            "(run `repowire link` with no args to see detected hints)."
+        )
+        sys.exit(2)
+
+    payload: dict = {"backend": backend}
+    if name:
+        payload["name"] = name
+    if circle:
+        payload["circle"] = circle
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(f"{daemon_url}/panes/{pane_id}/link", json=payload)
+        if resp.status_code == 409:
+            detail = resp.json().get("detail", {})
+            console.print(f"[yellow]![/] {detail.get('hint', 'already linked')}")
+            sys.exit(1)
+        if resp.status_code == 422:
+            console.print(f"[red]✗[/] {resp.json().get('detail', 'invalid request')}")
+            sys.exit(2)
+        resp.raise_for_status()
+        body = resp.json()
+    except httpx.HTTPError as e:
+        console.print(f"[red]✗[/] Link request failed: {e}")
+        sys.exit(1)
+
+    if body.get("linked"):
+        console.print(
+            f"[green]✓[/] Linked {body['pane_id']} → "
+            f"{body['display_name']} (transport connected)"
+        )
+        return
+    console.print(f"[red]✗[/] Link not established: {body.get('reason')}")
+    if body.get("repair_hint"):
+        console.print(f"  [dim]{body['repair_hint']}[/]")
+    sys.exit(1)
+
+
+@main.command()
 def doctor() -> None:
     """Run diagnostic checks and report repowire health."""
     from repowire.config.models import load_config

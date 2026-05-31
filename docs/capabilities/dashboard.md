@@ -17,6 +17,7 @@ The dashboard is a Next.js UI served by the daemon at `http://localhost:8377/das
 - **Attachment chips** — mesh events and per-peer chat render attachment chips with download links when an attachment ID is available.
 - **Command history** — from an empty composer, ArrowUp recalls previously sent asks for the selected peer (ArrowDown walks forward, Escape returns to empty). History is per-peer and in-memory for the session; once you start editing a recalled entry, arrows behave normally so multi-line editing is unaffected. The plain-text ask flow and Cmd/Ctrl+Enter submit are unchanged.
 - **Pending questions** — structured questions, including ACP tool-permission prompts, appear as an answer banner above the dashboard grid. Choice questions render option buttons; tool-permission questions also render an explicit Deny action. Answers post to the shared `/answer` route and close when the daemon emits the matching ack event.
+- **Unlinked panes** — the spawn dialog lists local tmux panes running an agent the daemon never registered, each with a copyable `repowire link --pane … --backend …` command. Adoption is the explicit CLI step (no one-click button in this slice); see [linking an orphan pane](../concepts/peer-identity-lifecycle.md#linking-an-orphan-pane-link-vs-spawn).
 
 ## Where chat turns come from
 
