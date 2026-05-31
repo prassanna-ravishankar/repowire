@@ -497,7 +497,7 @@ def detect_mcp_backend(
     markers are intentionally weaker than Claude/Gemini process signals because
     shells can carry Codex paths into other runtimes.
     """
-    env = env or os.environ
+    env = os.environ if env is None else env
 
     explicit = _explicit_backend(env)
     if explicit is not None:

@@ -132,59 +132,64 @@ class ApprovalBroker:
         )
         repowire_session_id = self._resolve_session_id(peer_id, session_id)
         try:
-            await self._ask_tracker.register(
-                from_peer_id=peer_id,
-                from_peer_name=peer_id,
-                to_peer_id=CONTROL_PEER_ID,
-                to_peer_name=CONTROL_PEER_NAME,
-                text=question.prompt or "ACP tool permission request",
-                correlation_id=request_id,
-                question=question,
+            try:
+                await self._ask_tracker.register(
+                    from_peer_id=peer_id,
+                    from_peer_name=peer_id,
+                    to_peer_id=CONTROL_PEER_ID,
+                    to_peer_name=CONTROL_PEER_NAME,
+                    text=question.prompt or "ACP tool permission request",
+                    correlation_id=request_id,
+                    question=question,
+                )
+            except Exception as e:  # noqa: BLE001 — registration must not hard-fail the ACP turn
+                return PermissionDecision(outcome="denied", message=f"register failed: {e}")
+
+            # Normal ask event (so the dashboard banner + Telegram render it) + the
+            # back-compat ACP-specific alias, both keyed by the same request_id/cid.
+            ask_event = {
+                "from": peer_id,
+                "to": CONTROL_PEER_NAME,
+                "from_peer_id": peer_id,
+                "to_peer_id": CONTROL_PEER_ID,
+                "text": question.prompt or "ACP tool permission request",
+                "correlation_id": request_id,
+                "question": question.model_dump(exclude_none=True),
+                "repowire_session_id": repowire_session_id,
+                "from_repowire_session_id": repowire_session_id,
+            }
+            self._emit_event("ask", ask_event)
+            self._emit_event(
+                "acp_permission_request",
+                {
+                    "request_id": request_id,
+                    "peer_id": peer_id,
+                    "session_id": session_id,
+                    "repowire_session_id": repowire_session_id,
+                    "tool_call": pending.tool_call,
+                    "options": normalized_options,
+                    "status": "pending",
+                    "timeout_seconds": self._timeout_seconds,
+                },
             )
-        except Exception as e:  # noqa: BLE001 — registration must not hard-fail the ACP turn
+
+            answer = await self._ask_tracker.wait_for_answer(
+                request_id,
+                timeout_seconds=self._timeout_seconds,
+                default_answer=question.default_answer,
+            )
+            decision = _answer_to_decision(answer)
+            if decision.timed_out:
+                self._last_error = "permission request timed out"
+                self._last_error_at = _utc_now()
+        except asyncio.CancelledError:
+            # The ACP turn was cancelled while awaiting the decision: close the
+            # question ask and propagate, so no orphan open question lingers.
+            await self._ask_tracker.close(request_id, reason="cancelled")
+            raise
+        finally:
             async with self._lock:
                 self._pending.pop(request_id, None)
-            return PermissionDecision(outcome="denied", message=f"register failed: {e}")
-
-        # Normal ask event (so the dashboard banner + Telegram render it) + the
-        # back-compat ACP-specific alias, both keyed by the same request_id/cid.
-        ask_event = {
-            "from": peer_id,
-            "to": CONTROL_PEER_NAME,
-            "from_peer_id": peer_id,
-            "to_peer_id": CONTROL_PEER_ID,
-            "text": question.prompt or "ACP tool permission request",
-            "correlation_id": request_id,
-            "question": question.model_dump(exclude_none=True),
-            "repowire_session_id": repowire_session_id,
-            "from_repowire_session_id": repowire_session_id,
-        }
-        self._emit_event("ask", ask_event)
-        self._emit_event(
-            "acp_permission_request",
-            {
-                "request_id": request_id,
-                "peer_id": peer_id,
-                "session_id": session_id,
-                "repowire_session_id": repowire_session_id,
-                "tool_call": pending.tool_call,
-                "options": normalized_options,
-                "status": "pending",
-                "timeout_seconds": self._timeout_seconds,
-            },
-        )
-
-        answer = await self._ask_tracker.wait_for_answer(
-            request_id,
-            timeout_seconds=self._timeout_seconds,
-            default_answer=question.default_answer,
-        )
-        decision = _answer_to_decision(answer)
-        if decision.timed_out:
-            self._last_error = "permission request timed out"
-            self._last_error_at = _utc_now()
-        async with self._lock:
-            self._pending.pop(request_id, None)
         self._emit_decision_event(pending, decision)
         return decision
 

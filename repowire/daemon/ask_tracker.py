@@ -310,6 +310,8 @@ class AskTracker:
                 raise KeyError(correlation_id)
             if ask.answer is not None:
                 return ask.answer
+            if ask.closed:
+                return Answer(outcome="cancelled", message=ask.close_reason)
             # Fail loud NOW if the default is invalid for this question, rather
             # than silently returning an unrecorded answer at timeout (codex
             # review): the timeout path must always go through answer().

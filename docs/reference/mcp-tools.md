@@ -82,9 +82,26 @@ ack(correlation_id: str, message: str | None = None, attachments: list[dict] | N
 
 Close an open ask. Bare `ack(cid)` signals "seen, no action needed." A reply `ack(cid, message)` closes the thread and delivers the message back to the original asker. Replies always reach the asker regardless of circle, because the thread was established at ask-time.
 
+When the ask carries a structured question, `ack` delegates to the typed answer path: bare `ack(cid)` records an acknowledged answer, while `ack(cid, message)` records a text answer. Use `answer` directly when selecting an option.
+
 ```python
 ack("ask-c1a1c7dd")
 ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")
+```
+
+### `answer`
+
+```python
+answer(correlation_id: str, option_id: str | None = None, text: str | None = None) -> str
+```
+
+Answer a structured question carried on an ask. Pass `option_id` to select a choice, or `text` for a free-text answer. A bare `answer(cid)` records an acknowledged answer. Tool-permission questions also accept a denied outcome through the dashboard and Telegram renderers; ACP permission prompts deny by default on timeout.
+
+This is the typed counterpart to `ack` for questions such as tool approvals and future AskUserQuestion-style prompts. Plain asks still use `ack`; `/answer` rejects a plain ask so the existing `ack` retry semantics are not bypassed.
+
+```python
+answer("acpperm-8b9c1f42", option_id="allow")
+answer("ask-c1a1c7dd", text="Use the staging database")
 ```
 
 ### `notify_peer`

@@ -26,6 +26,18 @@ Replies always reach the original asker regardless of circle — the thread was 
 
 Bare ack events and reply notifications carry the same nullable session metadata when a binding is known. Detached or offline peers keep those fields `null`.
 
+## Structured questions and `answer`
+
+Some asks carry a typed question envelope. A structured question can be an acknowledgement, a choice, free text, or a tool-permission prompt. The daemon still tracks it as an ask thread, but the close operation records a typed answer through `/answer` or the `answer` MCP tool:
+
+- Choice answers select an `option_id`.
+- Text answers carry free-form `text`.
+- Tool-permission questions can be denied explicitly, and deny by default on timeout.
+
+Telegram and the dashboard render structured questions as buttons when possible. ACP tool approvals use the same primitive: the ACP broker registers a blocking choice question, waits for the recorded answer, and maps it back to the runtime's permission decision. The older ACP permission-decision route remains as a compatibility shim.
+
+Plain asks still close with `ack`. `/answer` rejects a plain ask so a reply cannot bypass `ack`'s delivery/retry contract.
+
 ## `notify_peer`
 
 Fire-and-forget. No lifecycle, no response expected. Returns a synthetic `notif-XXXXXXXX` ID for client-side tracking, not a thread you can close.

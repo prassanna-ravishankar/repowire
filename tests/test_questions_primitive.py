@@ -190,6 +190,19 @@ async def test_close_cancels_a_dangling_waiter():
 
 
 @pytest.mark.asyncio
+async def test_wait_for_answer_on_already_closed_ask_returns_cancelled():
+    # If the terminal close wins before a blocking transport starts waiting,
+    # wait_for_answer must still return immediately instead of creating a
+    # dangling waiter.
+    at = AskTracker()
+    cid = await _register_question(at, _allow_deny())
+    await at.close(cid, reason="send_failed")
+    result = await at.wait_for_answer(cid, timeout_seconds=None, default_answer=None)
+    assert result.outcome == "cancelled"
+    assert result.message == "send_failed"
+
+
+@pytest.mark.asyncio
 async def test_plain_ask_without_question_is_unaffected():
     at = AskTracker()
     cid = await at.register(

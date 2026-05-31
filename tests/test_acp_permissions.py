@@ -306,3 +306,31 @@ async def test_tool_permission_answer_does_not_notify_runtime(
         notify_spy.assert_not_awaited()  # no runtime notify for a tool-permission answer
     finally:
         cleanup_deps()
+
+
+@pytest.mark.asyncio
+async def test_acp_permission_cancellation_cleans_pending_context() -> None:
+    tracker = AskTracker(ttl_hours=24.0)
+    broker = ApprovalBroker(
+        emit_event=lambda _event_type, _data: "evt",
+        ask_tracker=tracker,
+        timeout_seconds=60.0,
+    )
+    task = asyncio.create_task(
+        broker.request_permission(
+            peer_id="peer-1",
+            session_id="session-1",
+            tool_call={"name": "shell"},
+            options=[SimpleNamespace(option_id="opt-allow", title="Allow")],
+        )
+    )
+    deadline = time.monotonic() + 1.0
+    while broker.health_snapshot()["pending"] == 0 and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    assert broker.health_snapshot()["pending"] == 1
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert broker.health_snapshot()["pending"] == 0

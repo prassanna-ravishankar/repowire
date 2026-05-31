@@ -4,8 +4,8 @@ A ``Question`` rides on an ask; an ``Answer`` rides on the ack. This turns three
 things into one primitive at points on a spectrum:
 
   * plain ask        — no question (legacy) or ``Question(kind="acknowledge")``
-  * tool approval     — ``Question(kind="choice", options=[allow, deny],
-                        blocking=True, default_answer=deny)``
+  * tool approval     — ``Question(kind="choice", options=[allow], blocking=True,
+                        default_answer=deny)`` plus an explicit denied Answer
   * AskUserQuestion   — ``Question(kind="choice", options=[...N...])``
 
 The load-bearing boundary (see ``docs``/design notes): ``Question``/``Answer`` is
@@ -51,7 +51,9 @@ class Answer(BaseModel):
     text: str | None = Field(None, description="Free-text answer / reply body")
     outcome: AnswerOutcome = Field(
         "answered",
-        description="answered (option/text given), acknowledged (bare), timed_out, cancelled",
+        description=(
+            "answered (option/text given), acknowledged (bare), denied, timed_out, cancelled"
+        ),
     )
     message: str | None = Field(None, description="Optional human note alongside the answer")
 
@@ -94,9 +96,9 @@ class Question(BaseModel):
 
         Enforced in the daemon (not just the UI): a choice must pick a known
         option, UNLESS the answer is a non-selecting outcome (timed_out /
-        cancelled apply a default; acknowledged = "seen, no choice made").
-        text/ack kinds are permissive. First-answer-wins + lifecycle is the
-        tracker's job.
+        cancelled apply a default; acknowledged = "seen, no choice made";
+        denied = explicit refusal). text/ack kinds are permissive.
+        First-answer-wins + lifecycle is the tracker's job.
         """
         if answer.outcome in ("timed_out", "cancelled", "acknowledged", "denied"):
             return None
