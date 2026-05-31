@@ -73,21 +73,38 @@ export function PendingQuestions({
             <span className="font-semibold">@{q.from}</span> {q.text}
           </span>
           {q.question.kind === "choice" ? (
-            (q.question.options ?? []).map((opt) => (
-              <button
-                key={opt.id}
-                disabled={answering[q.correlation_id]}
-                onClick={() => answer(q.correlation_id, { option_id: opt.id })}
-                title={opt.description ?? undefined}
-                className={cn(
-                  "rounded border border-tertiary/40 bg-tertiary/15 px-2 py-0.5",
-                  "font-mono text-[11px] font-semibold hover:bg-tertiary/25",
-                  "disabled:opacity-50",
-                )}
-              >
-                {opt.title}
-              </button>
-            ))
+            <>
+              {(q.question.options ?? []).map((opt) => (
+                <button
+                  key={opt.id}
+                  disabled={answering[q.correlation_id]}
+                  onClick={() => answer(q.correlation_id, { option_id: opt.id })}
+                  title={opt.description ?? undefined}
+                  className={cn(
+                    "rounded border border-tertiary/40 bg-tertiary/15 px-2 py-0.5",
+                    "font-mono text-[11px] font-semibold hover:bg-tertiary/25",
+                    "disabled:opacity-50",
+                  )}
+                >
+                  {opt.title}
+                </button>
+              ))}
+              {q.question.scope === "tool_permission" && (
+                // ACP tool-permission options are allow-only; offer an explicit
+                // Deny that posts outcome:"denied" (no option needed).
+                <button
+                  disabled={answering[q.correlation_id]}
+                  onClick={() => answer(q.correlation_id, { outcome: "denied" })}
+                  className={cn(
+                    "rounded border border-error/40 bg-error/15 px-2 py-0.5",
+                    "font-mono text-[11px] font-semibold text-on-error-container",
+                    "hover:bg-error/25 disabled:opacity-50",
+                  )}
+                >
+                  ✕ Deny
+                </button>
+              )}
+            </>
           ) : (
             <button
               disabled={answering[q.correlation_id]}

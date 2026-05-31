@@ -720,3 +720,16 @@ class TestAnswerQuestion:
         resp = await client.post("/answer", json={"correlation_id": cid, "text": "hi"})
         assert resp.status_code == 422
         assert "not a structured question" in resp.json()["detail"]
+
+    async def test_answer_denied_on_generic_choice_closes_without_option(self, env):
+        # codex check: outcome="denied" is a GENERIC answer (not ACP-only) — it
+        # records + closes a non-permission choice question without needing an
+        # option_id (validation bypass like ack/timeout/cancel).
+        client, _, at, _ = env
+        asker = await _register_peer(client, "asker")
+        rcv = await _register_peer(client, "rcv")
+        cid = await self._ask_question(client, asker, rcv)  # plain choice, no scope
+        r = await client.post("/answer", json={"correlation_id": cid, "outcome": "denied"})
+        assert r.status_code == 200, r.text
+        ask = await at.get(cid)
+        assert ask.answer.outcome == "denied" and ask.closed

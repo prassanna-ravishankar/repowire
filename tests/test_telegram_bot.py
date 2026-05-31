@@ -509,3 +509,33 @@ async def test_stale_option_index_clears_entry(
     monkeypatch.setattr(telegram_bot, "_tg_send", AsyncMock())
     await telegram_bot._on_callback({"id": "cb", "data": "answer:ask-1:9"})  # out of range
     assert "ask-1" not in telegram_bot._question_options
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_question_renders_deny_button(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ACP tool-permission options are allow-only → an explicit Deny must appear.
+    send = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "_tg_send", send)
+    monkeypatch.setattr(telegram_bot, "_tg_send_attachments", AsyncMock())
+    await telegram_bot._on_ws({
+        "type": "ask", "from_peer": "worker", "correlation_id": "acpperm-1", "text": "Allow shell?",
+        "question": {"kind": "choice", "scope": "tool_permission",
+                     "options": [{"id": "allow", "title": "Allow"}]},
+    })
+    markup = send.await_args.kwargs["markup"]
+    buttons = [b for row in markup["inline_keyboard"] for b in row]
+    assert [b["callback_data"] for b in buttons] == ["answer:acpperm-1:0", "deny:acpperm-1"]
+
+
+@pytest.mark.asyncio
+async def test_deny_callback_posts_denied_outcome(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    post = AsyncMock(return_value=SimpleNamespace(status_code=200))
+    monkeypatch.setattr(telegram_bot._http, "post", post)
+    monkeypatch.setattr(telegram_bot, "_tg_send", AsyncMock())
+    await telegram_bot._on_callback({"id": "cb", "data": "deny:acpperm-1"})
+    call = next(c for c in post.await_args_list if str(c.args[0]).endswith("/answer"))
+    assert call.kwargs["json"] == {"correlation_id": "acpperm-1", "outcome": "denied"}

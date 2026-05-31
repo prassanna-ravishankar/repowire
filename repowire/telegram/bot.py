@@ -454,6 +454,8 @@ class TelegramPeer:
         elif data.startswith("answer:"):
             _, cid, option_index = data.split(":", 2)
             await self._answer_choice(cid, option_index)
+        elif data.startswith("deny:"):
+            await self._deny_question(data.split(":", 1)[1])
         elif data.startswith("ack:"):
             cid = data.split(":", 1)[1]
             await self._ack_ask(cid)
@@ -482,8 +484,31 @@ class TelegramPeer:
                     for i, o in enumerate(options)
                     if isinstance(o, dict)
                 ]
+                # ACP tool-permission options are allow-only — add an explicit
+                # Deny that posts outcome:"denied" (no option).
+                if question.get("scope") == "tool_permission":
+                    rows.append([("✕ Deny", f"deny:{cid}")])
                 return _kb(rows)
         return _kb([[("✓ Ack", f"ack:{cid}")]])
+
+    async def _deny_question(self, cid: str) -> None:
+        """Deny a tool-permission question → POST /answer {outcome: denied}."""
+        try:
+            r = await self._http.post(
+                f"{self._daemon_url}/answer",
+                json={"correlation_id": cid, "outcome": "denied"},
+                timeout=5.0,
+            )
+            short = cid[:12]
+            if r.status_code == 200:
+                self._question_options.pop(cid, None)
+                await self._tg_send(f"✕ Denied `#{_esc(short)}`")
+            elif r.status_code == 410:
+                await self._tg_send(f"`#{_esc(short)}` already answered")
+            else:
+                await self._tg_send(f"Deny failed for `#{_esc(short)}`: {r.status_code}")
+        except Exception as e:
+            await self._tg_send(f"Deny error: {_esc(str(e))}")
 
     async def _answer_choice(self, cid: str, option_index_raw: str) -> None:
         """Answer a choice question by option index → POST /answer."""
