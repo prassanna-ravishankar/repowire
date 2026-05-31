@@ -31,7 +31,8 @@ from repowire.daemon.peer_registry import (
 )
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
 from repowire.daemon.state.session_bindings import SessionBinding
-from repowire.hooks.ws_hook_supervisor import maybe_respawn
+from repowire.hooks.utils import clear_pane_runtime_state
+from repowire.hooks.ws_hook_supervisor import link_spawn_ws_hook
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
 from repowire.session.history import (
     HistoryLoadResult,
@@ -486,14 +487,29 @@ async def link_pane(
         circle_source="fallback",
         role=PeerRole.AGENT,
     )
-    peer_id, display_name, _pane_assigned, _cert = await _register_peer_impl(reg)
-
-    # Establish inbound transport, then verify a live WS actually connected —
-    # respawn alone (pid-based) does not prove connectivity.
-    await asyncio.to_thread(
-        maybe_respawn, pane_id, backend=request.backend.value, cwd=request.cwd or None,
+    # persist_binding=False: a rolled-back link must leave NO durable binding /
+    # birth-certificate residue. unregister_peer only clears registry/mappings;
+    # an orphan has no runtime session id to bind anyway (resume unavailable
+    # until its hooks report one).
+    peer_id, display_name, _pane_assigned, _cert = await _register_peer_impl(
+        reg, persist_binding=False
     )
-    connected = await _await_ws_connected(transport, peer_id, _LINK_WS_WAIT_SECONDS)
+
+    # First-adoption spawn (NOT maybe_respawn — that refuses without a prior
+    # pidfile, which an orphan never has). This writes pane metadata, claims the
+    # flock, and launches the ws-hook; then we verify a live WS actually
+    # connected before calling the link successful.
+    spawned = await asyncio.to_thread(
+        link_spawn_ws_hook,
+        pane_id,
+        peer_id=peer_id,
+        display_name=display_name,
+        backend=request.backend.value,
+        cwd=request.cwd or "",
+    )
+    connected = spawned and await _await_ws_connected(
+        transport, peer_id, _LINK_WS_WAIT_SECONDS
+    )
 
     if connected:
         return LinkPaneResponse(
@@ -505,9 +521,16 @@ async def link_pane(
             reason="linked",
         )
 
-    # Hard rollback: no live transport → don't leave a ghost peer behind.
+    # Hard rollback: no live transport → don't leave a ghost peer behind. Clear
+    # the pane runtime state we wrote so a later SessionStart/link isn't confused.
+    await asyncio.to_thread(clear_pane_runtime_state, pane_id)
     rolled_back = await peer_registry.unregister_peer(peer_id)
-    reason = "transport_unestablished" if rolled_back else "transport_unestablished_rollback_failed"
+    if not spawned:
+        reason = "ws_hook_spawn_failed"
+    elif rolled_back:
+        reason = "transport_unestablished"
+    else:
+        reason = "transport_unestablished_rollback_failed"
     return LinkPaneResponse(
         linked=False,
         pane_id=pane_id,
@@ -689,6 +712,8 @@ class ValidateBirthCertificateResponse(BaseModel):
 
 async def _register_peer_impl(
     request: RegisterPeerRequest,
+    *,
+    persist_binding: bool = True,
 ) -> tuple[str, str, bool, dict[str, Any] | None]:
     """Shared implementation for peer registration endpoints.
 
@@ -698,6 +723,12 @@ async def _register_peer_impl(
     sticky-orchestrator branch refused to displace a live orchestrator. When no
     pane_id was requested, pane_assigned defaults to True (vacuously: nothing
     to assign).
+
+    ``persist_binding=False`` skips the session-binding observation + birth
+    certificate. Pane adoption (``link``) uses this so a registration that is
+    rolled back on a failed transport leaves no durable binding/cert residue
+    (``unregister_peer`` only clears registry/mappings). A linked peer has no
+    runtime session id anyway until its hooks report one.
     """
     circle = request.circle or "global"
     runtime_session_id = _runtime_session_id_from_metadata(request.metadata)
@@ -731,7 +762,7 @@ async def _register_peer_impl(
         ) from exc
     binding_store = getattr(get_app_state(), "session_binding_store", None)
     birth_certificate: dict[str, Any] | None = None
-    if binding_store is not None:
+    if binding_store is not None and persist_binding:
         try:
             binding_store.upsert_observation(
                 peer_id=peer_id,

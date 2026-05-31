@@ -98,43 +98,114 @@ async def test_link_rejects_bad_pane_id(tmp_path):
 @pytest.mark.asyncio
 async def test_link_succeeds_when_ws_connects(tmp_path, monkeypatch):
     harness = make_daemon_app(tmp_path, [peers_routes.router])
-    monkeypatch.setattr(peers_routes, "maybe_respawn", lambda *a, **k: True)
+    spawn_calls: list[dict] = []
+
+    def fake_spawn(pane_id, **kw):
+        spawn_calls.append({"pane_id": pane_id, **kw})
+        return True
+
+    monkeypatch.setattr(peers_routes, "link_spawn_ws_hook", fake_spawn)
     # Transport reports the freshly-linked peer as connected.
     monkeypatch.setattr(harness.transport, "is_connected", lambda _pid: True)
 
     async with async_client_for(harness.app) as client:
         resp = await client.post(
-            "/panes/%7/link", json={"backend": "claude-code", "cwd": "/tmp/proj"}
+            "/panes/%2542/link", json={"backend": "claude-code", "cwd": "/tmp/proj"}
         )
     assert resp.status_code == 200
     body = resp.json()
     assert body["linked"] is True
     assert body["transport_connected"] is True
+    # The first-adoption spawn helper ran with the pane + identity metadata —
+    # NOT maybe_respawn (which would no-op on an orphan with no pidfile).
+    assert spawn_calls and spawn_calls[0]["pane_id"] == "%42"
+    assert spawn_calls[0]["backend"] == "claude-code"
+    assert spawn_calls[0]["cwd"] == "/tmp/proj"
     # The peer is in the roster bound to the pane.
-    peer = await harness.registry.get_peer_by_pane("%7")
+    peer = await harness.registry.get_peer_by_pane("%42")
     assert peer is not None
 
 
 @pytest.mark.asyncio
 async def test_link_rolls_back_when_ws_never_connects(tmp_path, monkeypatch):
     harness = make_daemon_app(tmp_path, [peers_routes.router])
-    monkeypatch.setattr(peers_routes, "maybe_respawn", lambda *a, **k: True)
+    monkeypatch.setattr(peers_routes, "link_spawn_ws_hook", lambda *a, **k: True)
+    monkeypatch.setattr(peers_routes, "clear_pane_runtime_state", lambda *a, **k: None)
     # WS never connects → fail-closed, no ghost left behind.
     monkeypatch.setattr(harness.transport, "is_connected", lambda _pid: False)
     monkeypatch.setattr(peers_routes, "_LINK_WS_WAIT_SECONDS", 0.05)
 
     async with async_client_for(harness.app) as client:
         resp = await client.post(
-            "/panes/%8/link", json={"backend": "codex", "cwd": "/tmp/proj"}
+            "/panes/%2543/link", json={"backend": "codex", "cwd": "/tmp/proj"}
         )
     assert resp.status_code == 200
     body = resp.json()
     assert body["linked"] is False
     assert body["transport_connected"] is False
     assert body["reason"] == "transport_unestablished"
-    assert "repowire link --pane %8" in body["repair_hint"]
+    assert "repowire link --pane %43" in body["repair_hint"]
     # Rolled back: no ghost peer for the pane.
-    assert await harness.registry.get_peer_by_pane("%8") is None
+    assert await harness.registry.get_peer_by_pane("%43") is None
+
+
+@pytest.mark.asyncio
+async def test_link_fails_when_spawn_helper_cannot_start(tmp_path, monkeypatch):
+    # A pane whose ws-hook can't be spawned (lock contested / script missing)
+    # must not be reported linked, and must leave no ghost.
+    harness = make_daemon_app(tmp_path, [peers_routes.router])
+    monkeypatch.setattr(peers_routes, "link_spawn_ws_hook", lambda *a, **k: False)
+    monkeypatch.setattr(peers_routes, "clear_pane_runtime_state", lambda *a, **k: None)
+    is_connected_calls: list[str] = []
+    monkeypatch.setattr(
+        harness.transport,
+        "is_connected",
+        lambda pid: is_connected_calls.append(pid) or False,
+    )
+
+    async with async_client_for(harness.app) as client:
+        resp = await client.post(
+            "/panes/%2544/link", json={"backend": "codex", "cwd": "/tmp/proj"}
+        )
+    body = resp.json()
+    assert body["linked"] is False
+    assert body["reason"] == "ws_hook_spawn_failed"
+    # Spawn failed → we never even poll for a connection.
+    assert is_connected_calls == []
+    assert await harness.registry.get_peer_by_pane("%44") is None
+
+
+@pytest.mark.asyncio
+async def test_link_does_not_persist_session_binding_or_cert(tmp_path, monkeypatch):
+    # A linked orphan has no runtime session id, and a rolled-back link must
+    # leave no durable binding/cert residue — so link registers with
+    # persist_binding=False and never touches the binding store.
+    class SpyBindingStore:
+        def __init__(self):
+            self.observations = 0
+            self.certs = 0
+
+        def upsert_observation(self, **_):
+            self.observations += 1
+
+        def mint_birth_certificate(self, **_):
+            self.certs += 1
+            return type("C", (), {"as_envelope": lambda self: {}})()
+
+    spy = SpyBindingStore()
+    harness = make_daemon_app(
+        tmp_path, [peers_routes.router], state_overrides={"session_binding_store": spy}
+    )
+    monkeypatch.setattr(peers_routes, "link_spawn_ws_hook", lambda *a, **k: True)
+    monkeypatch.setattr(harness.transport, "is_connected", lambda _pid: True)
+
+    async with async_client_for(harness.app) as client:
+        resp = await client.post(
+            "/panes/%2545/link", json={"backend": "claude-code", "cwd": "/tmp/proj"}
+        )
+    assert resp.json()["linked"] is True
+    assert spy.observations == 0
+    assert spy.certs == 0
 
 
 @pytest.mark.asyncio

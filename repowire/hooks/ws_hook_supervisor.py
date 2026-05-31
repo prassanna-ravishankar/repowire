@@ -25,11 +25,63 @@ from repowire.hooks.utils import (
     get_pane_file,
     pane_logs_dir,
     read_pane_runtime_metadata,
+    write_pane_runtime_metadata,
     ws_hook_lock_path,
     ws_hook_pid_path,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def link_spawn_ws_hook(
+    pane_id: str,
+    *,
+    peer_id: str,
+    display_name: str,
+    backend: str,
+    cwd: str,
+) -> bool:
+    """Start a ws-hook for a freshly-adopted (orphan) pane. Returns spawn success.
+
+    First-adoption spawn for ``link`` — distinct from :func:`maybe_respawn`,
+    which is a lazy-repair helper that refuses to act without a prior pidfile +
+    pane metadata. Here there is no prior hook: claim the pane flock, write the
+    pane runtime metadata SessionStart would have written, then spawn the hook.
+
+    Returns False if the lock is contested (another hook is starting/alive for
+    this pane) or the hook script is missing — the caller then fails the link
+    rather than leaving a half-adopted peer.
+    """
+    lock_path = ws_hook_lock_path(pane_id)
+    lock_fd = open(lock_path, "w")  # noqa: SIM115
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            lock_fd.close()
+            logger.warning("link_spawn_ws_hook: pane %s lock contested", pane_id)
+            return False
+        write_pane_runtime_metadata(
+            pane_id,
+            {
+                "backend": backend,
+                "cwd": cwd,
+                "display_name": display_name,
+                "peer_id": peer_id,
+            },
+        )
+        new_pid = spawn_ws_hook(
+            pane_id=pane_id,
+            peer_id=peer_id,
+            display_name=display_name,
+            backend=backend,
+            cwd=cwd,
+            lock_fd=lock_fd,
+        )
+        return new_pid is not None
+    finally:
+        # Child inherited the flock via pass_fds; release our copy.
+        lock_fd.close()
 
 
 def spawn_ws_hook(

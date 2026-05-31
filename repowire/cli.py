@@ -901,6 +901,8 @@ def link(pane_id: str | None, backend: str | None, name: str | None, circle: str
         )
         sys.exit(2)
 
+    from urllib.parse import quote
+
     payload: dict = {"backend": backend}
     if name:
         payload["name"] = name
@@ -908,7 +910,11 @@ def link(pane_id: str | None, backend: str | None, name: str | None, circle: str
         payload["circle"] = circle
     try:
         with httpx.Client(timeout=15.0) as client:
-            resp = client.post(f"{daemon_url}/panes/{pane_id}/link", json=payload)
+            # pane ids start with '%' — encode so the server doesn't decode
+            # "%42" as the byte 'B' before the route validator sees it.
+            resp = client.post(
+                f"{daemon_url}/panes/{quote(pane_id, safe='')}/link", json=payload
+            )
         if resp.status_code == 409:
             detail = resp.json().get("detail", {})
             console.print(f"[yellow]![/] {detail.get('hint', 'already linked')}")
