@@ -573,16 +573,45 @@ class PeerRegistry:
         sanitized = sanitized.strip("-")
         return sanitized or "peer"
 
+    @staticmethod
+    def _runtime_session_id(metadata: dict[str, Any] | None) -> str | None:
+        """Extract the runtime (hook) session id from a peer's metadata.
+
+        Mirrors the route-layer extractor. Two peers cannot share a runtime
+        session id (except transiently during a fork), so it is a stable
+        reconnect identity for name reclaim.
+        """
+        if not metadata:
+            return None
+        for key in ("hook_session_id", "runtime_session_id", "session_id"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
     def _build_display_name(
-        self, path: str, circle: str, backend: AgentType,
+        self,
+        path: str,
+        circle: str,
+        backend: AgentType,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         """Build a unique display_name for a peer. Must hold lock.
 
         Format: {folder}-{backend}[-{suffix}]
-        Prunes offline peers that hold a conflicting name (clean takeover).
+
+        Reclaims (prunes) a conflicting peer when it is the *same logical peer*
+        reconnecting, so a reconnect/daemon-restart keeps its name instead of
+        churning a fresh -2/-3 suffix. "Same logical peer" is decided by, in
+        order: (a) the runtime session id matches (two peers can't share one,
+        except transiently during a fork — so an equal id IS this peer coming
+        back, regardless of the blocker's status); (b) the blocker is OFFLINE
+        (the original clean-takeover rule). Only a genuinely distinct, live peer
+        on the same path+backend+circle gets a suffix.
         """
         folder = self._sanitize_folder_name(Path(path).name) if path else "peer"
         base = f"{folder}-{backend.value}"
+        incoming_session = self._runtime_session_id(metadata)
 
         candidate = base
         suffix = 2
@@ -597,15 +626,25 @@ class PeerRegistry:
                 return candidate
 
             sid, peer = blocker
-            if peer.status == PeerStatus.OFFLINE:
-                # Prune the offline peer entirely (clean takeover)
+            same_session = (
+                incoming_session is not None
+                and self._runtime_session_id(peer.metadata) == incoming_session
+            )
+            if same_session or peer.status == PeerStatus.OFFLINE:
+                # Same logical peer reconnecting (matching runtime session) or a
+                # dead peer holding the name -- reclaim it cleanly.
                 del self._peers[sid]
                 self._mappings.pop(sid, None)
                 self._mappings_dirty = True
-                logger.info(f"Pruned offline peer {candidate} ({sid}) for name reclaim")
+                logger.info(
+                    "Reclaimed name %s from %s (%s) for %s peer (status=%s)",
+                    candidate, peer.display_name, sid,
+                    "reconnecting same-session" if same_session else "offline",
+                    peer.status.value,
+                )
                 return candidate
 
-            # Name held by an active peer -- try next suffix
+            # Name held by a distinct live peer -- try next suffix
             candidate = f"{folder}-{suffix}-{backend.value}"
             suffix += 1
 
@@ -953,7 +992,7 @@ class PeerRegistry:
                 assigned_name = (
                     display_name_override
                     or (preferred_mapping.display_name if preferred_mapping else None)
-                    or self._build_display_name(path or "", circle, backend)
+                    or self._build_display_name(path or "", circle, backend, metadata)
                 )
                 mapping_circle = preferred_mapping.circle if preferred_mapping else circle
                 if display_name_override:
