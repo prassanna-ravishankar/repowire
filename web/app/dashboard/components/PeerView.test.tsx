@@ -1165,4 +1165,34 @@ describe("PeerView composer modes (ask | notify)", () => {
     await waitFor(() => expect(calls.some((c) => c.url === "/ask")).toBe(true));
     expect(screen.queryByTestId("notify-status")).not.toBeInTheDocument();
   });
+
+  it("carries an attachment through notify mode", async () => {
+    const calls: { url: string; body: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/attachments")) {
+        return new Response(JSON.stringify({ id: "att-1", path: "/tmp/f.txt" }), { status: 200 });
+      }
+      calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (url === "/notify") return new Response(JSON.stringify({ delivered: true }), { status: 200 });
+      return new Promise<Response>(() => {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(
+      <PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />,
+    );
+    fireEvent.click(screen.getByTestId("mode-notify"));
+    const file = new File(["data"], "f.txt", { type: "text/plain" });
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [file] } });
+    // File registers (the remove-attachment chip appears) before we send.
+    await screen.findByLabelText("Remove attachment");
+    fireEvent.change(textarea(), { target: { value: "see attached" } });
+    fireEvent.click(screen.getByLabelText("Notify peer"));
+
+    await waitFor(() => expect(calls.some((c) => c.url === "/notify")).toBe(true));
+    const notifyCall = calls.find((c) => c.url === "/notify");
+    expect((notifyCall?.body as { attachments?: unknown[] }).attachments).toHaveLength(1);
+  });
 });
