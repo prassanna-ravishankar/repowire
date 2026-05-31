@@ -5,7 +5,7 @@ import { AlertCircle, Bell, Check, Clock, Copy, Paperclip, Play, RefreshCw, Rota
 import { cn, shortPath, statusDot } from "../lib/utils";
 import { registerSnapshotProvider, useFrozenThread, useIsPeerProtected } from "../lib/protection";
 import { clearDraft, setDraftFile, setDraftText, useDraftFile, useDraftText } from "../lib/drafts";
-import { getHistory, pushHistory } from "../lib/history";
+import { clearHistory, getHistory, pushHistory } from "../lib/history";
 import type { AttachmentRef, Event, Peer } from "../types";
 import { peerLabel } from "../types";
 import { formatTime, StatusLabel } from "./status";
@@ -1145,6 +1145,9 @@ function ComposeBar({
   // getHistory(peer_id) (0 = oldest). Reset whenever the composer is edited or
   // sent so a fresh ArrowUp starts from the newest entry.
   const historyIdx = useRef<number | null>(null);
+  // Bumped on send/clear so the "clear history" affordance re-evaluates (the
+  // history store is a plain module, not a reactive source).
+  const [historyTick, setHistoryTick] = useState(0);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -1271,6 +1274,7 @@ function ComposeBar({
         ]);
         pushHistory(peer.peer_id, text);
         historyIdx.current = null;
+        setHistoryTick((t) => t + 1);
         clearDraft(peer.peer_id);
         onSent?.();
       }
@@ -1333,6 +1337,9 @@ function ComposeBar({
   };
 
   const visibleAsks = pendingAsks.filter((a) => a.to_peer_id === peer.peer_id);
+  // historyTick is read so a send/clear re-evaluates this (history is a plain module).
+  void historyTick;
+  const hasHistory = getHistory(peer.peer_id).length > 0;
 
   return (
     <div className="sticky bottom-0 z-10 border-t border-border-faint bg-surface-dim p-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] md:static md:p-4">
@@ -1340,6 +1347,20 @@ function ComposeBar({
         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-outline">
           ask &rarr; {peerLabel(peer)}
         </span>
+        {hasHistory && (
+          <button
+            data-testid="clear-history"
+            onClick={() => {
+              clearHistory(peer.peer_id);
+              historyIdx.current = null;
+              setHistoryTick((t) => t + 1);
+            }}
+            title="Clear this peer's command history"
+            className="font-mono text-[9px] uppercase tracking-[0.14em] text-outline hover:text-on-surface"
+          >
+            clear history
+          </button>
+        )}
         {isDirty && (
           <span
             data-testid="compose-draft-pill"
