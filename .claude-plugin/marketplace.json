@@ -1,0 +1,14 @@
+{
+  "name": "repowire",
+  "owner": {
+    "name": "Prassanna Ravishankar",
+    "url": "https://github.com/prassanna-ravishankar/repowire"
+  },
+  "plugins": [
+    {
+      "name": "repowire",
+      "source": ".",
+      "description": "Repowire mesh usage skills: cross-agent review/plan, delegate, patterns, and install/update — backend-agnostic, parameterised on the agent you choose."
+    }
+  ]
+}

@@ -412,6 +412,39 @@ class ExperimentsConfig(BaseModel):
     )
 
 
+class SkillsConfig(BaseModel):
+    """Defaults for the repowire skill pack (cross-agent review/plan/delegate).
+
+    Skills are backend-agnostic markdown; these defaults let an operator pick
+    which agent a skill prefers without editing the skill. A skill resolves a
+    backend as: explicit arg > the matching default here > a safe fallback
+    (ask, or pick a different available backend — never hardcode one). The
+    per-skill defaults default to ``default_backend`` when unset.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    default_backend: str | None = Field(
+        None, description="Fallback backend for skills when no per-skill default is set",
+    )
+    default_reviewer_backend: str | None = Field(
+        None, description="Preferred backend for cross-agent-review",
+    )
+    default_planner_backend: str | None = Field(
+        None, description="Preferred backend for cross-agent-plan",
+    )
+    default_delegate_backend: str | None = Field(
+        None, description="Preferred backend for delegate",
+    )
+    default_circle: str | None = Field(
+        None, description="Default circle for skills that spawn or target peers",
+    )
+
+    def resolve(self, key: str) -> str | None:
+        """Resolve a per-skill backend key, falling back to default_backend."""
+        return getattr(self, key, None) or self.default_backend
+
+
 class Config(BaseModel):
     """Main Repowire configuration."""
 
@@ -425,6 +458,7 @@ class Config(BaseModel):
     slack: SlackConfig = Field(default_factory=SlackConfig)
     updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
     experiments: ExperimentsConfig = Field(default_factory=ExperimentsConfig)
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
 
     @classmethod
     def get_config_dir(cls) -> Path:

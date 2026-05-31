@@ -15,6 +15,7 @@ from repowire.config.models import (
     PeerConfig,
     RelayConfig,
     RemoteToolApprovalConfig,
+    SkillsConfig,
     SpawnProfile,
     SpawnSettings,
     UpdatesConfig,
@@ -391,3 +392,50 @@ class TestRemoteToolApprovalConfig:
 
     def test_positive_timeout_is_kept(self):
         assert RemoteToolApprovalConfig(timeout_seconds=10.0).timeout_seconds == 10.0
+
+
+class TestSkillsConfig:
+    def test_defaults_are_all_none(self):
+        cfg = SkillsConfig()
+        assert cfg.default_backend is None
+        assert cfg.default_reviewer_backend is None
+        assert cfg.resolve("default_reviewer_backend") is None
+
+    def test_resolve_prefers_per_skill_over_generic(self):
+        cfg = SkillsConfig(default_backend="claude-code", default_reviewer_backend="codex")
+        assert cfg.resolve("default_reviewer_backend") == "codex"
+
+    def test_resolve_falls_back_to_default_backend(self):
+        cfg = SkillsConfig(default_backend="gemini")
+        assert cfg.resolve("default_planner_backend") == "gemini"
+
+    def test_config_exposes_skills_section(self):
+        assert isinstance(Config().skills, SkillsConfig)
+
+
+class TestConfigGetCommand:
+    def _invoke(self, monkeypatch, key, cfg, extra=None):
+        from repowire.cli import main
+
+        monkeypatch.setattr("repowire.config.models.load_config", lambda: cfg)
+        return CliRunner().invoke(main, ["config", "get", key, *(extra or [])])
+
+    def test_prints_a_set_value(self, monkeypatch):
+        cfg = Config(skills=SkillsConfig(default_reviewer_backend="codex"))
+        result = self._invoke(monkeypatch, "skills.default_reviewer_backend", cfg)
+        assert result.exit_code == 0
+        assert result.output.strip() == "codex"
+
+    def test_unset_value_prints_nothing_exit_zero(self, monkeypatch):
+        result = self._invoke(monkeypatch, "skills.default_reviewer_backend", Config())
+        assert result.exit_code == 0
+        assert result.output.strip() == ""
+
+    def test_unknown_key_exits_2(self, monkeypatch):
+        result = self._invoke(monkeypatch, "skills.nope", Config())
+        assert result.exit_code == 2
+
+    def test_nested_non_skills_key(self, monkeypatch):
+        result = self._invoke(monkeypatch, "daemon.port", Config())
+        assert result.exit_code == 0
+        assert result.output.strip() != ""  # daemon.port has a default
