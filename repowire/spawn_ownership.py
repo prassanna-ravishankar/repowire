@@ -9,6 +9,7 @@ is intentionally killed.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -19,6 +20,8 @@ from typing import Any, Literal
 
 from repowire.config.models import AgentType, Config
 from repowire.protocol.peers import Peer, PeerRole
+
+logger = logging.getLogger(__name__)
 
 OWNERSHIP_PATH = Config.get_config_dir() / "spawn_ownership.json"
 
@@ -201,6 +204,59 @@ def find_spawn_ownership_for_peer(peer: Peer) -> OwnershipValidation:
             "Manual peers and pre-proof spawns are left untouched."
         ),
     )
+
+
+def prune_dead_ownership() -> int:
+    """Drop ownership records whose pane is no longer live in tmux.
+
+    After a daemon restart, ``spawn_ownership.json`` rehydrates every record
+    from the last run; panes that have since died linger and cause kills to
+    no-op (they point at a dead pane) and weaken disambiguation. This prunes
+    them. Called opportunistically (lazy repair), never on a timer.
+
+    Returns the number of records removed.
+    """
+    records = _load_records()
+    dead = [pane_id for pane_id, rec in records.items() if probe_tmux_pane(rec.pane_id) is None]
+    if not dead:
+        return 0
+    for pane_id in dead:
+        records.pop(pane_id, None)
+    _save_records(records)
+    logger.info("Pruned %d spawn-ownership record(s) with dead panes", len(dead))
+    return len(dead)
+
+
+def backfill_ownership_peer_id(
+    peer: Peer, match: OwnershipValidation | None = None,
+) -> bool:
+    """Write ``peer.peer_id`` back onto its ownership record if it lacks one.
+
+    After restart, records rehydrate with ``peer_id=None`` (the strongest
+    disambiguator is lost). When a peer is uniquely correlated to a live-pane
+    record by identity, persist its peer_id so future lookups are unambiguous.
+    Returns True if a record was updated.
+
+    ``match`` lets a caller that already resolved ownership pass its
+    ``OwnershipValidation`` to avoid a second tmux-probing correlation pass.
+    """
+    if not peer.peer_id:
+        return False
+    if match is None:
+        match = find_spawn_ownership_for_peer(peer)
+    if not match.ok or match.record is None or match.record.peer_id:
+        return False
+    records = _load_records()
+    record = records.get(match.record.pane_id)
+    if record is None or record.peer_id:
+        return False
+    record.peer_id = peer.peer_id
+    _save_records(records)
+    logger.info(
+        "Backfilled peer_id=%s onto spawn-ownership record for pane %s",
+        peer.peer_id, record.pane_id,
+    )
+    return True
 
 
 def validate_spawn_ownership(peer: Peer) -> OwnershipValidation:

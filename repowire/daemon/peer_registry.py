@@ -2103,8 +2103,23 @@ class PeerRegistry:
             await self._evict_stale_peers()
             await self._emit_and_evict_expired_stashes()
             self._prune_delivery_traces()
+            self._prune_spawn_ownership()
             self._save_events()
             self._persist_mappings()
+
+    def _prune_spawn_ownership(self) -> None:
+        """Drop spawn-ownership records pointing at dead tmux panes. Best-effort.
+
+        After a daemon restart these rehydrate and otherwise cause kills to
+        no-op (they point at a dead pane) and weaken kill/restart
+        disambiguation. Piggy-backed on lazy_repair, never on a timer.
+        """
+        try:
+            from repowire.spawn_ownership import prune_dead_ownership
+
+            prune_dead_ownership()
+        except Exception:  # noqa: BLE001 — pruning must not break repair
+            logger.warning("Spawn-ownership prune failed", exc_info=True)
 
     def _prune_delivery_traces(self) -> None:
         """Drop delivery-trace rows older than prune_max_age_hours. Best-effort."""

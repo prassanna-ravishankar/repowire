@@ -27,6 +27,7 @@ from repowire.spawn import SpawnConfig, SpawnResult, kill_pane, spawn_peer
 from repowire.spawn_ownership import (
     OwnershipValidation,
     _norm_path,
+    backfill_ownership_peer_id,
     find_spawn_ownership_for_peer,
     forget_spawn_ownership,
     probe_tmux_pane,
@@ -390,6 +391,12 @@ def _effective_ownership_validation(peer: Peer) -> OwnershipValidation:
         if direct.ok:
             return direct
     adopted = find_spawn_ownership_for_peer(peer)
+    if adopted.ok:
+        # Rehydrated peer uniquely matched a record by identity + live pane but
+        # the record lost its peer_id across restart. Persist it so the next
+        # lookup has the strong disambiguator (reduces ambiguous_ownership).
+        # Pass the resolved validation to avoid a second correlation probe.
+        backfill_ownership_peer_id(peer, adopted)
     if adopted.ok or direct is None or adopted.error == "ambiguous_ownership":
         return adopted
     return direct
