@@ -53,7 +53,11 @@ def link_spawn_ws_hook(
     rather than leaving a half-adopted peer.
     """
     lock_path = ws_hook_lock_path(pane_id)
-    lock_fd = open(lock_path, "w")  # noqa: SIM115
+    try:
+        lock_fd = open(lock_path, "w")  # noqa: SIM115
+    except OSError as e:
+        logger.warning("link_spawn_ws_hook: pane %s lock open failed: %s", pane_id, e)
+        return False
     try:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -61,23 +65,30 @@ def link_spawn_ws_hook(
             lock_fd.close()
             logger.warning("link_spawn_ws_hook: pane %s lock contested", pane_id)
             return False
-        write_pane_runtime_metadata(
-            pane_id,
-            {
-                "backend": backend,
-                "cwd": cwd,
-                "display_name": display_name,
-                "peer_id": peer_id,
-            },
-        )
-        new_pid = spawn_ws_hook(
-            pane_id=pane_id,
-            peer_id=peer_id,
-            display_name=display_name,
-            backend=backend,
-            cwd=cwd,
-            lock_fd=lock_fd,
-        )
+        # Any failure past this point (metadata write or spawn) returns False so
+        # the caller's rollback (clear_pane_runtime_state + unregister) runs —
+        # an exception must not escape and leave a registered ghost behind.
+        try:
+            write_pane_runtime_metadata(
+                pane_id,
+                {
+                    "backend": backend,
+                    "cwd": cwd,
+                    "display_name": display_name,
+                    "peer_id": peer_id,
+                },
+            )
+            new_pid = spawn_ws_hook(
+                pane_id=pane_id,
+                peer_id=peer_id,
+                display_name=display_name,
+                backend=backend,
+                cwd=cwd,
+                lock_fd=lock_fd,
+            )
+        except Exception as e:  # noqa: BLE001 — fail closed so the route rolls back
+            logger.warning("link_spawn_ws_hook: pane %s spawn failed: %s", pane_id, e)
+            return False
         return new_pid is not None
     finally:
         # Child inherited the flock via pass_fds; release our copy.

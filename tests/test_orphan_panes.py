@@ -84,6 +84,27 @@ async def test_orphans_route_excludes_registered_peer_panes(tmp_path, monkeypatc
     assert panes[0]["confidence"] == "hint"
 
 
+# --- link_spawn_ws_hook exception safety ---
+
+
+def test_link_spawn_ws_hook_swallows_spawn_errors(tmp_path, monkeypatch):
+    # If spawn_ws_hook raises after the metadata write, the helper must catch it
+    # and return False (so the route's rollback runs) rather than propagating.
+    from repowire.hooks import ws_hook_supervisor as sup
+
+    monkeypatch.setattr(sup, "ws_hook_lock_path", lambda _pid: tmp_path / "lock")
+    monkeypatch.setattr(sup, "write_pane_runtime_metadata", lambda *_a, **_k: None)
+
+    def boom(**_kw):
+        raise RuntimeError("popen exploded")
+
+    monkeypatch.setattr(sup, "spawn_ws_hook", boom)
+    result = sup.link_spawn_ws_hook(
+        "%99", peer_id="p", display_name="d", backend="codex", cwd="/tmp/x"
+    )
+    assert result is False
+
+
 # --- POST /panes/{id}/link ---
 
 
@@ -173,6 +194,66 @@ async def test_link_fails_when_spawn_helper_cannot_start(tmp_path, monkeypatch):
     # Spawn failed → we never even poll for a connection.
     assert is_connected_calls == []
     assert await harness.registry.get_peer_by_pane("%44") is None
+
+
+@pytest.mark.asyncio
+async def test_link_resolves_cwd_from_live_pane_when_omitted(tmp_path, monkeypatch):
+    # The CLI/dashboard copy command sends only --pane + --backend; the daemon
+    # (discovery owner) resolves cwd from the live pane so Popen has a real dir.
+    harness = make_daemon_app(tmp_path, [peers_routes.router])
+    monkeypatch.setattr(
+        peers_routes, "list_all_panes", lambda: [_pane("%50", "claude", )]
+    )
+    spawn_calls: list[dict] = []
+    monkeypatch.setattr(
+        peers_routes,
+        "link_spawn_ws_hook",
+        lambda pane_id, **kw: spawn_calls.append(kw) or True,
+    )
+    monkeypatch.setattr(harness.transport, "is_connected", lambda _pid: True)
+
+    async with async_client_for(harness.app) as client:
+        resp = await client.post("/panes/%2550/link", json={"backend": "claude-code"})
+    assert resp.json()["linked"] is True
+    # cwd came from the pane (PaneInfo cwd="/tmp/x"), not the request.
+    assert spawn_calls[0]["cwd"] == "/tmp/x"
+
+
+@pytest.mark.asyncio
+async def test_link_404_when_no_cwd_and_pane_not_live(tmp_path, monkeypatch):
+    harness = make_daemon_app(tmp_path, [peers_routes.router])
+    monkeypatch.setattr(peers_routes, "list_all_panes", lambda: [])  # pane not present
+    async with async_client_for(harness.app) as client:
+        resp = await client.post("/panes/%2551/link", json={"backend": "codex"})
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "pane_not_found"
+    assert await harness.registry.get_peer_by_pane("%51") is None
+
+
+@pytest.mark.asyncio
+async def test_link_rolls_back_when_spawn_helper_raises(tmp_path, monkeypatch):
+    # link_spawn_ws_hook catches its own spawn errors and returns False; assert
+    # the route then rolls back (no ghost, metadata cleared) rather than letting
+    # an exception escape past the rollback block.
+    harness = make_daemon_app(tmp_path, [peers_routes.router])
+
+    def boom(*_a, **_k):
+        return False  # helper swallows the raise internally and reports failure
+
+    monkeypatch.setattr(peers_routes, "link_spawn_ws_hook", boom)
+    cleared: list[str] = []
+    monkeypatch.setattr(
+        peers_routes, "clear_pane_runtime_state", lambda pid: cleared.append(pid)
+    )
+    async with async_client_for(harness.app) as client:
+        resp = await client.post(
+            "/panes/%2552/link", json={"backend": "codex", "cwd": "/tmp/proj"}
+        )
+    body = resp.json()
+    assert body["linked"] is False
+    assert body["reason"] == "ws_hook_spawn_failed"
+    assert cleared == ["%52"]  # rollback cleared the pane metadata
+    assert await harness.registry.get_peer_by_pane("%52") is None
 
 
 @pytest.mark.asyncio

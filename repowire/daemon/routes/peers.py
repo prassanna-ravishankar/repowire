@@ -31,6 +31,7 @@ from repowire.daemon.peer_registry import (
 )
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
 from repowire.daemon.state.session_bindings import SessionBinding
+from repowire.hooks._tmux import list_all_panes
 from repowire.hooks.utils import clear_pane_runtime_state
 from repowire.hooks.ws_hook_supervisor import link_spawn_ws_hook
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
@@ -476,10 +477,29 @@ async def link_pane(
             },
         )
 
-    name = request.name or _link_default_name(request.backend, request.cwd)
+    # Resolve cwd from the live pane when the caller didn't supply one — the
+    # daemon owns discovery, so the CLI/dashboard copy command stays simple
+    # (just --pane + --backend). The ws-hook spawn needs a real cwd for Popen;
+    # an empty cwd would fail every adoption.
+    cwd = request.cwd
+    if not cwd:
+        cwd = next(
+            (p["cwd"] for p in await asyncio.to_thread(list_all_panes) if p["pane_id"] == pane_id),
+            None,
+        )
+    if not cwd:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "pane_not_found",
+                "hint": f"No live tmux pane {pane_id} to resolve a working directory from.",
+            },
+        )
+
+    name = request.name or _link_default_name(request.backend, cwd)
     reg = RegisterPeerRequest(
         name=name,
-        path=request.cwd,
+        path=cwd,
         machine=socket.gethostname(),
         pane_id=pane_id,
         backend=request.backend,
@@ -505,7 +525,7 @@ async def link_pane(
         peer_id=peer_id,
         display_name=display_name,
         backend=request.backend.value,
-        cwd=request.cwd or "",
+        cwd=cwd,
     )
     connected = spawned and await _await_ws_connected(
         transport, peer_id, _LINK_WS_WAIT_SECONDS
