@@ -6,6 +6,12 @@ import { cn, shortPath, statusDot } from "../lib/utils";
 import { registerSnapshotProvider, useFrozenThread, useIsPeerProtected } from "../lib/protection";
 import { clearDraft, setDraftFile, setDraftText, useDraftFile, useDraftText } from "../lib/drafts";
 import { clearHistory, getHistory, pushHistory } from "../lib/history";
+import {
+  type Template,
+  deleteTemplate,
+  listTemplates,
+  saveTemplate,
+} from "../lib/templates";
 import type { AttachmentRef, Event, Peer } from "../types";
 import { peerLabel } from "../types";
 import { formatTime, StatusLabel } from "./status";
@@ -1148,6 +1154,16 @@ function ComposeBar({
   // Bumped on send/clear so the "clear history" affordance re-evaluates (the
   // history store is a plain module, not a reactive source).
   const [historyTick, setHistoryTick] = useState(0);
+  const [showTemplates, setShowTemplates] = useState(false);
+
+  // Insert a template into the draft: into an empty composer as-is, else
+  // appended (never silently clobber unsent text).
+  const insertTemplate = (tplText: string) => {
+    setText(text.trim() ? `${text}\n\n${tplText}` : tplText);
+    historyIdx.current = null;
+    setShowTemplates(false);
+    textareaRef.current?.focus();
+  };
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -1361,6 +1377,24 @@ function ComposeBar({
             clear history
           </button>
         )}
+        <div className="relative">
+          <button
+            data-testid="templates-toggle"
+            onClick={() => setShowTemplates((v) => !v)}
+            aria-expanded={showTemplates}
+            title="Ask templates"
+            className="font-mono text-[9px] uppercase tracking-[0.14em] text-outline hover:text-on-surface"
+          >
+            templates
+          </button>
+          {showTemplates && (
+            <TemplatesMenu
+              draft={text}
+              onInsert={insertTemplate}
+              onClose={() => setShowTemplates(false)}
+            />
+          )}
+        </div>
         {isDirty && (
           <span
             data-testid="compose-draft-pill"
@@ -2329,5 +2363,85 @@ function CopyPeerName({ peer }: { peer: Peer }) {
     >
       {copied ? <Check className="h-3.5 w-3.5 text-secondary" /> : <Copy className="h-3.5 w-3.5" />}
     </button>
+  );
+}
+
+function TemplatesMenu({
+  draft,
+  onInsert,
+  onClose,
+}: {
+  draft: string;
+  onInsert: (text: string) => void;
+  onClose: () => void;
+}) {
+  const [tick, setTick] = useState(0);
+  const [name, setName] = useState("");
+  void tick; // re-render trigger; templates store is a plain module
+  const templates = listTemplates();
+
+  const save = () => {
+    const result = saveTemplate(name, draft);
+    if (result !== "rejected") {
+      setName("");
+      setTick((t) => t + 1);
+    }
+  };
+
+  return (
+    <div
+      data-testid="templates-menu"
+      className="absolute bottom-full left-0 z-20 mb-1 w-72 rounded border border-border bg-surface-container-low p-2 shadow-lg"
+    >
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-outline">Ask templates</span>
+        <button onClick={onClose} aria-label="Close templates" className="text-outline hover:text-on-surface">
+          <X className="h-3 w-3" />
+        </button>
+      </div>
+      <div className="max-h-48 overflow-y-auto">
+        {templates.length === 0 ? (
+          <p className="px-1 py-2 font-mono text-[11px] text-outline">No templates yet.</p>
+        ) : (
+          templates.map((t: Template) => (
+            <div key={t.id} className="flex items-center gap-1.5 px-1 py-1 hover:bg-surface-container-high">
+              <button
+                onClick={() => onInsert(t.text)}
+                title={t.text}
+                className="min-w-0 flex-1 truncate text-left font-mono text-[11px] text-on-surface-variant hover:text-on-surface"
+              >
+                {t.name}
+              </button>
+              <button
+                onClick={() => {
+                  deleteTemplate(t.id);
+                  setTick((x) => x + 1);
+                }}
+                aria-label={`Delete template ${t.name}`}
+                className="shrink-0 text-outline hover:text-error"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+      <div className="mt-2 flex items-center gap-1.5 border-t border-border-faint pt-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="save draft as…"
+          aria-label="Template name"
+          className="min-w-0 flex-1 rounded border border-border-faint bg-surface-container-lowest px-1.5 py-1 font-mono text-[11px] text-on-surface outline-none placeholder:text-outline focus:border-primary"
+        />
+        <button
+          onClick={save}
+          disabled={!name.trim() || !draft.trim()}
+          className="shrink-0 rounded bg-primary px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.1em] text-on-primary disabled:opacity-40"
+        >
+          Save
+        </button>
+      </div>
+    </div>
   );
 }

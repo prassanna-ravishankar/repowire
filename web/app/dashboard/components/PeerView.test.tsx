@@ -4,6 +4,7 @@ import { PeerView } from "./PeerView";
 import { __resetProtectionForTests, getFrozenThread, isProtected } from "../lib/protection";
 import { __resetDraftsForTests, getDraftText, setDraftText } from "../lib/drafts";
 import { __resetHistoryForTests, pushHistory } from "../lib/history";
+import { __resetTemplatesForTests, listTemplates, saveTemplate } from "../lib/templates";
 import type { Event, Peer } from "../types";
 
 const PEER: Peer = {
@@ -43,6 +44,7 @@ beforeEach(() => {
   __resetProtectionForTests();
   __resetDraftsForTests();
   __resetHistoryForTests();
+  __resetTemplatesForTests();
   vi.stubGlobal(
     "fetch",
     vi.fn(() => new Promise<Response>(() => {})),
@@ -53,6 +55,7 @@ afterEach(() => {
   __resetProtectionForTests();
   __resetDraftsForTests();
   __resetHistoryForTests();
+  __resetTemplatesForTests();
   vi.unstubAllGlobals();
 });
 
@@ -1039,5 +1042,48 @@ describe("PeerView composer command history", () => {
     fireEvent.change(textarea(), { target: { value: "beta edited" } });
     fireEvent.keyDown(textarea(), { key: "ArrowUp" }); // no longer navigating
     expect(textarea().value).toBe("beta edited");
+  });
+});
+
+describe("PeerView composer templates", () => {
+  const renderComposer = () =>
+    render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+  const textarea = () => screen.getByTestId("compose-textarea") as HTMLTextAreaElement;
+
+  it("inserts a template into an empty composer as-is", () => {
+    saveTemplate("tests", "run the tests", 1);
+    renderComposer();
+    fireEvent.click(screen.getByTestId("templates-toggle"));
+    fireEvent.click(screen.getByText("tests"));
+    expect(textarea().value).toBe("run the tests");
+  });
+
+  it("appends a template onto a dirty draft, preserving the unsent text", () => {
+    saveTemplate("tests", "run the tests", 1);
+    renderComposer();
+    fireEvent.change(textarea(), { target: { value: "existing draft" } });
+    fireEvent.click(screen.getByTestId("templates-toggle"));
+    fireEvent.click(screen.getByText("tests"));
+    expect(textarea().value).toBe("existing draft\n\nrun the tests");
+  });
+
+  it("saves the current draft as a named template (overwrite moves to top)", () => {
+    saveTemplate("old", "old text", 1);
+    renderComposer();
+    fireEvent.change(textarea(), { target: { value: "drafted body" } });
+    fireEvent.click(screen.getByTestId("templates-toggle"));
+    fireEvent.change(screen.getByLabelText("Template name"), { target: { value: "fresh" } });
+    fireEvent.click(screen.getByText("Save"));
+    const names = listTemplates().map((t) => t.name);
+    expect(names[0]).toBe("fresh"); // most-recently-saved first
+    expect(listTemplates().find((t) => t.name === "fresh")?.text).toBe("drafted body");
+  });
+
+  it("deletes a template from the menu", () => {
+    saveTemplate("doomed", "bye", 1);
+    renderComposer();
+    fireEvent.click(screen.getByTestId("templates-toggle"));
+    fireEvent.click(screen.getByLabelText("Delete template doomed"));
+    expect(listTemplates()).toEqual([]);
   });
 });
