@@ -1211,3 +1211,41 @@ class TestSessionUpdate:
 
         r = await client.get(f"/peers/{name}")
         assert r.json()["status"] == "busy"
+
+
+@pytest.mark.asyncio
+async def test_acp_notify_reason_is_broker_accepted():
+    # codex ACP must-fix #3: a fire-and-forget notify routed over ACP must report
+    # reason="broker_accepted" (the broker took the prompt task) rather than
+    # "transport_delivered" (which means written to a live WS), so clients don't
+    # mistake broker acceptance for a runtime receipt.
+    from unittest.mock import AsyncMock
+
+    from repowire.daemon.peer_delivery import PeerDeliveryService
+    from repowire.daemon.transport_router import NotifyTransportResult
+
+    sender = SimpleNamespace(peer_id="sender-id", display_name="sender-codex")
+    target = SimpleNamespace(peer_id="target-id", display_name="target-codex")
+
+    registry = SimpleNamespace(
+        check_access=AsyncMock(return_value=(sender, target)),
+        add_event=lambda *a, **k: None,
+    )
+    transport_router = SimpleNamespace(
+        send_notify=AsyncMock(
+            return_value=NotifyTransportResult(status="sent", transport="acp")
+        )
+    )
+    service = PeerDeliveryService(
+        config=Config(),
+        registry=registry,  # type: ignore[arg-type]
+        message_router=SimpleNamespace(),  # type: ignore[arg-type]
+        transport_router=transport_router,  # type: ignore[arg-type]
+    )
+
+    result = await service.notify_result(
+        from_peer="sender-codex", to_peer="target-codex", text="heads up",
+    )
+    assert result.delivery_state == "delivered"
+    assert result.reason == "broker_accepted"
+    assert result.transport == "acp"

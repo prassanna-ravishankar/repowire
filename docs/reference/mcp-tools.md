@@ -107,6 +107,8 @@ responses and hook receipts may include nullable `repowire_session_id`,
 
 If the live transport is unavailable but the daemon can resolve the target peer, `/notify` may return `delivery_state="queued"` and `reason="queued_delivery"`. That means the notification was stored in the SQLite queued-delivery table for the target peer/session and will be delivered once through the recipient's Stop hook or `repowire peer deliveries`, subject to the configured TTL and per-peer cap.
 
+For an ACP-brokered peer (experimental), a fire-and-forget `/notify` returns `delivery_state="delivered"` with `reason="broker_accepted"` rather than `transport_delivered`. The broker accepted the prompt task, but the ACP reply is discarded for notify, so this is *not* a runtime receipt — the daemon never learns whether the runtime completed it. Clients that need a real receipt must not treat `broker_accepted` as one.
+
 Peer resolution mirrors `ask`: defaults to the caller's circle, except for peers whose role bypasses circles (`orchestrator`, `service`, human surfaces) which resolve mesh-wide. Pass `circle="<name>"` to target a different circle.
 
 The special peer `telegram` routes to the user's phone. The `dashboard` already sees agent turns; you do not need to notify it. Both are human-role peers and resolve mesh-wide regardless of your circle.

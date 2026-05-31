@@ -40,11 +40,23 @@ class NotifyDeliveryResult:
     ``status`` is the legacy compact value returned by older call sites.
     ``delivery_state`` and ``reason`` make the same outcome explicit so
     clients do not need to infer BUSY queueing or transport success.
+
+    ``reason`` is honest about what was actually proven:
+      * ``transport_delivered`` — written to the recipient's live WS transport.
+      * ``broker_accepted`` — an ACP notify was accepted by the broker (the
+        prompt task was dispatched). It is *not* a runtime-receipt: the ACP
+        reply is discarded for fire-and-forget notify, so the daemon never
+        learns whether the runtime completed it. ``delivery_state`` is still
+        ``delivered`` (the broker took ownership), but clients that want a real
+        receipt must not read ``broker_accepted`` as one.
+      * ``recipient_busy`` / ``queued_delivery`` — held for later delivery.
     """
 
     status: Literal["sent", "queued"]
     delivery_state: Literal["delivered", "queued"]
-    reason: Literal["transport_delivered", "recipient_busy", "queued_delivery"]
+    reason: Literal[
+        "transport_delivered", "broker_accepted", "recipient_busy", "queued_delivery"
+    ]
     from_peer_id: str | None
     from_peer_name: str
     to_peer_id: str
@@ -308,9 +320,18 @@ class PeerDeliveryService:
         delivery_state: Literal["delivered", "queued"] = (
             "queued" if delivery_status == "queued" else "delivered"
         )
-        reason: Literal["transport_delivered", "recipient_busy", "queued_delivery"] = (
-            "recipient_busy" if delivery_status == "queued" else "transport_delivered"
-        )
+        reason: Literal[
+            "transport_delivered", "broker_accepted", "recipient_busy", "queued_delivery"
+        ]
+        if delivery_status == "queued":
+            reason = "recipient_busy"
+        elif transport_result.transport == "acp":
+            # ACP notify is fire-and-forget: the broker accepted the prompt
+            # task but the runtime receipt is discarded, so don't claim
+            # transport_delivered (which means "written to a live WS").
+            reason = "broker_accepted"
+        else:
+            reason = "transport_delivered"
         return NotifyDeliveryResult(
             status=delivery_status,
             delivery_state=delivery_state,
