@@ -3,6 +3,7 @@ export interface Peer {
   name: string;
   display_name: string;
   status: "online" | "busy" | "offline";
+  turn_state?: "idle" | "working" | "awaiting_input" | "pending_first_turn" | null;
   machine: string;
   path: string;
   tmux_session?: string;

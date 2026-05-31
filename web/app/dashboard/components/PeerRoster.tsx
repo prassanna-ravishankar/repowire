@@ -3,7 +3,7 @@ import { Search } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
 import type { Peer } from "../types";
 import { peerLabel } from "../types";
-import { StatusLabel, statusRank } from "./status";
+import { StatusLabel, TurnStateHint, statusRank } from "./status";
 
 export function PeerRoster({
   peers,
@@ -89,6 +89,7 @@ function PeerRow({ peer, active, onClick }: { peer: Peer; active: boolean; onCli
       <div className="mb-1 flex min-w-0 items-center gap-2.5">
         <span className={cn("h-2 w-2 shrink-0 rounded-full", statusDot(peer.status))} />
         <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-semibold">{peerLabel(peer)}</span>
+        <TurnStateHint turnState={peer.turn_state} />
         <StatusLabel status={peer.status} />
       </div>
       <div className="ml-[18px] truncate font-mono text-[11px] leading-5 text-outline">
