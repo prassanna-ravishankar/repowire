@@ -1058,6 +1058,42 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         )
 
     @mcp.tool()
+    async def answer(
+        correlation_id: str,
+        option_id: str | None = None,
+        text: str | None = None,
+    ) -> str:
+        """[Repowire mesh] Answer a structured question (choice or free-text).
+
+        The typed counterpart to `ack` for questions raised via `ask` with a
+        structured question (an approval, an AskUserQuestion-style choice, or a
+        free-text prompt). Pass `option_id` to pick a choice, or `text` for a
+        free-text answer. The answer is recorded and delivered back to the
+        asker; if the asking transport is blocked waiting (e.g. a tool-approval),
+        this is what unblocks it. Use `ack` for plain asks; use `answer` when the
+        ask carried options you're selecting from.
+
+        Args:
+            correlation_id: The question ask's correlation_id.
+            option_id: The chosen option id (for a choice question).
+            text: A free-text answer (for a text question or freeform reply).
+
+        Returns:
+            Confirmation message.
+        """
+        await _ensure_registered(strict=True)
+        body: dict = {"correlation_id": correlation_id}
+        if option_id is not None:
+            body["option_id"] = option_id
+        if text is not None:
+            body["text"] = text
+        if option_id is None and text is None:
+            body["outcome"] = "acknowledged"
+        await daemon_request("POST", "/answer", body)
+        picked = f"option={option_id}" if option_id else ("text" if text else "acknowledged")
+        return f"answered #{correlation_id} ({picked})"
+
+    @mcp.tool()
     async def notify_peer(
         peer_name: str,
         message: str,

@@ -643,3 +643,80 @@ class TestAskMany:
         client, _, _, _ = env
         r = await client.get("/ask-many/askm-nope")
         assert r.status_code == 404
+
+
+class TestAnswerQuestion:
+    async def _ask_question(self, client, asker, recipient, *, kind="choice"):
+        question = {"kind": kind, "blocking": False}
+        if kind == "choice":
+            question["options"] = [
+                {"id": "allow", "title": "Allow"},
+                {"id": "deny", "title": "Deny"},
+            ]
+        r = await client.post("/ask", json={
+            "from_peer": asker, "to_peer": recipient, "text": "run rm -rf?",
+            "question": question,
+        })
+        assert r.status_code == 200, r.text
+        return r.json()["correlation_id"]
+
+    async def test_answer_choice_records_and_delivers(self, env):
+        client, _, at, _ = env
+        asker = await _register_peer(client, "asker")
+        rcv = await _register_peer(client, "rcv")
+        cid = await self._ask_question(client, asker, rcv)
+
+        r = await client.post("/answer", json={"correlation_id": cid, "option_id": "allow"})
+        assert r.status_code == 200, r.text
+        ask = await at.get(cid)
+        assert ask.answer is not None and ask.answer.option_id == "allow"
+        assert ask.closed
+
+    async def test_answer_rejects_unknown_option_422(self, env):
+        client, _, _, _ = env
+        asker = await _register_peer(client, "asker")
+        rcv = await _register_peer(client, "rcv")
+        cid = await self._ask_question(client, asker, rcv)
+        r = await client.post("/answer", json={"correlation_id": cid, "option_id": "bogus"})
+        assert r.status_code == 422
+
+    async def test_re_answer_is_410(self, env):
+        client, _, _, _ = env
+        asker = await _register_peer(client, "asker")
+        rcv = await _register_peer(client, "rcv")
+        cid = await self._ask_question(client, asker, rcv)
+        first = await client.post("/answer", json={"correlation_id": cid, "option_id": "deny"})
+        assert first.status_code == 200
+        r2 = await client.post("/answer", json={"correlation_id": cid, "option_id": "allow"})
+        assert r2.status_code == 410
+
+    async def test_answer_unknown_ask_404(self, env):
+        client, _, _, _ = env
+        r = await client.post("/answer", json={"correlation_id": "ask-nope", "option_id": "allow"})
+        assert r.status_code == 404
+
+    async def test_ack_on_question_delegates_to_answer(self, env):
+        # bare ack on a choice question = acknowledged; ack-with-message = text answer
+        client, _, at, _ = env
+        asker = await _register_peer(client, "asker")
+        rcv = await _register_peer(client, "rcv")
+        cid = await self._ask_question(client, asker, rcv, kind="text")
+        r = await client.post("/ack", json={"correlation_id": cid, "message": "the answer is 42"})
+        assert r.status_code == 200, r.text
+        ask = await at.get(cid)
+        assert ask.answer is not None and ask.answer.text == "the answer is 42"
+        assert ask.closed
+
+    async def test_answer_rejects_plain_ask_422(self, env):
+        # codex #1: /answer must not accept a plain ask (would bypass /ack's
+        # fail-loud retry contract). Plain asks go through /ack.
+        client, _, _, _ = env
+        asker = await _register_peer(client, "asker")
+        rcv = await _register_peer(client, "rcv")
+        r = await client.post("/ask", json={
+            "from_peer": asker, "to_peer": rcv, "text": "plain ask, no question",
+        })
+        cid = r.json()["correlation_id"]
+        resp = await client.post("/answer", json={"correlation_id": cid, "text": "hi"})
+        assert resp.status_code == 422
+        assert "not a structured question" in resp.json()["detail"]

@@ -93,10 +93,12 @@ class Question(BaseModel):
         """Return an error string if ``answer`` is invalid for this question, else None.
 
         Enforced in the daemon (not just the UI): a choice must pick a known
-        option (unless it's a timeout/cancel applying the default); text/ack are
-        permissive. First-answer-wins + lifecycle is the tracker's job.
+        option, UNLESS the answer is a non-selecting outcome (timed_out /
+        cancelled apply a default; acknowledged = "seen, no choice made").
+        text/ack kinds are permissive. First-answer-wins + lifecycle is the
+        tracker's job.
         """
-        if answer.outcome in ("timed_out", "cancelled"):
+        if answer.outcome in ("timed_out", "cancelled", "acknowledged"):
             return None
         if self.kind == "choice":
             if answer.option_id is None:

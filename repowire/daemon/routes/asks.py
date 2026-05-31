@@ -34,7 +34,7 @@ from repowire.daemon.ask_many import (
     AskManyChild,
     AskManyTracker,
 )
-from repowire.daemon.ask_tracker import AskerIdentity, AskTracker, QuiescedError
+from repowire.daemon.ask_tracker import Ask, AskerIdentity, AskTracker, QuiescedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.peer_delivery import peer_delivery_from_state
@@ -44,6 +44,7 @@ from repowire.daemon.state.session_bindings import resolve_repowire_session_id
 from repowire.daemon.websocket_transport import DeliveryInjectionError, TransportError
 from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import Peer
+from repowire.protocol.questions import Answer, AnswerOutcome, Question
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["asks"])
@@ -65,6 +66,13 @@ class AskRequest(BaseModel):
     )
     bypass_circle: bool = Field(default=False)
     circle: str | None = Field(None)
+    question: Question | None = Field(
+        None,
+        description=(
+            "Optional structured question (approval / choice / text). When set, "
+            "the recipient answers via /answer (or ack); the answer is typed."
+        ),
+    )
 
 
 class AskResponse(BaseModel):
@@ -72,6 +80,20 @@ class AskResponse(BaseModel):
 
     correlation_id: str
     error: str | None = None
+
+
+class AnswerRequest(BaseModel):
+    """Answer a question ask (or a plain ask) with a typed Answer.
+
+    Canonical endpoint for the mesh-questions primitive. ``/ack`` delegates here.
+    """
+
+    correlation_id: str
+    option_id: str | None = Field(None, description="Selected option for a choice question")
+    text: str | None = Field(None, description="Free-text answer / reply body")
+    outcome: AnswerOutcome = Field("answered")
+    message: str | None = Field(None, description="Optional human note alongside the answer")
+    attachments: list[AttachmentRef] = Field(default_factory=list)
 
 
 class AckRequest(BaseModel):
@@ -428,6 +450,7 @@ async def open_ask(
             reply_to=request.reply_to,
             from_repowire_session_id=from_repowire_session_id,
             to_repowire_session_id=to_repowire_session_id,
+            question=request.question,
         )
     except QuiescedError as e:
         raise HTTPException(
@@ -720,6 +743,113 @@ async def ask_many_result(
     return result
 
 
+def _answer_reply_text(ask: Ask, answer: Answer) -> str | None:
+    """Human-readable body to deliver back to the asker for an answer.
+
+    A choice answer renders the chosen option's title; a text answer is its
+    text; a bare acknowledge has no body (the asker just learns it was acked).
+    """
+    if answer.text:
+        return answer.text
+    if answer.option_id and ask.question is not None:
+        for opt in ask.question.options:
+            if opt.id == answer.option_id:
+                return opt.title
+        return answer.option_id
+    return answer.message
+
+
+async def _answer_question_core(request: AnswerRequest) -> OkResponse:
+    """Shared answer logic for /answer and the /ack-on-question delegation.
+
+    Records the typed answer (source of truth; resolves any blocking transport's
+    waiter), then best-effort delivers a human-readable form back to the asker.
+    A transient asker-offline does NOT un-resolve the question — the blocking
+    transport cares the answer is recorded; redelivery is separate.
+    """
+    peer_registry = get_peer_registry()
+    state = get_app_state()
+    ask_tracker = state.ask_tracker
+
+    existing = await ask_tracker.get(request.correlation_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=404, detail=f"No open ask with correlation_id: {request.correlation_id}",
+        )
+    # /answer is only for structured questions. A plain ask must go through /ack
+    # so its fail-loud 503/retry contract isn't bypassed (codex review).
+    if existing.question is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Ask {request.correlation_id} is not a structured question; use /ack.",
+        )
+    answer = Answer(
+        option_id=request.option_id,
+        text=request.text,
+        outcome=request.outcome,
+        message=request.message,
+    )
+    try:
+        await ask_tracker.answer(request.correlation_id, answer)
+    except ask_tracker.AlreadyAnsweredError:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=f"Ask {request.correlation_id} is already answered/closed.",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # Best-effort: deliver a readable form of the answer back to the asker.
+    body = _answer_reply_text(existing, answer)
+    delivery_success = False
+    if body:
+        framed = f"[ack #{request.correlation_id} from @{existing.to_peer_name}] {body}"
+        try:
+            peer_delivery = peer_delivery_from_state(
+                config=state.config, registry=peer_registry, state=state,
+            )
+            await peer_delivery.notify(
+                from_peer=existing.to_peer_id,
+                to_peer=existing.from_peer_id,
+                text=framed,
+                bypass_circle=True,
+                attachments=request.attachments,
+            )
+            delivery_success = True
+        except (ValueError, TransportError) as e:
+            # The answer is recorded (truth); the asker just didn't get the
+            # human-readable notification this time. Redelivery-to-offline-asker
+            # is tracked as a follow-up (repowire-* — stash on answered question).
+            logger.warning(
+                "answer for %s recorded; asker delivery deferred (%s)",
+                request.correlation_id, e,
+            )
+    _emit_ack_event(
+        peer_registry=peer_registry,
+        ask=existing,
+        reason="answered",
+        delivered=delivery_success,  # truthful: only true when notify succeeded
+        has_message=bool(body),
+        has_attachments=bool(request.attachments),
+    )
+    return OkResponse()
+
+
+@router.post("/answer", response_model=OkResponse)
+async def answer_question(
+    request: AnswerRequest,
+    _: str | None = Depends(require_auth),
+) -> OkResponse:
+    """Answer a structured question with a typed Answer — the canonical verb.
+
+    Records the answer (resolving any blocking transport's waiter), then
+    best-effort delivers a human-readable form back to the asker. Returns 404
+    (unknown), 410 (already answered/closed), 422 (plain ask — use /ack, or
+    invalid option for the question).
+    """
+    return await _answer_question_core(request)
+
+
 @router.post("/ack", response_model=OkResponse)
 async def ack_ask(
     request: AckRequest,
@@ -754,6 +884,17 @@ async def ack_ask(
             status_code=404,
             detail=f"No open ask with correlation_id: {request.correlation_id}",
         )
+    # Acking a structured QUESTION delegates to the typed answer path so the
+    # blocking transport's waiter resolves and the answer is recorded. A bare
+    # ack on a question = acknowledge; ack-with-message = a text answer.
+    if existing.question is not None and not existing.closed:
+        delegated = AnswerRequest(
+            correlation_id=request.correlation_id,
+            text=request.message,
+            outcome="acknowledged" if not request.message else "answered",
+            attachments=request.attachments,
+        )
+        return await _answer_question_core(delegated)
     if existing.closed and (request.message or request.attachments):
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
