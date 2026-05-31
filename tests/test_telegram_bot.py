@@ -506,6 +506,9 @@ async def test_stale_option_index_clears_entry(
     telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     telegram_bot._question_options["ask-1"] = ["allow", "deny"]
+    monkeypatch.setattr(telegram_bot._http, "post", AsyncMock(
+        return_value=SimpleNamespace(status_code=200),
+    ))
     monkeypatch.setattr(telegram_bot, "_tg_send", AsyncMock())
     await telegram_bot._on_callback({"id": "cb", "data": "answer:ask-1:9"})  # out of range
     assert "ask-1" not in telegram_bot._question_options

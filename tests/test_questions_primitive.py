@@ -197,3 +197,18 @@ async def test_plain_ask_without_question_is_unaffected():
     )
     ask = await at.get(cid)
     assert ask is not None and ask.question is None and ask.answer is None
+
+
+@pytest.mark.asyncio
+async def test_answer_on_closed_unanswered_ask_is_rejected():
+    # gemini review: an ask closed by another terminal path (send_failed/ack)
+    # has closed=True but answer=None; answering it must NOT overwrite the close
+    # state — first terminal state wins.
+    at = AskTracker()
+    cid = await _register_question(at, _allow_deny())
+    await at.close(cid, reason="send_failed")  # closed, no answer
+    with pytest.raises(AskTracker.AlreadyAnsweredError):
+        await at.answer(cid, Answer(option_id="allow"))
+    ask = await at.get(cid)
+    assert ask.close_reason == "send_failed"  # unchanged, not overwritten to "answered"
+    assert ask.answer is None

@@ -268,7 +268,11 @@ class AskTracker:
             ask = self._asks.get(correlation_id)
             if ask is None:
                 raise KeyError(correlation_id)
-            if ask.answer is not None:
+            # Guard on closed, not just answer-present: an ask can be closed by
+            # another terminal path (send_failed / ack / reply_to) with no answer
+            # recorded. Answering it would overwrite that close state (gemini
+            # review). First terminal state wins.
+            if ask.closed or ask.answer is not None:
                 raise self.AlreadyAnsweredError(correlation_id)
             if ask.question is not None:
                 error = ask.question.validate_answer(answer)
