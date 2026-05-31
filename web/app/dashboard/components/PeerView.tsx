@@ -1155,6 +1155,15 @@ function ComposeBar({
   // history store is a plain module, not a reactive source).
   const [historyTick, setHistoryTick] = useState(0);
   const [showTemplates, setShowTemplates] = useState(false);
+  // Composer mode: "ask" (tracked, ack lifecycle) or "notify" (fire-and-forget).
+  const [mode, setMode] = useState<"ask" | "notify">("ask");
+  const [notifyStatus, setNotifyStatus] = useState<{ ok: boolean; text: string } | null>(null);
+  // Reset to the safe default on peer switch — the component may not remount on
+  // a peer prop change, and a sticky "notify" would be a surprise-send footgun.
+  useEffect(() => {
+    setMode("ask");
+    setNotifyStatus(null);
+  }, [peer.peer_id]);
 
   // Insert a template into the draft: into an empty composer as-is, else
   // appended (never silently clobber unsent text).
@@ -1261,6 +1270,34 @@ function ComposeBar({
         }
       }
 
+      if (mode === "notify") {
+        // Fire-and-forget: no ack lifecycle, no pending-ask card.
+        const res = await fetch(`${apiBase}/notify`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            from_peer: "dashboard",
+            to_peer: peer.peer_id,
+            text: msg,
+            attachments,
+            bypass_circle: true,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+          // Preserve the draft so the send can be retried.
+          setError(data.error || data.detail || `Error ${res.status}`);
+        } else {
+          setNotifyStatus({ ok: true, text: "notified" });
+          pushHistory(peer.peer_id, text);
+          historyIdx.current = null;
+          setHistoryTick((t) => t + 1);
+          clearDraft(peer.peer_id);
+          onSent?.();
+        }
+        return;
+      }
+
       const res = await fetch(`${apiBase}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1360,9 +1397,39 @@ function ComposeBar({
   return (
     <div className="sticky bottom-0 z-10 border-t border-border-faint bg-surface-dim p-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] md:static md:p-4">
       <div className="mb-2 flex items-center gap-2">
+        <div className="inline-flex overflow-hidden rounded border border-border-faint" role="group" aria-label="composer mode">
+          {(["ask", "notify"] as const).map((m) => (
+            <button
+              key={m}
+              data-testid={`mode-${m}`}
+              onClick={() => {
+                setMode(m);
+                setNotifyStatus(null);
+              }}
+              aria-pressed={mode === m}
+              className={cn(
+                "px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] transition-colors",
+                mode === m ? "bg-surface-container-high text-on-surface" : "text-outline hover:text-on-surface",
+              )}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-outline">
-          ask &rarr; {peerLabel(peer)}
+          &rarr; {peerLabel(peer)}
         </span>
+        {notifyStatus && (
+          <span
+            data-testid="notify-status"
+            className={cn(
+              "font-mono text-[9px] uppercase tracking-[0.14em]",
+              notifyStatus.ok ? "text-secondary" : "text-error",
+            )}
+          >
+            {notifyStatus.text}
+          </span>
+        )}
         {hasHistory && (
           <button
             data-testid="clear-history"
@@ -1451,10 +1518,11 @@ function ComposeBar({
                 historyIdx.current = null;
               }
             }
+            if (notifyStatus) setNotifyStatus(null); // transient: clear on next edit
             setText(event.target.value);
           }}
           onKeyDown={onKeyDown}
-          placeholder={`ask ${peerLabel(peer)} something...`}
+          placeholder={`${mode} ${peerLabel(peer)} something...`}
           rows={1}
           className={cn(
             "max-h-32 min-h-10 flex-1 resize-none rounded border bg-surface-container-lowest px-3 py-2.5 font-mono text-base text-on-surface outline-none placeholder:text-outline focus:border-primary focus:ring-1 focus:ring-primary md:text-sm",
@@ -1464,7 +1532,7 @@ function ComposeBar({
         <button
           onClick={submit}
           disabled={(!text.trim() && !file) || isPending}
-          aria-label="Ask peer"
+          aria-label={mode === "notify" ? "Notify peer" : "Ask peer"}
           aria-busy={isPending}
           className={cn(
             "flex h-10 w-10 shrink-0 items-center justify-center rounded transition-[filter,transform] active:scale-[0.98]",

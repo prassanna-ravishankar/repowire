@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { PeerView } from "./PeerView";
 import { __resetProtectionForTests, getFrozenThread, isProtected } from "../lib/protection";
 import { __resetDraftsForTests, getDraftText, setDraftText } from "../lib/drafts";
-import { __resetHistoryForTests, pushHistory } from "../lib/history";
+import { __resetHistoryForTests, getHistory, pushHistory } from "../lib/history";
 import { __resetTemplatesForTests, listTemplates, saveTemplate } from "../lib/templates";
 import type { Event, Peer } from "../types";
 
@@ -1085,5 +1085,84 @@ describe("PeerView composer templates", () => {
     fireEvent.click(screen.getByTestId("templates-toggle"));
     fireEvent.click(screen.getByLabelText("Delete template doomed"));
     expect(listTemplates()).toEqual([]);
+  });
+});
+
+describe("PeerView composer modes (ask | notify)", () => {
+  const textarea = () => screen.getByTestId("compose-textarea") as HTMLTextAreaElement;
+
+  function mockEndpoints(opts: { notifyOk?: boolean } = {}) {
+    const calls: { url: string; body: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url, body });
+      if (url === "/ask") {
+        return new Response(JSON.stringify({ correlation_id: "ask-1" }), { status: 200 });
+      }
+      if (url === "/notify") {
+        return opts.notifyOk === false
+          ? new Response(JSON.stringify({ error: "offline" }), { status: 503 })
+          : new Response(JSON.stringify({ delivered: true }), { status: 200 });
+      }
+      return new Promise<Response>(() => {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return calls;
+  }
+
+  it("notify mode posts /notify and creates no pending ask", async () => {
+    const calls = mockEndpoints();
+    render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    fireEvent.click(screen.getByTestId("mode-notify"));
+    fireEvent.change(textarea(), { target: { value: "heads up" } });
+    fireEvent.click(screen.getByLabelText("Notify peer"));
+
+    await waitFor(() => expect(calls.some((c) => c.url === "/notify")).toBe(true));
+    expect(calls.every((c) => c.url !== "/ask")).toBe(true);
+    expect(await screen.findByTestId("notify-status")).toBeInTheDocument();
+  });
+
+  it("successful notify pushes history and clears the draft", async () => {
+    mockEndpoints();
+    render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    fireEvent.click(screen.getByTestId("mode-notify"));
+    fireEvent.change(textarea(), { target: { value: "ping" } });
+    fireEvent.click(screen.getByLabelText("Notify peer"));
+
+    await waitFor(() => expect(textarea().value).toBe("")); // draft cleared
+    expect(getHistory(PEER.peer_id)).toEqual(["ping"]);
+  });
+
+  it("failed notify preserves the draft and does not push history", async () => {
+    mockEndpoints({ notifyOk: false });
+    render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    fireEvent.click(screen.getByTestId("mode-notify"));
+    fireEvent.change(textarea(), { target: { value: "wont send" } });
+    fireEvent.click(screen.getByLabelText("Notify peer"));
+
+    await waitFor(() => expect(screen.getByText(/offline|Error/)).toBeInTheDocument());
+    expect(textarea().value).toBe("wont send"); // preserved for retry
+    expect(getHistory(PEER.peer_id)).toEqual([]);
+  });
+
+  it("switching peer resets mode to ask", () => {
+    mockEndpoints();
+    const { rerender } = render(
+      <PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />,
+    );
+    fireEvent.click(screen.getByTestId("mode-notify"));
+    expect(screen.getByTestId("mode-notify").getAttribute("aria-pressed")).toBe("true");
+    rerender(<PeerView peer={OTHER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    expect(screen.getByTestId("mode-ask").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("ask mode still posts /ask (regression)", async () => {
+    const calls = mockEndpoints();
+    render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    fireEvent.change(textarea(), { target: { value: "normal ask" } });
+    fireEvent.click(screen.getByLabelText("Ask peer"));
+    await waitFor(() => expect(calls.some((c) => c.url === "/ask")).toBe(true));
+    expect(screen.queryByTestId("notify-status")).not.toBeInTheDocument();
   });
 });
