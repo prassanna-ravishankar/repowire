@@ -173,22 +173,30 @@ class MessageRouter:
         reply_to: str | None = None,
         intended_recipient_name: str | None = None,
         attachments: list[AttachmentRef] | list[dict[str, Any]] | None = None,
+        question: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Send a first-class ask wire message.
 
-        Wire shape: {type: ask, correlation_id, from_peer, text, reply_to?}.
-        The receiving transport dispatches type=ask explicitly and surfaces
-        the message to the agent (e.g. tmux paste). The daemon doesn't track
-        pickup state — open asks reappear in every Stop hook reminder until
-        acked.
+        Wire shape: {type: ask, correlation_id, from_peer, text, reply_to?,
+        question?}. The receiving transport dispatches type=ask explicitly and
+        surfaces the message to the agent (e.g. tmux paste). The daemon doesn't
+        track pickup state — open asks reappear in every Stop hook reminder
+        until acked. ``question`` carries the structured-question envelope so a
+        renderer (Telegram buttons, dashboard) can present options; the close
+        hint adapts to ``answer(...)`` for a question vs ``ack(...)`` for a plain
+        ask.
 
         Raises:
             TransportError: If send fails
         """
-        hinted_text = (
-            f'{text.rstrip()}\n'
-            f'↳ ack("{correlation_id}") or ack("{correlation_id}", "reply")'
-        )
+        if question is not None:
+            hint = (
+                f'↳ answer("{correlation_id}", option_id=...) '
+                f'or answer("{correlation_id}", text="...")'
+            )
+        else:
+            hint = f'↳ ack("{correlation_id}") or ack("{correlation_id}", "reply")'
+        hinted_text = f"{text.rstrip()}\n{hint}"
         message: dict[str, Any] = {
             "type": "ask",
             "delivery_id": f"ask-delivery-{uuid4().hex[:8]}",
@@ -201,6 +209,8 @@ class MessageRouter:
             message["attachments"] = _dump_attachments(attachments)
         if reply_to is not None:
             message["reply_to"] = reply_to
+        if question is not None:
+            message["question"] = question
         logger.info(
             "Ask delivery trace: sender_identity=%s intended_recipient_name=%s "
             "resolved_peer_id=%s frame.to_peer=%s actual_delivered_pane_id=%s",

@@ -18,6 +18,7 @@ from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import Peer, PeerStatus, TurnState
+from repowire.protocol.questions import Question
 
 
 def _text_with_attachment_fallback(text: str, attachments: tuple[AttachmentRef, ...]) -> str:
@@ -45,6 +46,7 @@ class AskEnvelope:
     attachments: tuple[AttachmentRef, ...] = ()
     from_repowire_session_id: str | None = None
     to_repowire_session_id: str | None = None
+    question: Question | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,11 @@ class WebSocketPeerTransport:
                 "repowire_session_id": envelope.to_repowire_session_id,
                 "from_repowire_session_id": envelope.from_repowire_session_id,
                 "to_repowire_session_id": envelope.to_repowire_session_id,
+                "question": (
+                    envelope.question.model_dump(exclude_none=True)
+                    if envelope.question is not None
+                    else None
+                ),
             },
         )
         hook_delivery = await self._router.send_ask(
@@ -133,6 +140,11 @@ class WebSocketPeerTransport:
                 envelope.intended_recipient_name or envelope.target.display_name
             ),
             attachments=list(envelope.attachments),
+            question=(
+                envelope.question.model_dump(exclude_none=True)
+                if envelope.question is not None
+                else None
+            ),
         )
         return AskTransportResult(
             transport="ws",

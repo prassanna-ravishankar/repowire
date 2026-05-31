@@ -184,4 +184,20 @@ export interface Event {
   kind?: "text" | "tool_use";
   tool_call?: { name: string; input: string };
   is_final?: boolean;
+  // structured question carried on an ask event (mesh questions primitive)
+  question?: AskQuestion | null;
+}
+
+export interface AskQuestionOption {
+  id: string;
+  title: string;
+  description?: string | null;
+}
+
+export interface AskQuestion {
+  kind: "acknowledge" | "choice" | "text";
+  prompt?: string | null;
+  options?: AskQuestionOption[];
+  blocking?: boolean;
+  scope?: string | null;
 }

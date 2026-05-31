@@ -411,3 +411,74 @@ def test_pending_retry_ttl(offset, expected):
     now = time.monotonic()
     r = PendingRetry(text="hi", expires_at=now + 10)
     assert r.is_active(now + offset) is expected
+
+
+@pytest.mark.asyncio
+async def test_choice_question_renders_option_buttons(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    send = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "_tg_send", send)
+    monkeypatch.setattr(telegram_bot, "_tg_send_attachments", AsyncMock())
+
+    await telegram_bot._on_ws({
+        "type": "ask",
+        "from_peer": "agent",
+        "correlation_id": "ask-abc123",
+        "text": "run rm -rf?",
+        "question": {
+            "kind": "choice",
+            "options": [
+                {"id": "allow", "title": "Allow"},
+                {"id": "deny", "title": "Deny"},
+            ],
+        },
+    })
+
+    markup = send.await_args.kwargs["markup"]
+    buttons = [b for row in markup["inline_keyboard"] for b in row]
+    assert [b["text"] for b in buttons] == ["Allow", "Deny"]
+    assert [b["callback_data"] for b in buttons] == [
+        "answer:ask-abc123:0", "answer:ask-abc123:1",
+    ]
+    # the option ids are remembered for the index-based callback
+    assert telegram_bot._question_options["ask-abc123"] == ["allow", "deny"]
+
+
+@pytest.mark.asyncio
+async def test_plain_ask_renders_ack_button(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    send = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "_tg_send", send)
+    monkeypatch.setattr(telegram_bot, "_tg_send_attachments", AsyncMock())
+
+    await telegram_bot._on_ws({
+        "type": "ask", "from_peer": "agent",
+        "correlation_id": "ask-xyz", "text": "fyi",
+    })
+    markup = send.await_args.kwargs["markup"]
+    buttons = [b for row in markup["inline_keyboard"] for b in row]
+    assert [b["callback_data"] for b in buttons] == ["ack:ask-xyz"]
+
+
+@pytest.mark.asyncio
+async def test_answer_callback_posts_chosen_option(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    telegram_bot._question_options["ask-abc123"] = ["allow", "deny"]
+    post = AsyncMock(return_value=SimpleNamespace(status_code=200))
+    monkeypatch.setattr(telegram_bot._http, "post", post)
+    monkeypatch.setattr(telegram_bot, "_tg_send", AsyncMock())
+
+    await telegram_bot._on_callback({"id": "cb-1", "data": "answer:ask-abc123:1"})
+
+    # the /answer POST carried the real option_id resolved from index 1
+    answer_call = next(
+        c for c in post.await_args_list if str(c.args[0]).endswith("/answer")
+    )
+    assert answer_call.kwargs["json"] == {
+        "correlation_id": "ask-abc123", "option_id": "deny",
+    }
+    # cleared after a successful answer
+    assert "ask-abc123" not in telegram_bot._question_options

@@ -268,6 +268,9 @@ class TelegramPeer:
         self._recents: deque[str] = deque(maxlen=10)
         self._pending_retry: PendingRetry | None = None
         self._keyboard_enabled: bool = True
+        # cid -> ordered option ids, so an index-based answer callback (kept
+        # short for Telegram's 64-byte callback_data limit) maps to a real id.
+        self._question_options: dict[str, list[str]] = {}
         self._peers_cache: list[dict] | None = None
         self._peers_cache_at: float = 0.0
 
@@ -365,7 +368,7 @@ class TelegramPeer:
             self._touch_recent(who)
             cid = msg.get("correlation_id", "")
             short_cid = cid[:12] if cid else "?"
-            markup = _kb([[("✓ Ack", f"ack:{cid}")]]) if cid else None
+            markup = self._ask_markup(cid, msg.get("question")) if cid else None
             await self._tg_send(
                 f"❓ *@{_esc(who)}* `[ask #{_esc(short_cid)}]`\n{_esc(text)}",
                 markup=markup,
@@ -446,9 +449,60 @@ class TelegramPeer:
             await self._tg_send("Cancelled\\.")
         elif data == "peers":
             await self._cmd_peers()
+        elif data.startswith("answer:"):
+            _, cid, option_index = data.split(":", 2)
+            await self._answer_choice(cid, option_index)
         elif data.startswith("ack:"):
             cid = data.split(":", 1)[1]
             await self._ack_ask(cid)
+
+    def _ask_markup(self, cid: str, question: dict | None) -> dict | None:
+        """Inline keyboard for an ask.
+
+        A choice question renders one button per option (callback answer:cid:idx,
+        index-based to stay within Telegram's 64-byte callback_data limit);
+        anything else (plain ask, text, acknowledge) gets the bare Ack button.
+        """
+        if isinstance(question, dict) and question.get("kind") == "choice":
+            options = question.get("options") or []
+            if options:
+                # Remember the option ids for this cid so the index-based
+                # callback can map back to the real option_id.
+                self._question_options[cid] = [
+                    str(o.get("id")) for o in options if isinstance(o, dict)
+                ]
+                rows = [
+                    [(str(o.get("title") or o.get("id")), f"answer:{cid}:{i}")]
+                    for i, o in enumerate(options)
+                    if isinstance(o, dict)
+                ]
+                return _kb(rows)
+        return _kb([[("✓ Ack", f"ack:{cid}")]])
+
+    async def _answer_choice(self, cid: str, option_index_raw: str) -> None:
+        """Answer a choice question by option index → POST /answer."""
+        ids = self._question_options.get(cid, [])
+        try:
+            option_id = ids[int(option_index_raw)]
+        except (ValueError, IndexError):
+            await self._tg_send(f"Stale or unknown option for `#{_esc(cid[:12])}`")
+            return
+        try:
+            r = await self._http.post(
+                f"{self._daemon_url}/answer",
+                json={"correlation_id": cid, "option_id": option_id},
+                timeout=5.0,
+            )
+            short = cid[:12]
+            if r.status_code == 200:
+                self._question_options.pop(cid, None)
+                await self._tg_send(f"✓ Answered `#{_esc(short)}`: {_esc(option_id)}")
+            elif r.status_code == 410:
+                await self._tg_send(f"`#{_esc(short)}` already answered")
+            else:
+                await self._tg_send(f"Answer failed for `#{_esc(short)}`: {r.status_code}")
+        except Exception as e:
+            await self._tg_send(f"Answer error: {_esc(str(e))}")
 
     async def _ack_ask(self, correlation_id: str) -> None:
         """Bare-ack an open ask. Uses the bot's configured display name."""

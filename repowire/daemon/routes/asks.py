@@ -503,6 +503,7 @@ async def open_ask(
             bypass_circle=True,
             attachments=request.attachments,
             on_acp_complete=_on_acp_complete,
+            question=request.question,
         )
     except ValueError as e:
         if trace is not None:

@@ -34,6 +34,7 @@ from repowire.daemon.transport_router import (
 from repowire.daemon.websocket_transport import DeliveryInjectionError, TransportError
 from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import PeerStatus
+from repowire.protocol.questions import Question
 
 logger = logging.getLogger(__name__)
 
@@ -365,6 +366,7 @@ class PeerDeliveryService:
         circle: str | None = None,
         attachments: list[AttachmentRef] | tuple[AttachmentRef, ...] | None = None,
         on_acp_complete: AskCompletion | None = None,
+        question: Question | None = None,
     ) -> AskTransportResult:
         """Deliver an already-registered ask using ACP-before-WS routing.
 
@@ -410,6 +412,7 @@ class PeerDeliveryService:
                     attachments=tuple(attachments or ()),
                     from_repowire_session_id=from_session_id,
                     to_repowire_session_id=to_session_id,
+                    question=question,
                 ),
                 on_acp_complete=completion,
             )
