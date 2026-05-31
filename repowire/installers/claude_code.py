@@ -12,8 +12,12 @@ CLAUDE_JSON = Path.home() / ".claude.json"
 
 HOOK_EVENTS = [
     "Stop", "StopFailure", "SessionStart", "SessionEnd",
-    "UserPromptSubmit", "Notification",
+    "UserPromptSubmit", "Notification", "PreToolUse",
 ]
+
+# Per-hook timeout (seconds) for the blocking PreToolUse approval. Must sit
+# above the daemon wait + client margin so the hook isn't killed mid-wait.
+PRETOOLUSE_HOOK_TIMEOUT_SECONDS = 60
 
 # Channel transport requires Claude Code v2.1.80+ with claude.ai login
 CHANNEL_MIN_VERSION = (2, 1, 80)
@@ -56,6 +60,19 @@ def _make_notification_hook_config(command: str, matcher: str) -> dict:
             {
                 "type": "command",
                 "command": command,
+            }
+        ],
+    }
+
+
+def _make_pretooluse_hook_config(command: str, matcher: str, timeout: int) -> dict:
+    return {
+        "matcher": matcher,
+        "hooks": [
+            {
+                "type": "command",
+                "command": command,
+                "timeout": timeout,
             }
         ],
     }
@@ -104,8 +121,25 @@ def install_hooks(channel_mode: bool = False) -> bool:
             "Notification",
             _make_notification_hook_config("repowire hook notification", "idle_prompt"),
         )
+        # PreToolUse remote approval: opt-in only. Register the hook (matcher
+        # scoped to the configured gated tools) when enabled, otherwise strip
+        # any prior repowire PreToolUse entry so toggling off cleans up.
+        approval = load_config().experiments.remote_tool_approval
+        if approval.enabled and approval.gated_tools:
+            matcher = "|".join(approval.gated_tools)
+            _replace_repowire_hook(
+                settings,
+                "PreToolUse",
+                _make_pretooluse_hook_config(
+                    "repowire hook pretooluse", matcher, PRETOOLUSE_HOOK_TIMEOUT_SECONDS,
+                ),
+            )
+        else:
+            _replace_repowire_hook(settings, "PreToolUse", None)
     else:
-        for event in ("SessionStart", "SessionEnd", "UserPromptSubmit", "Notification"):
+        for event in (
+            "SessionStart", "SessionEnd", "UserPromptSubmit", "Notification", "PreToolUse",
+        ):
             _replace_repowire_hook(settings, event, None)
 
     if not settings.get("hooks"):
@@ -142,6 +176,11 @@ def uninstall_hooks() -> bool:
     return removed_any
 
 
+# PreToolUse is opt-in (remote tool approval); its presence is not required for
+# hooks to count as installed. uninstall still iterates HOOK_EVENTS to clean it.
+_REQUIRED_HOOK_EVENTS = [e for e in HOOK_EVENTS if e != "PreToolUse"]
+
+
 def check_hooks_installed() -> bool:
     settings = _load_claude_settings()
     if "hooks" not in settings:
@@ -149,7 +188,7 @@ def check_hooks_installed() -> bool:
 
     return all(
         any(_is_repowire_hook_entry(entry) for entry in settings["hooks"].get(event, []))
-        for event in HOOK_EVENTS
+        for event in _REQUIRED_HOOK_EVENTS
     )
 
 

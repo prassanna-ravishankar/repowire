@@ -7,6 +7,7 @@ The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and client
 - `/health` and status routes for daemon checks.
 - `/peers` for peer registration, listing, lookup, and lifecycle operations. Includes `GET /peers/{id}/doctor` (read-only diagnostic report with contradiction detection) and `POST /peers/{id}/rehook` (non-destructive inbound ws-hook recovery, same-host, dry-run by default).
 - `/ask`, `/ack`, and `/asks/pending` for ask lifecycle.
+- `/answer` records a typed answer to a structured question; `POST /questions/ask-blocking` registers a blocking structured question (tool permission) and holds the connection open until it is answered or the daemon's wait cap elapses, then returns the typed answer (fail-closed: a tool-permission question denies on timeout). Used by blocking transports such as the ACP broker and the Claude Code `PreToolUse` approval hook.
 - `/traces/{trace_id}` returns the recorded delivery stages for an ask (`correlation_id`) or notify (`delivery_id`) from the local delivery trace ledger.
 - `/messages` and WebSocket routes for live delivery.
 - `/schedules` for one-shot and recurring scheduled messages.

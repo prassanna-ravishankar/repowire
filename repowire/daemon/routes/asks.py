@@ -24,6 +24,7 @@ the upgrade.
 from __future__ import annotations
 
 import logging
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -39,12 +40,19 @@ from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.peer_delivery import peer_delivery_from_state
 from repowire.daemon.peer_registry import PeerRegistry, normalize_identity_path
+from repowire.daemon.question_blocking import register_blocking_question_and_wait
 from repowire.daemon.routes._shared import OkResponse
 from repowire.daemon.state.session_bindings import resolve_repowire_session_id
 from repowire.daemon.websocket_transport import DeliveryInjectionError, TransportError
 from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import Peer
-from repowire.protocol.questions import Answer, AnswerOutcome, Question
+from repowire.protocol.questions import (
+    Answer,
+    AnswerOutcome,
+    Question,
+    QuestionOption,
+    QuestionScope,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["asks"])
@@ -94,6 +102,68 @@ class AnswerRequest(BaseModel):
     outcome: AnswerOutcome = Field("answered")
     message: str | None = Field(None, description="Optional human note alongside the answer")
     attachments: list[AttachmentRef] = Field(default_factory=list)
+
+
+# Hard server-side cap on how long /questions/ask-blocking holds a connection
+# open waiting for an answer. A blocking transport's client timeout must sit
+# above this (+ network margin) but below its own host timeout (e.g. Claude's
+# PreToolUse hook timeout). Timeout always records the question's default_answer
+# (fail-closed for tool_permission), so the caller never hangs.
+BLOCKING_QUESTION_MAX_WAIT_SECONDS = 55.0
+BLOCKING_QUESTION_DEFAULT_WAIT_SECONDS = 45.0
+
+
+class BlockingQuestionOption(BaseModel):
+    """An answerable option on a blocking question."""
+
+    id: str = Field(..., description="Stable option id the answer selects")
+    title: str = Field(..., description="Human-readable label")
+
+
+class AskBlockingRequest(BaseModel):
+    """Post a blocking structured question from an external transport.
+
+    Transport-neutral: an ACP runtime, a Claude Code PreToolUse hook, or any
+    client that owns a suspendable call registers a question, the daemon holds
+    the connection open up to ``BLOCKING_QUESTION_MAX_WAIT_SECONDS`` while a
+    human surface (dashboard / Telegram) or a peer answers, and the typed
+    answer is returned. Fail-closed: on timeout the question's default answer is
+    recorded.
+    """
+
+    prompt: str = Field(..., description="Short human prompt for the question")
+    options: list[BlockingQuestionOption] = Field(
+        default_factory=list,
+        description="Allow-capable options; at least one required for tool_permission",
+    )
+    scope: QuestionScope | None = Field(
+        None, description="Question scope, e.g. 'tool_permission'",
+    )
+    metadata: dict | None = Field(
+        None, description="Structured (truncated) context for renderers / audit",
+    )
+    timeout_seconds: float | None = Field(
+        None, description="Requested wait; clamped to the daemon max",
+    )
+    correlation_id: str | None = Field(
+        None,
+        description="Caller-supplied cid for idempotent retries (e.g. 'pretool-<hex>')",
+    )
+    origin: str | None = Field(
+        None, description="Originating transport label (e.g. 'pretooluse', 'acp')",
+    )
+    from_peer: str | None = Field(
+        None, description="Display name / id of the peer the question is about",
+    )
+
+
+class AskBlockingResponse(BaseModel):
+    """Resolved answer for a blocking question."""
+
+    correlation_id: str
+    outcome: AnswerOutcome
+    option_id: str | None = None
+    message: str | None = None
 
 
 class AckRequest(BaseModel):
@@ -857,6 +927,77 @@ async def _answer_question_core(request: AnswerRequest) -> OkResponse:
         has_attachments=bool(request.attachments),
     )
     return OkResponse()
+
+
+@router.post("/questions/ask-blocking", response_model=AskBlockingResponse)
+async def ask_blocking_question(
+    request: AskBlockingRequest,
+    _: str | None = Depends(require_auth),
+) -> AskBlockingResponse:
+    """Register a blocking structured question and wait for its answer.
+
+    The daemon holds this connection open up to a hard cap while a human surface
+    (dashboard / Telegram) or a peer answers. Fail-closed: a tool-permission
+    question denies on timeout / acknowledge / no-option (its default answer is
+    recorded through the answer machinery, so first-answer-wins still holds and
+    a late /answer returns 410).
+
+    Returns 422 when a tool_permission question carries no allow-capable option
+    (every answer would deny and the UI would look broken).
+    """
+    if request.scope == "tool_permission" and not request.options:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="tool_permission question requires at least one allow-capable option",
+        )
+
+    state = get_app_state()
+    ask_tracker = state.ask_tracker
+    emit_event = get_peer_registry().add_event
+
+    server_wait = min(
+        request.timeout_seconds or BLOCKING_QUESTION_DEFAULT_WAIT_SECONDS,
+        BLOCKING_QUESTION_MAX_WAIT_SECONDS,
+    )
+    correlation_id = request.correlation_id or f"ask-{uuid4().hex[:8]}"
+    from_peer = request.from_peer or "external"
+
+    # Fail-closed default: tool_permission denies, other scopes time out.
+    default_outcome: AnswerOutcome = (
+        "denied" if request.scope == "tool_permission" else "timed_out"
+    )
+    question = Question(
+        kind="choice",
+        prompt=request.prompt,
+        options=[QuestionOption(id=o.id, title=o.title) for o in request.options],
+        blocking=True,
+        timeout_seconds=server_wait,
+        default_answer=Answer(
+            outcome=default_outcome, message="blocking question timed out",
+        ),
+        scope=request.scope,
+        metadata=request.metadata or {},
+    )
+    try:
+        answer = await register_blocking_question_and_wait(
+            ask_tracker,
+            emit_event,
+            question=question,
+            text=request.prompt,
+            correlation_id=correlation_id,
+            server_wait_seconds=server_wait,
+            from_peer_id=from_peer,
+            from_peer_name=from_peer,
+            extra_ask_fields={"origin": request.origin} if request.origin else None,
+        )
+    except QuiescedError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+    return AskBlockingResponse(
+        correlation_id=correlation_id,
+        outcome=answer.outcome,
+        option_id=answer.option_id,
+        message=answer.message,
+    )
 
 
 @router.post("/answer", response_model=OkResponse)

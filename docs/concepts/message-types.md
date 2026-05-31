@@ -36,6 +36,12 @@ Some asks carry a typed question envelope. A structured question can be an ackno
 
 Telegram and the dashboard render structured questions as buttons when possible. ACP tool approvals use the same primitive: the ACP broker registers a blocking choice question, waits for the recorded answer, and maps it back to the runtime's permission decision. The older ACP permission-decision route remains as a compatibility shim.
 
+A *blocking* transport — one that owns a suspendable call, such as an ACP runtime or a Claude Code `PreToolUse` hook — can register a question and park until it is answered. The daemon exposes this as `POST /questions/ask-blocking`: the caller posts a tool-permission question, the daemon holds the connection open up to a hard cap while a human surface or peer answers, and returns the typed answer. It is transport-neutral (the ACP broker and the hook share the same register-emit-wait core) and fail-closed (a tool-permission question denies on timeout). The Claude Code remote tool-approval hook is opt-in; see [PreToolUse approval](#pretooluse-tool-approval-claude-code) below.
+
+### PreToolUse tool approval (Claude Code)
+
+When `experiments.remote_tool_approval.enabled` is set, `repowire setup` registers a `PreToolUse` hook scoped to the configured `gated_tools` (mutating/shell tools — `Bash`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit` — never read-only tools). Before a gated tool runs, the hook posts a blocking question to the daemon and waits; an allow from a human surface or peer returns `permissionDecision=allow`, and a deny, timeout, or daemon-unavailable returns `permissionDecision=deny`. Because the decision rides the hook rather than Claude's native approval, it still gates under `--dangerously-skip-permissions`.
+
 Plain asks still close with `ack`. `/answer` rejects a plain ask so a reply cannot bypass `ack`'s delivery/retry contract. Structured answers are recorded before the human-readable reply is delivered back to the asking peer; if that peer is temporarily offline, Repowire stashes the reply and redelivers it when the peer reconnects.
 
 ## `notify_peer`

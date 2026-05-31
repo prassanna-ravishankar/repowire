@@ -16,22 +16,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from repowire.config.models import Config as RealConfig
 from repowire.installers import claude_code as cc_mod
 
 
-def _retarget(tmp_path, monkeypatch):
+def _retarget(tmp_path, monkeypatch, *, config=None):
     settings = tmp_path / ".claude" / "settings.json"
     claude_json = tmp_path / ".claude.json"
     monkeypatch.setattr(cc_mod, "CLAUDE_SETTINGS", settings)
     monkeypatch.setattr(cc_mod, "CLAUDE_JSON", claude_json)
 
-    class Daemon:
-        auth_token = None
-
-    class Config:
-        daemon = Daemon()
-
-    monkeypatch.setattr(cc_mod, "load_config", lambda: Config())
+    cfg = config or RealConfig()
+    monkeypatch.setattr(cc_mod, "load_config", lambda: cfg)
     return settings, claude_json
 
 
@@ -87,9 +83,10 @@ def test_install_hooks_is_idempotent(tmp_path, monkeypatch):
     cc_mod.install_hooks()
     second = settings.read_text()
     assert first == second
-    # And each event has exactly one entry.
+    # And each (default-on) event has exactly one entry. PreToolUse is opt-in
+    # and absent here, so iterate the required set.
     data = json.loads(second)
-    for event in cc_mod.HOOK_EVENTS:
+    for event in cc_mod._REQUIRED_HOOK_EVENTS:
         assert len(data["hooks"][event]) == 1
 
 
@@ -105,6 +102,58 @@ def test_install_hooks_replaces_existing_repowire_entry_for_same_event(tmp_path,
     data = _read(settings)
     stop_cmds = [e["hooks"][0]["command"] for e in data["hooks"]["Stop"]]
     assert stop_cmds == ["repowire hook stop"]
+
+
+# -- PreToolUse remote approval (opt-in) ------------------------------------
+
+
+def _approval_config(enabled: bool, *, gated=None):
+    cfg = RealConfig()
+    cfg.experiments.remote_tool_approval.enabled = enabled
+    if gated is not None:
+        cfg.experiments.remote_tool_approval.gated_tools = gated
+    return cfg
+
+
+def test_pretooluse_absent_when_approval_disabled(tmp_path, monkeypatch):
+    settings, _ = _retarget(tmp_path, monkeypatch, config=_approval_config(False))
+    cc_mod.install_hooks()
+    data = _read(settings)
+    assert "PreToolUse" not in data["hooks"]
+
+
+def test_pretooluse_registered_when_approval_enabled(tmp_path, monkeypatch):
+    settings, _ = _retarget(
+        tmp_path, monkeypatch, config=_approval_config(True, gated=["Bash", "Edit"]),
+    )
+    cc_mod.install_hooks()
+    entry = _read(settings)["hooks"]["PreToolUse"][0]
+    assert entry["matcher"] == "Bash|Edit"
+    hook = entry["hooks"][0]
+    assert hook["command"] == "repowire hook pretooluse"
+    assert hook["timeout"] == cc_mod.PRETOOLUSE_HOOK_TIMEOUT_SECONDS
+
+
+def test_pretooluse_stripped_when_toggled_off(tmp_path, monkeypatch):
+    settings, _ = _retarget(
+        tmp_path, monkeypatch, config=_approval_config(True, gated=["Bash"]),
+    )
+    cc_mod.install_hooks()
+    assert "PreToolUse" in _read(settings)["hooks"]
+
+    # Re-install with the experiment off: the prior repowire PreToolUse entry
+    # is cleaned up rather than left dangling.
+    _retarget(tmp_path, monkeypatch, config=_approval_config(False))
+    cc_mod.install_hooks()
+    assert "PreToolUse" not in _read(settings)["hooks"]
+
+
+def test_pretooluse_absent_in_channel_mode(tmp_path, monkeypatch):
+    settings, _ = _retarget(
+        tmp_path, monkeypatch, config=_approval_config(True, gated=["Bash"]),
+    )
+    cc_mod.install_hooks(channel_mode=True)
+    assert "PreToolUse" not in _read(settings).get("hooks", {})
 
 
 # -- uninstall_hooks --------------------------------------------------------

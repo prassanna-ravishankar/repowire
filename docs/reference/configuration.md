@@ -89,3 +89,19 @@ Explicit command overrides still win over profiles. `repowire peer restart` pres
 Opt-in release availability checks for `repowire status` and `repowire doctor`. Default: `false`.
 
 When enabled, those commands may query PyPI and report that a newer Repowire release is available. They never install packages, rewrite hooks, restart services, or mutate daemon routing. `repowire update` remains the explicit upgrade path.
+
+## `experiments`
+
+Off-by-default feature flags for code paths not yet ready to be default-on:
+
+```yaml
+experiments:
+  acp_broker_client: true       # route asks to ACP peers through a broker-side ACP client
+  chat_turn_streaming: true     # stream block-level chat_turn_delta events (Claude Code)
+  remote_tool_approval:
+    enabled: true               # PreToolUse hooks-path remote tool approval (Claude Code)
+    gated_tools: [Bash, Edit, Write, MultiEdit, NotebookEdit]
+    timeout_seconds: 45
+```
+
+`remote_tool_approval` gates `gated_tools` behind a blocking approval question: before a gated tool runs, a `PreToolUse` hook posts the question to the daemon and waits for an allow/deny from a human surface or peer, denying on timeout. The installer only registers the `PreToolUse` hook when `enabled` is set; toggling it off and re-running `repowire setup` removes the hook. Read-only tools are never gated. See [Structured questions](../concepts/message-types.md#pretooluse-tool-approval-claude-code).

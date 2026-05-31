@@ -24,6 +24,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
+from repowire.daemon.question_blocking import (
+    CONTROL_PEER_ID,
+    CONTROL_PEER_NAME,
+    register_blocking_question_and_wait,
+)
 from repowire.protocol.questions import Answer, Question, QuestionOption
 
 if TYPE_CHECKING:
@@ -31,11 +36,9 @@ if TYPE_CHECKING:
 
 PermissionOutcome = Literal["allowed", "denied", "cancelled"]
 
-# Virtual recipient for a tool-permission question. Not a real peer and never
-# delivered through MessageRouter — human surfaces answer it via /answer using
-# the ask cid; a future roles/capabilities recipient model can replace it.
-CONTROL_PEER_ID = "__repowire_control__"
-CONTROL_PEER_NAME = "human"
+# CONTROL_PEER_ID / CONTROL_PEER_NAME are re-exported from the shared blocking
+# core so the virtual control-surface recipient is defined in exactly one place.
+__all__ = ["ApprovalBroker", "PermissionDecision", "CONTROL_PEER_ID", "CONTROL_PEER_NAME"]
 
 
 @dataclass(frozen=True)
@@ -131,34 +134,11 @@ class ApprovalBroker:
             },
         )
         repowire_session_id = self._resolve_session_id(peer_id, session_id)
+        text = question.prompt or "ACP tool permission request"
         try:
-            try:
-                await self._ask_tracker.register(
-                    from_peer_id=peer_id,
-                    from_peer_name=peer_id,
-                    to_peer_id=CONTROL_PEER_ID,
-                    to_peer_name=CONTROL_PEER_NAME,
-                    text=question.prompt or "ACP tool permission request",
-                    correlation_id=request_id,
-                    question=question,
-                )
-            except Exception as e:  # noqa: BLE001 — registration must not hard-fail the ACP turn
-                return PermissionDecision(outcome="denied", message=f"register failed: {e}")
-
-            # Normal ask event (so the dashboard banner + Telegram render it) + the
-            # back-compat ACP-specific alias, both keyed by the same request_id/cid.
-            ask_event = {
-                "from": peer_id,
-                "to": CONTROL_PEER_NAME,
-                "from_peer_id": peer_id,
-                "to_peer_id": CONTROL_PEER_ID,
-                "text": question.prompt or "ACP tool permission request",
-                "correlation_id": request_id,
-                "question": question.model_dump(exclude_none=True),
-                "repowire_session_id": repowire_session_id,
-                "from_repowire_session_id": repowire_session_id,
-            }
-            self._emit_event("ask", ask_event)
+            # Back-compat / audit alias, keyed by the same request_id/cid. Emitted
+            # alongside the normal "ask" event the shared core fires (so the
+            # dashboard banner + Telegram still render the question).
             self._emit_event(
                 "acp_permission_request",
                 {
@@ -172,12 +152,23 @@ class ApprovalBroker:
                     "timeout_seconds": self._timeout_seconds,
                 },
             )
-
-            answer = await self._ask_tracker.wait_for_answer(
-                request_id,
-                timeout_seconds=self._timeout_seconds,
-                default_answer=question.default_answer,
-            )
+            try:
+                answer = await register_blocking_question_and_wait(
+                    self._ask_tracker,
+                    self._emit_event,
+                    question=question,
+                    text=text,
+                    correlation_id=request_id,
+                    server_wait_seconds=self._timeout_seconds,
+                    from_peer_id=peer_id,
+                    from_peer_name=peer_id,
+                    from_repowire_session_id=repowire_session_id,
+                    extra_ask_fields={"repowire_session_id": repowire_session_id},
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 — registration must not hard-fail the ACP turn
+                return PermissionDecision(outcome="denied", message=f"register failed: {e}")
             decision = _answer_to_decision(answer)
             if decision.timed_out:
                 self._last_error = "permission request timed out"

@@ -4124,5 +4124,16 @@ def hook_notification() -> None:
     sys.exit(notification_main())
 
 
+@hook.command(name="pretooluse")
+@click.option("--backend", default="claude-code", help="Agent backend")
+def hook_pretooluse(backend: str) -> None:
+    """Handle PreToolUse hook - remote tool approval when opted in."""
+    import sys
+
+    from repowire.hooks.pretooluse_handler import main as pretooluse_main
+
+    sys.exit(pretooluse_main(backend=backend))
+
+
 if __name__ == "__main__":
     main()
