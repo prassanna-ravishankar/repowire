@@ -663,7 +663,21 @@ class TestMcpRegistration:
             {"ok": True},  # POST /peers/repowire-codex/touch
         ]
 
-        with patch.dict("repowire.mcp.server.os.environ", {"PATH": "/tmp/.codex/bin"}):
+        # patch.dict merges with the ambient env. When the suite runs INSIDE a
+        # Claude Code session, CLAUDECODE/CLAUDE_CODE_*/AI_AGENT leak in and
+        # claude-code's mcp_runtime_matches wins over the intended codex PATH
+        # signal. Null those markers so detection sees only the codex PATH.
+        with patch.dict(
+            "repowire.mcp.server.os.environ",
+            {
+                "PATH": "/tmp/.codex/bin",
+                "CLAUDECODE": "",
+                "CLAUDE_CODE_SESSION_ID": "",
+                "CLAUDE_CODE_ENTRYPOINT": "",
+                "AI_AGENT": "",
+                "GEMINI_CLI": "",
+            },
+        ):
             await mcp_server._ensure_registered()
 
         assert mock_request.await_count == 4
@@ -706,7 +720,21 @@ class TestMcpRegistration:
             {"ok": True},  # POST /peers/torale-seo/touch
         ]
 
-        with patch.dict("repowire.mcp.server.os.environ", {"PATH": "/tmp/.codex/bin"}):
+        # patch.dict merges with the ambient env. When the suite runs INSIDE a
+        # Claude Code session, CLAUDECODE/CLAUDE_CODE_*/AI_AGENT leak in and
+        # claude-code's mcp_runtime_matches wins over the intended codex PATH
+        # signal. Null those markers so detection sees only the codex PATH.
+        with patch.dict(
+            "repowire.mcp.server.os.environ",
+            {
+                "PATH": "/tmp/.codex/bin",
+                "CLAUDECODE": "",
+                "CLAUDE_CODE_SESSION_ID": "",
+                "CLAUDE_CODE_ENTRYPOINT": "",
+                "AI_AGENT": "",
+                "GEMINI_CLI": "",
+            },
+        ):
             await mcp_server._ensure_registered()
 
         assert mcp_server._cached_peer_name == "torale-seo"
