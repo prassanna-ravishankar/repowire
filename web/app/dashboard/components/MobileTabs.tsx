@@ -1,6 +1,6 @@
 import { cn } from "../lib/utils";
 
-export type MobileTab = "peers" | "mesh" | "jobs" | "beads";
+export type MobileTab = "peers" | "mesh" | "jobs";
 
 export function MobileTabs({
   activeTab,
@@ -18,7 +18,6 @@ export function MobileTabs({
       <MobileTabButton active={activeTab === "peers"} label="PEERS" sub={`${counts.online} online · ${counts.busy} busy`} onClick={() => onChange("peers")} />
       <MobileTabButton active={activeTab === "mesh"} label="MESH" sub={`${eventCount} events`} onClick={() => onChange("mesh")} />
       <MobileTabButton active={activeTab === "jobs"} label="JOBS" sub="tracked work" onClick={() => onChange("jobs")} />
-      <MobileTabButton active={activeTab === "beads"} label="BEADS" sub="work board" onClick={() => onChange("beads")} />
     </nav>
   );
 }
