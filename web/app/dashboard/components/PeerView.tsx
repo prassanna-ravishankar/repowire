@@ -5,6 +5,7 @@ import { AlertCircle, Bell, Check, Clock, Copy, Paperclip, Play, RefreshCw, Rota
 import { cn, shortPath, statusDot } from "../lib/utils";
 import { registerSnapshotProvider, useFrozenThread, useIsPeerProtected } from "../lib/protection";
 import { clearDraft, setDraftFile, setDraftText, useDraftFile, useDraftText } from "../lib/drafts";
+import { getHistory, pushHistory } from "../lib/history";
 import type { AttachmentRef, Event, Peer } from "../types";
 import { peerLabel } from "../types";
 import { formatTime, StatusLabel } from "./status";
@@ -1140,6 +1141,10 @@ function ComposeBar({
   const [pendingAsks, setPendingAsks] = useState<PendingAsk[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // History navigation cursor: null = not navigating; otherwise an index into
+  // getHistory(peer_id) (0 = oldest). Reset whenever the composer is edited or
+  // sent so a fresh ArrowUp starts from the newest entry.
+  const historyIdx = useRef<number | null>(null);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -1264,6 +1269,8 @@ function ComposeBar({
             attachments,
           },
         ]);
+        pushHistory(peer.peer_id, text);
+        historyIdx.current = null;
         clearDraft(peer.peer_id);
         onSent?.();
       }
@@ -1274,10 +1281,54 @@ function ComposeBar({
     }
   };
 
+  // Whether ArrowUp/Down should drive command-history recall right now. True
+  // when the composer is empty (start a fresh recall) or we're already
+  // navigating and the value still exactly matches the recalled entry (the user
+  // hasn't started editing it). A textarea with unrelated multi-line text keeps
+  // native arrow behavior.
+  const navigatingHistory = (): boolean => {
+    if (historyIdx.current === null) return text.length === 0;
+    const entries = getHistory(peer.peer_id);
+    return text === entries[historyIdx.current];
+  };
+
+  const recallHistory = (direction: "older" | "newer") => {
+    const entries = getHistory(peer.peer_id);
+    if (entries.length === 0) return;
+    let idx = historyIdx.current;
+    if (idx === null) {
+      // Begin at the newest entry on the first ArrowUp.
+      idx = direction === "older" ? entries.length - 1 : entries.length - 1;
+    } else if (direction === "older") {
+      idx = Math.max(0, idx - 1);
+    } else {
+      idx = idx + 1;
+    }
+    if (idx >= entries.length) {
+      // Walked past the newest entry → return to an empty composer.
+      historyIdx.current = null;
+      setText("");
+      return;
+    }
+    historyIdx.current = idx;
+    setText(entries[idx]);
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       submit();
+      return;
+    }
+    if (event.key === "Escape" && historyIdx.current !== null) {
+      event.preventDefault();
+      historyIdx.current = null;
+      setText("");
+      return;
+    }
+    if ((event.key === "ArrowUp" || event.key === "ArrowDown") && navigatingHistory()) {
+      event.preventDefault();
+      recallHistory(event.key === "ArrowUp" ? "older" : "newer");
     }
   };
 

@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { PeerView } from "./PeerView";
 import { __resetProtectionForTests, getFrozenThread, isProtected } from "../lib/protection";
 import { __resetDraftsForTests, getDraftText, setDraftText } from "../lib/drafts";
+import { __resetHistoryForTests, pushHistory } from "../lib/history";
 import type { Event, Peer } from "../types";
 
 const PEER: Peer = {
@@ -41,6 +42,7 @@ beforeEach(() => {
   scrollSpy.mockClear();
   __resetProtectionForTests();
   __resetDraftsForTests();
+  __resetHistoryForTests();
   vi.stubGlobal(
     "fetch",
     vi.fn(() => new Promise<Response>(() => {})),
@@ -50,6 +52,7 @@ beforeEach(() => {
 afterEach(() => {
   __resetProtectionForTests();
   __resetDraftsForTests();
+  __resetHistoryForTests();
   vi.unstubAllGlobals();
 });
 
@@ -942,5 +945,75 @@ describe("PeerView session controls", () => {
     expect(await screen.findByText("resume spawned")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("nudges need a running agent")).toBeDisabled();
     expect(screen.getByLabelText("Send session nudge")).toBeDisabled();
+  });
+});
+
+describe("PeerView composer command history", () => {
+  const renderComposer = () =>
+    render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+
+  const textarea = () => screen.getByTestId("compose-textarea") as HTMLTextAreaElement;
+
+  it("recalls the most recent send on ArrowUp from an empty composer", () => {
+    pushHistory(PEER.peer_id, "first ask");
+    pushHistory(PEER.peer_id, "second ask");
+    renderComposer();
+
+    fireEvent.keyDown(textarea(), { key: "ArrowUp" });
+    expect(textarea().value).toBe("second ask");
+  });
+
+  it("walks older with ArrowUp and newer with ArrowDown, then back to empty", () => {
+    pushHistory(PEER.peer_id, "one");
+    pushHistory(PEER.peer_id, "two");
+    renderComposer();
+
+    fireEvent.keyDown(textarea(), { key: "ArrowUp" });
+    expect(textarea().value).toBe("two");
+    fireEvent.keyDown(textarea(), { key: "ArrowUp" });
+    expect(textarea().value).toBe("one");
+    fireEvent.keyDown(textarea(), { key: "ArrowUp" }); // clamp at oldest
+    expect(textarea().value).toBe("one");
+    fireEvent.keyDown(textarea(), { key: "ArrowDown" });
+    expect(textarea().value).toBe("two");
+    fireEvent.keyDown(textarea(), { key: "ArrowDown" }); // past newest → empty
+    expect(textarea().value).toBe("");
+  });
+
+  it("marks the recalled draft dirty (it is unsent text)", () => {
+    pushHistory(PEER.peer_id, "recalled");
+    renderComposer();
+
+    fireEvent.keyDown(textarea(), { key: "ArrowUp" });
+    expect(textarea().dataset.dirty).toBe("true");
+    expect(isProtected(PEER.peer_id)).toBe(true);
+  });
+
+  it("leaves arrows native when the composer has unrelated text", () => {
+    pushHistory(PEER.peer_id, "history entry");
+    renderComposer();
+
+    fireEvent.change(textarea(), { target: { value: "mid edit" } });
+    fireEvent.keyDown(textarea(), { key: "ArrowUp" });
+    expect(textarea().value).toBe("mid edit"); // not hijacked
+  });
+
+  it("clears the recalled value on Escape without losing history", () => {
+    pushHistory(PEER.peer_id, "keepme");
+    renderComposer();
+
+    fireEvent.keyDown(textarea(), { key: "ArrowUp" });
+    expect(textarea().value).toBe("keepme");
+    fireEvent.keyDown(textarea(), { key: "Escape" });
+    expect(textarea().value).toBe("");
+    // History is intact: ArrowUp recalls it again.
+    fireEvent.keyDown(textarea(), { key: "ArrowUp" });
+    expect(textarea().value).toBe("keepme");
+  });
+
+  it("does nothing on ArrowUp when there is no history", () => {
+    renderComposer();
+    fireEvent.keyDown(textarea(), { key: "ArrowUp" });
+    expect(textarea().value).toBe("");
   });
 });

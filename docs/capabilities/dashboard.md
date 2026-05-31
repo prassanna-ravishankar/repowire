@@ -15,6 +15,7 @@ The dashboard is a Next.js UI served by the daemon at `http://localhost:8377/das
 - **MCP config tab** — supported peers can list, add, and remove MCP servers. The tab labels whether edits affect peer/project config or backend user-global config before showing edit controls.
 - **Attachments** — the compose bar has a file upload button. Files post to `POST /attachments` (10 MB limit, 24 h TTL). The outgoing ask carries structured attachment metadata plus a text fallback with the local path so existing agents can still read it.
 - **Attachment chips** — mesh events and per-peer chat render attachment chips with download links when an attachment ID is available.
+- **Command history** — from an empty composer, ArrowUp recalls previously sent asks for the selected peer (ArrowDown walks forward, Escape returns to empty). History is per-peer and in-memory for the session; once you start editing a recalled entry, arrows behave normally so multi-line editing is unaffected. The plain-text ask flow and Cmd/Ctrl+Enter submit are unchanged.
 - **Pending questions** — structured questions, including ACP tool-permission prompts, appear as an answer banner above the dashboard grid. Choice questions render option buttons; tool-permission questions also render an explicit Deny action. Answers post to the shared `/answer` route and close when the daemon emits the matching ack event.
 
 ## Where chat turns come from
