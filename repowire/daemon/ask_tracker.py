@@ -360,13 +360,23 @@ class AskTracker:
         correlation_id: str,
         framed_reply: str,
         identity: AskerIdentity | None = None,
+        *,
+        allow_answered_question: bool = False,
     ) -> bool:
-        """Stash a completed reply on an open ask for later redelivery.
+        """Stash a completed reply for later redelivery.
 
         Used by the ACP-routed `/ask` path when notify fails with
         TransportError: the assembled ACP answer is real and must not be
         dropped just because the asker is currently offline. Returns True
         if the ask exists and was still open, False otherwise.
+
+        ``allow_answered_question`` is the structured-question escape hatch:
+        `/answer` records the typed answer first (the source of truth), closing
+        the ask with ``close_reason="answered"`` before it attempts the
+        human-readable notify back to the asker. If that notify hits an offline
+        transport, this flag lets the already-answered question carry a
+        pending redelivery without reopening it. It deliberately does *not*
+        permit stashing on arbitrary closed asks.
 
         ``identity`` is the asker's full stable identity tuple at stash time,
         captured by the route handler when the asker peer is resolvable and
@@ -375,7 +385,14 @@ class AskTracker:
         """
         async with self._lock:
             ask = self._asks.get(correlation_id)
-            if not ask or ask.closed:
+            if not ask:
+                return False
+            if ask.closed and not (
+                allow_answered_question
+                and ask.question is not None
+                and ask.answer is not None
+                and ask.close_reason == "answered"
+            ):
                 return False
             ask.pending_reply = framed_reply
             ask.asker_identity = identity
@@ -383,6 +400,38 @@ class AskTracker:
             logger.debug(
                 "Stashed pending reply on ask %s (identity=%s)",
                 correlation_id, "yes" if identity else "no",
+            )
+            return True
+
+    async def mark_pending_reply_delivered(
+        self,
+        correlation_id: str,
+        *,
+        new_from_peer_id: str | None = None,
+        reason: str = "ack_with_msg",
+    ) -> bool:
+        """Mark a stashed reply delivered and clear it.
+
+        Open asks are closed with ``reason``. Already answered structured
+        questions stay closed as ``answered``; only their transient stash is
+        cleared. ``new_from_peer_id`` is used by the registry's identity-rebind
+        pass after a clean-takeover gives the original asker a new peer id.
+        """
+        async with self._lock:
+            ask = self._asks.get(correlation_id)
+            if ask is None or ask.pending_reply is None:
+                return False
+            if new_from_peer_id is not None:
+                ask.from_peer_id = new_from_peer_id
+            if not ask.closed:
+                ask.closed = True
+                ask.close_reason = reason
+                self._cancel_waiter(correlation_id, message=reason)
+            ask.pending_reply = None
+            logger.debug(
+                "Marked pending reply delivered for ask %s%s",
+                correlation_id,
+                f" -> {new_from_peer_id}" if new_from_peer_id else "",
             )
             return True
 
@@ -430,18 +479,17 @@ class AskTracker:
             return True
 
     async def take_pending_replies_for_asker(self, peer_id: str) -> list[Ask]:
-        """Snapshot open asks targeting this asker that have a stashed reply.
+        """Snapshot asks targeting this asker that have a stashed reply.
 
         Caller (peer_registry reconnect path) attempts redelivery for each;
-        on success it closes the ask via ``close`` and the reply will not
-        be re-driven. We snapshot rather than drain so a failed redelivery
-        leaves the reply in place for the next reconnect.
+        on success it marks the reply delivered and the reply will not be
+        re-driven. We snapshot rather than drain so a failed redelivery leaves
+        the reply in place for the next reconnect.
         """
         async with self._lock:
             return [
                 ask for ask in self._asks.values()
                 if ask.from_peer_id == peer_id
-                and not ask.closed
                 and ask.pending_reply is not None
             ]
 
@@ -462,7 +510,7 @@ class AskTracker:
           * every identity field matches the supplied tuple exactly
           * ``from_peer_id not in live_peer_ids`` (the original asker peer_id
             is no longer registered — only then is rebind in play)
-          * the ask is open and has a stashed reply
+          * the ask has a stashed reply
 
         The tracker performs no liveness lookups and no uniqueness gating.
         The caller (PeerRegistry) supplies ``live_peer_ids`` from its own
@@ -472,7 +520,7 @@ class AskTracker:
         async with self._lock:
             out: list[Ask] = []
             for ask in self._asks.values():
-                if ask.closed or ask.pending_reply is None:
+                if ask.pending_reply is None:
                     continue
                 ident = ask.asker_identity
                 if ident is None:

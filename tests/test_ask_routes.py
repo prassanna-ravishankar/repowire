@@ -1,5 +1,7 @@
 """Tests for /ask, /ack, and /asks/* HTTP routes."""
 
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -733,3 +735,45 @@ class TestAnswerQuestion:
         assert r.status_code == 200, r.text
         ask = await at.get(cid)
         assert ask.answer.outcome == "denied" and ask.closed
+
+    async def test_answer_stashes_and_redelivers_when_asker_transport_offline(
+        self, env, monkeypatch,
+    ):
+        client, registry, at, msg_router = env
+        asker = await _register_peer(client, "asker")
+        rcv = await _register_peer(client, "rcv")
+        asker_peer = await registry.get_peer(asker)
+        assert asker_peer is not None
+        cid = await self._ask_question(client, asker, rcv, kind="text")
+
+        async def _offline_notify(**_):
+            raise TransportError("asker offline")
+
+        delivery = SimpleNamespace(notify=AsyncMock(side_effect=_offline_notify))
+        monkeypatch.setattr(
+            asks, "peer_delivery_from_state", lambda **_: delivery,
+        )
+        await registry.update_peer_status(asker_peer.peer_id, PeerStatus.OFFLINE)
+
+        r = await client.post("/answer", json={
+            "correlation_id": cid,
+            "text": "structured answer",
+        })
+        assert r.status_code == 200, r.text
+        ask = await at.get(cid)
+        assert ask is not None
+        assert ask.closed is True
+        assert ask.close_reason == "answered"
+        assert ask.answer is not None and ask.answer.text == "structured answer"
+        assert ask.pending_reply is not None
+        assert "structured answer" in ask.pending_reply
+
+        await registry.update_peer_status(asker_peer.peer_id, PeerStatus.ONLINE)
+        await asyncio.sleep(0.05)
+
+        ask = await at.get(cid)
+        assert ask is not None
+        assert ask.closed is True
+        assert ask.close_reason == "answered"
+        assert ask.pending_reply is None
+        msg_router.send_notification.assert_awaited()

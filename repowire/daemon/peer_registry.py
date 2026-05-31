@@ -1105,9 +1105,11 @@ class PeerRegistry:
         # Out of the lock. Schedule pass-2 (identity-tuple) redelivery for
         # both fresh allocations and same-id reconnects. The new peer is
         # already ONLINE, so update_peer_status won't fire — this is the
-        # only redelivery hook on the SessionStart path. Gated on the
-        # acp_broker_client experiment so flag-off has zero new behaviour.
-        if should_redeliver and result_peer_id and self._acp_redelivery_enabled():
+        # only redelivery hook on the SessionStart path. Pending-reply stashes
+        # are now transport-neutral (ACP replies and structured question
+        # answers both use them), so reconnect always gives the tracker a
+        # chance to drain any existing stash.
+        if should_redeliver and result_peer_id and self._ask_tracker is not None:
             asyncio.create_task(
                 self._redeliver_pending_replies(result_peer_id),
                 name=f"redeliver-{result_peer_id[:12]}",
@@ -1546,24 +1548,14 @@ class PeerRegistry:
         if (
             asker_peer_id is not None
             and self._ask_tracker is not None
-            and self._acp_redelivery_enabled()
         ):
             asyncio.create_task(
                 self._redeliver_pending_replies(asker_peer_id),
                 name=f"redeliver-{asker_peer_id[:12]}",
             )
 
-    def _acp_redelivery_enabled(self) -> bool:
-        """Whether the ACP-routed stash/redeliver path is opted in.
-
-        Defensive against future Config refactors: a missing
-        ``experiments`` block or attribute is treated as flag-off, never
-        a crash.
-        """
-        return bool(getattr(self._experiments, "acp_broker_client", False))
-
     async def _redeliver_pending_replies(self, asker_peer_id: str) -> None:
-        """Drain ACP-stashed replies for an asker that just came back online.
+        """Drain stashed replies for an asker that just came back online.
 
         Two passes:
           1. ``take_pending_replies_for_asker`` — same peer_id reconnect
@@ -1575,9 +1567,11 @@ class PeerRegistry:
              tuple refuses rebind rather than misrouting.
 
         Best-effort: a failure here just leaves the reply stashed for the
-        next reconnect / sweep. Successful redelivery closes the ask
+        next reconnect / sweep. Successful redelivery closes open asks
         (ack_with_msg) and clears the stash so the Ask object isn't holding
-        reply text it can never use again.
+        reply text it can never use again. Already answered structured
+        questions stay closed as answered; only the redelivery stash is
+        drained.
         """
         if self._ask_tracker is None:
             return
@@ -1652,13 +1646,14 @@ class PeerRegistry:
     async def _deliver_one_stashed(
         self, ask: Any, asker_peer_id: str, *, rebind: bool,
     ) -> None:
-        """Deliver a single stashed reply and close the ask on success.
+        """Deliver a single stashed reply and mark it delivered on success.
 
         The Ask object is **never mutated** outside ``AskTracker`` locks.
         Notify targets ``asker_peer_id`` directly (the registry already
         knows the live id from its own pass-1/pass-2 caller); only on
         successful delivery do we ask the tracker to atomically rebind
-        + close + clear (rebind path) or close + clear (same-id path).
+        + clear (rebind path) or clear (same-id path), closing open asks in
+        the same operation.
         On notify failure the stash is left exactly as we found it.
         """
         reply = ask.pending_reply
@@ -1679,15 +1674,11 @@ class PeerRegistry:
             return
         if self._ask_tracker is None:
             return
-        if rebind:
-            await self._ask_tracker.rebind_and_close(
-                ask.correlation_id, asker_peer_id, reason="ack_with_msg",
-            )
-        else:
-            await self._ask_tracker.close(
-                ask.correlation_id, reason="ack_with_msg",
-            )
-            await self._ask_tracker.clear_pending_reply(ask.correlation_id)
+        await self._ask_tracker.mark_pending_reply_delivered(
+            ask.correlation_id,
+            new_from_peer_id=asker_peer_id if rebind else None,
+            reason="ack_with_msg",
+        )
         logger.info(
             "redeliver%s: delivered stashed reply for %s to %s",
             " (rebound)" if rebind else "",

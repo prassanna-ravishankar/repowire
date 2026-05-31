@@ -36,7 +36,7 @@ Some asks carry a typed question envelope. A structured question can be an ackno
 
 Telegram and the dashboard render structured questions as buttons when possible. ACP tool approvals use the same primitive: the ACP broker registers a blocking choice question, waits for the recorded answer, and maps it back to the runtime's permission decision. The older ACP permission-decision route remains as a compatibility shim.
 
-Plain asks still close with `ack`. `/answer` rejects a plain ask so a reply cannot bypass `ack`'s delivery/retry contract.
+Plain asks still close with `ack`. `/answer` rejects a plain ask so a reply cannot bypass `ack`'s delivery/retry contract. Structured answers are recorded before the human-readable reply is delivered back to the asking peer; if that peer is temporarily offline, Repowire stashes the reply and redelivers it when the peer reconnects.
 
 ## `notify_peer`
 

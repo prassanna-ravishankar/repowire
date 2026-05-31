@@ -97,7 +97,7 @@ answer(correlation_id: str, option_id: str | None = None, text: str | None = Non
 
 Answer a structured question carried on an ask. Pass `option_id` to select a choice, or `text` for a free-text answer. A bare `answer(cid)` records an acknowledged answer. Tool-permission questions also accept a denied outcome through the dashboard and Telegram renderers; ACP permission prompts deny by default on timeout.
 
-This is the typed counterpart to `ack` for questions such as tool approvals and future AskUserQuestion-style prompts. Plain asks still use `ack`; `/answer` rejects a plain ask so the existing `ack` retry semantics are not bypassed.
+This is the typed counterpart to `ack` for questions such as tool approvals and future AskUserQuestion-style prompts. Plain asks still use `ack`; `/answer` rejects a plain ask so the existing `ack` retry semantics are not bypassed. If the asking peer is offline after a structured answer is recorded, the readable reply is stashed and redelivered on reconnect.
 
 ```python
 answer("acpperm-8b9c1f42", option_id="allow")

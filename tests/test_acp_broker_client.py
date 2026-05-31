@@ -1207,18 +1207,13 @@ async def test_pending_reply_redelivered_on_asker_reconnect(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_reconnect_redelivery_is_skipped_when_flag_off(tmp_path: Path) -> None:
-    """Codex re-review BLOCKER: flag-off ⇒ zero new behaviour on reconnect.
+async def test_reconnect_redelivery_runs_even_when_acp_flag_off(tmp_path: Path) -> None:
+    """Pending-reply redelivery is now transport-neutral.
 
-    With ``experiments.acp_broker_client`` off, an OFFLINE→ONLINE transition
-    must NOT scan the ask tracker and must NOT call notify on the asker's
-    behalf — even if a pending_reply somehow ended up stashed. The phase-3
-    contract is strict: flag off means the WS/MCP path runs unchanged.
-
-    We seed a stashed reply directly into the tracker (bypassing the
-    flag-gated _acp_complete write path) and assert that the reconnect
-    hook leaves it untouched. With the flag on, the same scenario would
-    drain and deliver — proven by the redelivery test above.
+    ACP replies and structured question answers share the same stash/drain
+    mechanism, so the reconnect hook must no longer be gated by the ACP broker
+    experiment. The write sites decide when a stash exists; reconnect simply
+    gives the tracker a chance to drain one.
     """
     cfg = Config()
     cfg.experiments.acp_broker_client = False  # explicitly off
@@ -1267,13 +1262,12 @@ async def test_reconnect_redelivery_is_skipped_when_flag_off(tmp_path: Path) -> 
     await registry.update_peer_status(asker.peer_id, PeerStatus.ONLINE)
     await asyncio.sleep(0.05)
 
-    # With flag off: no redeliver task scheduled → no notify call,
-    # ask still open, pending_reply still on the ask.
-    assert notify_calls == [], "flag-off path called notify on reconnect"
+    # Even with the ACP flag off, a real stash is drained on reconnect.
+    assert len(notify_calls) == 1
     ask = await at.get(cid)
     assert ask is not None
-    assert ask.closed is False
-    assert ask.pending_reply is not None
+    assert ask.closed is True
+    assert ask.pending_reply is None
 
 
 @pytest.mark.asyncio

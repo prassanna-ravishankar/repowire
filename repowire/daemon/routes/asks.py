@@ -823,10 +823,27 @@ async def _answer_question_core(request: AnswerRequest) -> OkResponse:
                 attachments=request.attachments,
             )
             delivery_success = True
-        except (ValueError, TransportError) as e:
-            # The answer is recorded (truth); the asker just didn't get the
-            # human-readable notification this time. Redelivery-to-offline-asker
-            # is tracked as a follow-up (repowire-* — stash on answered question).
+        except TransportError as e:
+            # The answer is recorded (truth); keep its human-readable frame for
+            # the asker's next reconnect. Unlike plain /ack, this does not
+            # leave the question open: structured questions have a durable
+            # typed answer, and blocking transports consume that answer
+            # directly.
+            identity = await _capture_asker_identity(peer_registry, existing.from_peer_id)
+            stashed = await ask_tracker.set_pending_reply(
+                request.correlation_id,
+                framed,
+                identity=identity,
+                allow_answered_question=True,
+            )
+            logger.warning(
+                "answer for %s recorded; asker delivery deferred (%s; stashed=%s)",
+                request.correlation_id, e, stashed,
+            )
+        except ValueError as e:
+            # The asker no longer resolves, so there is no current transport
+            # target or identity tuple to stash against. The typed answer
+            # remains the source of truth.
             logger.warning(
                 "answer for %s recorded; asker delivery deferred (%s)",
                 request.correlation_id, e,

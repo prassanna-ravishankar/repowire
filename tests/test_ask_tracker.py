@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from repowire.daemon.ask_tracker import AskTracker
+from repowire.protocol.questions import Answer, Question
 
 
 @pytest.fixture
@@ -181,6 +182,70 @@ class TestSetPendingReplyIdentity:
         assert ok is True
         ask = await tracker.get(cid)
         assert ask is not None and ask.asker_identity is None
+
+    async def test_answered_question_can_carry_pending_reply_when_explicit(self, tracker):
+        cid = await tracker.register(
+            "asker-id", "asker", "b-id", "b", "x",
+            question=Question(kind="text"),
+        )
+        await tracker.answer(cid, Answer(text="done"))
+
+        assert await tracker.set_pending_reply(cid, "framed") is False
+        ok = await tracker.set_pending_reply(
+            cid, "framed", allow_answered_question=True,
+        )
+
+        assert ok is True
+        ask = await tracker.get(cid)
+        assert ask is not None
+        assert ask.closed is True
+        assert ask.close_reason == "answered"
+        assert ask.pending_reply == "framed"
+
+    async def test_closed_non_answered_ask_cannot_carry_pending_reply(self, tracker):
+        cid = await tracker.register("asker-id", "asker", "b-id", "b", "x")
+        await tracker.close(cid, reason="ack")
+
+        ok = await tracker.set_pending_reply(
+            cid, "framed", allow_answered_question=True,
+        )
+
+        assert ok is False
+        ask = await tracker.get(cid)
+        assert ask is not None and ask.pending_reply is None
+
+    async def test_take_pending_replies_includes_answered_question_stashes(self, tracker):
+        cid = await tracker.register(
+            "asker-id", "asker", "b-id", "b", "x",
+            question=Question(kind="text"),
+        )
+        await tracker.answer(cid, Answer(text="done"))
+        await tracker.set_pending_reply(
+            cid, "framed", allow_answered_question=True,
+        )
+
+        out = await tracker.take_pending_replies_for_asker("asker-id")
+
+        assert len(out) == 1 and out[0].correlation_id == cid
+
+    async def test_mark_pending_reply_delivered_keeps_answered_question_closed(self, tracker):
+        cid = await tracker.register(
+            "asker-id", "asker", "b-id", "b", "x",
+            question=Question(kind="text"),
+        )
+        await tracker.answer(cid, Answer(text="done"))
+        await tracker.set_pending_reply(
+            cid, "framed", allow_answered_question=True,
+        )
+
+        ok = await tracker.mark_pending_reply_delivered(cid)
+
+        assert ok is True
+        ask = await tracker.get(cid)
+        assert ask is not None
+        assert ask.closed is True
+        assert ask.close_reason == "answered"
+        assert ask.pending_reply is None
 
 
 class TestTakeOrphanPendingRepliesMatching:
