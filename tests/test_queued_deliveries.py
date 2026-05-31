@@ -64,7 +64,6 @@ def _make_app(tmp_path: Path, cfg: Config | None = None) -> tuple[FastAPI, Simpl
         state_db=state_db,
     )
     state.peer_delivery = PeerDeliveryService(
-        config=cfg,
         registry=registry,
         message_router=msg_router,
         transport_router=transport_router_from_state(

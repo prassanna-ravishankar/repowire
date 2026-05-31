@@ -1237,7 +1237,6 @@ async def test_acp_notify_reason_is_broker_accepted():
         )
     )
     service = PeerDeliveryService(
-        config=Config(),
         registry=registry,  # type: ignore[arg-type]
         message_router=SimpleNamespace(),  # type: ignore[arg-type]
         transport_router=transport_router,  # type: ignore[arg-type]

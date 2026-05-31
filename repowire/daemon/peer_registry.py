@@ -22,7 +22,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
-from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
+from repowire.config.models import (
+    DEFAULT_QUERY_TIMEOUT,
+    AgentType,
+    Config,
+    DaemonConfig,
+    ExperimentsConfig,
+)
 from repowire.daemon import diagnostics as diag
 from repowire.daemon.delivery_trace import DeliveryTraceStore
 from repowire.daemon.event_log import EventLog
@@ -133,8 +139,8 @@ class PeerRegistry:
 
     def __init__(
         self,
-        config: Config,
-        message_router: MessageRouter,
+        config: Config | None = None,
+        message_router: MessageRouter | None = None,
         query_tracker: QueryTracker | None = None,
         transport: WebSocketTransport | None = None,
         persistence_path: Path | None = None,
@@ -142,9 +148,22 @@ class PeerRegistry:
         event_bus: EventBus | None = None,
         event_log: EventLog | None = None,
         state_db: StateDatabase | None = None,
+        *,
+        daemon: DaemonConfig | None = None,
+        experiments: ExperimentsConfig | None = None,
     ) -> None:
-        self._config = config
-        self._router = message_router
+        # The registry only needs two config slices (daemon timings +
+        # experiments), not the whole Config god-object. Accept either a full
+        # Config (existing callers) or the slices directly (newer callers), and
+        # store only the slices so the registry's dependency surface is narrow.
+        if config is not None:
+            daemon = daemon or config.daemon
+            experiments = experiments or config.experiments
+        self._daemon = daemon or DaemonConfig()
+        self._experiments = experiments or ExperimentsConfig()
+        if message_router is None:
+            raise ValueError("PeerRegistry requires a message_router")
+        self._router: MessageRouter = message_router
         self._query_tracker = query_tracker
         self._transport = transport
         self._ask_tracker = ask_tracker
@@ -1237,7 +1256,7 @@ class PeerRegistry:
         two means the wire is dead. Public accessor so callers (routes, MCP)
         don't reach into `_config`.
         """
-        return self._config.daemon.heartbeat_interval * 2
+        return self._daemon.heartbeat_interval * 2
 
     async def get_orchestrator(self, circle: str) -> Peer | None:
         """Return the live orchestrator for a circle, or None.
@@ -1359,11 +1378,10 @@ class PeerRegistry:
         from repowire.daemon.transport_router import PeerTransportRouter
 
         return PeerDeliveryService(
-            config=self._config,
             registry=self,
             message_router=self._router,
             transport_router=PeerTransportRouter(
-                config=self._config,
+                experiments=self._experiments,
                 registry=self,
                 message_router=self._router,
             ),
@@ -1542,8 +1560,7 @@ class PeerRegistry:
         ``experiments`` block or attribute is treated as flag-off, never
         a crash.
         """
-        experiments = getattr(self._config, "experiments", None)
-        return bool(getattr(experiments, "acp_broker_client", False))
+        return bool(getattr(self._experiments, "acp_broker_client", False))
 
     async def _redeliver_pending_replies(self, asker_peer_id: str) -> None:
         """Drain ACP-stashed replies for an asker that just came back online.
@@ -1871,7 +1888,7 @@ class PeerRegistry:
         """
         if not peer.description:
             return
-        ttl = self._config.daemon.description_ttl_seconds
+        ttl = self._daemon.description_ttl_seconds
         if ttl <= 0:
             return
         set_at = self._description_set_at.get(peer.peer_id)
@@ -2093,7 +2110,7 @@ class PeerRegistry:
         """Drop delivery-trace rows older than prune_max_age_hours. Best-effort."""
         if self._state_db is None:
             return
-        max_age_hours = self._config.daemon.prune_max_age_hours
+        max_age_hours = self._daemon.prune_max_age_hours
         if not max_age_hours or max_age_hours <= 0:
             return
         try:
@@ -2123,8 +2140,8 @@ class PeerRegistry:
         if not self._transport:
             return 0
         acp_flag = (
-            bool(self._config.experiments.acp_broker_client)
-            if self._config.experiments
+            bool(self._experiments.acp_broker_client)
+            if self._experiments
             else False
         )
         async with self._lock:
@@ -2266,7 +2283,7 @@ class PeerRegistry:
         backend does not emit Stop/AfterAgent. It intentionally ignores
         awaiting_input and any peer with recent liveness progress.
         """
-        timeout = self._config.daemon.stale_busy_timeout_seconds
+        timeout = self._daemon.stale_busy_timeout_seconds
         if timeout <= 0:
             return 0
 
@@ -2297,7 +2314,7 @@ class PeerRegistry:
         demoted by the WebSocket liveness checks above; this pass removes peers
         that stayed offline past the configured grace window.
         """
-        ttl = self._config.daemon.peer_reap_ttl_seconds
+        ttl = self._daemon.peer_reap_ttl_seconds
         if ttl <= 0:
             return 0
 
@@ -2364,7 +2381,7 @@ class PeerRegistry:
 
         Returns number of evicted peers.
         """
-        max_age = self._config.daemon.prune_max_age_hours * 3600
+        max_age = self._daemon.prune_max_age_hours * 3600
         now = time.time()
         async with self._lock:
             stale = [

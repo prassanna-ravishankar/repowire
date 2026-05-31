@@ -185,7 +185,7 @@ async def test_register_route_reports_unassigned_sticky_orchestrator_pane(
     from repowire.daemon.routes import peers
 
     registry = _make_registry(tmp_path)
-    cfg = registry._config
+    cfg = Config()
     state = SimpleNamespace(
         config=cfg,
         transport=registry._transport,

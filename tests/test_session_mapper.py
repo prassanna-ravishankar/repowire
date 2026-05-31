@@ -483,7 +483,7 @@ async def test_same_workspace_temp_peer_does_not_replace_fresh_orchestrator(tmp_
     """A split-pane temp peer in the orchestrator workspace must not become
     the active orchestrator while the real holder is fresh."""
     registry = _make_registry(tmp_path)
-    registry._config.daemon.heartbeat_interval = 30
+    registry._daemon.heartbeat_interval = 30
     orch_path = str(tmp_path / "orchestrator")
     Path(orch_path).mkdir()
     real_id, real_name = await registry.allocate_and_register(

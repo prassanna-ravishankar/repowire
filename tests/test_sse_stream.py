@@ -49,7 +49,7 @@ def _make_registry(tmp_path: Path) -> PeerRegistry:
 
 def _make_app(tmp_path: Path) -> tuple[FastAPI, PeerRegistry]:
     registry = _make_registry(tmp_path)
-    cfg = registry._config
+    cfg = Config()
     app_state = SimpleNamespace(
         config=cfg,
         transport=registry._transport,

@@ -141,7 +141,7 @@ async def test_claim_orchestrator_allows_stale_holder(tmp_path: Path) -> None:
 @pytest.fixture
 async def client(tmp_path: Path):
     registry = _make_registry(tmp_path)
-    cfg = registry._config
+    cfg = Config()
     state = SimpleNamespace(
         config=cfg,
         transport=registry._transport,

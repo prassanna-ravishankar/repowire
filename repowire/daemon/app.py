@@ -299,7 +299,6 @@ def create_app(
         app.state.acp_manager = acp_manager
         from repowire.daemon.transport_router import transport_router_from_state
         peer_delivery = PeerDeliveryService(
-            config=cfg,
             registry=peer_registry,
             message_router=message_router,
             transport_router=transport_router_from_state(
@@ -649,7 +648,6 @@ def create_test_app(
         app.state.acp_manager = acp_manager
         from repowire.daemon.transport_router import transport_router_from_state
         peer_delivery = PeerDeliveryService(
-            config=cfg,
             registry=registry,
             message_router=msg_router,
             transport_router=transport_router_from_state(

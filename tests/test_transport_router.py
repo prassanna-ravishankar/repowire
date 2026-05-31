@@ -75,7 +75,7 @@ async def test_ask_routes_to_acp_before_websocket() -> None:
     on_complete = AsyncMock()
 
     router = PeerTransportRouter(
-        config=_config(acp_enabled=True),
+        experiments=_config(acp_enabled=True).experiments,
         registry=registry,
         message_router=ws_router,
         acp_manager=acp_manager,
@@ -102,7 +102,7 @@ async def test_acp_ask_propagates_turn_state_working_then_idle() -> None:
     on_complete = AsyncMock()
 
     router = PeerTransportRouter(
-        config=_config(acp_enabled=True),
+        experiments=_config(acp_enabled=True).experiments,
         registry=registry,
         message_router=ws_router,
         acp_manager=acp_manager,
@@ -129,7 +129,7 @@ async def test_acp_ask_settles_turn_state_idle_on_error() -> None:
     on_complete = AsyncMock()
 
     router = PeerTransportRouter(
-        config=_config(acp_enabled=True),
+        experiments=_config(acp_enabled=True).experiments,
         registry=registry,
         message_router=ws_router,
         acp_manager=acp_manager,
@@ -156,7 +156,7 @@ async def test_notify_routes_to_acp_and_discards_reply() -> None:
     )
 
     router = PeerTransportRouter(
-        config=_config(acp_enabled=True),
+        experiments=_config(acp_enabled=True).experiments,
         registry=registry,
         message_router=ws_router,
         acp_manager=acp_manager,
@@ -179,7 +179,7 @@ async def test_flag_off_acp_peer_falls_through_to_websocket() -> None:
         prompt=AsyncMock(return_value=AcpPromptResult(stop_reason="end_turn", text="unused")),
     )
     router = PeerTransportRouter(
-        config=_config(acp_enabled=False),
+        experiments=_config(acp_enabled=False).experiments,
         registry=registry,
         message_router=ws_router,
         acp_manager=acp_manager,

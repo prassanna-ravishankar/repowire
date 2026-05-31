@@ -87,7 +87,6 @@ class PeerDeliveryService:
     def __init__(
         self,
         *,
-        config: Config,
         registry: PeerRegistry,
         message_router: MessageRouter,
         transport_router: PeerTransportRouter | None = None,
@@ -96,7 +95,6 @@ class PeerDeliveryService:
         queued_delivery_store: SQLiteQueuedDeliveryStore | None = None,
         operation_store: Any | None = None,
     ) -> None:
-        self._config = config
         self._registry = registry
         self._message_router = message_router
         self._transport_router = transport_router
@@ -665,7 +663,6 @@ def peer_delivery_from_state(
         state=state,
     )
     return PeerDeliveryService(
-        config=config,
         registry=registry,
         message_router=getattr(state, "message_router"),
         transport_router=transport_router,

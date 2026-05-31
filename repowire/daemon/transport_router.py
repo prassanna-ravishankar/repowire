@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, cast
 
 from repowire.acp import AcpRouteDecision, deliver_ask_via_acp, maybe_decide_acp_route
-from repowire.config.models import Config
+from repowire.config.models import Config, ExperimentsConfig
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.protocol.messages import AttachmentRef
@@ -277,12 +277,12 @@ class PeerTransportRouter:
     def __init__(
         self,
         *,
-        config: Config,
+        experiments: ExperimentsConfig,
         registry: PeerRegistry,
         message_router: MessageRouter,
         acp_manager: Any | None = None,
     ) -> None:
-        self._config = config
+        self._experiments = experiments
         self._registry = registry
         self._ws = WebSocketPeerTransport(registry, message_router)
         self._acp = (
@@ -298,7 +298,7 @@ class PeerTransportRouter:
         return self._acp_decision(target)
 
     def _acp_decision(self, target: Peer) -> AcpRouteDecision | None:
-        experiments = self._config.experiments
+        experiments = self._experiments
         flag = bool(experiments.acp_broker_client) if experiments else False
         if not flag or self._acp is None:
             return None
@@ -372,7 +372,7 @@ def transport_router_from_state(
     message_router = getattr(state, "message_router")
     acp_manager = getattr(state, "acp_manager", None)
     return PeerTransportRouter(
-        config=config,
+        experiments=getattr(config, "experiments", None) or ExperimentsConfig(),
         registry=registry,
         message_router=message_router,
         acp_manager=acp_manager,
