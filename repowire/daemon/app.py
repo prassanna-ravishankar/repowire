@@ -43,6 +43,7 @@ from repowire.daemon.routes import (
     acp_permissions,
     asks,
     attachments,
+    beads,
     health,
     lifecycle,
     messages,
@@ -494,6 +495,7 @@ def create_app(
     app.include_router(sessions.router)
     app.include_router(traces.router)
     app.include_router(work.router)
+    app.include_router(beads.router)
 
     _mount_http_mcp(app, _config or load_config())
 
@@ -750,6 +752,7 @@ def create_test_app(
     app.include_router(sessions.router)
     app.include_router(traces.router)
     app.include_router(work.router)
+    app.include_router(beads.router)
 
     _mount_http_mcp(app, config or Config())
 

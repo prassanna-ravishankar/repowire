@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "./lib/utils";
 import { useEventStream } from "./lib/useEventStream";
 import { SettingsDialog, SpawnDialog } from "./components/DashboardDialogs";
+import { BeadsBoard } from "./components/BeadsBoard";
 import { JobsView } from "./components/JobsView";
 import { MeshFeed } from "./components/MeshFeed";
 import { MobileTabs, type MobileTab } from "./components/MobileTabs";
@@ -41,7 +42,7 @@ function DashboardInner() {
   const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [mobileTab, setMobileTab] = useState<MobileTab>("peers");
-  const [mainView, setMainView] = useState<"mesh" | "jobs">("mesh");
+  const [mainView, setMainView] = useState<"mesh" | "jobs" | "beads">("mesh");
   const [refreshSignal, setRefreshSignal] = useState(0);
   const [showSpawn, setShowSpawn] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -226,6 +227,11 @@ function DashboardInner() {
     setMobileTab("mesh");
   }, []);
 
+  const openBeads = useCallback(() => {
+    setSelectedPeerId(null);
+    setMainView("beads");
+  }, []);
+
   const handleMobileTab = useCallback((tab: MobileTab) => {
     setMobileTab(tab);
     if (tab === "mesh" || tab === "jobs") {
@@ -245,6 +251,7 @@ function DashboardInner() {
           onRefresh={refreshData}
           onMesh={openMesh}
           onJobs={openJobs}
+          onBeads={openBeads}
           onSpawn={() => setShowSpawn(true)}
           onSettings={() => setShowSettings(true)}
         />
@@ -293,6 +300,8 @@ function DashboardInner() {
               apiBase={API_BASE}
               refreshSignal={refreshSignal}
             />
+          ) : mainView === "beads" ? (
+            <BeadsBoard apiBase={API_BASE} />
           ) : (
             <MeshFeed
               events={events}

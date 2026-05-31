@@ -1,5 +1,5 @@
 import Image from "next/image";
-import { BriefcaseBusiness, Plus, RefreshCw, Settings } from "lucide-react";
+import { BriefcaseBusiness, ListChecks, Plus, RefreshCw, Settings } from "lucide-react";
 import { cn } from "../lib/utils";
 import type { ConnectionState } from "../lib/useEventStream";
 import { ThemeToggle } from "./ThemeToggle";
@@ -12,16 +12,18 @@ export function TopBar({
   onRefresh,
   onMesh,
   onJobs,
+  onBeads,
   onSpawn,
   onSettings,
 }: {
   counts: Record<"online" | "busy" | "offline", number>;
   connection: ConnectionState;
   isRefreshing: boolean;
-  activeView: "mesh" | "jobs";
+  activeView: "mesh" | "jobs" | "beads";
   onRefresh: () => void;
   onMesh: () => void;
   onJobs: () => void;
+  onBeads: () => void;
   onSpawn: () => void;
   onSettings: () => void;
 }) {
@@ -74,6 +76,17 @@ export function TopBar({
         >
           <BriefcaseBusiness className="h-3.5 w-3.5" />
           Jobs
+        </button>
+        <button
+          onClick={onBeads}
+          aria-pressed={activeView === "beads"}
+          className={cn(
+            "inline-flex h-8 items-center gap-1.5 border-l border-border px-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.12em] transition-colors",
+            activeView === "beads" ? "bg-surface-container-high text-on-surface" : "text-outline hover:bg-surface-container-high hover:text-on-surface",
+          )}
+        >
+          <ListChecks className="h-3.5 w-3.5" />
+          Beads
         </button>
       </div>
       <button
