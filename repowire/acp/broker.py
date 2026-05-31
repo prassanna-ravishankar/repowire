@@ -105,6 +105,15 @@ Args: (correlation_id, reply_text_or_None, error_or_None).
 - error non-None: ACP path failed; close the ask with an error frame.
 """
 
+AcpStateCallback = Callable[[str], Awaitable[None]]
+"""Callback to propagate the ACP peer's turn_state.
+
+Args: (turn_state,) — "working" when a prompt starts, "idle" when it settles
+(success or failure). The daemon owns identity/lifecycle, so the broker only
+emits the transition; the wiring side maps it onto ``PeerRegistry``. Best-effort:
+a failure here must never break ask delivery.
+"""
+
 
 async def deliver_ask_via_acp(
     *,
@@ -113,6 +122,7 @@ async def deliver_ask_via_acp(
     correlation_id: str,
     text: str,
     on_complete: AcpAckCallback,
+    on_state: AcpStateCallback | None = None,
     timeout: float = DEFAULT_PROMPT_TIMEOUT,
 ) -> asyncio.Task[None]:
     """Spawn a background task that prompts the ACP peer and acks the asker.
@@ -121,9 +131,25 @@ async def deliver_ask_via_acp(
     correlation_id immediately (matching the existing non-blocking semantics).
     The task acks via ``on_complete`` regardless of success or failure so an
     open ask never silently dies.
+
+    ``on_state`` (optional) is fired with "working" before the prompt and "idle"
+    once it settles, so the mesh/dashboard can see an ACP peer is mid-turn — the
+    broker's analogue of the WS UserPromptSubmit→Stop transition. It is
+    orthogonal to ``on_complete`` (which is the ask receipt) and best-effort.
     """
 
+    async def _set_state(state: str) -> None:
+        if on_state is None:
+            return
+        try:
+            await on_state(state)
+        except Exception as e:  # noqa: BLE001 — turn_state is cosmetic, never fail the ask
+            logger.warning(
+                "ACP turn_state=%s for peer_id=%s failed: %s", state, spec.peer_id, e,
+            )
+
     async def _run() -> None:
+        await _set_state("working")
         try:
             result = await manager.prompt(spec, text, timeout=timeout)
             reply = result.text or f"[acp stop_reason={result.stop_reason}, no text]"
@@ -134,5 +160,7 @@ async def deliver_ask_via_acp(
                 correlation_id, spec.peer_id, e,
             )
             await on_complete(correlation_id, None, str(e))
+        finally:
+            await _set_state("idle")
 
     return asyncio.create_task(_run(), name=f"acp-ask-{correlation_id[:8]}")

@@ -10,14 +10,14 @@ from __future__ import annotations
 import uuid
 from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from repowire.acp import AcpRouteDecision, deliver_ask_via_acp, maybe_decide_acp_route
 from repowire.config.models import Config
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.protocol.messages import AttachmentRef
-from repowire.protocol.peers import Peer, PeerStatus
+from repowire.protocol.peers import Peer, PeerStatus, TurnState
 
 
 def _text_with_attachment_fallback(text: str, attachments: tuple[AttachmentRef, ...]) -> str:
@@ -189,8 +189,9 @@ class WebSocketPeerTransport:
 class AcpPeerTransport:
     """ACP delivery mapped onto prompt calls."""
 
-    def __init__(self, manager: Any) -> None:
+    def __init__(self, manager: Any, registry: PeerRegistry | None = None) -> None:
         self._manager = manager
+        self._registry = registry
 
     def decide(self, target: Peer, *, flag_enabled: bool) -> AcpRouteDecision | None:
         return maybe_decide_acp_route(
@@ -198,6 +199,22 @@ class AcpPeerTransport:
             flag_enabled=flag_enabled,
             manager=self._manager,
         )
+
+    def _state_callback(self, peer_id: str):
+        """Build an on_state callback that maps ACP turn transitions onto turn_state.
+
+        Returns None when no registry is wired (e.g. bare transport in tests),
+        so the broker simply skips state propagation.
+        """
+        registry = self._registry
+        if registry is None:
+            return None
+
+        async def _on_state(state: str) -> None:
+            turn_state = cast("TurnState", state)
+            await registry.update_peer_turn_state(peer_id, turn_state)
+
+        return _on_state
 
     async def send_ask(
         self,
@@ -213,6 +230,7 @@ class AcpPeerTransport:
             correlation_id=envelope.correlation_id,
             text=_text_with_attachment_fallback(envelope.text, envelope.attachments),
             on_complete=on_complete,
+            on_state=self._state_callback(decision.spec.peer_id),
         )
         return AskTransportResult(transport="acp", hook_delivery=None)
 
@@ -241,6 +259,7 @@ class AcpPeerTransport:
             correlation_id=cid,
             text=_text_with_attachment_fallback(envelope.text, envelope.attachments),
             on_complete=_drop_result,
+            on_state=self._state_callback(decision.spec.peer_id),
         )
         return NotifyTransportResult(
             status="sent",
@@ -266,7 +285,9 @@ class PeerTransportRouter:
         self._config = config
         self._registry = registry
         self._ws = WebSocketPeerTransport(registry, message_router)
-        self._acp = AcpPeerTransport(acp_manager) if acp_manager is not None else None
+        self._acp = (
+            AcpPeerTransport(acp_manager, registry) if acp_manager is not None else None
+        )
 
     def _acp_decision(self, target: Peer) -> AcpRouteDecision | None:
         experiments = self._config.experiments

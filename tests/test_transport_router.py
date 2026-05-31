@@ -90,6 +90,61 @@ async def test_ask_routes_to_acp_before_websocket() -> None:
 
 
 @pytest.mark.asyncio
+async def test_acp_ask_propagates_turn_state_working_then_idle() -> None:
+    # codex ACP must-fix #1: an in-flight ACP prompt must be visible as
+    # turn_state=working, settling back to idle on completion.
+    target = _acp_peer()
+    registry = SimpleNamespace(add_event=Mock(), update_peer_turn_state=AsyncMock())
+    ws_router = SimpleNamespace(send_ask=AsyncMock(), send_notification=AsyncMock())
+    acp_manager = SimpleNamespace(
+        prompt=AsyncMock(return_value=AcpPromptResult(stop_reason="end_turn", text="answer")),
+    )
+    on_complete = AsyncMock()
+
+    router = PeerTransportRouter(
+        config=_config(acp_enabled=True),
+        registry=registry,
+        message_router=ws_router,
+        acp_manager=acp_manager,
+    )
+    await router.send_ask(_ask_envelope(target), on_acp_complete=on_complete)
+    await _wait_for_await(on_complete)
+
+    states = [call.args[1] for call in registry.update_peer_turn_state.await_args_list]
+    assert states == ["working", "idle"]
+    assert all(
+        call.args[0] == "target-id"
+        for call in registry.update_peer_turn_state.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_acp_ask_settles_turn_state_idle_on_error() -> None:
+    # turn_state must return to idle even when the ACP prompt fails, so a peer
+    # is never stuck showing "working" after a crashed/timed-out turn.
+    target = _acp_peer()
+    registry = SimpleNamespace(add_event=Mock(), update_peer_turn_state=AsyncMock())
+    ws_router = SimpleNamespace(send_ask=AsyncMock(), send_notification=AsyncMock())
+    acp_manager = SimpleNamespace(prompt=AsyncMock(side_effect=RuntimeError("boom")))
+    on_complete = AsyncMock()
+
+    router = PeerTransportRouter(
+        config=_config(acp_enabled=True),
+        registry=registry,
+        message_router=ws_router,
+        acp_manager=acp_manager,
+    )
+    await router.send_ask(_ask_envelope(target), on_acp_complete=on_complete)
+    await _wait_for_await(on_complete)
+
+    states = [call.args[1] for call in registry.update_peer_turn_state.await_args_list]
+    assert states == ["working", "idle"]
+    # the asker still gets the failure surfaced
+    on_complete.assert_awaited_once()
+    assert on_complete.await_args_list[0].args[2] is not None
+
+
+@pytest.mark.asyncio
 async def test_notify_routes_to_acp_and_discards_reply() -> None:
     target = _acp_peer()
     registry = SimpleNamespace(add_event=Mock())
