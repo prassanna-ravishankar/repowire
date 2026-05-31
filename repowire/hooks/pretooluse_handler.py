@@ -25,6 +25,9 @@ from uuid import uuid4
 from repowire.hooks._tmux import get_pane_id
 from repowire.hooks.utils import daemon_post_with_status, get_display_name
 
+# The single allow option this hook offers. The response must select exactly
+# this id to grant; anything else fails closed.
+_ALLOW_OPTION_ID = "allow"
 # Client HTTP timeout sits above the daemon's wait + a small network margin, but
 # must stay below Claude's configured PreToolUse hook timeout (60s in settings).
 _CLIENT_TIMEOUT_MARGIN_SECONDS = 5.0
@@ -76,11 +79,18 @@ def main(backend: str = "claude-code") -> int:
     if backend != "claude-code":
         return 0  # PreToolUse remote approval is a Claude Code path only
 
+    # This hook is installed/matched ONLY for gated tools, so once it runs we
+    # are about to gate a consequential tool call. Fail closed (deny) on any
+    # condition where we cannot affirmatively verify the call is ungated —
+    # otherwise empty stdout under --dangerously-skip-permissions is a bypass.
+    # The ONLY safe fall-through is: config loads cleanly AND says the tool is
+    # not gated (or the experiment is off).
     try:
         input_data = json.loads(sys.stdin.read())
     except json.JSONDecodeError as e:
         print(f"repowire pretooluse: invalid JSON input: {e}", file=sys.stderr)
-        return 0  # malformed input: don't interfere with the native flow
+        print(json.dumps(_deny_decision("malformed hook input")))
+        return 0
 
     tool_name = input_data.get("tool_name", "")
 
@@ -88,12 +98,13 @@ def main(backend: str = "claude-code") -> int:
         from repowire.config.models import load_config
 
         cfg = load_config()
-    except Exception as e:  # noqa: BLE001 — config failure must not block the tool
+    except Exception as e:  # noqa: BLE001 — can't verify intent → deny, don't bypass
         print(f"repowire pretooluse: config load failed: {e}", file=sys.stderr)
+        print(json.dumps(_deny_decision("approval config unavailable")))
         return 0
     approval = cfg.experiments.remote_tool_approval
     if not approval.enabled or tool_name not in approval.gated_tools:
-        return 0  # experiment off or tool not gated: native flow proceeds
+        return 0  # config loaded and says off / ungated: native flow proceeds
 
     # From here the tool is gated: any failure denies (fail closed).
     tool_input = input_data.get("tool_input", {})
@@ -104,7 +115,7 @@ def main(backend: str = "claude-code") -> int:
 
     payload = {
         "prompt": prompt,
-        "options": [{"id": "allow", "title": f"Allow {tool_name}"}],
+        "options": [{"id": _ALLOW_OPTION_ID, "title": f"Allow {tool_name}"}],
         "scope": "tool_permission",
         "timeout_seconds": server_wait,
         "correlation_id": correlation_id,
@@ -130,7 +141,10 @@ def main(backend: str = "claude-code") -> int:
 
     outcome = body.get("outcome")
     message = body.get("message") or ""
-    if outcome == "answered" and body.get("option_id"):
+    # Allow ONLY on the exact allow option this hook offered. A stale / local /
+    # malformed response carrying a different option_id (e.g. "deny") must not
+    # grant — fail closed.
+    if outcome == "answered" and body.get("option_id") == _ALLOW_OPTION_ID:
         print(json.dumps(_allow_decision(message)))
         return 0
 

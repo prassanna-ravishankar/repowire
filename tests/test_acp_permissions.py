@@ -309,6 +309,35 @@ async def test_tool_permission_answer_does_not_notify_runtime(
 
 
 @pytest.mark.asyncio
+async def test_register_failure_emits_balancing_decision_event() -> None:
+    # If the shared core's registration fails, the pending request alias must be
+    # balanced by a decision event so a consumer never sees a dangling request.
+    events: list[dict] = []
+
+    class BoomTracker(AskTracker):
+        async def register(self, *args, **kwargs):  # type: ignore[override]
+            raise RuntimeError("register boom")
+
+    broker = ApprovalBroker(
+        emit_event=lambda t, d: events.append({"type": t, **d}) or "evt",
+        ask_tracker=BoomTracker(ttl_hours=24.0),
+        timeout_seconds=5.0,
+    )
+
+    decision = await broker.request_permission(
+        peer_id="peer-1",
+        session_id="session-1",
+        tool_call={"name": "shell"},
+        options=[SimpleNamespace(option_id="opt-allow", title="Allow")],
+    )
+
+    assert decision.outcome == "denied"
+    assert any(e["type"] == "acp_permission_request" for e in events)
+    dec = next(e for e in events if e["type"] == "acp_permission_decision")
+    assert dec["outcome"] == "denied"
+
+
+@pytest.mark.asyncio
 async def test_acp_permission_cancellation_cleans_pending_context() -> None:
     tracker = AskTracker(ttl_hours=24.0)
     broker = ApprovalBroker(

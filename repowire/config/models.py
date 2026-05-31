@@ -323,6 +323,10 @@ class UpdatesConfig(BaseModel):
 # so the approval prompt fires on consequential actions, not every file read.
 DEFAULT_REMOTE_APPROVAL_TOOLS = ("Bash", "Edit", "Write", "MultiEdit", "NotebookEdit")
 
+# Never gate these read-only tools — approving every file read is pure friction.
+# Filtered out of gated_tools even if a user configures them.
+READ_ONLY_TOOLS = frozenset({"Read", "Glob", "Grep", "LS"})
+
 
 class RemoteToolApprovalConfig(BaseModel):
     """PreToolUse hooks-path remote approval (Claude Code).
@@ -344,6 +348,18 @@ class RemoteToolApprovalConfig(BaseModel):
         default=45.0,
         description="Requested wait; the daemon clamps to its blocking-question max",
     )
+
+    @field_validator("gated_tools")
+    @classmethod
+    def _drop_read_only_tools(cls, tools: list[str]) -> list[str]:
+        """Read-only tools are never gated, even if configured (codex review)."""
+        return [t for t in tools if t not in READ_ONLY_TOOLS]
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _positive_timeout(cls, value: float) -> float:
+        """A non-positive timeout would crash the hook HTTP path, not deny cleanly."""
+        return value if value > 0 else 45.0
 
 
 class ExperimentsConfig(BaseModel):

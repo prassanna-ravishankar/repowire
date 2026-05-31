@@ -168,7 +168,12 @@ class ApprovalBroker:
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 — registration must not hard-fail the ACP turn
-                return PermissionDecision(outcome="denied", message=f"register failed: {e}")
+                # Balance the pending alias emitted above with a closing decision
+                # so a consumer never sees a request with no matching decision
+                # (event truth; codex review).
+                denied = PermissionDecision(outcome="denied", message=f"register failed: {e}")
+                self._emit_decision_event(pending, denied)
+                return denied
             decision = _answer_to_decision(answer)
             if decision.timed_out:
                 self._last_error = "permission request timed out"

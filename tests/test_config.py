@@ -14,6 +14,7 @@ from repowire.config.models import (
     LoggingConfig,
     PeerConfig,
     RelayConfig,
+    RemoteToolApprovalConfig,
     SpawnProfile,
     SpawnSettings,
     UpdatesConfig,
@@ -371,3 +372,22 @@ class TestLoggingConfig:
         msg = str(exc.value)
         for valid in ["debug", "info", "warning", "error", "critical"]:
             assert valid in msg
+
+
+class TestRemoteToolApprovalConfig:
+    def test_defaults_gate_mutating_tools_only(self):
+        cfg = RemoteToolApprovalConfig()
+        assert cfg.enabled is False
+        assert "Bash" in cfg.gated_tools
+        assert not (set(cfg.gated_tools) & {"Read", "Glob", "Grep", "LS"})
+
+    def test_read_only_tools_are_filtered_out(self):
+        cfg = RemoteToolApprovalConfig(gated_tools=["Bash", "Read", "Grep", "Edit"])
+        assert cfg.gated_tools == ["Bash", "Edit"]
+
+    @pytest.mark.parametrize("bad", [0, -1, -45.0])
+    def test_non_positive_timeout_falls_back_to_default(self, bad: float):
+        assert RemoteToolApprovalConfig(timeout_seconds=bad).timeout_seconds == 45.0
+
+    def test_positive_timeout_is_kept(self):
+        assert RemoteToolApprovalConfig(timeout_seconds=10.0).timeout_seconds == 10.0

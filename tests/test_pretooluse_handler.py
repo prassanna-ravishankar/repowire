@@ -157,6 +157,45 @@ def test_prompt_input_is_truncated(monkeypatch):
     assert _decision(decision) == "allow"
 
 
+def test_deny_on_wrong_option_id_fail_closed(monkeypatch):
+    # A stale / local / malformed response selecting a different option must
+    # not allow, even with outcome=answered.
+    decision, _ = _run(
+        monkeypatch,
+        input_data={"tool_name": "Bash", "tool_input": {}},
+        config=_enabled_config(),
+        post_result=(200, {"outcome": "answered", "option_id": "deny"}),
+    )
+    assert _decision(decision) == "deny"
+
+
+def test_deny_on_malformed_input(monkeypatch):
+    # The hook only runs for gated tools; bad JSON means we can't verify, so deny
+    # rather than fall through (which would bypass under skip-permissions).
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json{"))
+    captured = io.StringIO()
+    monkeypatch.setattr("sys.stdout", captured)
+    rc = pretooluse_handler.main(backend="claude-code")
+    assert rc == 0
+    decision = json.loads(captured.getvalue().strip())
+    assert decision["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_deny_on_config_load_failure(monkeypatch):
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"tool_name": "Bash"})))
+
+    def boom():
+        raise RuntimeError("config exploded")
+
+    monkeypatch.setattr("repowire.config.models.load_config", boom)
+    captured = io.StringIO()
+    monkeypatch.setattr("sys.stdout", captured)
+    rc = pretooluse_handler.main(backend="claude-code")
+    assert rc == 0
+    decision = json.loads(captured.getvalue().strip())
+    assert decision["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
 def test_non_claude_backend_falls_through(monkeypatch):
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"tool_name": "Bash"})))
     captured = io.StringIO()
