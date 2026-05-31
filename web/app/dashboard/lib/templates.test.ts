@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_TEMPLATES,
   MAX_TEXT_LEN,
@@ -95,5 +95,15 @@ describe("composer ask templates", () => {
       JSON.stringify({ version: 999, templates: [{ id: "x", name: "n", text: "t", updatedAt: 1 }] }),
     );
     expect(listTemplates()).toEqual([]);
+  });
+
+  it("keeps templates in-memory even when localStorage writes fail", () => {
+    const realSetItem = window.localStorage.setItem.bind(window.localStorage);
+    vi.spyOn(window.localStorage.__proto__, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceeded");
+    });
+    expect(saveTemplate("t", "body", 1)).toBe("saved"); // store stays authoritative
+    expect(listTemplates().map((x) => x.name)).toEqual(["t"]);
+    vi.mocked(window.localStorage.setItem).mockImplementation(realSetItem);
   });
 });
