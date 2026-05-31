@@ -230,11 +230,12 @@ function DashboardInner() {
   const openBeads = useCallback(() => {
     setSelectedPeerId(null);
     setMainView("beads");
+    setMobileTab("beads");
   }, []);
 
   const handleMobileTab = useCallback((tab: MobileTab) => {
     setMobileTab(tab);
-    if (tab === "mesh" || tab === "jobs") {
+    if (tab === "mesh" || tab === "jobs" || tab === "beads") {
       setSelectedPeerId(null);
       setMainView(tab);
     }

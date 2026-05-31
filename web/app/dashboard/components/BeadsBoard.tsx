@@ -38,6 +38,36 @@ function assigneeLabel(assignee: string | null): string {
   return assignee.includes("@") ? assignee.split("@")[0] : assignee;
 }
 
+/** Group a column's rows by assignee (Unassigned bucket last), preserving order.
+ *  Returns null when no row has an assignee, so the caller renders a flat list. */
+function groupByAssignee(rows: BeadsRow[]): { label: string; rows: BeadsRow[] }[] | null {
+  if (!rows.some((r) => r.assignee)) return null;
+  const buckets = new Map<string, BeadsRow[]>();
+  for (const row of rows) {
+    const key = assigneeLabel(row.assignee);
+    (buckets.get(key) ?? buckets.set(key, []).get(key)!).push(row);
+  }
+  // Unassigned sinks to the bottom; the rest keep first-seen order.
+  return [...buckets.entries()]
+    .sort(([a], [b]) => (a === "Unassigned" ? 1 : b === "Unassigned" ? -1 : 0))
+    .map(([label, groupRows]) => ({ label, rows: groupRows }));
+}
+
+function Row({ row }: { row: BeadsRow }) {
+  return (
+    <div className="px-2.5 py-1.5">
+      <div className="flex items-baseline gap-1.5 font-mono text-[11px]">
+        <span className="shrink-0 font-bold text-on-surface">{row.id}</span>
+        <span className="min-w-0 flex-1 truncate text-on-surface-variant">{row.title}</span>
+      </div>
+      <div className="mt-0.5 flex items-center gap-2 font-mono text-[10px] text-outline">
+        {row.issue_type && <span>{row.issue_type}</span>}
+        {row.priority != null && <span>P{row.priority}</span>}
+      </div>
+    </div>
+  );
+}
+
 export function BeadsBoard({ apiBase }: { apiBase: string }) {
   const [data, setData] = useState<BeadsBoardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -105,19 +135,23 @@ export function BeadsBoard({ apiBase }: { apiBase: string }) {
                 {group.items.length === 0 ? (
                   <p className="px-2.5 py-2 font-mono text-[11px] text-outline">none</p>
                 ) : (
-                  group.items.map((row) => (
-                    <div key={row.id} className="px-2.5 py-1.5">
-                      <div className="flex items-baseline gap-1.5 font-mono text-[11px]">
-                        <span className="shrink-0 font-bold text-on-surface">{row.id}</span>
-                        <span className="min-w-0 flex-1 truncate text-on-surface-variant">{row.title}</span>
+                  (() => {
+                    const grouped = groupByAssignee(group.items);
+                    if (grouped === null) {
+                      return group.items.map((row) => <Row key={row.id} row={row} />);
+                    }
+                    // Grouped by assignee where rows carry one (Unassigned last).
+                    return grouped.map((bucket) => (
+                      <div key={bucket.label}>
+                        <div className="bg-surface-container-lowest px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-outline">
+                          {bucket.label}
+                        </div>
+                        {bucket.rows.map((row) => (
+                          <Row key={row.id} row={row} />
+                        ))}
                       </div>
-                      <div className="mt-0.5 flex items-center gap-2 font-mono text-[10px] text-outline">
-                        {row.issue_type && <span>{row.issue_type}</span>}
-                        {row.priority != null && <span>P{row.priority}</span>}
-                        <span className="truncate">{assigneeLabel(row.assignee)}</span>
-                      </div>
-                    </div>
-                  ))
+                    ));
+                  })()
                 )}
                 {group.truncated && (
                   <p className="px-2.5 py-1 font-mono text-[10px] text-outline">

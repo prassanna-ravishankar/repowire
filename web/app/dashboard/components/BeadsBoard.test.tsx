@@ -11,17 +11,19 @@ afterEach(() => {
 });
 
 describe("BeadsBoard", () => {
-  it("renders the four groups with counts and a compact assignee label", async () => {
+  it("renders the four groups and groups a mixed column by assignee", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
         new Response(
           JSON.stringify({
             available: true,
-            ready: group([
-              { id: "repo-1", title: "do a thing", status: "open", priority: 2, issue_type: "task", assignee: "me@x.io" },
+            // Mixed assignees → grouped under "me" (localpart) + "Unassigned".
+            in_progress: group([
+              { id: "repo-1", title: "do a thing", status: "in_progress", priority: 2, issue_type: "task", assignee: "me@x.io" },
+              { id: "repo-2", title: "another", status: "in_progress", priority: 3, issue_type: "task", assignee: null },
             ]),
-            in_progress: group([]),
+            ready: group([]),
             blocked: group([]),
             recently_closed: group([
               { id: "repo-9", title: "done", status: "closed", priority: 1, issue_type: "bug", assignee: null },
@@ -36,10 +38,10 @@ describe("BeadsBoard", () => {
 
     expect(await screen.findByText("repo-1")).toBeInTheDocument();
     expect(screen.getByText("do a thing")).toBeInTheDocument();
-    // Email assignee shown as localpart.
+    // Email assignee shown as localpart subheading; null row under Unassigned.
     expect(screen.getByText("me")).toBeInTheDocument();
-    // Null assignee → Unassigned.
     expect(screen.getByText("Unassigned")).toBeInTheDocument();
+    // A column with no assignees at all renders flat (no Unassigned heading).
     expect(screen.getByText("repo-9")).toBeInTheDocument();
   });
 
