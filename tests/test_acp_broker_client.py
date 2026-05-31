@@ -137,6 +137,71 @@ async def test_acp_manager_reuses_session_for_peer(acp_peer_config: AcpPeerConfi
         await mgr.close()
 
 
+@pytest.mark.asyncio
+async def test_close_sends_session_close_before_teardown(
+    acp_peer_config: AcpPeerConfig,
+) -> None:
+    # repowire-cju: close() should best-effort session/close before tearing down
+    # stdio (lifecycle hygiene), distinct from cancel().
+    from repowire.acp import AcpClient
+
+    client = AcpClient(acp_peer_config)
+    # Inject a fake live connection + session so close() exercises session/close
+    # without needing the stub to implement it.
+    closed: list[str] = []
+
+    class _FakeConn:
+        async def close_session(self, session_id: str, **_):
+            closed.append(session_id)
+
+    client._connection = _FakeConn()  # type: ignore[assignment]
+    client._session_id = "sess-xyz"
+    await client.close()
+    assert closed == ["sess-xyz"], "close() must call session/close once"
+    # Idempotent: a second close does not re-send.
+    await client.close()
+    assert closed == ["sess-xyz"]
+
+
+@pytest.mark.asyncio
+async def test_close_session_failure_does_not_break_teardown(
+    acp_peer_config: AcpPeerConfig,
+) -> None:
+    # A session/close error (e.g. agent doesn't support it) must not block stdio
+    # teardown — close stays best-effort.
+    from repowire.acp import AcpClient
+
+    client = AcpClient(acp_peer_config)
+
+    class _BadConn:
+        async def close_session(self, session_id: str, **_):
+            raise RuntimeError("not supported")
+
+    client._connection = _BadConn()  # type: ignore[assignment]
+    client._session_id = "sess-abc"
+    await client.close()  # must not raise
+    assert client._closed is True
+
+
+@pytest.mark.asyncio
+async def test_manager_health_snapshot_exposes_acp_session_ids(
+    acp_peer_config: AcpPeerConfig,
+) -> None:
+    # repowire-xig: ACP session ids are surfaced for diagnostics (NOT as a
+    # runtime_session_id resume handle).
+    from repowire.acp import AcpPeerSpec
+
+    mgr = AcpClientManager()
+    spec = AcpPeerSpec(peer_id="peer-diag", config=acp_peer_config)
+    try:
+        await mgr.prompt(spec, "ping")
+        snap = mgr.health_snapshot()
+        assert "peer-diag" in snap["sessions"]
+        assert isinstance(snap["sessions"]["peer-diag"], str)
+    finally:
+        await mgr.close()
+
+
 # ----- end-to-end: /ask via ACP delivers reply via notify -----
 
 

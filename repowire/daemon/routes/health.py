@@ -48,6 +48,9 @@ class AcpBrokerHealth(BaseModel):
     last_error_peer_id: str | None = None
     last_error_at: str | None = None
     last_success_at: str | None = None
+    # peer_id -> broker-protocol ACP session id. Diagnostics/timeline only; this
+    # is NOT a backend resume handle and must not be used as runtime_session_id.
+    sessions: dict[str, str] = Field(default_factory=dict)
     permissions: AcpPermissionHealth = Field(default_factory=AcpPermissionHealth)
 
 
@@ -164,6 +167,7 @@ async def _acp_broker_health(request: Request, config: Any) -> AcpBrokerHealth:
         last_error_peer_id=snapshot.get("last_error_peer_id"),
         last_error_at=snapshot.get("last_error_at"),
         last_success_at=snapshot.get("last_success_at"),
+        sessions=snapshot.get("sessions") or {},
         permissions=permissions,
     )
 

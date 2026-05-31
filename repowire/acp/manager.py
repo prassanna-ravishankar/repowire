@@ -122,6 +122,13 @@ class AcpClientManager:
             "last_error_peer_id": self._last_error_peer_id,
             "last_error_at": self._last_error_at,
             "last_success_at": self._last_success_at,
+            # Broker-protocol session ids, exposed for diagnostics/timeline only.
+            # NOT a backend resume handle — do not feed into runtime_session_id.
+            "sessions": {
+                peer_id: client.session_id
+                for peer_id, client in self._clients.items()
+                if client.session_id is not None
+            },
         }
 
     async def _drop_if_crashed(self, peer_id: str, client: AcpClient) -> None:

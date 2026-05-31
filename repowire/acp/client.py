@@ -321,13 +321,23 @@ class AcpClient:
 
         Idempotent. Does NOT acquire ``self._lock`` so it's safe to call while
         the prompt path already holds it.
+
+        Best-effort ``session/close`` first (lifecycle hygiene: lets the agent
+        flush/release the session) before tearing down stdio. This is distinct
+        from ``cancel()`` (which interrupts active work) — both are kept.
         """
         if self._closed:
             return
         self._closed = True
+        connection, session_id = self._connection, self._session_id
         stack, self._exit_stack = self._exit_stack, None
         self._connection = None
         self._session_id = None
+        if connection is not None and session_id is not None:
+            try:
+                await connection.close_session(session_id)
+            except Exception as e:  # noqa: BLE001 — close is best-effort, never block teardown
+                logger.debug("ACP session/close best-effort failed: %s", e)
         if stack is not None:
             try:
                 await stack.__aexit__(None, None, None)
