@@ -482,3 +482,30 @@ async def test_answer_callback_posts_chosen_option(
     }
     # cleared after a successful answer
     assert "ask-abc123" not in telegram_bot._question_options
+
+
+@pytest.mark.asyncio
+async def test_question_options_map_is_bounded(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The cid->option-ids map must not grow unbounded over a long bot process.
+    from repowire.telegram.bot import _MAX_REMEMBERED_QUESTIONS
+    monkeypatch.setattr(telegram_bot, "_tg_send", AsyncMock())
+    monkeypatch.setattr(telegram_bot, "_tg_send_attachments", AsyncMock())
+    q = {"kind": "choice", "options": [{"id": "a", "title": "A"}]}
+    for i in range(_MAX_REMEMBERED_QUESTIONS + 50):
+        await telegram_bot._on_ws({
+            "type": "ask", "from_peer": "agent",
+            "correlation_id": f"ask-{i}", "text": "?", "question": q,
+        })
+    assert len(telegram_bot._question_options) <= _MAX_REMEMBERED_QUESTIONS
+
+
+@pytest.mark.asyncio
+async def test_stale_option_index_clears_entry(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    telegram_bot._question_options["ask-1"] = ["allow", "deny"]
+    monkeypatch.setattr(telegram_bot, "_tg_send", AsyncMock())
+    await telegram_bot._on_callback({"id": "cb", "data": "answer:ask-1:9"})  # out of range
+    assert "ask-1" not in telegram_bot._question_options

@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 _MD_ESCAPE_RE = re.compile(r"([_*\[\]()~`>#+=|{}.!\-])")
 
 # Reply-keyboard button markers. Each label is `<marker> <peer_name>`.
+_MAX_REMEMBERED_QUESTIONS = 200  # cap the cid->option-ids map (FIFO eviction)
+
 CURRENT_MARK = "✦"        # currently selected target
 CURRENT_OFF_MARK = "✧"    # currently selected target but peer is offline
 RECENT_MARK = "💬"        # recent notifier
@@ -467,7 +469,11 @@ class TelegramPeer:
             options = question.get("options") or []
             if options:
                 # Remember the option ids for this cid so the index-based
-                # callback can map back to the real option_id.
+                # callback can map back to the real option_id. Bounded + FIFO so
+                # the map can't grow unbounded over a long-lived bot process
+                # (lazy cleanup, no timer — codex review).
+                if len(self._question_options) >= _MAX_REMEMBERED_QUESTIONS:
+                    self._question_options.pop(next(iter(self._question_options)), None)
                 self._question_options[cid] = [
                     str(o.get("id")) for o in options if isinstance(o, dict)
                 ]
@@ -485,6 +491,7 @@ class TelegramPeer:
         try:
             option_id = ids[int(option_index_raw)]
         except (ValueError, IndexError):
+            self._question_options.pop(cid, None)  # stale entry — don't retain
             await self._tg_send(f"Stale or unknown option for `#{_esc(cid[:12])}`")
             return
         try:

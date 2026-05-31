@@ -9,6 +9,7 @@ import { MeshFeed } from "./components/MeshFeed";
 import { MobileTabs, type MobileTab } from "./components/MobileTabs";
 import { PeerRoster } from "./components/PeerRoster";
 import { PeerView } from "./components/PeerView";
+import { PendingQuestions } from "./components/PendingQuestions";
 import { TopBar } from "./components/TopBar";
 import { WireTrace } from "./components/WireTrace";
 import type { Event, OrchestratorStatus, Peer } from "./types";
@@ -247,6 +248,8 @@ function DashboardInner() {
           onSpawn={() => setShowSpawn(true)}
           onSettings={() => setShowSettings(true)}
         />
+
+        <PendingQuestions events={events} apiBase={API_BASE} />
 
         {missingOrchestrators.length > 0 && (
           <div className="col-span-full border-b border-error/30 bg-error-container px-3 py-2 text-on-error-container md:px-5">
