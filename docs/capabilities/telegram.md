@@ -22,7 +22,7 @@ telegram:
 
 | Command | What it does |
 | --- | --- |
-| `/peers` (or `/start`, `/list`) | Show online peers as inline buttons; tap to pick a target |
+| `/peers` (or `/start`, `/list`) | Show other online peers as inline buttons; tap to pick a target |
 | `/select <peer>` | Sticky-route subsequent messages to that peer until `/clear` |
 | `/switch <peer>` | Alias for `/select` |
 | `/clear` | Clear the sticky target |

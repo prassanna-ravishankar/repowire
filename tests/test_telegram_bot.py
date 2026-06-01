@@ -254,6 +254,37 @@ async def test_send_peer_message_includes_attachments(
 
 
 @pytest.mark.asyncio
+async def test_fetch_online_peers_hides_telegram_self(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    telegram_bot._display_name = "telegram-claude-code"
+    telegram_bot._peer_id = "svc-telegram"
+    get = AsyncMock(return_value=SimpleNamespace(json=lambda: {
+        "peers": [
+            {
+                "peer_id": "svc-telegram",
+                "display_name": "telegram-claude-code",
+                "status": "online",
+                "role": "service",
+                "path": "/telegram",
+            },
+            {
+                "peer_id": "agent-1",
+                "display_name": "agent",
+                "status": "online",
+                "role": "agent",
+                "path": "/projects/agent",
+            },
+        ],
+    }))
+    monkeypatch.setattr(telegram_bot._http, "get", get)
+
+    peers = await telegram_bot._fetch_online_peers(use_cache=False)
+
+    assert [p["display_name"] for p in peers] == ["agent"]
+
+
+@pytest.mark.asyncio
 async def test_peer_picker_targets_peer_id_for_duplicate_names(
     telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

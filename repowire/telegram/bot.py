@@ -259,6 +259,7 @@ class TelegramPeer:
         self._chat_id = chat_id
         self._daemon_url = daemon_url.rstrip("/")
         self._display_name = display_name
+        self._peer_id: str | None = None
         self._circle = circle
         self._bot_path = f"/bot{bot_token}"
         self._http = httpx.AsyncClient(base_url="https://api.telegram.org", timeout=10.0)
@@ -324,6 +325,9 @@ class TelegramPeer:
                     assigned_name = resp.get("display_name")
                     if isinstance(assigned_name, str) and assigned_name:
                         self._display_name = assigned_name
+                    assigned_peer_id = resp.get("peer_id") or resp.get("session_id")
+                    if isinstance(assigned_peer_id, str) and assigned_peer_id:
+                        self._peer_id = assigned_peer_id
                     logger.info("Connected: %s", resp.get("session_id"))
                     # Best-effort: route user messages to the orchestrator by
                     # default if one is registered. User can still /select.
@@ -757,12 +761,24 @@ class TelegramPeer:
         try:
             r = await self._http.get(f"{self._daemon_url}/peers")
             peers = r.json().get("peers", [])
+            peers = [p for p in peers if not self._is_self_peer(p)]
             self._peers_cache = peers
             self._peers_cache_at = now
             return peers
         except Exception:
             logger.warning("Failed to fetch peers", exc_info=True)
             return []
+
+    def _is_self_peer(self, peer: dict[str, Any]) -> bool:
+        identifiers = {
+            str(peer.get("peer_id") or ""),
+            str(peer.get("display_name") or ""),
+            str(peer.get("name") or ""),
+        }
+        self_identifiers = {self._display_name, self._peer_id, "telegram"}
+        if identifiers & {i for i in self_identifiers if i}:
+            return True
+        return peer.get("role") == "service" and peer.get("path") == "/telegram"
 
     async def _fetch_orchestrator_status(
         self, *, use_cache: bool = True,

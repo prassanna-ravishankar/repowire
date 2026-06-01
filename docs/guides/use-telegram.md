@@ -23,7 +23,7 @@ Create a Telegram bot token and know the chat id Repowire should accept.
 
 ## Verify
 
-Send `/peers` from Telegram and confirm the expected peers appear. If messages do not arrive, check [Telegram](../capabilities/telegram.md) and [Diagnostic commands](../troubleshooting/diagnostics.md).
+Send `/peers` from Telegram and confirm the expected non-Telegram peers appear. If messages do not arrive, check [Telegram](../capabilities/telegram.md) and [Diagnostic commands](../troubleshooting/diagnostics.md).
 
 ## Related
 
