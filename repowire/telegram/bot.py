@@ -775,7 +775,7 @@ class TelegramPeer:
             str(peer.get("display_name") or ""),
             str(peer.get("name") or ""),
         }
-        self_identifiers = {self._display_name, self._peer_id, "telegram"}
+        self_identifiers = {self._display_name, self._peer_id}
         if identifiers & {i for i in self_identifiers if i}:
             return True
         return peer.get("role") == "service" and peer.get("path") == "/telegram"
