@@ -48,4 +48,4 @@ Authorization: Bearer <token>
 
 - [Python client](python-client.md)
 - [CLI](cli.md)
-- [Operations: architecture](../operations/architecture.md)
+- [Operations: architecture](../operate/architecture.md)

@@ -33,8 +33,7 @@ completion.
 
 ## Related
 
-- [Capabilities: scheduling](../capabilities/scheduling.md)
-- [Capabilities: jobs](../capabilities/jobs.md)
-- [Guide: run jobs](../guides/run-jobs.md)
+- [Scheduling](../use/features/scheduling.md)
+- [Jobs](../use/features/jobs.md)
 - [CLI reference](../reference/cli.md#repowire-jobs)
 - [MCP tools: scheduling](../reference/mcp-tools.md#scheduling)

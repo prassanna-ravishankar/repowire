@@ -5,10 +5,9 @@ Feature work that changes public behavior must update public docs in the same PR
 ## Where changes go
 
 - README: install path, quickstart, supported agents, major features, screenshots, roadmap positioning.
-- Concepts and patterns: mental models and recommended workflows.
-- Guides: task-oriented setup and operating recipes.
-- Capabilities: behavior and limits of user-facing features.
-- Operations: daemon, relay, transports, state, deployment, and security.
+- Use: active-user feature pages and workflow recipes.
+- Concepts: mental models and invariants.
+- Operate: daemon, relay, transports, state, deployment, and security.
 - Reference: exact CLI, MCP, Python client, config, HTTP, WebSocket, and hook details.
 - Troubleshooting: symptom-oriented fixes.
 - Contributing: maintainer workflows, release/versioning, backend additions, and design notes.
@@ -16,7 +15,7 @@ Feature work that changes public behavior must update public docs in the same PR
 ## Before opening a PR
 
 ```bash
-uv run --no-project mkdocs build --strict
+uv run --no-project zensical build --strict
 python3 scripts/pre_pr_hygiene.py
 ```
 

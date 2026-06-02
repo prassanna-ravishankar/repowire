@@ -15,7 +15,7 @@ Hooks run from the installed package, so reinstall after hook or installer chang
 pytest
 ruff check repowire/
 uv run ty check repowire/
-uv run --no-project mkdocs build --strict
+uv run --no-project zensical build --strict
 ```
 
 ## Related

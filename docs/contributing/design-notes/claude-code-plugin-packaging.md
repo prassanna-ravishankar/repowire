@@ -164,7 +164,7 @@ together:
   normal Repowire daemon setup.
 - `docs/start/setup.md`: keep `repowire setup` as the canonical machine
   setup and add the plugin as an optional Claude Code discoverability layer.
-- `docs/guides/connect-claude-code.md`: document plugin install, what it bundles, what
+- `docs/use/features/connect-claude-code.md`: document plugin install, what it bundles, what
   it does not install, and how it relates to hooks, MCP, and channel mode.
 - `docs/reference/cli.md`: document any new CLI support used to inspect plugin
   drift, if such a command is added.

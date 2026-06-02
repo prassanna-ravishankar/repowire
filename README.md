@@ -154,15 +154,15 @@ Repowire sits in a different slot: it is a live mesh and control plane for agent
 
 ### Ask another repo
 
-Project A needs the real API shape from Project B. Ask `project-b`; the peer answers from its live checkout, not stale docs. See [multi-repo coordination](https://docs.repowire.io/patterns/multi-repo/).
+Project A needs the real API shape from Project B. Ask `project-b`; the peer answers from its live checkout, not stale docs. See [multi-repo coordination](https://docs.repowire.io/use/workflows/multi-repo/).
 
 ### Drive from phone or dashboard
 
-Send work to a peer from Telegram, Slack, or the dashboard, then receive progress updates from agents as notifications. Telegram and Slack human messages open tracked asks by default; use their notify/FYI commands for fire-and-forget nudges. See [mobile mesh management](https://docs.repowire.io/patterns/mobile-mesh/).
+Send work to a peer from Telegram, Slack, or the dashboard, then receive progress updates from agents as notifications. Telegram and Slack human messages open tracked asks by default; use their notify/FYI commands for fire-and-forget nudges. See [mobile mesh management](https://docs.repowire.io/use/workflows/mobile-mesh/).
 
 ### Coordinate with an orchestrator
 
-Run one session as the orchestrator. It can dispatch to project peers, ask for status, review PRs, and wake itself later. See [orchestrator coordination](https://docs.repowire.io/patterns/orchestrator-coordination/).
+Run one session as the orchestrator. It can dispatch to project peers, ask for status, review PRs, and wake itself later. See [orchestrator coordination](https://docs.repowire.io/use/workflows/orchestrator-coordination/).
 
 ### Wake a peer later
 
@@ -293,11 +293,11 @@ If service management fails, use `repowire service status` first. Raw `launchctl
 ## References
 
 - [Start](https://docs.repowire.io/start/)
-- [Architecture](https://docs.repowire.io/operations/architecture/)
+- [Architecture](https://docs.repowire.io/operate/architecture/)
 - [MCP tools](https://docs.repowire.io/reference/mcp-tools/)
 - [CLI](https://docs.repowire.io/reference/cli/)
-- [Guides](https://docs.repowire.io/guides/)
-- [Capabilities](https://docs.repowire.io/capabilities/)
+- [Use](https://docs.repowire.io/use/)
+- [Features](https://docs.repowire.io/use/features/)
 - [Troubleshooting](https://docs.repowire.io/troubleshooting/)
 - [Compare](https://docs.repowire.io/start/compare/)
 

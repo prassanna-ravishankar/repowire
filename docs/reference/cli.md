@@ -96,7 +96,7 @@ repowire peer deliveries [--peer-id ID | --pane-id PANE | --peer NAME] [--json]
 repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 ```
 
-`peer whoami`, `peer asks`, `peer deliveries`, and `peer ack` are the shellable mesh primitives intended for agents whose hooks don't fire today (notably [Antigravity `agy`](../guides/connect-antigravity.md)). They wrap daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/deliveries/pending`, `/ack`) and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`. Use `peer whoami --register --backend antigravity` once at session start to self-onboard.
+`peer whoami`, `peer asks`, `peer deliveries`, and `peer ack` are the shellable mesh primitives intended for agents whose hooks don't fire today (notably [Antigravity `agy`](../use/features/connect-antigravity.md)). They wrap daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/deliveries/pending`, `/ack`) and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`. Use `peer whoami --register --backend antigravity` once at session start to self-onboard.
 
 `peer deliveries` drains one-shot queued deliveries for a peer. Draining deletes the queued rows to avoid duplicate paste/replay. For queued asks, `peer deliveries` shows the original ask text once, while `peer asks` continues to show the open ask until the agent closes it with `peer ack` or the MCP `ack` tool.
 

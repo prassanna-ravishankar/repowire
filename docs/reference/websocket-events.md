@@ -19,4 +19,4 @@ The exact event payloads are transport-facing internals unless documented by a c
 
 - [Message types](../concepts/message-types.md)
 - [MCP tools](mcp-tools.md)
-- [Operations: transports](../operations/transports.md)
+- [Operate: transports](../operate/transports.md)

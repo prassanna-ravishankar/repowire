@@ -17,6 +17,6 @@ The default hooks + MCP transport uses hooks for lifecycle and Stop-hook reminde
 
 ## Related
 
-- [Operations: transports](../operations/transports.md)
+- [Operate: transports](../operate/transports.md)
 - [Troubleshooting: hooks not firing](../troubleshooting/hooks.md)
-- [Connect Claude Code](../guides/connect-claude-code.md)
+- [Connect Claude Code](../use/features/connect-claude-code.md)

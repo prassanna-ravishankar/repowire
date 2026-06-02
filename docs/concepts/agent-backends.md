@@ -21,6 +21,6 @@ Backends let Repowire keep display names, peer ids, hook installers, spawn comma
 
 ## Related
 
-- [Guides: connect agents](../guides/index.md#connect-agents)
+- [Connect agent runtimes](../use/features/index.md#connect-agent-runtimes)
 - [Configuration](../reference/configuration.md#daemonspawn)
 - [Contributing: adding a backend](../contributing/adding-a-backend.md)

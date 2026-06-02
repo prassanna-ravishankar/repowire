@@ -1,24 +1,26 @@
 # Transports
 
-Transports are the ways messages reach a runtime. They are deliberately below the user-facing routing model: all peers still use the same `ask`, `ack`, `notify_peer`, and `broadcast` semantics.
+Transports are runtime-specific delivery adapters below the user-facing routing model. Peers still share the same message semantics: `ask`, `ack`, `notify_peer`, and `broadcast`.
 
-Glossary: hooks observe lifecycle, status, chat turns, and reminders; MCP is the outbound agent tool surface; WebSocket plus tmux injection is the default live inbound delivery mechanism for hook-based runtimes.
+## Model
 
-## Current transports
+The daemon routes at the peer and message level. A transport handles how a specific runtime receives inbound messages, reports lifecycle, exposes outbound tools, and returns chat turns.
 
-- Hooks + MCP for Claude Code, Codex, and Gemini. Hooks handle lifecycle, chat extraction, and Stop-hook reminders; MCP handles outbound commands; live inbound messages are delivered over the daemon WebSocket path and injected into the runtime's tmux pane by default.
-- Plugin + WebSocket for OpenCode.
-- Extension path for Pi.
-- Experimental channel/ACP transport for Claude Code.
-- Relay tunnel for remote dashboard and cross-machine traffic.
+This separation keeps routing transport-neutral: higher-level tools address peers and sessions, not hook files, tmux panes, plugins, or relay sockets.
 
-## Why it exists
+## Normalization
 
-Each agent runtime exposes different hooks, event names, and message-delivery affordances. Repowire normalizes those into a peer registry, transport router, and message lifecycle so higher-level tools do not need to know which runtime is on the other side.
+Agent runtimes expose different lifecycle hooks, event names, and delivery affordances. Repowire normalizes them into:
+
+- peer registration and liveness state,
+- a transport router for live delivery,
+- ask/ack lifecycle state,
+- chat-turn events for human surfaces,
+- session bindings where backend runtime ids are available.
 
 ## Related
 
-- [Operations: transports](../operations/transports.md)
+- [Operate: transports](../operate/transports.md)
 - [Hook payloads](../reference/hook-payloads.md)
 - [Message types](message-types.md)
 - [MCP tools](../reference/mcp-tools.md)

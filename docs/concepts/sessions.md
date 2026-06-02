@@ -26,4 +26,4 @@ not local agent sessions.
 
 - [Session-native roadmap](session-native-roadmap.md)
 - [Peer identity lifecycle](peer-identity-lifecycle.md)
-- [Operations: architecture](../operations/architecture.md)
+- [Operations: architecture](../operate/architecture.md)

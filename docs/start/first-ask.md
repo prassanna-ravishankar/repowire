@@ -45,4 +45,4 @@ The agent calls `notify_peer("project-b", "...")`. No correlation, no reply expe
 
 - [Concepts](../concepts/index.md) — peers, circles, message types, lazy repair.
 - [MCP tools](../reference/mcp-tools.md) — the full agent surface.
-- [Capabilities](../capabilities/index.md) — drive the mesh from the dashboard, Telegram, or Slack.
+- [Use](../use/index.md) — drive the mesh from features and workflow recipes.

@@ -1,6 +1,6 @@
 # Channel-mode auth failures
 
-The experimental [channel transport](../guides/connect-claude-code.md#channel-transport-experimental) routes messages directly through MCP instead of tmux injection. It only works on Claude Code, and only with specific prerequisites.
+The experimental [channel transport](../use/features/connect-claude-code.md#channel-transport-experimental) routes messages directly through MCP instead of tmux injection. It only works on Claude Code, and only with specific prerequisites.
 
 ## Hard requirements
 
@@ -35,5 +35,5 @@ Re-running without `--experimental-channels` restores the default hooks transpor
 
 ## See also
 
-- [Claude Code setup](../guides/connect-claude-code.md) — what gets installed in channel vs default mode.
+- [Claude Code setup](../use/features/connect-claude-code.md) — what gets installed in channel vs default mode.
 - [Daemon unreachable](daemon.md) — if the daemon is down, the channel server has nothing to talk to.

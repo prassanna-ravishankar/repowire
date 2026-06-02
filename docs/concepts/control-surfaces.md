@@ -1,41 +1,27 @@
 # Control surfaces
 
-The dashboard, Telegram bot, and Slack bot are peers too. They show up in `list_peers` alongside agents and use the same `ask` / `notify_peer` / `broadcast` primitives.
-
-- `dashboard` — Next.js UI at `localhost:8377/dashboard`, with a live mesh log and per-peer chat. See [web dashboard](../capabilities/dashboard.md).
-- `telegram` — bot you talk to from your phone. Sticky routing: `/select peer` sends subsequent messages as asks to that peer until `/clear`; `/notify` and `/fyi` remain fire-and-forget. See [Telegram bot](../capabilities/telegram.md).
-- `slack` — Socket Mode bot. Same sticky-routing pattern with Block Kit peer pickers; `notify` and `fyi` remain fire-and-forget. See [Slack bot](../capabilities/slack.md).
+Control surfaces are peers that represent humans or human-facing clients. The dashboard, Telegram bot, and Slack bot all route through the same daemon primitives as agent peers: `ask`, `ack`, `notify_peer`, and `broadcast`.
 
 ## Human framing
 
-Messages from `@telegram`, `@slack`, and `@dashboard` are humans. Agents that receive messages from these peers treat them as direct user instructions, not as agent-to-agent traffic. Telegram and Slack human inbound messages open tracked ask threads by default, so the recipient is reminded until it acks or replies. This framing is injected by repowire at delivery time — agents do not need to special-case the names themselves.
+Messages from `@telegram`, `@slack`, and `@dashboard` are human-originated. Repowire frames those inbound messages as direct user instructions at delivery time, so receiving agents do not need to infer that from the display name.
 
-When an agent wants to reach the human, the move is `notify_peer("telegram", "...")` (or `notify_peer("dashboard", ...)`, though the dashboard already sees turns and rarely needs an explicit notification). These peers have the human role, which bypasses circle filtering — they resolve and appear in `list_peers` mesh-wide regardless of the caller's circle.
+Human surfaces have the `human` role. That role bypasses circle filtering so the human can see and address the mesh without being trapped in one project circle.
 
-## What surfaces don't do
+## Surface state
 
-Control surfaces are clients of the routing API, not part of it. The daemon is the single source of truth for peer state and message routing. A surface that crashes does not lose mesh state; reopening it picks back up from the daemon.
+Control surfaces are clients of the routing API, not sources of truth. The daemon owns peer state, message routing, ask lifecycle, session bindings, and durable state. If a surface crashes or reconnects, it recovers by reading daemon state rather than reconstructing the mesh itself.
 
 ## Session-targeted controls
 
-The first session-native control API targets durable `repowire_session_id`
-bindings rather than display names:
+Peer-targeted routes address live peer identity. Session-targeted controls address durable `repowire_session_id` bindings. That distinction matters because display names and runtime session ids are not stable routing identities.
 
-- `POST /sessions/{repowire_session_id}/controls/notify` resolves the binding
-  to its current active executor and sends through the existing notify delivery
-  path. If no active executor is attached, it returns
-  `session_executor_unavailable` instead of guessing from path or display name.
-- `POST /sessions/{repowire_session_id}/controls/resume` reports the current
-  resume capability for the binding. Active sessions return
-  `status=active_executor`; detached local-agent sessions with captured runtime
-  ids return `status=resume_available`. Passing `dry_run=false` spawns the
-  backend-native resume command through the daemon spawn service.
+The session-control invariant is: resolve from a durable Repowire session binding, then act on the current executor if one exists or resume through backend-native session data if supported. Do not guess from display name, path, or runtime-local ids.
 
-Session resume is not limited to peers originally spawned by Repowire. Spawn
-ownership is still required for destructive pane operations such as
-peer restart/kill, but session resume only needs a captured backend runtime
-session id and a backend that supports local resume.
+## Related
 
-These routes require the SQLite session binding store. Existing peer-targeted
-`ask`, `notify_peer`, and dashboard routes remain compatible and continue to
-route by peer identity.
+- [Dashboard](../use/features/dashboard.md)
+- [Telegram](../use/features/telegram.md)
+- [Slack](../use/features/slack.md)
+- [Sessions](sessions.md)
+- [Peer identity lifecycle](peer-identity-lifecycle.md)

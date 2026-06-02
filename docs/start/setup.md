@@ -24,9 +24,9 @@ repowire setup --update-checks          # let status/doctor report new Repowire 
 repowire setup --non-interactive        # take flag values only, no prompts
 ```
 
-`--relay` makes the dashboard available at `https://repowire.io/dashboard` over an outbound WebSocket. See [relay access](../capabilities/relay-access.md).
+`--relay` makes the dashboard available at `https://repowire.io/dashboard` over an outbound WebSocket. See [relay access](../use/features/relay-access.md).
 
-`--experimental-channels` replaces the default hooks transport's tmux-injection delivery with direct MCP-channel / ACP delivery for Claude Code only. It is experimental. See [Claude Code setup](../guides/connect-claude-code.md).
+`--experimental-channels` replaces the default hooks transport's tmux-injection delivery with direct MCP-channel / ACP delivery for Claude Code only. It is experimental. See [Claude Code setup](../use/features/connect-claude-code.md).
 
 `--http-mcp` is a local-only experimental MCP endpoint for clients that need Streamable HTTP instead of the default stdio server. It generates a `daemon.auth_token` if needed and requires clients to send `Authorization: Bearer <token>`. The normal `repowire mcp` stdio server remains the default setup path.
 

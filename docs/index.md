@@ -17,24 +17,16 @@ Use it when one repo needs a concrete answer from another repo, when you want a 
     <strong>Start</strong>
     <span>Install, run setup, and send the first cross-repo ask.</span>
   </a>
+  <a class="doc-card" href="use/">
+    <strong>Use</strong>
+    <span>Features and workflows for active mesh work.</span>
+  </a>
   <a class="doc-card" href="concepts/">
     <strong>Concepts</strong>
     <span>Peers, sessions, backends, transports, messages, jobs, and routing.</span>
   </a>
-  <a class="doc-card" href="guides/">
-    <strong>Guides</strong>
-    <span>Task-focused setup and operating recipes.</span>
-  </a>
-  <a class="doc-card" href="patterns/">
-    <strong>Patterns</strong>
-    <span>Reusable playbooks for multi-agent work.</span>
-  </a>
-  <a class="doc-card" href="capabilities/">
-    <strong>Capabilities</strong>
-    <span>Dashboard, bots, attachments, schedules, jobs, spawning, and relay access.</span>
-  </a>
-  <a class="doc-card" href="operations/">
-    <strong>Operations</strong>
+  <a class="doc-card" href="operate/">
+    <strong>Operate</strong>
     <span>Daemon, relay, transports, state, auth, deployment, and architecture.</span>
   </a>
   <a class="doc-card" href="reference/">
@@ -78,10 +70,8 @@ Repowire is not a standalone chat UI in this flow. You ask your local agent in n
 ## What to read next
 
 - [Start](start/index.md) walks through install, setup, and the first cross-repo ask.
+- [Use](use/index.md) covers feature pages and workflow recipes for active users.
 - [Concepts](concepts/index.md) covers peers, sessions, backends, transports, messages, jobs, and lazy repair.
-- [Guides](guides/index.md) gives task-first recipes for connecting agents and using surfaces.
-- [Patterns](patterns/index.md) covers multi-repo asks, mobile dispatch, worktree isolation, scheduled wake-ups, and orchestrator coordination.
-- [Capabilities](capabilities/index.md) explains the behavior and limits of each major feature.
-- [Operations](operations/index.md) covers daemon, relay, transports, state, security, deployment, and architecture.
+- [Operate](operate/index.md) covers daemon, relay, transports, state, security, deployment, and architecture.
 - [MCP tools reference](reference/mcp-tools.md) is the source of truth for the agent API.
 - [CLI reference](reference/cli.md) covers setup, services, peers, schedules, bots, and diagnostics.

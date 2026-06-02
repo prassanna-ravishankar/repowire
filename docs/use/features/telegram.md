@@ -1,0 +1,92 @@
+# Telegram
+
+## What it is
+
+The Telegram bot is a human control surface that registers as the `telegram` peer. Notifications agents send to it appear in your Telegram chat; messages you send route back into the mesh as tracked asks by default.
+
+## When to use it
+
+Use Telegram when you want phone-side mesh control, agent status updates, sticky routing to one peer, or image/document uploads from your phone.
+
+Use the dashboard when you need a richer timeline or Jobs view. Use Slack when a team channel should drive the mesh.
+
+## Setup
+
+Create a Telegram bot token with `@BotFather`, identify the chat id Repowire should accept, then start the bot:
+
+```bash
+TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... repowire telegram start
+```
+
+Tokens can also live in `~/.repowire/config.yaml`:
+
+```yaml
+telegram:
+  bot_token: "..."
+  chat_id: "..."
+```
+
+`repowire setup` writes those keys after the interactive prompt for Telegram credentials. The bot can run on any machine that can reach the daemon. There is no hosted Telegram bot; you bring your own bot and run `repowire telegram start`.
+
+## Common workflows
+
+List and select peers:
+
+```text
+/peers
+/select repowire
+```
+
+After `/select repowire`, every normal message opens a tracked ask to `repowire` until you `/clear` or select another peer. The reply keyboard shows current and recent peers so the target is visible.
+
+Open an ask to a specific peer:
+
+```text
+@repowire status?
+```
+
+Send a fire-and-forget nudge:
+
+```text
+/notify @repowire deploy finished
+/fyi logs are uploaded
+```
+
+Send a photo or document when the target agent should inspect a file. The bot uploads it to the daemon and includes the local path in the outgoing ask.
+
+## Commands and API
+
+| Command | What it does |
+| --- | --- |
+| `/peers` (or `/start`, `/list`) | Show peers as inline buttons |
+| `/select <peer>` | Sticky-route subsequent messages to that peer |
+| `/switch <peer>` | Alias for `/select` |
+| `/clear` | Clear the sticky target |
+| `@peer message` | Open an ask to a specific peer and update sticky routing |
+| `/notify [@peer] message` | Fire-and-forget notification; uses sticky target if omitted |
+| `/fyi [@peer] message` | Alias for `/notify` |
+
+Agents can reach your phone with:
+
+```python
+notify_peer("telegram", "deploy finished, green across CI")
+```
+
+## Limits
+
+- Telegram traffic is not proxied by the relay; the bot talks directly to Telegram's API and to your daemon.
+- Attachments live in `~/.repowire/attachments/` with a 24-hour TTL and 10 MB upload limit.
+- Messages from `@telegram` are framed as human instructions to the receiving agent.
+
+## Troubleshooting
+
+- Bot does not respond to `/peers`: confirm `TELEGRAM_BOT_TOKEN` is set and the bot is registered with `@BotFather`.
+- Messages route to the wrong peer: check the sticky target with `/peers`; `/clear` resets it.
+- Photos do not reach the agent: confirm the daemon is reachable from the bot host and `/attachments` is not blocked by a proxy.
+
+## See also
+
+- [Attachments](attachments.md)
+- [Control surfaces](../../concepts/control-surfaces.md)
+- [Mobile mesh management](../workflows/mobile-mesh.md)
+- [Diagnostic commands](../../troubleshooting/diagnostics.md)
