@@ -116,7 +116,7 @@ peer construction.
 This finding **reinforces `registry-route-split-plan.md` PR4** (extract
 `repair.py`) and adds two slices that plan leaves implicit:
 
-1. **`SessionMappingStore`** — mirror `state/session_bindings.py` to give mapping
+1. **`SessionMappingStore`** — mirror `daemon/state/session_bindings.py` to give mapping
    persistence a transactional home and remove inline SQL. (The
    sqlite-state-expansion plan deliberately keeps mappings separate from session
    bindings; this respects that — it just gives mappings a real store class
