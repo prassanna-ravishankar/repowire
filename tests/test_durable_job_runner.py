@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
@@ -26,7 +27,13 @@ from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.routes import work as work_routes
 from repowire.daemon.session_control import SessionControlService
-from repowire.daemon.spawn_service import SpawnService, SpawnServiceResult
+from repowire.daemon.spawn_service import (
+    SpawnRegistrationResult,
+    SpawnService,
+    SpawnServiceResult,
+    capture_login_shell_path,
+    command_head_for_probe,
+)
 from repowire.daemon.state.calendar import SQLiteCalendarStore
 from repowire.daemon.state.database import StateDatabase
 from repowire.daemon.state.operations import SQLiteOperationStore
@@ -66,6 +73,27 @@ class FakeSpawn:
             tmux_session=self.tmux_session,
             pane_id=self.pane_id,
             message=kwargs.get("message"),
+        )
+
+    async def spawn_registered(self, *, await_peer, attempts=2, on_spawned=None, **kwargs):
+        registration_attempts: list[dict] = []
+        spawn_result = None
+        for attempt in range(1, attempts + 1):
+            spawn_result = self.spawn(**kwargs)
+            if on_spawned is not None:
+                on_spawned(spawn_result)
+            resolved = await await_peer(spawn_result)
+            if resolved is not None:
+                return SpawnRegistrationResult(
+                    spawn_result=spawn_result,
+                    resolved_peer=resolved,
+                    registration_attempts=registration_attempts,
+                )
+            registration_attempts.append({"attempt": attempt})
+        return SpawnRegistrationResult(
+            spawn_result=spawn_result,
+            resolved_peer=None,
+            registration_attempts=registration_attempts,
         )
 
 
@@ -509,6 +537,69 @@ async def test_path_backend_job_defaults_to_per_fire(tmp_path):
     attempt = result.provenance["runner"]["attempts"][0]
     assert attempt["acquisition"]["strategy"] == "spawned_peer"
     assert attempt["acquisition"]["release_handle"]["pane_id"] == spawn.pane_id
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_session_control_retries_spawn_registration_timeout(tmp_path, monkeypatch):
+    _cfg, _registry, db, store, _calendar, _session_bindings, _delivery, spawn, runner = _env(
+        tmp_path
+    )
+    worker_path = str(tmp_path / "daily-email-brief")
+    work = store.create(
+        title="daily brief",
+        circle="default",
+        request={"execution": {"target": {"path": worker_path, "backend": "codex"}}},
+    )
+
+    async def never_registered(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "repowire.daemon.session_control.SessionControlService._await_spawned_peer",
+        never_registered,
+    )
+
+    result = await runner.run_job(work.work_id)
+
+    assert result.state == "unavailable"
+    assert len(spawn.calls) == 2
+    attempt = result.provenance["runner"]["attempts"][0]
+    assert attempt["error"]["reason"] == "spawned_peer_not_registered"
+    assert [item["attempt"] for item in attempt["error"]["registration_attempts"]] == [1, 2]
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_legacy_runner_retries_spawn_registration_timeout(tmp_path, monkeypatch):
+    _cfg, _registry, db, store, _calendar, _session_bindings, _delivery, spawn, runner = _env(
+        tmp_path
+    )
+    runner._session_control = None
+    worker_path = str(tmp_path / "daily-email-brief")
+    work = store.create(
+        title="daily brief",
+        circle="default",
+        request={"execution": {"target": {"path": worker_path, "backend": "codex"}}},
+    )
+
+    async def never_registered(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "repowire.daemon.job_runner.JobRunner._await_spawned_peer",
+        never_registered,
+    )
+
+    result = await runner.run_job(work.work_id)
+
+    assert result.state == "unavailable"
+    assert len(spawn.calls) == 2
+    attempt = result.provenance["runner"]["attempts"][0]
+    assert attempt["error"]["reason"] == "spawned_peer_not_registered"
+    assert [item["attempt"] for item in attempt["error"]["registration_attempts"]] == [1, 2]
     db.close()
     cleanup_deps()
 
@@ -1514,6 +1605,216 @@ async def test_spawn_service_passes_codex_resume_command_to_spawn(tmp_path, monk
     assert spawn_config.command == (
         "codex --dangerously-bypass-approvals-and-sandbox resume codex-runtime-1"
     )
+
+
+@pytest.mark.anyio
+async def test_spawn_service_uses_explicit_env_path(tmp_path, monkeypatch):
+    cfg = Config()
+    cfg.daemon.spawn.commands[AgentType.CODEX] = "codex"
+    cfg.daemon.spawn.allowed_paths = [str(tmp_path)]
+    cfg.daemon.spawn.env_path = ["~/.local/bin", "/opt/homebrew/bin"]
+    cfg.daemon.spawn.env = {"GWS_CONFIG": "~/calendar.yaml"}
+    spawn_impl = Mock(
+        return_value=SimpleNamespace(
+            display_name="daily-email-brief",
+            tmux_session="default:daily-email-brief",
+            pane_id="%661",
+            message="warm",
+        )
+    )
+    monkeypatch.setattr("repowire.daemon.spawn_service.capture_login_shell_path", Mock())
+    monkeypatch.setattr(
+        "repowire.daemon.spawn_service.shutil.which",
+        Mock(return_value="/opt/homebrew/bin/codex"),
+    )
+    monkeypatch.setattr("repowire.daemon.spawn_service.record_spawn_ownership", Mock())
+
+    async def warmup(*_args, **_kwargs):
+        return None
+
+    service = SpawnService(
+        spawn=cfg.daemon.spawn,
+        spawned_pane_ids=set(),
+        background_tasks=set(),
+        spawn_impl=spawn_impl,
+        warmup_impl=warmup,
+    )
+
+    result = service.spawn(path=str(tmp_path), backend=AgentType.CODEX, message="warm")
+
+    spawn_config = spawn_impl.call_args.args[0]
+    assert spawn_config.env == {
+        "GWS_CONFIG": "~/calendar.yaml",
+        "PATH": f"{Path('~/.local/bin').expanduser()}{os.pathsep}/opt/homebrew/bin",
+    }
+    assert result.env == spawn_config.env
+
+
+@pytest.mark.anyio
+async def test_spawn_service_falls_back_to_login_shell_path(tmp_path, monkeypatch):
+    cfg = Config()
+    cfg.daemon.spawn.commands[AgentType.CODEX] = "codex"
+    cfg.daemon.spawn.allowed_paths = [str(tmp_path)]
+    spawn_impl = Mock(
+        return_value=SimpleNamespace(
+            display_name="daily-email-brief",
+            tmux_session="default:daily-email-brief",
+            pane_id="%661",
+            message="warm",
+        )
+    )
+    monkeypatch.setattr(
+        "repowire.daemon.spawn_service.capture_login_shell_path",
+        Mock(return_value="/nvm/bin:/opt/homebrew/bin:/usr/bin"),
+    )
+    monkeypatch.setattr("repowire.daemon.spawn_service.record_spawn_ownership", Mock())
+
+    async def warmup(*_args, **_kwargs):
+        return None
+
+    service = SpawnService(
+        spawn=cfg.daemon.spawn,
+        spawned_pane_ids=set(),
+        background_tasks=set(),
+        spawn_impl=spawn_impl,
+        warmup_impl=warmup,
+    )
+
+    service.spawn(path=str(tmp_path), backend=AgentType.CODEX, message="warm")
+
+    spawn_config = spawn_impl.call_args.args[0]
+    assert spawn_config.env == {"PATH": "/nvm/bin:/opt/homebrew/bin:/usr/bin"}
+
+
+@pytest.mark.anyio
+async def test_spawn_service_explicit_env_path_fails_fast_when_command_missing(
+    tmp_path, monkeypatch,
+):
+    cfg = Config()
+    cfg.daemon.spawn.commands[AgentType.CODEX] = "codex"
+    cfg.daemon.spawn.allowed_paths = [str(tmp_path)]
+    cfg.daemon.spawn.env_path = ["/nope"]
+    spawn_impl = Mock()
+    monkeypatch.setattr(
+        "repowire.daemon.spawn_service.shutil.which",
+        Mock(return_value=None),
+    )
+
+    service = SpawnService(
+        spawn=cfg.daemon.spawn,
+        spawned_pane_ids=set(),
+        background_tasks=set(),
+        spawn_impl=spawn_impl,
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        service.spawn(path=str(tmp_path), backend=AgentType.CODEX, message="warm")
+
+    assert getattr(exc_info.value, "status_code") == 422
+    assert exc_info.value.detail["error"] == "command_unavailable"
+    spawn_impl.assert_not_called()
+
+
+def test_capture_login_shell_path_ignores_noisy_startup_output(monkeypatch):
+    def fake_run(*_args, **_kwargs):
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "hello from zshrc\n"
+                "REPOWIRE_PATH_START:/nvm/bin:/opt/homebrew/bin:/usr/bin:"
+                "REPOWIRE_PATH_END\n"
+                "goodbye from zshrc\n"
+            ),
+        )
+
+    monkeypatch.setattr("repowire.daemon.spawn_service.subprocess.run", fake_run)
+
+    assert capture_login_shell_path() == "/nvm/bin:/opt/homebrew/bin:/usr/bin"
+
+
+def test_capture_login_shell_path_requires_sentinel(monkeypatch):
+    def fake_run(*_args, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout="hello\n/usr/bin:/bin\n")
+
+    monkeypatch.setattr("repowire.daemon.spawn_service.subprocess.run", fake_run)
+
+    assert capture_login_shell_path() is None
+
+
+def test_command_head_for_probe_uses_last_and_segment():
+    assert command_head_for_probe("cd /work && codex --model fast") == "codex"
+
+
+@pytest.mark.anyio
+async def test_spawn_service_registration_retry_captures_both_attempts_and_cleans_up(
+    tmp_path, monkeypatch,
+):
+    cfg = Config()
+    cfg.daemon.spawn.commands[AgentType.CODEX] = "codex"
+    cfg.daemon.spawn.allowed_paths = [str(tmp_path)]
+    spawned = [
+        SimpleNamespace(
+            display_name="daily-email-brief",
+            tmux_session="default:daily-email-brief",
+            pane_id="%701",
+            message="warm",
+        ),
+        SimpleNamespace(
+            display_name="daily-email-brief-2",
+            tmux_session="default:daily-email-brief-2",
+            pane_id="%702",
+            message="warm",
+        ),
+    ]
+    spawn_impl = Mock(side_effect=spawned)
+    monkeypatch.setattr(
+        "repowire.daemon.spawn_service.capture_login_shell_path",
+        Mock(return_value="/usr/bin:/bin"),
+    )
+    monkeypatch.setattr("repowire.daemon.spawn_service.record_spawn_ownership", Mock())
+    monkeypatch.setattr(
+        "repowire.daemon.spawn_service.capture_spawn_registration_diagnostics",
+        AsyncMock(side_effect=[
+            {"pane_id": "%701", "pane_live": True},
+            {"pane_id": "%702", "pane_live": False},
+        ]),
+    )
+    kill_pane = Mock(return_value=True)
+    forget_spawn_ownership = Mock()
+    monkeypatch.setattr("repowire.daemon.spawn_service.kill_pane", kill_pane)
+    monkeypatch.setattr(
+        "repowire.daemon.spawn_service.forget_spawn_ownership",
+        forget_spawn_ownership,
+    )
+
+    async def never_registered(_spawn_result):
+        return None
+
+    async def warmup(*_args, **_kwargs):
+        return None
+
+    service = SpawnService(
+        spawn=cfg.daemon.spawn,
+        spawned_pane_ids=set(),
+        background_tasks=set(),
+        spawn_impl=spawn_impl,
+        warmup_impl=warmup,
+    )
+
+    result = await service.spawn_registered(
+        path=str(tmp_path),
+        backend=AgentType.CODEX,
+        message="warm",
+        await_peer=never_registered,
+    )
+
+    assert result.resolved_peer is None
+    assert [item["attempt"] for item in result.registration_attempts] == [1, 2]
+    assert [item["pane_id"] for item in result.registration_attempts] == ["%701", "%702"]
+    assert kill_pane.call_args_list[0].args == ("%701",)
+    assert kill_pane.call_args_list[1].args == ("%702",)
+    assert forget_spawn_ownership.call_args_list[0].args == ("%701",)
+    assert forget_spawn_ownership.call_args_list[1].args == ("%702",)
 
 
 @pytest.mark.anyio

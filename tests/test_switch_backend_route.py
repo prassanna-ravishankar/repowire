@@ -14,7 +14,7 @@ from httpx import ASGITransport, AsyncClient
 
 from repowire.config.models import AgentType, Config
 from repowire.daemon.ask_tracker import AskTracker
-from repowire.daemon.deps import cleanup_deps, init_deps
+from repowire.daemon.deps import cleanup_deps, get_config, init_deps
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
@@ -100,6 +100,12 @@ class TestSwitchBackendRoute:
     async def test_same_host_happy_path(self, env, tmp_path):
         name = await _register(env.client, name="alpha", backend="claude-code",
                                 path=str(tmp_path))
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        codex_bin = bin_dir / "codex"
+        codex_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+        codex_bin.chmod(0o755)
+        get_config().daemon.spawn.env_path = [str(bin_dir)]
         with patch.object(spawn_routes, "spawn_peer", return_value=_fake_spawn(
             "alpha", "default:alpha", "%101",
         )) as mock_spawn, \
@@ -124,6 +130,7 @@ class TestSwitchBackendRoute:
         assert spawn_cfg.backend is AgentType.CODEX
         assert spawn_cfg.circle == "default"
         assert spawn_cfg.path == str(Path(tmp_path).resolve())
+        assert spawn_cfg.env == {"PATH": str(bin_dir)}
 
         # Registry must have unregistered the old peer.
         assert await env.registry.get_peer(name) is None

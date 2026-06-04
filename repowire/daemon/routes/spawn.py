@@ -27,7 +27,7 @@ from repowire.hooks.utils import clear_pane_runtime_state, read_pane_runtime_met
 from repowire.hooks.ws_hook_supervisor import maybe_respawn
 from repowire.installers.post_spawn import post_spawn_warmup
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus
-from repowire.spawn import SpawnConfig, SpawnResult, kill_pane, spawn_peer
+from repowire.spawn import SpawnResult, kill_pane, spawn_peer
 from repowire.spawn_ownership import (
     OwnershipValidation,
     _norm_path,
@@ -1245,31 +1245,32 @@ async def switch_peer_backend(
             },
         )
 
-    command = _command_for_backend(request.new_backend)
-    if command is None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "command_unavailable",
-                "hint": (
-                    f"No entry in daemon.spawn.commands maps to "
-                    f"{request.new_backend.value!r}. Add "
-                    f"daemon.spawn.commands.{request.new_backend.value} to "
-                    "~/.repowire/config.yaml."
-                ),
-                "new_backend": request.new_backend.value,
-            },
-        )
-
-    # Validate the resolved command + peer's existing path against config so
-    # operators can't bypass /spawn's guardrails via a backend switch.
-    _validate_spawn_path(peer.path)
-
     # Acquire the ask-tracker quiesce barrier atomically: this both verifies no
     # open asks exist for the peer AND blocks new /ask registrations targeting
     # the peer until end_quiesce() runs. Without the barrier a fresh /ask could
     # race between the pending check and the kill and be orphaned by the switch.
     state = get_app_state()
+    service = getattr(state, "spawn_service", None) or SpawnService(
+        spawn=get_config().daemon.spawn,
+        spawned_pane_ids=_SPAWNED_PANE_IDS,
+        background_tasks=_BACKGROUND_TASKS,
+        spawn_impl=spawn_peer,
+        warmup_impl=post_spawn_warmup,
+    )
+    # Validate the resolved command + peer's existing path against config before
+    # any destructive action so a misconfigured switch cannot kill a live peer.
+    service.validate_path(peer.path)
+    try:
+        command = service.resolve_command(request.new_backend)
+    except HTTPException as e:
+        if isinstance(e.detail, dict) and e.detail.get("error") == "command_unavailable":
+            detail = dict(e.detail)
+            detail["new_backend"] = request.new_backend.value
+            raise HTTPException(status_code=e.status_code, detail=detail) from e
+        raise
+    env = service.spawn_env()
+    service.validate_command_env(command, env)
+
     ask_tracker = state.ask_tracker
     try:
         await ask_tracker.begin_quiesce(peer.peer_id)
@@ -1325,42 +1326,20 @@ async def switch_peer_backend(
             _SPAWNED_PANE_IDS.discard(peer.pane_id)
         await peer_registry.unregister_peer(peer.peer_id)
 
-        # Respawn with the new backend.
-        try:
-            result: SpawnResult = spawn_peer(
-                SpawnConfig(
-                    path=resolved_path,
-                    circle=spawn_circle,
-                    backend=request.new_backend,
-                    command=command,
-                )
-            )
-        except (ValueError, RuntimeError) as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e),
-            ) from e
-
-        if result.pane_id:
-            _SPAWNED_PANE_IDS.add(result.pane_id)
-            task = asyncio.create_task(
-                post_spawn_warmup(
-                    request.new_backend,
-                    result.pane_id,
-                    path=resolved_path,
-                    circle=spawn_circle,
-                    message=result.message,
-                )
-            )
-            _BACKGROUND_TASKS.add(task)
-            task.add_done_callback(_BACKGROUND_TASKS.discard)
+        # Respawn with the new backend through SpawnService so switch uses the
+        # same validation, ownership, warmup, and env/PATH launch layer as /spawn.
+        result = service.spawn(
+            path=resolved_path,
+            circle=spawn_circle,
+            backend=request.new_backend,
+        )
 
         return SwitchBackendResponse(
             display_name=result.display_name,
             tmux_session=result.tmux_session,
             old_backend=current_backend,
             new_backend=request.new_backend,
-            command=command,
+            command=result.command or "",
         )
     finally:
         await ask_tracker.end_quiesce(peer.peer_id)

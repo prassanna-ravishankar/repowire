@@ -19,7 +19,7 @@ from repowire.daemon.session_control import (
     ExecutorAcquisitionUnavailableError,
     SessionControlService,
 )
-from repowire.daemon.spawn_service import SpawnService
+from repowire.daemon.spawn_service import SpawnAttemptError, SpawnService
 from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
 from repowire.daemon.work_store import TrackedWork, now_iso
 from repowire.protocol.peers import Peer, PeerStatus
@@ -375,47 +375,69 @@ class JobRunner:
             "Please register with the mesh; the job request will arrive as an ask."
         )
         resume_plan = self._resume_plan_for(work, path=str(path), backend=backend)
+        def mark_spawned(spawn_result) -> None:
+            self._store.update_attempt(
+                work.work_id,
+                attempt_id=attempt_id,
+                phase="resume_spawned" if resume_plan is not None else "spawned",
+                tmux={"tmux_session": spawn_result.tmux_session, "pane_id": spawn_result.pane_id},
+                resume_plan=self._resume_plan_info(resume_plan),
+            )
+
         try:
-            spawn_result = self._spawn.spawn(
+            registration = await self._spawn.spawn_registered(
                 path=str(path),
                 backend=backend,
                 profile=target.get("profile"),
                 circle=work.circle or "default",
                 message=warmup,
                 resume_plan=resume_plan,
+                on_spawned=mark_spawned,
+                await_peer=lambda spawn_result: self._await_spawned_peer(
+                    spawn_result.display_name,
+                    work.circle or "default",
+                    path=str(path),
+                    backend=backend,
+                    pane_id=spawn_result.pane_id,
+                ),
             )
-        except HTTPException as e:
+        except SpawnAttemptError as e:
+            original = e.original
+            if isinstance(original, HTTPException):
+                error = {
+                    "reason": "spawn_failed",
+                    "status_code": original.status_code,
+                    "detail": original.detail,
+                    "attempt": e.attempt,
+                    "registration_attempts": e.registration_attempts,
+                }
+            else:
+                error = {
+                    "reason": "spawn_failed",
+                    "message": str(original),
+                    "type": type(original).__name__,
+                    "attempt": e.attempt,
+                    "registration_attempts": e.registration_attempts,
+                }
             return self._store.update_attempt(
                 work.work_id,
                 attempt_id=attempt_id,
                 status="failed",
                 phase="spawn",
-                error={"reason": "spawn_failed", "status_code": e.status_code, "detail": e.detail},
+                error=error,
             )
-        except Exception as e:
-            return self._store.update_attempt(
-                work.work_id,
-                attempt_id=attempt_id,
-                status="failed",
-                phase="spawn",
-                error={"reason": "spawn_failed", "message": str(e), "type": type(e).__name__},
-            )
-        self._store.update_attempt(
-            work.work_id,
-            attempt_id=attempt_id,
-            phase="resume_spawned" if resume_plan is not None else "spawned",
-            tmux={"tmux_session": spawn_result.tmux_session, "pane_id": spawn_result.pane_id},
-            resume_plan=self._resume_plan_info(resume_plan),
-        )
-        resolved = await self._await_spawned_peer(
-            spawn_result.display_name,
-            work.circle or "default",
-            path=str(path),
-            backend=backend,
-            pane_id=spawn_result.pane_id,
-        )
+
+        resolved = registration.resolved_peer
         if resolved is None:
-            return self._mark_unavailable(work, attempt_id, "spawned_peer_not_registered")
+            return self._mark_unavailable(
+                work,
+                attempt_id,
+                "spawned_peer_not_registered",
+                error={
+                    "reason": "spawned_peer_not_registered",
+                    "registration_attempts": registration.registration_attempts,
+                },
+            )
         self._store.update_attempt(
             work.work_id,
             attempt_id=attempt_id,
@@ -674,6 +696,7 @@ class JobRunner:
         reason: str,
         *,
         assigned_peer_id: str | None = None,
+        error: dict[str, Any] | None = None,
     ) -> None:
         self._store.update_attempt(
             work.work_id,
@@ -681,7 +704,7 @@ class JobRunner:
             status="unavailable",
             phase="resolve_peer",
             assigned_peer_id=assigned_peer_id,
-            error={"reason": reason},
+            error=error or {"reason": reason},
         )
         return None
 

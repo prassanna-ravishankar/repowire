@@ -14,7 +14,7 @@ from repowire.agent_backends import AgentResumePlan
 from repowire.config.models import AgentType
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.resume_safety import resolve_resume_safety
-from repowire.daemon.spawn_service import SpawnService
+from repowire.daemon.spawn_service import SpawnAttemptError, SpawnService
 from repowire.daemon.state.operations import SQLiteOperationStore
 from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
 from repowire.daemon.work_store import TrackedWork, now_iso
@@ -180,38 +180,39 @@ class SessionControlService:
             "Please register with the mesh; the job request will arrive as an ask."
         )
         try:
-            spawn_result = self._spawn.spawn(
+            registration = await self._spawn.spawn_registered(
                 path=str(path),
                 backend=backend,
                 profile=target.get("profile"),
                 circle=circle,
                 message=warmup,
                 resume_plan=resume_plan,
+                await_peer=lambda spawn_result: self._await_spawned_peer(
+                    spawn_result.display_name,
+                    circle,
+                    path=str(path),
+                    backend=backend,
+                    pane_id=spawn_result.pane_id,
+                ),
             )
-        except HTTPException as e:
-            error = {
-                "reason": "spawn_failed",
-                "status_code": e.status_code,
-                "detail": e.detail,
-            }
-            self._operations.fail(
-                operation.operation_id,
-                strategy=strategy,
-                error=error,
-            )
-            raise ExecutorAcquisitionUnavailableError(
-                "spawn_failed",
-                operation_id=operation.operation_id,
-                status="failed",
-                phase="spawn",
-                error=error,
-            ) from e
-        except Exception as e:
-            error = {
-                "reason": "spawn_failed",
-                "message": str(e),
-                "type": type(e).__name__,
-            }
+        except SpawnAttemptError as e:
+            original = e.original
+            if isinstance(original, HTTPException):
+                error = {
+                    "reason": "spawn_failed",
+                    "status_code": original.status_code,
+                    "detail": original.detail,
+                    "attempt": e.attempt,
+                    "registration_attempts": e.registration_attempts,
+                }
+            else:
+                error = {
+                    "reason": "spawn_failed",
+                    "message": str(original),
+                    "type": type(original).__name__,
+                    "attempt": e.attempt,
+                    "registration_attempts": e.registration_attempts,
+                }
             self._operations.fail(
                 operation.operation_id,
                 strategy=strategy,
@@ -225,15 +226,12 @@ class SessionControlService:
                 error=error,
             ) from e
 
-        resolved = await self._await_spawned_peer(
-            spawn_result.display_name,
-            circle,
-            path=str(path),
-            backend=backend,
-            pane_id=spawn_result.pane_id,
-        )
+        resolved = registration.resolved_peer
         if resolved is None:
-            error = {"reason": "spawned_peer_not_registered"}
+            error = {
+                "reason": "spawned_peer_not_registered",
+                "registration_attempts": registration.registration_attempts,
+            }
             self._operations.fail(
                 operation.operation_id,
                 state="unavailable",

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -29,6 +30,7 @@ class SpawnConfig:
     message: str | None = None  # Optional warmup intent passed to post_spawn_warmup
     role: str | None = None  # Optional peer role (e.g. "orchestrator"); default agent
     peer_id: str | None = None  # Optional same-id reconnect hint for durable restart
+    env: dict[str, str] = field(default_factory=dict)  # Explicit env overlay for launched cmd
 
     @property
     def display_name(self) -> str:
@@ -111,7 +113,7 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
         pending_first_turn=bool(config.message),
     )
 
-    pane.send_keys(cmd, enter=True)
+    pane.send_keys(_command_with_env(cmd, config.env), enter=True)
 
     tmux_session = f"{config.circle}:{window_name}"
 
@@ -173,6 +175,17 @@ def _unique_window_name(session: libtmux.Session, base_name: str) -> str:
     while f"{base_name}-{i}" in existing_names:
         i += 1
     return f"{base_name}-{i}"
+
+
+def _command_with_env(command: str, env: dict[str, str]) -> str:
+    """Prefix a tmux shell command with explicit environment assignments."""
+    clean_env = {key: value for key, value in env.items() if key and value is not None}
+    if not clean_env:
+        return command
+    assignments = " ".join(
+        f"{key}={shlex.quote(str(value))}" for key, value in sorted(clean_env.items())
+    )
+    return f"env {assignments} {command}"
 
 
 def attach_session(tmux_session: str) -> None:

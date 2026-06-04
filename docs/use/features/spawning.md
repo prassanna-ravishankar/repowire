@@ -22,9 +22,21 @@ daemon:
     commands:
       claude-code: claude
       codex: codex
+    env_path:
+      - ~/.local/bin
+      - ~/.nvm/versions/node/v23.9.0/bin
+      - /opt/homebrew/bin
+      - /usr/bin
+      - /bin
 ```
 
 Profiles can append structured args to configured backend commands. Repowire does not hardcode provider model names.
+
+`env_path` is optional. When set, Repowire injects it as the spawned agent's `PATH`
+before launching the backend command. This is useful for durable job workers
+started by the daemon, because they should not depend on whichever PATH the tmux
+server happened to inherit. When `env_path` is omitted, Repowire captures the
+user's login-shell PATH and injects that as a fallback.
 
 ## Common workflows
 

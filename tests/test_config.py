@@ -283,6 +283,8 @@ class TestSpawnSettings:
         assert spawn.commands == {}
         assert spawn.allowed_commands == []
         assert spawn.allowed_paths == []
+        assert spawn.env_path == []
+        assert spawn.env == {}
 
     def test_with_values(self):
         spawn = SpawnSettings(
@@ -291,6 +293,18 @@ class TestSpawnSettings:
         )
         assert len(spawn.commands) == 2
         assert "~/git" in spawn.allowed_paths
+
+    def test_spawn_env_values(self):
+        spawn = SpawnSettings(
+            env_path=["~/.local/bin", "/opt/homebrew/bin"],
+            env={"GOOGLE_APPLICATION_CREDENTIALS": "~/secret.json"},
+        )
+        assert spawn.env_path == ["~/.local/bin", "/opt/homebrew/bin"]
+        assert spawn.env["GOOGLE_APPLICATION_CREDENTIALS"] == "~/secret.json"
+
+    def test_spawn_env_rejects_unsafe_keys(self):
+        with pytest.raises(ValueError, match="shell-safe identifiers"):
+            SpawnSettings(env={"BAD-KEY": "value"})
 
     def test_legacy_allowed_commands_bootstrap_commands(self):
         spawn = SpawnSettings(allowed_commands=["claude --model opus", "codex"])

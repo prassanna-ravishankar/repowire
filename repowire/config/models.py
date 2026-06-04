@@ -171,6 +171,25 @@ class SpawnSettings(BaseModel):
         default_factory=dict,
         description="Optional named spawn profiles per backend",
     )
+    env_path: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Explicit PATH entries for spawned agent processes. When empty, "
+            "Repowire captures the user's login-shell PATH as a fallback."
+        ),
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Extra environment variables injected into spawned agent commands",
+    )
+
+    @field_validator("env")
+    @classmethod
+    def validate_env_keys(cls, value: dict[str, str]) -> dict[str, str]:
+        for key in value:
+            if not key.isidentifier():
+                raise ValueError("daemon.spawn.env keys must be shell-safe identifiers")
+        return value
 
     @model_validator(mode="after")
     def _bootstrap_legacy_allowed_commands(self) -> SpawnSettings:

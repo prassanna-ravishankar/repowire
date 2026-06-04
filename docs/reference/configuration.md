@@ -101,6 +101,13 @@ Spawn is disabled until `allowed_paths` and at least one runtime command are con
 
 `profiles` is optional and keyed first by backend, then by a user-defined profile name. Each profile appends structured `args` to the configured backend command; Repowire does not hardcode provider model names. For example, spawning `codex` with profile `fast` runs the configured `daemon.spawn.commands.codex` command plus the profile args. Profile descriptions are informational and may be shown by UIs.
 
+`env_path` and `env` define the environment injected into spawned agent commands.
+`env_path` becomes the spawned process `PATH`; `env` adds extra variables such as
+tool config paths. If neither `env.PATH` nor `env_path` is set, Repowire captures
+the user's login-shell PATH and injects it so launchd/tmux-spawned workers can
+still see tools installed by Homebrew, nvm, and similar shell setup. This env is
+used by MCP/dashboard spawn, backend switching, restart, and durable job workers.
+
 Explicit command overrides still win over profiles. `repowire peer restart` preserves the peer's backend, path, circle, role, and mesh identity, but this slice does not persist the selected profile in peer state. Restart therefore uses the current configured backend command unless a future lane records spawn profile metadata.
 
 `allowed_commands` is a deprecated compatibility field. When present in an older config, Repowire normalizes it into `commands` while loading config; new configs should not add it.

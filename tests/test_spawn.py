@@ -293,6 +293,30 @@ class TestSpawnPeer:
 
     @patch("repowire.spawn._get_or_create_session")
     @patch("repowire.spawn.libtmux.Server")
+    def test_spawn_peer_prefixes_explicit_env(
+        self,
+        mock_server_class: MagicMock,
+        mock_get_session: MagicMock,
+    ) -> None:
+        """Spawned workers launch with explicit env instead of incidental tmux env."""
+        _mock_session, _mock_window, mock_pane = self._tmux_spawn(mock_get_session)
+        config = SpawnConfig(
+            path="/tmp/test",
+            circle="dev",
+            backend=AgentType.CODEX,
+            command="codex run",
+            env={"PATH": "/Users/me/bin:/opt/homebrew/bin", "FOO": "two words"},
+        )
+
+        spawn_peer(config)
+
+        mock_pane.send_keys.assert_called_once_with(
+            "env FOO='two words' PATH=/Users/me/bin:/opt/homebrew/bin codex run",
+            enter=True,
+        )
+
+    @patch("repowire.spawn._get_or_create_session")
+    @patch("repowire.spawn.libtmux.Server")
     def test_spawn_peer_unknown_backend_raises(
         self,
         mock_server_class: MagicMock,
