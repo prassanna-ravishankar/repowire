@@ -42,6 +42,7 @@ class PeerContradictionTracker:
                 },
             )
         except Exception:  # noqa: BLE001 - reconciliation must not break on event errors
+            self._emitted.discard(key)
             logger.warning("Failed to emit peer_contradiction %s", code, exc_info=True)
 
     def clear(self, peer_id: str, code: str) -> None:

@@ -39,6 +39,23 @@ def test_contradiction_tracker_dedups_until_cleared():
     assert len(events) == 2
 
 
+def test_contradiction_tracker_retries_after_event_sink_failure():
+    tracker = PeerContradictionTracker()
+    events: list[tuple[str, dict]] = []
+    peer = _peer()
+
+    def failing_add_event(event_type: str, payload: dict) -> None:
+        raise RuntimeError("event store unavailable")
+
+    def add_event(event_type: str, payload: dict) -> None:
+        events.append((event_type, payload))
+
+    tracker.emit(peer, "online_but_no_ws", "error", "missing ws", failing_add_event)
+    tracker.emit(peer, "online_but_no_ws", "error", "missing ws", add_event)
+
+    assert len(events) == 1
+
+
 def test_contradiction_tracker_clear_all_is_peer_scoped():
     tracker = PeerContradictionTracker()
     events: list[tuple[str, dict]] = []

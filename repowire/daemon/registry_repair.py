@@ -14,7 +14,7 @@ def has_runtime_evidence(peer: Peer) -> bool:
     This is demand-driven lazy repair, not polling. It intentionally checks only
     local process/tmux evidence and does not attempt any WebSocket recovery.
     """
-    if peer.agent_pid is not None:
+    if peer.agent_pid is not None and peer.agent_pid > 0:
         try:
             os.kill(peer.agent_pid, 0)
             return True

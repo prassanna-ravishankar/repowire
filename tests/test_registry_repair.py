@@ -37,6 +37,19 @@ def test_has_runtime_evidence_accepts_live_agent_pid(monkeypatch):
     assert calls == [(12345, 0)]
 
 
+def test_has_runtime_evidence_ignores_non_positive_agent_pid(monkeypatch):
+    calls: list[tuple[int, int]] = []
+
+    def fake_kill(pid: int, signal: int) -> None:
+        calls.append((pid, signal))
+
+    monkeypatch.setattr("repowire.daemon.registry_repair.os.kill", fake_kill)
+
+    assert not has_runtime_evidence(_peer(agent_pid=0))
+    assert not has_runtime_evidence(_peer(agent_pid=-123))
+    assert calls == []
+
+
 def test_has_runtime_evidence_falls_back_to_live_tmux_pane(monkeypatch):
     def fake_kill(pid: int, signal: int) -> None:
         raise ProcessLookupError
