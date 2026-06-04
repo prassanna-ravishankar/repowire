@@ -237,11 +237,11 @@ class TestLazyRepairDebounce:
             live.agent_pid = 999_999_999
 
         monkeypatch.setattr(
-            "repowire.daemon.peer_registry.os.kill",
+            "repowire.daemon.registry_repair.os.kill",
             lambda _pid, _sig: (_ for _ in ()).throw(ProcessLookupError()),
         )
         monkeypatch.setattr(
-            "repowire.daemon.peer_registry.subprocess.run",
+            "repowire.daemon.registry_repair.subprocess.run",
             lambda *_args, **_kwargs: subprocess.CompletedProcess(
                 args=["tmux"], returncode=1, stdout="", stderr="can't find pane",
             ),
@@ -280,11 +280,11 @@ class TestLazyRepairDebounce:
             manager._peers[peer.peer_id].agent_pid = 999_999_999
 
         monkeypatch.setattr(
-            "repowire.daemon.peer_registry.os.kill",
+            "repowire.daemon.registry_repair.os.kill",
             lambda _pid, _sig: (_ for _ in ()).throw(ProcessLookupError()),
         )
         monkeypatch.setattr(
-            "repowire.daemon.peer_registry.subprocess.run",
+            "repowire.daemon.registry_repair.subprocess.run",
             lambda *_args, **_kwargs: subprocess.CompletedProcess(
                 args=["tmux"], returncode=0, stdout="123\n", stderr="",
             ),

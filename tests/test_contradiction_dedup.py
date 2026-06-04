@@ -100,9 +100,15 @@ async def test_recovery_then_recurrence_reemits():
 def test_clear_all_contradictions():
     transport = FakeTransport()
     registry = _registry(transport)
-    registry._emitted_contradictions.add(("p1", diag.ONLINE_BUT_NO_WS))
-    registry._emitted_contradictions.add(("p1", diag.PANE_MISSING))
-    registry._emitted_contradictions.add(("p2", diag.ONLINE_BUT_NO_WS))
+    peer1 = _online_no_pane_peer("p1")
+    peer2 = _online_no_pane_peer("p2")
+    registry._emit_contradiction(peer1, diag.ONLINE_BUT_NO_WS, "error", "one")
+    registry._emit_contradiction(peer1, diag.PANE_MISSING, "error", "two")
+    registry._emit_contradiction(peer2, diag.ONLINE_BUT_NO_WS, "error", "three")
     registry._clear_all_contradictions("p1")
-    assert ("p2", diag.ONLINE_BUT_NO_WS) in registry._emitted_contradictions
-    assert not any(pid == "p1" for pid, _ in registry._emitted_contradictions)
+
+    registry._emit_contradiction(peer1, diag.ONLINE_BUT_NO_WS, "error", "again")
+    registry._emit_contradiction(peer2, diag.ONLINE_BUT_NO_WS, "error", "again")
+    events = _contradiction_events(registry)
+    assert [e["peer_id"] for e in events].count("p1") == 3
+    assert [e["peer_id"] for e in events].count("p2") == 1

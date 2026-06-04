@@ -27,7 +27,7 @@ The daemon is the single routing hub. It does not care whether a peer arrived th
 | Agent backends | `repowire/agent_types.py`, `repowire/agent_backends.py` | Serialized backend identity plus setup, spawn, resume prevalidation, history loading, MCP config, and post-spawn behavior dispatch |
 | Configuration | `repowire/config/models.py`, `repowire/config/paths.py`, `repowire/config/spawn.py`, `repowire/config/relay.py` | Main config value object plus narrow path, spawn, and relay config slices for callers that do not need the whole model |
 | Daemon app | `repowire/daemon/app.py`, `repowire/daemon/deps.py` | FastAPI app factory, dependency wiring, dashboard/static serving |
-| Peer state | `repowire/daemon/peer_registry.py` | Registration, liveness, circles, roles, lazy repair |
+| Peer state | `repowire/daemon/peer_registry.py`, `repowire/daemon/registry_identity.py`, `repowire/daemon/registry_events.py`, `repowire/daemon/registry_repair.py` | Registration, identity mapping, liveness, circles, roles, lazy repair, and contradiction events |
 | Message routing | `repowire/daemon/peer_delivery.py`, `repowire/daemon/transport_router.py`, `repowire/daemon/message_router.py`, `repowire/daemon/websocket_transport.py` | Delivery orchestration, ACP-before-WebSocket transport selection, and wire delivery over connected peers |
 | Ask lifecycle | `repowire/daemon/ask_tracker.py`, `repowire/daemon/routes/asks.py` | Open ask state, pending reminders, close/ack handling |
 | Session controls | `repowire/daemon/session_controls.py`, `repowire/daemon/routes/sessions.py` | Session-binding resolution and session-targeted control capability routes |

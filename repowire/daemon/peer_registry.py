@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 import time
 from collections import deque
 from dataclasses import asdict, dataclass
@@ -32,6 +31,14 @@ from repowire.config.models import (
 from repowire.daemon import diagnostics as diag
 from repowire.daemon.delivery_trace import DeliveryTraceStore
 from repowire.daemon.event_log import EventLog
+from repowire.daemon.registry_events import PeerContradictionTracker
+from repowire.daemon.registry_identity import (
+    CircleSource,
+    SessionMapping,
+    is_configured_orchestrator_path,
+    normalize_identity_path,
+)
+from repowire.daemon.registry_repair import has_runtime_evidence
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
 
@@ -45,9 +52,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-CircleSource = Literal["tmux", "spawn_hint", "fallback"]
-
-
 def _serialize_attachments(attachments: list | None) -> list[dict[str, Any]]:
     if not attachments:
         return []
@@ -55,34 +59,6 @@ def _serialize_attachments(attachments: list | None) -> list[dict[str, Any]]:
         item.model_dump(exclude_none=True) if hasattr(item, "model_dump") else item
         for item in attachments
     ]
-
-
-def normalize_identity_path(raw: str) -> str:
-    """Canonical path form for asker identity matching.
-
-    Used symmetrically at stash time (in routes/asks.py) and at rebind time
-    (in PeerRegistry._redeliver_pending_replies). Returns "" when ``raw`` is
-    empty so the strictness gate can refuse no-path stashes.
-    """
-    if not raw:
-        return ""
-    try:
-        return os.path.normpath(os.path.realpath(raw))
-    except (OSError, ValueError):
-        return os.path.normpath(raw)
-
-
-def _is_configured_orchestrator_path(raw: str | None) -> bool:
-    """Return True when ``raw`` is the configured orchestrator workspace path."""
-    if not raw:
-        return False
-    try:
-        from repowire.orchestrator.workspace import workspace_path
-
-        expected = normalize_identity_path(str(workspace_path()))
-    except Exception:  # noqa: BLE001 - path check must fail closed
-        return False
-    return normalize_identity_path(raw) == expected
 
 
 class PaneHijackRejectedError(Exception):
@@ -103,38 +79,6 @@ class RoleClaimResult:
     peer: Peer
     previous_holders: list[dict[str, str | None]]
     already_held: bool = False
-
-
-# ---------------------------------------------------------------------------
-# SessionMapping dataclass (previously in session_mapper.py)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class SessionMapping:
-    """Persistent mapping of session to peer identity."""
-
-    session_id: str  # "repow-dev-a1b2c3d4"
-    display_name: str
-    circle: str
-    backend: AgentType
-    path: str | None = None
-    role: PeerRole = PeerRole.AGENT
-    updated_at: str | None = None
-    description: str = ""
-    model: str | None = None
-    # Pid of the agent process that last owned this peer. Persisted so the
-    # pane-hijack guard (issue #190) survives daemon restart: when the
-    # original peer rehydrates via its ws-hook, we restore this value into
-    # the in-memory Peer and the guard can compare against it.
-    agent_pid: int | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.backend, AgentType):
-            self.backend = AgentType(self.backend)
-        if not isinstance(self.role, PeerRole):
-            self.role = PeerRole(self.role)
-        if self.updated_at is None:
-            self.updated_at = datetime.now(timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -201,10 +145,7 @@ class PeerRegistry:
         self._last_repair: float = 0.0
         self._repair_lock = asyncio.Lock()
 
-        # Transition-only dedup for fail-loud contradiction events: (peer_id, code)
-        # is emitted once on entry into the contradictory state and discarded on
-        # recovery or reap, so the 30s lazy_repair cadence doesn't spam events.
-        self._emitted_contradictions: set[tuple[str, str]] = set()
+        self._contradictions = PeerContradictionTracker()
 
         # When each peer's current description was set. Used for clear-on-read
         # TTL — see config.daemon.description_ttl_seconds. Registry-internal
@@ -463,33 +404,15 @@ class PeerRegistry:
 
         Best-effort: a logging/event-store failure must never abort reconciliation.
         """
-        key = (peer.peer_id, code)
-        if key in self._emitted_contradictions:
-            return
-        self._emitted_contradictions.add(key)
-        try:
-            self.add_event(
-                "peer_contradiction",
-                {
-                    "code": code,
-                    "severity": severity,
-                    "peer_id": peer.peer_id,
-                    "peer_name": peer.display_name,
-                    "detail": detail,
-                },
-            )
-        except Exception:  # noqa: BLE001 - reconciliation must not break on event errors
-            logger.warning("Failed to emit peer_contradiction %s", code, exc_info=True)
+        self._contradictions.emit(peer, code, severity, detail, self.add_event)
 
     def _clear_contradiction(self, peer_id: str, code: str) -> None:
         """Forget a contradiction so a future recurrence re-emits once."""
-        self._emitted_contradictions.discard((peer_id, code))
+        self._contradictions.clear(peer_id, code)
 
     def _clear_all_contradictions(self, peer_id: str) -> None:
         """Drop all contradiction state for a peer (e.g. on reap)."""
-        self._emitted_contradictions = {
-            (pid, code) for (pid, code) in self._emitted_contradictions if pid != peer_id
-        }
+        self._contradictions.clear_all(peer_id)
 
     def subscribe_events(self) -> asyncio.Event:
         """Register a wakeup Event fired on each add_event call.
@@ -1075,8 +998,8 @@ class PeerRegistry:
                         same_sticky_identity = (
                             sticky_holder.backend == backend
                             and sticky_holder.circle == circle
-                            and _is_configured_orchestrator_path(sticky_holder.path)
-                            and _is_configured_orchestrator_path(path)
+                            and is_configured_orchestrator_path(sticky_holder.path)
+                            and is_configured_orchestrator_path(path)
                         )
                         if same_sticky_identity:
                             old_status = sticky_holder.status
@@ -2410,7 +2333,7 @@ class PeerRegistry:
 
         checks = await asyncio.gather(
             *(
-                asyncio.to_thread(self._has_runtime_evidence, peer)
+                asyncio.to_thread(has_runtime_evidence, peer)
                 for peer in pane_candidates
             ),
             return_exceptions=True,
@@ -2460,36 +2383,6 @@ class PeerRegistry:
         if count:
             logger.info("demoted %d ghost peers (no WebSocket/runtime evidence)", count)
         return count
-
-    @staticmethod
-    def _has_runtime_evidence(peer: Peer) -> bool:
-        """Best-effort runtime proof for a disconnected pane-backed peer.
-
-        This is demand-driven lazy repair, not polling. It intentionally
-        checks only local process/tmux evidence and does not attempt any
-        WebSocket recovery.
-        """
-        if peer.agent_pid is not None:
-            try:
-                os.kill(peer.agent_pid, 0)
-                return True
-            except PermissionError:
-                return True
-            except OSError:
-                pass
-
-        if not peer.pane_id:
-            return False
-        try:
-            result = subprocess.run(
-                ["tmux", "display-message", "-t", peer.pane_id, "-p", "#{pane_pid}"],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-        except (FileNotFoundError, OSError, subprocess.SubprocessError):
-            return False
-        return result.returncode == 0 and bool(result.stdout.strip())
 
     async def _demote_unsafe_connected_peers(self) -> int:
         """Mark connected tmux peers OFFLINE if their pane is no longer safe."""
@@ -2755,7 +2648,7 @@ class PeerRegistry:
             peer_id = peer.peer_id
             circle = peer.circle
             if not transport.is_connected(peer_id):
-                has_evidence = await asyncio.to_thread(self._has_runtime_evidence, peer)
+                has_evidence = await asyncio.to_thread(has_runtime_evidence, peer)
                 return (peer_id, circle) if has_evidence else None
             if peer.backend == AgentType.OPENCODE:
                 return (peer_id, circle)
