@@ -277,7 +277,7 @@ async def test_tool_permission_answer_does_not_notify_runtime(
     # redundant/intrusive prompt (codex review).
     from unittest.mock import AsyncMock
 
-    import repowire.daemon.routes.asks as asks_mod
+    import repowire.daemon.ask_service as ask_service
 
     app, broker, registry = _make_permission_app(tmp_path)
     notify_spy = AsyncMock()
@@ -291,7 +291,7 @@ async def test_tool_permission_answer_does_not_notify_runtime(
         req = await _wait_for_event(registry, "acp_permission_request")
         # patch peer_delivery so any notify attempt is observable
         monkeypatch.setattr(
-            asks_mod, "peer_delivery_from_state",
+            ask_service, "peer_delivery_from_state",
             lambda **_: SimpleNamespace(notify=notify_spy),
         )
         async with AsyncClient(

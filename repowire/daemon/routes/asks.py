@@ -35,14 +35,20 @@ from repowire.daemon.ask_many import (
     AskManyChild,
     AskManyTracker,
 )
-from repowire.daemon.ask_tracker import Ask, AskerIdentity, AskTracker, QuiescedError
+from repowire.daemon.ask_service import (
+    AckCommand,
+    AnswerCommand,
+    AskService,
+    AskServiceError,
+    OpenAskCommand,
+)
+from repowire.daemon.ask_tracker import AskerIdentity, AskTracker, QuiescedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.peer_delivery import peer_delivery_from_state
 from repowire.daemon.peer_registry import PeerRegistry, normalize_identity_path
 from repowire.daemon.question_blocking import register_blocking_question_and_wait
 from repowire.daemon.routes._shared import OkResponse
-from repowire.daemon.state.session_bindings import resolve_repowire_session_id
 from repowire.daemon.websocket_transport import DeliveryInjectionError, TransportError
 from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import Peer
@@ -56,6 +62,14 @@ from repowire.protocol.questions import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["asks"])
+
+
+def _ask_service() -> AskService:
+    return AskService(state=get_app_state(), peer_registry=get_peer_registry())
+
+
+def _raise_http(error: AskServiceError) -> None:
+    raise HTTPException(status_code=error.status_code, detail=error.detail)
 
 
 class AskRequest(BaseModel):
@@ -219,18 +233,6 @@ class PendingDeliveriesResponse(BaseModel):
     deliveries: list[PendingDelivery]
 
 
-async def _get_peer_or_http(identifier: str, *, circle: str | None = None) -> Peer:
-    """Resolve a peer id/display name and convert ambiguity to HTTP errors."""
-    peer_registry = get_peer_registry()
-    try:
-        peer = await peer_registry.get_peer(identifier, circle=circle)
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
-    if not peer:
-        raise HTTPException(status_code=404, detail=f"Unknown peer: {identifier}")
-    return peer
-
-
 async def _resolve_sender_for_target(from_peer: str, target: Peer) -> Peer | None:
     """Resolve an ask sender, preferring the target circle for display-name lookups."""
     peer_registry = get_peer_registry()
@@ -277,22 +279,6 @@ async def _capture_asker_identity(
         path=norm_path,
         machine=peer.machine,
     )
-
-
-def _binding_id_for_peer(state: object, peer: Peer | None) -> str | None:
-    return resolve_repowire_session_id(
-        getattr(state, "session_binding_store", None),
-        peer=peer,
-    )
-
-
-def _uses_cli_polling_fallback(peer: Peer) -> bool:
-    """Whether asks can be opened for a peer that polls /asks/pending itself."""
-    return bool(peer.metadata.get("repowire_cli_fallback"))
-
-
-def _dump_attachments(attachments: list[AttachmentRef]) -> list[dict]:
-    return [a.model_dump(exclude_none=True) for a in attachments]
 
 
 def _emit_ack_event(
@@ -469,211 +455,23 @@ async def open_ask(
     request: AskRequest,
     _: str | None = Depends(require_auth),
 ) -> AskResponse:
-    """Open a non-blocking ask.
-
-    Pre-registers in the tracker, attempts wire send. On TransportError the
-    newly-registered ask is closed (rollback) and 503 is returned so the
-    caller can retry when the recipient is back online.
-    """
-    peer_registry = get_peer_registry()
-    state = get_app_state()
-    ask_tracker = state.ask_tracker
-    trace = getattr(state, "delivery_trace_store", None)
-    await peer_registry.lazy_repair()
-
-    peer = await _get_peer_or_http(request.to_peer, circle=request.circle)
-
-    from_peer_obj = await _resolve_sender_for_target(request.from_peer, peer)
-    if from_peer_obj is None:
-        logger.warning(
-            "Opening ask with unresolved sender %r for target peer_id=%s name=%s circle=%s",
-            request.from_peer,
-            peer.peer_id,
-            peer.display_name,
-            peer.circle,
-        )
-    from_peer_id = from_peer_obj.peer_id if from_peer_obj else request.from_peer
-    from_peer_name = from_peer_obj.display_name if from_peer_obj else request.from_peer
-    from_repowire_session_id = _binding_id_for_peer(state, from_peer_obj)
-    to_repowire_session_id = _binding_id_for_peer(state, peer)
-
-    # Enforce circle access BEFORE registering the ask. On the WS path
-    # ``deliver_ask`` runs the same check inside ``_resolve_from_peer_unlocked``
-    # and a violation rolls the tracker registration back; the ACP branch
-    # never reaches ``deliver_ask``, so we front-load the check via the
-    # public ``check_circle_access`` helper so both transports apply the
-    # same gate.
+    """Open a non-blocking ask."""
     try:
-        await peer_registry.check_circle_access(
-            from_peer_obj, peer, bypass_circle=request.bypass_circle,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    try:
-        cid = await ask_tracker.register(
-            from_peer_id=from_peer_id,
-            from_peer_name=from_peer_name,
-            to_peer_id=peer.peer_id,
-            to_peer_name=peer.display_name,
-            text=request.text,
-            reply_to=request.reply_to,
-            from_repowire_session_id=from_repowire_session_id,
-            to_repowire_session_id=to_repowire_session_id,
-            question=request.question,
-        )
-    except QuiescedError as e:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "peer_switching",
-                "hint": f"Peer {request.to_peer} is mid-switch; retry shortly.",
-                "peer_id": e.peer_id,
-            },
-        ) from e
-
-    if trace is not None:
-        trace.record(
-            trace_id=cid, kind="ask", stage="created",
-            peer_id=peer.peer_id, from_peer_id=from_peer_id,
-        )
-        trace.record(
-            trace_id=cid, kind="ask", stage="resolved_peer",
-            peer_id=peer.peer_id, from_peer_id=from_peer_id,
-        )
-
-    async def _on_acp_complete(
-        correlation_id: str, reply: str | None, error: str | None,
-    ) -> None:
-        await _acp_complete(
-            correlation_id=correlation_id,
-            reply=reply,
-            error=error,
-            ask_tracker=ask_tracker,
-            peer_registry=peer_registry,
-        )
-
-    try:
-        peer_delivery = peer_delivery_from_state(
-            config=state.config,
-            registry=peer_registry,
-            state=state,
-        )
-        if trace is not None:
-            trace.record(
-                trace_id=cid, kind="ask", stage="routed",
-                peer_id=peer.peer_id, from_peer_id=from_peer_id,
+        result = await _ask_service().open_ask(
+            OpenAskCommand(
+                from_peer=request.from_peer,
+                to_peer=request.to_peer,
+                text=request.text,
+                attachments=request.attachments,
+                reply_to=request.reply_to,
+                bypass_circle=request.bypass_circle,
+                circle=request.circle,
+                question=request.question,
             )
-        ask_outcome = await peer_delivery.deliver_ask(
-            from_peer=from_peer_id,
-            to_peer=peer.peer_id,
-            text=request.text,
-            correlation_id=cid,
-            reply_to=request.reply_to,
-            bypass_circle=True,
-            attachments=request.attachments,
-            on_acp_complete=_on_acp_complete,
-            question=request.question,
         )
-    except ValueError as e:
-        if trace is not None:
-            trace.record(
-                trace_id=cid, kind="ask", stage="resolve_failed", status="fail",
-                peer_id=peer.peer_id, detail={"error": str(e)},
-            )
-        await ask_tracker.close(cid, reason="evicted")
-        raise HTTPException(status_code=404, detail=str(e))
-    except DeliveryInjectionError as e:
-        # The hook was reached but the pane rejected/failed injection. The
-        # connection is alive (not a CLI-queue case) — record the TRUTHFUL
-        # terminal outcome, close fail-loud, and surface 503.
-        if trace is not None:
-            trace.record_outcome(
-                trace_id=cid,
-                kind="ask",
-                peer_id=peer.peer_id,
-                from_peer_id=from_peer_id,
-                transport="ws",
-                hook_delivery=e.hook_delivery,
-            )
-        await ask_tracker.close(cid, reason="send_failed")
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "injection_failed",
-                "hint": f"Ask injection failed for {request.to_peer}: {e}",
-                "correlation_id": cid,
-            },
-        )
-    except TransportError as e:
-        if _uses_cli_polling_fallback(peer):
-            queue = getattr(state, "queued_delivery_store", None)
-            if queue is not None:
-                queue.enqueue(
-                    peer_id=peer.peer_id,
-                    repowire_session_id=to_repowire_session_id,
-                    kind="ask",
-                    from_peer_id=from_peer_id,
-                    from_peer_name=from_peer_name,
-                    to_peer_name=peer.display_name,
-                    correlation_id=cid,
-                    text=request.text,
-                    attachments=_dump_attachments(request.attachments),
-                )
-            logger.info(
-                "Ask %s queued for CLI-polling peer %s (%s): %s",
-                cid,
-                peer.display_name,
-                peer.peer_id,
-                e,
-            )
-            if trace is not None:
-                trace.record(
-                    trace_id=cid, kind="ask", stage="pending",
-                    peer_id=peer.peer_id, detail={"transport": "cli_polling_queue"},
-                )
-            if request.reply_to:
-                prior = await ask_tracker.close(request.reply_to, reason="reply_to")
-                if prior is None:
-                    logger.debug(
-                        "ask reply_to=%s: prior ask not found or already closed",
-                        request.reply_to,
-                    )
-            return AskResponse(correlation_id=cid)
-        if trace is not None:
-            trace.record(
-                trace_id=cid, kind="ask", stage="no_connection", status="fail",
-                peer_id=peer.peer_id, detail={"error": str(e)},
-            )
-        await ask_tracker.close(cid, reason="send_failed")
-        raise HTTPException(
-            status_code=503,
-            detail=f"Peer {request.to_peer} has no live connection: {e}",
-        )
-
-    # Send succeeded: record the TRUTHFUL terminal stage from the transport
-    # outcome (pane_injected only on a real ws-hook injected receipt; otherwise
-    # websocket_sent/unverified for ACP or legacy no-ack hooks).
-    if trace is not None:
-        trace.record_outcome(
-            trace_id=cid,
-            kind="ask",
-            peer_id=peer.peer_id,
-            from_peer_id=from_peer_id,
-            transport=ask_outcome.transport,
-            hook_delivery=ask_outcome.hook_delivery,
-        )
-
-    # Send succeeded: close any prior thread referenced by reply_to.
-    if request.reply_to:
-        prior = await ask_tracker.close(request.reply_to, reason="reply_to")
-        if prior is None:
-            logger.debug(
-                "ask reply_to=%s: prior ask not found or already closed",
-                request.reply_to,
-            )
-
-    return AskResponse(correlation_id=cid)
+    except AskServiceError as e:
+        _raise_http(e)
+    return AskResponse(correlation_id=result.correlation_id)
 
 
 class AskManyRequest(BaseModel):
@@ -814,121 +612,6 @@ async def ask_many_result(
     return result
 
 
-def _answer_reply_text(ask: Ask, answer: Answer) -> str | None:
-    """Human-readable body to deliver back to the asker for an answer.
-
-    A choice answer renders the chosen option's title; a text answer is its
-    text; a bare acknowledge has no body (the asker just learns it was acked).
-    """
-    if answer.text:
-        return answer.text
-    if answer.option_id and ask.question is not None:
-        for opt in ask.question.options:
-            if opt.id == answer.option_id:
-                return opt.title
-        return answer.option_id
-    return answer.message
-
-
-async def _answer_question_core(request: AnswerRequest) -> OkResponse:
-    """Shared answer logic for /answer and the /ack-on-question delegation.
-
-    Records the typed answer (source of truth; resolves any blocking transport's
-    waiter), then best-effort delivers a human-readable form back to the asker.
-    A transient asker-offline does NOT un-resolve the question — the blocking
-    transport cares the answer is recorded; redelivery is separate.
-    """
-    peer_registry = get_peer_registry()
-    state = get_app_state()
-    ask_tracker = state.ask_tracker
-
-    existing = await ask_tracker.get(request.correlation_id)
-    if existing is None:
-        raise HTTPException(
-            status_code=404, detail=f"No open ask with correlation_id: {request.correlation_id}",
-        )
-    # /answer is only for structured questions. A plain ask must go through /ack
-    # so its fail-loud 503/retry contract isn't bypassed (codex review).
-    if existing.question is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Ask {request.correlation_id} is not a structured question; use /ack.",
-        )
-    answer = Answer(
-        option_id=request.option_id,
-        text=request.text,
-        outcome=request.outcome,
-        message=request.message,
-    )
-    try:
-        await ask_tracker.answer(request.correlation_id, answer)
-    except ask_tracker.AlreadyAnsweredError:
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail=f"Ask {request.correlation_id} is already answered/closed.",
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-
-    # Best-effort: deliver a readable form of the answer back to the asker —
-    # EXCEPT for tool-permission questions, where the ACP runtime already
-    # receives the decision via wait_for_answer; a notify back into the runtime
-    # would be a redundant/intrusive prompt (codex review).
-    is_tool_permission = (
-        existing.question is not None and existing.question.scope == "tool_permission"
-    )
-    body = None if is_tool_permission else _answer_reply_text(existing, answer)
-    delivery_success = False
-    if body:
-        framed = f"[ack #{request.correlation_id} from @{existing.to_peer_name}] {body}"
-        try:
-            peer_delivery = peer_delivery_from_state(
-                config=state.config, registry=peer_registry, state=state,
-            )
-            await peer_delivery.notify(
-                from_peer=existing.to_peer_id,
-                to_peer=existing.from_peer_id,
-                text=framed,
-                bypass_circle=True,
-                attachments=request.attachments,
-            )
-            delivery_success = True
-        except TransportError as e:
-            # The answer is recorded (truth); keep its human-readable frame for
-            # the asker's next reconnect. Unlike plain /ack, this does not
-            # leave the question open: structured questions have a durable
-            # typed answer, and blocking transports consume that answer
-            # directly.
-            identity = await _capture_asker_identity(peer_registry, existing.from_peer_id)
-            stashed = await ask_tracker.set_pending_reply(
-                request.correlation_id,
-                framed,
-                identity=identity,
-                allow_answered_question=True,
-            )
-            logger.warning(
-                "answer for %s recorded; asker delivery deferred (%s; stashed=%s)",
-                request.correlation_id, e, stashed,
-            )
-        except ValueError as e:
-            # The asker no longer resolves, so there is no current transport
-            # target or identity tuple to stash against. The typed answer
-            # remains the source of truth.
-            logger.warning(
-                "answer for %s recorded; asker delivery deferred (%s)",
-                request.correlation_id, e,
-            )
-    _emit_ack_event(
-        peer_registry=peer_registry,
-        ask=existing,
-        reason="answered",
-        delivered=delivery_success,  # truthful: only true when notify succeeded
-        has_message=bool(body),
-        has_attachments=bool(request.attachments),
-    )
-    return OkResponse()
-
-
 @router.post("/questions/ask-blocking", response_model=AskBlockingResponse)
 async def ask_blocking_question(
     request: AskBlockingRequest,
@@ -1012,7 +695,20 @@ async def answer_question(
     (unknown), 410 (already answered/closed), 422 (plain ask — use /ack, or
     invalid option for the question).
     """
-    return await _answer_question_core(request)
+    try:
+        await _ask_service().answer(
+            AnswerCommand(
+                correlation_id=request.correlation_id,
+                option_id=request.option_id,
+                text=request.text,
+                outcome=request.outcome,
+                message=request.message,
+                attachments=request.attachments,
+            )
+        )
+    except AskServiceError as e:
+        _raise_http(e)
+    return OkResponse()
 
 
 @router.post("/ack", response_model=OkResponse)
@@ -1038,125 +734,17 @@ async def ack_ask(
         410 if an ack-with-message targets an already-closed ask, 503 if reply
         delivery failed.
     """
-    peer_registry = get_peer_registry()
-    state = get_app_state()
-    ask_tracker = state.ask_tracker
-    trace = getattr(state, "delivery_trace_store", None)
-
-    existing = await ask_tracker.get(request.correlation_id)
-    if existing is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No open ask with correlation_id: {request.correlation_id}",
-        )
-    # Acking a structured QUESTION delegates to the typed answer path so the
-    # blocking transport's waiter resolves and the answer is recorded. A bare
-    # ack on a question = acknowledge; ack-with-message = a text answer.
-    if existing.question is not None and not existing.closed:
-        delegated = AnswerRequest(
-            correlation_id=request.correlation_id,
-            text=request.message,
-            outcome="acknowledged" if not request.message else "answered",
-            attachments=request.attachments,
-        )
-        return await _answer_question_core(delegated)
-    if existing.closed and (request.message or request.attachments):
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail=(
-                f"Ask {request.correlation_id} is already closed; "
-                "reply message was not delivered. Send a new notify/ask instead."
-            ),
-        )
-    if existing.closed:
-        # Idempotent bare re-ack: already closed, nothing to do.
-        return OkResponse()
-
-    if request.message or request.attachments:
-        # bypass_circle=True: ack closes a thread already established at
-        # ask-time; circle gate doesn't reapply.
-        framed = (
-            f"[ack #{request.correlation_id} from @{existing.to_peer_name}] "
-            f"{request.message or ''}"
-        )
-        try:
-            peer_delivery = peer_delivery_from_state(
-                config=state.config,
-                registry=peer_registry,
-                state=state,
-            )
-            await peer_delivery.notify(
-                from_peer=existing.to_peer_id,
-                to_peer=existing.from_peer_id,
-                text=framed,
-                bypass_circle=True,
+    try:
+        await _ask_service().ack(
+            AckCommand(
+                correlation_id=request.correlation_id,
+                message=request.message,
                 attachments=request.attachments,
+                from_peer=request.from_peer,
             )
-        except ValueError as e:
-            # Asker peer no longer in registry. Close as best-effort and
-            # log; nothing to retry against.
-            logger.warning(
-                "ack reply for %s: asker missing (%s); closing without delivery",
-                request.correlation_id, e,
-            )
-            await ask_tracker.close(request.correlation_id, reason="ack_with_msg")
-            _emit_ack_event(
-                peer_registry=peer_registry,
-                ask=existing,
-                reason="ack_with_msg",
-                delivered=False,
-                has_message=True,
-                has_attachments=bool(request.attachments),
-            )
-            return OkResponse()
-        except TransportError as e:
-            # Asker has no live WS. Leave the ask open so the recipient can
-            # retry (and report 503 so the MCP caller knows the reply did
-            # not land).
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    f"Reply delivery failed for {existing.from_peer_name}: {e}. "
-                    "Ask remains open; retry when the asker reconnects."
-                ),
-            )
-        except Exception as e:
-            # Unexpected error — also leave the ask open and surface a 500.
-            logger.exception(
-                "ack reply delivery error for %s: %s", request.correlation_id, e,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"Reply delivery error: {e}",
-            )
-
-        # Reply delivered: capture the body for ask-many aggregation (no-op for
-        # non-child asks) BEFORE closing, so a 503'd delivery above never marks
-        # the child replied.
-        if request.message and existing.parent_id is not None:
-            await ask_tracker.capture_child_reply(request.correlation_id, request.message)
-        await ask_tracker.close(request.correlation_id, reason="ack_with_msg")
-    else:
-        _emit_ack_event(
-            peer_registry=peer_registry,
-            ask=existing,
-            reason="ack",
-            delivered=False,
-            has_message=False,
-            has_attachments=False,
         )
-        await ask_tracker.close(request.correlation_id, reason="ack")
-
-    if trace is not None:
-        trace.record(
-            trace_id=request.correlation_id, kind="ask", stage="acked",
-            peer_id=existing.to_peer_id, from_peer_id=existing.from_peer_id,
-        )
-        trace.record(
-            trace_id=request.correlation_id, kind="ask", stage="closed",
-            peer_id=existing.to_peer_id, from_peer_id=existing.from_peer_id,
-        )
-
+    except AskServiceError as e:
+        _raise_http(e)
     return OkResponse()
 
 

@@ -750,8 +750,10 @@ class TestAnswerQuestion:
             raise TransportError("asker offline")
 
         delivery = SimpleNamespace(notify=AsyncMock(side_effect=_offline_notify))
+        import repowire.daemon.ask_service as ask_service
+
         monkeypatch.setattr(
-            asks, "peer_delivery_from_state", lambda **_: delivery,
+            ask_service, "peer_delivery_from_state", lambda **_: delivery,
         )
         await registry.update_peer_status(asker_peer.peer_id, PeerStatus.OFFLINE)
 
