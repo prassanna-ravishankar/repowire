@@ -95,7 +95,8 @@ class SpawnSettings(BaseModel):
             for cli_name in backend.cli_names
         }
         for command in self.allowed_commands:
-            head = command.split(None, 1)[0] if command else ""
+            parts = command.split(None, 1)
+            head = parts[0] if parts else ""
             backend = command_to_backend.get(head)
             if backend and backend not in inferred:
                 inferred[backend] = command

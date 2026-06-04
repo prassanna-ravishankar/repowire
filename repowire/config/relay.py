@@ -27,9 +27,13 @@ class RelayConfig(BaseModel):
 
         import httpx
 
-        relay_http = self.url.replace("wss://", "https://")
+        relay_http = self.url.replace("wss://", "https://").replace("ws://", "http://")
         user_id = getpass.getuser()
-        resp = httpx.post(f"{relay_http}/api/v1/register", json={"user_id": user_id})
+        resp = httpx.post(
+            f"{relay_http}/api/v1/register",
+            json={"user_id": user_id},
+            timeout=10.0,
+        )
         resp.raise_for_status()
         self.api_key = resp.json()["api_key"]
         return self.api_key

@@ -276,6 +276,26 @@ class TestRelayConfig:
         relay = RelayConfig()
         assert relay.url == "wss://repowire.io"
 
+    def test_ensure_api_key_supports_local_ws_urls_with_timeout(self):
+        relay = RelayConfig(url="ws://localhost:9000")
+
+        class Response:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"api_key": "rw_local"}
+
+        with patch("getpass.getuser", return_value="tester"), \
+            patch("httpx.post", return_value=Response()) as mock_post:
+            assert relay.ensure_api_key() == "rw_local"
+
+        mock_post.assert_called_once_with(
+            "http://localhost:9000/api/v1/register",
+            json={"user_id": "tester"},
+            timeout=10.0,
+        )
+
 
 class TestSpawnSettings:
     def test_defaults_empty(self):
@@ -310,6 +330,10 @@ class TestSpawnSettings:
         spawn = SpawnSettings(allowed_commands=["claude --model opus", "codex"])
         assert spawn.commands[AgentType.CLAUDE_CODE] == "claude --model opus"
         assert spawn.commands[AgentType.CODEX] == "codex"
+
+    def test_legacy_allowed_commands_ignore_blank_commands(self):
+        spawn = SpawnSettings(allowed_commands=["   ", "", "codex"])
+        assert spawn.commands == {AgentType.CODEX: "codex"}
 
     def test_profiles_can_extend_backend_commands(self):
         spawn = SpawnSettings(
