@@ -102,7 +102,7 @@ calling one service end-to-end.
 Adjacent low-risk win: give the CLI a sync wrapper over `client.py` and delete the
 inline `httpx` calls; this collapses the `/query` vs `/ask` divergence on its own.
 
-## Finding 2 — `peer_registry.py` is still a god-object (2796 LOC, 99 methods)
+## Finding 2 — `peer_registry.py` is still a god-object (2796 LOC, 94 registry methods)
 
 Even after the EventLog/delivery extractions, the registry is six classes in a
 trenchcoat: in-memory peer store, session-mapping persistence (hand-written SQL
