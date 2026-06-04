@@ -122,6 +122,57 @@ class AgentBackend(ABC):
             return f"{command} {self.resume_subcommand} {quoted_session}"
         return f"{command} {self.resume_flag} {quoted_session}"
 
+    def runtime_session_validation_status(
+        self,
+        peer_path: str | None,
+        runtime_session_id: str | None,
+    ) -> str:
+        """Return backend-specific local resume pre-validation status."""
+        if not runtime_session_id:
+            return "missing_id"
+        if not self.supports_resume:
+            return "unsupported"
+        from repowire.session.history import backend_runtime_session_validation_status
+
+        return backend_runtime_session_validation_status(
+            peer_path,
+            self.agent_type.value,
+            runtime_session_id,
+        )
+
+    def load_bound_history(
+        self,
+        *,
+        peer_path: str | None,
+        runtime_session_id: str | None,
+        runtime_source_uri: str | None,
+        metadata: dict[str, Any] | None = None,
+    ):
+        """Load history for a durable runtime binding using this backend."""
+        from repowire.session.history import backend_load_bound_history
+
+        return backend_load_bound_history(
+            peer_path=peer_path,
+            backend=self.agent_type.value,
+            runtime_session_id=runtime_session_id,
+            runtime_source_uri=runtime_source_uri,
+            metadata=metadata,
+        )
+
+    def load_peer_history(
+        self,
+        peer_path: str | None,
+        metadata: dict[str, Any] | None = None,
+    ):
+        """Load local peer history using this backend's history support."""
+        from repowire.session.history import backend_load_peer_history
+
+        return backend_load_peer_history(
+            peer_path,
+            self.agent_type.value,
+            metadata,
+        )
+
     async def post_spawn_warmup(
         self,
         pane_id: str,

@@ -124,6 +124,14 @@ def _write_claude_session(home: Path, cwd: str, session_id: str) -> None:
     (d / f"{session_id}.jsonl").write_text('{"type":"summary"}\n')
 
 
+def _write_codex_session(home: Path, cwd: str, session_id: str) -> None:
+    d = home / ".codex" / "sessions" / "2026" / "06" / "04"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"rollout-2026-06-04T00-00-00-{session_id}.jsonl").write_text(
+        json.dumps({"type": "session_meta", "payload": {"cwd": cwd}}) + "\n"
+    )
+
+
 class TestBackendValidators:
     """runtime_session_validation_status across all backends (fixture dirs)."""
 
@@ -132,8 +140,56 @@ class TestBackendValidators:
         from repowire.session.history import runtime_session_validation_status
         return runtime_session_validation_status(cwd, backend, sid)
 
+    def _backend_status(self, monkeypatch, home, cwd, backend, sid):
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        from repowire.agent_backends import agent_backend_for
+
+        return agent_backend_for(backend).runtime_session_validation_status(cwd, sid)
+
     def test_missing_id(self, tmp_path, monkeypatch):
         assert self._status(monkeypatch, tmp_path, "/x", "claude-code", None) == "missing_id"
+
+    def test_agent_backend_validates_claude_resume_session(self, tmp_path, monkeypatch):
+        home = tmp_path / "h"
+        cwd = "/Users/test/repo"
+        sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        _write_claude_session(home, cwd, sid)
+
+        assert self._backend_status(
+            monkeypatch, home, cwd, AgentType.CLAUDE_CODE, sid
+        ) == "resumable"
+        assert self._backend_status(
+            monkeypatch, home, cwd, AgentType.CLAUDE_CODE, "stale-id"
+        ) == "stale_missing_file"
+
+    def test_agent_backend_validates_codex_resume_session(self, tmp_path, monkeypatch):
+        home = tmp_path / "h"
+        cwd = "/Users/test/repo"
+        sid = "codex-session-123"
+        _write_codex_session(home, cwd, sid)
+
+        assert self._backend_status(monkeypatch, home, cwd, AgentType.CODEX, sid) == \
+            "resumable"
+        assert self._backend_status(monkeypatch, home, cwd, AgentType.CODEX, "missing") == \
+            "stale_missing_file"
+
+    def test_resume_safety_uses_backend_validation_boundary(self, tmp_path, monkeypatch):
+        home = tmp_path / "h"
+        cwd = "/Users/test/repo"
+        sid = "codex-session-456"
+        _write_codex_session(home, cwd, sid)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        from repowire.daemon.resume_safety import resolve_resume_safety
+
+        decision = resolve_resume_safety(
+            backend=AgentType.CODEX,
+            path=cwd,
+            runtime_session_id=sid,
+        )
+
+        assert decision.resumable
+        assert decision.plan is not None
+        assert decision.plan.backend == AgentType.CODEX
 
     def test_gemini_resumable_with_directory(self, tmp_path, monkeypatch):
         home = tmp_path / "h"

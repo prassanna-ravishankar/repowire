@@ -331,12 +331,12 @@ _RESUME_VALIDATORS = {
 PREVALIDATABLE_RESUME_BACKENDS = frozenset(_RESUME_VALIDATORS)
 
 
-def runtime_session_validation_status(
+def backend_runtime_session_validation_status(
     peer_path: str | None,
     backend: str,
     runtime_session_id: str | None,
 ) -> str:
-    """Granular pre-validation status for a runtime_session_id.
+    """Backend-owned granular pre-validation status for a runtime_session_id.
 
     Returns one of:
     - "missing_id": no id captured
@@ -357,6 +357,24 @@ def runtime_session_validation_status(
     if validator is None:
         return "unvalidated_backend"
     return "resumable" if validator(peer_path, runtime_session_id) else "stale_missing_file"
+
+
+def runtime_session_validation_status(
+    peer_path: str | None,
+    backend: str,
+    runtime_session_id: str | None,
+) -> str:
+    """Compatibility wrapper for backend session pre-validation."""
+    from repowire.agent_backends import agent_backend_for
+    from repowire.agent_types import AgentType
+
+    if not runtime_session_id:
+        return "missing_id"
+    try:
+        backend_obj = agent_backend_for(AgentType(getattr(backend, "value", backend)))
+    except ValueError:
+        return backend_runtime_session_validation_status(peer_path, backend, runtime_session_id)
+    return backend_obj.runtime_session_validation_status(peer_path, runtime_session_id)
 
 
 def runtime_session_resumable(
@@ -400,7 +418,7 @@ def _load_paths(
     return turns
 
 
-def load_bound_history(
+def backend_load_bound_history(
     *,
     peer_path: str | None,
     backend: str,
@@ -446,7 +464,37 @@ def load_bound_history(
             message=f"No {history_backend} history found for this session binding.",
         )
 
-    return load_peer_history(peer_path, backend_value, metadata)
+    return backend_load_peer_history(peer_path, backend_value, metadata)
+
+
+def load_bound_history(
+    *,
+    peer_path: str | None,
+    backend: str,
+    runtime_session_id: str | None,
+    runtime_source_uri: str | None,
+    metadata: dict[str, Any] | None = None,
+) -> HistoryLoadResult:
+    """Compatibility wrapper for backend-bound session history loading."""
+    from repowire.agent_backends import agent_backend_for
+    from repowire.agent_types import AgentType
+
+    try:
+        backend_obj = agent_backend_for(AgentType(getattr(backend, "value", backend)))
+    except ValueError:
+        return backend_load_bound_history(
+            peer_path=peer_path,
+            backend=backend,
+            runtime_session_id=runtime_session_id,
+            runtime_source_uri=runtime_source_uri,
+            metadata=metadata,
+        )
+    return backend_obj.load_bound_history(
+        peer_path=peer_path,
+        runtime_session_id=runtime_session_id,
+        runtime_source_uri=runtime_source_uri,
+        metadata=metadata,
+    )
 
 
 def _extract_text(content: Any) -> str:
@@ -708,7 +756,7 @@ def _sort_newest_first(turns: list[Turn]) -> list[Turn]:
     return turns
 
 
-def load_peer_history(
+def backend_load_peer_history(
     peer_path: str | None,
     backend: str,
     metadata: dict[str, Any] | None = None,
@@ -757,6 +805,22 @@ def load_peer_history(
         backend=backend_value,
         message=f"{backend_value} local history is not supported.",
     )
+
+
+def load_peer_history(
+    peer_path: str | None,
+    backend: str,
+    metadata: dict[str, Any] | None = None,
+) -> HistoryLoadResult:
+    """Compatibility wrapper for backend-owned local peer history loading."""
+    from repowire.agent_backends import agent_backend_for
+    from repowire.agent_types import AgentType
+
+    try:
+        backend_obj = agent_backend_for(AgentType(getattr(backend, "value", backend)))
+    except ValueError:
+        return backend_load_peer_history(peer_path, backend, metadata)
+    return backend_obj.load_peer_history(peer_path, metadata)
 
 
 def load_peer_turns(peer_path: str | None, backend: str) -> list[Turn]:

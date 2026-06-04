@@ -20,9 +20,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from repowire.agent_backends import AgentResumePlan, can_resume_backend
+from repowire.agent_backends import AgentResumePlan, agent_backend_for
 from repowire.config.models import AgentType
-from repowire.session.history import runtime_session_validation_status
 
 # Status values (documented set): "resumable", "missing_id", "unsupported",
 # "unvalidated_backend", "stale_missing_file". Kept as str to avoid Literal
@@ -86,11 +85,12 @@ def resolve_resume_safety(
         return ResumeSafetyDecision(None, False, "unsupported",
                                     _warning_for("unsupported", backend_value))
 
-    if not can_resume_backend(backend, runtime_session_id=runtime_session_id):
+    backend_obj = agent_backend_for(backend)
+    if not backend_obj.can_resume(runtime_session_id):
         return ResumeSafetyDecision(None, False, "unsupported",
                                     _warning_for("unsupported", backend_value))
 
-    status = runtime_session_validation_status(path, backend_value, runtime_session_id)
+    status = backend_obj.runtime_session_validation_status(path, runtime_session_id)
     if status != "resumable":
         return ResumeSafetyDecision(None, False, status, _warning_for(status, backend_value))
 

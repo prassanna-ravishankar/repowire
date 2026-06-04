@@ -37,8 +37,6 @@ from repowire.hooks.ws_hook_supervisor import link_spawn_ws_hook
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
 from repowire.session.history import (
     HistoryLoadResult,
-    load_bound_history,
-    load_peer_history,
     page_turns,
 )
 from repowire.session.timeline import (
@@ -1195,9 +1193,9 @@ def _load_history_for_peer(
 ) -> tuple[HistoryLoadResult, SessionBinding | None]:
     binding = _resolve_history_binding(peer, session_id)
     if binding is not None:
-        history = load_bound_history(
+        backend_obj = agent_backend_for(AgentType(binding.backend))
+        history = backend_obj.load_bound_history(
             peer_path=binding.project_path or peer.path,
-            backend=binding.backend,
             runtime_session_id=binding.runtime_session_id or session_id,
             runtime_source_uri=binding.runtime_source_uri,
             metadata={**peer.metadata, **binding.metadata},
@@ -1205,7 +1203,8 @@ def _load_history_for_peer(
         return history, binding
     # Keep peer/path discovery as the downgrade-compatible route behavior when
     # no binding is available or the observed bindings are ambiguous.
-    return load_peer_history(peer.path, peer.backend, peer.metadata), None
+    backend_obj = agent_backend_for(peer.backend)
+    return backend_obj.load_peer_history(peer.path, peer.metadata), None
 
 
 def _history_degradation_message(history: HistoryLoadResult, items: list[TimelineItem]) -> str:
