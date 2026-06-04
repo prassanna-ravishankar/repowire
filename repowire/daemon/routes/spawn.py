@@ -40,6 +40,8 @@ from repowire.spawn_ownership import (
     validate_spawn_ownership,
 )
 
+__all__ = ["SpawnResult"]
+
 # Strong references to background warmup tasks. asyncio holds only weak refs to
 # tasks, so without this set a long-sleeping warmup can be GC'd mid-flight.
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
@@ -267,63 +269,24 @@ async def _authorize_kill(registry: PeerRegistry, from_peer: str | None) -> None
     """Hook for future role-based authorization (e.g. orchestrator-only kill)."""
 
 
-def _record_daemon_spawn_ownership(
-    result: SpawnResult,
-    *,
-    path: str,
-    backend: AgentType,
-    circle: str,
-    role: PeerRole | str,
-    peer_id: str | None = None,
-) -> None:
-    """Record explicit ownership for panes created by daemon spawn/restart."""
+def _spawn_service(state: Any | None = None) -> SpawnService:
+    """Return the daemon spawn service for route handlers.
 
-    if not result.pane_id:
-        return
-    record_spawn_ownership(
-        pane_id=result.pane_id,
-        path=path,
-        backend=backend,
-        circle=circle,
-        role=role,
-        display_name=result.display_name,
-        tmux_session=result.tmux_session,
-        peer_id=peer_id,
-    )
-
-
-def _validate_spawn_path(path: str) -> None:
-    """Validate path against configured spawn roots.
-
-    Raises HTTPException 403 if spawn is disabled or the path is not allowed.
-    Raises HTTPException 404 if the path does not exist on disk.
+    Routes should not construct or bypass spawn behavior ad hoc. Keeping the
+    fallback construction here makes the SpawnService boundary explicit while
+    preserving test harnesses that initialize only partial app state.
     """
-    cfg = get_config()
-    allowed_paths = cfg.daemon.spawn.allowed_paths
-    commands = cfg.daemon.spawn.commands
-
-    if not commands or not allowed_paths:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "Spawn is disabled. Set daemon.spawn.commands and "
-                "daemon.spawn.allowed_paths in ~/.repowire/config.yaml"
-            ),
-        )
-
-    resolved = Path(path).expanduser().resolve()
-    if not resolved.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Path does not exist: {path}",
-        )
-
-    allowed_roots = [Path(p).expanduser().resolve() for p in allowed_paths]
-    if not any(resolved == root or root in resolved.parents for root in allowed_roots):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Path not under any allowed_paths: {path}",
-        )
+    state = state or get_app_state()
+    service = getattr(state, "spawn_service", None)
+    if service is not None:
+        return service
+    return SpawnService(
+        spawn=get_config().daemon.spawn,
+        spawned_pane_ids=_SPAWNED_PANE_IDS,
+        background_tasks=_BACKGROUND_TASKS,
+        spawn_impl=spawn_peer,
+        warmup_impl=post_spawn_warmup,
+    )
 
 
 @router.post("/spawn", response_model=SpawnResponse)
@@ -346,13 +309,7 @@ async def spawn(
         )
     else:
         backend = request.backend
-    service = getattr(get_app_state(), "spawn_service", None) or SpawnService(
-        spawn=get_config().daemon.spawn,
-        spawned_pane_ids=_SPAWNED_PANE_IDS,
-        background_tasks=_BACKGROUND_TASKS,
-        spawn_impl=spawn_peer,
-        warmup_impl=post_spawn_warmup,
-    )
+    service = _spawn_service()
     resolved_path = str(Path(request.path).expanduser().resolve())
     result = service.spawn(
         path=request.path,
@@ -844,18 +801,10 @@ async def restart_peer(
             },
         )
 
-    _validate_spawn_path(peer.path)
-
     spawn_circle = peer.circle or "default"
-    resolved_path = str(Path(peer.path).expanduser().resolve())
     state = get_app_state()
-    service = getattr(state, "spawn_service", None) or SpawnService(
-        spawn=get_config().daemon.spawn,
-        spawned_pane_ids=_SPAWNED_PANE_IDS,
-        background_tasks=_BACKGROUND_TASKS,
-        spawn_impl=spawn_peer,
-        warmup_impl=post_spawn_warmup,
-    )
+    service = _spawn_service(state)
+    resolved_path = service.validate_path(peer.path)
     resume_target_for_peer = _restart_resume_target(
         peer=peer,
         resolved_path=resolved_path,
@@ -1251,13 +1200,7 @@ async def switch_peer_backend(
     # the peer until end_quiesce() runs. Without the barrier a fresh /ask could
     # race between the pending check and the kill and be orphaned by the switch.
     state = get_app_state()
-    service = getattr(state, "spawn_service", None) or SpawnService(
-        spawn=get_config().daemon.spawn,
-        spawned_pane_ids=_SPAWNED_PANE_IDS,
-        background_tasks=_BACKGROUND_TASKS,
-        spawn_impl=spawn_peer,
-        warmup_impl=post_spawn_warmup,
-    )
+    service = _spawn_service(state)
     # Validate the resolved command + peer's existing path against config before
     # any destructive action so a misconfigured switch cannot kill a live peer.
     service.validate_path(peer.path)

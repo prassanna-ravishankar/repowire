@@ -113,6 +113,25 @@ def _spawn_result(pane_id: str = "%202") -> SpawnResult:
     )
 
 
+class _SpySpawnService:
+    def __init__(self, tmp_path: Path):
+        self.tmp_path = tmp_path
+        self.validated_paths: list[str] = []
+
+    def validate_path(self, path: str) -> str:
+        self.validated_paths.append(path)
+        return str(Path(path).expanduser().resolve())
+
+    def resolve_command(self, backend, profile=None):
+        return "claude"
+
+    def resume_command(self, command, *, backend, resume_plan):
+        return f"{command} --resume {resume_plan.runtime_session_id}"
+
+    def spawn(self, **kwargs):
+        raise AssertionError("dry-run restart must not spawn")
+
+
 def _patch_resume():
     def fake_resolve_resume_safety(
         *,
@@ -223,6 +242,23 @@ class TestRestartPeerRoute:
         assert response.json()["restarted"] is False
         mock_kill.assert_not_called()
         mock_spawn.assert_not_called()
+
+    async def test_restart_validates_path_through_spawn_service(self, env, tmp_path):
+        name = await _register(env.client, path=str(tmp_path), pane_id="%101")
+        spawn_routes._SPAWNED_PANE_IDS.add("%101")
+        service = _SpySpawnService(tmp_path)
+
+        with patch.object(spawn_routes, "_spawn_service", return_value=service), \
+            patch.object(spawn_routes, "kill_pane") as mock_kill, \
+            _patch_resume():
+            response = await env.client.post(
+                f"/peers/{name}/restart",
+                json={"dry_run": True},
+            )
+
+        assert response.status_code == 200, response.text
+        assert service.validated_paths == [str(tmp_path)]
+        mock_kill.assert_not_called()
 
     async def test_dry_run_uses_durable_ownership_after_daemon_restart(
         self, env, tmp_path, monkeypatch,
