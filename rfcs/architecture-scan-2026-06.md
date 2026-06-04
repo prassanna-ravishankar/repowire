@@ -64,9 +64,10 @@ ACP permission relay. Representative spots:
 
 - `routes/asks.py:_answer_question_core` (~100 lines of answer/ack/approval state
   machine); `routes/asks.py:_acp_complete` (~116 lines of ACP relay + retry).
-- `routes/spawn.py:restart_peer` (~195 lines of backend-switch + resume +
-  pane-probe orchestration), with `_resolve_spawn_command` / `_validate_spawn_path`
-  **duplicated** from `SpawnService`.
+- `routes/spawn.py:restart_peer` (~195 lines of restart + resume + pane-probe
+  orchestration). The route module still carries legacy compatibility helpers
+  such as `_resolve_spawn_command` / `_validate_spawn_path`, although the
+  command/path validation path has started moving into `SpawnService`.
 - `routes/peers.py:_link_pane` (~123 lines); health computed inline in
   `_peer_to_info_with_health`.
 
@@ -122,12 +123,14 @@ This finding **reinforces `registry-route-split-plan.md` PR4** (extract
    rather than raw SQL in the registry.)
 2. **`PeerAllocator`** for the 371-line method.
 
-One correctness note for PR4: the registry still emits to `_event_log` **and**
-`_event_bus` as two independent calls (`peer_registry.py:184-185` and the emit
-sites). That's a non-transactional double-write — the ledger can diverge from the
-bus. Since the roadmap wants approval/memory changes to be **first-class timeline
-events**, the repair/event work should unify these behind one `emit()` that
-writes log + bus together.
+One correctness note for PR4: the registry now has two event-ish surfaces:
+durable dashboard/timeline events through `EventLog`, and ephemeral in-process
+peer-status pub/sub through `EventBus` (`peer_registry.py:184-185`). They are not
+currently duplicate writes of the same event, but they can drift semantically as
+more lifecycle events become first-class. Since the roadmap wants approval/memory
+changes to be **first-class timeline events**, the repair/event work should make
+the durable `EventLog` path the clear source of timeline truth and keep
+`EventBus` scoped to transient daemon-internal notifications.
 
 Together these take the file toward ~1800 LOC and make identity/mapping reusable
 when sessions become the durable unit.
@@ -150,26 +153,31 @@ subclassing. **Direction:** push `is_session_resumable()` and `load_history()`
 down as `AgentBackend` methods; the dict and the if/elif chains dissolve into
 normal subclass overrides.
 
-This is also the cleanest **session-native unblocker**: it separates resume
-*proof* (does the session exist on disk?) from resume *decision* (should we?) from
-resume *command* (how?). Today `spawn_service.py:145` builds the resume command
-without pre-validating the id exists, so a stale id exits hard and kills the pane —
-exactly the "pre-validate destructive actions" philosophy, applied to resume.
+This is also the cleanest **session-native unblocker**: it keeps resume *proof*
+(does the session exist on disk?), resume *decision* (should we?), and resume
+*command* (how?) behind the same backend boundary. Current user-facing restart,
+session-control, and job-runner paths already pre-validate via `resume_target()`
+or `resolve_resume_safety()` before attaching a resume plan; the remaining seam
+is that `SpawnService` trusts callers to pass an already validated
+`AgentResumePlan`, while the backend-specific proof still lives in
+`session/history.py` instead of the backend registry.
 
-## Finding 4 — `Config` is a god-object (40 importers, confirmed)
+## Finding 4 — `Config` is a god-object (broad import surface)
 
 CLAUDE.md already flags `Config` as the densest, highest-blast-radius node; this
-scan quantifies it at 40 direct importers. Spawn code, hooks, installers, and the
-relay client import the whole object to read one slice.
+scan confirms the broad import surface: current main has 14 direct importers of
+the `Config` class, 33 Python files mentioning `Config`, and many more modules
+depending on `config.models` for adjacent exports. Spawn code, hooks, installers,
+and the relay client often import a broad config module to read one slice.
 
 - **Free win, zero risk:** `AgentType` is re-exported through `config.models` but
-  already lives in `agent_types.py`. ~6 files (hooks, `websocket_hook`) import
-  `Config` *only* for the enum — repoint those imports and they stop depending on
-  `Config` entirely.
+  already lives in `agent_types.py`. Several files import `AgentType` from
+  `config.models` even though they do not need the broader config model; repoint
+  those imports and they stop depending on `config.models` for an enum-only use.
 - **Structural:** slice `SpawnSettings` into its own module so
   `spawn.py` / `spawn_service.py` / `routes/spawn.py` / tests depend on a narrow
-  config; do the same for `RelayConfig`. This moves `Config` from ~40 importers
-  toward ~20 and makes spawn/relay tests constructable without a full `Config`.
+  config; do the same for `RelayConfig`. This shrinks the config blast radius and
+  makes spawn/relay tests constructable without a full `Config`.
 
 ## Finding 5 — `cli.py` is a 4406-LOC monolith
 
