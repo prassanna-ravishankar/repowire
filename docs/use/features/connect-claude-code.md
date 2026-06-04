@@ -15,7 +15,7 @@ Six lifecycle events are wired by default:
 | `SessionStart` | Registers the peer with the daemon, spawns the WebSocket hook supervisor, injects the peer list as context |
 | `UserPromptSubmit` | Marks the peer `busy` |
 | `Notification` | Resets the peer to `online` when Claude Code emits an idle prompt |
-| `Stop` | Extracts response + tool calls from the transcript, delivers any pending legacy `/query`, fetches `/asks/pending` and emits a reminder block if open asks exist, then marks the peer `online` |
+| `Stop` | Extracts response + tool calls from the transcript, drains any old legacy `/query` FIFO response, fetches `/asks/pending` and emits a reminder block if open asks exist, then marks the peer `online` |
 | `StopFailure` | Uses the same stop handler to repair status after API-level stop failures |
 | `SessionEnd` | Tears down the WebSocket hook supervisor, marks the peer `offline` |
 
@@ -46,7 +46,7 @@ repowire setup --experimental-channels
 
 Replaces tmux-injection delivery with direct MCP-channel delivery. When a message arrives, Claude sees a `<channel source="repowire">` tag in its context instead of a `[ask #cid from @peer] ...` line injected into the terminal.
 
-Channel setup adds a separate `repowire-channel` MCP server entry in `~/.claude.json`. The normal `repowire` MCP server remains installed; use its stable tools, including `ack`, for ask lifecycle and parity with the default transport. The channel server itself only handles channel delivery and legacy query replies.
+Channel setup adds a separate `repowire-channel` MCP server entry in `~/.claude.json`. The normal `repowire` MCP server remains installed; use its stable tools, including `ack`, for ask lifecycle and parity with the default transport. The channel server itself only handles channel delivery.
 
 Requirements:
 

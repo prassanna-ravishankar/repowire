@@ -9,6 +9,7 @@ The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and client
 - `GET /panes/orphans` lists local tmux panes not bound to any registered peer (with a display-only backend hint); `POST /panes/{pane_id}/link` adopts one — registers the peer AND establishes its inbound ws-hook, rolling the registration back if no live transport connects (fail-closed against ghosts). Driven by `repowire link`.
 - `/ask`, `/ack`, and `/asks/pending` for ask lifecycle.
 - `/answer` records a typed answer to a structured question; `POST /questions/ask-blocking` registers a blocking structured question (tool permission) and holds the connection open until it is answered or the daemon's wait cap elapses, then returns the typed answer (fail-closed: a tool-permission question denies on timeout). Used by blocking transports such as the ACP broker and the Claude Code `PreToolUse` approval hook.
+- `/query` is a legacy blocking compatibility route. It opens a structured text ask through the ask lifecycle, waits for the recipient's answer/ack, and returns the old `{text, error, status}` response shape for existing clients.
 - `/traces/{trace_id}` returns the recorded delivery stages for an ask (`correlation_id`) or notify (`delivery_id`) from the local delivery trace ledger.
 - `/messages` and WebSocket routes for live delivery.
 - `/schedules` for one-shot and recurring scheduled messages.

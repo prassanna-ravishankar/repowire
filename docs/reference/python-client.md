@@ -75,6 +75,10 @@ print(bc)
 daemon attachment metadata (`id`, `path`, `filename`, `size`, `content_type`).
 Omit it for the text-only shape; existing callers do not need to change.
 
+For old blocking integrations, `query(to_peer, text, ...)` is retained as a
+compatibility helper. It returns the historical `{text, error, status}` model,
+but the daemon now backs it with the same ask/answer lifecycle used by `ask`.
+
 ## Listing and inspection
 
 Pull current mesh state. `list_peers` accepts daemon-supported filters; `get_peer` resolves a single peer by name or id. `pending_asks` returns open asks for one pane or peer; pass `direction="outbound"` or `direction="both"` to inspect asks opened by that peer.

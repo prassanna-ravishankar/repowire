@@ -84,7 +84,7 @@ Key modules (the graph in `graphify-out/` is the live map; these are the hubs):
 
 ### Transport mechanics worth knowing
 
-- **Hooks (default):** SessionStart registers the peer + spawns the ws-hook (flock-deduped) + injects context. Stop posts chat turns, delivers the legacy /query response, then fetches `/asks/pending` and emits `{"decision":"block","reason":<reminder>}` if open asks exist (Stop can't add context otherwise), then marks online. UserPromptSubmit → BUSY; Notification(idle_prompt) → ONLINE. The ws-hook injects `[ask #cid]` text on arrival; the Stop reminder is the *only* thing that resurfaces an un-acked ask.
+- **Hooks (default):** SessionStart registers the peer + spawns the ws-hook (flock-deduped) + injects context. Stop posts chat turns, drains any old legacy `/query` FIFO response, then fetches `/asks/pending` and emits `{"decision":"block","reason":<reminder>}` if open asks exist (Stop can't add context otherwise), then marks online. UserPromptSubmit → BUSY; Notification(idle_prompt) → ONLINE. The ws-hook injects `[ask #cid]` text on arrival; the Stop reminder is the *only* thing that resurfaces an un-acked ask.
 - **Channel (experimental, `repowire setup --experimental-channels`):** Claude Code ↔ `channel/server.ts` (MCP stdio) ↔ daemon. Messages arrive as `<channel>` tags; Claude replies via the `reply`/`ack` tools. Requires claude.ai login, Claude Code 2.1.80+, bun. Only the Stop hook is kept in channel mode (for dashboard chat turns).
 - **Config** lives at `~/.repowire/config.yaml` (`daemon`, `relay`, `telegram`, `slack`, `updates`, `experiments`, …), loaded by `config/models.py`. Channel/MCP config is in `~/.claude.json`, managed by `repowire setup`.
 

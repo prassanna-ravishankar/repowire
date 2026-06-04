@@ -85,6 +85,7 @@ Exits 0 if all checks pass (or only warn/skip). Exits 1 if any check fails — s
 repowire peer new PATH [--backend BACKEND] [--profile PROFILE] [--circle CIRCLE]
 repowire peer list                          # god-view list (all circles, includes caller)
 repowire peer describe NAME_OR_ID [--circle C]  # full state for one peer
+repowire peer ask NAME QUERY [--timeout SEC] [--circle C]  # blocking compatibility ask
 repowire peer claim-role orchestrator [--peer NAME_OR_ID] [--circle C] [--force]
 repowire peer restart NAME_OR_ID [--circle C] [--dry-run] [-m MESSAGE]
 repowire peer doctor NAME_OR_ID [--circle C] [--json] [--fix]  # deep diagnostic + contradictions
@@ -103,6 +104,8 @@ repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 For Antigravity interop checks, `python3 scripts/agy_interop_smoke.py --run-cli-fallback` writes a JSON evidence report covering observed hook evidence, MCP availability state, and CLI fallback ask→ack. It records current behaviour only; hook or MCP support is not treated as verified unless the report observes matching daemon evidence.
 
 `peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP [`list_peers`](mcp-tools.md#list_peers) tool defaults to a peer-facing view (online only, caller hidden).
+
+`peer ask` is a blocking CLI compatibility helper for quick manual checks. It uses the daemon's ask/answer lifecycle under the hood, waits for the recipient to `ack` with a reply, then prints the reply text. For agent-to-agent work, prefer the MCP [`ask`](mcp-tools.md#ask) tool, which returns a correlation id immediately and lets the conversation continue asynchronously.
 
 `peer new` spawns a tmux-backed peer through the daemon `/spawn` route using the configured `daemon.spawn.commands.<backend>` command. Pass `--profile NAME` to append args from `daemon.spawn.profiles.<backend>.<name>`, such as a faster or more capable model selection. Antigravity uses the same daemon pre-registration path as MCP spawn, so it appears immediately as a CLI-fallback peer while upstream hooks are pending. `--command` remains accepted as a deprecated explicit override and bypasses daemon registration/profile resolution.
 

@@ -13,12 +13,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT
+from repowire.daemon.ask_service import AskService, AskServiceError, OpenAskCommand
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.peer_delivery import peer_delivery_from_state
 from repowire.daemon.routes._shared import OkResponse
 from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import PeerStatus, TurnState
+from repowire.protocol.questions import Answer, Question
 
 router = APIRouter(tags=["messages"])
 logger = logging.getLogger(__name__)
@@ -154,7 +156,7 @@ async def query_peer(
     request: QueryRequest,
     _: str | None = Depends(require_auth),
 ) -> QueryResponse:
-    """Send a query to a peer and wait for response."""
+    """Compatibility shim: open a blocking text ask and wait for its answer."""
     peer_registry = get_peer_registry()
     state = get_app_state()
     await peer_registry.lazy_repair()
@@ -172,32 +174,100 @@ async def query_peer(
                 error=f"Peer '{request.to_peer}' is offline",
                 status=PeerStatus.OFFLINE.value,
             )
+    else:
+        return QueryResponse(error=f"Unknown peer: {request.to_peer}")
 
     # Use "cli" as default from_peer if not specified
     from_peer = request.from_peer or "cli"
     # Auto-bypass circles for CLI requests (when from_peer was not specified)
     bypass = request.bypass_circle or request.from_peer is None
+    from_peer_id = None
+    try:
+        from_obj = (
+            await peer_registry.get_peer(from_peer, circle=peer.circle)
+            or await peer_registry.get_peer(from_peer)
+        )
+    except ValueError:
+        from_obj = None
+    if from_obj is not None:
+        from_peer_id = from_obj.peer_id
+    query_event_id = peer_registry.add_event(
+        "query",
+        {
+            "from": from_peer,
+            "to": request.to_peer,
+            "text": request.text,
+            "from_peer_id": from_peer_id,
+            "to_peer_id": peer.peer_id,
+            "status": "pending",
+        },
+    )
 
     try:
-        peer_delivery = peer_delivery_from_state(
-            config=state.config,
-            registry=peer_registry,
-            state=state,
+        ask_service = AskService(state=state, peer_registry=peer_registry)
+        result = await ask_service.open_ask(
+            OpenAskCommand(
+                from_peer=from_peer,
+                to_peer=request.to_peer,
+                text=request.text,
+                bypass_circle=bypass,
+                circle=request.circle,
+                question=Question(
+                    kind="text",
+                    prompt=request.text,
+                    blocking=True,
+                    timeout_seconds=request.timeout,
+                    default_answer=Answer(
+                        outcome="timed_out",
+                        message=f"Timeout waiting for {request.to_peer}",
+                    ),
+                    scope="mesh_ask",
+                    metadata={"compat": "query"},
+                ),
+            )
         )
-        response_text = await peer_delivery.query(
-            from_peer=from_peer,
-            to_peer=request.to_peer,
-            text=request.text,
-            timeout=request.timeout,
-            bypass_circle=bypass,
-            circle=request.circle,
+        answer = await state.ask_tracker.wait_for_answer(
+            result.correlation_id,
+            timeout_seconds=request.timeout,
+            default_answer=Answer(
+                outcome="timed_out",
+                message=f"Timeout waiting for {request.to_peer}",
+            ),
+        )
+        if answer.outcome == "timed_out":
+            peer_registry._update_event(query_event_id, {"status": "timeout"})
+            asyncio.ensure_future(peer_registry._check_peer_after_timeout(peer.peer_id))
+            return QueryResponse(error=f"Timeout waiting for {request.to_peer}")
+        if answer.outcome == "cancelled":
+            peer_registry._update_event(
+                query_event_id,
+                {"status": "error", "error": answer.message or "Query cancelled"},
+            )
+            return QueryResponse(error=answer.message or "Query cancelled")
+        response_text = answer.text or answer.message or answer.option_id or ""
+        peer_registry._update_event(query_event_id, {"status": "success"})
+        peer_registry.add_event(
+            "response",
+            {
+                "from": request.to_peer,
+                "to": from_peer,
+                "from_peer_id": peer.peer_id,
+                "to_peer_id": from_peer_id,
+                "text": response_text[:100] + "..." if len(response_text) > 100 else response_text,
+                "correlation_id": query_event_id,
+            },
         )
         return QueryResponse(text=response_text)
     except ValueError as e:
+        peer_registry._update_event(query_event_id, {"status": "error", "error": str(e)})
         return QueryResponse(error=str(e))
-    except TimeoutError:
-        return QueryResponse(error=f"Timeout waiting for {request.to_peer}")
+    except AskServiceError as e:
+        peer_registry._update_event(
+            query_event_id, {"status": "error", "error": str(e.detail)},
+        )
+        return QueryResponse(error=str(e.detail))
     except Exception as e:
+        peer_registry._update_event(query_event_id, {"status": "error", "error": str(e)})
         return QueryResponse(error=f"Query failed: {e}")
 
 

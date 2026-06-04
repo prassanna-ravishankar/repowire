@@ -3509,34 +3509,38 @@ def peer_rehook(name: str, circle: str | None, apply: bool) -> None:
 @click.option("--circle", "-c", default=None, help="Circle to scope peer lookup")
 def peer_ask(name: str, query: str, timeout: int, circle: str | None) -> None:
     """Ask a peer a question (CLI testing utility)."""
-    import httpx
+    from repowire.client import AsyncRepowireClient
+    from repowire.protocol.errors import (
+        DaemonConnectionError,
+        DaemonHTTPError,
+        DaemonTimeoutError,
+    )
 
     try:
-        with httpx.Client(timeout=float(timeout) + 5.0) as client:
-            body: dict = {
-                "to_peer": name,
-                "text": query,
-                "timeout": timeout,
-            }
-            if circle:
-                body["circle"] = circle
-            resp = client.post(
-                f"{_get_daemon_url()}/query",
-                json=body,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        async def _run():
+            async with AsyncRepowireClient(
+                base_url=_get_daemon_url(),
+                auth_token=_auth_token(),
+                timeout=float(timeout) + 5.0,
+            ) as client:
+                return await client.query(
+                    name,
+                    query,
+                    timeout=timeout,
+                    circle=circle,
+                )
 
-            if data.get("error"):
-                console.print(f"[red]Error: {data['error']}[/]")
-            else:
-                console.print(f"[cyan]{name}:[/] {data.get('text', '')}")
+        data = asyncio.run(_run())
+        if data.error:
+            console.print(f"[red]Error: {data.error}[/]")
+        else:
+            console.print(f"[cyan]{name}:[/] {data.text or ''}")
 
-    except httpx.ConnectError:
+    except DaemonConnectionError:
         console.print("[red]Error: Cannot connect to daemon. Run 'repowire serve' first.[/]")
-    except httpx.TimeoutException:
+    except DaemonTimeoutError:
         console.print(f"[red]Timeout: No response from {name}[/]")
-    except httpx.HTTPStatusError as e:
+    except DaemonHTTPError as e:
         console.print(f"[red]Error: {e}[/]")
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
@@ -3607,6 +3611,16 @@ def _auth_headers() -> dict[str, str]:
     except Exception:
         return {}
     return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _auth_token() -> str | None:
+    """Return daemon.auth_token if configured, else None."""
+    try:
+        from repowire.config.models import load_config
+
+        return load_config().daemon.auth_token
+    except Exception:
+        return None
 
 
 def _daemon_request_json(

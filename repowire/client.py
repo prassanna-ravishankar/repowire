@@ -414,7 +414,11 @@ class AsyncRepowireClient:
         bypass_circle: bool = False,
         circle: str | None = None,
     ) -> QueryResult:
-        """Send a legacy blocking query and wait for a response."""
+        """Open a blocking compatibility ask and wait for a response.
+
+        The daemon keeps ``/query`` as the old blocking RPC surface, but it is
+        backed by the ask/answer lifecycle.
+        """
         payload: dict[str, Any] = {
             "to_peer": to_peer,
             "text": text,

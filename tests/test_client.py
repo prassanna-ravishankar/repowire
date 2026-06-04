@@ -158,6 +158,35 @@ async def test_resume_session_client_posts_payload(client: AsyncRepowireClient):
     assert result.spawned_display_name == "repo-codex"
 
 
+async def test_query_client_posts_compat_payload(client: AsyncRepowireClient):
+    client._request = AsyncMock(  # type: ignore[method-assign]
+        return_value={"text": "pong", "error": None, "status": None}
+    )
+
+    result = await client.query(
+        "worker",
+        "ping",
+        from_peer="cli",
+        timeout=7,
+        bypass_circle=True,
+        circle="team-a",
+    )
+
+    client._request.assert_awaited_once_with(  # type: ignore[attr-defined]
+        "POST",
+        "/query",
+        json={
+            "to_peer": "worker",
+            "text": "ping",
+            "bypass_circle": True,
+            "from_peer": "cli",
+            "timeout": 7,
+            "circle": "team-a",
+        },
+    )
+    assert result.text == "pong"
+
+
 def test_client_peer_defaults_to_daemon_default_circle():
     peer = ClientPeer.model_validate(
         {

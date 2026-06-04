@@ -136,6 +136,77 @@ def test_whoami_no_pane_no_name_exits_nonzero(monkeypatch) -> None:
 # --- peer asks -----------------------------------------------------------------
 
 
+def test_peer_ask_uses_client_query_and_prints_reply(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    class FakeAsyncRepowireClient:
+        def __init__(self, *, base_url, auth_token, timeout):
+            calls.append({
+                "base_url": base_url,
+                "auth_token": auth_token,
+                "timeout": timeout,
+            })
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return None
+
+        async def query(self, to_peer, text, *, timeout=None, circle=None):
+            calls.append({
+                "to_peer": to_peer,
+                "text": text,
+                "query_timeout": timeout,
+                "circle": circle,
+            })
+            return SimpleNamespace(text="pong", error=None)
+
+    _set_auth_token(monkeypatch)
+    monkeypatch.setattr("repowire.cli._get_daemon_url", lambda: "http://daemon")
+    monkeypatch.setattr("repowire.client.AsyncRepowireClient", FakeAsyncRepowireClient)
+
+    result = CliRunner().invoke(
+        main,
+        ["peer", "ask", "worker", "ping", "--timeout", "7", "--circle", "team-a"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        {"base_url": "http://daemon", "auth_token": "secret-token", "timeout": 12.0},
+        {
+            "to_peer": "worker",
+            "text": "ping",
+            "query_timeout": 7,
+            "circle": "team-a",
+        },
+    ]
+    assert "worker:" in result.output
+    assert "pong" in result.output
+
+
+def test_peer_ask_prints_query_error(monkeypatch) -> None:
+    class FakeAsyncRepowireClient:
+        def __init__(self, **_):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return None
+
+        async def query(self, *_args, **_kwargs):
+            return SimpleNamespace(text=None, error="Peer 'worker' is busy")
+
+    monkeypatch.setattr("repowire.client.AsyncRepowireClient", FakeAsyncRepowireClient)
+
+    result = CliRunner().invoke(main, ["peer", "ask", "worker", "ping"])
+
+    assert result.exit_code == 0, result.output
+    assert "Error: Peer 'worker' is busy" in result.output
+
+
 def test_peer_restart_posts_request_and_prints_response(monkeypatch) -> None:
     client = _make_client(monkeypatch)
     client.post.return_value = _response(

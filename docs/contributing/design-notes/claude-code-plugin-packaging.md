@@ -130,8 +130,8 @@ Default Claude Code integration remains:
   injects peer context
 - `UserPromptSubmit` marks the peer busy
 - `Notification` repairs idle status
-- `Stop` and `StopFailure` extract chat turns, deliver legacy query responses,
-  fetch pending asks, and repair status
+- `Stop` and `StopFailure` extract chat turns, drain old legacy query FIFO
+  responses, fetch pending asks, and repair status
 - `SessionEnd` tears down the supervisor and marks the peer offline
 
 Channel mode remains an explicit `repowire setup --experimental-channels`
