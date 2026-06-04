@@ -14,7 +14,7 @@ from typing import Any, cast
 
 import yaml
 
-from repowire.config.models import Config
+from repowire.config import paths as config_paths
 from repowire.orchestrator.persona import get_active_persona, validate_persona_name
 from repowire.orchestrator.workspace import workspace_path
 
@@ -64,7 +64,7 @@ def validate_memory_name(name: str, *, label: str = "name") -> str:
 
 def memory_root() -> Path:
     """Return the mesh-memory root directory."""
-    return Config.get_config_dir() / "memory"
+    return config_paths.get_config_dir() / "memory"
 
 
 def normalize_scope(scope: str | None) -> str:

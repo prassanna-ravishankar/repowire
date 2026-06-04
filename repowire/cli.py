@@ -472,7 +472,7 @@ def uninstall(yes: bool) -> None:
     import shutil
     import subprocess
 
-    from repowire.config.models import Config
+    from repowire.config.paths import get_config_dir
     from repowire.service.installer import get_service_status, uninstall_service
 
     console.print("[cyan]Uninstalling repowire...[/]")
@@ -510,7 +510,7 @@ def uninstall(yes: bool) -> None:
     _uninstall_pi()
 
     # Remove config directory
-    config_dir = Config.get_config_dir()
+    config_dir = get_config_dir()
     if config_dir.exists():
         if yes or click.confirm("Remove ~/.repowire/ (config, logs, attachments)?", default=False):
             shutil.rmtree(config_dir)
@@ -1309,7 +1309,8 @@ _ORCHESTRATOR_RUNTIME_COMMANDS = {
 
 def _configured_spawn_command(backend: str, profile: str | None = None) -> str | None:
     """Return the configured spawn command for a backend/runtime profile."""
-    from repowire.config.models import AgentType, apply_spawn_profile, load_config
+    from repowire.agent_types import AgentType
+    from repowire.config.models import apply_spawn_profile, load_config
 
     try:
         backend_type = AgentType(backend)
@@ -1454,7 +1455,7 @@ def orchestrator_start(runtime: str | None, profile: str | None, service: bool) 
     """Spawn the orchestrator peer in its workspace."""
     import httpx
 
-    from repowire.config.models import AgentType
+    from repowire.agent_types import AgentType
     from repowire.orchestrator import (
         init_workspace,
         validate_workspace,
@@ -3116,7 +3117,7 @@ def peer_new(
     """
     import httpx
 
-    from repowire.config.models import AgentType
+    from repowire.agent_types import AgentType
     from repowire.spawn import SpawnConfig, spawn_peer
 
     actual_path = str(Path(path).resolve())
@@ -4303,9 +4304,9 @@ def config_show() -> None:
 @config.command(name="path")
 def config_path() -> None:
     """Show configuration file path."""
-    from repowire.config.models import Config
+    from repowire.config.paths import get_config_path
 
-    console.print(str(Config.get_config_path()))
+    console.print(str(get_config_path()))
 
 
 @config.command(name="get")

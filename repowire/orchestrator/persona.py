@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from repowire.config.models import Config
+from repowire.config import paths as config_paths
 from repowire.orchestrator.workspace import workspace_path
 
 _PERSONA_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
@@ -73,7 +73,7 @@ def active_soul_shim_path() -> Path:
 
 def global_persona_dir(name: str) -> Path:
     """Return ~/.repowire/personas/<name>/."""
-    return Config.get_config_dir() / "personas" / validate_persona_name(name)
+    return config_paths.get_config_dir() / "personas" / validate_persona_name(name)
 
 
 def workspace_persona_dir(name: str) -> Path:
@@ -203,7 +203,7 @@ def list_personas() -> list[PersonaSummary]:
     active_path = find_soul_path(active)[0] if active else None
     for source, root in (
         ("workspace", workspace_path() / "personas"),
-        ("global", Config.get_config_dir() / "personas"),
+        ("global", config_paths.get_config_dir() / "personas"),
     ):
         if not root.is_dir():
             continue

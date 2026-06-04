@@ -12,7 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 
 from repowire.agent_backends import agent_backend_for
-from repowire.config.models import AgentType, SpawnProfile, apply_spawn_profile
+from repowire.agent_types import AgentType
+from repowire.config.spawn import SpawnProfile, apply_spawn_profile
 from repowire.daemon.ask_tracker import QuiesceFailedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_config, get_peer_registry

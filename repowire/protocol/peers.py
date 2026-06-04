@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from repowire.config.models import AgentType
+from repowire.agent_types import AgentType
 
 # Per-turn progress, orthogonal to PeerStatus (online/busy/offline liveness).
 # - "idle":               Stop hook fired, no turn in progress

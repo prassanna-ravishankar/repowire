@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from repowire.agent_backends import AgentResumePlan, agent_backend_for
-from repowire.config.models import AgentType
+from repowire.agent_types import AgentType
 
 # Status values (documented set): "resumable", "missing_id", "unsupported",
 # "unvalidated_backend", "stale_missing_file". Kept as str to avoid Literal

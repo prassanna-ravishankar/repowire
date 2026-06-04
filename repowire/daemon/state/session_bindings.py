@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from repowire.config.models import AgentType
+from repowire.agent_types import AgentType
 from repowire.daemon.state.database import StateDatabase
 
 BindingStatus = Literal["active", "detached", "resumable", "archived", "lost", "superseded"]

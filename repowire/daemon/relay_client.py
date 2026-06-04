@@ -17,7 +17,7 @@ import httpx
 import websockets
 from websockets.asyncio.client import ClientConnection
 
-from repowire.config.models import RelayConfig
+from repowire.config.relay import RelayConfig
 
 logger = logging.getLogger(__name__)
 

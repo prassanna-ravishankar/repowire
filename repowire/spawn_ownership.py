@@ -18,12 +18,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from repowire.config.models import AgentType, Config
+from repowire.agent_types import AgentType
+from repowire.config import paths as config_paths
 from repowire.protocol.peers import Peer, PeerRole
 
 logger = logging.getLogger(__name__)
 
-OWNERSHIP_PATH = Config.get_config_dir() / "spawn_ownership.json"
+OWNERSHIP_PATH = config_paths.get_config_dir() / "spawn_ownership.json"
 
 OwnershipError = Literal[
     "missing_ownership",

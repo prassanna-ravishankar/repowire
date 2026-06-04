@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from repowire import peer_mcp
 from repowire.agent_backends import agent_backend_for, resume_capability_for_registration
-from repowire.config.models import AgentType
+from repowire.agent_types import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.diagnostics import (

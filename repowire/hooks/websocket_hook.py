@@ -20,7 +20,7 @@ except ImportError as e:
     print("Install with: pip install websockets", file=sys.stderr)
     sys.exit(1)
 
-from repowire.config.models import AgentType
+from repowire.agent_types import AgentType
 from repowire.hooks._tmux import get_tmux_info
 from repowire.hooks.utils import (
     clear_pane_runtime_state,

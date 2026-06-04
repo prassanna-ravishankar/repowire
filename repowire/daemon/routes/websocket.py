@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from repowire.config.models import AgentType
+from repowire.agent_types import AgentType
 from repowire.daemon.deps import get_app_state
 from repowire.daemon.peer_registry import CircleSource
 from repowire.daemon.routes._shared import is_valid_identifier

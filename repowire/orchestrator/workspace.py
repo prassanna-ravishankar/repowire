@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
 
-from repowire.config.models import Config
+from repowire.config import paths as config_paths
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,7 @@ def _claude_skill_symlink_broken(ws: Path, name: str) -> bool:
 
 def workspace_path() -> Path:
     """Return the orchestrator workspace path."""
-    return Config.get_config_dir() / "orchestrator"
+    return config_paths.get_config_dir() / "orchestrator"
 
 
 @contextmanager

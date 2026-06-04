@@ -15,8 +15,8 @@ def tmp_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     fake_config_dir = tmp_path / ".repowire"
     fake_config_dir.mkdir()
     monkeypatch.setattr(
-        "repowire.orchestrator.workspace.Config.get_config_dir",
-        classmethod(lambda cls: fake_config_dir),
+        "repowire.config.paths.get_config_dir",
+        lambda: fake_config_dir,
     )
     return fake_config_dir / "orchestrator"
 

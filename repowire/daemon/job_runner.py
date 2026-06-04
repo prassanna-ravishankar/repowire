@@ -11,7 +11,8 @@ from typing import Any
 from fastapi import HTTPException
 
 from repowire.agent_backends import AgentResumePlan
-from repowire.config.models import AgentType, Config
+from repowire.agent_types import AgentType
+from repowire.config.models import Config
 from repowire.daemon.peer_delivery import PeerDeliveryService
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.resume_safety import resolve_resume_safety

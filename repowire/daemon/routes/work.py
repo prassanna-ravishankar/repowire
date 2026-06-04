@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from repowire.config.models import AgentType
+from repowire.agent_types import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state
 from repowire.daemon.schedule_cron import CronExpressionError

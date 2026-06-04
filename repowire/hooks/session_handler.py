@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from repowire.config.models import AgentType
+from repowire.agent_types import AgentType
 from repowire.hooks._tmux import get_tmux_info
 from repowire.hooks.adapters import normalize
 from repowire.hooks.handoff import load_handoff_context, write_handoff_summary

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from repowire.agent_backends import agent_backend_for, can_resume_backend
-from repowire.config.models import AgentType
+from repowire.agent_types import AgentType
 from repowire.daemon.state.session_bindings import SessionBinding, SQLiteSessionBindingStore
 from repowire.protocol.peers import Peer, PeerStatus
 

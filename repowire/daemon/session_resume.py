@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from repowire.agent_backends import AgentResumePlan, resume_capability_for_registration
-from repowire.config.models import AgentType
+from repowire.agent_types import AgentType
 from repowire.daemon.resume_safety import resolve_resume_safety
 from repowire.daemon.session_controls import SessionResolution
 from repowire.daemon.spawn_service import SpawnService

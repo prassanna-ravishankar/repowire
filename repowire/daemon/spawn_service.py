@@ -15,7 +15,8 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from repowire.agent_backends import AgentResumePlan, build_resume_command
-from repowire.config.models import AgentType, SpawnSettings, apply_spawn_profile
+from repowire.agent_types import AgentType
+from repowire.config.spawn import SpawnSettings, apply_spawn_profile
 from repowire.daemon.spawn_diagnostics import capture_spawn_registration_diagnostics
 from repowire.installers.post_spawn import post_spawn_warmup
 from repowire.protocol.peers import PeerRole

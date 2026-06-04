@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import os
-import shlex
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -15,71 +14,43 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
-from repowire.agent_backends import DEFAULT_SPAWN_COMMANDS as _DEFAULT_SPAWN_COMMANDS
 from repowire.agent_types import AgentType
+from repowire.config.paths import CACHE_DIR, get_config_dir, get_config_path
+from repowire.config.relay import RelayConfig
+from repowire.config.spawn import (
+    DEFAULT_SPAWN_COMMANDS,
+    SpawnProfile,
+    SpawnSettings,
+    apply_spawn_profile,
+)
 
-DEFAULT_SPAWN_COMMANDS = _DEFAULT_SPAWN_COMMANDS
+__all__ = [
+    "AgentType",
+    "CACHE_DIR",
+    "Config",
+    "DEFAULT_DAEMON_URL",
+    "DEFAULT_HOST",
+    "DEFAULT_PORT",
+    "DEFAULT_QUERY_TIMEOUT",
+    "DEFAULT_SPAWN_COMMANDS",
+    "DaemonConfig",
+    "ExperimentsConfig",
+    "OrchestratorRecallConfig",
+    "PeerConfig",
+    "RelayConfig",
+    "SpawnProfile",
+    "SpawnSettings",
+    "apply_spawn_profile",
+    "load_config",
+]
 
 DEFAULT_QUERY_TIMEOUT: float = 300.0
 """Default timeout in seconds for peer-to-peer queries (5 minutes)."""
-
-CACHE_DIR: Path = Path.home() / ".cache" / "repowire"
-"""Runtime cache directory for logs and transient state."""
 
 DEFAULT_HOST: str = "127.0.0.1"
 DEFAULT_PORT: int = 8377
 DEFAULT_DAEMON_URL: str = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
 """Default daemon URL used by hooks and MCP server."""
-
-
-class SpawnProfile(BaseModel):
-    """Named spawn command extension for a backend runtime."""
-
-    args: list[str] = Field(
-        default_factory=list,
-        description="Additional command arguments appended to the backend command",
-    )
-    description: str | None = Field(
-        None,
-        description="Human-facing profile description for UIs and docs",
-    )
-
-
-def apply_spawn_profile(base_command: str, profile: SpawnProfile | None) -> str:
-    """Return a backend command with profile args appended."""
-    if profile is None or not profile.args:
-        return base_command
-    return f"{base_command} {shlex.join(profile.args)}"
-
-
-class RelayConfig(BaseModel):
-    """Configuration for relay server connection."""
-
-    enabled: bool = Field(default=False, description="Whether to connect to relay")
-    url: str = Field(default="wss://repowire.io", description="Relay server URL")
-    api_key: str | None = Field(None, description="API key for authentication")
-
-    @property
-    def dashboard_url(self) -> str | None:
-        """Dashboard URL via the relay, or None if not configured."""
-        if not self.api_key:
-            return None
-        return "https://repowire.io/dashboard"
-
-    def ensure_api_key(self) -> str:
-        """Register with relay and set API key if missing. Returns the key."""
-        if self.api_key:
-            return self.api_key
-        import getpass
-
-        import httpx
-
-        relay_http = self.url.replace("wss://", "https://")
-        user_id = getpass.getuser()
-        resp = httpx.post(f"{relay_http}/api/v1/register", json={"user_id": user_id})
-        resp.raise_for_status()
-        self.api_key = resp.json()["api_key"]
-        return self.api_key
 
 
 class PeerConfig(BaseModel):
@@ -145,72 +116,6 @@ class MCPHttpConfig(BaseModel):
         default=False,
         description="Allow lifecycle/admin tools over HTTP MCP",
     )
-
-
-class SpawnSettings(BaseModel):
-    """Settings controlling which runtimes and paths agents are allowed to spawn into.
-
-    New configs should use ``commands`` keyed by AgentType value. ``allowed_commands``
-    is retained as a one-release compatibility path for older clients/configs.
-    ``allowed_paths`` must be non-empty for spawn to be enabled.
-    """
-
-    commands: dict[AgentType, str] = Field(
-        default_factory=dict,
-        description="Spawn command per backend/runtime (empty = spawn disabled)",
-    )
-    allowed_commands: list[str] = Field(
-        default_factory=list,
-        description="Deprecated legacy allowed spawn commands",
-    )
-    allowed_paths: list[str] = Field(
-        default_factory=list,
-        description="Allowed root directories for spawned sessions (empty = spawn disabled)",
-    )
-    profiles: dict[AgentType, dict[str, SpawnProfile]] = Field(
-        default_factory=dict,
-        description="Optional named spawn profiles per backend",
-    )
-    env_path: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Explicit PATH entries for spawned agent processes. When empty, "
-            "Repowire captures the user's login-shell PATH as a fallback."
-        ),
-    )
-    env: dict[str, str] = Field(
-        default_factory=dict,
-        description="Extra environment variables injected into spawned agent commands",
-    )
-
-    @field_validator("env")
-    @classmethod
-    def validate_env_keys(cls, value: dict[str, str]) -> dict[str, str]:
-        for key in value:
-            if not key.isidentifier():
-                raise ValueError("daemon.spawn.env keys must be shell-safe identifiers")
-        return value
-
-    @model_validator(mode="after")
-    def _bootstrap_legacy_allowed_commands(self) -> SpawnSettings:
-        """Migrate legacy allowed_commands into runtime command profiles on load."""
-        if self.commands or not self.allowed_commands:
-            return self
-        from repowire.agent_backends import AGENT_BACKENDS
-
-        inferred: dict[AgentType, str] = {}
-        command_to_backend = {
-            cli_name: backend_type
-            for backend_type, backend in AGENT_BACKENDS.items()
-            for cli_name in backend.cli_names
-        }
-        for command in self.allowed_commands:
-            head = command.split(None, 1)[0] if command else ""
-            backend = command_to_backend.get(head)
-            if backend and backend not in inferred:
-                inferred[backend] = command
-        self.commands = inferred
-        return self
 
 
 class OrchestratorRecallConfig(BaseModel):
@@ -520,12 +425,12 @@ class Config(BaseModel):
     @classmethod
     def get_config_dir(cls) -> Path:
         """Get the Repowire config directory."""
-        return Path.home() / ".repowire"
+        return get_config_dir()
 
     @classmethod
     def get_config_path(cls) -> Path:
         """Get the config file path."""
-        return cls.get_config_dir() / "config.yaml"
+        return get_config_path()
 
     def save(self) -> None:
         """Save configuration to file atomically (write tmp + rename, 0600 perms)."""

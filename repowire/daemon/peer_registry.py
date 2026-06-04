@@ -22,9 +22,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
+from repowire.agent_types import AgentType
 from repowire.config.models import (
     DEFAULT_QUERY_TIMEOUT,
-    AgentType,
     Config,
     DaemonConfig,
     ExperimentsConfig,

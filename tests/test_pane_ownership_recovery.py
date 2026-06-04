@@ -88,7 +88,7 @@ async def test_same_path_orchestrator_restart_reuses_sticky_identity(
     registry = _make_registry(tmp_path)
     config_dir = tmp_path / "cfg"
     monkeypatch.setattr(
-        "repowire.orchestrator.workspace.Config.get_config_dir",
+        "repowire.config.paths.get_config_dir",
         lambda: config_dir,
     )
     path = str(config_dir / "orchestrator")
@@ -132,7 +132,7 @@ async def test_same_path_non_config_orchestrator_does_not_reuse_sticky_identity(
     registry = _make_registry(tmp_path)
     config_dir = tmp_path / "cfg"
     monkeypatch.setattr(
-        "repowire.orchestrator.workspace.Config.get_config_dir",
+        "repowire.config.paths.get_config_dir",
         lambda: config_dir,
     )
     wrong_path = str(tmp_path / "other" / "orchestrator")

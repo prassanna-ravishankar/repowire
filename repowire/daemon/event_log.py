@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from repowire.config.models import Config
+from repowire.config import paths as config_paths
 from repowire.daemon.state.events import SQLiteEventStore
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ class EventLog:
         max_events: int = 500,
         store: SQLiteEventStore | None = None,
     ) -> None:
-        self.path = path or (Config.get_config_dir() / "events.json")
+        self.path = path or (config_paths.get_config_dir() / "events.json")
         self.events: deque[dict[str, Any]] = deque(maxlen=max_events)
         self.dirty = False
         self.subscribers: set[asyncio.Event] = set()
