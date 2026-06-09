@@ -111,6 +111,37 @@ def check_tmux_lifecycle_hooks() -> CheckResult:
     )
 
 
+def check_ws_hook_orphans() -> CheckResult:
+    """Report ws-hook processes whose agent is conclusively gone.
+
+    Read-only (dry_run): orphans hold websockets open and keep dead peers
+    ONLINE until the daemon's startup sweep kills them.
+    """
+    from repowire.hooks.ws_hook_supervisor import sweep_orphan_ws_hooks
+
+    try:
+        reports = sweep_orphan_ws_hooks(dry_run=True)
+    except Exception as e:
+        return CheckResult("Orphan ws-hooks", Status.SKIP, f"sweep failed: {e}")
+    if not reports:
+        return CheckResult("Orphan ws-hooks", Status.OK, "none detected")
+    children = [
+        CheckResult(
+            f"pid {r.pid}",
+            Status.WARN,
+            f"pane={r.pane_id or '?'} peer={r.peer_id or '?'}: {r.reason}",
+        )
+        for r in reports
+    ]
+    return CheckResult(
+        "Orphan ws-hooks",
+        Status.WARN,
+        f"{len(reports)} orphaned ws-hook process(es); "
+        "`repowire service restart` sweeps them",
+        children=children,
+    )
+
+
 def check_package_manager() -> CheckResult:
     for tool in ("uv", "pipx", "pip"):
         if shutil.which(tool):
@@ -649,6 +680,7 @@ def run_all(config: Config, daemon_url: str) -> list[CheckResult]:
         check_python_version(),
         check_tmux(),
         check_tmux_lifecycle_hooks(),
+        check_ws_hook_orphans(),
         check_package_manager(),
         check_update_availability(config),
         check_daemon(daemon_url),

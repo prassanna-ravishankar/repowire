@@ -180,11 +180,24 @@ def _get_peer_id_for_pane(pane_id: str | None) -> str | None:
     return None
 
 
-def _mark_peer_offline(peer_id: str | None) -> None:
-    """Best-effort offline mark to cancel stale queries before pane takeover."""
+def _mark_peer_offline(
+    peer_id: str | None,
+    *,
+    reason: str,
+    source: str,
+    detail: str | None = None,
+) -> None:
+    """Best-effort terminal offline with a truthful cause.
+
+    Terminal so the displaced/ended peer's orphan ws-hook cannot reconnect it
+    back to life (the daemon rejects retired peer_ids without a live agent).
+    """
     if not peer_id:
         return
-    daemon_post(f"/peers/{quote(peer_id, safe='')}/offline", {})
+    daemon_post(
+        f"/peers/{quote(peer_id, safe='')}/offline",
+        {"reason": reason, "source": source, "detail": detail, "terminal": True},
+    )
 
 
 _CIRCLE_SOURCE_LABELS = {
@@ -539,7 +552,12 @@ def main(backend: str = "claude-code") -> int:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
             if prior_peer_id and prior_peer_id != peer_id:
-                _mark_peer_offline(prior_peer_id)
+                _mark_peer_offline(
+                    prior_peer_id,
+                    reason="pane_takeover",
+                    source="session_start_takeover",
+                    detail=f"pane {pane_id} taken over by {peer_id}",
+                )
             clear_pane_runtime_state(pane_id)
 
         write_pane_runtime_metadata(
@@ -613,8 +631,6 @@ def main(backend: str = "claude-code") -> int:
             print(json.dumps(output))
 
     elif event == "SessionEnd":
-        # Don't mark peer offline here - SessionEnd fires frequently during
-        # agentic loops and tool use cycles, not just at true session end.
         transcript_path = input_data.get("transcript_path")
         write_handoff_summary(
             cwd=cwd,
@@ -625,6 +641,26 @@ def main(backend: str = "claude-code") -> int:
                 if isinstance(transcript_path, str) and transcript_path else None
             ),
         )
+        # SessionEnd fires once at a true session boundary with a reason
+        # (verified live: /exit -> prompt_input_exit, /clear -> clear). Skip
+        # only /clear — a SessionStart(source=clear) rebinds the same pane
+        # ~200ms later and deregistering would race it. Anything else is a
+        # quit: deregister explicitly instead of waiting for liveness pings.
+        # An unknown/absent reason (other backends) deregisters too — a wrong
+        # call self-heals on the next SessionStart, which carries a live
+        # agent_pid and reclaims the identity.
+        reason = input_data.get("reason", "")
+        if reason != "clear":
+            end_peer_id = (
+                read_pane_runtime_metadata(pane_id).get("peer_id")
+                or _get_peer_id_for_pane(pane_id)
+            )
+            _mark_peer_offline(
+                end_peer_id,
+                reason="session_end",
+                source="session_end_hook",
+                detail=f"SessionEnd reason={reason or 'unknown'}",
+            )
 
     return 0
 

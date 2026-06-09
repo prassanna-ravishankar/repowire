@@ -214,3 +214,38 @@ def test_check_mcp_installed_reflects_state(tmp_path, monkeypatch):
     assert codex_mod.check_mcp_installed() is True
     codex_mod.uninstall_mcp()
     assert codex_mod.check_mcp_installed() is False
+
+
+# -- install_hooks / hooks.json ---------------------------------------------
+
+
+def test_install_hooks_registers_session_end(tmp_path, monkeypatch):
+    import json
+
+    _retarget(tmp_path, monkeypatch)
+    assert codex_mod.install_hooks() is True
+
+    hooks = json.loads(codex_mod.HOOKS_PATH.read_text())["hooks"]
+    assert "SessionEnd" in hooks
+    entry = hooks["SessionEnd"][0]
+    assert entry["hooks"][0]["command"] == "repowire hook session --backend=codex"
+    # No matcher: every true session end must deregister.
+    assert "matcher" not in entry
+
+
+def test_install_hooks_reports_unchanged_on_reinstall(tmp_path, monkeypatch):
+    """Second install must not rewrite content (codex re-prompts hook trust on
+    any hooks.json change, so the installer reports whether one is coming)."""
+    _retarget(tmp_path, monkeypatch)
+    assert codex_mod.install_hooks() is True
+    assert codex_mod.install_hooks() is False
+
+
+def test_uninstall_hooks_removes_session_end(tmp_path, monkeypatch):
+    import json
+
+    _retarget(tmp_path, monkeypatch)
+    codex_mod.install_hooks()
+    assert codex_mod.uninstall_hooks() is True
+    data = json.loads(codex_mod.HOOKS_PATH.read_text())
+    assert "SessionEnd" not in data.get("hooks", {})

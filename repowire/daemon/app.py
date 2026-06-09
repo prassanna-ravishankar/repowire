@@ -386,6 +386,36 @@ def create_app(
         else:
             logger.info("Skipping tmux lifecycle hook install (install_tmux_hooks=False)")
 
+        # One-shot orphan ws-hook sweep: kill hook processes whose agent is
+        # conclusively gone (they otherwise hold websockets open and keep dead
+        # peers ONLINE), and retire the peers they were impersonating. Gated
+        # with the tmux-hook flag because it touches host-global processes —
+        # a smoke daemon must not kill the live mesh's hooks.
+        if _install_tmux_hooks:
+            try:
+                from repowire.hooks.ws_hook_supervisor import sweep_orphan_ws_hooks
+
+                orphan_reports = await asyncio.to_thread(sweep_orphan_ws_hooks)
+                for report in orphan_reports:
+                    logger.warning(
+                        "Swept orphan ws-hook pid=%s pane=%s peer=%s (%s, killed=%s)",
+                        report.pid,
+                        report.pane_id,
+                        report.peer_id,
+                        report.reason,
+                        report.killed,
+                    )
+                    if report.killed and report.peer_id:
+                        await peer_registry.mark_offline(
+                            report.peer_id,
+                            reason="orphan_ws_hook",
+                            source="startup_sweep",
+                            detail=report.reason,
+                            terminal=True,
+                        )
+            except Exception:
+                logger.warning("Orphan ws-hook sweep failed", exc_info=True)
+
         # Start relay client if enabled
         relay_client: RelayClient | None = None
         if cfg.relay.enabled and cfg.relay.api_key:

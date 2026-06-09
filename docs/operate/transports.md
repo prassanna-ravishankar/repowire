@@ -13,6 +13,14 @@ This is the default path for Claude Code, Codex, and Gemini:
 - Live inbound messages are delivered through the WebSocket hook and injected into the runtime's tmux pane. The hook is bound to the owning agent PID and exits when that process disappears, so an orphaned hook cannot keep a dead peer's daemon socket alive indefinitely.
 - Open asks continue to resurface through Stop-hook reminders until they are acked.
 
+Deregistration is layered, strongest signal first:
+
+1. **SessionEnd (intent)** — a clean quit posts a terminal offline immediately (`reason=session_end`). `/clear` is skipped: the follow-up SessionStart rebinds the same pane milliseconds later.
+2. **Agent-pid watcher (crash)** — the ws-hook watches its owning agent PID and, when it disappears (including SIGKILL), posts a terminal offline (`reason=agent_exited`) before exiting — this covers backends without a session-end hook.
+3. **Liveness pings (backstop)** — lazy repair demotes a connected pane peer only after three consecutive honest `pane_alive=false` verdicts; inconclusive checks (tmux/ps hiccups) are never counted.
+
+A *terminal* offline retires the peer identity: the daemon severs its websocket and rejects reconnects claiming that peer_id unless they prove a live agent PID. A fresh SessionStart (which always carries one) reclaims the identity; a leftover orphan hook cannot. At startup the daemon additionally sweeps orphaned ws-hook processes whose agent is conclusively gone.
+
 Lazy repair treats a recorded agent PID as authoritative runtime evidence: if that PID is gone, a leftover tmux pane or shell is not enough to keep the peer online. Peers without a recorded agent PID can still fall back to live pane evidence.
 
 ## Plugin and extension transports

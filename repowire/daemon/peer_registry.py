@@ -38,8 +38,9 @@ from repowire.daemon.registry_identity import (
     is_configured_orchestrator_path,
     normalize_identity_path,
 )
-from repowire.daemon.registry_repair import has_runtime_evidence
+from repowire.daemon.registry_repair import has_runtime_evidence, pid_alive
 from repowire.daemon.websocket_transport import TransportError
+from repowire.protocol.capabilities import PANE_UNSAFE_STRIKE_LIMIT
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
 
 if TYPE_CHECKING:
@@ -70,6 +71,13 @@ class PaneHijackRejectedError(Exception):
 
 class RoleClaimConflictError(Exception):
     """Raised when a live peer already holds the requested special role."""
+
+
+class PeerRetiredError(Exception):
+    """Raised by allocate_and_register when a claim names a retired peer_id
+    without fresh runtime evidence (a live agent_pid). Stops orphan ws-hooks
+    from resurrecting peers that were terminally marked offline.
+    """
 
 
 @dataclass
@@ -151,6 +159,15 @@ class PeerRegistry:
         # TTL — see config.daemon.description_ttl_seconds. Registry-internal
         # so the wire-facing Peer schema stays untouched.
         self._description_set_at: dict[str, datetime] = {}
+
+        # Terminally-offlined peers: peer_id -> retired-at. A reconnect claiming
+        # a retired id is rejected unless it proves a live agent_pid; a real
+        # SessionStart (which always carries one) clears the entry. In-memory
+        # only — after a daemon restart the ping backstop re-converges.
+        self._retired: dict[str, datetime] = {}
+
+        # Consecutive honest pane_alive=false pongs per connected peer.
+        self._pane_unsafe_strikes: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Mapping persistence
@@ -864,6 +881,19 @@ class PeerRegistry:
         should_redeliver = False
 
         async with self._lock:
+            # Retirement guard: a claim naming a terminally-offlined peer_id is
+            # an orphan ws-hook reconnect unless it proves a live agent. Checked
+            # against _retired (not _peers) so it also covers ids already
+            # evicted from the registry.
+            if peer_id and peer_id in self._retired:
+                if agent_pid is None or not pid_alive(agent_pid):
+                    raise PeerRetiredError(
+                        f"peer_id {peer_id} was retired "
+                        f"(agent_pid={agent_pid or 'absent'}); "
+                        "re-register via a fresh SessionStart"
+                    )
+                self._retired.pop(peer_id, None)
+
             if peer_id is None and path and role == PeerRole.ORCHESTRATOR:
                 folder = self._sanitize_folder_name(Path(path).name)
                 expected_name = display_name_override or f"{folder}-{backend.value}"
@@ -1176,6 +1206,15 @@ class PeerRegistry:
                     agent_pid=effective_agent_pid,
                 )
                 self._peers[allocated_id] = peer
+                # A fresh registration backed by a live agent reclaims a
+                # retired identity (mapping reuse can hand back a retired id
+                # without an explicit peer_id claim).
+                if (
+                    allocated_id in self._retired
+                    and effective_agent_pid is not None
+                    and pid_alive(effective_agent_pid)
+                ):
+                    self._retired.pop(allocated_id, None)
                 logger.info(
                     "Peer registered: %s (%s, status=%s)",
                     assigned_name,
@@ -2092,8 +2131,15 @@ class PeerRegistry:
         source: str = "peer_registry",
         detail: str | None = None,
         context: dict[str, Any] | None = None,
+        terminal: bool = False,
     ) -> int:
         """Mark peer offline and cancel pending queries.
+
+        ``terminal=True`` means the caller knows the agent behind this peer is
+        gone (SessionEnd, agent pid exited, pane takeover, 3-strike pane loss).
+        The peer is retired — its transport is severed and a later reconnect
+        claiming this peer_id is rejected unless it proves a live agent_pid —
+        so an orphan ws-hook cannot resurrect it.
 
         Returns:
             Number of cancelled queries
@@ -2115,6 +2161,11 @@ class PeerRegistry:
                 context=context,
             )
             session_id = peer.peer_id
+            if terminal:
+                self._retired[session_id] = datetime.now(timezone.utc)
+
+        if terminal and self._transport:
+            await self._transport.disconnect(session_id)
 
         cancelled = 0
         if self._query_tracker:
@@ -2247,8 +2298,20 @@ class PeerRegistry:
             await self._emit_and_evict_expired_stashes()
             self._prune_delivery_traces()
             self._prune_spawn_ownership()
+            self._prune_retired()
             self._save_events()
             self._persist_mappings()
+
+    _RETIRED_TTL_SECONDS = 72 * 3600
+
+    def _prune_retired(self) -> None:
+        """Drop retirement records old enough that any orphan is long gone."""
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=self._RETIRED_TTL_SECONDS
+        )
+        self._retired = {
+            peer_id: at for peer_id, at in self._retired.items() if at > cutoff
+        }
 
     def _prune_spawn_ownership(self) -> None:
         """Drop spawn-ownership records pointing at dead tmux panes. Best-effort.
@@ -2395,21 +2458,38 @@ class PeerRegistry:
         async def check(peer_id: str) -> tuple[str, bool | None]:
             try:
                 pong = await transport.ping(peer_id, timeout=1.0)
-                return peer_id, bool(pong.get("pane_alive", True))
             except TimeoutError:
                 return peer_id, None
             except asyncio.TimeoutError:
                 return peer_id, None
             except Exception:
                 return peer_id, None
+            # Modern hooks omit pane_alive when the check was inconclusive
+            # (tmux/ps shell-out failed); legacy hooks always send a bool.
+            value = pong.get("pane_alive")
+            return peer_id, (value if isinstance(value, bool) else None)
 
         results = await asyncio.gather(*(check(peer_id) for peer_id in targets))
+        # Drop strike state for peers no longer tracked.
+        self._pane_unsafe_strikes = {
+            pid: n for pid, n in self._pane_unsafe_strikes.items()
+            if pid in self._peers
+        }
         count = 0
         for peer_id, pane_alive in results:
-            if pane_alive is not False:
+            if pane_alive is True:
                 # Recovered (or never broken): allow a future PANE_MISSING to re-emit.
+                self._pane_unsafe_strikes.pop(peer_id, None)
                 self._clear_contradiction(peer_id, diag.PANE_MISSING)
                 continue
+            if pane_alive is None:
+                # Inconclusive: neither a strike nor a recovery.
+                continue
+            strikes = self._pane_unsafe_strikes.get(peer_id, 0) + 1
+            self._pane_unsafe_strikes[peer_id] = strikes
+            if strikes < PANE_UNSAFE_STRIKE_LIMIT:
+                continue
+            self._pane_unsafe_strikes.pop(peer_id, None)
             peer = self._peers.get(peer_id)
             if peer is not None:
                 self._emit_contradiction(
@@ -2418,14 +2498,19 @@ class PeerRegistry:
                     diag.SEVERITY_ERROR,
                     f"connected pane {peer.pane_id} is no longer alive",
                 )
+            # Terminal: three honest "pane gone" verdicts retire the identity,
+            # so the reporting ws-hook cannot reconnect it back to life.
             await self.mark_offline(
                 peer_id,
                 reason="pane_missing",
                 source="lazy_repair",
-                detail="Connected ws-hook reported that its tmux pane is no longer alive.",
+                detail=(
+                    "Connected ws-hook reported its tmux pane gone on "
+                    f"{PANE_UNSAFE_STRIKE_LIMIT} consecutive pings."
+                ),
                 context={"contradiction": diag.PANE_MISSING},
+                terminal=True,
             )
-            await transport.disconnect(peer_id)
             count += 1
 
         if count:

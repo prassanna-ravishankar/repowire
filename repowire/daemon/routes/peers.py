@@ -27,6 +27,7 @@ from repowire.daemon.orphan_panes import find_orphan_panes
 from repowire.daemon.peer_registry import (
     CircleSource,
     PaneHijackRejectedError,
+    PeerRetiredError,
     RoleClaimConflictError,
 )
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
@@ -789,7 +790,7 @@ async def _register_peer_impl(
             parent_pid=request.parent_pid,
             circle_source=request.circle_source,
         )
-    except PaneHijackRejectedError as exc:
+    except (PaneHijackRejectedError, PeerRetiredError) as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
@@ -962,21 +963,39 @@ class OfflineResponse(BaseModel):
     cancelled_queries: int = 0
 
 
+class OfflineRequest(BaseModel):
+    """Optional truthful cause for an explicit offline.
+
+    Defaults preserve the legacy behavior for old hooks that POST `{}`.
+    ``terminal=True`` retires the peer: transport severed, reconnects without
+    a live agent_pid rejected.
+    """
+
+    reason: str = "offline_route"
+    source: str = "peers_route"
+    detail: str | None = "Peer was explicitly marked offline through the HTTP route."
+    terminal: bool = False
+
+
 @router.post("/peers/{name}/offline", response_model=OfflineResponse)
 async def mark_peer_offline(
     name: str,
+    request: OfflineRequest | None = None,
     _: str | None = Depends(require_auth),
 ) -> OfflineResponse:
     """Mark a peer as offline and cancel pending queries to it.
 
-    Called by SessionEnd hook when a Claude session closes.
+    Called by the SessionEnd hook at session close and by the ws-hook when
+    its owning agent process exits.
     """
     peer_registry = get_peer_registry()
+    body = request or OfflineRequest()
     cancelled = await peer_registry.mark_offline(
         name,
-        reason="offline_route",
-        source="peers_route",
-        detail="Peer was explicitly marked offline through the HTTP route.",
+        reason=body.reason,
+        source=body.source,
+        detail=body.detail,
+        terminal=body.terminal,
     )
     return OfflineResponse(cancelled_queries=cancelled)
 

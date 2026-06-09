@@ -17,7 +17,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from repowire.agent_types import AgentType
 from repowire.daemon.deps import get_app_state
-from repowire.daemon.peer_registry import CircleSource
+from repowire.daemon.peer_registry import CircleSource, PeerRetiredError
 from repowire.daemon.routes._shared import is_valid_identifier
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.peers import PeerRole, PeerStatus, TurnState
@@ -169,19 +169,34 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         model_details = data.get("model_details")
         if isinstance(model_details, dict):
             connect_metadata["model_details"] = model_details
-        peer_id, assigned_name = await peer_registry.allocate_and_register(
-            circle=circle,
-            backend=backend,
-            model=model,
-            path=path,
-            pane_id=pane_id,
-            tmux_session=tmux_session,
-            machine=os.environ.get("HOSTNAME") or socket.gethostname(),
-            role=role,
-            peer_id=claimed_peer_id,
-            circle_source=cast(CircleSource | None, circle_source),
-            metadata=connect_metadata or None,
-        )
+        # Runtime proof for the retirement guard: a reconnect claiming a
+        # retired peer_id is only honored when the owning agent is alive.
+        raw_agent_pid = data.get("agent_pid")
+        agent_pid = raw_agent_pid if isinstance(raw_agent_pid, int) and raw_agent_pid > 0 else None
+        try:
+            peer_id, assigned_name = await peer_registry.allocate_and_register(
+                circle=circle,
+                backend=backend,
+                model=model,
+                path=path,
+                pane_id=pane_id,
+                tmux_session=tmux_session,
+                machine=os.environ.get("HOSTNAME") or socket.gethostname(),
+                role=role,
+                peer_id=claimed_peer_id,
+                circle_source=cast(CircleSource | None, circle_source),
+                metadata=connect_metadata or None,
+                agent_pid=agent_pid,
+            )
+        except PeerRetiredError as exc:
+            await websocket.send_json(
+                {"type": "error", "code": "peer_retired", "error": str(exc)}
+            )
+            await websocket.close(code=4004, reason="Peer retired")
+            logger.info(
+                "WebSocket connect rejected (retired peer_id %s)", claimed_peer_id
+            )
+            return
         session_id = peer_id
 
         # Register with transport (handles connection + status tracking)

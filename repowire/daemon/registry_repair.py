@@ -8,6 +8,17 @@ import subprocess
 from repowire.protocol.peers import Peer
 
 
+def pid_alive(pid: int) -> bool:
+    """True if `pid` exists (EPERM counts as alive — foreign owner)."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
 def has_runtime_evidence(peer: Peer) -> bool:
     """Best-effort runtime proof for a disconnected pane-backed peer.
 
@@ -15,16 +26,10 @@ def has_runtime_evidence(peer: Peer) -> bool:
     local process/tmux evidence and does not attempt any WebSocket recovery.
     """
     if peer.agent_pid is not None and peer.agent_pid > 0:
-        try:
-            os.kill(peer.agent_pid, 0)
-            return True
-        except PermissionError:
-            return True
-        except OSError:
-            # A recorded agent PID is the strongest runtime identity proof we
-            # have. If it is gone, a leftover tmux pane/shell must not keep the
-            # old peer alive.
-            return False
+        # A recorded agent PID is the strongest runtime identity proof we
+        # have. If it is gone, a leftover tmux pane/shell must not keep the
+        # old peer alive.
+        return pid_alive(peer.agent_pid)
 
     if not peer.pane_id:
         return False

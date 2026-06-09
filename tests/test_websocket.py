@@ -11,7 +11,7 @@ from httpx_ws import aconnect_ws
 from httpx_ws.transport import ASGIWebSocketTransport
 
 from repowire.config.models import Config, DaemonConfig
-from repowire.daemon.deps import cleanup_deps, init_deps
+from repowire.daemon.deps import cleanup_deps, get_peer_registry, init_deps
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
@@ -92,6 +92,80 @@ class TestWebSocketConnect:
             session_id = resp["session_id"]
             assert session_id.startswith("repow-")
 
+        cleanup_deps()
+
+    async def test_retired_peer_id_claim_without_agent_pid_is_rejected(self, tmp_path):
+        """An orphan ws-hook reconnecting a terminally-offlined peer is refused."""
+        app = _make_app(tmp_path)
+        async with AsyncClient(
+            transport=ASGIWebSocketTransport(app), base_url="http://test"
+        ) as client:
+            async with aconnect_ws("/ws", client) as ws:
+                await ws.send_json({
+                    "type": "connect",
+                    "display_name": "zombiepeer",
+                    "circle": "default",
+                    "backend": "claude-code",
+                    "path": "/tmp/zombie",
+                })
+                resp = json.loads(await ws.receive_text())
+                session_id = resp["session_id"]
+
+            registry = get_peer_registry()
+            await registry.mark_offline(
+                session_id, reason="agent_exited", source="test", terminal=True
+            )
+
+            async with aconnect_ws("/ws", client) as ws:
+                await ws.send_json({
+                    "type": "connect",
+                    "display_name": "zombiepeer",
+                    "circle": "default",
+                    "backend": "claude-code",
+                    "path": "/tmp/zombie",
+                    "peer_id": session_id,
+                })
+                resp = json.loads(await ws.receive_text())
+                assert resp["type"] == "error"
+                assert resp["code"] == "peer_retired"
+        cleanup_deps()
+
+    async def test_retired_peer_id_claim_with_live_agent_pid_is_accepted(self, tmp_path):
+        """A reconnect that proves a live agent reclaims the retired identity."""
+        app = _make_app(tmp_path)
+        async with AsyncClient(
+            transport=ASGIWebSocketTransport(app), base_url="http://test"
+        ) as client:
+            async with aconnect_ws("/ws", client) as ws:
+                await ws.send_json({
+                    "type": "connect",
+                    "display_name": "phoenixpeer",
+                    "circle": "default",
+                    "backend": "claude-code",
+                    "path": "/tmp/phoenix",
+                })
+                resp = json.loads(await ws.receive_text())
+                session_id = resp["session_id"]
+
+            registry = get_peer_registry()
+            await registry.mark_offline(
+                session_id, reason="session_end", source="test", terminal=True
+            )
+
+            async with aconnect_ws("/ws", client) as ws:
+                await ws.send_json({
+                    "type": "connect",
+                    "display_name": "phoenixpeer",
+                    "circle": "default",
+                    "backend": "claude-code",
+                    "path": "/tmp/phoenix",
+                    "peer_id": session_id,
+                    "agent_pid": os.getpid(),
+                })
+                resp = json.loads(await ws.receive_text())
+                assert resp["type"] == "connected"
+                assert resp["session_id"] == session_id
+            assert session_id not in registry._retired
         cleanup_deps()
 
     async def test_connect_advertises_capabilities(self, tmp_path):

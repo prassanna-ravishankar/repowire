@@ -237,12 +237,110 @@ class TestSessionMain:
             mock_stdin.read.return_value = "not json"
             assert main() == 0
 
-    def test_session_end_is_noop(self):
+    @patch("repowire.hooks.session_handler.write_handoff_summary")
+    @patch("repowire.hooks.session_handler.daemon_post", return_value={})
+    @patch(
+        "repowire.hooks.session_handler.read_pane_runtime_metadata",
+        return_value={"peer_id": "repow-default-dead1234"},
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={"pane_id": "%1", "session_name": "default", "window_name": "t"},
+    )
+    def test_session_end_deregisters_terminally(
+        self, mock_tmux, mock_meta, mock_post, mock_handoff,
+    ):
+        result = _run_with_input({
+            "hook_event_name": "SessionEnd",
+            "cwd": "/tmp/test",
+            "reason": "prompt_input_exit",
+        })
+        assert result == 0
+        mock_handoff.assert_called_once()
+        mock_post.assert_called_once()
+        path, payload = mock_post.call_args.args
+        assert path == "/peers/repow-default-dead1234/offline"
+        assert payload["reason"] == "session_end"
+        assert payload["source"] == "session_end_hook"
+        assert payload["terminal"] is True
+        assert "prompt_input_exit" in payload["detail"]
+
+    @patch("repowire.hooks.session_handler.write_handoff_summary")
+    @patch("repowire.hooks.session_handler.daemon_post", return_value={})
+    @patch(
+        "repowire.hooks.session_handler.read_pane_runtime_metadata",
+        return_value={"peer_id": "repow-default-dead1234"},
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={"pane_id": "%1", "session_name": "default", "window_name": "t"},
+    )
+    def test_session_end_clear_skips_deregistration(
+        self, mock_tmux, mock_meta, mock_post, mock_handoff,
+    ):
+        """/clear ends the session but a SessionStart(source=clear) rebinds the
+        pane ~200ms later — deregistering would race it."""
+        result = _run_with_input({
+            "hook_event_name": "SessionEnd",
+            "cwd": "/tmp/test",
+            "reason": "clear",
+        })
+        assert result == 0
+        mock_handoff.assert_called_once()
+        mock_post.assert_not_called()
+
+    @patch("repowire.hooks.session_handler.write_handoff_summary")
+    @patch("repowire.hooks.session_handler.daemon_post", return_value={})
+    @patch(
+        "repowire.hooks.session_handler._get_peer_id_for_pane",
+        return_value="repow-default-bypane99",
+    )
+    @patch(
+        "repowire.hooks.session_handler.read_pane_runtime_metadata",
+        return_value={},
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={"pane_id": "%1", "session_name": "default", "window_name": "t"},
+    )
+    def test_session_end_without_reason_falls_back_to_by_pane_lookup(
+        self, mock_tmux, mock_meta, mock_lookup, mock_post, mock_handoff,
+    ):
+        """Backends that omit `reason` (codex) still deregister; peer_id comes
+        from the daemon's by-pane lookup when local meta is missing."""
         result = _run_with_input({
             "hook_event_name": "SessionEnd",
             "cwd": "/tmp/test",
         })
         assert result == 0
+        path, payload = mock_post.call_args.args
+        assert path == "/peers/repow-default-bypane99/offline"
+        assert "unknown" in payload["detail"]
+
+    @patch("repowire.hooks.session_handler.write_handoff_summary")
+    @patch("repowire.hooks.session_handler.daemon_post", return_value={})
+    @patch(
+        "repowire.hooks.session_handler._get_peer_id_for_pane",
+        return_value=None,
+    )
+    @patch(
+        "repowire.hooks.session_handler.read_pane_runtime_metadata",
+        return_value={},
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={"pane_id": "%1", "session_name": "default", "window_name": "t"},
+    )
+    def test_session_end_without_peer_id_is_noop(
+        self, mock_tmux, mock_meta, mock_lookup, mock_post, mock_handoff,
+    ):
+        result = _run_with_input({
+            "hook_event_name": "SessionEnd",
+            "cwd": "/tmp/test",
+            "reason": "prompt_input_exit",
+        })
+        assert result == 0
+        mock_post.assert_not_called()
 
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(

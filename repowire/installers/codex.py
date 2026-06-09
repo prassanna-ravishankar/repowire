@@ -10,7 +10,7 @@ CODEX_HOME = Path.home() / ".codex"
 HOOKS_PATH = CODEX_HOME / "hooks.json"
 CONFIG_PATH = CODEX_HOME / "config.toml"
 
-HOOK_EVENTS = ["SessionStart", "Stop", "UserPromptSubmit"]
+HOOK_EVENTS = ["SessionStart", "SessionEnd", "Stop", "UserPromptSubmit"]
 _MCP_ENV_LINE = 'env = { REPOWIRE_BACKEND = "codex" }'
 
 
@@ -41,6 +41,8 @@ _REPOWIRE_HOOKS = {
     "SessionStart": _make_hook_entry(
         "repowire hook session --backend=codex", matcher="startup|resume|clear",
     ),
+    # Deterministic deregistration at quit (no matcher: every true session end).
+    "SessionEnd": _make_hook_entry("repowire hook session --backend=codex"),
     "Stop": _make_hook_entry("repowire hook stop --backend=codex"),
     "UserPromptSubmit": _make_hook_entry("repowire hook prompt --backend=codex"),
 }
@@ -59,8 +61,13 @@ def install_hooks() -> bool:
 
     Appends to existing hook arrays rather than overwriting, preserving
     user-defined hooks for the same events.
+
+    Returns True when hooks.json content actually changed — codex pins a
+    trusted hash per hook entry, so any change makes it re-prompt for trust
+    on the next launch and callers should tell the user to expect that.
     """
-    data = _load_hooks()
+    before = _load_hooks()
+    data = json.loads(json.dumps(before)) if before else {}
     hooks = data.setdefault("hooks", {})
 
     for event, entry in _REPOWIRE_HOOKS.items():
@@ -71,7 +78,7 @@ def install_hooks() -> bool:
         hooks[event] = existing
 
     _save_hooks(data)
-    return True
+    return data != before
 
 
 def uninstall_hooks() -> bool:

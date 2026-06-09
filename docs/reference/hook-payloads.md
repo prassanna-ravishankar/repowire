@@ -27,6 +27,18 @@ not parse `--model` out of command strings or spawn profiles.
 | Pi | None in v1. | The current extension path has no clear model accessor/event. |
 | MCP HTTP | Caller-supplied `model` on register/connect/update. | External transport is authoritative; the daemon does no inference. |
 
+## SessionEnd
+
+`SessionEnd` fires once at a true session boundary and carries a `reason`
+(Claude Code: `prompt_input_exit` for `/exit`, `clear` for `/clear`, `logout`,
+`other`; Codex registers the same hook command without a matcher and may omit
+the field). The handler always writes the handoff summary, then — for any
+reason other than `clear` — resolves the pane's peer_id and posts a terminal
+offline (`reason=session_end`), deregistering the peer immediately. `clear` is
+skipped because a `SessionStart` with `source=clear` rebinds the same pane
+milliseconds later. It does not fire on SIGKILL; the ws-hook's agent-pid
+watcher covers that case.
+
 ## Default delivery path
 
 The default hooks + MCP transport uses hooks for lifecycle and Stop-hook reminders, MCP for outbound commands, and tmux pane injection for live inbound delivery.

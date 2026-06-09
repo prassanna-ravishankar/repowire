@@ -4,11 +4,13 @@
 
 A peer shows `online` in `list_peers` but the agent process is gone (closed terminal, killed tmux pane, crashed runtime). Symptom: routing to it succeeds at the daemon but the agent never sees the message.
 
-This happens when a peer exits without firing its `SessionEnd` / `Stop` hook — for example, a force-killed tmux pane, an OS-level kill, or a network partition during a remote session.
+Ghosts should now be rare: a clean quit deregisters through the `SessionEnd` hook, and a killed agent is reported by its own ws-hook (`agent_exited`) within seconds. Both retire the peer so a leftover ws-hook cannot reconnect it back to life. A ghost that persists means *both* explicit tiers were missed — for example, the ws-hook itself was SIGKILLed along with the agent, or a network partition during a remote session.
 
 ### Recovery
 
-Ghosts are evicted by **lazy repair**: the next MCP tool call from any peer triggers `lazy_repair()` (at most once per 30 seconds), which checks every peer's `last_seen` against the staleness threshold and demotes anything past it. There is no polling thread that does this — see [lazy repair](../concepts/lazy-repair.md).
+Remaining ghosts are evicted by **lazy repair**: the next MCP tool call from any peer triggers `lazy_repair()` (at most once per 30 seconds), which checks runtime evidence and `last_seen`, and demotes connected pane peers after three consecutive honest `pane_alive=false` ping verdicts. There is no polling thread that does this — see [lazy repair](../concepts/lazy-repair.md).
+
+Orphaned ws-hook *processes* (a hook outliving its agent, e.g. one installed before the agent-pid watcher existed) are swept once at daemon startup: the sweep kills hooks whose pane is gone, whose recorded agent pid is dead, or whose pane subtree contains only shells — and only on conclusive evidence. `repowire doctor` reports the current orphan count read-only; `repowire service restart` runs the sweep.
 
 If you need an immediate eviction:
 

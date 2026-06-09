@@ -70,6 +70,10 @@ Link is distinct from spawn: **spawn** starts a *new* agent in a working directo
 
 When a new peer claims a pane already held by another peer, the old peer normally loses that pane binding and is marked offline. Pane lookup should then resolve to the current live owner, not a zombie registration.
 
+## Retirement
+
+Some offlines are *terminal*: the caller knows the agent behind the peer is gone (a `SessionEnd` quit, the ws-hook reporting its agent pid exited, a pane takeover, or three consecutive honest `pane_alive=false` ping verdicts). A terminal offline retires the peer_id: the daemon severs its websocket and rejects any reconnect claiming that id unless the claim carries a *live* `agent_pid`. This is what stops an orphaned ws-hook's reconnect loop from resurrecting a dead peer. A fresh `SessionStart` always carries a live agent pid and therefore reclaims the identity cleanly; retirement records are in-memory and pruned after ~72 hours (after a daemon restart, the ping backstop re-converges on any orphan that re-registers).
+
 There is one protected case: a fresh live `orchestrator` peer keeps sticky ownership of its tmux pane. If a temporary same-pane session starts in a split terminal, the daemon can register that session without assigning the pane (`pane_assigned=false`). The temporary peer can still use outbound MCP/HTTP tools, but it does not get inbound hook transport and must not clear the incumbent orchestrator's pane metadata or WebSocket hook.
 
 Orchestrator role repair follows the same boundary. `claim_orchestrator_role`

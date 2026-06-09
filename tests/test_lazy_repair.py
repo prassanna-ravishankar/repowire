@@ -146,7 +146,7 @@ class TestLazyRepairDebounce:
         await manager.lazy_repair()
         assert await manager.get_peer(peer2.peer_id) is None
 
-    async def test_connected_unsafe_peer_is_demoted(self):
+    async def test_connected_unsafe_peer_is_demoted_after_three_strikes(self):
         transport = MagicMock(spec=WebSocketTransport)
         transport.is_connected = MagicMock(return_value=True)
         transport.ping = AsyncMock(return_value={"type": "pong", "pane_alive": False})
@@ -158,11 +158,18 @@ class TestLazyRepairDebounce:
         peer = _make_peer(pane_id="%5", status=PeerStatus.ONLINE)
         await manager.register_peer(peer)
 
-        await manager.lazy_repair()
+        # Two honest "pane gone" verdicts: still online (strikes 1 and 2).
+        await manager._demote_unsafe_connected_peers()
+        await manager._demote_unsafe_connected_peers()
+        result = await manager.get_peer(peer.peer_id)
+        assert result.status == PeerStatus.ONLINE
+
+        # Third strike demotes terminally.
+        await manager._demote_unsafe_connected_peers()
 
         result = await manager.get_peer(peer.peer_id)
         assert result.status == PeerStatus.OFFLINE
-        transport.ping.assert_awaited_once_with(peer.peer_id, timeout=1.0)
+        transport.ping.assert_awaited_with(peer.peer_id, timeout=1.0)
         transport.disconnect.assert_awaited_once_with(peer.peer_id)
         events = manager.get_events()
         assert [event["type"] for event in events] == [
@@ -175,6 +182,58 @@ class TestLazyRepairDebounce:
         assert offline["new_status"] == "offline"
         assert offline["reason"] == "pane_missing"
         assert offline["source"] == "lazy_repair"
+        # Terminal demotion retires the identity.
+        assert peer.peer_id in manager._retired
+
+    async def test_pane_alive_true_resets_strikes(self):
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.is_connected = MagicMock(return_value=True)
+        transport.disconnect = AsyncMock(return_value=True)
+        qt = MagicMock()
+        qt.cancel_queries_to_peer = AsyncMock(return_value=0)
+        manager = _make_manager(transport=transport, query_tracker=qt)
+
+        peer = _make_peer(pane_id="%5", status=PeerStatus.ONLINE)
+        await manager.register_peer(peer)
+
+        transport.ping = AsyncMock(return_value={"type": "pong", "pane_alive": False})
+        await manager._demote_unsafe_connected_peers()
+        await manager._demote_unsafe_connected_peers()
+        transport.ping = AsyncMock(return_value={"type": "pong", "pane_alive": True})
+        await manager._demote_unsafe_connected_peers()
+        transport.ping = AsyncMock(return_value={"type": "pong", "pane_alive": False})
+        await manager._demote_unsafe_connected_peers()
+        await manager._demote_unsafe_connected_peers()
+
+        result = await manager.get_peer(peer.peer_id)
+        assert result.status == PeerStatus.ONLINE
+
+    async def test_pane_alive_omitted_is_inconclusive(self):
+        """Modern hooks omit pane_alive when tmux/ps checks failed transiently:
+        no strike, no reset."""
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.is_connected = MagicMock(return_value=True)
+        transport.disconnect = AsyncMock(return_value=True)
+        qt = MagicMock()
+        qt.cancel_queries_to_peer = AsyncMock(return_value=0)
+        manager = _make_manager(transport=transport, query_tracker=qt)
+
+        peer = _make_peer(pane_id="%5", status=PeerStatus.ONLINE)
+        await manager.register_peer(peer)
+
+        transport.ping = AsyncMock(return_value={"type": "pong", "pane_alive": False})
+        await manager._demote_unsafe_connected_peers()
+        await manager._demote_unsafe_connected_peers()
+        # Inconclusive pong: strikes are preserved, not reset.
+        transport.ping = AsyncMock(return_value={"type": "pong"})
+        await manager._demote_unsafe_connected_peers()
+        result = await manager.get_peer(peer.peer_id)
+        assert result.status == PeerStatus.ONLINE
+        # One more honest false completes the three strikes.
+        transport.ping = AsyncMock(return_value={"type": "pong", "pane_alive": False})
+        await manager._demote_unsafe_connected_peers()
+        result = await manager.get_peer(peer.peer_id)
+        assert result.status == PeerStatus.OFFLINE
 
     async def test_connected_peer_ping_timeout_is_not_demoted(self):
         transport = MagicMock(spec=WebSocketTransport)
