@@ -28,6 +28,7 @@ from repowire.hooks.utils import (
     ws_hook_lock_path,
     ws_hook_pid_path,
 )
+from repowire.hooks.websocket_hook import find_pane_agent_pid, pid_comm_is_shell
 from repowire.hooks.ws_hook_supervisor import spawn_ws_hook
 from repowire.peer_describe import compute_git_status
 from repowire.protocol.capabilities import current_capabilities_metadata
@@ -467,7 +468,14 @@ def main(backend: str = "claude-code") -> int:
         #     invoked by a still-running claude), it's the parent agent's
         #     pid, which will match the existing peer's recorded agent_pid
         #     and trip the guard.
+        # Codex runs hook commands from the pane shell, so getppid() points at
+        # zsh — a watcher guarding the shell never notices the agent dying.
+        # When the parent is a shell, find the real agent in the pane subtree.
         agent_pid_val = os.getppid()
+        if pid_comm_is_shell(agent_pid_val) is True:
+            subtree_agent = find_pane_agent_pid(pane_id)
+            if subtree_agent is not None:
+                agent_pid_val = subtree_agent
         parent_pid_val = _read_ppid_of(agent_pid_val)
         registration_result = _register_peer_http(
             cwd,

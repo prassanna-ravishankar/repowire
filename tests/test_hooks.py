@@ -662,6 +662,25 @@ class TestIsPaneSafeSubtree:
             assert mock_run.called
         assert websocket_hook._cached_agent_pid == 300
 
+    def test_login_shell_dash_comm_is_still_a_shell(self):
+        """Login shells report comm as "-zsh"; the dash must not make the
+        shell pass as an agent (root cause of self-certifying orphans)."""
+        websocket_hook._expected_command = "claude"
+        ps_rows = [(200, 1, "-zsh")]
+        with self._patch_subprocess(pane_pid=200, ps_rows=ps_rows):
+            assert _is_pane_safe("%5") is False
+
+    def test_find_pane_agent_pid_skips_login_shell(self):
+        """Subtree agent discovery must skip the "-zsh" login shell and land
+        on the real agent process."""
+        ps_rows = [
+            (200, 1, "-zsh"),
+            (300, 200, "node"),
+            (400, 300, "codex"),
+        ]
+        with self._patch_subprocess(pane_pid=200, ps_rows=ps_rows):
+            assert websocket_hook.find_pane_agent_pid("%5") == 300
+
     def test_ps_failure_is_inconclusive(self):
         """A failing ps shell-out must yield None (no verdict), not False."""
         websocket_hook._expected_command = "claude"

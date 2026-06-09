@@ -257,7 +257,11 @@ def _build_ps_child_map() -> tuple[dict[int, list[int]], dict[int, str]] | None:
             ppid = int(parts[1])
         except ValueError:
             continue
-        comm = os.path.basename(parts[2].strip()).lower()
+        # Login shells report comm with a leading dash ("-zsh"). Strip it or
+        # the shell denylist misses them and the pane shell itself gets
+        # certified as the agent baseline — the root cause of orphan hooks
+        # answering pings "safe" for panes containing nothing but a shell.
+        comm = os.path.basename(parts[2].strip()).lower().lstrip("-")
         pid_to_comm[pid] = comm
         children.setdefault(ppid, []).append(pid)
     return children, pid_to_comm
@@ -326,6 +330,46 @@ def _capture_baseline_from_subtree(
         for child_pid in children.get(pid, []):
             queue.append(child_pid)
     return None
+
+
+def find_pane_agent_pid(pane_id: str | None) -> int | None:
+    """Best-effort pid of the agent process running inside a pane.
+
+    Walks the pane's subtree for the first non-shell process. Used by
+    SessionStart when the hook's own parent pid is a shell (codex spawns hook
+    commands from the pane shell, so os.getppid() points at zsh, and a watcher
+    guarding the shell never notices the agent dying).
+    """
+    if not pane_id:
+        return None
+    pane_pid, _conclusive = _get_pane_pid_checked(pane_id)
+    if pane_pid is None:
+        return None
+    ps_result = _build_ps_child_map()
+    if ps_result is None:
+        return None
+    children, pid_to_comm = ps_result
+    baseline = _capture_baseline_from_subtree(pane_pid, children, pid_to_comm)
+    if baseline is None:
+        return None
+    return _find_agent_in_subtree(pane_pid, baseline, children, pid_to_comm)
+
+
+def pid_comm_is_shell(pid: int) -> bool | None:
+    """True/False whether `pid`'s command is a plain shell; None if unknowable."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "comm=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    comm = os.path.basename(result.stdout.strip()).lower().lstrip("-")
+    return comm in _SHELL_COMMS
 
 
 def _is_pane_safe(pane_id: str) -> bool | None:

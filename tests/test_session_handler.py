@@ -7,6 +7,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from repowire.hooks.handoff import write_handoff_summary
 from repowire.hooks.session_handler import (
     _find_self_peer,
@@ -232,6 +234,14 @@ class TestFormatPeersContext:
 
 
 class TestSessionMain:
+    @pytest.fixture(autouse=True)
+    def _hermetic_agent_pid_probe(self, monkeypatch):
+        """The shell-parent probe shells out to ps/tmux; keep it inert so tests
+        that mock subprocess.Popen globally stay hermetic. Tests covering the
+        fallback override with @patch."""
+        from repowire.hooks import session_handler as sh
+
+        monkeypatch.setattr(sh, "pid_comm_is_shell", lambda _pid: False)
     def test_invalid_json(self):
         with patch("sys.stdin") as mock_stdin:
             mock_stdin.read.return_value = "not json"
@@ -373,6 +383,39 @@ class TestSessionMain:
             # First positional arg is now path (cwd), not display_name
             assert call_args[0][0] == str(tmp_path)
             assert call_args.kwargs["circle_source"] == "tmux"
+
+    @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
+    @patch(
+        "repowire.hooks.session_handler._register_peer_http",
+        return_value=("repow-default-abc12345", "test-claude-code", False, True),
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={
+            "pane_id": "%1",
+            "session_name": "default",
+            "window_name": "test",
+        },
+    )
+    @patch("repowire.hooks.session_handler.pid_comm_is_shell", return_value=True)
+    @patch("repowire.hooks.session_handler.find_pane_agent_pid", return_value=43210)
+    @patch("repowire.hooks.session_handler.subprocess.Popen")
+    @patch("repowire.hooks.session_handler.compute_git_status", return_value=None)
+    @patch("repowire.hooks.session_handler.get_git_branch", return_value=None)
+    def test_session_start_shell_parent_falls_back_to_pane_agent_pid(
+        self, mock_branch, mock_status, mock_popen, mock_find, mock_isshell,
+        mock_tmux, mock_register, mock_fetch, tmp_path,
+    ):
+        """Codex spawns hooks from the pane shell: getppid() is zsh, so the
+        recorded agent_pid must come from the pane subtree instead."""
+        with patch("repowire.config.models.CACHE_DIR", tmp_path):
+            result = _run_with_input({
+                "hook_event_name": "SessionStart",
+                "cwd": str(tmp_path),
+                "session_id": "abc12345-codex",
+            })
+            assert result == 0
+            assert mock_register.call_args.kwargs["agent_pid"] == 43210
 
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
