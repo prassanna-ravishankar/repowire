@@ -313,9 +313,9 @@ def _list_ws_hook_pids() -> dict[int, str] | None:
 def _live_tmux_panes() -> dict[str, int] | None:
     """Conclusive {pane_id: pane_pid} for all live panes.
 
-    Returns {} when tmux answered "no panes exist" (no binary / no server) and
-    None when the listing itself failed — callers must not treat None as
-    "every pane is dead".
+    Returns {} only when the tmux server itself answered "no panes exist",
+    and None when the listing was inconclusive — callers must not treat None
+    as "every pane is dead".
     """
     try:
         result = subprocess.run(
@@ -325,7 +325,10 @@ def _live_tmux_panes() -> dict[str, int] | None:
             timeout=5,
         )
     except FileNotFoundError:
-        return {}
+        # tmux missing from *this* process's PATH (e.g. a launchd service
+        # environment) says nothing about the user's tmux server — treating
+        # it as "no panes" would mass-kill live hooks.
+        return None
     except (subprocess.SubprocessError, OSError):
         return None
     if result.returncode != 0:
@@ -339,7 +342,24 @@ def _live_tmux_panes() -> dict[str, int] | None:
 
 
 def _terminate(pid: int) -> bool:
-    """SIGTERM with a 2s grace period, then SIGKILL. True if the pid is gone."""
+    """SIGTERM with a 2s grace period, then SIGKILL. True if the pid is gone.
+
+    Revalidates the pid still belongs to a ws-hook right before signaling, so
+    pid reuse inside the sweep window cannot kill an unrelated process.
+    """
+    try:
+        recheck = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return False
+    if recheck.returncode != 0:
+        return True  # already gone
+    if "websocket_hook.py" not in recheck.stdout:
+        return False  # pid reused by something else — do not touch it
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError:

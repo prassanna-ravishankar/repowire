@@ -320,3 +320,35 @@ class TestSweepOrphanWsHooks:
         assert len(reports) == 1
         assert reports[0].killed is False
         assert killed == []
+
+
+class TestSweepProbes:
+    def test_tmux_missing_from_path_is_inconclusive(self, monkeypatch):
+        """tmux absent from the daemon's PATH (launchd env) must not read as
+        "no panes exist" — that would mass-kill live hooks."""
+        def fake_run(*_a, **_k):
+            raise FileNotFoundError("tmux")
+
+        monkeypatch.setattr(ws_hook_supervisor.subprocess, "run", fake_run)
+        assert ws_hook_supervisor._live_tmux_panes() is None
+
+    def test_no_server_is_conclusively_empty(self, monkeypatch):
+        def fake_run(*_a, **_k):
+            return SimpleNamespace(returncode=1, stdout="", stderr="no server running on /tmp/x")
+
+        monkeypatch.setattr(ws_hook_supervisor.subprocess, "run", fake_run)
+        assert ws_hook_supervisor._live_tmux_panes() == {}
+
+    def test_terminate_refuses_reused_pid(self, monkeypatch):
+        """If the pid no longer belongs to a ws-hook (pid reuse inside the
+        sweep window), _terminate must not signal it."""
+        def fake_run(*_a, **_k):
+            return SimpleNamespace(returncode=0, stdout="/usr/bin/some-other-process\n", stderr="")
+
+        monkeypatch.setattr(ws_hook_supervisor.subprocess, "run", fake_run)
+        killed: list[int] = []
+        monkeypatch.setattr(
+            ws_hook_supervisor.os, "kill", lambda pid, sig: killed.append(pid)
+        )
+        assert ws_hook_supervisor._terminate(4242) is False
+        assert killed == []

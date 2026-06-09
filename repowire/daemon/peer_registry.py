@@ -2147,6 +2147,11 @@ class PeerRegistry:
         async with self._lock:
             peer = self._lookup_peer_unlocked(identifier)
             if not peer:
+                # Terminal offline for an id already evicted from the registry
+                # must still retire it, or the orphan it came from could
+                # re-register through a persisted mapping.
+                if terminal and identifier.startswith("repow-"):
+                    self._retired[identifier] = datetime.now(timezone.utc)
                 return 0
             old_status = peer.status
             peer.status = PeerStatus.OFFLINE
@@ -2161,11 +2166,16 @@ class PeerRegistry:
                 context=context,
             )
             session_id = peer.peer_id
+            doomed_ws = None
             if terminal:
                 self._retired[session_id] = datetime.now(timezone.utc)
+                if self._transport:
+                    doomed_ws = self._transport.current_websocket(session_id)
 
-        if terminal and self._transport:
-            await self._transport.disconnect(session_id)
+        if terminal and self._transport and doomed_ws is not None:
+            # Identity-checked: a legitimate reconnect that reclaimed this id
+            # after we released the lock must not lose its fresh socket.
+            await self._transport.disconnect(session_id, doomed_ws)
 
         cancelled = 0
         if self._query_tracker:

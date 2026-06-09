@@ -172,6 +172,11 @@ class WebSocketTransport:
         conn = self._connections.get(session_id)
         return conn.pane_id if conn else None
 
+    def current_websocket(self, session_id: str) -> WebSocket | None:
+        """Return the live WebSocket for a session, for identity-checked disconnects."""
+        conn = self._connections.get(session_id)
+        return conn.websocket if conn else None
+
     async def ping(self, session_id: str, timeout: float = 5.0) -> dict:
         """Send a ping to a peer and wait for pong.
 

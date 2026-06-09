@@ -696,10 +696,14 @@ async def main() -> int:
             )
     if _expected_command is None:
         # Fallback: no agent process found in the subtree yet (SessionStart
-        # may have fired before the agent finished spawning). The
-        # foreground-command shell-denylist path in _is_pane_safe will handle
-        # it from here.
-        _expected_command = _get_pane_command(pane_id)
+        # may have fired before the agent finished spawning). Adopt the
+        # foreground command only when it isn't a shell — a shell baseline
+        # would make _is_pane_safe match the pane shell itself and certify a
+        # dead pane as safe. Left None, the per-check shell-denylist path in
+        # _is_pane_safe handles it from here.
+        fallback_command = _get_pane_command(pane_id)
+        if fallback_command and fallback_command.lstrip("-") not in _SHELL_COMMS:
+            _expected_command = fallback_command
 
     daemon_host = os.environ.get("REPOWIRE_DAEMON_HOST", "127.0.0.1")
     daemon_port = os.environ.get("REPOWIRE_DAEMON_PORT", "8377")

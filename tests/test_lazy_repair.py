@@ -170,7 +170,11 @@ class TestLazyRepairDebounce:
         result = await manager.get_peer(peer.peer_id)
         assert result.status == PeerStatus.OFFLINE
         transport.ping.assert_awaited_with(peer.peer_id, timeout=1.0)
-        transport.disconnect.assert_awaited_once_with(peer.peer_id)
+        # Terminal offline severs the socket, identity-checked against the
+        # connection snapshotted under the lock.
+        transport.disconnect.assert_awaited_once_with(
+            peer.peer_id, transport.current_websocket.return_value,
+        )
         events = manager.get_events()
         assert [event["type"] for event in events] == [
             "peer_contradiction",
@@ -750,3 +754,23 @@ class TestPingPong:
         transport = WebSocketTransport()
         # Should not raise
         transport.resolve_pong("nonexistent", {"type": "pong"})
+
+
+class TestRetirement:
+    async def test_terminal_offline_on_evicted_id_still_retires(self):
+        """A terminal offline for an id no longer in the registry must record
+        retirement so the orphan it came from cannot re-register via mapping."""
+        manager = _make_manager()
+        await manager.mark_offline(
+            "repow-dev-gone1234", reason="agent_exited", source="ws_hook",
+            terminal=True,
+        )
+        assert "repow-dev-gone1234" in manager._retired
+
+    async def test_terminal_offline_on_unknown_display_name_does_not_retire(self):
+        manager = _make_manager()
+        await manager.mark_offline(
+            "some-display-name", reason="agent_exited", source="ws_hook",
+            terminal=True,
+        )
+        assert "some-display-name" not in manager._retired
