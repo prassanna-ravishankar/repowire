@@ -565,6 +565,7 @@ def main(backend: str = "claude-code") -> int:
                 backend=backend,
                 cwd=cwd,
                 lock_fd=lock_fd,
+                agent_pid=agent_pid_val,
             )
         except Exception as e:
             print(f"repowire: failed to start WebSocket hook: {e}", file=sys.stderr)

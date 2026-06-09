@@ -21,7 +21,10 @@ def has_runtime_evidence(peer: Peer) -> bool:
         except PermissionError:
             return True
         except OSError:
-            pass
+            # A recorded agent PID is the strongest runtime identity proof we
+            # have. If it is gone, a leftover tmux pane/shell must not keep the
+            # old peer alive.
+            return False
 
     if not peer.pane_id:
         return False

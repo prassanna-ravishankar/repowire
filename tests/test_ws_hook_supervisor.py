@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -160,3 +161,34 @@ class TestMaybeRespawn:
         with patch.object(ws_hook_supervisor, "spawn_ws_hook") as mock_spawn:
             assert ws_hook_supervisor.maybe_respawn(PANE_ID) is False
             mock_spawn.assert_not_called()
+
+
+class TestSpawnWsHook:
+    def test_passes_agent_pid_to_child_env(self, cache_dir):
+        lock_path = ws_hook_lock_path(PANE_ID)
+        lock_fd = open(lock_path, "w")  # noqa: SIM115
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            with patch.object(
+                ws_hook_supervisor.subprocess,
+                "Popen",
+                return_value=SimpleNamespace(pid=12345),
+            ) as popen:
+                pid = ws_hook_supervisor.spawn_ws_hook(
+                    pane_id=PANE_ID,
+                    peer_id="repow-default-deadbeef",
+                    display_name="lifetime-test",
+                    backend="claude-code",
+                    cwd=str(cache_dir),
+                    lock_fd=lock_fd,
+                    agent_pid=67890,
+                )
+
+            assert pid == 12345
+            env = popen.call_args.kwargs["env"]
+            assert env["REPOWIRE_AGENT_PID"] == "67890"
+            assert env["REPOWIRE_PEER_ID"] == "repow-default-deadbeef"
+            assert env["TMUX_PANE"] == PANE_ID
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()

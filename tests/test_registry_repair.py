@@ -50,7 +50,18 @@ def test_has_runtime_evidence_ignores_non_positive_agent_pid(monkeypatch):
     assert calls == []
 
 
-def test_has_runtime_evidence_falls_back_to_live_tmux_pane(monkeypatch):
+def test_has_runtime_evidence_falls_back_to_live_tmux_pane_without_agent_pid(monkeypatch):
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 0, stdout="222\n", stderr="")
+
+    monkeypatch.setattr("repowire.daemon.registry_repair.subprocess.run", fake_run)
+
+    assert has_runtime_evidence(_peer(pane_id="%7"))
+
+
+def test_has_runtime_evidence_rejects_dead_agent_pid_even_with_live_tmux_pane(
+    monkeypatch,
+):
     def fake_kill(pid: int, signal: int) -> None:
         raise ProcessLookupError
 
@@ -60,7 +71,7 @@ def test_has_runtime_evidence_falls_back_to_live_tmux_pane(monkeypatch):
     monkeypatch.setattr("repowire.daemon.registry_repair.os.kill", fake_kill)
     monkeypatch.setattr("repowire.daemon.registry_repair.subprocess.run", fake_run)
 
-    assert has_runtime_evidence(_peer(agent_pid=12345, pane_id="%7"))
+    assert not has_runtime_evidence(_peer(agent_pid=12345, pane_id="%7"))
 
 
 def test_has_runtime_evidence_rejects_missing_pid_and_pane():

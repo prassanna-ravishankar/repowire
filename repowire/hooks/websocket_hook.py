@@ -50,6 +50,7 @@ _consecutive_ping_unsafe = 0
 _CONSECUTIVE_PANE_UNSAFE_PINGS = 3
 _RECONNECT_WARNING_ATTEMPTS = 50
 _MAX_RECONNECT_DELAY_SECONDS = 30
+_AGENT_LIFETIME_CHECK_SECONDS = 5.0
 
 
 def _format_attachment_lines(attachments: object) -> str:
@@ -71,6 +72,42 @@ def _format_attachment_lines(attachments: object) -> str:
 
 class PaneUnsafeError(RuntimeError):
     """Raised when the pane no longer belongs to the expected live agent."""
+
+
+class AgentExitedError(RuntimeError):
+    """Raised when the agent process that owns this ws-hook has exited."""
+
+
+def _parse_positive_int(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return False
+
+
+async def _watch_agent_lifetime(agent_pid: int, pane_id: str) -> None:
+    """Exit the ws-hook when its owning agent process disappears."""
+    while True:
+        await asyncio.sleep(_AGENT_LIFETIME_CHECK_SECONDS)
+        if not _pid_exists(agent_pid):
+            raise AgentExitedError(
+                f"Agent pid {agent_pid} for pane {pane_id} exited",
+            )
 
 
 def _push_query_cid(pane_id: str, correlation_id: str) -> None:
@@ -557,6 +594,7 @@ async def main() -> int:
     circle_source = "tmux" if tmux_session_name else "fallback"
     display_name = get_display_name()
     backend_str = os.environ.get("REPOWIRE_BACKEND", "claude-code")
+    agent_pid = _parse_positive_int(os.environ.get("REPOWIRE_AGENT_PID"))
     try:
         backend = AgentType(backend_str)
     except ValueError:
@@ -643,20 +681,45 @@ async def main() -> int:
                     await asyncio.sleep(2)
                     continue
 
-                # Message loop — fully reactive, no polling tasks
+                # Message loop — ws-hook stays connected until the daemon
+                # disconnects, pane ownership becomes unsafe, or the owning
+                # agent pid exits.
                 try:
-                    async for message in websocket:
-                        try:
-                            data = json.loads(message)
-                            await handle_message(data, pane_id, websocket)
-                        except PaneUnsafeError:
-                            raise
-                        except Exception as exc:
-                            # A malformed payload or handler bug must not kill
-                            # the hook -- Stop-hook respawn is a safety net,
-                            # not a routine recovery path. Log and keep reading.
-                            logger.exception("Error handling message: %s", exc)
+                    async def read_messages() -> None:
+                        async for message in websocket:
+                            try:
+                                data = json.loads(message)
+                                await handle_message(data, pane_id, websocket)
+                            except PaneUnsafeError:
+                                raise
+                            except Exception as exc:
+                                # A malformed payload or handler bug must not kill
+                                # the hook -- Stop-hook respawn is a safety net,
+                                # not a routine recovery path. Log and keep reading.
+                                logger.exception("Error handling message: %s", exc)
+
+                    if agent_pid is None:
+                        await read_messages()
+                    else:
+                        reader = asyncio.create_task(read_messages())
+                        watcher = asyncio.create_task(
+                            _watch_agent_lifetime(agent_pid, pane_id),
+                        )
+                        done, pending = await asyncio.wait(
+                            {reader, watcher},
+                            return_when=asyncio.FIRST_EXCEPTION,
+                        )
+                        for task in pending:
+                            task.cancel()
+                        if pending:
+                            await asyncio.gather(*pending, return_exceptions=True)
+                        for task in done:
+                            task.result()
                 except PaneUnsafeError as e:
+                    logger.info("%s", e)
+                    clear_pane_runtime_state(pane_id)
+                    return 0
+                except AgentExitedError as e:
                     logger.info("%s", e)
                     clear_pane_runtime_state(pane_id)
                     return 0

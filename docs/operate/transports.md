@@ -10,8 +10,10 @@ This is the default path for Claude Code, Codex, and Gemini:
 
 - Lifecycle hooks register peers, update status, extract transcript/chat turns, and fetch pending ask reminders.
 - MCP tools provide outbound commands such as `ask`, `ack`, `notify_peer`, and `schedule_create`.
-- Live inbound messages are delivered through the WebSocket hook and injected into the runtime's tmux pane.
+- Live inbound messages are delivered through the WebSocket hook and injected into the runtime's tmux pane. The hook is bound to the owning agent PID and exits when that process disappears, so an orphaned hook cannot keep a dead peer's daemon socket alive indefinitely.
 - Open asks continue to resurface through Stop-hook reminders until they are acked.
+
+Lazy repair treats a recorded agent PID as authoritative runtime evidence: if that PID is gone, a leftover tmux pane or shell is not enough to keep the peer online. Peers without a recorded agent PID can still fall back to live pane evidence.
 
 ## Plugin and extension transports
 

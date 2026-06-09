@@ -85,6 +85,7 @@ def link_spawn_ws_hook(
                 backend=backend,
                 cwd=cwd,
                 lock_fd=lock_fd,
+                agent_pid=None,
             )
         except Exception as e:  # noqa: BLE001 — fail closed so the route rolls back
             logger.warning("link_spawn_ws_hook: pane %s spawn failed: %s", pane_id, e)
@@ -103,6 +104,7 @@ def spawn_ws_hook(
     backend: str,
     cwd: str,
     lock_fd,
+    agent_pid: int | None = None,
 ) -> int | None:
     """Launch websocket_hook.py in the background and write its pid file.
 
@@ -124,6 +126,8 @@ def spawn_ws_hook(
         env["REPOWIRE_DISPLAY_NAME"] = display_name
         if peer_id:
             env["REPOWIRE_PEER_ID"] = peer_id
+        if agent_pid is not None and agent_pid > 0:
+            env["REPOWIRE_AGENT_PID"] = str(agent_pid)
         env["REPOWIRE_BACKEND"] = backend
         # ws-hook reads TMUX_PANE for its pane id. Stop hook respawn runs in
         # a different subprocess context than SessionStart, so set explicitly.
@@ -207,6 +211,13 @@ def maybe_respawn(
             display_name = metadata.get("display_name")
             metadata_backend = metadata.get("backend") or "claude-code"
             peer_id = metadata.get("peer_id")
+            metadata_agent_pid = metadata.get("agent_pid")
+            if isinstance(metadata_agent_pid, int):
+                agent_pid = metadata_agent_pid
+            elif isinstance(metadata_agent_pid, str) and metadata_agent_pid.isdigit():
+                agent_pid = int(metadata_agent_pid)
+            else:
+                agent_pid = None
             if not metadata_cwd or not display_name:
                 # Without these we can't recreate the prior connect state.
                 # Drop the stale pid file so a future SessionStart isn't
@@ -246,6 +257,7 @@ def maybe_respawn(
                 backend=metadata_backend,
                 cwd=metadata_cwd,
                 lock_fd=lock_fd,
+                agent_pid=agent_pid,
             )
             return new_pid is not None
         finally:

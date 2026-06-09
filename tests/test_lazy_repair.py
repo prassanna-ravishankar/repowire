@@ -264,7 +264,7 @@ class TestLazyRepairDebounce:
         assert offline["source"] == "lazy_repair"
         assert offline["context"]["contradiction"] == "ONLINE_BUT_NO_WS"
 
-    async def test_disconnected_pane_peer_with_stale_pid_and_live_pane_stays_live(
+    async def test_disconnected_pane_peer_with_dead_agent_pid_and_live_pane_is_demoted(
         self, monkeypatch,
     ):
         transport = MagicMock(spec=WebSocketTransport)
@@ -293,8 +293,15 @@ class TestLazyRepairDebounce:
         await manager.lazy_repair()
 
         result = await manager.get_peer(peer.peer_id)
-        assert result.status == PeerStatus.ONLINE
-        qt.cancel_queries_to_peer.assert_not_called()
+        assert result.status == PeerStatus.OFFLINE
+        qt.cancel_queries_to_peer.assert_awaited_once_with(peer.peer_id)
+        events = manager.get_events()
+        assert [event["type"] for event in events] == [
+            "peer_contradiction",
+            "peer_contradiction",
+            "peer_offline",
+        ]
+        assert events[2]["reason"] == "no_websocket_no_runtime_evidence"
 
     async def test_stale_busy_working_peer_repairs_to_idle(self):
         manager = _make_manager(stale_busy_timeout_seconds=60)
@@ -352,6 +359,53 @@ class TestLazyRepairDebounce:
 
 
 class TestLazyRepairReaper:
+    async def test_stale_disconnected_online_peer_demotes_then_reaps(self):
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.is_connected = MagicMock(return_value=False)
+        transport.disconnect = AsyncMock(return_value=True)
+        ask_tracker = MagicMock()
+        ask_tracker.forget_peer = AsyncMock(return_value=1)
+        ask_tracker.snapshot_pending_replies_for_peer = AsyncMock(return_value=[])
+        ask_tracker.snapshot_expired_pending_replies = AsyncMock(return_value=[])
+        ask_tracker.evict_expired = AsyncMock(return_value=0)
+        manager = _make_manager(
+            transport=transport,
+            ask_tracker=ask_tracker,
+            peer_reap_ttl_seconds=60,
+        )
+        stale_seen = datetime.now(timezone.utc) - timedelta(
+            seconds=manager.heartbeat_tolerance() + 1,
+        )
+        peer = _make_peer(
+            status=PeerStatus.ONLINE,
+            pane_id=None,
+            last_seen=stale_seen,
+        )
+        await manager.register_peer(peer)
+        async with manager._lock:
+            live = manager._peers[peer.peer_id]
+            live.status = PeerStatus.ONLINE
+            live.last_seen = stale_seen
+
+        await manager.lazy_repair()
+
+        demoted = await manager.get_peer(peer.peer_id)
+        assert demoted is not None
+        assert demoted.status == PeerStatus.OFFLINE
+        assert manager.get_events()[-1]["reason"] == "no_websocket_no_pane"
+
+        async with manager._lock:
+            manager._peers[peer.peer_id].last_seen = (
+                datetime.now(timezone.utc) - timedelta(seconds=61)
+            )
+        manager._last_repair = time.monotonic() - 31.0
+
+        await manager.lazy_repair()
+
+        assert await manager.get_peer(peer.peer_id) is None
+        transport.disconnect.assert_awaited_once_with(peer.peer_id)
+        ask_tracker.forget_peer.assert_awaited_once_with(peer.peer_id)
+
     async def test_reaps_offline_peer_after_ttl(self):
         transport = MagicMock(spec=WebSocketTransport)
         transport.disconnect = AsyncMock(return_value=True)
