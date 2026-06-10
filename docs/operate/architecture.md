@@ -33,7 +33,8 @@ The daemon is the single routing hub. It does not care whether a peer arrived th
 | Session controls | `repowire/daemon/session_controls.py`, `repowire/daemon/routes/sessions.py` | Session-binding resolution and session-targeted control capability routes |
 | Session acquisition | `repowire/daemon/session_control.py`, `repowire/daemon/state/operations.py` | Durable operation records and live-executor acquisition for session/job work |
 | Schedules | `repowire/daemon/scheduler.py`, `repowire/daemon/schedule_store.py`, `repowire/daemon/routes/schedules.py` | One-shot and recurring cron deliveries |
-| Jobs | `repowire/daemon/job_runner.py`, `repowire/daemon/state/work.py`, `repowire/daemon/state/calendar.py`, `repowire/daemon/routes/work.py` | Durable tracked work, recurring calendar templates, and spawned job dispatch |
+| Jobs | `repowire/daemon/job_runner.py`, `repowire/daemon/state/work.py`, `repowire/daemon/state/calendar.py`, `repowire/daemon/routes/work.py` | Durable tracked work, recurring calendar templates, and spawned job dispatch (asks sent from the built-in `@jobs` service peer) |
+| Fire completion | `repowire/daemon/job_completion.py`, `repowire/daemon/job_release.py` | Structural job results: arms fires from the dispatch prompt, records the executor's final turn as the result, fails fires on executor death, emits `job_state_changed` events, notifies owners, releases executors |
 | Hooks | `repowire/hooks/` | Runtime event adapters, tmux injection, transcript/chat extraction |
 | MCP server | `repowire/mcp/server.py` | Agent-facing tools over stdio |
 | Control surfaces | `web/`, `repowire/telegram/bot.py`, `repowire/slack/bot.py` | Dashboard and human/service peers |

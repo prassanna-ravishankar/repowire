@@ -22,6 +22,7 @@ from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from repowire import __version__
+from repowire.agent_types import AgentType
 from repowire.config.models import Config, load_config
 from repowire.daemon.acp_reconcile import reconcile_acp_inflight
 from repowire.daemon.ask_many import AskManyTracker
@@ -31,6 +32,7 @@ from repowire.daemon.delivery_trace import DeliveryTraceStore
 from repowire.daemon.deps import cleanup_deps, init_deps
 from repowire.daemon.event_bus import EventBus
 from repowire.daemon.event_log import EventLog
+from repowire.daemon.job_completion import JobCompletionService
 from repowire.daemon.job_runner import JobRunner
 from repowire.daemon.lifecycle_handler import LifecycleHandler
 from repowire.daemon.message_router import MessageRouter
@@ -70,6 +72,7 @@ from repowire.daemon.state.session_bindings import (
 )
 from repowire.daemon.state.work import SQLiteWorkStore
 from repowire.daemon.websocket_transport import WebSocketTransport
+from repowire.protocol.peers import PeerRole
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +344,20 @@ def create_app(
             session_control=session_control,
         )
         app.state.job_runner = job_runner
+        job_completion = JobCompletionService(
+            work_store=work_store,
+            ask_tracker=ask_tracker,
+            session_control=session_control,
+            peer_registry=peer_registry,
+            peer_delivery=peer_delivery,
+        )
+        app.state.job_completion = job_completion
+        work_store.set_on_state_change(job_completion.on_work_state_change)
+        peer_registry.set_terminal_offline_hook(
+            lambda peer_id, reason: job_completion.on_peer_terminal_offline(
+                peer_id, reason=reason,
+            )
+        )
         scheduler = Scheduler(
             store=schedule_store,
             peer_registry=peer_registry,
@@ -356,8 +373,32 @@ def create_app(
         )
 
         await peer_registry.start()
+
+        # Register the in-process @jobs service peer: the addressable sender
+        # for job dispatch asks (a real return address instead of a ghost
+        # string). It lives exactly as long as the daemon; lazy repair skips
+        # in_process peers, and dispatch asks use pull reply delivery so no
+        # transport is ever needed.
+        try:
+            jobs_peer_id, _ = await peer_registry.allocate_and_register(
+                circle="default",
+                backend=AgentType.MCP_HTTP,
+                path="/jobs",
+                role=PeerRole.SERVICE,
+                metadata={"in_process": True},
+                display_name_override="jobs",
+            )
+            job_runner.set_sender_peer_id(jobs_peer_id)
+            job_completion.set_sender_peer_id(jobs_peer_id)
+            app.state.jobs_peer_id = jobs_peer_id
+        except Exception:
+            logger.exception("Failed to register @jobs service peer")
+
         await scheduler.start()
         await job_runner.start()
+        # Post-restart: fail in-flight fires whose executor died while the
+        # daemon was down (grace-delayed so live ws-hooks can reconnect first).
+        job_reconcile_task = asyncio.create_task(job_completion.reconcile_inflight())
         init_deps(
             cfg, peer_registry, app.state,
             lifecycle_handler=lifecycle_handler,
@@ -473,6 +514,7 @@ def create_app(
         if relay_client:
             await relay_client.stop()
         await acp_manager.close()
+        job_reconcile_task.cancel()
         await job_runner.stop()
         await scheduler.stop()
         event_log.save()

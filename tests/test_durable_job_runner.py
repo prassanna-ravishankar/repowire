@@ -226,7 +226,10 @@ def test_startup_recovery_marks_stale_dispatching_unavailable(tmp_path):
     cleanup_deps()
 
 
-def test_startup_recovery_marks_stale_delivered_unavailable(tmp_path, monkeypatch):
+def test_startup_recovery_leaves_delivered_fires_alone(tmp_path, monkeypatch):
+    """Delivered fires belong to the executor — an expired lease must not
+    reap them to terminal unavailable while the executor may still be working.
+    Executor death is detected by the fire-completion service instead."""
     _cfg, _registry, db, store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
         tmp_path
     )
@@ -256,15 +259,18 @@ def test_startup_recovery_marks_stale_delivered_unavailable(tmp_path, monkeypatc
 
     recovered = runner.recover_stale()
 
-    assert [w.work_id for w in recovered] == [work.work_id]
-    assert store.get(work.work_id).state == "unavailable"
+    assert recovered == []
+    assert store.get(work.work_id).state == "delivered"
     kill_pane.assert_not_called()
     db.close()
     cleanup_deps()
 
 
 @pytest.mark.anyio
-async def test_live_runner_recovers_delivered_after_lease_without_restart(tmp_path):
+async def test_live_runner_leaves_delivered_alone_after_lease_expiry(tmp_path):
+    """A delivered fire belongs to the executor: the runner's lease must not
+    reap it to terminal unavailable while the executor may still be working
+    (its late report would then 400 and the result would be lost)."""
     _cfg, _registry, db, store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
         tmp_path
     )
@@ -287,8 +293,7 @@ async def test_live_runner_recovers_delivered_after_lease_without_restart(tmp_pa
     try:
         await asyncio.sleep(0.2)
         recovered = store.get(work.work_id)
-        assert recovered.state == "unavailable"
-        assert recovered.state_reason == "runner_interrupted"
+        assert recovered.state == "delivered"
     finally:
         await runner.stop()
         db.close()

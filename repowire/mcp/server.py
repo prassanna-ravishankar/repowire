@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
@@ -987,6 +988,45 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         if result.get("error"):
             raise Exception(result["error"])
         return result.get("correlation_id", "")
+
+    @mcp.tool()
+    async def wait_on_ack(
+        correlation_id: str,
+        timeout_seconds: int = 600,
+    ) -> str:
+        """[Repowire mesh] Block until an ask you opened is answered or acked.
+
+        Call right after `ask` when you need the reply to continue (instead of
+        ending your turn to wait). The reply arrives as this tool's result;
+        while you wait, the ask is switched to pull delivery so the reply is
+        not also injected into your pane. Essential for job executors: a job's
+        fire ends when your turn ends, so never end a turn to wait on a peer.
+
+        Args:
+            correlation_id: The ask thread to wait on (returned by `ask`).
+            timeout_seconds: Overall wait budget; on expiry the ask stays open
+                and `{"status": "pending"}` is returned — you may call again.
+
+        Returns:
+            JSON: `{status: resolved|pending, reply, outcome, close_reason, ...}`
+        """
+        await _ensure_registered(strict=True)
+        deadline = time.monotonic() + max(timeout_seconds, 1)
+        path = f"/asks/{quote(correlation_id, safe='')}/wait"
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return json.dumps(
+                    {"correlation_id": correlation_id, "status": "pending"},
+                    sort_keys=True,
+                )
+            result = await daemon_request(
+                "POST", path, {"timeout_seconds": min(remaining, 45.0)},
+            )
+            if result.get("error"):
+                raise Exception(result["error"])
+            if result.get("status") == "resolved":
+                return json.dumps(result, sort_keys=True)
 
     @mcp.tool()
     async def ask_many(

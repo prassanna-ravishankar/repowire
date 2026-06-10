@@ -297,7 +297,11 @@ class AskService:
         )
         body = None if is_tool_permission else self._answer_reply_text(existing, answer)
         delivery_success = False
-        if body:
+        if body and existing.reply_delivery == "pull":
+            # Asker is blocked in wait_on_ack; the recorded answer is returned
+            # by the resolved waiter — no notify-back needed.
+            delivery_success = True
+        elif body:
             framed = f"[ack #{command.correlation_id} from @{existing.to_peer_name}] {body}"
             try:
                 peer_delivery = peer_delivery_from_state(
@@ -369,7 +373,20 @@ class AskService:
         if existing.closed:
             return
 
-        if command.message or command.attachments:
+        if command.message and existing.reply_delivery == "pull":
+            # The asker is blocked in wait_on_ack: retain the reply on the ask
+            # and let the resolved waiter deliver it as the tool result, instead
+            # of injecting into a pane nobody is reading.
+            await ask_tracker.capture_reply(command.correlation_id, command.message)
+            await ask_tracker.close(command.correlation_id, reason="ack_with_msg")
+            self._emit_ack_event(
+                ask=existing,
+                reason="ack_with_msg",
+                delivered=True,
+                has_message=True,
+                has_attachments=bool(command.attachments),
+            )
+        elif command.message or command.attachments:
             framed = (
                 f"[ack #{command.correlation_id} from @{existing.to_peer_name}] "
                 f"{command.message or ''}"
@@ -424,8 +441,8 @@ class AskService:
                     ),
                 )
 
-            if command.message and existing.parent_id is not None:
-                await ask_tracker.capture_child_reply(command.correlation_id, command.message)
+            if command.message:
+                await ask_tracker.capture_reply(command.correlation_id, command.message)
             await ask_tracker.close(command.correlation_id, reason="ack_with_msg")
         else:
             self._emit_ack_event(
@@ -459,6 +476,18 @@ class AskService:
         if ask is None or ask.closed:
             return
         is_error = error is not None
+        if not is_error and reply is not None and ask.reply_delivery == "pull":
+            # Asker is blocked in wait_on_ack: retain the reply, skip the notify.
+            await self._ask_tracker.capture_reply(correlation_id, reply)
+            await self._ask_tracker.close(correlation_id, reason="ack_with_msg")
+            self._emit_ack_event(
+                ask=ask,
+                reason="ack_with_msg",
+                delivered=True,
+                has_message=True,
+                has_attachments=False,
+            )
+            return
         if is_error:
             framed = f"[ack #{correlation_id} from @{ask.to_peer_name}] ACP error: {error}"
         else:
@@ -513,7 +542,7 @@ class AskService:
             )
             return
         if not is_error and reply is not None:
-            await self._ask_tracker.capture_child_reply(correlation_id, reply)
+            await self._ask_tracker.capture_reply(correlation_id, reply)
         await self._ask_tracker.close(
             correlation_id, reason="ack_with_msg" if not is_error else "send_failed",
         )

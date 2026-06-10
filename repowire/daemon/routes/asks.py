@@ -411,10 +411,10 @@ async def _acp_complete(
         )
         return
     # Reply delivered to the asker: capture the body for ask-many aggregation
-    # (no-op for non-child asks). Only here — the TransportError/ValueError/error
+    # and wait_on_ack pulls. Only here — the TransportError/ValueError/error
     # paths above must NOT mark a child replied without proven delivery.
     if not is_error and reply is not None:
-        await ask_tracker.capture_child_reply(correlation_id, reply)
+        await ask_tracker.capture_reply(correlation_id, reply)
     await ask_tracker.close(
         correlation_id, reason="ack_with_msg" if not is_error else "send_failed",
     )
@@ -775,6 +775,69 @@ async def mark_reminded(
     the simplified model open asks reappear in every Stop poll until acked.
     """
     return OkResponse()
+
+
+ASK_WAIT_MAX_SECONDS = 50.0
+ASK_WAIT_DEFAULT_SECONDS = 45.0
+
+
+class AskWaitRequest(BaseModel):
+    """Bounded wait for an ask to resolve (wait_on_ack primitive)."""
+
+    timeout_seconds: float | None = Field(
+        None, description="Requested wait per call; clamped to the daemon max",
+    )
+
+
+class AskWaitResponse(BaseModel):
+    """Resolution snapshot for a waited ask.
+
+    ``status="pending"`` means the bounded wait expired with the ask still
+    open — nothing was recorded; the caller may wait again. The ask is
+    switched to pull reply delivery on first wait, so the eventual reply is
+    retained here instead of being injected into the asker's pane.
+    """
+
+    correlation_id: str
+    status: str  # "resolved" | "pending"
+    reply: str | None = None
+    outcome: str | None = None
+    option_id: str | None = None
+    message: str | None = None
+    close_reason: str | None = None
+    responder: str | None = None
+
+
+@router.post("/asks/{correlation_id}/wait", response_model=AskWaitResponse)
+async def wait_on_ask(
+    correlation_id: str,
+    request: AskWaitRequest,
+    _: str | None = Depends(require_auth),
+) -> AskWaitResponse:
+    """Block (bounded) until the ask is answered/acked; pending on timeout."""
+    state = get_app_state()
+    timeout = min(request.timeout_seconds or ASK_WAIT_DEFAULT_SECONDS, ASK_WAIT_MAX_SECONDS)
+    try:
+        ask = await state.ask_tracker.wait_for_resolution(
+            correlation_id, timeout_seconds=max(timeout, 0.0),
+        )
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail=f"No ask with correlation_id: {correlation_id}",
+        ) from None
+    if ask is None:
+        return AskWaitResponse(correlation_id=correlation_id, status="pending")
+    answer = ask.answer
+    return AskWaitResponse(
+        correlation_id=correlation_id,
+        status="resolved",
+        reply=ask.reply_text if ask.reply_text is not None else (answer.text if answer else None),
+        outcome=answer.outcome if answer else None,
+        option_id=answer.option_id if answer else None,
+        message=answer.message if answer else None,
+        close_reason=ask.close_reason,
+        responder=ask.to_peer_name,
+    )
 
 
 @router.get("/asks/pending", response_model=PendingAsksResponse)

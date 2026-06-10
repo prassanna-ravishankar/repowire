@@ -74,6 +74,32 @@ ask("project-b", "What API endpoints do you expose?")
 # returns "ask-c1a1c7dd"
 ```
 
+### `wait_on_ack`
+
+```python
+wait_on_ack(correlation_id: str, timeout_seconds: int = 600) -> str
+```
+
+Block inside the tool call until an ask you opened is answered or acked.
+Returns JSON: `{status: "resolved" | "pending", reply, outcome, close_reason,
+responder, ...}`. On overall timeout the ask stays open and `status:
+"pending"` is returned — nothing is recorded, and you may call again.
+
+Waiting switches the ask to **pull reply delivery**: the responder's reply is
+retained on the ask and arrives as this tool's result instead of being
+injected into your pane, so a blocked caller doesn't also get a duplicate
+`[ack #cid …]` message after its turn.
+
+This is the waiting primitive for unattended sessions, and mandatory style
+for job executors: a job's fire ends when the turn ends, so a job that needs
+a peer's answer must `ask` then `wait_on_ack` rather than ending its turn.
+
+```python
+cid = ask("reviewer", "Review the diff on branch fix/x")
+wait_on_ack(cid, timeout_seconds=900)
+# {"status": "resolved", "reply": "LGTM with one nit", ...}
+```
+
 ### `ack`
 
 ```python
@@ -262,7 +288,9 @@ Return one job's current status JSON. `job_show` is an alias for `job_status`.
 job_update(job_id: str, state: str, state_reason: str | None = None, phase: str | None = None, progress: dict | None = None, progress_note: str | None = None, result_summary: str | None = None, result_data: dict | None = None, error: dict | None = None, artifacts: list | None = None, provenance: dict | None = None, attempt_id: str | None = None) -> str
 ```
 
-Update a job lifecycle state through `PATCH /jobs/{job_id}`. Returns the updated status JSON. Terminal jobs cannot move back to non-terminal states; same-terminal updates may add bounded metadata. Runner-managed updates should include the current `attempt_id` from the job prompt/status. Workers should immediately mark `state="running"` with that attempt id before longer work, then send the terminal update with the same attempt id.
+Update a job lifecycle state through `PATCH /jobs/{job_id}`. Returns the updated status JSON. Terminal jobs cannot move back to non-terminal states; same-terminal updates may add bounded metadata. Runner-managed updates should include the current `attempt_id` from the job prompt/status.
+
+`job_update` is **optional enrichment**: fire completion is structural (the daemon arms the fire from the dispatch prompt and records the executor's final turn message as the result — see [fire lifecycle](../concepts/jobs-and-schedules.md#fire-lifecycle-structural-completion)). Use it for progress notes and structured `result_data`. The escape hatch: a fire blocked on something outside the mesh can hold itself open across turn ends with `state="running"` plus an explicit `phase`, and must then terminal-report itself.
 
 ### `job_result`
 

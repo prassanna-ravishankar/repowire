@@ -652,6 +652,20 @@ async def ingest_chat_turn(
         except Exception:
             logger.warning("Failed to persist session binding for chat turn", exc_info=True)
 
+    # Fire-completion correlation: the Stop hook posts the turn pair here, so
+    # this is where a job fire's prompt (arming) and final message (completion)
+    # become observable to the daemon.
+    job_completion = getattr(state, "job_completion", None)
+    if job_completion is not None and resolved_peer is not None:
+        try:
+            await job_completion.on_chat_turn(
+                peer_id=resolved_peer.peer_id,
+                role=request.role,
+                text=request.text,
+            )
+        except Exception:
+            logger.exception("job completion chat-turn correlation failed")
+
     peer_registry.add_event("chat_turn", data)
     return OkResponse()
 

@@ -102,13 +102,18 @@ class Ask:
     pending_reply: str | None = None
     asker_identity: AskerIdentity | None = None
     pending_reply_at: datetime | None = None
-    # ask-many fanout: set on children of an askm- parent. ``reply_text`` is the
-    # captured ack message body (the normal ack path frames+notifies+closes but
-    # does not retain the body); populated only after the framed reply is
-    # delivered, so a 503'd reply leaves the child showing pending.
+    # ``reply_text`` is the captured ack message body (the normal ack path
+    # frames+notifies+closes but does not retain the body); populated only
+    # after the reply is resolved, so a 503'd push reply leaves the ask
+    # showing pending. ``parent_id`` marks ask-many fanout children.
     parent_id: str | None = None
     reply_text: str | None = None
     replied_at: datetime | None = None
+    # Reply routing: "push" (default) frames + notifies the asker's transport;
+    # "pull" retains the reply on the ask and skips the notify — set when the
+    # asker is blocked in wait_on_ack, so the reply arrives as the tool result
+    # instead of racing a pane injection.
+    reply_delivery: str = "push"
     # Structured question/answer (mesh questions primitive). ``question`` is set
     # when the ask is a structured question (approval / choice / text); ``answer``
     # is the typed resolution. A plain ask leaves both None and behaves as today.
@@ -185,6 +190,7 @@ class AskTracker:
         to_repowire_session_id: str | None = None,
         parent_id: str | None = None,
         question: Question | None = None,
+        reply_delivery: str = "push",
     ) -> str:
         """Register a new open ask. Returns the correlation_id.
 
@@ -195,6 +201,8 @@ class AskTracker:
         ``parent_id`` links this ask as a child of an ask-many parent.
         ``question`` makes this ask a structured question (approval / choice /
         text); a blocking transport then awaits :meth:`wait_for_answer`.
+        ``reply_delivery="pull"`` retains the eventual reply on the ask instead
+        of notifying the asker's transport (job dispatch, wait_on_ack).
 
         Raises QuiescedError if either endpoint is mid-switch.
         """
@@ -219,20 +227,22 @@ class AskTracker:
                 reply_to=reply_to,
                 parent_id=parent_id,
                 question=question,
+                reply_delivery=reply_delivery,
             )
             logger.debug("Registered ask %s: %s -> %s", cid, from_peer_name, to_peer_name)
             return cid
 
-    async def capture_child_reply(self, correlation_id: str, reply_text: str) -> None:
-        """Record an ack message body on an ask-many child after reply delivery.
+    async def capture_reply(self, correlation_id: str, reply_text: str) -> None:
+        """Record an ack message body on an ask once the reply is resolved.
 
-        The normal ack path frames + notifies + closes but does not retain the
-        body; ask-many aggregation needs it. No-op for non-child asks or when
-        already captured. Call only after the framed reply was delivered.
+        The push ack path frames + notifies + closes but does not retain the
+        body; ask-many aggregation and wait_on_ack pulls need it. No-op when
+        already captured. For push delivery, call only after the framed reply
+        was delivered.
         """
         async with self._lock:
             ask = self._asks.get(correlation_id)
-            if ask is None or ask.parent_id is None or ask.reply_text is not None:
+            if ask is None or ask.reply_text is not None:
                 return
             ask.reply_text = reply_text
             ask.replied_at = datetime.now(timezone.utc)
@@ -335,6 +345,39 @@ class AskTracker:
                 if existing is not None and existing.answer is not None:
                     return existing.answer
             return resolved_default
+
+    async def wait_for_resolution(
+        self,
+        correlation_id: str,
+        *,
+        timeout_seconds: float,
+        pull: bool = True,
+    ) -> Ask | None:
+        """Bounded wait until the ask resolves (answered or closed); None on timeout.
+
+        Unlike :meth:`wait_for_answer`, a timeout records nothing — the ask
+        stays open, so callers can poll in bounded slices (wait_on_ack). When
+        ``pull`` is set, the still-open ask is switched to pull reply delivery
+        so a racing ack retains the reply on the ask instead of injecting it
+        into the asker's pane while the asker is blocked here.
+        """
+        async with self._lock:
+            ask = self._asks.get(correlation_id)
+            if ask is None:
+                raise KeyError(correlation_id)
+            if ask.closed:
+                return ask
+            if pull:
+                ask.reply_delivery = "pull"
+            waiter = self._answer_waiters.get(correlation_id)
+            if waiter is None:
+                waiter = asyncio.get_running_loop().create_future()
+                self._answer_waiters[correlation_id] = waiter
+        try:
+            await asyncio.wait_for(asyncio.shield(waiter), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            return None
+        return self._asks.get(correlation_id)
 
     async def close(self, correlation_id: str, reason: str) -> Ask | None:
         """Close an ask. Returns the Ask if it existed and wasn't already closed."""

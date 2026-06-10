@@ -15,6 +15,7 @@ import os
 import re
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -155,6 +156,13 @@ class PeerRegistry:
 
         self._contradictions = PeerContradictionTracker()
 
+        # Awaited on every terminal mark_offline (after the lock); wired by the
+        # app to the fire-completion service so executor death fails in-flight
+        # job fires. The registry stays job-agnostic.
+        self._on_terminal_offline: (
+            Callable[[str, str], Awaitable[None]] | None
+        ) = None
+
         # When each peer's current description was set. Used for clear-on-read
         # TTL — see config.daemon.description_ttl_seconds. Registry-internal
         # so the wire-facing Peer schema stays untouched.
@@ -170,6 +178,12 @@ class PeerRegistry:
 
         # Consecutive honest pane_alive=false pongs per connected peer.
         self._pane_unsafe_strikes: dict[str, int] = {}
+
+    def set_terminal_offline_hook(
+        self, hook: Callable[[str, str], Awaitable[None]] | None,
+    ) -> None:
+        """Observe terminal offlines: ``await hook(peer_id, reason)``."""
+        self._on_terminal_offline = hook
 
     def _load_retired(self) -> None:
         if self._state_db is None:
@@ -2238,6 +2252,15 @@ class PeerRegistry:
         if self._query_tracker:
             cancelled = await self._query_tracker.cancel_queries_to_peer(session_id)
 
+        if terminal and self._on_terminal_offline is not None:
+            # Fire-completion seam: a terminal offline means the agent behind
+            # the peer is conclusively gone, so in-flight job fires assigned to
+            # it must fail loudly instead of staying delivered/running forever.
+            try:
+                await self._on_terminal_offline(session_id, reason)
+            except Exception:
+                logger.exception("terminal-offline hook failed for %s", session_id)
+
         logger.info(
             "Marked %s offline (reason=%s source=%s), cancelled %d queries",
             identifier,
@@ -2453,6 +2476,9 @@ class PeerRegistry:
                 and not self._transport.is_connected(p.peer_id)
                 and not p.pane_id
                 and not (acp_flag and p.metadata and p.metadata.get("acp"))
+                # In-process service peers (@jobs) live exactly as long as the
+                # daemon itself; they never own a WebSocket to lose.
+                and not (p.metadata and p.metadata.get("in_process"))
             ]
             pane_candidates = [
                 p for p in self._peers.values()

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -44,12 +46,33 @@ def _parse_iso(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+logger = logging.getLogger(__name__)
+
+#: Fired after a committed state transition: (work_after, prior_state).
+StateChangeCallback = Callable[[TrackedWork, str | None], None]
+
+
 class SQLiteWorkStore:
     """Tracked work store backed by daemon state DB."""
 
-    def __init__(self, db: StateDatabase) -> None:
+    def __init__(
+        self, db: StateDatabase, *, on_state_change: StateChangeCallback | None = None,
+    ) -> None:
         self._db = db
         self._conn = db.conn
+        self._on_state_change = on_state_change
+
+    def set_on_state_change(self, callback: StateChangeCallback | None) -> None:
+        """Observe committed state transitions (events, terminal side effects)."""
+        self._on_state_change = callback
+
+    def _emit_state_change(self, work: TrackedWork | None, prior_state: str | None) -> None:
+        if work is None or self._on_state_change is None or work.state == prior_state:
+            return
+        try:
+            self._on_state_change(work, prior_state)
+        except Exception:
+            logger.exception("work state-change callback failed for %s", work.work_id)
 
     @staticmethod
     def _row_to_work(row: sqlite3.Row | None) -> TrackedWork | None:
@@ -341,7 +364,9 @@ class SQLiteWorkStore:
                 correlation_id=existing.correlation_id,
                 provenance=provenance,
             )
-        return self.get(work_id)
+        acquired = self.get(work_id)
+        self._emit_state_change(acquired, existing.state)
+        return acquired
 
     def recover_stale_dispatching(
         self,
@@ -349,9 +374,17 @@ class SQLiteWorkStore:
         now: str,
         runner_owner_id: str | None = None,
     ) -> list[TrackedWork]:
+        """Recover work stuck mid-dispatch after a runner interruption.
+
+        Only ``dispatching`` is lease-bounded: it is the runner's own phase, so
+        an expired lease there means the runner died mid-acquisition. Once a
+        job is ``delivered`` the executor owns the fire — its liveness is
+        tracked by the fire-completion service (executor terminal offline),
+        never by a wall-clock lease.
+        """
         recovered: list[TrackedWork] = []
         rows = self._conn.execute(
-            "SELECT * FROM tracked_work WHERE state IN ('dispatching', 'delivered')"
+            "SELECT * FROM tracked_work WHERE state = 'dispatching'"
         ).fetchall()
         with self._conn:
             for row in rows:
@@ -400,6 +433,7 @@ class SQLiteWorkStore:
                 refreshed = self.get(work.work_id)
                 if refreshed is not None:
                     recovered.append(refreshed)
+                    self._emit_state_change(refreshed, work.state)
         return recovered
 
     def update_attempt(
@@ -457,7 +491,10 @@ class SQLiteWorkStore:
                     attempt["acquisition"] = acquisition
                 if error is not None:
                     attempt["error"] = error
-                if status in {"delivered", "failed", "unavailable", "interrupted", "cancelled"}:
+                if status in {
+                    "delivered", "completed", "failed",
+                    "unavailable", "interrupted", "cancelled",
+                }:
                     attempt["completed_at"] = now_iso()
                 break
             if not found:
@@ -505,7 +542,9 @@ class SQLiteWorkStore:
                 error=error if error is not None else existing.error,
                 completed_at=completed_at,
             )
-        return self.get(work_id)
+        updated = self.get(work_id)
+        self._emit_state_change(updated, existing.state)
+        return updated
 
     def update_state(
         self,
@@ -585,7 +624,9 @@ class SQLiteWorkStore:
                     work_id,
                 ),
             )
-        return self.get(work_id)
+        updated = self.get(work_id)
+        self._emit_state_change(updated, existing.state)
+        return updated
 
     def cancel(
         self,
@@ -638,7 +679,9 @@ class SQLiteWorkStore:
                         work_id,
                     ),
                 )
-            return self.get(work_id)
+            cancelled = self.get(work_id)
+            self._emit_state_change(cancelled, existing.state)
+            return cancelled
         with self._conn:
             self._conn.execute(
                 """

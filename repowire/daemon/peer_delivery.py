@@ -464,8 +464,14 @@ class PeerDeliveryService:
         to_peer: str,
         text: str,
         circle: str | None = None,
+        reply_delivery: str = "push",
     ) -> str:
-        """Register and deliver a scheduled ask, rolling back on send failure."""
+        """Register and deliver a scheduled ask, rolling back on send failure.
+
+        Job dispatch passes ``reply_delivery="pull"``: the @jobs sender has no
+        transport, so the executor's ack reply is retained on the ask instead
+        of attempting a notify back to a peer that cannot receive it.
+        """
         if self._ask_tracker is None:
             raise RuntimeError("AskTracker is required to open scheduled asks")
         cid = f"ask-{uuid4().hex[:8]}"
@@ -476,6 +482,7 @@ class PeerDeliveryService:
             to_peer_name=to_peer,
             text=text,
             correlation_id=cid,
+            reply_delivery=reply_delivery,
         )
         try:
             await self.deliver_ask(

@@ -70,10 +70,15 @@ class JobRunner:
         self._session_bindings = session_binding_store
         self._session_control = session_control
         self._runner_owner_id = runner_owner_id
+        self._sender_peer_id: str | None = None
         self._lease_seconds = lease_seconds
         self._task: asyncio.Task | None = None
         self._stopped = asyncio.Event()
         self._wake = asyncio.Event()
+
+    def set_sender_peer_id(self, peer_id: str) -> None:
+        """Address dispatch asks from the registered @jobs service peer."""
+        self._sender_peer_id = peer_id
 
     async def start(self) -> None:
         self.recover_stale()
@@ -151,12 +156,13 @@ class JobRunner:
             due = _parse_due(due_at) or now
             if soonest is None or due < soonest:
                 soonest = due
-        for state in ("dispatching", "delivered"):
-            for work in self._store.list_all(state=state):
-                runner = (work.provenance or {}).get("runner") or {}
-                lease_until = _parse_due(runner.get("lease_until"))
-                if lease_until is not None and (soonest is None or lease_until < soonest):
-                    soonest = lease_until
+        # Only dispatching is lease-bounded; delivered fires belong to the
+        # executor and end via fire completion, not a wall clock.
+        for work in self._store.list_all(state="dispatching"):
+            runner = (work.provenance or {}).get("runner") or {}
+            lease_until = _parse_due(runner.get("lease_until"))
+            if lease_until is not None and (soonest is None or lease_until < soonest):
+                soonest = lease_until
         if self._calendar is not None:
             calendar_delay = self._calendar.seconds_until_next_due(now=now)
             if calendar_delay is not None:
@@ -250,10 +256,11 @@ class JobRunner:
         )
         try:
             cid = await self._delivery.open_scheduled_ask(
-                from_peer=self._runner_owner_id,
+                from_peer=self._sender_peer_id or self._runner_owner_id,
                 to_peer=peer.peer_id,
                 text=text,
                 circle=peer.circle,
+                reply_delivery="pull",
             )
         except Exception as e:
             return self._store.update_attempt(
@@ -373,7 +380,9 @@ class JobRunner:
             return reusable
         warmup = (
             "Repowire spawned this session for a durable job. "
-            "Please register with the mesh; the job request will arrive as an ask."
+            "Please register with the mesh; the job request will arrive as an ask. "
+            "You will run unattended: your turn ending ends the job fire, so "
+            "never stop to ask a human — use wait_on_ack to wait on peers."
         )
         resume_plan = self._resume_plan_for(work, path=str(path), backend=backend)
         def mark_spawned(spawn_result) -> None:
@@ -719,7 +728,12 @@ class JobRunner:
             f"job_id: {work.work_id}\n"
             f"attempt_id: {attempt_id}\n\n"
             f"{body}\n\n"
-            "First, immediately PATCH /jobs/{job_id} to state=running with this "
-            "attempt_id before doing longer work. When complete, PATCH /jobs/{job_id} "
-            "with a terminal state and the same attempt_id. Ack only confirms receipt."
+            "Job contract: you are running as a durable job — there is no human "
+            "at this terminal. Your turn ending ends this fire: your final "
+            "message is recorded as the job result, so end with a clear report. "
+            "Never stop to ask permission; decide, or ask a peer and block on "
+            "the reply with wait_on_ack (never end your turn to wait). Optional: "
+            "job_update for progress or structured result_data; if you must "
+            "wait on something outside the mesh, job_update state=running with "
+            "an explicit phase to hold the fire open across turns."
         )

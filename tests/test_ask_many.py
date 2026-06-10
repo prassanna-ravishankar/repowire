@@ -31,7 +31,7 @@ async def test_all_reply_rolls_up_complete_with_bodies():
         cid = await _register_child(at, parent.parent_id, name)
         await am.add_child(parent.parent_id, AskManyChild(peer_name=name, correlation_id=cid))
         # simulate ack-with-message: capture reply, then close
-        await at.capture_child_reply(cid, f"{name} says hi")
+        await at.capture_reply(cid, f"{name} says hi")
         await at.close(cid, reason="ack_with_msg")
 
     status = await am.status(parent.parent_id)
@@ -110,14 +110,15 @@ async def test_unknown_parent_returns_none():
 
 
 @pytest.mark.asyncio
-async def test_capture_child_reply_is_noop_for_non_child_ask():
+async def test_capture_reply_retains_body_and_first_capture_wins():
     at = AskTracker()
     cid = await at.register(
         from_peer_id="a", from_peer_name="a", to_peer_id="b", to_peer_name="b", text="q",
     )
-    await at.capture_child_reply(cid, "ignored")  # no parent_id -> no-op
+    await at.capture_reply(cid, "first")
+    await at.capture_reply(cid, "second")  # already captured -> no-op
     ask = await at.get(cid)
-    assert ask is not None and ask.reply_text is None
+    assert ask is not None and ask.reply_text == "first"
 
 
 @pytest.mark.asyncio
