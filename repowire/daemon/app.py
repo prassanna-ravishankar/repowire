@@ -50,6 +50,7 @@ from repowire.daemon.routes import (
     reviews,
     schedules,
     sessions,
+    shares,
     traces,
     websocket,
     work,
@@ -523,6 +524,7 @@ def create_app(
     app.include_router(lifecycle.router)
     app.include_router(schedules.router)
     app.include_router(sessions.router)
+    app.include_router(shares.router)
     app.include_router(traces.router)
     app.include_router(work.router)
 
@@ -780,6 +782,7 @@ def create_test_app(
     app.include_router(lifecycle.router)
     app.include_router(schedules.router)
     app.include_router(sessions.router)
+    app.include_router(shares.router)
     app.include_router(traces.router)
     app.include_router(work.router)
 

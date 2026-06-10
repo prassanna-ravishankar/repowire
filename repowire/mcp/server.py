@@ -1773,6 +1773,54 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         await daemon_request("DELETE", f"/schedules/{quote(schedule_id, safe='')}")
         return f"deleted schedule {schedule_id}"
 
+    @mcp.tool()
+    async def share_session(
+        peer_name: str | None = None,
+        permissions: str = "ro",
+        ttl_secs: int | None = None,
+    ) -> str:
+        """[Repowire mesh] Share a peer's session via a relay link.
+
+        Generates a shareable URL for a peer. Anyone with the URL can observe
+        the session (read-only) or interact with the peer (read-write).
+
+        Requires relay to be configured (`repowire setup --relay`).
+
+        Args:
+            peer_name: Peer to share. Defaults to this peer (yourself).
+            permissions: "ro" (read-only, default) or "rw" (read-write).
+            ttl_secs: Link lifetime in seconds. None means no expiry.
+
+        Returns:
+            The share URL and share_id, e.g. "https://repowire.io/s/sh_xxx"
+        """
+        await _ensure_registered(strict=True)
+        target = peer_name or (await _get_my_peer_name())
+        result = await daemon_request(
+            "POST",
+            "/shares",
+            {"peer_name": target, "permissions": permissions, "ttl_secs": ttl_secs},
+        )
+        url = result.get("url", "")
+        share_id = result.get("share_id", "")
+        perms = result.get("permissions", permissions)
+        expires = result.get("expires_at") or "never"
+        return f"share link for {target} [{perms}]: {url}\nshare_id: {share_id}\nexpires: {expires}"
+
+    @mcp.tool()
+    async def revoke_share(share_id: str) -> str:
+        """[Repowire mesh] Revoke a previously issued share link.
+
+        Args:
+            share_id: The share_id returned by share_session.
+
+        Returns:
+            Confirmation message.
+        """
+        await _ensure_registered(strict=True)
+        await daemon_request("DELETE", f"/shares/{quote(share_id, safe='')}")
+        return f"revoked share {share_id}"
+
     return mcp
 
 

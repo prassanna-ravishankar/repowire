@@ -4166,6 +4166,111 @@ def relay_generate_key(user_id: str) -> None:
 
 
 # =============================================================================
+# share command
+# =============================================================================
+
+
+@main.command(name="share")
+@click.argument("peer_name", required=False)
+@click.option("--rw", is_flag=True, default=False, help="Allow viewer to send messages (read-write)")
+@click.option("--ttl", default=None, type=int, metavar="SECS", help="Link lifetime in seconds (default: no expiry)")
+@click.option("--revoke", default=None, metavar="SHARE_ID", help="Revoke a share link by its ID")
+@click.option("--list", "list_shares", is_flag=True, default=False, help="List active share links")
+def share_session(
+    peer_name: str | None,
+    rw: bool,
+    ttl: int | None,
+    revoke: str | None,
+    list_shares: bool,
+) -> None:
+    """Share a peer's session via a relay link.
+
+    Generates a shareable URL for PEER_NAME (defaults to the local daemon's
+    first connected peer). Requires relay to be configured.
+
+    Examples:
+
+      repowire share                      # share first peer, read-only
+      repowire share my-agent --rw        # read-write link
+      repowire share my-agent --ttl 3600  # expires in 1 hour
+      repowire share --list               # show active links
+      repowire share --revoke sh_xxx      # revoke a link
+    """
+    import httpx
+
+    daemon_url = _get_daemon_url()
+
+    if list_shares:
+        try:
+            resp = httpx.get(f"{daemon_url}/shares", timeout=10.0)
+            resp.raise_for_status()
+        except httpx.ConnectError:
+            console.print("[yellow]Daemon is not running.[/]")
+            return
+        tokens = resp.json()
+        if not tokens:
+            console.print("[dim]No active share links.[/]")
+            return
+        for t in tokens:
+            expires = t.get("expires_at") or "never"
+            perms = t.get("permissions", "ro")
+            console.print(f"[cyan]{t['share_id']}[/]  [{perms}]  {t.get('url', '')}  (expires: {expires})")
+        return
+
+    if revoke:
+        try:
+            resp = httpx.delete(f"{daemon_url}/shares/{revoke}", timeout=10.0)
+            resp.raise_for_status()
+        except httpx.ConnectError:
+            console.print("[yellow]Daemon is not running.[/]")
+            return
+        console.print(f"[green]Revoked share link {revoke}[/]")
+        return
+
+    payload: dict = {"permissions": "rw" if rw else "ro"}
+    if peer_name:
+        payload["peer_name"] = peer_name
+    else:
+        # Default to the first registered peer name from the daemon
+        try:
+            pr = httpx.get(f"{daemon_url}/peers", timeout=5.0)
+            pr.raise_for_status()
+            peers_data = pr.json()
+            if not peers_data:
+                console.print("[yellow]No peers registered. Start an agent session first.[/]")
+                return
+            payload["peer_name"] = peers_data[0].get("display_name") or peers_data[0].get("peer_name", "")
+        except Exception:
+            console.print("[yellow]Could not resolve peer name from daemon.[/]")
+            return
+
+    if ttl is not None:
+        payload["ttl_secs"] = ttl
+
+    try:
+        resp = httpx.post(f"{daemon_url}/shares", json=payload, timeout=10.0)
+        resp.raise_for_status()
+    except httpx.ConnectError:
+        console.print("[yellow]Daemon is not running.[/]")
+        return
+    except httpx.HTTPStatusError as e:
+        console.print(f"[red]Error: {e.response.status_code} — {e.response.text}[/]")
+        return
+
+    data = resp.json()
+    url = data.get("url", "")
+    share_id = data.get("share_id", "")
+    perms = data.get("permissions", "ro")
+    expires = data.get("expires_at") or "never"
+
+    console.print(f"\n[green]Share link created[/] — [{perms}]")
+    console.print(f"\n  [bold cyan]{url}[/]\n")
+    console.print(f"  share_id: [dim]{share_id}[/]")
+    console.print(f"  expires:  [dim]{expires}[/]")
+    console.print(f"\n  Revoke:   [dim]repowire share --revoke {share_id}[/]\n")
+
+
+# =============================================================================
 # telegram command group
 # =============================================================================
 

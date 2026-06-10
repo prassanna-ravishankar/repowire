@@ -40,12 +40,25 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from repowire.relay.auth import APIKey, register_token, validate_api_key
+from repowire.relay.share_tokens import (
+    ShareToken,
+    create_share_token,
+    list_share_tokens,
+    revoke_share_token,
+    validate_share_token,
+)
 
 log = logging.getLogger(__name__)
 
 
 class RegisterRequest(BaseModel):
     user_id: str
+
+
+class ShareCreateRequest(BaseModel):
+    peer_name: str
+    permissions: str = "ro"  # "ro" | "rw"
+    ttl_secs: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +106,11 @@ _http_futures: dict[str, asyncio.Future[dict[str, Any]]] = {}  # request_id -> F
 _sse_clients: set[asyncio.Queue[str]] = set()
 _sse_pollers: dict[str, asyncio.Task[None]] = {}  # user_id -> poller task
 _sse_last_event_id: str | None = None
+
+# Share-scoped SSE: per share_id queues + per user_id polling task (reused across shares)
+_share_sse_clients: dict[str, set[asyncio.Queue[str]]] = {}  # share_id -> queues
+_share_pollers: dict[str, asyncio.Task[None]] = {}  # user_id -> share-poller task
+_share_last_event_id: dict[str, str | None] = {}  # user_id -> last seen event id
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -448,6 +466,318 @@ async def _poll_events(user_id: str) -> None:
             log.warning("SSE poller error", exc_info=True)
 
 
+def _event_mentions_peer(event: dict, peer_name: str) -> bool:
+    """Return True if the event is relevant to the given peer."""
+    for key in ("peer_name", "from_peer", "to_peer", "display_name"):
+        if event.get(key) == peer_name:
+            return True
+    return False
+
+
+async def _poll_share_events(user_id: str) -> None:
+    """Shared share-SSE poller: one task per user, fans out filtered events to viewers."""
+    import json as _json
+
+    while True:
+        await asyncio.sleep(2)
+        try:
+            # Only run while there are active share viewers for this user
+            active_shares = [
+                sid for sid, qs in _share_sse_clients.items()
+                if qs and (t := validate_share_token(sid)) is not None and t.user_id == user_id
+            ]
+            if not active_shares:
+                continue
+
+            conn = _get_any_daemon(user_id)
+            if not conn:
+                continue
+
+            req_id = str(uuid4())
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[dict[str, Any]] = loop.create_future()
+            _http_futures[req_id] = future
+
+            last_id = _share_last_event_id.get(user_id)
+            qs_param = f"since={last_id}" if last_id else ""
+            try:
+                await conn.websocket.send_json({
+                    "type": "http_request",
+                    "request_id": req_id,
+                    "method": "GET",
+                    "path": "/events",
+                    "headers": {},
+                    "query_string": qs_param,
+                })
+                resp_msg = await asyncio.wait_for(future, timeout=10)
+            except Exception:
+                continue
+            finally:
+                _http_futures.pop(req_id, None)
+
+            if resp_msg.get("status") != 200:
+                continue
+
+            body = base64.b64decode(resp_msg.get("body", ""))
+            events = _json.loads(body)
+            if not events:
+                continue
+
+            _share_last_event_id[user_id] = events[-1].get("id")
+
+            # Fan out to each share's viewers, filtered by that share's peer_name
+            for share_id in active_shares:
+                token = validate_share_token(share_id)
+                if token is None:
+                    continue
+                queues = _share_sse_clients.get(share_id, set())
+                if not queues:
+                    continue
+                matching = [e for e in events if _event_mentions_peer(e, token.peer_name)]
+                for event in matching:
+                    data = f"data: {_json.dumps(event)}\n\n"
+                    dead: list[asyncio.Queue[str]] = []
+                    for q in queues:
+                        try:
+                            q.put_nowait(data)
+                        except asyncio.QueueFull:
+                            dead.append(q)
+                    for q in dead:
+                        queues.discard(q)
+
+        except Exception:
+            log.warning("share SSE poller error", exc_info=True)
+
+
+_SHARE_VIEWER_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>repowire — {peer_name}</title>
+<style>
+  *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+    background: #0a0a0f;
+    color: #c8c8d0;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }}
+  header {{
+    padding: 0.75rem 1.25rem;
+    border-bottom: 1px solid #1a1a2a;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    background: #0d0d16;
+  }}
+  .logo {{ color: #6a6aaa; font-weight: 600; font-size: 0.85rem; }}
+  .peer-name {{ color: #e0e0e8; font-size: 0.95rem; font-weight: 500; }}
+  .badge {{
+    font-size: 0.65rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 20px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }}
+  .badge-ro {{ background: #1a1a2a; color: #6a6a8a; border: 1px solid #2a2a3a; }}
+  .badge-rw {{ background: #0d2010; color: #4aaa6a; border: 1px solid #1a4a2a; }}
+  .dot {{
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: #3a6a3a;
+    animation: pulse 2s ease-in-out infinite;
+  }}
+  @keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.4; }} }}
+  .events {{
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }}
+  .event {{
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    border: 1px solid #1a1a2a;
+    background: #0d0d18;
+    max-width: 100%;
+    word-break: break-word;
+  }}
+  .event-type {{
+    font-size: 0.7rem;
+    color: #4a4a6a;
+    margin-bottom: 0.2rem;
+    font-family: monospace;
+  }}
+  .event-chat {{ border-color: #1a2a3a; background: #0a1020; }}
+  .event-ask  {{ border-color: #2a2a1a; background: #12100a; }}
+  .event-ack  {{ border-color: #0a2a1a; background: #081410; }}
+  .event-text {{ color: #c8c8d8; white-space: pre-wrap; }}
+  .from {{ color: #6a8aaa; font-size: 0.75rem; margin-bottom: 0.15rem; }}
+  .empty {{ color: #3a3a4a; font-size: 0.85rem; padding: 2rem; text-align: center; }}
+  .compose {{
+    padding: 0.75rem 1.25rem;
+    border-top: 1px solid #1a1a2a;
+    display: flex;
+    gap: 0.5rem;
+    background: #0d0d16;
+  }}
+  .compose textarea {{
+    flex: 1;
+    padding: 0.5rem 0.75rem;
+    background: #14141f;
+    border: 1px solid #2a2a3a;
+    border-radius: 6px;
+    color: #e0e0e8;
+    font-family: inherit;
+    font-size: 0.85rem;
+    resize: none;
+    height: 60px;
+    outline: none;
+  }}
+  .compose textarea:focus {{ border-color: #3a3a6a; }}
+  .compose button {{
+    padding: 0.5rem 1rem;
+    background: #1a1a3a;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    color: #c0c0e0;
+    cursor: pointer;
+    font-size: 0.85rem;
+    align-self: flex-end;
+  }}
+  .compose button:hover {{ background: #22223a; }}
+  .compose button:disabled {{ opacity: 0.4; cursor: default; }}
+  .send-status {{ font-size: 0.75rem; color: #4a6a4a; padding: 0.25rem 0; }}
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">repowire</span>
+  <span class="peer-name">{peer_name}</span>
+  <span class="badge {badge_class}">{perms_label}</span>
+  <span class="dot" id="dot" title="live"></span>
+</header>
+<div class="events" id="events">
+  <div class="empty" id="empty">Waiting for events…</div>
+</div>
+{compose_html}
+<script>
+const shareId = "{share_id}";
+const peerName = "{peer_name}";
+const isRw = {is_rw};
+
+const eventsEl = document.getElementById("events");
+const emptyEl = document.getElementById("empty");
+const dot = document.getElementById("dot");
+
+function addEvent(evt) {{
+  if (emptyEl) emptyEl.remove();
+  const div = document.createElement("div");
+  const type = evt.type || "event";
+  div.className = "event" +
+    (type.includes("chat") ? " event-chat" : "") +
+    (type.includes("ask") ? " event-ask" : "") +
+    (type.includes("ack") ? " event-ack" : "");
+  const from = evt.from_peer || evt.peer_name || "";
+  const text = evt.text || evt.content || evt.message || "";
+  div.innerHTML =
+    `<div class="event-type">${{type}}</div>` +
+    (from ? `<div class="from">${{from}}</div>` : "") +
+    (text ? `<div class="event-text">${{escHtml(text)}}</div>` : "");
+  eventsEl.appendChild(div);
+  eventsEl.scrollTop = eventsEl.scrollHeight;
+}}
+
+function escHtml(s) {{
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}}
+
+const es = new EventSource("/s/" + shareId + "/stream");
+es.onmessage = (e) => {{
+  try {{ addEvent(JSON.parse(e.data)); }} catch (_) {{}}
+}};
+es.onerror = () => {{ dot.style.background = "#6a2a2a"; }};
+es.onopen  = () => {{ dot.style.background = "#3a6a3a"; }};
+
+{send_script}
+</script>
+</body>
+</html>
+"""
+
+_SHARE_SEND_SCRIPT = """\
+const sendBtn = document.getElementById("send-btn");
+const msgInput = document.getElementById("msg-input");
+const sendStatus = document.getElementById("send-status");
+
+async function sendMessage() {
+  const text = msgInput.value.trim();
+  if (!text) return;
+  sendBtn.disabled = true;
+  sendStatus.textContent = "Sending…";
+  try {
+    const r = await fetch("/s/" + shareId + "/ask", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text}),
+    });
+    if (r.ok) {
+      msgInput.value = "";
+      sendStatus.textContent = "Sent";
+      setTimeout(() => { sendStatus.textContent = ""; }, 2000);
+    } else {
+      sendStatus.textContent = "Error: " + r.status;
+    }
+  } catch (e) {
+    sendStatus.textContent = "Network error";
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+sendBtn.addEventListener("click", sendMessage);
+msgInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+"""
+
+_COMPOSE_HTML = """\
+<div class="compose">
+  <textarea id="msg-input" placeholder="Ask {peer_name} something… (Enter to send)"></textarea>
+  <div style="display:flex;flex-direction:column;gap:0.25rem">
+    <button id="send-btn">Send</button>
+    <span class="send-status" id="send-status"></span>
+  </div>
+</div>
+"""
+
+
+def _build_viewer_html(token: ShareToken) -> str:
+    is_rw = token.permissions == "rw"
+    escaped = html.escape(token.peer_name)
+    compose_html = _COMPOSE_HTML.replace("{peer_name}", escaped) if is_rw else ""
+    send_script = _SHARE_SEND_SCRIPT if is_rw else ""
+    return (
+        _SHARE_VIEWER_HTML
+        .replace("{peer_name}", html.escape(token.peer_name))
+        .replace("{share_id}", html.escape(token.share_id))
+        .replace("{badge_class}", "badge-rw" if is_rw else "badge-ro")
+        .replace("{perms_label}", "read-write" if is_rw else "read-only")
+        .replace("{is_rw}", "true" if is_rw else "false")
+        .replace("{compose_html}", compose_html)
+        .replace("{send_script}", send_script)
+    )
+
+
 def _find_web_output_dir() -> str | None:
     """Find the web/out directory for dashboard static files."""
     import sys
@@ -604,6 +934,143 @@ def create_app() -> FastAPI:
             }
             for d in daemons
         ]
+
+    # -- Share session: create / list / revoke --
+
+    @app.post("/api/v1/share")
+    async def share_create(
+        req: ShareCreateRequest, api_key: APIKey = Depends(get_api_key)
+    ) -> dict[str, Any]:
+        """Issue a share token for a specific peer."""
+        if req.permissions not in ("ro", "rw"):
+            raise HTTPException(status_code=400, detail="permissions must be 'ro' or 'rw'")
+        conn = _get_any_daemon(api_key.user_id)
+        if not conn:
+            raise HTTPException(status_code=502, detail="No daemon connected")
+        token = create_share_token(
+            user_id=api_key.user_id,
+            peer_name=req.peer_name,
+            permissions=req.permissions,
+            ttl_secs=req.ttl_secs,
+        )
+        return token.to_dict()
+
+    @app.get("/api/v1/share")
+    async def share_list(api_key: APIKey = Depends(get_api_key)) -> list[dict[str, Any]]:
+        """List active share tokens for the authenticated user."""
+        return [t.to_dict() for t in list_share_tokens(api_key.user_id)]
+
+    @app.delete("/api/v1/share/{share_id}")
+    async def share_revoke(share_id: str, api_key: APIKey = Depends(get_api_key)) -> dict[str, Any]:
+        """Revoke a share token."""
+        token = validate_share_token(share_id)
+        if token is None:
+            raise HTTPException(status_code=404, detail="Share token not found")
+        if token.user_id != api_key.user_id:
+            raise HTTPException(status_code=403, detail="Not your share token")
+        revoke_share_token(share_id)
+        return {"ok": True, "share_id": share_id}
+
+    # -- Share viewer: /s/{share_id} --
+
+    @app.get("/s/{share_id}", response_class=HTMLResponse)
+    async def share_viewer(share_id: str) -> Response:
+        """Serve the share viewer page for a valid share token."""
+        token = validate_share_token(share_id)
+        if token is None:
+            return HTMLResponse(
+                "<html><body>Share link not found or expired.</body></html>", status_code=404
+            )
+        conn = _get_any_daemon(token.user_id)
+        if not conn:
+            return HTMLResponse(
+                "<html><body>Session owner is not connected.</body></html>", status_code=503
+            )
+        return HTMLResponse(_build_viewer_html(token))
+
+    @app.get("/s/{share_id}/stream")
+    async def share_stream(share_id: str, request: Request) -> StreamingResponse:
+        """SSE stream of events for the shared peer."""
+        token = validate_share_token(share_id)
+        if token is None:
+            raise HTTPException(status_code=404, detail="Share not found or expired")
+        conn = _get_any_daemon(token.user_id)
+        if not conn:
+            raise HTTPException(status_code=503, detail="Session owner not connected")
+
+        queue: asyncio.Queue[str] = asyncio.Queue(maxsize=64)
+        _share_sse_clients.setdefault(share_id, set()).add(queue)
+
+        # Ensure the share poller is running for this user
+        if token.user_id not in _share_pollers or _share_pollers[token.user_id].done():
+            _share_pollers[token.user_id] = asyncio.create_task(
+                _poll_share_events(token.user_id)
+            )
+
+        async def event_generator():
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        data = await asyncio.wait_for(queue.get(), timeout=15)
+                        yield data
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+            finally:
+                clients = _share_sse_clients.get(share_id)
+                if clients:
+                    clients.discard(queue)
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    @app.post("/s/{share_id}/ask")
+    async def share_ask(share_id: str, request: Request) -> Response:
+        """Inject an ask to the shared peer (rw only)."""
+        token = validate_share_token(share_id)
+        if token is None:
+            raise HTTPException(status_code=404, detail="Share not found or expired")
+        if token.permissions != "rw":
+            raise HTTPException(status_code=403, detail="This share link is read-only")
+        conn = _get_any_daemon(token.user_id)
+        if not conn:
+            raise HTTPException(status_code=503, detail="Session owner not connected")
+        body = await request.json()
+        text = str(body.get("text", "")).strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text is required")
+        import json as _json
+        ask_payload = _json.dumps(
+            {"from_peer": "guest", "to_peer": token.peer_name, "text": text}
+        ).encode()
+        request_id = str(uuid4())
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_event_loop().create_future()
+        _http_futures[request_id] = future
+        try:
+            await conn.websocket.send_json({
+                "type": "http_request",
+                "request_id": request_id,
+                "method": "POST",
+                "path": "/ask",
+                "headers": {"content-type": "application/json"},
+                "query_string": "",
+                "body": base64.b64encode(ask_payload).decode(),
+            })
+        except Exception:
+            _http_futures.pop(request_id, None)
+            raise HTTPException(status_code=502, detail="Failed to reach daemon")
+        try:
+            resp_msg = await asyncio.wait_for(future, timeout=HTTP_TUNNEL_TIMEOUT)
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Daemon did not respond")
+        finally:
+            _http_futures.pop(request_id, None)
+        resp_body = base64.b64decode(resp_msg.get("body", "")) if resp_msg.get("body") else b""
+        return Response(
+            content=resp_body,
+            status_code=resp_msg.get("status", 200),
+            headers=resp_msg.get("headers", {}),
+        )
 
     # -- WebSocket relay endpoint --
 
