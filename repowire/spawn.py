@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
+from uuid import uuid4
 
 import libtmux
 from libtmux.exc import LibTmuxException, ObjectDoesNotExist
@@ -177,15 +180,49 @@ def _unique_window_name(session: libtmux.Session, base_name: str) -> str:
     return f"{base_name}-{i}"
 
 
+# Above this, the typed line is replaced with a short launcher script. A fresh
+# pane's line editor does not reliably accept a very long single paste: a
+# captured login PATH with plugin bin dirs pushed the env-prefixed command past
+# ~1.5k chars and it arrived truncated, so the agent never launched (the pane
+# executed a PATH fragment instead).
+_MAX_TYPED_COMMAND_CHARS = 512
+
+_LAUNCHER_DIR = Path.home() / ".repowire" / "spawn-launchers"
+_LAUNCHER_MAX_AGE_SECONDS = 24 * 3600
+
+
 def _command_with_env(command: str, env: dict[str, str]) -> str:
-    """Prefix a tmux shell command with explicit environment assignments."""
+    """Prefix a tmux shell command with explicit environment assignments.
+
+    When the composed line is too long to type reliably, it is written to a
+    launcher script and the typed line becomes a short ``sh <script>``.
+    """
     clean_env = {key: value for key, value in env.items() if key and value is not None}
     if not clean_env:
         return command
     assignments = " ".join(
         f"{key}={shlex.quote(str(value))}" for key, value in sorted(clean_env.items())
     )
-    return f"env {assignments} {command}"
+    line = f"env {assignments} {command}"
+    if len(line) <= _MAX_TYPED_COMMAND_CHARS:
+        return line
+    return f"sh {shlex.quote(str(_write_launcher(line)))}"
+
+
+def _write_launcher(line: str) -> Path:
+    """Persist an over-long launch line as a script; prune stale siblings."""
+    _LAUNCHER_DIR.mkdir(parents=True, exist_ok=True)
+    cutoff = time.time() - _LAUNCHER_MAX_AGE_SECONDS
+    for stale in _LAUNCHER_DIR.glob("launch-*.sh"):
+        try:
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink()
+        except OSError:
+            pass
+    script = _LAUNCHER_DIR / f"launch-{uuid4().hex[:8]}.sh"
+    script.write_text(f"#!/bin/sh\nexec {line}\n", encoding="utf-8")
+    os.chmod(script, 0o700)
+    return script
 
 
 def attach_session(tmux_session: str) -> None:

@@ -1078,3 +1078,50 @@ class TestRunMcpServer:
             await mcp_server.run_mcp_server()
 
         assert stdio_called is True
+
+
+class TestCommandWithEnv:
+    """Long env-prefixed launch lines must not be typed into the pane raw."""
+
+    def test_short_env_stays_inline(self) -> None:
+        from repowire.spawn import _command_with_env
+
+        line = _command_with_env("claude", {"PATH": "/usr/bin"})
+        assert line == "env PATH=/usr/bin claude"
+
+    def test_no_env_returns_command(self) -> None:
+        from repowire.spawn import _command_with_env
+
+        assert _command_with_env("claude --model x", {}) == "claude --model x"
+
+    def test_long_env_uses_launcher_script(self, tmp_path, monkeypatch) -> None:
+        import repowire.spawn as spawn_mod
+
+        monkeypatch.setattr(spawn_mod, "_LAUNCHER_DIR", tmp_path)
+        huge_path = ":".join(f"/opt/very/long/plugin/bin/dir-{i}" for i in range(60))
+        line = spawn_mod._command_with_env("claude --model x", {"PATH": huge_path})
+
+        assert line.startswith("sh ")
+        assert len(line) < 200
+        script_path = list(tmp_path.glob("launch-*.sh"))[0]
+        content = script_path.read_text()
+        assert content.startswith("#!/bin/sh\nexec env ")
+        assert huge_path in content
+        assert content.rstrip().endswith("claude --model x")
+
+    def test_stale_launchers_pruned(self, tmp_path, monkeypatch) -> None:
+        import os
+        import time
+
+        import repowire.spawn as spawn_mod
+
+        monkeypatch.setattr(spawn_mod, "_LAUNCHER_DIR", tmp_path)
+        stale = tmp_path / "launch-old.sh"
+        stale.write_text("#!/bin/sh\n")
+        old = time.time() - 2 * 24 * 3600
+        os.utime(stale, (old, old))
+
+        huge_path = "x" * 600
+        spawn_mod._command_with_env("claude", {"PATH": huge_path})
+
+        assert not stale.exists()
