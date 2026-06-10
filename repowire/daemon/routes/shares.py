@@ -33,7 +33,7 @@ def _relay_http_and_key() -> tuple[str, str] | None:
     relay = cfg.relay
     if not relay.enabled or not relay.api_key:
         return None
-    base = relay.url.replace("wss://", "https://").replace("ws://", "http://")
+    base = relay.url.replace("wss://", "https://").replace("ws://", "http://").rstrip("/")
     return base, relay.api_key
 
 

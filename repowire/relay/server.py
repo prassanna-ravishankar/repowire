@@ -487,7 +487,9 @@ async def _poll_share_events(user_id: str) -> None:
                 if qs and (t := validate_share_token(sid)) is not None and t.user_id == user_id
             ]
             if not active_shares:
-                continue
+                # No active viewers — self-terminate so we don't hold a task forever
+                _share_pollers.pop(user_id, None)
+                return
 
             conn = _get_any_daemon(user_id)
             if not conn:
@@ -690,8 +692,8 @@ function addEvent(evt) {{
   const from = evt.from_peer || evt.peer_name || "";
   const text = evt.text || evt.content || evt.message || "";
   div.innerHTML =
-    `<div class="event-type">${{type}}</div>` +
-    (from ? `<div class="from">${{from}}</div>` : "") +
+    `<div class="event-type">${{escHtml(type)}}</div>` +
+    (from ? `<div class="from">${{escHtml(from)}}</div>` : "") +
     (text ? `<div class="event-text">${{escHtml(text)}}</div>` : "");
   eventsEl.appendChild(div);
   eventsEl.scrollTop = eventsEl.scrollHeight;
@@ -1021,6 +1023,8 @@ def create_app() -> FastAPI:
                 clients = _share_sse_clients.get(share_id)
                 if clients:
                     clients.discard(queue)
+                    if not clients:
+                        _share_sse_clients.pop(share_id, None)
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -1044,7 +1048,7 @@ def create_app() -> FastAPI:
             {"from_peer": "guest", "to_peer": token.peer_name, "text": text}
         ).encode()
         request_id = str(uuid4())
-        future: asyncio.Future[dict[str, Any]] = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         _http_futures[request_id] = future
         try:
             await conn.websocket.send_json({
