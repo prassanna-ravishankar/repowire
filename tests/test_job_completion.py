@@ -351,3 +351,21 @@ async def test_restart_reconcile_spares_live_executor(tmp_path):
 
     assert store.get(work.work_id).state == "delivered"
     db.close()
+
+
+@pytest.mark.asyncio
+async def test_arming_survives_collapsed_newlines(tmp_path):
+    """Pane injection can strip the prompt's newlines, butting the ids against
+    the next word — the markers must still parse."""
+    db, store = _store(tmp_path)
+    work, attempt_id = _delivered_work(store)
+    svc = JobCompletionService(work_store=store)
+    collapsed = (
+        f"@jobs → @exec [ask #ask-job1]: [Repowire durable job]"
+        f"job_id: {work.work_id}attempt_id: {attempt_id}Run: do the thing"
+    )
+
+    await svc.on_chat_turn(peer_id=EXECUTOR, role="user", text=collapsed)
+
+    assert store.get(work.work_id).state == "running"
+    db.close()

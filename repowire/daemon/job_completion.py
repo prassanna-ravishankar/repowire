@@ -37,8 +37,12 @@ from repowire.protocol.peers import PeerRole, PeerStatus
 
 logger = logging.getLogger(__name__)
 
-_WORK_MARKER = re.compile(r"\b(work-[0-9a-f]{12})\b")
-_ATTEMPT_MARKER = re.compile(r"\b(attempt-[0-9a-f]{12})\b")
+# Ids are exactly 12 hex chars, so no trailing \b: pane injection can collapse
+# the prompt's newlines, leaving the id butted against the next word
+# ("...034dattempt_id:"). The fixed length disambiguates, and arming verifies
+# the parsed ids against the store before acting.
+_WORK_MARKER = re.compile(r"\b(work-[0-9a-f]{12})")
+_ATTEMPT_MARKER = re.compile(r"\b(attempt-[0-9a-f]{12})")
 
 RESULT_SUMMARY_MAX_CHARS = 2000
 RESULT_MESSAGE_MAX_CHARS = 65536
