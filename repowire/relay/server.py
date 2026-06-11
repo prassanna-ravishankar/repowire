@@ -525,6 +525,25 @@ async def _poll_share_events(user_id: str) -> None:
             if not events:
                 continue
 
+            # First poll: record cursor without delivering (avoids history flood)
+            if user_id not in _share_last_event_id:
+                _share_last_event_id[user_id] = events[-1].get("id")
+                continue
+
+            # Relay-side dedup: only deliver events after last known id
+            last_id = _share_last_event_id.get(user_id)
+            if last_id is not None:
+                new_events: list[dict] = []
+                found = False
+                for ev in events:
+                    if found:
+                        new_events.append(ev)
+                    elif ev.get("id") == last_id:
+                        found = True
+                events = new_events if found else events
+
+            if not events:
+                continue
             _share_last_event_id[user_id] = events[-1].get("id")
 
             # Fan out to each share's viewers, filtered by that share's peer_name
@@ -946,6 +965,8 @@ def create_app() -> FastAPI:
         """Issue a share token for a specific peer."""
         if req.permissions not in ("ro", "rw"):
             raise HTTPException(status_code=400, detail="permissions must be 'ro' or 'rw'")
+        if req.ttl_secs is not None and req.ttl_secs <= 0:
+            raise HTTPException(status_code=400, detail="ttl_secs must be a positive integer")
         conn = _get_any_daemon(api_key.user_id)
         if not conn:
             raise HTTPException(status_code=502, detail="No daemon connected")
@@ -1014,6 +1035,9 @@ def create_app() -> FastAPI:
                 while True:
                     if await request.is_disconnected():
                         break
+                    if validate_share_token(share_id) is None:
+                        yield "data: {\"type\":\"share_expired\"}\n\n"
+                        break
                     try:
                         data = await asyncio.wait_for(queue.get(), timeout=15)
                         yield data
@@ -1040,6 +1064,8 @@ def create_app() -> FastAPI:
         if not conn:
             raise HTTPException(status_code=503, detail="Session owner not connected")
         body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Request body must be a JSON object")
         text = str(body.get("text", "")).strip()
         if not text:
             raise HTTPException(status_code=400, detail="text is required")

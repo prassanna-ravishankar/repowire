@@ -23,7 +23,9 @@ router = APIRouter(tags=["shares"])
 class ShareRequest(BaseModel):
     peer_name: str = Field(..., description="Display name of the peer to share")
     permissions: str = Field("ro", description="'ro' (read-only) or 'rw' (read-write)")
-    ttl_secs: int | None = Field(None, description="Token lifetime in seconds; None = no expiry")
+    ttl_secs: int | None = Field(
+        None, gt=0, description="Token lifetime in seconds; None = no expiry"
+    )
 
 
 def _relay_http_and_key() -> tuple[str, str] | None:
@@ -80,7 +82,7 @@ async def list_shares(
             headers={"x-api-key": api_key},
         )
     if resp.status_code != 200:
-        return []
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
     tokens = resp.json()
     for t in tokens:
         t["url"] = f"{base}/s/{t['share_id']}"

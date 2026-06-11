@@ -374,8 +374,47 @@ schedule_delete(schedule_id: str) -> str
 
 Cancel a pending scheduled check-in by the ID `schedule_create` returned.
 
+## Session sharing
+
+### `share_session`
+
+```python
+share_session(
+    peer_name: str | None = None,
+    permissions: str = "ro",
+    ttl_secs: int | None = None,
+) -> str
+```
+
+Generate a shareable relay link for a peer. **Only call when the user explicitly
+asks** — do not share proactively. Requires relay to be configured.
+
+| Arg | Description |
+|---|---|
+| `peer_name` | Display name of the peer to share. Defaults to the calling peer (yourself). |
+| `permissions` | `"ro"` (read-only, default) or `"rw"` (read-write — viewer can inject asks). |
+| `ttl_secs` | Link lifetime in seconds (must be > 0). `None` means no expiry. |
+
+Returns the share URL and `share_id`, e.g.:
+
+```
+share link for my-agent [ro]: https://repowire.io/s/sh_xxx
+share_id: sh_xxx
+expires: never
+```
+
+### `revoke_share`
+
+```python
+revoke_share(share_id: str) -> str
+```
+
+Revoke a share link. Active SSE connections on that link receive a
+`share_expired` event and close within the next keepalive cycle.
+
 ## See also
 
 - The [typed Python client](python-client.md) exposes the same routing calls over the daemon's HTTP API for non-MCP callers.
 - [Message types](../concepts/message-types.md) covers the semantics of `ask`, `ack`, `notify_peer`, and `broadcast` at a higher level.
 - The [orchestrator pattern](../concepts/orchestrator.md) shows where `orchestrator_status`, `review_queue`, and the scheduling tools fit together.
+- [Session sharing](../use/features/session-sharing.md) — full usage guide with examples.

@@ -118,6 +118,7 @@ nav:
           - Spawning: use/features/spawning.md
           - Orchestration: use/features/orchestration.md
           - Relay access: use/features/relay-access.md
+          - Session sharing: use/features/session-sharing.md
           - Memory: use/features/memory.md
           - Skills: use/features/skills.md
       - Workflows:

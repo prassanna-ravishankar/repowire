@@ -4172,8 +4172,8 @@ def relay_generate_key(user_id: str) -> None:
 
 @main.command(name="share")
 @click.argument("peer_name", required=False)
-@click.option("--rw", is_flag=True, default=False, help="Allow viewer to send messages (read-write)")
-@click.option("--ttl", default=None, type=int, metavar="SECS", help="Link lifetime in seconds (default: no expiry)")
+@click.option("--rw", is_flag=True, default=False, help="Allow viewer to send messages (rw)")
+@click.option("--ttl", default=None, type=int, metavar="SECS", help="Link lifetime in seconds")
 @click.option("--revoke", default=None, metavar="SHARE_ID", help="Revoke a share link by its ID")
 @click.option("--list", "list_shares", is_flag=True, default=False, help="List active share links")
 def share_session(
@@ -4202,7 +4202,7 @@ def share_session(
 
     if list_shares:
         try:
-            resp = httpx.get(f"{daemon_url}/shares", timeout=10.0)
+            resp = httpx.get(f"{daemon_url}/shares", headers=_auth_headers(), timeout=10.0)
             resp.raise_for_status()
         except httpx.ConnectError:
             console.print("[yellow]Daemon is not running.[/]")
@@ -4214,12 +4214,16 @@ def share_session(
         for t in tokens:
             expires = t.get("expires_at") or "never"
             perms = t.get("permissions", "ro")
-            console.print(f"[cyan]{t['share_id']}[/]  [{perms}]  {t.get('url', '')}  (expires: {expires})")
+            console.print(
+                f"[cyan]{t['share_id']}[/]  [{perms}]  {t.get('url', '')}  (expires: {expires})"
+            )
         return
 
     if revoke:
         try:
-            resp = httpx.delete(f"{daemon_url}/shares/{revoke}", timeout=10.0)
+            resp = httpx.delete(
+                f"{daemon_url}/shares/{revoke}", headers=_auth_headers(), timeout=10.0
+            )
             resp.raise_for_status()
         except httpx.ConnectError:
             console.print("[yellow]Daemon is not running.[/]")
@@ -4227,28 +4231,35 @@ def share_session(
         console.print(f"[green]Revoked share link {revoke}[/]")
         return
 
-    payload: dict = {"permissions": "rw" if rw else "ro"}
-    if peer_name:
-        payload["peer_name"] = peer_name
-    else:
-        # Default to the first registered peer name from the daemon
+    if not peer_name:
+        # Show registered peers so the user can pick one explicitly
         try:
-            pr = httpx.get(f"{daemon_url}/peers", timeout=5.0)
+            pr = httpx.get(f"{daemon_url}/peers", headers=_auth_headers(), timeout=5.0)
             pr.raise_for_status()
-            peers_data = pr.json()
-            if not peers_data:
-                console.print("[yellow]No peers registered. Start an agent session first.[/]")
-                return
-            payload["peer_name"] = peers_data[0].get("display_name") or peers_data[0].get("peer_name", "")
-        except Exception:
-            console.print("[yellow]Could not resolve peer name from daemon.[/]")
+            peers_data = pr.json().get("peers", [])
+        except httpx.ConnectError:
+            console.print("[yellow]Daemon is not running.[/]")
             return
+        except Exception:
+            peers_data = []
+        if peers_data:
+            names = "  ".join(
+                p.get("display_name") or p.get("peer_name", "?") for p in peers_data[:8]
+            )
+            console.print(f"[yellow]Peer name required.[/]  Available: {names}")
+        else:
+            console.print("[yellow]Peer name required. No peers are currently registered.[/]")
+        console.print("[dim]Usage: repowire share <peer_name> [--rw][/]")
+        raise SystemExit(1)
 
+    payload: dict = {"peer_name": peer_name, "permissions": "rw" if rw else "ro"}
     if ttl is not None:
         payload["ttl_secs"] = ttl
 
     try:
-        resp = httpx.post(f"{daemon_url}/shares", json=payload, timeout=10.0)
+        resp = httpx.post(
+            f"{daemon_url}/shares", json=payload, headers=_auth_headers(), timeout=10.0
+        )
         resp.raise_for_status()
     except httpx.ConnectError:
         console.print("[yellow]Daemon is not running.[/]")

@@ -159,6 +159,30 @@ repowire trace TRACE_ID [--json]
 
 Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`, returned in the `/notify` response). Stages are ordered (`created → resolved_peer → routed → websocket_sent → hook_received → pane_injected → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). Terminal stages are recorded **truthfully** from the transport outcome: `pane_injected` only when the ws-hook returned an `injected` delivery receipt; `injection_failed` on a `failed`/`rejected` receipt; and `websocket_sent` (unverified) for ACP delivery or legacy hooks that don't acknowledge, rather than assuming injection. This reads the local delivery trace ledger (`GET /traces/{trace_id}`); no external tracing infrastructure is required, and rows older than `daemon.prune_max_age_hours` are pruned during lazy repair. Currently covers ask and notify; query/broadcast pane stages are not yet traced. Exits non-zero if any stage failed.
 
+## `repowire share`
+
+```bash
+repowire share PEER_NAME [--rw] [--ttl SECS]
+repowire share --list
+repowire share --revoke SHARE_ID
+```
+
+Generate a shareable browser link for a running peer. Requires relay (`repowire
+setup --relay`). The link is served by the relay and requires no Repowire
+installation to open.
+
+| Flag | Description |
+|---|---|
+| `PEER_NAME` | Display name of the peer to share. Required — use `repowire peer list` to see registered peers. |
+| `--rw` | Read-write link; viewer can inject asks. Default is read-only. |
+| `--ttl SECS` | Link lifetime in seconds (> 0). Default: no expiry. |
+| `--list` | Show all active share links for this daemon. |
+| `--revoke SHARE_ID` | Revoke a share link immediately. |
+
+The command prints the share URL and the `share_id` needed for revocation.
+
+Links are scoped to one peer. The relay invalidates all links when it restarts.
+
 ## `repowire schedule`
 
 ```bash

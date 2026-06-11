@@ -1781,15 +1781,20 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
     ) -> str:
         """[Repowire mesh] Share a peer's session via a relay link.
 
+        ONLY call this tool when the user has explicitly asked to share a session
+        or generate a share link. Do not call proactively or as part of routine
+        setup — sharing exposes live agent activity to anyone with the link.
+
         Generates a shareable URL for a peer. Anyone with the URL can observe
         the session (read-only) or interact with the peer (read-write).
 
         Requires relay to be configured (`repowire setup --relay`).
 
         Args:
-            peer_name: Peer to share. Defaults to this peer (yourself).
+            peer_name: Display name of the peer to share. Defaults to yourself.
             permissions: "ro" (read-only, default) or "rw" (read-write).
-            ttl_secs: Link lifetime in seconds. None means no expiry.
+                         Read-write allows the viewer to inject asks.
+            ttl_secs: Link lifetime in seconds (must be > 0). None = no expiry.
 
         Returns:
             The share URL and share_id, e.g. "https://repowire.io/s/sh_xxx"
