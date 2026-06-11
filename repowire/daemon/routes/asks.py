@@ -784,6 +784,10 @@ ASK_WAIT_DEFAULT_SECONDS = 45.0
 class AskWaitRequest(BaseModel):
     """Bounded wait for an ask to resolve (wait_on_ack primitive)."""
 
+    peer_id: str = Field(
+        ...,
+        description="Caller identity; must be the ask's original asker",
+    )
     timeout_seconds: float | None = Field(
         None, description="Requested wait per call; clamped to the daemon max",
     )
@@ -806,6 +810,7 @@ class AskWaitResponse(BaseModel):
     message: str | None = None
     close_reason: str | None = None
     responder: str | None = None
+    attachments: list[dict] | None = None
 
 
 @router.post("/asks/{correlation_id}/wait", response_model=AskWaitResponse)
@@ -816,6 +821,23 @@ async def wait_on_ask(
 ) -> AskWaitResponse:
     """Block (bounded) until the ask is answered/acked; pending on timeout."""
     state = get_app_state()
+    existing = await state.ask_tracker.get(correlation_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=404, detail=f"No ask with correlation_id: {correlation_id}",
+        )
+    # Only the original asker may wait: waiting flips the ask to pull reply
+    # delivery, so an arbitrary caller could otherwise suppress the asker's
+    # push reply and read the result.
+    if request.peer_id not in (existing.from_peer_id, existing.from_peer_name):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "not_the_asker",
+                "correlation_id": correlation_id,
+                "asker": existing.from_peer_name,
+            },
+        )
     timeout = min(request.timeout_seconds or ASK_WAIT_DEFAULT_SECONDS, ASK_WAIT_MAX_SECONDS)
     try:
         ask = await state.ask_tracker.wait_for_resolution(
@@ -837,6 +859,7 @@ async def wait_on_ask(
         message=answer.message if answer else None,
         close_reason=ask.close_reason,
         responder=ask.to_peer_name,
+        attachments=ask.reply_attachments,
     )
 
 

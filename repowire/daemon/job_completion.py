@@ -224,31 +224,32 @@ class JobCompletionService:
             await self._maybe_complete(peer_id=peer_id, text=text)
 
     async def _maybe_arm(self, *, peer_id: str, text: str) -> None:
-        work_match = _WORK_MARKER.search(text)
-        attempt_match = _ATTEMPT_MARKER.search(text)
-        if not work_match or not attempt_match:
-            return
-        work = self._store.get(work_match.group(1))
-        if work is None or work.state != "delivered":
-            return
-        attempt_id = attempt_match.group(1)
-        if current_attempt_id(work) != attempt_id:
-            return
-        if work.assigned_peer_id and work.assigned_peer_id != peer_id:
-            logger.warning(
-                "Job %s prompt marker observed from %s but attempt is assigned "
-                "to %s; not arming",
-                work.work_id, peer_id, work.assigned_peer_id,
+        # A queued composer can merge several dispatch prompts into one user
+        # turn; arm every marker pair so none of those fires is orphaned. The
+        # shared assistant turn then legitimately completes all of them.
+        work_ids = _WORK_MARKER.findall(text)
+        attempt_ids = _ATTEMPT_MARKER.findall(text)
+        for work_id, attempt_id in zip(work_ids, attempt_ids, strict=False):
+            work = self._store.get(work_id)
+            if work is None or work.state != "delivered":
+                continue
+            if current_attempt_id(work) != attempt_id:
+                continue
+            if work.assigned_peer_id and work.assigned_peer_id != peer_id:
+                logger.warning(
+                    "Job %s prompt marker observed from %s but attempt is "
+                    "assigned to %s; not arming",
+                    work.work_id, peer_id, work.assigned_peer_id,
+                )
+                continue
+            self._store.update_state(
+                work.work_id,
+                state="running",
+                state_reason="turn_started",
+                phase=ARMED_PHASE,
+                attempt_id=attempt_id,
             )
-            return
-        self._store.update_state(
-            work.work_id,
-            state="running",
-            state_reason="turn_started",
-            phase=ARMED_PHASE,
-            attempt_id=attempt_id,
-        )
-        logger.info("Job %s armed: fire turn started on %s", work.work_id, peer_id)
+            logger.info("Job %s armed: fire turn started on %s", work.work_id, peer_id)
 
     async def _maybe_complete(self, *, peer_id: str, text: str) -> None:
         for work in self._armed_work_for_peer(peer_id):

@@ -112,8 +112,10 @@ class Ask:
     # Reply routing: "push" (default) frames + notifies the asker's transport;
     # "pull" retains the reply on the ask and skips the notify — set when the
     # asker is blocked in wait_on_ack, so the reply arrives as the tool result
-    # instead of racing a pane injection.
+    # instead of racing a pane injection. ``reply_attachments`` carries any
+    # attachment refs from a pull-mode ack (push delivers them via notify).
     reply_delivery: str = "push"
+    reply_attachments: list[dict] | None = None
     # Structured question/answer (mesh questions primitive). ``question`` is set
     # when the ask is a structured question (approval / choice / text); ``answer``
     # is the typed resolution. A plain ask leaves both None and behaves as today.
@@ -232,7 +234,13 @@ class AskTracker:
             logger.debug("Registered ask %s: %s -> %s", cid, from_peer_name, to_peer_name)
             return cid
 
-    async def capture_reply(self, correlation_id: str, reply_text: str) -> None:
+    async def capture_reply(
+        self,
+        correlation_id: str,
+        reply_text: str,
+        *,
+        attachments: list[dict] | None = None,
+    ) -> None:
         """Record an ack message body on an ask once the reply is resolved.
 
         The push ack path frames + notifies + closes but does not retain the
@@ -245,6 +253,8 @@ class AskTracker:
             if ask is None or ask.reply_text is not None:
                 return
             ask.reply_text = reply_text
+            if attachments:
+                ask.reply_attachments = attachments
             ask.replied_at = datetime.now(timezone.utc)
 
     async def list_by_parent(self, parent_id: str) -> list[Ask]:

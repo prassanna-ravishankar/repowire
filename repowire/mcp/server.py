@@ -1011,6 +1011,7 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
             JSON: `{status: resolved|pending, reply, outcome, close_reason, ...}`
         """
         await _ensure_registered(strict=True)
+        my_identifier = _cached_peer_id or await _get_my_peer_name()
         deadline = time.monotonic() + max(timeout_seconds, 1)
         path = f"/asks/{quote(correlation_id, safe='')}/wait"
         while True:
@@ -1021,7 +1022,9 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
                     sort_keys=True,
                 )
             result = await daemon_request(
-                "POST", path, {"timeout_seconds": min(remaining, 45.0)},
+                "POST",
+                path,
+                {"peer_id": my_identifier, "timeout_seconds": min(remaining, 45.0)},
             )
             if result.get("error"):
                 raise Exception(result["error"])

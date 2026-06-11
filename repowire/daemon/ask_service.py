@@ -373,11 +373,15 @@ class AskService:
         if existing.closed:
             return
 
-        if command.message and existing.reply_delivery == "pull":
+        if existing.reply_delivery == "pull" and (command.message or command.attachments):
             # The asker is blocked in wait_on_ack: retain the reply on the ask
             # and let the resolved waiter deliver it as the tool result, instead
             # of injecting into a pane nobody is reading.
-            await ask_tracker.capture_reply(command.correlation_id, command.message)
+            await ask_tracker.capture_reply(
+                command.correlation_id,
+                command.message or "",
+                attachments=[a.model_dump() for a in command.attachments or []] or None,
+            )
             await ask_tracker.close(command.correlation_id, reason="ack_with_msg")
             self._emit_ack_event(
                 ask=existing,

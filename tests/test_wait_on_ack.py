@@ -99,15 +99,37 @@ async def test_wait_route_resolves_and_404s(tmp_path):
     await at.close(cid, reason="ack_with_msg")
 
     async with async_client_for(harness.app) as client:
-        resp = await client.post(f"/asks/{cid}/wait", json={"timeout_seconds": 1})
+        resp = await client.post(
+            f"/asks/{cid}/wait", json={"peer_id": "repow-asker", "timeout_seconds": 1},
+        )
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "resolved"
         assert body["reply"] == "the reply body"
         assert body["close_reason"] == "ack_with_msg"
 
-        missing = await client.post("/asks/ask-nope/wait", json={})
+        missing = await client.post(
+            "/asks/ask-nope/wait", json={"peer_id": "repow-asker"},
+        )
         assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_wait_route_rejects_non_asker(tmp_path):
+    """Only the original asker may wait — waiting flips the ask to pull
+    delivery, so anyone else could suppress and read the asker's reply."""
+    harness = make_daemon_app(tmp_path, [asks_routes.router])
+    cid = await _open_ask(harness.ask_tracker)
+
+    async with async_client_for(harness.app) as client:
+        resp = await client.post(
+            f"/asks/{cid}/wait",
+            json={"peer_id": "repow-impostor", "timeout_seconds": 0.05},
+        )
+
+    assert resp.status_code == 403
+    ask = await harness.ask_tracker.get(cid)
+    assert ask is not None and ask.reply_delivery == "push"
 
 
 @pytest.mark.asyncio
@@ -116,7 +138,10 @@ async def test_wait_route_pending_on_timeout(tmp_path):
     cid = await _open_ask(harness.ask_tracker)
 
     async with async_client_for(harness.app) as client:
-        resp = await client.post(f"/asks/{cid}/wait", json={"timeout_seconds": 0.05})
+        resp = await client.post(
+            f"/asks/{cid}/wait",
+            json={"peer_id": "repow-asker", "timeout_seconds": 0.05},
+        )
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "pending"
@@ -146,3 +171,26 @@ async def test_pull_mode_ack_skips_notify_and_captures_reply(tmp_path):
     assert ask is not None and ask.closed
     assert ask.close_reason == "ack_with_msg"
     assert ask.reply_text == "review done: LGTM"
+
+
+@pytest.mark.asyncio
+async def test_pull_mode_ack_with_attachments_resolves_with_refs(tmp_path):
+    harness = make_daemon_app(tmp_path, [asks_routes.router])
+    at = harness.ask_tracker
+    cid = await _open_ask(at, reply_delivery="pull")
+
+    async with async_client_for(harness.app) as client:
+        resp = await client.post(
+            "/ack",
+            json={
+                "correlation_id": cid,
+                "message": "see attached",
+                "attachments": [{"id": "att-1", "filename": "report.txt"}],
+            },
+        )
+    assert resp.status_code == 200
+
+    ask = await at.get(cid)
+    assert ask is not None and ask.closed
+    assert ask.reply_text == "see attached"
+    assert ask.reply_attachments and ask.reply_attachments[0]["id"] == "att-1"
