@@ -22,6 +22,7 @@ from repowire.daemon.ask_tracker import AskerIdentity, AskTracker
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.orchestrator_recall import maybe_add_orchestrator_recall
 from repowire.daemon.peer_registry import PeerRegistry, normalize_identity_path
+from repowire.daemon.seed_gate import await_seed_settled
 from repowire.daemon.state.queued_deliveries import SQLiteQueuedDeliveryStore
 from repowire.daemon.state.session_bindings import resolve_repowire_session_id
 from repowire.daemon.transport_router import (
@@ -115,6 +116,27 @@ class PeerDeliveryService:
 
     def _session_id_for_peer(self, peer: Any | None) -> str | None:
         return resolve_repowire_session_id(self._session_binding_store, peer=peer)
+
+    async def _gate_on_seed_settled(self, target: Any) -> None:
+        """Hold a WS pane injection while ``target``'s spawn seed is in flight.
+
+        Invariant: no pane injection while the recipient is
+        ``pending_first_turn``. Only WS-routed targets inject into a pane —
+        ACP-routed targets prompt the broker, which serializes turns itself —
+        so this is a no-op for ACP. Bounded wait (see ``seed_gate``); proceeds
+        anyway on timeout rather than re-queueing (there's no flush trigger to
+        re-arm a live delivery).
+        """
+        if getattr(target, "turn_state", None) != "pending_first_turn":
+            return
+        if self._router().acp_route(target) is not None:
+            return
+        session_id = getattr(target, "peer_id", None)
+        if not session_id:
+            return
+        await await_seed_settled(
+            session_id, self._registry, context="Live delivery"
+        )
 
     async def _mark_transport_unreachable(
         self,
@@ -276,6 +298,7 @@ class PeerDeliveryService:
             from_repowire_session_id=from_session_id,
             to_repowire_session_id=to_session_id,
         )
+        await self._gate_on_seed_settled(target)
         try:
             transport_result = await self._router().send_notify(envelope, delivery_id)
         except TransportError as exc:
@@ -427,6 +450,7 @@ class PeerDeliveryService:
             )
             completion = self._settling_completion(completion, operation_id)
 
+        await self._gate_on_seed_settled(target)
         try:
             return await self._router().send_ask(
                 AskEnvelope(

@@ -230,3 +230,83 @@ class TestWaitForComposerReady:
                 _capture("❯ \n"),
             ]
             assert wait_for_composer_ready("%5", timeout=10.0, poll=0.1) is True
+
+    def test_stable_content_without_glyph_is_ready(self):
+        """Unknown-glyph backend: non-empty content unchanged across
+        stable_polls consecutive captures counts as ready (latency guard)."""
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep") as mock_sleep,
+            patch("repowire.tmux_inject.time.monotonic") as mock_mono,
+        ):
+            mock_mono.side_effect = [0.0, 1.0, 2.0, 3.0, 4.0]
+            # Same non-glyph content 3x => stable_count reaches 3 => ready.
+            mock_run.side_effect = [
+                _capture("weird-prompt$ \n"),
+                _capture("weird-prompt$ \n"),
+                _capture("weird-prompt$ \n"),
+            ]
+            assert (
+                wait_for_composer_ready("%5", timeout=30.0, poll=0.1, stable_polls=3)
+                is True
+            )
+            # Two sleeps between the three stabilizing captures.
+            assert mock_sleep.call_count == 2
+
+    def test_changing_content_resets_stability_streak(self):
+        """Content that keeps changing never trips the stable fallback; falls
+        through to timeout (then the caller injects anyway)."""
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+            patch("repowire.tmux_inject.time.monotonic") as mock_mono,
+        ):
+            # Deadline=5; trips on the 3rd monotonic check.
+            mock_mono.side_effect = [0.0, 1.0, 2.0, 5.0]
+            mock_run.side_effect = [
+                _capture("line 1\n"),
+                _capture("line 1\nline 2\n"),
+                _capture("line 1\nline 2\nline 3\n"),
+            ]
+            assert (
+                wait_for_composer_ready("%5", timeout=5.0, poll=0.1, stable_polls=3)
+                is False
+            )
+
+    def test_glyph_beats_stable_fallback(self):
+        """A glyph match returns ready immediately, before the stable streak
+        could accumulate."""
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep") as mock_sleep,
+            patch("repowire.tmux_inject.time.monotonic") as mock_mono,
+        ):
+            mock_mono.side_effect = [0.0, 1.0]
+            mock_run.return_value = _capture("❯ \n")
+            assert (
+                wait_for_composer_ready("%5", timeout=30.0, poll=0.1, stable_polls=3)
+                is True
+            )
+            mock_sleep.assert_not_called()
+
+    def test_empty_capture_does_not_count_as_stable(self):
+        """Blank/whitespace-only captures reset the streak — an empty pane is
+        not 'ready', it's just not booted yet."""
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+            patch("repowire.tmux_inject.time.monotonic") as mock_mono,
+        ):
+            mock_mono.side_effect = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+            # Empty 3x would trip stability if blanks counted; they must not,
+            # so this falls through to the glyph capture to become ready.
+            mock_run.side_effect = [
+                _capture("\n"),
+                _capture("   \n"),
+                _capture("\n"),
+                _capture("❯ \n"),
+            ]
+            assert (
+                wait_for_composer_ready("%5", timeout=30.0, poll=0.1, stable_polls=3)
+                is True
+            )

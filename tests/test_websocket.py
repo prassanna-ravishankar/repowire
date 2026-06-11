@@ -588,67 +588,29 @@ class TestWebSocketMessages:
         cleanup_deps()
 
 
-class TestSeedFlushGating:
-    """_await_seed_settled holds the queued-notify flush until the spawn seed
-    has settled (peer leaves pending_first_turn), so the seed and the flush
-    don't interleave into the same pane composer."""
 
-    @staticmethod
-    def _registry(peers_by_call: list[object]):
-        """Fake registry whose get_peer returns the next snapshot per call."""
-        calls = {"n": 0}
+class TestFlushGatesOnSeed:
+    """_flush_queued_notifies routes its wait through the shared seed gate."""
 
-        async def get_peer(_session_id: str):
-            idx = min(calls["n"], len(peers_by_call) - 1)
-            calls["n"] += 1
-            return peers_by_call[idx]
-
-        return SimpleNamespace(get_peer=get_peer)
-
-    async def test_no_wait_when_not_pending_first_turn(self):
-        peer = SimpleNamespace(turn_state="idle", display_name="p")
-        reg = self._registry([peer])
-        result = await websocket._await_seed_settled("sess", reg)
-        assert result is peer
-
-    async def test_waits_until_pending_first_turn_clears(self):
-        pending = SimpleNamespace(turn_state="pending_first_turn", display_name="p")
-        settled = SimpleNamespace(turn_state="working", display_name="p")
-        # First snapshot pending, second pending, third settled.
-        reg = self._registry([pending, pending, settled])
-
+    async def test_flush_awaits_seed_gate(self):
         from unittest.mock import AsyncMock, patch
 
-        with patch.object(websocket.asyncio, "sleep", new_callable=AsyncMock) as sleep:
-            result = await websocket._await_seed_settled("sess", reg)
+        # Minimal state with all three deps present so the flush reaches the
+        # gate. The gate stub returns a settled peer with no queued rows.
+        state = SimpleNamespace(
+            queued_delivery_store=SimpleNamespace(
+                list_for_peer=lambda *a, **k: []
+            ),
+            message_router=SimpleNamespace(),
+            peer_registry=SimpleNamespace(),
+        )
+        with patch(
+            "repowire.daemon.routes.websocket.await_seed_settled",
+            new_callable=AsyncMock,
+        ) as gate:
+            gate.return_value = SimpleNamespace(turn_state="idle", display_name="p")
+            await websocket._flush_queued_notifies("a-session", state)
+        gate.assert_awaited_once()
+        assert gate.await_args.args[0] == "a-session"
 
-        assert result is settled
-        assert sleep.await_count >= 1  # polled at least once while pending
-
-    async def test_proceeds_on_timeout_while_still_pending(self):
-        pending = SimpleNamespace(turn_state="pending_first_turn", display_name="p")
-        reg = self._registry([pending])
-
-        from unittest.mock import AsyncMock, patch
-
-        # Zero wait budget: the deadline check trips on the first iteration, so
-        # the loop breaks and flushes anyway rather than hanging forever.
-        with (
-            patch.object(websocket.asyncio, "sleep", new_callable=AsyncMock),
-            patch.object(websocket, "_SEED_FLUSH_WAIT_SECONDS", 0.0),
-        ):
-            result = await websocket._await_seed_settled("sess", reg)
-
-        # Returns the still-pending snapshot rather than hanging forever.
-        assert result is pending
-
-    async def test_returns_none_when_peer_vanishes_mid_wait(self):
-        pending = SimpleNamespace(turn_state="pending_first_turn", display_name="p")
-        reg = self._registry([pending, None])
-
-        from unittest.mock import AsyncMock, patch
-
-        with patch.object(websocket.asyncio, "sleep", new_callable=AsyncMock):
-            result = await websocket._await_seed_settled("sess", reg)
-
-        assert result is None
+        cleanup_deps()

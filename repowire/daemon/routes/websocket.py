@@ -19,6 +19,7 @@ from repowire.agent_types import AgentType
 from repowire.daemon.deps import get_app_state
 from repowire.daemon.peer_registry import CircleSource, PeerRetiredError
 from repowire.daemon.routes._shared import is_valid_identifier
+from repowire.daemon.seed_gate import await_seed_settled
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.peers import PeerRole, PeerStatus, TurnState
 
@@ -258,41 +259,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await query_tracker.cancel_queries_to_peer(session_id)
 
 
-# How long the queued-notify flush will wait for a spawn seed to land before
-# giving up and flushing anyway. The seed and the flush both inject into the
-# same pane composer; interleaving them mangles both. We gate on the existing
-# `pending_first_turn` marker — set at spawn, cleared once the seeded peer
-# takes its first turn — rather than build a general per-pane lock.
-_SEED_FLUSH_WAIT_SECONDS = 25.0
-_SEED_FLUSH_POLL_SECONDS = 0.5
-
-
 async def _await_seed_settled(session_id: str, peer_registry: Any) -> Any:
-    """Wait while a spawn seed is in flight (peer is ``pending_first_turn``).
+    """Hold the queued-notify flush until any in-flight spawn seed has settled.
 
-    Returns the latest peer snapshot. Bounded by ``_SEED_FLUSH_WAIT_SECONDS``
-    so a seed that never gets picked up can't wedge the flush forever; on
-    timeout we proceed and flush anyway (logged) — a possible interleave beats
-    a permanently stuck queue.
+    Thin wrapper over the shared seed gate (see ``daemon/seed_gate.py``); the
+    same bounded wait is applied to live deliveries in ``PeerDeliveryService``.
     """
-    peer = await peer_registry.get_peer(session_id)
-    if peer is None or getattr(peer, "turn_state", None) != "pending_first_turn":
-        return peer
-    deadline = asyncio.get_event_loop().time() + _SEED_FLUSH_WAIT_SECONDS
-    while getattr(peer, "turn_state", None) == "pending_first_turn":
-        if asyncio.get_event_loop().time() >= deadline:
-            logger.warning(
-                "Queued notify flush for %s proceeding while still pending_first_turn "
-                "(seed not settled within %.0fs)",
-                session_id,
-                _SEED_FLUSH_WAIT_SECONDS,
-            )
-            break
-        await asyncio.sleep(_SEED_FLUSH_POLL_SECONDS)
-        peer = await peer_registry.get_peer(session_id)
-        if peer is None:
-            return None
-    return peer
+    return await await_seed_settled(
+        session_id, peer_registry, context="Queued notify flush"
+    )
 
 
 async def _flush_queued_notifies(session_id: str, state: Any, *, max_results: int = 50) -> None:

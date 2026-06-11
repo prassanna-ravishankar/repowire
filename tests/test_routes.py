@@ -1273,3 +1273,96 @@ async def test_acp_notify_reason_is_broker_accepted():
     assert result.delivery_state == "delivered"
     assert result.reason == "broker_accepted"
     assert result.transport == "acp"
+
+
+@pytest.mark.asyncio
+async def test_live_notify_gates_on_pending_first_turn():
+    """A live notify to a WS peer still seeding (pending_first_turn) waits for
+    the seed to settle before injecting, so it doesn't race the spawn seed."""
+    from unittest.mock import AsyncMock, patch
+
+    from repowire.daemon.peer_delivery import PeerDeliveryService
+    from repowire.daemon.transport_router import NotifyTransportResult
+
+    sender = SimpleNamespace(peer_id="sender-id", display_name="sender-cc")
+    pending = SimpleNamespace(
+        peer_id="target-id", display_name="target-cc", turn_state="pending_first_turn"
+    )
+    settled = SimpleNamespace(
+        peer_id="target-id", display_name="target-cc", turn_state="idle"
+    )
+
+    snapshots = [pending, settled]
+    calls = {"n": 0}
+
+    async def get_peer(_session_id):
+        idx = min(calls["n"], len(snapshots) - 1)
+        calls["n"] += 1
+        return snapshots[idx]
+
+    registry = SimpleNamespace(
+        check_access=AsyncMock(return_value=(sender, pending)),
+        get_peer=get_peer,
+        add_event=lambda *a, **k: None,
+    )
+    send_notify = AsyncMock(
+        return_value=NotifyTransportResult(status="sent", transport="ws")
+    )
+    transport_router = SimpleNamespace(
+        send_notify=send_notify,
+        acp_route=lambda _target: None,  # WS route => gate applies
+    )
+    service = PeerDeliveryService(
+        registry=registry,  # type: ignore[arg-type]
+        message_router=SimpleNamespace(),  # type: ignore[arg-type]
+        transport_router=transport_router,  # type: ignore[arg-type]
+    )
+
+    with patch("repowire.daemon.seed_gate.asyncio.sleep", new_callable=AsyncMock):
+        result = await service.notify_result(
+            from_peer="sender-cc", to_peer="target-cc", text="heads up",
+        )
+
+    # The gate re-polled the registry (pending -> settled) before sending.
+    assert calls["n"] >= 2
+    send_notify.assert_awaited_once()
+    assert result.delivery_state == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_live_notify_acp_target_skips_seed_gate():
+    """ACP-routed targets don't inject into a pane, so the seed gate is a
+    no-op for them even while pending_first_turn."""
+    from unittest.mock import AsyncMock
+
+    from repowire.daemon.peer_delivery import PeerDeliveryService
+    from repowire.daemon.transport_router import NotifyTransportResult
+
+    sender = SimpleNamespace(peer_id="sender-id", display_name="sender-codex")
+    target = SimpleNamespace(
+        peer_id="target-id", display_name="target-codex", turn_state="pending_first_turn"
+    )
+
+    get_peer = AsyncMock()  # must NOT be polled by the gate for an ACP target
+    registry = SimpleNamespace(
+        check_access=AsyncMock(return_value=(sender, target)),
+        get_peer=get_peer,
+        add_event=lambda *a, **k: None,
+    )
+    transport_router = SimpleNamespace(
+        send_notify=AsyncMock(
+            return_value=NotifyTransportResult(status="sent", transport="acp")
+        ),
+        acp_route=lambda _target: SimpleNamespace(),  # ACP route => gate skipped
+    )
+    service = PeerDeliveryService(
+        registry=registry,  # type: ignore[arg-type]
+        message_router=SimpleNamespace(),  # type: ignore[arg-type]
+        transport_router=transport_router,  # type: ignore[arg-type]
+    )
+
+    result = await service.notify_result(
+        from_peer="sender-codex", to_peer="target-codex", text="heads up",
+    )
+    get_peer.assert_not_awaited()
+    assert result.reason == "broker_accepted"

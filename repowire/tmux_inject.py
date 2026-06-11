@@ -98,20 +98,57 @@ def composer_still_holds(pane_id: str, text: str) -> bool:
     return prefix in prompt_lines[-1]
 
 
-def wait_for_composer_ready(pane_id: str, *, timeout: float, poll: float = 0.5) -> bool:
-    """Poll capture-pane until a composer prompt appears, or timeout elapses.
+def wait_for_composer_ready(
+    pane_id: str,
+    *,
+    timeout: float,
+    poll: float = 0.5,
+    stable_polls: int = 3,
+) -> bool:
+    """Poll capture-pane until the pane looks ready, or timeout elapses.
 
-    Returns True once a prompt line is seen, False if the budget is exhausted
-    without confirmation (callers should still attempt their paste as a
-    fallback, but log that readiness was not confirmed). False on capture
-    failure is treated as "not yet ready" and the loop keeps polling.
+    Two ready signals, in priority order:
+      * **glyph** — a known composer prompt line (``❯``/``›``/``> ``) is the
+        fast path for the supported runtimes.
+      * **stable** — for a backend with an unrecognized prompt glyph, falling
+        through to the full timeout would regress latency vs the old fixed
+        sleep. So if the capture is non-empty and unchanged across
+        ``stable_polls`` consecutive polls, treat it as ready. This bounds
+        unknown-glyph backends to roughly the old latency.
+
+    A false positive here is acceptable: the prior behavior injected blindly
+    after a fixed sleep, so a too-early "ready" is never worse than the
+    baseline — and the hardened ``inject_text`` paste path tolerates it.
+
+    Returns True once ready, False if the budget is exhausted without either
+    signal (callers should still attempt their paste as a fallback, but log
+    that readiness was not confirmed). Capture failure is treated as "not yet
+    ready" and resets the stability streak. Logs which signal fired.
     """
     deadline = time.monotonic() + timeout
+    last_text: str | None = None
+    stable_count = 0
     while True:
         pane_text = _capture_pane(pane_id)
         if pane_text is not None and _composer_prompt_present(pane_text):
+            logger.debug("Pane %s ready (glyph)", pane_id)
             return True
+        if pane_text is not None and pane_text.strip():
+            if pane_text == last_text:
+                stable_count += 1
+                if stable_count >= stable_polls:
+                    logger.debug(
+                        "Pane %s ready (stable content, no glyph match)", pane_id
+                    )
+                    return True
+            else:
+                stable_count = 1
+                last_text = pane_text
+        else:
+            stable_count = 0
+            last_text = None
         if time.monotonic() >= deadline:
+            logger.debug("Pane %s readiness not confirmed (timeout)", pane_id)
             return False
         time.sleep(poll)
 
