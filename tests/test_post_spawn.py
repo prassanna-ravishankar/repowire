@@ -143,54 +143,65 @@ class TestPostSpawnWarmup:
 
 
 class TestClaudeCodeFamilySeed:
-    """_claude_code_family_seed drives the seed-delivery sequence."""
+    """_claude_code_family_seed waits for readiness then injects via the
+    shared hardened paste path."""
 
     @pytest.mark.asyncio
-    @patch("repowire.installers.post_spawn._tmux_send", new_callable=AsyncMock)
-    @patch("repowire.installers.post_spawn.asyncio.sleep", new_callable=AsyncMock)
+    @patch("repowire.installers.post_spawn.inject_text", return_value=True)
+    @patch("repowire.installers.post_spawn.wait_for_composer_ready", return_value=True)
     @patch("repowire.installers.post_spawn.shutil.which", return_value="/usr/bin/tmux")
-    async def test_seed_delivery_sequence(
+    async def test_seed_waits_for_ready_then_injects(
         self,
         _mock_which,
-        mock_sleep: AsyncMock,
-        mock_send: AsyncMock,
+        mock_ready,
+        mock_inject,
     ) -> None:
         await _claude_code_family_seed("%42", "Task brief from orch")
 
-        # message + C-m submit = 2 sends
-        assert mock_send.await_count == 2
-        calls = mock_send.await_args_list
-        assert calls[0].args == ("%42", "Task brief from orch")
-        assert calls[0].kwargs == {"literal": True}
-        assert calls[1].args == ("%42", "C-m")
-
-        # Sleeps: 5s boot + 0.2s pre-submit
-        sleep_args = [c.args[0] for c in mock_sleep.await_args_list]
-        assert sleep_args == [5, 0.2]
+        mock_ready.assert_called_once()
+        assert mock_ready.call_args.args[0] == "%42"
+        mock_inject.assert_called_once_with("%42", "Task brief from orch")
 
     @pytest.mark.asyncio
-    @patch("repowire.installers.post_spawn._tmux_send", new_callable=AsyncMock)
-    @patch("repowire.installers.post_spawn.asyncio.sleep", new_callable=AsyncMock)
+    @patch("repowire.installers.post_spawn.inject_text", return_value=True)
+    @patch("repowire.installers.post_spawn.wait_for_composer_ready", return_value=False)
+    @patch("repowire.installers.post_spawn.shutil.which", return_value="/usr/bin/tmux")
+    async def test_seed_injects_anyway_on_readiness_timeout(
+        self,
+        _mock_which,
+        _mock_ready,
+        mock_inject,
+    ) -> None:
+        """Readiness not confirmed => fall back to injecting once (prior
+        fire-once behavior), rather than dropping the seed."""
+        await _claude_code_family_seed("%42", "Task brief")
+        mock_inject.assert_called_once_with("%42", "Task brief")
+
+    @pytest.mark.asyncio
+    @patch("repowire.installers.post_spawn.inject_text", return_value=True)
+    @patch("repowire.installers.post_spawn.wait_for_composer_ready", return_value=True)
     @patch("repowire.installers.post_spawn.shutil.which", return_value=None)
     async def test_seed_skips_when_tmux_missing(
         self,
         _mock_which,
-        _mock_sleep: AsyncMock,
-        mock_send: AsyncMock,
+        mock_ready,
+        mock_inject,
     ) -> None:
         await _claude_code_family_seed("%42", "Task brief")
-        mock_send.assert_not_awaited()
+        mock_ready.assert_not_called()
+        mock_inject.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("repowire.installers.post_spawn._tmux_send", new_callable=AsyncMock)
-    @patch("repowire.installers.post_spawn.asyncio.sleep", new_callable=AsyncMock)
+    @patch("repowire.installers.post_spawn.inject_text", return_value=True)
+    @patch("repowire.installers.post_spawn.wait_for_composer_ready", return_value=True)
     async def test_seed_skips_when_pane_id_empty(
         self,
-        _mock_sleep: AsyncMock,
-        mock_send: AsyncMock,
+        mock_ready,
+        mock_inject,
     ) -> None:
         await _claude_code_family_seed("", "Task brief")
-        mock_send.assert_not_awaited()
+        mock_ready.assert_not_called()
+        mock_inject.assert_not_called()
 
 
 class TestCodexWarmup:

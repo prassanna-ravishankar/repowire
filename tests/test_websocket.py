@@ -586,3 +586,69 @@ class TestWebSocketMessages:
                 assert body["turn_state"] == "working"
 
         cleanup_deps()
+
+
+class TestSeedFlushGating:
+    """_await_seed_settled holds the queued-notify flush until the spawn seed
+    has settled (peer leaves pending_first_turn), so the seed and the flush
+    don't interleave into the same pane composer."""
+
+    @staticmethod
+    def _registry(peers_by_call: list[object]):
+        """Fake registry whose get_peer returns the next snapshot per call."""
+        calls = {"n": 0}
+
+        async def get_peer(_session_id: str):
+            idx = min(calls["n"], len(peers_by_call) - 1)
+            calls["n"] += 1
+            return peers_by_call[idx]
+
+        return SimpleNamespace(get_peer=get_peer)
+
+    async def test_no_wait_when_not_pending_first_turn(self):
+        peer = SimpleNamespace(turn_state="idle", display_name="p")
+        reg = self._registry([peer])
+        result = await websocket._await_seed_settled("sess", reg)
+        assert result is peer
+
+    async def test_waits_until_pending_first_turn_clears(self):
+        pending = SimpleNamespace(turn_state="pending_first_turn", display_name="p")
+        settled = SimpleNamespace(turn_state="working", display_name="p")
+        # First snapshot pending, second pending, third settled.
+        reg = self._registry([pending, pending, settled])
+
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(websocket.asyncio, "sleep", new_callable=AsyncMock) as sleep:
+            result = await websocket._await_seed_settled("sess", reg)
+
+        assert result is settled
+        assert sleep.await_count >= 1  # polled at least once while pending
+
+    async def test_proceeds_on_timeout_while_still_pending(self):
+        pending = SimpleNamespace(turn_state="pending_first_turn", display_name="p")
+        reg = self._registry([pending])
+
+        from unittest.mock import AsyncMock, patch
+
+        # Zero wait budget: the deadline check trips on the first iteration, so
+        # the loop breaks and flushes anyway rather than hanging forever.
+        with (
+            patch.object(websocket.asyncio, "sleep", new_callable=AsyncMock),
+            patch.object(websocket, "_SEED_FLUSH_WAIT_SECONDS", 0.0),
+        ):
+            result = await websocket._await_seed_settled("sess", reg)
+
+        # Returns the still-pending snapshot rather than hanging forever.
+        assert result is pending
+
+    async def test_returns_none_when_peer_vanishes_mid_wait(self):
+        pending = SimpleNamespace(turn_state="pending_first_turn", display_name="p")
+        reg = self._registry([pending, None])
+
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(websocket.asyncio, "sleep", new_callable=AsyncMock):
+            result = await websocket._await_seed_settled("sess", reg)
+
+        assert result is None

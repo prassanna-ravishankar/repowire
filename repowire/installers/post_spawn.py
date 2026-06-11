@@ -21,6 +21,13 @@ import shutil
 
 from repowire.agent_backends import agent_backend_for
 from repowire.agent_types import AgentType
+from repowire.tmux_inject import inject_text, wait_for_composer_ready
+
+# Ceiling for waiting on a freshly spawned pane's composer to appear before
+# seeding. Kept at the prior fixed-sleep budget's order of magnitude so slow
+# cold starts still get seeded, but we now poll and proceed the moment the
+# prompt shows rather than always paying the full wait.
+_SEED_READY_TIMEOUT_SECONDS = 20.0
 
 logger = logging.getLogger(__name__)
 
@@ -102,13 +109,16 @@ async def _codex_warmup(pane_id: str, message: str) -> None:
 async def _claude_code_family_seed(pane_id: str, message: str) -> None:
     """Deliver the per-spawn seed message into a claude-code-family pane.
 
-    These backends boot a TUI prompt that's ready to receive input within a
-    few seconds. Sleep for the boot budget, then send the seed text + Enter.
+    Waits (by polling capture-pane) until the runtime's composer prompt is
+    ready, then injects through the shared hardened paste path so the seed gets
+    the same bracketed-paste close + Enter-swallow retry as normal delivery.
     Best-effort — failure is logged and swallowed by the caller.
 
     Sequence:
-      1. Sleep 5s   -- claude-code-family TUI boot budget
-      2. send-keys message + C-m
+      1. Poll for the composer prompt, up to ``_SEED_READY_TIMEOUT_SECONDS``.
+         If it never appears, log loudly and seed anyway as a fallback
+         (preserves the prior fire-once behavior on slow/unreadable panes).
+      2. inject_text — hardened paste + submit, identical to ws-hook delivery.
     """
     if not pane_id:
         return
@@ -116,10 +126,18 @@ async def _claude_code_family_seed(pane_id: str, message: str) -> None:
         logger.warning("seed-message: tmux binary not found, skipping")
         return
 
-    await asyncio.sleep(5)
-    await _tmux_send(pane_id, message, literal=True)
-    await asyncio.sleep(0.2)
-    await _tmux_send(pane_id, "C-m")
+    ready = await asyncio.to_thread(
+        wait_for_composer_ready, pane_id, timeout=_SEED_READY_TIMEOUT_SECONDS
+    )
+    if not ready:
+        logger.warning(
+            "seed-message: composer readiness not confirmed for pane %s after %.0fs; "
+            "seeding anyway (fallback)",
+            pane_id,
+            _SEED_READY_TIMEOUT_SECONDS,
+        )
+    if not await asyncio.to_thread(inject_text, pane_id, message):
+        logger.warning("seed-message: injection failed for pane %s", pane_id)
 
 
 async def _tmux_send(pane_id: str, text: str, *, literal: bool = False) -> None:
