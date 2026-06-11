@@ -1,4 +1,4 @@
-type IconName = "ask" | "review" | "handoff" | "context" | "checkpoint" | "compare" | "escalate";
+type IconName = "ask" | "review" | "handoff" | "context" | "checkpoint" | "compare" | "escalate" | "share";
 
 const secondary: { icon: IconName; title: string; body: string }[] = [
   {
@@ -72,6 +72,29 @@ export default function Features() {
             <p>{it.body}</p>
           </div>
         ))}
+      </div>
+
+      <div className="feature feature-wide">
+        <div className="feature-wide-content">
+          <div className="feature-wide-copy">
+            <div className="feature-icon">
+              <FeatureIcon name="share" />
+            </div>
+            <span className="feature-new-badge">New</span>
+            <h3>Share a session</h3>
+            <p>
+              Generate a shareable link for any running agent peer.
+              Read-only observers watch the live event stream in a browser — no login, no Repowire
+              install. Flip to read-write and let a colleague inject asks directly.
+            </p>
+            <code className="feature-cmd">repowire share my-agent [--rw] [--ttl 3600]</code>
+          </div>
+          <div className="feature-wide-demo">
+            <div className="share-demo-pill share-demo-ro">read-only</div>
+            <div className="share-demo-url">repowire.io/s/sh_xxxxxxxx</div>
+            <div className="share-demo-pill share-demo-rw">read-write</div>
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -174,6 +197,16 @@ function FeatureIcon({ name }: { name: IconName }) {
         <svg {...props}>
           <circle cx="12" cy="8" r="4" />
           <path d="M4 21a8 8 0 0 1 16 0" />
+        </svg>
+      );
+    case "share":
+      return (
+        <svg {...props}>
+          <circle cx="18" cy="5" r="3" />
+          <circle cx="6" cy="12" r="3" />
+          <circle cx="18" cy="19" r="3" />
+          <path d="M8.59 13.51 15.42 17.49" />
+          <path d="M15.41 6.51 8.59 10.49" />
         </svg>
       );
   }
