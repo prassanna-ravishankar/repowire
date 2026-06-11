@@ -319,6 +319,236 @@ async def test_register_route_reports_unassigned_sticky_orchestrator_pane(
         cleanup_deps()
 
 
+# ---------------------------------------------------------------------------
+# Destructive pane-claim proof (repowire-oyg)
+#
+# A headless subprocess agent (e.g. `codex exec` launched from inside a
+# registered claude-code session) inherits TMUX_PANE and used to displace the
+# live pane holder on registration. Displacing a live holder now requires
+# proof the claimant actually runs in the pane: its ancestor chain must reach
+# the pane's root pid without passing through the live holder's agent.
+# ---------------------------------------------------------------------------
+
+HOLDER_PID = 1000
+CLAIMANT_PID = 2000
+PANE_PID = 400
+
+
+def _patch_probes(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    ancestors: set[int] | None,
+    pane_pid: int | None,
+    holder_alive: bool = True,
+) -> None:
+    monkeypatch.setattr(
+        "repowire.daemon.peer_registry.process_ancestors", lambda pid: ancestors
+    )
+    monkeypatch.setattr(
+        "repowire.daemon.peer_registry.tmux_pane_pid", lambda pane: pane_pid
+    )
+    monkeypatch.setattr(
+        "repowire.daemon.peer_registry.pid_alive", lambda pid: holder_alive
+    )
+
+
+async def _register_holder(registry: PeerRegistry) -> str:
+    holder_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/home/u/projects/main",
+        pane_id=PANE,
+        machine="m",
+        agent_pid=HOLDER_PID,
+    )
+    return holder_id
+
+
+@pytest.mark.asyncio
+async def test_live_holder_kept_when_claimant_not_in_pane_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A claimant whose process tree does not reach the pane's root pid
+    cannot displace a live holder: it registers pane-less and a loud
+    pane_claim_rejected event is emitted."""
+    registry = _make_registry(tmp_path)
+    holder_id = await _register_holder(registry)
+    # Claimant's ancestry never reaches the pane root (it merely inherited
+    # TMUX_PANE in its env).
+    _patch_probes(monkeypatch, ancestors={500, 1}, pane_pid=PANE_PID)
+
+    claim_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CODEX,
+        path="/home/u/projects/main",
+        pane_id=PANE,
+        machine="m",
+        agent_pid=CLAIMANT_PID,
+    )
+
+    holder = await registry.get_peer(holder_id)
+    claim = await registry.get_peer(claim_id)
+    assert holder is not None and claim is not None
+    assert holder.pane_id == PANE
+    assert holder.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
+    assert claim.pane_id is None
+    by_pane = await registry.get_peer_by_pane(PANE)
+    assert by_pane is not None and by_pane.peer_id == holder_id
+    rejected = [e for e in registry.get_events() if e["type"] == "pane_claim_rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["holder_peer_id"] == holder_id
+    assert rejected[0]["claimant_agent_pid"] == CLAIMANT_PID
+
+
+@pytest.mark.asyncio
+async def test_live_holder_kept_when_claimant_is_holder_subprocess(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The repowire-oyg incident: a headless agent launched from inside the
+    holder's session descends from the holder's agent pid. Even though its
+    chain also reaches the pane root, it must not take the pane."""
+    registry = _make_registry(tmp_path)
+    holder_id = await _register_holder(registry)
+    # claimant <- shell <- holder agent <- pane root
+    _patch_probes(monkeypatch, ancestors={1500, HOLDER_PID, PANE_PID, 1}, pane_pid=PANE_PID)
+
+    claim_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CODEX,
+        path="/home/u/projects/main",
+        pane_id=PANE,
+        machine="m",
+        agent_pid=CLAIMANT_PID,
+    )
+
+    holder = await registry.get_peer(holder_id)
+    claim = await registry.get_peer(claim_id)
+    assert holder is not None and claim is not None
+    assert holder.pane_id == PANE
+    assert holder.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
+    assert claim.pane_id is None
+    rejected = [e for e in registry.get_events() if e["type"] == "pane_claim_rejected"]
+    assert len(rejected) == 1
+    assert "subprocess" in rejected[0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_live_holder_displaced_by_pane_descendant_claimant(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A claimant that genuinely runs in the pane (ancestry reaches pane_pid
+    without passing through the holder's agent) may still take the pane from
+    a live holder — e.g. a new agent started in the pane's shell."""
+    registry = _make_registry(tmp_path)
+    holder_id = await _register_holder(registry)
+    _patch_probes(monkeypatch, ancestors={PANE_PID, 1}, pane_pid=PANE_PID)
+
+    claim_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CODEX,
+        path="/home/u/projects/other",
+        pane_id=PANE,
+        machine="m",
+        agent_pid=CLAIMANT_PID,
+    )
+
+    holder = await registry.get_peer(holder_id)
+    claim = await registry.get_peer(claim_id)
+    assert holder is not None and claim is not None
+    assert holder.pane_id is None
+    assert holder.status == PeerStatus.OFFLINE
+    assert claim.pane_id == PANE
+    assert not [e for e in registry.get_events() if e["type"] == "pane_claim_rejected"]
+
+
+@pytest.mark.asyncio
+async def test_stale_holder_displaced_without_proof(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A heartbeat-stale holder is the legitimate pane-reuse case: takeover
+    proceeds even when the claimant offers no pane proof at all."""
+    from datetime import datetime, timedelta, timezone
+
+    registry = _make_registry(tmp_path)
+    holder_id = await _register_holder(registry)
+    holder = await registry.get_peer(holder_id)
+    assert holder is not None
+    holder.last_seen = datetime.now(timezone.utc) - timedelta(
+        seconds=registry.heartbeat_tolerance() * 4
+    )
+    # Probes would reject this claimant if the guard consulted them.
+    _patch_probes(monkeypatch, ancestors={500, 1}, pane_pid=PANE_PID)
+
+    claim_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CODEX,
+        path="/home/u/projects/other",
+        pane_id=PANE,
+        machine="m",
+        agent_pid=CLAIMANT_PID,
+    )
+
+    claim = await registry.get_peer(claim_id)
+    assert claim is not None and claim.pane_id == PANE
+    by_pane = await registry.get_peer_by_pane(PANE)
+    assert by_pane is not None and by_pane.peer_id == claim_id
+
+
+@pytest.mark.asyncio
+async def test_dead_agent_holder_displaced_without_proof(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A fresh-looking holder whose agent process is gone (restart race) is
+    not a live holder; same-pane relaunch takes the pane as before."""
+    registry = _make_registry(tmp_path)
+    holder_id = await _register_holder(registry)
+    _patch_probes(
+        monkeypatch, ancestors={500, 1}, pane_pid=PANE_PID, holder_alive=False
+    )
+
+    claim_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/home/u/projects/main",
+        pane_id=PANE,
+        machine="m",
+        agent_pid=CLAIMANT_PID,
+    )
+
+    holder = await registry.get_peer(holder_id)
+    claim = await registry.get_peer(claim_id)
+    assert claim is not None and claim.pane_id == PANE
+    if holder is not None and holder.peer_id != claim_id:
+        assert holder.pane_id is None
+
+
+@pytest.mark.asyncio
+async def test_inconclusive_probes_allow_takeover(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Probe failure (no ps/tmux answer) is 'can't decide' and lets the claim
+    through — the pre-guard behavior, matching the parent_pid guard's
+    safe default."""
+    registry = _make_registry(tmp_path)
+    holder_id = await _register_holder(registry)
+    _patch_probes(monkeypatch, ancestors=None, pane_pid=None)
+
+    claim_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CODEX,
+        path="/home/u/projects/other",
+        pane_id=PANE,
+        machine="m",
+        agent_pid=CLAIMANT_PID,
+    )
+
+    holder = await registry.get_peer(holder_id)
+    claim = await registry.get_peer(claim_id)
+    assert holder is not None and claim is not None
+    assert holder.pane_id is None
+    assert claim.pane_id == PANE
+
+
 @pytest.mark.asyncio
 async def test_release_pane_still_offlines_agent(tmp_path: Path) -> None:
     """Sanity: the preservation rule is scoped to ORCHESTRATOR; regular

@@ -19,6 +19,62 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
+def tmux_pane_pid(pane_id: str) -> int | None:
+    """Resolve a tmux pane's root process pid. None when unprobeable."""
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_pid}"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
+def process_ancestors(pid: int) -> set[int] | None:
+    """Ancestor pids of ``pid`` (excluding itself). None when unprobeable.
+
+    One ``ps`` snapshot, then a ppid walk (bounded against cycles). Used by
+    the destructive pane-claim guard to tell a process that genuinely runs in
+    a tmux pane from a subprocess that merely inherited TMUX_PANE.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    parent: dict[int, int] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            parent[int(parts[0])] = int(parts[1])
+        except ValueError:
+            continue
+    ancestors: set[int] = set()
+    cur = pid
+    while cur in parent and len(ancestors) < 128:
+        cur = parent[cur]
+        if cur in ancestors or cur <= 0:
+            break
+        ancestors.add(cur)
+    return ancestors
+
+
 def has_runtime_evidence(peer: Peer) -> bool:
     """Best-effort runtime proof for a disconnected pane-backed peer.
 
@@ -33,13 +89,4 @@ def has_runtime_evidence(peer: Peer) -> bool:
 
     if not peer.pane_id:
         return False
-    try:
-        result = subprocess.run(
-            ["tmux", "display-message", "-t", peer.pane_id, "-p", "#{pane_pid}"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (FileNotFoundError, OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0 and bool(result.stdout.strip())
+    return tmux_pane_pid(peer.pane_id) is not None

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fastapi import APIRouter, FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -21,6 +22,24 @@ from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.state.database import StateDatabase
 from repowire.daemon.websocket_transport import WebSocketTransport
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_pane_claim_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the destructive pane-claim guard hermetic in tests.
+
+    The guard probes the live host (`ps` ancestry, `tmux` pane pids), and
+    tests register fabricated pids/pane ids that can collide with real ones
+    on a developer machine. Default both probes to inconclusive (None), which
+    lets claims through — the pre-guard behavior. Tests exercising the guard
+    monkeypatch these explicitly.
+    """
+    monkeypatch.setattr(
+        "repowire.daemon.peer_registry.process_ancestors", lambda pid: None
+    )
+    monkeypatch.setattr(
+        "repowire.daemon.peer_registry.tmux_pane_pid", lambda pane_id: None
+    )
 
 
 @dataclass

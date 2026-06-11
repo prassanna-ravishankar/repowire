@@ -39,7 +39,12 @@ from repowire.daemon.registry_identity import (
     is_configured_orchestrator_path,
     normalize_identity_path,
 )
-from repowire.daemon.registry_repair import has_runtime_evidence, pid_alive
+from repowire.daemon.registry_repair import (
+    has_runtime_evidence,
+    pid_alive,
+    process_ancestors,
+    tmux_pane_pid,
+)
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.capabilities import PANE_UNSAFE_STRIKE_LIMIT
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
@@ -852,6 +857,78 @@ class PeerRegistry:
             return peer
         return None
 
+    def _live_pane_holder(self, pane_id: str) -> Peer | None:
+        """Return the pane's holder when it is live with a verifiably-alive
+        agent process, else None. Must hold lock.
+
+        "Live" means status ONLINE/BUSY, a recorded agent_pid that is still
+        running, and either a heartbeat-fresh last_seen or a connected
+        transport. A holder whose agent process is gone (or that never
+        recorded one) is the legitimate pane-reuse case and keeps the
+        existing displacement behavior.
+        """
+        tolerance = self.heartbeat_tolerance()
+        now = datetime.now(timezone.utc)
+        for peer in self._peers.values():
+            if peer.pane_id != pane_id:
+                continue
+            if peer.status not in (PeerStatus.ONLINE, PeerStatus.BUSY):
+                continue
+            if peer.agent_pid is None or not pid_alive(peer.agent_pid):
+                continue
+            recently_seen = (
+                peer.last_seen is not None
+                and (now - peer.last_seen).total_seconds() <= tolerance
+            )
+            transport_connected = (
+                self._transport is not None
+                and self._transport.is_connected(peer.peer_id)
+            )
+            if recently_seen or transport_connected:
+                return peer
+        return None
+
+    def _pane_claim_proven(
+        self, pane_id: str, holder: Peer, claimant_pid: int | None
+    ) -> tuple[bool, str]:
+        """Decide whether a fresh claim may displace a live pane holder.
+
+        Env inheritance is not proof: a headless subprocess agent (e.g.
+        ``codex exec`` run from inside a claude-code pane) inherits TMUX_PANE
+        and would otherwise displace the legitimate holder. Proof requires
+        that the claimant's agent process actually runs in the pane: it is
+        the holder's own agent (same pid), or its ancestor chain reaches the
+        pane's root pid without passing through the live holder's agent.
+
+        Returns (proven, reason); ``reason`` is non-empty only on rejection.
+        Probes are best-effort: an inconclusive probe lets the claim through
+        (matching the parent_pid hijack guard's safe default). A claimant
+        that reported no agent_pid (older clients, CLI registration) is also
+        "can't decide" — hook-based registrations, the displacement vector
+        this guard exists for, always report one.
+        """
+        if claimant_pid is None:
+            return True, ""
+        if claimant_pid == holder.agent_pid:
+            return True, ""
+        ancestors = process_ancestors(claimant_pid)
+        if ancestors is None:
+            return True, ""
+        if holder.agent_pid in ancestors:
+            return False, (
+                f"claimant agent_pid={claimant_pid} is a subprocess of the "
+                f"live holder's agent_pid={holder.agent_pid}"
+            )
+        pane_pid = tmux_pane_pid(pane_id)
+        if pane_pid is None:
+            return True, ""
+        if claimant_pid == pane_pid or pane_pid in ancestors:
+            return True, ""
+        return False, (
+            f"claimant agent_pid={claimant_pid} is not in pane {pane_id}'s "
+            f"process tree (pane_pid={pane_pid})"
+        )
+
     def _release_pane(self, pane_id: str, new_peer_id: str) -> None:
         """Clear pane_id from any peer that currently owns it, except new_peer_id.
 
@@ -1154,6 +1231,53 @@ class PeerRegistry:
                             backend.value,
                         )
                         effective_pane_id = None
+
+                # Destructive pane-claim proof: pane ownership transfer away
+                # from a live holder is destructive, and env inheritance is
+                # not proof. When the pane is held by a live peer whose agent
+                # process is verifiably alive, the claimant must prove it
+                # actually runs in that pane (see _pane_claim_proven). No
+                # proof -> the holder keeps the pane and the new peer
+                # registers pane-less (mirroring the sticky-orchestrator
+                # behavior); the registration itself is never dropped, and a
+                # loud event records the rejected claim.
+                if effective_pane_id:
+                    live_holder = self._live_pane_holder(effective_pane_id)
+                    if live_holder is not None:
+                        proven, why = self._pane_claim_proven(
+                            effective_pane_id, live_holder, agent_pid
+                        )
+                        if not proven:
+                            logger.warning(
+                                "Rejecting pane claim for %s: held by live peer "
+                                "%s (%s); %s. Registering claimant pane-less "
+                                "(claim_backend=%s claim_path=%s)",
+                                effective_pane_id,
+                                live_holder.display_name,
+                                live_holder.peer_id,
+                                why,
+                                backend.value,
+                                path,
+                            )
+                            self.add_event(
+                                "pane_claim_rejected",
+                                {
+                                    "pane_id": effective_pane_id,
+                                    "holder_peer_id": live_holder.peer_id,
+                                    "holder_display_name": live_holder.display_name,
+                                    "holder_agent_pid": live_holder.agent_pid,
+                                    "claimant_agent_pid": agent_pid,
+                                    "claim_backend": backend.value,
+                                    "claim_path": path,
+                                    "reason": why,
+                                    "detail": (
+                                        "Claimant could not prove it runs in "
+                                        "this pane; registered pane-less and "
+                                        "the holder kept pane ownership."
+                                    ),
+                                },
+                            )
+                            effective_pane_id = None
 
                 preferred_mapping = self._mappings.get(peer_id) if peer_id else None
                 if preferred_mapping is not None:
