@@ -670,6 +670,8 @@ class PeerRegistry:
         circle: str,
         backend: AgentType,
         metadata: dict[str, Any] | None = None,
+        *,
+        exclude_session_id: str | None = None,
     ) -> str:
         """Build a unique display_name for a peer. Must hold lock.
 
@@ -683,6 +685,10 @@ class PeerRegistry:
         back, regardless of the blocker's status); (b) the blocker is OFFLINE
         (the original clean-takeover rule). Only a genuinely distinct, live peer
         on the same path+backend+circle gets a suffix.
+
+        ``exclude_session_id`` names a peer that must never be reclaimed or
+        evicted by this resolution (the live pane holder of a rejected pane
+        claim): its name blocker always falls through to suffixing.
         """
         folder = self._sanitize_folder_name(Path(path).name) if path else "peer"
         base = f"{folder}-{backend.value}"
@@ -705,7 +711,12 @@ class PeerRegistry:
                 incoming_session is not None
                 and self._runtime_session_id(peer.metadata) == incoming_session
             )
-            if same_session or peer.status == PeerStatus.OFFLINE:
+            # The live pane holder of a rejected claim (exclude_session_id) is
+            # never reclaimed or evicted, even on a runtime-session match —
+            # the claimant falls through to suffixing instead.
+            if sid != exclude_session_id and (
+                same_session or peer.status == PeerStatus.OFFLINE
+            ):
                 # Same logical peer reconnecting (matching runtime session) or a
                 # dead peer holding the name -- reclaim it cleanly.
                 del self._peers[sid]
@@ -748,12 +759,18 @@ class PeerRegistry:
         agent_pid: int | None = None,
         circle_source: CircleSource | None = None,
         preferred_session_id: str | None = None,
+        exclude_session_id: str | None = None,
     ) -> str:
         """Find existing mapping or allocate a new session_id. Must hold lock.
 
         Returns the session_id (existing or new).
+
+        ``exclude_session_id`` names a session that must never be reused (the
+        live pane holder of a rejected pane claim): every reuse/adoption path
+        skips it so the claimant gets a distinct identity instead of
+        overwriting the holder's peer record.
         """
-        if preferred_session_id:
+        if preferred_session_id and preferred_session_id != exclude_session_id:
             mapping = self._mappings.get(preferred_session_id)
             if (
                 mapping is not None
@@ -778,7 +795,8 @@ class PeerRegistry:
 
         for sid, mapping in self._mappings.items():
             if (
-                mapping.display_name == display_name
+                sid != exclude_session_id
+                and mapping.display_name == display_name
                 and mapping.circle == circle
                 and mapping.backend == backend
             ):
@@ -802,7 +820,8 @@ class PeerRegistry:
         if circle == "default" and path and can_cross_circle_adopt:
             for sid, mapping in self._mappings.items():
                 if (
-                    mapping.display_name == display_name
+                    sid != exclude_session_id
+                    and mapping.display_name == display_name
                     and mapping.backend == backend
                     and mapping.path == path
                 ):
@@ -1116,6 +1135,18 @@ class PeerRegistry:
                 # agent (e.g. `gemini --yolo` run from inside a claude-code pane)
                 # inheriting TMUX_PANE from its parent and trying to register on
                 # the parent's pane. Reject — the original peer keeps the pane.
+                #
+                # This stays a hard 409 (instead of the pane-less registration
+                # the ancestry guard below uses) deliberately: only SessionStart
+                # hooks send parent_pid, and hook versions between the #190
+                # guard and the later pane_assigned contract treat any 2xx as a
+                # confirmed pane claim and proceed to the destructive
+                # client-side takeover (kill the incumbent ws-hook, rewrite
+                # pane metadata). The 409 is what makes the rejection leave the
+                # world unchanged for every hook version; it also keeps
+                # SessionStart a no-op for the subprocess (no context
+                # injection, no ws-hook). The subprocess can still gain a
+                # pane-less identity later via MCP lazy registration.
                 if pane_id and parent_pid is not None:
                     tolerance = self.heartbeat_tolerance()
                     now = datetime.now(timezone.utc)
@@ -1145,6 +1176,28 @@ class PeerRegistry:
                             existing.peer_id,
                             existing.display_name,
                             pane_id,
+                        )
+                        self.add_event(
+                            "pane_claim_rejected",
+                            {
+                                "pane_id": pane_id,
+                                "holder_peer_id": existing.peer_id,
+                                "holder_display_name": existing.display_name,
+                                "holder_agent_pid": existing.agent_pid,
+                                "claimant_agent_pid": agent_pid,
+                                "claim_backend": backend.value,
+                                "claim_path": path,
+                                "outcome": "registration_rejected",
+                                "reason": (
+                                    f"claimant parent_pid={parent_pid} matches "
+                                    f"live holder agent_pid={existing.agent_pid}"
+                                ),
+                                "detail": (
+                                    "Direct-child SessionStart hijack: claim "
+                                    "rejected with 409 so the hook leaves the "
+                                    "incumbent untouched."
+                                ),
+                            },
                         )
                         raise PaneHijackRejectedError(
                             f"pane {pane_id} held by {existing.display_name} "
@@ -1241,6 +1294,7 @@ class PeerRegistry:
                 # registers pane-less (mirroring the sticky-orchestrator
                 # behavior); the registration itself is never dropped, and a
                 # loud event records the rejected claim.
+                rejected_holder: Peer | None = None
                 if effective_pane_id:
                     live_holder = self._live_pane_holder(effective_pane_id)
                     if live_holder is not None:
@@ -1248,6 +1302,7 @@ class PeerRegistry:
                             effective_pane_id, live_holder, agent_pid
                         )
                         if not proven:
+                            rejected_holder = live_holder
                             logger.warning(
                                 "Rejecting pane claim for %s: held by live peer "
                                 "%s (%s); %s. Registering claimant pane-less "
@@ -1269,6 +1324,7 @@ class PeerRegistry:
                                     "claimant_agent_pid": agent_pid,
                                     "claim_backend": backend.value,
                                     "claim_path": path,
+                                    "outcome": "registered_pane_less",
                                     "reason": why,
                                     "detail": (
                                         "Claimant could not prove it runs in "
@@ -1309,7 +1365,15 @@ class PeerRegistry:
                 assigned_name = (
                     display_name_override
                     or (preferred_mapping.display_name if preferred_mapping else None)
-                    or self._build_display_name(path or "", circle, backend, metadata)
+                    or self._build_display_name(
+                        path or "",
+                        circle,
+                        backend,
+                        metadata,
+                        exclude_session_id=(
+                            rejected_holder.peer_id if rejected_holder else None
+                        ),
+                    )
                 )
                 mapping_circle = preferred_mapping.circle if preferred_mapping else circle
                 if display_name_override:
@@ -1342,6 +1406,9 @@ class PeerRegistry:
                     assigned_name, mapping_circle, backend, path, model=model, role=role,
                     agent_pid=agent_pid, circle_source=circle_source,
                     preferred_session_id=peer_id,
+                    exclude_session_id=(
+                        rejected_holder.peer_id if rejected_holder else None
+                    ),
                 )
                 if effective_pane_id:
                     self._release_pane(effective_pane_id, allocated_id)

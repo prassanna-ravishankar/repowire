@@ -550,6 +550,131 @@ async def test_inconclusive_probes_allow_takeover(
 
 
 @pytest.mark.asyncio
+async def test_rejected_claimant_never_adopts_holder_identity_cross_circle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A rejected same-name/backend/path claimant must mint a NEW identity,
+    not adopt the live holder's mapping. The cross-circle adoption branch
+    (claimant in fallback 'default' circle, holder elsewhere) used to hand
+    back the holder's session id, and the final Peer write then overwrote
+    the holder's record pane-less under its own peer_id."""
+    registry = _make_registry(tmp_path)
+    holder_id, holder_name = await registry.allocate_and_register(
+        circle="work",
+        backend=AgentType.CLAUDE_CODE,
+        path="/home/u/projects/main",
+        pane_id=PANE,
+        machine="m",
+        agent_pid=HOLDER_PID,
+    )
+    _patch_probes(monkeypatch, ancestors={500, 1}, pane_pid=PANE_PID)
+
+    claim_id, _ = await registry.allocate_and_register(
+        circle="default",  # fallback circle -> cross-circle adoption eligible
+        backend=AgentType.CLAUDE_CODE,
+        path="/home/u/projects/main",
+        pane_id=PANE,
+        machine="m",
+        agent_pid=CLAIMANT_PID,
+    )
+
+    assert claim_id != holder_id
+    holder = await registry.get_peer(holder_id)
+    claim = await registry.get_peer(claim_id)
+    assert holder is not None and claim is not None
+    assert holder.pane_id == PANE
+    assert holder.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
+    assert holder.agent_pid == HOLDER_PID
+    assert holder.display_name == holder_name
+    assert claim.pane_id is None
+    by_pane = await registry.get_peer_by_pane(PANE)
+    assert by_pane is not None and by_pane.peer_id == holder_id
+    rejected = [e for e in registry.get_events() if e["type"] == "pane_claim_rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["outcome"] == "registered_pane_less"
+
+
+@pytest.mark.asyncio
+async def test_rejected_same_session_claimant_does_not_evict_holder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Same circle, same name, and a matching runtime session id: the
+    display-name reclaim path used to DELETE the live holder outright. A
+    rejected claimant must fall through to a suffixed fresh identity."""
+    registry = _make_registry(tmp_path)
+    holder_id, holder_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/home/u/projects/main",
+        pane_id=PANE,
+        machine="m",
+        agent_pid=HOLDER_PID,
+        metadata={"hook_session_id": "sess-1"},
+    )
+    _patch_probes(monkeypatch, ancestors={500, 1}, pane_pid=PANE_PID)
+
+    claim_id, claim_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/home/u/projects/main",
+        pane_id=PANE,
+        machine="m",
+        agent_pid=CLAIMANT_PID,
+        metadata={"hook_session_id": "sess-1"},  # orphan duplicate claim
+    )
+
+    assert claim_id != holder_id
+    assert claim_name != holder_name
+    holder = await registry.get_peer(holder_id)
+    claim = await registry.get_peer(claim_id)
+    assert holder is not None and claim is not None
+    assert holder.pane_id == PANE
+    assert holder.display_name == holder_name
+    assert claim.pane_id is None
+    by_pane = await registry.get_peer_by_pane(PANE)
+    assert by_pane is not None and by_pane.peer_id == holder_id
+
+
+@pytest.mark.asyncio
+async def test_direct_child_hijack_still_409s_and_emits_event(
+    tmp_path: Path,
+) -> None:
+    """The direct-child SessionStart hijack keeps its hard 409 (hook versions
+    between the #190 guard and the pane_assigned contract treat any 2xx as a
+    confirmed claim and run the destructive client-side takeover), but now
+    also emits the same pane_claim_rejected event for observability."""
+    from repowire.daemon.peer_registry import PaneHijackRejectedError
+
+    registry = _make_registry(tmp_path)
+    holder_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/home/u/projects/main",
+        pane_id=PANE,
+        machine="m",
+        agent_pid=HOLDER_PID,
+    )
+
+    with pytest.raises(PaneHijackRejectedError):
+        await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.GEMINI,
+            path="/home/u/projects/main",
+            pane_id=PANE,
+            machine="m",
+            agent_pid=CLAIMANT_PID,
+            parent_pid=HOLDER_PID,
+        )
+
+    by_pane = await registry.get_peer_by_pane(PANE)
+    assert by_pane is not None and by_pane.peer_id == holder_id
+    rejected = [e for e in registry.get_events() if e["type"] == "pane_claim_rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["outcome"] == "registration_rejected"
+    assert rejected[0]["holder_peer_id"] == holder_id
+
+
+@pytest.mark.asyncio
 async def test_release_pane_still_offlines_agent(tmp_path: Path) -> None:
     """Sanity: the preservation rule is scoped to ORCHESTRATOR; regular
     agents are still marked OFFLINE when their pane gets reassigned."""
