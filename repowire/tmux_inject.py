@@ -32,6 +32,14 @@ logger = logging.getLogger(__name__)
 # line starting with one of these is the live input line.
 _COMPOSER_PROMPT_PREFIXES = ("❯", "›", "> ")
 
+# The STABLE readiness signal (non-empty capture unchanged across N polls) must
+# not declare ready before this many seconds have elapsed. The acceptance bar
+# is "a false-ready is no worse than main", and main injected blindly after a
+# fixed 5s sleep — so a stable signal that fires at ~1s would be *worse*. The
+# GLYPH signal is exempt: it is positive evidence the composer exists, so it
+# stays fast.
+STABLE_READY_FLOOR_SECONDS = 5.0
+
 
 def _pane_in_copy_mode(pane_id: str) -> bool:
     """True if the pane is in tmux copy-mode. False on any query failure."""
@@ -104,28 +112,34 @@ def wait_for_composer_ready(
     timeout: float,
     poll: float = 0.5,
     stable_polls: int = 3,
+    stable_floor: float = STABLE_READY_FLOOR_SECONDS,
 ) -> bool:
     """Poll capture-pane until the pane looks ready, or timeout elapses.
 
     Two ready signals, in priority order:
-      * **glyph** — a known composer prompt line (``❯``/``›``/``> ``) is the
-        fast path for the supported runtimes.
+      * **glyph** — a known composer prompt line (``❯``/``›``/``> ``). This is
+        positive evidence the composer exists, so it is the fast path with no
+        minimum-elapsed floor.
       * **stable** — for a backend with an unrecognized prompt glyph, falling
         through to the full timeout would regress latency vs the old fixed
         sleep. So if the capture is non-empty and unchanged across
-        ``stable_polls`` consecutive polls, treat it as ready. This bounds
-        unknown-glyph backends to roughly the old latency.
+        ``stable_polls`` consecutive polls *and* at least ``stable_floor``
+        seconds have elapsed, treat it as ready. The floor exists because the
+        acceptance bar is "a false-ready is no worse than main" — main injected
+        blindly after a fixed 5s sleep, so a stable signal firing at ~1s would
+        be strictly worse. The floor keeps stable no faster than that baseline.
 
-    A false positive here is acceptable: the prior behavior injected blindly
-    after a fixed sleep, so a too-early "ready" is never worse than the
-    baseline — and the hardened ``inject_text`` paste path tolerates it.
+    A false positive at-or-after the floor is acceptable: the prior behavior
+    injected blindly after a fixed sleep, so a too-early "ready" is never worse
+    than the baseline — and the hardened ``inject_text`` paste path tolerates it.
 
     Returns True once ready, False if the budget is exhausted without either
     signal (callers should still attempt their paste as a fallback, but log
     that readiness was not confirmed). Capture failure is treated as "not yet
     ready" and resets the stability streak. Logs which signal fired.
     """
-    deadline = time.monotonic() + timeout
+    start = time.monotonic()
+    deadline = start + timeout
     last_text: str | None = None
     stable_count = 0
     while True:
@@ -136,7 +150,10 @@ def wait_for_composer_ready(
         if pane_text is not None and pane_text.strip():
             if pane_text == last_text:
                 stable_count += 1
-                if stable_count >= stable_polls:
+                if (
+                    stable_count >= stable_polls
+                    and time.monotonic() - start >= stable_floor
+                ):
                     logger.debug(
                         "Pane %s ready (stable content, no glyph match)", pane_id
                     )

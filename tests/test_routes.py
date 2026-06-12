@@ -1366,3 +1366,138 @@ async def test_live_notify_acp_target_skips_seed_gate():
     )
     get_peer.assert_not_awaited()
     assert result.reason == "broker_accepted"
+
+
+@pytest.mark.asyncio
+async def test_broadcast_defers_pending_peer_until_seed_settles():
+    """A broadcast must not inject into a still-seeding (pending_first_turn) WS
+    peer synchronously: that recipient is split out and delivered via a
+    background task after the seed gate clears. Non-pending peers receive
+    immediately and are never blocked by the pending one."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from repowire.daemon.peer_delivery import PeerDeliveryService
+
+    sender = SimpleNamespace(
+        peer_id="sender-id", display_name="sender", circle="c1",
+        bypasses_circles=False, status=PeerStatus.ONLINE, turn_state="idle",
+    )
+    ready = SimpleNamespace(
+        peer_id="ready-id", display_name="ready", circle="c1",
+        bypasses_circles=False, status=PeerStatus.ONLINE, turn_state="idle",
+    )
+    pending = SimpleNamespace(
+        peer_id="pending-id", display_name="pending", circle="c1",
+        bypasses_circles=False, status=PeerStatus.ONLINE,
+        turn_state="pending_first_turn",
+    )
+    settled = SimpleNamespace(
+        peer_id="pending-id", display_name="pending", circle="c1",
+        bypasses_circles=False, status=PeerStatus.ONLINE, turn_state="idle",
+    )
+
+    # get_peer: sender lookup + the gate's polling of the pending peer.
+    by_name = {"sender": sender}
+    pending_snaps = [pending, settled]
+    poll = {"n": 0}
+
+    async def get_peer(identifier):
+        if identifier in by_name:
+            return by_name[identifier]
+        # gate polls by peer_id
+        if identifier == "pending-id":
+            snap = pending_snaps[min(poll["n"], len(pending_snaps) - 1)]
+            poll["n"] += 1
+            return snap
+        return None
+
+    registry = SimpleNamespace(
+        get_peer=get_peer,
+        get_all_peers=AsyncMock(return_value=[sender, ready, pending]),
+        add_event=lambda *a, **k: None,
+    )
+
+    # No ACP routing for any peer (all WS).
+    transport_router = SimpleNamespace(acp_route=lambda _t: None)
+
+    ws_broadcast = AsyncMock(return_value=(["ready-id"], []))
+    broadcast_to_session = AsyncMock()
+    message_router = SimpleNamespace(
+        broadcast=ws_broadcast,
+        broadcast_to_session=broadcast_to_session,
+    )
+
+    service = PeerDeliveryService(
+        registry=registry,  # type: ignore[arg-type]
+        message_router=message_router,  # type: ignore[arg-type]
+        transport_router=transport_router,  # type: ignore[arg-type]
+    )
+
+    import repowire.daemon.peer_delivery as pd
+
+    with patch("repowire.daemon.seed_gate.asyncio.sleep", new_callable=AsyncMock):
+        sent, failed = await service.broadcast(from_peer="sender", text="hi all")
+        # Drain the deferred background task(s) to completion. Use gather on the
+        # tracked task set rather than asyncio.sleep(0) — the gate's sleep is
+        # patched, which would also no-op a sleep-based drain here.
+        await asyncio.gather(*list(pd._DEFERRED_BROADCAST_TASKS))
+
+    # The synchronous WS broadcast excluded the pending peer (only ready sent).
+    ws_exclude = ws_broadcast.await_args.kwargs["exclude"]
+    assert "pending-id" in ws_exclude
+    # ready delivered synchronously; pending reported as (deferred) recipient.
+    assert "ready" in sent
+    assert "pending" in sent
+    assert failed == []
+    # The pending peer received exactly one deferred broadcast after the gate.
+    broadcast_to_session.assert_awaited_once_with("sender", "hi all", "pending-id")
+    assert poll["n"] >= 2  # gate re-polled pending -> settled
+
+
+@pytest.mark.asyncio
+async def test_query_gates_on_pending_first_turn():
+    """The legacy query path also waits out the seed gate before injecting."""
+    from unittest.mock import AsyncMock, patch
+
+    from repowire.daemon.peer_delivery import PeerDeliveryService
+
+    sender = SimpleNamespace(peer_id="sender-id", display_name="sender")
+    pending = SimpleNamespace(
+        peer_id="target-id", display_name="target", turn_state="pending_first_turn"
+    )
+    settled = SimpleNamespace(
+        peer_id="target-id", display_name="target", turn_state="idle"
+    )
+
+    pending_snaps = [pending, settled]
+    poll = {"n": 0}
+
+    async def get_peer(_identifier):
+        snap = pending_snaps[min(poll["n"], len(pending_snaps) - 1)]
+        poll["n"] += 1
+        return snap
+
+    events = {"updated": []}
+    registry = SimpleNamespace(
+        check_access=AsyncMock(return_value=(sender, pending)),
+        get_peer=get_peer,
+        add_event=lambda *a, **k: "evt-1",
+        _update_event=lambda *a, **k: events["updated"].append(a),
+    )
+    send_query = AsyncMock(return_value="the answer")
+    transport_router = SimpleNamespace(acp_route=lambda _t: None)
+    message_router = SimpleNamespace(send_query=send_query)
+
+    service = PeerDeliveryService(
+        registry=registry,  # type: ignore[arg-type]
+        message_router=message_router,  # type: ignore[arg-type]
+        transport_router=transport_router,  # type: ignore[arg-type]
+    )
+
+    with patch("repowire.daemon.seed_gate.asyncio.sleep", new_callable=AsyncMock):
+        result = await service.query(from_peer="sender", to_peer="target", text="ping?")
+
+    assert result == "the answer"
+    send_query.assert_awaited_once()
+    assert poll["n"] >= 2  # gate re-polled pending -> settled before send

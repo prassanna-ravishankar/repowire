@@ -40,6 +40,10 @@ from repowire.protocol.questions import Question
 
 logger = logging.getLogger(__name__)
 
+# Strong references to deferred broadcast-delivery tasks. asyncio holds only
+# weak refs, so without this a task awaiting the seed gate can be GC'd mid-wait.
+_DEFERRED_BROADCAST_TASKS: set[asyncio.Task] = set()
+
 
 @dataclass(frozen=True)
 class NotifyDeliveryResult:
@@ -138,6 +142,35 @@ class PeerDeliveryService:
             session_id, self._registry, context="Live delivery"
         )
 
+    def _defer_broadcast_until_seed_settled(
+        self, from_peer: str, text: str, session_id: str
+    ) -> None:
+        """Schedule a single broadcast to a still-seeding WS peer.
+
+        The peer is already connected, so the queued-delivery store (which only
+        flushes on ws connect) would strand the message — instead we wait out
+        the seed gate in a background task and then send directly. One pending
+        peer must never block the rest of the broadcast fanout.
+        """
+
+        async def _deliver() -> None:
+            try:
+                await await_seed_settled(
+                    session_id, self._registry, context="Deferred broadcast"
+                )
+                await self._message_router.broadcast_to_session(
+                    from_peer, text, session_id
+                )
+            except Exception:
+                logger.warning(
+                    "Deferred broadcast to %s failed after seed gate", session_id,
+                    exc_info=True,
+                )
+
+        task = asyncio.create_task(_deliver())
+        _DEFERRED_BROADCAST_TASKS.add(task)
+        task.add_done_callback(_DEFERRED_BROADCAST_TASKS.discard)
+
     async def _mark_transport_unreachable(
         self,
         target: Any,
@@ -203,6 +236,7 @@ class PeerDeliveryService:
             },
         )
 
+        await self._gate_on_seed_settled(peer)
         try:
             response = await self._message_router.send_query(
                 from_peer=from_peer,
@@ -586,13 +620,32 @@ class PeerDeliveryService:
                 except Exception as e:  # noqa: BLE001 — one ACP failure must not abort fanout
                     acp_failed.append({"peer": peer.display_name, "error": str(e)})
 
+        # WS recipients still seeding (pending_first_turn) would have the
+        # broadcast interleaved with their in-flight spawn seed. Split them out:
+        # exclude from the synchronous fanout and deliver each via a background
+        # task that awaits the seed gate first. One pending peer never blocks
+        # the rest of the broadcast.
+        deferred_names: list[str] = []
+        for peer in peers:
+            if peer.peer_id in exclude_session_ids:
+                continue
+            if peer.status == PeerStatus.OFFLINE:
+                continue
+            if getattr(peer, "turn_state", None) != "pending_first_turn":
+                continue
+            exclude_session_ids.add(peer.peer_id)
+            self._defer_broadcast_until_seed_settled(from_peer, text, peer.peer_id)
+            deferred_names.append(peer.display_name)
+
         sent_ids, failed = await self._message_router.broadcast(
             from_peer=from_peer,
             text=text,
             exclude=exclude_session_ids,
         )
         return (
-            [id_to_name[sid] for sid in sent_ids if sid in id_to_name] + acp_sent,
+            [id_to_name[sid] for sid in sent_ids if sid in id_to_name]
+            + acp_sent
+            + deferred_names,
             [
                 {
                     "peer": id_to_name.get(f["session_id"], f["session_id"]),

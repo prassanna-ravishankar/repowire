@@ -236,6 +236,18 @@ class MessageRouter:
         logger.info(f"Ask sent: {from_peer} -> {to_peer_name} ({correlation_id[:8]})")
         return delivery_ack if isinstance(delivery_ack, dict) else None
 
+    async def broadcast_to_session(self, from_peer: str, text: str, session_id: str) -> None:
+        """Send a single broadcast envelope to one live WS session.
+
+        Used for deferred broadcast delivery to a recipient that was
+        ``pending_first_turn`` at fanout time (the seed gate held it back).
+        Raises ``TransportError`` if the session has no live transport.
+        """
+        await self._transport.send(
+            session_id,
+            {"type": "broadcast", "from_peer": from_peer, "text": text},
+        )
+
     async def broadcast(
         self,
         from_peer: str,
