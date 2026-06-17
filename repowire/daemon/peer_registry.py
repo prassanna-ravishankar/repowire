@@ -2859,19 +2859,47 @@ class PeerRegistry:
                 and p.last_seen is not None
                 and p.last_seen < cutoff
             ]
+
+        evidence = await self._runtime_evidence_ids(stale)
+
+        spared: list[Peer] = []
+        doomed: list[Peer] = []
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=ttl)
+        async with self._lock:
             for peer in stale:
-                self._peers.pop(peer.peer_id, None)
-                self._mappings.pop(peer.peer_id, None)
-                self._description_set_at.pop(peer.peer_id, None)
-                self._clear_all_contradictions(peer.peer_id)
+                current = self._peers.get(peer.peer_id)
+                if (
+                    current is None
+                    or current.status != PeerStatus.OFFLINE
+                    or current.last_seen is None
+                    or current.last_seen >= cutoff
+                    or self._runtime_marker(peer) != self._runtime_marker(current)
+                ):
+                    continue
+                if current.peer_id in evidence:
+                    spared.append(current)
+                    continue
+                doomed.append(current)
+                self._peers.pop(current.peer_id, None)
+                self._mappings.pop(current.peer_id, None)
+                self._description_set_at.pop(current.peer_id, None)
+                self._clear_all_contradictions(current.peer_id)
                 self._mappings_dirty = True
+
+        for peer in spared:
+            self._emit_offline_peer_still_has_runtime_evidence(
+                peer,
+                reason="offline_ttl_with_runtime_evidence",
+                cutoff=cutoff,
+                ttl_seconds=ttl,
+            )
 
         # Snapshot doomed-with-stash asks BEFORE any destructive cleanup
         # so observers see the pending_reply_lost event before the ask
         # disappears. Order: snapshot → emit → forget/evict.
         doomed_stashes: list[tuple[Any, str]] = []
         if self._ask_tracker is not None:
-            for peer in stale:
+            for peer in doomed:
                 snap = await self._ask_tracker.snapshot_pending_replies_for_peer(
                     peer.peer_id,
                 )
@@ -2881,7 +2909,7 @@ class PeerRegistry:
         for ask, reason in doomed_stashes:
             self._emit_pending_reply_lost(ask, reason)
 
-        for peer in stale:
+        for peer in doomed:
             if self._transport is not None:
                 try:
                     await self._transport.disconnect(peer.peer_id)
@@ -2905,9 +2933,14 @@ class PeerRegistry:
                 },
             )
 
-        if stale:
-            logger.info("reaped %d dangling offline peers", len(stale))
-        return len(stale)
+        if doomed:
+            logger.info("reaped %d dangling offline peers", len(doomed))
+        if spared:
+            logger.warning(
+                "spared %d stale offline peers with runtime evidence",
+                len(spared),
+            )
+        return len(doomed)
 
     async def _evict_stale_peers(self) -> int:
         """Evict long-offline peers from both _peers and _mappings.
@@ -2918,29 +2951,119 @@ class PeerRegistry:
         now = time.time()
         async with self._lock:
             stale = [
-                pid for pid, p in self._peers.items()
+                p for p in self._peers.values()
                 if p.status == PeerStatus.OFFLINE
                 and p.last_seen
                 and (now - p.last_seen.timestamp()) > max_age
             ]
-            for pid in stale:
-                del self._peers[pid]
-                self._mappings.pop(pid, None)
-            if stale:
+
+        evidence = await self._runtime_evidence_ids(stale)
+
+        spared: list[Peer] = []
+        evicted: list[Peer] = []
+        now = time.time()
+        async with self._lock:
+            for peer in stale:
+                current = self._peers.get(peer.peer_id)
+                if (
+                    current is None
+                    or current.status != PeerStatus.OFFLINE
+                    or current.last_seen is None
+                    or (now - current.last_seen.timestamp()) <= max_age
+                    or self._runtime_marker(peer) != self._runtime_marker(current)
+                ):
+                    continue
+                if current.peer_id in evidence:
+                    spared.append(current)
+                    continue
+                evicted.append(current)
+                del self._peers[current.peer_id]
+                self._mappings.pop(current.peer_id, None)
+            if evicted:
                 self._mappings_dirty = True
-                logger.info("evicted %d stale offline peers", len(stale))
-        if stale and self._ask_tracker is not None:
+
+        cutoff = datetime.fromtimestamp(now - max_age, timezone.utc)
+        for peer in spared:
+            self._emit_offline_peer_still_has_runtime_evidence(
+                peer,
+                reason="stale_evict_with_runtime_evidence",
+                cutoff=cutoff,
+                ttl_seconds=max_age,
+            )
+
+        if evicted:
+            logger.info("evicted %d stale offline peers", len(evicted))
+        if spared:
+            logger.warning(
+                "spared %d long-offline peers with runtime evidence",
+                len(spared),
+            )
+        if evicted and self._ask_tracker is not None:
             doomed_stashes: list[Any] = []
-            for pid in stale:
-                snap = await self._ask_tracker.snapshot_pending_replies_for_peer(pid)
+            for peer in evicted:
+                snap = await self._ask_tracker.snapshot_pending_replies_for_peer(
+                    peer.peer_id,
+                )
                 doomed_stashes.extend(snap)
             # snapshot → emit → forget so observers see the loss event
             # before the ask disappears.
             for ask in doomed_stashes:
                 self._emit_pending_reply_lost(ask, "stale_evict")
-            for pid in stale:
-                await self._ask_tracker.forget_peer(pid)
-        return len(stale)
+            for peer in evicted:
+                await self._ask_tracker.forget_peer(peer.peer_id)
+        return len(evicted)
+
+    @staticmethod
+    def _runtime_marker(peer: Peer) -> tuple[int | None, str | None]:
+        return (peer.agent_pid, peer.pane_id)
+
+    async def _runtime_evidence_ids(self, peers: list[Peer]) -> set[str]:
+        targets = [
+            peer for peer in peers
+            if (peer.agent_pid is not None and peer.agent_pid > 0) or peer.pane_id
+        ]
+        if not targets:
+            return set()
+
+        checks = await asyncio.gather(
+            *(asyncio.to_thread(has_runtime_evidence, peer) for peer in targets),
+            return_exceptions=True,
+        )
+        evidence: set[str] = set()
+        for peer, has_evidence in zip(targets, checks, strict=True):
+            if has_evidence is True:
+                evidence.add(peer.peer_id)
+            elif isinstance(has_evidence, Exception):
+                logger.warning(
+                    "runtime evidence check failed for %s during stale eviction",
+                    peer.peer_id,
+                    exc_info=has_evidence,
+                )
+        return evidence
+
+    def _emit_offline_peer_still_has_runtime_evidence(
+        self,
+        peer: Peer,
+        *,
+        reason: str,
+        cutoff: datetime,
+        ttl_seconds: float,
+    ) -> None:
+        self.add_event(
+            "offline_peer_still_has_runtime_evidence",
+            {
+                "peer_id": peer.peer_id,
+                "display_name": peer.display_name,
+                "backend": peer.backend.value,
+                "path": peer.path,
+                "pane_id": peer.pane_id,
+                "agent_pid": peer.agent_pid,
+                "last_seen": peer.last_seen.isoformat() if peer.last_seen else None,
+                "cutoff": cutoff.isoformat(),
+                "ttl_seconds": ttl_seconds,
+                "reason": reason,
+            },
+        )
 
     async def _emit_and_evict_expired_stashes(self) -> None:
         """Single owner for TTL-loss emission on stashed asks.

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from repowire.config.models import AgentType, Config
+from repowire.daemon.ask_tracker import AskTracker
 from repowire.daemon.peer_registry import PeerRegistry, SessionMapping
 from repowire.daemon.websocket_transport import WebSocketTransport
 from repowire.protocol.peers import Peer, PeerStatus
@@ -42,14 +43,17 @@ def _make_peer(
 def _make_manager(
     transport: WebSocketTransport | None = None,
     query_tracker: MagicMock | None = None,
-    ask_tracker: MagicMock | None = None,
+    ask_tracker: AskTracker | MagicMock | None = None,
     *,
     peer_reap_ttl_seconds: float | None = None,
+    prune_max_age_hours: float | None = None,
     stale_busy_timeout_seconds: float | None = None,
 ) -> PeerRegistry:
     config = Config()
     if peer_reap_ttl_seconds is not None:
         config.daemon.peer_reap_ttl_seconds = peer_reap_ttl_seconds
+    if prune_max_age_hours is not None:
+        config.daemon.prune_max_age_hours = prune_max_age_hours
     if stale_busy_timeout_seconds is not None:
         config.daemon.stale_busy_timeout_seconds = stale_busy_timeout_seconds
     router = MagicMock()
@@ -469,7 +473,121 @@ class TestLazyRepairReaper:
         transport.disconnect.assert_awaited_once_with(peer.peer_id)
         ask_tracker.forget_peer.assert_awaited_once_with(peer.peer_id)
 
-    async def test_reaps_offline_peer_after_ttl(self):
+    async def test_spares_offline_peer_after_ttl_with_runtime_evidence(
+        self, monkeypatch,
+    ):
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.disconnect = AsyncMock(return_value=True)
+        ask_tracker = MagicMock()
+        ask_tracker.forget_peer = AsyncMock(return_value=1)
+        ask_tracker.snapshot_pending_replies_for_peer = AsyncMock(return_value=[])
+        ask_tracker.snapshot_expired_pending_replies = AsyncMock(return_value=[])
+        ask_tracker.evict_expired = AsyncMock(return_value=0)
+        manager = _make_manager(
+            transport=transport,
+            ask_tracker=ask_tracker,
+            peer_reap_ttl_seconds=600,
+        )
+        stale_seen = datetime.now(timezone.utc) - timedelta(seconds=601)
+        peer = _make_peer(
+            status=PeerStatus.OFFLINE,
+            pane_id="%5",
+            last_seen=stale_seen,
+        )
+        peer.agent_pid = 12345
+        await manager.register_peer(peer)
+        async with manager._lock:
+            live = manager._peers[peer.peer_id]
+            live.status = PeerStatus.OFFLINE
+            live.last_seen = stale_seen
+            live.agent_pid = 12345
+            manager._mappings[peer.peer_id] = SessionMapping(
+                session_id=peer.peer_id,
+                display_name=peer.display_name,
+                circle=peer.circle,
+                backend=peer.backend,
+                path=peer.path,
+            )
+
+        monkeypatch.setattr(
+            "repowire.daemon.peer_registry.has_runtime_evidence",
+            lambda _peer: True,
+        )
+
+        await manager.lazy_repair()
+
+        result = await manager.get_peer(peer.peer_id)
+        assert result is not None
+        assert result.status == PeerStatus.OFFLINE
+        assert manager._mappings[peer.peer_id].display_name == peer.display_name
+        transport.disconnect.assert_not_awaited()
+        ask_tracker.forget_peer.assert_not_awaited()
+        events = manager.get_events()
+        assert len(events) == 1
+        assert events[0]["type"] == "offline_peer_still_has_runtime_evidence"
+        assert events[0]["peer_id"] == peer.peer_id
+        assert events[0]["pane_id"] == "%5"
+        assert events[0]["agent_pid"] == 12345
+        assert events[0]["reason"] == "offline_ttl_with_runtime_evidence"
+
+    async def test_spared_offline_peer_keeps_mapping_and_stashed_ask(
+        self, monkeypatch,
+    ):
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.disconnect = AsyncMock(return_value=True)
+        ask_tracker = AskTracker()
+        manager = _make_manager(
+            transport=transport,
+            ask_tracker=ask_tracker,
+            peer_reap_ttl_seconds=600,
+        )
+        stale_seen = datetime.now(timezone.utc) - timedelta(seconds=601)
+        peer = _make_peer(
+            status=PeerStatus.OFFLINE,
+            pane_id="%5",
+            last_seen=stale_seen,
+        )
+        peer.agent_pid = 12345
+        await manager.register_peer(peer)
+        async with manager._lock:
+            live = manager._peers[peer.peer_id]
+            live.status = PeerStatus.OFFLINE
+            live.last_seen = stale_seen
+            live.agent_pid = 12345
+            manager._mappings[peer.peer_id] = SessionMapping(
+                session_id=peer.peer_id,
+                display_name=peer.display_name,
+                circle=peer.circle,
+                backend=peer.backend,
+                path=peer.path,
+            )
+        cid = await ask_tracker.register(
+            from_peer_id=peer.peer_id,
+            from_peer_name=peer.display_name,
+            to_peer_id="repow-dev-answerer",
+            to_peer_name="answerer",
+            text="question",
+        )
+        assert await ask_tracker.set_pending_reply(cid, "stashed reply")
+
+        monkeypatch.setattr(
+            "repowire.daemon.peer_registry.has_runtime_evidence",
+            lambda _peer: True,
+        )
+
+        await manager.lazy_repair()
+
+        assert await manager.get_peer(peer.peer_id) is not None
+        assert peer.peer_id in manager._mappings
+        ask = await ask_tracker.get(cid)
+        assert ask is not None
+        assert ask.pending_reply == "stashed reply"
+        assert "pending_reply_lost" not in {
+            event["type"] for event in manager.get_events()
+        }
+        transport.disconnect.assert_not_awaited()
+
+    async def test_reaps_offline_peer_after_ttl(self, monkeypatch):
         transport = MagicMock(spec=WebSocketTransport)
         transport.disconnect = AsyncMock(return_value=True)
         ask_tracker = MagicMock()
@@ -501,6 +619,11 @@ class TestLazyRepairReaper:
                 path=peer.path,
             )
 
+        monkeypatch.setattr(
+            "repowire.daemon.peer_registry.has_runtime_evidence",
+            lambda _peer: False,
+        )
+
         await manager.lazy_repair()
 
         assert await manager.get_peer(peer.peer_id) is None
@@ -515,6 +638,56 @@ class TestLazyRepairReaper:
         assert events[0]["backend"] == peer.backend.value
         assert events[0]["pane_id"] == "%5"
         assert events[0]["reason"] == "offline_ttl"
+
+    async def test_stale_evict_spares_offline_peer_with_runtime_evidence(
+        self, monkeypatch,
+    ):
+        ask_tracker = MagicMock()
+        ask_tracker.forget_peer = AsyncMock(return_value=1)
+        ask_tracker.snapshot_pending_replies_for_peer = AsyncMock(return_value=[])
+        ask_tracker.snapshot_expired_pending_replies = AsyncMock(return_value=[])
+        ask_tracker.evict_expired = AsyncMock(return_value=0)
+        manager = _make_manager(
+            ask_tracker=ask_tracker,
+            peer_reap_ttl_seconds=0,
+            prune_max_age_hours=1 / 3600,
+        )
+        stale_seen = datetime.now(timezone.utc) - timedelta(seconds=2)
+        peer = _make_peer(
+            status=PeerStatus.OFFLINE,
+            pane_id="%5",
+            last_seen=stale_seen,
+        )
+        peer.agent_pid = 12345
+        await manager.register_peer(peer)
+        async with manager._lock:
+            live = manager._peers[peer.peer_id]
+            live.status = PeerStatus.OFFLINE
+            live.last_seen = stale_seen
+            live.agent_pid = 12345
+            manager._mappings[peer.peer_id] = SessionMapping(
+                session_id=peer.peer_id,
+                display_name=peer.display_name,
+                circle=peer.circle,
+                backend=peer.backend,
+                path=peer.path,
+            )
+
+        monkeypatch.setattr(
+            "repowire.daemon.peer_registry.has_runtime_evidence",
+            lambda _peer: True,
+        )
+
+        await manager.lazy_repair()
+
+        assert await manager.get_peer(peer.peer_id) is not None
+        assert peer.peer_id in manager._mappings
+        ask_tracker.forget_peer.assert_not_awaited()
+        events = manager.get_events()
+        assert len(events) == 1
+        assert events[0]["type"] == "offline_peer_still_has_runtime_evidence"
+        assert events[0]["peer_id"] == peer.peer_id
+        assert events[0]["reason"] == "stale_evict_with_runtime_evidence"
 
     async def test_does_not_reap_offline_peer_younger_than_ttl(self):
         manager = _make_manager(peer_reap_ttl_seconds=600)
