@@ -655,8 +655,9 @@ async def cancel_work(
         )
         if updated is not None:
             work = updated
-        if _has_release_handle(work):
-            current_attempt = _current_attempt_id(work)
+        current_attempt = _current_attempt_id(work)
+        should_terminal_cancel = current_attempt is not None or _has_release_handle(work)
+        if should_terminal_cancel and _has_release_handle(work):
             released_provenance = work.provenance
             session_control = _session_control()
             if (
@@ -668,6 +669,9 @@ async def cancel_work(
                     terminal_reason="cancel_requested",
                 )
                 released_provenance = _merge_release_result(work, release_result)
+        else:
+            released_provenance = work.provenance
+        if should_terminal_cancel:
             updated = _store().update_state(
                 work.work_id,
                 state="cancelled",

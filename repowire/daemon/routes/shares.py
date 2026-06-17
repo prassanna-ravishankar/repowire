@@ -31,7 +31,7 @@ class ShareRequest(BaseModel):
 def _relay_http_and_key() -> tuple[str, str] | None:
     """Return (relay_http_base, api_key) if relay is configured, else None."""
     state = get_app_state()
-    cfg = state.config  # type: ignore[attr-defined]
+    cfg = state.config
     relay = cfg.relay
     if not relay.enabled or not relay.api_key:
         return None

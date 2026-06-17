@@ -21,6 +21,7 @@ from repowire.agent_backends import (
 from repowire.config.models import AgentType, Config
 from repowire.daemon.ask_tracker import AskTracker
 from repowire.daemon.deps import cleanup_deps, init_deps
+from repowire.daemon.job_completion import JobCompletionService
 from repowire.daemon.job_runner import JobRunner
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
@@ -1305,7 +1306,218 @@ async def test_per_fire_terminal_update_releases_spawned_executor(
 
 
 @pytest.mark.anyio
-async def test_per_fire_cancel_releases_delivered_executor(tmp_path, monkeypatch):
+async def test_per_fire_completion_releases_spawned_executor(tmp_path, monkeypatch):
+    _cfg, registry, db, store, _calendar, _session_bindings, delivery, spawn, runner = _env(
+        tmp_path
+    )
+    worker_path = str(tmp_path / "moltbook-driver")
+    work = store.create(
+        title="moltbook sync",
+        circle="default",
+        request={
+            "execution": {
+                "process_scope": "per_fire",
+                "continuity": "fresh",
+                "target": {"path": worker_path, "backend": "codex"},
+                "delivery": {"kind": "ask"},
+            }
+        },
+    )
+    killed: list[str] = []
+    monkeypatch.setattr(
+        "repowire.daemon.session_control.kill_pane",
+        lambda pane_id: killed.append(pane_id) or True,
+    )
+    monkeypatch.setattr("repowire.daemon.session_control.forget_spawn_ownership", Mock())
+    registered: dict[str, str] = {}
+
+    async def register_after_spawn() -> None:
+        while not spawn.calls:
+            await asyncio.sleep(0.01)
+        peer_id, _name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CODEX,
+            path=worker_path,
+            peer_id="repow-default-moltbook-fire",
+            pane_id=spawn.pane_id,
+            tmux_session="default:moltbook-driver",
+            metadata={"hook_session_id": "codex-session-moltbook"},
+            initial_status=PeerStatus.ONLINE,
+            role=PeerRole.AGENT,
+        )
+        registered["peer_id"] = peer_id
+
+    task = asyncio.create_task(register_after_spawn())
+    try:
+        delivered = await runner.run_job(work.work_id)
+    finally:
+        await task
+
+    attempt = delivered.provenance["runner"]["attempts"][0]
+    assert attempt["acquisition"]["strategy"] == "spawned_peer"
+    assert attempt["acquisition"]["release_handle"]["pane_id"] == spawn.pane_id
+
+    completion = JobCompletionService(
+        work_store=store,
+        session_control=runner._session_control,  # noqa: SLF001
+    )
+    await completion.on_chat_turn(
+        peer_id=registered["peer_id"],
+        role="user",
+        text=delivery.calls[0]["text"],
+    )
+    await completion.on_chat_turn(
+        peer_id=registered["peer_id"],
+        role="assistant",
+        text="Moltbook sync posted.",
+    )
+
+    completed = store.get(work.work_id)
+    assert completed.state == "completed"
+    assert killed == [spawn.pane_id]
+    release = completed.provenance["runner"]["release_result"]
+    assert release["status"] == "released"
+    assert release["peer_id"] == registered["peer_id"]
+    assert await registry.get_peer(registered["peer_id"]) is None
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_per_fire_cancel_releases_spawned_executor(tmp_path, monkeypatch):
+    _cfg, registry, db, store, _calendar, _session_bindings, _delivery, spawn, runner = _env(
+        tmp_path
+    )
+    worker_path = str(tmp_path / "moltbook-driver")
+    work = store.create(
+        title="moltbook sync",
+        circle="default",
+        request={
+            "execution": {
+                "process_scope": "per_fire",
+                "continuity": "fresh",
+                "target": {"path": worker_path, "backend": "codex"},
+                "delivery": {"kind": "ask"},
+            }
+        },
+    )
+    killed: list[str] = []
+    monkeypatch.setattr(
+        "repowire.daemon.session_control.probe_tmux_pane",
+        lambda pane_id: object() if pane_id == spawn.pane_id else None,
+    )
+    monkeypatch.setattr(
+        "repowire.daemon.session_control.kill_pane",
+        lambda pane_id: killed.append(pane_id) or True,
+    )
+    monkeypatch.setattr("repowire.daemon.session_control.forget_spawn_ownership", Mock())
+    registered: dict[str, str] = {}
+
+    async def register_after_spawn() -> None:
+        while not spawn.calls:
+            await asyncio.sleep(0.01)
+        peer_id, _name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CODEX,
+            path=worker_path,
+            peer_id="repow-default-moltbook-cancel",
+            pane_id=spawn.pane_id,
+            tmux_session="default:moltbook-driver",
+            metadata={"hook_session_id": "codex-session-moltbook"},
+            initial_status=PeerStatus.ONLINE,
+            role=PeerRole.AGENT,
+        )
+        registered["peer_id"] = peer_id
+
+    task = asyncio.create_task(register_after_spawn())
+    try:
+        delivered = await runner.run_job(work.work_id)
+    finally:
+        await task
+
+    attempt = delivered.provenance["runner"]["attempts"][0]
+    assert attempt["acquisition"]["strategy"] == "spawned_peer"
+    assert attempt["acquisition"]["release_handle"]["pane_id"] == spawn.pane_id
+
+    app = FastAPI()
+    app.include_router(work_routes.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            f"/jobs/{work.work_id}/cancel",
+            json={"reason": "not_needed"},
+        )
+
+    assert response.status_code == 200, response.text
+    status = response.json()["status"]
+    assert status["state"] == "cancelled"
+    assert killed == [spawn.pane_id]
+    release = status["provenance"]["runner"]["release_result"]
+    assert release["status"] == "released"
+    assert release["pane_id"] == spawn.pane_id
+    assert await registry.get_peer(registered["peer_id"]) is None
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_persistent_completion_keeps_reused_executor_alive(tmp_path, monkeypatch):
+    _cfg, registry, db, store, _calendar, _session_bindings, delivery, spawn, runner = _env(
+        tmp_path
+    )
+    worker_path = str(tmp_path / "moltbook-driver")
+    peer_id = await _register_peer(
+        registry,
+        peer_id="repow-default-moltbook-persistent",
+        backend=AgentType.CODEX,
+        path=worker_path,
+        pane_id="%42",
+        tmux_session="default:moltbook-driver",
+        metadata={"hook_session_id": "codex-session-persistent"},
+        status=PeerStatus.ONLINE,
+    )
+    work = store.create(
+        title="moltbook sync",
+        circle="default",
+        request={
+            "execution": {
+                "process_scope": "persistent",
+                "target": {"path": worker_path, "backend": "codex"},
+                "delivery": {"kind": "ask"},
+            }
+        },
+    )
+    killed: list[str] = []
+    monkeypatch.setattr(
+        "repowire.daemon.session_control.kill_pane",
+        lambda pane_id: killed.append(pane_id) or True,
+    )
+
+    delivered = await runner.run_job(work.work_id)
+
+    assert delivered.state == "delivered"
+    assert spawn.calls == []
+    attempt = delivered.provenance["runner"]["attempts"][0]
+    assert attempt["acquisition"]["strategy"] == "reused_peer"
+    assert attempt["acquisition"]["release_handle"] is None
+
+    completion = JobCompletionService(
+        work_store=store,
+        session_control=runner._session_control,  # noqa: SLF001
+    )
+    await completion.on_chat_turn(peer_id=peer_id, role="user", text=delivery.calls[0]["text"])
+    await completion.on_chat_turn(peer_id=peer_id, role="assistant", text="Still resident.")
+
+    completed = store.get(work.work_id)
+    assert completed.state == "completed"
+    assert killed == []
+    assert "release_result" not in completed.provenance["runner"]
+    assert await registry.get_peer(peer_id) is not None
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_per_fire_cancel_leaves_assigned_executor_alive(tmp_path, monkeypatch):
     _cfg, registry, db, store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
         tmp_path
     )
@@ -1339,6 +1551,7 @@ async def test_per_fire_cancel_releases_delivered_executor(tmp_path, monkeypatch
 
     delivered = await runner.run_job(work.work_id)
     assert delivered.state == "delivered"
+    assert delivered.provenance["runner"]["attempts"][0]["acquisition"]["release_handle"] is None
 
     app = FastAPI()
     app.include_router(work_routes.router)
@@ -1351,8 +1564,9 @@ async def test_per_fire_cancel_releases_delivered_executor(tmp_path, monkeypatch
     assert response.status_code == 200, response.text
     status = response.json()["status"]
     assert status["state"] == "cancelled"
-    assert killed == ["%42"]
-    assert status["provenance"]["runner"]["release_result"]["status"] == "released"
+    assert killed == []
+    assert "release_result" not in status["provenance"]["runner"]
+    assert await registry.get_peer(peer_id) is not None
     db.close()
     cleanup_deps()
 

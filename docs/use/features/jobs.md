@@ -57,7 +57,7 @@ Cancel work that should not continue:
 repowire jobs cancel job-...
 ```
 
-Unassigned path/backend jobs run with per-fire executors by default: Repowire spawns or backend-resumes an executor for the run, delivers the job ask, and releases the executor when the fire completes. Recurring jobs can use `continuity=resume` to keep the backend-native runtime session id as the continuity handle for the next fire. Use `--continuity fresh` when a run should start without prior runtime context.
+Unassigned path/backend jobs run with per-fire executors by default: Repowire spawns or backend-resumes an executor for the run, delivers the job ask, and releases that executor when the fire completes. Reused persistent executors and explicitly assigned peers stay live. Recurring jobs can use `continuity=resume` to keep the backend-native runtime session id as the continuity handle for the next fire. Use `--continuity fresh` when a run should start without prior runtime context.
 
 Fire completion is automatic: the executor's turn ending ends the run, and its final message is recorded as the result. `jobs update` is optional progress/result enrichment, not a reporting requirement. Terminal results emit a `job_state_changed` event and best-effort notify the job's owner (falling back to the creator, then the circle's orchestrator).
 
@@ -72,7 +72,7 @@ Fire completion is automatic: the executor's turn ending ends the run, and its f
 ## Limits
 
 - Jobs complement asks and schedules; they do not replace the ask/ack lifecycle for conversations.
-- Per-fire executor cleanup is tied to terminal job lifecycle state, not ack lifecycle.
+- Per-fire executor cleanup is tied to terminal job lifecycle state, not ack lifecycle, and only applies to the executor the daemon spawned or backend-resumed for that fire.
 - A fire is one executor turn. Executors that must wait on a peer mid-job use `wait_on_ack` inside the turn; a fire blocked on something outside the mesh holds itself open with `jobs update --state running` plus an explicit phase, and must then report its own terminal state.
 - Resume continuity depends on a backend that supports local resume and a captured runtime session id.
 

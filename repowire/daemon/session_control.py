@@ -105,7 +105,6 @@ class SessionControlService:
                 work,
                 operation.operation_id,
                 str(assigned),
-                process_scope=execution_policy["process_scope"],
             )
 
         path = target.get("path")
@@ -297,8 +296,6 @@ class SessionControlService:
         work: TrackedWork,
         operation_id: str,
         assigned: str,
-        *,
-        process_scope: str,
     ) -> ExecutorAcquisition:
         resolved = await self._registry.resolve_peer_strict(assigned, circle=work.circle)
         if isinstance(resolved, list):
@@ -317,21 +314,7 @@ class SessionControlService:
                 assigned_peer_id=resolved.peer_id,
             )
         runtime_binding = self._record_runtime_binding(work, resolved, source="assigned_peer")
-        release_handle = self._release_handle_for_peer(
-            resolved,
-            process_scope=process_scope,
-            operation_id=operation_id,
-            strategy="assigned_peer",
-        )
-        if process_scope == "per_fire" and release_handle is None:
-            error = {"reason": "release_handle_unavailable", "peer_id": resolved.peer_id}
-            self._operations.fail(operation_id, state="unavailable", error=error)
-            raise ExecutorAcquisitionUnavailableError(
-                "release_handle_unavailable",
-                operation_id=operation_id,
-                assigned_peer_id=resolved.peer_id,
-                error=error,
-            )
+        release_handle = None
         self._operations.start_attempt(
             operation_id,
             strategy="assigned_peer",
@@ -748,6 +731,8 @@ class SessionControlService:
         strategy: str,
     ) -> dict[str, Any] | None:
         if process_scope != "per_fire":
+            return None
+        if strategy not in {"spawned_peer", "backend_resume"}:
             return None
         if not peer.pane_id:
             return None

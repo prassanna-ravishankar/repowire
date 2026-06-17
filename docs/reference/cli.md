@@ -229,7 +229,9 @@ jobs preserve the latest observed runtime binding for the same calendar/path
 and can launch `codex resume <runtime-session-id>` when compatible resume
 metadata exists; otherwise the runner falls back to normal spawn behavior.
 Unassigned path/backend jobs default to `process_scope=per_fire`: each run uses
-a short-lived executor process and terminal completion releases that process.
+a daemon-spawned or backend-resumed executor process, and terminal completion
+releases that process. Reused persistent executors and explicitly assigned peers
+are left alive.
 One-shot jobs default to `continuity=fresh`; recurring jobs default to
 `continuity=resume` so the next fire uses the backend-native runtime session id
 when available. Pass `--continuity fresh` on recurring jobs to start each fire
