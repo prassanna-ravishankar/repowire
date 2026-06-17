@@ -12,6 +12,14 @@ Remaining ghosts are evicted by **lazy repair**: the next MCP tool call from any
 
 Orphaned ws-hook *processes* (a hook outliving its agent, e.g. one installed before the agent-pid watcher existed) are swept once at daemon startup: the sweep kills hooks whose pane is gone, whose recorded agent pid is dead, or whose pane subtree contains only shells — and only on conclusive evidence. `repowire doctor` reports the current orphan count read-only; `repowire service restart` runs the sweep.
 
+Startup also rehydrates live pane-backed peers whose daemon registry was lost
+during the restart, but only when persisted peer identity and live pane metadata
+prove the same `peer_id` or a valid daemon-minted birth certificate. Rehydrated
+peers stay `offline` until their WebSocket hook reconnects; if no hook connects,
+the daemon emits `startup_hydration_no_transport` instead of advertising the
+peer as deliverable. Panes without that proof remain visible through
+`/panes/orphans` and require explicit `repowire link`.
+
 If you need an immediate eviction:
 
 ```bash

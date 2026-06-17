@@ -88,6 +88,32 @@ mapping-only holders, but they cannot demote a fresh online/busy orchestrator
 holder. To intentionally replace a live orchestrator, stop that holder first so
 the daemon no longer treats it as fresh.
 
+## Startup hydration
+
+On daemon startup, Repowire runs a one-shot hydration pass for pane-backed peers
+that were alive while the daemon was down. This is not a poller: it runs during
+startup only, then steady-state repair stays lazy.
+
+Hydration is anchored on persisted `peer_id` mappings and live tmux evidence.
+A pane is eligible only when daemon-written pane metadata names the same
+`peer_id`, or its embedded daemon-minted birth certificate validates through
+SQLite state. The backend, normalized project path, live pane cwd, and live
+`agent_pid` must all agree. Display name, cwd, command name, pane existence, and
+path/backend tuples are not identity proof; if any required proof is missing,
+ambiguous, stale, or contradictory, the daemon skips hydration and emits a
+`startup_hydration_skipped` event.
+
+Successful hydration recreates the peer with `status=offline`,
+`pane_id`, `agent_pid`, and `metadata.hydration_source=startup_hydration`.
+Offline is intentional: runtime evidence proves the session exists, but inbound
+delivery is not available until a WebSocket hook connects. Startup may respawn a
+ws-hook only for candidates that passed the full strict proof, and if no
+WebSocket connects within the bounded wait the peer remains offline and the
+daemon emits `startup_hydration_no_transport`.
+
+Unproven panes are left unadopted and continue to surface through
+`/panes/orphans` for explicit `repowire link`.
+
 MCP lazy registration treats tmux pane lookup as a locator, not as identity proof. A by-pane daemon result is accepted only when local pane runtime metadata proves the same daemon peer id, backend, and owning agent process. If that proof is missing or belongs to another process, MCP registers or resolves its own peer instead of adopting the incumbent. This keeps path and display name as useful context while avoiding path-based identity takeover.
 
 MCP lazy registration checks a daemon-minted birth certificate before the

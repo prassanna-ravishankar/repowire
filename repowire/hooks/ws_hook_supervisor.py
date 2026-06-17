@@ -278,6 +278,78 @@ def maybe_respawn(
         return False
 
 
+def startup_respawn_ws_hook(
+    pane_id: str,
+    *,
+    peer_id: str,
+    display_name: str,
+    backend: str,
+    cwd: str,
+    agent_pid: int,
+) -> bool:
+    """Start a ws-hook at daemon boot for a strictly proven peer.
+
+    This helper is intentionally narrower than ``link_spawn_ws_hook`` (manual
+    adoption) and ``maybe_respawn`` (Stop-hook lazy repair). The caller must
+    already have joined durable peer identity to live pane/runtime evidence.
+    """
+    lock_path = ws_hook_lock_path(pane_id)
+    try:
+        lock_fd = open(lock_path, "w")  # noqa: SIM115
+    except OSError as e:
+        logger.warning("startup_respawn_ws_hook: pane %s lock open failed: %s", pane_id, e)
+        return False
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return False
+
+        metadata = read_pane_runtime_metadata(pane_id)
+        metadata_peer_id = metadata.get("peer_id")
+        cert = metadata.get("birth_certificate")
+        cert_peer_id = cert.get("peer_id") if isinstance(cert, dict) else None
+        metadata_backend = metadata.get("backend")
+        metadata_cwd = metadata.get("cwd")
+        normalized_metadata_cwd = (
+            os.path.normpath(os.path.abspath(metadata_cwd))
+            if isinstance(metadata_cwd, str)
+            else None
+        )
+        normalized_cwd = os.path.normpath(os.path.abspath(cwd))
+        peer_matches = metadata_peer_id == peer_id or cert_peer_id == peer_id
+        if (
+            not peer_matches
+            or metadata_backend != backend
+            or normalized_metadata_cwd != normalized_cwd
+        ):
+            logger.warning(
+                "startup_respawn_ws_hook rejected: metadata peer/backend/cwd "
+                "mismatch for pane %s (peer=%s backend=%s cwd=%s)",
+                pane_id,
+                peer_id,
+                backend,
+                cwd,
+            )
+            return False
+
+        new_pid = spawn_ws_hook(
+            pane_id=pane_id,
+            peer_id=peer_id,
+            display_name=display_name,
+            backend=backend,
+            cwd=cwd,
+            lock_fd=lock_fd,
+            agent_pid=agent_pid,
+        )
+        return new_pid is not None
+    except Exception as e:
+        logger.warning("startup_respawn_ws_hook failed for pane %s: %s", pane_id, e)
+        return False
+    finally:
+        lock_fd.close()
+
+
 # ---------------------------------------------------------------------------
 # Orphan sweep
 # ---------------------------------------------------------------------------

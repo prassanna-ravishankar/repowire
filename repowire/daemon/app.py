@@ -458,6 +458,27 @@ def create_app(
             except Exception:
                 logger.warning("Orphan ws-hook sweep failed", exc_info=True)
 
+            try:
+                from repowire.daemon.startup_hydration import hydrate_startup_peers
+
+                result = await hydrate_startup_peers(
+                    registry=peer_registry,
+                    transport=transport,
+                    binding_store=session_binding_store,
+                )
+                if result.hydrated or result.skipped:
+                    logger.info(
+                        "Startup hydration complete: hydrated=%d respawned=%d "
+                        "connected=%d no_transport=%d skipped=%d",
+                        result.hydrated,
+                        result.respawned,
+                        result.connected,
+                        result.no_transport,
+                        result.skipped,
+                    )
+            except Exception:
+                logger.warning("Startup peer hydration failed", exc_info=True)
+
         # Start relay client if enabled
         relay_client: RelayClient | None = None
         if cfg.relay.enabled and cfg.relay.api_key:
