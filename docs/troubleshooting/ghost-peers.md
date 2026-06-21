@@ -12,6 +12,8 @@ Remaining ghosts are evicted by **lazy repair**: the next MCP tool call from any
 
 Orphaned ws-hook *processes* (a hook outliving its agent, e.g. one installed before the agent-pid watcher existed) are swept once at daemon startup: the sweep kills hooks whose pane is gone, whose recorded agent pid is dead, or whose pane subtree contains only shells — and only on conclusive evidence. `repowire doctor` reports the current orphan count read-only; `repowire service restart` runs the sweep.
 
+The `session-closed` tmux signal is **evidence-gated**: it offlines peers only after confirming the named session is genuinely gone from `tmux list-panes`, and even then spares any peer whose own pane is still live. A spurious `session-closed` (tmux resolves `#{session_name}` to the surviving session when a transient session exits) is ignored, so a short-lived spawned job finishing cannot mass-offline a populated circle.
+
 If `repowire peer doctor <peer>` reports `HOOK_PEERID_MISMATCH`, the pane's
 persisted ws-hook metadata still names an old peer identity. Run
 `repowire peer rehook <peer> --apply`: for a verified local pane, rehook rewrites

@@ -189,26 +189,139 @@ class TestPaneDied:
 # -- session-closed --
 
 
+def _pane(pane_id: str, session: str) -> dict:
+    return {
+        "pane_id": pane_id,
+        "pid": 123,
+        "command": "claude",
+        "cwd": "/tmp/test",
+        "session": session,
+        "window": "0",
+    }
+
+
 class TestSessionClosed:
     async def test_batch_offline(self, client_and_registry):
         client, registry = client_and_registry
-        p1 = _make_peer(peer_id="repow-dev-aaa11111", display_name="proj-a", circle="alpha")
-        p2 = _make_peer(peer_id="repow-dev-bbb22222", display_name="proj-b", circle="alpha")
-        p3 = _make_peer(peer_id="repow-dev-ccc33333", display_name="proj-c", circle="beta")
+        p1 = _make_peer(
+            peer_id="repow-dev-aaa11111", display_name="proj-a", circle="alpha",
+            pane_id="%5",
+        )
+        p2 = _make_peer(
+            peer_id="repow-dev-bbb22222", display_name="proj-b", circle="alpha",
+            pane_id="%6",
+        )
+        p3 = _make_peer(
+            peer_id="repow-dev-ccc33333", display_name="proj-c", circle="beta",
+            pane_id="%7",
+        )
         await registry.register_peer(p1)
         await registry.register_peer(p2)
         await registry.register_peer(p3)
 
-        r = await client.post(
-            "/hooks/lifecycle/session-closed",
-            json={"session_name": "alpha"},
-        )
+        # tmux confirms the 'alpha' session is gone (its panes %5/%6 absent);
+        # only the surviving 'beta' pane remains.
+        with patch(
+            "repowire.daemon.lifecycle_handler.list_all_panes",
+            return_value=[_pane("%7", "beta")],
+        ):
+            r = await client.post(
+                "/hooks/lifecycle/session-closed",
+                json={"session_name": "alpha"},
+            )
         assert r.status_code == 200
 
         assert (await registry.get_peer(p1.peer_id)).status == PeerStatus.OFFLINE
         assert (await registry.get_peer(p2.peer_id)).status == PeerStatus.OFFLINE
         # beta peer unaffected
         assert (await registry.get_peer(p3.peer_id)).status == PeerStatus.ONLINE
+
+    async def test_spurious_close_ignored_when_session_still_live(
+        self, client_and_registry
+    ):
+        """The repowire-egt-followup bug: a transient session exit fires
+        session-closed with #{session_name} resolved to the SURVIVING session.
+        If that session still has live panes, the close is spurious and must
+        NOT offline its (alive) peers."""
+        client, registry = client_and_registry
+        p1 = _make_peer(
+            peer_id="repow-dev-aaa11111", display_name="proj-a", circle="default",
+            pane_id="%50",
+        )
+        p2 = _make_peer(
+            peer_id="repow-dev-bbb22222", display_name="proj-b", circle="default",
+            pane_id="%228",
+        )
+        await registry.register_peer(p1)
+        await registry.register_peer(p2)
+
+        # tmux still reports live panes for 'default' -> spurious close.
+        with patch(
+            "repowire.daemon.lifecycle_handler.list_all_panes",
+            return_value=[_pane("%50", "default"), _pane("%228", "default")],
+        ):
+            r = await client.post(
+                "/hooks/lifecycle/session-closed",
+                json={"session_name": "default"},
+            )
+        assert r.status_code == 200
+
+        # Both stay ONLINE — no false offline, no pane-state wipe.
+        assert (await registry.get_peer(p1.peer_id)).status == PeerStatus.ONLINE
+        assert (await registry.get_peer(p2.peer_id)).status == PeerStatus.ONLINE
+
+    async def test_inconclusive_probe_does_not_mass_offline(
+        self, client_and_registry
+    ):
+        """tmux unreachable / empty listing is 'can't tell', not 'all dead'.
+        Refuse to offline on no evidence."""
+        client, registry = client_and_registry
+        p1 = _make_peer(
+            peer_id="repow-dev-aaa11111", display_name="proj-a", circle="default",
+            pane_id="%50",
+        )
+        await registry.register_peer(p1)
+
+        with patch(
+            "repowire.daemon.lifecycle_handler.list_all_panes",
+            return_value=[],
+        ):
+            r = await client.post(
+                "/hooks/lifecycle/session-closed",
+                json={"session_name": "default"},
+            )
+        assert r.status_code == 200
+        assert (await registry.get_peer(p1.peer_id)).status == PeerStatus.ONLINE
+
+    async def test_session_gone_spares_peer_with_live_pane(
+        self, client_and_registry
+    ):
+        """Even when the session is genuinely gone, a peer whose own pane is
+        still live is spared (pane death has its own signal)."""
+        client, registry = client_and_registry
+        dead = _make_peer(
+            peer_id="repow-dev-aaa11111", display_name="proj-a", circle="alpha",
+            pane_id="%5",
+        )
+        alive = _make_peer(
+            peer_id="repow-dev-bbb22222", display_name="proj-b", circle="alpha",
+            pane_id="%6",
+        )
+        await registry.register_peer(dead)
+        await registry.register_peer(alive)
+
+        # 'alpha' session not in the listing, but %6 survived (moved/reused).
+        with patch(
+            "repowire.daemon.lifecycle_handler.list_all_panes",
+            return_value=[_pane("%6", "other")],
+        ):
+            r = await client.post(
+                "/hooks/lifecycle/session-closed",
+                json={"session_name": "alpha"},
+            )
+        assert r.status_code == 200
+        assert (await registry.get_peer(dead.peer_id)).status == PeerStatus.OFFLINE
+        assert (await registry.get_peer(alive.peer_id)).status == PeerStatus.ONLINE
 
     async def test_unknown_session_is_ok(self, client_and_registry):
         client, _ = client_and_registry

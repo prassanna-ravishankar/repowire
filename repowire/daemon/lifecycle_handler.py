@@ -10,6 +10,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from repowire.hooks._tmux import list_all_panes
 from repowire.hooks.utils import clear_pane_runtime_state
 
 if TYPE_CHECKING:
@@ -66,13 +67,64 @@ class LifecycleHandler:
         return cancelled
 
     async def handle_session_closed(self, session_name: str) -> int:
-        """Batch-offline all peers in the given circle (session).
+        """Offline peers whose pane is genuinely gone after a session close.
 
-        Returns total cancelled queries.
+        Evidence-gated, not event-trusting. tmux's global ``session-closed``
+        hook fires with ``#{session_name}`` resolved against the *surviving*
+        attached session, not the one that closed — so when a transient session
+        (e.g. a short-lived spawned job) exits, this can arrive naming a circle
+        whose agents are all still alive. Blindly offlining + clearing pane
+        state on that signal nukes a live circle (and wipes hook metadata,
+        breaking inbound reconnect).
+
+        So: probe live tmux panes once. If the named session still has any live
+        pane, the event is spurious — do nothing. Otherwise offline only the
+        peers whose own pane is no longer present; a peer whose pane is still
+        live is kept (pane death has its own ``pane-died`` signal). A tmux probe
+        that returns nothing is inconclusive, not "everything died", so we
+        refuse to mass-offline on it.
         """
         peers = await self._registry.get_peers_by_circle(session_name)
         if not peers:
             logger.debug("session_closed: no peers in circle %s", session_name)
+            return 0
+
+        live_panes = await asyncio.to_thread(list_all_panes)
+        if not live_panes:
+            # Inconclusive (tmux unreachable / empty listing). Refuse to treat
+            # "no evidence" as "all gone" — that's how a probe blip would wipe
+            # a live circle. pane-died / lazy repair will catch real deaths.
+            logger.warning(
+                "session_closed: tmux pane probe returned nothing for %s; "
+                "skipping mass-offline (no runtime evidence of closure)",
+                session_name,
+            )
+            return 0
+
+        live_pane_ids = {p["pane_id"] for p in live_panes}
+        session_still_live = any(p["session"] == session_name for p in live_panes)
+        if session_still_live:
+            logger.info(
+                "session_closed ignored: session %s still has live panes "
+                "(spurious close — likely a transient session exit resolving "
+                "#{session_name} to the surviving session)",
+                session_name,
+            )
+            return 0
+
+        # Session is genuinely gone from tmux. Offline only peers whose pane is
+        # actually absent; spare any whose pane is somehow still live.
+        doomed = [
+            p for p in peers if not p.pane_id or p.pane_id not in live_pane_ids
+        ]
+        spared = len(peers) - len(doomed)
+        if not doomed:
+            logger.info(
+                "session_closed: session %s gone but all %d peers still hold "
+                "live panes; nothing offlined",
+                session_name,
+                len(peers),
+            )
             return 0
 
         async def _offline(peer_id: str) -> int:
@@ -81,7 +133,7 @@ class LifecycleHandler:
                 peer_id,
                 reason="session_closed",
                 source="tmux_lifecycle",
-                detail="tmux reported that the session closed.",
+                detail="tmux session closed and the peer's pane is gone.",
                 context={"tmux_session": session_name},
             )
             await self._transport.disconnect(peer_id)
@@ -90,14 +142,16 @@ class LifecycleHandler:
             return cancelled
 
         results = await asyncio.gather(
-            *(_offline(p.peer_id) for p in peers),
+            *(_offline(p.peer_id) for p in doomed),
         )
 
         total = sum(results)
         logger.info(
-            "session_closed: marked %d peers offline in circle %s",
-            len(peers),
+            "session_closed: marked %d peers offline in circle %s (%d spared "
+            "with live panes)",
+            len(doomed),
             session_name,
+            spared,
         )
         return total
 
