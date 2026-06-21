@@ -1111,7 +1111,7 @@ async def rehook_peer(
             peer_id=peer.peer_id,
             display_name=peer.display_name,
             backend=peer.backend.value,
-            cwd=peer.path or "",
+            cwd=peer.path or None,
         )
         return RehookPeerResponse(
             acted=True,

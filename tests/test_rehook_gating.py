@@ -247,3 +247,33 @@ class TestRehookGating:
         assert meta["parent_pid"] == 333
         assert meta["hook_session_id"] == "hook-session-1"
         assert "birth_certificate" not in meta
+
+    async def test_apply_reconciles_pathless_peer_with_cwd_none(self, env, tmp_path):
+        pane_id = "%203"
+        name = await _register(env.client, path=str(tmp_path), pane_id=pane_id)
+        peer = await env.registry.get_peer(name)
+        assert peer is not None
+        peer.path = ""
+        spawn_routes._SPAWNED_PANE_IDS.add(pane_id)
+        write_pane_runtime_metadata(
+            pane_id,
+            {
+                "backend": "claude-code",
+                "cwd": "/old/path",
+                "display_name": "old-name",
+                "peer_id": "repow-default-old",
+            },
+        )
+
+        with patch.object(env.transport, "is_connected", return_value=False), \
+            patch.object(ws_hook_supervisor, "spawn_ws_hook", return_value=4321) as mock_spawn:
+            r = await env.client.post(f"/peers/{name}/rehook", json={"apply": True})
+
+        assert r.status_code == 200, r.text
+        assert r.json()["reason"] == "reconciled_hook_metadata"
+        kwargs = mock_spawn.call_args.kwargs
+        assert kwargs["cwd"] is None
+        meta = read_pane_runtime_metadata(pane_id)
+        assert meta["peer_id"] == peer.peer_id
+        assert meta["display_name"] == peer.display_name
+        assert meta["cwd"] == "/old/path"

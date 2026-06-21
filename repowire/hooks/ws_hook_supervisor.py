@@ -106,7 +106,7 @@ def reconcile_spawn_ws_hook(
     peer_id: str,
     display_name: str,
     backend: str,
-    cwd: str,
+    cwd: str | None,
 ) -> bool:
     """Rewrite stale pane metadata and start a ws-hook for the registry owner.
 
@@ -135,11 +135,12 @@ def reconcile_spawn_ws_hook(
             corrected.update(
                 {
                     "backend": backend,
-                    "cwd": cwd,
                     "display_name": display_name,
                     "peer_id": peer_id,
                 }
             )
+            if cwd:
+                corrected["cwd"] = cwd
             write_pane_runtime_metadata(pane_id, corrected)
             metadata_agent_pid = corrected.get("agent_pid")
             if isinstance(metadata_agent_pid, int):
@@ -171,7 +172,7 @@ def spawn_ws_hook(
     peer_id: str | None,
     display_name: str,
     backend: str,
-    cwd: str,
+    cwd: str | None,
     lock_fd,
     agent_pid: int | None = None,
 ) -> int | None:
