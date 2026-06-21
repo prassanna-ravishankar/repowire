@@ -40,6 +40,80 @@ class TestHealth:
         assert "acp_broker" in body
         assert body["acp_broker"]["status"] == "inactive"
 
+    async def test_health_relay_disabled_when_no_client(self, client):
+        # No relay client on app.state and relay_mode false => disabled.
+        r = await client.get("/health")
+        body = r.json()
+        assert body["relay"]["status"] == "disabled"
+        assert body["relay"]["connected"] is False
+
+    async def test_health_relay_down_when_enabled_but_client_dead(self):
+        # The bug this guards: relay enabled but the client is not connected.
+        # Old /health reported relay_mode:true and hid it; now relay.status=down.
+        class DeadRelay:
+            def __init__(self):
+                self.ensured = False
+
+            async def ensure_running(self):
+                self.ensured = True
+                return False
+
+            def status(self):
+                return {
+                    "connected": False,
+                    "running": False,
+                    "url": "wss://relay.example",
+                    "last_connected_at": "2026-06-20T17:44:44+00:00",
+                    "last_error": "ConnectionClosedError: no close frame",
+                    "last_error_at": "2026-06-20T17:44:40+00:00",
+                }
+
+        dead = DeadRelay()
+        app = FastAPI()
+        app.state.config = Config()
+        app.state.relay_mode = True
+        app.state.relay_client = dead
+        app.include_router(health.router)
+
+        t = ASGITransport(app=app)
+        async with AsyncClient(transport=t, base_url="http://test") as c:
+            r = await c.get("/health")
+        body = r.json()
+        assert body["relay_mode"] is True  # config flag still true...
+        assert body["relay"]["status"] == "down"  # ...but truth is exposed
+        assert body["relay"]["enabled"] is True
+        assert body["relay"]["connected"] is False
+        assert body["relay"]["last_error"].startswith("ConnectionClosedError")
+        assert dead.ensured is True  # lazy self-heal was attempted
+
+    async def test_health_relay_connected(self):
+        class LiveRelay:
+            async def ensure_running(self):
+                return False
+
+            def status(self):
+                return {
+                    "connected": True,
+                    "running": True,
+                    "url": "wss://relay.example",
+                    "last_connected_at": "2026-06-21T03:00:00+00:00",
+                    "last_error": None,
+                    "last_error_at": None,
+                }
+
+        app = FastAPI()
+        app.state.config = Config()
+        app.state.relay_mode = True
+        app.state.relay_client = LiveRelay()
+        app.include_router(health.router)
+
+        t = ASGITransport(app=app)
+        async with AsyncClient(transport=t, base_url="http://test") as c:
+            r = await c.get("/health")
+        body = r.json()
+        assert body["relay"]["status"] == "connected"
+        assert body["relay"]["connected"] is True
+
     async def test_health_reports_acp_broker_snapshot(self, monkeypatch):
         monkeypatch.setattr("repowire.daemon.routes.health.shutil.which", lambda _tool: None)
         monkeypatch.setattr(

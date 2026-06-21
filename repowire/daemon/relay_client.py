@@ -11,6 +11,7 @@ import base64
 import json
 import logging
 import socket
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -23,6 +24,15 @@ logger = logging.getLogger(__name__)
 
 _MAX_BACKOFF = 30.0
 _INITIAL_BACKOFF = 1.0
+
+# Application-level keepalive. The relay (or an intermediary proxy) silently
+# drops idle connections; without an explicit ping the daemon can sit in
+# ``async for raw in ws`` on a half-open socket that never yields. websockets
+# raises ConnectionClosed from the keepalive task when a pong is missed, which
+# breaks the listen loop and triggers a reconnect. Tuned tighter than the
+# library defaults so a dead connection is caught within ~30s, not minutes.
+_PING_INTERVAL = 20.0
+_PING_TIMEOUT = 20.0
 
 
 class RelayClient:
@@ -41,21 +51,69 @@ class RelayClient:
         self._task: asyncio.Task[None] | None = None
         self._http: httpx.AsyncClient | None = None
         self._stopping = False
+        # Liveness telemetry surfaced via /health so a dead relay client is
+        # visible instead of masked behind the static relay-enabled config flag.
+        self._last_connected_at: datetime | None = None
+        self._last_error: str | None = None
+        self._last_error_at: datetime | None = None
 
     @property
     def connected(self) -> bool:
         """Whether currently connected to relay."""
         return self._ws is not None and self._ws.close_code is None
 
+    def status(self) -> dict[str, Any]:
+        """Live connection telemetry for health reporting (not the config flag)."""
+        task = self._task
+        return {
+            "connected": self.connected,
+            "running": task is not None and not task.done(),
+            "url": self._config.url,
+            "daemon_id": self._daemon_id,
+            "last_connected_at": (
+                self._last_connected_at.isoformat()
+                if self._last_connected_at
+                else None
+            ),
+            "last_error": self._last_error,
+            "last_error_at": (
+                self._last_error_at.isoformat() if self._last_error_at else None
+            ),
+        }
+
     async def start(self) -> None:
-        """Start the relay client as a background task."""
+        """Start the relay client as a background task.
+
+        Idempotent: if a prior loop task is still alive this is a no-op, so it
+        doubles as a lazy self-heal — a caller that observes a dead task (via
+        :meth:`ensure_running`) can restart without spawning duplicates.
+        """
         if not self._config.enabled or not self._config.api_key:
             logger.info("Relay disabled or no API key — skipping relay client")
             return
+        if self._task is not None and not self._task.done():
+            return
         self._stopping = False
-        self._http = httpx.AsyncClient()
+        if self._http is None:
+            self._http = httpx.AsyncClient()
         self._task = asyncio.create_task(self._run_loop())
         logger.info("Relay client started (daemon_id=%s)", self._daemon_id)
+
+    async def ensure_running(self) -> bool:
+        """Lazy self-heal: restart the loop if it died. Returns True if it relaunched.
+
+        Lazy-repair, not polling: call this from request paths (e.g. /health),
+        never on a timer. The hardened :meth:`_run_loop` should never exit on
+        its own, so this is a belt-and-braces backstop, not the primary
+        mechanism.
+        """
+        if self._stopping or not self._config.enabled or not self._config.api_key:
+            return False
+        if self._task is not None and not self._task.done():
+            return False
+        logger.warning("Relay loop was not running; relaunching (lazy self-heal)")
+        await self.start()
+        return True
 
     async def stop(self) -> None:
         """Gracefully disconnect."""
@@ -127,10 +185,13 @@ class RelayClient:
                     self._build_url(),
                     open_timeout=10,
                     close_timeout=5,
+                    ping_interval=_PING_INTERVAL,
+                    ping_timeout=_PING_TIMEOUT,
                     max_size=16 * 1024 * 1024,  # 16MB for attachment tunneling
                 ) as ws:
                     self._ws = ws
                     backoff = _INITIAL_BACKOFF
+                    self._last_connected_at = datetime.now(timezone.utc)
                     logger.info("Connected to relay at %s", self._config.url)
                     # Recreate httpx client on each reconnect (clear stale state)
                     if self._http:
@@ -139,15 +200,29 @@ class RelayClient:
                     await self._listen(ws)
             except asyncio.CancelledError:
                 break
-            except Exception:
+            except Exception as exc:
+                # Record the error before the stopping-check: a failure is a
+                # failure even if a shutdown is concurrently in flight, and
+                # surfacing it in /health is the whole point.
+                self._ws = None
+                self._last_error = f"{type(exc).__name__}: {exc}"
+                self._last_error_at = datetime.now(timezone.utc)
                 if self._stopping:
                     break
                 logger.warning(
                     "Relay connection lost, reconnecting in %.0fs", backoff, exc_info=True
                 )
-                self._ws = None
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, _MAX_BACKOFF)
+            else:
+                # _listen returned without an exception (server closed the
+                # stream cleanly). Loop and reconnect rather than exiting —
+                # falling out of the while body silently here is how the
+                # client could go permanently dark.
+                self._ws = None
+        # Loop exits only via stop()/cancel. A done task while not stopping is
+        # treated as dead by ensure_running() (lazy self-heal on next /health).
+        logger.info("Relay reconnect loop exited (stopping=%s)", self._stopping)
 
     async def _listen(self, ws: ClientConnection) -> None:
         """Listen for messages from relay and dispatch."""

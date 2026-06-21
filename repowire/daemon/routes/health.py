@@ -54,12 +54,31 @@ class AcpBrokerHealth(BaseModel):
     permissions: AcpPermissionHealth = Field(default_factory=AcpPermissionHealth)
 
 
+class RelayHealth(BaseModel):
+    """Live relay-client connection state (not the static config flag).
+
+    ``enabled`` is the config intent; ``connected``/``running`` are the truth.
+    A relay that is enabled-but-not-connected is the failure that used to hide
+    behind ``relay_mode: true`` while the client was silently dead.
+    """
+
+    status: Literal["disabled", "connected", "connecting", "down"]
+    enabled: bool = False
+    connected: bool = False
+    running: bool = False
+    url: str | None = None
+    last_connected_at: str | None = None
+    last_error: str | None = None
+    last_error_at: str | None = None
+
+
 class HealthResponse(BaseModel):
     """Health check response."""
 
     status: str
     version: str
     relay_mode: bool = False
+    relay: RelayHealth
     channel: ChannelHealth
     acp_broker: AcpBrokerHealth
 
@@ -74,8 +93,48 @@ async def health_check(request: Request) -> HealthResponse:
         status="ok",
         version=__version__,
         relay_mode=relay_mode,
+        relay=await _relay_health(request),
         channel=_channel_health(config),
         acp_broker=await _acp_broker_health(request, config),
+    )
+
+
+async def _relay_health(request: Request) -> RelayHealth:
+    """Report live relay-client state, lazily self-healing a dead loop.
+
+    Lazy repair, not polling: this runs only when /health is hit. If the
+    reconnect loop somehow died, ``ensure_running`` relaunches it here rather
+    than on a timer.
+    """
+    client = getattr(request.app.state, "relay_client", None)
+    enabled = bool(getattr(request.app.state, "relay_mode", False))
+    if client is None:
+        return RelayHealth(
+            status="disabled" if not enabled else "down",
+            enabled=enabled,
+        )
+
+    try:
+        await client.ensure_running()
+    except Exception:  # noqa: BLE001 — health must never raise
+        pass
+
+    st = client.status()
+    if st["connected"]:
+        status = "connected"
+    elif st["running"]:
+        status = "connecting"
+    else:
+        status = "down"
+    return RelayHealth(
+        status=status,
+        enabled=enabled,
+        connected=bool(st["connected"]),
+        running=bool(st["running"]),
+        url=st.get("url"),
+        last_connected_at=st.get("last_connected_at"),
+        last_error=st.get("last_error"),
+        last_error_at=st.get("last_error_at"),
     )
 
 
