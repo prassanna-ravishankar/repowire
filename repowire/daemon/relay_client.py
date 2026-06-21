@@ -216,10 +216,20 @@ class RelayClient:
                 backoff = min(backoff * 2, _MAX_BACKOFF)
             else:
                 # _listen returned without an exception (server closed the
-                # stream cleanly). Loop and reconnect rather than exiting —
-                # falling out of the while body silently here is how the
-                # client could go permanently dark.
+                # stream cleanly, e.g. 1000/1001). Reconnect rather than
+                # exiting — falling out of the while body silently here is how
+                # the client could go permanently dark — but back off and log
+                # like the error path so a relay that repeatedly accepts and
+                # immediately closes cannot spin a tight reconnect loop.
                 self._ws = None
+                if self._stopping:
+                    break
+                logger.info(
+                    "Relay closed the connection cleanly, reconnecting in %.0fs",
+                    backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, _MAX_BACKOFF)
         # Loop exits only via stop()/cancel. A done task while not stopping is
         # treated as dead by ensure_running() (lazy self-heal on next /health).
         logger.info("Relay reconnect loop exited (stopping=%s)", self._stopping)

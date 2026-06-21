@@ -11,6 +11,7 @@ import asyncio
 from repowire.config.relay import RelayConfig
 from repowire.daemon import relay_client as relay_client_mod
 from repowire.daemon.relay_client import (
+    _INITIAL_BACKOFF,
     _PING_INTERVAL,
     _PING_TIMEOUT,
     RelayClient,
@@ -129,6 +130,46 @@ class TestConnectArgs:
         st = client.status()
         assert st["last_error"] == "RuntimeError: boom relay"
         assert st["last_error_at"] is not None
+
+    async def test_clean_close_backs_off_not_tight_loop(self, monkeypatch):
+        """Nit fix (review #373): a clean WS close reconnects WITH a backoff
+        sleep, so a relay that accepts-then-cleanly-closes can't spin a tight
+        loop. Guards the `else` branch of _run_loop."""
+        sleeps: list[float] = []
+
+        async def record_sleep(seconds):
+            sleeps.append(seconds)
+
+        class FakeWS:
+            close_code = None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        connects = {"n": 0}
+
+        def fake_connect(url, **kwargs):
+            connects["n"] += 1
+            if connects["n"] >= 2:
+                client._stopping = True  # stop after the second clean cycle
+            return FakeWS()
+
+        async def fake_listen(ws):
+            return None  # clean close → the else branch
+
+        monkeypatch.setattr(relay_client_mod.websockets, "connect", fake_connect)
+        monkeypatch.setattr(relay_client_mod.asyncio, "sleep", record_sleep)
+
+        client = _client()
+        monkeypatch.setattr(client, "_listen", fake_listen)
+        await client._run_loop()
+
+        # First clean close backed off before reconnecting (not a no-delay spin).
+        assert sleeps, "clean close must sleep before reconnecting"
+        assert sleeps[0] >= _INITIAL_BACKOFF
 
 
 async def _noop_sleep(_seconds):
