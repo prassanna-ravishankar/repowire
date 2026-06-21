@@ -21,6 +21,8 @@ from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.routes import peers as peers_routes
 from repowire.daemon.routes import spawn as spawn_routes
 from repowire.daemon.websocket_transport import WebSocketTransport
+from repowire.hooks import ws_hook_supervisor
+from repowire.hooks.utils import read_pane_runtime_metadata, write_pane_runtime_metadata
 
 
 def _make_app(tmp_path: Path):
@@ -61,6 +63,7 @@ def _make_app(tmp_path: Path):
 @pytest.fixture
 async def env(tmp_path, monkeypatch):
     spawn_routes._SPAWNED_PANE_IDS.clear()
+    monkeypatch.setattr("repowire.config.models.CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr("repowire.spawn_ownership.OWNERSHIP_PATH", tmp_path / "ownership.json")
     app, registry, transport = _make_app(tmp_path)
     async with AsyncClient(
@@ -197,3 +200,50 @@ class TestRehookGating:
         assert body["reason"] == "respawned"
         mock_respawn.assert_called_once()
         mock_kill.assert_not_called()
+
+    async def test_apply_reconciles_stale_hook_metadata_before_respawn(self, env, tmp_path):
+        pane_id = "%202"
+        name = await _register(env.client, path=str(tmp_path), pane_id=pane_id)
+        peer = await env.registry.get_peer(name)
+        assert peer is not None
+        spawn_routes._SPAWNED_PANE_IDS.add(pane_id)
+        write_pane_runtime_metadata(
+            pane_id,
+            {
+                "agent_pid": "12345",
+                "backend": "claude-code",
+                "birth_certificate": {"peer_id": "repow-default-old"},
+                "cwd": "/old/path",
+                "display_name": "old-name",
+                "hook_session_id": "hook-session-1",
+                "parent_pid": 333,
+                "peer_id": "repow-default-old",
+            },
+        )
+
+        with patch.object(env.transport, "is_connected", return_value=False), \
+            patch.object(ws_hook_supervisor, "spawn_ws_hook", return_value=4321) as mock_spawn:
+            r = await env.client.post(f"/peers/{name}/rehook", json={"apply": True})
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["acted"] is True
+        assert body["ws_hook_respawned"] is True
+        assert body["reason"] == "reconciled_hook_metadata"
+        mock_spawn.assert_called_once()
+        kwargs = mock_spawn.call_args.kwargs
+        assert kwargs["peer_id"] == peer.peer_id
+        assert kwargs["display_name"] == peer.display_name
+        assert kwargs["backend"] == "claude-code"
+        assert kwargs["cwd"] == str(tmp_path)
+        assert kwargs["agent_pid"] == 12345
+
+        meta = read_pane_runtime_metadata(pane_id)
+        assert meta["peer_id"] == peer.peer_id
+        assert meta["display_name"] == peer.display_name
+        assert meta["cwd"] == str(tmp_path)
+        assert meta["backend"] == "claude-code"
+        assert meta["agent_pid"] == "12345"
+        assert meta["parent_pid"] == 333
+        assert meta["hook_session_id"] == "hook-session-1"
+        assert "birth_certificate" not in meta

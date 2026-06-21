@@ -100,6 +100,71 @@ def link_spawn_ws_hook(
         lock_fd.close()
 
 
+def reconcile_spawn_ws_hook(
+    pane_id: str,
+    *,
+    peer_id: str,
+    display_name: str,
+    backend: str,
+    cwd: str,
+) -> bool:
+    """Rewrite stale pane metadata and start a ws-hook for the registry owner.
+
+    This is the manual rehook repair path for a verified local pane whose
+    runtime metadata still names an old peer identity. It deliberately ignores
+    the old pid file: the problem can be a live hook process reconnecting with
+    stale identity, so pid liveness is not authoritative here.
+    """
+    lock_path = ws_hook_lock_path(pane_id)
+    try:
+        lock_fd = open(lock_path, "w")  # noqa: SIM115
+    except OSError as e:
+        logger.warning("reconcile_spawn_ws_hook: pane %s lock open failed: %s", pane_id, e)
+        return False
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            logger.warning("reconcile_spawn_ws_hook: pane %s lock contested", pane_id)
+            return False
+
+        try:
+            metadata = read_pane_runtime_metadata(pane_id)
+            corrected = dict(metadata)
+            corrected.pop("birth_certificate", None)
+            corrected.update(
+                {
+                    "backend": backend,
+                    "cwd": cwd,
+                    "display_name": display_name,
+                    "peer_id": peer_id,
+                }
+            )
+            write_pane_runtime_metadata(pane_id, corrected)
+            metadata_agent_pid = corrected.get("agent_pid")
+            if isinstance(metadata_agent_pid, int):
+                agent_pid = metadata_agent_pid
+            elif isinstance(metadata_agent_pid, str) and metadata_agent_pid.isdigit():
+                agent_pid = int(metadata_agent_pid)
+            else:
+                agent_pid = None
+            new_pid = spawn_ws_hook(
+                pane_id=pane_id,
+                peer_id=peer_id,
+                display_name=display_name,
+                backend=backend,
+                cwd=cwd,
+                lock_fd=lock_fd,
+                agent_pid=agent_pid,
+            )
+        except Exception as e:  # noqa: BLE001 — rehook must fail closed
+            logger.warning("reconcile_spawn_ws_hook: pane %s spawn failed: %s", pane_id, e)
+            return False
+        return new_pid is not None
+    finally:
+        lock_fd.close()
+
+
 def spawn_ws_hook(
     *,
     pane_id: str | None,

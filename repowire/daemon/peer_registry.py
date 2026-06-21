@@ -46,6 +46,7 @@ from repowire.daemon.registry_repair import (
     tmux_pane_pid,
 )
 from repowire.daemon.websocket_transport import TransportError
+from repowire.hooks.utils import read_pane_runtime_metadata, write_pane_runtime_metadata
 from repowire.protocol.capabilities import PANE_UNSAFE_STRIKE_LIMIT
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
 
@@ -66,6 +67,41 @@ def _serialize_attachments(attachments: list | None) -> list[dict[str, Any]]:
         item.model_dump(exclude_none=True) if hasattr(item, "model_dump") else item
         for item in attachments
     ]
+
+
+def _sync_pane_hook_identity(
+    pane_id: str,
+    *,
+    peer_id: str,
+    display_name: str,
+) -> None:
+    """Best-effort identity sync for existing pane hook metadata.
+
+    Registration remains authoritative; this only keeps the local hook's
+    persisted reconnect identity from lagging behind pane rebinds/renames.
+    """
+    try:
+        metadata = read_pane_runtime_metadata(pane_id)
+        if not metadata:
+            return
+        metadata_peer_id = metadata.get("peer_id")
+        metadata_display_name = metadata.get("display_name")
+        if metadata_peer_id == peer_id and metadata_display_name == display_name:
+            return
+        corrected = dict(metadata)
+        if metadata_peer_id != peer_id:
+            corrected.pop("birth_certificate", None)
+        corrected["peer_id"] = peer_id
+        corrected["display_name"] = display_name
+        write_pane_runtime_metadata(pane_id, corrected)
+    except Exception as e:  # noqa: BLE001 — never fail registration on hook-file repair
+        logger.warning(
+            "Failed to sync hook metadata identity for pane %s to %s (%s): %s",
+            pane_id,
+            display_name,
+            peer_id,
+            e,
+        )
 
 
 class PaneHijackRejectedError(Exception):
@@ -1037,6 +1073,7 @@ class PeerRegistry:
         result_peer_id: str | None = None
         result_name: str | None = None
         should_redeliver = False
+        pane_hook_sync_intent: tuple[str, str, str] | None = None
 
         async with self._lock:
             # Retirement guard: a claim naming a terminally-offlined peer_id is
@@ -1127,6 +1164,12 @@ class PeerRegistry:
                     result_peer_id = peer_id
                     result_name = existing.display_name
                     should_redeliver = True
+                    if existing.pane_id:
+                        pane_hook_sync_intent = (
+                            existing.pane_id,
+                            existing.peer_id,
+                            existing.display_name,
+                        )
 
             if result_peer_id is None:
                 # Pane-hijack guard: a fresh SessionStart claim for a pane that
@@ -1477,6 +1520,12 @@ class PeerRegistry:
                 result_peer_id = allocated_id
                 result_name = assigned_name
                 should_redeliver = True
+                if effective_pane_id:
+                    pane_hook_sync_intent = (
+                        effective_pane_id,
+                        allocated_id,
+                        assigned_name,
+                    )
 
         # Out of the lock. Schedule pass-2 (identity-tuple) redelivery for
         # both fresh allocations and same-id reconnects. The new peer is
@@ -1489,6 +1538,13 @@ class PeerRegistry:
             asyncio.create_task(
                 self._redeliver_pending_replies(result_peer_id),
                 name=f"redeliver-{result_peer_id[:12]}",
+            )
+        if pane_hook_sync_intent is not None:
+            sync_pane_id, sync_peer_id, sync_display_name = pane_hook_sync_intent
+            _sync_pane_hook_identity(
+                sync_pane_id,
+                peer_id=sync_peer_id,
+                display_name=sync_display_name,
             )
 
         assert result_peer_id is not None and result_name is not None
@@ -2349,6 +2405,7 @@ class PeerRegistry:
 
         Also updates the persistent mapping atomically.
         """
+        pane_hook_sync_intent: tuple[str, str, str] | None = None
         async with self._lock:
             peer = self._peers.get(session_id)
             if not peer:
@@ -2374,7 +2431,16 @@ class PeerRegistry:
                 mapping.display_name = new_name
                 mapping.updated_at = datetime.now(timezone.utc).isoformat()
                 self._mappings_dirty = True
-            return True
+            if peer.pane_id:
+                pane_hook_sync_intent = (peer.pane_id, peer.peer_id, peer.display_name)
+        if pane_hook_sync_intent is not None:
+            sync_pane_id, sync_peer_id, sync_display_name = pane_hook_sync_intent
+            _sync_pane_hook_identity(
+                sync_pane_id,
+                peer_id=sync_peer_id,
+                display_name=sync_display_name,
+            )
+        return True
 
     async def mark_offline(
         self,

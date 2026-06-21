@@ -19,6 +19,7 @@ from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.websocket_transport import WebSocketTransport
+from repowire.hooks.utils import read_pane_runtime_metadata, write_pane_runtime_metadata
 from repowire.protocol.peers import PeerRole, PeerStatus
 
 
@@ -224,6 +225,80 @@ async def test_non_orchestrator_incumbent_still_displaces(tmp_path: Path) -> Non
     assert old.pane_id is None
     assert old.status == PeerStatus.OFFLINE
     assert new.pane_id == PANE
+
+
+@pytest.mark.asyncio
+async def test_same_pane_displacement_rewrites_hook_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("repowire.config.models.CACHE_DIR", tmp_path / "cache")
+    registry = _make_registry(tmp_path)
+    old_id, old_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CODEX,
+        path="/home/u/projects/foo",
+        pane_id=PANE,
+        machine="m",
+    )
+    write_pane_runtime_metadata(
+        PANE,
+        {
+            "agent_pid": 111,
+            "backend": "codex",
+            "birth_certificate": {"peer_id": old_id},
+            "cwd": "/home/u/projects/foo",
+            "display_name": old_name,
+            "hook_session_id": "hook-session-1",
+            "peer_id": old_id,
+        },
+    )
+
+    new_id, new_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/home/u/projects/bar",
+        pane_id=PANE,
+        machine="m",
+    )
+
+    meta = read_pane_runtime_metadata(PANE)
+    assert meta["peer_id"] == new_id
+    assert meta["display_name"] == new_name
+    assert meta["agent_pid"] == 111
+    assert meta["hook_session_id"] == "hook-session-1"
+    assert "birth_certificate" not in meta
+
+
+@pytest.mark.asyncio
+async def test_display_name_update_rewrites_hook_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("repowire.config.models.CACHE_DIR", tmp_path / "cache")
+    registry = _make_registry(tmp_path)
+    peer_id, name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CODEX,
+        path="/home/u/projects/foo",
+        pane_id=PANE,
+        machine="m",
+    )
+    write_pane_runtime_metadata(
+        PANE,
+        {
+            "backend": "codex",
+            "birth_certificate": {"peer_id": peer_id},
+            "cwd": "/home/u/projects/foo",
+            "display_name": name,
+            "peer_id": peer_id,
+        },
+    )
+
+    assert await registry.update_peer_display_name(peer_id, "renamed-codex")
+
+    meta = read_pane_runtime_metadata(PANE)
+    assert meta["peer_id"] == peer_id
+    assert meta["display_name"] == "renamed-codex"
+    assert meta["birth_certificate"] == {"peer_id": peer_id}
 
 
 @pytest.mark.asyncio

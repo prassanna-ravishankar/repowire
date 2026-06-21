@@ -25,7 +25,7 @@ from repowire.daemon.session_resume import (
 )
 from repowire.daemon.spawn_service import SpawnService
 from repowire.hooks.utils import clear_pane_runtime_state, read_pane_runtime_metadata
-from repowire.hooks.ws_hook_supervisor import maybe_respawn
+from repowire.hooks.ws_hook_supervisor import maybe_respawn, reconcile_spawn_ws_hook
 from repowire.installers.post_spawn import post_spawn_warmup
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus
 from repowire.spawn import SpawnResult, kill_pane, spawn_peer
@@ -1090,6 +1090,44 @@ async def rehook_peer(
     # Act: drop only a confirmed-stale connection, then attempt a respawn.
     if ws_was_connected and ping_ok is False:
         await transport.disconnect(peer.peer_id)
+
+    meta = read_pane_runtime_metadata(peer.pane_id)
+    meta_peer_id = meta.get("peer_id")
+    meta_display_name = meta.get("display_name")
+    has_hook_identity_mismatch = bool(
+        meta
+        and (
+            (isinstance(meta_peer_id, str) and meta_peer_id != peer.peer_id)
+            or (
+                isinstance(meta_display_name, str)
+                and meta_display_name != peer.display_name
+            )
+        )
+    )
+    if has_hook_identity_mismatch:
+        reconciled = await asyncio.to_thread(
+            reconcile_spawn_ws_hook,
+            peer.pane_id,
+            peer_id=peer.peer_id,
+            display_name=peer.display_name,
+            backend=peer.backend.value,
+            cwd=peer.path or "",
+        )
+        return RehookPeerResponse(
+            acted=True,
+            peer_id=peer.peer_id,
+            display_name=peer.display_name,
+            pane_id=peer.pane_id,
+            ws_was_connected=ws_was_connected,
+            ping_ok=ping_ok,
+            pane_verified=True,
+            ws_hook_respawned=reconciled,
+            reason=(
+                "reconciled_hook_metadata"
+                if reconciled
+                else "reconcile_skipped_lock_contested_or_spawn_failed"
+            ),
+        )
 
     respawned = await asyncio.to_thread(
         maybe_respawn,
