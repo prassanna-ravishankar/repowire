@@ -49,6 +49,9 @@ docs = [
 acp-probe = [
     "agent-client-protocol>=0.10.0",
 ]
+webhooks-asymmetric = [
+    "cryptography>=42.0",
+]
 
 [project.scripts]
 repowire = "repowire.cli:main"

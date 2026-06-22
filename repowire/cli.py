@@ -4320,6 +4320,39 @@ def slack_start() -> None:
 
 
 # =============================================================================
+# ingress command group
+# =============================================================================
+
+
+@main.group(hidden=True)
+def ingress() -> None:
+    """Manage the inbound ingress peer (webhooks + cross-mesh federation)."""
+    pass
+
+
+@ingress.command(name="start")
+def ingress_start() -> None:
+    """Start the ingress peer (verifies inbound events, emits mesh messages)."""
+    from repowire.ingress.bot import main as bot_main
+
+    bot_main()
+
+
+@ingress.command(name="grant")
+def ingress_grant() -> None:
+    """Mint a new opaque federation grant id + shared secret to exchange out-of-band."""
+    grant_id = "grant_" + secrets.token_urlsafe(16)
+    secret = secrets.token_urlsafe(32)
+    click.echo(f"grant_id:      {grant_id}")
+    click.echo(f"shared_secret: {secret}")
+    click.echo(
+        "\nStore the secret under an env/keychain ref and put the ref + grant_id in "
+        "~/.repowire/config.yaml under 'federation:'. Share both with the peer mesh "
+        "over a secure channel; never commit the raw secret."
+    )
+
+
+# =============================================================================
 # service command group - system service management
 # =============================================================================
 

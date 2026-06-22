@@ -37,6 +37,7 @@ class RelayClient:
         self._config = config
         self._daemon_id = daemon_id or socket.gethostname()
         self._local_base_url = local_base_url
+        self._ingress_base_url: str | None = None
         self._ws: ClientConnection | None = None
         self._task: asyncio.Task[None] | None = None
         self._http: httpx.AsyncClient | None = None
@@ -212,8 +213,25 @@ class RelayClient:
         "x-real-ip", "forwarded",
     })
 
+    def _target_base_url(self, path: str) -> str:
+        """Resolve the local target for a tunneled request.
+
+        Everything goes to the daemon except `/ingress/*`, which is forwarded to
+        the ingress peer's local listener — keeping that peer off any public port
+        while the relay faces the world. The bind is read from config once.
+        """
+        if path == "/ingress" or path.startswith("/ingress/"):
+            if self._ingress_base_url is None:
+                from repowire.config.models import load_config
+
+                ing = load_config().ingress
+                host = ing.bind_host if ing.bind_host not in ("0.0.0.0", "::") else "127.0.0.1"
+                self._ingress_base_url = f"http://{host}:{ing.port}"
+            return self._ingress_base_url
+        return self._local_base_url
+
     async def _handle_http_request(self, msg: dict[str, Any]) -> None:
-        """Forward tunneled HTTP request to local daemon."""
+        """Forward tunneled HTTP request to the local daemon (or ingress peer)."""
         request_id = msg["request_id"]
         method = msg.get("method", "GET").upper()
         path = msg.get("path", "/")
@@ -224,7 +242,7 @@ class RelayClient:
         query_string = msg.get("query_string", "")
         body_b64 = msg.get("body")
 
-        url = f"{self._local_base_url}{path}"
+        url = f"{self._target_base_url(path)}{path}"
         if query_string:
             url = f"{url}?{query_string}"
 

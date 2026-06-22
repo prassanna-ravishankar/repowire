@@ -47,7 +47,13 @@ from repowire.daemon.registry_repair import (
 )
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.capabilities import PANE_UNSAFE_STRIKE_LIMIT
-from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
+from repowire.protocol.peers import (
+    RESERVED_INGRESS_PREFIXES,
+    Peer,
+    PeerRole,
+    PeerStatus,
+    TurnState,
+)
 
 if TYPE_CHECKING:
     from repowire.daemon.ask_tracker import AskTracker
@@ -1033,6 +1039,14 @@ class PeerRegistry:
         If ``peer_id`` is provided and matches an existing peer, the peer is
         taken over in-place (WebSocket reconnect after HTTP pre-registration).
         """
+        # Reserved-prefix guard: fed-*/ext-* ids are the ingress peer's synthetic
+        # federation/webhook principals (it stamps them as from_peer). The daemon
+        # only ever mints repow-* ids, so a claim on a reserved prefix can only be
+        # an attempt to impersonate a federated sender — refuse it. Case-folded so
+        # Ext-/FED- cannot slip past.
+        if peer_id and peer_id.lower().startswith(RESERVED_INGRESS_PREFIXES):
+            raise ValueError(f"peer_id {peer_id!r} uses a reserved ingress prefix")
+
         # Captured inside the lock, used outside it to schedule redelivery.
         result_peer_id: str | None = None
         result_name: str | None = None

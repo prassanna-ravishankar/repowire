@@ -15,6 +15,7 @@ Feature pages are the active-user source of truth for Repowire capabilities. Eac
 - [Dashboard](dashboard.md) — browser control surface and live session timeline.
 - [Telegram](telegram.md) — phone-side routing, notifications, and attachments.
 - [Slack](slack.md) — team chat control through Socket Mode.
+- [Webhooks & ingress](connect-webhook.md) — turn external events into mesh asks/notifies/jobs.
 - [Attachments](attachments.md) — local file upload and delivery paths.
 - [Scheduling](scheduling.md) — one-shot and recurring mesh messages.
 - [Jobs](jobs.md) — durable tracked work and recurring worker templates.

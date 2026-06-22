@@ -127,6 +127,14 @@ class BroadcastResult(BaseModel):
     failed: list[dict[str, str]] = Field(default_factory=list)
 
 
+class JobResult(BaseModel):
+    """Durable tracked-job create/run result."""
+
+    job_id: str | None = None
+    work_id: str | None = None
+    status: dict[str, Any] = Field(default_factory=dict)
+
+
 class MeshEvent(BaseModel):
     """Event emitted by the daemon event log."""
 
@@ -550,6 +558,57 @@ class AsyncRepowireClient:
             },
         )
         return BroadcastResult.model_validate(data)
+
+    async def create_job(
+        self,
+        title: str = "",
+        *,
+        kind: str = "general",
+        prompt: str | None = None,
+        path: str | None = None,
+        backend: str | None = None,
+        circle: str | None = None,
+        owner_peer_id: str | None = None,
+        source_kind: str | None = None,
+        source_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        due_at: str | None = None,
+        auto_run: bool = False,
+    ) -> JobResult:
+        """Create a durable tracked job, optionally firing it immediately.
+
+        Wraps ``POST /jobs``; ``auto_run`` follows with ``/jobs/{id}/run`` so a
+        one-shot trigger (e.g. a webhook) both records the job and dispatches it.
+        """
+        payload: dict[str, Any] = {"title": title, "kind": kind}
+        for key, value in {
+            "prompt": prompt,
+            "path": path,
+            "backend": backend,
+            "circle": circle,
+            "owner_peer_id": owner_peer_id,
+            "source_kind": source_kind,
+            "source_id": source_id,
+            "due_at": due_at,
+        }.items():
+            if value is not None:
+                payload[key] = value
+        if provenance:
+            payload["provenance"] = provenance
+        result = JobResult.model_validate(await self._request("POST", "/jobs", json=payload))
+        if auto_run and result.work_id:
+            await self.run_job(result.work_id)
+        return result
+
+    async def run_job(
+        self, work_id: str, *, requested_by_peer_id: str | None = None
+    ) -> JobResult:
+        """Fire a tracked job on demand (the manual trigger source for jobs)."""
+        payload: dict[str, Any] = {}
+        if requested_by_peer_id is not None:
+            payload["requested_by_peer_id"] = requested_by_peer_id
+        data = await self._request("POST", f"/jobs/{quote(work_id, safe='')}/run", json=payload)
+        return JobResult.model_validate(data)
 
     async def events(self) -> list[MeshEvent]:
         """Return recent daemon events."""
