@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -260,6 +261,123 @@ class SlackConfig(BaseModel):
     channel_id: str | None = Field(None, description="Slack channel ID (C...)")
 
 
+class VerifyConfig(BaseModel):
+    """Per-source inbound verification metadata.
+
+    This is the user-registered description of how a provider signs its
+    webhook — header, encoding, prefix, signed-payload template, and the name
+    of the secret/key. There are no hardcoded provider names: a generic handler
+    per ``scheme`` reads this block, so a new provider that fits an existing
+    scheme is pure config.
+    """
+
+    scheme: Literal["hmac", "token", "ecdsa", "ed25519", "trust_grant"] = "hmac"
+    header: str = "X-Hub-Signature-256"
+    encoding: Literal["hex", "base64"] = "hex"
+    prefix: str = "sha256="
+    payload_template: str = Field(
+        "{body}",
+        description=(
+            "Bytes that were signed: '{body}' (GitHub/Shopify), or a timestamped "
+            "form like '{ts}.{body}' (Stripe) / 'v0:{ts}:{body}' (Slack)"
+        ),
+    )
+    timestamp_header: str | None = Field(
+        None, description="Header carrying the signed timestamp (Slack/Discord-style)"
+    )
+    sig_kv: bool = Field(
+        False,
+        description="Signature header is comma-separated k=v pairs (Stripe 't=..,v1=..')",
+    )
+    ts_field: str = Field("t", description="k=v key holding the timestamp when sig_kv")
+    sig_field: str = Field("v1", description="k=v key holding the signature when sig_kv")
+    delivery_id_header: str | None = Field(
+        None, description="Header carrying a per-delivery id used as the idempotency key"
+    )
+    max_age_s: int | None = Field(
+        None, description="Reject if the signed timestamp is older than this (replay window)"
+    )
+    secret_ref: str | None = Field(None, description="Env/keychain name of the shared secret")
+    public_key_ref: str | None = Field(
+        None, description="Env/keychain name of the public key (ecdsa/ed25519)"
+    )
+
+
+class IngressTarget(BaseModel):
+    """Where a verified inbound event is emitted into the mesh."""
+
+    kind: Literal["ask", "notify", "job"] = "ask"
+    to_peer: str | None = Field(None, description="Fixed destination peer (or 'orchestrator')")
+    backend: str | None = Field(None, description="Job backend when kind=job")
+    path: str | None = Field(None, description="Job working directory when kind=job")
+    auto_run: bool = Field(False, description="Fire the job immediately when kind=job")
+
+
+class IngressSource(BaseModel):
+    """One narrowly-registered inbound webhook: verify, then emit to a fixed target.
+
+    The dict key under ``ingress.sources`` is the URL path segment
+    (``/ingress/<key>``) the user registers with the provider.
+    """
+
+    verify: VerifyConfig = Field(default_factory=VerifyConfig)
+    target: IngressTarget = Field(default_factory=IngressTarget)
+    template: str | None = Field(
+        None, description="str.format template over the parsed payload, fills the emitted text"
+    )
+    rate_limit_per_min: int = 60
+    allow: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Principal allowlist; empty allows all. Only meaningful for trust_grant "
+            "sources (the principal embeds the grant) — hmac/token have a single "
+            "fixed principal, so it cannot filter individual webhook senders."
+        ),
+    )
+    circle: str | None = None
+
+
+class IngressConfig(BaseModel):
+    """Inbound ingress peer configuration. Default-deny: disabled with no sources."""
+
+    enabled: bool = False
+    bind_host: str = "127.0.0.1"
+    port: int = 8378
+    sources: dict[str, IngressSource] = Field(default_factory=dict)
+
+
+class GrantConfig(BaseModel):
+    """A trust grant for cross-mesh federation.
+
+    Opaque + HMAC-authenticated: the grant is a bearer record validated by id
+    lookup plus a per-request signature. Only refs and ids live here — never the
+    raw shared secret (resolved from env/keychain at load).
+    """
+
+    grant_id: str
+    issuer_mesh_id: str = ""
+    audience_mesh_id: str = ""
+    direction: Literal["inbound", "outbound"] = "inbound"
+    exposed_circle: str | None = None
+    exposed_peers: list[str] | None = None
+    allowed_kinds: list[str] = Field(default_factory=lambda: ["ask", "notify"])
+    expires_at: str | None = None
+    revocation_ref: str | None = None
+    shared_secret_ref: str | None = None
+    endpoint_url: str | None = Field(
+        None, description="Outbound grants only: where to reach the peer mesh"
+    )
+
+
+class FederationConfig(BaseModel):
+    """Cross-mesh federation grants. Only refs/ids here — never raw secrets/hosts."""
+
+    mesh_id: str = ""
+    inbound_grants: list[GrantConfig] = Field(default_factory=list)
+    outbound_grants: list[GrantConfig] = Field(default_factory=list)
+    revoked: list[str] = Field(default_factory=list)
+
+
 class UpdatesConfig(BaseModel):
     """Update-check preferences.
 
@@ -418,6 +536,8 @@ class Config(BaseModel):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     slack: SlackConfig = Field(default_factory=SlackConfig)
+    ingress: IngressConfig = Field(default_factory=IngressConfig)
+    federation: FederationConfig = Field(default_factory=FederationConfig)
     updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
     experiments: ExperimentsConfig = Field(default_factory=ExperimentsConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)

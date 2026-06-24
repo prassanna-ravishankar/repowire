@@ -71,11 +71,14 @@ HTTP_TUNNEL_TIMEOUT = 30  # seconds
 _RELAY_PATHS = frozenset({"/", "/health", "/auth", "/ws/relay", "/dashboard", "/events/stream"})
 _RELAY_PREFIXES = ("/api/v1/", "/d/", "/_next/")
 
-# API paths tunneled to the daemon (everything else is static or relay-owned)
+# API paths tunneled to the daemon (everything else is static or relay-owned).
+# `/ingress` is tunneled too, but the daemon-side relay client forwards it on to
+# the ingress peer's local listener rather than the daemon — so external
+# webhooks reach the peer without it ever opening a public inbound port.
 _TUNNEL_PREFIXES = (
     "/peers", "/events", "/query", "/notify", "/broadcast",
     "/session", "/response", "/spawn", "/ws", "/attachments",
-    "/ask", "/ack", "/asks", "/circles", "/jobs",
+    "/ask", "/ack", "/asks", "/circles", "/jobs", "/ingress",
 )
 
 # Static file extensions served from web/out root (logos, favicon, images)

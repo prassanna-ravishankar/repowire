@@ -112,6 +112,7 @@ nav:
           - Dashboard: use/features/dashboard.md
           - Telegram: use/features/telegram.md
           - Slack: use/features/slack.md
+          - Webhooks & ingress: use/features/connect-webhook.md
           - Attachments: use/features/attachments.md
           - Scheduling: use/features/scheduling.md
           - Jobs: use/features/jobs.md

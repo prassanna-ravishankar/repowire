@@ -22,6 +22,16 @@ from repowire.agent_types import AgentType
 TurnState = Literal["idle", "working", "awaiting_input", "pending_first_turn"]
 
 
+# Synthetic peer_id prefixes the ingress peer stamps on webhook (ext-) and
+# federation (fed-) principals. The daemon only ever mints repow-* ids, so these
+# are reserved: a registration claiming one is an impersonation attempt and is
+# refused (see PeerRegistry.allocate_and_register). Kept here so the minting side
+# (repowire/ingress/bot.py) and the guard never drift.
+INGRESS_EXT_PREFIX = "ext-"
+INGRESS_FED_PREFIX = "fed-"
+RESERVED_INGRESS_PREFIXES = (INGRESS_FED_PREFIX, INGRESS_EXT_PREFIX)
+
+
 class PeerRole(str, Enum):
     """Role of a peer in the mesh."""
 
