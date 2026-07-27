@@ -16,6 +16,7 @@ The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and extern
 - `/messages` and WebSocket routes for live delivery.
 - `/schedules` for one-shot and recurring scheduled messages.
 - `/jobs` / work routes for durable tracked work.
+- `/spawn` creates tmux-backed peers; `GET /spawn/config` reports whether spawning is enabled, configured commands/profiles, allowed paths, and the active `circle_boundary` (`session` or `window`). In window mode the CLI supplies its current pane internally so the daemon can split the peer into that window.
 - `/attachments` for upload and download.
 - `/dashboard` for the static dashboard bundle.
 

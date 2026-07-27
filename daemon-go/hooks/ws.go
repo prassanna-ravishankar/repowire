@@ -13,6 +13,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"github.com/repowire/repowire/daemon-go/proto"
 )
 
 func startWSHook(paneID, peerID, displayName, backend, cwd string, agentPID int, lock *os.File) error {
@@ -162,7 +163,16 @@ func RunWS() int {
 		return 1
 	}
 	info := getTmuxInfo()
-	circle, source := info.SessionName, "tmux"
+	boundary, err := configuredCircleBoundary()
+	if err != nil {
+		errf("ws-hook: load circle boundary: %v", err)
+		return 1
+	}
+	source := "tmux"
+	if boundary == proto.CircleBoundaryWindow {
+		source = "tmux_window"
+	}
+	circle := proto.TmuxCircle(boundary, info.SessionName, info.WindowID)
 	if circle == "" {
 		errf("ws-hook: no tmux circle; spawn the peer with --circle")
 		return 1
@@ -210,6 +220,9 @@ func RunWS() int {
 			"type": "connect", "display_name": displayName, "circle": circle,
 			"backend": backend, "path": cwd, "pane_id": paneID, "circle_source": source,
 			"hook_version": hookVersion, "capabilities": []string{"delivery_receipts"},
+		}
+		if target := tmuxSession(info); target != "" {
+			connect["tmux_session"] = target
 		}
 		if peerID != "" {
 			connect["peer_id"] = peerID
@@ -281,7 +294,7 @@ func RunWS() int {
 				}
 				break
 			}
-			stop, unsafeStrikes = handleMessage(ctx, conn, message, paneID, expectedCommand, unsafeStrikes)
+			stop, unsafeStrikes = handleMessage(ctx, conn, message, paneID, expectedCommand, boundary, unsafeStrikes)
 		}
 		_ = conn.CloseNow()
 		cancel()
@@ -321,11 +334,12 @@ func watchAgent(ctx context.Context, conn *websocket.Conn, paneID string, agentP
 	}
 }
 
-func handleMessage(ctx context.Context, conn *websocket.Conn, data map[string]any, paneID, expectedCommand string, unsafeStrikes int) (bool, int) {
+func handleMessage(ctx context.Context, conn *websocket.Conn, data map[string]any, paneID, expectedCommand string, boundary proto.CircleBoundary, unsafeStrikes int) (bool, int) {
 	typ := stringValue(data, "type")
 	if typ == "ping" {
 		safe := paneSafe(paneID, expectedCommand)
-		pong := map[string]any{"type": "pong", "circle": getTmuxInfo().SessionName}
+		info := getTmuxInfo()
+		pong := map[string]any{"type": "pong", "circle": proto.TmuxCircle(boundary, info.SessionName, info.WindowID)}
 		if safe != nil {
 			pong["pane_alive"] = *safe
 		}

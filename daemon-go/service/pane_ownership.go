@@ -18,7 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -57,10 +57,12 @@ type OwnershipRecord struct {
 	CreatedAt   float64 `json:"created_at"`
 }
 
-// TmuxPaneEvidence is live tmux evidence for a pane id (session, current path,
-// pid via `tmux display-message`).
+// TmuxPaneEvidence is live tmux evidence for a pane id.
 type TmuxPaneEvidence struct {
 	PaneID      string
+	SessionName string
+	WindowID    string
+	WindowPanes int
 	TmuxSession string
 	CurrentPath string
 	PanePID     string
@@ -85,6 +87,7 @@ type OwnershipValidation struct {
 type PaneOwnership interface {
 	Record(rec OwnershipRecord)
 	Forget(paneID string)
+	UpdatePlacement(paneID, tmuxSession, circle string)
 	MarkSpawned(paneID string)
 	IsSpawned(paneID string) bool
 	ValidateBootstrap(paneID string) OwnershipValidation
@@ -178,6 +181,26 @@ func (o *fileOwnership) Forget(paneID string) {
 		delete(records, paneID)
 		o.saveLocked(records)
 	}
+}
+
+// UpdatePlacement keeps durable proof aligned with tmux renames.
+func (o *fileOwnership) UpdatePlacement(paneID, tmuxSession, circle string) {
+	if paneID == "" || tmuxSession == "" {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	records := o.loadLocked()
+	record, ok := records[paneID]
+	if !ok || (record.TmuxSession == tmuxSession && (circle == "" || record.Circle == circle)) {
+		return
+	}
+	record.TmuxSession = tmuxSession
+	if circle != "" {
+		record.Circle = circle
+	}
+	records[paneID] = record
+	o.saveLocked(records)
 }
 
 // ValidateBootstrap returns live tmux evidence for initial registration. A
@@ -452,28 +475,25 @@ func realProbeTmuxPane(paneID string) *TmuxPaneEvidence {
 		return nil
 	}
 	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p",
-		"#{session_name}\t#{window_name}\t#{pane_current_path}\t#{pane_pid}").Output()
+		"#{session_name}\t#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_pid}\t#{window_panes}").Output()
 	if err != nil {
 		return nil
 	}
 	parts := strings.Split(strings.TrimRight(string(out), "\n"), "\t")
-	if len(parts) != 4 || parts[0] == "" || parts[1] == "" || parts[3] == "" {
+	if len(parts) != 6 || parts[0] == "" || parts[1] == "" || parts[2] == "" || parts[4] == "" {
+		return nil
+	}
+	windowPanes, err := strconv.Atoi(parts[5])
+	if err != nil || windowPanes < 1 {
 		return nil
 	}
 	return &TmuxPaneEvidence{
 		PaneID:      paneID,
-		TmuxSession: parts[0] + ":" + parts[1],
-		CurrentPath: parts[2],
-		PanePID:     parts[3],
+		SessionName: parts[0],
+		WindowID:    parts[1],
+		WindowPanes: windowPanes,
+		TmuxSession: parts[0] + ":" + parts[2],
+		CurrentPath: parts[3],
+		PanePID:     parts[4],
 	}
-}
-
-// keysSorted is a tiny helper for deterministic iteration in tests/diagnostics.
-func keysSorted[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

@@ -1,17 +1,7 @@
 package service
 
-// session_control.go — executor acquisition for durable jobs. Port of
-// repowire/daemon/session_control.py:SessionControlService. The acquisition
-// ladder is: assigned-peer → reusable-peer (online/busy, same circle+backend+
-// normalized path, only when process_scope != per_fire) → backend-resume (when
-// continuity == resume and a pre-validated runtime session exists) → spawn
-// (SpawnService.Spawn + await registration by pane_id/display_name, 45s
-// deadline). Every acquire writes durable operation rows through the ported
-// state.OperationStore so a crashed runner leaves an audit trail.
-//
-// SpawnService is injected; main wires the same instance used by the spawn
-// routes. Registry resolution and resume safety enter through narrow interfaces
-// so the control service remains independently testable.
+// SessionControl acquires executors for durable jobs: assigned peer, reusable
+// peer, backend resume, then spawn. Every acquisition records an operation.
 
 import (
 	"context"
@@ -23,7 +13,6 @@ import (
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
-// spawnRegistrationTimeout mirrors SPAWN_REGISTRATION_TIMEOUT_SECONDS.
 const spawnRegistrationTimeout = 45 * time.Second
 
 // controlRegistry is the narrow registry seam SessionControl + JobRunner call.
@@ -32,7 +21,7 @@ const spawnRegistrationTimeout = 45 * time.Second
 // one-element slice is the unique resolution, N>1 is ambiguous. This matches the
 // authoritative spawnRegistry seam shape (a list never raises for ambiguity).
 type controlRegistry interface {
-	ResolvePeerStrict(identifier string, circle *string) ([]*proto.Peer, error)
+	ResolvePeerStrict(identifier string, circle *string) []*proto.Peer
 	GetAllPeers() []*proto.Peer
 	GetPeer(id proto.PeerID) (*proto.Peer, bool)
 	GetPeerByPane(pane string) (*proto.Peer, bool)
@@ -49,16 +38,6 @@ type spawnExecutor interface {
 	ResolveCommand(b proto.AgentType, profile *string) (string, error)
 	// Spawn performs the tmux exec + ownership record.
 	Spawn(cfg SpawnConfig) (SpawnResult, error)
-}
-
-// resumeResolver is the shared resume-safety seam (restart + jobs + session
-// control all use it). It pre-validates a backend session id on disk and returns
-// the plan to attach (or nil to start fresh). Owned by the resume-safety area;
-// nil here disables resume (every spawn starts fresh — the safe default).
-type resumeResolver interface {
-	// Resolve returns (plan, resumable). plan is the resume_plan_info map to pass
-	// into SpawnSpec.ResumePlan, or nil when the id is stale/unsupported.
-	Resolve(backend proto.AgentType, path, runtimeSessionID string, repowireSessionID *string, capability map[string]any) (plan map[string]any, resumable bool)
 }
 
 // ExecutorAcquisition is the result of AcquireExecutorForWork.
@@ -89,7 +68,7 @@ type SessionControl struct {
 	reg    controlRegistry
 	spawn  spawnExecutor
 	store  *state.Store
-	resume resumeResolver
+	resume func(proto.AgentType, string, string, *string, map[string]any) (map[string]any, bool)
 }
 
 // NewSessionControl wires the executor-acquisition service. spawn may be nil
@@ -100,7 +79,7 @@ func NewSessionControl(reg controlRegistry, spawn spawnExecutor, store *state.St
 }
 
 // WithResume attaches the shared resume-safety resolver. Returns the receiver.
-func (c *SessionControl) WithResume(r resumeResolver) *SessionControl {
+func (c *SessionControl) WithResume(r func(proto.AgentType, string, string, *string, map[string]any) (map[string]any, bool)) *SessionControl {
 	c.resume = r
 	return c
 }
@@ -243,11 +222,7 @@ func (c *SessionControl) AcquireExecutorForWork(ctx context.Context, work *state
 }
 
 func (c *SessionControl) acquireAssignedPeer(ctx context.Context, work *state.TrackedWork, operationID, assigned string) (*ExecutorAcquisition, error) {
-	resolved, err := c.reg.ResolvePeerStrict(assigned, work.Circle)
-	if err != nil {
-		c.failOp(ctx, operationID, "", map[string]any{"reason": "assigned_peer_unresolved", "message": err.Error()})
-		return nil, &ExecutorAcquisitionUnavailableError{Reason: "assigned_peer_unresolved", OperationID: operationID, Err: map[string]any{"reason": "assigned_peer_unresolved"}}
-	}
+	resolved := c.reg.ResolvePeerStrict(assigned, work.Circle)
 	if len(resolved) != 1 {
 		reason := "assigned_peer_not_found"
 		if len(resolved) > 1 {
@@ -386,7 +361,7 @@ func (c *SessionControl) awaitSpawnedPeer(ctx context.Context, displayName, circ
 			}
 			continue
 		}
-		if resolved, err := c.reg.ResolvePeerStrict(displayName, &circle); err == nil && len(resolved) == 1 && resolved[0].Status != proto.StatusOffline {
+		if resolved := c.reg.ResolvePeerStrict(displayName, &circle); len(resolved) == 1 && resolved[0].Status != proto.StatusOffline {
 			return resolved[0]
 		}
 		if p := c.findRegisteredSpawnedPeer(target, backend, circle); p != nil {
@@ -460,7 +435,7 @@ func (c *SessionControl) resumePlanFor(work *state.TrackedWork, path string, bac
 	if rs, ok := binding["repowire_session_id"].(string); ok && rs != "" {
 		repowireSessionID = &rs
 	}
-	plan, resumable := c.resume.Resolve(backend, path, runtimeSessionID, repowireSessionID, capability)
+	plan, resumable := c.resume(backend, path, runtimeSessionID, repowireSessionID, capability)
 	if !resumable {
 		return nil
 	}

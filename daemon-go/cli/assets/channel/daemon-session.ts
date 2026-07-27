@@ -12,6 +12,7 @@
  */
 
 import WebSocket from "ws";
+import { execFileSync } from "node:child_process";
 
 // -- Config --
 
@@ -19,8 +20,57 @@ const DAEMON_URL = process.env.REPOWIRE_DAEMON_URL ?? "ws://127.0.0.1:8377";
 const AUTH_TOKEN = process.env.REPOWIRE_AUTH_TOKEN ?? "";
 // Proposed name for initial connect; daemon assigns the canonical display_name
 const PROPOSED_NAME = process.env.REPOWIRE_DISPLAY_NAME ?? "channel";
-const CIRCLE = process.env.REPOWIRE_CIRCLE ?? "default";
 const PROJECT_PATH = process.cwd();
+
+interface TmuxPlacement {
+  circle: string;
+  circleSource: "tmux" | "tmux_window" | "fallback";
+  pane?: string;
+  tmuxSession?: string;
+}
+
+async function tmuxPlacement(): Promise<TmuxPlacement> {
+  const explicitCircle = process.env.REPOWIRE_CIRCLE ?? "";
+  const placement: TmuxPlacement = {
+    circle: explicitCircle,
+    circleSource: explicitCircle ? "fallback" : "tmux",
+  };
+  const pane = process.env.TMUX_PANE;
+  if (!process.env.TMUX || !pane) return placement;
+
+  let boundary: "session" | "window" = "session";
+  try {
+    const httpUrl = DAEMON_URL.replace("ws://", "http://").replace("wss://", "https://");
+    const response = await fetch(`${httpUrl}/spawn/config`, {
+      headers: AUTH_TOKEN ? { Authorization: `Bearer ${AUTH_TOKEN}` } : {},
+    });
+    if (response.ok) {
+      const config = (await response.json()) as { circle_boundary?: string };
+      if (config.circle_boundary === "window") boundary = "window";
+    }
+  } catch {
+    // Session is the compatibility boundary when the daemon is unavailable.
+  }
+
+  try {
+    const output = execFileSync(
+      "tmux",
+      ["display-message", "-t", pane, "-p", "#{session_name}\t#{window_name}\t#{window_id}"],
+      { encoding: "utf8" }
+    ).trim();
+    const [session, window, windowId] = output.split("\t");
+    const id = /^@(\d+)$/.exec(windowId ?? "");
+    placement.pane = pane;
+    if (session && window) placement.tmuxSession = `${session}:${window}`;
+    if (!explicitCircle) {
+      placement.circle = boundary === "window" ? (id ? `window-${id[1]}` : "") : session;
+      placement.circleSource = boundary === "window" ? "tmux_window" : "tmux";
+    }
+  } catch (error) {
+    console.error(`repowire: failed to derive circle from tmux: ${error}`);
+  }
+  return placement;
+}
 
 // -- Inbound message (normalized for adapters) --
 
@@ -68,10 +118,11 @@ export class DaemonSession {
 
   connect(onMessage: MessageHandler): void {
     this.onMessage = onMessage;
-    this.open();
+    void this.open();
   }
 
-  private open(): void {
+  private async open(): Promise<void> {
+    const placement = await tmuxPlacement();
     const url = `${DAEMON_URL.replace("http://", "ws://").replace("https://", "wss://")}/ws`;
 
     this.ws = new WebSocket(url);
@@ -81,9 +132,12 @@ export class DaemonSession {
         JSON.stringify({
           type: "connect",
           display_name: PROPOSED_NAME,
-          circle: CIRCLE,
+          circle: placement.circle,
+          circle_source: placement.circleSource,
           backend: "claude-code",
           path: PROJECT_PATH,
+          ...(placement.pane ? { pane_id: placement.pane } : {}),
+          ...(placement.tmuxSession ? { tmux_session: placement.tmuxSession } : {}),
           ...(AUTH_TOKEN ? { auth_token: AUTH_TOKEN } : {}),
         })
       );
@@ -106,7 +160,13 @@ export class DaemonSession {
       }
 
       if (msg.type === "ping") {
-        this.ws?.send(JSON.stringify({ type: "pong" }));
+        this.ws?.send(
+          JSON.stringify({
+            type: "pong",
+            circle: placement.circle,
+            ...(placement.pane ? { pane_alive: true } : {}),
+          })
+        );
         return;
       }
 
@@ -144,7 +204,7 @@ export class DaemonSession {
     if (this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.open();
+      void this.open();
     }, 2000);
   }
 

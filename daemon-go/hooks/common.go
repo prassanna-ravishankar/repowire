@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
+	"github.com/repowire/repowire/daemon-go/proto"
 )
 
 const (
@@ -251,7 +252,19 @@ func updateStatus(identifier, status, turnState, model string, byPane bool) bool
 }
 
 type tmuxInfo struct {
-	PaneID, SessionName, WindowName string
+	PaneID, SessionName, WindowName, WindowID string
+}
+
+func configuredCircleBoundary() (proto.CircleBoundary, error) {
+	cfg, err := config.Load()
+	return cfg.Daemon.CircleBoundary, err
+}
+
+func tmuxSession(info tmuxInfo) string {
+	if info.SessionName == "" || info.WindowName == "" {
+		return ""
+	}
+	return info.SessionName + ":" + info.WindowName
 }
 
 func getPaneID() string {
@@ -287,14 +300,14 @@ func getTmuxInfo() tmuxInfo {
 	if pane == "" {
 		return tmuxInfo{}
 	}
-	out, err := exec.Command("tmux", "display-message", "-t", pane, "-p", "#{session_name}:#{window_name}").Output()
+	out, err := exec.Command("tmux", "display-message", "-t", pane, "-p", "#{session_name}\t#{window_name}\t#{window_id}").Output()
 	if err != nil {
 		return tmuxInfo{PaneID: pane}
 	}
-	parts := strings.SplitN(strings.TrimSpace(string(out)), ":", 2)
+	parts := strings.Split(strings.TrimSpace(string(out)), "\t")
 	info := tmuxInfo{PaneID: pane}
-	if len(parts) == 2 {
-		info.SessionName, info.WindowName = parts[0], parts[1]
+	if len(parts) == 3 {
+		info.SessionName, info.WindowName, info.WindowID = parts[0], parts[1], parts[2]
 	}
 	return info
 }

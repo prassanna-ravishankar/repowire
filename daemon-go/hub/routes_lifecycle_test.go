@@ -21,12 +21,14 @@ func (f fakePaneLister) ListAllPanes() []PaneInfo { return f.panes }
 // registerPanePeer registers a peer occupying the given tmux pane in a circle.
 func registerPanePeer(t *testing.T, reg *peer.Registry, circle, pane string) proto.PeerID {
 	t.Helper()
+	tmuxSession := circle + ":window"
 	id, _, err := reg.AllocateAndRegister(context.Background(), peer.AllocateParams{
-		Circle:  circle,
-		Backend: proto.AgentClaudeCode,
-		Role:    proto.RoleAgent,
-		PaneID:  &pane,
-		Machine: "test",
+		Circle:      circle,
+		Backend:     proto.AgentClaudeCode,
+		Role:        proto.RoleAgent,
+		PaneID:      &pane,
+		TmuxSession: &tmuxSession,
+		Machine:     "test",
 	})
 	if err != nil {
 		t.Fatalf("AllocateAndRegister: %v", err)
@@ -50,7 +52,7 @@ func postLifecycle(t *testing.T, mux *http.ServeMux, path string, body any) *htt
 func TestPaneDiedOfflinesPeer(t *testing.T) {
 	h := newTestHub(t)
 	mux := http.NewServeMux()
-	lh := NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil)
+	lh := NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil, proto.CircleBoundarySession)
 	h.WithLifecycle(lh)
 	h.Routes(mux)
 
@@ -86,7 +88,7 @@ func TestPaneDiedForgetsSpawnOwnership(t *testing.T) {
 	mux := http.NewServeMux()
 	var forgotten []string
 	lh := NewLifecycleHandler(h.reg, h.transport, fakePaneLister{},
-		func(pane string) { forgotten = append(forgotten, pane) }, nil)
+		func(pane string) { forgotten = append(forgotten, pane) }, nil, proto.CircleBoundarySession)
 	h.WithLifecycle(lh)
 	h.Routes(mux)
 
@@ -104,7 +106,7 @@ func TestPaneDiedForgetsSpawnOwnership(t *testing.T) {
 func TestPaneDiedNoPeerStillOK(t *testing.T) {
 	h := newTestHub(t)
 	mux := http.NewServeMux()
-	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil))
+	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil, proto.CircleBoundarySession))
 	h.Routes(mux)
 
 	rec := postLifecycle(t, mux, "/hooks/lifecycle/pane-died", paneDiedRequest{PaneID: "%999"})
@@ -117,7 +119,7 @@ func TestPaneDiedNoPeerStillOK(t *testing.T) {
 func TestPaneDiedRejectsRemote(t *testing.T) {
 	h := newTestHub(t)
 	mux := http.NewServeMux()
-	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil))
+	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil, proto.CircleBoundarySession))
 	h.Routes(mux)
 
 	buf, _ := json.Marshal(paneDiedRequest{PaneID: "%1"})
@@ -137,7 +139,7 @@ func TestSessionClosedInconclusiveProbe(t *testing.T) {
 	h := newTestHub(t)
 	mux := http.NewServeMux()
 	// Empty lister → probe returns nothing → inconclusive.
-	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil))
+	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil, proto.CircleBoundarySession))
 	h.Routes(mux)
 
 	id := registerPanePeer(t, h.reg, "circle-a", "%7")
@@ -158,7 +160,7 @@ func TestSessionClosedSpuriousWhenSessionLive(t *testing.T) {
 	mux := http.NewServeMux()
 	// The session still has a live pane → spurious.
 	lister := fakePaneLister{panes: []PaneInfo{{PaneID: "%7", Session: "circle-a"}}}
-	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, lister, nil, nil))
+	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, lister, nil, nil, proto.CircleBoundarySession))
 	h.Routes(mux)
 
 	id := registerPanePeer(t, h.reg, "circle-a", "%7")
@@ -172,6 +174,40 @@ func TestSessionClosedSpuriousWhenSessionLive(t *testing.T) {
 	}
 }
 
+func TestSessionClosedSelectsPeersByTmuxSession(t *testing.T) {
+	h := newTestHub(t)
+	mux := http.NewServeMux()
+	lister := fakePaneLister{panes: []PaneInfo{{PaneID: "%other", Session: "other"}}}
+	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, lister, nil, nil, proto.CircleBoundaryWindow))
+	h.Routes(mux)
+	id := registerPanePeer(t, h.reg, "window-7", "%7")
+	h.reg.UpdateTmuxSession(context.Background(), id, "closing-session:window")
+	legacyPane := "%8"
+	legacyID, _, err := h.reg.AllocateAndRegister(context.Background(), peer.AllocateParams{
+		Circle: "closing-session", Backend: proto.AgentClaudeCode, Role: proto.RoleAgent,
+		PaneID: &legacyPane, Machine: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelatedID := registerPanePeer(t, h.reg, "closing-session", "%9")
+	h.reg.UpdateTmuxSession(context.Background(), unrelatedID, "other:window")
+
+	rec := postLifecycle(t, mux, "/hooks/lifecycle/session-closed", sessionClosedRequest{SessionName: "closing-session"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if p, _ := h.reg.GetPeer(id); p.Status != proto.StatusOffline {
+		t.Fatalf("peer status = %s, want OFFLINE", p.Status)
+	}
+	if p, _ := h.reg.GetPeer(legacyID); p.Status != proto.StatusOffline {
+		t.Fatalf("legacy peer status = %s, want OFFLINE", p.Status)
+	}
+	if p, _ := h.reg.GetPeer(unrelatedID); p.Status == proto.StatusOffline {
+		t.Fatal("same-named logical circle in another tmux session was offlined")
+	}
+}
+
 // TestSessionClosedOfflinesGonePane: session gone from tmux AND the peer's pane
 // absent → offline it; a peer whose pane is still live is spared.
 func TestSessionClosedOfflinesGonePane(t *testing.T) {
@@ -182,7 +218,7 @@ func TestSessionClosedOfflinesGonePane(t *testing.T) {
 	lister := fakePaneLister{panes: []PaneInfo{
 		{PaneID: "%8", Session: "other"},
 	}}
-	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, lister, nil, nil))
+	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, lister, nil, nil, proto.CircleBoundarySession))
 	h.Routes(mux)
 
 	dead := registerPanePeer(t, h.reg, "circle-a", "%7")  // pane gone → offline
@@ -204,7 +240,7 @@ func TestSessionClosedOfflinesGonePane(t *testing.T) {
 func TestSessionRenamedReCircles(t *testing.T) {
 	h := newTestHub(t)
 	mux := http.NewServeMux()
-	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil))
+	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil, proto.CircleBoundarySession))
 	h.Routes(mux)
 
 	id := registerPanePeer(t, h.reg, "old-circle", "%3")
@@ -219,16 +255,15 @@ func TestSessionRenamedReCircles(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d", rec.Code)
 	}
-	if p, _ := h.reg.GetPeer(id); p.Circle != "new-circle" {
-		t.Fatalf("peer should have moved to new-circle, got %s", p.Circle)
+	if p, _ := h.reg.GetPeer(id); p.Circle != "new-circle" || derefString(p.TmuxSession) != "new-circle:window" {
+		t.Fatalf("renamed peer = %+v", p)
 	}
 }
 
-// TestWindowRenamedNoOp: window-renamed must not touch peer state.
-func TestWindowRenamedNoOp(t *testing.T) {
+func TestWindowRenamedUpdatesLocatorButNotCircle(t *testing.T) {
 	h := newTestHub(t)
 	mux := http.NewServeMux()
-	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil))
+	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil, proto.CircleBoundarySession))
 	h.Routes(mux)
 
 	id := registerPanePeer(t, h.reg, "circle-x", "%5")
@@ -242,13 +277,34 @@ func TestWindowRenamedNoOp(t *testing.T) {
 	if p.Circle != "circle-x" {
 		t.Fatalf("window rename must NOT change circle, got %s", p.Circle)
 	}
+	if derefString(p.TmuxSession) != "circle-x:renamed-window" {
+		t.Fatalf("tmux session = %q", derefString(p.TmuxSession))
+	}
+}
+
+func TestWindowBoundarySessionRenameKeepsCircle(t *testing.T) {
+	h := newTestHub(t)
+	mux := http.NewServeMux()
+	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil, proto.CircleBoundaryWindow))
+	h.Routes(mux)
+	id := registerPanePeer(t, h.reg, "window-9", "%9")
+
+	rec := postLifecycle(t, mux, "/hooks/lifecycle/session-renamed",
+		sessionRenamedRequest{NewName: "renamed-session", PaneIDs: []string{"%9"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	p, _ := h.reg.GetPeer(id)
+	if p.Circle != "window-9" || derefString(p.TmuxSession) != "renamed-session:window" {
+		t.Fatalf("renamed window-boundary peer = %+v", p)
+	}
 }
 
 // TestNameFieldLengthCap: a name field over 64 chars is rejected with 422.
 func TestNameFieldLengthCap(t *testing.T) {
 	h := newTestHub(t)
 	mux := http.NewServeMux()
-	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil))
+	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil, proto.CircleBoundarySession))
 	h.Routes(mux)
 
 	long := make([]byte, 65)

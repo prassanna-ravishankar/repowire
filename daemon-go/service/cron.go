@@ -1,9 +1,6 @@
 package service
 
-// Small dependency-free five-field cron parser for repowire schedules. Port of
-// repowire/daemon/schedule_cron.py. Kept in the hub package because the schedules
-// routes + firing loop are the only callers; no Go cron lib is in go.mod, so a
-// compact parser is the lazier honest choice than adding one.
+// Small dependency-free five-field cron parser for repowire schedules.
 //
 // Supported syntax is standard five-field cron:
 //
@@ -19,14 +16,8 @@ import (
 	"time"
 )
 
-// CronExpressionError is returned when a cron expression is not supported.
-// Mirrors schedule_cron.CronExpressionError (a ValueError subclass in Python).
-type CronExpressionError struct{ msg string }
-
-func (e *CronExpressionError) Error() string { return e.msg }
-
 func cronErr(format string, args ...any) error {
-	return &CronExpressionError{msg: fmt.Sprintf(format, args...)}
+	return fmt.Errorf(format, args...)
 }
 
 var cronAliases = map[string]string{
@@ -37,7 +28,7 @@ var cronAliases = map[string]string{
 	"@monthly":  "0 0 1 * *",
 }
 
-// NormalizeCron normalizes supported aliases and whitespace. Mirrors normalize_cron.
+// NormalizeCron normalizes supported aliases and whitespace.
 func NormalizeCron(expr string) string {
 	raw := strings.Join(strings.Fields(strings.TrimSpace(expr)), " ")
 	if alias, ok := cronAliases[strings.ToLower(raw)]; ok {
@@ -46,8 +37,7 @@ func NormalizeCron(expr string) string {
 	return raw
 }
 
-// ValidateCron validates and returns the normalized cron expression. Mirrors
-// validate_cron.
+// ValidateCron validates and returns the normalized cron expression.
 func ValidateCron(expr string) (string, error) {
 	norm := NormalizeCron(expr)
 	fields := strings.Fields(norm)
@@ -73,8 +63,7 @@ func ValidateCron(expr string) (string, error) {
 	return norm, nil
 }
 
-// NextFireAfter returns the next UTC minute matching expr strictly after the
-// given time. Mirrors next_fire_after.
+// NextFireAfter returns the next UTC minute matching expr strictly after the given time.
 func NextFireAfter(expr string, after time.Time) (time.Time, error) {
 	norm, err := ValidateCron(expr)
 	if err != nil {
@@ -113,7 +102,7 @@ func NextFireAfter(expr string, after time.Time) (time.Time, error) {
 
 // cronDayMatches matches cron day fields. When both day-of-month and
 // day-of-week are restricted, cron treats them as OR; when either is "*", the
-// restricted field alone controls. Mirrors _day_matches.
+// restricted field alone controls.
 func cronDayMatches(day, weekday int, days, weekdays map[int]bool, domAny, dowAny bool) bool {
 	if domAny && dowAny {
 		return true
@@ -127,8 +116,7 @@ func cronDayMatches(day, weekday int, days, weekdays map[int]bool, domAny, dowAn
 	return days[day] || weekdays[weekday]
 }
 
-// parseCronField parses one field into the set of integers it matches. Mirrors
-// _parse_field.
+// parseCronField parses one field into the set of integers it matches.
 func parseCronField(raw string, minValue, maxValue int, label string) (map[int]bool, error) {
 	values := map[int]bool{}
 	for _, part := range strings.Split(raw, ",") {

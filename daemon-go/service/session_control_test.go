@@ -16,7 +16,7 @@ type scRegistry struct {
 	byPane map[string]*proto.Peer
 }
 
-func (r *scRegistry) ResolvePeerStrict(identifier string, circle *string) ([]*proto.Peer, error) {
+func (r *scRegistry) ResolvePeerStrict(identifier string, circle *string) []*proto.Peer {
 	var out []*proto.Peer
 	for _, p := range r.peers {
 		if string(p.PeerID) == identifier || string(p.DisplayName) == identifier {
@@ -26,7 +26,7 @@ func (r *scRegistry) ResolvePeerStrict(identifier string, circle *string) ([]*pr
 			out = append(out, p)
 		}
 	}
-	return out, nil
+	return out
 }
 func (r *scRegistry) GetAllPeers() []*proto.Peer { return r.peers }
 func (r *scRegistry) GetPeer(id proto.PeerID) (*proto.Peer, bool) {
@@ -103,7 +103,7 @@ func TestSessionControlBackendResumePassesResumeCommandToSpawn(t *testing.T) {
 	ctx := context.Background()
 	store := scStore(t)
 	projectPath := t.TempDir()
-	circle := "default"
+	circle := "window-7"
 	sourceKind := "calendar"
 	pane := "%42"
 
@@ -163,7 +163,7 @@ func TestSessionControlBackendResumePassesResumeCommandToSpawn(t *testing.T) {
 		"runtime_session_id": "runtime-123",
 		"capability":         map[string]any{"supported": true, "strategy": "codex_resume"},
 	}}
-	control := NewSessionControl(reg, spawner, store).WithResume(resume)
+	control := NewSessionControl(reg, spawner, store).WithResume(resume.Resolve)
 
 	acq, err := control.AcquireExecutorForWork(ctx, work, map[string]any{"path": projectPath, "backend": string(proto.AgentCodex)}, "tester")
 	if err != nil {
@@ -178,7 +178,7 @@ func TestSessionControlBackendResumePassesResumeCommandToSpawn(t *testing.T) {
 	}
 }
 
-func TestLocalResumeResolverRequiresCodexSessionFile(t *testing.T) {
+func TestResolveLocalResumeRequiresCodexSessionFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	projectPath := t.TempDir()
@@ -192,15 +192,14 @@ func TestLocalResumeResolverRequiresCodexSessionFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	resolver := LocalResumeResolver{}
-	plan, ok := resolver.Resolve(proto.AgentCodex, projectPath, "runtime-123", nil, map[string]any{"supported": true})
+	plan, ok := ResolveLocalResume(proto.AgentCodex, projectPath, "runtime-123", nil, map[string]any{"supported": true})
 	if !ok {
 		t.Fatal("expected codex session file to validate as resumable")
 	}
 	if plan["runtime_session_id"] != "runtime-123" {
 		t.Fatalf("runtime_session_id = %v, want runtime-123", plan["runtime_session_id"])
 	}
-	if _, ok := resolver.Resolve(proto.AgentCodex, projectPath, "missing", nil, map[string]any{"supported": true}); ok {
+	if _, ok := ResolveLocalResume(proto.AgentCodex, projectPath, "missing", nil, map[string]any{"supported": true}); ok {
 		t.Fatal("missing codex session id must not validate")
 	}
 }

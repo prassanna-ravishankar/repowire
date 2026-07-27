@@ -37,23 +37,31 @@ func requireMCPAdmin(h *Hub, cfg config.MCPHTTPConfig, caller, tool string) erro
 	if cfg.AllowDangerousTools {
 		return nil
 	}
-	return fmt.Errorf("%s is disabled for anonymous HTTP MCP; enable daemon.mcp_http.allow_dangerous_tools or use the local identity shim", tool)
+	return fmt.Errorf("%s is disabled for anonymous HTTP MCP; enable daemon.mcp_http.allow_dangerous_tools or use a registered peer identity", tool)
 }
 
-// mcpSpawnCircle keeps agent spawns in the caller's circle. Direct /spawn
-// callers (the CLI) intentionally bypass this MCP-specific policy.
-func (h *Hub) mcpSpawnCircle(caller, requested string) (string, error) {
+// mcpSpawnPlacement keeps agent spawns in the caller's circle and, when
+// available, carries its pane so window-boundary placement stays server-derived.
+// Direct /spawn callers (the CLI) intentionally bypass this MCP-specific policy.
+func (h *Hub) mcpSpawnPlacement(caller, requested string) (circle, sourcePane string, err error) {
 	if caller == mcpDefaultIdentity {
-		return firstNonempty(requested, "global"), nil
+		if requested == "" {
+			return "", "", fmt.Errorf("spawn_peer requires circle for anonymous HTTP MCP")
+		}
+		return requested, "", nil
 	}
 	peer, err := h.reg.GetPeerByName(caller, nil)
 	if err != nil || peer == nil {
-		return "", fmt.Errorf("spawn_peer caller is not registered")
+		return "", "", fmt.Errorf("spawn_peer caller is not registered")
 	}
-	if peer.Role != proto.RoleOrchestrator && requested != "" && requested != peer.Circle {
-		return "", fmt.Errorf("spawn_peer agents may only spawn in their own circle (%s)", peer.Circle)
+	if !peer.Role.BypassesCircles() && requested != "" && requested != peer.Circle {
+		return "", "", fmt.Errorf("spawn_peer agents may only spawn in their own circle (%s)", peer.Circle)
 	}
-	return firstNonempty(requested, peer.Circle), nil
+	circle = firstNonempty(requested, peer.Circle)
+	if circle == peer.Circle {
+		sourcePane = derefString(peer.PaneID)
+	}
+	return circle, sourcePane, nil
 }
 
 type mcpAskArgs struct {
@@ -331,7 +339,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := required("path", a.Path); err != nil {
 			return "", err
 		}
-		circle, err := h.mcpSpawnCircle(caller, a.Circle)
+		circle, sourcePane, err := h.mcpSpawnPlacement(caller, a.Circle)
 		if err != nil {
 			return "", err
 		}
@@ -340,7 +348,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 			value := proto.AgentType(a.Backend)
 			backend = &value
 		}
-		result, err := h.spawnPeer(ctx, SpawnRequest{Path: a.Path, Backend: backend, Profile: strPtr(a.Profile), Command: strPtr(a.Command), Circle: circle, Message: strPtr(a.Message)})
+		result, err := h.spawnPeer(ctx, SpawnRequest{Path: a.Path, Backend: backend, Profile: strPtr(a.Profile), Command: strPtr(a.Command), Circle: circle, Message: strPtr(a.Message), SourcePane: sourcePane})
 		if err != nil {
 			return "", err
 		}
@@ -403,7 +411,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if (a.FireAt == "") == (a.Cron == "") {
 			return "", fmt.Errorf("provide exactly one of fire_at or cron")
 		}
-		result, err := h.schedules.create(ctx, scheduleCreateRequest{FromPeer: caller, ToPeer: caller, Text: a.Text, FireAt: strPtr(a.FireAt), Cron: strPtr(a.Cron), Kind: firstNonempty(a.Kind, "notify"), Circle: strPtr(a.Circle)})
+		result, err := h.createSchedule(ctx, scheduleCreateRequest{FromPeer: caller, ToPeer: caller, Text: a.Text, FireAt: strPtr(a.FireAt), Cron: strPtr(a.Cron), Kind: firstNonempty(a.Kind, "notify"), Circle: strPtr(a.Circle)})
 		return result.ScheduleID, err
 	})
 	addMCPTool(srv, "schedule_list", "List pending scheduled messages.", func(ctx context.Context, caller string, a mcpScheduleListArgs) (string, error) {
@@ -411,7 +419,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if a.MineOnly == nil || *a.MineOnly {
 			fromPeer = &caller
 		}
-		result, err := h.schedules.list(ctx, fromPeer)
+		result, err := h.listSchedules(ctx, fromPeer)
 		if err != nil {
 			return "", err
 		}
@@ -436,7 +444,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := required("schedule_id", a.ScheduleID); err != nil {
 			return "", err
 		}
-		err := h.schedules.delete(ctx, a.ScheduleID)
+		err := h.deleteSchedule(ctx, a.ScheduleID)
 		return "deleted schedule " + a.ScheduleID, err
 	})
 	addMCPTool(srv, "share_session", "Generate a relay share link for a peer.", func(ctx context.Context, caller string, a mcpShareArgs) (string, error) {
@@ -478,7 +486,7 @@ func scheduleTool(h *Hub, cfg config.MCPHTTPConfig, cron bool) func(context.Cont
 		if !cron && a.FireAt == "" {
 			return "", fmt.Errorf("fire_at is required")
 		}
-		result, err := h.schedules.create(ctx, scheduleCreateRequest{FromPeer: caller, ToPeer: a.ToPeer, Text: a.Text, FireAt: strPtr(a.FireAt), Cron: strPtr(a.Cron), Kind: firstNonempty(a.Kind, "notify"), Circle: strPtr(a.Circle)})
+		result, err := h.createSchedule(ctx, scheduleCreateRequest{FromPeer: caller, ToPeer: a.ToPeer, Text: a.Text, FireAt: strPtr(a.FireAt), Cron: strPtr(a.Cron), Kind: firstNonempty(a.Kind, "notify"), Circle: strPtr(a.Circle)})
 		return result.ScheduleID, err
 	}
 }

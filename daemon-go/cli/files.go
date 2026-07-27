@@ -287,11 +287,15 @@ func runOrchestrator(argv []string) int {
 		if err != nil {
 			return fatal(err)
 		}
-		circle := first(a.string("circle", ""), stringAny(settings["circle"]), currentTmuxCircle())
+		currentCircle := currentTmuxCircle()
+		circle := first(a.string("circle", ""), stringAny(settings["circle"]), currentCircle)
 		if circle == "" {
 			return fatal(fmt.Errorf("orchestrator start requires a circle in orchestrator.yaml or --circle"))
 		}
 		body := map[string]any{"path": workspace, "backend": backend, "circle": circle, "role": "orchestrator"}
+		if pane := os.Getenv("TMUX_PANE"); pane != "" && circle == currentCircle {
+			body["source_pane"] = pane
+		}
 		if profile := first(a.string("profile", ""), stringAny(settings["profile"])); profile != "" {
 			body["profile"] = profile
 		}

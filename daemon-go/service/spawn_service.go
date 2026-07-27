@@ -14,9 +14,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,18 +33,19 @@ func sha256Hex16(s string) string {
 }
 
 // SpawnConfig is the input to a spawn. Path must be a caller-pre-resolved
-// absolute project dir; Circle is the tmux session name; Command empty → backend
-// default; Message nil → backend default warmup; PeerID is the same-id reconnect
-// hint for durable restart.
+// absolute project dir; Circle is the logical routing circle. Window boundary
+// spawns split TargetPane; session-boundary spawns create a window in Circle.
 type SpawnConfig struct {
-	Path    string
-	Circle  string
-	Backend proto.AgentType
-	Command string
-	Message *string
-	Role    proto.PeerRole
-	PeerID  *proto.PeerID
-	Env     map[string]string
+	Path           string
+	Circle         string
+	CircleBoundary proto.CircleBoundary
+	TargetPane     string
+	Backend        proto.AgentType
+	Command        string
+	Message        *string
+	Role           proto.PeerRole
+	PeerID         *proto.PeerID
+	Env            map[string]string
 }
 
 // SpawnResult is the outcome of a spawn: the (possibly suffixed) display name, the
@@ -52,6 +55,7 @@ type SpawnResult struct {
 	DisplayName string
 	TmuxSession string
 	PaneID      string
+	Circle      string
 	Message     *string
 }
 
@@ -100,10 +104,20 @@ func AsSpawnError(err error) (*SpawnError, bool) {
 type SpawnService struct {
 	tmux         TmuxController
 	own          PaneOwnership
+	boundary     proto.CircleBoundary
 	commands     map[proto.AgentType]string
 	allowedPaths []string
 	profiles     map[proto.AgentType]map[string][]string
 	env          map[string]string
+}
+
+// WithCircleBoundary applies the daemon-wide circle boundary to every spawn path.
+func (s *SpawnService) WithCircleBoundary(boundary proto.CircleBoundary) *SpawnService {
+	if boundary == "" {
+		boundary = proto.CircleBoundarySession
+	}
+	s.boundary = boundary
+	return s
 }
 
 func (s *SpawnService) WithRuntimeConfig(profiles map[proto.AgentType]map[string][]string, env map[string]string) *SpawnService {
@@ -116,7 +130,7 @@ func (s *SpawnService) WithRuntimeConfig(profiles map[proto.AgentType]map[string
 // the spawn allowlist root set. Empty commands OR empty allowedPaths means spawn
 // is disabled (ValidatePath 403s).
 func NewSpawnService(tmux TmuxController, own PaneOwnership, commands map[proto.AgentType]string, allowedPaths []string) *SpawnService {
-	return &SpawnService{tmux: tmux, own: own, commands: commands, allowedPaths: allowedPaths}
+	return &SpawnService{tmux: tmux, own: own, boundary: proto.CircleBoundarySession, commands: commands, allowedPaths: allowedPaths}
 }
 
 // Ownership exposes the PaneOwnership store so the routes (kill/restart/switch)
@@ -276,12 +290,59 @@ func commandExists(command, pathValue string) bool {
 	return false
 }
 
-// Spawn ports SpawnService.spawn: validate the path, resolve the command, hand
-// off to the TmuxController (which writes the spawn hint + send-keys), then on a
-// real pane add it to the spawned set + record durable ownership. Warmup is a
-// caller/transport concern (no asyncio background task here). A tmux failure is a
-// 500. Returns the SpawnResult so the route can finish registration.
+// PrepareSpawn applies the daemon-wide boundary and proves window placement.
+func (s *SpawnService) PrepareSpawn(cfg SpawnConfig) (SpawnConfig, error) {
+	return s.prepareSpawn(cfg, false)
+}
+
+func (s *SpawnService) prepareSpawn(cfg SpawnConfig, replacement bool) (SpawnConfig, error) {
+	cfg.CircleBoundary = s.boundary
+	if cfg.CircleBoundary != proto.CircleBoundaryWindow {
+		return cfg, nil
+	}
+	if s.tmux == nil {
+		return SpawnConfig{}, &SpawnError{Status: 503, Detail: "tmux controller is not configured"}
+	}
+	if cfg.TargetPane == "" {
+		id := strings.TrimPrefix(cfg.Circle, "window-")
+		if id == "" || strings.Trim(id, "0123456789") != "" {
+			return SpawnConfig{}, &SpawnError{Status: 422, Detail: "window-boundary circle must be a stable window-N id"}
+		}
+		cfg.TargetPane = "@" + id
+	}
+	evidence := s.tmux.ProbePane(cfg.TargetPane)
+	if evidence == nil {
+		return SpawnConfig{}, &SpawnError{Status: 409, Detail: "window-boundary spawn target is not live"}
+	}
+	circle := proto.TmuxCircle(proto.CircleBoundaryWindow, evidence.SessionName, evidence.WindowID)
+	if circle == "" {
+		return SpawnConfig{}, &SpawnError{Status: 409, Detail: "window-boundary spawn target has invalid tmux evidence"}
+	}
+	if cfg.Circle == "" {
+		cfg.Circle = circle
+	} else if circle != cfg.Circle {
+		return SpawnConfig{}, &SpawnError{Status: 409, Detail: "window-boundary spawn target contradicts the requested circle"}
+	}
+	if replacement && evidence.WindowPanes < 2 {
+		return SpawnConfig{}, &SpawnError{Status: 409, Detail: "cannot replace the last pane in a window-boundary circle without destroying its spawn target"}
+	}
+	cfg.TargetPane = evidence.WindowID
+	return cfg, nil
+}
+
+// PrepareReplacement additionally proves that killing the current pane cannot
+// destroy the window that the replacement spawn targets.
+func (s *SpawnService) PrepareReplacement(cfg SpawnConfig) (SpawnConfig, error) {
+	return s.prepareSpawn(cfg, true)
+}
+
+// Spawn validates, launches through tmux, and records durable pane ownership.
 func (s *SpawnService) Spawn(cfg SpawnConfig) (SpawnResult, error) {
+	var err error
+	cfg, err = s.PrepareSpawn(cfg)
+	if err != nil {
+		return SpawnResult{}, err
+	}
 	resolvedPath, err := s.ValidatePath(cfg.Path)
 	if err != nil {
 		return SpawnResult{}, err
@@ -333,6 +394,7 @@ func (s *SpawnService) Spawn(cfg SpawnConfig) (SpawnResult, error) {
 			PeerID:      peerID,
 		})
 	}
+	result.Circle = cfg.Circle
 	return result, nil
 }
 
@@ -428,30 +490,42 @@ type realTmuxController struct{}
 // NewRealTmuxController returns the production TmuxController (shells to `tmux`).
 func NewRealTmuxController() TmuxController { return realTmuxController{} }
 
-// Spawn creates (or reuses) the circle session, opens a uniquely-named window in
-// the project dir, writes the spawn hint, and send-keys the launch command.
-// Returns the pane id for ownership recording. A nil error means the window +
-// pane were created and the command was typed.
+// Spawn creates a pane according to the configured circle boundary, writes the
+// spawn hint, and send-keys the launch command.
 func (realTmuxController) Spawn(cfg SpawnConfig) (SpawnResult, error) {
 	displayName := filepath.Base(cfg.Path)
-
-	created, err := ensureSession(cfg.Circle, cfg.Path, displayName)
-	if err != nil {
-		return SpawnResult{}, err
-	}
-
-	windowName := displayName
-	if !created {
-		windowName = uniqueWindowName(cfg.Circle, displayName)
-		if err := tmuxRun("new-window", "-t", cfg.Circle, "-n", windowName, "-c", cfg.Path); err != nil {
-			return SpawnResult{}, fmt.Errorf("tmux new-window: %w", err)
+	spawnDisplayName := displayName
+	paneID, target := "", ""
+	if cfg.CircleBoundary == proto.CircleBoundaryWindow {
+		var err error
+		paneID, err = tmuxQuery(windowSplitArgs(cfg.TargetPane, cfg.Path)...)
+		if err != nil || paneID == "" {
+			return SpawnResult{}, fmt.Errorf("tmux split-window: %w", err)
 		}
-	}
+		target, err = tmuxQuery("display-message", "-t", paneID, "-p", "#{session_name}:#{window_name}")
+		if err != nil || target == "" {
+			return SpawnResult{}, fmt.Errorf("tmux could not resolve window for %s: %w", paneID, err)
+		}
+	} else {
+		created, err := ensureSession(cfg.Circle, cfg.Path, displayName)
+		if err != nil {
+			return SpawnResult{}, err
+		}
 
-	target := cfg.Circle + ":" + windowName
-	paneID, err := tmuxQuery("display-message", "-t", target, "-p", "#{pane_id}")
-	if err != nil || paneID == "" {
-		return SpawnResult{}, fmt.Errorf("tmux could not resolve pane for %s: %w", target, err)
+		windowName := displayName
+		if !created {
+			windowName = uniqueWindowName(cfg.Circle, displayName)
+			if err := tmuxRun("new-window", "-t", cfg.Circle, "-n", windowName, "-c", cfg.Path); err != nil {
+				return SpawnResult{}, fmt.Errorf("tmux new-window: %w", err)
+			}
+		}
+		spawnDisplayName = windowName
+
+		target = cfg.Circle + ":" + windowName
+		paneID, err = tmuxQuery("display-message", "-t", target, "-p", "#{pane_id}")
+		if err != nil || paneID == "" {
+			return SpawnResult{}, fmt.Errorf("tmux could not resolve pane for %s: %w", target, err)
+		}
 	}
 
 	// Drop the spawn hint BEFORE send-keys so a fast-registering runtime sees it.
@@ -468,11 +542,15 @@ func (realTmuxController) Spawn(cfg SpawnConfig) (SpawnResult, error) {
 	}
 
 	return SpawnResult{
-		DisplayName: windowName,
+		DisplayName: spawnDisplayName,
 		TmuxSession: target,
 		PaneID:      paneID,
 		Message:     cfg.Message,
 	}, nil
+}
+
+func windowSplitArgs(targetPane, path string) []string {
+	return []string{"split-window", "-P", "-F", "#{pane_id}", "-t", targetPane, "-c", path}
 }
 
 // KillPane wraps `tmux kill-pane -t <pane>`; true on success. Pane ids survive
@@ -535,7 +613,7 @@ func commandWithEnv(command string, env map[string]string) string {
 		return command
 	}
 	var assignments []string
-	for _, key := range keysSorted(env) {
+	for _, key := range slices.Sorted(maps.Keys(env)) {
 		if key == "" || env[key] == "" {
 			continue
 		}

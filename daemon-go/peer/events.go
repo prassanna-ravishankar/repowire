@@ -39,19 +39,6 @@ type eventBuffer struct {
 	subscribers map[chan struct{}]struct{}
 }
 
-// eventLog lazily initialises and returns the registry's in-memory event window,
-// mirroring recOrZero so tests that never touch events pay nothing.
-func (r *Registry) eventLog() *eventBuffer {
-	// MUST NOT take r.mu: appendEvent (the primary caller) runs while r.mu is
-	// already held, and r.mu is non-reentrant — guarding this init with r.mu
-	// deadlocked AllocateAndRegister/MarkOffline. sync.Once gates the lazy-init
-	// independently of the registry lock; the eventBuffer has its own mutex.
-	r.evlogOnce.Do(func() {
-		r.evlog = &eventBuffer{}
-	})
-	return r.evlog
-}
-
 // push appends a fully-formed event map, evicting the oldest beyond capacity,
 // then wakes every live SSE subscriber with a non-blocking send.
 func (b *eventBuffer) push(ev map[string]any) {
@@ -158,7 +145,7 @@ func (r *Registry) AddEvent(ctx context.Context, eventType string, data map[stri
 // writing the rows again or waking subscribers during daemon startup.
 func (r *Registry) HydrateEvents(events []map[string]any) {
 	for _, event := range events {
-		r.eventLog().push(event)
+		r.evlog.push(event)
 	}
 }
 
@@ -170,13 +157,13 @@ func (r *Registry) HydrateEvents(events []map[string]any) {
 // happens in push() OUTSIDE r.mu, so AddEvent (which may run while r.mu is held)
 // never re-enters the registry lock.
 func (r *Registry) SubscribeEvents() (<-chan struct{}, func()) {
-	return r.eventLog().subscribe()
+	return r.evlog.subscribe()
 }
 
 // GetEvents returns a snapshot of the full buffered window (last 500), oldest
 // first. Mirrors PeerRegistry.get_events.
 func (r *Registry) GetEvents() []map[string]any {
-	b := r.eventLog()
+	b := r.evlog
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	out := make([]map[string]any, len(b.events))
@@ -188,7 +175,7 @@ func (r *Registry) GetEvents() []map[string]any {
 // evicted from the buffer, it returns the full window (gap-recovery fallback).
 // Mirrors PeerRegistry.events_since / EventLog.events_since.
 func (r *Registry) EventsSince(eventID string) []map[string]any {
-	b := r.eventLog()
+	b := r.evlog
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if eventID == "" {

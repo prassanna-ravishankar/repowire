@@ -118,7 +118,9 @@ let projectPath: string = ""
 let serverUrl: string | null = null
 let opencodeClient: OpenCodeClient | null = null
 let activeModel: { providerID: string; modelID: string } | null = null
-let circle: string = "default"
+let circle: string = ""
+let circleSource = "tmux"
+let circleBoundary: "session" | "window" = "session"
 let tmuxSession: string | undefined = undefined
 let tmuxPane: string | undefined = undefined
 
@@ -168,13 +170,24 @@ function savePeerId(projectPath: string, sessionId: string, id: string): void {
 
 // HTTP helper for daemon
 async function daemon(p: string, body?: object) {
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`
   const res = await fetch(`${DAEMON_URL}${p}`, {
     method: body ? "POST" : "GET",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) throw new Error(`Daemon error: ${res.status}`)
   return res.json()
+}
+
+async function configuredCircleBoundary(): Promise<"session" | "window"> {
+  try {
+    const config = await daemon("/spawn/config")
+    return config?.circle_boundary === "window" ? "window" : "session"
+  } catch {
+    return "session"
+  }
 }
 
 function activeModelMetadata(): Record<string, unknown> | null {
@@ -225,6 +238,7 @@ function connectPeerWebSocket(conn: PeerConn) {
       type: "connect",
       display_name: conn.peerName,
       circle,
+      circle_source: circleSource,
       backend: "opencode",
       path: projectPath,
     }
@@ -320,7 +334,7 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
     )
   } else if (msgType === "ping") {
     if (conn.ws?.readyState === WebSocket.OPEN) {
-      conn.ws.send(JSON.stringify({ type: "pong", pane_alive: true }))
+      conn.ws.send(JSON.stringify({ type: "pong", pane_alive: true, circle }))
     }
   } else if (msgType === "notify" || msgType === "broadcast") {
     const fromPeer = (data.from_peer as string) || "unknown"
@@ -716,15 +730,19 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
   const su = (rest as { serverUrl?: URL | string }).serverUrl
   if (su) serverUrl = typeof su === "string" ? su : su.toString()
 
-  // Derive circle from tmux session name (matches Claude Code hooks).
+  circleBoundary = await configuredCircleBoundary()
+
+  // Derive circle from the configured tmux boundary.
   tmuxPane = process.env.TMUX_PANE
   if (process.env.TMUX && tmuxPane) {
     try {
       const { execFileSync } = require("child_process")
-      const session = execFileSync("tmux", ["display-message", "-t", tmuxPane, "-p", "#S"], { encoding: "utf-8" }).trim()
-      const window = execFileSync("tmux", ["display-message", "-t", tmuxPane, "-p", "#W"], { encoding: "utf-8" }).trim()
+      const tmux = execFileSync("tmux", ["display-message", "-t", tmuxPane, "-p", "#{session_name}\t#{window_name}\t#{window_id}"], { encoding: "utf-8" }).trim()
+      const [session, window, windowId] = tmux.split("\t")
       if (session) {
-        circle = session
+        const id = /^@(\d+)$/.exec(windowId || "")
+        circle = circleBoundary === "window" ? (id ? `window-${id[1]}` : "") : session
+        circleSource = circleBoundary === "window" ? "tmux_window" : "tmux"
         if (window) tmuxSession = `${session}:${window}`
       }
     } catch (e) {

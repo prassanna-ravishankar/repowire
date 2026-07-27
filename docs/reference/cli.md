@@ -88,7 +88,7 @@ repowire peer deliveries [--peer-id ID | --pane-id PANE | --peer NAME] [--json]
 repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 ```
 
-`peer whoami`, `peer asks`, `peer deliveries`, and `peer ack` are the shellable mesh primitives intended for agents whose hooks don't fire today (notably [Antigravity `agy`](../use/features/connect-antigravity.md)). They wrap daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/deliveries/pending`, `/ack`) and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`. Use `peer whoami --register --backend antigravity` once at session start to self-onboard; it uses the current tmux session or requires `--circle` outside tmux.
+`peer whoami`, `peer asks`, `peer deliveries`, and `peer ack` are the shellable mesh primitives intended for agents whose hooks don't fire today (notably [Antigravity `agy`](../use/features/connect-antigravity.md)). They wrap daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/deliveries/pending`, `/ack`) and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`. Use `peer whoami --register --backend antigravity` once at session start to self-onboard; it uses the configured tmux session/window boundary or requires `--circle` outside tmux.
 
 `peer deliveries` drains one-shot queued deliveries for a peer. Draining deletes the queued rows to avoid duplicate paste/replay. For queued asks, `peer deliveries` shows the original ask text once, while `peer asks` continues to show the open ask until the agent closes it with `peer ack` or the MCP `ack` tool.
 
@@ -98,7 +98,7 @@ For Antigravity interop checks, use `peer whoami`, `peer deliveries`, `peer asks
 
 `peer ask` is a blocking CLI compatibility helper for quick manual checks. It uses the daemon's ask/answer lifecycle under the hood, waits for the recipient to `ack` with a reply, then prints the reply text. For agent-to-agent work, prefer the MCP [`ask`](mcp-tools.md#ask) tool, which returns a correlation id immediately and lets the conversation continue asynchronously.
 
-`peer new` spawns a tmux-backed peer through the daemon `/spawn` route using the configured `daemon.spawn.commands.<backend>` command. Pass `--profile NAME` to append args from `daemon.spawn.profiles.<backend>.<name>`, such as a faster or more capable model selection. Antigravity uses the same daemon pre-registration path as MCP spawn, so it appears immediately as a CLI-fallback peer while upstream hooks are pending. `--command` remains accepted as a deprecated explicit override and bypasses daemon registration/profile resolution.
+`peer new` spawns a tmux-backed peer through the daemon `/spawn` route using the configured `daemon.spawn.commands.<backend>` command. Inside tmux it discovers the current session or window according to `daemon.circle_boundary`; window mode also forwards the current pane internally so the daemon can place the new peer in that window. There is no separate window flag. Outside tmux, pass an explicit circle in session mode; window mode requires tmux window evidence. Pass `--profile NAME` to append args from `daemon.spawn.profiles.<backend>.<name>`, such as a faster or more capable model selection. Antigravity uses the same daemon pre-registration path as MCP spawn, so it appears immediately as a CLI-fallback peer while upstream hooks are pending. `--command` remains accepted as a deprecated explicit override and bypasses daemon registration/profile resolution.
 
 `peer describe` accepts either a display name (`clitcoin-claude-code`) or a peer
 id (`repow-5-abd4d21e`). Pass `--circle` when a display name is ambiguous across
@@ -283,8 +283,8 @@ repowire orchestrator start [--runtime RUNTIME] [--profile PROFILE] [--circle CI
 binary; `--force` first moves the current workspace to a timestamped backup.
 `diff` reports Repowire-owned template files that differ or are missing.
 `start` selects an installed runtime (Pi first when its Repowire extension is
-installed), uses `--circle`, the configured circle, or the current tmux session
-in that order, and spawns with `role=orchestrator`. Outside tmux, a circle must
+installed), uses `--circle`, the configured circle, or the current tmux
+session/window boundary in that order, and spawns with `role=orchestrator`. Outside tmux, a circle must
 be chosen explicitly or configured; Repowire never invents one.
 
 ## `repowire orchestrator persona`

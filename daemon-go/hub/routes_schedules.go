@@ -33,26 +33,13 @@ type scheduleStore interface {
 // scheduleWaker is the wake seam (the scheduler's Wake). *Scheduler satisfies it.
 type scheduleWaker interface{ Wake() }
 
-// ScheduleRoutes owns the /schedules endpoints. It depends only on the store and
-// the scheduler wake — no dependency on the spawn/jobs areas, so it lands in
-// parallel.
-type ScheduleRoutes struct {
-	store     scheduleStore
-	scheduler scheduleWaker
-}
-
-// NewScheduleRoutes wires the route group.
-func NewScheduleRoutes(store scheduleStore, scheduler scheduleWaker) *ScheduleRoutes {
-	return &ScheduleRoutes{store: store, scheduler: scheduler}
-}
-
 // Register attaches the endpoints to the mux, each wrapped by the hub's auth
 // middleware. POST/GET share the "/schedules" pattern (dispatched by method);
 // DELETE uses the trailing-id pattern.
-func (sr *ScheduleRoutes) Register(mux *http.ServeMux, auth func(http.HandlerFunc) http.HandlerFunc) {
-	mux.HandleFunc("POST /schedules", auth(sr.handleCreate))
-	mux.HandleFunc("GET /schedules", auth(sr.handleList))
-	mux.HandleFunc("DELETE /schedules/{schedule_id}", auth(sr.handleScheduleByID))
+func (h *Hub) registerScheduleRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /schedules", h.requireAuth(h.handleScheduleCreate))
+	mux.HandleFunc("GET /schedules", h.requireAuth(h.handleScheduleList))
+	mux.HandleFunc("DELETE /schedules/{schedule_id}", h.requireAuth(h.handleScheduleByID))
 }
 
 // ----------------------------------------------------------------------------
@@ -69,46 +56,22 @@ type scheduleCreateRequest struct {
 	Circle   *string `json:"circle"`
 }
 
-type scheduleResponse struct {
-	ScheduleID string  `json:"schedule_id"`
-	FromPeer   string  `json:"from_peer"`
-	ToPeer     string  `json:"to_peer"`
-	Text       string  `json:"text"`
-	FireAt     string  `json:"fire_at"`
-	Kind       string  `json:"kind"`
-	Circle     *string `json:"circle"`
-	Cron       *string `json:"cron"`
-	CreatedAt  string  `json:"created_at"`
-}
-
-func scheduleToResponse(s *state.Schedule) scheduleResponse {
-	return scheduleResponse{
-		ScheduleID: s.ScheduleID,
-		FromPeer:   s.FromPeer,
-		ToPeer:     s.ToPeer,
-		Text:       s.Text,
-		FireAt:     s.FireAt,
-		Kind:       s.Kind,
-		Circle:     s.Circle,
-		Cron:       s.Cron,
-		CreatedAt:  s.CreatedAt,
-	}
-}
+type scheduleResponse = state.Schedule
 
 type scheduleListResponse struct {
-	Schedules []scheduleResponse `json:"schedules"`
+	Schedules []*state.Schedule `json:"schedules"`
 }
 
 // ----------------------------------------------------------------------------
 // Handlers
 // ----------------------------------------------------------------------------
 
-func (sr *ScheduleRoutes) handleCreate(w http.ResponseWriter, r *http.Request) {
+func (h *Hub) handleScheduleCreate(w http.ResponseWriter, r *http.Request) {
 	var req scheduleCreateRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	resp, err := sr.create(r.Context(), req)
+	resp, err := h.createSchedule(r.Context(), req)
 	if err != nil {
 		writeRouteError(w, err)
 		return
@@ -116,14 +79,14 @@ func (sr *ScheduleRoutes) handleCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (sr *ScheduleRoutes) create(ctx context.Context, req scheduleCreateRequest) (scheduleResponse, error) {
-	if sr == nil || sr.store == nil || sr.scheduler == nil {
-		return scheduleResponse{}, routeErr(http.StatusServiceUnavailable, "schedules not configured")
+func (h *Hub) createSchedule(ctx context.Context, req scheduleCreateRequest) (*state.Schedule, error) {
+	if h == nil || h.scheduleStore == nil || h.scheduleWaker == nil {
+		return nil, routeErr(http.StatusServiceUnavailable, "schedules not configured")
 	}
 
 	// Exactly one of fire_at|cron. (nil == nil) and (set && set) both rejected.
 	if (req.FireAt == nil) == (req.Cron == nil) {
-		return scheduleResponse{}, routeErr(http.StatusBadRequest, "provide exactly one of fire_at or cron")
+		return nil, routeErr(http.StatusBadRequest, "provide exactly one of fire_at or cron")
 	}
 
 	kind := req.Kind
@@ -140,41 +103,41 @@ func (sr *ScheduleRoutes) create(ctx context.Context, req scheduleCreateRequest)
 		// next_fire_after. Store the normalized cron so reschedule reparses cleanly.
 		norm, err := service.ValidateCron(*req.Cron)
 		if err != nil {
-			return scheduleResponse{}, routeErr(http.StatusBadRequest, err.Error())
+			return nil, routeErr(http.StatusBadRequest, err.Error())
 		}
 		next, err := service.NextFireAfter(norm, time.Now().UTC())
 		if err != nil {
-			return scheduleResponse{}, routeErr(http.StatusBadRequest, err.Error())
+			return nil, routeErr(http.StatusBadRequest, err.Error())
 		}
 		fireAt = next
 		cron = &norm
 	} else {
 		parsed, err := parseFireAt(*req.FireAt)
 		if err != nil {
-			return scheduleResponse{}, routeErr(http.StatusBadRequest, err.Error())
+			return nil, routeErr(http.StatusBadRequest, err.Error())
 		}
 		fireAt = parsed
 	}
 
-	sched, err := sr.store.CreateSchedule(
+	sched, err := h.scheduleStore.CreateSchedule(
 		ctx, req.FromPeer, req.ToPeer, req.Text, fireAt, kind, req.Circle, cron,
 	)
 	if err != nil {
 		// Invalid kind (and any other store-side validation) → 400, matching the
 		// Python ValueError → HTTPException(400) mapping.
-		return scheduleResponse{}, routeErr(http.StatusBadRequest, err.Error())
+		return nil, routeErr(http.StatusBadRequest, err.Error())
 	}
 
-	sr.scheduler.Wake()
-	return scheduleToResponse(sched), nil
+	h.scheduleWaker.Wake()
+	return sched, nil
 }
 
-func (sr *ScheduleRoutes) handleList(w http.ResponseWriter, r *http.Request) {
+func (h *Hub) handleScheduleList(w http.ResponseWriter, r *http.Request) {
 	var fromPeer *string
 	if v := r.URL.Query().Get("from_peer"); v != "" {
 		fromPeer = &v
 	}
-	out, err := sr.list(r.Context(), fromPeer)
+	out, err := h.listSchedules(r.Context(), fromPeer)
 	if err != nil {
 		writeRouteError(w, err)
 		return
@@ -182,29 +145,25 @@ func (sr *ScheduleRoutes) handleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (sr *ScheduleRoutes) list(ctx context.Context, fromPeer *string) (scheduleListResponse, error) {
-	if sr == nil || sr.store == nil {
+func (h *Hub) listSchedules(ctx context.Context, fromPeer *string) (scheduleListResponse, error) {
+	if h == nil || h.scheduleStore == nil {
 		return scheduleListResponse{}, routeErr(http.StatusServiceUnavailable, "schedules not configured")
 	}
-	scheds, err := sr.store.ListSchedules(ctx, fromPeer)
+	scheds, err := h.scheduleStore.ListSchedules(ctx, fromPeer)
 	if err != nil {
 		return scheduleListResponse{}, routeErr(http.StatusInternalServerError, err.Error())
 	}
-	out := scheduleListResponse{Schedules: make([]scheduleResponse, 0, len(scheds))}
-	for _, s := range scheds {
-		out.Schedules = append(out.Schedules, scheduleToResponse(s))
-	}
-	return out, nil
+	return scheduleListResponse{Schedules: scheds}, nil
 }
 
 // handleScheduleByID handles DELETE /schedules/{id}.
-func (sr *ScheduleRoutes) handleScheduleByID(w http.ResponseWriter, r *http.Request) {
+func (h *Hub) handleScheduleByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("schedule_id")
 	if id == "" {
 		writeError(w, http.StatusNotFound, "No schedule: ")
 		return
 	}
-	err := sr.delete(r.Context(), id)
+	err := h.deleteSchedule(r.Context(), id)
 	if err != nil {
 		writeRouteError(w, err)
 		return
@@ -212,18 +171,18 @@ func (sr *ScheduleRoutes) handleScheduleByID(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
-func (sr *ScheduleRoutes) delete(ctx context.Context, id string) error {
-	if sr == nil || sr.store == nil || sr.scheduler == nil {
+func (h *Hub) deleteSchedule(ctx context.Context, id string) error {
+	if h == nil || h.scheduleStore == nil || h.scheduleWaker == nil {
 		return routeErr(http.StatusServiceUnavailable, "schedules not configured")
 	}
-	removed, err := sr.store.DeleteSchedule(ctx, id)
+	removed, err := h.scheduleStore.DeleteSchedule(ctx, id)
 	if err != nil {
 		return routeErr(http.StatusInternalServerError, err.Error())
 	}
 	if removed == nil {
 		return routeErr(http.StatusNotFound, "No schedule: "+id)
 	}
-	sr.scheduler.Wake()
+	h.scheduleWaker.Wake()
 	return nil
 }
 

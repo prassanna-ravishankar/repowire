@@ -6,39 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"strings"
-
-	"github.com/google/uuid"
 )
-
-// opNowISO renders the canonical Python isoformat (UTC) used by the operations store.
-func opNowISO() string {
-	return nowISO()
-}
-
-// newOperationID mirrors operations.new_operation_id: "op-" + 12 hex chars.
-func newOperationID() string {
-	return "op-" + opHex12()
-}
-
-func newAttemptID() string {
-	return "op-attempt-" + opHex12()
-}
-
-// opHex12 mirrors uuid4().hex[:12] — the dashless hex form Python slices.
-func opHex12() string {
-	return strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
-}
-
-// opJSONDumps mirrors work_store.json_dumps: compact, sorted keys.
-func opJSONDumps(v any) (string, error) {
-	return marshalJSON(v)
-}
-
-// opJSONLoadsObject mirrors json_loads(raw, {}) — returns a map, {} on empty/non-object.
-func opJSONLoadsObject(raw string) map[string]any {
-	return decodeJSONObject(raw)
-}
 
 // opJSONLoadsArray mirrors json_loads(raw, []) — returns a slice, [] on empty/non-array.
 func opJSONLoadsArray(raw string) []map[string]any {
@@ -109,11 +77,11 @@ func scanOperation(row interface {
 		OperationID: operationID,
 		Kind:        kind,
 		State:       state,
-		Target:      opJSONLoadsObject(targetJSON),
+		Target:      decodeJSONObject(targetJSON),
 		Attempts:    opJSONLoadsArray(attemptsJSON),
-		Result:      opJSONLoadsObject(resultJSON),
-		Error:       opJSONLoadsObject(errorJSON),
-		Provenance:  opJSONLoadsObject(provJSON),
+		Result:      decodeJSONObject(resultJSON),
+		Error:       decodeJSONObject(errorJSON),
+		Provenance:  decodeJSONObject(provJSON),
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 	}
@@ -141,9 +109,9 @@ func (s *Store) CreateOperation(ctx context.Context, kind string, target, proven
 	if provenance == nil {
 		provenance = map[string]any{}
 	}
-	now := opNowISO()
+	now := nowISO()
 	op := &Operation{
-		OperationID: newOperationID(),
+		OperationID: newID("op-"),
 		Kind:        kind,
 		State:       "queued",
 		Target:      target,
@@ -155,23 +123,23 @@ func (s *Store) CreateOperation(ctx context.Context, kind string, target, proven
 		UpdatedAt:   now,
 	}
 
-	targetJSON, err := opJSONDumps(op.Target)
+	targetJSON, err := marshalJSON(op.Target)
 	if err != nil {
 		return nil, fmt.Errorf("marshal target: %w", err)
 	}
-	attemptsJSON, err := opJSONDumps(op.Attempts)
+	attemptsJSON, err := marshalJSON(op.Attempts)
 	if err != nil {
 		return nil, fmt.Errorf("marshal attempts: %w", err)
 	}
-	resultJSON, err := opJSONDumps(op.Result)
+	resultJSON, err := marshalJSON(op.Result)
 	if err != nil {
 		return nil, fmt.Errorf("marshal result: %w", err)
 	}
-	errorJSON, err := opJSONDumps(op.Error)
+	errorJSON, err := marshalJSON(op.Error)
 	if err != nil {
 		return nil, fmt.Errorf("marshal error: %w", err)
 	}
-	provJSON, err := opJSONDumps(op.Provenance)
+	provJSON, err := marshalJSON(op.Provenance)
 	if err != nil {
 		return nil, fmt.Errorf("marshal provenance: %w", err)
 	}
@@ -259,11 +227,11 @@ func (s *Store) StartAttempt(ctx context.Context, operationID string, strategy *
 	}
 	attempts := append([]map[string]any{}, op.Attempts...)
 	attempts = append(attempts, map[string]any{
-		"attempt_id":   newAttemptID(),
+		"attempt_id":   newID("op-attempt-"),
 		"state":        "running",
 		"strategy":     opStrategyValue(strategy),
 		"detail":       detail,
-		"started_at":   opNowISO(),
+		"started_at":   nowISO(),
 		"completed_at": nil,
 		"error":        map[string]any{},
 	})
@@ -284,7 +252,7 @@ func (s *Store) CompleteOperation(ctx context.Context, operationID string, strat
 	if result == nil {
 		result = map[string]any{}
 	}
-	now := opNowISO()
+	now := nowISO()
 	attempts := append([]map[string]any{}, op.Attempts...)
 	if n := len(attempts); n > 0 {
 		last := opCloneMap(attempts[n-1])
@@ -313,7 +281,7 @@ func (s *Store) FailOperation(ctx context.Context, operationID, state string, st
 	if opErr == nil {
 		opErr = map[string]any{}
 	}
-	now := opNowISO()
+	now := nowISO()
 	attempts := append([]map[string]any{}, op.Attempts...)
 	if n := len(attempts); n > 0 {
 		last := opCloneMap(attempts[n-1])
@@ -341,7 +309,7 @@ func (s *Store) updateOperation(
 	opErr map[string]any,
 	completedAt *string,
 ) (*Operation, error) {
-	now := opNowISO()
+	now := nowISO()
 	if attempts == nil {
 		attempts = op.Attempts
 	}
@@ -352,15 +320,15 @@ func (s *Store) updateOperation(
 		opErr = op.Error
 	}
 
-	attemptsJSON, err := opJSONDumps(attempts)
+	attemptsJSON, err := marshalJSON(attempts)
 	if err != nil {
 		return nil, fmt.Errorf("marshal attempts: %w", err)
 	}
-	resultJSON, err := opJSONDumps(result)
+	resultJSON, err := marshalJSON(result)
 	if err != nil {
 		return nil, fmt.Errorf("marshal result: %w", err)
 	}
-	errorJSON, err := opJSONDumps(opErr)
+	errorJSON, err := marshalJSON(opErr)
 	if err != nil {
 		return nil, fmt.Errorf("marshal error: %w", err)
 	}

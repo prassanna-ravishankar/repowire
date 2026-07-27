@@ -67,7 +67,7 @@ func (h *Hub) resumeSession(w http.ResponseWriter, r *http.Request, id string, r
 		runtimeID = *binding.RuntimeSessionID
 	}
 	backend := proto.AgentType(binding.Backend)
-	plan, ok := (service.LocalResumeResolver{}).Resolve(backend, binding.ProjectPath, runtimeID, &binding.RepowireSessionID, binding.ResumeCapability)
+	plan, ok := service.ResolveLocalResume(backend, binding.ProjectPath, runtimeID, &binding.RepowireSessionID, binding.ResumeCapability)
 	if !ok {
 		writeJSONError(w, http.StatusConflict, "resume_unavailable: runtime session is unsupported or stale")
 		return
@@ -109,7 +109,7 @@ func (h *Hub) resumeSession(w http.ResponseWriter, r *http.Request, id string, r
 	}
 	spawned, err := h.spawn.svc.Spawn(service.SpawnConfig{Path: binding.ProjectPath, Backend: backend, Command: command, Circle: circle, Message: req.Message, Role: role, PeerID: peerID})
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		h.writeSpawnError(w, err)
 		return
 	}
 	response["action"] = "spawned"

@@ -7,6 +7,7 @@ package proto
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,35 @@ type DisplayName string
 
 func (p PeerID) String() string      { return string(p) }
 func (d DisplayName) String() string { return string(d) }
+
+// CircleBoundary selects which tmux container defines the implicit circle.
+type CircleBoundary string
+
+const (
+	CircleBoundarySession CircleBoundary = "session"
+	CircleBoundaryWindow  CircleBoundary = "window"
+)
+
+func (b CircleBoundary) Valid() bool {
+	return b == CircleBoundarySession || b == CircleBoundaryWindow
+}
+
+// TmuxCircle returns the circle implied by tmux evidence. Window IDs are
+// server-unique and stable across window renames and index changes.
+func TmuxCircle(boundary CircleBoundary, sessionName, windowID string) string {
+	switch boundary {
+	case CircleBoundarySession:
+		return sessionName
+	case CircleBoundaryWindow:
+		id := strings.TrimPrefix(windowID, "@")
+		if id == "" || strings.Trim(id, "0123456789") != "" {
+			return ""
+		}
+		return "window-" + id
+	default:
+		return ""
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Typed enums. String values MUST match the Python wire contract exactly.

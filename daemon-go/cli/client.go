@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
+	"github.com/repowire/repowire/daemon-go/proto"
 )
 
 type args struct {
@@ -148,14 +149,27 @@ func first(values ...string) string {
 }
 
 func currentTmuxCircle() string {
-	if os.Getenv("TMUX_PANE") == "" {
+	pane := os.Getenv("TMUX_PANE")
+	if pane == "" {
 		return ""
 	}
-	out, err := exec.Command("tmux", "display-message", "-p", "#{session_name}").Output()
+	cfg, err := config.Load()
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	out, err := exec.Command("tmux", "display-message", "-t", pane, "-p", "#{session_name}\t#{window_id}").Output()
+	if err != nil {
+		return ""
+	}
+	return tmuxCircleFromOutput(cfg.Daemon.CircleBoundary, string(out))
+}
+
+func tmuxCircleFromOutput(boundary proto.CircleBoundary, output string) string {
+	parts := strings.Split(strings.TrimSpace(output), "\t")
+	if len(parts) != 2 {
+		return ""
+	}
+	return proto.TmuxCircle(boundary, parts[0], parts[1])
 }
 func anySlice(value any) []any { items, _ := value.([]any); return items }
 func addQuery(q url.Values, key, value string) {

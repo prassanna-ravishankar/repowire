@@ -19,6 +19,9 @@ func TestLoadMissingConfigUsesDefaults(t *testing.T) {
 	if !cfg.Daemon.MCPHTTP.RequireAuth {
 		t.Fatalf("mcp_http.require_auth default must stay true")
 	}
+	if cfg.Daemon.CircleBoundary != "session" {
+		t.Fatalf("circle boundary = %q, want session", cfg.Daemon.CircleBoundary)
+	}
 	if cfg.Relay.URL != defaultRelayURL {
 		t.Fatalf("relay url = %q, want %q", cfg.Relay.URL, defaultRelayURL)
 	}
@@ -31,6 +34,7 @@ func TestLoadConfigYAML(t *testing.T) {
 daemon:
   host: 0.0.0.0
   port: 9999
+  circle_boundary: window
   auth_token: secret
   spawn:
     commands:
@@ -62,6 +66,9 @@ slack:
 	if cfg.Daemon.Host != "0.0.0.0" || cfg.Daemon.Port != 9999 || cfg.Daemon.AuthToken != "secret" {
 		t.Fatalf("daemon config not loaded: %+v", cfg.Daemon)
 	}
+	if cfg.Daemon.CircleBoundary != "window" {
+		t.Fatalf("circle boundary = %q, want window", cfg.Daemon.CircleBoundary)
+	}
 	if cfg.Daemon.Spawn.Commands["codex"] == "" || len(cfg.Daemon.Spawn.AllowedPaths) != 1 {
 		t.Fatalf("spawn config not loaded: %+v", cfg.Daemon.Spawn)
 	}
@@ -83,6 +90,7 @@ func TestLoadEnvOverridesYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	t.Setenv("REPOWIRE_CONFIG", path)
 	t.Setenv("REPOWIRE_DAEMON__PORT", "8888")
+	t.Setenv("REPOWIRE_DAEMON__CIRCLE_BOUNDARY", "window")
 	t.Setenv("REPOWIRE_AUTH_TOKEN", "env-token")
 	t.Setenv("REPOWIRE_SPAWN_COMMANDS", `{"codex":"codex"}`)
 	t.Setenv("REPOWIRE_SPAWN_ALLOWED_PATHS", "/a,/b")
@@ -114,6 +122,9 @@ daemon:
 	if cfg.Daemon.Port != 8888 || cfg.Daemon.AuthToken != "env-token" {
 		t.Fatalf("env override failed: %+v", cfg.Daemon)
 	}
+	if cfg.Daemon.CircleBoundary != "window" {
+		t.Fatalf("circle boundary env override = %q", cfg.Daemon.CircleBoundary)
+	}
 	if got := cfg.Daemon.Spawn.CommandsJSON(); got != `{"codex":"codex"}` {
 		t.Fatalf("commands json = %s", got)
 	}
@@ -131,5 +142,16 @@ daemon:
 	}
 	if cfg.Slack.BotToken != "slack-env-token" || cfg.Slack.AppToken != "slack-env-app-token" || cfg.Slack.ChannelID != "C999" {
 		t.Fatalf("slack env overrides failed: %+v", cfg.Slack)
+	}
+}
+
+func TestLoadRejectsInvalidCircleBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("REPOWIRE_CONFIG", path)
+	if err := os.WriteFile(path, []byte("daemon:\n  circle_boundary: pane\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(); err == nil {
+		t.Fatal("invalid circle boundary was accepted")
 	}
 }

@@ -244,13 +244,9 @@ func (s *Scheduler) sleep(ctx context.Context, d time.Duration) (stopped bool) {
 	}
 }
 
-// parseScheduleFireAt parses the stored ISO-8601 fire_at. The Go store writes
-// RFC3339Nano UTC; tolerate the broader RFC3339 too.
+// parseScheduleFireAt parses the stored ISO-8601 fire_at.
 func parseScheduleFireAt(raw string) (time.Time, error) {
-	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
-		return t.UTC(), nil
-	}
-	t, err := time.Parse(time.RFC3339, raw)
+	t, err := time.Parse(time.RFC3339Nano, raw)
 	if err != nil {
 		return time.Time{}, err
 	}

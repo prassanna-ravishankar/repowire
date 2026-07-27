@@ -75,6 +75,25 @@ func TestWireValuesMatchPython(t *testing.T) {
 	}
 }
 
+func TestTmuxCircle(t *testing.T) {
+	if got := TmuxCircle(CircleBoundarySession, "mesh", "@7"); got != "mesh" {
+		t.Fatalf("session circle = %q", got)
+	}
+	if got := TmuxCircle(CircleBoundaryWindow, "mesh", "@7"); got != "window-7" {
+		t.Fatalf("window circle = %q", got)
+	}
+	for _, got := range []string{
+		TmuxCircle(CircleBoundarySession, "", "@7"),
+		TmuxCircle(CircleBoundaryWindow, "mesh", ""),
+		TmuxCircle(CircleBoundaryWindow, "mesh", "not-an-id"),
+		TmuxCircle("other", "mesh", "@7"),
+	} {
+		if got != "" {
+			t.Fatalf("missing/invalid evidence produced %q", got)
+		}
+	}
+}
+
 func TestStatusFrameOmitsNilTurnState(t *testing.T) {
 	raw, err := MarshalFrame(StatusFrame{Type: FrameStatus, Status: StatusOnline})
 	if err != nil {

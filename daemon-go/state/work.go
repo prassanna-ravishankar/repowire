@@ -70,11 +70,6 @@ func validateWorkState(state string) (string, error) {
 	return state, nil
 }
 
-// nowISO matches work_store.now_iso(): RFC3339 with offset, UTC.
-func workNowISO() string {
-	return nowISO()
-}
-
 // newWorkID matches work_store.new_work_id(): "work-" + 12 hex chars.
 func newWorkID() string {
 	var b [6]byte
@@ -160,7 +155,7 @@ func dumpJSONObject(m map[string]any) string {
 	if m == nil {
 		return "{}"
 	}
-	b, err := marshalSorted(m)
+	b, err := marshalJSON(m)
 	if err != nil {
 		return "{}"
 	}
@@ -172,18 +167,11 @@ func dumpJSONArray(a []any) string {
 	if a == nil {
 		return "[]"
 	}
-	b, err := marshalSorted(a)
+	b, err := marshalJSON(a)
 	if err != nil {
 		return "[]"
 	}
 	return b
-}
-
-// marshalSorted produces JSON with sorted object keys and no spaces, matching
-// Python's json.dumps(sort_keys=True, separators=(",", ":")). encoding/json
-// already sorts map keys and omits spaces, so this is a thin wrapper.
-func marshalSorted(v any) (string, error) {
-	return marshalJSON(v)
 }
 
 // loadJSONObject decodes a column into a map, defaulting to empty on null/blank/non-object.
@@ -209,14 +197,6 @@ func loadJSONArray(raw sql.NullString) []any {
 	return []any{}
 }
 
-func nsPtr(s sql.NullString) *string {
-	if !s.Valid {
-		return nil
-	}
-	v := s.String
-	return &v
-}
-
 const workColumns = `work_id, title, kind, state, state_reason, phase, progress_json,
 	progress_events_json, owner_peer_id, assigned_peer_id, repowire_session_id,
 	correlation_id, circle, created_by_peer_id, source_kind, source_id, scope,
@@ -226,7 +206,7 @@ const workColumns = `work_id, title, kind, state, state_reason, phase, progress_
 	completed_at, created_at, updated_at`
 
 // scanWork reads one tracked_work row in workColumns order.
-func scanWork(rows *sql.Rows) (*TrackedWork, error) {
+func scanWork(row interface{ Scan(...any) error }) (*TrackedWork, error) {
 	var (
 		workID, state, visibility, title, kind           string
 		createdAt, updatedAt                             string
@@ -242,7 +222,7 @@ func scanWork(rows *sql.Rows) (*TrackedWork, error) {
 		cancelRequestedAt, cancelRequestedBy             sql.NullString
 		cancellationReason, completedAt                  sql.NullString
 	)
-	if err := rows.Scan(
+	if err := row.Scan(
 		&workID, &title, &kind, &state, &stateReason, &phase, &progressJSON,
 		&progressEventsJSON, &ownerPeerID, &assignedPeerID, &repowireSessionID,
 		&correlationID, &circle, &createdByPeerID, &sourceKind, &sourceID, &scope,
@@ -262,33 +242,33 @@ func scanWork(rows *sql.Rows) (*TrackedWork, error) {
 		Title:                   title,
 		Kind:                    kind,
 		State:                   validated,
-		StateReason:             nsPtr(stateReason),
-		Phase:                   nsPtr(phase),
+		StateReason:             nullStringPtr(stateReason),
+		Phase:                   nullStringPtr(phase),
 		Progress:                loadJSONObject(progressJSON),
 		ProgressEvents:          loadJSONArray(progressEventsJSON),
-		OwnerPeerID:             nsPtr(ownerPeerID),
-		AssignedPeerID:          nsPtr(assignedPeerID),
-		RepowireSessionID:       nsPtr(repowireSessionID),
-		CorrelationID:           nsPtr(correlationID),
-		Circle:                  nsPtr(circle),
-		CreatedByPeerID:         nsPtr(createdByPeerID),
-		SourceKind:              nsPtr(sourceKind),
-		SourceID:                nsPtr(sourceID),
-		Scope:                   nsPtr(scope),
+		OwnerPeerID:             nullStringPtr(ownerPeerID),
+		AssignedPeerID:          nullStringPtr(assignedPeerID),
+		RepowireSessionID:       nullStringPtr(repowireSessionID),
+		CorrelationID:           nullStringPtr(correlationID),
+		Circle:                  nullStringPtr(circle),
+		CreatedByPeerID:         nullStringPtr(createdByPeerID),
+		SourceKind:              nullStringPtr(sourceKind),
+		SourceID:                nullStringPtr(sourceID),
+		Scope:                   nullStringPtr(scope),
 		Visibility:              visibility,
 		Request:                 loadJSONObject(requestJSON),
-		DeadlineAt:              nsPtr(deadlineAt),
-		ExpiresAt:               nsPtr(expiresAt),
-		ResultSummary:           nsPtr(resultSummry),
+		DeadlineAt:              nullStringPtr(deadlineAt),
+		ExpiresAt:               nullStringPtr(expiresAt),
+		ResultSummary:           nullStringPtr(resultSummry),
 		ResultData:              loadJSONObject(resultDataJSON),
 		Error:                   loadJSONObject(errorJSON),
 		Artifacts:               loadJSONArray(artifactsJSON),
 		Provenance:              loadJSONObject(provenanceJSON),
 		CancelRequested:         cancelRequested != 0,
-		CancelRequestedAt:       nsPtr(cancelRequestedAt),
-		CancelRequestedByPeerID: nsPtr(cancelRequestedBy),
-		CancellationReason:      nsPtr(cancellationReason),
-		CompletedAt:             nsPtr(completedAt),
+		CancelRequestedAt:       nullStringPtr(cancelRequestedAt),
+		CancelRequestedByPeerID: nullStringPtr(cancelRequestedBy),
+		CancellationReason:      nullStringPtr(cancellationReason),
+		CompletedAt:             nullStringPtr(completedAt),
 		CreatedAt:               createdAt,
 		UpdatedAt:               updatedAt,
 	}, nil
@@ -296,7 +276,7 @@ func scanWork(rows *sql.Rows) (*TrackedWork, error) {
 
 // CreateWork inserts a new tracked_work row in the "queued" state and returns it.
 func (s *Store) CreateWork(ctx context.Context, in WorkCreate) (*TrackedWork, error) {
-	now := workNowISO()
+	now := nowISO()
 	kind := in.Kind
 	if kind == "" {
 		kind = "general"
@@ -357,15 +337,10 @@ func (s *Store) CreateWork(ctx context.Context, in WorkCreate) (*TrackedWork, er
 // GetWork fetches one tracked_work row, returning (nil, nil) if absent.
 func (s *Store) GetWork(ctx context.Context, workID string) (*TrackedWork, error) {
 	const q = `SELECT ` + workColumns + ` FROM tracked_work WHERE work_id = ?`
-	rows, err := s.db.QueryContext(ctx, q, workID)
-	if err != nil {
-		return nil, fmt.Errorf("get work %s: %w", workID, err)
+	w, err := scanWork(s.db.QueryRowContext(ctx, q, workID))
+	if err == sql.ErrNoRows {
+		return nil, nil
 	}
-	defer rows.Close()
-	if !rows.Next() {
-		return nil, rows.Err()
-	}
-	w, err := scanWork(rows)
 	if err != nil {
 		return nil, fmt.Errorf("scan work %s: %w", workID, err)
 	}
@@ -466,7 +441,7 @@ func (s *Store) UpdateWorkState(ctx context.Context, workID string, u WorkUpdate
 
 	completedAt := existing.CompletedAt
 	if IsTerminalState(u.State) && completedAt == nil {
-		v := workNowISO()
+		v := nowISO()
 		completedAt = &v
 	}
 
@@ -477,7 +452,7 @@ func (s *Store) UpdateWorkState(ctx context.Context, workID string, u WorkUpdate
 			phase = *u.Phase
 		}
 		progressEvents = append(progressEvents, map[string]any{
-			"at":    workNowISO(),
+			"at":    nowISO(),
 			"note":  *u.ProgressNote,
 			"state": u.State,
 			"phase": phase,
@@ -519,7 +494,7 @@ func (s *Store) UpdateWorkState(ctx context.Context, workID string, u WorkUpdate
 		u.State, strOrNil(u.StateReason), strOrNil(u.Phase), dumpJSONObject(progress),
 		dumpJSONArray(progressEvents), strOrNil(resultSummary), dumpJSONObject(resultData),
 		dumpJSONObject(errObj), dumpJSONArray(artifacts), dumpJSONObject(provenance),
-		strOrNil(completedAt), workNowISO(), workID,
+		strOrNil(completedAt), nowISO(), workID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update work %s: %w", workID, err)
@@ -541,7 +516,7 @@ func (s *Store) CancelWork(ctx context.Context, workID string, requestedByPeerID
 	if existing == nil {
 		return nil, nil
 	}
-	requestedAt := workNowISO()
+	requestedAt := nowISO()
 
 	if existing.Terminal() {
 		const q = `UPDATE tracked_work SET
@@ -594,7 +569,7 @@ type AcquireOptions struct {
 // queued/failed/unavailable. Returns (nil, nil) when the work is absent,
 // cancel-requested, in a disallowed state, or not yet due.
 func (s *Store) AcquireForDispatch(ctx context.Context, workID string, opt AcquireOptions) (*TrackedWork, error) {
-	now := workNowISO()
+	now := nowISO()
 	attemptID := opt.AttemptID
 	if attemptID == "" {
 		var b [6]byte
@@ -657,7 +632,7 @@ func (s *Store) AcquireForDispatch(ctx context.Context, workID string, opt Acqui
 	_, err = s.db.ExecContext(ctx, q,
 		"dispatching", "dispatching", "acquired", strOrNil(existing.AssignedPeerID),
 		strOrNil(existing.CorrelationID), dumpJSONObject(provenance), "{}",
-		nil, workNowISO(), workID,
+		nil, nowISO(), workID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("acquire work %s: %w", workID, err)

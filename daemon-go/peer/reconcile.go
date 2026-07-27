@@ -177,11 +177,6 @@ func (r *Registry) WithReconciliation(
 	r.rec.evictMaxAge = evictMaxAge
 }
 
-// recOrZero returns the reconciliation state initialized by NewRegistry.
-func (r *Registry) recOrZero() *reconcileState {
-	return r.rec
-}
-
 // ---------------------------------------------------------------------------
 // Contradiction helpers (transition-only dedup; parallel diagnostics.py).
 // ---------------------------------------------------------------------------
@@ -190,7 +185,7 @@ func (r *Registry) recOrZero() *reconcileState {
 // (peer_id, code) transition. Safe without the registry lock (the contra set has
 // its own lock; appendEvent does not touch registry state).
 func (r *Registry) emitContradictionCode(ctx context.Context, p *proto.Peer, code, severity, detail string) {
-	rec := r.recOrZero()
+	rec := r.rec
 	key := contraKey{id: p.PeerID, code: code}
 	rec.contraMu.Lock()
 	if _, seen := rec.contraEmitted[key]; seen {
@@ -211,7 +206,7 @@ func (r *Registry) emitContradictionCode(ctx context.Context, p *proto.Peer, cod
 
 // clearContradiction forgets one contradiction so a recurrence re-emits once.
 func (r *Registry) clearContradiction(id proto.PeerID, code string) {
-	rec := r.recOrZero()
+	rec := r.rec
 	rec.contraMu.Lock()
 	delete(rec.contraEmitted, contraKey{id: id, code: code})
 	rec.contraMu.Unlock()
@@ -219,7 +214,7 @@ func (r *Registry) clearContradiction(id proto.PeerID, code string) {
 
 // clearAllContradictions drops all contradiction state for a peer (on reap).
 func (r *Registry) clearAllContradictions(id proto.PeerID) {
-	rec := r.recOrZero()
+	rec := r.rec
 	rec.contraMu.Lock()
 	for k := range rec.contraEmitted {
 		if k.id == id {
@@ -240,7 +235,7 @@ func (r *Registry) clearAllContradictions(id proto.PeerID) {
 // makes overlapping triggers safe: the loser returns early so a stash is never
 // sent twice. Best-effort: a failure leaves the stash for the next reconnect/sweep.
 func (r *Registry) redeliverPendingReplies(ctx context.Context, asker proto.PeerID) {
-	rec := r.recOrZero()
+	rec := r.rec
 	if rec.asks == nil || rec.delivery == nil {
 		return
 	}
@@ -313,7 +308,7 @@ func (r *Registry) redeliverPendingReplies(ctx context.Context, asker proto.Peer
 // The Ask is never mutated outside AskTracker locks. On notify error the stash
 // is left exactly as found.
 func (r *Registry) deliverOneStashed(ctx context.Context, ask StashedAsk, asker proto.PeerID, rebind bool) {
-	rec := r.recOrZero()
+	rec := r.rec
 	if ask.PendingReply == nil {
 		return
 	}
@@ -337,7 +332,7 @@ func (r *Registry) deliverOneStashed(ctx context.Context, ask StashedAsk, asker 
 // identity so the reporting ws-hook cannot reconnect it back to life. Returns the
 // number of peers demoted.
 func (r *Registry) demoteUnsafeConnectedPeers(ctx context.Context) int {
-	rec := r.recOrZero()
+	rec := r.rec
 	if r.transport == nil {
 		return 0
 	}
@@ -425,7 +420,7 @@ func (r *Registry) demoteUnsafeConnectedPeers(ctx context.Context) int {
 // backend never emits Stop/AfterAgent. It drives Busy--Stop-->Online through the
 // FSM, ignoring awaiting_input and any peer with recent progress. Returns count.
 func (r *Registry) repairStaleBusyPeers(ctx context.Context) int {
-	rec := r.recOrZero()
+	rec := r.rec
 	if rec.staleBusyTTL <= 0 {
 		return 0
 	}
@@ -479,7 +474,7 @@ func (r *Registry) repairStaleBusyPeers(ctx context.Context) int {
 // Python asyncio.gather to_thread fan-out). Returns the set of peers WITH
 // evidence (spared). A nil paneProbe yields the empty set (no peer spared).
 func (r *Registry) runtimeEvidenceIDs(candidates []*proto.Peer) map[proto.PeerID]struct{} {
-	rec := r.recOrZero()
+	rec := r.rec
 	out := make(map[proto.PeerID]struct{})
 	if rec.paneProbe == nil {
 		return out
@@ -529,7 +524,7 @@ func runtimeMarker(p *proto.Peer) (int, string) {
 // evidence is SPARED; a peer WITHOUT is EVICTED (deleted, NOT retired — that
 // asymmetry vs reap is intentional). Returns count evicted.
 func (r *Registry) evictStalePeers(ctx context.Context) int {
-	rec := r.recOrZero()
+	rec := r.rec
 	if rec.evictMaxAge <= 0 {
 		return 0
 	}
@@ -619,7 +614,7 @@ func (r *Registry) evictStalePeers(ctx context.Context) int {
 // recipient-facing lazy evictor passes includeStashed=false so this path always
 // wins the stashed asks.
 func (r *Registry) emitAndEvictExpiredStashes(ctx context.Context) {
-	rec := r.recOrZero()
+	rec := r.rec
 	if rec.asks == nil {
 		return
 	}

@@ -31,6 +31,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
@@ -72,9 +73,11 @@ type LifecycleTransport interface {
 // transport). Query cancellation cascades through reg.OnOffline, which the hub
 // already wires to the QueryTracker (see NewHubWithTransport).
 type LifecycleHandler struct {
-	reg       *peer.Registry
-	transport LifecycleTransport
-	panes     PaneLister
+	reg             *peer.Registry
+	transport       LifecycleTransport
+	panes           PaneLister
+	boundary        proto.CircleBoundary
+	updatePlacement func(paneID, tmuxSession, circle string)
 
 	// forgetSpawnedPane removes a pane id from the spawn-ownership set on pane
 	// death, so a tmux server restart can't reuse the id and match an externally
@@ -89,6 +92,13 @@ type LifecycleHandler struct {
 	clearPaneRuntimeState func(paneID string)
 }
 
+// WithPlacementUpdater keeps durable pane ownership in sync with tmux rename
+// events. It is optional because lifecycle tests and non-spawn hubs have none.
+func (h *LifecycleHandler) WithPlacementUpdater(fn func(paneID, tmuxSession, circle string)) *LifecycleHandler {
+	h.updatePlacement = fn
+	return h
+}
+
 // NewLifecycleHandler builds the handler. transport severs sockets; panes probes
 // live tmux for the session-closed evidence gate. forgetSpawnedPane and
 // clearPaneRuntimeState may be nil; nil defaults to service.ClearPaneRuntimeState.
@@ -98,6 +108,7 @@ func NewLifecycleHandler(
 	panes PaneLister,
 	forgetSpawnedPane func(paneID string),
 	clearRuntime func(paneID string),
+	boundary proto.CircleBoundary,
 ) *LifecycleHandler {
 	if forgetSpawnedPane == nil {
 		forgetSpawnedPane = func(string) {}
@@ -107,10 +118,14 @@ func NewLifecycleHandler(
 		// meta.json that would otherwise re-prove a reused pane. main need not wire it.
 		clearRuntime = service.ClearPaneRuntimeState
 	}
+	if boundary == "" {
+		boundary = proto.CircleBoundarySession
+	}
 	return &LifecycleHandler{
 		reg:                   reg,
 		transport:             transport,
 		panes:                 panes,
+		boundary:              boundary,
 		forgetSpawnedPane:     forgetSpawnedPane,
 		clearPaneRuntimeState: clearRuntime,
 	}
@@ -147,7 +162,19 @@ func (h *LifecycleHandler) HandlePaneDied(ctx context.Context, paneID string) {
 // close — EVIDENCE-GATED (commit b9e5a66), not event-trusting. See the file
 // header for why blindly trusting the event nukes a live circle.
 func (h *LifecycleHandler) HandleSessionClosed(ctx context.Context, sessionName string) {
-	peers := h.reg.GetPeersByCircle(sessionName)
+	var peers []*proto.Peer
+	for _, p := range h.reg.GetAllPeers() {
+		if p.TmuxSession == nil {
+			if p.Circle == sessionName { // legacy registration without a tmux locator
+				peers = append(peers, p)
+			}
+			continue
+		}
+		session, _, _ := strings.Cut(*p.TmuxSession, ":")
+		if session == sessionName {
+			peers = append(peers, p)
+		}
+	}
 	if len(peers) == 0 {
 		return
 	}
@@ -219,30 +246,54 @@ func (h *LifecycleHandler) HandleSessionClosed(ctx context.Context, sessionName 
 		len(doomed), sessionName, len(peers)-len(doomed))
 }
 
-// HandleSessionRenamed re-circles peers identified by their pane ids. Returns the
-// number of peers moved.
+// HandleSessionRenamed refreshes peer tmux locators; session-boundary circles
+// follow the renamed session while window-boundary circles remain stable.
 func (h *LifecycleHandler) HandleSessionRenamed(ctx context.Context, newName string, paneIDs []string) int {
 	count := 0
 	for _, paneID := range paneIDs {
 		p, ok := h.reg.GetPeerByPane(paneID)
-		if ok && p.Circle != newName {
-			h.reg.SetCircle(ctx, p.PeerID, newName)
-			count++
+		if !ok {
+			continue
 		}
+		window := ""
+		if p.TmuxSession != nil {
+			_, window, _ = strings.Cut(*p.TmuxSession, ":")
+		}
+		tmuxSession := newName
+		if window != "" {
+			tmuxSession += ":" + window
+		}
+		h.reg.UpdateTmuxSession(ctx, p.PeerID, tmuxSession)
+		if h.boundary == proto.CircleBoundarySession && p.Circle != newName {
+			h.reg.SetCircle(ctx, p.PeerID, newName)
+		}
+		circle := p.Circle
+		if h.boundary == proto.CircleBoundarySession {
+			circle = newName
+		}
+		if h.updatePlacement != nil {
+			h.updatePlacement(paneID, tmuxSession, circle)
+		}
+		count++
 	}
 	if count > 0 {
-		log.Printf("session_renamed: moved %d peers → %s", count, newName)
+		log.Printf("session_renamed: updated %d peers → %s", count, newName)
 	}
 	return count
 }
 
-// HandleWindowRenamed is a NO-OP. A window rename must not rewrite peer
-// display_name: it would strip the backend suffix (-claude-code, -codex, …) and
-// collide names across backends sharing a pane group. Session registration is
-// the sole source of peer naming.
-func (h *LifecycleHandler) HandleWindowRenamed(sessionName, newName string, paneIDs []string) {
-	log.Printf("window_renamed ignored: session=%s new_name=%s panes=%d",
-		sessionName, newName, len(paneIDs))
+// HandleWindowRenamed refreshes tmux locators without changing circle or display
+// name; window-boundary circles use the stable window id, not its mutable name.
+func (h *LifecycleHandler) HandleWindowRenamed(ctx context.Context, sessionName, newName string, paneIDs []string) {
+	for _, paneID := range paneIDs {
+		if p, ok := h.reg.GetPeerByPane(paneID); ok {
+			tmuxSession := sessionName + ":" + newName
+			h.reg.UpdateTmuxSession(ctx, p.PeerID, tmuxSession)
+			if h.updatePlacement != nil {
+				h.updatePlacement(paneID, tmuxSession, p.Circle)
+			}
+		}
+	}
 }
 
 // HandleClientDetached logs a client detach. No state change.
@@ -325,7 +376,7 @@ func (lh *LifecycleHandler) serveWindowRenamed(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusUnprocessableEntity, "invalid field")
 		return
 	}
-	lh.HandleWindowRenamed(req.SessionName, req.NewName, req.PaneIDs)
+	lh.HandleWindowRenamed(r.Context(), req.SessionName, req.NewName, req.PaneIDs)
 	writeJSON(w, http.StatusOK, okResponse{OK: true})
 }
 

@@ -7,8 +7,6 @@ import (
 	"maps"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // CalendarEntry is a recurring durable job template that materializes tracked
@@ -39,17 +37,6 @@ type CalendarEntry struct {
 	UpdatedAt            string
 }
 
-// newCalendarID matches Python new_calendar_id(): "cal-" + 12 hex chars.
-func newCalendarID() string {
-	return "cal-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
-}
-
-// calendarNowISO mirrors work_store.now_iso(): datetime.now(timezone.utc).isoformat(),
-// e.g. "2026-06-29T12:34:56.789012+00:00".
-func calendarNowISO() string {
-	return nowISO()
-}
-
 // calendarColumns is the canonical column order for SELECT * round-trips.
 const calendarColumns = `calendar_id, title, kind, state, cron, next_due_at,
 	owner_peer_id, assigned_peer_id, circle, created_by_peer_id,
@@ -65,11 +52,6 @@ func canonicalJSON(v map[string]any) (string, error) {
 		return "{}", nil
 	}
 	return marshalJSON(v)
-}
-
-// jsonObject mirrors json_loads(raw, {}): empty/blank -> {}, non-object -> {}.
-func jsonObject(raw string) map[string]any {
-	return decodeJSONObject(raw)
 }
 
 // calendarParseISO mirrors calendar.py _parse_iso: parse an ISO-8601 timestamp, assume
@@ -108,26 +90,18 @@ func scanCalendarEntry(row interface{ Scan(...any) error }) (*CalendarEntry, err
 	); err != nil {
 		return nil, err
 	}
-	e.OwnerPeerID = nullToPtr(owner)
-	e.AssignedPeerID = nullToPtr(assigned)
-	e.Circle = nullToPtr(circle)
-	e.CreatedByPeerID = nullToPtr(createdBy)
-	e.SourceKind = nullToPtr(sourceKind)
-	e.SourceID = nullToPtr(sourceID)
-	e.Scope = nullToPtr(scope)
-	e.LastOccurrenceWorkID = nullToPtr(lastWorkID)
-	e.LastMaterializedAt = nullToPtr(lastMaterial)
-	e.Request = jsonObject(requestJSON)
-	e.Provenance = jsonObject(provJSON)
+	e.OwnerPeerID = nullStringPtr(owner)
+	e.AssignedPeerID = nullStringPtr(assigned)
+	e.Circle = nullStringPtr(circle)
+	e.CreatedByPeerID = nullStringPtr(createdBy)
+	e.SourceKind = nullStringPtr(sourceKind)
+	e.SourceID = nullStringPtr(sourceID)
+	e.Scope = nullStringPtr(scope)
+	e.LastOccurrenceWorkID = nullStringPtr(lastWorkID)
+	e.LastMaterializedAt = nullStringPtr(lastMaterial)
+	e.Request = decodeJSONObject(requestJSON)
+	e.Provenance = decodeJSONObject(provJSON)
 	return &e, nil
-}
-
-func nullToPtr(n sql.NullString) *string {
-	if !n.Valid {
-		return nil
-	}
-	s := n.String
-	return &s
 }
 
 // CreateCalendarEntry inserts a new active calendar entry. The caller supplies
@@ -135,9 +109,9 @@ func nullToPtr(n sql.NullString) *string {
 // out of scope for this store port). title/kind/cron/nextDueAt are required;
 // the optional pointer fields and request/provenance maps may be nil.
 func (s *Store) CreateCalendarEntry(ctx context.Context, e *CalendarEntry) (*CalendarEntry, error) {
-	now := calendarNowISO()
+	now := nowISO()
 	out := *e
-	out.CalendarID = newCalendarID()
+	out.CalendarID = newID("cal-")
 	out.State = "active"
 	if out.Visibility == "" {
 		out.Visibility = "circle"
@@ -265,7 +239,7 @@ func (s *Store) CancelCalendarEntry(ctx context.Context, calendarID, reason stri
 	if err != nil {
 		return nil, fmt.Errorf("marshal provenance: %w", err)
 	}
-	now := calendarNowISO()
+	now := nowISO()
 	_, err = s.db.ExecContext(ctx,
 		`UPDATE calendar_entries SET state = 'cancelled', provenance_json = ?, updated_at = ? WHERE calendar_id = ?`,
 		provJSON, now, calendarID)
@@ -301,7 +275,7 @@ func (s *Store) UpdateCalendarRuntimeBinding(ctx context.Context, calendarID str
 	if err != nil {
 		return nil, fmt.Errorf("marshal provenance: %w", err)
 	}
-	now := calendarNowISO()
+	now := nowISO()
 	_, err = s.db.ExecContext(ctx,
 		`UPDATE calendar_entries SET provenance_json = ?, updated_at = ? WHERE calendar_id = ?`,
 		provJSON, now, calendarID)

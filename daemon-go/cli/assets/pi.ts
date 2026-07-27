@@ -50,6 +50,8 @@ const SPAWN_HINT_TTL_MS = 300_000;
 // Module state (process-wide, not per-session).
 let projectPath: string = process.cwd();
 let circle = "";
+let circleSource = "tmux";
+let circleBoundary: "session" | "window" = "session";
 let role: string | undefined = undefined;
 let tmuxSession: string | undefined = undefined;
 let tmuxPane: string | undefined = undefined;
@@ -133,9 +135,11 @@ function savePeerId(projectPath: string, sessionId: string, id: string): void {
 }
 
 async function daemon(p: string, body?: object) {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (AUTH_TOKEN) headers.Authorization = "Bearer " + AUTH_TOKEN;
   const res = await fetch(DAEMON_URL + p, {
     method: body ? "POST" : "GET",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -147,6 +151,15 @@ async function daemon(p: string, body?: object) {
     throw new Error("Daemon error " + res.status + suffix);
   }
   return res.json();
+}
+
+async function configuredCircleBoundary(): Promise<"session" | "window"> {
+  try {
+    const config = await daemon("/spawn/config");
+    return config?.circle_boundary === "window" ? "window" : "session";
+  } catch {
+    return "session";
+  }
 }
 
 function sanitizePeerName(name: string): string {
@@ -171,6 +184,7 @@ function connectPeerWebSocket(conn: PeerConn) {
       type: "connect",
       display_name: conn.peerName,
       circle,
+      circle_source: circleSource,
       backend: "pi",
       path: projectPath,
     };
@@ -409,7 +423,7 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
     );
   } else if (msgType === "ping") {
     if (conn.ws?.readyState === WebSocket.OPEN) {
-      conn.ws.send(JSON.stringify({ type: "pong", pane_alive: true }));
+      conn.ws.send(JSON.stringify({ type: "pong", pane_alive: true, circle }));
     }
   } else if (msgType === "notify" || msgType === "broadcast") {
     const fromPeer = (data.from_peer as string) || "unknown";
@@ -583,15 +597,19 @@ export default async function repowireExtension(pi: ExtensionAPI) {
     return undefined;
   }
 
-  // Derive circle from tmux session name (matches Claude Code hooks).
+  circleBoundary = await configuredCircleBoundary();
+
+  // Derive circle from the configured tmux boundary.
   tmuxPane = process.env.TMUX_PANE;
   if (process.env.TMUX && tmuxPane) {
     try {
       const { execFileSync } = require("child_process");
-      const session = execFileSync("tmux", ["display-message", "-t", tmuxPane, "-p", "#S"], { encoding: "utf-8" }).trim();
-      const window = execFileSync("tmux", ["display-message", "-t", tmuxPane, "-p", "#W"], { encoding: "utf-8" }).trim();
+      const tmux = execFileSync("tmux", ["display-message", "-t", tmuxPane, "-p", "#{session_name}\t#{window_name}\t#{window_id}"], { encoding: "utf-8" }).trim();
+      const [session, window, windowId] = tmux.split("\t");
       if (session) {
-        circle = session;
+        const id = /^@(\d+)$/.exec(windowId || "");
+        circle = circleBoundary === "window" ? (id ? "window-" + id[1] : "") : session;
+        circleSource = circleBoundary === "window" ? "tmux_window" : "tmux";
         if (window) tmuxSession = session + ":" + window;
       }
     } catch (e) {
@@ -605,7 +623,10 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   const hint = consumeSpawnHint(projectPath, "pi");
   if (hint) {
     if (hint.role) role = hint.role;
-    if (hint.circle && circle === "default") circle = hint.circle;
+    if (hint.circle && !circle) {
+      circle = hint.circle;
+      circleSource = "spawn_hint";
+    }
   }
 
   // Session lifecycle. session_start fires at boot (reason: "startup"), on
@@ -853,7 +874,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "spawn_peer",
     label: "Repowire: spawn peer",
-    description: "Spawn a new coding session in a different project directory. The backend must be configured in daemon.spawn.commands; if none are configured, spawn is disabled. The spawned agent self-registers shortly after start; use list_peers to confirm and get peer_id. Circle maps to tmux session name and cannot be reassigned after spawn. Pass message with first-turn context; codex needs it or the default warmup to register promptly. After spawn, use ask for tracked work or notify_peer for fire-and-forget prompts, not SendMessage.",
+    description: "Spawn a new coding session in a different project directory. The backend must be configured in daemon.spawn.commands; if none are configured, spawn is disabled. The spawned agent self-registers shortly after start; use list_peers to confirm and get peer_id. Spawn inherits the current circle by default; with window boundaries it also inherits the current tmux window. Pass message with first-turn context; codex needs it or the default warmup to register promptly. After spawn, use ask for tracked work or notify_peer for fire-and-forget prompts, not SendMessage.",
     parameters: Type.Object({
       path: Type.String({ description: "Absolute path to the project directory" }),
       backend: Type.String({ description: "Backend/runtime profile to spawn (claude-code, codex, gemini, antigravity, opencode, pi)" }),
@@ -861,12 +882,17 @@ export default async function repowireExtension(pi: ExtensionAPI) {
       message: Type.Optional(Type.String({ description: "Optional first-turn prompt for the spawned agent" })),
     }),
     async execute(_id, params, _signal, _onUpdate, _ctx) {
-      if (!params.circle && !circle) throw new Error("No current circle; run inside tmux or pass circle explicitly.");
+      const spawnCircle = params.circle || circle;
+      if (!spawnCircle) throw new Error("No current circle; run inside tmux.");
+      if (role !== "orchestrator" && spawnCircle !== circle) {
+        throw new Error("Only orchestrators can spawn outside their current circle.");
+      }
       const body: Record<string, unknown> = {
         path: params.path,
         backend: params.backend,
-        circle: params.circle || circle,
+        circle: spawnCircle,
       };
+      if (tmuxPane && spawnCircle === circle) body.source_pane = tmuxPane;
       if (params.message !== undefined) body.message = params.message;
       const result = await daemon("/spawn", body);
       const name = result.display_name as string;

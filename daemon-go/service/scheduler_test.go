@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -29,7 +30,7 @@ func (f *fakeScheduleStore) CreateSchedule(_ context.Context, fromPeer, toPeer, 
 		kind = "notify"
 	}
 	if kind != "ask" && kind != "notify" {
-		return nil, &CronExpressionError{msg: "kind must be one of [ask notify]; got " + kind}
+		return nil, errors.New("kind must be one of [ask notify]; got " + kind)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()

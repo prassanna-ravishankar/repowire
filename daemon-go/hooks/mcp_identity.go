@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/repowire/repowire/daemon-go/proto"
 )
 
 // MCPIdentity resolves or lazily registers the runtime hosting the stdio shim.
@@ -23,7 +25,15 @@ func MCPIdentity() string {
 	}
 	hint := consumeSpawnHint(cwd, backend)
 	info := getTmuxInfo()
-	circle, source := info.SessionName, "tmux"
+	boundary, err := configuredCircleBoundary()
+	if err != nil {
+		return filepath.Base(cwd)
+	}
+	source := "tmux"
+	if boundary == proto.CircleBoundaryWindow {
+		source = "tmux_window"
+	}
+	circle := proto.TmuxCircle(boundary, info.SessionName, info.WindowID)
 	if circle == "" && paneID != "" && hint != nil {
 		circle, source = stringValue(hint, "circle"), "spawn_hint"
 	}
@@ -33,6 +43,9 @@ func MCPIdentity() string {
 	body := map[string]any{
 		"name": filepath.Base(cwd), "path": cwd, "circle": circle,
 		"circle_source": source, "backend": backend, "agent_pid": agentPID,
+	}
+	if target := tmuxSession(info); target != "" {
+		body["tmux_session"] = target
 	}
 	if paneID != "" {
 		body["pane_id"] = paneID

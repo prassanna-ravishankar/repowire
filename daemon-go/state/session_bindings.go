@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-
-	"github.com/google/uuid"
 )
 
 // BindingStatus is the lifecycle state of a session binding. Mirrors the Python
@@ -44,30 +42,6 @@ type SessionBinding struct {
 	Metadata              map[string]any
 	CreatedAt             string
 	LastSeenAt            string
-}
-
-// sbNowISO renders the same wall-clock form the Python store writes for new rows
-// (datetime.now(timezone.utc).isoformat(), microsecond precision, +00:00 zone).
-func sbNowISO() string {
-	return nowISO()
-}
-
-func sbJSONDumps(v map[string]any) string {
-	if v == nil {
-		v = map[string]any{}
-	}
-	b, err := marshalJSON(v)
-	if err != nil {
-		return "{}"
-	}
-	return b
-}
-
-func sbJSONLoads(raw sql.NullString) map[string]any {
-	if !raw.Valid || raw.String == "" {
-		return map[string]any{}
-	}
-	return decodeJSONObject(raw.String)
 }
 
 // sbMergeDicts mirrors Python _merge_dicts: copy existing, overlay non-nil updates.
@@ -112,32 +86,20 @@ func sbScan(row interface{ Scan(...any) error }) (*SessionBinding, error) {
 		return nil, err
 	}
 	b := &SessionBinding{
-		RepowireSessionID: repowireSessionID,
-		Backend:           backend,
-		ProjectPath:       projectPath,
-		SourceCursor:      sbJSONLoads(sourceCursor),
-		Provenance:        sbJSONLoads(provenance),
-		ResumeCapability:  sbJSONLoads(resumeCapability),
-		Status:            BindingStatus(status),
-		Metadata:          sbJSONLoads(metadata),
-		CreatedAt:         createdAt,
-		LastSeenAt:        lastSeenAt,
-	}
-	if peerID.Valid {
-		v := peerID.String
-		b.PeerID = &v
-	}
-	if execPeerID.Valid {
-		v := execPeerID.String
-		b.CurrentExecutorPeerID = &v
-	}
-	if runtimeSessionID.Valid {
-		v := runtimeSessionID.String
-		b.RuntimeSessionID = &v
-	}
-	if runtimeSourceURI.Valid {
-		v := runtimeSourceURI.String
-		b.RuntimeSourceURI = &v
+		RepowireSessionID:     repowireSessionID,
+		Backend:               backend,
+		ProjectPath:           projectPath,
+		PeerID:                nullStringPtr(peerID),
+		CurrentExecutorPeerID: nullStringPtr(execPeerID),
+		RuntimeSessionID:      nullStringPtr(runtimeSessionID),
+		RuntimeSourceURI:      nullStringPtr(runtimeSourceURI),
+		SourceCursor:          loadJSONObject(sourceCursor),
+		Provenance:            loadJSONObject(provenance),
+		ResumeCapability:      loadJSONObject(resumeCapability),
+		Status:                BindingStatus(status),
+		Metadata:              loadJSONObject(metadata),
+		CreatedAt:             createdAt,
+		LastSeenAt:            lastSeenAt,
 	}
 	return b, nil
 }
@@ -169,7 +131,7 @@ func (s *Store) UpsertObservation(ctx context.Context, obs Observation) (*Sessio
 	}
 	now := obs.ObservedAt
 	if now == "" {
-		now = sbNowISO()
+		now = nowISO()
 	}
 	status := obs.Status
 	if status == "" {
@@ -184,7 +146,7 @@ func (s *Store) UpsertObservation(ctx context.Context, obs Observation) (*Sessio
 	var binding *SessionBinding
 	if existing == nil {
 		binding = &SessionBinding{
-			RepowireSessionID:     fmt.Sprintf("rw-session-%s", strings.ReplaceAll(uuid.NewString(), "-", "")[:12]),
+			RepowireSessionID:     newID("rw-session-"),
 			PeerID:                obs.PeerID,
 			CurrentExecutorPeerID: obs.PeerID,
 			Backend:               obs.Backend,
@@ -231,11 +193,11 @@ func (s *Store) UpsertObservation(ctx context.Context, obs Observation) (*Sessio
 		binding.ProjectPath,
 		strOrNil(binding.RuntimeSessionID),
 		strOrNil(binding.RuntimeSourceURI),
-		sbJSONDumps(binding.SourceCursor),
-		sbJSONDumps(binding.Provenance),
-		sbJSONDumps(binding.ResumeCapability),
+		dumpJSONObject(binding.SourceCursor),
+		dumpJSONObject(binding.Provenance),
+		dumpJSONObject(binding.ResumeCapability),
 		string(binding.Status),
-		sbJSONDumps(binding.Metadata),
+		dumpJSONObject(binding.Metadata),
 		binding.CreatedAt,
 		binding.LastSeenAt,
 	); err != nil {

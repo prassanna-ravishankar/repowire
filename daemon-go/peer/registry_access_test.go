@@ -126,23 +126,23 @@ func TestResolvePeerStrict_Cardinality(t *testing.T) {
 	})
 
 	// 0: no match.
-	if got, _ := r.ResolvePeerStrict("nobody", nil); len(got) != 0 {
+	if got := r.ResolvePeerStrict("nobody", nil); len(got) != 0 {
 		t.Fatalf("no-match: len = %d, want 0", len(got))
 	}
 
 	// 1: peer_id hit is unambiguous even when the name collides.
-	if got, _ := r.ResolvePeerStrict(string(idA), nil); len(got) != 1 || got[0].PeerID != idA {
+	if got := r.ResolvePeerStrict(string(idA), nil); len(got) != 1 || got[0].PeerID != idA {
 		t.Fatalf("peer_id hit: got %d candidates, want 1 == %q", len(got), idA)
 	}
 
 	// N: ambiguous display_name returns all candidates (caller disambiguates).
-	if got, _ := r.ResolvePeerStrict(string(name), nil); len(got) != 2 {
+	if got := r.ResolvePeerStrict(string(name), nil); len(got) != 2 {
 		t.Fatalf("ambiguous name: got %d candidates, want 2", len(got))
 	}
 
 	// 1 after circle scoping.
 	circle := "alpha"
-	if got, _ := r.ResolvePeerStrict(string(name), &circle); len(got) != 1 || got[0].Circle != "alpha" {
+	if got := r.ResolvePeerStrict(string(name), &circle); len(got) != 1 || got[0].Circle != "alpha" {
 		t.Fatalf("circle-scoped: got %d candidates, want 1 in alpha", len(got))
 	}
 }

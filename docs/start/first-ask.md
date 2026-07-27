@@ -29,7 +29,7 @@ Both halves work the same regardless of which runtimes you mix. Claude Code aski
 ## What just happened
 
 1. Both agents' `SessionStart` hooks registered them as peers with the local daemon.
-2. The daemon assigned each a display name (`project-a`, `project-b`) and put them in the same circle (the shared tmux session).
+2. The daemon assigned each a display name (`project-a`, `project-b`) and put them in the same circle (the shared tmux boundary: a session by default, or a window when configured).
 3. The MCP `ask` tool sent the message over HTTP to the daemon, which routed it to `project-b` via the chosen transport. The default hooks transport uses tmux injection for inbound delivery; channel/ACP uses direct channel delivery if you opted in.
 4. The `ack` came back through the same path.
 

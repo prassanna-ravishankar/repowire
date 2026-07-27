@@ -33,9 +33,6 @@ func (f *fakeScheduleStore) CreateSchedule(_ context.Context, fromPeer, toPeer, 
 		kind = "notify"
 	}
 	if kind != "ask" && kind != "notify" {
-		// A plain error suffices here (matches only on message, never type-asserted
-		// by the route handler); service.CronExpressionError's msg field is
-		// unexported and unreachable from this package.
 		return nil, errors.New("kind must be one of [ask notify]; got " + kind)
 	}
 	f.mu.Lock()
@@ -108,10 +105,9 @@ func newScheduleTestRig(t *testing.T) (*httptest.Server, *fakeScheduleStore, *fa
 	t.Helper()
 	store := newFakeScheduleStore()
 	waker := &fakeWaker{}
-	sr := NewScheduleRoutes(store, waker)
+	h := (&Hub{}).WithSchedules(store, waker)
 	mux := http.NewServeMux()
-	identityAuth := func(next http.HandlerFunc) http.HandlerFunc { return next }
-	sr.Register(mux, identityAuth)
+	h.registerScheduleRoutes(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, store, waker

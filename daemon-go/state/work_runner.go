@@ -80,7 +80,7 @@ func (s *Store) UpdateAttempt(ctx context.Context, workID, attemptID string, u A
 		setMap(attempt, "error", u.Error)
 		if u.Status != nil {
 			if _, terminal := attemptTerminalStatuses[*u.Status]; terminal {
-				attempt["completed_at"] = workNowISO()
+				attempt["completed_at"] = nowISO()
 			}
 		}
 		attempts[i] = attempt
@@ -100,7 +100,7 @@ func (s *Store) UpdateAttempt(ctx context.Context, workID, attemptID string, u A
 		// Not the current attempt: persist provenance only, no state cascade.
 		_, err := s.db.ExecContext(ctx,
 			`UPDATE tracked_work SET provenance_json = ?, updated_at = ? WHERE work_id = ?`,
-			dumpJSONObject(provenance), workNowISO(), workID)
+			dumpJSONObject(provenance), nowISO(), workID)
 		if err != nil {
 			return nil, fmt.Errorf("update attempt %s/%s: %w", workID, attemptID, err)
 		}
@@ -122,19 +122,19 @@ func (s *Store) UpdateAttempt(ctx context.Context, workID, attemptID string, u A
 			st = "failed"
 			reason = ptrStr(errReason(u.Error, "dispatch_failed"))
 			if completedAt == nil {
-				completedAt = ptrStr(workNowISO())
+				completedAt = ptrStr(nowISO())
 			}
 		case "unavailable":
 			st = "unavailable"
 			reason = ptrStr(errReason(u.Error, "unavailable"))
 			if completedAt == nil {
-				completedAt = ptrStr(workNowISO())
+				completedAt = ptrStr(nowISO())
 			}
 		case "cancelled":
 			st = "cancelled"
 			reason = ptrStr("cancel_requested")
 			if completedAt == nil {
-				completedAt = ptrStr(workNowISO())
+				completedAt = ptrStr(nowISO())
 			}
 		}
 	}
@@ -257,7 +257,7 @@ func (s *Store) replaceWorkJSON(ctx context.Context, workID string, a replaceWor
 	_, err := s.db.ExecContext(ctx, q,
 		a.State, strOrNil(a.StateReason), strOrNil(a.Phase), strOrNil(a.AssignedPeerID),
 		strOrNil(a.CorrelationID), dumpJSONObject(a.Provenance), dumpJSONObject(orEmptyMap(a.Error)),
-		strOrNil(a.CompletedAt), workNowISO(), workID,
+		strOrNil(a.CompletedAt), nowISO(), workID,
 	)
 	if err != nil {
 		return fmt.Errorf("replace work %s: %w", workID, err)

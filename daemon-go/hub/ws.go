@@ -112,7 +112,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	// Validate circle_source (None|tmux|spawn_hint|fallback).
 	if cf.CircleSource != nil {
 		switch *cf.CircleSource {
-		case "tmux", "spawn_hint", "fallback":
+		case "tmux", "tmux_window", "spawn_hint", "fallback":
 		default:
 			_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "Invalid circle_source"})
 			_ = conn.Close(4002, "Invalid circle_source")

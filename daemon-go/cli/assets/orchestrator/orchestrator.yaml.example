@@ -9,7 +9,8 @@
 # Detection order if unset: pi, claude-code, codex, gemini, opencode.
 # runtime: pi
 
-# Circle (logical subnet) the orchestrator joins. Default: "default".
+# Circle (logical subnet) the orchestrator joins. When unset, `start` uses the
+# current configured tmux boundary; outside tmux, choose one explicitly.
 # circle: default
 
 # Override the spawn command for the selected runtime. When unset, the

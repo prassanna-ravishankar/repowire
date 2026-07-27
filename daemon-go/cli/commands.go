@@ -255,11 +255,15 @@ func runPeer(argv []string) int {
 		if len(a.pos) < 1 {
 			return usage("peer new PATH --backend BACKEND")
 		}
-		circle := first(a.string("circle", ""), currentTmuxCircle())
+		currentCircle := currentTmuxCircle()
+		circle := first(a.string("circle", ""), currentCircle)
 		if circle == "" {
 			return usage("peer new PATH --circle CIRCLE [--backend BACKEND]")
 		}
 		body := map[string]any{"path": abs(a.pos[0]), "backend": a.string("backend", "claude-code"), "circle": circle}
+		if pane := os.Getenv("TMUX_PANE"); pane != "" && circle == currentCircle {
+			body["source_pane"] = pane
+		}
 		for _, key := range []string{"profile", "command", "message"} {
 			if value := a.string(key, ""); value != "" {
 				body[key] = value

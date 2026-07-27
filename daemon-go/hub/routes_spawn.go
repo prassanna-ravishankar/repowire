@@ -35,7 +35,7 @@ type spawnRegistry interface {
 	LazyRepair(ctx context.Context)
 	// ResolvePeerStrict returns 0/1/N candidates: empty → 404, one → resolved,
 	// many → 409 ambiguous (the route lists candidates). NEW on *peer.Registry.
-	ResolvePeerStrict(identifier string, circle *string) ([]*proto.Peer, error)
+	ResolvePeerStrict(identifier string, circle *string) []*proto.Peer
 	AllocateAndRegister(ctx context.Context, p peer.AllocateParams) (proto.PeerID, proto.DisplayName, error)
 	GetPeer(id proto.PeerID) (*proto.Peer, bool)
 	UnregisterPeer(ctx context.Context, identifier string, circle *string) (bool, error)
@@ -49,14 +49,21 @@ type spawnDeps struct {
 	reg         spawnRegistry
 	asks        *service.AskTracker
 	selfMachine string
+	boundary    proto.CircleBoundary
 }
 
 // WithSpawn attaches the spawn-kill-restart route group. svc owns tmux + ownership;
 // reg is the resolve/allocate/unregister seam; asks supplies the quiesce barrier
 // for restart/switch; selfMachine is the daemon hostname for the same-host gate.
 // Returns the hub for chaining; call before Routes.
-func (h *Hub) WithSpawn(svc *service.SpawnService, reg spawnRegistry, asks *service.AskTracker, selfMachine string) *Hub {
-	h.spawn = &spawnDeps{svc: svc, reg: reg, asks: asks, selfMachine: selfMachine}
+func (h *Hub) WithSpawn(svc *service.SpawnService, reg spawnRegistry, asks *service.AskTracker, selfMachine string, boundary proto.CircleBoundary) *Hub {
+	if boundary == "" {
+		boundary = proto.CircleBoundarySession
+	}
+	if svc != nil {
+		svc.WithCircleBoundary(boundary)
+	}
+	h.spawn = &spawnDeps{svc: svc, reg: reg, asks: asks, selfMachine: selfMachine, boundary: boundary}
 	return h
 }
 
@@ -88,6 +95,7 @@ func (h *Hub) spawnReady(w http.ResponseWriter) bool {
 // SpawnConfigResponse mirrors spawn.py SpawnConfigResponse.
 type SpawnConfigResponse struct {
 	Enabled         bool                       `json:"enabled"`
+	CircleBoundary  proto.CircleBoundary       `json:"circle_boundary"`
 	Commands        map[proto.AgentType]string `json:"commands"`
 	Profiles        map[string]any             `json:"profiles"`
 	AllowedCommands []string                   `json:"allowed_commands"`
@@ -106,6 +114,7 @@ func (h *Hub) handleSpawnConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, SpawnConfigResponse{
 		Enabled:         svc.Enabled(),
+		CircleBoundary:  h.spawn.boundary,
 		Commands:        commands,
 		Profiles:        spawnProfiles(svc.Profiles()),
 		AllowedCommands: allowed,
@@ -128,13 +137,14 @@ func spawnProfiles(profiles map[proto.AgentType]map[string][]string) map[string]
 // SpawnRequest mirrors spawn.py SpawnRequest. Exactly one of backend/command must
 // be set (validated below → 422). profile requires backend.
 type SpawnRequest struct {
-	Path    string           `json:"path"`
-	Backend *proto.AgentType `json:"backend"`
-	Profile *string          `json:"profile"`
-	Command *string          `json:"command"`
-	Circle  string           `json:"circle"`
-	Message *string          `json:"message"`
-	Role    proto.PeerRole   `json:"role"`
+	Path       string           `json:"path"`
+	Backend    *proto.AgentType `json:"backend"`
+	Profile    *string          `json:"profile"`
+	Command    *string          `json:"command"`
+	Circle     string           `json:"circle"`
+	Message    *string          `json:"message"`
+	Role       proto.PeerRole   `json:"role"`
+	SourcePane string           `json:"source_pane,omitempty"`
 }
 
 // SpawnResponse mirrors spawn.py SpawnResponse.
@@ -174,7 +184,15 @@ func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, e
 	if h.spawn == nil || h.spawn.svc == nil || h.spawn.reg == nil {
 		return SpawnResponse{}, &service.SpawnError{Status: http.StatusServiceUnavailable, Detail: "spawn not configured"}
 	}
-	if req.Circle == "" {
+	boundary := h.spawn.boundary
+	if boundary == "" {
+		boundary = proto.CircleBoundarySession
+	}
+	if boundary == proto.CircleBoundaryWindow {
+		if req.SourcePane == "" && req.Circle == "" {
+			return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: "circle or source_pane is required when daemon.circle_boundary is window"}
+		}
+	} else if req.Circle == "" {
 		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: "circle is required; run inside a tmux session or pass --circle"}
 	}
 	if req.Role == "" {
@@ -217,12 +235,8 @@ func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, e
 		return SpawnResponse{}, err
 	}
 	result, err := svc.Spawn(service.SpawnConfig{
-		Path:    req.Path,
-		Circle:  req.Circle,
-		Backend: backend,
-		Command: command,
-		Message: req.Message,
-		Role:    req.Role,
+		Path: req.Path, Circle: req.Circle, TargetPane: req.SourcePane,
+		Backend: backend, Command: command, Message: req.Message, Role: req.Role,
 	})
 	if err != nil {
 		return SpawnResponse{}, err
@@ -248,7 +262,7 @@ func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, e
 		paneID := result.PaneID
 		tmux := result.TmuxSession
 		peerID, displayName, aerr := h.spawn.reg.AllocateAndRegister(ctx, peer.AllocateParams{
-			Circle:      req.Circle,
+			Circle:      result.Circle,
 			Backend:     backend,
 			Path:        &resolvedPath,
 			PaneID:      &paneID,
@@ -461,7 +475,6 @@ func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusConflict, "peer has no circle; cannot restart")
 		return
 	}
-
 	resumeCommand, _, rerr := h.restartResumeCommand(ctx, peerCopy, resolvedPath)
 	if rerr != nil {
 		writeJSONError(w, http.StatusConflict, rerr)
@@ -474,6 +487,20 @@ func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
 		(proof.errCode == "missing_pane" || proof.errCode == "pane_not_live")
 	if !proof.ok && !canSkipKill {
 		writeJSONError(w, http.StatusConflict, h.paneControlErrorDetail(peerCopy, proof))
+		return
+	}
+	spawnConfig := service.SpawnConfig{
+		Path: resolvedPath, Circle: spawnCircle, Backend: peerCopy.Backend,
+		Role: peerCopy.Role, PeerID: &peerCopy.PeerID,
+	}
+	if proof.ok {
+		spawnConfig.TargetPane = proof.paneID
+		spawnConfig, perr = svc.PrepareReplacement(spawnConfig)
+	} else {
+		spawnConfig, perr = svc.PrepareSpawn(spawnConfig)
+	}
+	if perr != nil {
+		h.writeSpawnError(w, perr)
 		return
 	}
 
@@ -526,15 +553,9 @@ func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
 		_, _ = h.spawn.reg.MarkOffline(ctx, peerCopy.PeerID, false)
 	}
 
-	result, serr := svc.Spawn(service.SpawnConfig{
-		Path:    resolvedPath,
-		Circle:  spawnCircle,
-		Backend: peerCopy.Backend,
-		Command: resumeCommand,
-		Message: req.Message,
-		Role:    peerCopy.Role,
-		PeerID:  &peerCopy.PeerID,
-	})
+	spawnConfig.Command = resumeCommand
+	spawnConfig.Message = req.Message
+	result, serr := svc.Spawn(spawnConfig)
 	if serr != nil {
 		h.writeSpawnError(w, serr)
 		return
@@ -568,7 +589,7 @@ func (h *Hub) restartResumeCommand(ctx context.Context, peer *proto.Peer, resolv
 	if runtimeID == "" {
 		return "", nil, restartResumeUnavailable(peer, "missing_id")
 	}
-	plan, ok := (service.LocalResumeResolver{}).Resolve(peer.Backend, resolvedPath, runtimeID, repowireSessionID, capability)
+	plan, ok := service.ResolveLocalResume(peer.Backend, resolvedPath, runtimeID, repowireSessionID, capability)
 	if !ok {
 		return "", nil, restartResumeUnavailable(peer, "resume_unavailable")
 	}
@@ -690,6 +711,11 @@ func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 		h.writeSpawnError(w, cerr)
 		return
 	}
+	proof := h.destructivePaneProof(peerCopy)
+	if !proof.ok {
+		writeJSONError(w, http.StatusConflict, h.paneControlErrorDetail(peerCopy, proof))
+		return
+	}
 
 	if h.spawn.asks != nil {
 		if qerr := h.spawn.asks.BeginQuiesce(ctx, peerCopy.PeerID); qerr != nil {
@@ -705,28 +731,29 @@ func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusConflict, "peer has no circle; cannot switch backend")
 		return
 	}
-
-	// Only kill daemon-owned panes (spawned-set), same rule as /kill-peer. If
-	// kill_pane fails the old agent is still alive — abort rather than zombie it.
-	if peerCopy.PaneID != nil && *peerCopy.PaneID != "" && svc.Ownership().IsSpawned(*peerCopy.PaneID) {
-		if !svc.Tmux().KillPane(*peerCopy.PaneID) {
-			writeJSONError(w, http.StatusInternalServerError, map[string]any{
-				"error":   "kill_failed",
-				"hint":    "tmux kill-pane failed for the peer's pane; the old agent may still be alive. Aborting switch to avoid a zombie runtime. Check `tmux list-panes -a`.",
-				"pane_id": *peerCopy.PaneID,
-			})
-			return
-		}
-		svc.Ownership().Forget(*peerCopy.PaneID)
+	spawnConfig, perr := svc.PrepareReplacement(service.SpawnConfig{
+		Path: resolvedPath, Circle: spawnCircle, TargetPane: proof.paneID,
+		Backend: req.NewBackend, Command: command, Role: peerCopy.Role,
+	})
+	if perr != nil {
+		h.writeSpawnError(w, perr)
+		return
 	}
+
+	if !svc.Tmux().KillPane(proof.paneID) {
+		writeJSONError(w, http.StatusInternalServerError, map[string]any{
+			"error":   "kill_failed",
+			"hint":    "tmux kill-pane failed for the peer's verified pane; the old agent may still be alive. Aborting switch to avoid a zombie runtime. Check `tmux list-panes -a`.",
+			"pane_id": proof.paneID,
+		})
+		return
+	}
+	svc.Ownership().Forget(proof.paneID)
+	service.ClearPaneRuntimeState(proof.paneID)
 	// id is already resolved (resolveStrict), so the ambiguity error can't fire.
 	_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
 
-	result, serr := svc.Spawn(service.SpawnConfig{
-		Path:    resolvedPath,
-		Circle:  spawnCircle,
-		Backend: req.NewBackend,
-	})
+	result, serr := svc.Spawn(spawnConfig)
 	if serr != nil {
 		h.writeSpawnError(w, serr)
 		return
@@ -865,10 +892,7 @@ func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
 
 // resolveStrict resolves an identifier without coupling the operation to HTTP.
 func (h *Hub) resolveStrict(identifier string, circle *string) (*proto.Peer, error) {
-	candidates, err := h.spawn.reg.ResolvePeerStrict(identifier, circle)
-	if err != nil {
-		return nil, &service.SpawnError{Status: http.StatusConflict, Detail: err.Error()}
-	}
+	candidates := h.spawn.reg.ResolvePeerStrict(identifier, circle)
 	if len(candidates) == 0 {
 		return nil, &service.SpawnError{Status: http.StatusNotFound, Detail: "Peer not found: " + identifier}
 	}

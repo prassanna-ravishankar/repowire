@@ -25,7 +25,7 @@ import (
 // workRoutesRegistry is the narrow registry seam create_work needs to canonicalize
 // an assigned-peer identifier into a peer_id. *peer.Registry satisfies it.
 type workRoutesRegistry interface {
-	ResolvePeerStrict(identifier string, circle *string) ([]*proto.Peer, error)
+	ResolvePeerStrict(identifier string, circle *string) []*proto.Peer
 }
 
 // *peer.Registry satisfies the work routes' assigned-peer resolver seam.
@@ -589,10 +589,7 @@ func (h *Hub) canonicalAssignedPeer(identifier, circle *string) (*string, int, a
 		// No resolver wired: pass through verbatim (best-effort).
 		return identifier, 0, nil
 	}
-	resolved, err := h.work.reg.ResolvePeerStrict(*identifier, circle)
-	if err != nil {
-		return nil, http.StatusConflict, map[string]any{"error": "assigned_peer_unresolved", "peer": *identifier}
-	}
+	resolved := h.work.reg.ResolvePeerStrict(*identifier, circle)
 	if len(resolved) == 0 {
 		return nil, http.StatusNotFound, map[string]any{"error": "assigned_peer_not_found", "peer": *identifier}
 	}

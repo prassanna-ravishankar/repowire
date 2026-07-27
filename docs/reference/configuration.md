@@ -7,6 +7,7 @@ daemon:
   host: "127.0.0.1"
   port: 8377
   auth_token: "rw_local_..."
+  circle_boundary: session
   delivery_queue_ttl_seconds: 86400
   delivery_queue_max_per_peer: 100
   orchestrator_recall:
@@ -56,6 +57,7 @@ section delimiter:
 ```bash
 REPOWIRE_DAEMON__PORT=9000
 REPOWIRE_DAEMON__AUTH_TOKEN=rw_...
+REPOWIRE_DAEMON__CIRCLE_BOUNDARY=window
 REPOWIRE_RELAY__URL=wss://repowire.io
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
@@ -77,6 +79,21 @@ Optional local bearer token for daemon HTTP routes, WebSocket connections,
 hooks, and HTTP MCP. `repowire setup` generates one automatically because the
 stdio MCP identity shim forwards to `/mcp`. Treat it as a local password;
 rotate it by replacing the value and restarting the daemon service.
+
+## `daemon.circle_boundary`
+
+Controls which tmux container supplies the implicit circle. `session` is the
+default and preserves existing behavior: every peer in a tmux session shares
+that session's circle. `window` gives each tmux window its own stable circle,
+named from tmux's window id (for example `window-7`); panes in that window share
+the circle even if the window is renamed. The only accepted values are
+`session` and `window`; invalid configuration stops loading instead of silently
+falling back.
+
+Changing this setting does not rewrite durable peer identities already recorded
+in the daemon. Stop and recreate peers that should adopt the new boundary.
+Restart and backend-switch refuse to replace the last pane in a window, because
+killing it would destroy the window before tmux could place its replacement.
 
 ## `daemon.mcp_http`
 

@@ -291,14 +291,8 @@ func (s *Store) getCertByNonce(ctx context.Context, nonce string) (*RuntimeIdent
 		return nil, fmt.Errorf("scan certificate: %w", err)
 	}
 
-	if runtimeSessionID.Valid {
-		v := runtimeSessionID.String
-		cert.RuntimeSessionID = &v
-	}
-	if paneID.Valid {
-		v := paneID.String
-		cert.PaneID = &v
-	}
+	cert.RuntimeSessionID = nullStringPtr(runtimeSessionID)
+	cert.PaneID = nullStringPtr(paneID)
 	if agentPID.Valid {
 		v := int(agentPID.Int64)
 		cert.AgentPID = &v
@@ -307,11 +301,6 @@ func (s *Store) getCertByNonce(ctx context.Context, nonce string) (*RuntimeIdent
 		v := int(parentPID.Int64)
 		cert.ParentPID = &v
 	}
-	cert.Metadata = decodeMetadata(metaRaw)
+	cert.Metadata = decodeJSONObject(metaRaw)
 	return cert, nil
-}
-
-// decodeMetadata mirrors _json_loads: empty/invalid/non-object -> {}.
-func decodeMetadata(raw string) map[string]any {
-	return decodeJSONObject(raw)
 }

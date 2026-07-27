@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
+	"github.com/repowire/repowire/daemon-go/proto"
 )
 
 func Run(args []string) int {
@@ -80,7 +81,17 @@ func runSession(backend string) int {
 	priorPeerID := firstNonempty(stringValue(prior, "peer_id"), peerForPane(info.PaneID))
 
 	hint := consumeSpawnHint(cwd, backend)
-	circle, circleSource := info.SessionName, "tmux"
+	boundary, boundaryErr := configuredCircleBoundary()
+	if boundaryErr != nil {
+		errf("session: load circle boundary: %v", boundaryErr)
+		lock.Close()
+		return 0
+	}
+	circleSource := "tmux"
+	if boundary == proto.CircleBoundaryWindow {
+		circleSource = "tmux_window"
+	}
+	circle := proto.TmuxCircle(boundary, info.SessionName, info.WindowID)
 	if circle == "" && info.PaneID != "" && hint != nil {
 		circle, circleSource = stringValue(hint, "circle"), "spawn_hint"
 	}
@@ -124,6 +135,9 @@ func runSession(backend string) int {
 		"name": filepath.Base(cwd), "path": cwd, "circle": circle,
 		"circle_source": circleSource, "backend": backend, "metadata": metadata,
 		"agent_pid": agentPID,
+	}
+	if target := tmuxSession(info); target != "" {
+		request["tmux_session"] = target
 	}
 	if parent := parentPID(agentPID); parent > 0 {
 		request["parent_pid"] = parent
@@ -497,7 +511,7 @@ func formatSelfContext(displayName, peerID, circle, circleSource, backend, role,
 			branch = firstNonempty(stringValue(meta, "branch"), branch)
 		}
 	}
-	label := map[string]string{"tmux": "from tmux session", "spawn_hint": "from spawn hint", "fallback": "default fallback"}[circleSource]
+	label := map[string]string{"tmux": "from tmux session", "tmux_window": "from tmux window", "spawn_hint": "from spawn hint", "fallback": "from durable identity"}[circleSource]
 	lines := []string{"[Repowire Mesh] You are registered on the mesh as:", "  - display_name: " + displayName}
 	if peerID != "" {
 		lines[1] += "  (peer_id: " + peerID + ")"

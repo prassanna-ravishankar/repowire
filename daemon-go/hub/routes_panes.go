@@ -27,19 +27,20 @@ type localPane struct {
 	CWD             string `json:"cwd"`
 	Session         string `json:"session"`
 	Window          string `json:"window"`
+	WindowID        string `json:"window_id"`
 	DetectedBackend string `json:"detected_backend"`
 	Confidence      string `json:"confidence"`
 }
 
 func listLocalPanes() []localPane {
-	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{session_name}\t#{window_name}").Output()
+	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{session_name}\t#{window_name}\t#{window_id}").Output()
 	if err != nil {
 		return nil
 	}
 	var panes []localPane
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		parts := strings.Split(line, "\t")
-		if len(parts) != 6 {
+		if len(parts) != 7 {
 			continue
 		}
 		pid, _ := strconv.Atoi(parts[1])
@@ -48,7 +49,7 @@ func listLocalPanes() []localPane {
 		if backend != "unknown" {
 			confidence = "hint"
 		}
-		panes = append(panes, localPane{PaneID: parts[0], PID: pid, Command: parts[2], CWD: parts[3], Session: parts[4], Window: parts[5], DetectedBackend: backend, Confidence: confidence})
+		panes = append(panes, localPane{PaneID: parts[0], PID: pid, Command: parts[2], CWD: parts[3], Session: parts[4], Window: parts[5], WindowID: parts[6], DetectedBackend: backend, Confidence: confidence})
 	}
 	return panes
 }
@@ -61,6 +62,17 @@ func detectPaneBackend(command string) string {
 		}
 	}
 	return "unknown"
+}
+
+func localPaneIdentity(boundary proto.CircleBoundary, pane *localPane) (circle, tmuxSession string) {
+	if pane == nil {
+		return "", ""
+	}
+	circle = proto.TmuxCircle(boundary, pane.Session, pane.WindowID)
+	if pane.Session != "" && pane.Window != "" {
+		tmuxSession = pane.Session + ":" + pane.Window
+	}
+	return circle, tmuxSession
 }
 
 func (h *Hub) registerPaneRoutes(mux *http.ServeMux) {
@@ -105,6 +117,10 @@ func (h *Hub) handleLinkPane(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusUnprocessableEntity, "backend is required")
 		return
 	}
+	if request.Name != nil && *request.Name != "" && !isValidIdentifier(*request.Name) {
+		writeJSONError(w, http.StatusUnprocessableEntity, "name contains invalid characters")
+		return
+	}
 	if existing, ok := h.reg.GetPeerByPane(paneID); ok {
 		writeJSONError(w, http.StatusConflict, map[string]any{"error": "already_linked", "hint": fmt.Sprintf("Pane %s is already bound to peer %s.", paneID, existing.DisplayName), "peer_id": existing.PeerID})
 		return
@@ -127,11 +143,17 @@ func (h *Hub) handleLinkPane(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, map[string]any{"error": "pane_not_found", "hint": fmt.Sprintf("No live tmux pane %s to resolve a working directory from.", paneID)})
 		return
 	}
-	circle := ""
+	boundary := proto.CircleBoundarySession
+	if h.spawn != nil {
+		boundary = h.spawn.boundary
+	}
+	circle, tmuxSession := localPaneIdentity(boundary, pane)
 	if request.Circle != nil && *request.Circle != "" {
+		if circle != "" && *request.Circle != circle {
+			writeJSONError(w, http.StatusConflict, "explicit circle contradicts live tmux boundary evidence")
+			return
+		}
 		circle = *request.Circle
-	} else if pane != nil && pane.Session != "" {
-		circle = pane.Session
 	}
 	if circle == "" {
 		writeJSONError(w, http.StatusUnprocessableEntity, "circle is required when the pane has no tmux session")
@@ -142,10 +164,19 @@ func (h *Hub) handleLinkPane(w http.ResponseWriter, r *http.Request) {
 	if pane != nil {
 		pid = pane.PID
 	}
-	id, displayName, err := h.reg.AllocateAndRegister(r.Context(), peer.AllocateParams{Circle: circle, Backend: request.Backend, Path: &cwd, PaneID: &paneID, TmuxSession: strPtrValue(pane, func(value *localPane) string { return value.Session }), Machine: machine, Role: proto.RoleAgent, AgentPID: intPtrNonzero(pid)})
+	id, displayName, err := h.reg.AllocateAndRegister(r.Context(), peer.AllocateParams{Circle: circle, Backend: request.Backend, Path: &cwd, PaneID: &paneID, TmuxSession: strPtr(tmuxSession), Machine: machine, Role: proto.RoleAgent, AgentPID: intPtrNonzero(pid)})
 	if err != nil {
 		writeJSONError(w, http.StatusConflict, err.Error())
 		return
+	}
+	if request.Name != nil && *request.Name != "" {
+		updated, renameErr := h.reg.UpdateDisplayName(r.Context(), id, proto.DisplayName(*request.Name))
+		if renameErr != nil || !updated {
+			_, _ = h.reg.UnregisterPeer(r.Context(), string(id), nil)
+			writeJSONError(w, http.StatusConflict, "requested name is already in use")
+			return
+		}
+		displayName = proto.DisplayName(*request.Name)
 	}
 	spawned, spawnErr := clienthooks.ReconcileWSHook(paneID, string(id), string(displayName), string(request.Backend), cwd, pid)
 	connected := false
@@ -195,14 +226,4 @@ func intPtrNonzero(value int) *int {
 		return nil
 	}
 	return &value
-}
-func strPtrValue[T any](value *T, extract func(*T) string) *string {
-	if value == nil {
-		return nil
-	}
-	text := extract(value)
-	if text == "" {
-		return nil
-	}
-	return &text
 }

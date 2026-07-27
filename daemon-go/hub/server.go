@@ -54,10 +54,10 @@ type Hub struct {
 	// /ask·/ack·/answer·/query·/asks/* handlers 503 while unwired.
 	ask *askLifecycleDeps
 
-	// schedules is the optional /schedules route group, wired via WithSchedules
-	// once the daemon has built the schedules store + scheduler. nil → those
-	// endpoints are not registered.
-	schedules *ScheduleRoutes
+	// Optional /schedules dependencies, wired via WithSchedules.
+	scheduleStore       scheduleStore
+	scheduleWaker       scheduleWaker
+	schedulesConfigured bool
 
 	// session holds the session-wiring route dependencies (registry + query
 	// tracker + queued-delivery store), wired via WithSessionRoutes. The
@@ -124,7 +124,9 @@ func (h *Hub) WithRelayStatus(fn func() map[string]any) *Hub {
 // by main (it owns the goroutine lifecycle); this only wires the routes.
 // Returns the hub for chaining; call before Routes.
 func (h *Hub) WithSchedules(store scheduleStore, scheduler scheduleWaker) *Hub {
-	h.schedules = NewScheduleRoutes(store, scheduler)
+	h.scheduleStore = store
+	h.scheduleWaker = scheduler
+	h.schedulesConfigured = true
 	return h
 }
 
@@ -210,8 +212,8 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 	if h.lifecycle != nil {
 		h.LifecycleRoutes(mux, h.lifecycle)
 	}
-	if h.schedules != nil {
-		h.schedules.Register(mux, h.requireAuth)
+	if h.schedulesConfigured {
+		h.registerScheduleRoutes(mux)
 	}
 	if h.work != nil {
 		h.registerWorkRoutes(mux)

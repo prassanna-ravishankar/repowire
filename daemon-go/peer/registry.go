@@ -130,19 +130,12 @@ type Registry struct {
 	descriptionSetAt  map[proto.PeerID]time.Time
 
 	// rec holds the lifecycle-reconciliation seams + state (AskTracker,
-	// PaneProbe, PeerDelivery, strike counters, contradiction dedup). Injected
-	// via WithReconciliation after construction; nil-safe — see recOrZero.
+	// PaneProbe, PeerDelivery, strike counters, contradiction dedup).
 	rec *reconcileState
 
 	// evlog is the in-memory dashboard event buffer (last 500, mirrors the
-	// Python EventLog). Lazily initialised via eventLog() behind evlogOnce; nil-
-	// safe so tests that never touch events pay nothing. The lazy-init MUST NOT
-	// take r.mu: appendEvent runs while r.mu is already held (AllocateAndRegister,
-	// MarkOffline, ...), and r.mu is a non-reentrant RWMutex — guarding the init
-	// with r.mu deadlocked. sync.Once is the right, lock-independent gate. See
-	// events.go.
-	evlog     *eventBuffer
-	evlogOnce sync.Once
+	// Python EventLog).
+	evlog *eventBuffer
 
 	// OnOffline is a hook the hub sets so a terminal/transport offline can
 	// cascade query cancellation (the hub owns the QueryTracker). The registry
@@ -189,6 +182,7 @@ func NewRegistry(ctx context.Context, store Store, live Liveness, transport Tran
 			paneStrikes:   make(map[proto.PeerID]int),
 			contraEmitted: make(map[contraKey]struct{}),
 		},
+		evlog: &eventBuffer{},
 	}
 
 	mappings, err := store.LoadMappings(ctx)
@@ -541,7 +535,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 // flow) are made safe by the per-asker single-flight in redeliverPendingReplies
 // (claimRedelivery), not by snapshotting alone. No tracker → no-op.
 func (r *Registry) scheduleRedelivery(ctx context.Context, id proto.PeerID) {
-	if rec := r.recOrZero(); rec.asks != nil {
+	if rec := r.rec; rec.asks != nil {
 		// Detach from the triggering request/WS context: a one-shot register or
 		// status request returns immediately, and a canceled ctx would strand the
 		// owed reply (the stash stays in place until some later reconnect). Keep
@@ -980,6 +974,15 @@ func (r *Registry) SetCircle(ctx context.Context, id proto.PeerID, circle string
 	}
 }
 
+// UpdateTmuxSession refreshes the peer's runtime tmux locator after a rename.
+func (r *Registry) UpdateTmuxSession(ctx context.Context, id proto.PeerID, tmuxSession string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ps, ok := r.peers[id]; ok {
+		ps.peer.TmuxSession = &tmuxSession
+	}
+}
+
 // UpdateDisplayName renames a peer in place, preserving PeerID and keeping the
 // mapping in sync. Evicts Offline ghosts holding the same (name, backend);
 // returns false if a live peer already holds the name.
@@ -1120,7 +1123,7 @@ func (r *Registry) demoteDisconnected(ctx context.Context) {
 	if r.transport == nil {
 		return
 	}
-	rec := r.recOrZero()
+	rec := r.rec
 	acpFlag := rec.experiments.ACPBrokerClient
 
 	r.mu.Lock()
@@ -1224,7 +1227,7 @@ func (r *Registry) demoteDisconnected(ctx context.Context) {
 // and forgets its asks. Stash-loss ordering: snapshot -> emit -> forget so
 // observers see pending_reply_lost before the ask disappears.
 func (r *Registry) reapDangling(ctx context.Context) {
-	rec := r.recOrZero()
+	rec := r.rec
 
 	r.mu.RLock()
 	cutoff := time.Now().UTC().Add(-r.reapTTL)
@@ -1415,7 +1418,7 @@ func (r *Registry) appendEvent(ctx context.Context, e Event) {
 	// GET /events caller (and the SSE catch-up) sees lifecycle events alongside
 	// the route-emitted chat_turn/query/response events. The buffer is the live
 	// read surface; the store is the durable one.
-	r.eventLog().appendStructured(e)
+	r.evlog.appendStructured(e)
 }
 
 // emitContradiction records a fail-loud peer_contradiction when an illegal

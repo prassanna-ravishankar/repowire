@@ -92,7 +92,7 @@ func (r *Registry) GetPeerByName(name string, circle *string) (*proto.Peer, erro
 // match), a single-element slice (peer_id hit or unique name), or N candidates
 // (ambiguous name). Mirrors peer_registry.resolve_peer_strict; callers branch on
 // len. Never returns an error: ambiguity is surfaced as len>1, not a failure.
-func (r *Registry) ResolvePeerStrict(identifier string, circle *string) ([]*proto.Peer, error) {
+func (r *Registry) ResolvePeerStrict(identifier string, circle *string) []*proto.Peer {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -100,7 +100,7 @@ func (r *Registry) ResolvePeerStrict(identifier string, circle *string) ([]*prot
 
 	// peer_id hit is unambiguous (single).
 	if ps, ok := r.peers[proto.PeerID(identifier)]; ok && inCircle(ps.peer) {
-		return []*proto.Peer{clonePeer(ps.peer)}, nil
+		return []*proto.Peer{clonePeer(ps.peer)}
 	}
 
 	var byName []*proto.Peer
@@ -109,7 +109,7 @@ func (r *Registry) ResolvePeerStrict(identifier string, circle *string) ([]*prot
 			byName = append(byName, clonePeer(ps.peer))
 		}
 	}
-	return byName, nil
+	return byName
 }
 
 // UpdateModelByName updates a peer's observed runtime model in live + durable

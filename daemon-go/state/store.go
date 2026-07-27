@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -123,6 +124,10 @@ func formatISO(t time.Time) string { return t.UTC().Format(isoLayout) }
 
 func nowISO() string { return formatISO(time.Now()) }
 
+func newID(prefix string) string {
+	return prefix + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+}
+
 func marshalJSON(v any) (string, error) {
 	b, err := json.Marshal(v)
 	return string(b), err
@@ -134,6 +139,13 @@ func decodeJSONObject(raw string) map[string]any {
 		return map[string]any{}
 	}
 	return out
+}
+
+func nullStringPtr(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	return &value.String
 }
 
 func nullable[T any](value *T) any {

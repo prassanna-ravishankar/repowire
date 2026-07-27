@@ -2,11 +2,16 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/repowire/repowire/daemon-go/proto"
 	"gopkg.in/yaml.v3"
 )
 
@@ -17,11 +22,99 @@ func TestParseFlagsAfterPositionals(t *testing.T) {
 	}
 }
 
+func TestTmuxCircleFromOutput(t *testing.T) {
+	if got := tmuxCircleFromOutput(proto.CircleBoundarySession, "mesh\t@9\n"); got != "mesh" {
+		t.Fatalf("session circle = %q", got)
+	}
+	if got := tmuxCircleFromOutput(proto.CircleBoundaryWindow, "mesh\t@9\n"); got != "window-9" {
+		t.Fatalf("window circle = %q", got)
+	}
+}
+
+func TestOrchestratorStartOnlyIncludesSourcePaneForCurrentCircle(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/spawn" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		body = nil
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	endpoint, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := endpoint.Port()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TMUX_PANE", "%42")
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\nprintf 'mesh\\t@9\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	configPath := filepath.Join(home, "config.yaml")
+	t.Setenv("REPOWIRE_CONFIG", configPath)
+	if err := os.MkdirAll(filepath.Join(home, ".repowire", "orchestrator"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".repowire", "orchestrator", "AGENTS.md"), []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("daemon:\n  host: %s\n  port: %s\n", endpoint.Hostname(), port)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := Run([]string{"orchestrator", "start", "--runtime", "codex", "--circle", "mesh"}); code != 0 {
+		t.Fatalf("orchestrator start exited %d", code)
+	}
+	if got := body["source_pane"]; got != "%42" {
+		t.Fatalf("source_pane = %#v, want %%42", got)
+	}
+	if code := Run([]string{"orchestrator", "start", "--runtime", "codex", "--circle", "other"}); code != 0 {
+		t.Fatalf("cross-circle orchestrator start exited %d", code)
+	}
+	if _, ok := body["source_pane"]; ok {
+		t.Fatalf("cross-circle spawn included source_pane: %#v", body)
+	}
+	if code := Run([]string{"peer", "new", home, "--circle", "mesh"}); code != 0 {
+		t.Fatalf("peer new exited %d", code)
+	}
+	if got := body["source_pane"]; got != "%42" {
+		t.Fatalf("peer new source_pane = %#v, want %%42", got)
+	}
+	if code := Run([]string{"peer", "new", home, "--circle", "other"}); code != 0 {
+		t.Fatalf("cross-circle peer new exited %d", code)
+	}
+	if _, ok := body["source_pane"]; ok {
+		t.Fatalf("cross-circle peer spawn included source_pane: %#v", body)
+	}
+}
+
 func TestEmbeddedRuntimesDoNotOfferCircleMutation(t *testing.T) {
 	for name, asset := range map[string]string{"pi": piPlugin, "opencode": opencodePlugin} {
 		if strings.Contains(asset, "set_circle") {
 			t.Fatalf("%s still exposes removed set_circle protocol", name)
 		}
+		for _, want := range []string{"circle_boundary", "window_id", "tmux_window", "pane_alive: true, circle"} {
+			if !strings.Contains(asset, want) {
+				t.Fatalf("%s embedded runtime lacks %q boundary parity", name, want)
+			}
+		}
+	}
+	for _, want := range []string{`role !== "orchestrator" && spawnCircle !== circle`, `tmuxPane && spawnCircle === circle`} {
+		if !strings.Contains(piPlugin, want) {
+			t.Fatalf("pi spawn lacks policy %q", want)
+		}
+	}
+	if strings.Contains(piPlugin, "Circle maps to tmux session name") {
+		t.Fatal("pi spawn description still claims circles always map to tmux sessions")
 	}
 }
 
@@ -131,6 +224,14 @@ func TestPluginAssetsExtractTypeScript(t *testing.T) {
 func TestChannelAssetsAndVersionGate(t *testing.T) {
 	if !strings.Contains(channelServer, "Repowire") || !strings.Contains(channelPackage, "@modelcontextprotocol/sdk") {
 		t.Fatal("channel assets were not embedded")
+	}
+	for _, want := range []string{"circle_boundary", "window_id", "tmux_window", "circle_source", "pane_id: placement.pane", "circle: placement.circle"} {
+		if !strings.Contains(channelDaemonSession, want) {
+			t.Fatalf("channel connector lacks %q boundary parity", want)
+		}
+	}
+	if strings.Contains(channelDaemonSession, `?? "default"`) {
+		t.Fatal("channel connector still assigns an implicit default circle")
 	}
 	if !versionAtLeast("2.1.80", 2, 1, 80) || !versionAtLeast("2.2.0", 2, 1, 80) || versionAtLeast("2.1.79", 2, 1, 80) {
 		t.Fatal("Claude Code channel version gate is wrong")

@@ -330,7 +330,7 @@ func TestHandleWSNormalizesPath(t *testing.T) {
 func TestHandleWSRejectsFreshPanelessOrchestrator(t *testing.T) {
 	h := newTestHub(t)
 	ownership := service.NewFileOwnership("test-host", func(string) *service.TmuxPaneEvidence { return nil })
-	h.WithSpawn(service.NewSpawnService(nil, ownership, nil, nil), nil, nil, "test-host")
+	h.WithSpawn(service.NewSpawnService(nil, ownership, nil, nil), nil, nil, "test-host", proto.CircleBoundarySession)
 	srv := httptest.NewServer(http.HandlerFunc(h.HandleWS))
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

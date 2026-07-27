@@ -33,7 +33,7 @@ type fakeSpawnRegistry struct {
 
 func (r *fakeSpawnRegistry) LazyRepair(context.Context) {}
 
-func (r *fakeSpawnRegistry) ResolvePeerStrict(identifier string, circle *string) ([]*proto.Peer, error) {
+func (r *fakeSpawnRegistry) ResolvePeerStrict(identifier string, circle *string) []*proto.Peer {
 	var out []*proto.Peer
 	for _, p := range r.peers {
 		if string(p.PeerID) == identifier || string(p.DisplayName) == identifier {
@@ -43,7 +43,7 @@ func (r *fakeSpawnRegistry) ResolvePeerStrict(identifier string, circle *string)
 			out = append(out, p)
 		}
 	}
-	return out, nil
+	return out
 }
 
 func (r *fakeSpawnRegistry) AllocateAndRegister(_ context.Context, _ peer.AllocateParams) (proto.PeerID, proto.DisplayName, error) {
@@ -79,12 +79,14 @@ func (r *fakeSpawnRegistry) UpdateTurnState(_ context.Context, id proto.PeerID, 
 type fakeTmux struct {
 	spawnResult service.SpawnResult
 	spawnErr    error
+	spawnConfig service.SpawnConfig
 	killed      []string
 	killOK      bool
 	evidence    map[string]*service.TmuxPaneEvidence
 }
 
-func (f *fakeTmux) Spawn(service.SpawnConfig) (service.SpawnResult, error) {
+func (f *fakeTmux) Spawn(cfg service.SpawnConfig) (service.SpawnResult, error) {
+	f.spawnConfig = cfg
 	return f.spawnResult, f.spawnErr
 }
 func (f *fakeTmux) KillPane(paneID string) bool {
@@ -108,7 +110,7 @@ func newSpawnTestHub(t *testing.T, reg *fakeSpawnRegistry, tmux *fakeTmux) (*htt
 	)
 	asks := service.NewAskTracker(0)
 	h := &Hub{authToken: ""}
-	h.WithSpawn(svc, reg, asks, "test-host")
+	h.WithSpawn(svc, reg, asks, "test-host", proto.CircleBoundarySession)
 
 	mux := http.NewServeMux()
 	h.registerSpawnRoutes(mux)
@@ -127,6 +129,43 @@ func postSpawnJSON(t *testing.T, srv *httptest.Server, path string, body any) *h
 	}
 	return resp
 }
+
+func TestWindowBoundarySpawnUsesSourcePaneEvidence(t *testing.T) {
+	root, pane := t.TempDir(), "%12"
+	tmux := &fakeTmux{
+		spawnResult: service.SpawnResult{DisplayName: "worker", TmuxSession: "mesh:work", PaneID: "%13"},
+		evidence: map[string]*service.TmuxPaneEvidence{
+			pane: {PaneID: pane, SessionName: "mesh", WindowID: "@7", TmuxSession: "mesh:work", CurrentPath: root},
+			"@7": {PaneID: pane, SessionName: "mesh", WindowID: "@7", TmuxSession: "mesh:work", CurrentPath: root},
+		},
+	}
+	own := service.NewFileOwnership("test-host", tmux.ProbePane)
+	svc := service.NewSpawnService(tmux, own, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"}, []string{root})
+	h := &Hub{}
+	h.WithSpawn(svc, &fakeSpawnRegistry{}, service.NewAskTracker(0), "test-host", proto.CircleBoundaryWindow)
+
+	result, err := h.spawnPeer(context.Background(), SpawnRequest{Path: root, Backend: agentTypePtr(proto.AgentClaudeCode), SourcePane: pane})
+	if err != nil || !result.OK {
+		t.Fatalf("window spawn failed: result=%+v err=%v", result, err)
+	}
+	if tmux.spawnConfig.Circle != "window-7" || tmux.spawnConfig.TargetPane != "@7" || tmux.spawnConfig.CircleBoundary != proto.CircleBoundaryWindow {
+		t.Fatalf("spawn config = %+v", tmux.spawnConfig)
+	}
+
+	_, err = h.spawnPeer(context.Background(), SpawnRequest{Path: root, Backend: agentTypePtr(proto.AgentClaudeCode), SourcePane: pane, Circle: "other"})
+	if se, ok := service.AsSpawnError(err); !ok || se.Status != http.StatusConflict {
+		t.Fatalf("circle mismatch error = %v, want 409", err)
+	}
+	_, err = h.spawnPeer(context.Background(), SpawnRequest{Path: root, Backend: agentTypePtr(proto.AgentClaudeCode)})
+	if se, ok := service.AsSpawnError(err); !ok || se.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("missing source pane error = %v, want 422", err)
+	}
+	if _, err = h.spawnPeer(context.Background(), SpawnRequest{Path: root, Backend: agentTypePtr(proto.AgentClaudeCode), Circle: "window-7"}); err != nil {
+		t.Fatalf("explicit live window circle: %v", err)
+	}
+}
+
+func agentTypePtr(value proto.AgentType) *proto.AgentType { return &value }
 
 // strp is the shared test helper (hub_test.go).
 
@@ -260,6 +299,9 @@ func TestSpawnConfigReportsEnabled(t *testing.T) {
 	if !out.Enabled {
 		t.Fatalf("enabled = false, want true")
 	}
+	if out.CircleBoundary != proto.CircleBoundarySession {
+		t.Fatalf("circle_boundary = %q, want session", out.CircleBoundary)
+	}
 	if out.Commands[proto.AgentClaudeCode] != "claude" {
 		t.Fatalf("commands missing claude-code: %v", out.Commands)
 	}
@@ -345,7 +387,7 @@ func TestDestructivePaneProof_VerifiedByPaneMetadata(t *testing.T) {
 	svc := service.NewSpawnService(tmux, own,
 		map[proto.AgentType]string{proto.AgentClaudeCode: "claude"}, []string{t.TempDir()})
 	h := &Hub{}
-	h.WithSpawn(svc, nil, service.NewAskTracker(0), "test-host")
+	h.WithSpawn(svc, nil, service.NewAskTracker(0), "test-host", proto.CircleBoundarySession)
 
 	id := proto.PeerID("repow-ops-abc123")
 	p := &proto.Peer{PeerID: id, PaneID: &pane}
@@ -420,7 +462,7 @@ func TestRestartPeerDryRunUsesValidatedBackendResume(t *testing.T) {
 	}
 	reg := &fakeSpawnRegistry{peers: []*proto.Peer{peer}}
 	h := &Hub{store: store}
-	h.WithSpawn(svc, reg, service.NewAskTracker(0), "test-host")
+	h.WithSpawn(svc, reg, service.NewAskTracker(0), "test-host", proto.CircleBoundarySession)
 	mux := http.NewServeMux()
 	h.registerSpawnRoutes(mux)
 	srv := httptest.NewServer(mux)
@@ -448,6 +490,21 @@ func TestRestartPeerDryRunUsesValidatedBackendResume(t *testing.T) {
 	if len(tmux.killed) != 0 {
 		t.Fatalf("dry-run killed panes: %v", tmux.killed)
 	}
+
+	peer.Circle = "window-7"
+	tmux.evidence[pane] = &service.TmuxPaneEvidence{PaneID: pane, SessionName: "mesh", WindowID: "@7", WindowPanes: 1, TmuxSession: "mesh:work"}
+	tmux.evidence["@7"] = &service.TmuxPaneEvidence{PaneID: pane, SessionName: "mesh", WindowID: "@7", WindowPanes: 1, TmuxSession: "mesh:work"}
+	h.WithSpawn(svc, reg, service.NewAskTracker(0), "test-host", proto.CircleBoundaryWindow)
+	resp = postSpawnJSON(t, srv, "/peers/codex-1/restart", RestartPeerRequest{})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("last-pane restart status = %d, want 409", resp.StatusCode)
+	}
+	if len(tmux.killed) != 0 {
+		t.Fatalf("last-pane restart killed before validating its target: %v", tmux.killed)
+	}
+	peer.Circle = "default"
+	h.WithSpawn(svc, reg, service.NewAskTracker(0), "test-host", proto.CircleBoundarySession)
 
 	if err := os.Remove(sessionPath); err != nil {
 		t.Fatalf("remove codex session: %v", err)

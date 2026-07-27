@@ -47,8 +47,8 @@ repowire peer new ~/projects/project-a
 repowire peer new ~/projects/project-b --backend codex --profile fast
 ```
 
-Inside tmux, omitted `--circle` means the current tmux session. Outside tmux,
-pass `--circle`; there is no implicit `default` circle. The literal name
+Inside tmux, omitted `--circle` means the current tmux session or window,
+according to `daemon.circle_boundary`. Outside tmux, pass `--circle`; there is no implicit `default` circle. The literal name
 `default` remains valid when you choose it explicitly.
 
 From an agent, use the `spawn_peer` MCP tool when the path is allowed.

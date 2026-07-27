@@ -143,7 +143,7 @@ func (s *Store) MaterializeDue(ctx context.Context, now time.Time, nextFire func
 		if ferr != nil {
 			return nil, ferr
 		}
-		nowText := calendarNowISO()
+		nowText := nowISO()
 		prov := calendarCloneMap(refreshed.Provenance)
 		prov["last_materialized_reason"] = "due"
 		provJSON, jerr := canonicalJSON(prov)

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/repowire/repowire/daemon-go/proto"
 	"gopkg.in/yaml.v3"
 )
 
@@ -36,6 +37,7 @@ type DaemonConfig struct {
 	StaleBusyTimeoutSeconds float64                  `yaml:"stale_busy_timeout_seconds"`
 	DeliveryQueueTTLSeconds float64                  `yaml:"delivery_queue_ttl_seconds"`
 	DeliveryQueueMaxPerPeer int                      `yaml:"delivery_queue_max_per_peer"`
+	CircleBoundary          proto.CircleBoundary     `yaml:"circle_boundary"`
 	OrchestratorRecall      OrchestratorRecallConfig `yaml:"orchestrator_recall"`
 	Spawn                   SpawnConfig              `yaml:"spawn"`
 	MCPHTTP                 MCPHTTPConfig            `yaml:"mcp_http"`
@@ -104,6 +106,7 @@ func Defaults() Config {
 	return Config{
 		Daemon: DaemonConfig{
 			Host: defaultHost, Port: defaultPort, HeartbeatInterval: 30,
+			CircleBoundary:   proto.CircleBoundarySession,
 			PruneMaxAgeHours: 24, DescriptionTTLSeconds: 900,
 			PeerReapTTLSeconds: 600, StaleBusyTimeoutSeconds: 1800,
 			DeliveryQueueTTLSeconds: 86400, DeliveryQueueMaxPerPeer: 100,
@@ -160,6 +163,9 @@ func Load() (Config, error) {
 	}
 	applyEnv(&cfg)
 	normalize(&cfg)
+	if !cfg.Daemon.CircleBoundary.Valid() {
+		return cfg, fmt.Errorf("daemon.circle_boundary must be session or window, got %q", cfg.Daemon.CircleBoundary)
+	}
 	return cfg, nil
 }
 
@@ -200,6 +206,9 @@ func applyEnv(cfg *Config) {
 	setFloatEnv(&cfg.Daemon.StaleBusyTimeoutSeconds, "REPOWIRE_DAEMON__STALE_BUSY_TIMEOUT_SECONDS")
 	setFloatEnv(&cfg.Daemon.DeliveryQueueTTLSeconds, "REPOWIRE_DAEMON__DELIVERY_QUEUE_TTL_SECONDS")
 	setIntEnv(&cfg.Daemon.DeliveryQueueMaxPerPeer, "REPOWIRE_DAEMON__DELIVERY_QUEUE_MAX_PER_PEER")
+	if value := os.Getenv("REPOWIRE_DAEMON__CIRCLE_BOUNDARY"); value != "" {
+		cfg.Daemon.CircleBoundary = proto.CircleBoundary(value)
+	}
 	setBoolEnv(&cfg.Daemon.MCPHTTP.Enabled, "REPOWIRE_DAEMON__MCP_HTTP__ENABLED")
 	if v := os.Getenv("REPOWIRE_DAEMON__MCP_HTTP__BIND"); v != "" {
 		cfg.Daemon.MCPHTTP.Bind = v
@@ -264,6 +273,9 @@ func normalize(cfg *Config) {
 	}
 	if cfg.Daemon.Port == 0 {
 		cfg.Daemon.Port = defaultPort
+	}
+	if cfg.Daemon.CircleBoundary == "" {
+		cfg.Daemon.CircleBoundary = proto.CircleBoundarySession
 	}
 	if cfg.Daemon.Spawn.Commands == nil {
 		cfg.Daemon.Spawn.Commands = map[string]string{}

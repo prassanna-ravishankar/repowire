@@ -177,10 +177,10 @@ func TestMCPToolsList(t *testing.T) {
 
 func TestMCPSpawnCirclePolicy(t *testing.T) {
 	h, reg := newMCPTestHub(t, config.MCPHTTPConfig{})
-	register := func(circle string, role proto.PeerRole) proto.PeerID {
+	register := func(circle string, role proto.PeerRole, pane *string) proto.PeerID {
 		t.Helper()
 		id, _, err := reg.AllocateAndRegister(context.Background(), peer.AllocateParams{
-			Circle: circle, Backend: proto.AgentClaudeCode, Role: role,
+			Circle: circle, Backend: proto.AgentClaudeCode, Role: role, PaneID: pane,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -188,17 +188,21 @@ func TestMCPSpawnCirclePolicy(t *testing.T) {
 		return id
 	}
 
-	agent := register("alpha", proto.RoleAgent)
-	if circle, err := h.mcpSpawnCircle(string(agent), ""); err != nil || circle != "alpha" {
-		t.Fatalf("agent default = %q, %v; want alpha, nil", circle, err)
+	pane := "%7"
+	agent := register("alpha", proto.RoleAgent, &pane)
+	if circle, sourcePane, err := h.mcpSpawnPlacement(string(agent), ""); err != nil || circle != "alpha" || sourcePane != pane {
+		t.Fatalf("agent placement = %q, %q, %v; want alpha, %%7, nil", circle, sourcePane, err)
 	}
-	if _, err := h.mcpSpawnCircle(string(agent), "beta"); err == nil {
+	if _, _, err := h.mcpSpawnPlacement(string(agent), "beta"); err == nil {
 		t.Fatal("agent cross-circle spawn was allowed")
 	}
 
-	orchestrator := register("alpha", proto.RoleOrchestrator)
-	if circle, err := h.mcpSpawnCircle(string(orchestrator), "beta"); err != nil || circle != "beta" {
-		t.Fatalf("orchestrator cross-circle spawn = %q, %v; want beta, nil", circle, err)
+	orchestrator := register("alpha", proto.RoleOrchestrator, &pane)
+	if circle, sourcePane, err := h.mcpSpawnPlacement(string(orchestrator), "beta"); err != nil || circle != "beta" || sourcePane != "" {
+		t.Fatalf("orchestrator cross-circle spawn = %q, %q, %v; want beta, empty pane, nil", circle, sourcePane, err)
+	}
+	if _, _, err := h.mcpSpawnPlacement(mcpDefaultIdentity, ""); err == nil {
+		t.Fatal("anonymous MCP invented a spawn circle")
 	}
 }
 

@@ -38,10 +38,6 @@ type QueuedDelivery struct {
 	Metadata    map[string]any
 }
 
-func qdFormatISO(t time.Time) string {
-	return formatISO(t)
-}
-
 func newDeliveryID() (string, error) {
 	var b [6]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -78,8 +74,8 @@ func (s *Store) EnqueueDelivery(
 
 	out := d
 	out.DeliveryID = id
-	out.CreatedAt = qdFormatISO(now)
-	out.ExpiresAt = qdFormatISO(now.Add(time.Duration(ttlSeconds * float64(time.Second))))
+	out.CreatedAt = formatISO(now)
+	out.ExpiresAt = formatISO(now.Add(time.Duration(ttlSeconds * float64(time.Second))))
 	if out.Attachments == nil {
 		out.Attachments = []map[string]any{}
 	}
@@ -151,7 +147,7 @@ func (s *Store) DrainDeliveries(
 	if now.IsZero() {
 		now = time.Now()
 	}
-	cutoff := qdFormatISO(now.UTC())
+	cutoff := formatISO(now.UTC())
 	limit := maxResults
 	if limit <= 0 {
 		return nil, nil
@@ -197,7 +193,7 @@ func (s *Store) ListDeliveries(
 	if now.IsZero() {
 		now = time.Now()
 	}
-	cutoff := qdFormatISO(now.UTC())
+	cutoff := formatISO(now.UTC())
 	limit := maxResults
 	if limit <= 0 {
 		return nil, nil
@@ -355,18 +351,9 @@ func scanDelivery(rows *sql.Rows) (QueuedDelivery, error) {
 		return d, fmt.Errorf("scan delivery: %w", err)
 	}
 	d.Kind = DeliveryKind(kind)
-	if sessionID.Valid {
-		v := sessionID.String
-		d.RepowireSessionID = &v
-	}
-	if fromPeerID.Valid {
-		v := fromPeerID.String
-		d.FromPeerID = &v
-	}
-	if correlationID.Valid {
-		v := correlationID.String
-		d.CorrelationID = &v
-	}
+	d.RepowireSessionID = nullStringPtr(sessionID)
+	d.FromPeerID = nullStringPtr(fromPeerID)
+	d.CorrelationID = nullStringPtr(correlationID)
 
 	d.Attachments = []map[string]any{}
 	if attachmentsJSON.Valid && attachmentsJSON.String != "" {

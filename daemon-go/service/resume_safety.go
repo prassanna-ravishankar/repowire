@@ -11,12 +11,9 @@ import (
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
-// LocalResumeResolver is the Go port of daemon.resume_safety: it only returns a
-// plan after proving the backend-owned session file exists locally. Unknown or
-// stale ids fall back to fresh spawn.
-type LocalResumeResolver struct{}
-
-func (LocalResumeResolver) Resolve(backend proto.AgentType, path, runtimeSessionID string, repowireSessionID *string, capability map[string]any) (map[string]any, bool) {
+// ResolveLocalResume returns a plan only after proving the backend-owned session
+// file exists locally. Unknown or stale ids fall back to fresh spawn.
+func ResolveLocalResume(backend proto.AgentType, path, runtimeSessionID string, repowireSessionID *string, capability map[string]any) (map[string]any, bool) {
 	if runtimeSessionID == "" {
 		return nil, false
 	}
@@ -263,5 +260,3 @@ func strAny(v any) string {
 	s, _ := v.(string)
 	return s
 }
-
-var _ resumeResolver = LocalResumeResolver{}

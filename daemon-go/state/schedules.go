@@ -21,15 +21,15 @@ var validScheduleKinds = map[string]bool{
 // strings (the Python store keeps them as strings, never as time.Time), so we
 // preserve that representation rather than reparsing.
 type Schedule struct {
-	ScheduleID string
-	FromPeer   string
-	ToPeer     string
-	Text       string
-	FireAt     string // ISO-8601 UTC
-	Kind       string // "ask" | "notify"
-	Circle     *string
-	Cron       *string
-	CreatedAt  string // ISO-8601 UTC
+	ScheduleID string  `json:"schedule_id"`
+	FromPeer   string  `json:"from_peer"`
+	ToPeer     string  `json:"to_peer"`
+	Text       string  `json:"text"`
+	FireAt     string  `json:"fire_at"` // ISO-8601 UTC
+	Kind       string  `json:"kind"`    // "ask" | "notify"
+	Circle     *string `json:"circle"`
+	Cron       *string `json:"cron"`
+	CreatedAt  string  `json:"created_at"` // ISO-8601 UTC
 }
 
 // scheduleColumns is the exact subset _upsert_schedule / _row_to_schedule touch.

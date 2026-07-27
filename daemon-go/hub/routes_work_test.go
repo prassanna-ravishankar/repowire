@@ -128,11 +128,11 @@ type fakeControlRegistry struct {
 	resolve map[string][]*proto.Peer
 }
 
-func (f *fakeControlRegistry) ResolvePeerStrict(identifier string, circle *string) ([]*proto.Peer, error) {
+func (f *fakeControlRegistry) ResolvePeerStrict(identifier string, circle *string) []*proto.Peer {
 	if f.resolve != nil {
-		return f.resolve[identifier], nil
+		return f.resolve[identifier]
 	}
-	return nil, nil
+	return nil
 }
 func (f *fakeControlRegistry) GetAllPeers() []*proto.Peer { return f.peers }
 func (f *fakeControlRegistry) GetPeer(id proto.PeerID) (*proto.Peer, bool) {

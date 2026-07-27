@@ -101,10 +101,10 @@ func (s *Store) importLegacyEvents(ctx context.Context, path string) error {
 		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO events(
 			event_id, type, timestamp, peer_id, peer_name, session_id, turn_id, payload_json
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, typ, timestamp,
-			nullableText(firstLegacyString(event, "peer_id")),
-			nullableText(firstLegacyString(event, "peer", "from_peer", "to_peer")),
-			nullableText(firstLegacyString(event, "session_id", "repowire_session_id")),
-			nullableText(firstLegacyString(event, "turn_id")), string(payload)); err != nil {
+			nullString(firstLegacyString(event, "peer_id")),
+			nullString(firstLegacyString(event, "peer", "from_peer", "to_peer")),
+			nullString(firstLegacyString(event, "session_id", "repowire_session_id")),
+			nullString(firstLegacyString(event, "turn_id")), string(payload)); err != nil {
 			return err
 		}
 		imported++
@@ -188,7 +188,7 @@ func (s *Store) legacyDone(ctx context.Context, path string) bool {
 }
 
 func (s *Store) recordLegacy(ctx context.Context, path string, count int, status, detail string) error {
-	return recordLegacy(ctx, s.db, path, count, status, nullableText(detail))
+	return recordLegacy(ctx, s.db, path, count, status, nullString(detail))
 }
 
 type legacyExecer interface {
@@ -210,13 +210,6 @@ func recordLegacy(ctx context.Context, db legacyExecer, path string, count int, 
 func regularFile(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
-}
-
-func nullableText(value string) any {
-	if value == "" {
-		return nil
-	}
-	return value
 }
 
 func legacyTime(value time.Time) any {

@@ -450,7 +450,7 @@ func runDaemon() {
 	// isn't registered here, so dispatch asks carry an empty `from`
 	// (accessRegistry treats an unresolved sender as allowed, mirroring Python
 	// notify behavior).
-	sessionControl := service.NewSessionControl(reg, spawnService, store).WithResume(service.LocalResumeResolver{})
+	sessionControl := service.NewSessionControl(reg, spawnService, store).WithResume(service.ResolveLocalResume)
 	jobRunner := service.NewJobRunner(store, delivery, sessionControl)
 	jobCompletion := service.NewJobCompletion(store, asks, sessionControl, reg, delivery)
 	reg.OnTerminalOffline = jobCompletion.OnPeerTerminalOffline
@@ -481,7 +481,7 @@ func runDaemon() {
 		WithMessaging(delivery, store).
 		WithAskLifecycle(asks, delivery, reg).
 		WithSessionRoutes(reg, store).
-		WithSpawn(spawnService, reg, asks, selfMachine).
+		WithSpawn(spawnService, reg, asks, selfMachine, cfg.Daemon.CircleBoundary).
 		WithWork(jobRunner, store, reg).
 		WithJobCompletion(jobCompletion).
 		WithSchedules(store, scheduler).
@@ -494,7 +494,8 @@ func runDaemon() {
 		// destructivePaneProof can't authorize kill/restart against a reused pane id.
 		// clearPaneRuntimeState is nil here because NewLifecycleHandler defaults
 		// it to service.ClearPaneRuntimeState.
-		WithLifecycle(hub.NewLifecycleHandler(reg, transport, tmuxPaneLister{}, spawnService.Ownership().Forget, nil))
+		WithLifecycle(hub.NewLifecycleHandler(reg, transport, tmuxPaneLister{}, spawnService.Ownership().Forget, nil, cfg.Daemon.CircleBoundary).
+			WithPlacementUpdater(spawnService.Ownership().UpdatePlacement))
 	// Reviews defaults its JSON store at Routes() time if unset; leave it.
 
 	// Surface relay-client status on /health and drive its lazy self-heal there

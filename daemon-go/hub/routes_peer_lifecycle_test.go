@@ -137,7 +137,7 @@ func TestPaneRegistrationDerivesCircleAndRoleFromSpawnOwnership(t *testing.T) {
 	})
 
 	h := newTestHub(t)
-	h.WithSpawn(service.NewSpawnService(nil, ownership, nil, nil), nil, nil, "test-host")
+	h.WithSpawn(service.NewSpawnService(nil, ownership, nil, nil), nil, nil, "test-host", proto.CircleBoundarySession)
 	mux := http.NewServeMux()
 	h.Routes(mux)
 
@@ -168,7 +168,7 @@ func TestManualPaneRegistrationUsesLiveTmuxCircleAndAgentRole(t *testing.T) {
 		return nil
 	})
 	h := newTestHub(t)
-	h.WithSpawn(service.NewSpawnService(nil, ownership, nil, nil), nil, nil, "test-host")
+	h.WithSpawn(service.NewSpawnService(nil, ownership, nil, nil), nil, nil, "test-host", proto.CircleBoundarySession)
 	mux := http.NewServeMux()
 	h.Routes(mux)
 
@@ -181,6 +181,32 @@ func TestManualPaneRegistrationUsesLiveTmuxCircleAndAgentRole(t *testing.T) {
 	p, ok := h.reg.GetPeer(proto.PeerID(registered.PeerID))
 	if !ok || p.Circle != "manual" || p.Role != proto.RoleAgent {
 		t.Fatalf("manual pane peer = %+v, want manual agent", p)
+	}
+}
+
+func TestWindowBoundaryRegistrationUsesStableWindowCircle(t *testing.T) {
+	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
+	path, pane := t.TempDir(), "%80"
+	ownership := service.NewFileOwnership("test-host", func(id string) *service.TmuxPaneEvidence {
+		if id == pane {
+			return &service.TmuxPaneEvidence{PaneID: pane, SessionName: "mesh", WindowID: "@19", TmuxSession: "mesh:renamable", CurrentPath: path}
+		}
+		return nil
+	})
+	h := newTestHub(t)
+	h.WithSpawn(service.NewSpawnService(nil, ownership, nil, nil), nil, nil, "test-host", proto.CircleBoundaryWindow)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	rec := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{Name: "manual", Path: &path, PaneID: &pane})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("window pane registration: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var registered RegisterResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &registered)
+	p, _ := h.reg.GetPeer(proto.PeerID(registered.PeerID))
+	if p.Circle != "window-19" {
+		t.Fatalf("circle = %q, want window-19", p.Circle)
 	}
 }
 
@@ -207,7 +233,7 @@ func TestPaneRegistrationRejectsUnprovedOrContradictoryIdentity(t *testing.T) {
 		PaneID: pane, Path: path, Backend: string(proto.AgentClaudeCode), Circle: "trusted",
 		Role: string(proto.RoleAgent), TmuxSession: evidence.TmuxSession, Machine: "test-host",
 	})
-	h.WithSpawn(service.NewSpawnService(nil, ownership, nil, nil), nil, nil, "test-host")
+	h.WithSpawn(service.NewSpawnService(nil, ownership, nil, nil), nil, nil, "test-host", proto.CircleBoundarySession)
 
 	if rec := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{
 		Name: "worker", Path: &path, PaneID: &pane, Circle: strptr("other"),

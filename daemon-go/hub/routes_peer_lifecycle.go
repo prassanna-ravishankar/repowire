@@ -245,13 +245,16 @@ func (h *Hub) verifiedPaneIdentity(paneID string, backend proto.AgentType, path,
 	if !proof.OK || proof.Evidence == nil {
 		return "", "", http.StatusForbidden, "pane-backed runtime registration rejected: " + proof.Error
 	}
-	circle, _, _ := strings.Cut(proof.Evidence.TmuxSession, ":")
+	circle := tmuxEvidenceCircle(h.spawn.boundary, proof.Evidence)
 	role := proto.RoleAgent
 	if proof.Record != nil {
 		if proof.Record.Backend != string(backend) || service.NormPath(proof.Record.Path) != service.NormPath(path) {
 			return "", "", http.StatusForbidden, "pane-backed runtime registration does not match spawn ownership"
 		}
-		circle, role = proof.Record.Circle, proto.PeerRole(proof.Record.Role)
+		if proof.Record.Circle != circle {
+			return "", "", http.StatusForbidden, "pane-backed runtime registration circle contradicts live tmux evidence"
+		}
+		role = proto.PeerRole(proof.Record.Role)
 	}
 	if !isValidIdentifier(circle) || !role.Valid() {
 		return "", "", http.StatusConflict, "pane evidence has invalid circle or role"
@@ -266,6 +269,20 @@ func (h *Hub) verifiedPaneIdentity(paneID string, backend proto.AgentType, path,
 		return "", "", http.StatusForbidden, "pane-backed runtime registration role contradicts pane evidence"
 	}
 	return circle, role, http.StatusOK, ""
+}
+
+func tmuxEvidenceCircle(boundary proto.CircleBoundary, evidence *service.TmuxPaneEvidence) string {
+	if evidence == nil {
+		return ""
+	}
+	if boundary == "" {
+		boundary = proto.CircleBoundarySession
+	}
+	session := evidence.SessionName
+	if session == "" {
+		session, _, _ = strings.Cut(evidence.TmuxSession, ":")
+	}
+	return proto.TmuxCircle(boundary, session, evidence.WindowID)
 }
 
 // persistBinding records the session-binding observation and mints a birth
