@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -292,6 +293,37 @@ func TestRemoveAntigravityManifestEntry(t *testing.T) {
 func TestServiceLabelKeepsExistingInstallIdentity(t *testing.T) {
 	if serviceLabel() != "io.repowire.daemon" {
 		t.Fatalf("service label = %q", serviceLabel())
+	}
+}
+
+func TestInstallServicePreservesPath(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd only")
+	}
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	if err := os.Mkdir(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pathValue := binDir + ":/opt/homebrew/bin:/usr/bin:/bin"
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", pathValue)
+	t.Setenv("LC_ALL", "C.UTF-8")
+	if err := installService(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(homeDir, "Library", "LaunchAgents", serviceLabel()+".plist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "<key>PATH</key><string>"+pathValue+"</string>") {
+		t.Fatalf("launchd plist does not preserve PATH: %s", raw)
+	}
+	if !strings.Contains(string(raw), "<key>LC_ALL</key><string>C.UTF-8</string>") {
+		t.Fatalf("launchd plist does not preserve the locale: %s", raw)
 	}
 }
 

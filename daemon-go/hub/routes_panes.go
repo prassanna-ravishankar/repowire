@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -33,8 +34,9 @@ type localPane struct {
 }
 
 func listLocalPanes() []localPane {
-	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{session_name}\t#{window_name}\t#{window_id}").Output()
+	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{session_name}\t#{window_name}\t#{window_id}").CombinedOutput()
 	if err != nil {
+		log.Printf("tmux list-panes failed: %v: %s", err, strings.TrimSpace(string(out)))
 		return nil
 	}
 	var panes []localPane
@@ -50,6 +52,9 @@ func listLocalPanes() []localPane {
 			confidence = "hint"
 		}
 		panes = append(panes, localPane{PaneID: parts[0], PID: pid, Command: parts[2], CWD: parts[3], Session: parts[4], Window: parts[5], WindowID: parts[6], DetectedBackend: backend, Confidence: confidence})
+	}
+	if len(panes) == 0 && len(out) > 0 {
+		log.Printf("tmux list-panes returned unparseable output: %q", strings.TrimSpace(string(out)))
 	}
 	return panes
 }

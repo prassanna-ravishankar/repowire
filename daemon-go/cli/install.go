@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -785,7 +786,14 @@ func installService() error {
 		_ = os.Remove(obsoletePath)
 		path := filepath.Join(dir, serviceLabel()+".plist")
 		logPath := home(".repowire", "daemon.log")
-		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>serve</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, serviceLabel(), executable(), logPath, logPath)
+		locale := os.Getenv("LC_ALL")
+		if locale == "" {
+			locale = os.Getenv("LANG")
+		}
+		if locale == "" {
+			locale = "en_US.UTF-8"
+		}
+		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>serve</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string><key>LC_ALL</key><string>%s</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, serviceLabel(), executable(), html.EscapeString(os.Getenv("PATH")), html.EscapeString(locale), logPath, logPath)
 		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
 		if err := os.WriteFile(path, []byte(plist), 0o600); err != nil {
 			return err
