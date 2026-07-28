@@ -135,10 +135,6 @@ func (s *Store) MaterializeDue(ctx context.Context, now time.Time, nextFire func
 		if rd, rerr := calendarParseISO(refreshed.NextDueAt); rerr == nil && rd.After(now.UTC()) {
 			continue
 		}
-		work, err := s.createCalendarOccurrence(ctx, refreshed)
-		if err != nil {
-			return nil, err
-		}
 		next, ferr := nextFire(refreshed.Cron, now.UTC())
 		if ferr != nil {
 			return nil, ferr
@@ -150,15 +146,36 @@ func (s *Store) MaterializeDue(ctx context.Context, now time.Time, nextFire func
 		if jerr != nil {
 			return nil, jerr
 		}
-		// CAS on next_due_at so two materializers can't double-fire one entry.
-		_, err = s.db.ExecContext(ctx,
+		work := prepareCalendarOccurrence(refreshed)
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		result, err := tx.ExecContext(ctx,
 			`UPDATE calendar_entries
 			 SET next_due_at = ?, last_occurrence_work_id = ?,
 			     last_materialized_at = ?, provenance_json = ?, updated_at = ?
-			 WHERE calendar_id = ? AND next_due_at = ?`,
+			 WHERE calendar_id = ? AND next_due_at = ? AND state = 'active'`,
 			next.Format("2006-01-02T15:04:05.000000-07:00"), work.WorkID,
 			nowText, provJSON, nowText, refreshed.CalendarID, refreshed.NextDueAt)
 		if err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		claimed, err := result.RowsAffected()
+		if err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		if claimed == 0 {
+			_ = tx.Rollback()
+			continue
+		}
+		if err := insertWork(ctx, tx, work); err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
 			return nil, err
 		}
 		materialized = append(materialized, work)
@@ -166,10 +183,10 @@ func (s *Store) MaterializeDue(ctx context.Context, now time.Time, nextFire func
 	return materialized, nil
 }
 
-// createCalendarOccurrence builds the per-fire tracked work from a calendar
+// prepareCalendarOccurrence builds the per-fire tracked work from a calendar
 // entry, threading the due_at/calendar_id/cron into request.execution.schedule
 // and stamping a calendar provenance block. Mirrors _create_occurrence.
-func (s *Store) createCalendarOccurrence(ctx context.Context, entry *CalendarEntry) (*TrackedWork, error) {
+func prepareCalendarOccurrence(entry *CalendarEntry) *TrackedWork {
 	request := calendarCloneMap(entry.Request)
 	execution := calendarCloneMap(mapAt(request, "execution"))
 	schedule := calendarCloneMap(mapAt(execution, "schedule"))
@@ -186,7 +203,7 @@ func (s *Store) createCalendarOccurrence(ctx context.Context, entry *CalendarEnt
 		},
 	}
 	calendar := "calendar"
-	return s.CreateWork(ctx, WorkCreate{
+	return prepareWork(WorkCreate{
 		Title:           entry.Title,
 		Kind:            entry.Kind,
 		CreatedByPeerID: entry.CreatedByPeerID,

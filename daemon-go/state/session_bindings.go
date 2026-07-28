@@ -293,12 +293,6 @@ func (s *Store) GetByRuntimeSession(ctx context.Context, runtimeSessionID string
 	return b, nil
 }
 
-// ListBindingsByBackendProject returns bindings for a backend+project, newest first.
-func (s *Store) ListBindingsByBackendProject(ctx context.Context, backend, projectPath string) ([]*SessionBinding, error) {
-	q := `SELECT ` + sessionBindingColumns + ` FROM session_bindings WHERE backend = ? AND project_path = ? ORDER BY last_seen_at DESC`
-	return s.querySessionBindings(ctx, q, backend, projectPath)
-}
-
 // GetBySourceURI returns the newest binding for a runtime source URI, or nil.
 func (s *Store) GetBySourceURI(ctx context.Context, runtimeSourceURI string) (*SessionBinding, error) {
 	q := `SELECT ` + sessionBindingColumns + ` FROM session_bindings WHERE runtime_source_uri = ? ORDER BY last_seen_at DESC LIMIT 1`
@@ -310,12 +304,6 @@ func (s *Store) GetBySourceURI(ctx context.Context, runtimeSourceURI string) (*S
 		return nil, fmt.Errorf("get binding by source uri: %w", err)
 	}
 	return b, nil
-}
-
-// ListAllBindings returns every binding, newest last_seen_at first.
-func (s *Store) ListAllBindings(ctx context.Context) ([]*SessionBinding, error) {
-	q := `SELECT ` + sessionBindingColumns + ` FROM session_bindings ORDER BY last_seen_at DESC`
-	return s.querySessionBindings(ctx, q)
 }
 
 func (s *Store) querySessionBindings(ctx context.Context, query string, args ...any) ([]*SessionBinding, error) {

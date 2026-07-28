@@ -467,26 +467,6 @@ func antigravityManifestPath() string {
 }
 func updateAntigravityManifest(present bool) error {
 	path := antigravityManifestPath()
-	data, _ := readJSON(path, false)
-	items, _ := data["imports"].([]any)
-	kept := []any{}
-	for _, raw := range items {
-		item, _ := raw.(map[string]any)
-		if fmt.Sprint(item["name"]) != "repowire" {
-			kept = append(kept, raw)
-		}
-	}
-	if present {
-		kept = append(kept, map[string]any{"name": "repowire", "source": "local-install", "importedAt": time.Now().UTC().Format("2006-01-02T15:04:05Z"), "components": []string{"installed"}})
-	}
-	data["imports"] = kept
-	return writeJSON(path, data)
-}
-func uninstallAntigravity() error {
-	if err := os.RemoveAll(home(".gemini", "antigravity-cli", "plugins", "repowire")); err != nil {
-		return err
-	}
-	path := antigravityManifestPath()
 	data, err := readJSON(path, false)
 	if err != nil {
 		return err
@@ -499,11 +479,19 @@ func uninstallAntigravity() error {
 			kept = append(kept, raw)
 		}
 	}
-	if len(kept) == 0 {
+	if present {
+		kept = append(kept, map[string]any{"name": "repowire", "source": "local-install", "importedAt": time.Now().UTC().Format("2006-01-02T15:04:05Z"), "components": []string{"installed"}})
+	} else if len(kept) == 0 {
 		return removeIfExists(path)
 	}
 	data["imports"] = kept
 	return writeJSON(path, data)
+}
+func uninstallAntigravity() error {
+	if err := os.RemoveAll(home(".gemini", "antigravity-cli", "plugins", "repowire")); err != nil {
+		return err
+	}
+	return updateAntigravityManifest(false)
 }
 
 func hookEntry(command, matcher string, timeout int) map[string]any {

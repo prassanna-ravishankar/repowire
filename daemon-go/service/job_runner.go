@@ -429,23 +429,11 @@ func workNowISORunner() string {
 func nowUTCRunner() time.Time { return time.Now().UTC() }
 
 func parseRunnerISO(value string) (time.Time, error) {
-	// Reuse the calendar/work layouts via a local parse to avoid a state export.
-	layouts := []string{
-		"2006-01-02T15:04:05.999999-07:00",
-		"2006-01-02T15:04:05-07:00",
-		time.RFC3339Nano,
-		time.RFC3339,
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, errParseISO
 	}
-	v := value
-	if len(v) > 0 && v[len(v)-1] == 'Z' {
-		v = v[:len(v)-1] + "+00:00"
-	}
-	for _, l := range layouts {
-		if t, err := time.Parse(l, v); err == nil {
-			return t.UTC(), nil
-		}
-	}
-	return time.Time{}, errParseISO
+	return parsed.UTC(), nil
 }
 
 var errParseISO = errors.New("unparseable ISO timestamp")

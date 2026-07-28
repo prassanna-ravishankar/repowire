@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -314,6 +315,66 @@ func TestUpdateCalendarRuntimeBinding(t *testing.T) {
 	}
 	if none != nil {
 		t.Errorf("update missing should return nil, got %+v", none)
+	}
+}
+
+func TestMaterializeDueClaimsOccurrenceAtomically(t *testing.T) {
+	s := newTempStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 6, 30, 8, 0, 0, 0, time.UTC)
+	entry, err := s.CreateCalendarEntry(ctx, &CalendarEntry{
+		Title: "hourly", Kind: "job", Cron: "0 * * * *", NextDueAt: now.Add(-time.Minute).Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var ready sync.WaitGroup
+	ready.Add(2)
+	release := make(chan struct{})
+	nextFire := func(_ string, after time.Time) (time.Time, error) {
+		ready.Done()
+		<-release
+		return after.Add(time.Hour), nil
+	}
+	type result struct {
+		work []*TrackedWork
+		err  error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			work, err := s.MaterializeDue(ctx, now, nextFire)
+			results <- result{work: work, err: err}
+		}()
+	}
+	ready.Wait()
+	close(release)
+
+	total := 0
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		total += len(result.work)
+	}
+	if total != 1 {
+		t.Fatalf("materialized %d occurrences, want 1", total)
+	}
+	work, err := s.ListWork(ctx, WorkFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(work) != 1 {
+		t.Fatalf("stored %d occurrences, want 1", len(work))
+	}
+	refreshed, err := s.GetCalendarEntry(ctx, entry.CalendarID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.LastOccurrenceWorkID == nil || *refreshed.LastOccurrenceWorkID != work[0].WorkID {
+		t.Fatalf("calendar occurrence = %v, work = %s", refreshed.LastOccurrenceWorkID, work[0].WorkID)
 	}
 }
 

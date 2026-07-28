@@ -502,8 +502,14 @@ func (h *Hub) ackDirect(ctx context.Context, req AckRequest) (AckResponse, error
 			h.emitAckEvent(ctx, existing, "ack_with_msg", false, true, len(req.Attachments) > 0)
 			return AckResponse{OK: true}, nil
 		}
+		if res.Queued() {
+			h.ask.asks.CaptureReply(ctx, req.CorrelationID, derefOr(req.Message, ""), req.Attachments)
+			_, _ = h.ask.asks.Close(ctx, req.CorrelationID, "ack_with_msg")
+			h.emitAckEvent(ctx, existing, "ack_with_msg", false, true, len(req.Attachments) > 0)
+			return AckResponse{OK: true}, nil
+		}
 		if !res.Delivered() {
-			// Queued / not delivered → fail loud, leave the ask open for retry.
+			// An unaccepted non-delivery stays open for retry.
 			return AckResponse{}, routeErr(http.StatusServiceUnavailable, fmt.Sprintf(
 				"Reply delivery failed for %s: %s. Ask remains open; retry when "+
 					"the asker reconnects.", existing.FromPeerName, res.Reason))
@@ -1091,6 +1097,10 @@ func (h *Hub) handleAskWait(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if req.TimeoutSeconds != nil && *req.TimeoutSeconds > askWaitMaxSeconds.Seconds() {
+		clamped := askWaitMaxSeconds.Seconds()
+		req.TimeoutSeconds = &clamped
+	}
 	result, err := h.waitOnAck(r.Context(), r.PathValue("correlation_id"), req)
 	if err != nil {
 		writeRouteError(w, err)
@@ -1120,9 +1130,6 @@ func (h *Hub) waitOnAck(ctx context.Context, cid string, req AskWaitRequest) (As
 	timeout := askWaitDefaultSeconds
 	if req.TimeoutSeconds != nil {
 		timeout = time.Duration(*req.TimeoutSeconds * float64(time.Second))
-	}
-	if timeout > askWaitMaxSeconds {
-		timeout = askWaitMaxSeconds
 	}
 	if timeout < 0 {
 		timeout = 0

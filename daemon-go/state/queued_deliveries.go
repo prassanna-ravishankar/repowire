@@ -236,18 +236,6 @@ func (s *Store) DeleteDelivery(ctx context.Context, deliveryID string) (bool, er
 	return n > 0, nil
 }
 
-// CountDeliveries returns the raw row count for one peer (no expiry filter,
-// matching the Python count_for_peer).
-func (s *Store) CountDeliveries(ctx context.Context, peerID string) (int, error) {
-	var n int
-	if err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM queued_deliveries WHERE peer_id = ?", peerID,
-	).Scan(&n); err != nil {
-		return 0, fmt.Errorf("count deliveries: %w", err)
-	}
-	return n, nil
-}
-
 func deleteExpiredTx(ctx context.Context, tx *sql.Tx, cutoffISO string) error {
 	if _, err := tx.ExecContext(ctx,
 		"DELETE FROM queued_deliveries WHERE expires_at <= ?", cutoffISO,

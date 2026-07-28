@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -218,19 +217,9 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if timeout <= 0 {
 			timeout = 600
 		}
-		deadline := time.Now().Add(time.Duration(timeout) * time.Second)
-		for time.Now().Before(deadline) {
-			remaining := time.Until(deadline).Seconds()
-			wait := min(remaining, 45)
-			result, err := h.waitOnAck(ctx, a.CorrelationID, AskWaitRequest{PeerID: caller, TimeoutSeconds: &wait})
-			if err != nil {
-				return "", err
-			}
-			if result.Status == "resolved" {
-				return jsonResult(result), nil
-			}
-		}
-		return jsonResult(map[string]any{"correlation_id": a.CorrelationID, "status": "pending"}), nil
+		wait := float64(timeout)
+		result, err := h.waitOnAck(ctx, a.CorrelationID, AskWaitRequest{PeerID: caller, TimeoutSeconds: &wait})
+		return jsonResult(result), err
 	})
 	addMCPTool(srv, "ask_many", "Open one tracked ask per peer and return a parent id.", func(ctx context.Context, caller string, a mcpAskManyArgs) (string, error) {
 		if len(a.PeerNames) == 0 {
@@ -285,7 +274,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 			Title: a.Title, Kind: firstNonempty(a.Kind, "general"), CreatedByPeerID: &caller,
 			AssignedPeerID: strPtr(a.AssignedPeerID), OwnerPeerID: strPtr(a.OwnerPeerID), RepowireSessionID: strPtr(a.RepowireSessionID), CorrelationID: strPtr(a.CorrelationID), Circle: strPtr(a.Circle),
 			SourceKind: strPtr(a.SourceKind), SourceID: strPtr(a.SourceID), Scope: strPtr(a.Scope), Visibility: firstNonempty(a.Visibility, "circle"), DeadlineAt: strPtr(a.DeadlineAt), ExpiresAt: strPtr(a.ExpiresAt),
-			Prompt: strPtr(a.Prompt), Path: strPtr(a.Path), Backend: strPtr(a.Backend), Profile: strPtr(a.Profile), DueAt: strPtr(a.DueAt), Cron: strPtr(a.Cron), ResultSurface: strPtr(a.ResultSurface), ProcessScope: strPtr(a.ProcessScope), Continuity: strPtr(a.Continuity),
+			Prompt: strPtr(a.Prompt), PromptFile: strPtr(a.PromptFile), Path: strPtr(a.Path), Backend: strPtr(a.Backend), Profile: strPtr(a.Profile), DueAt: strPtr(a.DueAt), Cron: strPtr(a.Cron), ResultSurface: strPtr(a.ResultSurface), ProcessScope: strPtr(a.ProcessScope), Continuity: strPtr(a.Continuity),
 			Request: firstNonNilMap(a.Request), Provenance: a.Provenance,
 		})
 		return jsonResult(result), err

@@ -283,7 +283,7 @@ func migrate(db *sql.DB) error {
 	}
 
 	// PRAGMA user_version does not accept a bind parameter.
-	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", schemaVersion)); err != nil {
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", SchemaVersion)); err != nil {
 		return fmt.Errorf("stamp user_version: %w", err)
 	}
 	return tx.Commit()

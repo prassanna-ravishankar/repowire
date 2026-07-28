@@ -48,8 +48,8 @@ func TestNewStoreUpgradesFromZero(t *testing.T) {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != schemaVersion {
-		t.Fatalf("user_version = %d, want %d", version, schemaVersion)
+	if version != SchemaVersion {
+		t.Fatalf("user_version = %d, want %d", version, SchemaVersion)
 	}
 }
 

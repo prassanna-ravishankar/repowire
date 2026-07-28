@@ -51,12 +51,25 @@ func TestHandoffSummaryIsBounded(t *testing.T) {
 	}
 }
 
-func TestMCPIdentityReregistersAfterCachedCertificateFails(t *testing.T) {
+func TestReadPaneRuntimeMetadata(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if got := ReadPaneRuntimeMetadata("%9"); len(got) != 0 {
+		t.Fatalf("absent meta should be empty, got %v", got)
+	}
+	if err := writeMetadata("%9", map[string]any{"peer_id": "repow-x-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := ReadPaneRuntimeMetadata("%9")["peer_id"].(string); got != "repow-x-1" {
+		t.Fatalf("peer_id = %q, want repow-x-1", got)
+	}
+}
+
+func TestMCPIdentityRenewsExpiredCertificateWithoutSplittingPaneIdentity(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 	t.Setenv("TMUX_PANE", "%999")
 	t.Setenv("REPOWIRE_BACKEND", "codex")
-	t.Setenv("REPOWIRE_PEER_ID", "")
+	t.Setenv("REPOWIRE_PEER_ID", "repow-stale-env")
 	t.Setenv("REPOWIRE_CONFIG", filepath.Join(homeDir, "missing-config.yaml"))
 	cwd := mustGetwd()
 	hash := sha256.Sum256([]byte(cwd + "::codex"))
@@ -77,13 +90,14 @@ func TestMCPIdentityReregistersAfterCachedCertificateFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	registrations := 0
+	registrations, validations := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-token" {
 			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
 		}
 		switch r.URL.Path {
 		case "/peers/identity/validate":
+			validations++
 			var body struct {
 				Certificate map[string]any `json:"birth_certificate"`
 			}
@@ -97,12 +111,15 @@ func TestMCPIdentityReregistersAfterCachedCertificateFails(t *testing.T) {
 			registrations++
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["peer_id"] != "repow-old" {
+				t.Errorf("peer_id = %v, want pane metadata identity", body["peer_id"])
+			}
 			if body["role"] != nil {
 				t.Errorf("unsigned hint role reached registration: %v", body["role"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"peer_id": "repow-fresh", "display_name": "repowire-codex",
-				"birth_certificate": map[string]any{"nonce": "fresh", "peer_id": "repow-fresh"},
+				"peer_id": "repow-old", "display_name": "repowire-codex",
+				"birth_certificate": map[string]any{"nonce": "fresh", "peer_id": "repow-old"},
 			})
 		default:
 			http.NotFound(w, r)
@@ -115,7 +132,11 @@ func TestMCPIdentityReregistersAfterCachedCertificateFails(t *testing.T) {
 	t.Setenv("REPOWIRE_DAEMON__AUTH_TOKEN", "test-token")
 
 	identity, proof := MCPIdentityProof()
-	if identity != "repow-fresh" || proof != "fresh" || registrations != 1 {
-		t.Fatalf("identity=%q proof=%q registrations=%d", identity, proof, registrations)
+	if identity != "repow-old" || proof != "fresh" || registrations != 1 || validations != 1 {
+		t.Fatalf("identity=%q proof=%q registrations=%d validations=%d", identity, proof, registrations, validations)
+	}
+	cert, _ := ReadPaneRuntimeMetadata("%999")["birth_certificate"].(map[string]any)
+	if stringValue(cert, "nonce") != "fresh" {
+		t.Fatalf("pane metadata certificate was not refreshed: %v", cert)
 	}
 }

@@ -54,6 +54,20 @@ func listLocalPanes() []localPane {
 	return panes
 }
 
+// TmuxPaneLister projects the daemon's tmux snapshot for lifecycle evidence.
+// Keeping the shell call and parser here means orphan discovery and session
+// closure cannot disagree about which panes exist.
+type TmuxPaneLister struct{}
+
+func (TmuxPaneLister) ListAllPanes() []PaneInfo {
+	panes := listLocalPanes()
+	out := make([]PaneInfo, 0, len(panes))
+	for _, pane := range panes {
+		out = append(out, PaneInfo{PaneID: pane.PaneID, Session: pane.Session})
+	}
+	return out
+}
+
 func detectPaneBackend(command string) string {
 	name := strings.ToLower(filepath.Base(command))
 	for _, candidate := range []struct{ needle, backend string }{{"claude", "claude-code"}, {"codex", "codex"}, {"gemini", "gemini"}, {"opencode", "opencode"}, {"agy", "antigravity"}, {"pi", "pi"}} {
@@ -187,7 +201,7 @@ func (h *Hub) handleLinkPane(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"linked": true, "pane_id": paneID, "peer_id": id, "display_name": displayName, "transport_connected": true, "reason": "linked"})
 		return
 	}
-	service.ClearPaneRuntimeState(paneID)
+	clienthooks.ClearPaneRuntimeState(paneID)
 	rolledBack, _ := h.reg.UnregisterPeer(r.Context(), string(id), nil)
 	reason := "transport_unestablished"
 	if spawnErr != nil || !spawned {

@@ -398,7 +398,7 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 		}}
 	}
 	h.spawn.svc.Ownership().Forget(proof.paneID)
-	service.ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove a reused pane
+	clienthooks.ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove a reused pane
 	// id is already resolved (resolveStrict), so the ambiguity error can't fire.
 	_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
 	t := true
@@ -549,7 +549,7 @@ func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.spawn.svc.Ownership().Forget(proof.paneID)
-		service.ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove the reused pane
+		clienthooks.ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove the reused pane
 		_, _ = h.spawn.reg.MarkOffline(ctx, peerCopy.PeerID, false)
 	}
 
@@ -749,7 +749,7 @@ func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	svc.Ownership().Forget(proof.paneID)
-	service.ClearPaneRuntimeState(proof.paneID)
+	clienthooks.ClearPaneRuntimeState(proof.paneID)
 	// id is already resolved (resolveStrict), so the ambiguity error can't fire.
 	_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
 
@@ -1005,7 +1005,7 @@ func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
 	// owning peer_id into ws-hook-<pane>.meta.json; a match proves this peer really
 	// occupies the live pane (not merely shares its path). Parity with
 	// spawn.py destructive proof mode 3. Path match alone is still NOT proof.
-	if meta := service.ReadPaneRuntimeMetadata(*p.PaneID); meta != nil {
+	if meta := clienthooks.ReadPaneRuntimeMetadata(*p.PaneID); meta != nil {
 		if mpid, _ := meta["peer_id"].(string); mpid != "" {
 			if mpid == string(p.PeerID) {
 				return destructiveProof{ok: true, paneID: *p.PaneID, tmuxSession: ev.TmuxSession,

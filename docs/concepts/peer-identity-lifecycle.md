@@ -147,8 +147,11 @@ path+backend lookup. Validation rejects expired envelopes, backend mismatches,
 pane reuse, process mismatches, and envelope fields that do not match persisted
 daemon state. If the daemon restarted and no in-memory peer exists, a valid
 certificate can rehydrate the peer from persisted identity evidence. When the
-envelope is absent or invalid, MCP may register a fresh peer or fail closed for
-strict outbound tools; it should not silently adopt identity from path alone.
+envelope expires, exact same-pane metadata (backend, working directory, and
+agent PID) can renew the existing peer id and replace the certificate instead
+of splitting one runtime across two peers. Otherwise MCP may register a fresh
+peer or fail closed for strict outbound tools; it should not silently adopt
+identity from path alone.
 
 Birth certificates do not make the daemon the owner of raw transcript history
 and do not authorize destructive pane actions. Runtime session ids remain source

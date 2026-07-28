@@ -126,10 +126,24 @@ func wsHookPath(paneID, suffix string) string {
 	return filepath.Join(paneLogsDir(), "ws-hook-"+paneToken(paneID)+suffix)
 }
 
-func readMetadata(paneID string) map[string]any {
+func WSHookMetaPath(paneID string) string { return wsHookPath(paneID, ".meta.json") }
+
+// ReadPaneRuntimeMetadata reads hook-owned pane metadata, falling back to the
+// legacy cwd file when an older hook has not written metadata yet.
+func ReadPaneRuntimeMetadata(paneID string) map[string]any {
+	if paneID == "" {
+		return map[string]any{}
+	}
 	var out map[string]any
-	raw, err := os.ReadFile(wsHookPath(paneID, ".meta.json"))
-	if err != nil || json.Unmarshal(raw, &out) != nil || out == nil {
+	raw, err := os.ReadFile(WSHookMetaPath(paneID))
+	if err != nil {
+		legacy, _ := os.ReadFile(wsHookPath(paneID, ".cwd"))
+		if cwd := strings.TrimSpace(string(legacy)); cwd != "" {
+			return map[string]any{"cwd": cwd}
+		}
+		return map[string]any{}
+	}
+	if json.Unmarshal(raw, &out) != nil || out == nil {
 		return map[string]any{}
 	}
 	return out
@@ -143,7 +157,7 @@ func writeMetadata(paneID string, data map[string]any) error {
 	if err != nil {
 		return err
 	}
-	path := wsHookPath(paneID, ".meta.json")
+	path := WSHookMetaPath(paneID)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
@@ -157,14 +171,24 @@ func writeMetadata(paneID string, data map[string]any) error {
 	cert, certOK := data["birth_certificate"].(map[string]any)
 	backend, agentPID := stringValue(data, "backend"), intFromAny(data["agent_pid"])
 	if certOK && backend != "" && agentPID > 0 {
-		safeBackend := strings.NewReplacer("/", "-", "\\", "-").Replace(backend)
-		raw, _ := json.Marshal(cert)
-		_ = os.WriteFile(filepath.Join(paneLogsDir(), fmt.Sprintf("birth-%s-%d-%s.json", safeBackend, agentPID, paneToken(paneID))), raw, 0o600)
+		writeBirthCertificate(backend, agentPID, paneID, cert)
 	}
 	return nil
 }
 
-func clearRuntime(paneID string) {
+func writeBirthCertificate(backend string, agentPID int, paneID string, cert map[string]any) {
+	if agentPID <= 0 || cert == nil {
+		return
+	}
+	safeBackend := strings.NewReplacer("/", "-", "\\", "-").Replace(backend)
+	raw, _ := json.Marshal(cert)
+	_ = os.WriteFile(filepath.Join(paneLogsDir(), fmt.Sprintf("birth-%s-%d-%s.json", safeBackend, agentPID, paneToken(paneID))), raw, 0o600)
+}
+
+func ClearPaneRuntimeState(paneID string) {
+	if paneID == "" {
+		return
+	}
 	for _, suffix := range []string{".pid", ".meta.json", ".cwd"} {
 		_ = os.Remove(wsHookPath(paneID, suffix))
 	}
@@ -255,9 +279,14 @@ type tmuxInfo struct {
 	PaneID, SessionName, WindowName, WindowID string
 }
 
-func configuredCircleBoundary() (proto.CircleBoundary, error) {
+func tmuxPlacement(info tmuxInfo) (proto.CircleBoundary, string, string, error) {
 	cfg, err := config.Load()
-	return cfg.Daemon.CircleBoundary, err
+	boundary := cfg.Daemon.CircleBoundary
+	source := "tmux"
+	if boundary == proto.CircleBoundaryWindow {
+		source = "tmux_window"
+	}
+	return boundary, proto.TmuxCircle(boundary, info.SessionName, info.WindowID), source, err
 }
 
 func tmuxSession(info tmuxInfo) string {

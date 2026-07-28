@@ -92,14 +92,6 @@ func TestEnqueueAndDrainRoundTrip(t *testing.T) {
 		t.Fatalf("bad delivery id %q", enq.DeliveryID)
 	}
 
-	n, err := s.CountDeliveries(ctx, "bob")
-	if err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if n != 1 {
-		t.Fatalf("count = %d, want 1", n)
-	}
-
 	got, err := s.DrainDeliveries(ctx, "bob", 50, now.Add(time.Second))
 	if err != nil {
 		t.Fatalf("drain: %v", err)
@@ -172,13 +164,6 @@ func TestExpiryEviction(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected expiry eviction, got %d", len(got))
-	}
-	n, err := s.CountDeliveries(ctx, "bob")
-	if err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("expected row evicted, count = %d", n)
 	}
 }
 

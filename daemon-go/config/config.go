@@ -61,7 +61,6 @@ type MCPHTTPConfig struct {
 	Enabled                       bool   `yaml:"enabled"`
 	Bind                          string `yaml:"bind"`
 	RequireAuth                   bool   `yaml:"require_auth"`
-	ExposeViaRelay                bool   `yaml:"expose_via_relay"`
 	AllowUnauthenticatedLocalhost bool   `yaml:"allow_unauthenticated_localhost"`
 	AllowDangerousTools           bool   `yaml:"allow_dangerous_tools"`
 }
@@ -214,7 +213,6 @@ func applyEnv(cfg *Config) {
 		cfg.Daemon.MCPHTTP.Bind = v
 	}
 	setBoolEnv(&cfg.Daemon.MCPHTTP.RequireAuth, "REPOWIRE_DAEMON__MCP_HTTP__REQUIRE_AUTH")
-	setBoolEnv(&cfg.Daemon.MCPHTTP.ExposeViaRelay, "REPOWIRE_DAEMON__MCP_HTTP__EXPOSE_VIA_RELAY")
 	setBoolEnv(&cfg.Daemon.MCPHTTP.AllowUnauthenticatedLocalhost, "REPOWIRE_DAEMON__MCP_HTTP__ALLOW_UNAUTHENTICATED_LOCALHOST")
 	setBoolEnv(&cfg.Daemon.MCPHTTP.AllowDangerousTools, "REPOWIRE_DAEMON__MCP_HTTP__ALLOW_DANGEROUS_TOOLS")
 	setBoolEnv(&cfg.Daemon.OrchestratorRecall.Enabled, "REPOWIRE_DAEMON__ORCHESTRATOR_RECALL__ENABLED")
@@ -228,7 +226,7 @@ func applyEnv(cfg *Config) {
 		}
 	}
 	if v := os.Getenv("REPOWIRE_SPAWN_ALLOWED_PATHS"); v != "" {
-		cfg.Daemon.Spawn.AllowedPaths = splitCSV(v)
+		cfg.Daemon.Spawn.AllowedPaths = SplitCSV(v)
 	}
 	if v := firstEnv("REPOWIRE_RELAY_URL", "REPOWIRE_RELAY__URL"); v != "" {
 		cfg.Relay.URL = v
@@ -262,7 +260,7 @@ func applyEnv(cfg *Config) {
 		if json.Unmarshal([]byte(v), &tools) == nil {
 			cfg.Experiments.RemoteToolApproval.GatedTools = tools
 		} else {
-			cfg.Experiments.RemoteToolApproval.GatedTools = splitCSV(v)
+			cfg.Experiments.RemoteToolApproval.GatedTools = SplitCSV(v)
 		}
 	}
 }
@@ -332,7 +330,8 @@ func setBoolEnv(target *bool, key string) {
 	}
 }
 
-func splitCSV(s string) []string {
+// SplitCSV parses comma-separated config and flag values.
+func SplitCSV(s string) []string {
 	var out []string
 	for _, p := range strings.Split(s, ",") {
 		if trimmed := strings.TrimSpace(p); trimmed != "" {

@@ -33,9 +33,9 @@ import (
 	"net/http"
 	"strings"
 
+	clienthooks "github.com/repowire/repowire/daemon-go/hooks"
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
-	"github.com/repowire/repowire/daemon-go/service"
 )
 
 // nameFieldMax caps the name/pane fields on every lifecycle request, matching
@@ -101,7 +101,7 @@ func (h *LifecycleHandler) WithPlacementUpdater(fn func(paneID, tmuxSession, cir
 
 // NewLifecycleHandler builds the handler. transport severs sockets; panes probes
 // live tmux for the session-closed evidence gate. forgetSpawnedPane and
-// clearPaneRuntimeState may be nil; nil defaults to service.ClearPaneRuntimeState.
+// clearPaneRuntimeState may be nil; nil defaults to hooks.ClearPaneRuntimeState.
 func NewLifecycleHandler(
 	reg *peer.Registry,
 	transport LifecycleTransport,
@@ -116,7 +116,7 @@ func NewLifecycleHandler(
 	if clearRuntime == nil {
 		// Default to the real pane-runtime cleanup so pane death drops the stale
 		// meta.json that would otherwise re-prove a reused pane. main need not wire it.
-		clearRuntime = service.ClearPaneRuntimeState
+		clearRuntime = clienthooks.ClearPaneRuntimeState
 	}
 	if boundary == "" {
 		boundary = proto.CircleBoundarySession

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
-	"github.com/repowire/repowire/daemon-go/proto"
 )
 
 func Run(args []string) int {
@@ -56,7 +55,7 @@ func runSession(backend string) int {
 	if payload.Event == "SessionEnd" || stringValue(raw, "hook_event_name") == "SessionEnd" {
 		writeHandoff(cwd, backend, payload.SessionID, payload.TranscriptPath, "", "")
 		if stringValue(raw, "reason") != "clear" {
-			meta := readMetadata(info.PaneID)
+			meta := ReadPaneRuntimeMetadata(info.PaneID)
 			peerID := firstNonempty(stringValue(meta, "peer_id"), peerForPane(info.PaneID))
 			markOffline(peerID, "session_end", "session_end_hook", "SessionEnd reason="+firstNonempty(stringValue(raw, "reason"), "unknown"))
 		}
@@ -72,7 +71,7 @@ func runSession(backend string) int {
 		return 0
 	}
 	locked := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil
-	prior := readMetadata(info.PaneID)
+	prior := ReadPaneRuntimeMetadata(info.PaneID)
 	needsTakeover := !locked
 	if needsTakeover && payload.SessionID != "" && stringValue(prior, "hook_session_id") == payload.SessionID && stringValue(prior, "cwd") == cwd && stringValue(prior, "backend") == backend {
 		lock.Close()
@@ -81,17 +80,12 @@ func runSession(backend string) int {
 	priorPeerID := firstNonempty(stringValue(prior, "peer_id"), peerForPane(info.PaneID))
 
 	hint := consumeSpawnHint(cwd, backend)
-	boundary, boundaryErr := configuredCircleBoundary()
+	_, circle, circleSource, boundaryErr := tmuxPlacement(info)
 	if boundaryErr != nil {
 		errf("session: load circle boundary: %v", boundaryErr)
 		lock.Close()
 		return 0
 	}
-	circleSource := "tmux"
-	if boundary == proto.CircleBoundaryWindow {
-		circleSource = "tmux_window"
-	}
-	circle := proto.TmuxCircle(boundary, info.SessionName, info.WindowID)
 	if circle == "" && info.PaneID != "" && hint != nil {
 		circle, circleSource = stringValue(hint, "circle"), "spawn_hint"
 	}
@@ -192,7 +186,7 @@ func runSession(backend string) int {
 		if priorPeerID != "" && priorPeerID != peerID {
 			markOffline(priorPeerID, "pane_takeover", "session_start_takeover", "pane "+info.PaneID+" taken over by "+peerID)
 		}
-		clearRuntime(info.PaneID)
+		ClearPaneRuntimeState(info.PaneID)
 	}
 	meta := map[string]any{
 		"backend": backend, "cwd": cwd, "display_name": displayName,

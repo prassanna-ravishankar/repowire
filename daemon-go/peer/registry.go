@@ -1062,19 +1062,6 @@ func (r *Registry) GetPeerByPane(pane string) (*proto.Peer, bool) {
 	return nil, false
 }
 
-// GetPeersByCircle returns all peers in a circle.
-func (r *Registry) GetPeersByCircle(circle string) []*proto.Peer {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	var out []*proto.Peer
-	for _, ps := range r.peers {
-		if ps.peer.Circle == circle {
-			out = append(out, clonePeer(ps.peer))
-		}
-	}
-	return out
-}
-
 // LazyRepair is demand-driven maintenance: demote ghosts, reap dangling offline
 // peers, persist mappings, prune expired retirements. Debounced to ~1x/30s and
 // never run on a timer. All status changes go through Apply; an illegal move

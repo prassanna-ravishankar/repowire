@@ -268,6 +268,27 @@ func TestVersionGreater(t *testing.T) {
 	}
 }
 
+func TestRemoveAntigravityManifestEntry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := antigravityManifestPath()
+	if err := writeJSON(path, map[string]any{"imports": []any{
+		map[string]any{"name": "other"}, map[string]any{"name": "repowire"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateAntigravityManifest(false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := readJSON(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imports, _ := data["imports"].([]any)
+	if len(imports) != 1 || fmt.Sprint(imports[0].(map[string]any)["name"]) != "other" {
+		t.Fatalf("imports = %#v", imports)
+	}
+}
+
 func TestServiceLabelKeepsExistingInstallIdentity(t *testing.T) {
 	if serviceLabel() != "io.repowire.daemon" {
 		t.Fatalf("service label = %q", serviceLabel())

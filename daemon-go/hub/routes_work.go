@@ -11,8 +11,11 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -91,6 +94,7 @@ type workCreateRequest struct {
 	ExpiresAt         *string        `json:"expires_at"`
 	Provenance        map[string]any `json:"provenance"`
 	Prompt            *string        `json:"prompt"`
+	PromptFile        *string        `json:"prompt_file"`
 	Path              *string        `json:"path"`
 	Backend           *string        `json:"backend"`
 	Profile           *string        `json:"profile"`
@@ -725,13 +729,20 @@ func summaryStatus(status map[string]any) map[string]any {
 // mergeExecutionRequest threads prompt/target/schedule/delivery/process_scope/
 // continuity into request.execution, applying the per_fire/resume defaults.
 // Returns (merged, httpCode, detail); code 0 means success. Mirrors
-// _merge_execution_request. prompt_file is not supported (no daemon-side file
-// read in the Go port) — callers pass an inline prompt.
+// _merge_execution_request.
 func mergeExecutionRequest(req *workCreateRequest, assigned *string) (map[string]any, int, any) {
 	body := cloneAny(req.Request)
 	execution := cloneAny(mapAtAny(body, "execution"))
 	prompt := cloneAny(mapAtAny(execution, "prompt"))
 	switch {
+	case req.PromptFile != nil && *req.PromptFile != "":
+		content, err := readPromptFile(*req.PromptFile)
+		if err != nil {
+			return nil, http.StatusBadRequest, err.Error()
+		}
+		prompt["body"] = content
+		prompt["source"] = "file"
+		prompt["source_path"] = *req.PromptFile
 	case req.Prompt != nil:
 		prompt["body"] = *req.Prompt
 		prompt["source"] = "inline"
@@ -809,6 +820,25 @@ func mergeExecutionRequest(req *workCreateRequest, assigned *string) (map[string
 	execution["delivery"] = delivery
 	body["execution"] = execution
 	return body, 0, nil
+}
+
+func readPromptFile(path string) (string, error) {
+	expanded := path
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		expanded = home
+		if path != "~" {
+			expanded = filepath.Join(home, strings.TrimPrefix(path, "~/"))
+		}
+	}
+	content, err := os.ReadFile(expanded)
+	if err != nil {
+		return "", fmt.Errorf("read prompt_file %q: %w", path, err)
+	}
+	return string(content), nil
 }
 
 func optQuery(q url.Values, key string) *string {

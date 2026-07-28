@@ -73,31 +73,6 @@ func (realPaneProbe) HasRuntimeEvidence(p *proto.Peer) bool {
 	return err == nil && len(strings.TrimSpace(string(out))) > 0
 }
 
-// tmuxPaneLister implements hub.PaneLister for the session-closed evidence gate.
-// It shells out to `tmux list-panes -a` once; an empty/failed listing returns
-// nil, which the gate treats as INCONCLUSIVE (never "everything died"). Mirrors
-// repowire.hooks._tmux.list_all_panes (the gate only needs pane_id + session).
-type tmuxPaneLister struct{}
-
-func (tmuxPaneLister) ListAllPanes() []hub.PaneInfo {
-	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{session_name}").Output()
-	if err != nil {
-		return nil
-	}
-	var panes []hub.PaneInfo
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		panes = append(panes, hub.PaneInfo{PaneID: parts[0], Session: parts[1]})
-	}
-	return panes
-}
-
 // realProcessProbe implements peer.ProcessProbe for the destructive pane-claim
 // proof: one `ps` snapshot for the ancestor walk, and `tmux display-message` for
 // the pane root pid. Both are best-effort — ok=false on any error lets the claim
@@ -249,21 +224,6 @@ func defaultDBPath() string {
 		return "state.db"
 	}
 	return filepath.Join(home, ".repowire", "state.db")
-}
-
-// splitCSV splits a comma-separated flag/env value into trimmed, non-empty
-// entries. Used for the spawn allowlist until the YAML config loader is ported.
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 func main() {
@@ -440,7 +400,7 @@ func runDaemon() {
 			spawnEnv["PATH"] = path
 		}
 	}
-	spawnService := service.NewSpawnService(tmuxCtl, ownership, spawnCommands, splitCSV(*spawnPathsFlag)).WithRuntimeConfig(profiles, spawnEnv)
+	spawnService := service.NewSpawnService(tmuxCtl, ownership, spawnCommands, config.SplitCSV(*spawnPathsFlag)).WithRuntimeConfig(profiles, spawnEnv)
 
 	// (9) Work/jobs + scheduler. SessionControl is the executor-acquisition
 	// ladder (assigned → reuse → resume → spawn); JobRunner dispatches durable
@@ -493,8 +453,8 @@ func runDaemon() {
 		// forgetSpawnedPane drops a dead pane from the spawn-ownership store so
 		// destructivePaneProof can't authorize kill/restart against a reused pane id.
 		// clearPaneRuntimeState is nil here because NewLifecycleHandler defaults
-		// it to service.ClearPaneRuntimeState.
-		WithLifecycle(hub.NewLifecycleHandler(reg, transport, tmuxPaneLister{}, spawnService.Ownership().Forget, nil, cfg.Daemon.CircleBoundary).
+		// it to hooks.ClearPaneRuntimeState.
+		WithLifecycle(hub.NewLifecycleHandler(reg, transport, hub.TmuxPaneLister{}, spawnService.Ownership().Forget, nil, cfg.Daemon.CircleBoundary).
 			WithPlacementUpdater(spawnService.Ownership().UpdatePlacement))
 	// Reviews defaults its JSON store at Routes() time if unset; leave it.
 

@@ -58,10 +58,15 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	registered := false
 
 	defer func() {
-		// IDENTITY-CHECKED teardown: only act if WE still own the stored socket.
+		// IDENTITY-CHECKED teardown: only remove the socket we own. A pane-backed
+		// runtime can outlive its sidecar connection, so lazy repair owns the
+		// runtime-evidence check before changing that peer's lifecycle status.
 		if registered {
 			if removed := h.transport.Disconnect(ctx, sessionID, conn); removed {
-				_, _ = h.reg.MarkOffline(ctx, sessionID, false)
+				p, _ := h.reg.GetPeer(sessionID)
+				if transportOwnsLifecycle(p) {
+					_, _ = h.reg.MarkOffline(ctx, sessionID, false)
+				}
 			}
 		}
 		_ = conn.CloseNow()
@@ -286,6 +291,10 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		h.dispatch(ctx, sessionID, raw)
 	}
+}
+
+func transportOwnsLifecycle(p *proto.Peer) bool {
+	return p == nil || p.PaneID == nil || *p.PaneID == ""
 }
 
 func isDaemonMobilePeer(name proto.DisplayName, path *string, role proto.PeerRole) bool {

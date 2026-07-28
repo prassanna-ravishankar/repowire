@@ -23,9 +23,9 @@ import (
 // Compile-time assertion: Store satisfies the peer.Store contract.
 var _ peer.Store = (*Store)(nil)
 
-// schemaVersion is the current user_version. Migrations advance older stores;
+// SchemaVersion is the current user_version. Migrations advance older stores;
 // newer stores fail loud rather than risking corruption.
-const schemaVersion = 12
+const SchemaVersion = 12
 
 // tsLayout is the exact format the Python daemon writes (strftime %Y-%m-%dT%H:%M:%fZ).
 const tsLayout = "2006-01-02T15:04:05.000Z"
@@ -79,12 +79,12 @@ func NewStore(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("read user_version: %w", err)
 	}
 	// A DB stamped newer than we understand is a downgrade hazard — refuse.
-	if version > schemaVersion {
+	if version > SchemaVersion {
 		_ = db.Close()
-		return nil, fmt.Errorf("state db schema version %d is newer than supported %d", version, schemaVersion)
+		return nil, fmt.Errorf("state db schema version %d is newer than supported %d", version, SchemaVersion)
 	}
 	// version 0 (fresh) or any older version: apply the idempotent bootstrap.
-	if version != schemaVersion {
+	if version != SchemaVersion {
 		if err := migrate(db); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate state db: %w", err)

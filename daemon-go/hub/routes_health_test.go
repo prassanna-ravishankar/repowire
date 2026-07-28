@@ -12,6 +12,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/state"
 )
 
 // TestHealthWireShape verifies GET /health, registered via h.Routes on a real
@@ -50,8 +51,8 @@ func TestHealthWireShape(t *testing.T) {
 	if got, ok := body["peers"].(float64); !ok || got != 0 {
 		t.Fatalf("peers = %v, want 0", body["peers"])
 	}
-	if got, ok := body["schema_version"].(float64); !ok || int(got) != schemaVersion {
-		t.Fatalf("schema_version = %v, want %d", body["schema_version"], schemaVersion)
+	if got, ok := body["schema_version"].(float64); !ok || int(got) != state.SchemaVersion {
+		t.Fatalf("schema_version = %v, want %d", body["schema_version"], state.SchemaVersion)
 	}
 }
 

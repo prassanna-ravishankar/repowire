@@ -94,7 +94,7 @@ func maybeRespawn(paneID, backend, cwd string) bool {
 	if syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
 		return false
 	}
-	meta := readMetadata(paneID)
+	meta := ReadPaneRuntimeMetadata(paneID)
 	metaCWD := stringValue(meta, "cwd")
 	metaBackend := firstNonempty(stringValue(meta, "backend"), "claude-code")
 	displayName := stringValue(meta, "display_name")
@@ -130,7 +130,7 @@ func ReconcileWSHook(paneID, peerID, displayName, backend, cwd string, agentPID 
 			return false, fmt.Errorf("ws-hook lock remained contested")
 		}
 	}
-	meta := readMetadata(paneID)
+	meta := ReadPaneRuntimeMetadata(paneID)
 	delete(meta, "birth_certificate")
 	meta["backend"], meta["cwd"], meta["display_name"], meta["peer_id"], meta["agent_pid"] = backend, cwd, displayName, peerID, agentPID
 	if err := writeMetadata(paneID, meta); err != nil {
@@ -163,16 +163,11 @@ func RunWS() int {
 		return 1
 	}
 	info := getTmuxInfo()
-	boundary, err := configuredCircleBoundary()
+	boundary, circle, source, err := tmuxPlacement(info)
 	if err != nil {
 		errf("ws-hook: load circle boundary: %v", err)
 		return 1
 	}
-	source := "tmux"
-	if boundary == proto.CircleBoundaryWindow {
-		source = "tmux_window"
-	}
-	circle := proto.TmuxCircle(boundary, info.SessionName, info.WindowID)
 	if circle == "" {
 		errf("ws-hook: no tmux circle; spawn the peer with --circle")
 		return 1
@@ -202,7 +197,7 @@ func RunWS() int {
 				agentPID = replacement
 			} else if safe := paneSafe(paneID, expectedCommand); safe != nil && !*safe {
 				markOffline(lastPeerID, "agent_exited", "ws_hook", fmt.Sprintf("agent pid %d for pane %s exited", agentPID, paneID))
-				clearRuntime(paneID)
+				ClearPaneRuntimeState(paneID)
 				return 0
 			}
 		}
@@ -254,7 +249,7 @@ func RunWS() int {
 		if stringValue(response, "type") == "error" && stringValue(response, "code") == "peer_retired" {
 			_ = conn.Close(websocket.StatusNormalClosure, "retired")
 			cancel()
-			clearRuntime(paneID)
+			ClearPaneRuntimeState(paneID)
 			return 0
 		}
 		if stringValue(response, "type") != "connected" {
@@ -266,7 +261,7 @@ func RunWS() int {
 		}
 		failures = 0
 		lastPeerID = stringValue(response, "session_id")
-		meta := readMetadata(paneID)
+		meta := ReadPaneRuntimeMetadata(paneID)
 		meta["backend"], meta["cwd"], meta["display_name"], meta["peer_id"] = backend, cwd, firstNonempty(stringValue(response, "display_name"), displayName), lastPeerID
 		if agentPID > 0 {
 			meta["agent_pid"] = agentPID
@@ -285,7 +280,7 @@ func RunWS() int {
 				case gone := <-exited:
 					if gone {
 						markOffline(lastPeerID, "agent_exited", "ws_hook", fmt.Sprintf("agent pid %d for pane %s exited", agentPID, paneID))
-						clearRuntime(paneID)
+						ClearPaneRuntimeState(paneID)
 						_ = conn.CloseNow()
 						cancel()
 						return 0
@@ -299,7 +294,7 @@ func RunWS() int {
 		_ = conn.CloseNow()
 		cancel()
 		if stop {
-			clearRuntime(paneID)
+			ClearPaneRuntimeState(paneID)
 			return 0
 		}
 		time.Sleep(2 * time.Second)

@@ -467,6 +467,13 @@ func (d *PeerDelivery) completeACPAsk(ctx context.Context, cid string, reply, er
 	}
 	framed := fmt.Sprintf("[ack #%s from @%s] %s", cid, ask.ToPeerName, body)
 	result, err := d.Notify(ctx, NotifyParams{FromPeer: string(ask.ToPeerID), ToPeer: string(ask.FromPeerID), Text: framed, BypassCircle: true})
+	if err == nil && result.Queued() && !isError {
+		if reply != nil {
+			d.asks.CaptureReply(ctx, cid, *reply, nil)
+		}
+		_, _ = d.asks.Close(ctx, cid, "ack_with_msg")
+		return
+	}
 	if err != nil || !result.Delivered() {
 		if isError {
 			_, _ = d.asks.Close(ctx, cid, "send_failed")
@@ -708,12 +715,14 @@ func (d *PeerDelivery) Close() {
 	d.wg.Wait()
 }
 
-// markTransportUnreachable drives a peer offline after a genuine TransportError
-// (no live socket). It skips repowire_cli_fallback peers (a CLI peer with no
-// runtime should not be retired on a failed push). Best-effort; mirrors
-// PeerDeliveryService._mark_transport_unreachable.
+// markTransportUnreachable drives a transport-owned peer offline after a genuine
+// TransportError. Pane-backed runtimes can outlive a disconnected sidecar, so
+// lazy repair owns their runtime-evidence check before changing lifecycle state.
 func (d *PeerDelivery) markTransportUnreachable(ctx context.Context, target *proto.Peer, operation string, transportErr error) {
 	if target == nil {
+		return
+	}
+	if target.PaneID != nil && *target.PaneID != "" {
 		return
 	}
 	if target.Metadata != nil {

@@ -293,6 +293,59 @@ func TestDeliverAskTransportFailureMarksOffline(t *testing.T) {
 	}
 }
 
+func TestDeliverAskTransportFailurePreservesPaneRuntime(t *testing.T) {
+	target := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	pane := "%9"
+	target.PaneID = &pane
+	reg := &fakeRegistry{peers: []*proto.Peer{target}}
+	f := &fakeTransport{ackErr: ErrNotConnected}
+	d := NewPeerDelivery(reg, newRouterWithFake(f), f, NewAskTracker(0), nil)
+
+	_, err := d.DeliverAsk(context.Background(), DeliverAskParams{
+		FromPeer: "alpha", ToPeer: "beta", Text: "x", CorrelationID: "cid-pane",
+	})
+	if !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("expected ErrNotConnected to remain fail-loud, got %v", err)
+	}
+	if len(reg.offlined) != 0 {
+		t.Fatalf("transport loss must not demote a pane-backed runtime, got %v", reg.offlined)
+	}
+}
+
+func TestCompleteACPAskQueuedReplyClosesWithoutPendingDuplicate(t *testing.T) {
+	asker := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	responder := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	reg := &fakeRegistry{peers: []*proto.Peer{asker, responder}}
+	f := &fakeTransport{ackErr: ErrNotConnected}
+	queue := &fakeQueue{}
+	asks := NewAskTracker(0)
+	cid, err := asks.Register(context.Background(), RegisterAskParams{
+		FromPeerID: asker.PeerID, FromPeerName: asker.DisplayName,
+		ToPeerID: responder.PeerID, ToPeerName: responder.DisplayName,
+	})
+	if err != nil {
+		t.Fatalf("register ask: %v", err)
+	}
+	d := NewPeerDelivery(reg, newRouterWithFake(f), f, asks, queue)
+
+	reply := "done"
+	d.completeACPAsk(context.Background(), cid, &reply, nil)
+
+	if len(queue.enqueued) != 1 {
+		t.Fatalf("expected one durable reply, got %d", len(queue.enqueued))
+	}
+	ask, ok := asks.Get(cid)
+	if !ok || !ask.Closed || ask.CloseReason != "ack_with_msg" {
+		t.Fatalf("expected closed ack_with_msg ask, got %+v", ask)
+	}
+	if ask.ReplyText == nil || *ask.ReplyText != reply {
+		t.Fatalf("expected captured reply %q, got %+v", reply, ask.ReplyText)
+	}
+	if ask.PendingReply != nil {
+		t.Fatalf("queued reply must not also be stashed, got %q", *ask.PendingReply)
+	}
+}
+
 // TestMarkOfflineSkipsCliFallback: a repowire_cli_fallback peer is never retired
 // on a failed push.
 func TestMarkOfflineSkipsCliFallback(t *testing.T) {

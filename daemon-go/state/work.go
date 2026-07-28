@@ -6,9 +6,7 @@ package state
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,13 +66,6 @@ func validateWorkState(state string) (string, error) {
 		return "", fmt.Errorf("state must be one of %v; got %q", keys, state)
 	}
 	return state, nil
-}
-
-// newWorkID matches work_store.new_work_id(): "work-" + 12 hex chars.
-func newWorkID() string {
-	var b [6]byte
-	_, _ = rand.Read(b[:])
-	return "work-" + hex.EncodeToString(b[:])
 }
 
 // TrackedWork is the daemon-owned lifecycle record (work_store.TrackedWork).
@@ -274,8 +265,7 @@ func scanWork(row interface{ Scan(...any) error }) (*TrackedWork, error) {
 	}, nil
 }
 
-// CreateWork inserts a new tracked_work row in the "queued" state and returns it.
-func (s *Store) CreateWork(ctx context.Context, in WorkCreate) (*TrackedWork, error) {
+func prepareWork(in WorkCreate) *TrackedWork {
 	now := nowISO()
 	kind := in.Kind
 	if kind == "" {
@@ -285,8 +275,8 @@ func (s *Store) CreateWork(ctx context.Context, in WorkCreate) (*TrackedWork, er
 	if visibility == "" {
 		visibility = "circle"
 	}
-	w := &TrackedWork{
-		WorkID:            newWorkID(),
+	return &TrackedWork{
+		WorkID:            newID("work-"),
 		Title:             in.Title,
 		Kind:              kind,
 		State:             "queued",
@@ -312,11 +302,17 @@ func (s *Store) CreateWork(ctx context.Context, in WorkCreate) (*TrackedWork, er
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
+}
 
+type workExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func insertWork(ctx context.Context, db workExecer, w *TrackedWork) error {
 	const q = `INSERT INTO tracked_work(` + workColumns + `) VALUES (
 		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err := s.db.ExecContext(ctx, q,
+	_, err := db.ExecContext(ctx, q,
 		w.WorkID, w.Title, w.Kind, w.State, strOrNil(w.StateReason), strOrNil(w.Phase),
 		dumpJSONObject(w.Progress), dumpJSONArray(w.ProgressEvents),
 		strOrNil(w.OwnerPeerID), strOrNil(w.AssignedPeerID), strOrNil(w.RepowireSessionID),
@@ -329,7 +325,16 @@ func (s *Store) CreateWork(ctx context.Context, in WorkCreate) (*TrackedWork, er
 		strOrNil(w.CancellationReason), strOrNil(w.CompletedAt), w.CreatedAt, w.UpdatedAt,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("create work %s: %w", w.WorkID, err)
+		return fmt.Errorf("create work %s: %w", w.WorkID, err)
+	}
+	return nil
+}
+
+// CreateWork inserts a new tracked_work row in the "queued" state and returns it.
+func (s *Store) CreateWork(ctx context.Context, in WorkCreate) (*TrackedWork, error) {
+	w := prepareWork(in)
+	if err := insertWork(ctx, s.db, w); err != nil {
+		return nil, err
 	}
 	return w, nil
 }
@@ -572,9 +577,7 @@ func (s *Store) AcquireForDispatch(ctx context.Context, workID string, opt Acqui
 	now := nowISO()
 	attemptID := opt.AttemptID
 	if attemptID == "" {
-		var b [6]byte
-		_, _ = rand.Read(b[:])
-		attemptID = "attempt-" + hex.EncodeToString(b[:])
+		attemptID = newID("attempt-")
 	}
 
 	existing, err := s.GetWork(ctx, workID)

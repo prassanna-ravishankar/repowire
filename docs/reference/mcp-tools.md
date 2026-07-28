@@ -125,7 +125,7 @@ wait_on_ack(cid, timeout_seconds=900)
 ack(correlation_id: str, message: str | None = None, attachments: list[dict] | None = None) -> str
 ```
 
-Close an open ask. Bare `ack(cid)` signals "seen, no action needed." A reply `ack(cid, message)` closes the thread and delivers the message back to the original asker. Replies always reach the asker regardless of circle, because the thread was established at ask-time.
+Close an open ask. Bare `ack(cid)` signals "seen, no action needed." A reply `ack(cid, message)` closes the thread and delivers the message back to the original asker, durably queuing it when live delivery is unavailable. Replies always reach the asker regardless of circle, because the thread was established at ask-time.
 
 When the ask carries a structured question, `ack` delegates to the typed answer path: bare `ack(cid)` records an acknowledged answer, while `ack(cid, message)` records a text answer. Use `answer` directly when selecting an option.
 

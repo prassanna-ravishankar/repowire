@@ -42,9 +42,13 @@ func (r *askFakeRegistry) GetPeerByName(name string, circle *string) (*proto.Pee
 // the httptest server serving its mux. The transport's ackFrame drives the WS
 // delivery result.
 func newAskTestHub(t *testing.T, reg *askFakeRegistry, f *fakeTransport) (*httptest.Server, *service.AskTracker) {
+	return newAskTestHubWithQueue(t, reg, f, nil)
+}
+
+func newAskTestHubWithQueue(t *testing.T, reg *askFakeRegistry, f *fakeTransport, queue *fakeQueue) (*httptest.Server, *service.AskTracker) {
 	t.Helper()
 	asks := service.NewAskTracker(0)
-	delivery := service.NewPeerDelivery(reg, newRouterWithFake(f), f, asks, nil)
+	delivery := service.NewPeerDelivery(reg, newRouterWithFake(f), f, asks, queue)
 	h := &Hub{authToken: ""}
 	h.WithAskLifecycle(asks, delivery, reg)
 
@@ -53,6 +57,42 @@ func newAskTestHub(t *testing.T, reg *askFakeRegistry, f *fakeTransport) (*httpt
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, asks
+}
+
+func TestPostAckQueuedReplyClosesWithoutDuplicate(t *testing.T) {
+	asker := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	responder := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	reg := newAskFakeRegistry(asker, responder)
+	queue := &fakeQueue{}
+	srv, asks := newAskTestHubWithQueue(t, reg, &fakeTransport{ackErr: service.ErrNotConnected}, queue)
+	cid, err := asks.Register(context.Background(), service.RegisterAskParams{
+		FromPeerID: asker.PeerID, FromPeerName: asker.DisplayName,
+		ToPeerID: responder.PeerID, ToPeerName: responder.DisplayName, Text: "q",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reply := "durable reply"
+	resp := postJSON(t, srv.URL+"/ack", AckRequest{CorrelationID: cid, Message: &reply})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("queued ack status = %d, want 200", resp.StatusCode)
+	}
+	closed, _ := asks.Get(cid)
+	if !closed.Closed || closed.CloseReason != "ack_with_msg" || closed.ReplyText == nil || *closed.ReplyText != reply {
+		t.Fatalf("ask not closed with captured reply: %+v", closed)
+	}
+	if len(queue.enqueued) != 1 {
+		t.Fatalf("queued rows = %d, want 1", len(queue.enqueued))
+	}
+
+	// A retrying client can safely bare-ack the now-closed ask without another row.
+	retry := postJSON(t, srv.URL+"/ack", AckRequest{CorrelationID: cid})
+	retry.Body.Close()
+	if retry.StatusCode != http.StatusOK || len(queue.enqueued) != 1 {
+		t.Fatalf("retry status=%d queued rows=%d", retry.StatusCode, len(queue.enqueued))
+	}
 }
 
 // postJSON is the shared test helper (routes_events_test.go).

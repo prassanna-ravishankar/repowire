@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	clienthooks "github.com/repowire/repowire/daemon-go/hooks"
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/service"
@@ -357,14 +358,10 @@ func TestSpawnRejectsDoubleSelector(t *testing.T) {
 	}
 }
 
-// writeSpawnTestPaneMeta writes a ws-hook meta.json for a pane directly via the
-// exported service.WSHookMetaPath (this file does not share pane_runtime_test.go's
-// writePaneMeta — that helper lives with the service-side pane-runtime tests).
+// writeSpawnTestPaneMeta writes a ws-hook meta.json for a pane directly.
 func writeSpawnTestPaneMeta(t *testing.T, paneID string, meta map[string]any) {
 	t.Helper()
-	metaPath := service.WSHookMetaPath(paneID)
-	// paneLogsDir is unexported in service; derive the directory from the
-	// exported meta path instead of needing a second seam.
+	metaPath := clienthooks.WSHookMetaPath(paneID)
 	if err := os.MkdirAll(filepath.Dir(metaPath), 0o755); err != nil {
 		t.Fatalf("mkdir pane logs: %v", err)
 	}

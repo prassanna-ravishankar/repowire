@@ -116,14 +116,7 @@ func (s *Store) importLegacyEvents(ctx context.Context, path string) error {
 }
 
 func (s *Store) importLegacySchedules(ctx context.Context, path string) error {
-	if !regularFile(path) {
-		return nil
-	}
-	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schedules`).Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
+	if s.legacyDone(ctx, path) || !regularFile(path) {
 		return nil
 	}
 	raw, err := os.ReadFile(path)
@@ -168,7 +161,7 @@ func (s *Store) importLegacySchedules(ctx context.Context, path string) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 	for _, schedule := range schedules {
-		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO schedules(
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schedules(
 			schedule_id, from_peer, to_peer, text, kind, circle, fire_at, cron, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, schedule.ScheduleID, schedule.FromPeer,
 			schedule.ToPeer, schedule.Text, schedule.Kind, strOrNil(schedule.Circle),

@@ -21,8 +21,8 @@ func TestNewStoreBootstrapsFreshDB(t *testing.T) {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != schemaVersion {
-		t.Fatalf("user_version = %d, want %d", version, schemaVersion)
+	if version != SchemaVersion {
+		t.Fatalf("user_version = %d, want %d", version, SchemaVersion)
 	}
 
 	var ledger int
@@ -83,7 +83,7 @@ func TestNewStoreIdempotent(t *testing.T) {
 }
 
 // TestNewStoreRefusesNewerSchema guards the downgrade hazard: a DB stamped past
-// schemaVersion must be refused, not silently opened.
+// SchemaVersion must be refused, not silently opened.
 func TestNewStoreRefusesNewerSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	db, err := sql.Open("sqlite", "file:"+path)

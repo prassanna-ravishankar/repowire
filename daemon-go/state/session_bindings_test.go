@@ -153,13 +153,6 @@ func TestUpsertObservationUpdatesExistingByRuntimeSession(t *testing.T) {
 		t.Errorf("metadata should merge: %v", second.Metadata)
 	}
 
-	all, err := s.ListAllBindings(ctx)
-	if err != nil {
-		t.Fatalf("ListAllBindings: %v", err)
-	}
-	if len(all) != 1 {
-		t.Fatalf("expected 1 binding after update, got %d", len(all))
-	}
 }
 
 func TestGetByRuntimeSessionScoping(t *testing.T) {
@@ -221,14 +214,6 @@ func TestListByPeerAndBackendProjectAndSourceURI(t *testing.T) {
 	}
 	if len(byPeer) != 2 {
 		t.Errorf("peer-1 bindings = %d, want 2", len(byPeer))
-	}
-
-	byProj, err := s.ListBindingsByBackendProject(ctx, "claude-code", "/a")
-	if err != nil {
-		t.Fatalf("ListBindingsByBackendProject: %v", err)
-	}
-	if len(byProj) != 2 {
-		t.Errorf("claude-code/a bindings = %d, want 2", len(byProj))
 	}
 
 	bySrc, err := s.GetBySourceURI(ctx, "file:///x.jsonl")

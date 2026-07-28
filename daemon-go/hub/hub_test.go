@@ -142,6 +142,16 @@ func TestDisconnectIdentityChecked(t *testing.T) {
 	}
 }
 
+func TestTransportDisconnectPreservesPaneRuntime(t *testing.T) {
+	pane := "%9"
+	if transportOwnsLifecycle(&proto.Peer{PaneID: &pane}) {
+		t.Fatal("pane-backed runtime lifecycle must not follow its sidecar socket")
+	}
+	if !transportOwnsLifecycle(&proto.Peer{}) {
+		t.Fatal("pane-less peer lifecycle should follow its transport")
+	}
+}
+
 // dummyConn establishes a real *websocket.Conn (the server-accepted side) so the
 // disconnect guard test has genuine, distinct connection pointers to compare.
 func dummyConn(t *testing.T) (*websocket.Conn, func()) {

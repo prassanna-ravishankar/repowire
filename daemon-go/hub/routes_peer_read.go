@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	clienthooks "github.com/repowire/repowire/daemon-go/hooks"
 	"github.com/repowire/repowire/daemon-go/proto"
-	"github.com/repowire/repowire/daemon-go/service"
 )
 
 // ============================================================================
@@ -152,7 +152,7 @@ func (h *Hub) getPeerDoctor(w http.ResponseWriter, r *http.Request) {
 		if !exists {
 			contradictions = append(contradictions, contradiction("PANE_MISSING", "error", "registry pane "+*peer.PaneID+" is not present in tmux"))
 		}
-		meta := service.ReadPaneRuntimeMetadata(*peer.PaneID)
+		meta := clienthooks.ReadPaneRuntimeMetadata(*peer.PaneID)
 		report["hook_meta_available"] = len(meta) > 0
 		report["hook_meta_peer_id"] = meta["peer_id"]
 		report["hook_meta_display_name"] = meta["display_name"]

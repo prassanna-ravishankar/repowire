@@ -19,9 +19,6 @@ import (
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
-// schemaVersion is reported by /health; matches the SQLite state schema version.
-const schemaVersion = 12
-
 // Hub is the network hub: it owns the transport, query tracker, message router,
 // and the registry it routes against. Everything routing-sensitive flows through
 // proto.PeerID. The hub wires reg.OnOffline to the tracker so a terminal/
@@ -247,7 +244,7 @@ func (h *Hub) health(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{
 		"status":         "ok",
 		"peers":          peers,
-		"schema_version": schemaVersion,
+		"schema_version": state.SchemaVersion,
 	}
 	if h.relayStatus != nil {
 		out["relay"] = h.relayStatus() // also triggers relay lazy self-heal

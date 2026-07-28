@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -118,6 +119,33 @@ func newWorkTestStore(t *testing.T) *state.Store {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
+}
+
+func TestMergeExecutionRequestReadsPromptFileBeforeInlinePrompt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "prompt.txt"), []byte("from file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	promptFile, inline := "~/prompt.txt", "inline"
+	merged, code, detail := mergeExecutionRequest(&workCreateRequest{
+		Title: "title", Prompt: &inline, PromptFile: &promptFile,
+	}, nil)
+	if code != 0 {
+		t.Fatalf("merge failed: code=%d detail=%v", code, detail)
+	}
+	prompt := mapAtAny(mapAtAny(merged, "execution"), "prompt")
+	if prompt["body"] != "from file" || prompt["source"] != "file" || prompt["source_path"] != promptFile {
+		t.Fatalf("prompt = %#v", prompt)
+	}
+}
+
+func TestMergeExecutionRequestRejectsUnreadablePromptFile(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.txt")
+	_, code, detail := mergeExecutionRequest(&workCreateRequest{Title: "title", PromptFile: &missing}, nil)
+	if code != http.StatusBadRequest || !strings.Contains(detail.(string), "prompt_file") {
+		t.Fatalf("code=%d detail=%v", code, detail)
+	}
 }
 
 // --- fakes for the cross-area seams ---

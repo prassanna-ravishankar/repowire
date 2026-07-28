@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestNewStoreImportsLegacyStateOnce(t *testing.T) {
@@ -52,5 +53,37 @@ func TestNewStoreImportsLegacyStateOnce(t *testing.T) {
 	mappings, _ = reopened.LoadMappings(context.Background())
 	if len(mappings) != 1 {
 		t.Fatalf("legacy sessions were re-imported/destructively replaced: %#v", mappings)
+	}
+}
+
+func TestLegacySchedulesImportAlongsideExistingRows(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateSchedule(context.Background(), "existing", "peer", "keep", time.Now().Add(time.Hour), "notify", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	legacy := `{"sched-legacy":{"schedule_id":"sched-legacy","from_peer":"legacy","to_peer":"other","text":"ping","fire_at":"2026-07-11T10:00:00Z","kind":"notify","created_at":"2026-07-10T10:00:00Z"}}`
+	if err := os.WriteFile(filepath.Join(dir, "schedules.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if schedule, err := reopened.GetSchedule(context.Background(), "sched-legacy"); err != nil || schedule == nil {
+		t.Fatalf("legacy schedule was not merged: %#v, %v", schedule, err)
+	}
+	var count int
+	if err := reopened.db.QueryRow(`SELECT COUNT(*) FROM schedules`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("schedule count = %d, %v", count, err)
 	}
 }
