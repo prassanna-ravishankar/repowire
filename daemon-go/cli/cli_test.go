@@ -23,6 +23,32 @@ func TestParseFlagsAfterPositionals(t *testing.T) {
 	}
 }
 
+func TestCLIPeerIdentityUsesRegisteredPaneWithoutLazyRegistration(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodGet || r.URL.Path != "/peers/by-pane/%25" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "repow-3-current", "display_name": "repowire-codex"})
+	}))
+	defer server.Close()
+	t.Setenv("TMUX_PANE", "%25")
+
+	identity, err := cliPeerIdentity(&client{base: server.URL, http: server.Client()})
+	if err != nil || identity != "repow-3-current" || requests != 1 {
+		t.Fatalf("identity = %q, requests = %d, err = %v", identity, requests, err)
+	}
+}
+
+func TestCLIPeerIdentityOutsideTmuxIsAdminIdentity(t *testing.T) {
+	t.Setenv("TMUX_PANE", "")
+	identity, err := cliPeerIdentity(&client{})
+	if err != nil || identity != "repowire-cli" {
+		t.Fatalf("identity = %q, err = %v", identity, err)
+	}
+}
+
 func TestTmuxCircleFromOutput(t *testing.T) {
 	if got := tmuxCircleFromOutput(proto.CircleBoundarySession, "mesh\t@9\n"); got != "mesh" {
 		t.Fatalf("session circle = %q", got)

@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -85,6 +86,22 @@ func sbScan(row interface{ Scan(...any) error }) (*SessionBinding, error) {
 	); err != nil {
 		return nil, err
 	}
+	sourceCursorValue, err := sessionBindingJSON(sourceCursor, "source_cursor")
+	if err != nil {
+		return nil, err
+	}
+	provenanceValue, err := sessionBindingJSON(provenance, "provenance")
+	if err != nil {
+		return nil, err
+	}
+	resumeCapabilityValue, err := sessionBindingJSON(resumeCapability, "resume_capability")
+	if err != nil {
+		return nil, err
+	}
+	metadataValue, err := sessionBindingJSON(metadata, "metadata")
+	if err != nil {
+		return nil, err
+	}
 	b := &SessionBinding{
 		RepowireSessionID:     repowireSessionID,
 		Backend:               backend,
@@ -93,15 +110,29 @@ func sbScan(row interface{ Scan(...any) error }) (*SessionBinding, error) {
 		CurrentExecutorPeerID: nullStringPtr(execPeerID),
 		RuntimeSessionID:      nullStringPtr(runtimeSessionID),
 		RuntimeSourceURI:      nullStringPtr(runtimeSourceURI),
-		SourceCursor:          loadJSONObject(sourceCursor),
-		Provenance:            loadJSONObject(provenance),
-		ResumeCapability:      loadJSONObject(resumeCapability),
+		SourceCursor:          sourceCursorValue,
+		Provenance:            provenanceValue,
+		ResumeCapability:      resumeCapabilityValue,
 		Status:                BindingStatus(status),
-		Metadata:              loadJSONObject(metadata),
+		Metadata:              metadataValue,
 		CreatedAt:             createdAt,
 		LastSeenAt:            lastSeenAt,
 	}
 	return b, nil
+}
+
+func sessionBindingJSON(raw sql.NullString, field string) (map[string]any, error) {
+	if !raw.Valid || raw.String == "" {
+		return map[string]any{}, nil
+	}
+	var value map[string]any
+	if err := json.Unmarshal([]byte(raw.String), &value); err != nil {
+		return nil, fmt.Errorf("decode session binding %s: %w", field, err)
+	}
+	if value == nil {
+		return nil, fmt.Errorf("decode session binding %s: expected JSON object", field)
+	}
+	return value, nil
 }
 
 // Observation captures one observed runtime edge for UpsertObservation. Nil-able

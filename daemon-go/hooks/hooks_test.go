@@ -62,6 +62,17 @@ func TestHandoffSummaryIsBounded(t *testing.T) {
 	}
 }
 
+func TestStopTurnKeepsHookResponseWhenTranscriptHasNoAssistant(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"role":"user","content":"question"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, assistant, _, _ := stopTurn(path, "hook response")
+	if assistant != "hook response" {
+		t.Fatalf("assistant = %q, want hook response", assistant)
+	}
+}
+
 func TestReadPaneRuntimeMetadata(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if got := ReadPaneRuntimeMetadata("%9"); len(got) != 0 {

@@ -335,7 +335,7 @@ Hook-backed runtimes self-register via `SessionStart` within a few seconds. Anti
 kill_peer(peer_identifier: str, circle: str | None = None) -> str
 ```
 
-Terminate a peer by name or `peer_id`. The mesh registration is always removed once the peer resolves unambiguously. The tmux pane is killed only when the daemon can prove it belongs to that peer: current/durable Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target peer. Path match alone is not destructive proof. If the pane cannot be verified, the call succeeds with a skipped tmux-kill note so stale/manual peers can be retired from the mesh without touching tmux. If `tmux kill-pane` fails after verification, the call fails loudly and leaves the peer registered for inspection.
+Terminate a peer by name or `peer_id`. Ordinary registered peers may only target their own circle; orchestrator, service, and human roles may pass another `circle`. Anonymous HTTP MCP retains the configured admin behavior. The mesh registration is always removed once the peer resolves unambiguously. The tmux pane is killed only when the daemon can prove it belongs to that peer: current/durable Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target peer. Path match alone is not destructive proof. If the pane cannot be verified, the call succeeds with a skipped tmux-kill note so stale/manual peers can be retired from the mesh without touching tmux. If `tmux kill-pane` fails after verification, the call fails loudly and leaves the peer registered for inspection.
 
 ## Review queue
 

@@ -232,10 +232,7 @@ func runStop(backend string) int {
 		_ = os.Remove(streamerPIDPath(paneID))
 	}
 	maybeRespawn(paneID, backend, firstNonempty(payload.CWD, mustGetwd()))
-	user, assistant, turnID, calls := "", payload.ResponseText, "", []toolCall(nil)
-	if payload.TranscriptPath != "" {
-		user, assistant, turnID, calls = lastTurn(payload.TranscriptPath)
-	}
+	user, assistant, turnID, calls := stopTurn(payload.TranscriptPath, payload.ResponseText)
 	user, assistant = strings.TrimSpace(user), strings.TrimSpace(assistant)
 	writeHandoff(firstNonempty(payload.CWD, mustGetwd()), backend, payload.SessionID, payload.TranscriptPath, user, assistant)
 	peer := getDisplayName()
@@ -270,6 +267,18 @@ func runStop(backend string) int {
 	}
 	hookOutput(backend)
 	return 0
+}
+
+func stopTurn(transcriptPath, responseText string) (user, assistant, turnID string, calls []toolCall) {
+	assistant = responseText
+	if transcriptPath == "" {
+		return
+	}
+	user, parsed, turnID, calls := lastTurn(transcriptPath)
+	if strings.TrimSpace(parsed) != "" {
+		assistant = parsed
+	}
+	return user, assistant, turnID, calls
 }
 
 func runPrompt(backend string) int {

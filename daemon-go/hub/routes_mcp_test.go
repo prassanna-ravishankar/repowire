@@ -206,6 +206,36 @@ func TestMCPSpawnCirclePolicy(t *testing.T) {
 	}
 }
 
+func TestMCPKillCirclePolicy(t *testing.T) {
+	h, reg := newMCPTestHub(t, config.MCPHTTPConfig{})
+	register := func(circle string, role proto.PeerRole) proto.PeerID {
+		t.Helper()
+		id, _, err := reg.AllocateAndRegister(context.Background(), peer.AllocateParams{
+			Circle: circle, Backend: proto.AgentClaudeCode, Role: role,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+
+	agent := register("alpha", proto.RoleAgent)
+	if circle, err := h.mcpKillCircle(string(agent), ""); err != nil || circle == nil || *circle != "alpha" {
+		t.Fatalf("agent kill circle = %v, %v; want alpha, nil", circle, err)
+	}
+	if _, err := h.mcpKillCircle(string(agent), "beta"); err == nil {
+		t.Fatal("agent cross-circle kill was allowed")
+	}
+
+	orchestrator := register("alpha", proto.RoleOrchestrator)
+	if circle, err := h.mcpKillCircle(string(orchestrator), "beta"); err != nil || circle == nil || *circle != "beta" {
+		t.Fatalf("orchestrator kill circle = %v, %v; want beta, nil", circle, err)
+	}
+	if circle, err := h.mcpKillCircle(mcpDefaultIdentity, ""); err != nil || circle != nil {
+		t.Fatalf("anonymous admin kill circle = %v, %v; want nil, nil", circle, err)
+	}
+}
+
 // mcpToolCallResult is the shared tools/call result decode shape.
 type mcpToolCallResult struct {
 	Content []struct {

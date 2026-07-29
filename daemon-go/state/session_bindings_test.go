@@ -235,3 +235,18 @@ func TestGetSessionBindingMissingReturnsNil(t *testing.T) {
 		t.Errorf("expected nil for missing binding, got %+v", got)
 	}
 }
+
+func TestGetSessionBindingRejectsCorruptJSON(t *testing.T) {
+	s := newBindingStore(t)
+	ctx := context.Background()
+	binding, err := s.UpsertObservation(ctx, Observation{Backend: "codex", ProjectPath: sbPtr("/work/repo")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE session_bindings SET metadata = '{' WHERE repowire_session_id = ?`, binding.RepowireSessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetSessionBinding(ctx, binding.RepowireSessionID); err == nil || !strings.Contains(err.Error(), "decode session binding metadata") {
+		t.Fatalf("corrupt metadata error = %v", err)
+	}
+}

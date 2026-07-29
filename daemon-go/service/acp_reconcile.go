@@ -62,10 +62,6 @@ func ReconcileACPInflight(ctx context.Context, store *state.Store, ttlSeconds fl
 			continue
 		}
 		for _, op := range ops {
-			if _, err := store.FailOperation(ctx, op.OperationID, "", nil, map[string]any{"reason": "daemon_restart_lost_acp_task"}); err != nil {
-				continue
-			}
-			n++
 			fromID, _ := op.Target["from_peer_id"].(string)
 			if fromID == "" {
 				continue
@@ -74,11 +70,18 @@ func ReconcileACPInflight(ctx context.Context, store *state.Store, ttlSeconds fl
 			fromName, _ := op.Target["from_peer_name"].(string)
 			toID, _ := op.Target["to_peer_id"].(string)
 			toName, _ := op.Target["to_peer_name"].(string)
-			_, _ = store.EnqueueDelivery(ctx, state.QueuedDelivery{
+			queued, err := store.EnqueueDelivery(ctx, state.QueuedDelivery{
 				PeerID: fromID, Kind: state.DeliveryNotify, FromPeerID: stringPtr(toID),
 				FromPeerName: toName, ToPeerName: fromName,
 				Text: fmt.Sprintf("[ack #%s from @%s] ACP ask lost across daemon restart; please retry.", cid, toName),
 			}, ttlSeconds, maxPerPeer, time.Time{})
+			if err != nil || queued == nil {
+				continue
+			}
+			if _, err := store.FailOperation(ctx, op.OperationID, "", nil, map[string]any{"reason": "daemon_restart_lost_acp_task"}); err != nil {
+				continue
+			}
+			n++
 		}
 	}
 	return n

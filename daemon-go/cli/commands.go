@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
-	"github.com/repowire/repowire/daemon-go/hooks"
 	"gopkg.in/yaml.v3"
 )
 
@@ -357,7 +356,10 @@ func runPeer(argv []string) int {
 		if len(a.pos) < 2 {
 			return usage("peer ask NAME QUERY")
 		}
-		from := hooks.MCPIdentity()
+		from, err := cliPeerIdentity(c)
+		if err != nil {
+			return fatal(err)
+		}
 		body := map[string]any{"from_peer": from, "to_peer": a.pos[0], "text": strings.Join(a.pos[1:], " ")}
 		if value := a.string("circle", ""); value != "" {
 			body["circle"] = value
@@ -460,7 +462,14 @@ func runPeer(argv []string) int {
 		if len(a.pos) < 1 {
 			return usage("peer ack CORR_ID [-m MESSAGE]")
 		}
-		body := map[string]any{"correlation_id": a.pos[0], "from_peer": first(a.string("from-peer", ""), hooks.MCPIdentity())}
+		from := a.string("from-peer", "")
+		if from == "" {
+			from, err = cliPeerIdentity(c)
+			if err != nil {
+				return fatal(err)
+			}
+		}
+		body := map[string]any{"correlation_id": a.pos[0], "from_peer": from}
 		if msg := a.string("message", ""); msg != "" {
 			body["message"] = msg
 		}
@@ -474,7 +483,14 @@ func runPeer(argv []string) int {
 		if len(a.pos) < 1 || a.pos[0] != "orchestrator" {
 			return usage("peer claim-role orchestrator")
 		}
-		body := map[string]any{"peer_name": first(a.string("peer", ""), hooks.MCPIdentity()), "role": "orchestrator", "force": a.bool("force")}
+		peerName := a.string("peer", "")
+		if peerName == "" {
+			peerName, err = cliPeerIdentity(c)
+			if err != nil {
+				return fatal(err)
+			}
+		}
+		body := map[string]any{"peer_name": peerName, "role": "orchestrator", "force": a.bool("force")}
 		if value := a.string("circle", ""); value != "" {
 			body["circle"] = value
 		}
@@ -495,7 +511,11 @@ func peerPoll(c *client, a args, path, key string) int {
 		addQuery(q, strings.ReplaceAll(name, "-", "_"), a.string(name, ""))
 	}
 	if q.Get("peer_id") == "" && q.Get("pane_id") == "" && q.Get("peer") == "" {
-		q.Set("peer_id", hooks.MCPIdentity())
+		identity, err := cliPeerIdentity(c)
+		if err != nil {
+			return fatal(err)
+		}
+		q.Set("peer_id", identity)
 	}
 	result, err := c.request(http.MethodGet, pathQuery(path, q), nil)
 	if err != nil {
@@ -503,6 +523,22 @@ func peerPoll(c *client, a args, path, key string) int {
 	}
 	printJSON(result[key])
 	return 0
+}
+
+func cliPeerIdentity(c *client) (string, error) {
+	pane := os.Getenv("TMUX_PANE")
+	if pane == "" {
+		return "repowire-cli", nil
+	}
+	peer, err := c.request(http.MethodGet, "/peers/by-pane/"+url.PathEscape(pane), nil)
+	if err != nil {
+		return "", fmt.Errorf("no registered peer for pane %s; run `repowire peer whoami --register --backend BACKEND`: %w", pane, err)
+	}
+	identity := first(stringValue(peer, "peer_id"), stringValue(peer, "display_name"), stringValue(peer, "name"))
+	if identity == "" {
+		return "", fmt.Errorf("registered peer for pane %s has no identity", pane)
+	}
+	return identity, nil
 }
 
 func runJobs(argv []string) int {
@@ -521,7 +557,11 @@ func runJobs(argv []string) int {
 			return usage("jobs create TITLE")
 		}
 		method, path = http.MethodPost, "/jobs"
-		m := map[string]any{"title": strings.Join(a.pos, " "), "kind": a.string("kind", "general"), "created_by_peer_id": hooks.MCPIdentity(), "visibility": a.string("visibility", "circle")}
+		identity, err := cliPeerIdentity(c)
+		if err != nil {
+			return fatal(err)
+		}
+		m := map[string]any{"title": strings.Join(a.pos, " "), "kind": a.string("kind", "general"), "created_by_peer_id": identity, "visibility": a.string("visibility", "circle")}
 		copyFlags(m, a, "prompt", "prompt-file", "path", "backend", "profile", "due-at", "cron", "process-scope", "continuity", "result-surface", "circle")
 		copyFlagAs(m, a, "assigned-peer", "assigned_peer_id")
 		copyFlagAs(m, a, "owner", "owner_peer_id")
@@ -558,7 +598,14 @@ func runJobs(argv []string) int {
 			return usage("jobs cancel JOB_ID")
 		}
 		method, path = http.MethodPost, "/jobs/"+url.PathEscape(a.pos[0])+"/cancel"
-		body = map[string]any{"requested_by_peer_id": first(a.string("requested-by", ""), hooks.MCPIdentity()), "reason": a.string("reason", "cancel_requested")}
+		requestedBy := a.string("requested-by", "")
+		if requestedBy == "" {
+			requestedBy, err = cliPeerIdentity(c)
+			if err != nil {
+				return fatal(err)
+			}
+		}
+		body = map[string]any{"requested_by_peer_id": requestedBy, "reason": a.string("reason", "cancel_requested")}
 	case "result":
 		if len(a.pos) < 1 {
 			return usage("jobs result JOB_ID")
@@ -587,7 +634,11 @@ func runSchedule(argv []string) int {
 	switch argv[0] {
 	case "self", "create":
 		offset := 0
-		to := hooks.MCPIdentity()
+		identity, err := cliPeerIdentity(c)
+		if err != nil {
+			return fatal(err)
+		}
+		to := identity
 		if argv[0] == "create" {
 			if len(a.pos) < 3 {
 				return usage("schedule create TO WHEN TEXT --from-peer FROM")
@@ -598,7 +649,7 @@ func runSchedule(argv []string) int {
 			return usage("schedule self WHEN TEXT")
 		}
 		when, text := a.pos[offset], strings.Join(a.pos[offset+1:], " ")
-		body := map[string]any{"from_peer": first(a.string("from-peer", ""), hooks.MCPIdentity()), "to_peer": to, "text": text, "kind": a.string("kind", "notify")}
+		body := map[string]any{"from_peer": first(a.string("from-peer", ""), identity), "to_peer": to, "text": text, "kind": a.string("kind", "notify")}
 		if a.bool("cron") {
 			body["cron"] = when
 		} else {

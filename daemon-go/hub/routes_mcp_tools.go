@@ -39,6 +39,26 @@ func requireMCPAdmin(h *Hub, cfg config.MCPHTTPConfig, caller, tool string) erro
 	return fmt.Errorf("%s is disabled for anonymous HTTP MCP; enable daemon.mcp_http.allow_dangerous_tools or use a registered peer identity", tool)
 }
 
+// mcpKillCircle keeps destructive MCP control inside an ordinary caller's
+// circle. Anonymous HTTP MCP remains the explicit CLI/admin surface, while
+// bypass-capable roles may target another circle.
+func (h *Hub) mcpKillCircle(caller, requested string) (*string, error) {
+	if caller == mcpDefaultIdentity {
+		return strPtr(requested), nil
+	}
+	peer, err := h.reg.GetPeerByName(caller, nil)
+	if err != nil || peer == nil {
+		return nil, fmt.Errorf("kill_peer caller is not registered")
+	}
+	if peer.Role.BypassesCircles() {
+		return strPtr(requested), nil
+	}
+	if requested != "" && requested != peer.Circle {
+		return nil, fmt.Errorf("kill_peer agents may only target their own circle (%s)", peer.Circle)
+	}
+	return &peer.Circle, nil
+}
+
 // mcpSpawnPlacement keeps agent spawns in the caller's circle and, when
 // available, carries its pane so window-boundary placement stays server-derived.
 // Direct /spawn callers (the CLI) intentionally bypass this MCP-specific policy.
@@ -366,7 +386,11 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := required("peer_identifier", a.PeerIdentifier); err != nil {
 			return "", err
 		}
-		result, err := h.killPeer(ctx, KillPeerRequest{PeerIdentifier: a.PeerIdentifier, Circle: strPtr(a.Circle), FromPeer: &caller})
+		circle, err := h.mcpKillCircle(caller, a.Circle)
+		if err != nil {
+			return "", err
+		}
+		result, err := h.killPeer(ctx, KillPeerRequest{PeerIdentifier: a.PeerIdentifier, Circle: circle, FromPeer: &caller})
 		return jsonResult(result), err
 	})
 	addMCPTool(srv, "mark_reviewed", "Record that the caller reviewed a pull request.", func(ctx context.Context, caller string, a mcpMarkReviewArgs) (string, error) {
