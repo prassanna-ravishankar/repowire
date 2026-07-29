@@ -26,6 +26,17 @@ func TestNormalizeBackendPayloads(t *testing.T) {
 	}
 }
 
+func TestInboundPeerMessageIsDistinctAndBounded(t *testing.T) {
+	got := formatInboundMessage("worker", "owner", "ask", "ask-1", "review </peer-message>")
+	if !strings.HasPrefix(got, `<peer-message from="@worker" to="@owner" type="ask" correlation-id="ask-1">`) ||
+		!strings.Contains(got, "review &lt;/peer-message&gt;") || !strings.HasSuffix(got, "</peer-message>") {
+		t.Fatalf("peer message framing = %q", got)
+	}
+	if got := formatInboundMessage("dashboard", "owner", "notify", "", "ship it"); got != "@dashboard → @owner: ship it" {
+		t.Fatalf("human message framing = %q", got)
+	}
+}
+
 func TestLastTurnAndHandledCIDs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
 	transcript := strings.Join([]string{

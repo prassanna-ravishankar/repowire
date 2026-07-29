@@ -202,7 +202,7 @@ type mcpShareArgs struct {
 }
 
 func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
-	addMCPTool(srv, "ask", "Open a non-blocking tracked ask thread with a peer.", func(ctx context.Context, caller string, a mcpAskArgs) (string, error) {
+	addMCPTool(srv, "ask", "Open a tracked thread only when another peer's context or ownership materially helps and explicit closure is needed; peers may be occupied.", func(ctx context.Context, caller string, a mcpAskArgs) (string, error) {
 		if err := requireFields("peer_name", a.PeerName, "query", a.Query); err != nil {
 			return "", err
 		}
@@ -221,7 +221,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		result, err := h.waitOnAck(ctx, a.CorrelationID, AskWaitRequest{PeerID: caller, TimeoutSeconds: &wait})
 		return jsonResult(result), err
 	})
-	addMCPTool(srv, "ask_many", "Open one tracked ask per peer and return a parent id.", func(ctx context.Context, caller string, a mcpAskManyArgs) (string, error) {
+	addMCPTool(srv, "ask_many", "Open tracked asks only when every named peer's input is materially needed; peers may be occupied.", func(ctx context.Context, caller string, a mcpAskManyArgs) (string, error) {
 		if len(a.PeerNames) == 0 {
 			return "", fmt.Errorf("peer_names is required")
 		}

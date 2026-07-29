@@ -55,7 +55,7 @@ Ask: "Are you primarily on phone (Telegram) or laptop (dashboard) when reaching 
 
 Ask: "For architectural-but-bounded changes (single PR, <500 LoC, but touches multiple layers), should I run a two-model critique by default?"
 
-- **Always for architectural** — spawn a different-model peer in the same worktree to review the plan before code
+- **For high-risk architectural work** — spawn a different-model peer in the same worktree when an independent plan review materially reduces risk
 - **PR-size-based** — only for PRs >300 lines or that touch >3 files
 - **Never** — skip unless explicitly asked
 

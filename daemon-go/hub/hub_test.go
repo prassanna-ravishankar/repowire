@@ -415,7 +415,11 @@ func (r *fakeRegistry) CheckAccess(ctx context.Context, fromPeer, toPeer string,
 	if target == nil {
 		return nil, nil, errors.New("Unknown peer: " + toPeer)
 	}
-	return r.lookup(fromPeer), target, nil
+	from := r.lookup(fromPeer)
+	if !bypassCircle && from != nil && !from.Role.BypassesCircles() && !target.Role.BypassesCircles() && from.Circle != target.Circle {
+		return from, nil, errors.New("Circle boundary: " + fromPeer + " cannot access " + toPeer)
+	}
+	return from, target, nil
 }
 
 func (r *fakeRegistry) GetPeer(id proto.PeerID) (*proto.Peer, bool) {

@@ -32,10 +32,32 @@ func (r *askFakeRegistry) GetPeerByPane(pane string) (*proto.Peer, bool) {
 }
 
 func (r *askFakeRegistry) GetPeerByName(name string, circle *string) (*proto.Peer, error) {
-	if p := r.lookup(name); p != nil {
-		return p, nil
+	for _, p := range r.peers {
+		if (string(p.DisplayName) == name || string(p.PeerID) == name) && (circle == nil || p.Circle == *circle) {
+			return p, nil
+		}
 	}
 	return nil, nil
+}
+
+func TestPostAskRejectsCrossCircleBeforeRegistration(t *testing.T) {
+	from := peerWith("repow-zero-aaaa", "agentbox-2-codex", "0", proto.StatusOnline)
+	target := peerWith("repow-other-bbbb", "agentbox-codex", "agentbox-sgp-dev", proto.StatusOnline)
+	reg := newAskFakeRegistry(from, target)
+	f := &fakeTransport{ackFrame: map[string]any{"status": "injected"}}
+	srv, asks := newAskTestHub(t, reg, f)
+	circle := target.Circle
+
+	resp := postJSON(t, srv.URL+"/ask", AskRequest{
+		FromPeer: string(from.PeerID), ToPeer: string(target.DisplayName), Text: "cross", Circle: &circle,
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-circle ask status = %d, want 403", resp.StatusCode)
+	}
+	if asks.OpenCount() != 0 || f.lastTarget != "" {
+		t.Fatalf("cross-circle ask registered or delivered: open=%d target=%s", asks.OpenCount(), f.lastTarget)
+	}
 }
 
 // newAskTestHub builds a hub with the ask-lifecycle deps wired over fakes, plus

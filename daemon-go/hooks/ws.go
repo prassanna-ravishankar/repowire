@@ -3,6 +3,7 @@ package hooks
 import (
 	"context"
 	"fmt"
+	"html"
 	"net/url"
 	"os"
 	"os/exec"
@@ -364,19 +365,7 @@ func handleMessage(ctx context.Context, conn *websocket.Conn, data map[string]an
 		return safe != nil && !*safe, unsafeStrikes
 	}
 	from, to, text := firstNonempty(stringValue(data, "from_peer"), "unknown"), stringValue(data, "to_peer"), stringValue(data, "text")+formatAttachments(data["attachments"])
-	toLabel := ""
-	if to != "" {
-		toLabel = " → @" + to
-	}
-	var injected string
-	switch typ {
-	case "ask":
-		injected = "@" + from + toLabel + " [ask #" + stringValue(data, "correlation_id") + "]: " + text
-	case "notify":
-		injected = "@" + from + toLabel + ": " + text
-	case "broadcast":
-		injected = "@" + from + " [broadcast]: " + text
-	}
+	injected := formatInboundMessage(from, to, typ, stringValue(data, "correlation_id"), text)
 	if injectText(paneID, injected) {
 		sendDeliveryAck(ctx, conn, data, "injected", "")
 	} else {
@@ -384,6 +373,36 @@ func handleMessage(ctx context.Context, conn *websocket.Conn, data map[string]an
 		sendDeliveryAck(ctx, conn, data, "failed", detail)
 	}
 	return false, unsafeStrikes
+}
+
+func formatInboundMessage(from, to, typ, correlationID, text string) string {
+	from = strings.TrimPrefix(from, "@")
+	to = strings.TrimPrefix(to, "@")
+	toLabel := ""
+	if to != "" {
+		toLabel = " → @" + to
+	}
+	if isHumanSender(from) {
+		return "@" + from + toLabel + ": " + text
+	}
+	attrs := ` from="@` + html.EscapeString(from) + `"`
+	if to != "" {
+		attrs += ` to="@` + html.EscapeString(to) + `"`
+	}
+	attrs += ` type="` + html.EscapeString(typ) + `"`
+	if correlationID != "" {
+		attrs += ` correlation-id="` + html.EscapeString(correlationID) + `"`
+	}
+	return "<peer-message" + attrs + ">\n" + html.EscapeString(text) + "\n</peer-message>"
+}
+
+func isHumanSender(from string) bool {
+	switch strings.TrimPrefix(strings.ToLower(from), "@") {
+	case "dashboard", "telegram", "slack", "human":
+		return true
+	default:
+		return false
+	}
 }
 
 func sendDeliveryAck(ctx context.Context, conn *websocket.Conn, data map[string]any, status, detail string) {

@@ -84,7 +84,7 @@ Daemon events for asks and acks include nullable `repowire_session_id`, `from_re
 
 Live delivery is attempted first. If a CLI-fallback/polling peer has no live transport, the ask stays open and a one-shot queued delivery is stored in SQLite for its next Stop-hook or CLI drain. The queued delivery is deleted after drain; the ask itself still appears in `/asks/pending` until `ack`.
 
-Peer resolution defaults to the caller's circle. Callers or targets whose role bypasses circles (`orchestrator`, `service`, human surfaces) resolve mesh-wide; everything else is scoped to the caller's circle so the daemon's ambiguous-resolve refusal applies. Pass `circle="<name>"` to target a different circle explicitly.
+Peer resolution defaults to the caller's circle. Ordinary peers cannot target another circle explicitly; passing a foreign `circle=` is rejected. Callers or targets whose role bypasses circles (`orchestrator`, `service`, human surfaces) may resolve mesh-wide and pass `circle="<name>"` to disambiguate.
 
 Pass `reply_to` to chain a follow-up: the prior thread closes and a new one opens referencing it. See [misroute refusal](../concepts/message-types.md#misroute-refusal) for what happens when names collide within the resolution scope.
 
@@ -171,7 +171,7 @@ If the live transport is unavailable but the daemon can resolve the target peer,
 
 For an ACP-brokered peer (experimental), a fire-and-forget `/notify` returns `delivery_state="delivered"` with `reason="broker_accepted"` rather than `transport_delivered`. The broker accepted the prompt task, but the ACP reply is discarded for notify, so this is *not* a runtime receipt — the daemon never learns whether the runtime completed it. Clients that need a real receipt must not treat `broker_accepted` as one.
 
-Peer resolution mirrors `ask`: defaults to the caller's circle, except callers or targets whose role bypasses circles (`orchestrator`, `service`, human surfaces) resolve mesh-wide. Pass `circle="<name>"` to target a different circle.
+Peer resolution mirrors `ask`: ordinary peers remain in their own circle even when a foreign `circle=` is supplied, while circle-bypassing roles may target another circle explicitly.
 
 The special peer `telegram` routes to the user's phone. The `dashboard` already sees agent turns; you do not need to notify it. Both are human-role peers and resolve mesh-wide regardless of your circle.
 

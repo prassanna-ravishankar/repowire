@@ -8,7 +8,7 @@ A live peer has these identity and lifecycle fields:
 
 - `peer_id` — daemon-assigned stable id for routing and ask ownership.
 - `display_name` / `name` — human-facing name. It can collide across circles, so it is not globally unique.
-- `circle` — routing scope. Peers normally message peers in the same circle unless the caller passes an explicit circle or has a role that bypasses circles.
+- `circle` — routing scope. Ordinary peers message only within their own circle; an explicit foreign circle is accepted only for a role that bypasses circles.
 - `backend` — agent runtime, such as `claude-code`, `codex`, `gemini`, `antigravity`, `opencode`, or `pi`.
 - `path` — working directory used for name allocation, filtering, and operator context. It is not sufficient by itself to prove peer identity.
 - `pane_id` / WebSocket binding — local delivery endpoint for hook-based peers.
@@ -162,7 +162,7 @@ pane metadata that names the target `peer_id`.
 
 Display names are scoped and human-facing. A name can exist in multiple circles, so routing code must not silently choose among multiple viable matches.
 
-Use `peer_id` when exact routing matters. If you use a display name and more than one live candidate matches without an explicit `circle=`, the daemon returns a conflict instead of guessing. Passing `circle="name"` narrows the lookup. MCP `list_peers` and `repowire peer describe` expose both display names and peer ids so operators can disambiguate.
+Use `peer_id` when exact routing matters. If you use a display name and more than one live candidate matches without an explicit `circle=`, the daemon returns a conflict instead of guessing. An authorized cross-circle caller can pass `circle="name"` to narrow the lookup; an ordinary peer cannot use that argument to escape its boundary. MCP `list_peers` and `repowire peer describe` expose both display names and peer ids so operators can disambiguate.
 
 ## Descriptions and stale task state
 

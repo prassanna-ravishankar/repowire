@@ -192,7 +192,7 @@ func registerMCPTools(srv *mcp.Server, h *Hub, delivery *service.PeerDelivery, c
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "notify_peer",
-		Description: "Send a fire-and-forget message to a peer by name.",
+		Description: "Send a necessary fire-and-forget update to one peer. Do not notify peers reflexively; they may be occupied.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args mcpNotifyPeerArgs) (*mcp.CallToolResult, any, error) {
 		res, err := h.mcpNotifyPeer(ctx, delivery, args, callerIdentity(req))
 		return res, nil, err
@@ -202,7 +202,7 @@ func registerMCPTools(srv *mcp.Server, h *Hub, delivery *service.PeerDelivery, c
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "broadcast",
-		Description: "Send a fire-and-forget message to every eligible peer in the caller's circle.",
+		Description: "Broadcast only an announcement that materially affects every eligible peer in the caller's circle.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args mcpBroadcastArgs) (*mcp.CallToolResult, any, error) {
 		res, err := mcpBroadcast(ctx, delivery, args, callerIdentity(req))
 		return res, nil, err

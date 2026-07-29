@@ -42,6 +42,9 @@ import (
 // The concrete registry satisfies this seam. Keeping it narrow makes route
 // tests hermetic (no SQLite and no live transport).
 type askRoutesRegistry interface {
+	// CheckAccess resolves the canonical sender/target pair and enforces circle
+	// boundaries before an ask is registered.
+	CheckAccess(ctx context.Context, fromPeer, toPeer string, bypassCircle bool, circle *string) (*proto.Peer, *proto.Peer, error)
 	// GetPeerByPane resolves a tmux-pane-keyed transport (Claude Code / Codex /
 	// Gemini Stop hooks) to its peer. (nil,false) when no peer owns the pane.
 	GetPeerByPane(pane string) (*proto.Peer, bool)
@@ -275,8 +278,8 @@ func (h *Hub) askOperationReady() error {
 	return nil
 }
 
-// handleAsk opens a non-blocking ask: resolve+authorize via CheckAccess (inside
-// DeliverAsk), register in the service.AskTracker (minting ask-<hex8> or reusing the
+// handleAsk opens a non-blocking ask: resolve+authorize via CheckAccess, register
+// in the service.AskTracker (minting ask-<hex8> or reusing the
 // caller-supplied cid), then deliver. On service.ErrQuiesced → 409; on a
 // service.DeliveryInjectionError → close send_failed + 503 {injection_failed}; on a
 // genuine TransportError → close send_failed + 503 (the peer is marked offline
@@ -314,11 +317,18 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	if target == nil {
 		return AskResponse{}, routeErr(http.StatusNotFound, "Unknown peer: "+req.ToPeer)
 	}
-	// Best-effort sender resolution (preferring the target's circle); an
-	// unresolved sender still proceeds (the from fields stay as supplied).
+	// Authorize the canonical target before registration. Delivery bypasses its
+	// duplicate check below only because this shared seam has already enforced it.
+	from, authorizedTarget, accessErr := h.ask.reg.CheckAccess(ctx, req.FromPeer, string(target.PeerID), req.BypassCircle, nil)
+	if accessErr != nil {
+		return AskResponse{}, routeErr(http.StatusForbidden, accessErr.Error())
+	}
+	target = authorizedTarget
+	// An unresolved sender is allowed for compatibility; preserve its supplied
+	// identity in that case.
 	fromID := proto.PeerID(req.FromPeer)
 	fromName := proto.DisplayName(req.FromPeer)
-	if from, ferr := h.ask.reg.GetPeerByName(req.FromPeer, &target.Circle); ferr == nil && from != nil {
+	if from != nil {
 		fromID = from.PeerID
 		fromName = from.DisplayName
 	}

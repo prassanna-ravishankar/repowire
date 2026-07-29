@@ -11,6 +11,7 @@ This is the default path for Claude Code, Codex, and Gemini:
 - Native Go lifecycle hooks register peers, update status, extract transcript/chat turns, and fetch pending ask reminders.
 - `repowire mcp` preserves the runtime's peer certificate over stdio and proxies outbound tool calls to the daemon's localhost `/mcp` implementation.
 - Live inbound messages are delivered through the WebSocket hook and injected into the runtime's tmux pane. The hook is bound to the owning agent PID and exits when that process disappears, so an orphaned hook cannot keep a dead peer's daemon socket alive indefinitely.
+- Non-human deliveries are injected inside a `<peer-message>` envelope carrying sender, type, target, and correlation id when applicable. Dashboard, Telegram, and Slack messages remain direct human instructions.
 - Open asks continue to resurface through Stop-hook reminders until they are acked.
 
 Deregistration is layered, strongest signal first:
@@ -31,7 +32,8 @@ OpenCode uses a TypeScript plugin with a persistent WebSocket connection. Pi use
 
 Claude Code can opt into the embedded TypeScript channel client with `repowire
 setup --experimental-channels`. Messages arrive through `<channel
-source="repowire">` tags and the default Stop hook remains for dashboard chat
+source="repowire">` tags; non-human content inside the channel is additionally
+wrapped in `<peer-message>`. The default Stop hook remains for dashboard chat
 turn extraction. Separately, the Go daemon's experiment-gated ACP subprocess
 client routes ACP-marked peers and sends tool permission requests through the
 same blocking-question path as the dashboard/human surfaces.
