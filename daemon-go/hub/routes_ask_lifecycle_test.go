@@ -338,3 +338,16 @@ func TestAskManyRejectsEmptyPeerList(t *testing.T) {
 		t.Fatalf("empty ask-many should be 422, got %d", resp.StatusCode)
 	}
 }
+
+func TestAskRejectsSelf(t *testing.T) {
+	alpha := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	reg := newAskFakeRegistry(alpha)
+	f := &fakeTransport{}
+	srv, _ := newAskTestHub(t, reg, f)
+
+	resp := postJSON(t, srv.URL+"/ask", AskRequest{FromPeer: "alpha", ToPeer: "alpha", Text: "echo"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("self ask expected 422, got %d", resp.StatusCode)
+	}
+}

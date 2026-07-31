@@ -100,12 +100,17 @@ type mcpAskManyArgs struct {
 	Circle         string   `json:"circle,omitempty"`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
 }
-type mcpIDArgs struct {
-	ID         string `json:"id,omitempty"`
-	JobID      string `json:"job_id,omitempty"`
-	ParentID   string `json:"parent_id,omitempty"`
-	ScheduleID string `json:"schedule_id,omitempty"`
-	ShareID    string `json:"share_id,omitempty"`
+type mcpParentIDArgs struct {
+	ParentID string `json:"parent_id"`
+}
+type mcpJobIDArgs struct {
+	JobID string `json:"job_id"`
+}
+type mcpScheduleIDArgs struct {
+	ScheduleID string `json:"schedule_id"`
+}
+type mcpShareIDArgs struct {
+	ShareID string `json:"share_id"`
 }
 type mcpAckArgs struct {
 	CorrelationID string           `json:"correlation_id"`
@@ -254,7 +259,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		}
 		return result.ParentID, nil
 	})
-	addMCPTool(srv, "ask_many_result", "Return the current result of an ask-many fanout.", func(ctx context.Context, _ string, a mcpIDArgs) (string, error) {
+	addMCPTool(srv, "ask_many_result", "Return the current result of an ask-many fanout.", func(ctx context.Context, _ string, a mcpParentIDArgs) (string, error) {
 		if err := required("parent_id", a.ParentID); err != nil {
 			return "", err
 		}
@@ -303,7 +308,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		result, err := h.jobList(ctx, workListRequest{State: strPtr(a.State), OwnerPeerID: strPtr(a.OwnerPeerID), CreatedByPeerID: strPtr(a.CreatedByPeerID), RepowireSessionID: strPtr(a.RepowireSessionID), Circle: strPtr(a.Circle)})
 		return jsonResult(result), err
 	})
-	jobStatus := func(ctx context.Context, _ string, a mcpIDArgs) (string, error) {
+	jobStatus := func(ctx context.Context, _ string, a mcpJobIDArgs) (string, error) {
 		if err := required("job_id", a.JobID); err != nil {
 			return "", err
 		}
@@ -319,7 +324,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		result, err := h.jobUpdate(ctx, a.JobID, workUpdateRequest{State: a.State, StateReason: strPtr(a.StateReason), Phase: strPtr(a.Phase), ProgressNote: strPtr(a.ProgressNote), ResultSummary: strPtr(a.ResultSummary), AttemptID: strPtr(a.AttemptID), Progress: a.Progress, ResultData: a.ResultData, Error: a.Error, Provenance: a.Provenance, Artifacts: a.Artifacts})
 		return jsonResult(result), err
 	})
-	addMCPTool(srv, "job_result", "Return a tracked job result as JSON.", func(ctx context.Context, _ string, a mcpIDArgs) (string, error) {
+	addMCPTool(srv, "job_result", "Return a tracked job result as JSON.", func(ctx context.Context, _ string, a mcpJobIDArgs) (string, error) {
 		if err := required("job_id", a.JobID); err != nil {
 			return "", err
 		}
@@ -450,7 +455,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		}
 		return strings.Join(lines, "\n"), nil
 	})
-	addMCPTool(srv, "schedule_delete", "Cancel a pending schedule.", func(ctx context.Context, caller string, a mcpIDArgs) (string, error) {
+	addMCPTool(srv, "schedule_delete", "Cancel a pending schedule.", func(ctx context.Context, caller string, a mcpScheduleIDArgs) (string, error) {
 		if err := requireMCPAdmin(h, cfg, caller, "schedule_delete"); err != nil {
 			return "", err
 		}
@@ -472,7 +477,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		}
 		return fmt.Sprintf("share link for %s [%s]: %s\nshare_id: %s\nexpires: %s", target, stringValue(result, "permissions"), stringValue(result, "url"), stringValue(result, "share_id"), expires), nil
 	})
-	addMCPTool(srv, "revoke_share", "Revoke a relay share link.", func(ctx context.Context, _ string, a mcpIDArgs) (string, error) {
+	addMCPTool(srv, "revoke_share", "Revoke a relay share link.", func(ctx context.Context, _ string, a mcpShareIDArgs) (string, error) {
 		if err := required("share_id", a.ShareID); err != nil {
 			return "", err
 		}

@@ -142,7 +142,10 @@ func TestMCPToolsList(t *testing.T) {
 	}
 	var result struct {
 		Tools []struct {
-			Name string `json:"name"`
+			Name        string `json:"name"`
+			InputSchema struct {
+				Properties map[string]any `json:"properties"`
+			} `json:"inputSchema"`
 		} `json:"tools"`
 	}
 	decodeResult(t, envelope, &result)
@@ -167,6 +170,11 @@ func TestMCPToolsList(t *testing.T) {
 			t.Errorf("unexpected tool %q", tl.Name)
 		}
 		want[tl.Name] = true
+		if tl.Name == "ask_many_result" {
+			if len(tl.InputSchema.Properties) != 1 || tl.InputSchema.Properties["parent_id"] == nil {
+				t.Errorf("ask_many_result schema = %#v; want only parent_id", tl.InputSchema.Properties)
+			}
+		}
 	}
 	for name, seen := range want {
 		if !seen {

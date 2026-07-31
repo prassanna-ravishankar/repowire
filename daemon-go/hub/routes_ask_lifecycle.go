@@ -332,6 +332,9 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		fromID = from.PeerID
 		fromName = from.DisplayName
 	}
+	if fromID == target.PeerID {
+		return AskResponse{}, routeErr(http.StatusUnprocessableEntity, "cannot ask the calling peer")
+	}
 
 	// reply_to closes a PRIOR ask; it is NOT this ask's cid. Register with an
 	// empty CorrelationID so a fresh ask-<hex8> is minted.
@@ -904,6 +907,12 @@ func (h *Hub) openAskMany(ctx context.Context, req AskManyRequest) (AskManyRespo
 		if from, ferr := h.ask.reg.GetPeerByName(req.FromPeer, &target.Circle); ferr == nil && from != nil {
 			fromID = from.PeerID
 			fromName = from.DisplayName
+		}
+		if fromID == target.PeerID {
+			msg := "cannot ask the calling peer"
+			h.ask.askMany.AddChild(parent.ParentID, service.AskManyChild{PeerName: string(target.DisplayName), PeerID: strPtr(string(target.PeerID)), DeliveryError: &msg})
+			out.Children = append(out.Children, AskManyChildResponse{Peer: string(target.DisplayName), Error: &msg})
+			continue
 		}
 		cid, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
 			FromPeerID:   fromID,

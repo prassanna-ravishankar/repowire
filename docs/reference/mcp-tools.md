@@ -82,7 +82,7 @@ Use `ask` for worker checkpoints, review requests, pre-commit handoffs, status c
 
 Daemon events for asks and acks include nullable `repowire_session_id`, `from_repowire_session_id`, and `to_repowire_session_id` fields when an existing session binding can be resolved. Peer IDs remain the routing authority.
 
-Live delivery is attempted first. If a CLI-fallback/polling peer has no live transport, the ask stays open and a one-shot queued delivery is stored in SQLite for its next Stop-hook or CLI drain. The queued delivery is deleted after drain; the ask itself still appears in `/asks/pending` until `ack`.
+Live delivery is attempted first. A busy hook-backed peer is not interrupted; its open ask appears through the existing Stop reminder when the active turn ends. If a CLI-fallback/polling peer has no live transport, the ask stays open and a one-shot queued delivery is stored in SQLite for its next Stop-hook or CLI drain. The queued delivery is deleted after drain; the ask itself still appears in `/asks/pending` until `ack`. Asking your own peer is rejected.
 
 Peer resolution defaults to the caller's circle. Ordinary peers cannot target another circle explicitly; passing a foreign `circle=` is rejected. Callers or targets whose role bypasses circles (`orchestrator`, `service`, human surfaces) may resolve mesh-wide and pass `circle="<name>"` to disambiguate.
 
@@ -167,7 +167,7 @@ arrived before the daemon returned. When a session binding is known, `/notify`
 responses and hook receipts may include nullable `repowire_session_id`,
 `from_repowire_session_id`, and `to_repowire_session_id` fields for grouping.
 
-If the live transport is unavailable but the daemon can resolve the target peer, `/notify` may return `delivery_state="queued"` and `reason="queued_delivery"`. That means the notification was stored in the SQLite queued-delivery table for the target peer/session and will be delivered once through the recipient's Stop hook or `repowire peer deliveries`, subject to the configured TTL and per-peer cap.
+If a hook-backed recipient is busy, `/notify` returns `delivery_state="queued"` and `reason="recipient_busy"` instead of interrupting its active turn. An unavailable live transport similarly queues with `reason="queued_delivery"`. The notification is stored in SQLite and delivered once through the recipient's Stop hook or `repowire peer deliveries`, subject to the configured TTL and per-peer cap.
 
 For an ACP-brokered peer (experimental), a fire-and-forget `/notify` returns `delivery_state="delivered"` with `reason="broker_accepted"` rather than `transport_delivered`. The broker accepted the prompt task, but the ACP reply is discarded for notify, so this is *not* a runtime receipt — the daemon never learns whether the runtime completed it. Clients that need a real receipt must not treat `broker_accepted` as one.
 
@@ -205,7 +205,7 @@ ask_many(peer_names: list[str], query: str, circle: str | None = None, timeout_s
 ask_many_result(parent_id: str) -> str
 ```
 
-Ask the same question to several peers in parallel under one parent (`askm-...`). Each recipient gets a normal child ask it closes with `ack`/`ack(msg)` — `ask_many` is a fan-out, not a vote: no quorum, no retry, no aggregation logic beyond collecting replies. Best-effort per peer (a recipient that fails to resolve or deliver is recorded as a `failed` child and does not abort the rest; the peer list is deduped and bounded).
+Ask the same question to several peers in parallel under one parent (`askm-...`). Each recipient gets a normal child ask it closes with `ack`/`ack(msg)` — `ask_many` is a fan-out, not a vote: no quorum, no retry, no aggregation logic beyond collecting replies. Best-effort per peer (a recipient that fails to resolve or is the caller is recorded as a `failed` child and does not abort the rest; the peer list is deduped and bounded).
 
 `ask_many` returns the `parent_id`; poll `ask_many_result(parent_id)` for the current rollup — per-peer status (`pending` / `acked` / `replied` / `failed`), captured reply bodies, and a `state` of `complete` / `partial` / `pending`. Timeout is lazy: a parent past its `timeout_seconds` deadline with open children reports `partial` / `timed_out` at read time (no background timer). State is in-memory and does not survive a daemon restart.
 

@@ -32,6 +32,7 @@ func startWSHook(paneID, peerID, displayName, backend, cwd string, agentPID int,
 		"REPOWIRE_PEER_ID="+peerID,
 		"REPOWIRE_AGENT_PID="+strconv.Itoa(agentPID),
 		"REPOWIRE_BACKEND="+backend,
+		"REPOWIRE_HOOK_LOCK_FD=3",
 		"TMUX_PANE="+paneID,
 	)
 	cmd := exec.Command(executable, "ws-hook")
@@ -158,6 +159,9 @@ func intFromAny(value any) int {
 }
 
 func RunWS() int {
+	if fd, err := strconv.Atoi(os.Getenv("REPOWIRE_HOOK_LOCK_FD")); err == nil && fd >= 0 {
+		syscall.CloseOnExec(fd)
+	}
 	paneID := os.Getenv("TMUX_PANE")
 	if paneID == "" {
 		errf("ws-hook: TMUX_PANE not set")

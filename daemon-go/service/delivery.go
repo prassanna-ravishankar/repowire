@@ -137,12 +137,12 @@ func (d *PeerDelivery) WithOperationStore(store *state.Store) *PeerDelivery {
 
 // NotifyResult is the explicit fire-and-forget notify outcome
 // (NotifyDeliveryResult). Reason is honest about what was proven:
-// transport_delivered (live WS write), broker_accepted (ACP prompt dispatched,
-// no runtime receipt), queued_delivery (no live transport → durable queue).
+// transport_delivered (live WS write), broker_accepted (ACP prompt dispatched),
+// recipient_busy, or queued_delivery (no live transport → durable queue).
 type NotifyResult struct {
 	Status                string // "sent" | "queued"
 	DeliveryState         string // "delivered" | "queued"
-	Reason                string // transport_delivered | broker_accepted | queued_delivery
+	Reason                string // transport_delivered | broker_accepted | recipient_busy | queued_delivery
 	FromPeerID            *proto.PeerID
 	FromPeerName          proto.DisplayName
 	ToPeerID              proto.PeerID
@@ -249,6 +249,10 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 			ToRepowireSessionID:   toSessionID,
 		}, nil
 	}
+	if wsRecipientBusy(target) {
+		return d.queueNotify(ctx, params, fromID, fromName, target,
+			fmt.Errorf("peer %s is busy and durable queue is unavailable", target.DisplayName), true)
+	}
 
 	hookDelivery, err := d.router.SendNotification(
 		ctx, fromName, target.PeerID, target.DisplayName,
@@ -256,7 +260,7 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 	)
 	if err != nil {
 		if errors.Is(err, ErrNotConnected) || errors.Is(err, ErrTransportUnavailable) {
-			return d.queueNotify(ctx, params, fromID, fromName, target, err)
+			return d.queueNotify(ctx, params, fromID, fromName, target, err, false)
 		}
 		return NotifyResult{}, err
 	}
@@ -289,8 +293,11 @@ func (d *PeerDelivery) queueNotify(
 	fromName proto.DisplayName,
 	target *proto.Peer,
 	transportErr error,
+	recipientBusy bool,
 ) (NotifyResult, error) {
-	d.markTransportUnreachable(ctx, target, "notify", transportErr)
+	if !recipientBusy {
+		d.markTransportUnreachable(ctx, target, "notify", transportErr)
+	}
 
 	if d.store == nil {
 		return NotifyResult{}, transportErr
@@ -334,10 +341,14 @@ func (d *PeerDelivery) queueNotify(
 		"attachments":       attachments,
 	})
 
+	reason := "queued_delivery"
+	if recipientBusy {
+		reason = "recipient_busy"
+	}
 	return NotifyResult{
 		Status:                "queued",
 		DeliveryState:         "queued",
-		Reason:                "queued_delivery",
+		Reason:                reason,
 		FromPeerID:            fromID,
 		FromPeerName:          fromName,
 		ToPeerID:              target.PeerID,
@@ -416,6 +427,11 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 		}
 		return AskResult{Transport: "acp"}, nil
 	}
+	// The open AskTracker row is the queue: Stop surfaces it after the active
+	// turn, avoiding tmux input that interrupts Codex and similar runtimes.
+	if wsRecipientBusy(target) {
+		return AskResult{Transport: "deferred"}, nil
+	}
 
 	hookDelivery, err := d.router.SendAsk(
 		ctx, fromName, target.PeerID, target.DisplayName, proto.DisplayName(params.ToPeer),
@@ -434,6 +450,10 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 	}
 
 	return AskResult{Transport: "ws", HookDelivery: hookDelivery}, nil
+}
+
+func wsRecipientBusy(peer *proto.Peer) bool {
+	return peer.Status == proto.StatusBusy || peer.TurnState == proto.TurnWorking
 }
 
 func peerIDString(value *proto.PeerID) string {

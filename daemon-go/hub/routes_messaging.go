@@ -165,7 +165,7 @@ func (mr *MessagingRoutes) handleNotify(w http.ResponseWriter, r *http.Request) 
 	}
 	mr.trace(ctx, deliveryID, "notify", "resolved_peer", "", deliveryID, toPeerID, fromPeerID, nil)
 	if result.Queued() {
-		mr.trace(ctx, deliveryID, "notify", "pending", "", deliveryID, toPeerID, fromPeerID, map[string]any{"reason": "recipient_busy"})
+		mr.trace(ctx, deliveryID, "notify", "pending", "", deliveryID, toPeerID, fromPeerID, map[string]any{"reason": result.Reason})
 	}
 	if result.HookDelivery != nil || !result.Queued() {
 		mr.recordOutcome(ctx, deliveryID, "notify", toPeerID, fromPeerID, result.Transport, result.HookDelivery)

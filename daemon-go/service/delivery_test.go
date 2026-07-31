@@ -178,6 +178,26 @@ func TestNotifyQueuesWhenNoTransport(t *testing.T) {
 	}
 }
 
+func TestBusyWSRecipientDefersWithoutInjection(t *testing.T) {
+	target := peerWith("repow-default-bbbb", "beta", "default", proto.StatusBusy)
+	reg := &fakeRegistry{peers: []*proto.Peer{target}}
+	f := &fakeTransport{ackFrame: map[string]any{"status": "injected"}}
+	q := &fakeQueue{}
+	d := NewPeerDelivery(reg, newRouterWithFake(f), f, NewAskTracker(0), q)
+
+	notify, err := d.Notify(context.Background(), NotifyParams{FromPeer: "alpha", ToPeer: "beta", Text: "later"})
+	if err != nil || !notify.Queued() || notify.Reason != "recipient_busy" || len(q.enqueued) != 1 {
+		t.Fatalf("busy notify = %+v, %v; queue = %+v", notify, err, q.enqueued)
+	}
+	ask, err := d.DeliverAsk(context.Background(), DeliverAskParams{FromPeer: "alpha", ToPeer: "beta", Text: "question", CorrelationID: "cid-busy"})
+	if err != nil || ask.Transport != "deferred" {
+		t.Fatalf("busy ask = %+v, %v", ask, err)
+	}
+	if f.lastTarget != "" || len(reg.offlined) != 0 {
+		t.Fatalf("busy peer was injected/offlined: target=%q offline=%v", f.lastTarget, reg.offlined)
+	}
+}
+
 // TestNotifyFailsLoudWhenQueueDisabled: with no queue store wired, a no-transport
 // notify must propagate the TransportError (fail loud → 503), never silently
 // claim success.
