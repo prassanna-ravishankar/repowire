@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/cli"
+	"github.com/repowire/repowire/daemon-go/codexbridge"
 	"github.com/repowire/repowire/daemon-go/config"
 	"github.com/repowire/repowire/daemon-go/hooks"
 	"github.com/repowire/repowire/daemon-go/hub"
@@ -243,6 +244,13 @@ func main() {
 			os.Exit(hooks.RunChatStream(os.Args[2:]))
 		case "mcp":
 			os.Exit(mcpstdio.Run())
+		case "codex-bridge":
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			if err := codexbridge.Run(ctx, cli.Version); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "lifecycle":
 			os.Exit(hooks.RunLifecycle(os.Args[2:]))
 		}

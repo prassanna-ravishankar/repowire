@@ -517,7 +517,10 @@ func injectText(paneID, text string) bool {
 	return exec.Command("tmux", "send-keys", "-t", paneID, "Enter").Run() == nil
 }
 
-func consumeSpawnHint(path, backend string) map[string]any {
+// ConsumeSpawnHint claims the next queued spawn identity for a runtime path.
+// Native transports use the same queue as hooks so a spawned peer keeps its
+// requested circle, role, and durable peer id regardless of transport.
+func ConsumeSpawnHint(path, backend string) map[string]any {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		abs = path
@@ -558,6 +561,8 @@ func consumeSpawnHint(path, backend string) map[string]any {
 	}
 	return selected
 }
+
+func consumeSpawnHint(path, backend string) map[string]any { return ConsumeSpawnHint(path, backend) }
 
 func markOffline(peerID, reason, source, detail string) {
 	if peerID == "" {

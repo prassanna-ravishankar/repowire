@@ -2,7 +2,8 @@
 
 ## Peers
 
-A peer is one running agent session. Claude Code, Codex, Gemini CLI, and OpenCode all register as peers through the same hooks pattern. Peers have:
+A peer is one running agent session. Runtime adapters—hooks, Codex App Server,
+and plugins—normalize every supported agent into the same peer model. Peers have:
 
 - a `name` (display name; auto-suffixed on collision: `repowire`, `repowire-2`),
 - a `path` (working directory),

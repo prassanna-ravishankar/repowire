@@ -25,9 +25,10 @@ server-global tmux lifecycle hooks used for pane exits and renames.
 
 ### Codex
 
-1. Confirm `~/.codex/config.toml` contains `[features] hooks = true`. If it still has the deprecated `codex_hooks` key, re-run `repowire setup` to migrate it away; current Codex versions warn when that legacy key is present.
-2. Codex fires `SessionStart` **after** the first user interaction. If your peer never registers, the agent may not have received a first turn — try `notify_peer(peer, "ping")` or send a message manually.
-3. If you used `spawn_peer` without a `message`, the seed turn may have been swallowed. Re-send via `notify_peer`.
+Current Codex releases do not use Repowire hooks. Check `repowire service
+status` and `~/.repowire/codex-bridge.log`; a thread should register before its
+first prompt. `repowire setup` retains the hook path only for older Codex
+releases that do not expose `app-server --listen`.
 
 ### Gemini CLI
 

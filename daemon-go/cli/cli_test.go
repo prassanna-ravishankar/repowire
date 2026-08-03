@@ -334,6 +334,9 @@ func TestInstallServicePreservesPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\necho --listen\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	pathValue := binDir + ":/opt/homebrew/bin:/usr/bin:/bin"
 	t.Setenv("HOME", homeDir)
 	t.Setenv("PATH", pathValue)
@@ -350,6 +353,48 @@ func TestInstallServicePreservesPath(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "<key>LC_ALL</key><string>C.UTF-8</string>") {
 		t.Fatalf("launchd plist does not preserve the locale: %s", raw)
+	}
+	bridgeRaw, err := os.ReadFile(filepath.Join(homeDir, "Library", "LaunchAgents", codexBridgeLabel()+".plist"))
+	if err != nil || !strings.Contains(string(bridgeRaw), "<string>codex-bridge</string>") {
+		t.Fatalf("Codex bridge plist missing: %v %s", err, bridgeRaw)
+	}
+}
+
+func TestInstallCodexUsesNativeThreadsWhenAppServerIsAvailable(t *testing.T) {
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	codex := filepath.Join(binDir, "codex")
+	if err := os.WriteFile(codex, []byte("#!/bin/sh\necho --listen\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	hooksPath := filepath.Join(homeDir, ".codex", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{"hooks":{"SessionStart":[{"hooks":[{"command":"repowire hook session --backend=codex"}]},{"hooks":[{"command":"keep-me"}]}]}}`
+	if err := os.WriteFile(hooksPath, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installCodex(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := readJSON(hooksPath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks, _ := data["hooks"].(map[string]any)
+	entries, _ := hooks["SessionStart"].([]any)
+	if len(entries) != 1 || fmt.Sprint(entries[0]) == "" || !strings.Contains(fmt.Sprint(entries[0]), "keep-me") {
+		t.Fatalf("SessionStart hooks = %#v", entries)
+	}
+	configRaw, err := os.ReadFile(filepath.Join(homeDir, ".codex", "config.toml"))
+	if err != nil || !strings.Contains(string(configRaw), "[mcp_servers.repowire]") {
+		t.Fatalf("Codex MCP config missing: %v %s", err, configRaw)
 	}
 }
 

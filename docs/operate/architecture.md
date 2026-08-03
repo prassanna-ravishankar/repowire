@@ -4,7 +4,8 @@ Repowire is a local-first routing daemon plus thin transport adapters for each a
 
 ```text
 Agent runtime
-  ├─ Go hooks + stdio identity shim (Claude Code, Codex, Gemini)
+  ├─ Go hooks + stdio identity shim (Claude Code, Gemini)
+  ├─ App Server thread bridge + MCP (Codex)
   ├─ plugin + WebSocket (OpenCode)
   ├─ extension (Pi)
   └─ channel / ACP transport (Claude Code experimental)
@@ -33,6 +34,7 @@ The daemon is the single routing hub. It does not care whether a peer arrived th
 | Sessions and spawn | `daemon-go/service/session_control.go`, `daemon-go/service/spawn_service.go` | Resume prevalidation, destructive pane proof, executor acquisition, and controls |
 | Schedules and jobs | `daemon-go/service/scheduler.go`, `daemon-go/service/job_runner.go`, `daemon-go/service/job_completion.go`, `daemon-go/state/` | Deadline-driven schedules, durable work, turn completion, executor-death failure, SQLite state |
 | Hooks | `daemon-go/hooks/` | Runtime adapters, ws-hook supervision, tmux injection, chat extraction, remote approval |
+| Codex bridge | `daemon-go/codexbridge/` | App Server lifecycle, native thread steering, and chat events |
 | MCP | `daemon-go/hub/routes_mcp*.go`, `daemon-go/mcpstdio/` | Complete daemon-owned HTTP tool surface plus the per-runtime identity proxy |
 | Control surfaces | `web/`, `daemon-go/mobile/` | Dashboard and native Telegram/Slack human peers |
 | Relay | `daemon-go/relayserver/`, `daemon-go/relay/` | Native hosted server plus the daemon's outbound tunnel client |
@@ -41,7 +43,7 @@ The daemon is the single routing hub. It does not care whether a peer arrived th
 
 ### Hooks + MCP
 
-Claude Code, Codex, and Gemini use native Go lifecycle hooks for registration,
+Claude Code and Gemini use native Go lifecycle hooks for registration,
 status, and chat extraction. Their `repowire mcp` process resolves a
 daemon-minted runtime certificate and proxies tool JSON-RPC to `/mcp`, where all
 31 tool implementations live.
@@ -51,6 +53,15 @@ unacked asks. The identity shim lazily registers on tool calls so runtimes that
 initialize late, especially Codex, still get a peer identity. The daemon ignores
 a claimed identity header unless its certificate proof is current and bound to
 that peer.
+
+### Codex App Server
+
+The separately supervised Codex companion owns the default Unix control socket
+and translates App Server threads into ordinary mesh peers. `thread/started`
+registers a peer before its first prompt; turn and item notifications drive
+status and dashboard chat events. Inbound delivery uses `turn/steer` for an
+active turn or `turn/start` for an idle thread. Restarting the routing daemon
+does not restart App Server or the Codex TUI.
 
 If a hook-backed orchestrator reconnects after daemon restart or WebSocket churn without carrying its prior `peer_id`, the daemon may reclaim the existing offline identity when the role, display name, circle, backend, and path match unambiguously. Queued notifications for that peer are replayed over the renewed WebSocket before falling back to Stop-hook or CLI draining.
 

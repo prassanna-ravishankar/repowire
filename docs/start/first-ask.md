@@ -1,6 +1,7 @@
 # First ask
 
-Open two agents in separate tmux windows. Claude Code registers on session start; Codex registers after its first interaction.
+Open two agents in separate tmux windows. Claude Code registers through its
+session hook; Codex registers through App Server as soon as its thread opens.
 
 ```bash
 # window 1
@@ -10,7 +11,7 @@ cd ~/projects/project-a && claude
 cd ~/projects/project-b && codex
 ```
 
-Send a short warmup prompt in `project-b`, then verify both peers:
+Before prompting either agent, verify both peers:
 
 ```bash
 repowire peer list
@@ -28,9 +29,9 @@ Both halves work the same regardless of which runtimes you mix. Claude Code aski
 
 ## What just happened
 
-1. Both agents' `SessionStart` hooks registered them as peers with the local daemon.
+1. Claude Code's `SessionStart` hook and Codex's native thread event registered them as peers with the local daemon.
 2. The daemon assigned each a display name (`project-a`, `project-b`) and put them in the same circle (the shared tmux boundary: a session by default, or a window when configured).
-3. The MCP `ask` tool sent the message over HTTP to the daemon, which routed it to `project-b` via the chosen transport. The default hooks transport uses tmux injection for inbound delivery; channel/ACP uses direct channel delivery if you opted in.
+3. The MCP `ask` tool sent the message over HTTP to the daemon, which routed it to `project-b` via the chosen transport. Codex uses native thread steering; hook-backed runtimes use tmux injection.
 4. The `ack` came back through the same path.
 
 ## Try a notification

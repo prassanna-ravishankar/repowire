@@ -281,10 +281,9 @@ func (mr *MessagingRoutes) trace(ctx context.Context, traceID, kind, stage, stat
 }
 
 // recordOutcome reproduces DeliveryTraceStore.record_outcome's truth table: a
-// hook receipt is the ONLY proof of pane injection — callers never hand-assert
-// it. ws + status==injected -> hook_received + pane_injected; ws + failed/
-// rejected -> hook_received + injection_failed; no receipt (ACP / legacy hook
-// that never acks) -> websocket_sent (handoff only, verified=false).
+// transport receipt is the only proof of injection — callers never hand-assert
+// it. Hook injection and native thread acceptance remain distinct so a native
+// delivery is never mislabeled as tmux pane injection.
 func (mr *MessagingRoutes) recordOutcome(ctx context.Context, traceID, kind, peerID, fromPeerID, transport string, hookDelivery map[string]any) {
 	if mr.traces == nil {
 		return
@@ -302,6 +301,8 @@ func (mr *MessagingRoutes) recordOutcome(ctx context.Context, traceID, kind, pee
 	case "injected":
 		rec("hook_received", "", nil)
 		rec("pane_injected", "", nil)
+	case "accepted":
+		rec("thread_input_accepted", "", map[string]any{"transport": transport})
 	case "failed", "rejected":
 		rec("hook_received", "", nil)
 		rec("injection_failed", "fail", map[string]any{"hook_status": hookStatus})

@@ -387,8 +387,13 @@ func installCodex() error {
 	data, _ := readJSON(hooksPath, false)
 	hooks := mapChild(data, "hooks")
 	specs := map[string][]string{"SessionStart": {"hook session --backend=codex", "startup|resume|clear"}, "Stop": {"hook stop --backend=codex", ""}, "UserPromptSubmit": {"hook prompt --backend=codex", ""}}
+	nativeThreads := codexAppServerSupported()
 	for event, spec := range specs {
-		replaceHook(hooks, event, hookEntry(hookCommand(spec[0]), spec[1], 0))
+		if nativeThreads {
+			removeRepowireEntries(hooks, event)
+		} else {
+			replaceHook(hooks, event, hookEntry(hookCommand(spec[0]), spec[1], 0))
+		}
 	}
 	removeRepowireEntries(hooks, "SessionEnd")
 	if err := writeJSON(hooksPath, data); err != nil {
@@ -400,19 +405,21 @@ func installCodex() error {
 	content = ensureTomlFeature(content, "hooks", "true")
 	content = replaceTomlSection(content, "mcp_servers.repowire", []string{"command = " + strconv.Quote(executable()), "args = [\"mcp\"]"})
 	content = replaceTomlSection(content, "mcp_servers.repowire.env", []string{"REPOWIRE_BACKEND = \"codex\""})
-	for event, spec := range specs {
-		entries, _ := hooks[event].([]any)
-		for groupIndex, raw := range entries {
-			entry, _ := raw.(map[string]any)
-			if !isRepowireHook(entry) {
-				continue
-			}
-			handlers, _ := entry["hooks"].([]any)
-			for handlerIndex, hraw := range handlers {
-				handler, _ := hraw.(map[string]any)
-				command, _ := handler["command"].(string)
-				key := fmt.Sprintf("%s:%s:%d:%d", hooksPath, map[string]string{"SessionStart": "session_start", "Stop": "stop", "UserPromptSubmit": "user_prompt_submit"}[event], groupIndex, handlerIndex)
-				content = replaceTomlSection(content, "hooks.state.\""+key+"\"", []string{"trusted_hash = \"" + codexHookHash(event, command, spec[1]) + "\""})
+	if !nativeThreads {
+		for event, spec := range specs {
+			entries, _ := hooks[event].([]any)
+			for groupIndex, raw := range entries {
+				entry, _ := raw.(map[string]any)
+				if !isRepowireHook(entry) {
+					continue
+				}
+				handlers, _ := entry["hooks"].([]any)
+				for handlerIndex, hraw := range handlers {
+					handler, _ := hraw.(map[string]any)
+					command, _ := handler["command"].(string)
+					key := fmt.Sprintf("%s:%s:%d:%d", hooksPath, map[string]string{"SessionStart": "session_start", "Stop": "stop", "UserPromptSubmit": "user_prompt_submit"}[event], groupIndex, handlerIndex)
+					content = replaceTomlSection(content, "hooks.state.\""+key+"\"", []string{"trusted_hash = \"" + codexHookHash(event, command, spec[1]) + "\""})
+				}
 			}
 		}
 	}
@@ -745,7 +752,7 @@ func installTmuxLifecycle() error {
 
 func runService(argv []string) int {
 	if len(argv) == 0 {
-		return usage("service <install|restart|status|uninstall>")
+		return usage("service <install|start|restart|status|uninstall>")
 	}
 	switch argv[0] {
 	case "install":
@@ -753,6 +760,12 @@ func runService(argv []string) int {
 			return fatal(err)
 		}
 		fmt.Println("service installed")
+		return 0
+	case "start":
+		if err := startService(); err != nil {
+			return fatal(err)
+		}
+		fmt.Println("service started")
 		return 0
 	case "restart":
 		if err := restartService(); err != nil {
@@ -769,11 +782,12 @@ func runService(argv []string) int {
 		fmt.Println("service removed")
 		return 0
 	default:
-		return usage("service <install|restart|status|uninstall>")
+		return usage("service <install|start|restart|status|uninstall>")
 	}
 }
 
-func serviceLabel() string { return "io.repowire.daemon" }
+func serviceLabel() string     { return "io.repowire.daemon" }
+func codexBridgeLabel() string { return "io.repowire.codex-bridge" }
 
 const obsoleteServiceLabel = "com.repowire.daemon"
 
@@ -798,7 +812,10 @@ func installService() error {
 		if err := os.WriteFile(path, []byte(plist), 0o600); err != nil {
 			return err
 		}
-		return exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
+		if err := exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run(); err != nil {
+			return err
+		}
+		return installCodexBridgeService(os.Getenv("PATH"), locale)
 	}
 	dir := home(".config", "systemd", "user")
 	_ = os.MkdirAll(dir, 0o755)
@@ -806,37 +823,143 @@ func installService() error {
 	if err := os.WriteFile(filepath.Join(dir, "repowire.service"), []byte(unit), 0o600); err != nil {
 		return err
 	}
+	if err := installCodexBridgeService("", ""); err != nil {
+		return err
+	}
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	return exec.Command("systemctl", "--user", "enable", "--now", "repowire.service").Run()
 }
+
+func installCodexBridgeService(pathValue, locale string) error {
+	if !codexAppServerSupported() {
+		return removeCodexBridgeService()
+	}
+	if runtime.GOOS == "darwin" {
+		dir := home("Library", "LaunchAgents")
+		path := filepath.Join(dir, codexBridgeLabel()+".plist")
+		logPath := home(".repowire", "codex-bridge.log")
+		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>codex-bridge</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string><key>LC_ALL</key><string>%s</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, codexBridgeLabel(), executable(), html.EscapeString(pathValue), html.EscapeString(locale), logPath, logPath)
+		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
+		if err := os.WriteFile(path, []byte(plist), 0o600); err != nil {
+			return err
+		}
+		return exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
+	}
+	unit := fmt.Sprintf("[Unit]\nDescription=Repowire Codex thread bridge\nAfter=repowire.service\nWants=repowire.service\n[Service]\nExecStart=%s codex-bridge\nRestart=always\n[Install]\nWantedBy=default.target\n", executable())
+	path := home(".config", "systemd", "user", "repowire-codex.service")
+	if err := os.WriteFile(path, []byte(unit), 0o600); err != nil {
+		return err
+	}
+	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+	return exec.Command("systemctl", "--user", "enable", "--now", "repowire-codex.service").Run()
+}
+
+func codexAppServerSupported() bool {
+	path, err := execLookPath("codex")
+	if err != nil {
+		return false
+	}
+	out, err := exec.Command(path, "app-server", "--help").CombinedOutput()
+	return err == nil && strings.Contains(string(out), "--listen")
+}
+
+func removeCodexBridgeService() error {
+	if runtime.GOOS == "darwin" {
+		path := home("Library", "LaunchAgents", codexBridgeLabel()+".plist")
+		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	_ = exec.Command("systemctl", "--user", "disable", "--now", "repowire-codex.service").Run()
+	err := os.Remove(home(".config", "systemd", "user", "repowire-codex.service"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func startService() error {
+	if runtime.GOOS == "darwin" {
+		if err := startLaunchAgent(serviceLabel()); err != nil {
+			return err
+		}
+		if _, err := os.Stat(home("Library", "LaunchAgents", codexBridgeLabel()+".plist")); err == nil {
+			return startLaunchAgent(codexBridgeLabel())
+		}
+		return nil
+	}
+	if err := exec.Command("systemctl", "--user", "start", "repowire.service").Run(); err != nil {
+		return err
+	}
+	if _, err := os.Stat(home(".config", "systemd", "user", "repowire-codex.service")); err == nil {
+		return exec.Command("systemctl", "--user", "start", "repowire-codex.service").Run()
+	}
+	return nil
+}
+
+func startLaunchAgent(label string) error {
+	domain := "gui/" + strconv.Itoa(os.Getuid())
+	if err := exec.Command("launchctl", "kickstart", domain+"/"+label).Run(); err == nil {
+		return nil
+	}
+	return exec.Command("launchctl", "bootstrap", domain, home("Library", "LaunchAgents", label+".plist")).Run()
+}
+
 func restartService() error {
 	if runtime.GOOS == "darwin" {
 		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+obsoleteServiceLabel).Run()
 		_ = os.Remove(home("Library", "LaunchAgents", obsoleteServiceLabel+".plist"))
-		return exec.Command("launchctl", "kickstart", "-k", "gui/"+strconv.Itoa(os.Getuid())+"/"+serviceLabel()).Run()
+		if err := exec.Command("launchctl", "kickstart", "-k", "gui/"+strconv.Itoa(os.Getuid())+"/"+serviceLabel()).Run(); err != nil {
+			return err
+		}
+		if _, err := os.Stat(home("Library", "LaunchAgents", codexBridgeLabel()+".plist")); err == nil {
+			return exec.Command("launchctl", "kickstart", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexBridgeLabel()).Run()
+		}
+		return nil
 	}
-	return exec.Command("systemctl", "--user", "restart", "repowire.service").Run()
+	if err := exec.Command("systemctl", "--user", "restart", "repowire.service").Run(); err != nil {
+		return err
+	}
+	if _, err := os.Stat(home(".config", "systemd", "user", "repowire-codex.service")); err == nil {
+		return exec.Command("systemctl", "--user", "start", "repowire-codex.service").Run()
+	}
+	return nil
 }
 func stopService() error {
 	if runtime.GOOS == "darwin" {
+		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexBridgeLabel()).Run()
 		return exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+serviceLabel()).Run()
 	}
+	_ = exec.Command("systemctl", "--user", "stop", "repowire-codex.service").Run()
 	return exec.Command("systemctl", "--user", "stop", "repowire.service").Run()
 }
 func serviceStatus() int {
-	var cmd *exec.Cmd
+	var commands []*exec.Cmd
 	if runtime.GOOS == "darwin" {
-		cmd = exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+serviceLabel())
+		commands = append(commands, exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+serviceLabel()))
+		if _, err := os.Stat(home("Library", "LaunchAgents", codexBridgeLabel()+".plist")); err == nil {
+			commands = append(commands, exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexBridgeLabel()))
+		}
 	} else {
-		cmd = exec.Command("systemctl", "--user", "status", "repowire.service", "--no-pager")
+		commands = append(commands, exec.Command("systemctl", "--user", "status", "repowire.service", "--no-pager"))
+		if _, err := os.Stat(home(".config", "systemd", "user", "repowire-codex.service")); err == nil {
+			commands = append(commands, exec.Command("systemctl", "--user", "status", "repowire-codex.service", "--no-pager"))
+		}
 	}
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return 1
+	for _, cmd := range commands {
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		if err := cmd.Run(); err != nil {
+			return 1
+		}
 	}
 	return 0
 }
 func uninstallService() error {
+	if err := removeCodexBridgeService(); err != nil {
+		return err
+	}
 	if runtime.GOOS == "darwin" {
 		for _, label := range []string{serviceLabel(), obsoleteServiceLabel} {
 			path := home("Library", "LaunchAgents", label+".plist")

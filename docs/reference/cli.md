@@ -48,17 +48,18 @@ When `updates.check_enabled` is true, status also reports whether a newer Repowi
 
 ```bash
 repowire service install
+repowire service start
 repowire service restart
 repowire service status
 repowire service uninstall
 ```
 
-Manage the installed daemon user service. `install` writes and starts the
-platform service (`launchd` on macOS, `systemd --user` on Linux), `restart`
-restarts the installed daemon after a local reinstall or config change,
-`status` shows whether it is installed/running, and `uninstall` removes the
-service entry. Prefer these commands over raw `launchctl` or `systemctl`
-unless you are troubleshooting the platform service manager directly.
+Manage the installed user services. `install` writes and starts the daemon and,
+when supported, the independent Codex App Server bridge. `start` starts installed
+services. `restart` restarts only the routing daemon and ensures the Codex bridge
+is running, so live Codex threads are not bounced. `status` reports both; `stop`
+through `repowire daemon stop` and `uninstall` stop both. Prefer these commands
+over raw `launchctl` or `systemctl` unless troubleshooting the service manager.
 
 ## `repowire doctor`
 

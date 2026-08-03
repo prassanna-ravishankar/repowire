@@ -184,8 +184,27 @@ type SessionMapping struct {
 const (
 	CurrentHookVersion    = 1
 	CapDeliveryReceipts   = "delivery_receipts"
+	CapThreadSteering     = "thread_steering"
 	PaneUnsafeStrikeLimit = 3
 )
+
+func HasCapability(metadata map[string]any, capability string) bool {
+	switch values := metadata["capabilities"].(type) {
+	case []string:
+		for _, value := range values {
+			if value == capability {
+				return true
+			}
+		}
+	case []any:
+		for _, value := range values {
+			if value == capability {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // ---------------------------------------------------------------------------
 // Wire frames. JSON shape is IDENTICAL to the Python daemon. Frames are

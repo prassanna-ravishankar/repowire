@@ -7,7 +7,7 @@ An agent backend is the runtime family Repowire knows how to install, spawn, res
 | Backend | Runtime | Connection path |
 | --- | --- | --- |
 | `claude-code` | Claude Code | Hooks + MCP; optional experimental channel/ACP |
-| `codex` | Codex | Hooks + MCP |
+| `codex` | Codex | App Server threads + MCP; hooks fallback on older releases |
 | `gemini` | Gemini CLI | Hooks + MCP through normalized `BeforeAgent` / `AfterAgent` events |
 | `antigravity` | Antigravity CLI (`agy`) | Plugin install verified; hook firing and MCP pending upstream verification |
 | `opencode` | OpenCode | TypeScript plugin + WebSocket |

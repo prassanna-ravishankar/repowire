@@ -37,8 +37,9 @@ const (
 // terminal hook-receipt stages used to derive inbound health. Mirror Python
 // DeliveryTraceStore default stages.
 const (
-	stagePaneInjected    = "pane_injected"
-	stageInjectionFailed = "injection_failed"
+	stagePaneInjected        = "pane_injected"
+	stageThreadInputAccepted = "thread_input_accepted"
+	stageInjectionFailed     = "injection_failed"
 )
 
 // PeerInfo is the peer wire shape for HTTP responses. Field names + JSON tags
@@ -320,8 +321,8 @@ func (h *Hub) peerToInfoWithHealth(ctx context.Context, p *proto.Peer, injection
 
 	wsConnected := h.transport != nil && h.transport.IsConnected(p.PeerID)
 
-	advertises := metadataAdvertisesReceipts(p.Metadata)
-	lastSuccess := lookupStage(injectionTimes, p.PeerID, stagePaneInjected)
+	advertises := proto.HasCapability(p.Metadata, proto.CapDeliveryReceipts)
+	lastSuccess := newestStage(injectionTimes, p.PeerID, stagePaneInjected, stageThreadInputAccepted)
 	lastFailure := lookupStage(injectionTimes, p.PeerID, stageInjectionFailed)
 	observedReceipt := lastSuccess != nil || lastFailure != nil
 	hookSupportsReceipts := advertises || observedReceipt
@@ -430,22 +431,15 @@ func computeInboundStatus(in inboundStatusInputs) string {
 	return inboundOnline
 }
 
-// metadataAdvertisesReceipts reports whether metadata["capabilities"] (a JSON
-// array) contains the delivery_receipts capability.
-func metadataAdvertisesReceipts(metadata map[string]any) bool {
-	if metadata == nil {
-		return false
-	}
-	caps, ok := metadata["capabilities"].([]any)
-	if !ok {
-		return false
-	}
-	for _, c := range caps {
-		if s, ok := c.(string); ok && s == proto.CapDeliveryReceipts {
-			return true
+func newestStage(times map[[2]string]string, id proto.PeerID, stages ...string) *string {
+	// RFC3339Nano UTC timestamps sort lexically in time order.
+	var newest *string
+	for _, stage := range stages {
+		if value := lookupStage(times, id, stage); value != nil && (newest == nil || *value > *newest) {
+			newest = value
 		}
 	}
-	return false
+	return newest
 }
 
 // lookupStage returns the ts for (peer_id, stage) from the batched snapshot, or

@@ -111,7 +111,7 @@ func (s *Store) StagesFor(ctx context.Context, traceID string) ([]TraceRow, erro
 
 // defaultInboundStages are the terminal hook-receipt stages list_peers uses to
 // derive per-peer inbound health (last_success_at / last_failure_at).
-var defaultInboundStages = []string{"pane_injected", "injection_failed"}
+var defaultInboundStages = []string{"pane_injected", "thread_input_accepted", "injection_failed"}
 
 // LatestStagesForPeers returns the newest ts per (peer_id, stage) for a set of
 // peers in one query, keyed by [2]string{peer_id, stage}. Only present keys are

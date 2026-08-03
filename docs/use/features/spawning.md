@@ -59,7 +59,9 @@ Verify registration:
 repowire peer list
 ```
 
-The new peer appears after its runtime starts and registers. Codex may register after its first interaction; spawn seed messages are used to trigger that first turn.
+The new peer appears after its runtime starts and registers. Codex registers
+when App Server creates the thread; a spawn message is optional opening context,
+not a registration seed.
 
 Restart a resumable peer:
 
@@ -88,7 +90,7 @@ Dashboard spawn and backend controls use the same spawn configuration as CLI and
 ## Troubleshooting
 
 - Spawn is refused: check `daemon.spawn.allowed_paths` and backend command configuration.
-- Spawned Codex peer is not visible yet: send or confirm the seed prompt so Codex fires `SessionStart`.
+- Spawned Codex peer is not visible yet: check `repowire service status` and `~/.repowire/codex-bridge.log`.
 - Restart fails before killing the pane: inspect the session binding and backend resume support.
 - Kill is refused for an external pane: rehook/link the pane or retire it manually; destructive pane control requires proof.
 

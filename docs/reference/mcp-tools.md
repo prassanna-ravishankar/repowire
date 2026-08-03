@@ -327,7 +327,12 @@ spawn_peer(path: str, backend: str, profile: str | None = None, circle: str | No
 
 Spawn a new agent session in a project directory. `backend` must have a launch profile in `daemon.spawn.commands` in `~/.repowire/config.yaml`; spawn is off by default until you configure at least one backend and one allowed path. Pass `profile` to append args from `daemon.spawn.profiles.<backend>.<profile>` for model/profile selection. If `circle` is omitted, the MCP tool uses the registered caller's current circle; anonymous HTTP MCP callers must provide one. In window-boundary mode it also inherits the caller's tmux window. Agents cannot override that scope, while orchestrators may target another circle. With the default session boundary, pass `circle="default"` explicitly to target the `default` tmux session. `command` remains accepted as a deprecated compatibility selector for one release and bypasses profile resolution.
 
-Hook-backed runtimes self-register via `SessionStart` within a few seconds. Antigravity is the exception while `agy` hook firing is pending upstream: daemon spawn pre-registers it as a CLI-polling peer and returns `registration_state=cli_fallback` plus a warning. The `message` seeds first-turn context. Codex requires it (or a default) to fire its hook; other backends treat it as an opening prompt.
+Hook-backed runtimes self-register via `SessionStart` within a few seconds.
+Codex registers from its App Server thread event before the first prompt.
+Antigravity is the exception while `agy` hook firing is pending upstream:
+daemon spawn pre-registers it as a CLI-polling peer and returns
+`registration_state=cli_fallback` plus a warning. The optional `message` is an
+opening prompt for every backend; it is no longer a Codex registration seed.
 
 ### `kill_peer`
 

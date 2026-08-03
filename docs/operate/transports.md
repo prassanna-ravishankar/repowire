@@ -6,7 +6,7 @@ Transports are runtime-specific delivery adapters. The daemon routes at the peer
 
 ## Hooks + MCP transport
 
-This is the default path for Claude Code, Codex, and Gemini:
+This is the default path for Claude Code and Gemini:
 
 - Native Go lifecycle hooks register peers, update status, extract transcript/chat turns, and fetch pending ask reminders.
 - `repowire mcp` preserves the runtime's peer certificate over stdio and proxies outbound tool calls to the daemon's localhost `/mcp` implementation.
@@ -23,6 +23,16 @@ Deregistration is layered, strongest signal first:
 A *terminal* offline retires the peer identity: the daemon severs its websocket and rejects reconnects claiming that peer_id unless they prove a live agent PID. A fresh SessionStart (which always carries one) reclaims the identity; a leftover orphan hook cannot. At startup the daemon additionally sweeps orphaned ws-hook processes whose agent is conclusively gone.
 
 Lazy repair treats a recorded agent PID as authoritative runtime evidence: if that PID is gone, a leftover tmux pane or shell is not enough to keep the peer online. Peers without a recorded agent PID can still fall back to live pane evidence.
+
+## Codex App Server transport
+
+Current Codex releases use an independently supervised local App Server and a
+Repowire bridge. Threads register before their first prompt. Inbound messages
+use `turn/start` while idle and `turn/steer` during a live turn; delivery
+receipts are recorded as native thread acceptance, never as pane injection.
+The ordinary Codex TUI remains visible. Tmux is optional placement/lifecycle
+evidence and is not the delivery channel. Older Codex releases without a Unix
+App Server listener fall back to hooks + MCP.
 
 ## Plugin and extension transports
 

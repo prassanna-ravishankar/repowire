@@ -453,6 +453,9 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 }
 
 func wsRecipientBusy(peer *proto.Peer) bool {
+	if proto.HasCapability(peer.Metadata, proto.CapThreadSteering) {
+		return false
+	}
 	return peer.Status == proto.StatusBusy || peer.TurnState == proto.TurnWorking
 }
 

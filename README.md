@@ -53,7 +53,8 @@ cd ~/projects/project-b && codex
 
 **3. Check that both peers appeared.**
 
-Claude Code registers on session start. Codex registers after its first interaction, so send a short warmup prompt in `project-b`, then run:
+Claude Code registers on session start. Codex registers through App Server when
+its TUI thread opens, before the first prompt. Run:
 
 ```bash
 repowire peer list
@@ -111,7 +112,8 @@ The stable public surface is peers, circles, asks, notifications, broadcasts, sc
 
 Transport notes:
 
-- Claude Code, Codex, and Gemini CLI use hooks plus MCP tools.
+- Claude Code and Gemini CLI use hooks plus MCP tools.
+- Codex uses its native App Server thread API plus MCP; tmux remains optional lifecycle/placement support.
 - OpenCode uses a TypeScript plugin plus WebSocket.
 - Pi uses the Repowire extension path when detected by setup.
 - Claude Code channel/ACP delivery is experimental and opt-in.
@@ -122,7 +124,7 @@ Transport notes:
 | Agent runtime | Connection path |
 | --- | --- |
 | Claude Code | Hooks + MCP; optional experimental channel/ACP transport |
-| Codex | Hooks + MCP |
+| Codex | App Server threads + MCP |
 | Gemini CLI | Hooks + MCP through normalized `BeforeAgent` / `AfterAgent` events |
 | Antigravity CLI (`agy`) | Plugin install verified; hook firing and MCP pending upstream verification |
 | OpenCode | Plugin + WebSocket |

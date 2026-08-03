@@ -198,6 +198,23 @@ func TestBusyWSRecipientDefersWithoutInjection(t *testing.T) {
 	}
 }
 
+func TestBusyThreadSteeringRecipientDeliversImmediately(t *testing.T) {
+	target := peerWith("repow-default-bbbb", "beta", "default", proto.StatusBusy)
+	target.Metadata = map[string]any{"capabilities": []any{proto.CapThreadSteering}}
+	reg := &fakeRegistry{peers: []*proto.Peer{target}}
+	f := &fakeTransport{ackFrame: map[string]any{"status": "accepted"}}
+	d := NewPeerDelivery(reg, newRouterWithFake(f), f, NewAskTracker(0), &fakeQueue{})
+
+	notify, err := d.Notify(context.Background(), NotifyParams{FromPeer: "alpha", ToPeer: "beta", Text: "now"})
+	if err != nil || notify.Queued() || notify.Transport != "ws" {
+		t.Fatalf("steerable busy notify = %+v, %v", notify, err)
+	}
+	ask, err := d.DeliverAsk(context.Background(), DeliverAskParams{FromPeer: "alpha", ToPeer: "beta", Text: "question", CorrelationID: "cid-live"})
+	if err != nil || ask.Transport != "ws" {
+		t.Fatalf("steerable busy ask = %+v, %v", ask, err)
+	}
+}
+
 // TestNotifyFailsLoudWhenQueueDisabled: with no queue store wired, a no-transport
 // notify must propagate the TransportError (fail loud → 503), never silently
 // claim success.
