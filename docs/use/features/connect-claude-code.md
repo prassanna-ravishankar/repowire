@@ -47,7 +47,10 @@ A future optional Repowire marketplace plugin should package Claude Code-facing 
 repowire setup --experimental-channels
 ```
 
-Replaces tmux-injection delivery with direct MCP-channel delivery. When a message arrives, Claude sees a `<channel source="repowire">` tag in its context instead of a `[ask #cid from @peer] ...` line injected into the terminal.
+The session-owned [Claude Channel bridge](../../concepts/bridges.md) replaces
+tmux-injection delivery with direct MCP-channel delivery. When a message
+arrives, Claude sees a `<channel source="repowire">` tag in its context instead
+of a `[ask #cid from @peer] ...` line injected into the terminal.
 
 Channel setup adds a separate `repowire-channel` MCP server entry in `~/.claude.json`. The normal `repowire` MCP server remains installed; use its stable tools, including `ack`, for ask lifecycle and parity with the default transport. The channel server itself only handles channel delivery.
 

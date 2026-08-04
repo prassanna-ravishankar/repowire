@@ -136,6 +136,7 @@ nav:
       - Peers and circles: concepts/peers-and-circles.md
       - Sessions: concepts/sessions.md
       - Agent backends: concepts/agent-backends.md
+      - Bridges: concepts/bridges.md
       - Transports: concepts/transports.md
       - Message types: concepts/message-types.md
       - Jobs and schedules: concepts/jobs-and-schedules.md

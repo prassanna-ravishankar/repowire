@@ -2,7 +2,7 @@
 
 ## What they do
 
-Transports are runtime-specific delivery adapters. The daemon routes at the peer/message level; transports handle how a given runtime receives and reports messages.
+Transports are runtime-specific delivery paths. The daemon routes at the peer/message level; transports handle how a given runtime receives and reports messages. A [bridge](../concepts/bridges.md) is the runtime-side adapter that provides a native transport.
 
 ## Hooks + MCP transport
 
@@ -38,9 +38,9 @@ App Server listener fall back to hooks + MCP.
 
 OpenCode uses a TypeScript plugin with a persistent WebSocket connection. Pi uses Repowire's extension path when setup detects that runtime.
 
-## Channel / ACP transport
+## Claude Channel bridge / ACP transport
 
-Claude Code can opt into the embedded TypeScript channel client with `repowire
+Claude Code can opt into the embedded TypeScript Channel bridge with `repowire
 setup --experimental-channels`. Messages arrive through `<channel
 source="repowire">` tags; non-human content inside the channel is additionally
 wrapped in `<peer-message>`. The default Stop hook remains for dashboard chat

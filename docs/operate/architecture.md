@@ -5,10 +5,10 @@ Repowire is a local-first routing daemon plus thin transport adapters for each a
 ```text
 Agent runtime
   ├─ Go hooks + stdio identity shim (Claude Code, Gemini)
-  ├─ App Server thread bridge + MCP (Codex)
+  ├─ App Server bridge + MCP (Codex)
   ├─ plugin + WebSocket (OpenCode)
   ├─ extension (Pi)
-  └─ channel / ACP transport (Claude Code experimental)
+  └─ Channel bridge / ACP transport (Claude Code experimental)
         ↓
 Go HTTP/WebSocket/MCP daemon on 127.0.0.1:8377
         ↓
@@ -16,6 +16,11 @@ Dashboard, Telegram, Slack, orchestrator peers, relay, and other peers
 ```
 
 The daemon is the single routing hub. It does not care whether a peer arrived through hooks, an OpenCode plugin, the Pi extension path, a bot, relay traffic, or experimental channel/ACP delivery. Every peer is represented in the registry and routes messages through the same core message layer.
+
+Runtime-side components that translate a native session API into this common
+protocol are called [bridges](../concepts/bridges.md). Their lifecycle follows
+the runtime: Codex needs a supervised companion, while Claude Channels,
+OpenCode, and Pi load their bridge inside the agent session.
 
 <p align="center">
   <img src="../assets/repowire-arch.webp" alt="Repowire architecture diagram" width="700" />
@@ -69,10 +74,10 @@ If a hook-backed orchestrator reconnects after daemon restart or WebSocket churn
 
 OpenCode does not expose the same hook shape, so Repowire installs a TypeScript plugin. The plugin holds a WebSocket connection to the daemon and bridges OpenCode session events into the same peer/message model. Pi uses Repowire's extension path when setup detects the `pi` CLI or config.
 
-### Channel / ACP transport
+### Claude Channel bridge / ACP transport
 
 `repowire setup --experimental-channels` installs the embedded TypeScript Claude
-channel client. Messages arrive as `<channel source="repowire">` tags. The
+Channel bridge. Messages arrive as `<channel source="repowire">` tags. The
 HTTP-backed MCP identity shim remains installed for stable tools. The Go daemon
 also contains the experiment-gated ACP subprocess client and maps ACP permission
 requests onto the shared blocking-question path. Channel mode still requires

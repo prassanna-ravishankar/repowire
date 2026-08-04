@@ -113,10 +113,11 @@ The stable public surface is peers, circles, asks, notifications, broadcasts, sc
 Transport notes:
 
 - Claude Code and Gemini CLI use hooks plus MCP tools.
-- Codex uses its native App Server thread API plus MCP; tmux remains optional lifecycle/placement support.
+- Native session APIs connect through runtime-side bridges; routing remains daemon-owned and transport-neutral.
+- Codex uses an App Server bridge plus MCP; tmux remains optional lifecycle/placement support.
 - OpenCode uses a TypeScript plugin plus WebSocket.
 - Pi uses the Repowire extension path when detected by setup.
-- Claude Code channel/ACP delivery is experimental and opt-in.
+- Claude Code's Channel bridge / ACP delivery is experimental and opt-in.
 - Relay is optional remote access, not a requirement for local routing.
 
 ## Supported Agents and Surfaces
