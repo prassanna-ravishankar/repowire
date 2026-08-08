@@ -376,7 +376,7 @@ func TestInstallCodexUsesNativeThreadsWhenAppServerIsAvailable(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	seed := `{"hooks":{"SessionStart":[{"hooks":[{"command":"repowire hook session --backend=codex"}]},{"hooks":[{"command":"keep-me"}]}]}}`
+	seed := `{"hooks":{"SessionStart":[{"hooks":[{"command":"repowire hook session --backend=codex"}]},{"hooks":[{"command":"keep-me"}]}],"Stop":[{"hooks":[{"command":"keep-stop"}]}]}}`
 	if err := os.WriteFile(hooksPath, []byte(seed), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -392,8 +392,12 @@ func TestInstallCodexUsesNativeThreadsWhenAppServerIsAvailable(t *testing.T) {
 	if len(entries) != 1 || fmt.Sprint(entries[0]) == "" || !strings.Contains(fmt.Sprint(entries[0]), "keep-me") {
 		t.Fatalf("SessionStart hooks = %#v", entries)
 	}
+	stopEntries, _ := hooks["Stop"].([]any)
+	if len(stopEntries) != 2 || !strings.Contains(fmt.Sprint(stopEntries), "keep-stop") || !strings.Contains(fmt.Sprint(stopEntries), "--reminders-only") {
+		t.Fatalf("Stop hooks = %#v", stopEntries)
+	}
 	configRaw, err := os.ReadFile(filepath.Join(homeDir, ".codex", "config.toml"))
-	if err != nil || !strings.Contains(string(configRaw), "[mcp_servers.repowire]") {
+	if err != nil || !strings.Contains(string(configRaw), "[mcp_servers.repowire]") || !strings.Contains(string(configRaw), "hooks.state.") {
 		t.Fatalf("Codex MCP config missing: %v %s", err, configRaw)
 	}
 }

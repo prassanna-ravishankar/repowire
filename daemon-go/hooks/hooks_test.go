@@ -73,6 +73,35 @@ func TestStopTurnKeepsHookResponseWhenTranscriptHasNoAssistant(t *testing.T) {
 	}
 }
 
+func TestCodexReminderResolvesNativeThreadPeer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/peers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"peers": []any{map[string]any{
+				"peer_id": "repow-codex-1", "backend": "codex", "metadata": map[string]any{"runtime_session_id": "thread-1"},
+			}}})
+		case "/asks/pending":
+			if got := r.URL.Query().Get("peer_id"); got != "repow-codex-1" {
+				t.Errorf("peer_id = %q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"asks": []any{map[string]any{
+				"correlation_id": "ask-1", "from_peer": "reviewer", "text": "Did this land?",
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	port, _ := strconv.Atoi(strings.TrimPrefix(server.URL, "http://127.0.0.1:"))
+	t.Setenv("REPOWIRE_DAEMON__HOST", "127.0.0.1")
+	t.Setenv("REPOWIRE_DAEMON__PORT", strconv.Itoa(port))
+
+	got := reminderBlockForRuntimeSession("thread-1")
+	if !strings.Contains(got, "#ask-1 from @reviewer: Did this land?") {
+		t.Fatalf("reminder = %q", got)
+	}
+}
+
 func TestReadPaneRuntimeMetadata(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if got := ReadPaneRuntimeMetadata("%9"); len(got) != 0 {

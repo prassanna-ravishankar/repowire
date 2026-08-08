@@ -1,6 +1,6 @@
 # Hook Payloads
 
-Hook payloads vary by agent runtime. Repowire normalizes them before handler code updates peer state or extracts responses. The Codex column documents the fallback used only when that release lacks an App Server listener.
+Hook payloads vary by agent runtime. Repowire normalizes them before handler code updates peer state or extracts responses. Current Codex releases retain only the Stop payload's `session_id` for pending-ask reminders; the other Codex entries describe the full fallback used when App Server listening is unavailable.
 
 ## Normalized concepts
 

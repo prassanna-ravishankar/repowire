@@ -31,8 +31,10 @@ Repowire bridge. Threads register before their first prompt. Inbound messages
 use `turn/start` while idle and `turn/steer` during a live turn; delivery
 receipts are recorded as native thread acceptance, never as pane injection.
 The ordinary Codex TUI remains visible. Tmux is optional placement/lifecycle
-evidence and is not the delivery channel. Older Codex releases without a Unix
-App Server listener fall back to hooks + MCP.
+evidence and is not the delivery channel. A reminder-only Stop hook resurfaces
+asks that remain open after a turn; it does not duplicate App Server lifecycle
+or chat handling. Older Codex releases without a Unix App Server listener fall
+back to hooks + MCP.
 
 ## Plugin and extension transports
 

@@ -25,10 +25,12 @@ server-global tmux lifecycle hooks used for pane exits and renames.
 
 ### Codex
 
-Current Codex releases do not use Repowire hooks. Check `repowire service
-status` and `~/.repowire/codex-bridge.log`; a thread should register before its
-first prompt. `repowire setup` retains the hook path only for older Codex
-releases that do not expose `app-server --listen`.
+Current Codex releases use App Server for registration, lifecycle, chat, and
+delivery. They retain only a reminder-only Stop hook so unacknowledged asks
+resurface after a turn. Check `repowire service status`,
+`~/.repowire/codex-bridge.log`, and the `Stop` entry in
+`~/.codex/hooks.json`. Older Codex releases without `app-server --listen` retain
+the full hooks transport.
 
 ### Gemini CLI
 

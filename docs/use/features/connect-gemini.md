@@ -21,7 +21,7 @@ names so the handler code does not branch on runtime.
 
 ### Hook output
 
-Gemini hooks require an explicit decision in their JSON output. Repowire emits `{"decision": "allow"}` from `AfterAgent` so the agent continues normally. Claude Code and Codex hooks ignore the output and run silent — only Gemini needs the `decision` field.
+Gemini hooks require an explicit decision in their JSON output. Repowire emits `{"decision": "allow"}` from `AfterAgent` so the agent continues normally. Claude Code and Codex Stop hooks emit a decision only when blocking to resurface an open ask.
 
 ### MCP server
 

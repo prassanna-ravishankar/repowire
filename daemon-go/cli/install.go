@@ -389,9 +389,12 @@ func installCodex() error {
 	specs := map[string][]string{"SessionStart": {"hook session --backend=codex", "startup|resume|clear"}, "Stop": {"hook stop --backend=codex", ""}, "UserPromptSubmit": {"hook prompt --backend=codex", ""}}
 	nativeThreads := codexAppServerSupported()
 	for event, spec := range specs {
-		if nativeThreads {
+		if nativeThreads && event != "Stop" {
 			removeRepowireEntries(hooks, event)
 		} else {
+			if nativeThreads {
+				spec = []string{"hook stop --backend=codex --reminders-only", ""}
+			}
 			replaceHook(hooks, event, hookEntry(hookCommand(spec[0]), spec[1], 0))
 		}
 	}
@@ -405,21 +408,25 @@ func installCodex() error {
 	content = ensureTomlFeature(content, "hooks", "true")
 	content = replaceTomlSection(content, "mcp_servers.repowire", []string{"command = " + strconv.Quote(executable()), "args = [\"mcp\"]"})
 	content = replaceTomlSection(content, "mcp_servers.repowire.env", []string{"REPOWIRE_BACKEND = \"codex\""})
-	if !nativeThreads {
-		for event, spec := range specs {
-			entries, _ := hooks[event].([]any)
-			for groupIndex, raw := range entries {
-				entry, _ := raw.(map[string]any)
-				if !isRepowireHook(entry) {
-					continue
-				}
-				handlers, _ := entry["hooks"].([]any)
-				for handlerIndex, hraw := range handlers {
-					handler, _ := hraw.(map[string]any)
-					command, _ := handler["command"].(string)
-					key := fmt.Sprintf("%s:%s:%d:%d", hooksPath, map[string]string{"SessionStart": "session_start", "Stop": "stop", "UserPromptSubmit": "user_prompt_submit"}[event], groupIndex, handlerIndex)
-					content = replaceTomlSection(content, "hooks.state.\""+key+"\"", []string{"trusted_hash = \"" + codexHookHash(event, command, spec[1]) + "\""})
-				}
+	for event, spec := range specs {
+		if nativeThreads && event != "Stop" {
+			continue
+		}
+		if nativeThreads {
+			spec = []string{"hook stop --backend=codex --reminders-only", ""}
+		}
+		entries, _ := hooks[event].([]any)
+		for groupIndex, raw := range entries {
+			entry, _ := raw.(map[string]any)
+			if !isRepowireHook(entry) {
+				continue
+			}
+			handlers, _ := entry["hooks"].([]any)
+			for handlerIndex, hraw := range handlers {
+				handler, _ := hraw.(map[string]any)
+				command, _ := handler["command"].(string)
+				key := fmt.Sprintf("%s:%s:%d:%d", hooksPath, map[string]string{"SessionStart": "session_start", "Stop": "stop", "UserPromptSubmit": "user_prompt_submit"}[event], groupIndex, handlerIndex)
+				content = replaceTomlSection(content, "hooks.state.\""+key+"\"", []string{"trusted_hash = \"" + codexHookHash(event, command, spec[1]) + "\""})
 			}
 		}
 	}

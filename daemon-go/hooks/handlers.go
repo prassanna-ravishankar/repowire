@@ -23,6 +23,7 @@ func Run(args []string) int {
 	name := args[0]
 	flags := flag.NewFlagSet("hook "+name, flag.ContinueOnError)
 	backend := flags.String("backend", "claude-code", "agent backend")
+	remindersOnly := flags.Bool("reminders-only", false, "only block on unacked asks")
 	if flags.Parse(args[1:]) != nil {
 		return 2
 	}
@@ -30,7 +31,7 @@ func Run(args []string) int {
 	case "session":
 		return runSession(*backend)
 	case "stop":
-		return runStop(*backend)
+		return runStop(*backend, *remindersOnly)
 	case "prompt":
 		return runPrompt(*backend)
 	case "notification":
@@ -217,7 +218,7 @@ func runSession(backend string) int {
 	return 0
 }
 
-func runStop(backend string) int {
+func runStop(backend string, remindersOnly bool) int {
 	raw, err := readInput()
 	if err != nil {
 		errf("stop: invalid JSON input: %v", err)
@@ -227,6 +228,12 @@ func runStop(backend string) int {
 		return 0
 	}
 	payload := Normalize(raw, backend)
+	if remindersOnly {
+		if block := reminderBlockForRuntimeSession(payload.SessionID); block != "" {
+			printJSON(map[string]string{"decision": "block", "reason": block})
+		}
+		return 0
+	}
 	paneID := getPaneID()
 	if paneID != "" {
 		_ = os.Remove(streamerPIDPath(paneID))
@@ -422,7 +429,31 @@ func summarizeToolInput(input map[string]any) string {
 }
 
 func reminderBlock(paneID string, handled map[string]bool) string {
-	result := daemonGet("/asks/pending?pane_id=" + url.QueryEscape(paneID))
+	return reminderBlockFrom("pane_id", paneID, handled)
+}
+
+func reminderBlockForRuntimeSession(sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	peerID := ""
+	for _, peer := range peerList() {
+		metadata, _ := peer["metadata"].(map[string]any)
+		if stringValue(peer, "backend") == "codex" && stringValue(metadata, "runtime_session_id") == sessionID {
+			if peerID != "" {
+				return ""
+			}
+			peerID = stringValue(peer, "peer_id")
+		}
+	}
+	return reminderBlockFrom("peer_id", peerID, nil)
+}
+
+func reminderBlockFrom(key, value string, handled map[string]bool) string {
+	if value == "" {
+		return ""
+	}
+	result := daemonGet("/asks/pending?" + key + "=" + url.QueryEscape(value))
 	items, _ := result["asks"].([]any)
 	var asks []map[string]any
 	for _, raw := range items {

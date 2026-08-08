@@ -10,7 +10,7 @@ as the message transport.
 | --- | --- |
 | `repowire-codex` user service | Runs the local Codex App Server and thread bridge |
 | `~/.codex/config.toml` | Installs the Repowire MCP tools |
-| `~/.codex/hooks.json` | Repowire Codex hooks are removed when native App Server support is available |
+| `~/.codex/hooks.json` | A reminder-only Stop hook keeps unacknowledged asks visible |
 
 The MCP entry points at the installed `repowire` binary:
 
@@ -36,6 +36,11 @@ There is no warmup prompt or `UserPromptSubmit` one-turn delay. Repowire sends a
 idle thread a native `turn/start` request and steers an active thread with
 `turn/steer`. App Server lifecycle notifications drive `busy` and `online`
 status, including interrupt and completion boundaries.
+
+The Stop hook remains as a narrow reliability backstop: if Codex completes a
+turn without acknowledging an open ask, it blocks with a reminder. It does
+not register the peer, report status or chat, or deliver messages; App Server
+owns those paths.
 
 Tmux remains useful for hosting and restarting a TUI, but it is not used for
 message delivery. When exactly one tmux circle matches a Codex thread's working
