@@ -2,8 +2,10 @@ package hooks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -16,6 +18,8 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/repowire/repowire/daemon-go/proto"
 )
+
+const claudeMessagingSocketEnv = "CLAUDE_CODE_MESSAGING_SOCKET"
 
 func startWSHook(paneID, peerID, displayName, backend, cwd string, agentPID int, lock *os.File) error {
 	executable, err := os.Executable()
@@ -35,6 +39,9 @@ func startWSHook(paneID, peerID, displayName, backend, cwd string, agentPID int,
 		"REPOWIRE_HOOK_LOCK_FD=3",
 		"TMUX_PANE="+paneID,
 	)
+	if socket := stringValue(ReadPaneRuntimeMetadata(paneID), "claude_messaging_socket"); socket != "" {
+		env = append(env, claudeMessagingSocketEnv+"="+socket)
+	}
 	cmd := exec.Command(executable, "ws-hook")
 	cmd.Dir = cwd
 	cmd.Env = env
@@ -219,7 +226,7 @@ func RunWS() int {
 		connect := map[string]any{
 			"type": "connect", "display_name": displayName, "circle": circle,
 			"backend": backend, "path": cwd, "pane_id": paneID, "circle_source": source,
-			"hook_version": hookVersion, "capabilities": []string{"delivery_receipts"},
+			"hook_version": hookVersion, "capabilities": transportCapabilities(backend),
 		}
 		if target := tmuxSession(info); target != "" {
 			connect["tmux_session"] = target
@@ -356,11 +363,26 @@ func handleMessage(ctx context.Context, conn *websocket.Conn, data map[string]an
 	if typ != "ask" && typ != "notify" && typ != "broadcast" {
 		return false, unsafeStrikes
 	}
+	from, to, text := firstNonempty(stringValue(data, "from_peer"), "unknown"), stringValue(data, "to_peer"), stringValue(data, "text")+formatAttachments(data["attachments"])
+	injected := formatInboundMessage(from, to, typ, stringValue(data, "correlation_id"), text)
+	var inboxErr error
+	if firstNonempty(os.Getenv("REPOWIRE_BACKEND"), "claude-code") == "claude-code" {
+		if socket := claudeMessagingSocket(); socket != "" {
+			if inboxErr = injectClaudeInbox(socket, injected); inboxErr == nil {
+				sendDeliveryAck(ctx, conn, data, "accepted", "claude inbox socket")
+				return false, unsafeStrikes
+			}
+			errf("ws-hook: Claude inbox delivery failed, falling back to tmux: %v", inboxErr)
+		}
+	}
 	safe := paneSafe(paneID, expectedCommand)
 	if safe == nil || !*safe {
 		status, detail := "rejected", "Pane "+paneID+" not safe for injection"
 		if safe == nil {
 			status, detail = "failed", "Pane "+paneID+" safety inconclusive; delivery not injected"
+		}
+		if inboxErr != nil {
+			detail = "Claude inbox failed: " + inboxErr.Error() + "; " + detail
 		}
 		sendDeliveryAck(ctx, conn, data, status, detail)
 		if typ == "ask" {
@@ -368,15 +390,43 @@ func handleMessage(ctx context.Context, conn *websocket.Conn, data map[string]an
 		}
 		return safe != nil && !*safe, unsafeStrikes
 	}
-	from, to, text := firstNonempty(stringValue(data, "from_peer"), "unknown"), stringValue(data, "to_peer"), stringValue(data, "text")+formatAttachments(data["attachments"])
-	injected := formatInboundMessage(from, to, typ, stringValue(data, "correlation_id"), text)
 	if injectText(paneID, injected) {
 		sendDeliveryAck(ctx, conn, data, "injected", "")
 	} else {
 		detail := "Failed to send keys to pane " + paneID
+		if inboxErr != nil {
+			detail = "Claude inbox failed: " + inboxErr.Error() + "; " + detail
+		}
 		sendDeliveryAck(ctx, conn, data, "failed", detail)
 	}
 	return false, unsafeStrikes
+}
+
+func claudeMessagingSocket() string {
+	return strings.TrimPrefix(os.Getenv(claudeMessagingSocketEnv), "uds:")
+}
+
+func transportCapabilities(backend string) []string {
+	capabilities := []string{proto.CapDeliveryReceipts}
+	if backend == "claude-code" && claudeMessagingSocket() != "" {
+		capabilities = append(capabilities, proto.CapRuntimeInbox)
+	}
+	return capabilities
+}
+
+func injectClaudeInbox(socket, text string) error {
+	conn, err := net.DialTimeout("unix", strings.TrimPrefix(socket, "uds:"), 2*time.Second)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		return err
+	}
+	return json.NewEncoder(conn).Encode(map[string]any{
+		"type":    "user",
+		"message": map[string]any{"role": "user", "content": text},
+	})
 }
 
 func formatInboundMessage(from, to, typ, correlationID, text string) string {

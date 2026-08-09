@@ -10,7 +10,8 @@ This is the default path for Claude Code and Gemini:
 
 - Native Go lifecycle hooks register peers, update status, extract transcript/chat turns, and fetch pending ask reminders.
 - `repowire mcp` preserves the runtime's peer certificate over stdio and proxies outbound tool calls to the daemon's localhost `/mcp` implementation.
-- Live inbound messages are delivered through the WebSocket hook and injected into the runtime's tmux pane. The hook is bound to the owning agent PID and exits when that process disappears, so an orphaned hook cannot keep a dead peer's daemon socket alive indefinitely.
+- Live inbound messages are delivered through the WebSocket hook. Claude Code 2.1.224+ prefers its per-session native inbox and falls back to tmux injection if the socket is absent or fails; Gemini uses tmux injection. The hook is bound to the owning agent PID and exits when that process disappears, so an orphaned hook cannot keep a dead peer's daemon socket alive indefinitely.
+- Native Claude inbox writes return an `accepted` receipt and can reach busy sessions. Claude's own `crossSessionInbound` controls may still hold or refuse the message; Repowire never changes those controls.
 - Non-human deliveries are injected inside a `<peer-message>` envelope carrying sender, type, target, and correlation id when applicable. Dashboard, Telegram, and Slack messages remain direct human instructions.
 - Open asks continue to resurface through Stop-hook reminders until they are acked.
 

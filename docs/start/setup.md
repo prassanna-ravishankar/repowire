@@ -31,7 +31,7 @@ repowire setup --non-interactive        # take flag values only, no prompts
 
 `--relay` makes the dashboard available at `https://repowire.io/dashboard` over an outbound WebSocket. See [relay access](../use/features/relay-access.md).
 
-`--experimental-channels` replaces the default hooks transport's tmux-injection delivery with direct MCP-channel / ACP delivery for Claude Code only. It is experimental. See [Claude Code setup](../use/features/connect-claude-code.md).
+`--experimental-channels` replaces the default hook bridge with direct MCP-channel / ACP delivery for Claude Code only. Without that flag, current Claude Code releases use their native session inbox with tmux injection retained as fallback. Channel mode is experimental. See [Claude Code setup](../use/features/connect-claude-code.md).
 
 Setup always enables the localhost-only `/mcp` implementation and generates a
 `daemon.auth_token` if needed, because agent runtimes reach it through

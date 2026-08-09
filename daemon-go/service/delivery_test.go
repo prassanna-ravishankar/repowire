@@ -215,6 +215,19 @@ func TestBusyThreadSteeringRecipientDeliversImmediately(t *testing.T) {
 	}
 }
 
+func TestBusyRuntimeInboxRecipientDeliversImmediately(t *testing.T) {
+	target := peerWith("repow-default-bbbb", "beta", "default", proto.StatusBusy)
+	target.Metadata = map[string]any{"capabilities": []any{proto.CapRuntimeInbox}}
+	reg := &fakeRegistry{peers: []*proto.Peer{target}}
+	f := &fakeTransport{ackFrame: map[string]any{"status": "accepted"}}
+	d := NewPeerDelivery(reg, newRouterWithFake(f), f, nil, &fakeQueue{})
+
+	result, err := d.Notify(context.Background(), NotifyParams{FromPeer: "alpha", ToPeer: "beta", Text: "now"})
+	if err != nil || result.Queued() || result.Transport != "ws" {
+		t.Fatalf("runtime-inbox busy notify = %+v, %v", result, err)
+	}
+}
+
 // TestNotifyFailsLoudWhenQueueDisabled: with no queue store wired, a no-transport
 // notify must propagate the TransportError (fail loud → 503), never silently
 // claim success.

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
+	"github.com/repowire/repowire/daemon-go/proto"
 )
 
 func Run(args []string) int {
@@ -109,9 +110,13 @@ func runSession(backend string) int {
 		circle = firstNonempty(stringValue(certified, "circle"), circle)
 		circleSource = "fallback"
 	}
+	capabilities := transportCapabilities(backend)
 	metadata := map[string]any{
 		"project": filepath.Base(cwd), "hook_version": hookVersion,
-		"capabilities": []string{"delivery_receipts"},
+		"capabilities": capabilities,
+	}
+	if contains(capabilities, proto.CapRuntimeInbox) {
+		metadata["transport"] = "claude-inbox"
 	}
 	if payload.SessionID != "" {
 		metadata["hook_session_id"] = payload.SessionID
@@ -193,6 +198,9 @@ func runSession(backend string) int {
 		"backend": backend, "cwd": cwd, "display_name": displayName,
 		"hook_session_id": payload.SessionID, "peer_id": peerID,
 		"agent_pid": agentPID, "parent_pid": parentPID(agentPID),
+	}
+	if socket := os.Getenv(claudeMessagingSocketEnv); backend == "claude-code" && socket != "" {
+		meta["claude_messaging_socket"] = socket
 	}
 	if cert, ok := registered["birth_certificate"].(map[string]any); ok {
 		meta["birth_certificate"] = cert
@@ -593,7 +601,7 @@ func formatPeersContext(peers []map[string]any, me string) string {
 	if len(lines) == 1 {
 		return ""
 	}
-	lines = append(lines, "", "Use another peer only when its ownership, context, or independent work materially helps. Do not contact peers reflexively; they may be occupied with another task. Use ask() only when explicit closure is needed and notify_peer() for a necessary fire-and-forget update.", "Use notify_peer('telegram', msg) to send updates to the user's phone.", "Call set_description(\"brief task summary\") early - it becomes your title in the dashboard and peer list.", "Peer list may be outdated - use list_peers() to refresh.", "NOTE: SendMessage is a Claude Code harness tool for same-session teammates only. To reach peers listed above, use repowire tools: ask(), ack(), notify_peer(), broadcast().")
+	lines = append(lines, "", "Use another peer only when its ownership, context, or independent work materially helps. Do not contact peers reflexively; they may be occupied with another task. Use ask() only when explicit closure is needed and notify_peer() for a necessary fire-and-forget update.", "Use notify_peer('telegram', msg) to send updates to the user's phone.", "Call set_description(\"brief task summary\") early - it becomes your title in the dashboard and peer list.", "Peer list may be outdated - use list_peers() to refresh.", "NOTE: Claude Code's SendMessage addresses its native Claude roster. To reach Repowire mesh peers listed above, use repowire tools: ask(), ack(), notify_peer(), broadcast().")
 	return strings.Join(lines, "\n")
 }
 

@@ -31,7 +31,7 @@ Both halves work the same regardless of which runtimes you mix. Claude Code aski
 
 1. Claude Code's `SessionStart` hook and Codex's native thread event registered them as peers with the local daemon.
 2. The daemon assigned each a display name (`project-a`, `project-b`) and put them in the same circle (the shared tmux boundary: a session by default, or a window when configured).
-3. The MCP `ask` tool sent the message over HTTP to the daemon, which routed it to `project-b` via the chosen transport. Codex uses native thread steering; hook-backed runtimes use tmux injection.
+3. The MCP `ask` tool sent the message over HTTP to the daemon, which routed it to `project-b` via the chosen transport. Codex uses native thread steering; current Claude Code sessions use their native inbox with tmux fallback; other hook-backed runtimes use tmux injection.
 4. The `ack` came back through the same path.
 
 ## Try a notification

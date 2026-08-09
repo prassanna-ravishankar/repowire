@@ -4,7 +4,7 @@ Feature pages are the active-user source of truth for Repowire capabilities. Eac
 
 ## Connect agent runtimes
 
-- [Claude Code](connect-claude-code.md) — hooks, MCP, and optional channel transport.
+- [Claude Code](connect-claude-code.md) — hooks, MCP, native inbox delivery, and optional channel transport.
 - [Codex](connect-codex.md) — hooks, MCP, late registration, and first-turn behavior.
 - [Gemini CLI](connect-gemini.md) — setup and hook verification.
 - [Antigravity CLI](connect-antigravity.md) — current manual registration constraints.

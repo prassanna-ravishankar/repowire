@@ -184,6 +184,7 @@ type SessionMapping struct {
 const (
 	CurrentHookVersion    = 1
 	CapDeliveryReceipts   = "delivery_receipts"
+	CapRuntimeInbox       = "runtime_inbox"
 	CapThreadSteering     = "thread_steering"
 	PaneUnsafeStrikeLimit = 3
 )

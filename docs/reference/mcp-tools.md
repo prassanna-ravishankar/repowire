@@ -82,7 +82,7 @@ Use `ask` for worker checkpoints, review requests, pre-commit handoffs, status c
 
 Daemon events for asks and acks include nullable `repowire_session_id`, `from_repowire_session_id`, and `to_repowire_session_id` fields when an existing session binding can be resolved. Peer IDs remain the routing authority.
 
-Live delivery is attempted first. A busy hook-backed peer is not interrupted; its open ask appears through the existing Stop reminder when the active turn ends. If a CLI-fallback/polling peer has no live transport, the ask stays open and a one-shot queued delivery is stored in SQLite for its next Stop-hook or CLI drain. The queued delivery is deleted after drain; the ask itself still appears in `/asks/pending` until `ack`. Asking your own peer is rejected.
+Live delivery is attempted first. A busy peer with native active-delivery support, including current Claude inbox and Codex App Server peers, accepts the message immediately; other busy hook-backed peers defer it until the active turn ends. If a CLI-fallback/polling peer has no live transport, the ask stays open and a one-shot queued delivery is stored in SQLite for its next Stop-hook or CLI drain. The queued delivery is deleted after drain; the ask itself still appears in `/asks/pending` until `ack`. Asking your own peer is rejected.
 
 Peer resolution defaults to the caller's circle. Ordinary peers cannot target another circle explicitly; passing a foreign `circle=` is rejected. Callers or targets whose role bypasses circles (`orchestrator`, `service`, human surfaces) may resolve mesh-wide and pass `circle="<name>"` to disambiguate.
 
@@ -161,13 +161,13 @@ Do not use `notify_peer` for worker checkpoints, review requests, pre-commit han
 
 On the HTTP `/notify` response, `hook_delivery` may be present when the
 recipient is a new enough WebSocket hook. It is a best-effort terminal injection
-receipt with statuses such as `injected`, `rejected`, or `failed`; `null` means
+receipt with statuses such as `accepted`, `injected`, `rejected`, or `failed`; `null` means
 the hook is older, a non-hook transport handled the notify, or no receipt
 arrived before the daemon returned. When a session binding is known, `/notify`
 responses and hook receipts may include nullable `repowire_session_id`,
 `from_repowire_session_id`, and `to_repowire_session_id` fields for grouping.
 
-If a hook-backed recipient is busy, `/notify` returns `delivery_state="queued"` and `reason="recipient_busy"` instead of interrupting its active turn. An unavailable live transport similarly queues with `reason="queued_delivery"`. The notification is stored in SQLite and delivered once through the recipient's Stop hook or `repowire peer deliveries`, subject to the configured TTL and per-peer cap.
+If a hook-backed recipient without native active-delivery support is busy, `/notify` returns `delivery_state="queued"` and `reason="recipient_busy"`. Claude inbox and Codex App Server peers accept delivery while busy. An unavailable live transport similarly queues with `reason="queued_delivery"`. The notification is stored in SQLite and delivered once through the recipient's Stop hook or `repowire peer deliveries`, subject to the configured TTL and per-peer cap.
 
 For an ACP-brokered peer (experimental), a fire-and-forget `/notify` returns `delivery_state="delivered"` with `reason="broker_accepted"` rather than `transport_delivered`. The broker accepted the prompt task, but the ACP reply is discarded for notify, so this is *not* a runtime receipt — the daemon never learns whether the runtime completed it. Clients that need a real receipt must not treat `broker_accepted` as one.
 

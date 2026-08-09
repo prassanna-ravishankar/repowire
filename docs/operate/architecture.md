@@ -4,7 +4,8 @@ Repowire is a local-first routing daemon plus thin transport adapters for each a
 
 ```text
 Agent runtime
-  ├─ Go hooks + stdio identity shim (Claude Code, Gemini)
+  ├─ Go hooks + native inbox + stdio identity shim (Claude Code)
+  ├─ Go hooks + stdio identity shim (Gemini)
   ├─ App Server bridge + MCP (Codex)
   ├─ plugin + WebSocket (OpenCode)
   ├─ extension (Pi)
@@ -38,7 +39,7 @@ OpenCode, and Pi load their bridge inside the agent session.
 | Ask lifecycle | `daemon-go/service/ask_tracker.go`, `daemon-go/hub/routes_ask_lifecycle.go` | Open asks, reminders, structured answers, and ack/reply delivery |
 | Sessions and spawn | `daemon-go/service/session_control.go`, `daemon-go/service/spawn_service.go` | Resume prevalidation, destructive pane proof, executor acquisition, and controls |
 | Schedules and jobs | `daemon-go/service/scheduler.go`, `daemon-go/service/job_runner.go`, `daemon-go/service/job_completion.go`, `daemon-go/state/` | Deadline-driven schedules, durable work, turn completion, executor-death failure, SQLite state |
-| Hooks | `daemon-go/hooks/` | Runtime adapters, ws-hook supervision, tmux injection, chat extraction, remote approval |
+| Hooks | `daemon-go/hooks/` | Runtime adapters, ws-hook supervision, Claude inbox/tmux delivery, chat extraction, remote approval |
 | Codex bridge | `daemon-go/codexbridge/` | App Server lifecycle, native thread steering, and chat events |
 | MCP | `daemon-go/hub/routes_mcp*.go`, `daemon-go/mcpstdio/` | Complete daemon-owned HTTP tool surface plus the per-runtime identity proxy |
 | Control surfaces | `web/`, `daemon-go/mobile/` | Dashboard and native Telegram/Slack human peers |
@@ -53,10 +54,11 @@ status, and chat extraction. Their `repowire mcp` process resolves a
 daemon-minted runtime certificate and proxies tool JSON-RPC to `/mcp`, where all
 31 tool implementations live.
 
-Default message delivery still uses tmux injection plus Stop-hook reminders for
-unacked asks. The identity shim lazily registers on tool calls so runtimes that
-initialize late, especially Codex, still get a peer identity. The daemon ignores
-a claimed identity header unless its certificate proof is current and bound to
+Claude Code 2.1.224+ receives messages through its per-session native inbox;
+the same WebSocket hook retains tmux injection as a compatibility fallback.
+Gemini still uses tmux injection. Stop-hook reminders resurface unacked asks.
+The identity shim lazily registers on tool calls, and the daemon ignores a
+claimed identity header unless its certificate proof is current and bound to
 that peer.
 
 ### Codex App Server

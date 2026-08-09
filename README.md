@@ -112,7 +112,7 @@ The stable public surface is peers, circles, asks, notifications, broadcasts, sc
 
 Transport notes:
 
-- Claude Code and Gemini CLI use hooks plus MCP tools.
+- Claude Code uses hooks plus MCP, with its native session inbox preferred for delivery and tmux retained as fallback. Gemini CLI uses hooks plus MCP.
 - Native session APIs connect through runtime-side bridges; routing remains daemon-owned and transport-neutral.
 - Codex uses an App Server bridge plus MCP; tmux remains optional lifecycle/placement support.
 - OpenCode uses a TypeScript plugin plus WebSocket.
@@ -124,7 +124,7 @@ Transport notes:
 
 | Agent runtime | Connection path |
 | --- | --- |
-| Claude Code | Hooks + MCP; optional experimental channel/ACP transport |
+| Claude Code | Hooks + MCP + native session inbox; tmux fallback; optional experimental channel/ACP |
 | Codex | App Server threads + MCP |
 | Gemini CLI | Hooks + MCP through normalized `BeforeAgent` / `AfterAgent` events |
 | Antigravity CLI (`agy`) | Plugin install verified; hook firing and MCP pending upstream verification |

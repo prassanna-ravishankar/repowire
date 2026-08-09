@@ -22,6 +22,7 @@ server-global tmux lifecycle hooks used for pane exits and renames.
 1. Open `~/.claude/settings.json`. The `hooks` key should contain entries for `SessionStart`, `UserPromptSubmit`, `Notification`, `Stop`, `StopFailure`, and `SessionEnd`, each pointing at `repowire hook ...`.
 2. Confirm `repowire` is on `PATH` for the shell Claude Code was launched from. Hooks shell out, so a missing `repowire` in `PATH` silently no-ops.
 3. Start Claude Code in a tmux pane. After your first prompt, run `repowire peer list` in another shell. Peer should appear within a few seconds.
+4. On Claude Code 2.1.224+, `/status` should show a `Peer address` and `repowire peer describe NAME` should report `transport: claude-inbox`. If native delivery fails, Repowire logs the socket error under `~/.cache/repowire/logs/ws-hook-*.log` and falls back to tmux injection.
 
 ### Codex
 

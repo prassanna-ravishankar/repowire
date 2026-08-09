@@ -21,6 +21,9 @@ Bridges do not share one process model:
 - **Codex:** a separately supervised companion owns or reuses the local App
   Server socket. This lets multiple normal Codex TUIs attach while Repowire
   observes and steers their threads.
+- **Claude Code inbox:** the hook-supervised WebSocket client writes inbound
+  messages to Claude's per-session Unix socket. Tmux remains the compatibility
+  fallback while session-keyed lifecycle ownership is field-tested.
 - **Claude Code Channels:** the channel MCP server is session-owned and starts
   with Claude Code. It pushes mesh events directly into that running session
   and exposes reply and permission-relay tools.
@@ -49,4 +52,3 @@ inside another runtime and cannot share either implementation or lifecycle.
 - [Transports](transports.md)
 - [Architecture](../operate/architecture.md)
 - [Operate: transports](../operate/transports.md)
-
