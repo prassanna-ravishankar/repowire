@@ -30,6 +30,12 @@ Current Codex releases use an independently supervised local App Server and a
 Repowire bridge. Threads register before their first prompt. Inbound messages
 use `turn/start` while idle and `turn/steer` during a live turn; delivery
 receipts are recorded as native thread acceptance, never as pane injection.
+The bridge restores mesh instructions with App Server history injection, binds
+per-call `_meta.threadId` MCP identity through a daemon-minted certificate,
+and preserves peer provenance, ask correlation, safe uploaded-image input,
+tool-call summaries, and handoff state. On the idle transition it reads the
+completed turn once, since App Server item events are client-scoped; no polling
+is involved.
 The ordinary Codex TUI remains visible. Tmux is optional placement/lifecycle
 evidence and is not the delivery channel. A reminder-only Stop hook resurfaces
 asks that remain open after a turn; it does not duplicate App Server lifecycle

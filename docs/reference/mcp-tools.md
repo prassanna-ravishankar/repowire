@@ -329,6 +329,9 @@ Spawn a new agent session in a project directory. `backend` must have a launch p
 
 Hook-backed runtimes self-register via `SessionStart` within a few seconds.
 Codex registers from its App Server thread event before the first prompt.
+Its stdio MCP shim validates the bridge's daemon-minted runtime certificate for
+Codex's per-call `_meta.threadId`, so tool calls from a shared App Server MCP
+process resolve to that same native-thread `peer_id`.
 Antigravity is the exception while `agy` hook firing is pending upstream:
 daemon spawn pre-registers it as a CLI-polling peer and returns
 `registration_state=cli_fallback` plus a warning. The optional `message` is an

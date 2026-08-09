@@ -240,6 +240,10 @@ func writeHandoff(cwd, backend, sessionID, transcript, user, assistant string) {
 	_ = os.WriteFile(path, append(raw, '\n'), 0o600)
 }
 
+func WriteHandoff(cwd, backend, sessionID, user, assistant string) {
+	writeHandoff(cwd, backend, sessionID, "", user, assistant)
+}
+
 func loadHandoff(cwd, backend, sessionID string) string {
 	path := handoffPath(cwd, backend, sessionID)
 	raw, err := os.ReadFile(path)
@@ -255,4 +259,8 @@ func loadHandoff(cwd, backend, sessionID string) string {
 		return ""
 	}
 	return "[Repowire Session Handoff]\nSummary from the previous turn of this same cwd/session identity:\n" + summary
+}
+
+func LoadHandoff(cwd, backend, sessionID string) string {
+	return loadHandoff(cwd, backend, sessionID)
 }

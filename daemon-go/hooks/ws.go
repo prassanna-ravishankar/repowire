@@ -400,6 +400,12 @@ func formatInboundMessage(from, to, typ, correlationID, text string) string {
 	return "<peer-message" + attrs + ">\n" + html.EscapeString(text) + "\n</peer-message>"
 }
 
+// FormatInboundMessage preserves the human/peer trust boundary for transports
+// that deliver without terminal injection.
+func FormatInboundMessage(from, to, typ, correlationID, text string) string {
+	return formatInboundMessage(from, to, typ, correlationID, text)
+}
+
 func isHumanSender(from string) bool {
 	switch strings.TrimPrefix(strings.ToLower(from), "@") {
 	case "dashboard", "telegram", "slack", "human":
@@ -452,6 +458,10 @@ func formatAttachments(value any) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// FormatAttachments renders delivery attachment provenance for transports that
+// may additionally pass supported files through their native input API.
+func FormatAttachments(value any) string { return formatAttachments(value) }
 
 func backoff(failures int) time.Duration {
 	seconds := 1

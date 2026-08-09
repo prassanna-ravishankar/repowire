@@ -34,6 +34,7 @@ import (
 const defaultCircle = "default"
 
 var invalidName = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+var providerEnvKey = regexp.MustCompile(`(?m)^\s*env_key\s*=\s*["']([A-Za-z_][A-Za-z0-9_]*)["']`)
 
 type rpcReply struct {
 	result json.RawMessage
@@ -58,21 +59,30 @@ type Bridge struct {
 }
 
 type threadPeer struct {
-	bridge      *Bridge
-	id          string
-	cwd         string
-	circle      string
-	circleSrc   string
-	role        string
-	hintedID    string
-	peerID      string
-	displayName string
-	activeTurn  string
-	busy        bool
-	mu          sync.Mutex
-	writeMu     sync.Mutex
-	conn        *websocket.Conn
-	cancel      context.CancelFunc
+	bridge        *Bridge
+	id            string
+	cwd           string
+	circle        string
+	circleSrc     string
+	role          string
+	hintedID      string
+	peerID        string
+	displayName   string
+	model         string
+	branch        string
+	gitStatus     map[string]any
+	tmux          map[string]any
+	activeTurn    string
+	busy          bool
+	lastUser      string
+	lastAnswer    string
+	toolCalls     map[string][]map[string]string
+	seenItems     map[string]map[string]bool
+	completedTurn string
+	mu            sync.Mutex
+	writeMu       sync.Mutex
+	conn          *websocket.Conn
+	cancel        context.CancelFunc
 }
 
 // Run keeps the bridge attached until the service is stopped or App Server
@@ -108,7 +118,8 @@ func Run(ctx context.Context, version string) error {
 	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if _, err := b.call(initCtx, "initialize", map[string]any{
-		"clientInfo": map[string]any{"name": "repowire", "title": "Repowire", "version": version},
+		"clientInfo":   map[string]any{"name": "repowire", "title": "Repowire", "version": version},
+		"capabilities": map[string]any{"experimentalApi": true},
 	}); err != nil {
 		return fmt.Errorf("initialize Codex App Server: %w", err)
 	}
@@ -140,6 +151,7 @@ func ensureAppServer(ctx context.Context) (*websocket.Conn, *exec.Cmd, error) {
 		return nil, nil, err
 	}
 	cmd := exec.Command(codex, "app-server", "--listen", "unix://")
+	cmd.Env = codexChildEnvironment(ctx)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		return nil, nil, fmt.Errorf("start Codex App Server: %w", err)
@@ -163,6 +175,77 @@ func ensureAppServer(ctx context.Context) (*websocket.Conn, *exec.Cmd, error) {
 		case <-tick.C:
 		}
 	}
+}
+
+func codexChildEnvironment(ctx context.Context) []string {
+	env := os.Environ()
+	keys := configuredProviderEnvKeys()
+	var missing []string
+	for _, key := range keys {
+		if os.Getenv(key) == "" {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) == 0 {
+		return env
+	}
+	snapshotCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		for _, candidate := range []string{"/bin/zsh", "/bin/bash"} {
+			if _, err := os.Stat(candidate); err == nil {
+				shell = candidate
+				break
+			}
+		}
+	}
+	if shell == "" {
+		log.Printf("codex bridge: provider environment unavailable for %s: no login shell", strings.Join(missing, ", "))
+		return env
+	}
+	out, err := exec.CommandContext(snapshotCtx, shell, "-l", "-i", "-c", "env").Output()
+	if err != nil {
+		log.Printf("codex bridge: provider environment unavailable for %s: %v", strings.Join(missing, ", "), err)
+		return env
+	}
+	values := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	for _, key := range missing {
+		if value := values[key]; value != "" {
+			env = append(env, key+"="+value)
+		} else {
+			log.Printf("codex bridge: provider environment %s is not set; rerun setup from a configured shell", key)
+		}
+	}
+	return env
+}
+
+func configuredProviderEnvKeys() []string {
+	root := os.Getenv("CODEX_HOME")
+	if root == "" {
+		home, _ := os.UserHomeDir()
+		root = filepath.Join(home, ".codex")
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "config.toml"))
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var keys []string
+	for _, match := range providerEnvKey.FindAllSubmatch(raw, -1) {
+		key := string(match[1])
+		if !seen[key] {
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }
 
 func appServerSocket() string {
@@ -288,7 +371,11 @@ func (b *Bridge) handleNotification(method string, params map[string]any) {
 		}
 	case "thread/status/changed":
 		if p := b.thread(stringValue(params, "threadId")); p != nil {
-			p.setBusy(statusType(params["status"]) == "active")
+			active := statusType(params["status"]) == "active"
+			p.setBusy(active)
+			if !active {
+				go b.captureCompletedTurn(p.id)
+			}
 		}
 	case "turn/started":
 		if p := b.thread(stringValue(params, "threadId")); p != nil {
@@ -297,13 +384,57 @@ func (b *Bridge) handleNotification(method string, params map[string]any) {
 		}
 	case "turn/completed":
 		if p := b.thread(stringValue(params, "threadId")); p != nil {
-			p.setActiveTurn("")
+			turn, _ := params["turn"].(map[string]any)
+			b.finishTurn(p, turn)
 		}
 	case "item/completed":
 		b.postChatItem(params)
 	case "thread/closed", "thread/deleted":
 		b.closeThread(stringValue(params, "threadId"))
 	}
+}
+
+func (b *Bridge) captureCompletedTurn(threadID string) {
+	ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
+	defer cancel()
+	raw, err := b.call(ctx, "thread/read", map[string]any{"threadId": threadID, "includeTurns": true})
+	if err != nil {
+		log.Printf("codex bridge: reconcile completed turn for %s: %v", threadID, err)
+		return
+	}
+	var result map[string]any
+	if json.Unmarshal(raw, &result) != nil {
+		return
+	}
+	thread, _ := result["thread"].(map[string]any)
+	turns := mapSlice(thread["turns"])
+	for i := len(turns) - 1; i >= 0; i-- {
+		if stringValue(turns[i], "status") == "completed" {
+			if p := b.thread(threadID); p != nil {
+				b.finishTurn(p, turns[i])
+			}
+			return
+		}
+	}
+}
+
+func (b *Bridge) finishTurn(p *threadPeer, turn map[string]any) {
+	turnID := stringValue(turn, "id")
+	if turnID == "" {
+		return
+	}
+	p.mu.Lock()
+	if p.completedTurn == turnID {
+		p.mu.Unlock()
+		return
+	}
+	p.completedTurn = turnID
+	p.mu.Unlock()
+	for _, item := range mapSlice(turn["items"]) {
+		b.postChatItem(map[string]any{"threadId": p.id, "turnId": turnID, "item": item})
+	}
+	p.completeTurn(turnID)
+	p.setActiveTurn("")
 }
 
 func (b *Bridge) ensureThread(thread map[string]any) {
@@ -320,8 +451,9 @@ func (b *Bridge) ensureThread(thread map[string]any) {
 	hint := hooks.ConsumeSpawnHint(cwd, "codex")
 	b.hintMu.Unlock()
 	circle, source := defaultCircle, "fallback"
-	if tmuxCircle, tmuxSource := threadTmuxPlacement(cwd, b.boundary); tmuxCircle != "" {
-		circle, source = tmuxCircle, tmuxSource
+	tmux := threadTmuxPlacement(cwd, b.boundary)
+	if tmux.circle != "" {
+		circle, source = tmux.circle, tmux.source
 	}
 	if configured := os.Getenv("REPOWIRE_CODEX_CIRCLE"); configured != "" {
 		circle, source = configured, "fallback"
@@ -337,7 +469,15 @@ func (b *Bridge) ensureThread(thread map[string]any) {
 		hintedID = stringValue(hint, "peer_id")
 	}
 	peerCtx, cancel := context.WithCancel(b.ctx)
-	p := &threadPeer{bridge: b, id: id, cwd: cwd, circle: circle, circleSrc: source, role: role, hintedID: hintedID, cancel: cancel}
+	gitInfo, _ := thread["gitInfo"].(map[string]any)
+	p := &threadPeer{
+		bridge: b, id: id, cwd: cwd, circle: circle, circleSrc: source, role: role, hintedID: hintedID, cancel: cancel,
+		model: stringValue(thread, "model"), branch: stringValue(gitInfo, "branch"), gitStatus: repositoryStatus(cwd),
+		toolCalls: map[string][]map[string]string{}, seenItems: map[string]map[string]bool{},
+	}
+	if tmux.circle != "" {
+		p.tmux = map[string]any{"session": tmux.session, "window_id": tmux.windowID, "pane_id": tmux.paneID, "pane_pid": tmux.panePID}
+	}
 	p.busy = statusType(thread["status"]) == "active"
 	p.activeTurn = activeTurn(thread)
 	b.threads[id] = p
@@ -408,6 +548,9 @@ func (p *threadPeer) connectMesh(ctx context.Context) (*websocket.Conn, error) {
 	if err := p.register(ctx); err != nil {
 		return nil, err
 	}
+	if err := p.ensureContext(ctx); err != nil {
+		log.Printf("codex bridge: inject mesh context for %s: %v", p.id, err)
+	}
 	conn, _, err := websocket.Dial(ctx, p.bridge.daemonWS, nil)
 	if err != nil {
 		return nil, err
@@ -459,13 +602,21 @@ func (p *threadPeer) register(ctx context.Context) error {
 		claim = p.hintedID
 	}
 	p.mu.Unlock()
+	metadata := map[string]any{
+		"runtime_session_id": p.id, "runtime_source_uri": "codex:" + p.id,
+		"transport": "codex-app-server", "capabilities": []string{"delivery_receipts", "thread_steering"},
+		"branch": p.branch, "git_status": p.gitStatus,
+	}
+	if p.tmux != nil {
+		metadata["tmux_evidence"] = p.tmux
+	}
 	body := map[string]any{
 		"name": safeName(filepath.Base(p.cwd)), "path": p.cwd, "circle": p.circle,
 		"circle_source": p.circleSrc, "backend": "codex", "role": p.role,
-		"metadata": map[string]any{
-			"runtime_session_id": p.id, "runtime_source_uri": "codex:" + p.id,
-			"transport": "codex-app-server", "capabilities": []string{"delivery_receipts", "thread_steering"},
-		},
+		"metadata": metadata,
+	}
+	if p.model != "" {
+		body["model"] = p.model
 	}
 	if claim != "" {
 		body["peer_id"] = claim
@@ -480,7 +631,43 @@ func (p *threadPeer) register(ctx context.Context) error {
 	if p.peerID == "" {
 		return errors.New("daemon registration returned no peer_id")
 	}
+	if cert, ok := result["birth_certificate"].(map[string]any); ok {
+		if err := hooks.WriteRuntimeIdentity("codex", p.id, map[string]any{"birth_certificate": cert}); err != nil {
+			return fmt.Errorf("persist runtime identity: %w", err)
+		}
+	}
 	return nil
+}
+
+func (p *threadPeer) ensureContext(ctx context.Context) error {
+	state := hooks.ReadRuntimeIdentity("codex", p.id)
+	if injected, _ := state["mesh_context_injected"].(bool); injected {
+		return nil
+	}
+	result, err := p.bridge.daemonRequest(ctx, http.MethodGet, "/peers", nil)
+	if err != nil {
+		return err
+	}
+	peers := mapSlice(result["peers"])
+	var self map[string]any
+	for _, peer := range peers {
+		if stringValue(peer, "peer_id") == p.peerID {
+			self = peer
+			break
+		}
+	}
+	sections := []string{hooks.FormatSelfContext(p.displayName, p.peerID, p.circle, p.circleSrc, "codex", p.role, p.cwd, p.branch, self)}
+	if value := hooks.FormatPeersContext(peers, p.displayName); value != "" {
+		sections = append(sections, value)
+	}
+	if value := hooks.LoadHandoff(p.cwd, "codex", p.id); value != "" {
+		sections = append(sections, value)
+	}
+	item := map[string]any{"type": "message", "role": "developer", "content": []any{map[string]any{"type": "input_text", "text": strings.Join(sections, "\n\n")}}}
+	if _, err := p.bridge.call(ctx, "thread/inject_items", map[string]any{"threadId": p.id, "items": []any{item}}); err != nil {
+		return err
+	}
+	return hooks.WriteRuntimeIdentity("codex", p.id, map[string]any{"mesh_context_injected": true})
 }
 
 func (p *threadPeer) readMesh(ctx context.Context, conn *websocket.Conn) error {
@@ -499,7 +686,9 @@ func (p *threadPeer) readMesh(ctx context.Context, conn *websocket.Conn) error {
 }
 
 func (p *threadPeer) inject(ctx context.Context, conn *websocket.Conn, frame map[string]any) {
-	text := stringValue(frame, "text")
+	kind := stringValue(frame, "type")
+	cid := stringValue(frame, "correlation_id")
+	text := stringValue(frame, "text") + hooks.FormatAttachments(frame["attachments"])
 	deliveryID := stringValue(frame, "delivery_id")
 	if text == "" {
 		p.deliveryAck(ctx, conn, deliveryID, stringValue(frame, "type"), "failed", "empty delivery")
@@ -510,7 +699,9 @@ func (p *threadPeer) inject(ctx context.Context, conn *websocket.Conn, frame map
 	p.mu.Unlock()
 	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	text = hooks.FormatInboundMessage(firstNonempty(stringValue(frame, "from_peer"), "unknown"), stringValue(frame, "to_peer"), kind, cid, text)
 	input := []any{map[string]any{"type": "text", "text": text}}
+	input = append(input, attachmentInputs(frame["attachments"])...)
 	var err error
 	if activeTurn != "" {
 		_, err = p.bridge.call(callCtx, "turn/steer", map[string]any{"threadId": p.id, "expectedTurnId": activeTurn, "input": input})
@@ -521,10 +712,42 @@ func (p *threadPeer) inject(ctx context.Context, conn *websocket.Conn, frame map
 		_, err = p.bridge.call(callCtx, "turn/start", map[string]any{"threadId": p.id, "input": input})
 	}
 	if err != nil {
-		p.deliveryAck(ctx, conn, deliveryID, stringValue(frame, "type"), "failed", err.Error())
+		p.deliveryAck(ctx, conn, deliveryID, kind, "failed", err.Error())
 		return
 	}
-	p.deliveryAck(ctx, conn, deliveryID, stringValue(frame, "type"), "accepted", "codex thread API")
+	p.deliveryAck(ctx, conn, deliveryID, kind, "accepted", "codex thread API")
+}
+
+func attachmentInputs(value any) []any {
+	var out []any
+	for _, item := range mapSlice(value) {
+		contentType, path := stringValue(item, "content_type"), stringValue(item, "path")
+		if !strings.HasPrefix(contentType, "image/") {
+			continue
+		}
+		if path, ok := nativeAttachmentPath(path); ok {
+			out = append(out, map[string]any{"type": "localImage", "path": path})
+		}
+	}
+	return out
+}
+
+func nativeAttachmentPath(path string) (string, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil || path == "" {
+		return "", false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	base := filepath.Join(home, ".repowire", "attachments")
+	rel, err := filepath.Rel(base, abs)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	info, err := os.Lstat(abs)
+	return abs, err == nil && info.Mode().IsRegular()
 }
 
 func (p *threadPeer) deliveryAck(ctx context.Context, conn *websocket.Conn, deliveryID, kind, status, detail string) {
@@ -544,10 +767,11 @@ func (p *threadPeer) writeMesh(ctx context.Context, conn *websocket.Conn, value 
 
 func (p *threadPeer) setBusy(busy bool) {
 	p.mu.Lock()
+	changed := p.busy != busy
 	p.busy = busy
 	conn := p.conn
 	p.mu.Unlock()
-	if conn != nil {
+	if conn != nil && changed {
 		status, turnState := "online", "idle"
 		if busy {
 			status, turnState = "busy", "working"
@@ -569,6 +793,21 @@ func (b *Bridge) postChatItem(params map[string]any) {
 	if p == nil || item == nil {
 		return
 	}
+	turnID := stringValue(params, "turnId")
+	if itemID := stringValue(item, "id"); itemID != "" {
+		p.mu.Lock()
+		seen := p.seenItems[turnID]
+		if seen == nil {
+			seen = map[string]bool{}
+			p.seenItems[turnID] = seen
+		}
+		if seen[itemID] {
+			p.mu.Unlock()
+			return
+		}
+		seen[itemID] = true
+		p.mu.Unlock()
+	}
 	role, text := "", ""
 	switch stringValue(item, "type") {
 	case "userMessage":
@@ -579,6 +818,13 @@ func (b *Bridge) postChatItem(params map[string]any) {
 			return
 		}
 		role, text = "assistant", stringValue(item, "text")
+	default:
+		if call := completedToolCall(item); call != nil {
+			p.mu.Lock()
+			p.toolCalls[turnID] = append(p.toolCalls[turnID], call)
+			p.mu.Unlock()
+		}
+		return
 	}
 	if strings.TrimSpace(text) == "" {
 		return
@@ -589,12 +835,84 @@ func (b *Bridge) postChatItem(params map[string]any) {
 	if peerID == "" {
 		return
 	}
-	body := map[string]any{"peer": displayName, "peer_id": peerID, "role": role, "text": text, "session_id": p.id, "turn_id": stringValue(params, "turnId")}
+	body := map[string]any{"peer": displayName, "peer_id": peerID, "role": role, "text": text, "session_id": p.id, "turn_id": turnID}
+	p.mu.Lock()
+	if role == "user" {
+		p.lastUser = text
+	} else {
+		p.lastAnswer = text
+		if calls := p.toolCalls[turnID]; len(calls) > 0 {
+			body["tool_calls"] = calls
+		}
+	}
+	p.mu.Unlock()
 	postCtx, cancel := context.WithTimeout(b.ctx, 3*time.Second)
 	defer cancel()
 	if _, err := b.daemonRequest(postCtx, http.MethodPost, "/events/chat", body); err != nil {
 		log.Printf("codex bridge: post chat item for %s: %v", p.id, err)
 	}
+}
+
+func (p *threadPeer) completeTurn(turnID string) {
+	p.mu.Lock()
+	user, answer := p.lastUser, p.lastAnswer
+	p.lastUser, p.lastAnswer = "", ""
+	delete(p.toolCalls, turnID)
+	delete(p.seenItems, turnID)
+	p.mu.Unlock()
+	if user != "" || answer != "" {
+		hooks.WriteHandoff(p.cwd, "codex", p.id, user, answer)
+	}
+}
+
+func completedToolCall(item map[string]any) map[string]string {
+	var name, input string
+	switch stringValue(item, "type") {
+	case "commandExecution":
+		name, input = "exec_command", stringValue(item, "command")
+	case "fileChange":
+		name, input = "apply_patch", changedPaths(item["changes"])
+	case "mcpToolCall":
+		name = strings.Trim(strings.Join([]string{stringValue(item, "server"), stringValue(item, "tool")}, "__"), "_")
+		input = compactValue(item["arguments"])
+	case "dynamicToolCall":
+		name, input = stringValue(item, "tool"), compactValue(item["arguments"])
+	case "collabAgentToolCall":
+		name, input = stringValue(item, "tool"), firstNonempty(stringValue(item, "prompt"), compactValue(item["receiverThreadIds"]))
+	case "webSearch":
+		name, input = "web_search", stringValue(item, "query")
+	case "imageView":
+		name, input = "view_image", stringValue(item, "path")
+	case "imageGeneration":
+		name, input = "image_generation", stringValue(item, "prompt")
+	default:
+		return nil
+	}
+	if name == "" {
+		return nil
+	}
+	if len(input) > 120 {
+		input = input[:119] + "…"
+	}
+	return map[string]string{"name": name, "input": input}
+}
+
+func changedPaths(value any) string {
+	var paths []string
+	for _, change := range mapSlice(value) {
+		if path := stringValue(change, "path"); path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return strings.Join(paths, ", ")
+}
+
+func compactValue(value any) string {
+	raw, _ := json.Marshal(value)
+	if string(raw) == "null" {
+		return ""
+	}
+	return string(raw)
 }
 
 func userText(value any) string {
@@ -607,6 +925,17 @@ func userText(value any) string {
 		}
 	}
 	return strings.Join(text, "\n")
+}
+
+func mapSlice(value any) []map[string]any {
+	items, _ := value.([]any)
+	out := make([]map[string]any, 0, len(items))
+	for _, raw := range items {
+		if item, ok := raw.(map[string]any); ok {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func (b *Bridge) daemonRequest(ctx context.Context, method, path string, body any) (map[string]any, error) {
@@ -644,31 +973,36 @@ func safeName(value string) string {
 	return value
 }
 
-func threadTmuxPlacement(cwd string, boundary proto.CircleBoundary) (string, string) {
-	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_current_path}\t#{session_name}\t#{window_id}\t#{pane_pid}").Output()
+type tmuxPlacement struct {
+	circle, source, session, windowID, paneID string
+	panePID                                   int
+}
+
+func threadTmuxPlacement(cwd string, boundary proto.CircleBoundary) tmuxPlacement {
+	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_current_path}\t#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}").Output()
 	if err != nil {
-		return "", ""
+		return tmuxPlacement{}
 	}
 	processes, err := exec.Command("ps", "-axo", "pid=,ppid=,command=").Output()
 	if err != nil {
-		return "", ""
+		return tmuxPlacement{}
 	}
 	return parseTmuxPlacement(string(out), string(processes), cwd, boundary)
 }
 
-func parseTmuxPlacement(output, processes, cwd string, boundary proto.CircleBoundary) (string, string) {
+func parseTmuxPlacement(output, processes, cwd string, boundary proto.CircleBoundary) tmuxPlacement {
 	want, _ := filepath.Abs(cwd)
-	circles := map[string]bool{}
+	var matches []tmuxPlacement
 	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		fields := strings.Split(line, "\t")
-		if len(fields) != 4 {
+		if len(fields) != 5 {
 			continue
 		}
 		path, _ := filepath.Abs(fields[0])
 		if filepath.Clean(path) != filepath.Clean(want) {
 			continue
 		}
-		root, err := strconv.Atoi(fields[3])
+		root, err := strconv.Atoi(fields[4])
 		if err != nil || !processTreeHasCodex(processes, root) {
 			continue
 		}
@@ -676,19 +1010,16 @@ func parseTmuxPlacement(output, processes, cwd string, boundary proto.CircleBoun
 		if candidate == "" {
 			continue
 		}
-		circles[candidate] = true
+		source := "tmux"
+		if boundary == proto.CircleBoundaryWindow {
+			source = "tmux_window"
+		}
+		matches = append(matches, tmuxPlacement{circle: candidate, source: source, session: fields[1], windowID: fields[2], paneID: fields[3], panePID: root})
 	}
-	if len(circles) != 1 {
-		return "", ""
+	if len(matches) != 1 {
+		return tmuxPlacement{}
 	}
-	var circle string
-	for value := range circles {
-		circle = value
-	}
-	if boundary == proto.CircleBoundaryWindow {
-		return circle, "tmux_window"
-	}
-	return circle, "tmux"
+	return matches[0]
 }
 
 func processTreeHasCodex(output string, root int) bool {
@@ -725,6 +1056,30 @@ func stringValue(m map[string]any, key string) string {
 	}
 	value, _ := m[key].(string)
 	return value
+}
+
+func firstNonempty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func repositoryStatus(cwd string) map[string]any {
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = cwd
+	raw, err := cmd.Output()
+	if err != nil {
+		return map[string]any{"available": false}
+	}
+	text := strings.TrimSpace(string(raw))
+	changed := 0
+	if text != "" {
+		changed = len(strings.Split(text, "\n"))
+	}
+	return map[string]any{"clean": changed == 0, "changed_files": changed}
 }
 
 func statusType(value any) string {

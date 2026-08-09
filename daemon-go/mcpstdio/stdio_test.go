@@ -26,16 +26,21 @@ func TestRunRefreshesIdentityForEveryRequest(t *testing.T) {
 	original := resolveIdentity
 	t.Cleanup(func() { resolveIdentity = original })
 	calls := 0
-	resolveIdentity = func() (string, string) {
+	var threadIDs []string
+	resolveIdentity = func(threadID string) (string, string) {
 		calls++
+		threadIDs = append(threadIDs, threadID)
 		return "repow-test", fmt.Sprintf("proof-%d", calls)
 	}
 
 	var out bytes.Buffer
-	if code := run(strings.NewReader("{}\n{}\n"), &out); code != 0 {
+	if code := run(strings.NewReader("{}\n{\"params\":{\"_meta\":{\"threadId\":\"thread-live\"}}}\n"), &out); code != 0 {
 		t.Fatalf("run returned %d", code)
 	}
 	if got := strings.Join(proofs, ","); got != "proof-1,proof-2" {
 		t.Fatalf("proofs = %q", got)
+	}
+	if got := strings.Join(threadIDs, ","); got != ",thread-live" {
+		t.Fatalf("thread ids = %q", got)
 	}
 }

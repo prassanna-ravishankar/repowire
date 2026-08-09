@@ -108,6 +108,51 @@ func cachePath(parts ...string) string {
 	return filepath.Join(append([]string{homePath(".cache", "repowire")}, parts...)...)
 }
 
+func runtimeIdentityPath(backend, sessionID string) string {
+	hash := sha256.Sum256([]byte(backend + "\x00" + sessionID))
+	return cachePath("runtime-identities", hex.EncodeToString(hash[:])+".json")
+}
+
+// ReadRuntimeIdentity returns bridge-owned runtime proof and setup state. The
+// session id only selects a local cache file; identity still requires the
+// daemon-minted certificate stored inside it.
+func ReadRuntimeIdentity(backend, sessionID string) map[string]any {
+	if backend == "" || sessionID == "" {
+		return map[string]any{}
+	}
+	var out map[string]any
+	raw, err := os.ReadFile(runtimeIdentityPath(backend, sessionID))
+	if err != nil || json.Unmarshal(raw, &out) != nil || out == nil {
+		return map[string]any{}
+	}
+	return out
+}
+
+// WriteRuntimeIdentity atomically merges bridge-owned runtime proof and setup
+// state so certificate refreshes do not repeat one-time context injection.
+func WriteRuntimeIdentity(backend, sessionID string, update map[string]any) error {
+	if backend == "" || sessionID == "" {
+		return errors.New("backend and runtime session id are required")
+	}
+	data := ReadRuntimeIdentity(backend, sessionID)
+	for key, value := range update {
+		data[key] = value
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	path := runtimeIdentityPath(backend, sessionID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 func paneToken(paneID string) string {
 	value := strings.NewReplacer("%", "", "/", "", "\\", "").Replace(paneID)
 	if value == "" {

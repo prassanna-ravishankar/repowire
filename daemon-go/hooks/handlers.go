@@ -565,6 +565,10 @@ func formatSelfContext(displayName, peerID, circle, circleSource, backend, role,
 	return strings.Join(lines, "\n")
 }
 
+func FormatSelfContext(displayName, peerID, circle, circleSource, backend, role, cwd, branch string, peer map[string]any) string {
+	return formatSelfContext(displayName, peerID, circle, circleSource, backend, role, cwd, branch, peer)
+}
+
 func formatPeersContext(peers []map[string]any, me string) string {
 	lines := []string{"[Repowire Mesh] You have access to other coding sessions working on related projects:"}
 	for _, peer := range peers {
@@ -591,6 +595,10 @@ func formatPeersContext(peers []map[string]any, me string) string {
 	}
 	lines = append(lines, "", "Use another peer only when its ownership, context, or independent work materially helps. Do not contact peers reflexively; they may be occupied with another task. Use ask() only when explicit closure is needed and notify_peer() for a necessary fire-and-forget update.", "Use notify_peer('telegram', msg) to send updates to the user's phone.", "Call set_description(\"brief task summary\") early - it becomes your title in the dashboard and peer list.", "Peer list may be outdated - use list_peers() to refresh.", "NOTE: SendMessage is a Claude Code harness tool for same-session teammates only. To reach peers listed above, use repowire tools: ask(), ack(), notify_peer(), broadcast().")
 	return strings.Join(lines, "\n")
+}
+
+func FormatPeersContext(peers []map[string]any, me string) string {
+	return formatPeersContext(peers, me)
 }
 
 func gitStatus(cwd string) map[string]any {

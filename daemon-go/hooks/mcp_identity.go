@@ -13,17 +13,25 @@ import (
 // MCPIdentity resolves or lazily registers the runtime hosting the stdio shim.
 // The returned peer_id is stamped onto every HTTP MCP request.
 func MCPIdentity() string {
-	identity, _ := resolveMCPIdentity()
+	identity, _ := resolveMCPIdentity("")
 	return identity
 }
 
-func resolveMCPIdentity() (string, string) {
+func resolveMCPIdentity(codexThreadID string) (string, string) {
 	claimedPeerID := os.Getenv("REPOWIRE_PEER_ID")
 	backend := firstNonempty(os.Getenv("REPOWIRE_BACKEND"), "claude-code")
 	cwd := mustGetwd()
 	paneID := getPaneID()
 	agentPID := os.Getppid()
 	paneMeta := ReadPaneRuntimeMetadata(paneID)
+	if backend == "codex" {
+		threadID := firstNonempty(codexThreadID, os.Getenv("CODEX_THREAD_ID"))
+		if cert, ok := ReadRuntimeIdentity(backend, threadID)["birth_certificate"].(map[string]any); ok {
+			if peer, _ := validateCertificates(backend, cwd, paneID, agentPID, []map[string]any{cert}); peer != nil {
+				return firstNonempty(stringValue(peer, "peer_id"), stringValue(peer, "display_name")), stringValue(cert, "nonce")
+			}
+		}
+	}
 	if peer, cert := validateCertificateIdentityWithCert(backend, cwd, paneID, agentPID); peer != nil {
 		return firstNonempty(stringValue(peer, "peer_id"), stringValue(peer, "display_name")), stringValue(cert, "nonce")
 	}
@@ -91,7 +99,13 @@ func resolveMCPIdentity() (string, string) {
 // that peer. The HTTP MCP handler ignores an X-Repowire-Peer claim without
 // this proof, preventing direct local clients from spoofing shim identity.
 func MCPIdentityProof() (string, string) {
-	return resolveMCPIdentity()
+	return resolveMCPIdentity("")
+}
+
+// MCPIdentityProofForThread uses Codex's per-call _meta.threadId when App
+// Server shares one MCP subprocess across multiple threads.
+func MCPIdentityProofForThread(threadID string) (string, string) {
+	return resolveMCPIdentity(threadID)
 }
 
 func validateCertificateIdentity(backend, cwd, paneID string, agentPID int) map[string]any {
@@ -112,6 +126,10 @@ func validateCertificateIdentityWithCert(backend, cwd, paneID string, agentPID i
 			certificates = append(certificates, cert)
 		}
 	}
+	return validateCertificates(backend, cwd, paneID, agentPID, certificates)
+}
+
+func validateCertificates(backend, cwd, paneID string, agentPID int, certificates []map[string]any) (map[string]any, map[string]any) {
 	seen := map[string]bool{}
 	for _, cert := range certificates {
 		nonce := stringValue(cert, "nonce")

@@ -191,3 +191,37 @@ func TestMCPIdentityRenewsExpiredCertificateWithoutSplittingPaneIdentity(t *test
 		t.Fatalf("pane metadata certificate was not refreshed: %v", cert)
 	}
 }
+
+func TestMCPIdentityUsesCodexThreadCertificate(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("REPOWIRE_BACKEND", "codex")
+	t.Setenv("CODEX_THREAD_ID", "")
+	t.Setenv("REPOWIRE_CONFIG", filepath.Join(homeDir, "missing-config.yaml"))
+	cert := map[string]any{"nonce": "native-proof", "peer_id": "repow-native", "backend": "codex", "project_path": mustGetwd(), "runtime_session_id": "thread-native"}
+	if err := WriteRuntimeIdentity("codex", "thread-native", map[string]any{"birth_certificate": cert}); err != nil {
+		t.Fatal(err)
+	}
+	registrations := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/peers/identity/validate":
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer": map[string]any{"peer_id": "repow-native", "display_name": "native"}})
+		case "/peers":
+			registrations++
+			http.Error(w, "unexpected registration", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	port, _ := strconv.Atoi(strings.TrimPrefix(server.URL, "http://127.0.0.1:"))
+	t.Setenv("REPOWIRE_DAEMON__HOST", "127.0.0.1")
+	t.Setenv("REPOWIRE_DAEMON__PORT", strconv.Itoa(port))
+
+	identity, proof := MCPIdentityProofForThread("thread-native")
+	if identity != "repow-native" || proof != "native-proof" || registrations != 0 {
+		t.Fatalf("identity=%q proof=%q registrations=%d", identity, proof, registrations)
+	}
+}
