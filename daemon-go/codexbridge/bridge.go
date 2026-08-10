@@ -31,7 +31,10 @@ import (
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
-const defaultCircle = "default"
+const (
+	defaultCircle      = "default"
+	appServerReadLimit = 16 << 20
+)
 
 var invalidName = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 var providerEnvKey = regexp.MustCompile(`(?m)^\s*env_key\s*=\s*["']([A-Za-z_][A-Za-z0-9_]*)["']`)
@@ -85,8 +88,8 @@ type threadPeer struct {
 	cancel        context.CancelFunc
 }
 
-// Run keeps the bridge attached until the service is stopped or App Server
-// exits. The service manager owns restart/backoff for process-level failures.
+// Run keeps the bridge attached until the service is stopped. App Server
+// connection failures are repaired here so they cannot terminate live TUIs.
 func Run(ctx context.Context, version string) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -103,39 +106,90 @@ func Run(ctx context.Context, version string) error {
 		daemonWS: "ws://" + address + "/ws", token: cfg.Daemon.AuthToken, boundary: cfg.Daemon.CircleBoundary,
 	}
 
-	conn, child, err := ensureAppServer(ctx)
-	if err != nil {
-		return err
-	}
-	b.app = conn
-	defer conn.CloseNow()
-	if child != nil {
-		defer func() { _ = child.Process.Signal(os.Interrupt) }()
-	}
+	return b.runAppServer(ensureAppServer)
+}
 
+func (b *Bridge) runAppServer(connect func(context.Context) (*websocket.Conn, *exec.Cmd, error)) error {
+	var child *exec.Cmd
+	defer func() {
+		if child != nil {
+			_ = child.Process.Signal(os.Interrupt)
+		}
+	}()
+	failures := 0
+	for {
+		conn, started, err := connect(b.ctx)
+		if err != nil {
+			if child == nil {
+				return err
+			}
+			failures++
+			log.Printf("codex bridge: reconnect to App Server: %v", err)
+			if !wait(b.ctx, backoff(failures)) {
+				return nil
+			}
+			continue
+		}
+		if started != nil {
+			child = started
+		}
+		failures = 0
+		err = b.serveApp(conn)
+		b.clearApp(conn)
+		if b.ctx.Err() != nil {
+			return nil
+		}
+		failures++
+		log.Printf("codex bridge: App Server connection closed, reconnecting: %v", err)
+		if !wait(b.ctx, backoff(failures)) {
+			return nil
+		}
+	}
+}
+
+func (b *Bridge) serveApp(conn *websocket.Conn) error {
+	b.appWrite.Lock()
+	b.app = conn
+	b.appWrite.Unlock()
 	readErr := make(chan error, 1)
-	go func() { readErr <- b.readApp() }()
-	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		readErr <- b.readApp(conn)
+	}()
+	defer func() {
+		_ = conn.CloseNow()
+		<-readerDone
+	}()
+	initCtx, cancel := context.WithTimeout(b.ctx, 10*time.Second)
 	defer cancel()
 	if _, err := b.call(initCtx, "initialize", map[string]any{
-		"clientInfo":   map[string]any{"name": "repowire", "title": "Repowire", "version": version},
+		"clientInfo":   map[string]any{"name": "repowire", "title": "Repowire", "version": b.version},
 		"capabilities": map[string]any{"experimentalApi": true},
 	}); err != nil {
 		return fmt.Errorf("initialize Codex App Server: %w", err)
 	}
-	if err := b.notify(ctx, "initialized", map[string]any{}); err != nil {
+	if err := b.notify(b.ctx, "initialized", map[string]any{}); err != nil {
 		return fmt.Errorf("acknowledge Codex App Server initialization: %w", err)
 	}
-	if err := b.loadExistingThreads(ctx); err != nil {
+	if err := b.loadExistingThreads(b.ctx); err != nil {
 		log.Printf("codex bridge: loaded-thread reconciliation: %v", err)
 	}
 	log.Printf("codex bridge connected to App Server at %s", appServerSocket())
 
 	select {
-	case <-ctx.Done():
+	case <-b.ctx.Done():
 		return nil
 	case err := <-readErr:
-		return fmt.Errorf("Codex App Server connection closed: %w", err)
+		return err
+	}
+}
+
+func (b *Bridge) clearApp(conn *websocket.Conn) {
+	b.appWrite.Lock()
+	defer b.appWrite.Unlock()
+	if b.app == conn {
+		b.app = nil
 	}
 }
 
@@ -279,6 +333,10 @@ func (b *Bridge) call(ctx context.Context, method string, params any) (json.RawM
 		b.rpcMu.Unlock()
 	}()
 	b.appWrite.Lock()
+	if b.app == nil {
+		b.appWrite.Unlock()
+		return nil, errors.New("Codex App Server is reconnecting")
+	}
 	err := wsjson.Write(ctx, b.app, map[string]any{"id": id, "method": method, "params": params})
 	b.appWrite.Unlock()
 	if err != nil {
@@ -295,13 +353,17 @@ func (b *Bridge) call(ctx context.Context, method string, params any) (json.RawM
 func (b *Bridge) notify(ctx context.Context, method string, params any) error {
 	b.appWrite.Lock()
 	defer b.appWrite.Unlock()
+	if b.app == nil {
+		return errors.New("Codex App Server is reconnecting")
+	}
 	return wsjson.Write(ctx, b.app, map[string]any{"method": method, "params": params})
 }
 
-func (b *Bridge) readApp() error {
+func (b *Bridge) readApp(conn *websocket.Conn) error {
+	conn.SetReadLimit(appServerReadLimit)
 	for {
 		var message map[string]any
-		if err := wsjson.Read(b.ctx, b.app, &message); err != nil {
+		if err := wsjson.Read(b.ctx, conn, &message); err != nil {
 			b.failPending(err)
 			return err
 		}

@@ -6,8 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -47,7 +50,7 @@ func testDeliveryMethod(t *testing.T, activeTurn, want string) {
 		t.Fatal(err)
 	}
 	b := &Bridge{ctx: ctx, app: appConn, pending: map[int64]chan rpcReply{}, threads: map[string]*threadPeer{}}
-	go b.readApp()
+	go b.readApp(appConn)
 
 	meshConn := make(chan *websocket.Conn, 1)
 	meshServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -131,7 +134,7 @@ func TestNativeDeliveryPreservesProvenanceAndImage(t *testing.T) {
 	defer appServer.Close()
 	appConn, _, _ := websocket.Dial(ctx, "ws"+strings.TrimPrefix(appServer.URL, "http"), nil)
 	b := &Bridge{ctx: ctx, app: appConn, pending: map[int64]chan rpcReply{}, threads: map[string]*threadPeer{}}
-	go b.readApp()
+	go b.readApp(appConn)
 	p := &threadPeer{bridge: b, id: "thread-1"}
 	p.inject(ctx, nil, map[string]any{
 		"type": "ask", "from_peer": "reviewer", "to_peer": "owner", "correlation_id": "ask-1", "text": "review this\n↳ ack(\"ask-1\") or ack(\"ask-1\", \"reply\")",
@@ -263,7 +266,7 @@ func TestMeshContextUsesHistoryInjectionOnce(t *testing.T) {
 	}))
 	defer peerServer.Close()
 	b := &Bridge{ctx: ctx, app: appConn, pending: map[int64]chan rpcReply{}, threads: map[string]*threadPeer{}, daemonHTTP: peerServer.URL}
-	go b.readApp()
+	go b.readApp(appConn)
 	p := &threadPeer{bridge: b, id: "thread-context", cwd: "/work/repo", circle: "mesh", circleSrc: "fallback", role: "agent", peerID: "repow-native", displayName: "repo"}
 	if err := p.ensureContext(ctx); err != nil {
 		t.Fatal(err)
@@ -285,5 +288,107 @@ func TestMeshContextUsesHistoryInjectionOnce(t *testing.T) {
 	case duplicate := <-requests:
 		t.Fatalf("duplicate context injection: %#v", duplicate)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestAppServerResponseOverDefaultWebSocketLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := websocket.Accept(w, r, nil)
+		defer conn.CloseNow()
+		var request map[string]any
+		if wsjson.Read(ctx, conn, &request) == nil {
+			_ = wsjson.Write(ctx, conn, map[string]any{
+				"id": request["id"], "result": map[string]any{"payload": strings.Repeat("x", 64<<10)},
+			})
+		}
+	}))
+	defer appServer.Close()
+	appConn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(appServer.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer appConn.CloseNow()
+	b := &Bridge{ctx: ctx, app: appConn, pending: map[int64]chan rpcReply{}, threads: map[string]*threadPeer{}}
+	go b.readApp(appConn)
+	result, err := b.call(ctx, "thread/read", map[string]any{"threadId": "large"})
+	if err != nil || len(result) < 64<<10 {
+		t.Fatalf("large App Server response: bytes=%d err=%v", len(result), err)
+	}
+}
+
+func TestAppServerReadFailureReconnectsWithoutStoppingOwnedServer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	connections := make(chan int32, 2)
+	var accepted atomic.Int32
+	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := websocket.Accept(w, r, nil)
+		defer conn.CloseNow()
+		n := accepted.Add(1)
+		connections <- n
+		for {
+			var request map[string]any
+			if wsjson.Read(ctx, conn, &request) != nil {
+				return
+			}
+			id, hasID := request["id"]
+			if !hasID {
+				continue
+			}
+			result := map[string]any{}
+			if stringValue(request, "method") == "thread/loaded/list" {
+				result["data"] = []string{}
+			}
+			_ = wsjson.Write(ctx, conn, map[string]any{"id": id, "result": result})
+			if n == 1 && stringValue(request, "method") == "thread/loaded/list" {
+				_ = conn.Close(websocket.StatusInternalError, "test bridge failure")
+				return
+			}
+		}
+	}))
+	defer appServer.Close()
+
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer child.Process.Kill()
+	var connects atomic.Int32
+	connect := func(ctx context.Context) (*websocket.Conn, *exec.Cmd, error) {
+		conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(appServer.URL, "http"), nil)
+		if connects.Add(1) == 1 {
+			return conn, child, err
+		}
+		return conn, nil, err
+	}
+	b := &Bridge{ctx: ctx, version: "test", pending: map[int64]chan rpcReply{}, threads: map[string]*threadPeer{}}
+	done := make(chan error, 1)
+	go func() { done <- b.runAppServer(connect) }()
+	for range 2 {
+		select {
+		case <-connections:
+		case <-time.After(2 * time.Second):
+			t.Fatal("bridge did not reconnect")
+		}
+	}
+	if err := child.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("bridge failure stopped owned App Server: %v", err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("bridge did not stop")
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- child.Wait() }()
+	select {
+	case <-waited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("intentional shutdown did not stop owned App Server")
 	}
 }
