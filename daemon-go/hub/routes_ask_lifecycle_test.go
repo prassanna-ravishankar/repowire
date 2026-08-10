@@ -81,6 +81,39 @@ func newAskTestHubWithQueue(t *testing.T, reg *askFakeRegistry, f *fakeTransport
 	return srv, asks
 }
 
+func TestRequireAuthAllowsOnlyLocalDashboard(t *testing.T) {
+	h := &Hub{authToken: "secret"}
+	handler := h.requireAuth(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	tests := []struct {
+		name       string
+		remoteAddr string
+		host       string
+		headers    map[string]string
+		want       int
+	}{
+		{"same-origin dashboard", "127.0.0.1:1234", "localhost:8377", map[string]string{"Sec-Fetch-Site": "same-origin"}, http.StatusNoContent},
+		{"same-host dashboard referer", "127.0.0.1:1234", "localhost:8377", map[string]string{"Referer": "http://localhost:8377/dashboard"}, http.StatusNoContent},
+		{"script without browser metadata", "127.0.0.1:1234", "localhost:8377", nil, http.StatusUnauthorized},
+		{"remote spoof", "203.0.113.10:1234", "localhost:8377", map[string]string{"Sec-Fetch-Site": "same-origin"}, http.StatusUnauthorized},
+		{"non-loopback host spoof", "127.0.0.1:1234", "attacker.example", map[string]string{"Sec-Fetch-Site": "same-origin"}, http.StatusUnauthorized},
+		{"bearer client", "127.0.0.1:1234", "localhost:8377", map[string]string{"Authorization": "Bearer secret"}, http.StatusNoContent},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://"+tt.host+"/peers", nil)
+			req.RemoteAddr = tt.remoteAddr
+			for key, value := range tt.headers {
+				req.Header.Set(key, value)
+			}
+			res := httptest.NewRecorder()
+			handler(res, req)
+			if res.Code != tt.want {
+				t.Fatalf("status = %d, want %d", res.Code, tt.want)
+			}
+		})
+	}
+}
+
 func TestPostAckQueuedReplyClosesWithoutDuplicate(t *testing.T) {
 	asker := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
 	responder := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)

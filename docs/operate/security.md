@@ -24,6 +24,7 @@ For the hosted relay at `repowire.io`, this means the operators *could* see your
 - The daemon authenticates to the relay with `relay.api_key`. The key is auto-generated and stored in `~/.repowire/config.yaml`.
 - The dashboard authenticates to the relay with a cookie set after submitting the same API key at `/auth`. Possession of the key grants dashboard access; treat it like a password.
 - Local-daemon `daemon.auth_token` is independent and gates the local WebSocket / HTTP API. `repowire setup` generates one because the MCP identity shim forwards to bearer-authenticated `/mcp`. Set or rotate it manually if other processes on the machine should not have free access.
+- The daemon-served localhost dashboard can use same-origin HTTP routes without exposing that token to browser JavaScript. Cross-origin, remote, WebSocket, and MCP callers remain bearer-gated.
 
 ## Trust boundaries
 

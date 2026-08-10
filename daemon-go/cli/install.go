@@ -830,7 +830,7 @@ func installService() error {
 	if err := os.WriteFile(filepath.Join(dir, "repowire.service"), []byte(unit), 0o600); err != nil {
 		return err
 	}
-	if err := installCodexBridgeService("", ""); err != nil {
+	if err := installCodexBridgeService(os.Getenv("PATH"), ""); err != nil {
 		return err
 	}
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
@@ -852,13 +852,17 @@ func installCodexBridgeService(pathValue, locale string) error {
 		}
 		return exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
 	}
-	unit := fmt.Sprintf("[Unit]\nDescription=Repowire Codex thread bridge\nAfter=repowire.service\nWants=repowire.service\n[Service]\nExecStart=%s codex-bridge\nRestart=always\n[Install]\nWantedBy=default.target\n", executable())
+	unit := codexBridgeSystemdUnit(pathValue)
 	path := home(".config", "systemd", "user", "repowire-codex.service")
 	if err := os.WriteFile(path, []byte(unit), 0o600); err != nil {
 		return err
 	}
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	return exec.Command("systemctl", "--user", "enable", "--now", "repowire-codex.service").Run()
+}
+
+func codexBridgeSystemdUnit(pathValue string) string {
+	return fmt.Sprintf("[Unit]\nDescription=Repowire Codex thread bridge\nAfter=repowire.service\nWants=repowire.service\n[Service]\nEnvironment=\"PATH=%s\"\nExecStart=%s codex-bridge\nRestart=always\n[Install]\nWantedBy=default.target\n", pathValue, executable())
 }
 
 func codexAppServerSupported() bool {

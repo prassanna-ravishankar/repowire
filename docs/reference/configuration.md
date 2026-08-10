@@ -79,6 +79,8 @@ Optional local bearer token for daemon HTTP routes, WebSocket connections,
 hooks, and HTTP MCP. `repowire setup` generates one automatically because the
 stdio MCP identity shim forwards to `/mcp`. Treat it as a local password;
 rotate it by replacing the value and restarting the daemon service.
+The daemon-served localhost dashboard may call same-origin HTTP routes without
+the token; other local HTTP clients still require the bearer header.
 
 ## `daemon.circle_boundary`
 

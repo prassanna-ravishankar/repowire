@@ -62,6 +62,9 @@ When `daemon.auth_token` is configured, clients send:
 Authorization: Bearer <token>
 ```
 
+The dashboard served from the daemon's localhost origin is the exception: its
+same-origin browser requests are accepted without exposing the token to JavaScript.
+
 ## Related
 
 - [CLI](cli.md)

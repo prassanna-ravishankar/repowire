@@ -25,7 +25,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -184,12 +186,13 @@ func (h *Hub) handleAskBlockingQuestion(w http.ResponseWriter, r *http.Request) 
 // ----------------------------------------------------------------------------
 
 // requireAuth gates an HTTP handler behind the daemon bearer token. An empty
-// configured token (h.authToken == "") disables auth (dev/local). Otherwise an
-// "Authorization: Bearer <token>" header must match in constant time. Mirrors
-// daemon/auth.py require_auth (401 on missing/invalid).
+// configured token (h.authToken == "") disables auth (dev/local); same-origin
+// requests from the daemon-served localhost dashboard are also allowed.
+// Otherwise an "Authorization: Bearer <token>" header must match in constant
+// time. Mirrors daemon/auth.py require_auth (401 on missing/invalid).
 func (h *Hub) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.authToken == "" {
+		if h.authToken == "" || isLocalDashboardRequest(r) {
 			next(w, r)
 			return
 		}
@@ -206,6 +209,27 @@ func (h *Hub) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+func isLocalDashboardRequest(r *http.Request) bool {
+	if !isLocalhost(r) {
+		return false
+	}
+	host := r.Host
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		host = parsed
+	}
+	if host != "localhost" {
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return false
+		}
+	}
+	if r.Header.Get("Sec-Fetch-Site") == "same-origin" {
+		return true
+	}
+	referer, err := url.Parse(r.Referer())
+	return err == nil && referer.Host != "" && strings.EqualFold(referer.Host, r.Host)
 }
 
 // writeJSON encodes v as the response body with the given status.

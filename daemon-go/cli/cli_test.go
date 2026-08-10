@@ -360,6 +360,14 @@ func TestInstallServicePreservesPath(t *testing.T) {
 	}
 }
 
+func TestCodexBridgeSystemdUnitPreservesPath(t *testing.T) {
+	pathValue := "/home/user/.local/bin:/usr/bin:/bin"
+	unit := codexBridgeSystemdUnit(pathValue)
+	if !strings.Contains(unit, `Environment="PATH=`+pathValue+`"`) {
+		t.Fatalf("systemd unit does not preserve PATH: %s", unit)
+	}
+}
+
 func TestInstallCodexUsesNativeThreadsWhenAppServerIsAvailable(t *testing.T) {
 	homeDir := t.TempDir()
 	binDir := filepath.Join(homeDir, "bin")
