@@ -31,6 +31,9 @@ func (r *Registry) UnregisterPeer(ctx context.Context, identifier string, circle
 		delete(r.mappings, ps.peer.PeerID)
 		id := ps.peer.PeerID
 		r.mu.Unlock()
+		if r.transport != nil {
+			_ = r.transport.Close(id)
+		}
 		_ = r.store.DeleteMapping(ctx, id)
 		return true, nil
 	}
@@ -47,6 +50,9 @@ func (r *Registry) UnregisterPeer(ctx context.Context, identifier string, circle
 	delete(r.peers, id)
 	delete(r.mappings, id)
 	r.mu.Unlock()
+	if r.transport != nil {
+		_ = r.transport.Close(id)
+	}
 	_ = r.store.DeleteMapping(ctx, id)
 	return true, nil
 }

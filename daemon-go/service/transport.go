@@ -318,8 +318,9 @@ func (t *WebSocketTransport) GetAllSessions() []proto.PeerID {
 	return out
 }
 
-// Close severs a retired peer's socket (peer.Transport). It removes the record
-// under lock and closes the underlying connection. Idempotent.
+// Close severs a peer's socket (peer.Transport). It removes the record under
+// lock and closes the underlying connection. Idempotent. Registry removal and
+// terminal retirement both use this seam, so the close reason stays generic.
 func (t *WebSocketTransport) Close(id proto.PeerID) error {
 	t.mu.Lock()
 	info, ok := t.conns[id]
@@ -329,7 +330,7 @@ func (t *WebSocketTransport) Close(id proto.PeerID) error {
 	}
 	t.mu.Unlock()
 	if ok && info.WS != nil {
-		err := info.WS.Close(websocket.StatusGoingAway, "peer retired")
+		err := info.WS.Close(websocket.StatusGoingAway, "peer removed by daemon")
 		if manager != nil {
 			manager.Drop(id)
 		}

@@ -12,6 +12,11 @@ Human surfaces have the `human` role. That role bypasses circle filtering so the
 
 Control surfaces are clients of the routing API, not sources of truth. The daemon owns peer state, message routing, ask lifecycle, session bindings, and durable state. If a surface crashes or reconnects, it recovers by reading daemon state rather than reconstructing the mesh itself.
 
+When the daemon unregisters a connected control-surface peer, it also closes
+that peer's WebSocket. Long-lived service clients treat the close as a
+reconnect signal, so registry removal cannot leave them blocked forever on a
+socket the daemon no longer routes.
+
 ## Session-targeted controls
 
 Peer-targeted routes address live peer identity. Session-targeted controls address durable `repowire_session_id` bindings. That distinction matters because display names and runtime session ids are not stable routing identities.
