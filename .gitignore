@@ -1,15 +1,7 @@
-__pycache__/
 .DS_Store
-*.pyc
-*.pyo
-.venv/
 .env
-*.egg-info/
 dist/
 build/
-.ruff_cache/
-.mypy_cache/
-.pytest_cache/
 .repowire/
 ui/
 repowire-design-system/
@@ -25,7 +17,6 @@ session-logs.md
 # Dashboard and local native build output
 web/out/
 bin/
-.coverage
 
 # docs build output
 site/

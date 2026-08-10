@@ -1,9 +1,9 @@
 package service
 
 import (
+	"bufio"
+	"encoding/json"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,33 +11,12 @@ import (
 )
 
 func TestACPManagerPromptRoundTripAndSessionReuse(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 unavailable")
-	}
-	script := filepath.Join(t.TempDir(), "echo_acp.py")
-	source := `import json, sys
-session = "echo-session"
-for line in sys.stdin:
-    msg = json.loads(line)
-    method = msg.get("method")
-    if method == "initialize": result = {"protocolVersion": 1, "agentCapabilities": {}}
-    elif method == "session/new": result = {"sessionId": session}
-    elif method == "session/prompt":
-        text = msg["params"]["prompt"][0]["text"]
-        print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"[echo] "+text}}}}), flush=True)
-        result = {"stopReason":"end_turn"}
-    elif method == "session/close": result = {}
-    elif method == "session/cancel": continue
-    else: result = {}
-    print(json.dumps({"jsonrpc":"2.0","id":msg["id"],"result":result}), flush=True)
-`
-	if err := os.WriteFile(script, []byte(source), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	manager := NewACPManager()
 	defer manager.Close()
-	spec := ACPPeerSpec{PeerID: "repow-test-acp", Command: python, Args: []string{script}, CWD: t.TempDir()}
+	spec := ACPPeerSpec{
+		PeerID: "repow-test-acp", Command: os.Args[0], Args: []string{"-test.run=^TestACPHelperProcess$"},
+		CWD: t.TempDir(), Env: map[string]string{"REPOWIRE_ACP_TEST_HELPER": "1"},
+	}
 	for _, prompt := range []string{"one", "two"} {
 		done := make(chan struct {
 			result ACPPromptResult
@@ -62,6 +41,50 @@ for line in sys.stdin:
 		case <-time.After(5 * time.Second):
 			t.Fatal("ACP prompt timed out")
 		}
+	}
+}
+
+func TestACPHelperProcess(t *testing.T) {
+	if os.Getenv("REPOWIRE_ACP_TEST_HELPER") != "1" {
+		return
+	}
+	type request struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		Params struct {
+			Prompt []struct {
+				Text string `json:"text"`
+			} `json:"prompt"`
+		} `json:"params"`
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		var message request
+		if err := json.Unmarshal(scanner.Bytes(), &message); err != nil {
+			t.Fatal(err)
+		}
+		var result any = map[string]any{}
+		switch message.Method {
+		case "initialize":
+			result = map[string]any{"protocolVersion": 1, "agentCapabilities": map[string]any{}}
+		case "session/new":
+			result = map[string]any{"sessionId": "echo-session"}
+		case "session/prompt":
+			text := message.Params.Prompt[0].Text
+			if err := encoder.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": "echo-session", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "[echo] " + text}}}}); err != nil {
+				t.Fatal(err)
+			}
+			result = map[string]any{"stopReason": "end_turn"}
+		case "session/cancel":
+			continue
+		}
+		if err := encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": message.ID, "result": result}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
 	}
 }
 

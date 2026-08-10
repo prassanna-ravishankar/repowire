@@ -8,4 +8,4 @@ Always live test installer changes (hooks, config files, CLI detection) on an ac
 
 **Why:** Gemini installer support was merged without live testing and regressed. Codex was live-tested before merge and that caught a version parsing bug. Same rigor should apply to all installers.
 
-**How to apply:** For any PR that writes config files (`hooks.json`, `settings.json`, `config.toml`, `.claude.json`, `plugin/repowire.ts`), run the installer functions in a Python shell and inspect the output files before merging.
+**How to apply:** For any PR that writes config files (`hooks.json`, `settings.json`, `config.toml`, `.claude.json`, `plugin/repowire.ts`), build the native binary, run `repowire setup`, and inspect the output files before merging.

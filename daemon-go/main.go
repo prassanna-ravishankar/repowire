@@ -601,11 +601,6 @@ func findWebOutputDir() string {
 			filepath.Join(dir, "..", "..", "web", "out"),
 		)
 	}
-	for _, path := range filepath.SplitList(os.Getenv("PYTHONPATH")) {
-		if path != "" {
-			candidates = append(candidates, filepath.Join(path, "web", "out"))
-		}
-	}
 	for _, dir := range candidates {
 		if stat, err := os.Stat(filepath.Join(dir, "dashboard.html")); err == nil && !stat.IsDir() {
 			return filepath.Clean(dir)

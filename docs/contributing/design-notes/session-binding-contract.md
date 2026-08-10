@@ -129,42 +129,41 @@ Rules:
 
 ## Existing touchpoints
 
-- `repowire/protocol/peers.py` defines live peer identity, backend, path,
+- `daemon-go/proto/proto.go` defines live peer identity, backend, path,
   machine, metadata, status, and turn state.
-- `repowire/daemon/peer_registry.py` persists `SessionMapping` in
-  `StateDatabase` and imports legacy `sessions.json` once. It owns peer ID reuse, display-name
+- `daemon-go/peer/` persists `SessionMapping` through `daemon-go/state/` and
+  imports legacy `sessions.json` once. It owns peer ID reuse, display-name
   collision handling, role claims, descriptions, pane hijack evidence, and
   ghost eviction.
-- `daemon-go/hooks/session.go` registers peers on `SessionStart` with
+- `daemon-go/hooks/handlers.go` registers peers on `SessionStart` with
   backend, path, pane, role, turn state, agent PID, and metadata such as
   `hook_session_id`.
-- `daemon-go/hooks/stop.go` posts chat turns with runtime `session_id`,
+- `daemon-go/hooks/handlers.go` posts chat turns with runtime `session_id`,
   turn IDs, pane IDs, and transcript-derived tool summaries.
-- `repowire/session/history.py` discovers and replays backend-owned history for
+- `daemon-go/hub/routes_history.go` discovers and replays backend-owned history for
   Claude Code and Codex by project path and runtime metadata.
-- `repowire/daemon/routes/peers.py` exposes `/peers/{name}/timeline` and
+- `daemon-go/hub/routes_history.go` exposes `/peers/{name}/timeline` and
   `/peers/{name}/transcript`, resolving through an unambiguous session binding
   when available and otherwise preserving peer/path/backend compatibility plus
   optional runtime `session_id` filtering.
-- `repowire/daemon/routes/messages.py` ingests live `chat_turn` and
+- `daemon-go/hub/routes_events.go` ingests live `chat_turn` and
   `chat_turn_delta` events using runtime `session_id` and `turn_id` for
   dashboard reconciliation.
-- `repowire/daemon/ask_tracker.py` keeps open asks and pending replies
+- `daemon-go/service/ask_tracker.go` keeps open asks and pending replies
   in-memory, with peer IDs as routing endpoints and strict identity snapshots
   for ACP reply rebind.
-- `repowire/daemon/peer_delivery.py` coordinates ask/notify delivery and
+- `daemon-go/service/delivery.go` coordinates ask/notify delivery and
   already exposes explicit delivered/queued outcomes for some paths.
-- `repowire/daemon/state/database.py` is the experimental daemon SQLite wrapper
-  currently used by schedules and session bindings. The existing
+- `daemon-go/state/` owns SQLite persistence for schedules and session bindings. The existing
   `rfcs/sqlite-state-expansion-plan.md` recommends expanding SQLite
   carefully and keeping raw transcripts outside SQLite.
-- `repowire/daemon/state/session_bindings.py` persists binding metadata,
+- `daemon-go/state/session_bindings.go` persists binding metadata,
   source locators, cursors, provenance, resume capability, and lifecycle
   status without storing raw runtime transcript bodies.
-- `repowire/daemon/session_control.py` is the first session-acquisition service
+- `daemon-go/service/session_control.go` is the first session-acquisition service
   used by durable jobs. It records a `session.acquire_executor` operation,
   then resolves a live peer, backend-native resume, or fresh spawn.
-- `repowire/daemon/state/operations.py` stores internal operation lifecycle
+- `daemon-go/state/operations.go` stores internal operation lifecycle
   records for acquisition attempts, strategies, results, and structured
   failures. Operations are audit/control records; they do not replace peer,
   session, or job identity.

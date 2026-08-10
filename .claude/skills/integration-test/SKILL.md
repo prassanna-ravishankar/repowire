@@ -55,8 +55,8 @@ curl -s http://127.0.0.1:8377/health 2>/dev/null | jq . || echo "Daemon not runn
 curl -s http://127.0.0.1:8377/peers 2>/dev/null | jq '.peers[] | {name, status, circle}' || echo "No peers"
 
 # Installation status
-uv tool list 2>/dev/null | grep repowire || echo "No uv tool installation"
-python3 -c "import json; d=json.load(open('$HOME/.claude/settings.json')); print('Hooks:', list(d.get('hooks',{}).keys()))" 2>/dev/null || echo "No Claude hooks"
+command -v repowire >/dev/null && repowire --version || echo "Repowire not installed"
+jq -r '"Hooks: " + ((.hooks // {}) | keys | join(", "))' "$HOME/.claude/settings.json" 2>/dev/null || echo "No Claude hooks"
 ls ~/.opencode/plugin/repowire.ts 2>/dev/null && echo "OpenCode plugin installed" || echo "No OpenCode plugin"
 ```
 
@@ -74,8 +74,6 @@ tmux kill-session -t circle-a 2>/dev/null || true
 tmux kill-session -t circle-b 2>/dev/null || true
 tmux kill-session -t opencode-test 2>/dev/null || true
 tmux kill-session -t mixed-test 2>/dev/null || true
-pkill -f websocket_hook 2>/dev/null || true
-
 curl -s http://127.0.0.1:8377/health >/dev/null 2>&1 && {
   repowire peer prune --force 2>/dev/null || true
 }
@@ -91,19 +89,17 @@ rm -f ~/.repowire/sessions.json 2>/dev/null || true
 ```bash
 # Run in a tmux pane (e.g. tmux send-keys to a spare window):
 
-# Uninstall
-repowire uninstall 2>/dev/null || true
-uv tool uninstall repowire 2>/dev/null || true
-
-# Install as tool from local source
-uv tool install --force /path/to/repowire
+# Build from local source
+cd /path/to/repowire
+mkdir -p bin
+(cd daemon-go && go build -o ../bin/repowire .)
 
 # Setup hooks and MCP server
-repowire setup --no-service
+./bin/repowire setup --no-service
 
 # Verify
-repowire --version
-python3 -c "import json; d=json.load(open('$HOME/.claude/settings.json')); print('Hooks:', list(d.get('hooks',{}).keys()))"
+./bin/repowire --version
+jq -r '"Hooks: " + ((.hooks // {}) | keys | join(", "))' "$HOME/.claude/settings.json"
 ls ~/.opencode/plugin/repowire.ts 2>/dev/null && echo "OpenCode plugin: OK"
 ```
 
@@ -144,15 +140,10 @@ sleep 30  # Wait for sessions to initialize and hooks to register
 
 ```bash
 # All 3 peers should be online with correct circles and peer_id format
-curl -s http://127.0.0.1:8377/peers | python3 -c "
-import sys, json, re
-peers = json.load(sys.stdin)['peers']
-expected = {'$PEER_A1': 'circle-a', '$PEER_A2': 'circle-a', '$PEER_B1': 'circle-b'}
-for name, circle in expected.items():
-    match = [p for p in peers if p['name'] == name and p['status'] == 'online']
-    ok = match and match[0].get('circle') == circle and re.match(r'^repow-[\w-]+-[a-f0-9]{8}$', match[0].get('peer_id',''))
-    print(f'  {name}: {\"PASS\" if ok else \"FAIL\"} ({match[0] if match else \"not found\"})')
-"
+curl -s http://127.0.0.1:8377/peers | jq --arg a1 "$PEER_A1" --arg a2 "$PEER_A2" --arg b1 "$PEER_B1" '
+  [.peers[] | select(.name == $a1 or .name == $a2 or .name == $b1) |
+   {name, status, circle, peer_id}]
+'
 ```
 
 If a peer doesn't register, check `.claude/settings.local.json` for `disableAllHooks: true`.
@@ -188,7 +179,6 @@ If a peer doesn't register, check `.claude/settings.local.json` for `disableAllH
 ```bash
 tmux kill-session -t circle-a 2>/dev/null || true
 tmux kill-session -t circle-b 2>/dev/null || true
-pkill -f websocket_hook 2>/dev/null || true
 repowire peer prune --force 2>/dev/null || true
 ```
 
@@ -237,14 +227,10 @@ sleep 30  # Wait for warmup to complete
 ### Verify Registration
 
 ```bash
-curl -s http://127.0.0.1:8377/peers | python3 -c "
-import sys, json
-peers = json.load(sys.stdin)['peers']
-oc = [p for p in peers if p.get('backend') == 'opencode' and p['status'] == 'online']
-for p in oc:
-    print(f'  {p[\"name\"]}: peer_id={p.get(\"peer_id\")}, backend={p.get(\"backend\")}')
-print(f'  opencode peers: {len(oc)}')
-"
+curl -s http://127.0.0.1:8377/peers | jq '
+  [.peers[] | select(.backend == "opencode" and .status == "online") |
+   {name, peer_id, backend}]
+'
 ```
 
 ### Tests
@@ -282,7 +268,7 @@ print(f'  opencode peers: {len(oc)}')
 | "No active session" | Warmup prompt didn't create session | Press Enter manually in opencode pane, or wait longer |
 | "(empty response)" | Model returned 0 parts | Check model config — switch to `anthropic/claude-sonnet-4-5-20250929` |
 | "Not Found" in TUI | LiteLLM model ID not recognized | Use `--model anthropic/<model-id>` directly |
-| Plugin not connecting | Wrong WS URL or old plugin | Reinstall: `uv run python3 -c "from repowire.installers.opencode import install_plugin; install_plugin()"` |
+| Plugin not connecting | Wrong WS URL or old plugin | Reinstall with `repowire setup --no-service` |
 
 ### Cleanup
 

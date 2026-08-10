@@ -15,7 +15,7 @@
 
 # next.js
 /.next/
-# /out/ - included in PyPI package for dashboard
+# /out/ - bundled into native releases
 
 # production
 /build
