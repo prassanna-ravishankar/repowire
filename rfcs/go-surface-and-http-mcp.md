@@ -1,6 +1,6 @@
 # Go the full surface + HTTP MCP
 
-Status: implemented on `feat/daemon-go` (2026-07-10). Tracked in
+Status: implemented on `main` (2026-08-10). Tracked in
 repowire-53c (daemon), repowire-76o (hooks), repowire-sfh (HTTP MCP), and
 repowire-jx8 (CLI/distribution).
 
@@ -15,11 +15,9 @@ push the rest of the surface the same way:
   Stop / UserPromptSubmit). Each invocation pays the Python interpreter +
   import tax (~100–300 ms) versus ~5 ms for a static Go binary. This is the
   one place users feel the runtime on every single turn.
-- **Distribution.** A single static binary removes uv/venv variance and the
-  "hooks run from the installed package" reinstall foot-gun. During the
-  transition, wheels keep wrapping the binary so `uv tool install repowire`
-  continues to work (platform wheels already ship the Go hub via the hatch
-  hook).
+- **Distribution.** A single static binary removes package-manager and virtual
+  environment variance and the "hooks run from the installed package" reinstall
+  foot-gun.
 
 What stays as-is: the channel server and web dashboard are TypeScript and
 remain so (transports are client-side; the daemon philosophy is unchanged).
@@ -29,19 +27,17 @@ remain so (transports are client-side; the daemon philosophy is unchanged).
 The native binary now owns config loading, SQLite bootstrap/migrations, resume
 safety, the full daemon route surface, ACP subprocess routing and permission
 relay, hooks/ws-hook/chat streaming, runtime installers, service management,
-and the CLI. The wheel entry point execs the binary; it no longer selects a
-Python daemon fallback.
+and the CLI.
 
 The dashboard and channel server remain TypeScript. The hosted relay server and
-Telegram/Slack peers remain separate Python deployments/clients; they are not
-part of the local substrate and connect to the Go daemon unchanged.
+Telegram/Slack peers are native Go surfaces.
 
 ## Completed phases
 
 1. **Daemon independence:** Go loads config and owns state migrations/resume safety.
 2. **Hooks:** session/stop/prompt/notification/pre-tool hooks, ws-hook, chat streaming, and lifecycle hooks run in Go.
 3. **HTTP MCP:** all 31 tools live daemon-side at `/mcp`.
-4. **CLI/distribution:** the Go CLI and embedded runtime assets ship in platform wheels; the Python entry point is only a native-binary launcher.
+4. **CLI/distribution:** the Go CLI and embedded runtime assets ship in native release archives.
 
 ## HTTP MCP: /mcp on the daemon + stdio identity shim
 

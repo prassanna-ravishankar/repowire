@@ -49,6 +49,5 @@ use `repowire setup`, which configures the local HTTP MCP endpoint, installs the
 identity shim and hooks/plugins for detected runtimes, and installs the user
 service.
 
-The wheel entry point is a small compatibility launcher for the bundled native
-binary. OpenCode, pi, and channel TypeScript assets are embedded into the binary
-so their installers also work from a standalone build.
+OpenCode, Pi, and channel TypeScript assets are embedded into the binary so
+their installers work from a standalone build.
