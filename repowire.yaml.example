@@ -1,31 +1,31 @@
-# Repowire Configuration Example
 # Copy to ~/.repowire/config.yaml
+daemon:
+  host: "127.0.0.1"
+  port: 8377
+  auth_token: ""
+  spawn:
+    commands:
+      claude-code: "claude --dangerously-skip-permissions"
+      codex: "codex --dangerously-bypass-approvals-and-sandbox"
+    allowed_paths: []
+  mcp_http:
+    enabled: true
+    bind: "localhost-only"
+    require_auth: true
 
-# Relay server connection (for multi-machine mesh)
 relay:
   enabled: false
-  url: "wss://relay.repowire.io"
-  api_key: null  # Get from: repowire relay generate-key
+  url: "wss://repowire.io"
+  api_key: ""
 
-# Local peers (tmux sessions running Claude Code)
-peers:
-  frontend:
-    tmux_session: "frontend"
-    path: "/Users/you/app/frontend"
-  backend:
-    tmux_session: "backend"
-    path: "/Users/you/app/backend"
-  infra:
-    tmux_session: "infra"
-    path: "/Users/you/app/infra"
+telegram:
+  bot_token: ""
+  chat_id: ""
 
-# Daemon settings
-daemon:
-  auto_reconnect: true
-  heartbeat_interval: 30
-  socket_path: "/tmp/repowire.sock"
+slack:
+  bot_token: ""
+  app_token: ""
+  channel_id: ""
 
-# Logging
-logging:
-  level: "info"
-  file: null  # or "~/.repowire/repowire.log"
+updates:
+  check_enabled: false

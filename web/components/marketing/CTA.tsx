@@ -14,7 +14,7 @@ export default function CTA() {
         </div>
         <CopyButton text={INSTALL_CMD} />
       </div>
-      <div className="cta-meta">Requires macOS or Linux · Python 3.10+ · tmux 3.0+</div>
+      <div className="cta-meta">Requires macOS or Linux · tmux 3.0+ · no Python required</div>
     </section>
   );
 }

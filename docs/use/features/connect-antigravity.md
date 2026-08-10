@@ -13,7 +13,9 @@ Repowire ships a plugin into the Antigravity plugins directory at `~/.gemini/ant
     └── hooks.json       # SessionStart / BeforeAgent / AfterAgent
 ```
 
-The validated hook file uses Gemini-style event names. If `agy` fires those plugin hooks, Repowire's adapter at `hooks/adapters.py` maps `BeforeAgent`/`AfterAgent` to canonical prompt/stop events.
+The validated hook file uses Gemini-style event names. If `agy` fires those
+plugin hooks, the native hook normalizer in `daemon-go/hooks/common.go` maps
+`BeforeAgent`/`AfterAgent` to canonical prompt/stop events.
 
 | Antigravity event | Mapped to | Command |
 | --- | --- | --- |
@@ -25,10 +27,11 @@ The validated hook file uses Gemini-style event names. If `agy` fires those plug
 
 The Antigravity CLI plugin layout validates cleanly, but two pieces of end-to-end behaviour are not yet confirmed and should be treated as best-effort:
 
-1. **Whether `agy` actually fires plugin-defined hooks at session boundaries today.** `agy --help` does not document the hook system, and the plugin validator reports `hooks: 1 processed` without running them. `repowire status` and `repowire doctor` mark this gap as a `WARN`, not an `OK`.
+1. **Whether `agy` actually fires plugin-defined hooks at session boundaries today.** `agy --help` does not document the hook system, and the plugin validator reports `hooks: 1 processed` without running them. `repowire status` can confirm that the runtime and plugin are installed, but only a live peer registration confirms hook firing.
 2. **MCP server registration via the plugin system.** The `mcpServers/` plugin subdirectory shape couldn't be verified through `agy plugin validate`. The installer deliberately does **not** write any MCP entries — writing unknown shapes is worse than an honest gap. `check_mcp_installed()` always returns `False` for Antigravity until the schema is documented or observed.
 
-When upstream lands hook/MCP support, the installer will be tightened to write the verified shapes and `doctor` will flip from `WARN` to `OK` without changes to the surrounding integration.
+When upstream lands hook/MCP support, the installer can be tightened to write
+the verified shapes without changes to the surrounding integration.
 
 ## CLI fallback (while hooks are pending)
 
@@ -66,15 +69,17 @@ daemon:
 ## Verifying
 
 ```bash
-repowire status     # ⚠ antigravity (plugin installed; hook firing pending upstream)
-repowire doctor     # WARN: vX.Y.Z — plugin installed; hook firing/MCP pending upstream
+repowire status     # reports runtime/plugin installation and daemon health
+repowire doctor     # also checks the local tmux/git prerequisites
 agy plugin list     # should show repowire under "imports"
 ```
 
 For a repeatable evidence snapshot, run the smoke harness:
 
 ```bash
-python3 scripts/agy_interop_smoke.py --run-cli-fallback --output agy-smoke.json
+repowire peer whoami --register --backend antigravity
+repowire peer deliveries
+repowire peer asks
 ```
 
 The JSON report records current local evidence separately for the `agy` binary,

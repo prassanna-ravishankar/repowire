@@ -82,8 +82,8 @@ extra:
       name: Relay dashboard
     - icon: fontawesome/brands/github
       link: https://github.com/prassanna-ravishankar/repowire
-    - icon: fontawesome/brands/python
-      link: https://pypi.org/project/repowire/
+    - icon: material/tag-outline
+      link: https://github.com/prassanna-ravishankar/repowire/releases
 
 nav:
   - Home: index.md
@@ -136,6 +136,7 @@ nav:
       - Peers and circles: concepts/peers-and-circles.md
       - Sessions: concepts/sessions.md
       - Agent backends: concepts/agent-backends.md
+      - Bridges: concepts/bridges.md
       - Transports: concepts/transports.md
       - Message types: concepts/message-types.md
       - Jobs and schedules: concepts/jobs-and-schedules.md
@@ -148,7 +149,6 @@ nav:
   - Reference:
       - reference/index.md
       - MCP tools: reference/mcp-tools.md
-      - Python client: reference/python-client.md
       - CLI: reference/cli.md
       - Configuration: reference/configuration.md
       - HTTP API: reference/http-api.md

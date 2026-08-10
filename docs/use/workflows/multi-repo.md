@@ -14,7 +14,7 @@ cd ~/projects/project-a && claude
 cd ~/projects/project-b && codex
 ```
 
-Both auto-register on `SessionStart`. They land in the same circle (shared tmux session) and can address each other by display name.
+Both auto-register on `SessionStart`. With the default session boundary they land in the same circle and can address each other by display name. With `daemon.circle_boundary: window`, start them as panes in one window instead.
 
 ## The ask
 

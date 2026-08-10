@@ -47,6 +47,10 @@ repowire peer new ~/projects/project-a
 repowire peer new ~/projects/project-b --backend codex --profile fast
 ```
 
+Inside tmux, omitted `--circle` means the current tmux session or window,
+according to `daemon.circle_boundary`. Outside tmux, pass `--circle`; there is no implicit `default` circle. The literal name
+`default` remains valid when you choose it explicitly.
+
 From an agent, use the `spawn_peer` MCP tool when the path is allowed.
 
 Verify registration:
@@ -55,7 +59,9 @@ Verify registration:
 repowire peer list
 ```
 
-The new peer appears after its runtime starts and registers. Codex may register after its first interaction; spawn seed messages are used to trigger that first turn.
+The new peer appears after its runtime starts and registers. Codex registers
+when App Server creates the thread; a spawn message is optional opening context,
+not a registration seed.
 
 Restart a resumable peer:
 
@@ -75,6 +81,7 @@ Dashboard spawn and backend controls use the same spawn configuration as CLI and
 ## Limits
 
 - Spawning is disabled until `daemon.spawn.allowed_paths` and backend commands are configured.
+- The configured command must resolve to an executable on the daemon's configured `PATH` before a pane is opened.
 - A path outside the allowed roots is rejected.
 - Killing a tmux pane is allowed only when the daemon can prove the pane belongs to the target peer: Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target.
 - Externally attached peers without matching metadata cannot have their pane killed by Repowire.
@@ -83,7 +90,7 @@ Dashboard spawn and backend controls use the same spawn configuration as CLI and
 ## Troubleshooting
 
 - Spawn is refused: check `daemon.spawn.allowed_paths` and backend command configuration.
-- Spawned Codex peer is not visible yet: send or confirm the seed prompt so Codex fires `SessionStart`.
+- Spawned Codex peer is not visible yet: check `repowire service status` and `~/.repowire/codex-bridge.log`.
 - Restart fails before killing the pane: inspect the session binding and backend resume support.
 - Kill is refused for an external pane: rehook/link the pane or retire it manually; destructive pane control requires proof.
 

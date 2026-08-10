@@ -7,10 +7,10 @@
   <h1>Repowire</h1>
   <p>Let your coding agents talk to each other.</p>
 
-  [![PyPI](https://img.shields.io/pypi/v/repowire)](https://pypi.org/project/repowire/)
+  [![Release](https://img.shields.io/github/v/release/prassanna-ravishankar/repowire)](https://github.com/prassanna-ravishankar/repowire/releases)
   [![CI](https://github.com/prassanna-ravishankar/repowire/actions/workflows/ci.yml/badge.svg)](https://github.com/prassanna-ravishankar/repowire/actions/workflows/ci.yml)
-  [![Python](https://img.shields.io/pypi/pyversions/repowire)](https://pypi.org/project/repowire/)
-  [![License](https://img.shields.io/pypi/l/repowire)](https://github.com/prassanna-ravishankar/repowire/blob/main/LICENSE)
+  [![Go](https://img.shields.io/github/go-mod/go-version/prassanna-ravishankar/repowire?filename=daemon-go%2Fgo.mod)](daemon-go/go.mod)
+  [![License](https://img.shields.io/github/license/prassanna-ravishankar/repowire)](LICENSE)
   [![Docs](https://img.shields.io/badge/docs-repowire.io-2563EB)](https://docs.repowire.io/)
 </div>
 
@@ -29,16 +29,15 @@ Repowire runs locally by default through a daemon on your machine. The hosted re
 
 ## Quickstart
 
-**Requirements:** macOS or Linux, Python 3.10+, tmux.
+**Requirements:** macOS or Linux and tmux. Python is not required.
 
 **1. Install Repowire and wire your agents.**
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
-repowire setup
+curl -fsSL https://github.com/prassanna-ravishankar/repowire/releases/latest/download/install.sh | sh
 ```
 
-The installer detects `uv`, `pipx`, and `pip` in that order.
+The installer downloads a checksum-verified native binary from GitHub Releases.
 
 **2. Open your normal agent CLIs.**
 
@@ -54,7 +53,8 @@ cd ~/projects/project-b && codex
 
 **3. Check that both peers appeared.**
 
-Claude Code registers on session start. Codex registers after its first interaction, so send a short warmup prompt in `project-b`, then run:
+Claude Code registers on session start. Codex registers through App Server when
+its TUI thread opens, before the first prompt. Run:
 
 ```bash
 repowire peer list
@@ -112,18 +112,20 @@ The stable public surface is peers, circles, asks, notifications, broadcasts, sc
 
 Transport notes:
 
-- Claude Code, Codex, and Gemini CLI use hooks plus MCP tools.
+- Claude Code uses hooks plus MCP, with its native session inbox preferred for delivery and tmux retained as fallback. Gemini CLI uses hooks plus MCP.
+- Native session APIs connect through runtime-side bridges; routing remains daemon-owned and transport-neutral.
+- Codex uses an App Server bridge plus MCP; tmux remains optional lifecycle/placement support.
 - OpenCode uses a TypeScript plugin plus WebSocket.
 - Pi uses the Repowire extension path when detected by setup.
-- Claude Code channel/ACP delivery is experimental and opt-in.
+- Claude Code's Channel bridge / ACP delivery is experimental and opt-in.
 - Relay is optional remote access, not a requirement for local routing.
 
 ## Supported Agents and Surfaces
 
 | Agent runtime | Connection path |
 | --- | --- |
-| Claude Code | Hooks + MCP; optional experimental channel/ACP transport |
-| Codex | Hooks + MCP |
+| Claude Code | Hooks + MCP + native session inbox; tmux fallback; optional experimental channel/ACP |
+| Codex | App Server threads + MCP |
 | Gemini CLI | Hooks + MCP through normalized `BeforeAgent` / `AfterAgent` events |
 | Antigravity CLI (`agy`) | Plugin install verified; hook firing and MCP pending upstream verification |
 | OpenCode | Plugin + WebSocket |
@@ -204,8 +206,7 @@ https://repowire.io/dashboard
 ## Core Commands
 
 ```bash
-repowire setup                         # install hooks/MCP/plugin/service for detected agents
-repowire setup --http-mcp              # opt in to localhost Streamable HTTP MCP at /mcp
+repowire setup                         # install runtime transports/service + localhost MCP identity shim
 repowire setup --update-checks         # let status/doctor report available updates
 repowire update                        # explicit package upgrade + hook reinstall + daemon restart
 repowire status                        # show installed components and daemon status
@@ -237,7 +238,7 @@ daemon:
   port: 8377
   auth_token: "rw_local_..."
   mcp_http:
-    enabled: false
+    enabled: true
     bind: "localhost-only"
     require_auth: true
     allow_dangerous_tools: false
@@ -260,14 +261,14 @@ relay:
   api_key: "rw_..."
 ```
 
-Update checks are off by default. If enabled with `repowire setup --update-checks`, `repowire status` and `repowire doctor` may report that a newer release is available, but they do not upgrade packages, rewrite hooks, or restart services. Use `repowire update` when you want to upgrade explicitly; it preserves enabled package extras such as `repowire[acp]` where practical.
+Update checks are off by default. If enabled with `repowire setup --update-checks`, `repowire status` and `repowire doctor` may report that a newer release is available, but they do not rewrite hooks or restart services. Use `repowire update` when you want to upgrade explicitly.
 
 Security defaults:
 
 - Local daemon binds to `127.0.0.1`.
 - Relay is opt-in and uses outbound WebSocket.
 - WebSocket and local HTTP auth are available through `daemon.auth_token`.
-- Experimental HTTP MCP is opt-in, localhost-only, bearer-authenticated by default, and not exposed through the hosted relay.
+- MCP tools are implemented by the Go daemon at a localhost-only, bearer-authenticated `/mcp`; agent runtimes reach it through a thin stdio identity shim, and the hosted relay rejects it.
 - Spawn requires explicit command and path allowlists.
 - Experimental channel/ACP transport is opt-in.
 
@@ -276,16 +277,20 @@ Security defaults:
 ```bash
 git clone https://github.com/prassanna-ravishankar/repowire
 cd repowire
-uv sync --extra dev
-uv tool install . --force-reinstall
+cd web && npm ci && npm run build && cd ..
+mkdir -p bin
+(cd daemon-go && go build -o ../bin/repowire .)
+./bin/repowire setup --non-interactive
 ```
 
-Hooks and MCP servers run the installed `repowire` executable, not your checkout. After changing daemon, hook, or MCP code locally, reinstall the tool and restart the daemon service so the live mesh uses the new code:
+Hooks and the MCP identity shim run the binary recorded by setup, not an
+arbitrary binary elsewhere in your checkout. Rebuild that binary after native
+changes, then restart the daemon service:
 
 ```bash
-uv tool install . --force-reinstall
-repowire setup --non-interactive   # rewrites hooks/MCP/service to the installed local build
-repowire service restart           # enough when only daemon code changed
+(cd daemon-go && go build -o ../bin/repowire .)
+./bin/repowire setup --non-interactive   # rewrites hooks/MCP/service to this build
+./bin/repowire service restart           # enough when only daemon code changed
 ```
 
 If service management fails, use `repowire service status` first. Raw `launchctl` on macOS or `systemctl --user` on Linux are fallback troubleshooting tools.
@@ -305,7 +310,8 @@ If service management fails, use `repowire service status` first. Raw `launchctl
 
 ```bash
 repowire uninstall
-uv tool uninstall repowire
+rm -f ~/.local/bin/repowire
+rm -rf ~/.local/share/repowire
 ```
 
 `repowire uninstall` removes hooks, MCP entries, channel transport config, OpenCode plugin files, and the daemon service. It does not automatically remove `~/.repowire/`, which contains local config, events, attachments, and relay keys.
@@ -316,7 +322,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Before opening a PR, run the advisory re
 checklist:
 
 ```bash
-python3 scripts/pre_pr_hygiene.py
+scripts/pre-pr-hygiene.sh
 ```
 
 It is an opt-in prompt for docs, README, agent-instruction, and graphify follow-ups, not a

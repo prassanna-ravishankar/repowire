@@ -1,76 +1,77 @@
 #!/bin/sh
-# Repowire installer — curl -sSf https://repowire.io/install | sh
-set -e
+# Repowire native installer — curl -fsSL https://github.com/prassanna-ravishankar/repowire/releases/latest/download/install.sh | sh
+set -eu
 
-echo "Installing repowire..."
-echo ""
+repo="prassanna-ravishankar/repowire"
+os=$(uname -s)
+arch=$(uname -m)
+case "$os" in
+  Darwin) os=darwin ;;
+  Linux) os=linux ;;
+  *) echo "Error: Repowire supports macOS and Linux (got $os)." >&2; exit 1 ;;
+esac
+case "$arch" in
+  x86_64|amd64) arch=amd64 ;;
+  arm64|aarch64) arch=arm64 ;;
+  *) echo "Error: unsupported architecture $arch." >&2; exit 1 ;;
+esac
 
-# Check Python >= 3.10
-python_cmd=""
-for cmd in python3 python; do
-    if command -v "$cmd" >/dev/null 2>&1; then
-        version=$("$cmd" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-        major=$(echo "$version" | cut -d. -f1)
-        minor=$(echo "$version" | cut -d. -f2)
-        if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ]; then
-            python_cmd="$cmd"
-            break
-        fi
-    fi
-done
-
-if [ -z "$python_cmd" ]; then
-    echo "Error: Python 3.10+ is required."
-    echo "Install Python from https://python.org or via your package manager."
-    exit 1
+if ! command -v curl >/dev/null 2>&1; then
+  echo "Error: curl is required." >&2
+  exit 1
 fi
-echo "Found $python_cmd ($version)"
 
-# Check tmux
+version=${REPOWIRE_VERSION:-}
+if [ -z "$version" ]; then
+  version=$(curl -fsSL -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/$repo/releases/latest" \
+    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | head -n 1)
+fi
+if [ -z "$version" ]; then
+  echo "Error: could not determine the latest Repowire release." >&2
+  exit 1
+fi
+case "$version" in v*) ;; *) version="v$version" ;; esac
+
+asset="repowire_${version#v}_${os}_${arch}.tar.gz"
+base="https://github.com/$repo/releases/download/$version"
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/repowire.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+
+echo "Installing Repowire $version for $os/$arch..."
+curl -fsSL "$base/$asset" -o "$tmp/$asset"
+curl -fsSL "$base/checksums.txt" -o "$tmp/checksums.txt"
+expected=$(awk -v name="$asset" '$2 == name {print $1}' "$tmp/checksums.txt")
+if [ -z "$expected" ]; then
+  echo "Error: release checksum for $asset is missing." >&2
+  exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+  actual=$(sha256sum "$tmp/$asset" | awk '{print $1}')
+else
+  actual=$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')
+fi
+if [ "$actual" != "$expected" ]; then
+  echo "Error: checksum mismatch for $asset." >&2
+  exit 1
+fi
+
+root=${REPOWIRE_INSTALL_DIR:-"$HOME/.local/share/repowire"}
+bin_dir=${REPOWIRE_BIN_DIR:-"$HOME/.local/bin"}
+target="$root/$version"
+mkdir -p "$target" "$bin_dir"
+tar -xzf "$tmp/$asset" -C "$target"
+chmod +x "$target/repowire"
+ln -sfn "$target/repowire" "$bin_dir/repowire"
+
+case ":$PATH:" in
+  *":$bin_dir:"*) ;;
+  *) echo "Note: add $bin_dir to PATH." ;;
+esac
 if ! command -v tmux >/dev/null 2>&1; then
-    echo "Warning: tmux not found (needed for peer spawning)."
-    echo "  macOS: brew install tmux"
-    echo "  Linux: apt install tmux / yum install tmux"
+  echo "Warning: tmux is not installed (needed for peer spawning)."
 fi
 
-# Install via uv > pipx > pip
-if command -v uv >/dev/null 2>&1; then
-    if command -v repowire >/dev/null 2>&1; then
-        echo "Upgrading via uv..."
-        uv tool upgrade repowire || uv tool install repowire --force
-    else
-        echo "Installing via uv..."
-        uv tool install repowire
-    fi
-elif command -v pipx >/dev/null 2>&1; then
-    if command -v repowire >/dev/null 2>&1; then
-        echo "Upgrading via pipx..."
-        pipx upgrade repowire || pipx install --force repowire
-    else
-        echo "Installing via pipx..."
-        pipx install repowire
-    fi
-elif "$python_cmd" -m pip --version >/dev/null 2>&1; then
-    echo "Installing/upgrading via pip..."
-    "$python_cmd" -m pip install --user -U repowire
-    echo ""
-    echo "Note: ensure ~/.local/bin is in your PATH"
-else
-    echo "Error: No package manager found (uv, pipx, or pip)."
-    echo "Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh"
-    exit 1
-fi
-
-echo ""
-
-# Verify installation
-if command -v repowire >/dev/null 2>&1; then
-    echo "repowire $(repowire --version) installed."
-    echo ""
-    echo "Running setup..."
-    echo ""
-    repowire setup "$@"
-else
-    echo "repowire installed but not on PATH."
-    echo "Add ~/.local/bin to your PATH, then run: repowire setup"
-fi
+echo "Installed Repowire $version to $target."
+"$target/repowire" setup "$@"

@@ -2,6 +2,10 @@
 
 The daemon routes four message types. Pick by lifecycle, not by content.
 
+Peer-originated deliveries are framed as `<peer-message from="@name" type="...">…</peer-message>` so runtimes can distinguish them from human instructions. Peer content is subordinate to the active user task: act or reply only when it is relevant and non-disruptive. An ask must still be closed with `ack` even when no response or action is warranted; notifications and broadcasts need no response. Messages from `@dashboard`, `@telegram`, and `@slack` are human-originated and are not peer-framed.
+
+Contact another peer only when its ownership, context, or independent work materially helps. A reachable peer may already be occupied; availability is not a reason to delegate reflexively.
+
 ## `ask`
 
 Non-blocking. Returns a `correlation_id` immediately. The recipient closes the thread with `ack(corr_id)` (bare) or `ack(corr_id, message)` (reply). Chain follow-ups with `ask(reply_to=corr_id, ...)`, which closes the prior thread and opens a new one referencing it.
@@ -65,4 +69,4 @@ Fan-out to all online peers in your circle. No correlation, no reply. Use sparin
 
 ## Misroute refusal
 
-`ask` and `notify_peer` resolve peer names within the caller's circle by default; peers whose role bypasses circles (`orchestrator`, `service`, human surfaces like `@telegram` / `@dashboard` / `@slack`) resolve mesh-wide. If a name matches multiple peers within the resolution scope, the daemon refuses the call with a hint to disambiguate. Pass an explicit `circle=` argument to pick one. This prevents a silent wrong-peer delivery when display names collide.
+`ask` and `notify_peer` resolve peer names within the caller's circle by default. An ordinary peer cannot escape that boundary by passing another `circle=` explicitly; the daemon rejects the delivery. Roles that bypass circles (`orchestrator`, `service`, and human surfaces like `@telegram` / `@dashboard` / `@slack`) may use an explicit circle to disambiguate mesh-wide names. If a name still matches multiple peers within the allowed scope, the daemon refuses the call instead of guessing.

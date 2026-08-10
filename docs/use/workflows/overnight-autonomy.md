@@ -26,7 +26,7 @@ The orchestrator dispatches to `project-a`, watches for progress, and forwards u
 
 If you want a hard deadline:
 
-```python
+```text
 schedule_create(
     to_peer="orchestrator",
     text="status check: where is the v1->v2 migration?",
@@ -37,7 +37,7 @@ schedule_create(
 
 At 6 AM the orchestrator gets a forced ask; the answer surfaces in your morning Telegram (or whatever surface the orchestrator chooses to forward to). For a recurring cadence, use `schedule_cron` or `schedule_self(..., cron="...")`:
 
-```python
+```text
 schedule_cron(
     to_peer="orchestrator",
     text="weekday morning status: overnight work, blockers, next action",

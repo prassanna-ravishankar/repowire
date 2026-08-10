@@ -59,9 +59,11 @@ Removes peers whose `last_seen` exceeds `daemon.prune_max_age_hours` (default 24
 
 The user-service log location is reported by `repowire status`. On macOS this is typically under `~/Library/Logs/`; on Linux, under `journalctl --user -u repowire` for systemd installs.
 
-## MCP server logs
+## MCP shim and daemon logs
 
-MCP servers run as stdio subprocesses of the agent. Their stderr goes wherever the agent puts MCP server output:
+`repowire mcp` runs as a small stdio proxy inside each agent. It reports
+connection/auth/proxy failures to the runtime's MCP stderr; tool execution and
+routing errors are owned by the daemon log:
 
 - **Claude Code** — `~/Library/Logs/Claude/mcp-server-repowire.log` on macOS.
 - **Codex** — visible in the Codex log output.

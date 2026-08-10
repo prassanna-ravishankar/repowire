@@ -1,6 +1,7 @@
 # CLI
 
-The `repowire` command is a thin wrapper around setup, the daemon, and the bot peers. Most users only ever need `setup`. Everything else is for operators running their own daemon or control surfaces.
+The native Go `repowire` command owns setup, daemon operation, hooks, mesh
+control, Telegram and Slack peers, and the hosted relay server.
 
 ## `repowire setup`
 
@@ -8,7 +9,9 @@ The `repowire` command is a thin wrapper around setup, the daemon, and the bot p
 repowire setup [--relay] [--experimental-channels] [--http-mcp] [--update-checks|--no-update-checks] [--no-service] [--non-interactive]
 ```
 
-One-time install. Detects every supported agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires the appropriate Repowire transport for each, and installs the daemon as a user service.
+One-time install. Detects Claude Code, Codex, Gemini CLI, Antigravity, OpenCode,
+and Pi; wires each available transport; configures `/mcp` plus the stdio identity
+shim; and installs the Go daemon as a user service.
 
 Setup uses the SQLite daemon state store. The daemon applies idempotent
 migrations on startup, imports legacy `schedules.json`, `events.json`, and
@@ -18,8 +21,8 @@ files.
 
 - `--relay` opts in to the hosted relay at `repowire.io`.
 - `--experimental-channels` enables the experimental MCP channel / ACP transport for Claude Code (v2.1.80+, claude.ai login, bun).
-- `--http-mcp` enables the experimental localhost Streamable HTTP MCP endpoint at `http://127.0.0.1:8377/mcp` and generates `daemon.auth_token` if needed.
-- `--update-checks` lets `repowire status` and `repowire doctor` check PyPI for newer Repowire releases and suggest `repowire update`. Checks are disabled by default and updates are never auto-applied. Use `--no-update-checks` to turn the check off again.
+- `--http-mcp` is accepted for older setup scripts. Normal setup already enables the localhost `/mcp` implementation and generates `daemon.auth_token` if needed.
+- `--update-checks` lets `repowire status` and `repowire doctor` check GitHub Releases for newer Repowire versions and suggest `repowire update`. Checks are disabled by default and updates are never auto-applied. Use `--no-update-checks` to turn the check off again.
 - `--no-service` skips daemon service installation; run `repowire serve` manually.
 - `--non-interactive` skips prompts and uses flag values only.
 
@@ -45,17 +48,18 @@ When `updates.check_enabled` is true, status also reports whether a newer Repowi
 
 ```bash
 repowire service install
+repowire service start
 repowire service restart
 repowire service status
 repowire service uninstall
 ```
 
-Manage the installed daemon user service. `install` writes and starts the
-platform service (`launchd` on macOS, `systemd --user` on Linux), `restart`
-restarts the installed daemon after a local reinstall or config change,
-`status` shows whether it is installed/running, and `uninstall` removes the
-service entry. Prefer these commands over raw `launchctl` or `systemctl`
-unless you are troubleshooting the platform service manager directly.
+Manage the installed user services. `install` writes and starts the daemon and,
+when supported, the independent Codex App Server bridge. `start` starts installed
+services. `restart` restarts only the routing daemon and ensures the Codex bridge
+is running, so live Codex threads are not bounced. `status` reports both; `stop`
+through `repowire daemon stop` and `uninstall` stop both. Prefer these commands
+over raw `launchctl` or `systemctl` unless troubleshooting the service manager.
 
 ## `repowire doctor`
 
@@ -63,53 +67,47 @@ unless you are troubleshooting the platform service manager directly.
 repowire doctor
 ```
 
-Run a battery of diagnostic checks and print color-coded results. Each check reports `✓` (ok), `⚠` (warn, non-fatal), `✗` (fail), or `·` (skip, not applicable).
-
-Checks include:
-
-- Daemon reachable (`GET /health`, prints version and warns if the running daemon version differs from the CLI/package version)
-- Per-runtime hook + MCP install state (claude-code, codex, gemini, antigravity, opencode, pi)
-- `tmux`, Python, and package-manager (`uv`/`pipx`/`pip`) availability
-- Update availability when opted in with `repowire setup --update-checks`
-- Spawn allowlist resolves (commands on `PATH`, paths exist as directories)
-- WebSocket auth token state
-- SQLite state database integrity, schema version, import audit, event count, and peer mapping count
-- Relay reachable (when `relay.enabled`)
-- Channel transport (when configured via `--experimental-channels`)
-
-Exits 0 if all checks pass (or only warn/skip). Exits 1 if any check fails — suitable for `bash`-style health gates.
+Runs the same daemon/runtime/integration report as `status`, then checks the
+host prerequisites used by the core (`tmux` and `git`). It exits non-zero when
+the daemon is unavailable; missing optional host tools are reported as warnings.
 
 ## `repowire peer`
 
 ```bash
 repowire peer new PATH [--backend BACKEND] [--profile PROFILE] [--circle CIRCLE]
 repowire peer list                          # god-view list (all circles, includes caller)
-repowire peer describe NAME_OR_ID [--circle C]  # full state for one peer
+repowire peer describe NAME_OR_ID [--circle C]  # daemon state for one peer
 repowire peer ask NAME QUERY [--timeout SEC] [--circle C]  # blocking compatibility ask
 repowire peer claim-role orchestrator [--peer NAME_OR_ID] [--circle C] [--force]
 repowire peer restart NAME_OR_ID [--circle C] [--dry-run] [-m MESSAGE]
 repowire peer doctor NAME_OR_ID [--circle C] [--json] [--fix]  # deep diagnostic + contradictions
 repowire peer rehook NAME_OR_ID [--circle C] [--apply]         # re-establish inbound ws-hook (non-destructive)
-repowire peer prune                         # remove offline peers from the registry
+repowire peer prune [--dry-run] [--force]   # confirm, then remove offline peers
 repowire peer whoami [--register --backend B --name NAME --circle C --path P]  # read-only identity, or self-register
 repowire peer asks [--peer-id ID | --pane-id PANE | --peer NAME] [--direction inbound|outbound|both] [--json]
 repowire peer deliveries [--peer-id ID | --pane-id PANE | --peer NAME] [--json]
 repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 ```
 
-`peer whoami`, `peer asks`, `peer deliveries`, and `peer ack` are the shellable mesh primitives intended for agents whose hooks don't fire today (notably [Antigravity `agy`](../use/features/connect-antigravity.md)). They wrap daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/deliveries/pending`, `/ack`) and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`. Use `peer whoami --register --backend antigravity` once at session start to self-onboard.
+`peer whoami`, `peer asks`, `peer deliveries`, and `peer ack` are the shellable mesh primitives intended for agents whose hooks don't fire today (notably [Antigravity `agy`](../use/features/connect-antigravity.md)). They wrap daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/deliveries/pending`, `/ack`) and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`. Use `peer whoami --register --backend antigravity` once at session start to self-onboard; it uses the configured tmux session/window boundary or requires `--circle` outside tmux.
+
+Commands that need a sender identity resolve `$TMUX_PANE` to its registered canonical `peer_id`; they fail with a registration hint instead of lazily creating another runtime identity. Outside tmux they use the explicit `repowire-cli` admin identity.
 
 `peer deliveries` drains one-shot queued deliveries for a peer. Draining deletes the queued rows to avoid duplicate paste/replay. For queued asks, `peer deliveries` shows the original ask text once, while `peer asks` continues to show the open ask until the agent closes it with `peer ack` or the MCP `ack` tool.
 
-For Antigravity interop checks, `python3 scripts/agy_interop_smoke.py --run-cli-fallback` writes a JSON evidence report covering observed hook evidence, MCP availability state, and CLI fallback ask→ack. It records current behaviour only; hook or MCP support is not treated as verified unless the report observes matching daemon evidence.
+For Antigravity interop checks, use `peer whoami`, `peer deliveries`, `peer asks`, and `peer ack` to exercise the CLI fallback directly against the live daemon.
 
 `peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP [`list_peers`](mcp-tools.md#list_peers) tool defaults to a peer-facing view (online only, caller hidden).
 
-`peer ask` is a blocking CLI compatibility helper for quick manual checks. It uses the daemon's ask/answer lifecycle under the hood, waits for the recipient to `ack` with a reply, then prints the reply text. For agent-to-agent work, prefer the MCP [`ask`](mcp-tools.md#ask) tool, which returns a correlation id immediately and lets the conversation continue asynchronously.
+`peer ask` is a blocking CLI compatibility helper for quick manual checks. It uses the daemon's ask/answer lifecycle under the hood, waits for the recipient to `ack` with a reply, then prints the reply text. `--circle` disambiguates only within the caller's authorized scope; an ordinary registered peer cannot use it to cross a circle boundary. For agent-to-agent work, prefer the MCP [`ask`](mcp-tools.md#ask) tool, which returns a correlation id immediately and lets the conversation continue asynchronously.
 
-`peer new` spawns a tmux-backed peer through the daemon `/spawn` route using the configured `daemon.spawn.commands.<backend>` command. Pass `--profile NAME` to append args from `daemon.spawn.profiles.<backend>.<name>`, such as a faster or more capable model selection. Antigravity uses the same daemon pre-registration path as MCP spawn, so it appears immediately as a CLI-fallback peer while upstream hooks are pending. `--command` remains accepted as a deprecated explicit override and bypasses daemon registration/profile resolution.
+`peer new` spawns a tmux-backed peer through the daemon `/spawn` route using the configured `daemon.spawn.commands.<backend>` command. Inside tmux it discovers the current session or window according to `daemon.circle_boundary`; window mode also forwards the current pane internally so the daemon can place the new peer in that window. There is no separate window flag. Outside tmux, pass an explicit circle in session mode; window mode requires tmux window evidence. Pass `--profile NAME` to append args from `daemon.spawn.profiles.<backend>.<name>`, such as a faster or more capable model selection. Antigravity uses the same daemon pre-registration path as MCP spawn, so it appears immediately as a CLI-fallback peer while upstream hooks are pending. `--command` remains accepted as a deprecated explicit override and bypasses daemon registration/profile resolution.
 
-`peer describe` accepts either a display name (`clitcoin-claude-code`) or a peer id (`repow-5-abd4d21e`). Pass `--circle` when a display name is ambiguous across circles — without it, the command refuses to guess and prints the same misroute-style refusal the daemon emits internally. Output includes identity (project, circle, role, backend), liveness (status, path, machine, last-seen), open ask threads in both directions, and the last few communication events involving the peer. Reads `GET /peers`, `GET /peers/{id}`, `GET /asks/pending?direction=both`, and `GET /events` — no new daemon endpoints.
+`peer describe` accepts either a display name (`clitcoin-claude-code`) or a peer
+id (`repow-5-abd4d21e`). Pass `--circle` when a display name is ambiguous across
+circles; the daemon refuses to guess. Output is the canonical `GET
+/peers/{identifier}` state, including identity, liveness, inbound health, and
+runtime metadata.
 
 `peer claim-role orchestrator` repairs an existing registered peer when the durable session mapping has the wrong role after daemon restart. It updates the live peer and its persisted session mapping, demoting offline or stale orchestrator holders in the same circle. It refuses to demote a fresh online/busy holder, even with `--force`; stop the current holder first if you intentionally need to replace it. Omit `--peer` only from inside a registered peer shell where Repowire can discover the current peer.
 
@@ -157,7 +155,7 @@ gone fail loudly with a non-zero exit instead of starting fresh.
 repowire trace TRACE_ID [--json]
 ```
 
-Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`, returned in the `/notify` response). Stages are ordered (`created → resolved_peer → routed → websocket_sent → hook_received → pane_injected → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). Terminal stages are recorded **truthfully** from the transport outcome: `pane_injected` only when the ws-hook returned an `injected` delivery receipt; `injection_failed` on a `failed`/`rejected` receipt; and `websocket_sent` (unverified) for ACP delivery or legacy hooks that don't acknowledge, rather than assuming injection. This reads the local delivery trace ledger (`GET /traces/{trace_id}`); no external tracing infrastructure is required, and rows older than `daemon.prune_max_age_hours` are pruned during lazy repair. Currently covers ask and notify; query/broadcast pane stages are not yet traced. Exits non-zero if any stage failed.
+Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`, returned in the `/notify` response). Stages are ordered (`created → resolved_peer → routed → websocket_sent → pane_injected|thread_input_accepted → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). Terminal stages are recorded **truthfully** from the transport outcome: `pane_injected` only when the ws-hook returned an `injected` receipt; `thread_input_accepted` when a native Codex thread or Claude inbox accepted the input; `injection_failed` on a `failed`/`rejected` receipt; and `websocket_sent` (unverified) for ACP delivery or legacy hooks that don't acknowledge. This reads the local delivery trace ledger (`GET /traces/{trace_id}`); no external tracing infrastructure is required, and rows older than `daemon.prune_max_age_hours` are pruned during lazy repair. Currently covers ask and notify; query/broadcast terminal stages are not yet traced. Exits non-zero if any stage failed.
 
 ## `repowire share`
 
@@ -273,10 +271,24 @@ command.
 
 Agent folders are a convention, not a registry: jobs still target them with
 `--path` and `--backend`. `--backend` on `agents create` only fills the
-suggested jobs command. The scaffold path is absolute in the output so daemon
-spawn does not depend on the daemon's current directory. If `.repowire/` is
-git-ignored or the folder is outside `daemon.spawn.allowed_paths`, the command
-prints a warning but does not edit repository ignore rules or Repowire config.
+suggested jobs command. The scaffold path is absolute so daemon spawn does not
+depend on the daemon's current directory.
+
+## `repowire orchestrator`
+
+```bash
+repowire orchestrator init [--force]
+repowire orchestrator diff
+repowire orchestrator start [--runtime RUNTIME] [--profile PROFILE] [--circle CIRCLE]
+```
+
+`init` renders the orchestrator workspace and skill pack embedded in the Go
+binary; `--force` first moves the current workspace to a timestamped backup.
+`diff` reports Repowire-owned template files that differ or are missing.
+`start` selects an installed runtime (Pi first when its Repowire extension is
+installed), uses `--circle`, the configured circle, or the current tmux
+session/window boundary in that order, and spawns with `role=orchestrator`. Outside tmux, a circle must
+be chosen explicitly or configured; Repowire never invents one.
 
 ## `repowire orchestrator persona`
 
@@ -357,21 +369,13 @@ Run the Slack bot peer over Socket Mode (no public URL needed). Reads `SLACK_BOT
 repowire update
 ```
 
-Re-install repowire via the same package manager that installed it. Use after pulling a new release.
-When config enables optional runtime support such as ACP, `update` upgrades the
-matching package extra so the service runtime keeps the dependency. After
-reinstalling hooks/plugins, `update` restarts the daemon service when it is
-running. SQLite state migrations run during that daemon restart; verify with
-`repowire doctor`.
+Download and install the latest checksum-verified native release, then re-run
+non-interactive setup. SQLite state migrations run when the daemon restarts;
+verify with `repowire doctor`.
 
-`repowire update` is the only command that upgrades the installed package.
+`repowire update` is the only command that upgrades the installed binary.
 Hooks, MCP calls, daemon routing, `status`, and `doctor` never auto-update
 Repowire.
-
-When config enables an optional runtime surface that requires package extras,
-such as `experiments.acp_broker_client`, `update` uses an explicit package spec
-like `repowire[acp]` where the package manager supports it so optional
-dependencies are preserved.
 
 ## `repowire uninstall`
 
@@ -379,7 +383,7 @@ dependencies are preserved.
 repowire uninstall [--yes]
 ```
 
-Remove hooks, MCP entries, and the daemon service. Prompts before deleting `~/.repowire/` (config, logs, attachments); decline to keep it for reinstalls. `--yes` skips the prompts and removes the directory along with the installed package.
+Remove hooks, MCP entries, and the daemon service. `--yes` also removes `~/.repowire/` (config, logs, attachments); omit it to keep local state for reinstalls. Remove the release binary separately if desired.
 
 ## See also
 

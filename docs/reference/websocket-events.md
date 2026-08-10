@@ -13,7 +13,7 @@ The ws-hook `connect` frame advertises `hook_version` and `capabilities` (e.g. `
 
 ## Compatibility
 
-The exact event payloads are transport-facing internals unless documented by a client or MCP tool. Prefer MCP tools for agent actions and the Python client for programmatic daemon access.
+The exact event payloads are transport-facing internals unless documented by an HTTP route or MCP tool. Prefer MCP tools for agent actions and the HTTP API for external integrations.
 
 ## Related
 

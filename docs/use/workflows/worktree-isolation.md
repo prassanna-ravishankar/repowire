@@ -38,7 +38,7 @@ Both register as peers (different display names, separate paths). Address them b
 
 Orchestrators commonly spawn peers on worktrees. The flow:
 
-```python
+```text
 spawn_peer(
     path="/home/me/projects/project-feat-c",
     backend="claude-code",

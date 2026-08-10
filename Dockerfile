@@ -1,32 +1,29 @@
-# Stage 1: Build Next.js dashboard static export
+# Stage 1: Build the dashboard static export.
 FROM node:22-slim AS web-builder
-WORKDIR /web
+WORKDIR /src/web
 COPY web/package.json web/package-lock.json* ./
 RUN npm ci
-COPY web/ .
+COPY web/ ./
 ENV NEXT_PUBLIC_API_BASE=""
 RUN npm run build
 
-# Stage 2: Python relay server
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+# Stage 2: Build the native relay.
+FROM golang:1.25-bookworm AS go-builder
+WORKDIR /src/daemon-go
+COPY daemon-go/go.mod daemon-go/go.sum ./
+RUN go mod download
+COPY daemon-go/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /repowire .
 
+# Stage 3: Minimal runtime; no Python or Node.js.
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --home-dir /app repowire
 WORKDIR /app
-
-ENV UV_COMPILE_BYTECODE=1
-ENV UV_LINK_MODE=copy
-
-# Dependency cache layer
-COPY pyproject.toml uv.lock README.md hatch_build.py ./
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-install-project --no-dev
-
-# App code layer
-COPY repowire/ repowire/
-# Copy built dashboard from web-builder stage
-COPY --from=web-builder /web/out web/out
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
-
-ENV PATH="/app/.venv/bin:$PATH"
-ENV PYTHONUNBUFFERED=1
-
+COPY --from=go-builder /repowire /usr/local/bin/repowire
+COPY --from=web-builder /src/web/out /app/web/out
+USER repowire
 EXPOSE 8000
-CMD ["repowire", "relay", "start", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["repowire"]
+CMD ["relay", "start", "--host", "0.0.0.0", "--port", "8000"]

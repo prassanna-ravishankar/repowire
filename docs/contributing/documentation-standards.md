@@ -8,15 +8,15 @@ Feature work that changes public behavior must update public docs in the same PR
 - Use: active-user feature pages and workflow recipes.
 - Concepts: mental models and invariants.
 - Operate: daemon, relay, transports, state, deployment, and security.
-- Reference: exact CLI, MCP, Python client, config, HTTP, WebSocket, and hook details.
+- Reference: exact CLI, MCP, config, HTTP, WebSocket, and hook details.
 - Troubleshooting: symptom-oriented fixes.
 - Contributing: maintainer workflows, release/versioning, backend additions, and design notes.
 
 ## Before opening a PR
 
 ```bash
-uv run --no-project zensical build --strict
-python3 scripts/pre_pr_hygiene.py
+uvx --from zensical==0.0.43 zensical build --strict
+scripts/pre-pr-hygiene.sh
 ```
 
 If docs are intentionally deferred, file a Beads follow-up and say why in the PR handoff.

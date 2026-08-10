@@ -1,4 +1,4 @@
-name: Publish
+name: Publish native release
 
 on:
   push:
@@ -7,24 +7,52 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
-      id-token: write
+      contents: write
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon-go/go.mod
+          cache-dependency-path: daemon-go/go.sum
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "22"
 
-      - name: Build UI
-        run: cd web && npm ci && npm run build
+      - name: Verify Go
+        run: cd daemon-go && go vet ./... && go test -race ./...
 
-      - name: Set version from tag
-        run: uv version ${GITHUB_REF#refs/tags/v}
+      - name: Verify and build dashboard
+        run: cd web && npm ci && npm test -- --run && npm run build
 
-      - name: Build
-        run: uv build
+      - name: Build release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os=${target%/*}
+            arch=${target#*/}
+            stage=$(mktemp -d)
+            mkdir -p "$stage/web"
+            cp -R web/out "$stage/web/out"
+            (
+              cd daemon-go
+              CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+                -ldflags="-s -w -X github.com/repowire/repowire/daemon-go/cli.Version=$version" \
+                -o "$stage/repowire" .
+            )
+            tar -C "$stage" -czf "dist/repowire_${version}_${os}_${arch}.tar.gz" repowire web
+            rm -rf "$stage"
+          done
+          cp install.sh dist/install.sh
+          cd dist
+          sha256sum repowire_*.tar.gz install.sh > checksums.txt
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes \
+            || gh release upload "$GITHUB_REF_NAME" dist/* --clobber

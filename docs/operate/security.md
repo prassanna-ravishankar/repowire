@@ -17,13 +17,14 @@ For the hosted relay at `repowire.io`, this means the operators *could* see your
 
 - **Local-only traffic.** A daemon running without `relay.enabled: true` never connects to the relay. Mesh traffic stays on `127.0.0.1:8377`.
 - **Other users' traffic.** API keys scope by user id; daemons in different scopes cannot reach each other.
-- **MCP-server traffic.** Default MCP tool calls travel agent → MCP stdio → daemon HTTP, locally. The opt-in HTTP MCP endpoint is also localhost-only and is not tunneled through the hosted relay.
+- **MCP traffic.** Tool calls travel agent → stdio identity shim → daemon `/mcp`, locally. The relay client rejects `/mcp` tunnel requests before forwarding them.
 
 ## Authentication
 
 - The daemon authenticates to the relay with `relay.api_key`. The key is auto-generated and stored in `~/.repowire/config.yaml`.
 - The dashboard authenticates to the relay with a cookie set after submitting the same API key at `/auth`. Possession of the key grants dashboard access; treat it like a password.
-- Local-daemon `daemon.auth_token` is independent and gates the local WebSocket / HTTP API. `repowire setup --http-mcp` generates one because HTTP MCP requires bearer auth by default. Set or rotate it manually if other processes on the machine should not have free access.
+- Local-daemon `daemon.auth_token` is independent and gates the local WebSocket / HTTP API. `repowire setup` generates one because the MCP identity shim forwards to bearer-authenticated `/mcp`. Set or rotate it manually if other processes on the machine should not have free access.
+- The daemon-served localhost dashboard can use same-origin HTTP routes without exposing that token to browser JavaScript. Cross-origin, remote, WebSocket, and MCP callers remain bearer-gated.
 
 ## Trust boundaries
 
@@ -31,7 +32,7 @@ For the hosted relay at `repowire.io`, this means the operators *could* see your
 | --- | --- |
 | Browser ↔ relay | TLS (you trust the relay's certificate) |
 | Relay ↔ daemon | TLS-over-WSS (you trust the relay's network and process) |
-| Daemon ↔ agent (MCP) | Local stdio by default; optional HTTP MCP is localhost-only with bearer auth |
+| Daemon ↔ agent (MCP) | Per-agent stdio identity proof, then localhost-only HTTP with bearer auth |
 | Daemon ↔ agent (hooks) | Local HTTP on `127.0.0.1`; gated by `daemon.auth_token` if set |
 
 ## Hardening recommendations

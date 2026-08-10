@@ -16,15 +16,18 @@ Gemini CLI uses different event names than Claude Code or Codex:
 | `BeforeAgent` | prompt hook (`UserPromptSubmit` equivalent) | Marks peer `busy` |
 | `AfterAgent` | stop hook (`Stop` equivalent) | Captures response, fetches pending asks, marks peer `online` |
 
-The hook adapter at `hooks/adapters.py` normalizes these to canonical names so the handler code does not branch on runtime.
+The native normalizer in `daemon-go/hooks/common.go` maps these to canonical
+names so the handler code does not branch on runtime.
 
 ### Hook output
 
-Gemini hooks require an explicit decision in their JSON output. Repowire emits `{"decision": "allow"}` from `AfterAgent` so the agent continues normally. Claude Code and Codex hooks ignore the output and run silent — only Gemini needs the `decision` field.
+Gemini hooks require an explicit decision in their JSON output. Repowire emits `{"decision": "allow"}` from `AfterAgent` so the agent continues normally. Claude Code and Codex Stop hooks emit a decision only when blocking to resurface an open ask.
 
 ### MCP server
 
-The repowire MCP server is added under `mcpServers.repowire` in the same `settings.json`, runs as `repowire mcp` over stdio, and sets `REPOWIRE_BACKEND=gemini` for stable runtime identity.
+The Repowire MCP identity shim is added under `mcpServers.repowire` in the same
+`settings.json`, runs as `repowire mcp` over stdio, sets
+`REPOWIRE_BACKEND=gemini`, and proxies tools to the daemon's `/mcp` endpoint.
 
 ## Response field
 

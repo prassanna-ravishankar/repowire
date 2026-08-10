@@ -4,10 +4,13 @@ on:
   push:
     branches: [main]
     paths:
-      - "repowire/relay/**"
-      - "repowire/protocol/**"
-      - "repowire/config/**"
-      - "repowire/daemon/relay_client.py"
+      - "daemon-go/relayserver/**"
+      - "daemon-go/relay/**"
+      - "daemon-go/config/**"
+      - "daemon-go/cli/**"
+      - "daemon-go/main.go"
+      - "daemon-go/go.mod"
+      - "daemon-go/go.sum"
       - "web/**"
       - "Dockerfile"
       - "charts/repowire-relay/**"
@@ -21,6 +24,21 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon-go/go.mod
+          cache-dependency-path: daemon-go/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Verify Go
+        run: cd daemon-go && go vet ./... && go test -race ./...
+
+      - name: Verify dashboard
+        run: cd web && npm ci && npm test -- --run
 
       - id: auth
         uses: google-github-actions/auth@v2

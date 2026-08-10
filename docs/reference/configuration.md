@@ -7,6 +7,7 @@ daemon:
   host: "127.0.0.1"
   port: 8377
   auth_token: "rw_local_..."
+  circle_boundary: session
   delivery_queue_ttl_seconds: 86400
   delivery_queue_max_per_peer: 100
   orchestrator_recall:
@@ -15,7 +16,7 @@ daemon:
     max_chars: 900
     max_file_chars: 12000
   mcp_http:
-    enabled: false
+    enabled: true
     bind: "localhost-only"
     require_auth: true
     allow_unauthenticated_localhost: false
@@ -38,37 +39,79 @@ daemon:
     allowed_paths: []
 updates:
   check_enabled: false
+telegram:
+  bot_token: ""
+  chat_id: ""
+slack:
+  bot_token: ""
+  app_token: ""
+  channel_id: ""
 ```
 
 ## Environment variables
 
-Any field can be overridden by an environment variable. Nested fields use a `REPOWIRE_` prefix and `__` as the section delimiter:
+Documented scalar daemon, relay, and experiment fields can be overridden
+by environment variables. Nested fields use a `REPOWIRE_` prefix and `__` as the
+section delimiter:
 
 ```bash
 REPOWIRE_DAEMON__PORT=9000
 REPOWIRE_DAEMON__AUTH_TOKEN=rw_...
+REPOWIRE_DAEMON__CIRCLE_BOUNDARY=window
 REPOWIRE_RELAY__URL=wss://repowire.io
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+SLACK_CHANNEL_ID=C...
 ```
 
 Two legacy flat aliases are kept for the relay: `REPOWIRE_RELAY_URL` and `REPOWIRE_API_KEY` (setting `REPOWIRE_API_KEY` also flips `relay.enabled` to true).
+
+Telegram and Slack accept both their conventional flat environment variables
+shown above and nested `REPOWIRE_TELEGRAM__*` / `REPOWIRE_SLACK__*` aliases.
 
 Resolution precedence, highest first: explicit constructor arguments, the flat relay aliases, `REPOWIRE_*` environment variables, `~/.repowire/config.yaml`, then built-in defaults. Environment variables take precedence over the config file, so an exported `REPOWIRE_DAEMON__PORT` overrides `daemon.port` in the YAML.
 
 ## `daemon.auth_token`
 
-Optional local bearer token for daemon HTTP routes, WebSocket connections, hooks, and the opt-in HTTP MCP endpoint. `repowire setup --http-mcp` generates one automatically if missing. Treat it as a local password; rotate it by replacing the value and restarting the daemon service.
+Optional local bearer token for daemon HTTP routes, WebSocket connections,
+hooks, and HTTP MCP. `repowire setup` generates one automatically because the
+stdio MCP identity shim forwards to `/mcp`. Treat it as a local password;
+rotate it by replacing the value and restarting the daemon service.
+The daemon-served localhost dashboard may call same-origin HTTP routes without
+the token; other local HTTP clients still require the bearer header.
+
+## `daemon.circle_boundary`
+
+Controls which tmux container supplies the implicit circle. `session` is the
+default and preserves existing behavior: every peer in a tmux session shares
+that session's circle. `window` gives each tmux window its own stable circle,
+named from tmux's window id (for example `window-7`); panes in that window share
+the circle even if the window is renamed. The only accepted values are
+`session` and `window`; invalid configuration stops loading instead of silently
+falling back.
+
+Changing this setting does not rewrite durable peer identities already recorded
+in the daemon. Stop and recreate peers that should adopt the new boundary.
+Restart and backend-switch refuse to replace the last pane in a window, because
+killing it would destroy the window before tmux could place its replacement.
 
 ## `daemon.mcp_http`
 
-Experimental Streamable HTTP MCP endpoint mounted at `http://127.0.0.1:8377/mcp`.
+Streamable HTTP MCP endpoint mounted at `http://127.0.0.1:8377/mcp`. The daemon
+owns all tool implementations here; `repowire mcp` is a per-agent stdio proxy.
 
-- `enabled`: opt in to mounting `/mcp`. Default: `false`.
-- `bind`: only `localhost-only` is supported. If `daemon.host` is not `127.0.0.1`, `::1`, or `localhost`, `/mcp` is not mounted.
+- `enabled`: mount `/mcp`. The model default is `false`; `repowire setup` enables it for normal installations.
+- `bind`: only `localhost-only` is supported. The handler rejects non-loopback callers even when the daemon itself listens on a wider interface.
 - `require_auth`: require `Authorization: Bearer <daemon.auth_token>`. Default: `true`.
 - `allow_unauthenticated_localhost`: development-only escape hatch that disables bearer auth when `require_auth` is also disabled. Do not use on shared machines.
 - `allow_dangerous_tools`: allow lifecycle/admin MCP tools over HTTP MCP. Default: `false`; spawn, kill, and schedule mutation stay disabled.
 
-HTTP MCP is never exposed through the hosted relay. The default stdio MCP server installed by `repowire setup` is unchanged and remains the stable path for agents.
+HTTP MCP is never exposed through the hosted relay. The stdio identity shim is
+the stable path for agents because it preserves peer identity; direct HTTP is
+for local steering clients that accept the `mcp-http` identity and restricted
+admin surface.
 
 ## `daemon.delivery_queue_*`
 
@@ -116,7 +159,7 @@ Explicit command overrides still win over profiles. `repowire peer restart` pres
 
 Opt-in release availability checks for `repowire status` and `repowire doctor`. Default: `false`.
 
-When enabled, those commands may query PyPI and report that a newer Repowire release is available. They never install packages, rewrite hooks, restart services, or mutate daemon routing. `repowire update` remains the explicit upgrade path.
+When enabled, those commands may query GitHub Releases and report that a newer Repowire release is available. They never install binaries, rewrite hooks, restart services, or mutate daemon routing. `repowire update` remains the explicit upgrade path.
 
 ## `experiments`
 

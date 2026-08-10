@@ -35,7 +35,7 @@ daemon, hook, MCP, service, relay, channel, and multi-runtime install path.
 ## Proposed plugin layout
 
 The marketplace package should be small and declarative. Runtime code should
-stay in the installed `repowire` Python package unless Claude Code requires a
+stay in the installed native `repowire` binary unless Claude Code requires a
 thin wrapper.
 
 ```text

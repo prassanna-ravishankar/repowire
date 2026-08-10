@@ -135,10 +135,10 @@ Rules:
   `StateDatabase` and imports legacy `sessions.json` once. It owns peer ID reuse, display-name
   collision handling, role claims, descriptions, pane hijack evidence, and
   ghost eviction.
-- `repowire/hooks/session_handler.py` registers peers on `SessionStart` with
+- `daemon-go/hooks/session.go` registers peers on `SessionStart` with
   backend, path, pane, role, turn state, agent PID, and metadata such as
   `hook_session_id`.
-- `repowire/hooks/stop_handler.py` posts chat turns with runtime `session_id`,
+- `daemon-go/hooks/stop.go` posts chat turns with runtime `session_id`,
   turn IDs, pane IDs, and transcript-derived tool summaries.
 - `repowire/session/history.py` discovers and replays backend-owned history for
   Claude Code and Codex by project path and runtime metadata.

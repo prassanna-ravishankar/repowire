@@ -1,17 +1,11 @@
 FROM python:3.12-slim AS build
 
-RUN pip install --no-cache-dir uv==0.5.4
+RUN pip install --no-cache-dir zensical==0.0.43
 
 WORKDIR /src
-COPY pyproject.toml uv.lock README.md ./
 COPY docs ./docs
 COPY mkdocs.yml ./
-
-# --no-install-project: docs build only needs zensical from the [docs] extra.
-# Skipping the project install avoids pulling repowire's hatch build, which
-# force-includes web/out (a Next.js export artifact unrelated to the docs site).
-RUN uv sync --extra docs --frozen --no-install-project
-RUN .venv/bin/zensical build --strict
+RUN zensical build --strict
 
 FROM nginx:alpine
 

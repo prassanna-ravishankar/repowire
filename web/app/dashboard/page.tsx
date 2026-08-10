@@ -14,7 +14,7 @@ import { TopBar } from "./components/TopBar";
 import { WireTrace } from "./components/WireTrace";
 import type { Event, OrchestratorStatus, Peer } from "./types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8377";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 
 const RELAY_DASHBOARD_URL = "https://relay.repowire.io/dashboard";
 

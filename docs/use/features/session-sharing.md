@@ -90,7 +90,7 @@ repowire share --revoke sh_xxxxxxxxxxxxxxxx
 Agents can generate share links for themselves. Call only when the user
 explicitly asks — do not share proactively:
 
-```python
+```text
 share_session()                            # share yourself, read-only
 share_session(permissions="rw")            # read-write
 share_session(peer_name="other-agent")     # share a different peer
@@ -99,7 +99,7 @@ share_session(ttl_secs=1800)               # expires in 30 minutes
 
 Revoke a link:
 
-```python
+```text
 revoke_share(share_id="sh_xxx")
 ```
 

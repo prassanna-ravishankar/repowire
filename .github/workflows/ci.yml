@@ -6,20 +6,51 @@ on:
   pull_request:
 
 jobs:
-  check:
+  go:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon-go/go.mod
+          cache-dependency-path: daemon-go/go.sum
 
-      - name: Install dependencies
-        run: uv sync --all-extras
+      - name: Vet, build, and race-test
+        run: cd daemon-go && go vet ./... && go build ./... && go test -race ./...
 
-      - name: Lint
-        run: uvx ruff check repowire/
+      - name: Cross-compile release targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd daemon-go
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null .
+            echo "ok $target"
+          done
 
-      - name: Type check
-        run: uv run ty check repowire/
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm test -- --run
+      - run: npm run build
 
-      - name: Test
-        run: uv run pytest
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: repowire-relay:test

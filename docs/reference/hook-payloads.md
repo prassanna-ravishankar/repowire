@@ -1,6 +1,6 @@
 # Hook Payloads
 
-Hook payloads vary by agent runtime. Repowire normalizes them before handler code updates peer state or extracts responses.
+Hook payloads vary by agent runtime. Repowire normalizes them before handler code updates peer state or extracts responses. Current Codex releases retain only the Stop payload's `session_id` for pending-ask reminders; the other Codex entries describe the full fallback used when App Server listening is unavailable.
 
 ## Normalized concepts
 
@@ -20,7 +20,7 @@ not parse `--model` out of command strings or spawn profiles.
 | Backend | Capture path | Gotcha |
 | --- | --- | --- |
 | Claude Code | `SessionStart` hook `model` field. | Claude Code exposes model on `SessionStart`; later hook events may not refresh it. |
-| Codex | Hook `model` field on registration and later prompt/stop events. | Missing values preserve the last known model. |
+| Codex | App Server thread metadata; fallback hooks expose a `model` field. | The native thread summary may not expose a concrete model, so it can remain unknown. |
 | Gemini | Best-effort explicit hook `model` field, if present. | Current Repowire Gemini path has no confirmed model field. |
 | Antigravity | Same best-effort extraction as Gemini once hooks fire. | `agy` hook firing is still pending upstream, so daemon-spawned CLI-fallback peers usually have no model. |
 | OpenCode | Plugin `message.updated` user-message model; `modelID` becomes `peer.model`, provider/model details stay in metadata. | Model may be unknown until OpenCode emits its first user-message model info. |
@@ -38,17 +38,15 @@ skipped because a `SessionStart` with `source=clear` rebinds the same pane
 milliseconds later. It does not fire on SIGKILL; the ws-hook's agent-pid
 watcher covers that case.
 
-Codex has no SessionEnd hook event (its hook set is SessionStart /
-UserPromptSubmit / Stop plus tool, compact, and subagent events), so codex
-quit deregistration rides entirely on the agent-pid watcher. Repowire
-pre-trusts its codex hook entries in `[hooks.state]` when `repowire setup`
-writes `hooks.json` — codex silently skips untrusted hooks, so without the
-pre-trust every setup run would disable the codex transport until the user
-re-trusts in the TUI.
+On current Codex releases, App Server's `thread/closed` event ends the live peer.
+The older hooks fallback has no SessionEnd event, so quit deregistration relies
+on the agent-pid watcher.
 
 ## Default delivery path
 
-The default hooks + MCP transport uses hooks for lifecycle and Stop-hook reminders, MCP for outbound commands, and tmux pane injection for live inbound delivery.
+The hooks + MCP transport uses hooks for lifecycle and Stop-hook reminders, MCP
+for outbound commands, and tmux pane injection for live inbound delivery. Codex
+uses App Server thread steering instead when available.
 
 ## Related
 

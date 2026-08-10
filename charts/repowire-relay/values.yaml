@@ -40,8 +40,3 @@ httpRoute:
   gatewayName: clusterkit-gateway
   annotations:
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
-
-# Secret for JWT signing
-secrets:
-  jwtSecretName: repowire-relay-secrets
-  jwtSecretKey: jwt-secret

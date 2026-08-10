@@ -66,7 +66,7 @@ All mesh memory lives under `~/.repowire/memory/`:
 
 Each scope has the same internal shape: a `MEMORY.md` index plus one file per
 memory, identical frontmatter to the orchestrator template
-(`repowire/orchestrator/template/memory/MEMORY.md`).
+(`daemon-go/cli/assets/orchestrator/memory/MEMORY.md`).
 
 ### Scope semantics
 

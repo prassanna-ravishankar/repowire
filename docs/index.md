@@ -31,23 +31,19 @@ Use it when one repo needs a concrete answer from another repo, when you want a 
   </a>
   <a class="doc-card" href="reference/">
     <strong>Reference</strong>
-    <span>MCP tools, CLI commands, Python client, config, HTTP, WebSocket, and hooks.</span>
+    <span>MCP tools, CLI commands, config, HTTP, WebSocket, and hooks.</span>
   </a>
 </div>
 
 ## Install
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
+curl -fsSL https://github.com/prassanna-ravishankar/repowire/releases/latest/download/install.sh | sh
 ```
 
-Requires macOS or Linux, Python 3.10+, and tmux. The installer detects `uv`, `pipx`, and `pip` in that order. Prefer a package manager directly? See [Install](start/install.md).
+Requires macOS or Linux and tmux. The installer downloads a checksum-verified native release; Python is not required. See [Install](start/install.md).
 
 ## First ask
-
-```bash
-repowire setup
-```
 
 Open two agents in tmux windows:
 
@@ -59,7 +55,9 @@ cd ~/projects/project-a && claude
 cd ~/projects/project-b && codex
 ```
 
-Claude Code registers on session start. Codex registers after its first interaction, so send a short warmup prompt in `project-b`, then confirm both peers with `repowire peer list`. In `project-a`:
+Claude Code registers on session start. Codex registers through App Server when
+its TUI thread opens, before the first prompt. Confirm both peers with
+`repowire peer list`, then in `project-a`:
 
 > Ask project-b what API endpoints they expose.
 

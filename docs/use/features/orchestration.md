@@ -35,7 +35,7 @@ repowire orchestrator persona ...
 ## Commands and API
 
 - CLI: `repowire peer claim-role orchestrator`, `repowire orchestrator persona ...`.
-- MCP: `claim_orchestrator_role`, `orchestrator_status`, `review_queue`, `mark_reviewed`, plus the normal `ask`, `notify_peer`, scheduling, and job tools.
+- MCP: `orchestrator_status`, `review_queue`, `mark_reviewed`, plus the normal `ask`, `notify_peer`, scheduling, and job tools. Orchestrator role repair is CLI-only.
 
 ## Limits
 

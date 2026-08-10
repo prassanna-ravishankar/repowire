@@ -4,17 +4,24 @@ Repowire is a local-first routing daemon plus thin transport adapters for each a
 
 ```text
 Agent runtime
-  ├─ hooks + MCP (Claude Code, Codex, Gemini)
+  ├─ Go hooks + native inbox + stdio identity shim (Claude Code)
+  ├─ Go hooks + stdio identity shim (Gemini)
+  ├─ App Server bridge + MCP (Codex)
   ├─ plugin + WebSocket (OpenCode)
   ├─ extension (Pi)
-  └─ channel / ACP transport (Claude Code experimental)
+  └─ Channel bridge / ACP transport (Claude Code experimental)
         ↓
-HTTP/WebSocket daemon on 127.0.0.1:8377
+Go HTTP/WebSocket/MCP daemon on 127.0.0.1:8377
         ↓
 Dashboard, Telegram, Slack, orchestrator peers, relay, and other peers
 ```
 
 The daemon is the single routing hub. It does not care whether a peer arrived through hooks, an OpenCode plugin, the Pi extension path, a bot, relay traffic, or experimental channel/ACP delivery. Every peer is represented in the registry and routes messages through the same core message layer.
+
+Runtime-side components that translate a native session API into this common
+protocol are called [bridges](../concepts/bridges.md). Their lifecycle follows
+the runtime: Codex needs a supervised companion, while Claude Channels,
+OpenCode, and Pi load their bridge inside the agent session.
 
 <p align="center">
   <img src="../assets/repowire-arch.webp" alt="Repowire architecture diagram" width="700" />
@@ -24,29 +31,44 @@ The daemon is the single routing hub. It does not care whether a peer arrived th
 
 | Area | Files | Responsibility |
 | --- | --- | --- |
-| Agent backends | `repowire/agent_types.py`, `repowire/agent_backends.py` | Serialized backend identity plus setup, spawn, resume prevalidation, history loading, MCP config, and post-spawn behavior dispatch |
-| Configuration | `repowire/config/models.py`, `repowire/config/paths.py`, `repowire/config/spawn.py`, `repowire/config/relay.py` | Main config value object plus narrow path, spawn, and relay config slices for callers that do not need the whole model |
-| Daemon app | `repowire/daemon/app.py`, `repowire/daemon/deps.py` | FastAPI app factory, dependency wiring, dashboard/static serving |
-| Peer state | `repowire/daemon/peer_registry.py`, `repowire/daemon/registry_identity.py`, `repowire/daemon/registry_events.py`, `repowire/daemon/registry_repair.py` | Registration, identity mapping, liveness, circles, roles, lazy repair, and contradiction events |
-| Message routing | `repowire/daemon/peer_delivery.py`, `repowire/daemon/transport_router.py`, `repowire/daemon/message_router.py`, `repowire/daemon/websocket_transport.py` | Delivery orchestration, ACP-before-WebSocket transport selection, and wire delivery over connected peers |
-| Ask lifecycle | `repowire/daemon/ask_tracker.py`, `repowire/daemon/routes/asks.py` | Open ask state, pending reminders, close/ack handling |
-| Session controls | `repowire/daemon/session_controls.py`, `repowire/daemon/routes/sessions.py` | Session-binding resolution and session-targeted control capability routes |
-| Session acquisition | `repowire/daemon/session_control.py`, `repowire/daemon/state/operations.py` | Durable operation records and live-executor acquisition for session/job work |
-| Schedules | `repowire/daemon/scheduler.py`, `repowire/daemon/schedule_store.py`, `repowire/daemon/routes/schedules.py` | One-shot and recurring cron deliveries |
-| Jobs | `repowire/daemon/job_runner.py`, `repowire/daemon/state/work.py`, `repowire/daemon/state/calendar.py`, `repowire/daemon/routes/work.py` | Durable tracked work, recurring calendar templates, and spawned job dispatch (asks sent from the built-in `@jobs` service peer) |
-| Fire completion | `repowire/daemon/job_completion.py`, `repowire/daemon/job_release.py` | Structural job results: arms fires from the dispatch prompt, records the executor's final turn as the result, fails fires on executor death, emits `job_state_changed` events, notifies owners, releases executors |
-| Hooks | `repowire/hooks/` | Runtime event adapters, tmux injection, transcript/chat extraction |
-| MCP server | `repowire/mcp/server.py` | Agent-facing tools over stdio |
-| Control surfaces | `web/`, `repowire/telegram/bot.py`, `repowire/slack/bot.py` | Dashboard and human/service peers |
-| Relay | `repowire/relay/server.py`, `repowire/daemon/relay_client.py` | Hosted remote dashboard and cross-machine tunnel |
+| CLI and installers | `daemon-go/cli/` | Setup, runtime installation, service/peer/job/schedule/session commands, embedded client assets |
+| Configuration | `daemon-go/config/` | YAML/default/environment loading for daemon, spawn, relay, MCP, and experiments |
+| Daemon routes | `daemon-go/hub/` | HTTP/WebSocket server, dashboard, history/timeline, daemon endpoints, and `/mcp` |
+| Peer state | `daemon-go/peer/` | Typed identity registry, lifecycle FSM, circles, roles, lazy repair, and contradictions |
+| Message routing | `daemon-go/service/delivery.go`, `daemon-go/service/router.go`, `daemon-go/service/transport.go`, `daemon-go/service/acp.go` | ACP-before-WebSocket delivery, receipts, queuing, and transport lifecycle |
+| Ask lifecycle | `daemon-go/service/ask_tracker.go`, `daemon-go/hub/routes_ask_lifecycle.go` | Open asks, reminders, structured answers, and ack/reply delivery |
+| Sessions and spawn | `daemon-go/service/session_control.go`, `daemon-go/service/spawn_service.go` | Resume prevalidation, destructive pane proof, executor acquisition, and controls |
+| Schedules and jobs | `daemon-go/service/scheduler.go`, `daemon-go/service/job_runner.go`, `daemon-go/service/job_completion.go`, `daemon-go/state/` | Deadline-driven schedules, durable work, turn completion, executor-death failure, SQLite state |
+| Hooks | `daemon-go/hooks/` | Runtime adapters, ws-hook supervision, Claude inbox/tmux delivery, chat extraction, remote approval |
+| Codex bridge | `daemon-go/codexbridge/` | App Server lifecycle, native thread steering, and chat events |
+| MCP | `daemon-go/hub/routes_mcp*.go`, `daemon-go/mcpstdio/` | Complete daemon-owned HTTP tool surface plus the per-runtime identity proxy |
+| Control surfaces | `web/`, `daemon-go/mobile/` | Dashboard and native Telegram/Slack human peers |
+| Relay | `daemon-go/relayserver/`, `daemon-go/relay/` | Native hosted server plus the daemon's outbound tunnel client |
 
 ## Transports
 
 ### Hooks + MCP
 
-Claude Code, Codex, and Gemini use lifecycle hooks for registration/status/chat extraction and MCP tools for outbound commands. The hook adapter normalizes each runtime's event names and response fields.
+Claude Code and Gemini use native Go lifecycle hooks for registration,
+status, and chat extraction. Their `repowire mcp` process resolves a
+daemon-minted runtime certificate and proxies tool JSON-RPC to `/mcp`, where all
+31 tool implementations live.
 
-Default message delivery still uses tmux injection plus Stop-hook reminders for unacked asks. The MCP server lazily registers on tool calls so runtimes that initialize late, especially Codex, still get a peer identity before routing.
+Claude Code 2.1.224+ receives messages through its per-session native inbox;
+the same WebSocket hook retains tmux injection as a compatibility fallback.
+Gemini still uses tmux injection. Stop-hook reminders resurface unacked asks.
+The identity shim lazily registers on tool calls, and the daemon ignores a
+claimed identity header unless its certificate proof is current and bound to
+that peer.
+
+### Codex App Server
+
+The separately supervised Codex companion owns the default Unix control socket
+and translates App Server threads into ordinary mesh peers. `thread/started`
+registers a peer before its first prompt; turn and item notifications drive
+status and dashboard chat events. Inbound delivery uses `turn/steer` for an
+active turn or `turn/start` for an idle thread. Restarting the routing daemon
+does not restart App Server or the Codex TUI.
 
 If a hook-backed orchestrator reconnects after daemon restart or WebSocket churn without carrying its prior `peer_id`, the daemon may reclaim the existing offline identity when the role, display name, circle, backend, and path match unambiguously. Queued notifications for that peer are replayed over the renewed WebSocket before falling back to Stop-hook or CLI draining.
 
@@ -54,9 +76,14 @@ If a hook-backed orchestrator reconnects after daemon restart or WebSocket churn
 
 OpenCode does not expose the same hook shape, so Repowire installs a TypeScript plugin. The plugin holds a WebSocket connection to the daemon and bridges OpenCode session events into the same peer/message model. Pi uses Repowire's extension path when setup detects the `pi` CLI or config.
 
-### Channel / ACP transport
+### Claude Channel bridge / ACP transport
 
-`repowire setup --experimental-channels` installs Claude Code's experimental channel/ACP transport. Messages arrive as `<channel source="repowire">` tags. The normal `repowire mcp` server remains installed for stable tools such as `ask`, `ack`, `notify_peer`, schedules, and peer listing. This requires Claude Code support, claude.ai login, and `bun`. Treat this path as experimental; hooks + MCP remain the default.
+`repowire setup --experimental-channels` installs the embedded TypeScript Claude
+Channel bridge. Messages arrive as `<channel source="repowire">` tags. The
+HTTP-backed MCP identity shim remains installed for stable tools. The Go daemon
+also contains the experiment-gated ACP subprocess client and maps ACP permission
+requests onto the shared blocking-question path. Channel mode still requires
+Claude Code support, claude.ai login, and `bun`.
 
 ### Relay
 
@@ -75,7 +102,7 @@ The current stable surface is peer-oriented, but the v0.14 architecture train is
 - Sessions become the durable unit of work.
 - Peers remain runtime executors.
 - Ask/notify delivery now goes through a delivery service plus transport router; WebSocket hooks, experimental ACP, relay, and future transports continue moving toward transport-neutral routing.
-- The dashboard currently shows a selected peer/session timeline, merging Claude transcript history where available with realtime events.
+- The dashboard currently shows a selected peer/session timeline, merging Claude Code or Codex local history where available with realtime events.
 - The first session-targeted control routes resolve `repowire_session_id` bindings to an active executor or explicit resume capability status.
 - Broader composer actions, scheduling, approval handling, and backend/model controls move toward the same shared session command surface.
 

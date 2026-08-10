@@ -2,15 +2,17 @@
 
 ## What they do
 
-Transports are runtime-specific delivery adapters. The daemon routes at the peer/message level; transports handle how a given runtime receives and reports messages.
+Transports are runtime-specific delivery paths. The daemon routes at the peer/message level; transports handle how a given runtime receives and reports messages. A [bridge](../concepts/bridges.md) is the runtime-side adapter that provides a native transport.
 
 ## Hooks + MCP transport
 
-This is the default path for Claude Code, Codex, and Gemini:
+This is the default path for Claude Code and Gemini:
 
-- Lifecycle hooks register peers, update status, extract transcript/chat turns, and fetch pending ask reminders.
-- MCP tools provide outbound commands such as `ask`, `ack`, `notify_peer`, and `schedule_create`.
-- Live inbound messages are delivered through the WebSocket hook and injected into the runtime's tmux pane. The hook is bound to the owning agent PID and exits when that process disappears, so an orphaned hook cannot keep a dead peer's daemon socket alive indefinitely.
+- Native Go lifecycle hooks register peers, update status, extract transcript/chat turns, and fetch pending ask reminders.
+- `repowire mcp` preserves the runtime's peer certificate over stdio and proxies outbound tool calls to the daemon's localhost `/mcp` implementation.
+- Live inbound messages are delivered through the WebSocket hook. Claude Code 2.1.224+ prefers its per-session native inbox and falls back to tmux injection if the socket is absent or fails; Gemini uses tmux injection. The hook is bound to the owning agent PID and exits when that process disappears, so an orphaned hook cannot keep a dead peer's daemon socket alive indefinitely.
+- Native Claude inbox writes return an `accepted` receipt and can reach busy sessions. Claude's own `crossSessionInbound` controls may still hold or refuse the message; Repowire never changes those controls.
+- Non-human deliveries are injected inside a `<peer-message>` envelope carrying sender, type, target, and correlation id when applicable. Dashboard, Telegram, and Slack messages remain direct human instructions.
 - Open asks continue to resurface through Stop-hook reminders until they are acked.
 
 Deregistration is layered, strongest signal first:
@@ -23,13 +25,37 @@ A *terminal* offline retires the peer identity: the daemon severs its websocket 
 
 Lazy repair treats a recorded agent PID as authoritative runtime evidence: if that PID is gone, a leftover tmux pane or shell is not enough to keep the peer online. Peers without a recorded agent PID can still fall back to live pane evidence.
 
+## Codex App Server transport
+
+Current Codex releases use an independently supervised local App Server and a
+Repowire bridge. Threads register before their first prompt. Inbound messages
+use `turn/start` while idle and `turn/steer` during a live turn; delivery
+receipts are recorded as native thread acceptance, never as pane injection.
+The bridge restores mesh instructions with App Server history injection, binds
+per-call `_meta.threadId` MCP identity through a daemon-minted certificate,
+and preserves peer provenance, ask correlation, safe uploaded-image input,
+tool-call summaries, and handoff state. On the idle transition it reads the
+completed turn once, since App Server item events are client-scoped; no polling
+is involved.
+The ordinary Codex TUI remains visible. Tmux is optional placement/lifecycle
+evidence and is not the delivery channel. A reminder-only Stop hook resurfaces
+asks that remain open after a turn; it does not duplicate App Server lifecycle
+or chat handling. Older Codex releases without a Unix App Server listener fall
+back to hooks + MCP.
+
 ## Plugin and extension transports
 
 OpenCode uses a TypeScript plugin with a persistent WebSocket connection. Pi uses Repowire's extension path when setup detects that runtime.
 
-## Channel / ACP transport
+## Claude Channel bridge / ACP transport
 
-Claude Code can opt into the experimental channel/ACP transport with `repowire setup --experimental-channels`. Messages arrive through `<channel source="repowire">` tags and the default Stop hook remains for dashboard chat-turn extraction.
+Claude Code can opt into the embedded TypeScript Channel bridge with `repowire
+setup --experimental-channels`. Messages arrive through `<channel
+source="repowire">` tags; non-human content inside the channel is additionally
+wrapped in `<peer-message>`. The default Stop hook remains for dashboard chat
+turn extraction. Separately, the Go daemon's experiment-gated ACP subprocess
+client routes ACP-marked peers and sends tool permission requests through the
+same blocking-question path as the dashboard/human surfaces.
 
 ## Relay transport
 

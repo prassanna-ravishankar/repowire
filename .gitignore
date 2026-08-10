@@ -22,11 +22,12 @@ repowire-design-system/
 .opencode/
 session-logs.md
 
-# Dashboard build output (run 'repowire build-ui' before 'uv build')
+# Dashboard and local native build output
 web/out/
+bin/
 .coverage
 
-# mkdocs build output (uv run mkdocs build)
+# docs build output
 site/
 
 # Beads / Dolt files (added by bd init)

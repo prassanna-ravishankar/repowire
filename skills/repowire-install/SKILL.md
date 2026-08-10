@@ -17,7 +17,7 @@ repowire --version    # already installed?
 ```
 If missing, install the CLI and set up hooks/MCP:
 ```bash
-uv tool install repowire        # or: pipx install repowire
+curl -sSfL https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
 repowire setup                  # daemon, hooks, MCP, service (the supported path)
 ```
 `repowire setup` is the source of truth for daemon/hook/MCP/service install —

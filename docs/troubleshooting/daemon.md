@@ -34,7 +34,7 @@ Browser-side errors that mention origin or CORS: the daemon restricts CORS to lo
 repowire serve  # foreground, all logs to stderr
 ```
 
-Or check the user-service log location reported by `repowire status`. Look for stack traces from FastAPI; routing errors are usually visible in the first 20 lines.
+Or check the user-service log location reported by `repowire status`. Native route and transport errors are usually visible in the first 20 lines.
 
 ## Process hanging on port 8377
 

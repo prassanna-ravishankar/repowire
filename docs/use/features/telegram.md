@@ -52,7 +52,7 @@ Send a fire-and-forget nudge:
 /fyi logs are uploaded
 ```
 
-Send a photo or document when the target agent should inspect a file. The bot uploads it to the daemon and includes the local path in the outgoing ask.
+Send a photo when the target agent should inspect it. The bot uploads it to the daemon and includes it in the outgoing ask. Attachments sent by agents are uploaded back to Telegram as photos or documents.
 
 ## Commands and API
 
@@ -62,13 +62,14 @@ Send a photo or document when the target agent should inspect a file. The bot up
 | `/select <peer>` | Sticky-route subsequent messages to that peer |
 | `/switch <peer>` | Alias for `/select` |
 | `/clear` | Clear the sticky target |
+| `/keyboard on` / `/keyboard off` | Show or hide the persistent peer keyboard |
 | `@peer message` | Open an ask to a specific peer and update sticky routing |
 | `/notify [@peer] message` | Fire-and-forget notification; uses sticky target if omitted |
 | `/fyi [@peer] message` | Alias for `/notify` |
 
 Agents can reach your phone with:
 
-```python
+```text
 notify_peer("telegram", "deploy finished, green across CI")
 ```
 

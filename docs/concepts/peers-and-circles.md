@@ -2,7 +2,8 @@
 
 ## Peers
 
-A peer is one running agent session. Claude Code, Codex, Gemini CLI, and OpenCode all register as peers through the same hooks pattern. Peers have:
+A peer is one running agent session. Runtime adapters—hooks, Codex App Server,
+and plugins—normalize every supported agent into the same peer model. Peers have:
 
 - a `name` (display name; auto-suffixed on collision: `repowire`, `repowire-2`),
 - a `path` (working directory),
@@ -17,9 +18,9 @@ Peer state lives in the local daemon at `127.0.0.1:8377`. It is not synced anywh
 
 ## Circles
 
-A circle is a logical subnet. Peers can only message peers in the same circle unless you pass an explicit `circle=` argument that targets a different one. Circles map to tmux sessions by default, so opening agents in the same tmux session puts them in the same circle.
+A circle is a logical subnet. Ordinary agents communicate and spawn within their own circle; circle-bypassing roles such as orchestrators, services, and human surfaces can address others explicitly. By default circles map to tmux sessions, so agents in the same tmux session share a circle. Set `daemon.circle_boundary: window` to scope them to a tmux window instead; all panes in a window share its stable `window-N` circle. A runtime cannot move itself to another circle; choose the target from the CLI/orchestrator spawn surface or recreate it under the desired tmux boundary.
 
-Use circles to keep work-domain peers from talking to home-project peers when you don't want them to. They are scoping, not authorization — a peer with knowledge of a name and circle can reach it.
+Use circles to keep work-domain peers from talking to home-project peers when you don't want them to. They are an agent-routing boundary, not a security boundary against local administrators or circle-bypassing roles.
 
 ## Roles
 

@@ -3,19 +3,22 @@
 ## Quality gates
 
 ```bash
-pytest
-ruff check repowire/
-uv run ty check repowire/
+cd daemon-go
+gofmt -w .
+go vet ./...
+go test -race ./...
+cd ../web
+npm test -- --run
+npm run build
 ```
 
 CI runs the same core gates.
 
 ## Notes
 
-- Route tests use `httpx.AsyncClient` with `ASGITransport`.
-- WebSocket tests use `httpx-ws` with `ASGIWebSocketTransport`.
-- Mock `subprocess.Popen` in session-handler tests so the WebSocket hook does not leak to a live daemon.
-- Reinstall the package after hook changes because hooks run from the installed package.
+- Route and WebSocket tests use `httptest` plus the native WebSocket client.
+- Keep environment-sensitive runtime detection tests hermetic.
+- Rebuild and re-run setup after hook changes because hooks run from the recorded binary.
 
 ## Related
 

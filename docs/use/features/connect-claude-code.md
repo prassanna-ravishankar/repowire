@@ -21,9 +21,26 @@ Six lifecycle events are wired by default:
 
 The hooks shell out to the `repowire` CLI: `repowire hook session`, `repowire hook prompt`, `repowire hook notification`, `repowire hook stop`, `repowire hook session-end`.
 
+### Native inbox delivery
+
+Claude Code 2.1.224 and newer exposes each session's local messaging socket to
+hooks. Repowire's WebSocket hook prefers that native inbox for inbound asks and
+notifications, so an idle session starts a turn and a busy session receives the
+message between tool calls without terminal keystrokes. A successful socket
+write is recorded as native runtime acceptance, not pane injection.
+
+Tmux injection remains the automatic fallback when Claude does not expose the
+socket or a socket write fails. Claude's `crossSessionInbound` policy still
+applies and may hold or refuse an accepted message; Repowire does not change
+that setting. Current setup therefore still requires tmux for placement and
+lifecycle ownership while the session-keyed bridge is tested separately.
+
 ### MCP server
 
-The normal Repowire MCP server is added as `repowire`. It runs as `repowire mcp` over stdio and provides the stable tool surface: `ask`, `ack`, `notify_peer`, `broadcast`, peer listing, schedules, and related commands.
+The normal Repowire MCP entry is added as `repowire`. `repowire mcp` runs as a
+small stdio identity shim and proxies the stable tool surface (`ask`, `ack`,
+`notify_peer`, schedules, jobs, and related commands) to the Go daemon's local
+`/mcp` endpoint.
 
 ## Plugins and skills
 
@@ -44,7 +61,10 @@ A future optional Repowire marketplace plugin should package Claude Code-facing 
 repowire setup --experimental-channels
 ```
 
-Replaces tmux-injection delivery with direct MCP-channel delivery. When a message arrives, Claude sees a `<channel source="repowire">` tag in its context instead of a `[ask #cid from @peer] ...` line injected into the terminal.
+The session-owned [Claude Channel bridge](../../concepts/bridges.md) replaces
+tmux-injection delivery with direct MCP-channel delivery. When a message
+arrives, Claude sees a `<channel source="repowire">` tag in its context instead
+of a `[ask #cid from @peer] ...` line injected into the terminal.
 
 Channel setup adds a separate `repowire-channel` MCP server entry in `~/.claude.json`. The normal `repowire` MCP server remains installed; use its stable tools, including `ack`, for ask lifecycle and parity with the default transport. The channel server itself only handles channel delivery.
 
@@ -74,5 +94,7 @@ To confirm hooks fire, open a new Claude Code session in tmux and watch `repowir
 ## Troubleshooting
 
 - Hooks not firing → [Hooks not firing](../../troubleshooting/hooks.md).
+- Native messages fall back to terminal injection → confirm Claude Code is
+  2.1.224 or newer and `/status` shows a `Peer address`.
 - Channel auth errors → [Channel-mode auth failures](../../troubleshooting/channel-auth.md).
 - Peer stuck `busy` after a turn ends → [Ghost peers and stuck busy state](../../troubleshooting/ghost-peers.md).

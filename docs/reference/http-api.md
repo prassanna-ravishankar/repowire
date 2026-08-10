@@ -1,6 +1,6 @@
 # HTTP API
 
-The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and client libraries. The stable public client surface is the CLI, MCP tools, and Python client; raw HTTP routes may move faster.
+The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and external integrations. The stable public client surfaces are the CLI and MCP tools; raw HTTP routes may move faster.
 
 ## Primary route groups
 
@@ -16,6 +16,7 @@ The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and client
 - `/messages` and WebSocket routes for live delivery.
 - `/schedules` for one-shot and recurring scheduled messages.
 - `/jobs` / work routes for durable tracked work.
+- `/spawn` creates tmux-backed peers; `GET /spawn/config` reports whether spawning is enabled, configured commands/profiles, allowed paths, and the active `circle_boundary` (`session` or `window`). In window mode the CLI supplies its current pane internally so the daemon can split the peer into that window.
 - `/attachments` for upload and download.
 - `/dashboard` for the static dashboard bundle.
 
@@ -61,8 +62,10 @@ When `daemon.auth_token` is configured, clients send:
 Authorization: Bearer <token>
 ```
 
+The dashboard served from the daemon's localhost origin is the exception: its
+same-origin browser requests are accepted without exposing the token to JavaScript.
+
 ## Related
 
-- [Python client](python-client.md)
 - [CLI](cli.md)
 - [Operations: architecture](../operate/architecture.md)

@@ -5,7 +5,7 @@ See [`CONTRIBUTING.md`](https://github.com/prassanna-ravishankar/repowire/blob/m
 Before opening a PR from a checkout, run the advisory hygiene checklist:
 
 ```bash
-python3 scripts/pre_pr_hygiene.py
+scripts/pre-pr-hygiene.sh
 ```
 
 The checklist is not a mandatory hook. It points contributors at README, reference docs, mirrored

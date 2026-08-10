@@ -30,12 +30,6 @@ spec:
         ports:
         - containerPort: {{ .Values.relay.port }}
         command: ["repowire", "relay", "start", "--host", "{{ .Values.relay.host }}", "--port", "{{ .Values.relay.port }}"]
-        env:
-        - name: REPOWIRE_RELAY_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: {{ .Values.secrets.jwtSecretName }}
-              key: {{ .Values.secrets.jwtSecretKey }}
         resources:
           {{- toYaml .Values.resources | nindent 10 }}
         livenessProbe:

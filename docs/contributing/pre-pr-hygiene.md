@@ -4,7 +4,7 @@ Repowire changes often touch more than one public surface. Before opening a PR, 
 advisory checklist:
 
 ```bash
-python3 scripts/pre_pr_hygiene.py
+scripts/pre-pr-hygiene.sh
 ```
 
 The script compares your branch with `origin/main`, includes staged and unstaged changes, and
@@ -16,7 +16,7 @@ feature PRs.
 To clean local-only ledger churn before opening a PR, run:
 
 ```bash
-python3 scripts/pre_pr_hygiene.py --restore-beads-ledgers
+scripts/pre-pr-hygiene.sh --restore-beads-ledgers
 ```
 
 That command backs up the local ledger contents under `.beads/backup/pre-pr-hygiene/` and restores
@@ -28,11 +28,11 @@ and explain any intentional docs deferral in the handoff.
 
 | Change area | Code paths that usually trigger review | Public surfaces to check |
 | --- | --- | --- |
-| CLI and setup | `repowire/cli.py`, `repowire/config/`, `repowire/spawn.py`, `install.sh`, `repowire.yaml.example` | `README.md`, `docs/reference/cli.md`, `CLAUDE.md`, `AGENTS.md` |
-| MCP and Python client | `repowire/mcp/`, `repowire/peer_mcp.py`, `repowire/client.py`, `repowire/protocol/` | `docs/reference/mcp-tools.md`, `docs/reference/python-client.md`, `README.md` when the surface changes materially |
-| Agent runtimes and hooks | `repowire/hooks/`, `repowire/installers/`, `repowire/channel/`, `repowire/acp/` | `docs/use/features/connect-*.md`, `docs/operate/transports.md`, hook/channel troubleshooting docs, `CLAUDE.md`, `AGENTS.md` |
-| Dashboard and human surfaces | `web/app/dashboard/`, `repowire/telegram/`, `repowire/slack/`, attachments routes, relay code | `docs/use/features/`, `docs/operate/relay.md`, `README.md`, browser-generated screenshots under `images/` when UI changes materially |
-| Daemon routing and architecture | `repowire/daemon/`, `repowire/session/`, routing/lifecycle/scheduling state | `docs/operate/architecture.md`, `docs/concepts/`, `docs/use/workflows/`, `CLAUDE.md`, `AGENTS.md` |
+| CLI and setup | `daemon-go/cli/`, `daemon-go/config/`, `daemon-go/service/spawn_service.go`, `install.sh`, `repowire.yaml.example` | `README.md`, `docs/reference/cli.md`, `CLAUDE.md`, `AGENTS.md` |
+| MCP surface | `daemon-go/hub/routes_mcp*.go`, `daemon-go/mcpstdio/`, `daemon-go/proto/` | `docs/reference/mcp-tools.md`, `README.md` when the surface changes materially |
+| Agent runtimes and hooks | `daemon-go/hooks/`, `daemon-go/cli/assets/` | `docs/use/features/connect-*.md`, `docs/operate/transports.md`, hook/channel troubleshooting docs, `CLAUDE.md`, `AGENTS.md` |
+| Dashboard and human surfaces | `web/app/dashboard/`, `daemon-go/mobile/`, attachments routes, `daemon-go/relayserver/` | `docs/use/features/`, `docs/operate/relay.md`, `README.md`, browser-generated screenshots under `images/` when UI changes materially |
+| Daemon routing and architecture | `daemon-go/hub/`, `daemon-go/peer/`, `daemon-go/service/`, `daemon-go/state/` | `docs/operate/architecture.md`, `docs/concepts/`, `docs/use/workflows/`, `CLAUDE.md`, `AGENTS.md` |
 
 ## Graphify Reminder
 

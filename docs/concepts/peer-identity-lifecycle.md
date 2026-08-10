@@ -8,7 +8,7 @@ A live peer has these identity and lifecycle fields:
 
 - `peer_id` — daemon-assigned stable id for routing and ask ownership.
 - `display_name` / `name` — human-facing name. It can collide across circles, so it is not globally unique.
-- `circle` — routing scope. Peers normally message peers in the same circle unless the caller passes an explicit circle or has a role that bypasses circles.
+- `circle` — routing scope. Ordinary peers message only within their own circle; an explicit foreign circle is accepted only for a role that bypasses circles.
 - `backend` — agent runtime, such as `claude-code`, `codex`, `gemini`, `antigravity`, `opencode`, or `pi`.
 - `path` — working directory used for name allocation, filtering, and operator context. It is not sufficient by itself to prove peer identity.
 - `pane_id` / WebSocket binding — local delivery endpoint for hook-based peers.
@@ -82,8 +82,8 @@ Some offlines are *terminal*: the caller knows the agent behind the peer is gone
 
 There is one protected case: a fresh live `orchestrator` peer keeps sticky ownership of its tmux pane. If a temporary same-pane session starts in a split terminal, the daemon can register that session without assigning the pane (`pane_assigned=false`). The temporary peer can still use outbound MCP/HTTP tools, but it does not get inbound hook transport and must not clear the incumbent orchestrator's pane metadata or WebSocket hook.
 
-Orchestrator role repair follows the same boundary. `claim_orchestrator_role`
-and `repowire peer claim-role orchestrator` can repair stale, offline, or
+Orchestrator role repair follows the same boundary. The CLI-only
+`repowire peer claim-role orchestrator` command can repair stale, offline, or
 mapping-only holders, but they cannot demote a fresh online/busy orchestrator
 holder. To intentionally replace a live orchestrator, stop that holder first so
 the daemon no longer treats it as fresh.
@@ -147,8 +147,11 @@ path+backend lookup. Validation rejects expired envelopes, backend mismatches,
 pane reuse, process mismatches, and envelope fields that do not match persisted
 daemon state. If the daemon restarted and no in-memory peer exists, a valid
 certificate can rehydrate the peer from persisted identity evidence. When the
-envelope is absent or invalid, MCP may register a fresh peer or fail closed for
-strict outbound tools; it should not silently adopt identity from path alone.
+envelope expires, exact same-pane metadata (backend, working directory, and
+agent PID) can renew the existing peer id and replace the certificate instead
+of splitting one runtime across two peers. Otherwise MCP may register a fresh
+peer or fail closed for strict outbound tools; it should not silently adopt
+identity from path alone.
 
 Birth certificates do not make the daemon the owner of raw transcript history
 and do not authorize destructive pane actions. Runtime session ids remain source
@@ -159,7 +162,7 @@ pane metadata that names the target `peer_id`.
 
 Display names are scoped and human-facing. A name can exist in multiple circles, so routing code must not silently choose among multiple viable matches.
 
-Use `peer_id` when exact routing matters. If you use a display name and more than one live candidate matches without an explicit `circle=`, the daemon returns a conflict instead of guessing. Passing `circle="name"` narrows the lookup. MCP `list_peers` and `repowire peer describe` expose both display names and peer ids so operators can disambiguate.
+Use `peer_id` when exact routing matters. If you use a display name and more than one live candidate matches without an explicit `circle=`, the daemon returns a conflict instead of guessing. An authorized cross-circle caller can pass `circle="name"` to narrow the lookup; an ordinary peer cannot use that argument to escape its boundary. MCP `list_peers` and `repowire peer describe` expose both display names and peer ids so operators can disambiguate.
 
 ## Descriptions and stale task state
 

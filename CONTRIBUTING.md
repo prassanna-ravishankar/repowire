@@ -8,22 +8,22 @@ A good place to start is the [`good first issue`](https://github.com/prassanna-r
 
 ## Setting Up the Dev Environment
 
-You'll need Python 3.10+, [uv](https://docs.astral.sh/uv/getting-started/installation/), and [bun](https://bun.sh/) if you're touching the channel server.
+You'll need Go 1.25+, Node.js 22+, and [bun](https://bun.sh/) only if you're touching the experimental channel server.
 ```bash
 # Clone the repo
 git clone https://github.com/prassanna-ravishankar/repowire.git
 cd repowire
 
-# Install dev dependencies (pytest, ruff, ty, httpx-ws)
-uv sync --extra dev --group dev
-
-# Install repowire globally (hooks run from the installed package, not source)
-uv tool install --force --reinstall .
+# Build the dashboard and native binary
+cd web && npm ci && npm run build && cd ..
+mkdir -p bin
+(cd daemon-go && go build -o ../bin/repowire .)
+./bin/repowire setup --non-interactive
 ```
 
 If you're working on the channel server:
 ```bash
-cd repowire/channel && bun install
+cd daemon-go/cli/assets/channel && bun install
 ```
 
 If you're working on the dashboard (`web/`):
@@ -36,27 +36,27 @@ repowire build-ui                      # production build (served by daemon at /
 
 Before pushing anything, make sure these all pass:
 ```bash
-uv run pytest                  # run tests
-uv run ruff check repowire/   # lint
-uv run ty check repowire/     # type check
+cd daemon-go && gofmt -w . && go vet ./... && go test -race ./...
+cd web && npm test -- --run && npm run build
 ```
 
-CI runs all three on every PR, so it's easier to catch issues locally first.
+CI runs the same gates and cross-compiles all release targets on every PR.
 
 ## How Hooks Work
 
-This is the most common gotcha for new contributors: hooks run from the **installed package**, not your source files. After any code change, reinstall before your changes take effect:
+This is the most common gotcha for new contributors: hooks run from the **binary recorded by setup**, not directly from source files. Rebuild it after changes:
 ```bash
-uv tool install --force --reinstall .
+(cd daemon-go && go build -o ../bin/repowire .)
+./bin/repowire setup --non-interactive
 ```
 
 If your changes aren't showing up, this is almost always why.
 
 ## Code Style
 
-Repowire uses [ruff](https://docs.astral.sh/ruff/) with a line length of 100. The full config is in `pyproject.toml`. You can auto-fix most issues with:
+Repowire uses `gofmt` and `go vet` for native code. Format before committing:
 ```bash
-uv run ruff check repowire/ --fix
+cd daemon-go && gofmt -w . && go vet ./...
 ```
 
 ## PR Workflow
@@ -72,7 +72,7 @@ git push origin your-branch-name
 
 Before opening the PR, run the advisory repo-hygiene checklist:
 ```bash
-python3 scripts/pre_pr_hygiene.py
+scripts/pre-pr-hygiene.sh
 ```
 
 This is not a mandatory hook. It compares your branch with `origin/main` and reminds you which
@@ -86,13 +86,12 @@ for the tool-surface matrix.
 
 | Module | What it does |
 |---|---|
-| `daemon/` | Central routing hub: peer registry, message router, ask tracker (non-blocking ask lifecycle), legacy query tracker, HTTP routes |
-| `hooks/` | Default agent transport (Claude, Codex, Gemini): session, stop, prompt, notification handlers + ask-pickup transport reporter |
-| `channel/server.ts` | Experimental MCP stdio transport (requires bun) |
-| `mcp/server.py` | MCP tools: `list_peers`, `ask`, `ack`, `notify_peer`, `broadcast`, etc. |
-| `relay/server.py` | Hosted relay at repowire.io (WS bridge + HTTP tunnel) |
-| `telegram/bot.py` | Telegram bot peer for mobile mesh control |
-| `slack/bot.py` | Slack bot peer via Socket Mode |
+| `daemon-go/hub/`, `peer/`, `service/` | Central routing hub, peer registry, ask lifecycle, and HTTP/WebSocket routes |
+| `daemon-go/hooks/` | Native session, stop, prompt, notification, and ws-hook transport |
+| `daemon-go/cli/assets/channel/` | Experimental MCP stdio transport (requires bun) |
+| `daemon-go/mcpstdio/` | Per-session stdio identity shim for daemon-owned HTTP MCP tools |
+| `daemon-go/relayserver/` | Hosted relay at repowire.io (WS bridge + HTTP tunnel) |
+| `daemon-go/mobile/` | Native Telegram and Slack bot peers |
 | `web/` | Next.js dashboard, build with `repowire build-ui` |
 
 Repowire follows a **lazy repair** philosophy. Nothing polls. Work is deferred until needed and piggy-backed on incoming requests. Avoid adding polling loops, periodic timers, or eager disk writes.

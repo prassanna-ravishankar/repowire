@@ -5,6 +5,7 @@ The mental model behind Repowire. Read once, refer rarely.
 - [Peers and circles](peers-and-circles.md) — what a peer is and how circles scope routing.
 - [Sessions](sessions.md) — durable work context versus live runtime executors.
 - [Agent backends](agent-backends.md) — Claude Code, Codex, Gemini, Antigravity, OpenCode, Pi, and backend identity.
+- [Bridges](bridges.md) — runtime-side adapters from native session APIs into the mesh.
 - [Transports](transports.md) — hooks, plugins, channel/ACP, relay, and why routing stays transport-neutral.
 - [Message types](message-types.md) — `ask`, `ack`, `notify`, `broadcast`.
 - [Jobs and schedules](jobs-and-schedules.md) — delayed messages, recurring work, and durable jobs.

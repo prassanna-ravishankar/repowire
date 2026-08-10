@@ -2,7 +2,7 @@
 
 ## What it runs
 
-The daemon is the local FastAPI routing hub on `127.0.0.1:8377` by default. It owns peer registration, message routing, ask state, schedules, durable jobs, dashboard routes, attachments, relay client connections, and lazy repair.
+The daemon is the native Go routing hub on `127.0.0.1:8377` by default. It owns peer registration, message routing, ask state, schedules, durable jobs, dashboard routes, attachments, relay client connections, and lazy repair.
 
 ## Service lifecycle
 

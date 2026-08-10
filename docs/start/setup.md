@@ -8,7 +8,12 @@ This is the one-time install step. It runs from your shell, not from inside an a
 
 ## What setup does
 
-For every agent runtime it finds, it wires the appropriate Repowire transport. Auto-detection covers Claude Code, Codex, Gemini CLI, OpenCode, and Pi. Then it installs the local daemon as a user service (launchd on macOS, systemd on Linux).
+For every agent runtime it finds, the Go CLI wires the appropriate Repowire
+transport. Auto-detection covers Claude Code, Codex, Gemini CLI, Antigravity,
+OpenCode, and Pi. Then it installs the Go daemon as a user service (launchd on
+macOS, systemd on Linux). When Codex exposes an App Server Unix listener, setup
+also installs its independent thread bridge and keeps only Codex's
+pending-ask reminder Stop hook.
 
 When setup finishes, the daemon is listening on `127.0.0.1:8377`. Open a new agent session in any directory and it will register itself.
 
@@ -19,18 +24,24 @@ When setup finishes, the daemon is listening on `127.0.0.1:8377`. Open a new age
 ```bash
 repowire setup --relay                  # also connect to the hosted relay at repowire.io
 repowire setup --experimental-channels  # use the experimental channel/ACP transport (Claude Code v2.1.80+, claude.ai login, bun)
-repowire setup --http-mcp               # enable localhost Streamable HTTP MCP at /mcp
+repowire setup --http-mcp               # accepted for compatibility; /mcp is configured by setup
 repowire setup --update-checks          # let status/doctor report new Repowire releases
 repowire setup --non-interactive        # take flag values only, no prompts
 ```
 
 `--relay` makes the dashboard available at `https://repowire.io/dashboard` over an outbound WebSocket. See [relay access](../use/features/relay-access.md).
 
-`--experimental-channels` replaces the default hooks transport's tmux-injection delivery with direct MCP-channel / ACP delivery for Claude Code only. It is experimental. See [Claude Code setup](../use/features/connect-claude-code.md).
+`--experimental-channels` replaces the default hook bridge with direct MCP-channel / ACP delivery for Claude Code only. Without that flag, current Claude Code releases use their native session inbox with tmux injection retained as fallback. Channel mode is experimental. See [Claude Code setup](../use/features/connect-claude-code.md).
 
-`--http-mcp` is a local-only experimental MCP endpoint for clients that need Streamable HTTP instead of the default stdio server. It generates a `daemon.auth_token` if needed and requires clients to send `Authorization: Bearer <token>`. The normal `repowire mcp` stdio server remains the default setup path.
+Setup always enables the localhost-only `/mcp` implementation and generates a
+`daemon.auth_token` if needed, because agent runtimes reach it through
+`repowire mcp`. That stdio command is a small Go proxy which preserves the
+runtime's daemon-minted peer identity; it does not duplicate the MCP tools.
+`--http-mcp` remains accepted for older scripts. Direct HTTP clients must send
+`Authorization: Bearer <token>` and, without the stdio identity proof, act as
+the restricted `mcp-http` caller.
 
-`--update-checks` opts this machine into update availability checks from `repowire status` and `repowire doctor`. It only reports that a newer release exists; `repowire update` remains the explicit command that upgrades the installed package, reinstalls hooks/plugins, and restarts the daemon service when needed.
+`--update-checks` opts this machine into update availability checks from `repowire status` and `repowire doctor`. It only reports that a newer release exists; `repowire update` remains the explicit command that upgrades the installed binary and re-runs setup.
 
 ## Verifying
 

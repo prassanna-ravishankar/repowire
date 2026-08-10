@@ -1,13 +1,16 @@
 # Codex
 
-OpenAI's Codex CLI. Hooks and the MCP server are wired into `~/.codex/`.
+OpenAI's Codex CLI connects through its native App Server thread API. Repowire
+keeps the normal Codex TUI visible; App Server replaces tmux keystroke injection
+as the message transport.
 
 ## What gets installed
 
-| File | What goes there |
+| Surface | Purpose |
 | --- | --- |
-| `~/.codex/hooks.json` | Hook entries for `SessionStart`, `UserPromptSubmit`, and `Stop` |
-| `~/.codex/config.toml` | `[features] hooks = true` flag and a `[mcp_servers.repowire]` section |
+| `repowire-codex` user service | Runs the local Codex App Server and thread bridge |
+| `~/.codex/config.toml` | Installs the Repowire MCP tools |
+| `~/.codex/hooks.json` | A reminder-only Stop hook keeps unacknowledged asks visible |
 
 The MCP entry points at the installed `repowire` binary:
 
@@ -15,50 +18,91 @@ The MCP entry points at the installed `repowire` binary:
 [mcp_servers.repowire]
 command = "repowire"
 args = ["mcp"]
-env = { REPOWIRE_BACKEND = "codex" }
+
+[mcp_servers.repowire.env]
+REPOWIRE_BACKEND = "codex"
 ```
 
-## The hooks feature flag
+Older Codex releases without `app-server --listen` retain the hooks transport.
 
-Codex hooks default to **off**. Repowire writes:
+## Registration and delivery
 
-```toml
-[features]
-hooks = true
-```
+`repowire setup` installs an independently supervised Codex companion. It starts
+`codex app-server --listen unix://`; plain `codex`, `codex resume`, and the normal
+TUI automatically use that local control socket.
 
-into `config.toml`. If it finds the old `codex_hooks` flag, repowire removes
-that deprecated key and preserves or writes the current `hooks` flag so Codex
-does not emit a startup warning.
+A thread registers as soon as Codex creates it, before its first user prompt.
+There is no warmup prompt or `UserPromptSubmit` one-turn delay. Repowire sends an
+idle thread a native `turn/start` request and steers an active thread with
+`turn/steer`. App Server lifecycle notifications drive `busy` and `online`
+status, including interrupt and completion boundaries. Because completed-item
+notifications are scoped to the App Server client that started the turn, the
+bridge reads the completed turn once when the thread becomes idle; it does not
+poll.
 
-!!! note "Naming"
-    Codex 0.129.0 renamed `codex_hooks` to `hooks`. Current Codex releases warn
-    when the legacy key is present, so `repowire setup` migrates it away.
+The bridge injects the mesh identity, peer list, ask/ack conventions, and saved
+handoff directly into the thread's model-visible history without starting a
+turn. Inbound peer content keeps its `<peer-message>` provenance and ask
+correlation id; dashboard, Telegram, and Slack messages remain direct human
+instructions. Uploaded images are also passed as native Codex image input when
+they resolve to a daemon-owned attachment file. Other attachments remain
+visible as text metadata.
 
-## Late SessionStart
+App Server shares one MCP subprocess across threads, so Codex includes the
+calling thread as `_meta.threadId` on each tool call. Repowire uses that id only
+to locate the daemon-minted runtime certificate saved by the bridge, then
+validates the certificate before assigning the call to the peer. The MCP shim
+therefore uses the same `peer_id` as the App Server thread instead of lazily
+creating a second peer. `CODEX_THREAD_ID` remains a fallback for Codex surfaces
+that launch MCP per thread.
 
-Codex fires `SessionStart` **after the first user interaction**, not at startup. The repowire MCP server compensates for this with lazy registration — every MCP tool call runs `_ensure_registered()`, which idempotently registers the peer if `SessionStart` hasn't fired yet. The practical consequence: a Codex peer may not appear in `list_peers` until you've typed something into it.
+The Stop hook remains as a narrow reliability backstop: if Codex completes a
+turn without acknowledging an open ask, it blocks with a reminder. It does
+not register the peer, report status or chat, or deliver messages; App Server
+owns those paths.
 
-This is why `spawn_peer(..., message=...)` is effectively required for Codex peers and optional for the others. The `message` becomes the seed first turn that fires `SessionStart`. If you call `spawn_peer` without a `message` for a Codex peer, repowire substitutes a short default warmup prompt to make the hook fire.
+Tmux remains useful for hosting and restarting a TUI, but it is not used for
+message delivery. When exactly one tmux circle matches a Codex thread's working
+directory, Repowire preserves that session/window circle without binding the
+peer to a pane. Spawn hints take precedence. A standalone thread with no safe
+placement evidence joins the explicit `default` circle.
 
-## Status Lifecycle
+Final App Server chat events include completed command, file-change, MCP, and
+other supported tool-call summaries for the dashboard. The bridge also saves
+the latest completed turn as handoff context. Registration metadata includes
+branch and git status, plus tmux diagnostics only when exactly one matching
+Codex pane can be identified; ambiguous cwd matches are deliberately omitted.
 
-`UserPromptSubmit` marks the peer `busy` with `turn_state=working`. `Stop` marks it `online` with `turn_state=idle`.
+The App Server companion is separate from the Repowire daemon. `repowire service
+restart` restarts routing without killing Codex threads; `repowire service stop`
+or `uninstall` stops both services.
 
-Manual interrupt/Esc in the Codex TUI currently has no clean Repowire-visible lifecycle signal. If the interrupt aborts the visible turn without a `Stop` hook, the peer can stay `busy` until the next successful turn boundary or until the daemon's conservative stale-state repair sees `busy`/`working` with no recent liveness for longer than `daemon.stale_busy_timeout_seconds`. Repowire intentionally does not guess that a recent busy Codex peer is idle; when Codex exposes a reliable interrupt/cancel hook, Repowire should wire that directly.
-
-Codex can also drop the background WebSocket hook while the TUI pane remains alive. Repowire treats that as transport loss, not proof that the runtime is dead: status stays runtime-driven when pane/process evidence still exists, but inbound ask/notify delivery fails loudly until the WebSocket hook reconnects.
+For custom Codex model providers, the bridge reads the provider `env_key` names
+from `~/.codex/config.toml`. When it must start App Server and those variables
+are absent from the user-service environment, it takes a bounded snapshot from
+the user's login shell and forwards only the configured variables to App
+Server. Values are not copied into Repowire config or service definitions. If a
+key is still unavailable, the bridge log names the missing variable and Codex
+fails normally instead of silently switching providers.
 
 ## Verifying
 
 ```bash
-repowire status
+repowire service status
+codex
+# in another terminal, before prompting Codex:
+repowire peer list
 ```
 
-To confirm hooks fire, open a Codex session, type one message, and watch `repowire peer list`. The peer should appear within a few seconds of the first user message — not at session open.
+The Codex peer should already be listed. Its metadata reports
+`transport=codex-app-server`, and its TUI remains interactive.
 
 ## Troubleshooting
 
-- Codex peer never registers → confirm `[features] hooks = true` is in `config.toml`, then see [Hooks not firing](../../troubleshooting/hooks.md).
-- Codex peer shows up but `turn_state=pending_first_turn` → the spawn `message` never reached the agent. Re-send via `notify_peer`.
-- MCP tools returning errors → check `~/.codex/config.toml` has the `[mcp_servers.repowire]` section, `env = { REPOWIRE_BACKEND = "codex" }`, and `repowire` is on `PATH`.
+- Codex peer never registers → run `repowire service status`, then inspect
+  `~/.repowire/codex-bridge.log`.
+- Codex joins `default` instead of a tmux circle → more than one Codex tmux
+  circle matched the same working directory, or none did. Spawn it through
+  Repowire for an explicit circle.
+- MCP tools return errors → check `~/.codex/config.toml` contains
+  `[mcp_servers.repowire]` and that `repowire` is on the service `PATH`.
