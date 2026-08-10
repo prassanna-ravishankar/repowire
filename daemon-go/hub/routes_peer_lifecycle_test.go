@@ -8,7 +8,10 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
@@ -103,6 +106,74 @@ func TestRegisterPeerEndpoint(t *testing.T) {
 	gone := postLifecycleJSON(t, mux, "/peer/unregister", UnregisterPeerRequest{Name: resp.DisplayName})
 	if gone.Code != http.StatusNotFound {
 		t.Fatalf("unregister of an unknown peer: want 404, got %d (%s)", gone.Code, gone.Body.String())
+	}
+}
+
+// TestUnregisterPeerClosesLiveSocket proves the self-healing contract for
+// long-lived service clients: removing their registry identity must close the
+// underlying socket so their read loop exits and reconnect backoff can run.
+func TestUnregisterPeerClosesLiveSocket(t *testing.T) {
+	h := newTestHub(t)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	wsURL := "ws" + srv.URL[len("http"):] + "/ws"
+	connectService := func(claimed *proto.PeerID) (*websocket.Conn, proto.PeerID) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		conn, _, err := websocket.Dial(ctx, wsURL, nil)
+		if err != nil {
+			t.Fatalf("dial service: %v", err)
+		}
+		path := "/telegram"
+		if err := wsjson.Write(ctx, conn, proto.ConnectFrame{
+			Type: proto.FrameConnect, DisplayName: "telegram", Circle: "default",
+			Backend: proto.AgentClaudeCode, Role: proto.RoleService, Path: &path, PeerID: claimed,
+		}); err != nil {
+			conn.CloseNow()
+			t.Fatalf("connect service: %v", err)
+		}
+		var connected proto.ConnectedFrame
+		if err := wsjson.Read(ctx, conn, &connected); err != nil {
+			conn.CloseNow()
+			t.Fatalf("read service identity: %v", err)
+		}
+		return conn, connected.SessionID
+	}
+
+	conn, peerID := connectService(nil)
+	defer conn.CloseNow()
+	waitConnected(t, h, peerID)
+
+	readCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	readErr := make(chan error, 1)
+	go func() {
+		_, _, err := conn.Read(readCtx)
+		readErr <- err
+	}()
+
+	rec := postLifecycleJSON(t, mux, "/peer/unregister", UnregisterPeerRequest{Name: string(peerID)})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unregister: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	select {
+	case err := <-readErr:
+		if status := websocket.CloseStatus(err); status != websocket.StatusGoingAway {
+			t.Fatalf("client read close status = %d (%v), want %d", status, err, websocket.StatusGoingAway)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("unregister left the service socket open; client cannot reconnect")
+	}
+
+	reconnected, newPeerID := connectService(&peerID)
+	defer reconnected.CloseNow()
+	waitConnected(t, h, newPeerID)
+	if newPeerID == "" {
+		t.Fatal("service reconnect did not receive a new mesh identity")
 	}
 }
 
