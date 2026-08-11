@@ -226,7 +226,8 @@ var migrationStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_delivery_traces_ts ON delivery_traces(ts)`,
 	`CREATE TABLE IF NOT EXISTS retired_peers (
 		peer_id TEXT PRIMARY KEY,
-		retired_at TEXT NOT NULL
+		retired_at TEXT NOT NULL,
+		hard INTEGER NOT NULL DEFAULT 0
 	)`,
 }
 
@@ -249,6 +250,7 @@ var migrationLedger = []struct {
 	{10, "delivery trace ledger"},
 	{11, "observed peer runtime model"},
 	{12, "retired peer identities survive daemon restarts"},
+	{13, "operator-closed peer identities reject live-runtime reclaim"},
 }
 
 // migrate applies the idempotent schema and stamps user_version. Safe to run on
@@ -272,6 +274,9 @@ func migrate(db *sql.DB) error {
 	if err := ensureModelColumn(tx); err != nil {
 		return err
 	}
+	if err := ensureRetiredHardColumn(tx); err != nil {
+		return err
+	}
 
 	for _, m := range migrationLedger {
 		if _, err := tx.Exec(
@@ -287,6 +292,21 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("stamp user_version: %w", err)
 	}
 	return tx.Commit()
+}
+
+func ensureRetiredHardColumn(tx *sql.Tx) error {
+	var count int
+	if err := tx.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('retired_peers') WHERE name = 'hard'`,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("check retired hard column: %w", err)
+	}
+	if count == 0 {
+		if _, err := tx.Exec(`ALTER TABLE retired_peers ADD COLUMN hard INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add retired hard column: %w", err)
+		}
+	}
+	return nil
 }
 
 // ensureModelColumn adds peer_session_mappings.model on legacy DBs that predate

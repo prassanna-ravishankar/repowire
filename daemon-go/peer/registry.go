@@ -106,7 +106,7 @@ type Registry struct {
 	mappings        map[proto.PeerID]*proto.SessionMapping
 	mappingsDirty   bool
 	mappingsVersion uint64
-	retired         map[proto.PeerID]time.Time
+	retired         map[proto.PeerID]Retirement
 
 	store     Store
 	live      Liveness
@@ -168,7 +168,7 @@ func NewRegistry(ctx context.Context, store Store, live Liveness, transport Tran
 	r := &Registry{
 		peers:             make(map[proto.PeerID]*peerState),
 		mappings:          make(map[proto.PeerID]*proto.SessionMapping),
-		retired:           make(map[proto.PeerID]time.Time),
+		retired:           make(map[proto.PeerID]Retirement),
 		redeliverActive:   make(map[proto.PeerID]struct{}),
 		store:             store,
 		live:              live,
@@ -198,8 +198,8 @@ func NewRegistry(ctx context.Context, store Store, live Liveness, transport Tran
 	if err != nil {
 		return nil, fmt.Errorf("load retired: %w", err)
 	}
-	for id, at := range retired {
-		r.retired[id] = at
+	for id, retirement := range retired {
+		r.retired[id] = retirement
 	}
 	return r, nil
 }
@@ -246,7 +246,10 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	// reconnect unless it proves a live agent. Checked against `retired` (not
 	// `peers`) so it covers ids already evicted from the registry.
 	if params.ClaimedPeerID != nil {
-		if _, isRetired := r.retired[*params.ClaimedPeerID]; isRetired {
+		if retirement, isRetired := r.retired[*params.ClaimedPeerID]; isRetired {
+			if retirement.Hard {
+				return "", "", ErrPeerRetired
+			}
 			if params.AgentPID == nil || !r.live.PIDAlive(*params.AgentPID) {
 				return "", "", ErrPeerRetired
 			}
@@ -836,13 +839,24 @@ func (r *Registry) MarkOffline(ctx context.Context, id proto.PeerID, terminal bo
 // MarkOfflineWithReason is MarkOffline with a truthful terminal cause for
 // lifecycle observers. Non-terminal callers may pass an empty reason.
 func (r *Registry) MarkOfflineWithReason(ctx context.Context, id proto.PeerID, terminal bool, reason string) (int, error) {
+	return r.markOffline(ctx, id, terminal, reason, false)
+}
+
+// ClosePeer is the explicit operator-close transition. Unlike a normal
+// terminal offline, its durable tombstone rejects reconnect even when the old
+// runtime PID remains alive (notably the pane-less Codex App Server bridge).
+func (r *Registry) ClosePeer(ctx context.Context, id proto.PeerID, reason string) (int, error) {
+	return r.markOffline(ctx, id, true, reason, true)
+}
+
+func (r *Registry) markOffline(ctx context.Context, id proto.PeerID, terminal bool, reason string, hardRetire bool) (int, error) {
 	r.mu.Lock()
 	ps, ok := r.peers[id]
 	if !ok {
 		// Terminal offline for an id already evicted must still retire it, or the
 		// orphan it came from could re-register through a persisted mapping.
 		if terminal {
-			r.retireLocked(ctx, id)
+			r.retireLocked(ctx, id, hardRetire)
 		}
 		r.mu.Unlock()
 		return 0, nil
@@ -866,7 +880,7 @@ func (r *Registry) MarkOfflineWithReason(ctx context.Context, id proto.PeerID, t
 	ps.peer.LastSeen = &now
 
 	if terminal {
-		r.retireLocked(ctx, id)
+		r.retireLocked(ctx, id, hardRetire)
 	}
 	name := ps.peer.DisplayName
 	r.mu.Unlock()
@@ -1272,7 +1286,7 @@ func (r *Registry) reapDangling(ctx context.Context) {
 		delete(r.peers, peer.PeerID)
 		delete(r.mappings, peer.PeerID)
 		r.clearAllContradictions(peer.PeerID)
-		r.retired[peer.PeerID] = now
+		r.retired[peer.PeerID] = Retirement{At: now}
 		done = append(done, reaped{peer.PeerID, name})
 	}
 	r.mu.Unlock()
@@ -1302,7 +1316,7 @@ func (r *Registry) reapDangling(ctx context.Context) {
 		if err := r.store.DeleteMapping(ctx, d.id); err != nil {
 			log.Printf("repowire: reap DeleteMapping failed for %s: %v", d.id, err)
 		}
-		if err := r.store.Retire(ctx, d.id, now); err != nil {
+		if err := r.store.Retire(ctx, d.id, now, false); err != nil {
 			log.Printf("repowire: reap Retire FAILED for %s: %v (orphan may reclaim after restart)", d.id, err)
 			r.appendEvent(ctx, Event{Type: "retire_persist_failed", Timestamp: now, PeerID: d.id, SessionID: d.id,
 				Payload: map[string]any{"error": err.Error(), "reason": "reap"}})
@@ -1352,8 +1366,8 @@ func (r *Registry) pruneRetired(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-r.retiredTTL)
 	r.mu.Lock()
 	var expired []proto.PeerID
-	for id, at := range r.retired {
-		if !at.After(cutoff) {
+	for id, retirement := range r.retired {
+		if !retirement.At.After(cutoff) {
 			expired = append(expired, id)
 		}
 	}
@@ -1370,10 +1384,10 @@ func (r *Registry) pruneRetired(ctx context.Context) {
 
 // --- retirement helpers (must hold lock) ---
 
-func (r *Registry) retireLocked(ctx context.Context, id proto.PeerID) {
+func (r *Registry) retireLocked(ctx context.Context, id proto.PeerID, hard bool) {
 	at := time.Now().UTC()
-	r.retired[id] = at
-	if err := r.store.Retire(ctx, id, at); err != nil {
+	r.retired[id] = Retirement{At: at, Hard: hard}
+	if err := r.store.Retire(ctx, id, at, hard); err != nil {
 		// Fail loud: the in-memory `retired` set only protects until restart. If
 		// this write is lost, an orphan ws-hook can reclaim the id on the next
 		// boot via its persisted mapping. Surface it, don't swallow.

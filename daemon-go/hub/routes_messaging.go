@@ -285,11 +285,18 @@ func (mr *MessagingRoutes) trace(ctx context.Context, traceID, kind, stage, stat
 // it. Hook injection and native thread acceptance remain distinct so a native
 // delivery is never mislabeled as tmux pane injection.
 func (mr *MessagingRoutes) recordOutcome(ctx context.Context, traceID, kind, peerID, fromPeerID, transport string, hookDelivery map[string]any) {
-	if mr.traces == nil {
+	recordDeliveryOutcome(ctx, mr.traces, traceID, kind, peerID, fromPeerID, transport, hookDelivery)
+}
+
+// recordDeliveryOutcome is shared by notify and ask route groups. Keeping the
+// receipt truth table in one place prevents native asks from drifting into a
+// different (or missing) trace vocabulary.
+func recordDeliveryOutcome(ctx context.Context, traces deliveryTracer, traceID, kind, peerID, fromPeerID, transport string, hookDelivery map[string]any) {
+	if traces == nil {
 		return
 	}
 	rec := func(stage, status string, detail map[string]any) {
-		_ = mr.traces.RecordTrace(ctx, traceID, kind, stage, status, traceID, peerID, fromPeerID, detail)
+		_ = traces.RecordTrace(ctx, traceID, kind, stage, status, traceID, peerID, fromPeerID, detail)
 	}
 	var hookStatus string
 	if hookDelivery != nil {

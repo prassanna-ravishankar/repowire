@@ -482,9 +482,11 @@ func readHintQueue(target string) []map[string]any {
 // ---------------------------------------------------------------------------
 
 // realTmuxController shells to the `tmux` CLI. It reproduces spawn_peer's
-// get-or-create-session + unique-window-name + send-keys flow without libtmux,
-// and writes the spawn hint before send-keys (so codex's late MCP boot can
-// discover its circle).
+// get-or-create-session + unique-window-name flow without libtmux, writes the
+// spawn hint before launch (so codex's late MCP boot can discover its circle),
+// then starts the command directly in the newly created pane. Commands can
+// contain a multi-kilobyte captured PATH; send-keys truncates long literals and
+// paste-buffer races interactive shells' bracketed-paste handling.
 type realTmuxController struct{}
 
 // NewRealTmuxController returns the production TmuxController (shells to `tmux`).
@@ -537,8 +539,8 @@ func (realTmuxController) Spawn(cfg SpawnConfig) (SpawnResult, error) {
 	writeHint(cfg.Path, string(cfg.Backend), cfg.Circle, rolePtr, cfg.PeerID, cfg.Message != nil)
 
 	command := commandWithEnv(cfg.Command, cfg.Env)
-	if err := tmuxRun("send-keys", "-t", paneID, command, "Enter"); err != nil {
-		return SpawnResult{}, fmt.Errorf("tmux send-keys: %w", err)
+	if err := tmuxStartCommand(paneID, command); err != nil {
+		return SpawnResult{}, fmt.Errorf("tmux launch command: %w", err)
 	}
 
 	return SpawnResult{
@@ -547,6 +549,19 @@ func (realTmuxController) Spawn(cfg SpawnConfig) (SpawnResult, error) {
 		PaneID:      paneID,
 		Message:     cfg.Message,
 	}, nil
+}
+
+// tmuxStartCommand replaces the fresh shell in paneID with command. The pane is
+// created immediately above and its spawn hint has already been persisted, so
+// killing that placeholder shell is safe and a fast runtime can still recover
+// its requested identity. Passing command as respawn-pane's shell-command avoids
+// interactive editor limits while retaining tmux's normal shell parsing.
+func tmuxStartCommand(paneID, command string) error {
+	cmd := exec.Command("tmux", "respawn-pane", "-k", "-t", paneID, command)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("respawn-pane: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func windowSplitArgs(targetPane, path string) []string {

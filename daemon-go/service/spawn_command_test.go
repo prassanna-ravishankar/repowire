@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/repowire/repowire/daemon-go/proto"
@@ -105,5 +106,40 @@ func TestResolveCommandUsesConfiguredPath(t *testing.T) {
 	var spawnErr *SpawnError
 	if !errors.As(err, &spawnErr) || spawnErr.Status != 422 {
 		t.Fatalf("missing executable: want 422 SpawnError, got %v", err)
+	}
+}
+
+func TestTmuxStartCommandCarriesLongLiteralAsShellCommand(t *testing.T) {
+	dir := t.TempDir()
+	commandPath := filepath.Join(dir, "command.txt")
+	tmuxPath := filepath.Join(dir, "tmux")
+	script := `#!/bin/sh
+test "$1" = "respawn-pane" || exit 9
+test "$2" = "-k" || exit 8
+test "$3" = "-t" || exit 7
+test "$4" = "%42" || exit 6
+printf '%s' "$5" > "$TMUX_COMMAND"
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":/usr/bin:/bin")
+	t.Setenv("TMUX_COMMAND", commandPath)
+
+	longPath := strings.Repeat("/Applications/Agent Tool/bin:", 300)
+	command := commandWithEnv("codex --yolo", map[string]string{"PATH": longPath})
+	if len(command) < 4096 {
+		t.Fatalf("fixture command too short: %d", len(command))
+	}
+	if err := tmuxStartCommand("%42", command); err != nil {
+		t.Fatalf("tmuxStartCommand: %v", err)
+	}
+
+	got, err := os.ReadFile(commandPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != command {
+		t.Fatalf("respawn shell command length = %d, want exact %d-byte command", len(got), len(command))
 	}
 }

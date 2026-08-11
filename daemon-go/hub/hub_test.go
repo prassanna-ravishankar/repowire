@@ -27,12 +27,12 @@ type memStore struct{}
 func (memStore) LoadMappings(context.Context) ([]*proto.SessionMapping, error) { return nil, nil }
 func (memStore) UpsertMapping(context.Context, *proto.SessionMapping) error    { return nil }
 func (memStore) DeleteMapping(context.Context, proto.PeerID) error             { return nil }
-func (memStore) LoadRetired(context.Context, time.Time) (map[proto.PeerID]time.Time, error) {
-	return map[proto.PeerID]time.Time{}, nil
+func (memStore) LoadRetired(context.Context, time.Time) (map[proto.PeerID]peer.Retirement, error) {
+	return map[proto.PeerID]peer.Retirement{}, nil
 }
-func (memStore) Retire(context.Context, proto.PeerID, time.Time) error { return nil }
-func (memStore) Unretire(context.Context, proto.PeerID) error          { return nil }
-func (memStore) AppendEvent(context.Context, peer.Event) error         { return nil }
+func (memStore) Retire(context.Context, proto.PeerID, time.Time, bool) error { return nil }
+func (memStore) Unretire(context.Context, proto.PeerID) error                { return nil }
+func (memStore) AppendEvent(context.Context, peer.Event) error               { return nil }
 
 type deadLive struct{}
 

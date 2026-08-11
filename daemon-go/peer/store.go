@@ -11,9 +11,18 @@ import (
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
+// Retirement is the durable tombstone for a peer identity. Hard retirements
+// come from an explicit operator close and cannot be reclaimed merely because
+// the old runtime process is still alive; soft lifecycle retirements retain the
+// existing live-agent recovery escape hatch.
+type Retirement struct {
+	At   time.Time
+	Hard bool
+}
+
 // Store is the persistence seam the Registry needs. All identity arguments use
 // proto.PeerID; the compiler forbids passing a DisplayName. The implementation
-// (package state) reads the existing schema-v12 SQLite db unchanged.
+// lives in package state and migrates older SQLite stores in place.
 type Store interface {
 	// LoadMappings returns every persisted peer_session_mappings row, so the
 	// Registry can hydrate its in-memory mappings on startup.
@@ -28,11 +37,11 @@ type Store interface {
 
 	// LoadRetired returns retired peer_ids whose retired_at is newer than
 	// `cutoff` (TTL filter applied by the caller's clock).
-	LoadRetired(ctx context.Context, cutoff time.Time) (map[proto.PeerID]time.Time, error)
+	LoadRetired(ctx context.Context, cutoff time.Time) (map[proto.PeerID]Retirement, error)
 
 	// Retire records a terminal peer_id (INSERT OR REPLACE retired_peers) so an
 	// orphan ws-hook cannot resurrect it without live-agent proof.
-	Retire(ctx context.Context, id proto.PeerID, at time.Time) error
+	Retire(ctx context.Context, id proto.PeerID, at time.Time, hard bool) error
 
 	// Unretire clears a retirement when a reconnect proves a live agent_pid.
 	Unretire(ctx context.Context, id proto.PeerID) error

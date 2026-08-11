@@ -40,6 +40,9 @@ type Hub struct {
 	// WithMessaging when the daemon has built a service.PeerDelivery. nil → those
 	// endpoints are not registered (the spike daemon has no service.PeerDelivery yet).
 	messaging *MessagingRoutes
+	// deliveryTraces is shared by notify and ask lifecycle paths so HTTP and MCP
+	// asks write the same durable breadcrumb sequence as notifications.
+	deliveryTraces deliveryTracer
 
 	// lifecycle is the optional tmux-lifecycle hook route group (pane/session/
 	// window/client), wired via WithLifecycle. nil → the /hooks/lifecycle/*
@@ -140,6 +143,7 @@ func (h *Hub) WithLifecycle(lh *LifecycleHandler) *Hub {
 // the LazyRepair seam; auth reuses the hub's requireAuth wrapper. Returns the
 // hub for chaining; call before Routes.
 func (h *Hub) WithMessaging(delivery *service.PeerDelivery, traces deliveryTracer) *Hub {
+	h.deliveryTraces = traces
 	h.messaging = NewMessagingRoutes(delivery, h.reg, traces)
 	return h
 }

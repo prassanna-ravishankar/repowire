@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Bell, Check, Clock, Copy, Paperclip, Play, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
+import { AlertCircle, Bell, Check, Clock, Copy, Paperclip, Play, RefreshCw, RotateCcw, Search, Send, Trash2, X } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
 import { registerSnapshotProvider, useFrozenThread, useIsPeerProtected } from "../lib/protection";
 import { clearDraft, setDraftFile, setDraftText, useDraftFile, useDraftText } from "../lib/drafts";
@@ -160,6 +160,8 @@ export function PeerView({
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchDegradation, setSearchDegradation] = useState<string | null>(null);
+  const [unregistering, setUnregistering] = useState(false);
+  const [unregisterError, setUnregisterError] = useState<string | null>(null);
   const [highlightTarget, setHighlightTarget] = useState<string | null>(null);
   const [pinnedSearchTurn, setPinnedSearchTurn] = useState<TranscriptTurn | null>(null);
   const timelineTopSentinelRef = useRef<HTMLDivElement>(null);
@@ -415,6 +417,31 @@ export function PeerView({
 
   const { folder, parent } = peer.path ? shortPath(peer.path) : { folder: "", parent: "" };
 
+  const unregisterPeer = useCallback(async () => {
+    if (!window.confirm(
+      `Unregister @${peerLabel(peer)}? This retires the current peer identity, even if its agent process is still running.`,
+    )) return;
+
+    setUnregistering(true);
+    setUnregisterError(null);
+    try {
+      const res = await fetch(`${apiBase}/peers/${encodeURIComponent(peer.peer_id)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const message = await res.text();
+        throw new Error(message || `Error ${res.status}`);
+      }
+      onSent();
+      onClose();
+    } catch (error) {
+      setUnregisterError(error instanceof Error ? error.message : "Failed to unregister peer");
+    } finally {
+      setUnregistering(false);
+    }
+  }, [apiBase, onClose, onSent, peer]);
+
   return (
     <>
       <div className="sticky top-[var(--topbar-offset)] z-10 flex items-center gap-3 border-b border-border-faint bg-surface-dim px-4 py-3 md:static md:px-6">
@@ -439,13 +466,28 @@ export function PeerView({
         {peer.path ? <OpenInEditorButton path={peer.path} /> : null}
         <CopyPeerName peer={peer} />
         <button
+          onClick={unregisterPeer}
+          disabled={unregistering}
+          aria-label="Unregister peer"
+          title="Unregister peer"
+          className="flex h-8 w-8 items-center justify-center rounded border border-border text-outline transition-colors hover:border-error/50 hover:bg-error/10 hover:text-error disabled:cursor-wait disabled:opacity-50"
+        >
+          {unregistering ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+        </button>
+        <button
           onClick={onClose}
-          aria-label="Close peer"
+          aria-label="Close peer view"
           className="flex h-8 w-8 items-center justify-center rounded border border-border text-outline transition-colors hover:bg-surface-container-high hover:text-on-surface"
         >
           <X className="h-4 w-4" />
         </button>
       </div>
+
+      {unregisterError && (
+        <div role="alert" className="border-b border-error/25 bg-error/10 px-4 py-2 font-mono text-xs text-error md:px-6">
+          {unregisterError}
+        </div>
+      )}
 
       {peer.description && (
         <div className="border-b border-border-faint px-4 py-2 font-mono text-xs text-outline md:px-6">

@@ -17,14 +17,14 @@ type memStore struct {
 	mu       sync.Mutex
 	mappings map[proto.PeerID]*proto.SessionMapping
 	upserts  int
-	retired  map[proto.PeerID]time.Time
+	retired  map[proto.PeerID]Retirement
 	events   []Event
 }
 
 func newMemStore() *memStore {
 	return &memStore{
 		mappings: map[proto.PeerID]*proto.SessionMapping{},
-		retired:  map[proto.PeerID]time.Time{},
+		retired:  map[proto.PeerID]Retirement{},
 	}
 }
 
@@ -52,21 +52,21 @@ func (s *memStore) DeleteMapping(_ context.Context, id proto.PeerID) error {
 	delete(s.mappings, id)
 	return nil
 }
-func (s *memStore) LoadRetired(_ context.Context, cutoff time.Time) (map[proto.PeerID]time.Time, error) {
+func (s *memStore) LoadRetired(_ context.Context, cutoff time.Time) (map[proto.PeerID]Retirement, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := map[proto.PeerID]time.Time{}
-	for id, at := range s.retired {
-		if at.After(cutoff) {
-			out[id] = at
+	out := map[proto.PeerID]Retirement{}
+	for id, retirement := range s.retired {
+		if retirement.At.After(cutoff) {
+			out[id] = retirement
 		}
 	}
 	return out, nil
 }
-func (s *memStore) Retire(_ context.Context, id proto.PeerID, at time.Time) error {
+func (s *memStore) Retire(_ context.Context, id proto.PeerID, at time.Time, hard bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.retired[id] = at
+	s.retired[id] = Retirement{At: at, Hard: hard}
 	return nil
 }
 func (s *memStore) Unretire(_ context.Context, id proto.PeerID) error {
@@ -446,6 +446,36 @@ func TestMarkOffline_Terminal_Retires(t *testing.T) {
 		Role: proto.RoleAgent, ClaimedPeerID: &claimed, AgentPID: &pid,
 	}); err != nil {
 		t.Fatalf("retired reclaim with live agent: %v", err)
+	}
+}
+
+func TestClosePeer_HardRetirementRejectsLiveAgentReclaim(t *testing.T) {
+	ctx := context.Background()
+	r, store := newRegistry(t)
+	pid := 4242
+	r.live = fakeLive{alive: map[int]bool{pid: true}}
+	id, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "alpha", Backend: proto.AgentCodex, Path: ptr("/work/x"), Machine: "m",
+		Role: proto.RoleAgent, AgentPID: &pid,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.ClosePeer(ctx, id, "operator_close"); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	retirement := store.retired[id]
+	store.mu.Unlock()
+	if !retirement.Hard {
+		t.Fatal("operator close did not persist a hard retirement")
+	}
+	claimed := id
+	if _, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "alpha", Backend: proto.AgentCodex, Path: ptr("/work/x"), Machine: "m",
+		Role: proto.RoleAgent, ClaimedPeerID: &claimed, AgentPID: &pid,
+	}); err != ErrPeerRetired {
+		t.Fatalf("hard-retired live reclaim err = %v, want ErrPeerRetired", err)
 	}
 }
 

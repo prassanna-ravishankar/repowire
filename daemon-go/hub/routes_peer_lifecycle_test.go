@@ -34,6 +34,14 @@ func postLifecycleJSON(t *testing.T, mux *http.ServeMux, path string, body any) 
 	return rec
 }
 
+func deleteLifecycle(t *testing.T, mux *http.ServeMux, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, path, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
 // TestRegisterPeerEndpoint is the primary handler test: POST /peers registers a
 // peer through the registry FSM and returns the canonical peer_id + assigned
 // display_name in the Python wire shape. A follow-up offline + unregister
@@ -174,6 +182,41 @@ func TestUnregisterPeerClosesLiveSocket(t *testing.T) {
 	waitConnected(t, h, newPeerID)
 	if newPeerID == "" {
 		t.Fatal("service reconnect did not receive a new mesh identity")
+	}
+}
+
+func TestDeletePeerRetiresIdentityAndRejectsPaneLessReconnect(t *testing.T) {
+	h := newTestHub(t)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	circle := "sanity"
+	path := "/work/sanity"
+
+	registered := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{
+		Name: "sanity-codex", Path: &path, Backend: proto.AgentCodex, Circle: &circle,
+	})
+	if registered.Code != http.StatusOK {
+		t.Fatalf("register: %d %s", registered.Code, registered.Body.String())
+	}
+	var first RegisterResponse
+	if err := json.Unmarshal(registered.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+
+	closed := deleteLifecycle(t, mux, "/peers/"+first.PeerID)
+	if closed.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", closed.Code, closed.Body.String())
+	}
+	if _, ok := h.reg.GetPeer(proto.PeerID(first.PeerID)); ok {
+		t.Fatal("terminal delete left peer in registry")
+	}
+
+	reconnect := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{
+		PeerID: &first.PeerID, Name: "sanity-codex", Path: &path,
+		Backend: proto.AgentCodex, Circle: &circle,
+	})
+	if reconnect.Code != http.StatusConflict {
+		t.Fatalf("pane-less retired reconnect = %d %s, want 409", reconnect.Code, reconnect.Body.String())
 	}
 }
 

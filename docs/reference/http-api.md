@@ -65,6 +65,16 @@ Authorization: Bearer <token>
 The dashboard served from the daemon's localhost origin is the exception: its
 same-origin browser requests are accepted without exposing the token to JavaScript.
 
+## Peer lifecycle
+
+`DELETE /peers/{name-or-id}` is the explicit operator-close route used by the
+dashboard's **Unregister peer** action and the CLI. It resolves the target to an
+immutable `peer_id`, records a hard retirement tombstone, and removes it from the
+registry. A still-running bridge cannot reclaim that closed identity.
+
+`POST /peer/unregister` is intentionally non-terminal. Transport and service
+clients use it to drop a registration before reconnecting the same session.
+
 ## Related
 
 - [CLI](cli.md)

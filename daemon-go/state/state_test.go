@@ -225,10 +225,10 @@ func TestRetireLoadCutoffAndUnretire(t *testing.T) {
 
 	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	recent := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	if err := s.Retire(ctx, "peer-old", old); err != nil {
+	if err := s.Retire(ctx, "peer-old", old, false); err != nil {
 		t.Fatalf("Retire old: %v", err)
 	}
-	if err := s.Retire(ctx, "peer-recent", recent); err != nil {
+	if err := s.Retire(ctx, "peer-recent", recent, true); err != nil {
 		t.Fatalf("Retire recent: %v", err)
 	}
 
@@ -240,7 +240,7 @@ func TestRetireLoadCutoffAndUnretire(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d retired, want 1 (cutoff filters old)", len(got))
 	}
-	if rt, ok := got["peer-recent"]; !ok || !rt.Equal(recent) {
+	if rt, ok := got["peer-recent"]; !ok || !rt.At.Equal(recent) || !rt.Hard {
 		t.Errorf("peer-recent missing or wrong time: %v %v", ok, rt)
 	}
 	if _, ok := got["peer-old"]; ok {

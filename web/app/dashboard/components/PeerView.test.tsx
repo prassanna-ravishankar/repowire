@@ -59,6 +59,57 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("PeerView lifecycle controls", () => {
+  it("confirms and unregisters the selected peer by immutable id", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/peers/peer-1" && init?.method === "DELETE") {
+        return new Response(null, { status: 204 });
+      }
+      return new Promise<Response>(() => {});
+    });
+    const confirmMock = vi.fn(() => true);
+    const onClose = vi.fn();
+    const onSent = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", confirmMock);
+
+    render(
+      <PeerView
+        peer={PEER}
+        events={[]}
+        apiBase=""
+        onClose={onClose}
+        onSent={onSent}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Unregister peer" }));
+
+    expect(confirmMock).toHaveBeenCalledWith(expect.stringContaining("retires the current peer identity"));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith("/peers/peer-1", {
+        method: "DELETE",
+        credentials: "include",
+      });
+      expect(onSent).toHaveBeenCalledOnce();
+      expect(onClose).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("keeps close-view non-destructive", () => {
+    const onClose = vi.fn();
+    render(<PeerView peer={PEER} events={[]} apiBase="" onClose={onClose} onSent={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close peer view" }));
+
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(fetch).not.toHaveBeenCalledWith(
+      expect.stringContaining("/peers/"),
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+});
+
 describe("PeerView session protection", () => {
   it("renders persisted transcript turns in the primary chat timeline", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {

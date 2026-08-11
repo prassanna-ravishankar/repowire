@@ -349,7 +349,7 @@ func (h *Hub) persistBinding(
 // /peers/{name}: 404 if the peer is unknown (matching Python's get_peer
 // pre-check), else remove it from the registry + durable mapping. An ambiguous
 // display_name resolves to a 409 (fail-loud), never a silent guess.
-func (h *Hub) unregisterPeerImpl(r *http.Request, name string, circle *string) (int, string) {
+func (h *Hub) unregisterPeerImpl(r *http.Request, name string, circle *string, terminal bool) (int, string) {
 	ctx := r.Context()
 	p, err := h.reg.ResolvePeer(name, circle)
 	if err != nil {
@@ -357,6 +357,13 @@ func (h *Hub) unregisterPeerImpl(r *http.Request, name string, circle *string) (
 	}
 	if p == nil {
 		return http.StatusNotFound, "Peer not found: " + name
+	}
+	// DELETE is the operator's explicit close action. Retire the exact identity
+	// before removing it so a still-running pane-less bridge cannot immediately
+	// resurrect the same peer through reconnect. POST /peer/unregister remains a
+	// non-terminal transport repair primitive for service clients.
+	if terminal {
+		_, _ = h.reg.ClosePeer(ctx, p.PeerID, "operator_close")
 	}
 	// Delete by the RESOLVED peer_id, not the raw name: the id is already
 	// unambiguous here, so UnregisterPeer's own ambiguity error can't fire.
@@ -440,7 +447,7 @@ func (h *Hub) handleUnregisterPeerBody(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if code, detail := h.unregisterPeerImpl(r, req.Name, nil); code != http.StatusOK {
+	if code, detail := h.unregisterPeerImpl(r, req.Name, nil, false); code != http.StatusOK {
 		writeError(w, code, detail)
 		return
 	}
@@ -453,7 +460,7 @@ func (h *Hub) handleDeletePeer(w http.ResponseWriter, r *http.Request) {
 	if c := r.URL.Query().Get("circle"); c != "" {
 		circle = &c
 	}
-	if code, detail := h.unregisterPeerImpl(r, name, circle); code != http.StatusOK {
+	if code, detail := h.unregisterPeerImpl(r, name, circle, true); code != http.StatusOK {
 		writeError(w, code, detail)
 		return
 	}

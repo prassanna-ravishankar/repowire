@@ -25,7 +25,7 @@ var _ peer.Store = (*Store)(nil)
 
 // SchemaVersion is the current user_version. Migrations advance older stores;
 // newer stores fail loud rather than risking corruption.
-const SchemaVersion = 12
+const SchemaVersion = 13
 
 // tsLayout is the exact format the Python daemon writes (strftime %Y-%m-%dT%H:%M:%fZ).
 const tsLayout = "2006-01-02T15:04:05.000Z"
@@ -269,20 +269,21 @@ func (s *Store) DeleteMapping(ctx context.Context, id proto.PeerID) error {
 }
 
 // LoadRetired returns retired peer_ids whose retired_at >= cutoff.
-func (s *Store) LoadRetired(ctx context.Context, cutoff time.Time) (map[proto.PeerID]time.Time, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT peer_id, retired_at FROM retired_peers`)
+func (s *Store) LoadRetired(ctx context.Context, cutoff time.Time) (map[proto.PeerID]peer.Retirement, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT peer_id, retired_at, hard FROM retired_peers`)
 	if err != nil {
 		return nil, fmt.Errorf("load retired: %w", err)
 	}
 	defer rows.Close()
 
-	out := make(map[proto.PeerID]time.Time)
+	out := make(map[proto.PeerID]peer.Retirement)
 	for rows.Next() {
 		var (
 			peerID    string
 			retiredAt string
+			hard      int
 		)
-		if err := rows.Scan(&peerID, &retiredAt); err != nil {
+		if err := rows.Scan(&peerID, &retiredAt, &hard); err != nil {
 			return nil, fmt.Errorf("scan retired: %w", err)
 		}
 		t, err := parseTS(retiredAt)
@@ -292,7 +293,7 @@ func (s *Store) LoadRetired(ctx context.Context, cutoff time.Time) (map[proto.Pe
 		if t.Before(cutoff) {
 			continue
 		}
-		out[proto.PeerID(peerID)] = t
+		out[proto.PeerID(peerID)] = peer.Retirement{At: t, Hard: hard != 0}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate retired: %w", err)
@@ -301,10 +302,10 @@ func (s *Store) LoadRetired(ctx context.Context, cutoff time.Time) (map[proto.Pe
 }
 
 // Retire records a terminal peer_id.
-func (s *Store) Retire(ctx context.Context, id proto.PeerID, at time.Time) error {
+func (s *Store) Retire(ctx context.Context, id proto.PeerID, at time.Time, hard bool) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR REPLACE INTO retired_peers (peer_id, retired_at) VALUES (?, ?)`,
-		string(id), formatTS(at),
+		`INSERT OR REPLACE INTO retired_peers (peer_id, retired_at, hard) VALUES (?, ?, ?)`,
+		string(id), formatTS(at), hard,
 	)
 	if err != nil {
 		return fmt.Errorf("retire %s: %w", id, err)

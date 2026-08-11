@@ -68,17 +68,23 @@ func newAskTestHub(t *testing.T, reg *askFakeRegistry, f *fakeTransport) (*httpt
 }
 
 func newAskTestHubWithQueue(t *testing.T, reg *askFakeRegistry, f *fakeTransport, queue *fakeQueue) (*httptest.Server, *service.AskTracker) {
+	srv, asks, _ := newAskTestHubWithTracer(t, reg, f, queue)
+	return srv, asks
+}
+
+func newAskTestHubWithTracer(t *testing.T, reg *askFakeRegistry, f *fakeTransport, queue *fakeQueue) (*httptest.Server, *service.AskTracker, *captureTracer) {
 	t.Helper()
 	asks := service.NewAskTracker(0)
 	delivery := service.NewPeerDelivery(reg, newRouterWithFake(f), f, asks, queue)
-	h := &Hub{authToken: ""}
+	tr := &captureTracer{}
+	h := &Hub{authToken: "", deliveryTraces: tr}
 	h.WithAskLifecycle(asks, delivery, reg)
 
 	mux := http.NewServeMux()
 	h.registerAskLifecycleRoutes(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return srv, asks
+	return srv, asks, tr
 }
 
 func TestRequireAuthAllowsOnlyLocalDashboard(t *testing.T) {
@@ -188,6 +194,37 @@ func TestPostAskRegistersAndDelivers(t *testing.T) {
 	}
 	if len(pending) != 1 || pending[0].CorrelationID != out.CorrelationID {
 		t.Fatalf("expected the open ask surfaced inbound, got %+v", pending)
+	}
+}
+
+func TestPostAskAndAckRecordNativeDeliveryTrace(t *testing.T) {
+	target := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	from := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	reg := newAskFakeRegistry(from, target)
+	f := &fakeTransport{ackFrame: map[string]any{"status": "accepted"}}
+	srv, _, tr := newAskTestHubWithTracer(t, reg, f, nil)
+
+	resp := postJSON(t, srv.URL+"/ask", AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "trace me"})
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("ask status = %d, want 200", resp.StatusCode)
+	}
+	var out AskResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	reply := "done"
+	ack := postJSON(t, srv.URL+"/ack", AckRequest{CorrelationID: out.CorrelationID, Message: &reply})
+	ack.Body.Close()
+	if ack.StatusCode != http.StatusOK {
+		t.Fatalf("ack status = %d, want 200", ack.StatusCode)
+	}
+	want := []string{"created", "resolved_peer", "routed", "thread_input_accepted", "acked", "closed"}
+	if !equalStrings(tr.stages, want) {
+		t.Fatalf("trace stages = %v, want %v", tr.stages, want)
 	}
 }
 

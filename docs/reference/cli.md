@@ -77,6 +77,7 @@ the daemon is unavailable; missing optional host tools are reported as warnings.
 repowire peer new PATH [--backend BACKEND] [--profile PROFILE] [--circle CIRCLE]
 repowire peer list                          # god-view list (all circles, includes caller)
 repowire peer describe NAME_OR_ID [--circle C]  # daemon state for one peer
+repowire peer unregister NAME_OR_ID         # explicitly close and retire this peer identity
 repowire peer ask NAME QUERY [--timeout SEC] [--circle C]  # blocking compatibility ask
 repowire peer claim-role orchestrator [--peer NAME_OR_ID] [--circle C] [--force]
 repowire peer restart NAME_OR_ID [--circle C] [--dry-run] [-m MESSAGE]
@@ -98,6 +99,8 @@ Commands that need a sender identity resolve `$TMUX_PANE` to its registered cano
 For Antigravity interop checks, use `peer whoami`, `peer deliveries`, `peer asks`, and `peer ack` to exercise the CLI fallback directly against the live daemon.
 
 `peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP [`list_peers`](mcp-tools.md#list_peers) tool defaults to a peer-facing view (online only, caller hidden).
+
+`peer unregister` is an explicit operator close, equivalent to the dashboard's **Unregister peer** action. It retires the resolved `peer_id` before removing it, so a stale pane-less bridge or ws-hook cannot immediately recreate the closed peer. A genuinely new runtime session receives a new identity. Internal `POST /peer/unregister` remains the non-terminal service-reconnect primitive.
 
 `peer ask` is a blocking CLI compatibility helper for quick manual checks. It uses the daemon's ask/answer lifecycle under the hood, waits for the recipient to `ack` with a reply, then prints the reply text. `--circle` disambiguates only within the caller's authorized scope; an ordinary registered peer cannot use it to cross a circle boundary. For agent-to-agent work, prefer the MCP [`ask`](mcp-tools.md#ask) tool, which returns a correlation id immediately and lets the conversation continue asynchronously.
 
