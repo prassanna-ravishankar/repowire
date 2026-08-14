@@ -14,8 +14,8 @@ same thing:
 
 - `Peer.peer_id` is the daemon-assigned live routing identity for the current
   executor.
-- `PeerRegistry.SessionMapping` persists peer reuse metadata in
-  `sessions.json`.
+- Daemon-owned peer session mappings persist peer reuse metadata in SQLite,
+  with one-time import from legacy `sessions.json`.
 - Hook payload `session_id` values identify a backend runtime transcript
   session.
 - Transcript and rollout files are backend-owned source history.
@@ -154,9 +154,8 @@ Rules:
   for ACP reply rebind.
 - `daemon-go/service/delivery.go` coordinates ask/notify delivery and
   already exposes explicit delivered/queued outcomes for some paths.
-- `daemon-go/state/` owns SQLite persistence for schedules and session bindings. The existing
-  `rfcs/sqlite-state-expansion-plan.md` recommends expanding SQLite
-  carefully and keeping raw transcripts outside SQLite.
+- `daemon-go/state/` owns SQLite persistence for schedules and session bindings;
+  raw transcripts remain outside SQLite.
 - `daemon-go/state/session_bindings.go` persists binding metadata,
   source locators, cursors, provenance, resume capability, and lifecycle
   status without storing raw runtime transcript bodies.
@@ -276,9 +275,9 @@ routes harden.
 
 Session bindings fit the daemon-owned SQLite boundary better than raw
 transcripts because they are control/provenance state. The current binding table
-lives under the existing `StateDatabase` lifecycle and remains distinct from
-`PeerRegistry.SessionMapping` so peer identity restart behavior and downgrade
-compatibility are preserved.
+lives under the daemon state-store lifecycle and remains distinct from peer
+session mappings so peer identity restart behavior and downgrade compatibility
+are preserved.
 
 Do not use the binding table as a reason to remove peer/path compatibility,
 rewrite delivery semantics, or persist raw runtime transcript bodies. Further

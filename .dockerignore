@@ -1,7 +1,6 @@
 .git
 .venv
 bin
-graphify-out
 site
 web/.next
 web/node_modules

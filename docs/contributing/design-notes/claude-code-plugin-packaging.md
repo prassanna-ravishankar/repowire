@@ -27,8 +27,8 @@ daemon, hook, MCP, service, relay, channel, and multi-runtime install path.
 - Do not own `~/.repowire/config.yaml`, relay enrollment, auth tokens, or local
   state migration.
 - Do not redefine ask/ack/notify lifecycle rules.
-- Do not make tracked-work lifecycle, ACP/channel health, SQLite cleanup, or
-  graphify claims as part of plugin packaging.
+- Do not make tracked-work lifecycle, ACP/channel health, or SQLite cleanup
+  claims as part of plugin packaging.
 - Do not make Claude Code the only supported runtime. Codex, Gemini CLI,
   OpenCode, Pi, bots, and dashboard surfaces continue to use the shared daemon.
 

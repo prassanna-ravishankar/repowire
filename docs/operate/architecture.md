@@ -107,9 +107,3 @@ The current stable surface is peer-oriented, but the v0.14 architecture train is
 - Broader composer actions, scheduling, approval handling, and backend/model controls move toward the same shared session command surface.
 
 This is a roadmap. Current routes and tools still expose peers, circles, asks, notifications, and schedules. The ask/notify delivery-service and transport-router extraction has landed, but ACP remains experimental and not every route/control path is transport-neutral yet.
-
-## Knowledge graph
-
-`graphify-out/GRAPH_REPORT.md` summarizes the codebase graph. The current report identifies the main hubs as `AgentType`, `Config`, `PeerRegistry`, `MessageRouter`, and `WebSocketTransport`, with communities around daemon routing, CLI/setup, channel installer, Telegram, attachments, hook normalization, relay auth, and peer lifecycle.
-
-Keep generated graph JSON and cache files out of prose docs. Link or summarize the report when useful; do not paste large graph artifacts into README or hand-written docs.

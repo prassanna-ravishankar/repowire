@@ -328,6 +328,5 @@ working directory.
 - No SQLite cleanup, migration consolidation, or broad state-store refactor in
   this design slice.
 - No dashboard UI implementation.
-- No graphify update requirement.
 - No automatic Beads issue import/export or product commits containing Beads
   ledger churn.

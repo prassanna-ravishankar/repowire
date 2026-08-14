@@ -316,5 +316,5 @@ touching peers or schedules.
 - No changes to ask reminder, ack, pending reply, or schedule delivery
   semantics.
 - No memory file mutation or automatic learning behavior.
-- No peer identity, durable restart, state-store, graphify, or Beads ledger
+- No peer identity, durable restart, state-store, or Beads ledger
   changes.

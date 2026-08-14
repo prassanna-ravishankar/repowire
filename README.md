@@ -325,7 +325,7 @@ checklist:
 scripts/pre-pr-hygiene.sh
 ```
 
-It is an opt-in prompt for docs, README, agent-instruction, and graphify follow-ups, not a
+It is an opt-in prompt for docs, README, and agent-instruction follow-ups, not a
 mandatory hook. It also flags Beads JSONL ledger churn before it can leak into PR diffs.
 
 ## License

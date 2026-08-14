@@ -77,7 +77,7 @@ scripts/pre-pr-hygiene.sh
 
 This is not a mandatory hook. It compares your branch with `origin/main` and reminds you which
 public surfaces to check: README, reference docs, mirrored web docs, `CLAUDE.md` / `AGENTS.md`,
-and graphify for architecture-level changes. See [`docs/pre-pr-hygiene.md`](docs/pre-pr-hygiene.md)
+and architecture docs. See [`docs/contributing/pre-pr-hygiene.md`](docs/contributing/pre-pr-hygiene.md)
 for the tool-surface matrix.
 
 ## Where to Find Things

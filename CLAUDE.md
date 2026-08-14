@@ -2,7 +2,7 @@
 
 Repowire is a mesh network for AI coding agents: Claude Code, Codex, Gemini, OpenCode, antigravity, and pi sessions get a mesh address and talk to each other (ask/ack, notify, broadcast), steerable from a browser, phone (Telegram/Slack), or other agents.
 
-This file is orientation, not a rulebook. It captures how the project thinks and the things that bite you in a long session. For the detailed per-feature reference, the `docs/` tree is the source of truth (and is mirrored into the graphify knowledge graph in `graphify-out/`).
+This file is orientation, not a rulebook. It captures how the project thinks and the things that bite you in a long session. For the detailed per-feature reference, the `docs/` tree is the source of truth.
 
 ## Philosophies
 
@@ -28,7 +28,6 @@ Things that have cost time before. Not exhaustive, and some may drift — verify
 - **bd runs on the dolt backend; don't trust its error hints.** If `bd create` suggests `bd init` or `--no-db`, do neither — `bd list`/`create`/`close` work directly against the existing dolt db. `--no-db` mode is broken here (`issues.jsonl` line 104 is malformed — string comment id — and JSONL-only mode refuses to load; the dolt path just skips it with a warning). A failed bd invocation can leave a blank empty-id issue behind; `bd delete "" --force` doesn't work (no tombstone support), `bd close ""` does.
 - **Backend-detection tests must be env-hermetic.** `detect_mcp_backend` reads the process env, so a test that `patch.dict`s only `PATH` still inherits the ambient `CLAUDE_CODE_*`/`AI_AGENT` of the host session and mis-detects `claude-code`. (This bit the old `TestMcpRegistration` "codex vs claude-code" failures, fixed in #330 by nulling the conflicting markers.) Null the other runtimes' markers when asserting a specific backend.
 - **Codex registers late** (after its first interaction, not at startup); its hook payload still carries the runtime `session_id` like Claude's. MCP lazy registration covers the gap.
-- **graphify finding (refresh periodically):** post-v0.15.2 refactor, the highest-blast-radius surface is the `Peer` type family — `Peer` (degree 340), `PeerRole` (332), `PeerStatus` (299), then `PeerRegistry` (263). `Config` dropped to 8th (175) after the config-import slicing, so it is no longer the densest node. Treat the `Peer`/`PeerRole`/`PeerStatus` data types as the things to keep stable; registry/identity/spawn still form one tightly-coupled community (`c0`, ~984 nodes) despite the file-level `registry_*` split, because they share the `Peer` data shape. (Graph refreshed 2026-06-06 at v0.15.2: 7374 nodes / 277 communities.)
 
 ## Build, test, release
 
@@ -65,7 +64,7 @@ Versioning: patch (0.x.Y) for fixes/cleanup/small additions, minor (0.X.0) for s
    (tmux injection)     (MCP stdio)
 ```
 
-Key modules (the graph in `graphify-out/` is the live map; these are the hubs):
+Key modules:
 
 - `daemon-go/peer/` — peer state, circle access, events, lazy repair, ghost eviction, contradiction events
 - `daemon-go/service/` — message/transport routing (ACP-before-WS), delivery, asks, spawn, resume safety, sessions, schedules, and jobs
@@ -84,10 +83,9 @@ Key modules (the graph in `graphify-out/` is the live map; these are the hubs):
 - **Channel (experimental, `repowire setup --experimental-channels`):** Claude Code ↔ `channel/server.ts` (MCP stdio) ↔ daemon. Messages arrive as `<channel>` tags; Claude replies via the `reply`/`ack` tools. Requires claude.ai login, Claude Code 2.1.80+, bun. Only the Stop hook is kept in channel mode (for dashboard chat turns).
 - **Config** lives at `~/.repowire/config.yaml` (`daemon`, `relay`, `telegram`, `slack`, `updates`, `experiments`, …) and is loaded through `daemon-go/config`. Channel/MCP config is in `~/.claude.json`, managed by `repowire setup`.
 
-## Docs, memory, graph
+## Docs and memory
 
 - **Public docs (`docs/`) are part of the change.** Behavior changes update the relevant docs in the same PR — README for install/quickstart/major features, `docs/reference/*` for CLI/MCP/HTTP/config surfaces, `docs/guides|capabilities|concepts|patterns|operations/*` for the rest. If you intentionally defer, file a Beads follow-up and say so in the handoff. `scripts/pre-pr-hygiene.sh` is an advisory pre-PR check (points at docs surfaces, fails on beads-ledger churn). Screenshots: browser-generated only, never AI-mockups.
-- **Knowledge graph:** `graphify-out/` holds a graphify graph; refresh after significant changes with `/graphify . --update`. Useful for "what touches X / how does A reach B" questions grep can't answer. Don't paste generated JSON into hand-written docs.
 - **Memory** is project-local at `.claude/memory/` (committed, public) — and `bd remember` for beads-tracked knowledge. Public-repo sanitization: no secrets, no absolute/home paths (repo-relative only), no IPs/hostnames/personal identifiers. When in doubt, omit.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->

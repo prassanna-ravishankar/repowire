@@ -33,15 +33,3 @@ and explain any intentional docs deferral in the handoff.
 | Agent runtimes and hooks | `daemon-go/hooks/`, `daemon-go/cli/assets/` | `docs/use/features/connect-*.md`, `docs/operate/transports.md`, hook/channel troubleshooting docs, `CLAUDE.md`, `AGENTS.md` |
 | Dashboard and human surfaces | `web/app/dashboard/`, `daemon-go/mobile/`, attachments routes, `daemon-go/relayserver/` | `docs/use/features/`, `docs/operate/relay.md`, `README.md`, browser-generated screenshots under `images/` when UI changes materially |
 | Daemon routing and architecture | `daemon-go/hub/`, `daemon-go/peer/`, `daemon-go/service/`, `daemon-go/state/` | `docs/operate/architecture.md`, `docs/concepts/`, `docs/use/workflows/`, `CLAUDE.md`, `AGENTS.md` |
-
-## Graphify Reminder
-
-For architecture-level changes, especially daemon routing, peer state, hook lifecycle, transport,
-or session model changes, run the incremental graph update:
-
-```bash
-/graphify . --update
-```
-
-Use `graphify-out/GRAPH_REPORT.md` as a navigation aid for the PR summary when helpful. Do not
-paste large generated JSON or cache artifacts into README or hand-written docs.

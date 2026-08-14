@@ -57,5 +57,5 @@ case "$changes" in
 esac
 case "$changes" in
   *daemon-go/peer/*|*daemon-go/service/*|*daemon-go/state/*)
-    echo "Review docs/operate/architecture.md and consider refreshing graphify-out/." ;;
+    echo "Review docs/operate/architecture.md and docs/concepts/." ;;
 esac
