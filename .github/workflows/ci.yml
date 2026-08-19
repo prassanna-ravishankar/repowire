@@ -28,6 +28,9 @@ jobs:
             echo "ok $target"
           done
 
+      - name: Test Homebrew formula renderer
+        run: scripts/test-render-homebrew-formula.sh
+
   web:
     runs-on: ubuntu-latest
     defaults:

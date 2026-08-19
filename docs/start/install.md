@@ -7,14 +7,25 @@ required.
 ## Recommended
 
 ```bash
+brew install prassanna-ravishankar/repowire/repowire
+repowire setup
+```
+
+The formula downloads the checksum-pinned native release for your OS and
+architecture. `repowire setup` wires the installed agent runtimes and starts the
+local services.
+
+Without Homebrew, use the native installer:
+
+```bash
 curl -fsSL https://github.com/prassanna-ravishankar/repowire/releases/latest/download/install.sh | sh
 ```
 
-The installer detects the current OS and architecture, downloads the matching
-GitHub Release archive, verifies its SHA-256 checksum, and then runs [setup](setup.md).
+The installer detects the current OS and architecture, verifies the release
+checksum, installs the archive, and runs [setup](setup.md).
 
 Set `REPOWIRE_VERSION=v0.X.Y`, `REPOWIRE_INSTALL_DIR`, or `REPOWIRE_BIN_DIR`
-before running the installer to pin a version or choose alternate locations.
+before running the native installer to pin a version or choose alternate locations.
 
 ## What gets installed
 

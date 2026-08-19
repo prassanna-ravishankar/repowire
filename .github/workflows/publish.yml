@@ -56,3 +56,27 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes \
             || gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v5
+        with:
+          repository: prassanna-ravishankar/homebrew-repowire
+          path: homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+
+      - name: Update Homebrew formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/render-homebrew-formula.sh "$GITHUB_REF_NAME" dist/checksums.txt \
+            > homebrew-tap/Formula/repowire.rb
+          cd homebrew-tap
+          if [ -z "$(git status --porcelain -- Formula/repowire.rb)" ]; then
+            echo "Homebrew formula is already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/repowire.rb
+          git commit -m "repowire ${GITHUB_REF_NAME}"
+          git push
