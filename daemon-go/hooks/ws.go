@@ -19,7 +19,10 @@ import (
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
-const claudeMessagingSocketEnv = "CLAUDE_CODE_MESSAGING_SOCKET"
+const (
+	claudeMessagingSocketEnv = "CLAUDE_CODE_MESSAGING_SOCKET"
+	claudeMessagingTokenEnv  = "CLAUDE_CODE_MESSAGING_TOKEN"
+)
 
 func startWSHook(paneID, peerID, displayName, backend, cwd string, agentPID int, lock *os.File) error {
 	executable, err := os.Executable()
@@ -39,8 +42,12 @@ func startWSHook(paneID, peerID, displayName, backend, cwd string, agentPID int,
 		"REPOWIRE_HOOK_LOCK_FD=3",
 		"TMUX_PANE="+paneID,
 	)
-	if socket := stringValue(ReadPaneRuntimeMetadata(paneID), "claude_messaging_socket"); socket != "" {
+	meta := ReadPaneRuntimeMetadata(paneID)
+	if socket := stringValue(meta, "claude_messaging_socket"); socket != "" {
 		env = append(env, claudeMessagingSocketEnv+"="+socket)
+	}
+	if token := stringValue(meta, "claude_messaging_token"); token != "" {
+		env = append(env, claudeMessagingTokenEnv+"="+token)
 	}
 	cmd := exec.Command(executable, "ws-hook")
 	cmd.Dir = cwd
@@ -423,7 +430,13 @@ func injectClaudeInbox(socket, text string) error {
 	if err := conn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		return err
 	}
-	return json.NewEncoder(conn).Encode(map[string]any{
+	encoder := json.NewEncoder(conn)
+	if token := os.Getenv(claudeMessagingTokenEnv); token != "" {
+		if err := encoder.Encode(map[string]any{"type": "auth", "token": token}); err != nil {
+			return err
+		}
+	}
+	return encoder.Encode(map[string]any{
 		"type":    "user",
 		"message": map[string]any{"role": "user", "content": text},
 	})

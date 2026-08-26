@@ -201,6 +201,9 @@ func runSession(backend string) int {
 	}
 	if socket := os.Getenv(claudeMessagingSocketEnv); backend == "claude-code" && socket != "" {
 		meta["claude_messaging_socket"] = socket
+		if token := os.Getenv(claudeMessagingTokenEnv); token != "" {
+			meta["claude_messaging_token"] = token
+		}
 	}
 	if cert, ok := registered["birth_certificate"].(map[string]any); ok {
 		meta["birth_certificate"] = cert
