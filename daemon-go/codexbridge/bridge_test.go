@@ -318,6 +318,50 @@ func TestAppServerResponseOverDefaultWebSocketLimit(t *testing.T) {
 	}
 }
 
+func TestStatusChangeDiscoversResumedThread(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	read := make(chan map[string]any, 1)
+	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := websocket.Accept(w, r, nil)
+		defer conn.CloseNow()
+		var request map[string]any
+		if wsjson.Read(ctx, conn, &request) == nil {
+			params, _ := request["params"].(map[string]any)
+			read <- params
+			_ = wsjson.Write(ctx, conn, map[string]any{"id": request["id"], "result": map[string]any{"thread": map[string]any{
+				"id": "thread-resumed", "cwd": "/missing/thread-worktree", "status": map[string]any{"type": "idle"},
+			}}})
+		}
+	}))
+	defer appServer.Close()
+	appConn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(appServer.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &Bridge{ctx: ctx, app: appConn, pending: map[int64]chan rpcReply{}, threads: map[string]*threadPeer{}}
+	go b.readApp(appConn)
+	b.handleNotification("thread/status/changed", map[string]any{"threadId": "thread-resumed", "status": map[string]any{"type": "idle"}})
+
+	var params map[string]any
+	select {
+	case params = <-read:
+	case <-time.After(time.Second):
+		t.Fatal("thread/status/changed did not trigger thread/read")
+	}
+	if params["threadId"] != "thread-resumed" || params["includeTurns"] != nil {
+		t.Fatalf("thread/read params = %#v", params)
+	}
+	deadline := time.Now().Add(time.Second)
+	for b.thread("thread-resumed") == nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if b.thread("thread-resumed") == nil {
+		t.Fatal("resumed thread was not discovered")
+	}
+}
+
 func TestAppServerReadFailureReconnectsWithoutStoppingOwnedServer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	connections := make(chan int32, 2)

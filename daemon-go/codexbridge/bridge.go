@@ -411,17 +411,30 @@ func (b *Bridge) loadExistingThreads(ctx context.Context) error {
 		return err
 	}
 	for _, id := range list.Data {
-		threadRaw, err := b.call(ctx, "thread/read", map[string]any{"threadId": id, "includeTurns": true})
-		if err != nil {
+		if err := b.loadThread(ctx, id); err != nil {
 			log.Printf("codex bridge: read loaded thread %s: %v", id, err)
-			continue
-		}
-		var result map[string]any
-		_ = json.Unmarshal(threadRaw, &result)
-		if thread, ok := result["thread"].(map[string]any); ok {
-			b.ensureThread(thread)
 		}
 	}
+	return nil
+}
+
+func (b *Bridge) loadThread(ctx context.Context, id string) error {
+	if id == "" || b.thread(id) != nil {
+		return nil
+	}
+	threadRaw, err := b.call(ctx, "thread/read", map[string]any{"threadId": id})
+	if err != nil {
+		return err
+	}
+	var result map[string]any
+	if err := json.Unmarshal(threadRaw, &result); err != nil {
+		return err
+	}
+	thread, ok := result["thread"].(map[string]any)
+	if !ok {
+		return errors.New("thread/read returned no thread")
+	}
+	b.ensureThread(thread)
 	return nil
 }
 
@@ -432,12 +445,21 @@ func (b *Bridge) handleNotification(method string, params map[string]any) {
 			b.ensureThread(thread)
 		}
 	case "thread/status/changed":
-		if p := b.thread(stringValue(params, "threadId")); p != nil {
+		id := stringValue(params, "threadId")
+		if p := b.thread(id); p != nil {
 			active := statusType(params["status"]) == "active"
 			p.setBusy(active)
 			if !active {
 				go b.captureCompletedTurn(p.id)
 			}
+		} else if id != "" {
+			go func() {
+				ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
+				defer cancel()
+				if err := b.loadThread(ctx, id); err != nil {
+					log.Printf("codex bridge: discover resumed thread %s: %v", id, err)
+				}
+			}()
 		}
 	case "turn/started":
 		if p := b.thread(stringValue(params, "threadId")); p != nil {

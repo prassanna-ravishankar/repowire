@@ -35,7 +35,10 @@ A thread registers as soon as Codex creates it, before its first user prompt.
 There is no warmup prompt or `UserPromptSubmit` one-turn delay. Repowire sends an
 idle thread a native `turn/start` request and steers an active thread with
 `turn/steer`. App Server lifecycle notifications drive `busy` and `online`
-status, including interrupt and completion boundaries. Because completed-item
+status, including interrupt and completion boundaries. A thread resumed after
+the bridge starts is discovered from its first status notification, so service
+restarts do not leave its MCP calls under the fallback `mcp-http` identity.
+Because completed-item
 notifications are scoped to the App Server client that started the turn, the
 bridge reads the completed turn once when the thread becomes idle; it does not
 poll.
