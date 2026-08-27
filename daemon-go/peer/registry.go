@@ -263,14 +263,14 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	// peer_id matches, or an existing peer holding the target display_name is
 	// Offline (clean takeover).
 	displayName := r.buildDisplayName(params)
+	claimPath := ""
+	if params.Path != nil {
+		claimPath = *params.Path
+	}
 
 	var id proto.PeerID
 	if params.ClaimedPeerID != nil {
 		cid := *params.ClaimedPeerID
-		claimPath := ""
-		if params.Path != nil {
-			claimPath = *params.Path
-		}
 		// Reuse a claimed peer_id ONLY when it still describes the same identity:
 		// same backend and a compatible path. Stale pane/cert metadata from another
 		// workspace or backend must not take over a live id — that reintroduces the
@@ -298,7 +298,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		}
 	}
 	if id == "" {
-		if reclaimed, ok := r.reclaimableOfflineLocked(displayName, params.Circle, params.Backend); ok {
+		if reclaimed, ok := r.reclaimableOfflineLocked(displayName, params.Circle, params.Backend, claimPath); ok {
 			id = reclaimed
 		}
 	}
@@ -310,7 +310,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	// the (e) mapping-wins block restores those fields. Parity with
 	// PeerRegistry._find_or_allocate_mapping.
 	if id == "" {
-		if adopted, ok := r.findReusableMappingLocked(displayName, params.Circle, params.Backend); ok {
+		if adopted, ok := r.findReusableMappingLocked(displayName, params.Circle, params.Backend, claimPath); ok {
 			id = adopted
 		}
 	}
@@ -804,12 +804,12 @@ func runtimeSessionID(metadata map[string]any) string {
 }
 
 // reclaimableOfflineLocked returns a PeerID whose Offline peer currently holds
-// the given (display_name, circle, backend) — a clean takeover candidate.
-func (r *Registry) reclaimableOfflineLocked(name proto.DisplayName, circle string, backend proto.AgentType) (proto.PeerID, bool) {
+// the given identity — a clean takeover candidate.
+func (r *Registry) reclaimableOfflineLocked(name proto.DisplayName, circle string, backend proto.AgentType, claimPath string) (proto.PeerID, bool) {
 	for id, ps := range r.peers {
 		if ps.peer.DisplayName == name &&
 			ps.peer.Circle == circle &&
-			ps.peer.Backend == backend &&
+			claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, backend, claimPath) &&
 			ps.state == StateOffline {
 			return id, true
 		}
@@ -818,11 +818,15 @@ func (r *Registry) reclaimableOfflineLocked(name proto.DisplayName, circle strin
 }
 
 // findReusableMappingLocked adopts a persisted mapping only for the same
-// display name, circle, and backend. A missing circle must not silently restore
-// the peer into an older circle.
-func (r *Registry) findReusableMappingLocked(name proto.DisplayName, circle string, backend proto.AgentType) (proto.PeerID, bool) {
+// display name, circle, backend, and compatible path. A missing circle must not
+// silently restore the peer into an older circle.
+func (r *Registry) findReusableMappingLocked(name proto.DisplayName, circle string, backend proto.AgentType, claimPath string) (proto.PeerID, bool) {
 	for sid, m := range r.mappings {
-		if m.DisplayName == name && m.Circle == circle && m.Backend == backend {
+		mappingPath := ""
+		if m.Path != nil {
+			mappingPath = *m.Path
+		}
+		if m.DisplayName == name && m.Circle == circle && claimMatchesIdentity(m.Backend, mappingPath, backend, claimPath) {
 			return sid, true
 		}
 	}

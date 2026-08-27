@@ -306,6 +306,38 @@ func TestReclaim_DoesNotCrossAdoptMappings(t *testing.T) {
 	}
 }
 
+// TestReclaim_DoesNotCrossAdoptWorktrees proves same-name peers in one circle
+// cannot reclaim an offline peer or mapping from a different worktree.
+func TestReclaim_DoesNotCrossAdoptWorktrees(t *testing.T) {
+	ctx := context.Background()
+	for _, mappingOnly := range []bool{false, true} {
+		r, _ := newRegistry(t)
+		seedID, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+			Circle: "ops", Backend: proto.AgentCodex, Path: ptr("/work/a/repowire"),
+			Machine: "m", Role: proto.RoleAgent,
+		})
+		if err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if mappingOnly {
+			delete(r.peers, seedID)
+		} else if _, err := r.MarkOffline(ctx, seedID, false); err != nil {
+			t.Fatalf("offline seed: %v", err)
+		}
+
+		got, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+			Circle: "ops", Backend: proto.AgentCodex, Path: ptr("/work/b/repowire"),
+			Machine: "m", Role: proto.RoleAgent,
+		})
+		if err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		if got == seedID {
+			t.Fatalf("mappingOnly=%v: cross-adopted %s", mappingOnly, seedID)
+		}
+	}
+}
+
 func newRegistry(t *testing.T) (*Registry, *memStore) {
 	t.Helper()
 	store := newMemStore()

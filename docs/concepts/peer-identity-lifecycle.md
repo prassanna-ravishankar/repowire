@@ -60,6 +60,8 @@ A reconnect may reclaim an existing `peer_id` only when the claim still describe
 
 If the check fails, the stale `peer_id` claim is ignored and the daemon allocates or adopts a different identity. This prevents an old environment variable or stale pane metadata from binding a different session's WebSocket to the wrong peer.
 
+Compatibility reclaim of an offline peer or durable mapping also requires a compatible project path. It never crosses between two known, different worktrees that happen to share a folder name, circle, and backend.
+
 Orchestrator reconnects get one additional bounded repair path because they are long-lived control peers. If an orchestrator hook reconnects without a `peer_id`, the daemon may adopt exactly one offline peer in the same circle with the same canonical display name, backend, role, and project path. That preserves queued deliveries across daemon restarts or WebSocket churn without allowing general path-based identity takeover.
 
 ## Linking an orphan pane (link vs spawn)
