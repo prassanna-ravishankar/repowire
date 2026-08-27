@@ -16,6 +16,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"github.com/repowire/repowire/daemon-go/hooks"
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
@@ -364,6 +365,54 @@ func TestStatusChangeDiscoversResumedThread(t *testing.T) {
 	}
 	if b.thread("thread-resumed") == nil {
 		t.Fatal("resumed thread was not discovered")
+	}
+}
+
+func TestRegisterRestoresThreadIdentityFromBirthCertificate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	threadID, cwd := "thread-resumed", t.TempDir()
+	cert := map[string]any{
+		"nonce": "proof", "peer_id": "repow-stable", "display_name": "repo-codex",
+		"backend": "codex", "project_path": cwd, "runtime_session_id": threadID,
+		"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+	}
+	if err := hooks.WriteRuntimeIdentity("codex", threadID, map[string]any{"birth_certificate": cert}); err != nil {
+		t.Fatal(err)
+	}
+	cached := cachedBirthCertificate("codex", threadID)
+	if cached == nil {
+		t.Fatal("valid thread certificate was not loaded")
+	}
+
+	var registered map[string]any
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/peers/identity/validate":
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer": map[string]any{
+				"peer_id": "repow-stable", "display_name": "repo-codex", "circle": "correct", "role": "orchestrator",
+			}})
+		case "/peers":
+			_ = json.NewDecoder(r.Body).Decode(&registered)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"peer_id": "repow-stable", "display_name": "repo-codex", "circle": "correct", "role": "orchestrator",
+				"birth_certificate": cert,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer daemon.Close()
+
+	p := &threadPeer{
+		bridge: &Bridge{daemonHTTP: daemon.URL}, id: threadID, cwd: cwd,
+		circle: "guessed", role: "agent", hintedID: "repow-stale", birthCert: cached,
+	}
+	if err := p.register(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if registered["peer_id"] != "repow-stable" || registered["circle"] != "correct" || registered["role"] != "orchestrator" {
+		t.Fatalf("registration did not use validated identity: %#v", registered)
 	}
 }
 

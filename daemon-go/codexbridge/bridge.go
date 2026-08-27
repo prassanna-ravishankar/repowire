@@ -69,6 +69,7 @@ type threadPeer struct {
 	circleSrc     string
 	role          string
 	hintedID      string
+	birthCert     map[string]any
 	peerID        string
 	displayName   string
 	model         string
@@ -531,9 +532,13 @@ func (b *Bridge) ensureThread(thread map[string]any) {
 		b.threadsMu.Unlock()
 		return
 	}
-	b.hintMu.Lock()
-	hint := hooks.ConsumeSpawnHint(cwd, "codex")
-	b.hintMu.Unlock()
+	cert := cachedBirthCertificate("codex", id)
+	var hint map[string]any
+	if cert == nil {
+		b.hintMu.Lock()
+		hint = hooks.ConsumeSpawnHint(cwd, "codex")
+		b.hintMu.Unlock()
+	}
 	circle, source := defaultCircle, "fallback"
 	tmux := threadTmuxPlacement(cwd, b.boundary)
 	if tmux.circle != "" {
@@ -555,7 +560,7 @@ func (b *Bridge) ensureThread(thread map[string]any) {
 	peerCtx, cancel := context.WithCancel(b.ctx)
 	gitInfo, _ := thread["gitInfo"].(map[string]any)
 	p := &threadPeer{
-		bridge: b, id: id, cwd: cwd, circle: circle, circleSrc: source, role: role, hintedID: hintedID, cancel: cancel,
+		bridge: b, id: id, cwd: cwd, circle: circle, circleSrc: source, role: role, hintedID: hintedID, birthCert: cert, cancel: cancel,
 		model: stringValue(thread, "model"), branch: stringValue(gitInfo, "branch"), gitStatus: repositoryStatus(cwd),
 		toolCalls: map[string][]map[string]string{}, seenItems: map[string]map[string]bool{},
 	}
@@ -680,6 +685,9 @@ func (p *threadPeer) connectMesh(ctx context.Context) (*websocket.Conn, error) {
 }
 
 func (p *threadPeer) register(ctx context.Context) error {
+	if err := p.restoreIdentity(ctx); err != nil {
+		return err
+	}
 	p.mu.Lock()
 	claim := p.peerID
 	if claim == "" {
@@ -711,15 +719,65 @@ func (p *threadPeer) register(ctx context.Context) error {
 	}
 	p.mu.Lock()
 	p.peerID, p.displayName = stringValue(result, "peer_id"), stringValue(result, "display_name")
+	if circle := stringValue(result, "circle"); circle != "" {
+		p.circle = circle
+	}
+	if role := stringValue(result, "role"); role != "" {
+		p.role = role
+	}
 	p.mu.Unlock()
 	if p.peerID == "" {
 		return errors.New("daemon registration returned no peer_id")
 	}
 	if cert, ok := result["birth_certificate"].(map[string]any); ok {
+		p.mu.Lock()
+		p.birthCert = cert
+		p.mu.Unlock()
 		if err := hooks.WriteRuntimeIdentity("codex", p.id, map[string]any{"birth_certificate": cert}); err != nil {
 			return fmt.Errorf("persist runtime identity: %w", err)
 		}
 	}
+	return nil
+}
+
+func cachedBirthCertificate(backend, sessionID string) map[string]any {
+	cert, _ := hooks.ReadRuntimeIdentity(backend, sessionID)["birth_certificate"].(map[string]any)
+	if cert == nil || stringValue(cert, "runtime_session_id") != sessionID {
+		return nil
+	}
+	expires, err := time.Parse(time.RFC3339Nano, stringValue(cert, "expires_at"))
+	if err != nil || !expires.After(time.Now()) {
+		return nil
+	}
+	return cert
+}
+
+// restoreIdentity rebinds a restarted bridge from the daemon-minted proof for
+// this exact Codex thread before weaker spawn/name hints are considered.
+func (p *threadPeer) restoreIdentity(ctx context.Context) error {
+	p.mu.Lock()
+	if p.peerID != "" || p.birthCert == nil {
+		p.mu.Unlock()
+		return nil
+	}
+	cert := p.birthCert
+	p.mu.Unlock()
+	result, err := p.bridge.daemonRequest(ctx, http.MethodPost, "/peers/identity/validate", map[string]any{
+		"birth_certificate": cert, "backend": "codex", "path": p.cwd,
+	})
+	if err != nil {
+		return fmt.Errorf("validate runtime identity: %w", err)
+	}
+	peer, _ := result["peer"].(map[string]any)
+	peerID, displayName := stringValue(peer, "peer_id"), stringValue(peer, "display_name")
+	circle, role := stringValue(peer, "circle"), stringValue(peer, "role")
+	if peerID == "" || displayName == "" || circle == "" || role == "" {
+		return errors.New("runtime identity validation returned an incomplete peer")
+	}
+	p.mu.Lock()
+	p.peerID = peerID
+	p.displayName, p.circle, p.role = displayName, circle, role
+	p.mu.Unlock()
 	return nil
 }
 

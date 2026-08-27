@@ -74,6 +74,9 @@ func TestRegisterPeerEndpoint(t *testing.T) {
 	if resp.DisplayName != "myproj-claude-code" {
 		t.Fatalf("display_name: want myproj-claude-code, got %q", resp.DisplayName)
 	}
+	if resp.Circle != "default" || resp.Role != proto.RoleAgent {
+		t.Fatalf("canonical placement: circle=%q role=%q", resp.Circle, resp.Role)
+	}
 	if !resp.PaneAssigned {
 		t.Fatalf("pane_assigned must be true when no pane was requested")
 	}

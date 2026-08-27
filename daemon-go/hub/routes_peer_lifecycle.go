@@ -67,13 +67,15 @@ type RegisterPeerRequest struct {
 	Metadata     map[string]any   `json:"metadata"`
 }
 
-// RegisterResponse mirrors the Python RegisterResponse. BirthCertificate is the
-// cert envelope (nil when the binding store is absent or persistence was
-// skipped/failed).
+// RegisterResponse extends the Python-compatible response with the daemon's
+// canonical circle and role. BirthCertificate is nil when persistence is
+// unavailable, skipped, or failed.
 type RegisterResponse struct {
 	OK               bool           `json:"ok"`
 	PeerID           string         `json:"peer_id"`
 	DisplayName      string         `json:"display_name"`
+	Circle           string         `json:"circle"`
+	Role             proto.PeerRole `json:"role"`
 	PaneAssigned     bool           `json:"pane_assigned"`
 	BirthCertificate map[string]any `json:"birth_certificate"`
 }
@@ -131,7 +133,7 @@ type SetDescriptionRequest struct {
 // session id registers OFFLINE — its ws-hook owns the ONLINE transition), then
 // persists a session-binding observation + mints a birth certificate (unless
 // persistBinding is false, the pane-adoption rollback path). Returns the
-// canonical peer_id, assigned display_name, pane_assigned, and the cert envelope.
+// canonical peer_id, display_name, circle, role, pane_assigned, and cert envelope.
 func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persistBinding bool) (RegisterResponse, int, string) {
 	ctx := r.Context()
 
@@ -203,6 +205,12 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 		// PaneHijack / PeerRetired guards are 409s (orphan ws-hook reclaim).
 		return RegisterResponse{}, http.StatusConflict, err.Error()
 	}
+	if registered, ok := h.reg.GetPeer(peerID); ok {
+		displayName, circle, role = registered.DisplayName, registered.Circle, registered.Role
+		if registered.Path != "" {
+			req.Path = &registered.Path
+		}
+	}
 
 	// Initial-OFFLINE rule: a pane-backed peer that already reported a runtime
 	// session id is mid-handoff — its ws-hook, not this HTTP registration, owns
@@ -232,6 +240,8 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 		OK:               true,
 		PeerID:           string(peerID),
 		DisplayName:      string(displayName),
+		Circle:           circle,
+		Role:             role,
 		PaneAssigned:     paneAssigned,
 		BirthCertificate: birthCert,
 	}, http.StatusOK, ""

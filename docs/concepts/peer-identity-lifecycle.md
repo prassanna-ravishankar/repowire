@@ -124,6 +124,10 @@ starts without pane context, no local metadata is available, and exactly one
 online candidate matches. This is a narrow bridge for stripped tmux
 environments, not an identity source of truth.
 
+The Codex App Server bridge stores the same certificate by native thread id. On
+bridge restart it validates that proof and restores the daemon's canonical peer,
+circle, and role before consulting spawn or display-name hints.
+
 ## Runtime birth certificates
 
 Hook-based `SessionStart` registration mints a short-lived runtime identity
