@@ -66,8 +66,9 @@ owns those paths.
 
 Tmux remains useful for hosting and restarting a TUI, but it is not used for
 message delivery. When exactly one tmux circle matches a Codex thread's working
-directory, Repowire preserves that session/window circle without binding the
-peer to a pane. Spawn hints take precedence. A standalone thread with no safe
+directory, Repowire preserves that session/window circle even when several
+panes in that circle share the path, without binding the peer to a pane. Spawn
+hints take precedence. A standalone thread with no safe
 placement evidence joins the explicit `default` circle.
 
 Final App Server chat events include completed command, file-change, MCP, and

@@ -559,7 +559,7 @@ func (b *Bridge) ensureThread(thread map[string]any) {
 		model: stringValue(thread, "model"), branch: stringValue(gitInfo, "branch"), gitStatus: repositoryStatus(cwd),
 		toolCalls: map[string][]map[string]string{}, seenItems: map[string]map[string]bool{},
 	}
-	if tmux.circle != "" {
+	if tmux.paneID != "" {
 		p.tmux = map[string]any{"session": tmux.session, "window_id": tmux.windowID, "pane_id": tmux.paneID, "pane_pid": tmux.panePID}
 	}
 	p.busy = statusType(thread["status"]) == "active"
@@ -1100,8 +1100,16 @@ func parseTmuxPlacement(output, processes, cwd string, boundary proto.CircleBoun
 		}
 		matches = append(matches, tmuxPlacement{circle: candidate, source: source, session: fields[1], windowID: fields[2], paneID: fields[3], panePID: root})
 	}
-	if len(matches) != 1 {
+	if len(matches) == 0 {
 		return tmuxPlacement{}
+	}
+	for _, match := range matches[1:] {
+		if match.circle != matches[0].circle {
+			return tmuxPlacement{}
+		}
+	}
+	if len(matches) > 1 {
+		return tmuxPlacement{circle: matches[0].circle, source: matches[0].source}
 	}
 	return matches[0]
 }

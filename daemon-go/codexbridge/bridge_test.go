@@ -96,14 +96,19 @@ func TestThreadHelpers(t *testing.T) {
 	}
 }
 
-func TestTmuxPlacementRequiresOneMatchingCodexPane(t *testing.T) {
+func TestTmuxPlacementRequiresOneMatchingCircle(t *testing.T) {
 	out := "/work/repo\tmesh\t@7\t%1\t100\n/work/other\tother\t@8\t%2\t200\n"
 	processes := "100 1 zsh\n101 100 node /usr/local/bin/codex\n200 1 zsh\n"
 	if got := parseTmuxPlacement(out, processes, "/work/repo", proto.CircleBoundarySession); got.circle != "mesh" || got.source != "tmux" || got.paneID != "%1" {
 		t.Fatalf("placement = %+v", got)
 	}
-	out += "/work/repo\tother-mesh\t@9\t%3\t300\n"
+	out += "/work/repo\tmesh\t@9\t%3\t300\n"
 	processes += "300 1 /opt/codex\n"
+	if got := parseTmuxPlacement(out, processes, "/work/repo", proto.CircleBoundarySession); got.circle != "mesh" || got.paneID != "" {
+		t.Fatalf("same-circle placement = %+v", got)
+	}
+	out += "/work/repo\tother-mesh\t@10\t%4\t400\n"
+	processes += "400 1 /opt/codex\n"
 	if got := parseTmuxPlacement(out, processes, "/work/repo", proto.CircleBoundarySession); got.circle != "" {
 		t.Fatalf("ambiguous placement should fail loud, got %+v", got)
 	}
