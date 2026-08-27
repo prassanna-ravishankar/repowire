@@ -34,10 +34,12 @@ Repowire runs locally by default through a daemon on your machine. The hosted re
 **1. Install Repowire and wire your agents.**
 
 ```bash
-curl -fsSL https://github.com/prassanna-ravishankar/repowire/releases/latest/download/install.sh | sh
+brew install prassanna-ravishankar/repowire/repowire
+repowire setup
 ```
 
-The installer downloads a checksum-verified native binary from GitHub Releases.
+Homebrew downloads a checksum-pinned native release. Alternatively, use the
+[native installer](https://docs.repowire.io/start/install/).
 
 **2. Open your normal agent CLIs.**
 
