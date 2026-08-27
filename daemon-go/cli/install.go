@@ -185,11 +185,24 @@ func executable() string {
 	if err != nil {
 		return "repowire"
 	}
+	return stableExecutable(path)
+}
+
+func stableExecutable(path string) string {
 	resolved, err := filepath.EvalSymlinks(path)
-	if err == nil {
-		return resolved
+	if err != nil {
+		return path
 	}
-	return path
+	if index := strings.Index(filepath.ToSlash(resolved), "/Cellar/repowire/"); index >= 0 {
+		linked := filepath.FromSlash(filepath.ToSlash(resolved)[:index] + "/bin/repowire")
+		if target, err := filepath.EvalSymlinks(linked); err == nil && target == resolved {
+			return linked
+		}
+	}
+	return resolved
+}
+func homebrewCellarPath(path string) bool {
+	return strings.Contains(filepath.ToSlash(path), "/Cellar/repowire/")
 }
 func hookCommand(args string) string { return strconv.Quote(executable()) + " " + args }
 
@@ -1038,6 +1051,15 @@ func runUpdate() int {
 	args := "--non-interactive"
 	if channelConfigured() {
 		args += " --experimental-channels"
+	}
+	if path, err := os.Executable(); err == nil {
+		stable := stableExecutable(path)
+		if resolved, err := filepath.EvalSymlinks(path); err == nil && homebrewCellarPath(resolved) {
+			if code := runExternal("brew", "upgrade", "repowire"); code != 0 {
+				return code
+			}
+			return runExternal(stable, append([]string{"setup"}, strings.Fields(args)...)...)
+		}
 	}
 	command := "curl -fsSL https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh -s -- " + args
 	return runExternal("sh", "-c", command)

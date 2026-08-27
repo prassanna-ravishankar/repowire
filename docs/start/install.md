@@ -4,7 +4,17 @@ Repowire runs on macOS and Linux with tmux. The CLI, daemon, hooks, MCP shim,
 Telegram/Slack peers, and hosted relay are native Go binaries. Python is not
 required.
 
-## Recommended
+## Homebrew (recommended)
+
+```bash
+brew install prassanna-ravishankar/repowire/repowire
+repowire setup
+```
+
+Homebrew upgrades work through either `brew upgrade repowire` or
+`repowire update`.
+
+## Native installer
 
 ```bash
 curl -fsSL https://github.com/prassanna-ravishankar/repowire/releases/latest/download/install.sh | sh

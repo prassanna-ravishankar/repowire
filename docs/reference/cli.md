@@ -372,7 +372,8 @@ Run the Slack bot peer over Socket Mode (no public URL needed). Reads `SLACK_BOT
 repowire update
 ```
 
-Download and install the latest checksum-verified native release, then re-run
+Upgrade through Homebrew when Repowire is Homebrew-managed; otherwise download
+and install the latest checksum-verified native release. Then re-run
 non-interactive setup. SQLite state migrations run when the daemon restarts;
 verify with `repowire doctor`.
 

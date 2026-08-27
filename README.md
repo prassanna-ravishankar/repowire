@@ -34,6 +34,13 @@ Repowire runs locally by default through a daemon on your machine. The hosted re
 **1. Install Repowire and wire your agents.**
 
 ```bash
+brew install prassanna-ravishankar/repowire/repowire
+repowire setup
+```
+
+Or use the checksum-verified native installer:
+
+```bash
 curl -fsSL https://github.com/prassanna-ravishankar/repowire/releases/latest/download/install.sh | sh
 ```
 
@@ -261,7 +268,7 @@ relay:
   api_key: "rw_..."
 ```
 
-Update checks are off by default. If enabled with `repowire setup --update-checks`, `repowire status` and `repowire doctor` may report that a newer release is available, but they do not rewrite hooks or restart services. Use `repowire update` when you want to upgrade explicitly.
+Update checks are off by default. If enabled with `repowire setup --update-checks`, `repowire status` and `repowire doctor` may report that a newer release is available, but they do not rewrite hooks or restart services. Use `repowire update` when you want to upgrade explicitly; Homebrew installs delegate that command to `brew upgrade`.
 
 Security defaults:
 

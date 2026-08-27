@@ -295,6 +295,32 @@ func TestVersionGreater(t *testing.T) {
 	}
 }
 
+func TestStableExecutableKeepsHomebrewSymlink(t *testing.T) {
+	root := t.TempDir()
+	cellar := filepath.Join(root, "Cellar", "repowire", "0.18.0", "bin", "repowire")
+	linked := filepath.Join(root, "bin", "repowire")
+	if err := os.MkdirAll(filepath.Dir(cellar), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(linked), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cellar, nil, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(cellar, linked); err != nil {
+		t.Fatal(err)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(canonicalRoot, "bin", "repowire")
+	if got := stableExecutable(cellar); got != want {
+		t.Fatalf("stable executable = %q, want %q", got, want)
+	}
+}
+
 func TestRemoveAntigravityManifestEntry(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	path := antigravityManifestPath()
