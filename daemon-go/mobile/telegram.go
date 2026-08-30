@@ -257,6 +257,9 @@ func (b *Telegram) onUpdate(ctx context.Context, update map[string]any) error {
 
 func (b *Telegram) matchesChat(message map[string]any) bool {
 	chat, _ := message["chat"].(map[string]any)
+	if id, ok := number(chat["id"]); ok {
+		return strconv.FormatInt(int64(id), 10) == b.chatID
+	}
 	return fmt.Sprint(chat["id"]) == b.chatID
 }
 

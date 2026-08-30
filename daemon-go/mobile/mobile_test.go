@@ -100,11 +100,14 @@ func TestTelegramAcknowledgesUpdateOnlyAfterSuccessfulReply(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
 	}))
 	t.Cleanup(telegramAPI.Close)
-	bot := NewTelegram("token", "42", NewDaemonPeer(daemonServer.URL, "secret", "telegram", "/telegram", "default"))
+	// Telegram chat IDs are large enough that fmt.Sprint(float64(id)) uses
+	// scientific notation. Exercise the real JSON-decoded numeric shape so a
+	// valid chat is not silently ignored before command dispatch.
+	bot := NewTelegram("token", "347354611", NewDaemonPeer(daemonServer.URL, "secret", "telegram", "/telegram", "default"))
 	bot.apiBase = telegramAPI.URL
 	update := map[string]any{
 		"update_id": float64(41),
-		"message":   map[string]any{"message_id": float64(7), "text": "/peers", "chat": map[string]any{"id": float64(42)}},
+		"message":   map[string]any{"message_id": float64(7), "text": "📋 peers", "chat": map[string]any{"id": float64(347354611)}},
 	}
 	if err := bot.handleUpdate(context.Background(), update); err == nil {
 		t.Fatal("failed Telegram reply unexpectedly acknowledged")
