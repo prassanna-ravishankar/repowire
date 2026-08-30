@@ -269,8 +269,8 @@ func (h *Hub) getPeerByPane(w http.ResponseWriter, r *http.Request) {
 }
 
 // getCircleOrchestrator handles GET /circles/{name}/orchestrator. present=true
-// iff a live orchestrator (role=orchestrator, online/busy, fresh last_seen)
-// exists in the circle.
+// iff a live orchestrator (role=orchestrator, online/busy, and heartbeat-fresh
+// or transport-connected) exists in the circle.
 func (h *Hub) getCircleOrchestrator(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	tolerance := int(h.reg.HeartbeatTolerance().Seconds())

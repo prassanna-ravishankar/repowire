@@ -178,9 +178,11 @@ func (r *Registry) preferenceKey(p *proto.Peer) preferenceKey {
 }
 
 // GetOrchestrator returns the live orchestrator for a circle, or (nil,false).
-// Live = role=orchestrator, status online/busy, last_seen within
-// HeartbeatTolerance. When several match, the most-recently-seen wins. Mirrors
-// PeerRegistry.get_orchestrator.
+// Live = role=orchestrator, status online/busy, and either a fresh last_seen or
+// a connected transport. A live socket is stronger liveness evidence than the
+// request-driven heartbeat timestamp, which may remain unchanged while an idle
+// orchestrator is still connected. When several match, the
+// most-recently-seen wins.
 func (r *Registry) GetOrchestrator(circle string) (*proto.Peer, bool) {
 	tolerance := r.HeartbeatTolerance()
 	r.mu.RLock()
@@ -195,10 +197,12 @@ func (r *Registry) GetOrchestrator(circle string) (*proto.Peer, bool) {
 		if p.Status != proto.StatusOnline && p.Status != proto.StatusBusy {
 			continue
 		}
-		if p.LastSeen == nil || now.Sub(*p.LastSeen) > tolerance {
+		fresh := p.LastSeen != nil && now.Sub(*p.LastSeen) <= tolerance
+		connected := r.transport != nil && r.transport.IsConnected(p.PeerID)
+		if !fresh && !connected {
 			continue
 		}
-		if best == nil || (best.LastSeen != nil && p.LastSeen.After(*best.LastSeen)) {
+		if best == nil || lastSeenAfter(p, best) {
 			best = p
 		}
 	}

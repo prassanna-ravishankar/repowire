@@ -86,7 +86,7 @@ There is one protected case: a fresh live `orchestrator` peer keeps sticky owner
 
 Orchestrator role repair follows the same boundary. The CLI-only
 `repowire peer claim-role orchestrator` command can repair stale, offline, or
-mapping-only holders, but they cannot demote a fresh online/busy orchestrator
+mapping-only holders, but they cannot demote a fresh or transport-connected online/busy orchestrator
 holder. To intentionally replace a live orchestrator, stop that holder first so
 the daemon no longer treats it as fresh.
 

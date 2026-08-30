@@ -260,7 +260,7 @@ set_description("rebuilding docs slice B")
 orchestrator_status(circle: str | None = None) -> str
 ```
 
-Check whether a live orchestrator is present in a circle. Returns a TSV row with columns: `circle`, `present`, `peer_name`, `peer_id`, `last_seen`, `stale_after_seconds`. Defaults to the caller's own circle.
+Check whether a live orchestrator is present in a circle. An online/busy orchestrator counts as live while its transport is connected or its last-seen heartbeat remains fresh. Returns a TSV row with columns: `circle`, `present`, `peer_name`, `peer_id`, `last_seen`, `stale_after_seconds`. Defaults to the caller's own circle.
 
 "Live" means a peer with `role=orchestrator`, status `online` or `busy`, and a heartbeat within `stale_after_seconds`. Use this before dispatching long-running work that assumes an orchestrator will be available to coordinate.
 

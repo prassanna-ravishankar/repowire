@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "./lib/utils";
 import { useEventStream } from "./lib/useEventStream";
+import { activeRuntimeCircles } from "./lib/orchestrators";
 import { SettingsDialog, SpawnDialog } from "./components/DashboardDialogs";
 import { JobsView } from "./components/JobsView";
 import { MeshFeed } from "./components/MeshFeed";
@@ -51,9 +52,7 @@ function DashboardInner() {
 
   const fetchOrchestrators = useCallback(async (nextPeers?: Peer[]) => {
     const sourcePeers = nextPeers ?? peersRef.current;
-    const circles = Array.from(
-      new Set(sourcePeers.map((peer) => peer.circle || "default"))
-    ).sort((a, b) => a.localeCompare(b));
+    const circles = activeRuntimeCircles(sourcePeers);
 
     if (circles.length === 0) {
       setOrchestrators([]);
