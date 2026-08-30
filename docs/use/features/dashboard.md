@@ -50,6 +50,8 @@ The dashboard uses daemon HTTP and SSE routes directly:
 
 Dashboard spawn and backend controls use the same allowed paths, backend commands, and profile configuration as CLI and MCP surfaces.
 
+Backend switching appears only for Repowire-managed tmux peers with a recorded pane id. Pane-less native sessions, including Codex App Server threads, show `native · no switch`: Repowire cannot prove and terminate their exact runtime process safely, so it does not offer a destructive control. A rejected switch on an eligible peer is shown inline in the peer header.
+
 ## Limits
 
 - The dashboard does not poll. It streams daemon events and receives chat turns from runtime hooks or plugin bridges.

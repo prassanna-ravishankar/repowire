@@ -110,6 +110,66 @@ describe("PeerView lifecycle controls", () => {
   });
 });
 
+describe("PeerView backend switching", () => {
+  it("does not offer a destructive switch for a pane-less native peer", () => {
+    render(
+      <PeerView
+        peer={{ ...PEER, backend: "codex", pane_id: null }}
+        events={[]}
+        apiBase=""
+        onClose={() => {}}
+        onSent={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("native · no switch")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Switch backend" })).not.toBeInTheDocument();
+  });
+
+  it("targets the immutable peer id and shows a rejected switch inline", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/spawn/config") {
+        return new Response(JSON.stringify({ commands: { codex: "codex", "claude-code": "claude" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url === "/peers/peer-1/switch-backend" && init?.method === "POST") {
+        return new Response(JSON.stringify({ detail: { hint: "Pane ownership changed; retry after rehooking." } }), {
+          status: 409,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Promise<Response>(() => {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => true));
+
+    render(
+      <PeerView
+        peer={{ ...PEER, backend: "codex", pane_id: "%7" }}
+        events={[]}
+        apiBase=""
+        onClose={() => {}}
+        onSent={() => {}}
+      />,
+    );
+
+    const select = await screen.findByRole("combobox", { name: "Switch backend" });
+    fireEvent.change(select, { target: { value: "claude-code" } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Pane ownership changed; retry after rehooking.");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/peers/peer-1/switch-backend",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ new_backend: "claude-code" }),
+      }),
+    );
+  });
+});
+
 describe("PeerView session protection", () => {
   it("renders persisted transcript turns in the primary chat timeline", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {

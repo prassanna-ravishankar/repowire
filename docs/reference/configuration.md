@@ -145,7 +145,7 @@ self-attestation.
 
 ## `daemon.spawn`
 
-Spawn is disabled until `allowed_paths` and at least one runtime command are configured. `commands` is keyed by backend (`claude-code`, `codex`, `opencode`, `pi`) and is the single launch profile used by MCP `spawn_peer`, dashboard spawn, backend switching, `repowire peer restart`, and `repowire orchestrator start`. Legacy Gemini or Antigravity keys are ignored.
+Spawn is disabled until `allowed_paths` and at least one runtime command are configured. `commands` is keyed by backend (`claude-code`, `codex`, `opencode`, `pi`) and is the single launch profile used by MCP `spawn_peer`, dashboard spawn, backend switching, `repowire peer restart`, and `repowire orchestrator start`. Backend switching is destructive and is offered only for Repowire-managed tmux peers whose pane ownership can be proven; native pane-less sessions remain attached to their runtime. Legacy Gemini or Antigravity keys are ignored.
 
 Backend commands are reloaded from config when a spawn request needs them, so
 `repowire setup` and manual command edits take effect without restarting the

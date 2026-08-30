@@ -39,6 +39,7 @@ func TestListPeersWireShape(t *testing.T) {
 	defer srv.Close()
 
 	path := "/work/alpha"
+	paneID := "%7"
 	// in_process metadata exempts the peer from lazy_repair's no-WS ghost demote,
 	// so it stays online without a live socket (mirrors @jobs service peers).
 	registerTestPeer(t, h, peer.AllocateParams{
@@ -46,6 +47,7 @@ func TestListPeersWireShape(t *testing.T) {
 		Backend:  proto.AgentClaudeCode,
 		Role:     proto.RoleAgent,
 		Path:     &path,
+		PaneID:   &paneID,
 		Machine:  "host-a",
 		Metadata: map[string]any{"in_process": true},
 	})
@@ -72,6 +74,9 @@ func TestListPeersWireShape(t *testing.T) {
 	}
 	if info.PeerID == "" {
 		t.Fatalf("peer_id empty")
+	}
+	if info.PaneID == nil || *info.PaneID != paneID {
+		t.Fatalf("pane_id = %v, want %q", info.PaneID, paneID)
 	}
 	if info.Status != string(proto.StatusOnline) {
 		t.Fatalf("status = %q, want online", info.Status)

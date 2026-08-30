@@ -2173,6 +2173,7 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!peer.pane_id) return;
     let cancelled = false;
     fetch(`${apiBase}/spawn/config`, { credentials: "include" })
       .then((r) => (r.ok ? r.json() : null))
@@ -2188,7 +2189,7 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
     return () => {
       cancelled = true;
     };
-  }, [apiBase]);
+  }, [apiBase, peer.pane_id]);
 
   // Map configured runtimes → unique backends, filter out current backend.
   const options = useMemo(() => {
@@ -2202,6 +2203,17 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
     }
     return out;
   }, [configuredBackends, peer.backend]);
+
+  if (!peer.pane_id) {
+    return (
+      <span
+        className="hidden h-8 items-center rounded border border-border px-2 font-mono text-[10px] uppercase tracking-[0.12em] text-outline sm:flex"
+        title="Backend switching requires a Repowire-managed tmux pane. Native sessions stay attached to their runtime."
+      >
+        native · no switch
+      </span>
+    );
+  }
 
   if (configuredBackends === null || options.length === 0) return null;
 
@@ -2218,7 +2230,7 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
     setBusy(true);
     try {
       const r = await fetch(
-        `${apiBase}/peers/${encodeURIComponent(peer.name)}/switch-backend`,
+        `${apiBase}/peers/${encodeURIComponent(peer.peer_id)}/switch-backend`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2244,7 +2256,7 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
   }
 
   return (
-    <div className="hidden items-center gap-1.5 sm:flex" title={error || undefined}>
+    <div className="hidden max-w-[220px] flex-col items-end gap-1 sm:flex">
       <select
         aria-label="Switch backend"
         disabled={busy}
@@ -2265,6 +2277,11 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
           </option>
         ))}
       </select>
+      {error ? (
+        <span role="alert" className="font-mono text-[10px] leading-tight text-error">
+          {error}
+        </span>
+      ) : null}
     </div>
   );
 }

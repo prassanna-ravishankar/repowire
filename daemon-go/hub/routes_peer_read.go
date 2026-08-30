@@ -53,6 +53,7 @@ type PeerInfo struct {
 	Path        *string           `json:"path"`
 	Machine     *string           `json:"machine"`
 	TmuxSession *string           `json:"tmux_session"`
+	PaneID      *string           `json:"pane_id"`
 	Backend     proto.AgentType   `json:"backend"`
 	Model       *string           `json:"model"`
 	Circle      string            `json:"circle"`
@@ -386,6 +387,7 @@ func peerToInfo(p *proto.Peer) PeerInfo {
 		Path:          path,
 		Machine:       machine,
 		TmuxSession:   p.TmuxSession,
+		PaneID:        p.PaneID,
 		Backend:       p.Backend,
 		Model:         p.Model,
 		Circle:        p.Circle,

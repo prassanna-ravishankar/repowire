@@ -7,6 +7,7 @@ export interface Peer {
   machine: string;
   path: string;
   tmux_session?: string;
+  pane_id?: string | null;
   backend?: string;
   model?: string | null;
   circle: string;
