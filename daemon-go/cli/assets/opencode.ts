@@ -5,6 +5,7 @@ type OpenCodeClient = PluginInput["client"]
 import * as fs from "node:fs"
 import * as path from "node:path"
 import * as os from "node:os"
+import * as crypto from "node:crypto"
 
 // Type definitions for event properties
 interface SessionEventInfo {
@@ -107,9 +108,34 @@ interface PeerConn {
 }
 
 // Configuration
+function repowireAuthToken(): string {
+  if (process.env.REPOWIRE_AUTH_TOKEN) return process.env.REPOWIRE_AUTH_TOKEN
+  try {
+    const raw = fs.readFileSync(path.join(os.homedir(), ".repowire", "config.yaml"), "utf-8")
+    let inDaemon = false
+    for (const line of raw.split(/\r?\n/)) {
+      if (/^daemon:\s*$/.test(line)) {
+        inDaemon = true
+        continue
+      }
+      if (inDaemon && /^\S/.test(line)) break
+      if (!inDaemon) continue
+      const match = /^\s+auth_token:\s*(.*?)\s*$/.exec(line)
+      if (!match) continue
+      const value = match[1].replace(/\s+#.*$/, "").trim()
+      if (value.startsWith('"')) return JSON.parse(value)
+      if (value.startsWith("'")) return value.slice(1, -1).replaceAll("''", "'")
+      return value
+    }
+  } catch {
+    // Setup may not have created config yet; the daemon will reject clearly.
+  }
+  return ""
+}
+
 const DAEMON_URL = process.env.REPOWIRE_DAEMON_URL || "http://127.0.0.1:8377"
 const DAEMON_WS_URL = process.env.REPOWIRE_DAEMON_WS_URL || "ws://127.0.0.1:8377/ws"
-const AUTH_TOKEN = process.env.REPOWIRE_AUTH_TOKEN || ""
+const AUTH_TOKEN = repowireAuthToken()
 const QUERY_TIMEOUT_MS = 120_000
 const MAX_RECONNECT_ATTEMPTS = 50
 
@@ -179,6 +205,25 @@ async function daemon(p: string, body?: object) {
   })
   if (!res.ok) throw new Error(`Daemon error: ${res.status}`)
   return res.json()
+}
+
+function standaloneProjectCircle(project: string): string {
+  let resolved = path.resolve(project)
+  try { resolved = fs.realpathSync(resolved) } catch { /* lexical path is stable enough */ }
+  return "project-" + crypto.createHash("sha256").update(resolved).digest("hex").slice(0, 12)
+}
+
+async function registerPaneLessPeer(conn: PeerConn): Promise<void> {
+  const body: Record<string, unknown> = {
+    name: conn.peerName, path: projectPath, backend: "opencode", circle,
+    circle_source: circleSource, role: "agent",
+    metadata: { runtime_session_id: conn.sessionId },
+  }
+  if (conn.peerId) body.peer_id = conn.peerId
+  const registered = await daemon("/peers", body)
+  conn.peerId = typeof registered.peer_id === "string" ? registered.peer_id : conn.peerId
+  conn.peerName = typeof registered.display_name === "string" ? registered.display_name : conn.peerName
+  if (conn.peerId) savePeerId(projectPath, conn.sessionId, conn.peerId)
 }
 
 async function configuredCircleBoundary(): Promise<"session" | "window"> {
@@ -263,9 +308,10 @@ function connectPeerWebSocket(conn: PeerConn) {
     }
   }
 
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     if (conn.closed) return
-    console.debug(`[repowire] WebSocket disconnected for ${conn.peerName}, scheduling reconnect`)
+    const reason = event.reason ? `: ${event.reason}` : ""
+    console.debug(`[repowire] WebSocket disconnected for ${conn.peerName} (${event.code}${reason}), scheduling reconnect`)
     schedulePeerReconnect(conn)
   }
 
@@ -326,6 +372,8 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
       savePeerId(projectPath, conn.sessionId, conn.peerId)
     }
     sendStatus(conn, conn.busy ? "busy" : "idle")
+  } else if (msgType === "error") {
+    console.error(`[repowire] Daemon rejected ${conn.peerName}: ${String(data.error || "unknown error")}`)
   } else if (msgType === "query") {
     const correlationId = data.correlation_id as string
     const fromPeer = data.from_peer as string
@@ -458,7 +506,13 @@ function ensurePeer(session: { id: string; title?: string | null }) {
     closed: false,
   }
   peerBySession.set(session.id, conn)
-  connectPeerWebSocket(conn)
+  if (tmuxPane) {
+    connectPeerWebSocket(conn)
+  } else {
+    void registerPaneLessPeer(conn).then(() => connectPeerWebSocket(conn)).catch((e) => {
+      console.error("[repowire] Pane-less OpenCode registration failed:", e)
+    })
+  }
 }
 
 function removePeer(sessionId: string) {
@@ -756,39 +810,13 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
       console.warn("[repowire] Failed to derive circle from tmux:", e)
     }
   }
-
-  // Bootstrap: enumerate existing root sessions on next tick, AFTER opencode
-  // finishes its own startup. Awaiting client.session.list() here would
-  // deadlock — the plugin loader blocks server startup, but session.list()
-  // hits opencode's /session endpoint which isn't ready until startup
-  // completes. setTimeout(0) yields control back to opencode's loader.
-  setTimeout(() => {
-    void (async () => {
-      try {
-        const result = await client.session.list()
-        const sessions = result?.data
-        if (Array.isArray(sessions)) {
-          for (const s of sessions) {
-            if (s && s.parentID == null && typeof s.id === "string") {
-              ensurePeer({ id: s.id, title: (s as { title?: string }).title })
-            }
-          }
-        }
-      } catch (e) {
-        console.warn("[repowire] Failed to enumerate sessions on bootstrap:", e)
-      }
-    })()
-  }, 0)
-
-  // beforeExit fires when the event loop is empty; cleanup is best-effort.
-  // For signals, install a one-shot handler that cleans up and re-emits the
-  // default behavior (process.exit). Without `once`, our handler would
-  // override Node's default termination behavior on SIGINT/SIGTERM.
-  process.on("beforeExit", cleanup)
-  process.once("SIGINT", () => { try { cleanup() } finally { process.exit(130) } })
-  process.once("SIGTERM", () => { try { cleanup() } finally { process.exit(143) } })
+  if (!circle) {
+    circle = standaloneProjectCircle(projectPath)
+    circleSource = "fallback"
+  }
 
   return {
+    dispose: async () => cleanup(),
     tool: {
       list_peers: tool({
         description: "List all available peers in the mesh network",
@@ -935,6 +963,7 @@ ${me.peerId || ""}	${me.peerName}			not registered			`
         // Source: packages/opencode/src/session/status.ts:38-83.
         const sid = props?.sessionID
         if (!sid) return
+        if (!peerBySession.has(sid)) ensurePeer({ id: sid })
         const conn = peerBySession.get(sid)
         if (!conn) return
         const statusType = props?.status?.type

@@ -8,9 +8,8 @@ Feature pages are the authoritative place for what a capability does, when to us
 
 - [Connect Claude Code](features/connect-claude-code.md)
 - [Connect Codex](features/connect-codex.md)
-- [Connect Gemini CLI](features/connect-gemini.md)
-- [Connect Antigravity CLI](features/connect-antigravity.md)
 - [Connect OpenCode](features/connect-opencode.md)
+- [Connect Pi](features/connect-pi.md)
 - [Dashboard](features/dashboard.md)
 - [Telegram](features/telegram.md)
 - [Slack](features/slack.md)

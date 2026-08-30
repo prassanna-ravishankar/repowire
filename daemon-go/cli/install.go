@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"os"
@@ -68,8 +69,11 @@ func runSetup(argv []string) int {
 			return fatal(err)
 		}
 	}
+	if err := cleanupRetiredRuntimeIntegrations(); err != nil {
+		fmt.Fprintln(os.Stderr, "repowire: retired runtime cleanup:", err)
+	}
 	installed := 0
-	for _, runtimeName := range []string{"claude-code", "codex", "gemini", "antigravity", "opencode", "pi"} {
+	for _, runtimeName := range []string{"claude-code", "codex", "opencode", "pi"} {
 		if runtimeAvailable(runtimeName) {
 			if err := installRuntime(runtimeName); err != nil {
 				fmt.Fprintf(os.Stderr, "repowire: %s setup: %v\n", runtimeName, err)
@@ -105,7 +109,10 @@ func runSetup(argv []string) int {
 }
 
 func runtimeAvailable(name string) bool {
-	binary := map[string]string{"claude-code": "claude", "codex": "codex", "gemini": "gemini", "antigravity": "agy", "opencode": "opencode", "pi": "pi"}[name]
+	binary := map[string]string{"claude-code": "claude", "codex": "codex", "opencode": "opencode", "pi": "pi"}[name]
+	if binary == "" {
+		return false
+	}
 	_, err := exec.LookPath(binary)
 	return err == nil
 }
@@ -127,11 +134,16 @@ func enableDaemonMCP(relay bool) error {
 		daemon["auth_token"] = randomToken()
 	}
 	commands := mapChild(mapChild(daemon, "spawn"), "commands")
+	for backend, oldDefault := range map[string]string{
+		"gemini": "gemini --yolo", "antigravity": "agy --dangerously-skip-permissions",
+	} {
+		if command, _ := commands[backend].(string); command == oldDefault {
+			delete(commands, backend)
+		}
+	}
 	for backend, spec := range map[string]struct{ binary, command string }{
 		"claude-code": {"claude", "claude --dangerously-skip-permissions"},
 		"codex":       {"codex", "codex --dangerously-bypass-approvals-and-sandbox"},
-		"gemini":      {"gemini", "gemini --yolo"},
-		"antigravity": {"agy", "agy --dangerously-skip-permissions"},
 		"opencode":    {"opencode", "opencode"},
 		"pi":          {"pi", "pi"},
 	} {
@@ -212,12 +224,11 @@ func installRuntime(name string) error {
 		return installClaude()
 	case "codex":
 		return installCodex()
-	case "gemini":
-		return installGemini()
-	case "antigravity":
-		return installAntigravity()
 	case "opencode":
-		return installPluginAsset("opencode", home(".opencode", "plugin", "repowire.ts"))
+		if err := installPluginAsset("opencode", home(".config", "opencode", "plugins", "repowire.ts")); err != nil {
+			return err
+		}
+		return removeIfExists(home(".opencode", "plugin", "repowire.ts"))
 	case "pi":
 		return installPluginAsset("pi", home(".pi", "agent", "extensions", "repowire.ts"))
 	default:
@@ -230,11 +241,10 @@ func uninstallRuntime(name string) error {
 		return uninstallClaude()
 	case "codex":
 		return uninstallCodex()
-	case "gemini":
-		return uninstallJSONRuntime(home(".gemini", "settings.json"), []string{"SessionStart", "SessionEnd", "BeforeAgent", "AfterAgent"}, home(".gemini", "settings.json"))
-	case "antigravity":
-		return uninstallAntigravity()
 	case "opencode":
+		if err := removeIfExists(home(".config", "opencode", "plugins", "repowire.ts")); err != nil {
+			return err
+		}
 		return removeIfExists(home(".opencode", "plugin", "repowire.ts"))
 	case "pi":
 		return removeIfExists(home(".pi", "agent", "extensions", "repowire.ts"))
@@ -244,6 +254,10 @@ func uninstallRuntime(name string) error {
 }
 
 func installClaude() error {
+	versionOutput, err := exec.Command("claude", "--version").Output()
+	if err != nil || !claudeInboxVersionSupported(string(versionOutput)) {
+		return errors.New("Claude Code 2.1.224 or newer is required for native inbox delivery")
+	}
 	path := home(".claude", "settings.json")
 	data, err := readJSON(path, true)
 	if err != nil {
@@ -275,6 +289,11 @@ func installClaude() error {
 	servers := mapChild(root, "mcpServers")
 	servers["repowire"] = map[string]any{"type": "stdio", "command": executable(), "args": []string{"mcp"}, "env": map[string]string{"REPOWIRE_BACKEND": "claude-code"}}
 	return writeJSON(rootPath, root)
+}
+
+func claudeInboxVersionSupported(output string) bool {
+	fields := strings.Fields(output)
+	return len(fields) > 0 && versionAtLeast(fields[0], 2, 1, 224)
 }
 
 func installChannel() error {
@@ -381,20 +400,6 @@ func uninstallClaude() error {
 	return writeJSON(rootPath, root)
 }
 
-func installGemini() error {
-	path := home(".gemini", "settings.json")
-	data, err := readJSON(path, true)
-	if err != nil {
-		return err
-	}
-	hooks := mapChild(data, "hooks")
-	for event, spec := range map[string][]string{"SessionStart": {"hook session --backend=gemini", "startup"}, "SessionEnd": {"hook session --backend=gemini", ""}, "BeforeAgent": {"hook prompt --backend=gemini", ""}, "AfterAgent": {"hook stop --backend=gemini", ""}} {
-		replaceHook(hooks, event, hookEntry(hookCommand(spec[0]), spec[1], 0))
-	}
-	mapChild(data, "mcpServers")["repowire"] = map[string]any{"command": executable(), "args": []string{"mcp"}, "env": map[string]string{"REPOWIRE_BACKEND": "gemini"}}
-	return writeJSON(path, data)
-}
-
 func installCodex() error {
 	hooksPath := home(".codex", "hooks.json")
 	data, _ := readJSON(hooksPath, false)
@@ -449,18 +454,6 @@ func installCodex() error {
 	return os.WriteFile(configPath, []byte(content), 0o600)
 }
 
-func installAntigravity() error {
-	dir := home(".gemini", "antigravity-cli", "plugins", "repowire")
-	hooks := map[string]any{"hooks": map[string]any{"SessionStart": []any{hookEntry(hookCommand("hook session --backend=antigravity"), "startup", 0)}, "SessionEnd": []any{hookEntry(hookCommand("hook session --backend=antigravity"), "", 0)}, "BeforeAgent": []any{hookEntry(hookCommand("hook prompt --backend=antigravity"), "", 0)}, "AfterAgent": []any{hookEntry(hookCommand("hook stop --backend=antigravity"), "", 0)}}}
-	if err := writeJSON(filepath.Join(dir, "hooks", "hooks.json"), hooks); err != nil {
-		return err
-	}
-	if err := writeJSON(filepath.Join(dir, "plugin.json"), map[string]any{"name": "repowire", "version": "0.1.0", "description": "Repowire mesh integration (peer-to-peer agent messaging)"}); err != nil {
-		return err
-	}
-	return updateAntigravityManifest(true)
-}
-
 func installPluginAsset(name, target string) error {
 	source, err := pluginAsset(name)
 	if err != nil {
@@ -493,7 +486,7 @@ func removeIfExists(path string) error {
 func antigravityManifestPath() string {
 	return home(".gemini", "antigravity-cli", "import_manifest.json")
 }
-func updateAntigravityManifest(present bool) error {
+func removeLegacyAntigravityManifestEntry() error {
 	path := antigravityManifestPath()
 	data, err := readJSON(path, false)
 	if err != nil {
@@ -507,9 +500,7 @@ func updateAntigravityManifest(present bool) error {
 			kept = append(kept, raw)
 		}
 	}
-	if present {
-		kept = append(kept, map[string]any{"name": "repowire", "source": "local-install", "importedAt": time.Now().UTC().Format("2006-01-02T15:04:05Z"), "components": []string{"installed"}})
-	} else if len(kept) == 0 {
+	if len(kept) == 0 {
 		return removeIfExists(path)
 	}
 	data["imports"] = kept
@@ -519,7 +510,17 @@ func uninstallAntigravity() error {
 	if err := os.RemoveAll(home(".gemini", "antigravity-cli", "plugins", "repowire")); err != nil {
 		return err
 	}
-	return updateAntigravityManifest(false)
+	return removeLegacyAntigravityManifestEntry()
+}
+
+// cleanupRetiredRuntimeIntegrations removes only Repowire-owned entries left
+// by releases that supported Gemini CLI and Antigravity. Other user settings
+// and plugins are preserved.
+func cleanupRetiredRuntimeIntegrations() error {
+	if err := uninstallJSONRuntime(home(".gemini", "settings.json"), []string{"SessionStart", "SessionEnd", "BeforeAgent", "AfterAgent"}, home(".gemini", "settings.json")); err != nil {
+		return err
+	}
+	return uninstallAntigravity()
 }
 
 func hookEntry(command, matcher string, timeout int) map[string]any {
@@ -726,15 +727,8 @@ func runtimeIntegrated(name string) bool {
 	case "codex":
 		raw, _ := os.ReadFile(home(".codex", "config.toml"))
 		return strings.Contains(string(raw), "[mcp_servers.repowire]")
-	case "gemini":
-		settings, _ := readJSON(home(".gemini", "settings.json"), false)
-		servers, _ := settings["mcpServers"].(map[string]any)
-		return servers["repowire"] != nil
-	case "antigravity":
-		_, err := os.Stat(home(".gemini", "antigravity-cli", "plugins", "repowire", "plugin.json"))
-		return err == nil
 	case "opencode":
-		_, err := os.Stat(home(".opencode", "plugin", "repowire.ts"))
+		_, err := os.Stat(home(".config", "opencode", "plugins", "repowire.ts"))
 		return err == nil
 	case "pi":
 		_, err := os.Stat(home(".pi", "agent", "extensions", "repowire.ts"))
@@ -1241,9 +1235,10 @@ func channelConfigured() bool {
 	return servers["repowire-channel"] != nil
 }
 func runUninstall(argv []string) int {
-	for _, name := range []string{"claude-code", "codex", "gemini", "antigravity", "opencode", "pi"} {
+	for _, name := range []string{"claude-code", "codex", "opencode", "pi"} {
 		_ = uninstallRuntime(name)
 	}
+	_ = cleanupRetiredRuntimeIntegrations()
 	_ = uninstallService()
 	if parse(argv, "yes").bool("yes") {
 		_ = os.RemoveAll(home(".repowire"))

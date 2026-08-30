@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -40,9 +40,34 @@ interface PeerConn {
   introduced: boolean;
 }
 
+function repowireAuthToken(): string {
+  if (process.env.REPOWIRE_AUTH_TOKEN) return process.env.REPOWIRE_AUTH_TOKEN;
+  try {
+    const raw = fs.readFileSync(path.join(os.homedir(), ".repowire", "config.yaml"), "utf-8");
+    let inDaemon = false;
+    for (const line of raw.split(/\r?\n/)) {
+      if (/^daemon:\s*$/.test(line)) {
+        inDaemon = true;
+        continue;
+      }
+      if (inDaemon && /^\S/.test(line)) break;
+      if (!inDaemon) continue;
+      const match = /^\s+auth_token:\s*(.*?)\s*$/.exec(line);
+      if (!match) continue;
+      const value = match[1].replace(/\s+#.*$/, "").trim();
+      if (value.startsWith('"')) return JSON.parse(value);
+      if (value.startsWith("'")) return value.slice(1, -1).replaceAll("''", "'");
+      return value;
+    }
+  } catch {
+    // Setup may not have created config yet; the daemon will reject clearly.
+  }
+  return "";
+}
+
 const DAEMON_URL = process.env.REPOWIRE_DAEMON_URL || "http://127.0.0.1:8377";
 const DAEMON_WS_URL = process.env.REPOWIRE_DAEMON_WS_URL || "ws://127.0.0.1:8377/ws";
-const AUTH_TOKEN = process.env.REPOWIRE_AUTH_TOKEN || "";
+const AUTH_TOKEN = repowireAuthToken();
 const QUERY_TIMEOUT_MS = 120_000;
 const MAX_RECONNECT_ATTEMPTS = 50;
 const SPAWN_HINT_TTL_MS = 300_000;
@@ -153,6 +178,25 @@ async function daemon(p: string, body?: object) {
   return res.json();
 }
 
+function standaloneProjectCircle(project: string): string {
+  let resolved = path.resolve(project);
+  try { resolved = fs.realpathSync(resolved); } catch { /* lexical path is stable enough */ }
+  return "project-" + crypto.createHash("sha256").update(resolved).digest("hex").slice(0, 12);
+}
+
+async function registerPaneLessPeer(conn: PeerConn): Promise<void> {
+  const body: Record<string, unknown> = {
+    name: conn.peerName, path: projectPath, backend: "pi", circle,
+    circle_source: circleSource, role: role || "agent",
+    metadata: { runtime_session_id: conn.sessionId },
+  };
+  if (conn.peerId) body.peer_id = conn.peerId;
+  const registered = await daemon("/peers", body);
+  conn.peerId = typeof registered.peer_id === "string" ? registered.peer_id : conn.peerId;
+  conn.peerName = typeof registered.display_name === "string" ? registered.display_name : conn.peerName;
+  if (conn.peerId) savePeerId(projectPath, conn.sessionId, conn.peerId);
+}
+
 async function configuredCircleBoundary(): Promise<"session" | "window"> {
   try {
     const config = await daemon("/spawn/config");
@@ -206,9 +250,10 @@ function connectPeerWebSocket(conn: PeerConn) {
     }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     if (conn.closed) return;
-    console.debug("[repowire] WebSocket disconnected for " + conn.peerName + ", scheduling reconnect");
+    const reason = event.reason ? ": " + event.reason : "";
+    console.debug("[repowire] WebSocket disconnected for " + conn.peerName + " (" + event.code + reason + "), scheduling reconnect");
     schedulePeerReconnect(conn);
   };
 
@@ -409,6 +454,8 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
         conn.introduced = true;
       }
     }
+  } else if (msgType === "error") {
+    console.error("[repowire] Daemon rejected " + conn.peerName + ": " + String(data.error || "unknown error"));
   } else if (msgType === "query") {
     const correlationId = data.correlation_id as string;
     const fromPeer = data.from_peer as string;
@@ -453,7 +500,13 @@ function ensurePeer(sessionId: string, sessionName: string | null) {
     introduced: false,
   };
   peerBySession.set(sessionId, conn);
-  connectPeerWebSocket(conn);
+  if (tmuxPane) {
+    connectPeerWebSocket(conn);
+  } else {
+    void registerPaneLessPeer(conn).then(() => connectPeerWebSocket(conn)).catch((e) => {
+      console.error("[repowire] Pane-less Pi registration failed:", e);
+    });
+  }
 }
 
 function removePeer(sessionId: string) {
@@ -546,20 +599,11 @@ function flushPending(conn: PeerConn, correlationId: string) {
 }
 
 function cleanup() {
-  for (const conn of peerBySession.values()) {
-    conn.closed = true;
-    if (conn.reconnectTimeout) clearTimeout(conn.reconnectTimeout);
-    if (conn.ws) {
-      sendStatus(conn, "offline");
-      try { conn.ws.close(); } catch { /* ignore */ }
-      conn.ws = null;
-    }
-  }
-  peerBySession.clear();
+  for (const sessionId of [...peerBySession.keys()]) removePeer(sessionId);
 }
 
 // Resolve which PeerConn a tool call is attributed to. ctx.sessionManager
-// exposes the active session id via getSessionId() (pi 0.74 ReadonlySessionManager).
+// exposes the active session id via getSessionId().
 // Fall back to the first registered peer if the lookup fails (subagent
 // contexts, unknown shape, etc.).
 function callerPeer(ctx: ExtensionContext | undefined): { peerName: string; peerId: string | null } {
@@ -587,7 +631,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   }
 
   // Resolve "the peer for the currently active session" from a captured ctx.
-  // session_start carries no session id in pi 0.74 — we read it off ctx.sessionManager.
+  // session_start carries no session id — read it from ctx.sessionManager.
   function activePeerFromCtx(ctx: ExtensionContext | undefined): PeerConn | undefined {
     try {
       const sid = ctx?.sessionManager?.getSessionId?.();
@@ -629,6 +673,10 @@ export default async function repowireExtension(pi: ExtensionAPI) {
       circleSource = "spawn_hint";
     }
   }
+  if (!circle) {
+    circle = standaloneProjectCircle(projectPath);
+    circleSource = "fallback";
+  }
 
   // Session lifecycle. session_start fires at boot (reason: "startup"), on
   // resume/reload/fork navigation, and on /new. SessionStartEvent carries
@@ -640,6 +688,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   pi.on("session_start", async (event, ctx) => {
     capture(event, ctx);
     try {
+      if (typeof ctx.cwd === "string" && ctx.cwd) projectPath = ctx.cwd;
       const sessionId = ctx.sessionManager.getSessionId?.();
       if (!sessionId) {
         console.warn("[repowire] session_start: no session id on ctx");
@@ -654,16 +703,11 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   });
 
   // session_shutdown carries `reason` ("quit" | "reload" | "new" | "resume" | "fork").
-  // Pi tears down the extension runtime on quit/reload/new/resume/fork. Disconnect
-  // the active peer cleanly.
+  // Pi tears down the extension runtime on quit/reload/new/resume/fork, so
+  // release every peer connection and pending request owned by this instance.
   pi.on("session_shutdown", async (event, ctx) => {
     capture(event, ctx);
-    try {
-      const sessionId = ctx.sessionManager.getSessionId?.();
-      if (sessionId) removePeer(sessionId);
-    } catch {
-      /* swallow — we're tearing down */
-    }
+    cleanup();
   });
 
   // Scaffold for pre-compact handling. Out of scope for v1: in the future,
@@ -695,14 +739,14 @@ export default async function repowireExtension(pi: ExtensionAPI) {
     conn.busy = false;
     sendStatus(conn, "idle");
     // Turn-boundary ask-reminder backstop: mirror Stop hook behavior for
-    // claude-code/codex/gemini. Open asks reappear every turn_end until
+    // claude-code/codex. Open asks reappear every turn_end until
     // acked. Fire-and-forget; failures are logged but don't block the turn.
     void pollAndRemindOpenAsks(conn);
   });
 
   // message_update carries an assistantMessageEvent union. text_delta gives
   // us new text chunks. error type gives us the final error if streaming
-  // failed (no errorMessage on message_end in pi 0.74). thinking_delta is
+  // failed. thinking_delta is
   // discarded — we only want answer text.
   pi.on("message_update", async (event, ctx) => {
     capture(event, ctx);
@@ -722,16 +766,8 @@ export default async function repowireExtension(pi: ExtensionAPI) {
     }
   });
 
-  // beforeExit fires when the event loop is empty; cleanup is best-effort.
-  // Signal handlers are one-shot and re-emit the default termination so
-  // Node still exits cleanly.
-  process.on("beforeExit", cleanup);
-  process.once("SIGINT", () => { try { cleanup(); } finally { process.exit(130); } });
-  process.once("SIGTERM", () => { try { cleanup(); } finally { process.exit(143); } });
-
-  // Tools. Pi's parameter schema uses TypeBox; we use bare-shape objects
-  // here for portability since pi's docs show both patterns. If pi
-  // strictly requires TypeBox, swap in Type.Object().
+  // Tools use Pi's bundled TypeBox entry point so the extension shares the
+  // runtime's schema version.
   pi.registerTool({
     name: "list_peers",
     label: "Repowire: list peers",
@@ -878,7 +914,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
     description: "Spawn a new coding session in a different project directory. The backend must be configured in daemon.spawn.commands; if none are configured, spawn is disabled. The spawned agent self-registers shortly after start; use list_peers to confirm and get peer_id. Spawn inherits the current circle by default; with window boundaries it also inherits the current tmux window. Pass message with first-turn context; codex needs it or the default warmup to register promptly. After spawn, use ask for tracked work or notify_peer for fire-and-forget prompts, not SendMessage.",
     parameters: Type.Object({
       path: Type.String({ description: "Absolute path to the project directory" }),
-      backend: Type.String({ description: "Backend/runtime profile to spawn (claude-code, codex, gemini, antigravity, opencode, pi)" }),
+      backend: Type.String({ description: "Backend/runtime profile to spawn (claude-code, codex, opencode, pi)" }),
       circle: Type.Optional(Type.String({ description: "Circle to spawn into (default: current circle)" })),
       message: Type.Optional(Type.String({ description: "Optional first-turn prompt for the spawned agent" })),
     }),

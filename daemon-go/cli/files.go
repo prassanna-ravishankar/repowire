@@ -406,7 +406,7 @@ func orchestratorRuntime() string {
 	if runtimeAvailable("pi") && runtimeIntegrated("pi") {
 		return "pi"
 	}
-	for _, name := range []string{"claude-code", "codex", "gemini", "opencode"} {
+	for _, name := range []string{"claude-code", "codex", "opencode"} {
 		if runtimeAvailable(name) {
 			return name
 		}

@@ -58,8 +58,6 @@ func TestWireValuesMatchPython(t *testing.T) {
 		string(AgentClaudeCode):      "claude-code",
 		string(AgentOpenCode):        "opencode",
 		string(AgentCodex):           "codex",
-		string(AgentGemini):          "gemini",
-		string(AgentAntigravity):     "antigravity",
 		string(AgentPi):              "pi",
 		string(AgentMCPHTTP):         "mcp-http",
 		string(TurnIdle):             "idle",

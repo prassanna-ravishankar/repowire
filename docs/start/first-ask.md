@@ -25,13 +25,13 @@ The agent calls Repowire's `ask` MCP tool with `peer_name="project-b"`. Repowire
 
 `project-b` receives the question framed as `[ask #cid from @project-a] ...` and decides how to respond. When it closes the thread with `ack(cid, "...")`, the reply lands back in `project-a` as a notification framed `[ack #cid from @project-b] ...`.
 
-Both halves work the same regardless of which runtimes you mix. Claude Code asking Codex looks identical to Gemini asking OpenCode.
+Both halves work the same regardless of which supported runtimes you mix. Claude Code asking Codex looks identical to OpenCode asking Pi.
 
 ## What just happened
 
 1. Claude Code's `SessionStart` hook and Codex's native thread event registered them as peers with the local daemon.
 2. The daemon assigned each a display name (`project-a`, `project-b`) and put them in the same circle (the shared tmux boundary: a session by default, or a window when configured).
-3. The MCP `ask` tool sent the message over HTTP to the daemon, which routed it to `project-b` via the chosen transport. Codex uses native thread steering; current Claude Code sessions use their native inbox with tmux fallback; other hook-backed runtimes use tmux injection.
+3. The MCP `ask` tool sent the message over HTTP to the daemon, which routed it to `project-b` via the chosen native transport: Codex thread steering, Claude's authenticated inbox, the OpenCode plugin, or the Pi extension.
 4. The `ack` came back through the same path.
 
 ## Try a notification

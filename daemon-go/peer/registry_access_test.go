@@ -112,6 +112,32 @@ func TestCheckAccess_AmbiguousTargetFailsLoud(t *testing.T) {
 	}
 }
 
+func TestResolvePeerScopedFallsBackToUniqueGlobalService(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newRegistry(t)
+	_, serviceName, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "default", Backend: proto.AgentClaudeCode, Path: ptr("/telegram"), Machine: "m", Role: proto.RoleService,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherCircle := "work"
+	servicePeer, err := r.GetPeerByName(string(serviceName), &otherCircle)
+	if err != nil || servicePeer == nil || servicePeer.Role != proto.RoleService {
+		t.Fatalf("global service fallback = %#v, %v", servicePeer, err)
+	}
+
+	_, agentName, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "default", Backend: proto.AgentClaudeCode, Path: ptr("/agent"), Machine: "m", Role: proto.RoleAgent,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent, err := r.GetPeerByName(string(agentName), &otherCircle); err != nil || agent != nil {
+		t.Fatalf("ordinary agent escaped circle scope: %#v, %v", agent, err)
+	}
+}
+
 // TestResolvePeerStrict_Cardinality covers the 0/1/N branches the destructive
 // routes (kill/restart/spawn) switch on.
 func TestResolvePeerStrict_Cardinality(t *testing.T) {

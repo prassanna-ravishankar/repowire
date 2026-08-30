@@ -85,6 +85,44 @@ func TestTelegramRoutesHumanMessageAsAsk(t *testing.T) {
 	}
 }
 
+func TestTelegramAcknowledgesUpdateOnlyAfterSuccessfulReply(t *testing.T) {
+	daemonServer, _ := fakeDaemon(t)
+	var mu sync.Mutex
+	fail := true
+	telegramAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		shouldFail := fail
+		mu.Unlock()
+		if shouldFail {
+			_, _ = w.Write([]byte(`{"ok":false,"description":"temporary failure"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+	}))
+	t.Cleanup(telegramAPI.Close)
+	bot := NewTelegram("token", "42", NewDaemonPeer(daemonServer.URL, "secret", "telegram", "/telegram", "default"))
+	bot.apiBase = telegramAPI.URL
+	update := map[string]any{
+		"update_id": float64(41),
+		"message":   map[string]any{"message_id": float64(7), "text": "/peers", "chat": map[string]any{"id": float64(42)}},
+	}
+	if err := bot.handleUpdate(context.Background(), update); err == nil {
+		t.Fatal("failed Telegram reply unexpectedly acknowledged")
+	}
+	if bot.offset != 0 {
+		t.Fatalf("offset advanced after failure: %d", bot.offset)
+	}
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+	if err := bot.handleUpdate(context.Background(), update); err != nil {
+		t.Fatal(err)
+	}
+	if bot.offset != 42 {
+		t.Fatalf("offset after successful retry = %d, want 42", bot.offset)
+	}
+}
+
 func TestTelegramReplyKeyboardKeepsCurrentAndRecentPeers(t *testing.T) {
 	bot := NewTelegram("token", "42", NewDaemonPeer("http://localhost:8377", "", "telegram", "/telegram", "default"))
 	bot.setTarget("worker")

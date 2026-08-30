@@ -196,16 +196,37 @@ func (b *Telegram) poll(ctx context.Context) error {
 			}
 			continue
 		}
+		failed := false
 		for _, update := range updates {
-			if id, ok := number(update["update_id"]); ok {
-				b.mu.Lock()
-				b.offset = int64(id) + 1
-				b.mu.Unlock()
-			}
-			if err := b.onUpdate(ctx, update); err != nil {
+			if err := b.handleUpdate(ctx, update); err != nil {
 				fmt.Printf("telegram: update failed: %v\n", err)
+				// Do not acknowledge a failed update. Telegram will return it
+				// again, which makes transient daemon/API failures recoverable.
+				failed = true
+				break
 			}
 		}
+		if failed {
+			timer := time.NewTimer(2 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil
+			case <-timer.C:
+			}
+		}
+	}
+	return nil
+}
+
+func (b *Telegram) handleUpdate(ctx context.Context, update map[string]any) error {
+	if err := b.onUpdate(ctx, update); err != nil {
+		return err
+	}
+	if id, ok := number(update["update_id"]); ok {
+		b.mu.Lock()
+		b.offset = int64(id) + 1
+		b.mu.Unlock()
 	}
 	return nil
 }

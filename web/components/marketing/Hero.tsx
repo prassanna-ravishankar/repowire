@@ -14,7 +14,7 @@ export default function Hero() {
           Coordinate AI coding agents <span className="hero-soft">on one local mesh.</span>
         </h1>
         <p className="lead">
-          Repowire gives Claude Code, Codex, Gemini CLI, and OpenCode sessions an address.
+          Repowire gives Claude Code, Codex, OpenCode, and Pi sessions an address.
           They ask each other questions, post updates, and stay steerable from your browser or phone.
         </p>
         <div className="hero-actions">

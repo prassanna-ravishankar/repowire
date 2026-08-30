@@ -29,7 +29,7 @@ daemon, hook, MCP, service, relay, channel, and multi-runtime install path.
 - Do not redefine ask/ack/notify lifecycle rules.
 - Do not make tracked-work lifecycle, ACP/channel health, or SQLite cleanup
   claims as part of plugin packaging.
-- Do not make Claude Code the only supported runtime. Codex, Gemini CLI,
+- Do not make Claude Code the only supported runtime. Codex,
   OpenCode, Pi, bots, and dashboard surfaces continue to use the shared daemon.
 
 ## Proposed plugin layout

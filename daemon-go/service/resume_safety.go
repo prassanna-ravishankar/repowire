@@ -1,9 +1,7 @@
 package service
 
 import (
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,14 +57,6 @@ func runtimeSessionValidationStatus(peerPath string, backend proto.AgentType, ru
 		}
 	case proto.AgentPi:
 		if piResumable(peerPath, runtimeSessionID) {
-			return "resumable"
-		}
-	case proto.AgentAntigravity:
-		if antigravityResumable(peerPath, runtimeSessionID) {
-			return "resumable"
-		}
-	case proto.AgentGemini:
-		if geminiResumable(peerPath, runtimeSessionID) {
 			return "resumable"
 		}
 	default:
@@ -139,62 +129,6 @@ func piResumable(peerPath, runtimeSessionID string) bool {
 		return false
 	}
 	return fileExists(strAny(entry["sessionFile"]))
-}
-
-func antigravityResumable(peerPath, runtimeSessionID string) bool {
-	root := filepath.Join(homeDir(), ".gemini", "antigravity-cli")
-	var last map[string]any
-	if readJSONFile(filepath.Join(root, "cache", "last_conversations.json"), &last) != nil {
-		return false
-	}
-	if peerPath != "" {
-		mapped := ""
-		for cwd, id := range last {
-			if pathsMatch(cwd, peerPath) {
-				mapped = strAny(id)
-				break
-			}
-		}
-		if mapped != runtimeSessionID {
-			return false
-		}
-	} else {
-		seen := false
-		for _, id := range last {
-			if strAny(id) == runtimeSessionID {
-				seen = true
-				break
-			}
-		}
-		if !seen {
-			return false
-		}
-	}
-	return fileExists(filepath.Join(root, "conversations", runtimeSessionID+".pb"))
-}
-
-func geminiResumable(peerPath, runtimeSessionID string) bool {
-	root := filepath.Join(homeDir(), ".gemini", "tmp")
-	expectedHash := ""
-	if peerPath != "" {
-		expectedHash = fmt.Sprintf("%x", sha256.Sum256([]byte(NormPath(peerPath))))
-	}
-	found := false
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasPrefix(filepath.Base(path), "session-") || !strings.HasSuffix(path, ".json") {
-			return nil
-		}
-		var data map[string]any
-		if readJSONFile(path, &data) != nil || data["sessionId"] != runtimeSessionID {
-			return nil
-		}
-		if peerPath == "" || pathsMatch(strAny(data["directory"]), peerPath) || pathsMatch(strAny(data["cwd"]), peerPath) || strAny(data["projectHash"]) == expectedHash {
-			found = true
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	return found
 }
 
 func codexFileMatchesPeer(path, peerPath string) bool {

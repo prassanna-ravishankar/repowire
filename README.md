@@ -75,7 +75,7 @@ In `project-a`, tell your local agent:
 Ask project-b what API endpoints they expose.
 ```
 
-Your local agent invokes Repowire's `ask` MCP tool, the second agent receives the question, and the reply comes back as an `ack` notification. Repowire is the mesh and tool surface around the agents, not a standalone chat UI. The same pattern works across Claude Code, Codex, Gemini CLI, OpenCode, and Pi when those runtimes are installed.
+Your local agent invokes Repowire's `ask` MCP tool, the second agent receives the question, and the reply comes back as an `ack` notification. Repowire is the mesh and tool surface around the agents, not a standalone chat UI. The same pattern works across Claude Code, Codex, OpenCode, and Pi when those runtimes are installed.
 
 
 https://github.com/user-attachments/assets/a9eab9c4-8aea-4dbb-8914-e998311b6d14
@@ -119,7 +119,7 @@ The stable public surface is peers, circles, asks, notifications, broadcasts, sc
 
 Transport notes:
 
-- Claude Code uses hooks plus MCP, with its native session inbox preferred for delivery and tmux retained as fallback. Gemini CLI uses hooks plus MCP.
+- Claude Code uses hooks plus MCP, with its authenticated native session inbox for delivery. Claude Code 2.1.224+ is required.
 - Native session APIs connect through runtime-side bridges; routing remains daemon-owned and transport-neutral.
 - Codex uses an App Server bridge plus MCP; tmux remains optional lifecycle/placement support.
 - OpenCode uses a TypeScript plugin plus WebSocket.
@@ -131,12 +131,10 @@ Transport notes:
 
 | Agent runtime | Connection path |
 | --- | --- |
-| Claude Code | Hooks + MCP + native session inbox; tmux fallback; optional experimental channel/ACP |
+| Claude Code | Hooks + MCP + native session inbox; optional experimental channel/ACP |
 | Codex | App Server threads + MCP |
-| Gemini CLI | Hooks + MCP through normalized `BeforeAgent` / `AfterAgent` events |
-| Antigravity CLI (`agy`) | Plugin install verified; hook firing and MCP pending upstream verification |
 | OpenCode | Plugin + WebSocket |
-| Pi | Repowire extension |
+| Pi | Native Repowire extension + WebSocket |
 
 | Human or service surface | Role in the mesh |
 | --- | --- |
@@ -254,7 +252,7 @@ daemon:
     commands:
       claude-code: "claude --dangerously-skip-permissions"
       codex: "codex --dangerously-bypass-approvals-and-sandbox"
-      gemini: "gemini --yolo"
+      pi: "pi"
     profiles:
       codex:
         fast:

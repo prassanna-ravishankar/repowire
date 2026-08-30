@@ -1737,7 +1737,7 @@ interface McpConfigScope {
 
 function fallbackMcpScope(peer: Peer): McpConfigScope {
   const backend = peer.backend || "unknown";
-  const isGlobal = backend === "codex" || backend === "gemini";
+  const isGlobal = backend === "codex";
   return {
     backend,
     owner: isGlobal ? "backend" : "peer/project",

@@ -719,11 +719,11 @@ describe("PeerView MCP config scope", () => {
               peer_machine: "remote-host",
               self_machine: "local-host",
               config_scope: {
-                backend: "gemini",
+                backend: "codex",
                 owner: "backend",
                 effective_scope: "backend_global",
-                label: "Gemini global backend config",
-                description: "Gemini MCP edits target the user-level Gemini settings shared by Gemini sessions on this host.",
+                label: "Codex global backend config",
+                description: "Codex MCP edits target the user-level Codex config shared by Codex sessions on this host.",
                 supported_scopes: ["user"],
                 default_scope: "user",
                 is_global: true,
@@ -745,7 +745,7 @@ describe("PeerView MCP config scope", () => {
 
     render(
       <PeerView
-        peer={{ ...PEER, backend: "gemini", machine: "remote-host" }}
+        peer={{ ...PEER, backend: "codex", machine: "remote-host" }}
         events={[]}
         apiBase=""
         onClose={() => {}}
@@ -755,7 +755,7 @@ describe("PeerView MCP config scope", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "mcp" }));
 
-    expect(await screen.findByText("Gemini global backend config")).toBeInTheDocument();
+    expect(await screen.findByText("Codex global backend config")).toBeInTheDocument();
     expect(screen.getByText("remote host")).toBeInTheDocument();
   });
 });

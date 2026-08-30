@@ -9,7 +9,7 @@ control, Telegram and Slack peers, and the hosted relay server.
 repowire setup [--relay] [--experimental-channels] [--http-mcp] [--update-checks|--no-update-checks] [--no-service] [--non-interactive]
 ```
 
-One-time install. Detects Claude Code, Codex, Gemini CLI, Antigravity, OpenCode,
+One-time install. Detects Claude Code, Codex, OpenCode,
 and Pi; wires each available transport; configures `/mcp` plus the stdio identity
 shim; and installs the Go daemon as a user service.
 
@@ -92,13 +92,11 @@ repowire peer deliveries [--peer-id ID | --pane-id PANE | --peer NAME] [--json]
 repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 ```
 
-`peer whoami`, `peer asks`, `peer deliveries`, and `peer ack` are the shellable mesh primitives intended for agents whose hooks don't fire today (notably [Antigravity `agy`](../use/features/connect-antigravity.md)). They wrap daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/deliveries/pending`, `/ack`) and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`. Use `peer whoami --register --backend antigravity` once at session start to self-onboard; it uses the configured tmux session/window boundary or requires `--circle` outside tmux.
+`peer whoami`, `peer asks`, `peer deliveries`, and `peer ack` are shellable mesh diagnostics. They wrap daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/deliveries/pending`, `/ack`) and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`.
 
 Commands that need a sender identity resolve `$TMUX_PANE` to its registered canonical `peer_id`; they fail with a registration hint instead of lazily creating another runtime identity. Outside tmux they use the explicit `repowire-cli` admin identity.
 
 `peer deliveries` drains one-shot queued deliveries for a peer. Draining deletes the queued rows to avoid duplicate paste/replay. For queued asks, `peer deliveries` shows the original ask text once, while `peer asks` continues to show the open ask until the agent closes it with `peer ack` or the MCP `ack` tool.
-
-For Antigravity interop checks, use `peer whoami`, `peer deliveries`, `peer asks`, and `peer ack` to exercise the CLI fallback directly against the live daemon.
 
 `peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP [`list_peers`](mcp-tools.md#list_peers) tool defaults to a peer-facing view (online only, caller hidden).
 
@@ -106,7 +104,7 @@ For Antigravity interop checks, use `peer whoami`, `peer deliveries`, `peer asks
 
 `peer ask` is a blocking CLI compatibility helper for quick manual checks. It uses the daemon's ask/answer lifecycle under the hood, waits for the recipient to `ack` with a reply, then prints the reply text. `--circle` disambiguates only within the caller's authorized scope; an ordinary registered peer cannot use it to cross a circle boundary. For agent-to-agent work, prefer the MCP [`ask`](mcp-tools.md#ask) tool, which returns a correlation id immediately and lets the conversation continue asynchronously.
 
-`peer new` spawns a tmux-backed peer through the daemon `/spawn` route using the configured `daemon.spawn.commands.<backend>` command. Inside tmux it discovers the current session or window according to `daemon.circle_boundary`; window mode also forwards the current pane internally so the daemon can place the new peer in that window. There is no separate window flag. Outside tmux, pass an explicit circle in session mode; window mode requires tmux window evidence. Pass `--profile NAME` to append args from `daemon.spawn.profiles.<backend>.<name>`, such as a faster or more capable model selection. Antigravity uses the same daemon pre-registration path as MCP spawn, so it appears immediately as a CLI-fallback peer while upstream hooks are pending. `--command` remains accepted as a deprecated explicit override and bypasses daemon registration/profile resolution.
+`peer new` spawns a tmux-backed peer through the daemon `/spawn` route using the configured `daemon.spawn.commands.<backend>` command. Inside tmux it discovers the current session or window according to `daemon.circle_boundary`; window mode also forwards the current pane internally so the daemon can place the new peer in that window. There is no separate window flag. Outside tmux, pass an explicit circle in session mode; window mode requires tmux window evidence. Pass `--profile NAME` to append args from `daemon.spawn.profiles.<backend>.<name>`, such as a faster or more capable model selection. `--command` remains accepted as a deprecated explicit override and bypasses daemon registration/profile resolution.
 
 `peer describe` accepts either a display name (`clitcoin-claude-code`) or a peer
 id (`repow-5-abd4d21e`). Pass `--circle` when a display name is ambiguous across
@@ -129,8 +127,6 @@ The id is **pre-validated against on-disk session storage before the pane is kil
 | claude-code | `claude --resume <id>` | `~/.claude/projects/<cwd>/<id>.jsonl` |
 | codex | `codex resume <id>` | `~/.codex/sessions/**/rollout-*<id>.jsonl` |
 | opencode | `opencode --session <id>` | `~/.local/share/opencode/storage/session/*/ses_<id>.json` (id + directory) |
-| gemini | `gemini --resume <id>` | `~/.gemini/tmp/<hash>/chats/session-*.json` (sessionId) |
-| antigravity | `agy --conversation <id>` | `~/.gemini/antigravity-cli` (last_conversations + `<id>.pb`; validates the last conversation per cwd) |
 | pi | `pi --session <id>` | `~/.pi/pi-acp/session-map.json` (cwd + sessionFile) |
 
 This same resume-safety check is shared by restart, durable/recurring jobs, and session control, so a stale id never resumes anywhere. Resume does not persist the originally selected spawn profile.
@@ -160,7 +156,7 @@ gone fail loudly with a non-zero exit instead of starting fresh.
 repowire trace TRACE_ID [--json]
 ```
 
-Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`, returned in the `/notify` response). Stages are ordered (`created → resolved_peer → routed → websocket_sent → pane_injected|thread_input_accepted → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). Terminal stages are recorded **truthfully** from the transport outcome: `pane_injected` only when the ws-hook returned an `injected` receipt; `thread_input_accepted` when a native Codex thread or Claude inbox accepted the input; `injection_failed` on a `failed`/`rejected` receipt; and `websocket_sent` (unverified) for ACP delivery or legacy hooks that don't acknowledge. This reads the local delivery trace ledger (`GET /traces/{trace_id}`); no external tracing infrastructure is required, and rows older than `daemon.prune_max_age_hours` are pruned during lazy repair. Currently covers ask and notify; query/broadcast terminal stages are not yet traced. Exits non-zero if any stage failed.
+Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`, returned in the `/notify` response). Stages are ordered (`created → resolved_peer → routed → websocket_sent → thread_input_accepted → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). `thread_input_accepted` means a native Codex thread or Claude inbox accepted the input; `injection_failed` records a failed/rejected receipt. Historical ledgers may contain `pane_injected` from releases that supported tmux keystroke delivery. This reads the local delivery trace ledger (`GET /traces/{trace_id}`); rows older than `daemon.prune_max_age_hours` are pruned during lazy repair. Currently covers ask and notify; query/broadcast terminal stages are not yet traced. Exits non-zero if any stage failed.
 
 ## `repowire share`
 

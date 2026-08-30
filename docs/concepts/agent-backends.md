@@ -6,14 +6,12 @@ An agent backend is the runtime family Repowire knows how to install, spawn, res
 
 | Backend | Runtime | Connection path |
 | --- | --- | --- |
-| `claude-code` | Claude Code | Hooks + MCP + native session inbox; tmux fallback; optional experimental channel/ACP |
-| `codex` | Codex | App Server threads + MCP; hooks fallback on older releases |
-| `gemini` | Gemini CLI | Hooks + MCP through normalized `BeforeAgent` / `AfterAgent` events |
-| `antigravity` | Antigravity CLI (`agy`) | Plugin install verified; hook firing and MCP pending upstream verification |
+| `claude-code` | Claude Code 2.1.224+ | Hooks + MCP + authenticated native session inbox; optional experimental channel/ACP |
+| `codex` | Codex | App Server threads + MCP |
 | `opencode` | OpenCode | TypeScript plugin + WebSocket |
-| `pi` | Pi | Repowire extension path |
+| `pi` | Pi | Native Repowire extension + WebSocket |
 
-Antigravity is not at parity with the hook-backed runtimes yet. Treat it as a CLI-fallback and plugin-integration lane until hook firing and MCP availability are verified upstream.
+Gemini CLI and Antigravity were retired as supported backends. Running `repowire setup` removes only Repowire-owned legacy entries from their configuration; existing persisted peer rows remain readable as historical data but cannot be spawned or resumed.
 
 ## Why it exists
 

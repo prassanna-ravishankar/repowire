@@ -62,7 +62,7 @@ Useful when you have two orchestrators (one Claude Code, one Codex; an observer 
 A second orchestrator can run in parallel as an observer or learner. Use `orchestrator_status` to coordinate. Common shape:
 
 - **Driver** (claude-code) — dispatches and reviews.
-- **Observer** (codex or gemini) — watches the mesh log, runs the same review pass after the driver, surfaces findings the driver missed.
+- **Observer** (Codex, OpenCode, or Pi) — watches the mesh log, runs the same review pass after the driver, surfaces findings the driver missed.
 
 Pairing runtimes also hedges against rate limits and credit caps on either side.
 

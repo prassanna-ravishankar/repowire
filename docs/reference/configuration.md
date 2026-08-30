@@ -25,7 +25,7 @@ daemon:
     commands:
       claude-code: "claude --dangerously-skip-permissions"
       codex: "codex --dangerously-bypass-approvals-and-sandbox"
-      gemini: "gemini --yolo"
+      pi: "pi"
       opencode: "opencode"
       pi: "pi"
     profiles:
@@ -145,7 +145,7 @@ self-attestation.
 
 ## `daemon.spawn`
 
-Spawn is disabled until `allowed_paths` and at least one runtime command are configured. `commands` is keyed by backend (`claude-code`, `codex`, `gemini`, `antigravity`, `opencode`, `pi`) and is the single launch profile used by MCP `spawn_peer`, dashboard spawn, backend switching, `repowire peer restart`, and `repowire orchestrator start`.
+Spawn is disabled until `allowed_paths` and at least one runtime command are configured. `commands` is keyed by backend (`claude-code`, `codex`, `opencode`, `pi`) and is the single launch profile used by MCP `spawn_peer`, dashboard spawn, backend switching, `repowire peer restart`, and `repowire orchestrator start`. Legacy Gemini or Antigravity keys are ignored.
 
 `profiles` is optional and keyed first by backend, then by a user-defined profile name. Each profile appends structured `args` to the configured backend command; Repowire does not hardcode provider model names. For example, spawning `codex` with profile `fast` runs the configured `daemon.spawn.commands.codex` command plus the profile args. Profile descriptions are informational and may be shown by UIs.
 

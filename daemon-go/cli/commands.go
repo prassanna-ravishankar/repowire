@@ -69,7 +69,7 @@ func Run(argv []string) int {
 		return runRuntimeInstall("claude-code", argv[1:])
 	case "claude":
 		return runRuntimeInstall("claude-code", argv[1:])
-	case "codex", "gemini", "opencode", "antigravity", "pi":
+	case "codex", "opencode", "pi":
 		return runRuntimeInstall(argv[0], argv[1:])
 	case "memory":
 		return runMemory(argv[1:])
@@ -98,7 +98,7 @@ func help() int {
 
 func runStatus() int {
 	fmt.Println("repowire:", Version)
-	for _, name := range []string{"claude-code", "codex", "gemini", "antigravity", "opencode", "pi"} {
+	for _, name := range []string{"claude-code", "codex", "opencode", "pi"} {
 		if runtimeAvailable(name) || runtimeIntegrated(name) {
 			fmt.Printf("%s: runtime=%s integration=%s\n", name,
 				map[bool]string{true: "detected", false: "missing"}[runtimeAvailable(name)],

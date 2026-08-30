@@ -80,9 +80,6 @@ func MCPConfigScope(backend proto.AgentType) (map[string]any, error) {
 	case proto.AgentCodex:
 		base["owner"], base["effective_scope"], base["label"] = "backend", "backend_global", "Codex global backend config"
 		base["description"], base["supported_scopes"], base["is_global"] = "Codex MCP edits target the user-level Codex config shared by Codex sessions on this host.", []string{"user"}, true
-	case proto.AgentGemini:
-		base["owner"], base["effective_scope"], base["label"] = "backend", "backend_global", "Gemini global backend config"
-		base["description"], base["supported_scopes"], base["is_global"] = "Gemini MCP edits target the user-level Gemini settings shared by Gemini sessions on this host.", []string{"user"}, true
 	default:
 		return nil, fmt.Errorf("%w %s", ErrMCPUnsupported, backend)
 	}
@@ -95,8 +92,6 @@ func ListPeerMCP(ctx context.Context, peer *proto.Peer) ([]MCPServerEntry, error
 		return listClaudeMCP(ctx, peer.Path)
 	case proto.AgentCodex:
 		return listCodexMCP()
-	case proto.AgentGemini:
-		return listGeminiMCP()
 	default:
 		return nil, fmt.Errorf("%w %s", ErrMCPUnsupported, peer.Backend)
 	}
@@ -123,8 +118,6 @@ func AddPeerMCP(ctx context.Context, peer *proto.Peer, spec MCPServerSpec) error
 		return addClaudeMCP(ctx, peer.Path, spec)
 	case proto.AgentCodex:
 		return addCodexMCP(spec)
-	case proto.AgentGemini:
-		return addGeminiMCP(spec)
 	default:
 		return fmt.Errorf("%w %s", ErrMCPUnsupported, peer.Backend)
 	}
@@ -153,8 +146,6 @@ func RemovePeerMCP(ctx context.Context, peer *proto.Peer, name string) error {
 		return runClaudeMCP(ctx, peer.Path, "mcp", "remove", name)
 	case proto.AgentCodex:
 		return removeCodexMCP(name)
-	case proto.AgentGemini:
-		return removeGeminiMCP(name)
 	default:
 		return fmt.Errorf("%w %s", ErrMCPUnsupported, peer.Backend)
 	}
@@ -384,108 +375,6 @@ func removeCodexMCP(name string) error {
 		}
 	}
 	return atomicWrite(path, []byte(strings.Join(out, "")), 0o600)
-}
-
-func geminiMCPPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".gemini", "settings.json")
-}
-func loadGeminiMCP() (map[string]any, error) {
-	raw, err := os.ReadFile(geminiMCPPath())
-	if os.IsNotExist(err) {
-		return map[string]any{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var data map[string]any
-	if json.Unmarshal(raw, &data) != nil {
-		return nil, errors.New("failed to read gemini settings")
-	}
-	return data, nil
-}
-func listGeminiMCP() ([]MCPServerEntry, error) {
-	data, err := loadGeminiMCP()
-	if err != nil {
-		return nil, err
-	}
-	servers, _ := data["mcpServers"].(map[string]any)
-	entries := []MCPServerEntry{}
-	names := make([]string, 0, len(servers))
-	for name := range servers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		body, _ := servers[name].(map[string]any)
-		entry := MCPServerEntry{Name: name, Scope: "user", Type: "stdio", Args: []string{}, EnvKeys: []string{}}
-		if value, ok := body["command"].(string); ok {
-			entry.Command = &value
-		}
-		if values, ok := body["args"].([]any); ok {
-			for _, value := range values {
-				if text, ok := value.(string); ok {
-					entry.Args = append(entry.Args, text)
-				}
-			}
-		}
-		value, _ := body["url"].(string)
-		if value == "" {
-			value, _ = body["httpUrl"].(string)
-		}
-		if value != "" {
-			entry.URL = &value
-			entry.Type = "http"
-		}
-		if env, ok := body["env"].(map[string]any); ok {
-			for key := range env {
-				entry.EnvKeys = append(entry.EnvKeys, key)
-			}
-			sort.Strings(entry.EnvKeys)
-		}
-		entries = append(entries, entry)
-	}
-	return entries, nil
-}
-func addGeminiMCP(spec MCPServerSpec) error {
-	data, err := loadGeminiMCP()
-	if err != nil {
-		return err
-	}
-	servers, ok := data["mcpServers"].(map[string]any)
-	if !ok {
-		servers = map[string]any{}
-		data["mcpServers"] = servers
-	}
-	entry := map[string]any{}
-	if spec.Command != nil {
-		entry["command"] = *spec.Command
-	}
-	if len(spec.Args) > 0 {
-		entry["args"] = spec.Args
-	}
-	if spec.URL != nil {
-		entry["url"] = *spec.URL
-	}
-	if len(spec.Env) > 0 {
-		entry["env"] = spec.Env
-	}
-	servers[spec.Name] = entry
-	raw, _ := json.MarshalIndent(data, "", "  ")
-	return atomicWrite(geminiMCPPath(), append(raw, '\n'), 0o600)
-}
-func removeGeminiMCP(name string) error {
-	data, err := loadGeminiMCP()
-	if err != nil {
-		return err
-	}
-	servers, _ := data["mcpServers"].(map[string]any)
-	if servers == nil {
-		return ErrMCPNotFound
-	}
-	delete(servers, name)
-	raw, _ := json.MarshalIndent(data, "", "  ")
-	return atomicWrite(geminiMCPPath(), append(raw, '\n'), 0o600)
 }
 
 func atomicWrite(path string, content []byte, mode os.FileMode) error {

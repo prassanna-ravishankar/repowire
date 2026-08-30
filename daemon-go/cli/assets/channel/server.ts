@@ -2,7 +2,7 @@
 /**
  * Repowire Channel — Native Claude Code transport.
  *
- * Replaces hooks + tmux injection with a direct MCP channel.
+ * Replaces the default hook + native-inbox path with a direct MCP channel.
  * Delivers messages to Claude Code natively via channel notifications;
  * Claude replies via the `reply` tool instead of transcript scraping.
  *

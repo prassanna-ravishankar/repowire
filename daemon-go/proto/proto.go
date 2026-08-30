@@ -116,19 +116,16 @@ const (
 type AgentType string
 
 const (
-	AgentClaudeCode  AgentType = "claude-code"
-	AgentOpenCode    AgentType = "opencode"
-	AgentCodex       AgentType = "codex"
-	AgentGemini      AgentType = "gemini"
-	AgentAntigravity AgentType = "antigravity"
-	AgentPi          AgentType = "pi"
-	AgentMCPHTTP     AgentType = "mcp-http"
+	AgentClaudeCode AgentType = "claude-code"
+	AgentOpenCode   AgentType = "opencode"
+	AgentCodex      AgentType = "codex"
+	AgentPi         AgentType = "pi"
+	AgentMCPHTTP    AgentType = "mcp-http"
 )
 
 func (a AgentType) Valid() bool {
 	switch a {
-	case AgentClaudeCode, AgentOpenCode, AgentCodex, AgentGemini,
-		AgentAntigravity, AgentPi, AgentMCPHTTP:
+	case AgentClaudeCode, AgentOpenCode, AgentCodex, AgentPi, AgentMCPHTTP:
 		return true
 	}
 	return false

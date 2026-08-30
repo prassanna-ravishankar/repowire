@@ -67,9 +67,12 @@ Agents can reach your phone with:
 notify_peer("telegram", "deploy finished, green across CI")
 ```
 
+`telegram` is a canonical service address. A unique service/human display name resolves across circles, so agents do not need to discover or pass the bot's configured service circle. Ordinary agent names remain circle-scoped.
+
 ## Limits
 
 - Telegram traffic is not proxied by the relay; the bot talks directly to Telegram's API and to your daemon.
+- Telegram updates are acknowledged only after Repowire handles them successfully. A transient daemon or Telegram API failure is retried instead of silently consuming the command.
 - Attachments live in `~/.repowire/attachments/` with a 24-hour TTL and 10 MB upload limit.
 - Messages from `@telegram` are framed as human instructions to the receiving agent.
 

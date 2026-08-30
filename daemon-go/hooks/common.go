@@ -46,10 +46,8 @@ type Payload struct {
 func Normalize(raw map[string]any, backend string) Payload {
 	event, _ := raw["hook_event_name"].(string)
 	switch event {
-	case "AfterAgent", "StopFailure":
+	case "StopFailure":
 		event = "Stop"
-	case "BeforeAgent":
-		event = "UserPromptSubmit"
 	}
 	response := ""
 	for _, key := range []string{"prompt_response", "last_assistant_message", "final_response"} {
@@ -88,12 +86,6 @@ func readInput() (map[string]any, error) {
 
 func printJSON(value any) {
 	_ = json.NewEncoder(os.Stdout).Encode(value)
-}
-
-func hookOutput(backend string) {
-	if backend == "gemini" || backend == "antigravity" {
-		printJSON(map[string]string{"decision": "allow"})
-	}
 }
 
 func homePath(parts ...string) string {
@@ -544,22 +536,6 @@ func findExpectedAgentPID(paneID, expectedCommand string) int {
 		queue = append(queue, children[pid]...)
 	}
 	return 0
-}
-
-func injectText(paneID, text string) bool {
-	copyMode, _ := tmuxValue(paneID, "#{pane_in_mode}")
-	if copyMode == "1" {
-		_ = exec.Command("tmux", "send-keys", "-t", paneID, "-X", "cancel").Run()
-	}
-	if exec.Command("tmux", "send-keys", "-t", paneID, "-l", text).Run() != nil {
-		return false
-	}
-	time.Sleep(min(500*time.Millisecond+time.Duration(len(text))*time.Second/4000, 1500*time.Millisecond))
-	if exec.Command("tmux", "send-keys", "-t", paneID, "-H", "1b", "5b", "32", "30", "31", "7e").Run() != nil {
-		return false
-	}
-	time.Sleep(100 * time.Millisecond)
-	return exec.Command("tmux", "send-keys", "-t", paneID, "Enter").Run() == nil
 }
 
 // ConsumeSpawnHint claims the next queued spawn identity for a runtime path.

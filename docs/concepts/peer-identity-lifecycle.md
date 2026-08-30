@@ -9,7 +9,7 @@ A live peer has these identity and lifecycle fields:
 - `peer_id` — daemon-assigned stable id for routing and ask ownership.
 - `display_name` / `name` — human-facing name. It can collide across circles, so it is not globally unique.
 - `circle` — routing scope. Ordinary peers message only within their own circle; an explicit foreign circle is accepted only for a role that bypasses circles.
-- `backend` — agent runtime, such as `claude-code`, `codex`, `gemini`, `antigravity`, `opencode`, or `pi`.
+- `backend` — supported agent runtime: `claude-code`, `codex`, `opencode`, or `pi`.
 - `path` — working directory used for name allocation, filtering, and operator context. It is not sufficient by itself to prove peer identity.
 - `pane_id` / WebSocket binding — local delivery endpoint for hook-based peers.
 - `role` — `agent` by default; service, human, and orchestrator roles can bypass normal circle visibility.

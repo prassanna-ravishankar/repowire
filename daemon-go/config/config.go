@@ -135,8 +135,8 @@ func legacySpawnCommands(commands []string) map[string]string {
 			continue
 		}
 		backend := map[string]string{
-			"claude": "claude-code", "codex": "codex", "gemini": "gemini",
-			"opencode": "opencode", "agy": "antigravity", "pi": "pi",
+			"claude": "claude-code", "codex": "codex",
+			"opencode": "opencode", "pi": "pi",
 		}[fields[0]]
 		if backend != "" {
 			if _, exists := out[backend]; !exists {

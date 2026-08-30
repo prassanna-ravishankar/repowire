@@ -16,12 +16,12 @@ import (
 
 func TestNormalizeBackendPayloads(t *testing.T) {
 	p := Normalize(map[string]any{
-		"hook_event_name": "AfterAgent",
+		"hook_event_name": "StopFailure",
 		"session_id":      "s1",
 		"final_response":  "done",
-		"model":           map[string]any{"modelID": "gemini-3"},
-	}, "gemini")
-	if p.Event != "Stop" || p.SessionID != "s1" || p.ResponseText != "done" || p.Model != "gemini-3" {
+		"model":           map[string]any{"modelID": "claude-opus"},
+	}, "claude-code")
+	if p.Event != "Stop" || p.SessionID != "s1" || p.ResponseText != "done" || p.Model != "claude-opus" {
 		t.Fatalf("unexpected normalization: %+v", p)
 	}
 }

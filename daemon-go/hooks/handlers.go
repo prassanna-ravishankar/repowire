@@ -277,13 +277,12 @@ func runStop(backend string, remindersOnly bool) int {
 		errf("stop: failed to update status for %s", identifier)
 	}
 	if len(blocks) > 0 {
-		decision := map[string]string{"claude-code": "block", "codex": "block", "gemini": "deny"}[backend]
+		decision := map[string]string{"claude-code": "block", "codex": "block"}[backend]
 		if decision != "" {
 			printJSON(map[string]string{"decision": decision, "reason": strings.Join(blocks, "\n\n")})
 			return 0
 		}
 	}
-	hookOutput(backend)
 	return 0
 }
 
@@ -318,7 +317,6 @@ func runPrompt(backend string) int {
 			startChatStreamer(payload.TranscriptPath, getDisplayName(), pane, payload.SessionID)
 		}
 	}
-	hookOutput(backend)
 	return 0
 }
 

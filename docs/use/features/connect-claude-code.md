@@ -24,18 +24,18 @@ The hooks shell out to the `repowire` CLI: `repowire hook session`, `repowire ho
 ### Native inbox delivery
 
 Claude Code 2.1.224 and newer exposes each session's local messaging socket to
-hooks. Repowire's WebSocket hook prefers that native inbox for inbound asks and
+hooks. Repowire's WebSocket hook uses that native inbox for inbound asks and
 notifications, so an idle session starts a turn and a busy session receives the
 message between tool calls without terminal keystrokes. The hook authenticates
 with Claude's per-session messaging token, so Claude recognizes it as its own
 installed hook. A successful socket write is recorded as native runtime
 acceptance, not pane injection.
 
-Tmux injection remains the automatic fallback when Claude does not expose the
+Delivery fails loudly when Claude does not expose the
 socket or a socket write fails. Claude's `crossSessionInbound` policy still
 applies and may hold or refuse an accepted message; Repowire does not change
-that setting. Current setup therefore still requires tmux for placement and
-lifecycle ownership while the session-keyed bridge is tested separately.
+that setting. Current setup still uses tmux for placement, process ownership,
+safe kill/restart proof, circles, and orchestrator panes—not message delivery.
 
 ### MCP server
 

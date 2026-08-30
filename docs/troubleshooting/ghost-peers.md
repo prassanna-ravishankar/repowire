@@ -40,8 +40,8 @@ Removes all peers whose `last_seen` exceeds `daemon.prune_max_age_hours` (defaul
 
 A peer shows `busy` long after the turn that triggered it has ended. The most common causes:
 
-1. **`Stop` / `AfterAgent` hook didn't fire.** The peer never marked itself `online` again. The next user prompt should reset it; if not, re-run `repowire setup` to rewrite the hook entries.
-2. **Hook script error.** The hook ran but failed before reaching the status update. Check the hook log (visible directly in Gemini output; for Claude Code / Codex, look at `repowire serve` foreground output or the user-service log).
+1. **The runtime's stop or idle event didn't fire.** The peer never marked itself `online` again. The next user prompt should reset it; if not, re-run `repowire setup` to rewrite the integration.
+2. **Transport error.** The hook, bridge, plugin, or extension failed before reaching the status update. Check the runtime output and the `repowire serve` foreground output or user-service log.
 3. **`turn_state=awaiting_input`.** The peer is mid-turn waiting on user input (a permission prompt, a `read -p`, an MCP tool that suspended). This is not stuck — it's correctly reporting state. Send input to unblock it.
 4. **`turn_state=pending_first_turn`.** A spawn-seeded peer whose seed message never reached the agent. Re-send via `notify_peer`.
 

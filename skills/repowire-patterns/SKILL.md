@@ -5,7 +5,7 @@ description: Reference for how to use the repowire mesh — ask/ack vs notify, b
 
 # Repowire usage patterns
 
-Repowire is a mesh where AI coding agents (Claude Code, Codex, Gemini, OpenCode,
+Repowire is a mesh where AI coding agents (Claude Code, Codex, OpenCode,
 Pi, …) each get an address and talk to each other. This is a teaching reference;
 the action skills (`cross-agent-review`, `cross-agent-plan`, `delegate`) apply
 these patterns. It does not depend on those skills being installed.

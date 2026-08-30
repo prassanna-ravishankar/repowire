@@ -157,11 +157,9 @@ type SpawnResponse struct {
 	Warnings          []string `json:"warnings"`
 }
 
-// selfRegistersOnSpawn ports the per-backend self_registers_on_spawn flag. Default
-// true (hook-backed runtimes self-register via SessionStart); only antigravity
-// overrides to false in agent_backends.py.
+// Every supported runtime self-registers through its native integration.
 func selfRegistersOnSpawn(b proto.AgentType) bool {
-	return b != proto.AgentAntigravity
+	return b.Valid()
 }
 
 func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
@@ -178,8 +176,8 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 }
 
 // spawnPeer is the typed spawn entry point shared by HTTP and MCP callers.
-// It preserves the route's validation, configured-command policy, Antigravity
-// polling fallback, and ownership recording without requiring JSON plumbing.
+// It preserves the route's validation, configured-command policy, and
+// ownership recording without requiring JSON plumbing.
 func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, error) {
 	if h.spawn == nil || h.spawn.svc == nil || h.spawn.reg == nil {
 		return SpawnResponse{}, &service.SpawnError{Status: http.StatusServiceUnavailable, Detail: "spawn not configured"}

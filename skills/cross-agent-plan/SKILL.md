@@ -1,6 +1,6 @@
 ---
 name: cross-agent-plan
-description: Get an independent implementation plan from a DIFFERENT AI agent over the repowire mesh before you build (e.g. have Gemini or Codex draft an approach for Claude to critique). Use when you want a second perspective on how to approach a task.
+description: Get an independent implementation plan from a DIFFERENT AI agent over the repowire mesh before you build (e.g. have Pi or Codex draft an approach for Claude to critique). Use when you want a second perspective on how to approach a task.
 ---
 
 # Cross-agent plan

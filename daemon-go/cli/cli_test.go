@@ -246,6 +246,50 @@ func TestPluginAssetsExtractTypeScript(t *testing.T) {
 			t.Fatalf("%s asset was not extracted", name)
 		}
 	}
+	if !strings.Contains(opencodePlugin, "dispose: async () => cleanup()") || strings.Contains(opencodePlugin, `process.once("SIGINT"`) {
+		t.Fatal("OpenCode plugin does not use the native dispose lifecycle")
+	}
+	if strings.Contains(opencodePlugin, "client.session.list()") || !strings.Contains(opencodePlugin, `if (!peerBySession.has(sid)) ensurePeer`) {
+		t.Fatal("OpenCode plugin should register only active sessions, not historical session.list rows")
+	}
+	if !strings.Contains(piPlugin, `from "typebox"`) || !strings.Contains(piPlugin, `pi.on("session_shutdown"`) || strings.Contains(piPlugin, `process.once("SIGINT"`) {
+		t.Fatal("Pi extension does not match the native Pi lifecycle")
+	}
+	for name, asset := range map[string]string{"opencode": opencodePlugin, "pi": piPlugin} {
+		for _, want := range []string{"repowireAuthToken", "standaloneProjectCircle", "registerPaneLessPeer"} {
+			if !strings.Contains(asset, want) {
+				t.Fatalf("%s asset lacks %s", name, want)
+			}
+		}
+	}
+}
+
+func TestOpenCodeInstallMigratesCanonicalPluginPath(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	legacy := filepath.Join(homeDir, ".opencode", "plugin", "repowire.ts")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installRuntime("opencode"); err != nil {
+		t.Fatal(err)
+	}
+	canonical := filepath.Join(homeDir, ".config", "opencode", "plugins", "repowire.ts")
+	if raw, err := os.ReadFile(canonical); err != nil || !strings.Contains(string(raw), "Repowire") {
+		t.Fatalf("canonical plugin = %q, %v", raw, err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy plugin was not removed: %v", err)
+	}
+}
+
+func TestClaudeNativeInboxVersionGate(t *testing.T) {
+	if !claudeInboxVersionSupported("2.1.224 (Claude Code)") || !claudeInboxVersionSupported("2.2.0") || claudeInboxVersionSupported("2.1.223") || claudeInboxVersionSupported("") {
+		t.Fatal("Claude native inbox version gate is wrong")
+	}
 }
 
 func TestChannelAssetsAndVersionGate(t *testing.T) {
@@ -329,7 +373,7 @@ func TestRemoveAntigravityManifestEntry(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := updateAntigravityManifest(false); err != nil {
+	if err := removeLegacyAntigravityManifestEntry(); err != nil {
 		t.Fatal(err)
 	}
 	data, err := readJSON(path, true)

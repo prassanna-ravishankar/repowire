@@ -79,10 +79,17 @@ func (r *Registry) resolvePeerLocked(identifier string, circle *string) (*proto.
 				filtered = append(filtered, p)
 			}
 		}
-		matches = filtered
-		if len(matches) == 0 {
+		if len(filtered) == 0 {
+			// Human and service peers are intentionally addressable across
+			// circles. Fall back only when the global name is unique and the
+			// target's role is itself circle-bypassing; ordinary agents remain
+			// strictly scoped and ambiguous names still fail loud.
+			if len(matches) == 1 && matches[0].Role.BypassesCircles() {
+				return matches[0], nil
+			}
 			return nil, nil
 		}
+		matches = filtered
 	}
 	if len(matches) == 1 {
 		return matches[0], nil
