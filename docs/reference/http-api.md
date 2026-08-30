@@ -16,7 +16,7 @@ The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and extern
 - `/messages` and WebSocket routes for live delivery.
 - `/schedules` for one-shot and recurring scheduled messages.
 - `/jobs` / work routes for durable tracked work.
-- `/spawn` creates tmux-backed peers; `GET /spawn/config` reports whether spawning is enabled, configured commands/profiles, allowed paths, and the active `circle_boundary` (`session` or `window`). In window mode the CLI supplies its current pane internally so the daemon can split the peer into that window.
+- `/spawn` creates tmux-backed peers; `GET /spawn/config` reports whether spawning is enabled, configured commands/profiles, allowed paths, and the active `circle_boundary` (`session` or `window`). In window mode the CLI supplies its current pane internally so the daemon can split the peer into that window. `POST /peers/{id}/fork-backend` non-destructively starts an agent-role sibling on another configured backend in the source peer's project and circle. The source stays live and its backend-native conversation history is not copied.
 - `/attachments` for upload and download.
 - `/dashboard` for the static dashboard bundle.
 

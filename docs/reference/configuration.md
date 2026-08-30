@@ -145,7 +145,7 @@ self-attestation.
 
 ## `daemon.spawn`
 
-Spawn is disabled until `allowed_paths` and at least one runtime command are configured. `commands` is keyed by backend (`claude-code`, `codex`, `opencode`, `pi`) and is the single launch profile used by MCP `spawn_peer`, dashboard spawn, backend switching, `repowire peer restart`, and `repowire orchestrator start`. Backend switching is destructive and is offered only for Repowire-managed tmux peers whose pane ownership can be proven; native pane-less sessions remain attached to their runtime. Legacy Gemini or Antigravity keys are ignored.
+Spawn is disabled until `allowed_paths` and at least one runtime command are configured. `commands` is keyed by backend (`claude-code`, `codex`, `opencode`, `pi`) and is the single launch profile used by MCP `spawn_peer`, dashboard spawn and backend forking, `repowire peer restart`, and `repowire orchestrator start`. Dashboard backend forking is non-destructive: it starts an agent-role sibling in the source peer's project and circle while the source keeps running. It works for both Repowire-managed tmux peers and pane-less native sessions. Backend-native conversation history is not copied. Legacy Gemini or Antigravity keys are ignored.
 
 Backend commands are reloaded from config when a spawn request needs them, so
 `repowire setup` and manual command edits take effect without restarting the
@@ -158,7 +158,7 @@ daemon or bouncing existing agent sessions.
 tool config paths. If neither `env.PATH` nor `env_path` is set, Repowire captures
 the user's login-shell PATH and injects it so launchd/tmux-spawned workers can
 still see tools installed by Homebrew, nvm, and similar shell setup. This env is
-used by MCP/dashboard spawn, backend switching, restart, and durable job workers.
+used by MCP/dashboard spawn, backend forking, restart, and durable job workers.
 
 Explicit command overrides still win over profiles. `repowire peer restart` preserves the peer's backend, path, circle, role, and mesh identity, but this slice does not persist the selected profile in peer state. Restart therefore uses the current configured backend command unless a future lane records spawn profile metadata.
 

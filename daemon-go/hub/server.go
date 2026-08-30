@@ -87,7 +87,7 @@ type Hub struct {
 
 	// spawn holds the spawn-kill-restart route dependencies (SpawnService + the
 	// narrow spawnRegistry seam + service.AskTracker quiesce barrier), wired via WithSpawn.
-	// nil → the /spawn·/kill-peer·/peers/{name}/{restart,switch-backend,rehook}
+	// nil → the /spawn·/kill-peer·/peers/{name}/{restart,fork-backend,rehook}
 	// handlers 503. Built in main with the real TmuxController + PaneOwnership.
 	spawn *spawnDeps
 

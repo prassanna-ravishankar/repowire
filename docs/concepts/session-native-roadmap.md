@@ -9,7 +9,7 @@ The v0.14 architecture train is moving toward a **session-native mesh**. This is
 - **Session-first mesh.** Sessions become the durable unit of work, with peers acting as live runtime executors.
 - **Transport-neutral routing.** Ask/notify delivery now goes through a transport router. WebSocket hooks, experimental ACP, relay, and future transports continue moving toward the same message/control boundary.
 - **Timeline-centered dashboard.** Persisted history and realtime events converge into one session timeline instead of separate live/history views.
-- **Shared command surface.** Controls such as send message, switch backend/model, resume, schedule, and approvals target sessions and can be reused from dashboard, MCP, Telegram, and other surfaces.
+- **Shared command surface.** Controls such as send message, fork work to another backend/model, resume, schedule, and approvals target sessions and can be reused from dashboard, MCP, Telegram, and other surfaces.
 - **Search as large recall.** SQLite-backed session/timeline search should carry detailed historical recall, while orchestrator markdown memory remains a small curated procedure layer.
 - **Compatible v0.14 slices.** The architecture changes land incrementally while preserving current hooks, MCP tools, HTTP routes, and dashboard workflows.
 - **Human approval path.** Permission and plan approval events become first-class timeline/control events instead of transport-specific callbacks.
@@ -42,7 +42,7 @@ Today, the stable surface is still peer and message based:
 
 ## What not to assume yet
 
-- Do not describe seamless model switching, approval brokering, or backend changes as completed functionality.
+- Do not describe seamless model switching, conversation cloning, approval brokering, or backend changes as completed functionality. Today's dashboard fork shares a workspace and circle while preserving the source peer; it does not transfer backend-native conversation history.
 - Do not imply every route/control path is transport-neutral yet.
 - Do not call ACP production-ready; treat ACP as experimental.
 - Do not claim reliable delivery across all transports.

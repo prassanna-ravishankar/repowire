@@ -110,8 +110,17 @@ describe("PeerView lifecycle controls", () => {
   });
 });
 
-describe("PeerView backend switching", () => {
-  it("does not offer a destructive switch for a pane-less native peer", () => {
+describe("PeerView backend forking", () => {
+  it("offers a non-destructive fork for a pane-less native peer", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/spawn/config") {
+        return new Response(JSON.stringify({ commands: { codex: "codex", "claude-code": "claude" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Promise<Response>(() => {});
+    }));
     render(
       <PeerView
         peer={{ ...PEER, backend: "codex", pane_id: null }}
@@ -122,11 +131,10 @@ describe("PeerView backend switching", () => {
       />,
     );
 
-    expect(screen.getByText("native · no switch")).toBeInTheDocument();
-    expect(screen.queryByRole("combobox", { name: "Switch backend" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("combobox", { name: "Fork to backend" })).toBeInTheDocument();
   });
 
-  it("targets the immutable peer id and shows a rejected switch inline", async () => {
+  it("targets the immutable peer id and shows a rejected fork inline", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/spawn/config") {
@@ -135,8 +143,8 @@ describe("PeerView backend switching", () => {
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url === "/peers/peer-1/switch-backend" && init?.method === "POST") {
-        return new Response(JSON.stringify({ detail: { hint: "Pane ownership changed; retry after rehooking." } }), {
+      if (url === "/peers/peer-1/fork-backend" && init?.method === "POST") {
+        return new Response(JSON.stringify({ detail: { hint: "Backend command is not configured." } }), {
           status: 409,
           headers: { "Content-Type": "application/json" },
         });
@@ -144,7 +152,6 @@ describe("PeerView backend switching", () => {
       return new Promise<Response>(() => {});
     });
     vi.stubGlobal("fetch", fetchMock);
-    vi.stubGlobal("confirm", vi.fn(() => true));
 
     render(
       <PeerView
@@ -156,17 +163,43 @@ describe("PeerView backend switching", () => {
       />,
     );
 
-    const select = await screen.findByRole("combobox", { name: "Switch backend" });
+    const select = await screen.findByRole("combobox", { name: "Fork to backend" });
     fireEvent.change(select, { target: { value: "claude-code" } });
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Pane ownership changed; retry after rehooking.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Backend command is not configured.");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/peers/peer-1/switch-backend",
+      "/peers/peer-1/fork-backend",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ new_backend: "claude-code" }),
       }),
     );
+  });
+
+  it("reports a successful fork and refreshes the roster", async () => {
+    const onSent = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/spawn/config") {
+        return new Response(JSON.stringify({ commands: { codex: "codex", pi: "pi" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (String(input) === "/peers/peer-1/fork-backend" && init?.method === "POST") {
+        return new Response(JSON.stringify({ display_name: "project-pi", registration_state: "pending_hook" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Promise<Response>(() => {});
+    }));
+
+    render(<PeerView peer={{ ...PEER, backend: "codex", pane_id: null }} events={[]} apiBase="" onClose={() => {}} onSent={onSent} />);
+
+    fireEvent.change(await screen.findByRole("combobox", { name: "Fork to backend" }), { target: { value: "pi" } });
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Forked project-pi; source is still running.");
+    expect(onSent).toHaveBeenCalledOnce();
   });
 });
 
