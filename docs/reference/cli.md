@@ -49,15 +49,17 @@ When `updates.check_enabled` is true, status also reports whether a newer Repowi
 ```bash
 repowire service install
 repowire service start
-repowire service restart
+repowire service restart [daemon|bridge|all]
 repowire service status
 repowire service uninstall
 ```
 
 Manage the installed user services. `install` writes and starts the daemon and,
 when supported, the independent Codex App Server bridge. `start` starts installed
-services. `restart` restarts only the routing daemon and ensures the Codex bridge
-is running, so live Codex threads are not bounced. `status` reports both; `stop`
+services. `restart` defaults to the routing daemon only, so live Codex threads
+are not bounced. `restart bridge` explicitly replaces the Codex bridge and its
+owned App Server and therefore interrupts active Codex sessions; `restart all`
+does both. `status` reports both; `stop`
 through `repowire daemon stop` and `uninstall` stop both. Prefer these commands
 over raw `launchctl` or `systemctl` unless troubleshooting the service manager.
 
@@ -356,7 +358,7 @@ Build the Next.js dashboard into the static export served by the daemon at `/das
 repowire telegram start
 ```
 
-Run the Telegram bot peer. Reads `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from the environment or `~/.repowire/config.yaml`. The bot registers as the `telegram` peer; messages from it are framed as human input.
+Run the Telegram bot peer manually. Reads `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from the environment or `~/.repowire/config.yaml`. When both values are configured, setup installs Telegram as an OS-managed user service alongside the daemon; this command is for an intentionally separate bot process. The bot registers as the canonical `telegram` peer, and messages from it are framed as human input.
 
 ## `repowire slack start`
 
@@ -364,7 +366,7 @@ Run the Telegram bot peer. Reads `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` fro
 repowire slack start
 ```
 
-Run the Slack bot peer over Socket Mode (no public URL needed). Reads `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, and `SLACK_CHANNEL_ID` from the environment or config.
+Run the Slack bot peer manually over Socket Mode (no public URL needed). Reads `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, and `SLACK_CHANNEL_ID` from the environment or config. When all three values are configured, setup installs Slack as an OS-managed user service alongside the daemon.
 
 ## `repowire update`
 
@@ -375,7 +377,8 @@ repowire update
 Upgrade through Homebrew when Repowire is Homebrew-managed; otherwise download
 and install the latest checksum-verified native release. Then re-run
 non-interactive setup. SQLite state migrations run when the daemon restarts;
-verify with `repowire doctor`.
+the updater preserves an already-running Codex bridge/App Server so active Codex
+sessions survive. Verify with `repowire doctor`.
 
 `repowire update` is the only command that upgrades the installed binary.
 Hooks, MCP calls, daemon routing, `status`, and `doctor` never auto-update

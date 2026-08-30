@@ -218,12 +218,13 @@ repowire setup --update-checks         # let status/doctor report available upda
 repowire update                        # explicit package upgrade + hook reinstall + daemon restart
 repowire status                        # show installed components and daemon status
 repowire doctor                        # run diagnostics
-repowire service restart               # restart the installed daemon service
+repowire service restart               # restart daemon; preserve live Codex bridge
+repowire service restart bridge        # explicitly restart bridge (interrupts Codex sessions)
 repowire peer list                     # list mesh peers
 repowire peer new PATH [--profile P]   # spawn a peer in tmux
 repowire schedule self 10m "check CI"  # wake this peer later
-repowire telegram start                # run Telegram service peer
-repowire slack start                   # run Slack service peer
+repowire telegram start                # manually run Telegram against another daemon
+repowire slack start                   # manually run Slack against another daemon
 ```
 
 The daemon uses `~/.repowire/state.db` for durable local state. On first startup
@@ -268,7 +269,7 @@ relay:
   api_key: "rw_..."
 ```
 
-Update checks are off by default. If enabled with `repowire setup --update-checks`, `repowire status` and `repowire doctor` may report that a newer release is available, but they do not rewrite hooks or restart services. Use `repowire update` when you want to upgrade explicitly; Homebrew installs delegate that command to `brew upgrade`.
+Update checks are off by default. If enabled with `repowire setup --update-checks`, `repowire status` and `repowire doctor` may report that a newer release is available, but they do not rewrite hooks or restart services. Use `repowire update` when you want to upgrade explicitly; Homebrew installs delegate that command to `brew upgrade`. Updates restart the routing daemon but preserve a live Codex bridge and its App Server, so active Codex sessions remain running.
 
 Security defaults:
 

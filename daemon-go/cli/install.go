@@ -772,7 +772,7 @@ func installTmuxLifecycle() error {
 
 func runService(argv []string) int {
 	if len(argv) == 0 {
-		return usage("service <install|start|restart|status|uninstall>")
+		return usage("service <install|start|restart [daemon|bridge|all]|status|uninstall>")
 	}
 	switch argv[0] {
 	case "install":
@@ -788,10 +788,27 @@ func runService(argv []string) int {
 		fmt.Println("service started")
 		return 0
 	case "restart":
-		if err := restartService(); err != nil {
+		component := "daemon"
+		if len(argv) > 1 {
+			component = argv[1]
+		}
+		var err error
+		switch component {
+		case "daemon":
+			err = restartService()
+		case "bridge":
+			err = restartCodexBridgeService()
+		case "all":
+			if err = restartService(); err == nil {
+				err = restartCodexBridgeService()
+			}
+		default:
+			return usage("service restart [daemon|bridge|all]")
+		}
+		if err != nil {
 			return fatal(err)
 		}
-		fmt.Println("service restarted")
+		fmt.Println(component + " service restarted")
 		return 0
 	case "status":
 		return serviceStatus()
@@ -802,12 +819,29 @@ func runService(argv []string) int {
 		fmt.Println("service removed")
 		return 0
 	default:
-		return usage("service <install|start|restart|status|uninstall>")
+		return usage("service <install|start|restart [daemon|bridge|all]|status|uninstall>")
 	}
 }
 
-func serviceLabel() string     { return "io.repowire.daemon" }
-func codexBridgeLabel() string { return "io.repowire.codex-bridge" }
+func serviceLabel() string                  { return "io.repowire.daemon" }
+func codexBridgeLabel() string              { return "io.repowire.codex-bridge" }
+func mobileServiceLabel(name string) string { return "io.repowire." + name }
+
+func mobileServiceInstalled(name string) bool {
+	if runtime.GOOS == "darwin" {
+		_, err := os.Stat(home("Library", "LaunchAgents", mobileServiceLabel(name)+".plist"))
+		return err == nil
+	}
+	_, err := os.Stat(home(".config", "systemd", "user", "repowire-"+name+".service"))
+	return err == nil
+}
+
+func mobileServiceRunning(name string) bool {
+	if runtime.GOOS == "darwin" {
+		return launchAgentLoaded(mobileServiceLabel(name))
+	}
+	return systemdServiceActive("repowire-" + name + ".service")
+}
 
 const obsoleteServiceLabel = "com.repowire.daemon"
 
@@ -835,7 +869,10 @@ func installService() error {
 		if err := exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run(); err != nil {
 			return err
 		}
-		return installCodexBridgeService(os.Getenv("PATH"), locale)
+		if err := installCodexBridgeService(os.Getenv("PATH"), locale); err != nil {
+			return err
+		}
+		return installConfiguredMobileServices(os.Getenv("PATH"), locale)
 	}
 	dir := home(".config", "systemd", "user")
 	_ = os.MkdirAll(dir, 0o755)
@@ -846,8 +883,78 @@ func installService() error {
 	if err := installCodexBridgeService(os.Getenv("PATH"), ""); err != nil {
 		return err
 	}
+	if err := installConfiguredMobileServices(os.Getenv("PATH"), ""); err != nil {
+		return err
+	}
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	return exec.Command("systemctl", "--user", "enable", "--now", "repowire.service").Run()
+}
+
+func installConfiguredMobileServices(pathValue, locale string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	configured := map[string]bool{
+		"telegram": cfg.Telegram.BotToken != "" && cfg.Telegram.ChatID != "",
+		"slack":    cfg.Slack.BotToken != "" && cfg.Slack.AppToken != "" && cfg.Slack.ChannelID != "",
+	}
+	for _, name := range []string{"telegram", "slack"} {
+		if !configured[name] {
+			if err := removeMobileService(name); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := installMobileService(name, pathValue, locale); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func installMobileService(name, pathValue, locale string) error {
+	if runtime.GOOS == "darwin" {
+		dir := home("Library", "LaunchAgents")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		path := filepath.Join(dir, mobileServiceLabel(name)+".plist")
+		logPath := home(".repowire", name+".log")
+		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>%s</string><string>start</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string><key>LC_ALL</key><string>%s</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, mobileServiceLabel(name), executable(), name, html.EscapeString(pathValue), html.EscapeString(locale), logPath, logPath)
+		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+mobileServiceLabel(name)).Run()
+		if err := os.WriteFile(path, []byte(plist), 0o600); err != nil {
+			return err
+		}
+		return exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
+	}
+	unitName := "repowire-" + name + ".service"
+	unit := fmt.Sprintf("[Unit]\nDescription=Repowire %s peer\nAfter=repowire.service\nWants=repowire.service\n[Service]\nEnvironment=\"PATH=%s\"\nExecStart=%s %s start\nRestart=always\n[Install]\nWantedBy=default.target\n", name, pathValue, executable(), name)
+	path := home(".config", "systemd", "user", unitName)
+	if err := os.WriteFile(path, []byte(unit), 0o600); err != nil {
+		return err
+	}
+	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+	return exec.Command("systemctl", "--user", "enable", "--now", unitName).Run()
+}
+
+func removeMobileService(name string) error {
+	if runtime.GOOS == "darwin" {
+		label := mobileServiceLabel(name)
+		path := home("Library", "LaunchAgents", label+".plist")
+		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+label).Run()
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	unitName := "repowire-" + name + ".service"
+	_ = exec.Command("systemctl", "--user", "disable", "--now", unitName).Run()
+	err := os.Remove(home(".config", "systemd", "user", unitName))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func installCodexBridgeService(pathValue, locale string) error {
@@ -857,21 +964,36 @@ func installCodexBridgeService(pathValue, locale string) error {
 	if runtime.GOOS == "darwin" {
 		dir := home("Library", "LaunchAgents")
 		path := filepath.Join(dir, codexBridgeLabel()+".plist")
+		loaded := launchAgentLoaded(codexBridgeLabel())
 		logPath := home(".repowire", "codex-bridge.log")
 		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>codex-bridge</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string><key>LC_ALL</key><string>%s</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, codexBridgeLabel(), executable(), html.EscapeString(pathValue), html.EscapeString(locale), logPath, logPath)
-		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
 		if err := os.WriteFile(path, []byte(plist), 0o600); err != nil {
 			return err
+		}
+		if loaded {
+			return nil
 		}
 		return exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
 	}
 	unit := codexBridgeSystemdUnit(pathValue)
 	path := home(".config", "systemd", "user", "repowire-codex.service")
+	active := systemdServiceActive("repowire-codex.service")
 	if err := os.WriteFile(path, []byte(unit), 0o600); err != nil {
 		return err
 	}
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+	if active {
+		return nil
+	}
 	return exec.Command("systemctl", "--user", "enable", "--now", "repowire-codex.service").Run()
+}
+
+func launchAgentLoaded(label string) bool {
+	return exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+label).Run() == nil
+}
+
+func systemdServiceActive(unit string) bool {
+	return exec.Command("systemctl", "--user", "is-active", "--quiet", unit).Run() == nil
 }
 
 func codexBridgeSystemdUnit(pathValue string) string {
@@ -910,7 +1032,17 @@ func startService() error {
 			return err
 		}
 		if _, err := os.Stat(home("Library", "LaunchAgents", codexBridgeLabel()+".plist")); err == nil {
-			return startLaunchAgent(codexBridgeLabel())
+			if err := startLaunchAgent(codexBridgeLabel()); err != nil {
+				return err
+			}
+		}
+		for _, name := range []string{"telegram", "slack"} {
+			label := mobileServiceLabel(name)
+			if _, err := os.Stat(home("Library", "LaunchAgents", label+".plist")); err == nil {
+				if err := startLaunchAgent(label); err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	}
@@ -918,7 +1050,17 @@ func startService() error {
 		return err
 	}
 	if _, err := os.Stat(home(".config", "systemd", "user", "repowire-codex.service")); err == nil {
-		return exec.Command("systemctl", "--user", "start", "repowire-codex.service").Run()
+		if err := exec.Command("systemctl", "--user", "start", "repowire-codex.service").Run(); err != nil {
+			return err
+		}
+	}
+	for _, name := range []string{"telegram", "slack"} {
+		unit := "repowire-" + name + ".service"
+		if _, err := os.Stat(home(".config", "systemd", "user", unit)); err == nil {
+			if err := exec.Command("systemctl", "--user", "start", unit).Run(); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -938,23 +1080,34 @@ func restartService() error {
 		if err := exec.Command("launchctl", "kickstart", "-k", "gui/"+strconv.Itoa(os.Getuid())+"/"+serviceLabel()).Run(); err != nil {
 			return err
 		}
-		if _, err := os.Stat(home("Library", "LaunchAgents", codexBridgeLabel()+".plist")); err == nil {
-			return exec.Command("launchctl", "kickstart", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexBridgeLabel()).Run()
-		}
 		return nil
 	}
 	if err := exec.Command("systemctl", "--user", "restart", "repowire.service").Run(); err != nil {
 		return err
 	}
-	if _, err := os.Stat(home(".config", "systemd", "user", "repowire-codex.service")); err == nil {
-		return exec.Command("systemctl", "--user", "start", "repowire-codex.service").Run()
-	}
 	return nil
+}
+
+func restartCodexBridgeService() error {
+	if runtime.GOOS == "darwin" {
+		path := home("Library", "LaunchAgents", codexBridgeLabel()+".plist")
+		if _, err := os.Stat(path); err != nil {
+			return err
+		}
+		return exec.Command("launchctl", "kickstart", "-k", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexBridgeLabel()).Run()
+	}
+	return exec.Command("systemctl", "--user", "restart", "repowire-codex.service").Run()
 }
 func stopService() error {
 	if runtime.GOOS == "darwin" {
+		for _, name := range []string{"telegram", "slack"} {
+			_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+mobileServiceLabel(name)).Run()
+		}
 		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexBridgeLabel()).Run()
 		return exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+serviceLabel()).Run()
+	}
+	for _, name := range []string{"telegram", "slack"} {
+		_ = exec.Command("systemctl", "--user", "stop", "repowire-"+name+".service").Run()
 	}
 	_ = exec.Command("systemctl", "--user", "stop", "repowire-codex.service").Run()
 	return exec.Command("systemctl", "--user", "stop", "repowire.service").Run()
@@ -966,10 +1119,22 @@ func serviceStatus() int {
 		if _, err := os.Stat(home("Library", "LaunchAgents", codexBridgeLabel()+".plist")); err == nil {
 			commands = append(commands, exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexBridgeLabel()))
 		}
+		for _, name := range []string{"telegram", "slack"} {
+			label := mobileServiceLabel(name)
+			if _, err := os.Stat(home("Library", "LaunchAgents", label+".plist")); err == nil {
+				commands = append(commands, exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+label))
+			}
+		}
 	} else {
 		commands = append(commands, exec.Command("systemctl", "--user", "status", "repowire.service", "--no-pager"))
 		if _, err := os.Stat(home(".config", "systemd", "user", "repowire-codex.service")); err == nil {
 			commands = append(commands, exec.Command("systemctl", "--user", "status", "repowire-codex.service", "--no-pager"))
+		}
+		for _, name := range []string{"telegram", "slack"} {
+			unit := "repowire-" + name + ".service"
+			if _, err := os.Stat(home(".config", "systemd", "user", unit)); err == nil {
+				commands = append(commands, exec.Command("systemctl", "--user", "status", unit, "--no-pager"))
+			}
 		}
 	}
 	for _, cmd := range commands {
@@ -981,6 +1146,11 @@ func serviceStatus() int {
 	return 0
 }
 func uninstallService() error {
+	for _, name := range []string{"telegram", "slack"} {
+		if err := removeMobileService(name); err != nil {
+			return err
+		}
+	}
 	if err := removeCodexBridgeService(); err != nil {
 		return err
 	}

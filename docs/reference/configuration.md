@@ -70,6 +70,11 @@ Two legacy flat aliases are kept for the relay: `REPOWIRE_RELAY_URL` and `REPOWI
 
 Telegram and Slack accept both their conventional flat environment variables
 shown above and nested `REPOWIRE_TELEGRAM__*` / `REPOWIRE_SLACK__*` aliases.
+When all required credentials for a transport are present during `repowire setup`,
+Repowire installs that bot as an OS-managed user service alongside the daemon.
+Removing or clearing those credentials and running setup again removes the
+corresponding managed service. The transport remains a client of the daemon; it
+does not run inside the daemon or in tmux.
 
 Resolution precedence, highest first: explicit constructor arguments, the flat relay aliases, `REPOWIRE_*` environment variables, `~/.repowire/config.yaml`, then built-in defaults. Environment variables take precedence over the config file, so an exported `REPOWIRE_DAEMON__PORT` overrides `daemon.port` in the YAML.
 

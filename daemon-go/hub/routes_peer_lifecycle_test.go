@@ -151,6 +151,9 @@ func TestUnregisterPeerClosesLiveSocket(t *testing.T) {
 			conn.CloseNow()
 			t.Fatalf("read service identity: %v", err)
 		}
+		if connected.DisplayName != "telegram" {
+			t.Fatalf("daemon-owned Telegram address = %q, want telegram", connected.DisplayName)
+		}
 		return conn, connected.SessionID
 	}
 

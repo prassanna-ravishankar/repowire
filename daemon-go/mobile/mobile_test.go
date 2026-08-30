@@ -106,6 +106,23 @@ func TestTelegramReplyKeyboardKeepsCurrentAndRecentPeers(t *testing.T) {
 	}
 }
 
+func TestTelegramReplyKeyboardHidesCanonicalPeerID(t *testing.T) {
+	bot := NewTelegram("token", "42", NewDaemonPeer("http://localhost:8377", "", "telegram", "/telegram", "default"))
+	bot.setTargetLabel("repow-0-12345678", "orchestrator-pi")
+
+	encoded, err := json.Marshal(bot.replyKeyboard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyboard := string(encoded)
+	if !strings.Contains(keyboard, "✦ orchestrator-pi") || strings.Contains(keyboard, "repow-0-12345678") {
+		t.Fatalf("reply keyboard leaked routing identity: %s", keyboard)
+	}
+	if got := bot.resolveTarget("orchestrator-pi"); got != "repow-0-12345678" {
+		t.Fatalf("resolved keyboard target = %q", got)
+	}
+}
+
 func TestTelegramSendsAgentAttachmentAsPhoto(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "result.png")
 	if err := os.WriteFile(path, []byte("fake image"), 0o600); err != nil {

@@ -394,6 +394,185 @@ func TestCodexBridgeSystemdUnitPreservesPath(t *testing.T) {
 	}
 }
 
+func TestInstallCodexBridgePreservesLoadedBridge(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd only")
+	}
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	if err := os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launchctl := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/launchctl.calls\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\necho --listen\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	if err := installCodexBridgeService(binDir, "C.UTF-8"); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := os.ReadFile(filepath.Join(homeDir, "launchctl.calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(calls)
+	if strings.Contains(text, "bootout") || strings.Contains(text, "bootstrap") {
+		t.Fatalf("loaded bridge was disrupted: %s", text)
+	}
+	if !strings.Contains(text, "print gui/") || !strings.Contains(text, codexBridgeLabel()) {
+		t.Fatalf("loaded bridge was not probed: %s", text)
+	}
+}
+
+func TestInstallCodexBridgeBootstrapsWhenAbsent(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd only")
+	}
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	if err := os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launchctl := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/launchctl.calls\"\n[ \"$1\" != print ]\n"
+	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\necho --listen\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	if err := installCodexBridgeService(binDir, "C.UTF-8"); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ := os.ReadFile(filepath.Join(homeDir, "launchctl.calls"))
+	if !strings.Contains(string(calls), "bootstrap gui/") || !strings.Contains(string(calls), codexBridgeLabel()+".plist") {
+		t.Fatalf("absent bridge was not bootstrapped: %s", calls)
+	}
+}
+
+func TestInstallConfiguredMobileServicesTracksCredentials(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd only")
+	}
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	launchAgents := filepath.Join(homeDir, "Library", "LaunchAgents")
+	if err := os.MkdirAll(launchAgents, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(homeDir, ".repowire"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launchctl := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/launchctl.calls\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configYAML := "telegram:\n  bot_token: token\n  chat_id: '42'\nslack:\n  bot_token: ''\n  app_token: ''\n  channel_id: ''\n"
+	if err := os.WriteFile(filepath.Join(homeDir, ".repowire", "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staleSlack := filepath.Join(launchAgents, mobileServiceLabel("slack")+".plist")
+	if err := os.WriteFile(staleSlack, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	t.Setenv("TELEGRAM_BOT_TOKEN", "")
+	t.Setenv("TELEGRAM_CHAT_ID", "")
+	t.Setenv("SLACK_BOT_TOKEN", "")
+	t.Setenv("SLACK_APP_TOKEN", "")
+	t.Setenv("SLACK_CHANNEL_ID", "")
+	if err := installConfiguredMobileServices(binDir, "C.UTF-8"); err != nil {
+		t.Fatal(err)
+	}
+	telegramPlist := filepath.Join(launchAgents, mobileServiceLabel("telegram")+".plist")
+	raw, err := os.ReadFile(telegramPlist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "<string>telegram</string><string>start</string>") || !strings.Contains(string(raw), "<key>KeepAlive</key><true/>") {
+		t.Fatalf("Telegram LaunchAgent is incomplete: %s", raw)
+	}
+	if _, err := os.Stat(staleSlack); !os.IsNotExist(err) {
+		t.Fatalf("unconfigured Slack service was not removed: %v", err)
+	}
+	calls, _ := os.ReadFile(filepath.Join(homeDir, "launchctl.calls"))
+	if !strings.Contains(string(calls), "bootstrap gui/") || !strings.Contains(string(calls), mobileServiceLabel("telegram")+".plist") {
+		t.Fatalf("Telegram service was not bootstrapped: %s", calls)
+	}
+}
+
+func TestDaemonRestartDoesNotKickCodexBridge(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd only")
+	}
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launchctl := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/launchctl.calls\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	if err := restartService(); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := os.ReadFile(filepath.Join(homeDir, "launchctl.calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(calls), codexBridgeLabel()) {
+		t.Fatalf("daemon restart touched Codex bridge: %s", calls)
+	}
+}
+
+func TestExplicitCodexBridgeRestartIsDestructive(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd only")
+	}
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	if err := os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(homeDir, "Library", "LaunchAgents", codexBridgeLabel()+".plist"), []byte("plist"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launchctl := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/launchctl.calls\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	if err := restartCodexBridgeService(); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ := os.ReadFile(filepath.Join(homeDir, "launchctl.calls"))
+	if !strings.Contains(string(calls), "kickstart -k") || !strings.Contains(string(calls), codexBridgeLabel()) {
+		t.Fatalf("explicit bridge restart did not replace bridge: %s", calls)
+	}
+}
+
 func TestInstallCodexUsesNativeThreadsWhenAppServerIsAvailable(t *testing.T) {
 	homeDir := t.TempDir()
 	binDir := filepath.Join(homeDir, "bin")

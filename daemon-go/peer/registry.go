@@ -56,17 +56,22 @@ const paneHeartbeatTolerance = 60 * time.Second
 // sensitive routing only ever flows through proto.PeerID (ClaimedPeerID); the
 // human-facing DisplayName is derived, never an input key for routing.
 type AllocateParams struct {
-	Circle        string
-	Backend       proto.AgentType
-	Model         *string
-	Path          *string
-	PaneID        *string
-	TmuxSession   *string
-	Machine       string
-	Role          proto.PeerRole
-	ClaimedPeerID *proto.PeerID
-	Metadata      map[string]any
-	AgentPID      *int
+	Circle  string
+	Backend proto.AgentType
+	// PreferredDisplayName is reserved for daemon-owned service peers whose
+	// stable public address is part of the protocol (currently telegram/slack).
+	// Ordinary runtime peers leave this nil and keep the derived
+	// {folder}-{backend} naming scheme.
+	PreferredDisplayName *proto.DisplayName
+	Model                *string
+	Path                 *string
+	PaneID               *string
+	TmuxSession          *string
+	Machine              string
+	Role                 proto.PeerRole
+	ClaimedPeerID        *proto.PeerID
+	Metadata             map[string]any
+	AgentPID             *int
 	// TurnState, when supplied, is applied to the peer on both fresh registration
 	// and same-id reconnect (parity with the Python initial turn_state). nil leaves
 	// the peer's turn_state untouched on reconnect / zero on fresh.
@@ -761,6 +766,11 @@ func (r *Registry) buildDisplayName(params AllocateParams) proto.DisplayName {
 		folder = baseFolder(*params.Path)
 	}
 	base := fmt.Sprintf("%s-%s", folder, params.Backend)
+	preferred := false
+	if params.PreferredDisplayName != nil && *params.PreferredDisplayName != "" {
+		base = string(*params.PreferredDisplayName)
+		preferred = true
+	}
 	incomingSession := runtimeSessionID(params.Metadata)
 
 	candidate := base
@@ -783,7 +793,11 @@ func (r *Registry) buildDisplayName(params AllocateParams) proto.DisplayName {
 			return proto.DisplayName(candidate)
 		}
 		// Held by a distinct live peer — try the next suffix.
-		candidate = fmt.Sprintf("%s-%d-%s", folder, suffix, params.Backend)
+		if preferred {
+			candidate = fmt.Sprintf("%s-%d", base, suffix)
+		} else {
+			candidate = fmt.Sprintf("%s-%d-%s", folder, suffix, params.Backend)
+		}
 	}
 }
 

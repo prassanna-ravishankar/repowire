@@ -12,13 +12,7 @@ Use the dashboard when you need a richer timeline or Jobs view. Use Slack when a
 
 ## Setup
 
-Create a Telegram bot token with `@BotFather`, identify the chat id Repowire should accept, then start the bot:
-
-```bash
-TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... repowire telegram start
-```
-
-Tokens can also live in `~/.repowire/config.yaml`:
+Create a Telegram bot token with `@BotFather`, identify the chat id Repowire should accept, then add both values to `~/.repowire/config.yaml`:
 
 ```yaml
 telegram:
@@ -26,7 +20,7 @@ telegram:
   chat_id: "..."
 ```
 
-`repowire setup` writes those keys after the interactive prompt for Telegram credentials. The bot can run on any machine that can reach the daemon. There is no hosted Telegram bot; you bring your own bot and run `repowire telegram start`.
+`repowire setup` writes those keys after the interactive prompt for Telegram credentials. When both are configured, setup installs the bot as an OS-managed user service alongside the daemon. There is no hosted Telegram bot; you bring your own bot. Use `repowire telegram start` only when intentionally running the bot separately on a machine that can reach the daemon.
 
 ## Common workflows
 
@@ -37,7 +31,7 @@ List and select peers:
 /select repowire
 ```
 
-After `/select repowire`, every normal message opens a tracked ask to `repowire` until you `/clear` or select another peer. The reply keyboard shows current and recent peers so the target is visible.
+After `/select repowire`, every normal message opens a tracked ask to `repowire` until you `/clear` or select another peer. The reply keyboard shows display names for current and recent peers while routing internally by canonical `peer_id`.
 
 Open an ask to a specific peer:
 

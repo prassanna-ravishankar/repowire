@@ -18,7 +18,7 @@ Create a Slack app with:
 - App-level token (`xapp-...`) with `connections:write`.
 - Channel ID (`C...`) for the channel the bot watches.
 
-Start the bot:
+For a one-off manual process, start the bot with:
 
 ```bash
 SLACK_BOT_TOKEN=xoxb-... \
@@ -35,6 +35,8 @@ slack:
   app_token: "xapp-..."
   channel_id: "C..."
 ```
+
+When all three values are configured, setup installs Slack as an OS-managed user service alongside the daemon. The manual command is only needed when running the bot separately from the daemon host.
 
 ## Common workflows
 

@@ -29,6 +29,8 @@ type Telegram struct {
 	recents  []string
 	pending  *telegramPending
 	options  map[string][]string
+	labels   map[string]string
+	targets  map[string]string
 	keyboard bool
 }
 
@@ -42,7 +44,8 @@ type telegramPending struct {
 func NewTelegram(token, chatID string, daemon *DaemonPeer) *Telegram {
 	return &Telegram{
 		token: token, chatID: chatID, apiBase: "https://api.telegram.org", daemon: daemon,
-		http: &http.Client{Timeout: 40 * time.Second}, options: map[string][]string{}, keyboard: true,
+		http: &http.Client{Timeout: 40 * time.Second}, options: map[string][]string{},
+		labels: map[string]string{}, targets: map[string]string{}, keyboard: true,
 	}
 }
 
@@ -50,8 +53,8 @@ func (b *Telegram) Run(ctx context.Context) error {
 	if b.token == "" || b.chatID == "" {
 		return fmt.Errorf("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
 	}
-	if target := b.daemon.DefaultTarget(ctx); target != "" {
-		b.setTarget(target)
+	if target, label := b.daemon.DefaultTargetInfo(ctx); target != "" {
+		b.setTargetLabel(target, label)
 	}
 	return runTogether(ctx, func(ctx context.Context) error { return b.daemon.Run(ctx, b.onDaemon) }, b.poll)
 }
@@ -246,9 +249,9 @@ func (b *Telegram) onCallback(ctx context.Context, data string) error {
 				b.setPending(pending)
 				return b.send(ctx, "✗ Retry failed: "+err.Error(), nil)
 			}
-			return b.send(ctx, "✓ Sent to @"+target+".", nil)
+			return b.send(ctx, "✓ Sent to @"+b.displayTarget(target)+".", nil)
 		}
-		return b.send(ctx, "Now talking to @"+b.targetName()+".", nil)
+		return b.send(ctx, "Now talking to @"+b.displayTarget(target)+".", nil)
 	case strings.HasPrefix(data, "ack:"):
 		cid := strings.TrimPrefix(data, "ack:")
 		var result map[string]any
@@ -294,15 +297,16 @@ func (b *Telegram) answer(ctx context.Context, cid, option, outcome string) erro
 
 func (b *Telegram) onText(ctx context.Context, text string, messageIDs ...int64) error {
 	if target, ok := keyboardTarget(text); ok {
+		target = b.resolveTarget(target)
 		b.setTarget(target)
 		if pending := b.takePending(); pending != nil {
 			if _, err := b.daemon.Send(ctx, target, pending.message, pending.mode, pending.attachments); err != nil {
 				b.setPending(pending)
 				return b.send(ctx, "✗ Retry failed: "+err.Error(), nil)
 			}
-			return b.send(ctx, "✓ Sent to @"+target+".", nil)
+			return b.send(ctx, "✓ Sent to @"+b.displayTarget(target)+".", nil)
 		}
-		return b.send(ctx, "Now talking to @"+target+".", nil)
+		return b.send(ctx, "Now talking to @"+b.displayTarget(target)+".", nil)
 	}
 	switch {
 	case text == "/start" || text == "/peers" || text == "/list" || text == "📋 peers":
@@ -320,7 +324,7 @@ func (b *Telegram) onText(ctx context.Context, text string, messageIDs ...int64)
 	case strings.HasPrefix(text, "/select ") || strings.HasPrefix(text, "/switch "):
 		parts := strings.SplitN(text, " ", 2)
 		b.setTarget(strings.TrimPrefix(strings.TrimSpace(parts[1]), "@"))
-		return b.send(ctx, "Now talking to @"+b.targetName()+".", nil)
+		return b.send(ctx, "Now talking to @"+b.displayTarget(b.targetName())+".", nil)
 	}
 	b.clearPending()
 	mode, target, message, targeted := parseTargeted(text, true)
@@ -331,7 +335,9 @@ func (b *Telegram) onText(ctx context.Context, text string, messageIDs ...int64)
 		target = b.targetName()
 	}
 	if target == "" {
-		target = b.daemon.DefaultTarget(ctx)
+		var label string
+		target, label = b.daemon.DefaultTargetInfo(ctx)
+		b.rememberTarget(target, label)
 	}
 	if target == "" {
 		return b.send(ctx, "No active conversation. Use /peers or @name message.", nil)
@@ -343,7 +349,7 @@ func (b *Telegram) onText(ctx context.Context, text string, messageIDs ...int64)
 	_, err := b.daemon.Send(ctx, target, message, mode, nil)
 	if err != nil {
 		b.setPending(&telegramPending{message: message, mode: mode, expiresAt: time.Now().Add(time.Minute)})
-		return b.send(ctx, "✗ Couldn't reach @"+target+": "+err.Error()+"\nTap a peer to retry, or type a new message to cancel.", nil)
+		return b.send(ctx, "✗ Couldn't reach @"+b.displayTarget(target)+": "+err.Error()+"\nTap a peer to retry, or type a new message to cancel.", nil)
 	}
 	if len(messageIDs) > 0 && messageIDs[0] != 0 {
 		_ = b.react(ctx, messageIDs[0])
@@ -363,6 +369,7 @@ func (b *Telegram) sendPeers(ctx context.Context) error {
 	rows := make([]any, 0, len(peers))
 	for _, peer := range peers {
 		name, target := textField(peer, "display_name"), peerTarget(peer)
+		b.rememberTarget(target, name)
 		lines = append(lines, "• @"+name+" — "+textField(peer, "status"))
 		rows = append(rows, []any{map[string]string{"text": "💬 " + name, "callback_data": "target:" + target}})
 	}
@@ -482,6 +489,39 @@ func (b *Telegram) setTarget(target string) {
 	b.mu.Unlock()
 }
 
+func (b *Telegram) setTargetLabel(target, label string) {
+	b.rememberTarget(target, label)
+	b.setTarget(target)
+}
+
+func (b *Telegram) rememberTarget(target, label string) {
+	if target == "" || label == "" {
+		return
+	}
+	b.mu.Lock()
+	b.labels[target] = label
+	b.targets[label] = target
+	b.mu.Unlock()
+}
+
+func (b *Telegram) displayTarget(target string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if label := b.labels[target]; label != "" {
+		return label
+	}
+	return target
+}
+
+func (b *Telegram) resolveTarget(label string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if target := b.targets[label]; target != "" {
+		return target
+	}
+	return label
+}
+
 func (b *Telegram) targetName() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -521,8 +561,12 @@ func (b *Telegram) replyKeyboard() map[string]any {
 	buttons := []any{}
 	seen := map[string]bool{}
 	if b.target != "" {
-		buttons = append(buttons, map[string]string{"text": "✦ " + b.target})
-		seen[b.target] = true
+		label := b.target
+		if known := b.labels[b.target]; known != "" {
+			label = known
+		}
+		buttons = append(buttons, map[string]string{"text": "✦ " + label})
+		seen[label] = true
 	}
 	for _, peer := range b.recents {
 		if !seen[peer] && len(buttons) < 6 {

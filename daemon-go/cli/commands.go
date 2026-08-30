@@ -105,6 +105,17 @@ func runStatus() int {
 				map[bool]string{true: "installed", false: "missing"}[runtimeIntegrated(name)])
 		}
 	}
+	if cfg, err := config.Load(); err == nil {
+		mobileConfigured := map[string]bool{
+			"telegram": cfg.Telegram.BotToken != "" && cfg.Telegram.ChatID != "",
+			"slack":    cfg.Slack.BotToken != "" && cfg.Slack.AppToken != "" && cfg.Slack.ChannelID != "",
+		}
+		for _, name := range []string{"telegram", "slack"} {
+			if mobileConfigured[name] || mobileServiceInstalled(name) {
+				fmt.Printf("%s: configured=%t service=%s\n", name, mobileConfigured[name], map[bool]string{true: "running", false: "stopped"}[mobileServiceRunning(name)])
+			}
+		}
+	}
 	c, err := newClient()
 	if err != nil {
 		return fatal(err)
