@@ -29,7 +29,9 @@ Repowire runs locally by default through a daemon on your machine. The hosted re
 
 ## Quickstart
 
-**Requirements:** macOS or Linux and tmux. Python is not required.
+**Requirements:** macOS or Linux. Tmux is required for the default Claude Code
+workflow and Repowire-managed spawning/lifecycle, but not for pane-less Codex,
+OpenCode, or Pi connections. Python is not required.
 
 **1. Install Repowire and wire your agents.**
 

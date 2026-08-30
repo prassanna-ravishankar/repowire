@@ -485,15 +485,15 @@ func readHintQueue(target string) []map[string]any {
 // get-or-create-session + unique-window-name flow without libtmux, writes the
 // spawn hint before launch (so codex's late MCP boot can discover its circle),
 // then starts the command directly in the newly created pane. Commands can
-// contain a multi-kilobyte captured PATH; send-keys truncates long literals and
-// paste-buffer races interactive shells' bracketed-paste handling.
+// contain a multi-kilobyte captured PATH, so launch uses respawn-pane's direct
+// shell-command argument rather than interactive terminal input.
 type realTmuxController struct{}
 
 // NewRealTmuxController returns the production TmuxController (shells to `tmux`).
 func NewRealTmuxController() TmuxController { return realTmuxController{} }
 
 // Spawn creates a pane according to the configured circle boundary, writes the
-// spawn hint, and send-keys the launch command.
+// spawn hint, and replaces the fresh placeholder shell with the launch command.
 func (realTmuxController) Spawn(cfg SpawnConfig) (SpawnResult, error) {
 	displayName := filepath.Base(cfg.Path)
 	spawnDisplayName := displayName
@@ -530,7 +530,7 @@ func (realTmuxController) Spawn(cfg SpawnConfig) (SpawnResult, error) {
 		}
 	}
 
-	// Drop the spawn hint BEFORE send-keys so a fast-registering runtime sees it.
+	// Drop the spawn hint BEFORE launch so a fast-registering runtime sees it.
 	var rolePtr *string
 	if cfg.Role != "" {
 		r := string(cfg.Role)
