@@ -123,9 +123,9 @@ Transport notes:
 
 - Claude Code uses hooks plus MCP, with its authenticated native session inbox for delivery. Claude Code 2.1.224+ is required.
 - Native session APIs connect through runtime-side bridges; routing remains daemon-owned and transport-neutral.
-- Codex uses an App Server bridge plus MCP; tmux remains optional lifecycle/placement support.
-- OpenCode uses a TypeScript plugin plus WebSocket.
-- Pi uses the Repowire extension path when detected by setup.
+- Codex uses an App Server bridge plus MCP; daemon-minted thread certificates preserve identity across soft retirement, while tmux remains optional lifecycle/placement support.
+- OpenCode uses a TypeScript plugin plus WebSocket; its per-session identity and certificate survive plugin reconnects.
+- Pi uses the Repowire extension path when detected by setup, with the same per-session reconnect protection.
 - Claude Code's Channel bridge / ACP delivery is experimental and opt-in.
 - Relay is optional remote access, not a requirement for local routing.
 

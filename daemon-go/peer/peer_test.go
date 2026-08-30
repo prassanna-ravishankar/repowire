@@ -509,6 +509,51 @@ func TestClosePeer_HardRetirementRejectsLiveAgentReclaim(t *testing.T) {
 	}); err != ErrPeerRetired {
 		t.Fatalf("hard-retired live reclaim err = %v, want ErrPeerRetired", err)
 	}
+	if _, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "alpha", Backend: proto.AgentCodex, Path: ptr("/work/x"), Machine: "m",
+		Role: proto.RoleAgent, ClaimedPeerID: &claimed, RuntimeIdentityVerified: true,
+	}); err != ErrPeerRetired {
+		t.Fatalf("hard-retired certified reclaim err = %v, want ErrPeerRetired", err)
+	}
+}
+
+func TestSoftRetirementAllowsVerifiedRuntimeIdentityReclaim(t *testing.T) {
+	for _, backend := range []proto.AgentType{proto.AgentCodex, proto.AgentOpenCode, proto.AgentPi} {
+		t.Run(string(backend), func(t *testing.T) {
+			ctx := context.Background()
+			r, store := newRegistry(t)
+			id, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+				Circle: "alpha", Backend: backend, Path: ptr("/work/x"), Machine: "m", Role: proto.RoleAgent,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.MarkOffline(ctx, id, true); err != nil {
+				t.Fatal(err)
+			}
+
+			claimed := id
+			got, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+				Circle: "alpha", Backend: backend, Path: ptr("/work/x"), Machine: "m",
+				Role: proto.RoleAgent, ClaimedPeerID: &claimed, RuntimeIdentityVerified: true,
+			})
+			if err != nil {
+				t.Fatalf("certified reclaim: %v", err)
+			}
+			if got != id {
+				t.Fatalf("certified reclaim id = %q, want %q", got, id)
+			}
+			if recovered, ok := r.GetPeer(id); !ok || recovered.Status != proto.StatusOnline {
+				t.Fatalf("recovered peer = (%+v, %v), want online", recovered, ok)
+			}
+			store.mu.Lock()
+			_, retired := store.retired[id]
+			store.mu.Unlock()
+			if retired {
+				t.Fatal("certified reclaim did not clear soft retirement")
+			}
+		})
+	}
 }
 
 func ptr[T any](v T) *T { return &v }

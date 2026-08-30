@@ -81,6 +81,11 @@ type AllocateParams struct {
 	// parent_pid is the live pane holder's agent_pid is a subprocess inheriting
 	// TMUX_PANE, and is rejected.
 	ParentPID *int
+	// RuntimeIdentityVerified is set only after the daemon has validated its own
+	// unexpired birth certificate for this exact backend/session/path. It lets
+	// session-native runtimes without a per-thread PID recover a soft retirement;
+	// hard operator retirement remains final.
+	RuntimeIdentityVerified bool
 }
 
 // ErrPeerRetired is returned by AllocateAndRegister when a claim names a retired
@@ -246,19 +251,23 @@ func (r *Registry) applyDescriptionTTLLocked(peer *proto.Peer) {
 func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParams) (proto.PeerID, proto.DisplayName, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	recoveredRetirement := false
 
 	// (a) Retirement guard. A claim naming a retired peer_id is an orphan ws-hook
-	// reconnect unless it proves a live agent. Checked against `retired` (not
-	// `peers`) so it covers ids already evicted from the registry.
+	// reconnect unless it proves a live agent or presents a daemon-validated
+	// runtime identity. Checked against `retired` (not `peers`) so it covers ids
+	// already evicted from the registry.
 	if params.ClaimedPeerID != nil {
 		if retirement, isRetired := r.retired[*params.ClaimedPeerID]; isRetired {
 			if retirement.Hard {
 				return "", "", ErrPeerRetired
 			}
-			if params.AgentPID == nil || !r.live.PIDAlive(*params.AgentPID) {
+			livePID := params.AgentPID != nil && r.live.PIDAlive(*params.AgentPID)
+			if !livePID && !params.RuntimeIdentityVerified {
 				return "", "", ErrPeerRetired
 			}
 			r.unretireLocked(ctx, *params.ClaimedPeerID)
+			recoveredRetirement = true
 		}
 	}
 
@@ -345,6 +354,15 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		case StateBusy:
 			if n, err := Apply(StateBusy, EventStop); err == nil {
 				target = n
+			}
+		case StateRetired:
+			// Soft retirement keeps the peer record until lazy reaping. Only the
+			// proof accepted by the retirement guard may revive that retained FSM;
+			// a contradictory retired record without proof stays retired.
+			if recoveredRetirement {
+				if n, err := Apply(StateRetired, EventReclaimWithLiveAgent); err == nil {
+					target = n
+				}
 			}
 		}
 		existing.state = target

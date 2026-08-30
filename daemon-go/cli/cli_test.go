@@ -171,7 +171,7 @@ func TestSetupRejectsUnknownOptionBeforeMutation(t *testing.T) {
 func TestEnableDaemonMCPPreservesConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	t.Setenv("REPOWIRE_CONFIG", path)
-	if err := os.WriteFile(path, []byte("slack:\n  enabled: true\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("slack:\n  enabled: true\ndaemon:\n  spawn:\n    commands:\n      claude-code: claude --model opus\n      gemini: custom-gemini\n      agy: custom-agy\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := enableDaemonMCP(false); err != nil {
@@ -189,6 +189,13 @@ func TestEnableDaemonMCPPreservesConfig(t *testing.T) {
 	mcp := daemon["mcp_http"].(map[string]any)
 	if mcp["enabled"] != true || daemon["auth_token"] == "" {
 		t.Fatalf("mcp/auth not configured: %v", daemon)
+	}
+	commands := daemon["spawn"].(map[string]any)["commands"].(map[string]any)
+	if commands["claude-code"] != "claude --model opus" {
+		t.Fatalf("supported custom command was not preserved: %v", commands)
+	}
+	if commands["gemini"] != nil || commands["agy"] != nil {
+		t.Fatalf("retired runtime commands survived setup: %v", commands)
 	}
 }
 

@@ -25,6 +25,7 @@ interface PendingQuery {
 interface PeerConn {
   sessionId: string;
   peerId: string | null;
+  birthCertificate: Record<string, unknown> | null;
   peerName: string;
   ws: WebSocket | null;
   pendingQueries: Map<string, PendingQuery>;
@@ -127,32 +128,41 @@ function cacheKey(projectPath: string, sessionId: string): string {
   return projectPath + "#" + sessionId;
 }
 
-function loadPeerId(projectPath: string, sessionId: string): string | null {
+interface CachedIdentity {
+  peerId: string | null;
+  birthCertificate: Record<string, unknown> | null;
+}
+
+function loadIdentity(projectPath: string, sessionId: string): CachedIdentity {
   try {
-    if (!fs.existsSync(PEER_ID_CACHE_PATH)) return null;
+    if (!fs.existsSync(PEER_ID_CACHE_PATH)) return { peerId: null, birthCertificate: null };
     const raw = fs.readFileSync(PEER_ID_CACHE_PATH, "utf-8");
-    const data = JSON.parse(raw) as Record<string, string>;
-    return data[cacheKey(projectPath, sessionId)] ?? null;
+    const data = JSON.parse(raw) as Record<string, string | { peer_id?: string; birth_certificate?: Record<string, unknown> }>;
+    const cached = data[cacheKey(projectPath, sessionId)];
+    if (typeof cached === "string") return { peerId: cached, birthCertificate: null };
+    return {
+      peerId: typeof cached?.peer_id === "string" ? cached.peer_id : null,
+      birthCertificate: cached?.birth_certificate ?? null,
+    };
   } catch (e) {
     console.debug("[repowire] Failed to load peer_id cache:", e);
-    return null;
+    return { peerId: null, birthCertificate: null };
   }
 }
 
-function savePeerId(projectPath: string, sessionId: string, id: string): void {
+function saveIdentity(projectPath: string, sessionId: string, id: string, birthCertificate: Record<string, unknown> | null): void {
   try {
     fs.mkdirSync(path.dirname(PEER_ID_CACHE_PATH), { recursive: true });
-    let data: Record<string, string> = {};
+    let data: Record<string, unknown> = {};
     if (fs.existsSync(PEER_ID_CACHE_PATH)) {
       try {
-        data = JSON.parse(fs.readFileSync(PEER_ID_CACHE_PATH, "utf-8")) as Record<string, string>;
+        data = JSON.parse(fs.readFileSync(PEER_ID_CACHE_PATH, "utf-8")) as Record<string, unknown>;
       } catch {
         data = {};
       }
     }
     const key = cacheKey(projectPath, sessionId);
-    if (data[key] === id) return;
-    data[key] = id;
+    data[key] = { peer_id: id, birth_certificate: birthCertificate };
     fs.writeFileSync(PEER_ID_CACHE_PATH, JSON.stringify(data, null, 2));
   } catch (e) {
     console.debug("[repowire] Failed to save peer_id cache:", e);
@@ -188,13 +198,35 @@ async function registerPaneLessPeer(conn: PeerConn): Promise<void> {
   const body: Record<string, unknown> = {
     name: conn.peerName, path: projectPath, backend: "pi", circle,
     circle_source: circleSource, role: role || "agent",
+    agent_pid: process.pid,
     metadata: { runtime_session_id: conn.sessionId },
   };
   if (conn.peerId) body.peer_id = conn.peerId;
-  const registered = await daemon("/peers", body);
+  let registered: Record<string, unknown>;
+  try {
+    registered = await daemon("/peers", body);
+  } catch (e) {
+    if (!conn.birthCertificate || !String(e).includes("retired peer_id")) throw e;
+    await recoverPaneLessIdentity(conn);
+    registered = await daemon("/peers", body);
+  }
   conn.peerId = typeof registered.peer_id === "string" ? registered.peer_id : conn.peerId;
   conn.peerName = typeof registered.display_name === "string" ? registered.display_name : conn.peerName;
-  if (conn.peerId) savePeerId(projectPath, conn.sessionId, conn.peerId);
+  conn.birthCertificate = registered.birth_certificate && typeof registered.birth_certificate === "object"
+    ? registered.birth_certificate as Record<string, unknown>
+    : conn.birthCertificate;
+  if (conn.peerId) saveIdentity(projectPath, conn.sessionId, conn.peerId, conn.birthCertificate);
+}
+
+async function recoverPaneLessIdentity(conn: PeerConn): Promise<void> {
+  if (!conn.birthCertificate) return;
+  const recovered = await daemon("/peers/identity/validate", {
+    birth_certificate: conn.birthCertificate,
+    backend: "pi",
+    path: projectPath,
+  });
+  if (typeof recovered.peer_id === "string") conn.peerId = recovered.peer_id;
+  if (typeof recovered.display_name === "string") conn.peerName = recovered.display_name;
 }
 
 async function configuredCircleBoundary(): Promise<"session" | "window"> {
@@ -231,9 +263,10 @@ function connectPeerWebSocket(conn: PeerConn) {
       circle_source: circleSource,
       backend: "pi",
       path: projectPath,
+      agent_pid: process.pid,
     };
     if (role) connectMsg.role = role;
-    const cachedPeerId = conn.peerId || loadPeerId(projectPath, conn.sessionId);
+    const cachedPeerId = conn.peerId || loadIdentity(projectPath, conn.sessionId).peerId;
     if (cachedPeerId) connectMsg.peer_id = cachedPeerId;
     if (tmuxSession) connectMsg.tmux_session = tmuxSession;
     if (tmuxPane) connectMsg.pane_id = tmuxPane;
@@ -439,7 +472,7 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
     if (data.session_id) {
       conn.peerId = data.session_id as string;
       console.debug("[repowire] " + conn.peerName + " connected with peer_id: " + conn.peerId);
-      savePeerId(projectPath, conn.sessionId, conn.peerId);
+      saveIdentity(projectPath, conn.sessionId, conn.peerId, conn.birthCertificate);
     }
     sendStatus(conn, conn.busy ? "busy" : "idle");
     // SessionStart-equivalent mesh primer: tell the agent who it is, who
@@ -456,6 +489,13 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
     }
   } else if (msgType === "error") {
     console.error("[repowire] Daemon rejected " + conn.peerName + ": " + String(data.error || "unknown error"));
+    if (data.code === "peer_retired" && !tmuxPane) {
+      try {
+        await recoverPaneLessIdentity(conn);
+      } catch (e) {
+        console.error("[repowire] Failed to recover retired Pi identity:", e);
+      }
+    }
   } else if (msgType === "query") {
     const correlationId = data.correlation_id as string;
     const fromPeer = data.from_peer as string;
@@ -486,9 +526,11 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
 function ensurePeer(sessionId: string, sessionName: string | null) {
   if (peerBySession.has(sessionId)) return;
   const folder = path.basename(projectPath) || "unknown";
+  const cached = loadIdentity(projectPath, sessionId);
   const conn: PeerConn = {
     sessionId,
-    peerId: loadPeerId(projectPath, sessionId),
+    peerId: cached.peerId,
+    birthCertificate: cached.birthCertificate,
     peerName: peerNameFor(folder, sessionId, sessionName),
     ws: null,
     pendingQueries: new Map(),

@@ -226,6 +226,61 @@ func TestDeletePeerRetiresIdentityAndRejectsPaneLessReconnect(t *testing.T) {
 	}
 }
 
+func TestValidatedRuntimeCertificateRecoversOnlySoftRetirement(t *testing.T) {
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	h := newTestHub(t)
+	h.store = store
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	path, runtimeID := "/work/native", "thread-native"
+	registered := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{
+		Name: "native-codex", Path: &path, Backend: proto.AgentCodex, Circle: strptr("0"),
+		Metadata: map[string]any{"runtime_session_id": runtimeID},
+	})
+	if registered.Code != http.StatusOK {
+		t.Fatalf("register: %d %s", registered.Code, registered.Body.String())
+	}
+	var first RegisterResponse
+	if err := json.Unmarshal(registered.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	var envelope state.CertEnvelope
+	raw, _ := json.Marshal(first.BirthCertificate)
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	id := proto.PeerID(first.PeerID)
+	if _, err := h.reg.MarkOffline(context.Background(), id, true); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered := postLifecycleJSON(t, mux, "/peers/identity/validate", validateBirthCertificateRequest{
+		BirthCertificate: envelope, Backend: proto.AgentCodex, Path: &path,
+	})
+	if recovered.Code != http.StatusOK {
+		t.Fatalf("soft-retired certificate recovery: %d %s", recovered.Code, recovered.Body.String())
+	}
+	peer, ok := h.reg.GetPeer(id)
+	if !ok || peer.Status != proto.StatusOnline {
+		t.Fatalf("recovered peer = (%+v, %v), want online", peer, ok)
+	}
+
+	if _, err := h.reg.ClosePeer(context.Background(), id, "operator_close"); err != nil {
+		t.Fatal(err)
+	}
+	blocked := postLifecycleJSON(t, mux, "/peers/identity/validate", validateBirthCertificateRequest{
+		BirthCertificate: envelope, Backend: proto.AgentCodex, Path: &path,
+	})
+	if blocked.Code != http.StatusConflict {
+		t.Fatalf("hard-retired certificate recovery: %d %s, want 409", blocked.Code, blocked.Body.String())
+	}
+}
+
 func TestRegisterPeerRequiresCircleButAcceptsLiteralDefault(t *testing.T) {
 	h := newTestHub(t)
 	mux := http.NewServeMux()

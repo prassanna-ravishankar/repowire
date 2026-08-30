@@ -120,6 +120,7 @@ func TestMCPIdentityRenewsExpiredCertificateWithoutSplittingPaneIdentity(t *test
 	t.Setenv("HOME", homeDir)
 	t.Setenv("TMUX_PANE", "%999")
 	t.Setenv("REPOWIRE_BACKEND", "codex")
+	t.Setenv("CODEX_THREAD_ID", "")
 	t.Setenv("REPOWIRE_PEER_ID", "repow-stale-env")
 	t.Setenv("REPOWIRE_CONFIG", filepath.Join(homeDir, "missing-config.yaml"))
 	cwd := mustGetwd()
@@ -223,5 +224,44 @@ func TestMCPIdentityUsesCodexThreadCertificate(t *testing.T) {
 	identity, proof := MCPIdentityProofForThread("thread-native")
 	if identity != "repow-native" || proof != "native-proof" || registrations != 0 {
 		t.Fatalf("identity=%q proof=%q registrations=%d", identity, proof, registrations)
+	}
+}
+
+func TestMCPIdentityDoesNotBorrowAnotherCodexThreadCertificate(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("TMUX_PANE", "%999")
+	t.Setenv("REPOWIRE_BACKEND", "codex")
+	t.Setenv("CODEX_THREAD_ID", "")
+	t.Setenv("REPOWIRE_CONFIG", filepath.Join(homeDir, "missing-config.yaml"))
+	parentCert := map[string]any{
+		"nonce": "parent-proof", "peer_id": "repow-parent", "backend": "codex",
+		"project_path": mustGetwd(), "runtime_session_id": "thread-parent",
+	}
+	if err := writeMetadata("%999", map[string]any{
+		"backend": "codex", "cwd": mustGetwd(), "agent_pid": os.Getppid(), "birth_certificate": parentCert,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	validations := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/peers/identity/validate" {
+			validations++
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer": map[string]any{"peer_id": "repow-parent"}})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	port, _ := strconv.Atoi(strings.TrimPrefix(server.URL, "http://127.0.0.1:"))
+	t.Setenv("REPOWIRE_DAEMON__HOST", "127.0.0.1")
+	t.Setenv("REPOWIRE_DAEMON__PORT", strconv.Itoa(port))
+
+	identity, proof := MCPIdentityProofForThread("thread-child")
+	if validations != 0 {
+		t.Fatalf("child thread validated another thread's certificate %d times", validations)
+	}
+	if identity == "repow-parent" || proof != "" {
+		t.Fatalf("child borrowed parent identity: identity=%q proof=%q", identity, proof)
 	}
 }

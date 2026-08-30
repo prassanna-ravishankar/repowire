@@ -139,12 +139,8 @@ func enableDaemonMCP(relay bool) error {
 		daemon["auth_token"] = randomToken()
 	}
 	commands := mapChild(mapChild(daemon, "spawn"), "commands")
-	for backend, oldDefault := range map[string]string{
-		"gemini": "gemini --yolo", "antigravity": "agy --dangerously-skip-permissions",
-	} {
-		if command, _ := commands[backend].(string); command == oldDefault {
-			delete(commands, backend)
-		}
+	for _, backend := range []string{"gemini", "antigravity", "agy"} {
+		delete(commands, backend)
 	}
 	for backend, spec := range map[string]struct{ binary, command string }{
 		"claude-code": {"claude", claudeDefaultSpawnCommand},

@@ -1429,7 +1429,10 @@ function ComposeBar({
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    // Chat convention: Enter sends, Shift+Enter inserts a newline. Do not
+    // submit while an IME is still composing text. Cmd/Ctrl+Enter continues
+    // to send because it is also an unshifted Enter.
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       submit();
       return;

@@ -1264,6 +1264,17 @@ describe("PeerView composer modes (ask | notify)", () => {
     expect(screen.queryByTestId("notify-status")).not.toBeInTheDocument();
   });
 
+  it("sends with Enter and keeps Shift+Enter for multiline input", async () => {
+    const calls = mockEndpoints();
+    render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    fireEvent.change(textarea(), { target: { value: "line one" } });
+    fireEvent.keyDown(textarea(), { key: "Enter", shiftKey: true });
+    expect(calls.every((c) => c.url !== "/ask")).toBe(true);
+
+    fireEvent.keyDown(textarea(), { key: "Enter" });
+    await waitFor(() => expect(calls.some((c) => c.url === "/ask")).toBe(true));
+  });
+
   it("carries an attachment through notify mode", async () => {
     const calls: { url: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

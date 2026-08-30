@@ -107,7 +107,12 @@ func (h *Hub) handleSpawnConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	svc := h.spawn.svc
-	commands := svc.Commands()
+	commands := map[proto.AgentType]string{}
+	for backend, command := range svc.Commands() {
+		if supportedSpawnBackend(backend) {
+			commands[backend] = command
+		}
+	}
 	allowed := make([]string, 0, len(commands))
 	for _, c := range commands {
 		allowed = append(allowed, c)
@@ -125,9 +130,16 @@ func (h *Hub) handleSpawnConfig(w http.ResponseWriter, r *http.Request) {
 func spawnProfiles(profiles map[proto.AgentType]map[string][]string) map[string]any {
 	out := map[string]any{}
 	for backend, items := range profiles {
+		if !supportedSpawnBackend(backend) {
+			continue
+		}
 		out[string(backend)] = items
 	}
 	return out
+}
+
+func supportedSpawnBackend(backend proto.AgentType) bool {
+	return backend.Valid() && backend != proto.AgentMCPHTTP
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +236,12 @@ func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, e
 			}}
 		}
 		backend = resolved
+	}
+	if !supportedSpawnBackend(backend) {
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: map[string]any{
+			"error": "unsupported_backend", "backend": string(backend),
+			"hint": "Supported runtimes are claude-code, codex, opencode, and pi.",
+		}}
 	}
 
 	svc := h.spawn.svc
@@ -657,6 +675,13 @@ func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var req SwitchBackendRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !supportedSpawnBackend(req.NewBackend) {
+		writeJSONError(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": "unsupported_backend", "backend": string(req.NewBackend),
+			"hint": "Supported runtimes are claude-code, codex, opencode, and pi.",
+		})
 		return
 	}
 	var circle *string

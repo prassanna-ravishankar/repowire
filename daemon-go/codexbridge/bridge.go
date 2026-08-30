@@ -715,6 +715,16 @@ func (p *threadPeer) register(ctx context.Context) error {
 	}
 	result, err := p.bridge.daemonRequest(ctx, http.MethodPost, "/peers", body)
 	if err != nil {
+		// A still-running native thread can outlive lazy soft retirement of its
+		// mesh peer. Drop the in-memory claim once so the next retry validates the
+		// cached daemon birth certificate and rehydrates the exact identity.
+		if claim != "" && p.birthCert != nil && strings.Contains(err.Error(), "retired peer_id") {
+			p.mu.Lock()
+			if p.peerID == claim {
+				p.peerID = ""
+			}
+			p.mu.Unlock()
+		}
 		return err
 	}
 	p.mu.Lock()
