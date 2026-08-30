@@ -147,6 +147,10 @@ self-attestation.
 
 Spawn is disabled until `allowed_paths` and at least one runtime command are configured. `commands` is keyed by backend (`claude-code`, `codex`, `opencode`, `pi`) and is the single launch profile used by MCP `spawn_peer`, dashboard spawn, backend switching, `repowire peer restart`, and `repowire orchestrator start`. Legacy Gemini or Antigravity keys are ignored.
 
+Backend commands are reloaded from config when a spawn request needs them, so
+`repowire setup` and manual command edits take effect without restarting the
+daemon or bouncing existing agent sessions.
+
 `profiles` is optional and keyed first by backend, then by a user-defined profile name. Each profile appends structured `args` to the configured backend command; Repowire does not hardcode provider model names. For example, spawning `codex` with profile `fast` runs the configured `daemon.spawn.commands.codex` command plus the profile args. Profile descriptions are informational and may be shown by UIs.
 
 `env_path` and `env` define the environment injected into spawned agent commands.

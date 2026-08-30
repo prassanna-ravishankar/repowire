@@ -408,7 +408,19 @@ func runDaemon() {
 			spawnEnv["PATH"] = path
 		}
 	}
-	spawnService := service.NewSpawnService(tmuxCtl, ownership, spawnCommands, config.SplitCSV(*spawnPathsFlag)).WithRuntimeConfig(profiles, spawnEnv)
+	spawnService := service.NewSpawnService(tmuxCtl, ownership, spawnCommands, config.SplitCSV(*spawnPathsFlag)).
+		WithRuntimeConfig(profiles, spawnEnv).
+		WithCommandLoader(func() (map[proto.AgentType]string, error) {
+			live, err := config.Load()
+			if err != nil {
+				return nil, err
+			}
+			commands := make(map[proto.AgentType]string, len(live.Daemon.Spawn.Commands))
+			for backend, command := range live.Daemon.Spawn.Commands {
+				commands[proto.AgentType(backend)] = command
+			}
+			return commands, nil
+		})
 
 	// (9) Work/jobs + scheduler. SessionControl is the executor-acquisition
 	// ladder (assigned → reuse → resume → spawn); JobRunner dispatches durable

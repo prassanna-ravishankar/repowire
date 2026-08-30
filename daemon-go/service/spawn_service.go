@@ -102,13 +102,14 @@ func AsSpawnError(err error) (*SpawnError, bool) {
 // come from config (passed as plain maps/slices — there is no Go config package
 // yet).
 type SpawnService struct {
-	tmux         TmuxController
-	own          PaneOwnership
-	boundary     proto.CircleBoundary
-	commands     map[proto.AgentType]string
-	allowedPaths []string
-	profiles     map[proto.AgentType]map[string][]string
-	env          map[string]string
+	tmux          TmuxController
+	own           PaneOwnership
+	boundary      proto.CircleBoundary
+	commands      map[proto.AgentType]string
+	commandLoader func() (map[proto.AgentType]string, error)
+	allowedPaths  []string
+	profiles      map[proto.AgentType]map[string][]string
+	env           map[string]string
 }
 
 // WithCircleBoundary applies the daemon-wide circle boundary to every spawn path.
@@ -123,6 +124,26 @@ func (s *SpawnService) WithCircleBoundary(boundary proto.CircleBoundary) *SpawnS
 func (s *SpawnService) WithRuntimeConfig(profiles map[proto.AgentType]map[string][]string, env map[string]string) *SpawnService {
 	s.profiles, s.env = profiles, env
 	return s
+}
+
+// WithCommandLoader makes backend command resolution request-driven. Setup can
+// update config on disk without restarting the daemon (and bouncing every mesh
+// connection); the next real spawn observes the new command. The startup map
+// remains the fallback for tests and explicit flag-only daemon launches.
+func (s *SpawnService) WithCommandLoader(loader func() (map[proto.AgentType]string, error)) *SpawnService {
+	s.commandLoader = loader
+	return s
+}
+
+func (s *SpawnService) currentCommands() (map[proto.AgentType]string, error) {
+	if s.commandLoader == nil {
+		return s.commands, nil
+	}
+	commands, err := s.commandLoader()
+	if err != nil {
+		return nil, err
+	}
+	return commands, nil
 }
 
 // NewSpawnService constructs the service over an injected TmuxController and
@@ -143,11 +164,18 @@ func (s *SpawnService) Tmux() TmuxController { return s.tmux }
 
 // Enabled reports whether spawn is configured (commands AND allowed_paths set).
 func (s *SpawnService) Enabled() bool {
-	return len(s.commands) > 0 && len(s.allowedPaths) > 0
+	commands, err := s.currentCommands()
+	return err == nil && len(commands) > 0 && len(s.allowedPaths) > 0
 }
 
 // Commands returns the configured per-backend launch lines (for /spawn/config).
-func (s *SpawnService) Commands() map[proto.AgentType]string { return s.commands }
+func (s *SpawnService) Commands() map[proto.AgentType]string {
+	commands, err := s.currentCommands()
+	if err != nil {
+		return s.commands
+	}
+	return commands
+}
 
 // Profiles returns the configured launch profiles for spawn discovery.
 func (s *SpawnService) Profiles() map[proto.AgentType]map[string][]string { return s.profiles }
@@ -178,7 +206,11 @@ func (s *SpawnService) ValidatePath(path string) (string, error) {
 // ResolveCommand ports SpawnService.resolve_command: 422 command_unavailable when
 // no commands entry maps to the backend. An unknown profile is 422.
 func (s *SpawnService) ResolveCommand(b proto.AgentType, profile *string) (string, error) {
-	command := s.commands[b]
+	commands, err := s.currentCommands()
+	if err != nil {
+		return "", &SpawnError{Status: 500, Detail: "reload spawn commands: " + err.Error()}
+	}
+	command := commands[b]
 	if command == "" {
 		return "", &SpawnError{Status: 422, Detail: map[string]any{
 			"error":   "command_unavailable",
