@@ -100,9 +100,13 @@ func runStatus() int {
 	fmt.Println("repowire:", Version)
 	for _, name := range []string{"claude-code", "codex", "opencode", "pi"} {
 		if runtimeAvailable(name) || runtimeIntegrated(name) {
-			fmt.Printf("%s: runtime=%s integration=%s\n", name,
+			mode := ""
+			if name == "claude-code" {
+				mode = map[bool]string{true: " channel=experimental", false: " channel=disabled"}[channelConfigured()]
+			}
+			fmt.Printf("%s: runtime=%s integration=%s%s\n", name,
 				map[bool]string{true: "detected", false: "missing"}[runtimeAvailable(name)],
-				map[bool]string{true: "installed", false: "missing"}[runtimeIntegrated(name)])
+				map[bool]string{true: "installed", false: "missing"}[runtimeIntegrated(name)], mode)
 		}
 	}
 	if cfg, err := config.Load(); err == nil {

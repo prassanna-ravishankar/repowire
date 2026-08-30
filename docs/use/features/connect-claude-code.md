@@ -64,11 +64,18 @@ repowire setup --experimental-channels
 ```
 
 The session-owned [Claude Channel bridge](../../concepts/bridges.md) replaces
-tmux-injection delivery with direct MCP-channel delivery. When a message
+the default native-inbox delivery path with direct MCP-channel delivery. When a message
 arrives, Claude sees a `<channel source="repowire">` tag in its context instead
-of a `[ask #cid from @peer] ...` line injected into the terminal.
+of a native-inbox user message.
 
 Channel setup adds a separate `repowire-channel` MCP server entry in `~/.claude.json`. The normal `repowire` MCP server remains installed; use its stable tools, including `ack`, for ask lifecycle and parity with the default transport. The channel server itself only handles channel delivery.
+
+Claude requires an explicit per-process opt-in for a development channel.
+Repowire adds `--dangerously-load-development-channels
+server:repowire-channel` only to its known default managed-spawn command. A
+custom `daemon.spawn.commands.claude-code` is never guessed or rewritten on
+enable; add the opt-in yourself or setup reports the exact requirement. Running
+setup without `--experimental-channels` removes the Repowire-owned opt-in again.
 
 Requirements:
 
@@ -96,7 +103,8 @@ To confirm hooks fire, open a new Claude Code session in tmux and watch `repowir
 ## Troubleshooting
 
 - Hooks not firing → [Hooks not firing](../../troubleshooting/hooks.md).
-- Native messages fall back to terminal injection → confirm Claude Code is
-  2.1.224 or newer and `/status` shows a `Peer address`.
+- Native inbox delivery fails → confirm Claude Code is 2.1.224 or newer and
+  `/status` shows a `Peer address`; Repowire does not synthesize terminal
+  keystrokes as a fallback.
 - Channel auth errors → [Channel-mode auth failures](../../troubleshooting/channel-auth.md).
 - Peer stuck `busy` after a turn ends → [Ghost peers and stuck busy state](../../troubleshooting/ghost-peers.md).

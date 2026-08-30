@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -312,6 +313,11 @@ func TestChannelAssetsAndVersionGate(t *testing.T) {
 func TestDisableChannelKeepsNormalMCP(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	configPath := filepath.Join(homeDir, "config.yaml")
+	t.Setenv("REPOWIRE_CONFIG", configPath)
+	if err := os.WriteFile(configPath, []byte("daemon:\n  spawn:\n    commands:\n      claude-code: "+strconv.Quote(claudeDefaultSpawnCommand+" "+claudeChannelOptIn)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(homeDir, ".claude.json")
 	if err := os.WriteFile(path, []byte(`{"mcpServers":{"repowire":{},"repowire-channel":{}},"other":true}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -327,6 +333,51 @@ func TestDisableChannelKeepsNormalMCP(t *testing.T) {
 	servers := root["mcpServers"].(map[string]any)
 	if servers["repowire"] == nil || servers["repowire-channel"] != nil || root["other"] != true {
 		t.Fatalf("channel cleanup changed unrelated config: %#v", root)
+	}
+	command, err := claudeSpawnCommand()
+	if err != nil || command != claudeDefaultSpawnCommand {
+		t.Fatalf("disabled channel spawn command = %q, %v", command, err)
+	}
+}
+
+func TestClaudeChannelSpawnOptInLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("REPOWIRE_CONFIG", path)
+	writeCommand := func(command string) {
+		t.Helper()
+		content := "daemon:\n  spawn:\n    commands:\n      claude-code: " + strconv.Quote(command) + "\n"
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeCommand(claudeDefaultSpawnCommand)
+	if err := validateClaudeChannelSpawnCommand(); err != nil {
+		t.Fatal(err)
+	}
+	if err := setClaudeChannelSpawnOptIn(true); err != nil {
+		t.Fatal(err)
+	}
+	command, err := claudeSpawnCommand()
+	if err != nil || command != claudeDefaultSpawnCommand+" "+claudeChannelOptIn {
+		t.Fatalf("enabled channel spawn command = %q, %v", command, err)
+	}
+
+	custom := "env CLAUDE_PROFILE=orch claude --model opus"
+	writeCommand(custom)
+	if err := validateClaudeChannelSpawnCommand(); err == nil || !strings.Contains(err.Error(), claudeChannelOptIn) {
+		t.Fatalf("custom command without opt-in was accepted: %v", err)
+	}
+	writeCommand(custom + " " + claudeChannelOptIn)
+	if err := validateClaudeChannelSpawnCommand(); err != nil {
+		t.Fatal(err)
+	}
+	if err := setClaudeChannelSpawnOptIn(false); err != nil {
+		t.Fatal(err)
+	}
+	command, err = claudeSpawnCommand()
+	if err != nil || command != custom {
+		t.Fatalf("custom command after disable = %q, %v", command, err)
 	}
 }
 

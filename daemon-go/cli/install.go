@@ -29,6 +29,11 @@ import (
 
 var execLookPath = exec.LookPath
 
+const (
+	claudeDefaultSpawnCommand = "claude --dangerously-skip-permissions"
+	claudeChannelOptIn        = "--dangerously-load-development-channels server:repowire-channel"
+)
+
 //go:embed assets/opencode.ts
 var opencodePlugin string
 
@@ -142,7 +147,7 @@ func enableDaemonMCP(relay bool) error {
 		}
 	}
 	for backend, spec := range map[string]struct{ binary, command string }{
-		"claude-code": {"claude", "claude --dangerously-skip-permissions"},
+		"claude-code": {"claude", claudeDefaultSpawnCommand},
 		"codex":       {"codex", "codex --dangerously-bypass-approvals-and-sandbox"},
 		"opencode":    {"opencode", "opencode"},
 		"pi":          {"pi", "pi"},
@@ -304,6 +309,9 @@ func installChannel() error {
 	if err != nil || !versionAtLeast(strings.Fields(string(versionOutput))[0], 2, 1, 80) {
 		return fmt.Errorf("Claude Code 2.1.80+ is required")
 	}
+	if err := validateClaudeChannelSpawnCommand(); err != nil {
+		return err
+	}
 	dir := home(".repowire", "channel")
 	for name, content := range map[string]string{
 		"server.ts":         channelServer,
@@ -339,6 +347,9 @@ func installChannel() error {
 	if err := writeJSON(rootPath, root); err != nil {
 		return err
 	}
+	if err := setClaudeChannelSpawnOptIn(true); err != nil {
+		return err
+	}
 
 	// Channel mode still keeps Stop/StopFailure for dashboard chat turns, but
 	// registration and inbound delivery are owned by the channel server.
@@ -357,21 +368,80 @@ func installChannel() error {
 
 func disableChannel() error {
 	path := home(".claude.json")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil
-	} else if err != nil {
+	if _, err := os.Stat(path); err == nil {
+		root, err := readJSON(path, true)
+		if err != nil {
+			return err
+		}
+		servers, _ := root["mcpServers"].(map[string]any)
+		if servers != nil && servers["repowire-channel"] != nil {
+			delete(servers, "repowire-channel")
+			if err := writeJSON(path, root); err != nil {
+				return err
+			}
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
-	root, err := readJSON(path, true)
+	return setClaudeChannelSpawnOptIn(false)
+}
+
+func validateClaudeChannelSpawnCommand() error {
+	command, err := claudeSpawnCommand()
+	if err != nil || command == "" || command == claudeDefaultSpawnCommand || strings.Contains(command, claudeChannelOptIn) {
+		return err
+	}
+	return fmt.Errorf("custom daemon.spawn.commands.claude-code must include %q for experimental channel delivery", claudeChannelOptIn)
+}
+
+func claudeSpawnCommand() (string, error) {
+	data := map[string]any{}
+	if raw, err := os.ReadFile(config.Path()); err == nil {
+		if err := yaml.Unmarshal(raw, &data); err != nil {
+			return "", fmt.Errorf("parse %s: %w", config.Path(), err)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	commands := mapChild(mapChild(mapChild(data, "daemon"), "spawn"), "commands")
+	command, _ := commands["claude-code"].(string)
+	return strings.TrimSpace(command), nil
+}
+
+func setClaudeChannelSpawnOptIn(enabled bool) error {
+	path := config.Path()
+	data := map[string]any{}
+	if raw, err := os.ReadFile(path); err == nil {
+		if err := yaml.Unmarshal(raw, &data); err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	commands := mapChild(mapChild(mapChild(data, "daemon"), "spawn"), "commands")
+	command, _ := commands["claude-code"].(string)
+	command = strings.TrimSpace(command)
+	if enabled {
+		if command == "" {
+			command = claudeDefaultSpawnCommand
+		}
+		if !strings.Contains(command, claudeChannelOptIn) {
+			command += " " + claudeChannelOptIn
+		}
+	} else {
+		command = strings.TrimSpace(strings.TrimSuffix(command, " "+claudeChannelOptIn))
+	}
+	if command != "" {
+		commands["claude-code"] = command
+	}
+	raw, err := yaml.Marshal(data)
 	if err != nil {
 		return err
 	}
-	servers, _ := root["mcpServers"].(map[string]any)
-	if servers == nil || servers["repowire-channel"] == nil {
-		return nil
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
 	}
-	delete(servers, "repowire-channel")
-	return writeJSON(path, root)
+	return os.WriteFile(path, raw, 0o600)
 }
 
 func versionAtLeast(value string, want ...int) bool {

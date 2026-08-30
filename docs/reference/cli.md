@@ -40,7 +40,8 @@ Run the daemon in the foreground. Useful for debugging hooks or running outside 
 repowire status
 ```
 
-Show what's installed, which agents were detected, and whether the daemon is running.
+Show what's installed, which agents were detected, whether Claude's experimental
+channel transport is enabled, and whether the daemon is running.
 
 When `updates.check_enabled` is true, status also reports whether a newer Repowire release is available. It does not upgrade anything.
 
