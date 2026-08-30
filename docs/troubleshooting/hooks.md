@@ -22,7 +22,7 @@ server-global tmux lifecycle hooks used for pane exits and renames.
 1. Open `~/.claude/settings.json`. The `hooks` key should contain entries for `SessionStart`, `UserPromptSubmit`, `Notification`, `Stop`, `StopFailure`, and `SessionEnd`, each pointing at `repowire hook ...`.
 2. Confirm `repowire` is on `PATH` for the shell Claude Code was launched from. Hooks shell out, so a missing `repowire` in `PATH` silently no-ops.
 3. Start Claude Code in a tmux pane. After your first prompt, run `repowire peer list` in another shell. Peer should appear within a few seconds.
-4. On Claude Code 2.1.224+, `/status` should show a `Peer address` and `repowire peer describe NAME` should report `transport: claude-inbox`. If native delivery fails, Repowire logs the socket error under `~/.cache/repowire/logs/ws-hook-*.log` and falls back to tmux injection.
+4. On Claude Code 2.1.224+, `/status` should show a `Peer address` and `repowire peer describe NAME` should report `transport: claude-inbox`. If native delivery fails, Repowire logs the socket error under `~/.cache/repowire/logs/ws-hook-*.log` and returns a failed delivery receipt. There is no keystroke fallback.
 
 ### Codex
 
@@ -33,15 +33,9 @@ resurface after a turn. Check `repowire service status`,
 `~/.codex/hooks.json`. Older Codex releases without `app-server --listen` retain
 the full hooks transport.
 
-### Gemini CLI
-
-1. Open `~/.gemini/settings.json`. The `hooks` key should contain `SessionStart`, `BeforeAgent`, and `AfterAgent` entries pointing at `repowire hook ...`.
-2. Gemini surfaces hook stderr — if the hook is failing, you'll see it in the Gemini output directly.
-3. The `AfterAgent` hook must return `{"decision": "allow"}` to let the agent continue. Repowire emits this by default; if you've patched the hook, make sure that field is still there.
-
 ### OpenCode
 
-OpenCode does not use shell hooks. It uses a TypeScript plugin at `~/.opencode/plugin/repowire.ts` (or `.opencode/plugin/` for local installs). If the peer never appears:
+OpenCode does not use shell hooks. It uses a TypeScript plugin at `~/.config/opencode/plugins/repowire.ts`. If the peer never appears:
 
 1. Confirm the plugin file exists and is non-empty.
 2. Check OpenCode's log for plugin load errors.

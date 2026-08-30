@@ -719,11 +719,11 @@ describe("PeerView MCP config scope", () => {
               peer_machine: "remote-host",
               self_machine: "local-host",
               config_scope: {
-                backend: "gemini",
+                backend: "codex",
                 owner: "backend",
                 effective_scope: "backend_global",
-                label: "Gemini global backend config",
-                description: "Gemini MCP edits target the user-level Gemini settings shared by Gemini sessions on this host.",
+                label: "Codex global backend config",
+                description: "Codex MCP edits target the user-level Codex config shared by Codex sessions on this host.",
                 supported_scopes: ["user"],
                 default_scope: "user",
                 is_global: true,
@@ -745,7 +745,7 @@ describe("PeerView MCP config scope", () => {
 
     render(
       <PeerView
-        peer={{ ...PEER, backend: "gemini", machine: "remote-host" }}
+        peer={{ ...PEER, backend: "codex", machine: "remote-host" }}
         events={[]}
         apiBase=""
         onClose={() => {}}
@@ -755,7 +755,7 @@ describe("PeerView MCP config scope", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "mcp" }));
 
-    expect(await screen.findByText("Gemini global backend config")).toBeInTheDocument();
+    expect(await screen.findByText("Codex global backend config")).toBeInTheDocument();
     expect(screen.getByText("remote host")).toBeInTheDocument();
   });
 });
@@ -1262,6 +1262,17 @@ describe("PeerView composer modes (ask | notify)", () => {
     fireEvent.click(screen.getByLabelText("Ask peer"));
     await waitFor(() => expect(calls.some((c) => c.url === "/ask")).toBe(true));
     expect(screen.queryByTestId("notify-status")).not.toBeInTheDocument();
+  });
+
+  it("sends with Enter and keeps Shift+Enter for multiline input", async () => {
+    const calls = mockEndpoints();
+    render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    fireEvent.change(textarea(), { target: { value: "line one" } });
+    fireEvent.keyDown(textarea(), { key: "Enter", shiftKey: true });
+    expect(calls.every((c) => c.url !== "/ask")).toBe(true);
+
+    fireEvent.keyDown(textarea(), { key: "Enter" });
+    await waitFor(() => expect(calls.some((c) => c.url === "/ask")).toBe(true));
   });
 
   it("carries an attachment through notify mode", async () => {

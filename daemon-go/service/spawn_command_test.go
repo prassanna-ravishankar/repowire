@@ -109,6 +109,29 @@ func TestResolveCommandUsesConfiguredPath(t *testing.T) {
 	}
 }
 
+func TestResolveCommandReloadsCommandsOnDemand(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"old-agent", "new-agent"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	live := map[proto.AgentType]string{proto.AgentClaudeCode: "old-agent"}
+	svc := NewSpawnService(nil, nil, map[proto.AgentType]string{proto.AgentClaudeCode: "stale-agent"}, []string{dir}).
+		WithRuntimeConfig(nil, map[string]string{"PATH": dir}).
+		WithCommandLoader(func() (map[proto.AgentType]string, error) { return live, nil })
+
+	command, err := svc.ResolveCommand(proto.AgentClaudeCode, nil)
+	if err != nil || command != "old-agent" {
+		t.Fatalf("initial live command = %q, %v", command, err)
+	}
+	live = map[proto.AgentType]string{proto.AgentClaudeCode: "new-agent"}
+	command, err = svc.ResolveCommand(proto.AgentClaudeCode, nil)
+	if err != nil || command != "new-agent" {
+		t.Fatalf("reloaded command = %q, %v", command, err)
+	}
+}
+
 func TestTmuxStartCommandCarriesLongLiteralAsShellCommand(t *testing.T) {
 	dir := t.TempDir()
 	commandPath := filepath.Join(dir, "command.txt")

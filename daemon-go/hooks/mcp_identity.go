@@ -31,9 +31,18 @@ func resolveMCPIdentity(codexThreadID string) (string, string) {
 				return firstNonempty(stringValue(peer, "peer_id"), stringValue(peer, "display_name")), stringValue(cert, "nonce")
 			}
 		}
-	}
-	if peer, cert := validateCertificateIdentityWithCert(backend, cwd, paneID, agentPID); peer != nil {
-		return firstNonempty(stringValue(peer, "peer_id"), stringValue(peer, "display_name")), stringValue(cert, "nonce")
+		// Codex App Server shares one process and MCP subprocess across many
+		// threads. A pane/PID certificate belongs to some other thread and must
+		// never be used as fallback identity for this thread.
+		if threadID == "" {
+			if peer, cert := validateCertificateIdentityWithCert(backend, cwd, paneID, agentPID); peer != nil {
+				return firstNonempty(stringValue(peer, "peer_id"), stringValue(peer, "display_name")), stringValue(cert, "nonce")
+			}
+		}
+	} else {
+		if peer, cert := validateCertificateIdentityWithCert(backend, cwd, paneID, agentPID); peer != nil {
+			return firstNonempty(stringValue(peer, "peer_id"), stringValue(peer, "display_name")), stringValue(cert, "nonce")
+		}
 	}
 	// An expired certificate renews the pane's existing runtime identity. PID,
 	// backend, and cwd must all match so stale pane metadata cannot claim a peer.

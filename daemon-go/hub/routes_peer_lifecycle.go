@@ -418,33 +418,31 @@ func (h *Hub) handleValidateRuntimeIdentity(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	peerID := proto.PeerID(cert.PeerID)
-	p, ok := h.reg.GetPeer(peerID)
-	if !ok {
-		circle, _ := cert.Metadata["circle"].(string)
-		if circle == "" {
-			writeError(w, http.StatusConflict, "Runtime identity certificate has no circle")
-			return
-		}
-		role := proto.RoleAgent
-		if value, ok := cert.Metadata["role"].(string); ok && value != "" {
-			role = proto.PeerRole(value)
-		}
-		machine, _ := os.Hostname()
-		metadata := map[string]any{"birth_certificate_nonce": cert.Nonce}
-		if cert.RuntimeSessionID != nil {
-			metadata["hook_session_id"] = *cert.RuntimeSessionID
-		}
-		id, _, allocErr := h.reg.AllocateAndRegister(r.Context(), peer.AllocateParams{
-			Circle: circle, Backend: proto.AgentType(cert.Backend), Path: &cert.ProjectPath,
-			PaneID: cert.PaneID, Machine: machine, Role: role, ClaimedPeerID: &peerID,
-			Metadata: metadata, AgentPID: cert.AgentPID, ParentPID: cert.ParentPID,
-		})
-		if allocErr != nil {
-			writeError(w, http.StatusConflict, "Runtime identity certificate could not rehydrate peer: "+allocErr.Error())
-			return
-		}
-		p, ok = h.reg.GetPeer(id)
+	circle, _ := cert.Metadata["circle"].(string)
+	if circle == "" {
+		writeError(w, http.StatusConflict, "Runtime identity certificate has no circle")
+		return
 	}
+	role := proto.RoleAgent
+	if value, ok := cert.Metadata["role"].(string); ok && value != "" {
+		role = proto.PeerRole(value)
+	}
+	machine, _ := os.Hostname()
+	metadata := map[string]any{"birth_certificate_nonce": cert.Nonce}
+	if cert.RuntimeSessionID != nil {
+		metadata["hook_session_id"] = *cert.RuntimeSessionID
+	}
+	id, _, allocErr := h.reg.AllocateAndRegister(r.Context(), peer.AllocateParams{
+		Circle: circle, Backend: proto.AgentType(cert.Backend), Path: &cert.ProjectPath,
+		PaneID: cert.PaneID, Machine: machine, Role: role, ClaimedPeerID: &peerID,
+		Metadata: metadata, AgentPID: cert.AgentPID, ParentPID: cert.ParentPID,
+		RuntimeIdentityVerified: true,
+	})
+	if allocErr != nil {
+		writeError(w, http.StatusConflict, "Runtime identity certificate could not rehydrate peer: "+allocErr.Error())
+		return
+	}
+	p, ok := h.reg.GetPeer(id)
 	if !ok || p == nil {
 		writeError(w, http.StatusNotFound, "Peer not found after runtime identity validation")
 		return

@@ -4,13 +4,13 @@
 
 Transports are runtime-specific delivery paths. The daemon routes at the peer/message level; transports handle how a given runtime receives and reports messages. A [bridge](../concepts/bridges.md) is the runtime-side adapter that provides a native transport.
 
-## Hooks + MCP transport
+## Claude hooks + MCP transport
 
-This is the default path for Claude Code and Gemini:
+This is the default path for Claude Code 2.1.224 and newer:
 
 - Native Go lifecycle hooks register peers, update status, extract transcript/chat turns, and fetch pending ask reminders.
 - `repowire mcp` preserves the runtime's peer certificate over stdio and proxies outbound tool calls to the daemon's localhost `/mcp` implementation.
-- Live inbound messages are delivered through the WebSocket hook. Claude Code 2.1.224+ prefers its per-session native inbox and falls back to tmux injection if the socket is absent or fails; Gemini uses tmux injection. The hook is bound to the owning agent PID and exits when that process disappears, so an orphaned hook cannot keep a dead peer's daemon socket alive indefinitely.
+- Live inbound messages are delivered through Claude's authenticated per-session native inbox. A missing or failed inbox is reported as a delivery failure; Repowire does not synthesize keystrokes as a fallback. The hook is bound to the owning agent PID and exits when that process disappears, so an orphaned hook cannot keep a dead peer's daemon socket alive indefinitely.
 - Native Claude inbox writes return an `accepted` receipt and can reach busy sessions. Claude's own `crossSessionInbound` controls may still hold or refuse the message; Repowire never changes those controls.
 - Non-human deliveries are injected inside a `<peer-message>` envelope carrying sender, type, target, and correlation id when applicable. Dashboard, Telegram, and Slack messages remain direct human instructions.
 - Open asks continue to resurface through Stop-hook reminders until they are acked.
@@ -40,12 +40,12 @@ is involved.
 The ordinary Codex TUI remains visible. Tmux is optional placement/lifecycle
 evidence and is not the delivery channel. A reminder-only Stop hook resurfaces
 asks that remain open after a turn; it does not duplicate App Server lifecycle
-or chat handling. Older Codex releases without a Unix App Server listener fall
-back to hooks + MCP.
+or chat handling. Codex releases without a Unix App Server listener are not a
+supported inbound-delivery path.
 
 ## Plugin and extension transports
 
-OpenCode uses a TypeScript plugin with a persistent WebSocket connection. Pi uses Repowire's extension path when setup detects that runtime.
+OpenCode uses a TypeScript plugin with a persistent WebSocket connection and the plugin API's `dispose` lifecycle. Pi uses a native Repowire extension with Pi's session lifecycle and `sendUserMessage`/`steer` delivery APIs. Neither uses tmux for message delivery. Pane-less local sessions authenticate from Repowire's local config, pre-register over HTTP, and share a stable project-derived circle; tmux/spawn placement wins when present.
 
 ## Claude Channel bridge / ACP transport
 

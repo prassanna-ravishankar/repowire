@@ -85,6 +85,47 @@ func TestTelegramRoutesHumanMessageAsAsk(t *testing.T) {
 	}
 }
 
+func TestTelegramAcknowledgesUpdateOnlyAfterSuccessfulReply(t *testing.T) {
+	daemonServer, _ := fakeDaemon(t)
+	var mu sync.Mutex
+	fail := true
+	telegramAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		shouldFail := fail
+		mu.Unlock()
+		if shouldFail {
+			_, _ = w.Write([]byte(`{"ok":false,"description":"temporary failure"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+	}))
+	t.Cleanup(telegramAPI.Close)
+	// Telegram chat IDs are large enough that fmt.Sprint(float64(id)) uses
+	// scientific notation. Exercise the real JSON-decoded numeric shape so a
+	// valid chat is not silently ignored before command dispatch.
+	bot := NewTelegram("token", "347354611", NewDaemonPeer(daemonServer.URL, "secret", "telegram", "/telegram", "default"))
+	bot.apiBase = telegramAPI.URL
+	update := map[string]any{
+		"update_id": float64(41),
+		"message":   map[string]any{"message_id": float64(7), "text": "📋 peers", "chat": map[string]any{"id": float64(347354611)}},
+	}
+	if err := bot.handleUpdate(context.Background(), update); err == nil {
+		t.Fatal("failed Telegram reply unexpectedly acknowledged")
+	}
+	if bot.offset != 0 {
+		t.Fatalf("offset advanced after failure: %d", bot.offset)
+	}
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+	if err := bot.handleUpdate(context.Background(), update); err != nil {
+		t.Fatal(err)
+	}
+	if bot.offset != 42 {
+		t.Fatalf("offset after successful retry = %d, want 42", bot.offset)
+	}
+}
+
 func TestTelegramReplyKeyboardKeepsCurrentAndRecentPeers(t *testing.T) {
 	bot := NewTelegram("token", "42", NewDaemonPeer("http://localhost:8377", "", "telegram", "/telegram", "default"))
 	bot.setTarget("worker")
@@ -103,6 +144,23 @@ func TestTelegramReplyKeyboardKeepsCurrentAndRecentPeers(t *testing.T) {
 	}
 	if target, ok := keyboardTarget("💬 reviewer"); !ok || target != "reviewer" {
 		t.Fatalf("keyboard target = %q, %v", target, ok)
+	}
+}
+
+func TestTelegramReplyKeyboardHidesCanonicalPeerID(t *testing.T) {
+	bot := NewTelegram("token", "42", NewDaemonPeer("http://localhost:8377", "", "telegram", "/telegram", "default"))
+	bot.setTargetLabel("repow-0-12345678", "orchestrator-pi")
+
+	encoded, err := json.Marshal(bot.replyKeyboard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyboard := string(encoded)
+	if !strings.Contains(keyboard, "✦ orchestrator-pi") || strings.Contains(keyboard, "repow-0-12345678") {
+		t.Fatalf("reply keyboard leaked routing identity: %s", keyboard)
+	}
+	if got := bot.resolveTarget("orchestrator-pi"); got != "repow-0-12345678" {
+		t.Fatalf("resolved keyboard target = %q", got)
 	}
 }
 

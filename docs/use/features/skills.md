@@ -57,7 +57,7 @@ Defaults live in `~/.repowire/config.yaml`:
 skills:
   default_backend: codex
   default_reviewer_backend: codex
-  default_planner_backend: gemini
+  default_planner_backend: pi
   default_delegate_backend: codex
   default_circle: default
 ```

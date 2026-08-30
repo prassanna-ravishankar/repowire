@@ -5,7 +5,6 @@ Repowire is a local-first routing daemon plus thin transport adapters for each a
 ```text
 Agent runtime
   ├─ Go hooks + native inbox + stdio identity shim (Claude Code)
-  ├─ Go hooks + stdio identity shim (Gemini)
   ├─ App Server bridge + MCP (Codex)
   ├─ plugin + WebSocket (OpenCode)
   ├─ extension (Pi)
@@ -49,14 +48,14 @@ OpenCode, and Pi load their bridge inside the agent session.
 
 ### Hooks + MCP
 
-Claude Code and Gemini use native Go lifecycle hooks for registration,
+Claude Code uses native Go lifecycle hooks for registration,
 status, and chat extraction. Their `repowire mcp` process resolves a
 daemon-minted runtime certificate and proxies tool JSON-RPC to `/mcp`, where all
 31 tool implementations live.
 
-Claude Code 2.1.224+ receives messages through its per-session native inbox;
-the same WebSocket hook retains tmux injection as a compatibility fallback.
-Gemini still uses tmux injection. Stop-hook reminders resurface unacked asks.
+Claude Code 2.1.224+ receives messages through its authenticated per-session
+native inbox. Inbox failure is surfaced rather than falling back to tmux
+keystrokes. Stop-hook reminders resurface unacked asks.
 The identity shim lazily registers on tool calls, and the daemon ignores a
 claimed identity header unless its certificate proof is current and bound to
 that peer.

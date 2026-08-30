@@ -10,7 +10,7 @@ and plugins—normalize every supported agent into the same peer model. Peers ha
 - a `circle`,
 - a `status` (`online` / `busy` / `offline`),
 - a free-form `description` the agent sets via `set_description`,
-- a `backend` (`claude-code`, `codex`, `gemini`, `antigravity`, `opencode`, …),
+- a `backend` (`claude-code`, `codex`, `opencode`, or `pi`),
 - a `last_seen` timestamp,
 - and a `turn_state` (`idle`, `working`, `awaiting_input`, `pending_first_turn`, or empty when unknown).
 

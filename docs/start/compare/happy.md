@@ -20,7 +20,7 @@ Different shapes: Happy is a transport for one session's I/O; repowire is a rout
 ## When to use repowire instead
 
 - You have more than one agent session running and want them to talk to each other.
-- You want cross-runtime work (Claude Code asking Codex; Gemini reviewing OpenCode).
+- You want cross-runtime work (Claude Code asking Codex; Pi reviewing OpenCode).
 - You need a control surface that aggregates state across peers (dashboard, Telegram, Slack as peers, not just as one session's terminal).
 
 ## When to use Happy instead

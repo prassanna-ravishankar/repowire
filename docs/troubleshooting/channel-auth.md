@@ -1,6 +1,6 @@
 # Channel-mode auth failures
 
-The experimental [channel transport](../use/features/connect-claude-code.md#channel-transport-experimental) routes messages directly through MCP instead of tmux injection. It only works on Claude Code, and only with specific prerequisites.
+The experimental [channel transport](../use/features/connect-claude-code.md#channel-transport-experimental) routes messages directly through MCP instead of the default native-inbox bridge. It only works on Claude Code, and only with specific prerequisites.
 
 ## Hard requirements
 

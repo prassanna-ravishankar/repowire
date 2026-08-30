@@ -69,7 +69,7 @@ func Run(argv []string) int {
 		return runRuntimeInstall("claude-code", argv[1:])
 	case "claude":
 		return runRuntimeInstall("claude-code", argv[1:])
-	case "codex", "gemini", "opencode", "antigravity", "pi":
+	case "codex", "opencode", "pi":
 		return runRuntimeInstall(argv[0], argv[1:])
 	case "memory":
 		return runMemory(argv[1:])
@@ -98,11 +98,26 @@ func help() int {
 
 func runStatus() int {
 	fmt.Println("repowire:", Version)
-	for _, name := range []string{"claude-code", "codex", "gemini", "antigravity", "opencode", "pi"} {
+	for _, name := range []string{"claude-code", "codex", "opencode", "pi"} {
 		if runtimeAvailable(name) || runtimeIntegrated(name) {
-			fmt.Printf("%s: runtime=%s integration=%s\n", name,
+			mode := ""
+			if name == "claude-code" {
+				mode = map[bool]string{true: " channel=experimental", false: " channel=disabled"}[channelConfigured()]
+			}
+			fmt.Printf("%s: runtime=%s integration=%s%s\n", name,
 				map[bool]string{true: "detected", false: "missing"}[runtimeAvailable(name)],
-				map[bool]string{true: "installed", false: "missing"}[runtimeIntegrated(name)])
+				map[bool]string{true: "installed", false: "missing"}[runtimeIntegrated(name)], mode)
+		}
+	}
+	if cfg, err := config.Load(); err == nil {
+		mobileConfigured := map[string]bool{
+			"telegram": cfg.Telegram.BotToken != "" && cfg.Telegram.ChatID != "",
+			"slack":    cfg.Slack.BotToken != "" && cfg.Slack.AppToken != "" && cfg.Slack.ChannelID != "",
+		}
+		for _, name := range []string{"telegram", "slack"} {
+			if mobileConfigured[name] || mobileServiceInstalled(name) {
+				fmt.Printf("%s: configured=%t service=%s\n", name, mobileConfigured[name], map[bool]string{true: "running", false: "stopped"}[mobileServiceRunning(name)])
+			}
 		}
 	}
 	c, err := newClient()

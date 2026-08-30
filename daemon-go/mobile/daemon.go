@@ -282,16 +282,24 @@ func (p *DaemonPeer) ActivePeers(ctx context.Context) ([]map[string]any, error) 
 }
 
 func (p *DaemonPeer) DefaultTarget(ctx context.Context) string {
+	target, _ := p.DefaultTargetInfo(ctx)
+	return target
+}
+
+// DefaultTargetInfo returns the canonical routing address and the human-facing
+// display name separately. Mobile UIs route by peer_id but must never leak that
+// internal identity into buttons or conversation copy.
+func (p *DaemonPeer) DefaultTargetInfo(ctx context.Context) (string, string) {
 	peers, err := p.ActivePeers(ctx)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	for _, peer := range peers {
 		if textField(peer, "role") == "orchestrator" || strings.HasPrefix(textField(peer, "display_name"), "orchestrator-") {
-			return peerTarget(peer)
+			return peerTarget(peer), textField(peer, "display_name")
 		}
 	}
-	return ""
+	return "", ""
 }
 
 func runTogether(ctx context.Context, first, second func(context.Context) error) error {

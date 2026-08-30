@@ -15,13 +15,11 @@ type backendResumeSpec struct {
 }
 
 var backendResumeSpecs = map[proto.AgentType]backendResumeSpec{
-	proto.AgentClaudeCode:  {supported: true, strategy: "claude_resume", flag: "--resume"},
-	proto.AgentCodex:       {supported: true, strategy: "codex_resume", subcommand: "resume"},
-	proto.AgentGemini:      {supported: true, strategy: "gemini_resume", flag: "--resume"},
-	proto.AgentOpenCode:    {supported: true, strategy: "opencode_session", flag: "--session"},
-	proto.AgentAntigravity: {supported: true, strategy: "antigravity_conversation", flag: "--conversation"},
-	proto.AgentPi:          {supported: true, strategy: "pi_session", flag: "--session"},
-	proto.AgentMCPHTTP:     {supported: false, strategy: "unsupported"},
+	proto.AgentClaudeCode: {supported: true, strategy: "claude_resume", flag: "--resume"},
+	proto.AgentCodex:      {supported: true, strategy: "codex_resume", subcommand: "resume"},
+	proto.AgentOpenCode:   {supported: true, strategy: "opencode_session", flag: "--session"},
+	proto.AgentPi:         {supported: true, strategy: "pi_session", flag: "--session"},
+	proto.AgentMCPHTTP:    {supported: false, strategy: "unsupported"},
 }
 
 // ResumeCapabilityForRegistration mirrors agent_backends.resume_capability_for_registration.

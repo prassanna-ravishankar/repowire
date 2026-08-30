@@ -18,7 +18,7 @@ curl -fsS http://127.0.0.1:8377/health || echo "(daemon not running — run 'rep
 # Use the list_peers MCP tool, not curl — your registration may not be visible yet via HTTP cache.
 
 # What runtimes does the user have? (matters when you later dispatch peers)
-for r in pi claude codex gemini opencode; do command -v "$r" && echo "  $r: available"; done
+for r in pi claude codex opencode; do command -v "$r" && echo "  $r: available"; done
 ```
 
 If the daemon is down, surface that to the user immediately — don't continue the ritual until they fix it. If runtimes are missing, note them; you may need to suggest the user install them when they ask for work in those backends.

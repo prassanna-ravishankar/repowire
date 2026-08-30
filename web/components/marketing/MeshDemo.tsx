@@ -7,7 +7,7 @@ type Verb = "ask" | "ack" | "notify" | "broadcast";
 const peers = [
   { id: "backend", agent: "claude-code", x: 50, y: 14, status: "on" },
   { id: "frontend", agent: "codex", x: 86, y: 50, status: "on" },
-  { id: "db-migrations", agent: "gemini-cli", x: 50, y: 86, status: "stale" },
+  { id: "db-migrations", agent: "pi", x: 50, y: 86, status: "stale" },
   { id: "qa", agent: "opencode", x: 14, y: 50, status: "on" },
 ] as const;
 

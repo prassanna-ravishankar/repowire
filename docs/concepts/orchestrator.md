@@ -41,7 +41,7 @@ Local skills are the on-demand procedure layer. `.agents/skills/` is the canonic
 
 A second orchestrator peer can co-exist as an observer or learner without colliding. Use [`orchestrator_status`](../reference/mcp-tools.md#orchestrator_status) before dispatching long-running work to confirm a live orchestrator is present in the target circle. The call returns presence, name, peer id, last-seen timestamp, and the staleness threshold — *not* a snapshot of mesh state.
 
-Pair runtimes: a `claude-code` orchestrator alongside a `codex` or `gemini` one keeps the mesh moving when one runtime hits credit limits or rate caps.
+Pair runtimes: a `claude-code` orchestrator alongside a `codex`, `opencode`, or `pi` one keeps the mesh moving when one runtime hits credit limits or rate caps.
 
 ## Scheduled check-ins
 

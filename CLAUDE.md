@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Repowire is a mesh network for AI coding agents: Claude Code, Codex, Gemini, OpenCode, antigravity, and pi sessions get a mesh address and talk to each other (ask/ack, notify, broadcast), steerable from a browser, phone (Telegram/Slack), or other agents.
+Repowire is a mesh network for AI coding agents: Claude Code, Codex, OpenCode, and Pi sessions get a mesh address and talk to each other (ask/ack, notify, broadcast), steerable from a browser, phone (Telegram/Slack), or other agents.
 
 This file is orientation, not a rulebook. It captures how the project thinks and the things that bite you in a long session. For the detailed per-feature reference, the `docs/` tree is the source of truth.
 
@@ -9,7 +9,7 @@ This file is orientation, not a rulebook. It captures how the project thinks and
 These are the load-bearing ideas. When a change feels off, it's usually because it fights one of these.
 
 - **Lazy repair, never poll.** Nothing runs on a timer. Liveness reconciliation, persistence flushes, and ghost eviction are deferred until a real request needs them, then piggy-backed on it (`lazy_repair()` runs at most ~1x/30s, triggered by endpoints; disk writes are debounced via dirty flags). If you're reaching for a polling loop or a periodic timer, look for the request you can hang the work off instead.
-- **Fail loud, don't paper over.** Delivery that can't happen should surface, not silently degrade. Recent work made `/ask` fail loudly when tmux injection fails, added delivery-trace truthfulness (only claim `pane_injected` when the hook actually acked), and emits `peer_contradiction` events when a peer is in a self-inconsistent state. Prefer a visible warning + safe fallback over a quiet wrong result.
+- **Fail loud, don't paper over.** Delivery that can't happen should surface, not silently degrade. Claude's authenticated inbox and Codex's App Server report native acceptance; Repowire no longer falls back to tmux keystroke injection. Historical `pane_injected` trace rows remain readable. Prefer a visible warning + safe fallback over a quiet wrong result.
 - **The daemon is the only hub; transports are client-side.** Every peer speaks the same WebSocket protocol to `daemon-go/hub`. How a peer connects (hooks, channel/ACP, relay, bot) is a client concern. Routing, identity, and lifecycle live in the daemon and shouldn't learn about specific transports.
 - **Session-native is the direction, not the present.** Sessions are becoming the durable unit of work; peers stay live runtime executors. Ask/notify already route through a transport router; resume is captured per backend. Frame model-switching, plan approval, universal transport-neutral control, and production ACP as roadmap — don't claim them done.
 - **Identity is `peer_id`, addressing is `display_name`.** Display names collide (spawned same-path peers); the daemon canonicalizes routing-sensitive state to `peer_id`. When something misroutes or 500s intermittently, suspect a display-name lookup that should have been a peer_id.
@@ -61,7 +61,7 @@ Versioning: patch (0.x.Y) for fixes/cleanup/small additions, minor (0.X.0) for s
    Hooks transport      Channel/ACP transport   Other peers
    (default)            (experimental)          (relay, Telegram, Slack, OpenCode)
  daemon-go/hooks/ws.go  channel/server.ts
-   (tmux injection)     (MCP stdio)
+   (Claude inbox)       (MCP stdio)
 ```
 
 Key modules:

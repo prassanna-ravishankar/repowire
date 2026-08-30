@@ -350,26 +350,26 @@ func TestRedeliverPendingReplies_TwoPass_UniquenessGate(t *testing.T) {
 	// tuple. A fresh orphan must now be REFUSED (ambiguous -> never misroute).
 	r.UpdateDisplayName(ctx, asker, "shared-name") // detach asker's name first
 	idA, _, _ := r.AllocateAndRegister(ctx, AllocateParams{
-		Circle: "beta", Backend: proto.AgentGemini, Path: ptr("/work/dup"), Machine: "host2", Role: proto.RoleAgent,
+		Circle: "beta", Backend: proto.AgentOpenCode, Path: ptr("/work/dup"), Machine: "host2", Role: proto.RoleAgent,
 	})
 	idB, _, _ := r.AllocateAndRegister(ctx, AllocateParams{
-		Circle: "beta", Backend: proto.AgentGemini, Path: ptr("/work/dup"), Machine: "host2", Role: proto.RoleAgent,
+		Circle: "beta", Backend: proto.AgentOpenCode, Path: ptr("/work/dup"), Machine: "host2", Role: proto.RoleAgent,
 	})
-	// Allocation now auto-suffixes the second peer's display_name ("dup-2-gemini")
+	// Allocation now auto-suffixes the second peer's display_name ("dup-2-opencode")
 	// so distinct live peers never collide via the registration path. The
 	// uniqueness gate still has to defend against a TRANSIENT duplicate (a
 	// reborn peer overlapping a not-yet-evicted ghost, or external rename racing
 	// the snapshot), so force both live peers onto the identical tuple directly
 	// to exercise the gate's ambiguity refusal.
 	r.mu.Lock()
-	r.peers[idB].peer.DisplayName = r.peers[idA].peer.DisplayName // both "dup-gemini"
+	r.peers[idB].peer.DisplayName = r.peers[idA].peer.DisplayName // both "dup-opencode"
 	r.mu.Unlock()
 	reply3 := "answer-3"
 	asks.add(StashedAsk{
 		CorrelationID: "ask-ambiguous", FromPeerID: "repow-beta-deadid", FromPeerName: "asker",
 		ToPeerID: "repow-beta-answerer", ToPeerName: "answerer", PendingReply: &reply3,
 		AskerIdentity: &AskerIdentity{
-			DisplayName: "dup-gemini", Circle: "beta", Backend: proto.AgentGemini,
+			DisplayName: "dup-opencode", Circle: "beta", Backend: proto.AgentOpenCode,
 			Path: normalizeIdentityPath("/work/dup"), Machine: "host2",
 		},
 	})

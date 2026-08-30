@@ -83,9 +83,7 @@ func TestBuildResumeCommandMatchesPythonBackends(t *testing.T) {
 	}{
 		{proto.AgentClaudeCode, "claude --dangerously-skip-permissions", "claude --dangerously-skip-permissions --resume runtime-123"},
 		{proto.AgentCodex, "codex --dangerously-bypass-approvals-and-sandbox", "codex --dangerously-bypass-approvals-and-sandbox resume runtime-123"},
-		{proto.AgentGemini, "gemini --yolo", "gemini --yolo --resume runtime-123"},
 		{proto.AgentOpenCode, "opencode", "opencode --session runtime-123"},
-		{proto.AgentAntigravity, "agy --dangerously-skip-permissions", "agy --dangerously-skip-permissions --conversation runtime-123"},
 		{proto.AgentPi, "pi", "pi --session runtime-123"},
 	}
 	for _, tc := range cases {

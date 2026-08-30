@@ -9,11 +9,15 @@ This is the one-time install step. It runs from your shell, not from inside an a
 ## What setup does
 
 For every agent runtime it finds, the Go CLI wires the appropriate Repowire
-transport. Auto-detection covers Claude Code, Codex, Gemini CLI, Antigravity,
+transport. Auto-detection covers Claude Code, Codex,
 OpenCode, and Pi. Then it installs the Go daemon as a user service (launchd on
 macOS, systemd on Linux). When Codex exposes an App Server Unix listener, setup
 also installs its independent thread bridge and keeps only Codex's
 pending-ask reminder Stop hook.
+
+Setup also removes Repowire-owned legacy Gemini CLI and Antigravity entries.
+It preserves unrelated settings and leaves custom retired-backend spawn keys
+inert; old defaults inserted by Repowire are removed.
 
 When setup finishes, the daemon is listening on `127.0.0.1:8377`. Open a new agent session in any directory and it will register itself.
 
@@ -31,7 +35,14 @@ repowire setup --non-interactive        # take flag values only, no prompts
 
 `--relay` makes the dashboard available at `https://repowire.io/dashboard` over an outbound WebSocket. See [relay access](../use/features/relay-access.md).
 
-`--experimental-channels` replaces the default hook bridge with direct MCP-channel / ACP delivery for Claude Code only. Without that flag, current Claude Code releases use their native session inbox with tmux injection retained as fallback. Channel mode is experimental. See [Claude Code setup](../use/features/connect-claude-code.md).
+`--experimental-channels` replaces the default hook/native-inbox bridge with
+direct MCP-channel / ACP delivery for Claude Code only. For Repowire-managed
+Claude spawns it also adds Claude's explicit development-channel opt-in to the
+configured default command. Without the flag, setup removes that Repowire-owned
+opt-in and Claude Code 2.1.224+ uses its authenticated native session inbox.
+Custom Claude spawn commands must include the channel opt-in explicitly or
+setup fails loudly without rewriting them. Channel mode is experimental. See
+[Claude Code setup](../use/features/connect-claude-code.md).
 
 Setup always enables the localhost-only `/mcp` implementation and generates a
 `daemon.auth_token` if needed, because agent runtimes reach it through

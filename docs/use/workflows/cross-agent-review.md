@@ -16,7 +16,7 @@ The second agent has no commitment to the implementation. It hasn't spent five t
 Pair runtimes for an additional check:
 
 - **Claude Code + Codex** — different model lineages catch different things.
-- **Claude Code + Gemini** — Gemini tends to flag different patterns.
+- **OpenCode + Pi** — native plugin and extension paths provide a useful cross-runtime check.
 - **Same runtime, fresh session** — works too; the new session loads the diff cold.
 
 ## Concrete prompts

@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"os"
@@ -27,6 +28,11 @@ import (
 )
 
 var execLookPath = exec.LookPath
+
+const (
+	claudeDefaultSpawnCommand = "claude --dangerously-skip-permissions"
+	claudeChannelOptIn        = "--dangerously-load-development-channels server:repowire-channel"
+)
 
 //go:embed assets/opencode.ts
 var opencodePlugin string
@@ -68,8 +74,11 @@ func runSetup(argv []string) int {
 			return fatal(err)
 		}
 	}
+	if err := cleanupRetiredRuntimeIntegrations(); err != nil {
+		fmt.Fprintln(os.Stderr, "repowire: retired runtime cleanup:", err)
+	}
 	installed := 0
-	for _, runtimeName := range []string{"claude-code", "codex", "gemini", "antigravity", "opencode", "pi"} {
+	for _, runtimeName := range []string{"claude-code", "codex", "opencode", "pi"} {
 		if runtimeAvailable(runtimeName) {
 			if err := installRuntime(runtimeName); err != nil {
 				fmt.Fprintf(os.Stderr, "repowire: %s setup: %v\n", runtimeName, err)
@@ -105,7 +114,10 @@ func runSetup(argv []string) int {
 }
 
 func runtimeAvailable(name string) bool {
-	binary := map[string]string{"claude-code": "claude", "codex": "codex", "gemini": "gemini", "antigravity": "agy", "opencode": "opencode", "pi": "pi"}[name]
+	binary := map[string]string{"claude-code": "claude", "codex": "codex", "opencode": "opencode", "pi": "pi"}[name]
+	if binary == "" {
+		return false
+	}
 	_, err := exec.LookPath(binary)
 	return err == nil
 }
@@ -127,11 +139,12 @@ func enableDaemonMCP(relay bool) error {
 		daemon["auth_token"] = randomToken()
 	}
 	commands := mapChild(mapChild(daemon, "spawn"), "commands")
+	for _, backend := range []string{"gemini", "antigravity", "agy"} {
+		delete(commands, backend)
+	}
 	for backend, spec := range map[string]struct{ binary, command string }{
-		"claude-code": {"claude", "claude --dangerously-skip-permissions"},
+		"claude-code": {"claude", claudeDefaultSpawnCommand},
 		"codex":       {"codex", "codex --dangerously-bypass-approvals-and-sandbox"},
-		"gemini":      {"gemini", "gemini --yolo"},
-		"antigravity": {"agy", "agy --dangerously-skip-permissions"},
 		"opencode":    {"opencode", "opencode"},
 		"pi":          {"pi", "pi"},
 	} {
@@ -212,12 +225,11 @@ func installRuntime(name string) error {
 		return installClaude()
 	case "codex":
 		return installCodex()
-	case "gemini":
-		return installGemini()
-	case "antigravity":
-		return installAntigravity()
 	case "opencode":
-		return installPluginAsset("opencode", home(".opencode", "plugin", "repowire.ts"))
+		if err := installPluginAsset("opencode", home(".config", "opencode", "plugins", "repowire.ts")); err != nil {
+			return err
+		}
+		return removeIfExists(home(".opencode", "plugin", "repowire.ts"))
 	case "pi":
 		return installPluginAsset("pi", home(".pi", "agent", "extensions", "repowire.ts"))
 	default:
@@ -230,11 +242,10 @@ func uninstallRuntime(name string) error {
 		return uninstallClaude()
 	case "codex":
 		return uninstallCodex()
-	case "gemini":
-		return uninstallJSONRuntime(home(".gemini", "settings.json"), []string{"SessionStart", "SessionEnd", "BeforeAgent", "AfterAgent"}, home(".gemini", "settings.json"))
-	case "antigravity":
-		return uninstallAntigravity()
 	case "opencode":
+		if err := removeIfExists(home(".config", "opencode", "plugins", "repowire.ts")); err != nil {
+			return err
+		}
 		return removeIfExists(home(".opencode", "plugin", "repowire.ts"))
 	case "pi":
 		return removeIfExists(home(".pi", "agent", "extensions", "repowire.ts"))
@@ -244,6 +255,10 @@ func uninstallRuntime(name string) error {
 }
 
 func installClaude() error {
+	versionOutput, err := exec.Command("claude", "--version").Output()
+	if err != nil || !claudeInboxVersionSupported(string(versionOutput)) {
+		return errors.New("Claude Code 2.1.224 or newer is required for native inbox delivery")
+	}
 	path := home(".claude", "settings.json")
 	data, err := readJSON(path, true)
 	if err != nil {
@@ -277,6 +292,11 @@ func installClaude() error {
 	return writeJSON(rootPath, root)
 }
 
+func claudeInboxVersionSupported(output string) bool {
+	fields := strings.Fields(output)
+	return len(fields) > 0 && versionAtLeast(fields[0], 2, 1, 224)
+}
+
 func installChannel() error {
 	if _, err := exec.LookPath("bun"); err != nil {
 		return fmt.Errorf("bun runtime not found")
@@ -284,6 +304,9 @@ func installChannel() error {
 	versionOutput, err := exec.Command("claude", "--version").Output()
 	if err != nil || !versionAtLeast(strings.Fields(string(versionOutput))[0], 2, 1, 80) {
 		return fmt.Errorf("Claude Code 2.1.80+ is required")
+	}
+	if err := validateClaudeChannelSpawnCommand(); err != nil {
+		return err
 	}
 	dir := home(".repowire", "channel")
 	for name, content := range map[string]string{
@@ -320,6 +343,9 @@ func installChannel() error {
 	if err := writeJSON(rootPath, root); err != nil {
 		return err
 	}
+	if err := setClaudeChannelSpawnOptIn(true); err != nil {
+		return err
+	}
 
 	// Channel mode still keeps Stop/StopFailure for dashboard chat turns, but
 	// registration and inbound delivery are owned by the channel server.
@@ -338,21 +364,80 @@ func installChannel() error {
 
 func disableChannel() error {
 	path := home(".claude.json")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil
-	} else if err != nil {
+	if _, err := os.Stat(path); err == nil {
+		root, err := readJSON(path, true)
+		if err != nil {
+			return err
+		}
+		servers, _ := root["mcpServers"].(map[string]any)
+		if servers != nil && servers["repowire-channel"] != nil {
+			delete(servers, "repowire-channel")
+			if err := writeJSON(path, root); err != nil {
+				return err
+			}
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
-	root, err := readJSON(path, true)
+	return setClaudeChannelSpawnOptIn(false)
+}
+
+func validateClaudeChannelSpawnCommand() error {
+	command, err := claudeSpawnCommand()
+	if err != nil || command == "" || command == claudeDefaultSpawnCommand || strings.Contains(command, claudeChannelOptIn) {
+		return err
+	}
+	return fmt.Errorf("custom daemon.spawn.commands.claude-code must include %q for experimental channel delivery", claudeChannelOptIn)
+}
+
+func claudeSpawnCommand() (string, error) {
+	data := map[string]any{}
+	if raw, err := os.ReadFile(config.Path()); err == nil {
+		if err := yaml.Unmarshal(raw, &data); err != nil {
+			return "", fmt.Errorf("parse %s: %w", config.Path(), err)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	commands := mapChild(mapChild(mapChild(data, "daemon"), "spawn"), "commands")
+	command, _ := commands["claude-code"].(string)
+	return strings.TrimSpace(command), nil
+}
+
+func setClaudeChannelSpawnOptIn(enabled bool) error {
+	path := config.Path()
+	data := map[string]any{}
+	if raw, err := os.ReadFile(path); err == nil {
+		if err := yaml.Unmarshal(raw, &data); err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	commands := mapChild(mapChild(mapChild(data, "daemon"), "spawn"), "commands")
+	command, _ := commands["claude-code"].(string)
+	command = strings.TrimSpace(command)
+	if enabled {
+		if command == "" {
+			command = claudeDefaultSpawnCommand
+		}
+		if !strings.Contains(command, claudeChannelOptIn) {
+			command += " " + claudeChannelOptIn
+		}
+	} else {
+		command = strings.TrimSpace(strings.TrimSuffix(command, " "+claudeChannelOptIn))
+	}
+	if command != "" {
+		commands["claude-code"] = command
+	}
+	raw, err := yaml.Marshal(data)
 	if err != nil {
 		return err
 	}
-	servers, _ := root["mcpServers"].(map[string]any)
-	if servers == nil || servers["repowire-channel"] == nil {
-		return nil
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
 	}
-	delete(servers, "repowire-channel")
-	return writeJSON(path, root)
+	return os.WriteFile(path, raw, 0o600)
 }
 
 func versionAtLeast(value string, want ...int) bool {
@@ -379,20 +464,6 @@ func uninstallClaude() error {
 		delete(servers, "repowire-channel")
 	}
 	return writeJSON(rootPath, root)
-}
-
-func installGemini() error {
-	path := home(".gemini", "settings.json")
-	data, err := readJSON(path, true)
-	if err != nil {
-		return err
-	}
-	hooks := mapChild(data, "hooks")
-	for event, spec := range map[string][]string{"SessionStart": {"hook session --backend=gemini", "startup"}, "SessionEnd": {"hook session --backend=gemini", ""}, "BeforeAgent": {"hook prompt --backend=gemini", ""}, "AfterAgent": {"hook stop --backend=gemini", ""}} {
-		replaceHook(hooks, event, hookEntry(hookCommand(spec[0]), spec[1], 0))
-	}
-	mapChild(data, "mcpServers")["repowire"] = map[string]any{"command": executable(), "args": []string{"mcp"}, "env": map[string]string{"REPOWIRE_BACKEND": "gemini"}}
-	return writeJSON(path, data)
 }
 
 func installCodex() error {
@@ -449,18 +520,6 @@ func installCodex() error {
 	return os.WriteFile(configPath, []byte(content), 0o600)
 }
 
-func installAntigravity() error {
-	dir := home(".gemini", "antigravity-cli", "plugins", "repowire")
-	hooks := map[string]any{"hooks": map[string]any{"SessionStart": []any{hookEntry(hookCommand("hook session --backend=antigravity"), "startup", 0)}, "SessionEnd": []any{hookEntry(hookCommand("hook session --backend=antigravity"), "", 0)}, "BeforeAgent": []any{hookEntry(hookCommand("hook prompt --backend=antigravity"), "", 0)}, "AfterAgent": []any{hookEntry(hookCommand("hook stop --backend=antigravity"), "", 0)}}}
-	if err := writeJSON(filepath.Join(dir, "hooks", "hooks.json"), hooks); err != nil {
-		return err
-	}
-	if err := writeJSON(filepath.Join(dir, "plugin.json"), map[string]any{"name": "repowire", "version": "0.1.0", "description": "Repowire mesh integration (peer-to-peer agent messaging)"}); err != nil {
-		return err
-	}
-	return updateAntigravityManifest(true)
-}
-
 func installPluginAsset(name, target string) error {
 	source, err := pluginAsset(name)
 	if err != nil {
@@ -493,7 +552,7 @@ func removeIfExists(path string) error {
 func antigravityManifestPath() string {
 	return home(".gemini", "antigravity-cli", "import_manifest.json")
 }
-func updateAntigravityManifest(present bool) error {
+func removeLegacyAntigravityManifestEntry() error {
 	path := antigravityManifestPath()
 	data, err := readJSON(path, false)
 	if err != nil {
@@ -507,9 +566,7 @@ func updateAntigravityManifest(present bool) error {
 			kept = append(kept, raw)
 		}
 	}
-	if present {
-		kept = append(kept, map[string]any{"name": "repowire", "source": "local-install", "importedAt": time.Now().UTC().Format("2006-01-02T15:04:05Z"), "components": []string{"installed"}})
-	} else if len(kept) == 0 {
+	if len(kept) == 0 {
 		return removeIfExists(path)
 	}
 	data["imports"] = kept
@@ -519,7 +576,17 @@ func uninstallAntigravity() error {
 	if err := os.RemoveAll(home(".gemini", "antigravity-cli", "plugins", "repowire")); err != nil {
 		return err
 	}
-	return updateAntigravityManifest(false)
+	return removeLegacyAntigravityManifestEntry()
+}
+
+// cleanupRetiredRuntimeIntegrations removes only Repowire-owned entries left
+// by releases that supported Gemini CLI and Antigravity. Other user settings
+// and plugins are preserved.
+func cleanupRetiredRuntimeIntegrations() error {
+	if err := uninstallJSONRuntime(home(".gemini", "settings.json"), []string{"SessionStart", "SessionEnd", "BeforeAgent", "AfterAgent"}, home(".gemini", "settings.json")); err != nil {
+		return err
+	}
+	return uninstallAntigravity()
 }
 
 func hookEntry(command, matcher string, timeout int) map[string]any {
@@ -726,15 +793,8 @@ func runtimeIntegrated(name string) bool {
 	case "codex":
 		raw, _ := os.ReadFile(home(".codex", "config.toml"))
 		return strings.Contains(string(raw), "[mcp_servers.repowire]")
-	case "gemini":
-		settings, _ := readJSON(home(".gemini", "settings.json"), false)
-		servers, _ := settings["mcpServers"].(map[string]any)
-		return servers["repowire"] != nil
-	case "antigravity":
-		_, err := os.Stat(home(".gemini", "antigravity-cli", "plugins", "repowire", "plugin.json"))
-		return err == nil
 	case "opencode":
-		_, err := os.Stat(home(".opencode", "plugin", "repowire.ts"))
+		_, err := os.Stat(home(".config", "opencode", "plugins", "repowire.ts"))
 		return err == nil
 	case "pi":
 		_, err := os.Stat(home(".pi", "agent", "extensions", "repowire.ts"))
@@ -772,7 +832,7 @@ func installTmuxLifecycle() error {
 
 func runService(argv []string) int {
 	if len(argv) == 0 {
-		return usage("service <install|start|restart|status|uninstall>")
+		return usage("service <install|start|restart [daemon|bridge|all]|status|uninstall>")
 	}
 	switch argv[0] {
 	case "install":
@@ -788,10 +848,27 @@ func runService(argv []string) int {
 		fmt.Println("service started")
 		return 0
 	case "restart":
-		if err := restartService(); err != nil {
+		component := "daemon"
+		if len(argv) > 1 {
+			component = argv[1]
+		}
+		var err error
+		switch component {
+		case "daemon":
+			err = restartService()
+		case "bridge":
+			err = restartCodexBridgeService()
+		case "all":
+			if err = restartService(); err == nil {
+				err = restartCodexBridgeService()
+			}
+		default:
+			return usage("service restart [daemon|bridge|all]")
+		}
+		if err != nil {
 			return fatal(err)
 		}
-		fmt.Println("service restarted")
+		fmt.Println(component + " service restarted")
 		return 0
 	case "status":
 		return serviceStatus()
@@ -802,12 +879,29 @@ func runService(argv []string) int {
 		fmt.Println("service removed")
 		return 0
 	default:
-		return usage("service <install|start|restart|status|uninstall>")
+		return usage("service <install|start|restart [daemon|bridge|all]|status|uninstall>")
 	}
 }
 
-func serviceLabel() string     { return "io.repowire.daemon" }
-func codexBridgeLabel() string { return "io.repowire.codex-bridge" }
+func serviceLabel() string                  { return "io.repowire.daemon" }
+func codexBridgeLabel() string              { return "io.repowire.codex-bridge" }
+func mobileServiceLabel(name string) string { return "io.repowire." + name }
+
+func mobileServiceInstalled(name string) bool {
+	if runtime.GOOS == "darwin" {
+		_, err := os.Stat(home("Library", "LaunchAgents", mobileServiceLabel(name)+".plist"))
+		return err == nil
+	}
+	_, err := os.Stat(home(".config", "systemd", "user", "repowire-"+name+".service"))
+	return err == nil
+}
+
+func mobileServiceRunning(name string) bool {
+	if runtime.GOOS == "darwin" {
+		return launchAgentLoaded(mobileServiceLabel(name))
+	}
+	return systemdServiceActive("repowire-" + name + ".service")
+}
 
 const obsoleteServiceLabel = "com.repowire.daemon"
 
@@ -835,7 +929,10 @@ func installService() error {
 		if err := exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run(); err != nil {
 			return err
 		}
-		return installCodexBridgeService(os.Getenv("PATH"), locale)
+		if err := installCodexBridgeService(os.Getenv("PATH"), locale); err != nil {
+			return err
+		}
+		return installConfiguredMobileServices(os.Getenv("PATH"), locale)
 	}
 	dir := home(".config", "systemd", "user")
 	_ = os.MkdirAll(dir, 0o755)
@@ -846,8 +943,78 @@ func installService() error {
 	if err := installCodexBridgeService(os.Getenv("PATH"), ""); err != nil {
 		return err
 	}
+	if err := installConfiguredMobileServices(os.Getenv("PATH"), ""); err != nil {
+		return err
+	}
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	return exec.Command("systemctl", "--user", "enable", "--now", "repowire.service").Run()
+}
+
+func installConfiguredMobileServices(pathValue, locale string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	configured := map[string]bool{
+		"telegram": cfg.Telegram.BotToken != "" && cfg.Telegram.ChatID != "",
+		"slack":    cfg.Slack.BotToken != "" && cfg.Slack.AppToken != "" && cfg.Slack.ChannelID != "",
+	}
+	for _, name := range []string{"telegram", "slack"} {
+		if !configured[name] {
+			if err := removeMobileService(name); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := installMobileService(name, pathValue, locale); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func installMobileService(name, pathValue, locale string) error {
+	if runtime.GOOS == "darwin" {
+		dir := home("Library", "LaunchAgents")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		path := filepath.Join(dir, mobileServiceLabel(name)+".plist")
+		logPath := home(".repowire", name+".log")
+		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>%s</string><string>start</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string><key>LC_ALL</key><string>%s</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, mobileServiceLabel(name), executable(), name, html.EscapeString(pathValue), html.EscapeString(locale), logPath, logPath)
+		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+mobileServiceLabel(name)).Run()
+		if err := os.WriteFile(path, []byte(plist), 0o600); err != nil {
+			return err
+		}
+		return exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
+	}
+	unitName := "repowire-" + name + ".service"
+	unit := fmt.Sprintf("[Unit]\nDescription=Repowire %s peer\nAfter=repowire.service\nWants=repowire.service\n[Service]\nEnvironment=\"PATH=%s\"\nExecStart=%s %s start\nRestart=always\n[Install]\nWantedBy=default.target\n", name, pathValue, executable(), name)
+	path := home(".config", "systemd", "user", unitName)
+	if err := os.WriteFile(path, []byte(unit), 0o600); err != nil {
+		return err
+	}
+	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+	return exec.Command("systemctl", "--user", "enable", "--now", unitName).Run()
+}
+
+func removeMobileService(name string) error {
+	if runtime.GOOS == "darwin" {
+		label := mobileServiceLabel(name)
+		path := home("Library", "LaunchAgents", label+".plist")
+		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+label).Run()
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	unitName := "repowire-" + name + ".service"
+	_ = exec.Command("systemctl", "--user", "disable", "--now", unitName).Run()
+	err := os.Remove(home(".config", "systemd", "user", unitName))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func installCodexBridgeService(pathValue, locale string) error {
@@ -857,21 +1024,36 @@ func installCodexBridgeService(pathValue, locale string) error {
 	if runtime.GOOS == "darwin" {
 		dir := home("Library", "LaunchAgents")
 		path := filepath.Join(dir, codexBridgeLabel()+".plist")
+		loaded := launchAgentLoaded(codexBridgeLabel())
 		logPath := home(".repowire", "codex-bridge.log")
 		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>codex-bridge</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string><key>LC_ALL</key><string>%s</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, codexBridgeLabel(), executable(), html.EscapeString(pathValue), html.EscapeString(locale), logPath, logPath)
-		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
 		if err := os.WriteFile(path, []byte(plist), 0o600); err != nil {
 			return err
+		}
+		if loaded {
+			return nil
 		}
 		return exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
 	}
 	unit := codexBridgeSystemdUnit(pathValue)
 	path := home(".config", "systemd", "user", "repowire-codex.service")
+	active := systemdServiceActive("repowire-codex.service")
 	if err := os.WriteFile(path, []byte(unit), 0o600); err != nil {
 		return err
 	}
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+	if active {
+		return nil
+	}
 	return exec.Command("systemctl", "--user", "enable", "--now", "repowire-codex.service").Run()
+}
+
+func launchAgentLoaded(label string) bool {
+	return exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+label).Run() == nil
+}
+
+func systemdServiceActive(unit string) bool {
+	return exec.Command("systemctl", "--user", "is-active", "--quiet", unit).Run() == nil
 }
 
 func codexBridgeSystemdUnit(pathValue string) string {
@@ -910,7 +1092,17 @@ func startService() error {
 			return err
 		}
 		if _, err := os.Stat(home("Library", "LaunchAgents", codexBridgeLabel()+".plist")); err == nil {
-			return startLaunchAgent(codexBridgeLabel())
+			if err := startLaunchAgent(codexBridgeLabel()); err != nil {
+				return err
+			}
+		}
+		for _, name := range []string{"telegram", "slack"} {
+			label := mobileServiceLabel(name)
+			if _, err := os.Stat(home("Library", "LaunchAgents", label+".plist")); err == nil {
+				if err := startLaunchAgent(label); err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	}
@@ -918,7 +1110,17 @@ func startService() error {
 		return err
 	}
 	if _, err := os.Stat(home(".config", "systemd", "user", "repowire-codex.service")); err == nil {
-		return exec.Command("systemctl", "--user", "start", "repowire-codex.service").Run()
+		if err := exec.Command("systemctl", "--user", "start", "repowire-codex.service").Run(); err != nil {
+			return err
+		}
+	}
+	for _, name := range []string{"telegram", "slack"} {
+		unit := "repowire-" + name + ".service"
+		if _, err := os.Stat(home(".config", "systemd", "user", unit)); err == nil {
+			if err := exec.Command("systemctl", "--user", "start", unit).Run(); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -938,23 +1140,34 @@ func restartService() error {
 		if err := exec.Command("launchctl", "kickstart", "-k", "gui/"+strconv.Itoa(os.Getuid())+"/"+serviceLabel()).Run(); err != nil {
 			return err
 		}
-		if _, err := os.Stat(home("Library", "LaunchAgents", codexBridgeLabel()+".plist")); err == nil {
-			return exec.Command("launchctl", "kickstart", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexBridgeLabel()).Run()
-		}
 		return nil
 	}
 	if err := exec.Command("systemctl", "--user", "restart", "repowire.service").Run(); err != nil {
 		return err
 	}
-	if _, err := os.Stat(home(".config", "systemd", "user", "repowire-codex.service")); err == nil {
-		return exec.Command("systemctl", "--user", "start", "repowire-codex.service").Run()
-	}
 	return nil
+}
+
+func restartCodexBridgeService() error {
+	if runtime.GOOS == "darwin" {
+		path := home("Library", "LaunchAgents", codexBridgeLabel()+".plist")
+		if _, err := os.Stat(path); err != nil {
+			return err
+		}
+		return exec.Command("launchctl", "kickstart", "-k", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexBridgeLabel()).Run()
+	}
+	return exec.Command("systemctl", "--user", "restart", "repowire-codex.service").Run()
 }
 func stopService() error {
 	if runtime.GOOS == "darwin" {
+		for _, name := range []string{"telegram", "slack"} {
+			_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+mobileServiceLabel(name)).Run()
+		}
 		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexBridgeLabel()).Run()
 		return exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+serviceLabel()).Run()
+	}
+	for _, name := range []string{"telegram", "slack"} {
+		_ = exec.Command("systemctl", "--user", "stop", "repowire-"+name+".service").Run()
 	}
 	_ = exec.Command("systemctl", "--user", "stop", "repowire-codex.service").Run()
 	return exec.Command("systemctl", "--user", "stop", "repowire.service").Run()
@@ -966,10 +1179,22 @@ func serviceStatus() int {
 		if _, err := os.Stat(home("Library", "LaunchAgents", codexBridgeLabel()+".plist")); err == nil {
 			commands = append(commands, exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexBridgeLabel()))
 		}
+		for _, name := range []string{"telegram", "slack"} {
+			label := mobileServiceLabel(name)
+			if _, err := os.Stat(home("Library", "LaunchAgents", label+".plist")); err == nil {
+				commands = append(commands, exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+label))
+			}
+		}
 	} else {
 		commands = append(commands, exec.Command("systemctl", "--user", "status", "repowire.service", "--no-pager"))
 		if _, err := os.Stat(home(".config", "systemd", "user", "repowire-codex.service")); err == nil {
 			commands = append(commands, exec.Command("systemctl", "--user", "status", "repowire-codex.service", "--no-pager"))
+		}
+		for _, name := range []string{"telegram", "slack"} {
+			unit := "repowire-" + name + ".service"
+			if _, err := os.Stat(home(".config", "systemd", "user", unit)); err == nil {
+				commands = append(commands, exec.Command("systemctl", "--user", "status", unit, "--no-pager"))
+			}
 		}
 	}
 	for _, cmd := range commands {
@@ -981,6 +1206,11 @@ func serviceStatus() int {
 	return 0
 }
 func uninstallService() error {
+	for _, name := range []string{"telegram", "slack"} {
+		if err := removeMobileService(name); err != nil {
+			return err
+		}
+	}
 	if err := removeCodexBridgeService(); err != nil {
 		return err
 	}
@@ -1071,9 +1301,10 @@ func channelConfigured() bool {
 	return servers["repowire-channel"] != nil
 }
 func runUninstall(argv []string) int {
-	for _, name := range []string{"claude-code", "codex", "gemini", "antigravity", "opencode", "pi"} {
+	for _, name := range []string{"claude-code", "codex", "opencode", "pi"} {
 		_ = uninstallRuntime(name)
 	}
+	_ = cleanupRetiredRuntimeIntegrations()
 	_ = uninstallService()
 	if parse(argv, "yes").bool("yes") {
 		_ = os.RemoveAll(home(".repowire"))

@@ -36,9 +36,9 @@ type ClaimResult struct {
 
 // ClaimSpecialRole claims a singleton special role (only RoleOrchestrator) for an
 // existing live peer. Returns (nil,nil) when no peer matches the identifier (→
-// HTTP 404), a *RoleClaimConflictError when a fresh holder blocks the claim (→
-// 409), or a plain error for a bad role / ambiguous identifier (→ 400). Mirrors
-// PeerRegistry.claim_special_role.
+// HTTP 404), a *RoleClaimConflictError when a fresh or transport-connected
+// holder blocks the claim (→ 409), or a plain error for a bad role / ambiguous
+// identifier (→ 400). Mirrors PeerRegistry.claim_special_role.
 func (r *Registry) ClaimSpecialRole(ctx context.Context, name string, role proto.PeerRole, circle *string, force bool) (*ClaimResult, error) {
 	if role != proto.RoleOrchestrator {
 		return nil, fmt.Errorf("Only role=orchestrator can be claimed")
@@ -46,10 +46,12 @@ func (r *Registry) ClaimSpecialRole(ctx context.Context, name string, role proto
 	now := time.Now().UTC()
 	tolerance := r.HeartbeatTolerance()
 
-	freshHolder := func(p *proto.Peer) bool {
+	liveHolder := func(p *proto.Peer) bool {
+		fresh := p.LastSeen != nil && now.Sub(*p.LastSeen) <= tolerance
+		connected := r.transport != nil && r.transport.IsConnected(p.PeerID)
 		return p.Role == role &&
 			(p.Status == proto.StatusOnline || p.Status == proto.StatusBusy) &&
-			p.LastSeen != nil && now.Sub(*p.LastSeen) <= tolerance
+			(fresh || connected)
 	}
 
 	r.mu.Lock()
@@ -73,7 +75,7 @@ func (r *Registry) ClaimSpecialRole(ctx context.Context, name string, role proto
 	var holder *proto.Peer
 	for _, ps := range r.peers {
 		p := ps.peer
-		if p.PeerID == target.PeerID || p.Circle != targetCircle || !freshHolder(p) {
+		if p.PeerID == target.PeerID || p.Circle != targetCircle || !liveHolder(p) {
 			continue
 		}
 		if holder == nil || lastSeenAfter(p, holder) {

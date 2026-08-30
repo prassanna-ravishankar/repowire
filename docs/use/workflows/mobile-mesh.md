@@ -4,9 +4,7 @@ Drive the mesh from your phone. The Telegram bot is the most common path; the mo
 
 ## Telegram
 
-```bash
-TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... repowire telegram start
-```
+Configure `telegram.bot_token` and `telegram.chat_id` in `~/.repowire/config.yaml`; setup installs the bot as an OS-managed user service alongside the daemon.
 
 In your Telegram chat with the bot:
 

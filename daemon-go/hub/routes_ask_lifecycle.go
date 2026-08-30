@@ -47,8 +47,8 @@ type askRoutesRegistry interface {
 	// CheckAccess resolves the canonical sender/target pair and enforces circle
 	// boundaries before an ask is registered.
 	CheckAccess(ctx context.Context, fromPeer, toPeer string, bypassCircle bool, circle *string) (*proto.Peer, *proto.Peer, error)
-	// GetPeerByPane resolves a tmux-pane-keyed transport (Claude Code / Codex /
-	// Gemini Stop hooks) to its peer. (nil,false) when no peer owns the pane.
+	// GetPeerByPane resolves a tmux-pane-keyed transport (Claude Code / Codex
+	// hooks) to its peer. (nil,false) when no peer owns the pane.
 	GetPeerByPane(pane string) (*proto.Peer, bool)
 	// GetPeer resolves by peer_id (the canonical key). (nil,false) when unknown.
 	GetPeer(id proto.PeerID) (*proto.Peer, bool)

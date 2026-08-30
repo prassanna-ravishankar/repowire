@@ -26,7 +26,7 @@ The big difference is *where the agent process lives*. Cloud services run it; re
 - You want to keep agent state, codebases, and credentials on your own machines.
 - You're paying by API tokens and don't want a per-task or per-ACU cloud premium on top.
 - You need multi-agent coordination with full context retained between turns. Cloud services typically reset per task; repowire sessions persist as long as the agent processes do.
-- You want to mix runtimes (Claude Code, Codex, Gemini, OpenCode) freely.
+- You want to mix runtimes (Claude Code, Codex, OpenCode, Pi) freely.
 
 ## When to use a cloud coding service instead
 

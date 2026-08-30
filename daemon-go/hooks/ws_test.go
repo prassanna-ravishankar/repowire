@@ -85,6 +85,41 @@ func TestClaudeInboxDelivery(t *testing.T) {
 	}
 }
 
+func TestClaudeInboxUnavailableFailsWithoutTmuxFallback(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	meshConn := make(chan *websocket.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err == nil {
+			meshConn <- conn
+		}
+	}))
+	defer server.Close()
+	client, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseNow()
+	peer := <-meshConn
+	defer peer.CloseNow()
+
+	t.Setenv("REPOWIRE_BACKEND", "claude-code")
+	t.Setenv(claudeMessagingSocketEnv, "")
+	handleMessage(ctx, client, map[string]any{
+		"type": "ask", "delivery_id": "delivery-2", "correlation_id": "ask-2",
+		"from_peer": "reviewer", "to_peer": "owner", "text": "review this",
+	}, "%999", "claude", proto.CircleBoundarySession, 0)
+
+	var ack map[string]any
+	if err := wsjson.Read(ctx, peer, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if ack["status"] != "failed" || !strings.Contains(stringValue(ack, "detail"), "2.1.224") {
+		t.Fatalf("failure receipt = %#v", ack)
+	}
+}
+
 func TestRuntimeInboxCapabilityRequiresClaudeSocket(t *testing.T) {
 	t.Setenv(claudeMessagingSocketEnv, "")
 	if got := transportCapabilities("claude-code"); len(got) != 1 || got[0] != proto.CapDeliveryReceipts {
@@ -94,7 +129,7 @@ func TestRuntimeInboxCapabilityRequiresClaudeSocket(t *testing.T) {
 	if got := transportCapabilities("claude-code"); len(got) != 2 || got[1] != proto.CapRuntimeInbox {
 		t.Fatalf("Claude capabilities = %v", got)
 	}
-	if got := transportCapabilities("gemini"); len(got) != 1 {
-		t.Fatalf("Gemini capabilities = %v", got)
+	if got := transportCapabilities("pi"); len(got) != 1 {
+		t.Fatalf("Pi hook capabilities = %v", got)
 	}
 }

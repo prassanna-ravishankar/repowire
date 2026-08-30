@@ -6,10 +6,9 @@ OpenCode integrates via a TypeScript plugin instead of shell hooks. The plugin h
 
 | Path | What |
 | --- | --- |
-| `~/.opencode/plugin/repowire.ts` | Global plugin (default) |
-| `.opencode/plugin/repowire.ts` | Local plugin (when installed per-project) |
+| `~/.config/opencode/plugins/repowire.ts` | Global plugin (default) |
 
-The plugin uses the OpenCode plugin API (`@opencode-ai/plugin`). It hooks into session lifecycle events from inside the OpenCode runtime — not via external shell hooks — and bridges them to the repowire daemon over WebSocket.
+The plugin uses the current OpenCode plugin API (`@opencode-ai/plugin`). It hooks into session lifecycle events from inside the OpenCode runtime — not via external shell hooks — and bridges them to the Repowire daemon over WebSocket. OpenCode calls the plugin's `dispose` hook on reload or shutdown so connections and pending requests are released without process-level signal handlers.
 
 OpenCode's `session.status` event is the authoritative status source:
 `busy` sends `status=busy, turn_state=working`, and `idle` sends
@@ -32,14 +31,14 @@ The trade-off: the plugin runs inside OpenCode's process, so a plugin crash take
 repowire status
 ```
 
-Open an OpenCode session and watch `repowire peer list`. The peer registers on session start over the WebSocket. If it doesn't appear, the plugin failed to load — check OpenCode's plugin log for the error.
+Open an OpenCode session, submit its first prompt, and watch `repowire peer list`. The peer registers from the first live session event. The plugin deliberately does not mark every historical session returned by `session.list()` online at startup. If the active peer does not appear, check OpenCode's plugin log for the error.
 
-## Global vs local
+`repowire setup` installs globally in OpenCode's canonical plural `plugins` directory. It removes the old Repowire file from `~/.opencode/plugin/` after the new file is written, preventing the plugin from loading twice during migration.
 
-By default `repowire setup` installs the plugin globally at `~/.opencode/plugin/`. You can install it per-project with the `--local` flag on the OpenCode installer step, which writes to `.opencode/plugin/` in the current directory. Use local installs when one project on a machine wants a different plugin version than the rest.
+Outside tmux, the plugin reads the local daemon token from `~/.repowire/config.yaml`, pre-registers its pane-less identity over authenticated HTTP, and uses the same stable project-derived circle as Pi. Inside a Repowire-spawned tmux pane, verified tmux/spawn placement remains authoritative.
 
 ## Troubleshooting
 
-- Peer never appears → the plugin didn't load. Check that `~/.opencode/plugin/repowire.ts` exists and is non-empty; check OpenCode's log for plugin load errors.
+- Peer never appears → the plugin didn't load. Check that `~/.config/opencode/plugins/repowire.ts` exists and is non-empty; check OpenCode's log for plugin load errors.
 - WebSocket errors in the plugin log → daemon is unreachable. See [Daemon unreachable](../../troubleshooting/daemon.md).
 - Tool calls missing from the dashboard → confirm the plugin version matches the installed `repowire` package. Re-run `repowire setup` to refresh.

@@ -9,7 +9,7 @@ A live peer has these identity and lifecycle fields:
 - `peer_id` — daemon-assigned stable id for routing and ask ownership.
 - `display_name` / `name` — human-facing name. It can collide across circles, so it is not globally unique.
 - `circle` — routing scope. Ordinary peers message only within their own circle; an explicit foreign circle is accepted only for a role that bypasses circles.
-- `backend` — agent runtime, such as `claude-code`, `codex`, `gemini`, `antigravity`, `opencode`, or `pi`.
+- `backend` — supported agent runtime: `claude-code`, `codex`, `opencode`, or `pi`.
 - `path` — working directory used for name allocation, filtering, and operator context. It is not sufficient by itself to prove peer identity.
 - `pane_id` / WebSocket binding — local delivery endpoint for hook-based peers.
 - `role` — `agent` by default; service, human, and orchestrator roles can bypass normal circle visibility.
@@ -64,6 +64,8 @@ Compatibility reclaim of an offline peer or durable mapping also requires a comp
 
 Orchestrator reconnects get one additional bounded repair path because they are long-lived control peers. If an orchestrator hook reconnects without a `peer_id`, the daemon may adopt exactly one offline peer in the same circle with the same canonical display name, backend, role, and project path. That preserves queued deliveries across daemon restarts or WebSocket churn without allowing general path-based identity takeover.
 
+Session-native runtimes such as Codex, OpenCode, and Pi can also recover an exact softly retired identity by presenting an unexpired daemon-minted birth certificate whose backend, runtime session, and project path all validate. This supports native threads that do not have a distinct agent PID; OpenCode and Pi additionally report their live runtime PID on registration and reconnect. Hard operator retirement is never cleared by certificate recovery.
+
 ## Linking an orphan pane (link vs spawn)
 
 When an agent is already running in a local tmux pane but never registered — hooks or MCP did not fire — the daemon cannot see it. `GET /panes/orphans` lists every unregistered local pane (with a display-only backend hint), and `repowire link --pane %NN --backend X` adopts one intentionally.
@@ -86,7 +88,7 @@ There is one protected case: a fresh live `orchestrator` peer keeps sticky owner
 
 Orchestrator role repair follows the same boundary. The CLI-only
 `repowire peer claim-role orchestrator` command can repair stale, offline, or
-mapping-only holders, but they cannot demote a fresh online/busy orchestrator
+mapping-only holders, but they cannot demote a fresh or transport-connected online/busy orchestrator
 holder. To intentionally replace a live orchestrator, stop that holder first so
 the daemon no longer treats it as fresh.
 

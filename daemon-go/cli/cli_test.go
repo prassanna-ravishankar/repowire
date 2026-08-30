@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -170,7 +171,7 @@ func TestSetupRejectsUnknownOptionBeforeMutation(t *testing.T) {
 func TestEnableDaemonMCPPreservesConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	t.Setenv("REPOWIRE_CONFIG", path)
-	if err := os.WriteFile(path, []byte("slack:\n  enabled: true\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("slack:\n  enabled: true\ndaemon:\n  spawn:\n    commands:\n      claude-code: claude --model opus\n      gemini: custom-gemini\n      agy: custom-agy\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := enableDaemonMCP(false); err != nil {
@@ -188,6 +189,13 @@ func TestEnableDaemonMCPPreservesConfig(t *testing.T) {
 	mcp := daemon["mcp_http"].(map[string]any)
 	if mcp["enabled"] != true || daemon["auth_token"] == "" {
 		t.Fatalf("mcp/auth not configured: %v", daemon)
+	}
+	commands := daemon["spawn"].(map[string]any)["commands"].(map[string]any)
+	if commands["claude-code"] != "claude --model opus" {
+		t.Fatalf("supported custom command was not preserved: %v", commands)
+	}
+	if commands["gemini"] != nil || commands["agy"] != nil {
+		t.Fatalf("retired runtime commands survived setup: %v", commands)
 	}
 }
 
@@ -246,6 +254,50 @@ func TestPluginAssetsExtractTypeScript(t *testing.T) {
 			t.Fatalf("%s asset was not extracted", name)
 		}
 	}
+	if !strings.Contains(opencodePlugin, "dispose: async () => cleanup()") || strings.Contains(opencodePlugin, `process.once("SIGINT"`) {
+		t.Fatal("OpenCode plugin does not use the native dispose lifecycle")
+	}
+	if strings.Contains(opencodePlugin, "client.session.list()") || !strings.Contains(opencodePlugin, `if (!peerBySession.has(sid)) ensurePeer`) {
+		t.Fatal("OpenCode plugin should register only active sessions, not historical session.list rows")
+	}
+	if !strings.Contains(piPlugin, `from "typebox"`) || !strings.Contains(piPlugin, `pi.on("session_shutdown"`) || strings.Contains(piPlugin, `process.once("SIGINT"`) {
+		t.Fatal("Pi extension does not match the native Pi lifecycle")
+	}
+	for name, asset := range map[string]string{"opencode": opencodePlugin, "pi": piPlugin} {
+		for _, want := range []string{"repowireAuthToken", "standaloneProjectCircle", "registerPaneLessPeer"} {
+			if !strings.Contains(asset, want) {
+				t.Fatalf("%s asset lacks %s", name, want)
+			}
+		}
+	}
+}
+
+func TestOpenCodeInstallMigratesCanonicalPluginPath(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	legacy := filepath.Join(homeDir, ".opencode", "plugin", "repowire.ts")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installRuntime("opencode"); err != nil {
+		t.Fatal(err)
+	}
+	canonical := filepath.Join(homeDir, ".config", "opencode", "plugins", "repowire.ts")
+	if raw, err := os.ReadFile(canonical); err != nil || !strings.Contains(string(raw), "Repowire") {
+		t.Fatalf("canonical plugin = %q, %v", raw, err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy plugin was not removed: %v", err)
+	}
+}
+
+func TestClaudeNativeInboxVersionGate(t *testing.T) {
+	if !claudeInboxVersionSupported("2.1.224 (Claude Code)") || !claudeInboxVersionSupported("2.2.0") || claudeInboxVersionSupported("2.1.223") || claudeInboxVersionSupported("") {
+		t.Fatal("Claude native inbox version gate is wrong")
+	}
 }
 
 func TestChannelAssetsAndVersionGate(t *testing.T) {
@@ -268,6 +320,11 @@ func TestChannelAssetsAndVersionGate(t *testing.T) {
 func TestDisableChannelKeepsNormalMCP(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	configPath := filepath.Join(homeDir, "config.yaml")
+	t.Setenv("REPOWIRE_CONFIG", configPath)
+	if err := os.WriteFile(configPath, []byte("daemon:\n  spawn:\n    commands:\n      claude-code: "+strconv.Quote(claudeDefaultSpawnCommand+" "+claudeChannelOptIn)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(homeDir, ".claude.json")
 	if err := os.WriteFile(path, []byte(`{"mcpServers":{"repowire":{},"repowire-channel":{}},"other":true}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -283,6 +340,51 @@ func TestDisableChannelKeepsNormalMCP(t *testing.T) {
 	servers := root["mcpServers"].(map[string]any)
 	if servers["repowire"] == nil || servers["repowire-channel"] != nil || root["other"] != true {
 		t.Fatalf("channel cleanup changed unrelated config: %#v", root)
+	}
+	command, err := claudeSpawnCommand()
+	if err != nil || command != claudeDefaultSpawnCommand {
+		t.Fatalf("disabled channel spawn command = %q, %v", command, err)
+	}
+}
+
+func TestClaudeChannelSpawnOptInLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("REPOWIRE_CONFIG", path)
+	writeCommand := func(command string) {
+		t.Helper()
+		content := "daemon:\n  spawn:\n    commands:\n      claude-code: " + strconv.Quote(command) + "\n"
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeCommand(claudeDefaultSpawnCommand)
+	if err := validateClaudeChannelSpawnCommand(); err != nil {
+		t.Fatal(err)
+	}
+	if err := setClaudeChannelSpawnOptIn(true); err != nil {
+		t.Fatal(err)
+	}
+	command, err := claudeSpawnCommand()
+	if err != nil || command != claudeDefaultSpawnCommand+" "+claudeChannelOptIn {
+		t.Fatalf("enabled channel spawn command = %q, %v", command, err)
+	}
+
+	custom := "env CLAUDE_PROFILE=orch claude --model opus"
+	writeCommand(custom)
+	if err := validateClaudeChannelSpawnCommand(); err == nil || !strings.Contains(err.Error(), claudeChannelOptIn) {
+		t.Fatalf("custom command without opt-in was accepted: %v", err)
+	}
+	writeCommand(custom + " " + claudeChannelOptIn)
+	if err := validateClaudeChannelSpawnCommand(); err != nil {
+		t.Fatal(err)
+	}
+	if err := setClaudeChannelSpawnOptIn(false); err != nil {
+		t.Fatal(err)
+	}
+	command, err = claudeSpawnCommand()
+	if err != nil || command != custom {
+		t.Fatalf("custom command after disable = %q, %v", command, err)
 	}
 }
 
@@ -329,7 +431,7 @@ func TestRemoveAntigravityManifestEntry(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := updateAntigravityManifest(false); err != nil {
+	if err := removeLegacyAntigravityManifestEntry(); err != nil {
 		t.Fatal(err)
 	}
 	data, err := readJSON(path, true)
@@ -391,6 +493,185 @@ func TestCodexBridgeSystemdUnitPreservesPath(t *testing.T) {
 	unit := codexBridgeSystemdUnit(pathValue)
 	if !strings.Contains(unit, `Environment="PATH=`+pathValue+`"`) {
 		t.Fatalf("systemd unit does not preserve PATH: %s", unit)
+	}
+}
+
+func TestInstallCodexBridgePreservesLoadedBridge(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd only")
+	}
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	if err := os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launchctl := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/launchctl.calls\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\necho --listen\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	if err := installCodexBridgeService(binDir, "C.UTF-8"); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := os.ReadFile(filepath.Join(homeDir, "launchctl.calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(calls)
+	if strings.Contains(text, "bootout") || strings.Contains(text, "bootstrap") {
+		t.Fatalf("loaded bridge was disrupted: %s", text)
+	}
+	if !strings.Contains(text, "print gui/") || !strings.Contains(text, codexBridgeLabel()) {
+		t.Fatalf("loaded bridge was not probed: %s", text)
+	}
+}
+
+func TestInstallCodexBridgeBootstrapsWhenAbsent(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd only")
+	}
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	if err := os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launchctl := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/launchctl.calls\"\n[ \"$1\" != print ]\n"
+	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\necho --listen\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	if err := installCodexBridgeService(binDir, "C.UTF-8"); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ := os.ReadFile(filepath.Join(homeDir, "launchctl.calls"))
+	if !strings.Contains(string(calls), "bootstrap gui/") || !strings.Contains(string(calls), codexBridgeLabel()+".plist") {
+		t.Fatalf("absent bridge was not bootstrapped: %s", calls)
+	}
+}
+
+func TestInstallConfiguredMobileServicesTracksCredentials(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd only")
+	}
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	launchAgents := filepath.Join(homeDir, "Library", "LaunchAgents")
+	if err := os.MkdirAll(launchAgents, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(homeDir, ".repowire"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launchctl := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/launchctl.calls\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configYAML := "telegram:\n  bot_token: token\n  chat_id: '42'\nslack:\n  bot_token: ''\n  app_token: ''\n  channel_id: ''\n"
+	if err := os.WriteFile(filepath.Join(homeDir, ".repowire", "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staleSlack := filepath.Join(launchAgents, mobileServiceLabel("slack")+".plist")
+	if err := os.WriteFile(staleSlack, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	t.Setenv("TELEGRAM_BOT_TOKEN", "")
+	t.Setenv("TELEGRAM_CHAT_ID", "")
+	t.Setenv("SLACK_BOT_TOKEN", "")
+	t.Setenv("SLACK_APP_TOKEN", "")
+	t.Setenv("SLACK_CHANNEL_ID", "")
+	if err := installConfiguredMobileServices(binDir, "C.UTF-8"); err != nil {
+		t.Fatal(err)
+	}
+	telegramPlist := filepath.Join(launchAgents, mobileServiceLabel("telegram")+".plist")
+	raw, err := os.ReadFile(telegramPlist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "<string>telegram</string><string>start</string>") || !strings.Contains(string(raw), "<key>KeepAlive</key><true/>") {
+		t.Fatalf("Telegram LaunchAgent is incomplete: %s", raw)
+	}
+	if _, err := os.Stat(staleSlack); !os.IsNotExist(err) {
+		t.Fatalf("unconfigured Slack service was not removed: %v", err)
+	}
+	calls, _ := os.ReadFile(filepath.Join(homeDir, "launchctl.calls"))
+	if !strings.Contains(string(calls), "bootstrap gui/") || !strings.Contains(string(calls), mobileServiceLabel("telegram")+".plist") {
+		t.Fatalf("Telegram service was not bootstrapped: %s", calls)
+	}
+}
+
+func TestDaemonRestartDoesNotKickCodexBridge(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd only")
+	}
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launchctl := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/launchctl.calls\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	if err := restartService(); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := os.ReadFile(filepath.Join(homeDir, "launchctl.calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(calls), codexBridgeLabel()) {
+		t.Fatalf("daemon restart touched Codex bridge: %s", calls)
+	}
+}
+
+func TestExplicitCodexBridgeRestartIsDestructive(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd only")
+	}
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	if err := os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(homeDir, "Library", "LaunchAgents", codexBridgeLabel()+".plist"), []byte("plist"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launchctl := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/launchctl.calls\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	if err := restartCodexBridgeService(); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ := os.ReadFile(filepath.Join(homeDir, "launchctl.calls"))
+	if !strings.Contains(string(calls), "kickstart -k") || !strings.Contains(string(calls), codexBridgeLabel()) {
+		t.Fatalf("explicit bridge restart did not replace bridge: %s", calls)
 	}
 }
 

@@ -6,7 +6,7 @@
 # All fields optional. CLI flags override these. Missing fields use defaults.
 
 # Preferred runtime for `repowire orchestrator start` when no --runtime flag.
-# Detection order if unset: pi, claude-code, codex, gemini, opencode.
+# Detection order if unset: pi, claude-code, codex, opencode.
 # runtime: pi
 
 # Circle (logical subnet) the orchestrator joins. When unset, `start` uses the

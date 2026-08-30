@@ -67,7 +67,6 @@ routing errors are owned by the daemon log:
 
 - **Claude Code** — `~/Library/Logs/Claude/mcp-server-repowire.log` on macOS.
 - **Codex** — visible in the Codex log output.
-- **Gemini CLI** — surfaced directly in the Gemini output.
 - **OpenCode** — the plugin log inside OpenCode.
 
 ## Quick "is anything broken?" pass

@@ -29,7 +29,9 @@ Repowire runs locally by default through a daemon on your machine. The hosted re
 
 ## Quickstart
 
-**Requirements:** macOS or Linux and tmux. Python is not required.
+**Requirements:** macOS or Linux. Tmux is required for the default Claude Code
+workflow and Repowire-managed spawning/lifecycle, but not for pane-less Codex,
+OpenCode, or Pi connections. Python is not required.
 
 **1. Install Repowire and wire your agents.**
 
@@ -75,7 +77,7 @@ In `project-a`, tell your local agent:
 Ask project-b what API endpoints they expose.
 ```
 
-Your local agent invokes Repowire's `ask` MCP tool, the second agent receives the question, and the reply comes back as an `ack` notification. Repowire is the mesh and tool surface around the agents, not a standalone chat UI. The same pattern works across Claude Code, Codex, Gemini CLI, OpenCode, and Pi when those runtimes are installed.
+Your local agent invokes Repowire's `ask` MCP tool, the second agent receives the question, and the reply comes back as an `ack` notification. Repowire is the mesh and tool surface around the agents, not a standalone chat UI. The same pattern works across Claude Code, Codex, OpenCode, and Pi when those runtimes are installed.
 
 
 https://github.com/user-attachments/assets/a9eab9c4-8aea-4dbb-8914-e998311b6d14
@@ -119,11 +121,11 @@ The stable public surface is peers, circles, asks, notifications, broadcasts, sc
 
 Transport notes:
 
-- Claude Code uses hooks plus MCP, with its native session inbox preferred for delivery and tmux retained as fallback. Gemini CLI uses hooks plus MCP.
+- Claude Code uses hooks plus MCP, with its authenticated native session inbox for delivery. Claude Code 2.1.224+ is required.
 - Native session APIs connect through runtime-side bridges; routing remains daemon-owned and transport-neutral.
-- Codex uses an App Server bridge plus MCP; tmux remains optional lifecycle/placement support.
-- OpenCode uses a TypeScript plugin plus WebSocket.
-- Pi uses the Repowire extension path when detected by setup.
+- Codex uses an App Server bridge plus MCP; daemon-minted thread certificates preserve identity across soft retirement, while tmux remains optional lifecycle/placement support.
+- OpenCode uses a TypeScript plugin plus WebSocket; its per-session identity and certificate survive plugin reconnects.
+- Pi uses the Repowire extension path when detected by setup, with the same per-session reconnect protection.
 - Claude Code's Channel bridge / ACP delivery is experimental and opt-in.
 - Relay is optional remote access, not a requirement for local routing.
 
@@ -131,12 +133,10 @@ Transport notes:
 
 | Agent runtime | Connection path |
 | --- | --- |
-| Claude Code | Hooks + MCP + native session inbox; tmux fallback; optional experimental channel/ACP |
+| Claude Code | Hooks + MCP + native session inbox; optional experimental channel/ACP |
 | Codex | App Server threads + MCP |
-| Gemini CLI | Hooks + MCP through normalized `BeforeAgent` / `AfterAgent` events |
-| Antigravity CLI (`agy`) | Plugin install verified; hook firing and MCP pending upstream verification |
 | OpenCode | Plugin + WebSocket |
-| Pi | Repowire extension |
+| Pi | Native Repowire extension + WebSocket |
 
 | Human or service surface | Role in the mesh |
 | --- | --- |
@@ -218,12 +218,13 @@ repowire setup --update-checks         # let status/doctor report available upda
 repowire update                        # explicit package upgrade + hook reinstall + daemon restart
 repowire status                        # show installed components and daemon status
 repowire doctor                        # run diagnostics
-repowire service restart               # restart the installed daemon service
+repowire service restart               # restart daemon; preserve live Codex bridge
+repowire service restart bridge        # explicitly restart bridge (interrupts Codex sessions)
 repowire peer list                     # list mesh peers
 repowire peer new PATH [--profile P]   # spawn a peer in tmux
 repowire schedule self 10m "check CI"  # wake this peer later
-repowire telegram start                # run Telegram service peer
-repowire slack start                   # run Slack service peer
+repowire telegram start                # manually run Telegram against another daemon
+repowire slack start                   # manually run Slack against another daemon
 ```
 
 The daemon uses `~/.repowire/state.db` for durable local state. On first startup
@@ -253,7 +254,7 @@ daemon:
     commands:
       claude-code: "claude --dangerously-skip-permissions"
       codex: "codex --dangerously-bypass-approvals-and-sandbox"
-      gemini: "gemini --yolo"
+      pi: "pi"
     profiles:
       codex:
         fast:
@@ -268,7 +269,7 @@ relay:
   api_key: "rw_..."
 ```
 
-Update checks are off by default. If enabled with `repowire setup --update-checks`, `repowire status` and `repowire doctor` may report that a newer release is available, but they do not rewrite hooks or restart services. Use `repowire update` when you want to upgrade explicitly; Homebrew installs delegate that command to `brew upgrade`.
+Update checks are off by default. If enabled with `repowire setup --update-checks`, `repowire status` and `repowire doctor` may report that a newer release is available, but they do not rewrite hooks or restart services. Use `repowire update` when you want to upgrade explicitly; Homebrew installs delegate that command to `brew upgrade`. Updates restart the routing daemon but preserve a live Codex bridge and its App Server, so active Codex sessions remain running.
 
 Security defaults:
 

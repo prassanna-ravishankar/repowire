@@ -75,7 +75,7 @@ func (TmuxPaneLister) ListAllPanes() []PaneInfo {
 
 func detectPaneBackend(command string) string {
 	name := strings.ToLower(filepath.Base(command))
-	for _, candidate := range []struct{ needle, backend string }{{"claude", "claude-code"}, {"codex", "codex"}, {"gemini", "gemini"}, {"opencode", "opencode"}, {"agy", "antigravity"}, {"pi", "pi"}} {
+	for _, candidate := range []struct{ needle, backend string }{{"claude", "claude-code"}, {"codex", "codex"}, {"opencode", "opencode"}, {"pi", "pi"}} {
 		if name == candidate.needle || strings.Contains(name, candidate.needle) {
 			return candidate.backend
 		}

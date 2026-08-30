@@ -216,6 +216,9 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		ClaimedPeerID: cf.PeerID,
 		AgentPID:      cf.AgentPID,
 	}
+	if isDaemonMobilePeer(cf.DisplayName, path, role) {
+		params.PreferredDisplayName = &cf.DisplayName
+	}
 	if len(cf.ModelDetails) > 0 || len(cf.Capabilities) > 0 || cf.HookVersion != nil {
 		md := map[string]any{}
 		if cf.HookVersion != nil {

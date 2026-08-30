@@ -12,7 +12,7 @@ HTTP/WebSocket protocol to this daemon.
 ## Layout
 
 - `cli/` — setup, service management, peer/job/schedule/session commands, and runtime installers
-- `hooks/` — runtime event normalization, ws-hook supervision, tmux injection, transcript extraction
+- `hooks/` — runtime event normalization, ws-hook supervision, native Claude inbox delivery, transcript extraction
 - `mcpstdio/` — newline JSON-RPC proxy that stamps the calling peer identity and forwards to `/mcp`
 - `hub/` — HTTP/WebSocket routes and the complete 31-tool MCP server
 - `service/` — delivery, asks, ACP, spawn/resume, jobs, schedules, and permissions

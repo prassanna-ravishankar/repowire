@@ -319,6 +319,50 @@ func TestSpawnConfigReportsEnabled(t *testing.T) {
 	}
 }
 
+func TestSpawnSurfacesExcludeRetiredRuntimeCommands(t *testing.T) {
+	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
+	t.Setenv("REPOWIRE_CACHE_DIR", t.TempDir())
+	root := t.TempDir()
+	tmux := &fakeTmux{}
+	commands := map[proto.AgentType]string{
+		proto.AgentClaudeCode:     "claude",
+		proto.AgentType("gemini"): "gemini --yolo",
+	}
+	svc := newHermeticSpawnService(t, tmux, service.NewFileOwnership("test-host", tmux.ProbePane), commands, []string{root})
+	h := &Hub{authToken: ""}
+	h.WithSpawn(svc, &fakeSpawnRegistry{}, service.NewAskTracker(0), "test-host", proto.CircleBoundarySession)
+	muxRouter := http.NewServeMux()
+	h.registerSpawnRoutes(muxRouter)
+	srv := httptest.NewServer(muxRouter)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/spawn/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var config SpawnConfigResponse
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		t.Fatal(err)
+	}
+	if _, leaked := config.Commands[proto.AgentType("gemini")]; leaked {
+		t.Fatalf("retired runtime leaked through spawn config: %v", config.Commands)
+	}
+
+	retired := proto.AgentType("gemini")
+	spawn := postSpawnJSON(t, srv, "/spawn", SpawnRequest{Path: root, Backend: &retired, Circle: "default"})
+	defer spawn.Body.Close()
+	if spawn.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("retired runtime spawn status = %d, want 422", spawn.StatusCode)
+	}
+
+	switchResp := postSpawnJSON(t, srv, "/peers/anything/switch-backend", SwitchBackendRequest{NewBackend: retired})
+	defer switchResp.Body.Close()
+	if switchResp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("retired runtime switch status = %d, want 422", switchResp.StatusCode)
+	}
+}
+
 // TestSpawnClaudeCodeIsPendingHook verifies a self-registering backend (claude-code)
 // spawns and leaves registration to its SessionStart hook: registration_state is
 // pending_hook, no peer_id is pre-allocated, and the pane is recorded as

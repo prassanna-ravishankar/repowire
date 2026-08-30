@@ -372,39 +372,25 @@ func handleMessage(ctx context.Context, conn *websocket.Conn, data map[string]an
 	}
 	from, to, text := firstNonempty(stringValue(data, "from_peer"), "unknown"), stringValue(data, "to_peer"), stringValue(data, "text")+formatAttachments(data["attachments"])
 	injected := formatInboundMessage(from, to, typ, stringValue(data, "correlation_id"), text)
-	var inboxErr error
-	if firstNonempty(os.Getenv("REPOWIRE_BACKEND"), "claude-code") == "claude-code" {
-		if socket := claudeMessagingSocket(); socket != "" {
-			if inboxErr = injectClaudeInbox(socket, injected); inboxErr == nil {
-				sendDeliveryAck(ctx, conn, data, "accepted", "claude inbox socket")
-				return false, unsafeStrikes
-			}
-			errf("ws-hook: Claude inbox delivery failed, falling back to tmux: %v", inboxErr)
+	backend := firstNonempty(os.Getenv("REPOWIRE_BACKEND"), "claude-code")
+	detail := "native runtime inbox unavailable"
+	if backend == "claude-code" {
+		socket := claudeMessagingSocket()
+		if socket == "" {
+			detail = "Claude native inbox unavailable; Claude Code 2.1.224 or newer is required"
+		} else if err := injectClaudeInbox(socket, injected); err == nil {
+			sendDeliveryAck(ctx, conn, data, "accepted", "claude inbox socket")
+			return false, unsafeStrikes
+		} else {
+			detail = "Claude native inbox delivery failed: " + err.Error()
+			errf("ws-hook: %s", detail)
 		}
-	}
-	safe := paneSafe(paneID, expectedCommand)
-	if safe == nil || !*safe {
-		status, detail := "rejected", "Pane "+paneID+" not safe for injection"
-		if safe == nil {
-			status, detail = "failed", "Pane "+paneID+" safety inconclusive; delivery not injected"
-		}
-		if inboxErr != nil {
-			detail = "Claude inbox failed: " + inboxErr.Error() + "; " + detail
-		}
-		sendDeliveryAck(ctx, conn, data, status, detail)
-		if typ == "ask" {
-			sendFrameError(ctx, conn, stringValue(data, "correlation_id"), detail)
-		}
-		return safe != nil && !*safe, unsafeStrikes
-	}
-	if injectText(paneID, injected) {
-		sendDeliveryAck(ctx, conn, data, "injected", "")
 	} else {
-		detail := "Failed to send keys to pane " + paneID
-		if inboxErr != nil {
-			detail = "Claude inbox failed: " + inboxErr.Error() + "; " + detail
-		}
-		sendDeliveryAck(ctx, conn, data, "failed", detail)
+		detail = "runtime " + backend + " has no native inbox transport"
+	}
+	sendDeliveryAck(ctx, conn, data, "failed", detail)
+	if typ == "ask" {
+		sendFrameError(ctx, conn, stringValue(data, "correlation_id"), detail)
 	}
 	return false, unsafeStrikes
 }

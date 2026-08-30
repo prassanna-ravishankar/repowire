@@ -416,6 +416,61 @@ func TestRegisterRestoresThreadIdentityFromBirthCertificate(t *testing.T) {
 	}
 }
 
+func TestRegisterRetiredClaimFallsBackToBirthCertificate(t *testing.T) {
+	threadID, cwd := "thread-live", t.TempDir()
+	cert := map[string]any{
+		"nonce": "proof", "peer_id": "repow-stable", "display_name": "repo-codex",
+		"backend": "codex", "project_path": cwd, "runtime_session_id": threadID,
+		"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+	}
+	registerCalls := 0
+	validateCalls := 0
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/peers/identity/validate":
+			validateCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer": map[string]any{
+				"peer_id": "repow-stable", "display_name": "repo-codex", "circle": "0", "role": "agent",
+			}})
+		case "/peers":
+			registerCalls++
+			if registerCalls == 1 {
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{"detail": "peer: retired peer_id cannot be reclaimed without a live agent"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"peer_id": "repow-stable", "display_name": "repo-codex", "circle": "0", "role": "agent",
+				"birth_certificate": cert,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer daemon.Close()
+
+	p := &threadPeer{
+		bridge: &Bridge{daemonHTTP: daemon.URL}, id: threadID, cwd: cwd,
+		circle: "0", role: "agent", peerID: "repow-stable", displayName: "repo-codex", birthCert: cert,
+	}
+	if err := p.register(context.Background()); err == nil {
+		t.Fatal("first retired registration unexpectedly succeeded")
+	}
+	if p.peerID != "" {
+		t.Fatalf("retired in-memory claim was not cleared: %q", p.peerID)
+	}
+	if err := p.register(context.Background()); err != nil {
+		t.Fatalf("certified retry: %v", err)
+	}
+	if validateCalls != 1 || registerCalls != 2 {
+		t.Fatalf("validate calls=%d register calls=%d, want 1 and 2", validateCalls, registerCalls)
+	}
+	if p.peerID != "repow-stable" {
+		t.Fatalf("recovered peer_id = %q", p.peerID)
+	}
+}
+
 func TestAppServerReadFailureReconnectsWithoutStoppingOwnedServer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	connections := make(chan int32, 2)
