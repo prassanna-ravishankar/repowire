@@ -50,7 +50,7 @@ The dashboard uses daemon HTTP and SSE routes directly:
 
 Dashboard spawn and backend controls use the same allowed paths, backend commands, and profile configuration as CLI and MCP surfaces.
 
-Backend switching appears only for Repowire-managed tmux peers with a recorded pane id. Pane-less native sessions, including Codex App Server threads, show `native · no switch`: Repowire cannot prove and terminate their exact runtime process safely, so it does not offer a destructive control. A rejected switch on an eligible peer is shown inline in the peer header.
+The peer header's `Fork to…` control starts a sibling agent on another configured backend in the same project and circle. The source peer stays alive, so the control is available for pane-less native sessions as well as Repowire-managed tmux peers. The fork shares workspace state but does not clone backend-native conversation history. Success and rejected forks are shown inline in the peer header.
 
 ## Limits
 

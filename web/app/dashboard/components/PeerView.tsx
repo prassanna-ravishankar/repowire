@@ -462,7 +462,7 @@ export function PeerView({
           </div>
         </div>
         <StatusLabel status={peer.status} />
-        <SwitchBackendControl peer={peer} apiBase={apiBase} />
+        <ForkBackendControl peer={peer} apiBase={apiBase} onForked={onSent} />
         {peer.path ? <OpenInEditorButton path={peer.path} /> : null}
         <CopyPeerName peer={peer} />
         <button
@@ -2167,13 +2167,31 @@ function OpenInEditorButton({ path }: { path: string }) {
   );
 }
 
-function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }) {
+interface ForkBackendResponse {
+  display_name: string;
+  registration_state: string;
+}
+
+function ForkBackendControl({
+  peer,
+  apiBase,
+  onForked,
+}: {
+  peer: Peer;
+  apiBase: string;
+  onForked: () => void;
+}) {
   const [configuredBackends, setConfiguredBackends] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!peer.pane_id) return;
+    setError(null);
+    setStatus(null);
+  }, [peer.peer_id]);
+
+  useEffect(() => {
     let cancelled = false;
     fetch(`${apiBase}/spawn/config`, { credentials: "include" })
       .then((r) => (r.ok ? r.json() : null))
@@ -2189,7 +2207,7 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
     return () => {
       cancelled = true;
     };
-  }, [apiBase, peer.pane_id]);
+  }, [apiBase]);
 
   // Map configured runtimes → unique backends, filter out current backend.
   const options = useMemo(() => {
@@ -2204,33 +2222,18 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
     return out;
   }, [configuredBackends, peer.backend]);
 
-  if (!peer.pane_id) {
-    return (
-      <span
-        className="hidden h-8 items-center rounded border border-border px-2 font-mono text-[10px] uppercase tracking-[0.12em] text-outline sm:flex"
-        title="Backend switching requires a Repowire-managed tmux pane. Native sessions stay attached to their runtime."
-      >
-        native · no switch
-      </span>
-    );
-  }
-
   if (configuredBackends === null || options.length === 0) return null;
 
   async function onChange(event: React.ChangeEvent<HTMLSelectElement>) {
     const newBackend = event.target.value;
     event.target.value = "";  // reset placeholder
     if (!newBackend) return;
-    if (!confirm(
-      `Switch ${peer.name} from ${peer.backend} to ${newBackend}?\n\n` +
-      `The current session will be killed and a fresh ${newBackend} session ` +
-      `will start in the same directory. Conversation state is not preserved.`
-    )) return;
     setError(null);
+    setStatus(null);
     setBusy(true);
     try {
       const r = await fetch(
-        `${apiBase}/peers/${encodeURIComponent(peer.peer_id)}/switch-backend`,
+        `${apiBase}/peers/${encodeURIComponent(peer.peer_id)}/fork-backend`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2247,7 +2250,9 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
         setError(hint);
         return;
       }
-      // Success: peer list will refresh via events; nothing else to do here.
+      const body = (await r.json()) as ForkBackendResponse;
+      setStatus(`Forked ${body.display_name}; source is still running.`);
+      onForked();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Request failed");
     } finally {
@@ -2256,12 +2261,13 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
   }
 
   return (
-    <div className="hidden max-w-[220px] flex-col items-end gap-1 sm:flex">
+    <div className="hidden max-w-[260px] flex-col items-end gap-1 sm:flex">
       <select
-        aria-label="Switch backend"
+        aria-label="Fork to backend"
         disabled={busy}
         defaultValue=""
         onChange={onChange}
+        title="Start a sibling in the same project and circle. The current peer stays alive; conversation history is not copied."
         className={cn(
           "h-8 max-w-[140px] truncate rounded border bg-surface-container-low px-2 font-mono text-[11px] uppercase tracking-[0.14em] text-on-surface-variant",
           error ? "border-error/60" : "border-border",
@@ -2269,7 +2275,7 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
         )}
       >
         <option value="" disabled>
-          {busy ? "switching…" : `switch → ${peer.backend}`}
+          {busy ? "forking…" : "fork to…"}
         </option>
         {options.map((backend) => (
           <option key={backend} value={backend}>
@@ -2277,11 +2283,8 @@ function SwitchBackendControl({ peer, apiBase }: { peer: Peer; apiBase: string }
           </option>
         ))}
       </select>
-      {error ? (
-        <span role="alert" className="font-mono text-[10px] leading-tight text-error">
-          {error}
-        </span>
-      ) : null}
+      {error ? <span role="alert" className="font-mono text-[10px] leading-tight text-error">{error}</span> : null}
+      {!error && status ? <span role="status" className="font-mono text-[10px] leading-tight text-primary">{status}</span> : null}
     </div>
   );
 }

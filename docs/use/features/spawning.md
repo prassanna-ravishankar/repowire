@@ -10,6 +10,8 @@ Use spawning when an orchestrator, dashboard, CLI command, or MCP tool should la
 
 Use restart when the backend supports resume and the existing peer has a captured runtime session id. Restart is strict: Repowire pre-validates resume data before killing a live pane.
 
+Use dashboard `Fork to…` when you want a second backend to join the same project and circle without stopping the source peer. A fork shares the working tree, not the source runtime's private conversation history, so coordinate before both peers edit overlapping files.
+
 ## Setup
 
 Configure spawn commands and allowed paths in `~/.repowire/config.yaml`:
@@ -75,8 +77,8 @@ Dashboard spawn and backend controls use the same spawn configuration as CLI and
 
 - CLI: `repowire peer new`, `repowire peer restart`.
 - MCP: `spawn_peer`, `kill_peer`.
-- HTTP: spawn and session-control routes exposed by the daemon.
-- Dashboard: spawn dialog and backend/profile controls.
+- HTTP: `POST /spawn`, `POST /peers/{peer_id}/fork-backend`, and session-control routes exposed by the daemon.
+- Dashboard: spawn dialog, backend/profile controls, and non-destructive `Fork to…` from a peer header.
 
 ## Limits
 
@@ -86,6 +88,7 @@ Dashboard spawn and backend controls use the same spawn configuration as CLI and
 - Killing a tmux pane is allowed only when the daemon can prove the pane belongs to the target peer: Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target.
 - Externally attached peers without matching metadata cannot have their pane killed by Repowire.
 - Restart does not fall back to a fresh spawn when resume data is missing or stale.
+- Backend fork preserves the source peer and starts the target as an agent-role sibling; it does not copy backend-native conversation history.
 
 ## Troubleshooting
 

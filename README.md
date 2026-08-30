@@ -196,7 +196,11 @@ repowire setup --relay
   <img src="images/repowire-hosted-2.png" alt="Repowire dashboard peer overview" width="700" />
 </p>
 
-The dashboard shows peers, status, descriptions, chat turns, tool calls, attachments, durable jobs, and the selected peer/session timeline. For Claude Code peers, it can merge transcript history with realtime events; other backends contribute realtime events as their transports report them.
+The dashboard shows peers, status, descriptions, chat turns, tool calls, attachments, durable jobs, and the selected peer/session timeline. Its non-destructive `Fork to…` control can start a sibling backend in the same project and circle without stopping the current peer; backend-native conversation history is not copied. For Claude Code peers, the timeline can merge transcript history with realtime events; other backends contribute realtime events as their transports report them.
+
+<p align="center">
+  <img src="images/dashboard-fork-backend.png" alt="Dashboard peer header with the non-destructive Fork to backend control" width="700" />
+</p>
 
 Run it locally at:
 

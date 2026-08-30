@@ -356,10 +356,80 @@ func TestSpawnSurfacesExcludeRetiredRuntimeCommands(t *testing.T) {
 		t.Fatalf("retired runtime spawn status = %d, want 422", spawn.StatusCode)
 	}
 
-	switchResp := postSpawnJSON(t, srv, "/peers/anything/switch-backend", SwitchBackendRequest{NewBackend: retired})
-	defer switchResp.Body.Close()
-	if switchResp.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("retired runtime switch status = %d, want 422", switchResp.StatusCode)
+	forkResp := postSpawnJSON(t, srv, "/peers/anything/fork-backend", ForkBackendRequest{NewBackend: retired})
+	defer forkResp.Body.Close()
+	if forkResp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("retired runtime fork status = %d, want 422", forkResp.StatusCode)
+	}
+}
+
+func TestForkBackendSpawnsSiblingWithoutTouchingSource(t *testing.T) {
+	tmux := &fakeTmux{spawnResult: service.SpawnResult{
+		DisplayName: "project-claude-code", TmuxSession: "default:project", PaneID: "%9",
+	}}
+	reg := &fakeSpawnRegistry{}
+	srv, svc := newSpawnTestHub(t, reg, tmux)
+	reg.peers = []*proto.Peer{{
+		PeerID:      "peer-source",
+		DisplayName: "project-codex",
+		Path:        svc.AllowedPaths()[0],
+		Machine:     "test-host",
+		Backend:     proto.AgentCodex,
+		Circle:      "default",
+		Role:        proto.RoleOrchestrator,
+	}}
+
+	resp := postSpawnJSON(t, srv, "/peers/peer-source/fork-backend", ForkBackendRequest{NewBackend: proto.AgentClaudeCode})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("fork status = %d, want 200", resp.StatusCode)
+	}
+	var out ForkBackendResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.SourcePeerID != "peer-source" || out.SourceDisplayName != "project-codex" || out.NewBackend != proto.AgentClaudeCode {
+		t.Fatalf("fork response = %+v", out)
+	}
+	if service.NormPath(tmux.spawnConfig.Path) != service.NormPath(svc.AllowedPaths()[0]) || tmux.spawnConfig.Circle != "default" || tmux.spawnConfig.Backend != proto.AgentClaudeCode {
+		t.Fatalf("spawn config = %+v", tmux.spawnConfig)
+	}
+	if tmux.spawnConfig.Role != proto.RoleAgent {
+		t.Fatalf("fork role = %q, want agent", tmux.spawnConfig.Role)
+	}
+	if len(tmux.killed) != 0 || len(reg.unregistered) != 0 {
+		t.Fatalf("fork touched source: killed=%v unregistered=%v", tmux.killed, reg.unregistered)
+	}
+	if len(out.Warnings) == 0 {
+		t.Fatal("fork response omitted conversation-history warning")
+	}
+}
+
+func TestForkBackendRejectsSameBackendWithoutSpawning(t *testing.T) {
+	tmux := &fakeTmux{}
+	reg := &fakeSpawnRegistry{}
+	srv, svc := newSpawnTestHub(t, reg, tmux)
+	reg.peers = []*proto.Peer{{
+		PeerID: "peer-source", DisplayName: "project-codex", Path: svc.AllowedPaths()[0],
+		Machine: "test-host", Backend: proto.AgentCodex, Circle: "default", Role: proto.RoleAgent,
+	}}
+
+	resp := postSpawnJSON(t, srv, "/peers/peer-source/fork-backend", ForkBackendRequest{NewBackend: proto.AgentCodex})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("same-backend fork status = %d, want 409", resp.StatusCode)
+	}
+	if tmux.spawnConfig.Backend != "" || len(tmux.killed) != 0 || len(reg.unregistered) != 0 {
+		t.Fatalf("rejected fork mutated state: spawn=%+v killed=%v unregistered=%v", tmux.spawnConfig, tmux.killed, reg.unregistered)
+	}
+}
+
+func TestRemovedSwitchBackendRouteIsNotRegistered(t *testing.T) {
+	srv, _ := newSpawnTestHub(t, &fakeSpawnRegistry{}, &fakeTmux{})
+	resp := postSpawnJSON(t, srv, "/peers/anything/switch-backend", map[string]string{"new_backend": "claude-code"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("removed switch route status = %d, want 404", resp.StatusCode)
 	}
 }
 

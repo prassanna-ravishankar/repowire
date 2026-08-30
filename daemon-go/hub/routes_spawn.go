@@ -7,7 +7,7 @@ package hub
 //	POST /spawn                           create an agent session in tmux
 //	POST /kill-peer                       kill a registered peer by mesh identity
 //	POST /peers/{name}/restart            strict kill + backend-resume
-//	POST /peers/{name}/switch-backend     kill + respawn with a new backend
+//	POST /peers/{name}/fork-backend       spawn a sibling on a new backend
 //	POST /peers/{name}/rehook             ws-hook recovery (dry-run/report subset)
 //
 // Identity discipline: every destructive proof keys on peer_id, never
@@ -54,7 +54,7 @@ type spawnDeps struct {
 
 // WithSpawn attaches the spawn-kill-restart route group. svc owns tmux + ownership;
 // reg is the resolve/allocate/unregister seam; asks supplies the quiesce barrier
-// for restart/switch; selfMachine is the daemon hostname for the same-host gate.
+// for restart; selfMachine is the daemon hostname for the same-host gate.
 // Returns the hub for chaining; call before Routes.
 func (h *Hub) WithSpawn(svc *service.SpawnService, reg spawnRegistry, asks *service.AskTracker, selfMachine string, boundary proto.CircleBoundary) *Hub {
 	if boundary == "" {
@@ -75,7 +75,7 @@ func (h *Hub) registerSpawnRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /spawn", h.requireAuth(h.handleSpawn))
 	mux.HandleFunc("POST /kill-peer", h.requireAuth(h.handleKillPeer))
 	mux.HandleFunc("POST /peers/{name}/restart", h.requireAuth(h.handleRestartPeer))
-	mux.HandleFunc("POST /peers/{name}/switch-backend", h.requireAuth(h.handleSwitchBackend))
+	mux.HandleFunc("POST /peers/{name}/fork-backend", h.requireAuth(h.handleForkBackend))
 	mux.HandleFunc("POST /peers/{name}/rehook", h.requireAuth(h.handleRehookPeer))
 }
 
@@ -650,30 +650,34 @@ func restartResumeUnavailable(peer *proto.Peer, reason string) map[string]any {
 }
 
 // ---------------------------------------------------------------------------
-// POST /peers/{name}/switch-backend
+// POST /peers/{name}/fork-backend
 // ---------------------------------------------------------------------------
 
-// SwitchBackendRequest mirrors spawn.py SwitchBackendRequest.
-type SwitchBackendRequest struct {
+// ForkBackendRequest starts a sibling runtime in the source peer's project and
+// circle. Backend-native conversation history remains attached to the source.
+type ForkBackendRequest struct {
 	NewBackend proto.AgentType `json:"new_backend"`
 }
 
-// SwitchBackendResponse mirrors spawn.py SwitchBackendResponse.
-type SwitchBackendResponse struct {
-	OK          bool            `json:"ok"`
-	DisplayName string          `json:"display_name"`
-	TmuxSession string          `json:"tmux_session"`
-	OldBackend  proto.AgentType `json:"old_backend"`
-	NewBackend  proto.AgentType `json:"new_backend"`
-	Command     string          `json:"command"`
+type ForkBackendResponse struct {
+	OK                bool            `json:"ok"`
+	SourcePeerID      string          `json:"source_peer_id"`
+	SourceDisplayName string          `json:"source_display_name"`
+	SourceBackend     proto.AgentType `json:"source_backend"`
+	NewBackend        proto.AgentType `json:"new_backend"`
+	DisplayName       string          `json:"display_name"`
+	TmuxSession       string          `json:"tmux_session"`
+	PeerID            *string         `json:"peer_id"`
+	RegistrationState string          `json:"registration_state"`
+	Warnings          []string        `json:"warnings"`
 }
 
-func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
+func (h *Hub) handleForkBackend(w http.ResponseWriter, r *http.Request) {
 	if !h.spawnReady(w) {
 		return
 	}
 	name := r.PathValue("name")
-	var req SwitchBackendRequest
+	var req ForkBackendRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
@@ -696,15 +700,15 @@ func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 		h.writeSpawnError(w, err)
 		return
 	}
-	peerCopy := resolved // switch uses identity + spawned-set ownership, not adoption
+	peerCopy := resolved
 
-	if !h.sameHostOK(w, peerCopy, "Backend switch is same-host only in v1; ACP transport required for remote peers.") {
+	if !h.sameHostOK(w, peerCopy, "Backend fork is same-host only in v1; remote workspace spawning requires a remote spawn transport.") {
 		return
 	}
 	if peerCopy.Backend == req.NewBackend {
 		writeJSONError(w, http.StatusConflict, map[string]any{
 			"error":   "same_backend",
-			"hint":    "Peer is already running " + string(peerCopy.Backend),
+			"hint":    "Choose a backend different from the source peer's " + string(peerCopy.Backend) + " runtime.",
 			"backend": string(peerCopy.Backend),
 		})
 		return
@@ -712,82 +716,44 @@ func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 	if peerCopy.Path == "" {
 		writeJSONError(w, http.StatusConflict, map[string]any{
 			"error": "missing_path",
-			"hint":  "Peer has no recorded working directory; cannot respawn.",
+			"hint":  "Peer has no recorded working directory; cannot fork its workspace.",
 		})
 		return
-	}
-
-	svc := h.spawn.svc
-	resolvedPath, perr := svc.ValidatePath(peerCopy.Path)
-	if perr != nil {
-		h.writeSpawnError(w, perr)
-		return
-	}
-	command, cerr := svc.ResolveCommand(req.NewBackend, nil)
-	if cerr != nil {
-		// Decorate command_unavailable with new_backend (parity with Python).
-		if se, ok := service.AsSpawnError(cerr); ok {
-			if m, ok := se.Detail.(map[string]any); ok && m["error"] == "command_unavailable" {
-				m["new_backend"] = string(req.NewBackend)
-			}
-		}
-		h.writeSpawnError(w, cerr)
-		return
-	}
-	proof := h.destructivePaneProof(peerCopy)
-	if !proof.ok {
-		writeJSONError(w, http.StatusConflict, h.paneControlErrorDetail(peerCopy, proof))
-		return
-	}
-
-	if h.spawn.asks != nil {
-		if qerr := h.spawn.asks.BeginQuiesce(ctx, peerCopy.PeerID); qerr != nil {
-			h.writeQuiesceError(w, qerr, ctx, peerCopy.PeerID, "switch_in_progress",
-				"Another switch is in progress for this peer. Retry shortly.")
-			return
-		}
-		defer h.spawn.asks.EndQuiesce(ctx, peerCopy.PeerID)
 	}
 
 	spawnCircle := peerCopy.Circle
 	if spawnCircle == "" {
-		writeJSONError(w, http.StatusConflict, "peer has no circle; cannot switch backend")
+		writeJSONError(w, http.StatusConflict, "peer has no circle; cannot fork backend")
 		return
 	}
-	spawnConfig, perr := svc.PrepareReplacement(service.SpawnConfig{
-		Path: resolvedPath, Circle: spawnCircle, TargetPane: proof.paneID,
-		Backend: req.NewBackend, Command: command, Role: peerCopy.Role,
+	sourcePane := ""
+	if peerCopy.PaneID != nil {
+		sourcePane = *peerCopy.PaneID
+	}
+	spawnResp, spawnErr := h.spawnPeer(ctx, SpawnRequest{
+		Path:       peerCopy.Path,
+		Backend:    &req.NewBackend,
+		Circle:     spawnCircle,
+		Role:       proto.RoleAgent,
+		SourcePane: sourcePane,
 	})
-	if perr != nil {
-		h.writeSpawnError(w, perr)
+	if spawnErr != nil {
+		h.writeSpawnError(w, spawnErr)
 		return
 	}
-
-	if !svc.Tmux().KillPane(proof.paneID) {
-		writeJSONError(w, http.StatusInternalServerError, map[string]any{
-			"error":   "kill_failed",
-			"hint":    "tmux kill-pane failed for the peer's verified pane; the old agent may still be alive. Aborting switch to avoid a zombie runtime. Check `tmux list-panes -a`.",
-			"pane_id": proof.paneID,
-		})
-		return
-	}
-	svc.Ownership().Forget(proof.paneID)
-	clienthooks.ClearPaneRuntimeState(proof.paneID)
-	// id is already resolved (resolveStrict), so the ambiguity error can't fire.
-	_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
-
-	result, serr := svc.Spawn(spawnConfig)
-	if serr != nil {
-		h.writeSpawnError(w, serr)
-		return
-	}
-	writeJSON(w, http.StatusOK, SwitchBackendResponse{
-		OK:          true,
-		DisplayName: result.DisplayName,
-		TmuxSession: result.TmuxSession,
-		OldBackend:  peerCopy.Backend,
-		NewBackend:  req.NewBackend,
-		Command:     command,
+	warnings := append([]string{}, spawnResp.Warnings...)
+	warnings = append(warnings, "The source peer is still running; backend-native conversation history was not copied.")
+	writeJSON(w, http.StatusOK, ForkBackendResponse{
+		OK:                true,
+		SourcePeerID:      string(peerCopy.PeerID),
+		SourceDisplayName: string(peerCopy.DisplayName),
+		SourceBackend:     peerCopy.Backend,
+		NewBackend:        req.NewBackend,
+		DisplayName:       spawnResp.DisplayName,
+		TmuxSession:       spawnResp.TmuxSession,
+		PeerID:            spawnResp.PeerID,
+		RegistrationState: spawnResp.RegistrationState,
+		Warnings:          warnings,
 	})
 }
 
