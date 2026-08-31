@@ -16,6 +16,8 @@ import (
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
+var startSessionWSHook = startWSHook
+
 func Run(args []string) int {
 	if len(args) == 0 {
 		errf("usage: repowire hook <session|stop|prompt|notification|pretooluse>")
@@ -51,6 +53,10 @@ func runSession(backend string) int {
 		errf("session: invalid JSON input: %v", err)
 		return 0
 	}
+	return handleSession(raw, backend, true)
+}
+
+func handleSession(raw map[string]any, backend string, emitContext bool) int {
 	payload := Normalize(raw, backend)
 	cwd := firstNonempty(payload.CWD, mustGetwd())
 	info := getTmuxInfo()
@@ -75,11 +81,15 @@ func runSession(backend string) int {
 	locked := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil
 	prior := ReadPaneRuntimeMetadata(info.PaneID)
 	needsTakeover := !locked
-	if needsTakeover && payload.SessionID != "" && stringValue(prior, "hook_session_id") == payload.SessionID && stringValue(prior, "cwd") == cwd && stringValue(prior, "backend") == backend {
+	livePeerID := ""
+	if needsTakeover {
+		livePeerID = peerForPane(info.PaneID)
+	}
+	priorPeerID := firstNonempty(stringValue(prior, "peer_id"), livePeerID)
+	if needsTakeover && reusablePaneRegistration(prior, payload.SessionID, cwd, backend, priorPeerID, livePeerID) {
 		lock.Close()
 		return 0
 	}
-	priorPeerID := firstNonempty(stringValue(prior, "peer_id"), peerForPane(info.PaneID))
 
 	hint := consumeSpawnHint(cwd, backend)
 	_, circle, circleSource, boundaryErr := tmuxPlacement(info)
@@ -165,12 +175,13 @@ func runSession(backend string) int {
 		return 0
 	}
 	peerID := stringValue(registered, "peer_id")
-	displayName := firstNonempty(stringValue(registered, "display_name"), filepath.Base(cwd))
-	if needsTakeover && peerID == "" {
-		errf("registration unconfirmed during pane takeover, leaving incumbent in place")
+	if status < http.StatusOK || status >= http.StatusMultipleChoices || peerID == "" {
+		detail := firstNonempty(stringValue(registered, "detail"), http.StatusText(status))
+		errf("SessionStart registration failed (status=%d): %s", status, detail)
 		lock.Close()
 		return 0
 	}
+	displayName := firstNonempty(stringValue(registered, "display_name"), filepath.Base(cwd))
 	if assigned, present := registered["pane_assigned"].(bool); present && !assigned {
 		errf("pane %s held by live orchestrator; registered as %s (%s) without pane ownership", info.PaneID, displayName, peerID)
 		lock.Close()
@@ -209,7 +220,7 @@ func runSession(backend string) int {
 		meta["birth_certificate"] = cert
 	}
 	_ = writeMetadata(info.PaneID, meta)
-	if err := startWSHook(info.PaneID, peerID, displayName, backend, cwd, agentPID, lock); err != nil {
+	if err := startSessionWSHook(info.PaneID, peerID, displayName, backend, cwd, agentPID, lock); err != nil {
 		errf("failed to start WebSocket hook: %v", err)
 	}
 	lock.Close()
@@ -223,10 +234,18 @@ func runSession(backend string) int {
 	if context := loadHandoff(cwd, backend, payload.SessionID); context != "" {
 		sections = append(sections, context)
 	}
-	printJSON(map[string]any{"hookSpecificOutput": map[string]any{
-		"hookEventName": "SessionStart", "additionalContext": strings.Join(sections, "\n\n"),
-	}})
+	if emitContext {
+		printJSON(map[string]any{"hookSpecificOutput": map[string]any{
+			"hookEventName": "SessionStart", "additionalContext": strings.Join(sections, "\n\n"),
+		}})
+	}
 	return 0
+}
+
+func reusablePaneRegistration(prior map[string]any, sessionID, cwd, backend, priorPeerID, livePeerID string) bool {
+	return sessionID != "" && priorPeerID != "" && livePeerID == priorPeerID &&
+		stringValue(prior, "hook_session_id") == sessionID &&
+		stringValue(prior, "cwd") == cwd && stringValue(prior, "backend") == backend
 }
 
 func runStop(backend string, remindersOnly bool) int {
@@ -304,12 +323,26 @@ func runPrompt(backend string) int {
 		errf("prompt: invalid JSON input: %v", err)
 		return 0
 	}
+	return handlePrompt(raw, backend)
+}
+
+func handlePrompt(raw map[string]any, backend string) int {
 	payload := Normalize(raw, backend)
 	if payload.Event != "UserPromptSubmit" {
 		return 0
 	}
 	pane := getPaneID()
-	if pane != "" && !updateStatus(pane, "busy", "working", payload.Model, true) {
+	updated := pane != "" && updateStatus(pane, "busy", "working", payload.Model, true)
+	if backend == "claude-code" && pane != "" && !updated {
+		repair := make(map[string]any, len(raw))
+		for key, value := range raw {
+			repair[key] = value
+		}
+		repair["hook_event_name"] = "SessionStart"
+		handleSession(repair, backend, false)
+		updated = updateStatus(pane, "busy", "working", payload.Model, true)
+	}
+	if pane != "" && !updated {
 		errf("prompt: failed to update status for pane %s", pane)
 	}
 	if backend == "claude-code" && pane != "" && payload.TranscriptPath != "" {
