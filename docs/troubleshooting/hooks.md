@@ -24,6 +24,12 @@ server-global tmux lifecycle hooks used for pane exits and renames.
 3. Start Claude Code in a tmux pane. After your first prompt, run `repowire peer list` in another shell. Peer should appear within a few seconds.
 4. On Claude Code 2.1.224+, `/status` should show a `Peer address` and `repowire peer describe NAME` should report `transport: claude-inbox`. If native delivery fails, Repowire logs the socket error under `~/.cache/repowire/logs/ws-hook-*.log` and returns a failed delivery receipt. There is no keystroke fallback.
 
+If the hook reports `pane_identity_mismatch` after tmux has restarted, the pane
+id may have been reused while an ownership record from an older tmux session
+remained on disk. Repowire discards that stale bootstrap record automatically.
+It still rejects path or placement mismatches within the same live tmux session,
+because those records may authorize destructive pane operations.
+
 ### Codex
 
 Current Codex releases use App Server for registration, lifecycle, chat, and
@@ -46,8 +52,10 @@ OpenCode does not use shell hooks. It uses a TypeScript plugin at `~/.config/ope
 All hooks shell out to the daemon over HTTP. If the daemon is down, hooks
 succeed (they do not block agent startup) but no peer state changes. A later
 Claude Code `UserPromptSubmit` repairs a missing pane registration with the
-current session's authenticated inbox; a failed SessionStart is never retained
-as an empty ws-hook identity. See [Daemon unreachable](daemon.md).
+current session's authenticated inbox. It also replaces a connected ws-hook
+whose Claude inbox socket belongs to an older process, rather than accepting a
+status-only recovery that cannot deliver messages. A failed SessionStart is
+never retained as an empty ws-hook identity. See [Daemon unreachable](daemon.md).
 
 ## After upgrading `repowire`
 
