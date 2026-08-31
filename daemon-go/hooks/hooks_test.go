@@ -14,6 +14,126 @@ import (
 	"time"
 )
 
+func TestReusablePaneRegistrationRequiresConfirmedLivePeer(t *testing.T) {
+	prior := map[string]any{
+		"hook_session_id": "session-1", "cwd": "/project", "backend": "claude-code", "peer_id": "repow-1",
+	}
+	if !reusablePaneRegistration(prior, "session-1", "/project", "claude-code", "repow-1", "repow-1") {
+		t.Fatal("confirmed matching pane registration was not reusable")
+	}
+	for name, peers := range map[string][2]string{
+		"empty metadata":      {"", ""},
+		"missing live peer":   {"repow-1", ""},
+		"different live peer": {"repow-1", "repow-2"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if reusablePaneRegistration(prior, "session-1", "/project", "claude-code", peers[0], peers[1]) {
+				t.Fatal("unconfirmed pane registration was reused")
+			}
+		})
+	}
+}
+
+func TestFailedSessionRegistrationDoesNotPersistEmptyPeer(t *testing.T) {
+	homeDir, binDir := hookTestEnvironment(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/peers/by-pane/%2526" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Path == "/peers" && r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]any{"detail": "daemon warming up"})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	configureHookTestDaemon(t, server.URL)
+	t.Setenv("PATH", binDir+":/usr/bin:/bin")
+	handleSession(map[string]any{
+		"hook_event_name": "SessionStart", "session_id": "session-1", "cwd": homeDir,
+	}, "claude-code", false)
+	if meta := ReadPaneRuntimeMetadata("%26"); len(meta) != 0 {
+		t.Fatalf("failed registration persisted pane metadata: %v", meta)
+	}
+	if _, err := os.Stat(wsHookPath("%26", ".pid")); !os.IsNotExist(err) {
+		t.Fatalf("failed registration started ws-hook: %v", err)
+	}
+}
+
+func TestPromptRepairsMissingClaudePaneRegistration(t *testing.T) {
+	homeDir, binDir := hookTestEnvironment(t)
+	registered := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/peers/by-pane/%2526" && !registered:
+			http.NotFound(w, r)
+		case r.URL.Path == "/peers/by-pane/%2526":
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "repow-26"})
+		case r.URL.Path == "/peers" && r.Method == http.MethodPost:
+			registered = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "repow-26", "display_name": "project-claude-code"})
+		case r.URL.Path == "/peers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"peers": []any{}})
+		case r.URL.Path == "/session/update":
+			if !registered {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	configureHookTestDaemon(t, server.URL)
+	t.Setenv("PATH", binDir+":/usr/bin:/bin")
+	t.Setenv(claudeMessagingSocketEnv, "uds:/tmp/current-claude.sock")
+	t.Setenv(claudeMessagingTokenEnv, "current-token")
+	startedPeer := ""
+	previous := startSessionWSHook
+	startSessionWSHook = func(_ string, peerID, _, _, _ string, _ int, _ *os.File) error {
+		startedPeer = peerID
+		return nil
+	}
+	t.Cleanup(func() { startSessionWSHook = previous })
+	handlePrompt(map[string]any{
+		"hook_event_name": "UserPromptSubmit", "session_id": "session-2", "cwd": homeDir, "prompt": "hello",
+	}, "claude-code")
+	if !registered || startedPeer != "repow-26" {
+		t.Fatalf("prompt repair registered=%v startedPeer=%q", registered, startedPeer)
+	}
+	meta := ReadPaneRuntimeMetadata("%26")
+	if stringValue(meta, "claude_messaging_socket") != "uds:/tmp/current-claude.sock" || stringValue(meta, "claude_messaging_token") != "current-token" {
+		t.Fatalf("prompt repair did not capture current inbox environment: %v", meta)
+	}
+}
+
+func hookTestEnvironment(t *testing.T) (string, string) {
+	t.Helper()
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tmux := "#!/bin/sh\nprintf '0\\tzsh\\t@1\\n'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "tmux"), []byte(tmux), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", homeDir)
+	t.Setenv("TMUX_PANE", "%26")
+	return homeDir, binDir
+}
+
+func configureHookTestDaemon(t *testing.T, serverURL string) {
+	t.Helper()
+	port, _ := strconv.Atoi(strings.TrimPrefix(serverURL, "http://127.0.0.1:"))
+	t.Setenv("REPOWIRE_DAEMON__HOST", "127.0.0.1")
+	t.Setenv("REPOWIRE_DAEMON__PORT", strconv.Itoa(port))
+	t.Setenv("REPOWIRE_DAEMON__AUTH_TOKEN", "")
+}
+
 func TestNormalizeBackendPayloads(t *testing.T) {
 	p := Normalize(map[string]any{
 		"hook_event_name": "StopFailure",

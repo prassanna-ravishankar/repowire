@@ -43,7 +43,11 @@ OpenCode does not use shell hooks. It uses a TypeScript plugin at `~/.config/ope
 
 ## Daemon must be running
 
-All hooks shell out to the daemon over HTTP. If the daemon is down, hooks succeed (they do not block agent startup) but no peer state changes. See [Daemon unreachable](daemon.md).
+All hooks shell out to the daemon over HTTP. If the daemon is down, hooks
+succeed (they do not block agent startup) but no peer state changes. A later
+Claude Code `UserPromptSubmit` repairs a missing pane registration with the
+current session's authenticated inbox; a failed SessionStart is never retained
+as an empty ws-hook identity. See [Daemon unreachable](daemon.md).
 
 ## After upgrading `repowire`
 
