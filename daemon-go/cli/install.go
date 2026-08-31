@@ -28,6 +28,7 @@ import (
 )
 
 var execLookPath = exec.LookPath
+var nativeCodexResolver = resolveNativeCodex
 
 const (
 	claudeDefaultSpawnCommand = "claude --dangerously-skip-permissions"
@@ -884,6 +885,7 @@ func runService(argv []string) int {
 }
 
 func serviceLabel() string                  { return "io.repowire.daemon" }
+func codexAppServerLabel() string           { return "io.repowire.codex-app-server" }
 func codexBridgeLabel() string              { return "io.repowire.codex-bridge" }
 func mobileServiceLabel(name string) string { return "io.repowire." + name }
 
@@ -906,6 +908,7 @@ func mobileServiceRunning(name string) bool {
 const obsoleteServiceLabel = "com.repowire.daemon"
 
 func installService() error {
+	pathValue := serviceEnvironmentPath(os.Getenv("PATH"))
 	if runtime.GOOS == "darwin" {
 		dir := home("Library", "LaunchAgents")
 		_ = os.MkdirAll(dir, 0o755)
@@ -921,7 +924,7 @@ func installService() error {
 		if locale == "" {
 			locale = "en_US.UTF-8"
 		}
-		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>serve</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string><key>LC_ALL</key><string>%s</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, serviceLabel(), executable(), html.EscapeString(os.Getenv("PATH")), html.EscapeString(locale), logPath, logPath)
+		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>serve</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string><key>LC_ALL</key><string>%s</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, serviceLabel(), executable(), html.EscapeString(pathValue), html.EscapeString(locale), logPath, logPath)
 		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
 		if err := os.WriteFile(path, []byte(plist), 0o600); err != nil {
 			return err
@@ -929,10 +932,10 @@ func installService() error {
 		if err := exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run(); err != nil {
 			return err
 		}
-		if err := installCodexBridgeService(os.Getenv("PATH"), locale); err != nil {
+		if err := installCodexBridgeService(pathValue, locale); err != nil {
 			return err
 		}
-		return installConfiguredMobileServices(os.Getenv("PATH"), locale)
+		return installConfiguredMobileServices(pathValue, locale)
 	}
 	dir := home(".config", "systemd", "user")
 	_ = os.MkdirAll(dir, 0o755)
@@ -940,14 +943,47 @@ func installService() error {
 	if err := os.WriteFile(filepath.Join(dir, "repowire.service"), []byte(unit), 0o600); err != nil {
 		return err
 	}
-	if err := installCodexBridgeService(os.Getenv("PATH"), ""); err != nil {
+	if err := installCodexBridgeService(pathValue, ""); err != nil {
 		return err
 	}
-	if err := installConfiguredMobileServices(os.Getenv("PATH"), ""); err != nil {
+	if err := installConfiguredMobileServices(pathValue, ""); err != nil {
 		return err
 	}
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	return exec.Command("systemctl", "--user", "enable", "--now", "repowire.service").Run()
+}
+
+func serviceEnvironmentPath(raw string) string {
+	if raw == "" {
+		return "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+	}
+	userHome, _ := os.UserHomeDir()
+	protected := make([]string, 0, 7)
+	for _, name := range []string{"Desktop", "Documents", "Downloads", "Movies", "Music", "Pictures"} {
+		protected = append(protected, filepath.Join(userHome, name))
+	}
+	protected = append(protected, filepath.Join(userHome, ".codex", "tmp"))
+	seen := map[string]bool{}
+	cleaned := make([]string, 0, len(filepath.SplitList(raw)))
+	for _, entry := range filepath.SplitList(raw) {
+		entry = filepath.Clean(entry)
+		if entry == "." || seen[entry] {
+			continue
+		}
+		skip := false
+		for _, root := range protected {
+			if entry == root || strings.HasPrefix(entry, root+string(filepath.Separator)) {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+		seen[entry] = true
+		cleaned = append(cleaned, entry)
+	}
+	return strings.Join(cleaned, string(os.PathListSeparator))
 }
 
 func installConfiguredMobileServices(pathValue, locale string) error {
@@ -1019,14 +1055,20 @@ func removeMobileService(name string) error {
 
 func installCodexBridgeService(pathValue, locale string) error {
 	if !codexAppServerSupported() {
-		return removeCodexBridgeService()
+		if err := removeCodexBridgeService(); err != nil {
+			return err
+		}
+		return removeCodexAppServerService()
 	}
 	if runtime.GOOS == "darwin" {
+		if err := installCodexAppServerService(pathValue, locale); err != nil {
+			return err
+		}
 		dir := home("Library", "LaunchAgents")
 		path := filepath.Join(dir, codexBridgeLabel()+".plist")
 		loaded := launchAgentLoaded(codexBridgeLabel())
 		logPath := home(".repowire", "codex-bridge.log")
-		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>codex-bridge</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string><key>LC_ALL</key><string>%s</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, codexBridgeLabel(), executable(), html.EscapeString(pathValue), html.EscapeString(locale), logPath, logPath)
+		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>codex-bridge</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string><key>LC_ALL</key><string>%s</string><key>REPOWIRE_CODEX_APP_SERVER_MANAGED</key><string>1</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, codexBridgeLabel(), executable(), html.EscapeString(pathValue), html.EscapeString(locale), logPath, logPath)
 		if err := os.WriteFile(path, []byte(plist), 0o600); err != nil {
 			return err
 		}
@@ -1046,6 +1088,77 @@ func installCodexBridgeService(pathValue, locale string) error {
 		return nil
 	}
 	return exec.Command("systemctl", "--user", "enable", "--now", "repowire-codex.service").Run()
+}
+
+const codexTeamIdentifier = "2DC432GLL2"
+
+func installCodexAppServerService(pathValue, locale string) error {
+	nativeCodex, err := nativeCodexResolver()
+	if err != nil {
+		return fmt.Errorf("install independent Codex App Server: %w", err)
+	}
+	dir := home("Library", "LaunchAgents")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, codexAppServerLabel()+".plist")
+	loaded := launchAgentLoaded(codexAppServerLabel())
+	logPath := home(".repowire", "codex-app-server.log")
+	environment := fmt.Sprintf(`<key>PATH</key><string>%s</string><key>LC_ALL</key><string>%s</string>`, html.EscapeString(pathValue), html.EscapeString(locale))
+	if codexHome := os.Getenv("CODEX_HOME"); codexHome != "" {
+		environment += fmt.Sprintf(`<key>CODEX_HOME</key><string>%s</string>`, html.EscapeString(codexHome))
+	}
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>app-server</string><string>--listen</string><string>unix://</string></array><key>EnvironmentVariables</key><dict>%s</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, codexAppServerLabel(), html.EscapeString(nativeCodex), environment, logPath, logPath)
+	if err := os.WriteFile(path, []byte(plist), 0o600); err != nil {
+		return err
+	}
+	if loaded {
+		return nil
+	}
+	// A bridge installed before the App Server service owns the App Server as a
+	// child. Stop it once so launchd can become the stable responsibility root.
+	if launchAgentLoaded(codexBridgeLabel()) {
+		if err := exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexBridgeLabel()).Run(); err != nil {
+			return fmt.Errorf("stop bridge for App Server handoff: %w", err)
+		}
+	}
+	return exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
+}
+
+func resolveNativeCodex() (string, error) {
+	entrypoint, err := execLookPath("codex")
+	if err != nil {
+		return "", errors.New("codex executable not found")
+	}
+	resolved, err := filepath.EvalSymlinks(entrypoint)
+	if err != nil {
+		resolved = entrypoint
+	}
+	candidates := []string{entrypoint}
+	if resolved != entrypoint {
+		candidates = append(candidates, resolved)
+	}
+	packageRoot := filepath.Dir(filepath.Dir(resolved))
+	switch runtime.GOARCH {
+	case "arm64":
+		candidates = append(candidates, filepath.Join(packageRoot, "node_modules", "@openai", "codex-darwin-arm64", "vendor", "aarch64-apple-darwin", "bin", "codex"))
+	case "amd64":
+		candidates = append(candidates, filepath.Join(packageRoot, "node_modules", "@openai", "codex-darwin-x64", "vendor", "x86_64-apple-darwin", "bin", "codex"))
+	}
+	for _, candidate := range candidates {
+		if info, statErr := os.Stat(candidate); statErr != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+			continue
+		}
+		signature, signErr := exec.Command("codesign", "-dv", "--verbose=4", candidate).CombinedOutput()
+		if signErr != nil || !strings.Contains(string(signature), "Identifier=codex") || !strings.Contains(string(signature), "TeamIdentifier="+codexTeamIdentifier) {
+			continue
+		}
+		help, helpErr := exec.Command(candidate, "app-server", "--help").CombinedOutput()
+		if helpErr == nil && strings.Contains(string(help), "--listen") {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("no signed native Codex executable from OpenAI team %s was found", codexTeamIdentifier)
 }
 
 func launchAgentLoaded(label string) bool {
@@ -1086,10 +1199,27 @@ func removeCodexBridgeService() error {
 	return err
 }
 
+func removeCodexAppServerService() error {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	path := home("Library", "LaunchAgents", codexAppServerLabel()+".plist")
+	_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexAppServerLabel()).Run()
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func startService() error {
 	if runtime.GOOS == "darwin" {
 		if err := startLaunchAgent(serviceLabel()); err != nil {
 			return err
+		}
+		if _, err := os.Stat(home("Library", "LaunchAgents", codexAppServerLabel()+".plist")); err == nil {
+			if err := startLaunchAgent(codexAppServerLabel()); err != nil {
+				return err
+			}
 		}
 		if _, err := os.Stat(home("Library", "LaunchAgents", codexBridgeLabel()+".plist")); err == nil {
 			if err := startLaunchAgent(codexBridgeLabel()); err != nil {
@@ -1164,6 +1294,7 @@ func stopService() error {
 			_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+mobileServiceLabel(name)).Run()
 		}
 		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexBridgeLabel()).Run()
+		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexAppServerLabel()).Run()
 		return exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+serviceLabel()).Run()
 	}
 	for _, name := range []string{"telegram", "slack"} {
@@ -1178,6 +1309,9 @@ func serviceStatus() int {
 		commands = append(commands, exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+serviceLabel()))
 		if _, err := os.Stat(home("Library", "LaunchAgents", codexBridgeLabel()+".plist")); err == nil {
 			commands = append(commands, exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexBridgeLabel()))
+		}
+		if _, err := os.Stat(home("Library", "LaunchAgents", codexAppServerLabel()+".plist")); err == nil {
+			commands = append(commands, exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+codexAppServerLabel()))
 		}
 		for _, name := range []string{"telegram", "slack"} {
 			label := mobileServiceLabel(name)
@@ -1212,6 +1346,9 @@ func uninstallService() error {
 		}
 	}
 	if err := removeCodexBridgeService(); err != nil {
+		return err
+	}
+	if err := removeCodexAppServerService(); err != nil {
 		return err
 	}
 	if runtime.GOOS == "darwin" {

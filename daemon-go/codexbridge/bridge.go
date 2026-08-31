@@ -198,6 +198,9 @@ func ensureAppServer(ctx context.Context) (*websocket.Conn, *exec.Cmd, error) {
 	if conn, err := dialAppServer(ctx); err == nil {
 		return conn, nil, nil
 	}
+	if os.Getenv("REPOWIRE_CODEX_APP_SERVER_MANAGED") == "1" {
+		return nil, nil, errors.New("managed Codex App Server is not accepting connections")
+	}
 	codex, err := exec.LookPath("codex")
 	if err != nil {
 		return nil, nil, errors.New("codex executable not found")
