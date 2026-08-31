@@ -219,6 +219,17 @@ func (o *fileOwnership) ValidateBootstrap(paneID string) OwnershipValidation {
 	if !ok {
 		return OwnershipValidation{OK: true, Evidence: ev}
 	}
+	// tmux pane ids are only unique for the lifetime of one tmux server. A pane
+	// such as %26 can therefore inherit an ownership record written for an old,
+	// now-unrelated session after tmux restarts. That record must not block a
+	// normal hook bootstrap: without it, this exact live pane would already be
+	// allowed to register from tmux evidence alone. Forget only when the tmux
+	// session itself differs. A window rename within the same session remains a
+	// fail-loud mismatch until UpdatePlacement has reconciled the durable proof.
+	if tmuxSessionName(rec.TmuxSession) != "" && ev.SessionName != "" && tmuxSessionName(rec.TmuxSession) != ev.SessionName {
+		o.Forget(paneID)
+		return OwnershipValidation{OK: true, Evidence: ev}
+	}
 	if rec.Machine != "" && rec.Machine != o.selfMachine {
 		return OwnershipValidation{Record: &rec, Evidence: ev, Error: "ownership_machine_mismatch", Hint: "Ownership proof was written on a different host."}
 	}
@@ -226,6 +237,11 @@ func (o *fileOwnership) ValidateBootstrap(paneID string) OwnershipValidation {
 		return OwnershipValidation{Record: &rec, Evidence: ev, Error: "pane_identity_mismatch", Hint: "Live tmux pane evidence does not match the ownership proof."}
 	}
 	return OwnershipValidation{OK: true, Record: &rec, Evidence: ev}
+}
+
+func tmuxSessionName(target string) string {
+	session, _, _ := strings.Cut(target, ":")
+	return session
 }
 
 // ValidateForPeer ports _effective_ownership_validation: a direct valid pane

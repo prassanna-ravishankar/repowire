@@ -16,7 +16,10 @@ import (
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
-var startSessionWSHook = startWSHook
+var (
+	startSessionWSHook  = startWSHook
+	repairPromptSession = handleSession
+)
 
 func Run(args []string) int {
 	if len(args) == 0 {
@@ -245,7 +248,20 @@ func handleSession(raw map[string]any, backend string, emitContext bool) int {
 func reusablePaneRegistration(prior map[string]any, sessionID, cwd, backend, priorPeerID, livePeerID string) bool {
 	return sessionID != "" && priorPeerID != "" && livePeerID == priorPeerID &&
 		stringValue(prior, "hook_session_id") == sessionID &&
-		stringValue(prior, "cwd") == cwd && stringValue(prior, "backend") == backend
+		stringValue(prior, "cwd") == cwd && stringValue(prior, "backend") == backend &&
+		!claudeInboxMetadataStale(prior, backend)
+}
+
+func claudeInboxMetadataStale(meta map[string]any, backend string) bool {
+	if backend != "claude-code" {
+		return false
+	}
+	current := strings.TrimPrefix(os.Getenv(claudeMessagingSocketEnv), "uds:")
+	if current == "" {
+		return false
+	}
+	registered := strings.TrimPrefix(stringValue(meta, "claude_messaging_socket"), "uds:")
+	return registered != current
 }
 
 func runStop(backend string, remindersOnly bool) int {
@@ -333,13 +349,14 @@ func handlePrompt(raw map[string]any, backend string) int {
 	}
 	pane := getPaneID()
 	updated := pane != "" && updateStatus(pane, "busy", "working", payload.Model, true)
-	if backend == "claude-code" && pane != "" && !updated {
+	staleInbox := backend == "claude-code" && pane != "" && claudeInboxMetadataStale(ReadPaneRuntimeMetadata(pane), backend)
+	if backend == "claude-code" && pane != "" && (!updated || staleInbox) {
 		repair := make(map[string]any, len(raw))
 		for key, value := range raw {
 			repair[key] = value
 		}
 		repair["hook_event_name"] = "SessionStart"
-		handleSession(repair, backend, false)
+		repairPromptSession(repair, backend, false)
 		updated = updateStatus(pane, "busy", "working", payload.Model, true)
 	}
 	if pane != "" && !updated {

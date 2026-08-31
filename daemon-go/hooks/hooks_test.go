@@ -110,6 +110,50 @@ func TestPromptRepairsMissingClaudePaneRegistration(t *testing.T) {
 	}
 }
 
+func TestPromptRefreshesStaleClaudeInboxForRegisteredPane(t *testing.T) {
+	homeDir, binDir := hookTestEnvironment(t)
+	updates := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/peers/by-pane/%2526":
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "repow-26"})
+		case r.URL.Path == "/session/update":
+			updates++
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	configureHookTestDaemon(t, server.URL)
+	t.Setenv("PATH", binDir+":/usr/bin:/bin")
+	t.Setenv(claudeMessagingSocketEnv, "uds:/tmp/current-claude.sock")
+	t.Setenv(claudeMessagingTokenEnv, "current-token")
+	if err := writeMetadata("%26", map[string]any{
+		"peer_id": "repow-26", "display_name": "project-claude-code", "backend": "claude-code",
+		"cwd": homeDir, "hook_session_id": "session-2", "claude_messaging_socket": "/tmp/old-claude.sock",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repairs := 0
+	previous := repairPromptSession
+	repairPromptSession = func(raw map[string]any, backend string, emitContext bool) int {
+		repairs++
+		if stringValue(raw, "hook_event_name") != "SessionStart" || backend != "claude-code" || emitContext {
+			t.Fatalf("unexpected repair call: raw=%v backend=%q emitContext=%v", raw, backend, emitContext)
+		}
+		return 0
+	}
+	t.Cleanup(func() { repairPromptSession = previous })
+
+	handlePrompt(map[string]any{
+		"hook_event_name": "UserPromptSubmit", "session_id": "session-2", "cwd": homeDir, "prompt": "hello",
+	}, "claude-code")
+	if repairs != 1 || updates != 2 {
+		t.Fatalf("stale inbox repairs=%d status updates=%d, want 1 and 2", repairs, updates)
+	}
+}
+
 func hookTestEnvironment(t *testing.T) (string, string) {
 	t.Helper()
 	homeDir := t.TempDir()

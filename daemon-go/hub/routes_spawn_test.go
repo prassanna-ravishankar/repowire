@@ -143,6 +143,7 @@ func postSpawnJSON(t *testing.T, srv *httptest.Server, path string, body any) *h
 }
 
 func TestWindowBoundarySpawnUsesSourcePaneEvidence(t *testing.T) {
+	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
 	root, pane := t.TempDir(), "%12"
 	tmux := &fakeTmux{
 		spawnResult: service.SpawnResult{DisplayName: "worker", TmuxSession: "mesh:work", PaneID: "%13"},
