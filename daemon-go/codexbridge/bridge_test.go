@@ -237,6 +237,18 @@ func TestConfiguredProviderEnvKeys(t *testing.T) {
 	}
 }
 
+func TestManagedAppServerNeverFallsBackToChildProcess(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("REPOWIRE_CODEX_APP_SERVER_MANAGED", "1")
+	conn, child, err := ensureAppServer(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "managed Codex App Server") {
+		t.Fatalf("ensureAppServer error = %v", err)
+	}
+	if conn != nil || child != nil {
+		t.Fatalf("managed connection unexpectedly returned conn=%v child=%v", conn, child)
+	}
+}
+
 func containsEnv(env []string, value string) bool {
 	for _, item := range env {
 		if item == value {

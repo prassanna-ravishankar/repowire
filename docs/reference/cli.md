@@ -56,13 +56,20 @@ repowire service uninstall
 ```
 
 Manage the installed user services. `install` writes and starts the daemon and,
-when supported, the independent Codex App Server bridge. `start` starts installed
-services. `restart` defaults to the routing daemon only, so live Codex threads
-are not bounced. `restart bridge` explicitly replaces the Codex bridge and its
-owned App Server and therefore interrupts active Codex sessions; `restart all`
-does both. `status` reports both; `stop`
-through `repowire daemon stop` and `uninstall` stop both. Prefer these commands
+when supported, the Codex App Server and its independent Repowire bridge.
+`start` starts installed services. `restart` defaults to the routing daemon;
+`restart bridge` replaces the adapter; and `restart all` replaces both daemon
+and adapter. On macOS all three preserve the separately owned Codex App Server
+and live Codex threads. `status` reports installed services. `stop` through
+`repowire daemon stop` and `uninstall` stop every service. Prefer these commands
 over raw `launchctl` or `systemctl` unless troubleshooting the service manager.
+
+On macOS, `service install` also installs `io.repowire.codex-app-server` when an official signed native Codex App Server is available. The LaunchAgent executes Codex directly; the separate `io.repowire.codex-bridge` process only attaches to its Unix socket. `restart daemon`, `restart bridge`, and `restart all` preserve the App Server and live Codex threads. The first migration from a bridge-owned App Server requires a one-time Codex process restart.
+
+Generated service environments keep normal executable search paths but omit
+protected user folders (`Desktop`, `Documents`, `Downloads`, `Movies`, `Music`,
+and `Pictures`) and ephemeral Codex shim directories. This prevents an unrelated
+PATH lookup from causing macOS Files & Folders prompts under a service's name.
 
 ## `repowire doctor`
 

@@ -78,16 +78,16 @@ branch and git status, plus tmux diagnostics only when exactly one matching
 Codex pane can be identified; ambiguous cwd matches are deliberately omitted.
 
 The App Server companion is separate from the Repowire daemon. `repowire service
-restart` restarts routing without killing Codex threads; `repowire service stop`
+restart` restarts routing without killing Codex threads. On macOS, restarting
+the bridge also preserves the independent App Server. `repowire service stop`
 or `uninstall` stops both services.
 
-For custom Codex model providers, the bridge reads the provider `env_key` names
-from `~/.codex/config.toml`. When it must start App Server and those variables
-are absent from the user-service environment, it takes a bounded snapshot from
-the user's login shell and forwards only the configured variables to App
-Server. Values are not copied into Repowire config or service definitions. If a
-key is still unavailable, the bridge log names the missing variable and Codex
-fails normally instead of silently switching providers.
+On macOS the independent App Server uses Codex's stored login. Custom model
+providers that rely on an `env_key` must expose that variable to the launchd
+user domain (for example with `launchctl setenv KEY VALUE` before service
+installation); Repowire does not copy secrets into its plist. The legacy
+bridge-owned fallback on other platforms still takes a bounded login-shell
+snapshot and forwards only provider variables named in Codex config.
 
 ## Verifying
 
@@ -101,10 +101,14 @@ repowire peer list
 The Codex peer should already be listed. Its metadata reports
 `transport=codex-app-server`, and its TUI remains interactive.
 
+### macOS process ownership
+
+Repowire setup installs the official signed native Codex App Server as the user LaunchAgent `io.repowire.codex-app-server`. The Repowire bridge is a separate client of its Unix socket, not its parent. This matters for macOS privacy controls: tools launched by Codex are attributed to Codex instead of to the Repowire executable. Routine Repowire daemon and bridge restarts preserve the App Server and its live threads. Existing installations have one unavoidable process restart when they first migrate to this layout.
+
 ## Troubleshooting
 
 - Codex peer never registers → run `repowire service status`, then inspect
-  `~/.repowire/codex-bridge.log`.
+  `~/.repowire/codex-bridge.log` and `~/.repowire/codex-app-server.log`.
 - Codex joins `default` instead of a tmux circle → more than one Codex tmux
   circle matched the same working directory, or none did. Spawn it through
   Repowire for an explicit circle.
