@@ -523,6 +523,13 @@ func (b *Bridge) finishTurn(p *threadPeer, turn map[string]any) {
 	}
 	p.completeTurn(turnID)
 	p.setActiveTurn("")
+	go func() {
+		ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
+		defer cancel()
+		if err := p.injectDescriptionReminder(ctx); err != nil {
+			log.Printf("codex bridge: inject description reminder for %s: %v", p.id, err)
+		}
+	}()
 }
 
 func (b *Bridge) ensureThread(thread map[string]any) {
@@ -821,11 +828,31 @@ func (p *threadPeer) ensureContext(ctx context.Context) error {
 	if value := hooks.LoadHandoff(p.cwd, "codex", p.id); value != "" {
 		sections = append(sections, value)
 	}
-	item := map[string]any{"type": "message", "role": "developer", "content": []any{map[string]any{"type": "input_text", "text": strings.Join(sections, "\n\n")}}}
-	if _, err := p.bridge.call(ctx, "thread/inject_items", map[string]any{"threadId": p.id, "items": []any{item}}); err != nil {
+	sections = append(sections, hooks.DescriptionReminder(stringValue(self, "description")))
+	if err := p.injectDeveloperContext(ctx, strings.Join(sections, "\n\n")); err != nil {
 		return err
 	}
 	return hooks.WriteRuntimeIdentity("codex", p.id, map[string]any{"mesh_context_injected": true})
+}
+
+func (p *threadPeer) injectDescriptionReminder(ctx context.Context) error {
+	p.mu.Lock()
+	peerID := p.peerID
+	p.mu.Unlock()
+	if peerID == "" {
+		return errors.New("Codex thread has no Repowire peer identity")
+	}
+	peer, err := p.bridge.daemonRequest(ctx, http.MethodGet, "/peers/"+peerID, nil)
+	if err != nil {
+		return err
+	}
+	return p.injectDeveloperContext(ctx, hooks.DescriptionReminder(stringValue(peer, "description")))
+}
+
+func (p *threadPeer) injectDeveloperContext(ctx context.Context, text string) error {
+	item := map[string]any{"type": "message", "role": "developer", "content": []any{map[string]any{"type": "input_text", "text": text}}}
+	_, err := p.bridge.call(ctx, "thread/inject_items", map[string]any{"threadId": p.id, "items": []any{item}})
+	return err
 }
 
 func (p *threadPeer) readMesh(ctx context.Context, conn *websocket.Conn) error {

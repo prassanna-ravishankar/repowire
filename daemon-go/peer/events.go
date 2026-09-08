@@ -209,7 +209,6 @@ func (r *Registry) GetAllPeers() []*proto.Peer {
 	defer r.mu.Unlock()
 	out := make([]*proto.Peer, 0, len(r.peers))
 	for _, ps := range r.peers {
-		r.applyDescriptionTTLLocked(ps.peer)
 		out = append(out, clonePeer(ps.peer))
 	}
 	return out

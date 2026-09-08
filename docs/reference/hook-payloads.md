@@ -9,7 +9,7 @@ Hook payloads vary by agent runtime. Repowire normalizes them before handler cod
 | Prompt event | `UserPromptSubmit` | `UserPromptSubmit` |
 | Stop event | `Stop` | `Stop` |
 | Response field | transcript JSONL | `last_assistant_message` |
-| Hook output | empty | empty |
+| Hook output | `UserPromptSubmit` returns model-only `additionalContext` with the current Repowire description | Same in the legacy hook fallback; modern Codex receives equivalent developer-history context from App Server |
 
 ## Runtime model capture
 

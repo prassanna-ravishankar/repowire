@@ -50,7 +50,6 @@ func (r *Registry) ResolvePeer(identifier string, circle *string) (*proto.Peer, 
 	// because identity-mutating wrappers (touch/description) resolve then mutate
 	// under one write lock. Off-lock route callers must get a snapshot instead.
 	p, err := r.resolvePeerLocked(identifier, circle)
-	r.applyDescriptionTTLLocked(p)
 	return clonePeer(p), err
 }
 

@@ -12,8 +12,8 @@ Six lifecycle events are wired by default:
 
 | Event | What it does |
 | --- | --- |
-| `SessionStart` | Registers the peer with the daemon, spawns the WebSocket hook supervisor, injects the peer list as context |
-| `UserPromptSubmit` | Lazily repairs a missing pane registration, then marks the peer `busy` |
+| `SessionStart` | Registers the peer with the daemon, spawns the WebSocket hook supervisor, and teaches the agent to update its Repowire description when its task changes |
+| `UserPromptSubmit` | Lazily repairs a missing pane registration, marks the peer `busy`, and injects the current description as model-only context (or asks the agent to set one) |
 | `Notification` | Resets the peer to `online` when Claude Code emits an idle prompt |
 | `Stop` | Extracts response + tool calls from the transcript, drains any old legacy `/query` FIFO response, fetches `/asks/pending` and emits a reminder block if open asks exist, then marks the peer `online` |
 | `StopFailure` | Uses the same stop handler to repair status after API-level stop failures |
