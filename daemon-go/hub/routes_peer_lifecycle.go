@@ -145,18 +145,25 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 		return RegisterResponse{}, http.StatusUnprocessableEntity,
 			"Circle must match ^[a-zA-Z0-9._-]+$ and be <= 64 chars"
 	}
+	if req.CircleSource != nil && !validCircleSource(*req.CircleSource) {
+		return RegisterResponse{}, http.StatusUnprocessableEntity, "Invalid circle_source"
+	}
 
 	backend := req.Backend
 	if backend == "" {
 		backend = proto.AgentClaudeCode
 	}
-	role, circle := req.Role, ""
+	role, circle, circleSource := req.Role, "", derefString(req.CircleSource)
 	if req.PaneID != nil && *req.PaneID != "" {
 		var code int
 		var detail string
 		circle, role, code, detail = h.verifiedPaneIdentity(*req.PaneID, backend, derefString(req.Path), derefString(req.Circle), req.Role)
 		if code != http.StatusOK {
 			return RegisterResponse{}, code, detail
+		}
+		circleSource = "tmux"
+		if h.spawn.boundary == proto.CircleBoundaryWindow {
+			circleSource = "tmux_window"
 		}
 	} else {
 		if req.Circle == nil || *req.Circle == "" {
@@ -187,6 +194,7 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 
 	params := peer.AllocateParams{
 		Circle:        circle,
+		CircleSource:  circleSource,
 		Backend:       backend,
 		Model:         req.Model,
 		Path:          req.Path,
@@ -245,6 +253,15 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 		PaneAssigned:     paneAssigned,
 		BirthCertificate: birthCert,
 	}, http.StatusOK, ""
+}
+
+func validCircleSource(source string) bool {
+	switch source {
+	case "", "tmux", "tmux_window", "spawn_hint", "fallback":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *Hub) verifiedPaneIdentity(paneID string, backend proto.AgentType, path, requestedCircle string, requestedRole proto.PeerRole) (string, proto.PeerRole, int, string) {

@@ -428,6 +428,40 @@ func TestRegisterRestoresThreadIdentityFromBirthCertificate(t *testing.T) {
 	}
 }
 
+func TestRegisterKeepsFreshTmuxCircleWhenRestoringIdentity(t *testing.T) {
+	threadID, cwd := "thread-moved", t.TempDir()
+	cert := map[string]any{
+		"nonce": "proof", "peer_id": "repow-stable", "display_name": "repo-codex",
+		"backend": "codex", "project_path": cwd, "runtime_session_id": threadID,
+		"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+	}
+	var registered map[string]any
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/peers/identity/validate":
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer": map[string]any{
+				"peer_id": "repow-stable", "display_name": "repo-codex", "circle": "old", "role": "agent",
+			}})
+		case "/peers":
+			_ = json.NewDecoder(r.Body).Decode(&registered)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"peer_id": "repow-stable", "display_name": "repo-codex", "circle": "new", "role": "agent",
+			})
+		}
+	}))
+	defer daemon.Close()
+	p := &threadPeer{
+		bridge: &Bridge{daemonHTTP: daemon.URL}, id: threadID, cwd: cwd,
+		circle: "new", circleSrc: "tmux", role: "agent", birthCert: cert,
+	}
+	if err := p.register(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if registered["circle"] != "new" || registered["circle_source"] != "tmux" {
+		t.Fatalf("registration placement = %#v", registered)
+	}
+}
+
 func TestRegisterRetiredClaimFallsBackToBirthCertificate(t *testing.T) {
 	threadID, cwd := "thread-live", t.TempDir()
 	cert := map[string]any{

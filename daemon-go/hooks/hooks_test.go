@@ -62,6 +62,48 @@ func TestFailedSessionRegistrationDoesNotPersistEmptyPeer(t *testing.T) {
 	}
 }
 
+func TestSessionStartKeepsFreshTmuxCircleWhenRestoringIdentity(t *testing.T) {
+	homeDir, binDir := hookTestEnvironment(t)
+	t.Setenv("PATH", binDir+":/usr/bin:/bin")
+	if err := writeMetadata("%26", map[string]any{
+		"birth_certificate": map[string]any{"nonce": "proof", "peer_id": "repow-stable"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var registration map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/peers/identity/validate":
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer": map[string]any{
+				"peer_id": "repow-stable", "display_name": "project-claude-code", "circle": "old", "role": "agent",
+			}})
+		case r.URL.Path == "/peers" && r.Method == http.MethodPost:
+			_ = json.NewDecoder(r.Body).Decode(&registration)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"peer_id": "repow-stable", "display_name": "project-claude-code", "circle": "0",
+			})
+		case r.URL.Path == "/peers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"peers": []any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	configureHookTestDaemon(t, server.URL)
+
+	previous := startSessionWSHook
+	startSessionWSHook = func(_, _, _, _, _ string, _ int, _ *os.File) error { return nil }
+	t.Cleanup(func() { startSessionWSHook = previous })
+
+	handleSession(map[string]any{
+		"hook_event_name": "SessionStart", "session_id": "session-1", "cwd": homeDir,
+	}, "claude-code", false)
+	if registration["peer_id"] != "repow-stable" || registration["circle"] != "0" || registration["circle_source"] != "tmux" {
+		t.Fatalf("registration placement = %#v", registration)
+	}
+}
+
 func TestPromptRepairsMissingClaudePaneRegistration(t *testing.T) {
 	homeDir, binDir := hookTestEnvironment(t)
 	registered := false

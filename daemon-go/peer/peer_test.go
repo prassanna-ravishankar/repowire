@@ -306,6 +306,46 @@ func TestReclaim_DoesNotCrossAdoptMappings(t *testing.T) {
 	}
 }
 
+func TestReconnectAuthoritativeCircleOverridesMapping(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name, source, want string
+		dropLive           bool
+	}{
+		{"live tmux reconnect", "tmux", "new", false},
+		{"mapping-only tmux reconnect", "tmux", "new", true},
+		{"fallback preserves mapping", "fallback", "old", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := newRegistry(t)
+			id, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+				Circle: "old", Backend: proto.AgentCodex, Path: ptr("/work/repo"),
+				Machine: "m", Role: proto.RoleOrchestrator,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.dropLive {
+				delete(r.peers, id)
+			}
+			if _, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+				ClaimedPeerID: &id, Circle: "new", CircleSource: tc.source,
+				Backend: proto.AgentCodex, Path: ptr("/work/repo"), Machine: "m",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			peer, _ := r.GetPeer(id)
+			mapping, _ := r.GetMapping(id)
+			if peer.Circle != tc.want || mapping.Circle != tc.want {
+				t.Fatalf("circle peer=%q mapping=%q, want %q", peer.Circle, mapping.Circle, tc.want)
+			}
+			if peer.Role != proto.RoleOrchestrator {
+				t.Fatalf("role = %q, want orchestrator", peer.Role)
+			}
+		})
+	}
+}
+
 // TestReclaim_DoesNotCrossAdoptWorktrees proves same-name peers in one circle
 // cannot reclaim an offline peer or mapping from a different worktree.
 func TestReclaim_DoesNotCrossAdoptWorktrees(t *testing.T) {

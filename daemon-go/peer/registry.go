@@ -56,8 +56,11 @@ const paneHeartbeatTolerance = 60 * time.Second
 // sensitive routing only ever flows through proto.PeerID (ClaimedPeerID); the
 // human-facing DisplayName is derived, never an input key for routing.
 type AllocateParams struct {
-	Circle  string
-	Backend proto.AgentType
+	Circle string
+	// CircleSource distinguishes current placement (tmux/tmux_window/spawn_hint)
+	// from fallback values restored from durable identity.
+	CircleSource string
+	Backend      proto.AgentType
 	// PreferredDisplayName is reserved for daemon-owned service peers whose
 	// stable public address is part of the protocol (currently telegram/slack).
 	// Ordinary runtime peers leave this nil and keep the derived
@@ -334,11 +337,10 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		id = proto.PeerID(fmt.Sprintf("repow-%s-%s", params.Circle, uuid.NewString()[:8]))
 	}
 
-	// (d) In-place reconnect when the id names a LIVE peer. Update liveness only;
-	// PRESERVE role/circle/display_name/path/description and MERGE metadata. A
-	// reconnect frame that omits role/circle/metadata must not demote, relocate,
-	// or strip the peer (parity with PeerRegistry same-id reconnect — otherwise an
-	// orchestrator silently becomes role=agent on its next SessionStart).
+	// (d) In-place reconnect when the id names a LIVE peer. Preserve durable
+	// identity fields except when fresh runtime placement explicitly relocates the
+	// circle; merge metadata. A reconnect that omits role/circle/metadata must not
+	// demote, relocate, or strip the peer.
 	if existing, isLive := r.peers[id]; isLive {
 		// A (re)register means the hook just (re)started: reset to ONLINE, parity
 		// with PeerRegistry assigning initial_status on reconnect. Stale BUSY must
@@ -370,6 +372,9 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 			existing.peer.Status = status
 		}
 		existing.peer.LastSeen = &now
+		if circleSourceOverridesMapping(params.CircleSource) {
+			existing.peer.Circle = params.Circle
+		}
 		if params.Model != nil {
 			existing.peer.Model = params.Model
 		}
@@ -405,6 +410,9 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		}
 		if m := r.mappings[id]; m != nil {
 			m.UpdatedAt = now
+			if circleSourceOverridesMapping(params.CircleSource) {
+				m.Circle = params.Circle
+			}
 			if params.Model != nil {
 				m.Model = params.Model
 			}
@@ -491,15 +499,16 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	status, _ := next.ToStatus()
 
 	// When a persisted mapping exists for this id (a RECLAIM of a known identity —
-	// daemon restart or offline takeover), the mapping is the durable source of
-	// truth for circle/role/description/display_name: it WINS over the caller's
-	// per-transport default ("global" for HTTP, "default" for ws), so a reclaim
-	// never silently demotes role, moves circle, or drops the description. model:
-	// caller wins, else mapping. No mapping → a truly fresh mint uses the caller's
-	// values. Parity with PeerRegistry fresh-creation restore.
+	// daemon restart or offline takeover), it restores role/description/name and
+	// the circle when the caller only has a fallback. Fresh tmux or spawn placement
+	// wins because the runtime may have moved since the mapping was written. model:
+	// caller wins, else mapping. No mapping → a truly fresh mint uses caller values.
 	role, circle, model, description := params.Role, params.Circle, params.Model, ""
 	if m := r.mappings[id]; m != nil {
-		role, circle, description, displayName = m.Role, m.Circle, m.Description, m.DisplayName
+		role, description, displayName = m.Role, m.Description, m.DisplayName
+		if !circleSourceOverridesMapping(params.CircleSource) {
+			circle = m.Circle
+		}
 		if model == nil {
 			model = m.Model
 		}
@@ -552,6 +561,10 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	r.appendEvent(ctx, Event{Type: "peer_online", Timestamp: now, PeerID: id, PeerName: displayName, SessionID: id})
 	r.scheduleRedelivery(ctx, id)
 	return id, displayName, nil
+}
+
+func circleSourceOverridesMapping(source string) bool {
+	return source == "tmux" || source == "tmux_window" || source == "spawn_hint"
 }
 
 // scheduleRedelivery drains any stashed replies owed to a just-(re)registered

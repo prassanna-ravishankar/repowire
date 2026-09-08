@@ -120,8 +120,6 @@ func handleSession(raw map[string]any, backend string, emitContext bool) int {
 			"peer_id": stringValue(certified, "peer_id"),
 			"role":    stringValue(certified, "role"),
 		}
-		circle = firstNonempty(stringValue(certified, "circle"), circle)
-		circleSource = "fallback"
 	}
 	capabilities := transportCapabilities(backend)
 	metadata := map[string]any{

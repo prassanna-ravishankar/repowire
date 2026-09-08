@@ -115,14 +115,10 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate circle_source (None|tmux|spawn_hint|fallback).
-	if cf.CircleSource != nil {
-		switch *cf.CircleSource {
-		case "tmux", "tmux_window", "spawn_hint", "fallback":
-		default:
-			_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "Invalid circle_source"})
-			_ = conn.Close(4002, "Invalid circle_source")
-			return
-		}
+	if cf.CircleSource != nil && !validCircleSource(*cf.CircleSource) {
+		_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "Invalid circle_source"})
+		_ = conn.Close(4002, "Invalid circle_source")
+		return
 	}
 
 	// Validate display_name.
@@ -177,6 +173,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		path = &normalized
 	}
+	circleSource := derefString(cf.CircleSource)
 	if cf.PaneID != nil && *cf.PaneID != "" {
 		verifiedCircle, verifiedRole, code, detail := h.verifiedPaneIdentity(*cf.PaneID, backend, derefString(path), circle, requestedRole)
 		if code != http.StatusOK {
@@ -185,6 +182,10 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		circle, role = verifiedCircle, verifiedRole
+		circleSource = "tmux"
+		if h.spawn.boundary == proto.CircleBoundaryWindow {
+			circleSource = "tmux_window"
+		}
 	} else if h.spawn != nil && !isDaemonMobilePeer(cf.DisplayName, path, role) {
 		if cf.PeerID == nil {
 			_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "Pane-less WebSocket registration requires an existing peer identity"})
@@ -206,6 +207,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	machine, _ := os.Hostname()
 	params := peer.AllocateParams{
 		Circle:        circle,
+		CircleSource:  circleSource,
 		Backend:       backend,
 		Model:         cf.Model,
 		Path:          path,

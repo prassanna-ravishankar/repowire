@@ -789,7 +789,10 @@ func (p *threadPeer) restoreIdentity(ctx context.Context) error {
 	}
 	p.mu.Lock()
 	p.peerID = peerID
-	p.displayName, p.circle, p.role = displayName, circle, role
+	p.displayName, p.role = displayName, role
+	if p.circleSrc == "" || p.circleSrc == "fallback" {
+		p.circle = circle
+	}
 	p.mu.Unlock()
 	return nil
 }
