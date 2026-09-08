@@ -179,6 +179,10 @@ func TestTurnCompletedBackfillsItemsWithoutDuplicates(t *testing.T) {
 	cwd := t.TempDir()
 	posted := make(chan map[string]any, 3)
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "peer-1", "description": "testing turn capture"})
+			return
+		}
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		posted <- body
@@ -186,7 +190,7 @@ func TestTurnCompletedBackfillsItemsWithoutDuplicates(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer daemon.Close()
-	b := &Bridge{ctx: context.Background(), threads: map[string]*threadPeer{}, daemonHTTP: daemon.URL}
+	b := &Bridge{ctx: context.Background(), pending: map[int64]chan rpcReply{}, threads: map[string]*threadPeer{}, daemonHTTP: daemon.URL}
 	p := &threadPeer{
 		bridge: b, id: "thread-1", cwd: cwd, peerID: "peer-1", displayName: "repo",
 		toolCalls: map[string][]map[string]string{}, seenItems: map[string]map[string]bool{},
@@ -306,6 +310,42 @@ func TestMeshContextUsesHistoryInjectionOnce(t *testing.T) {
 	case duplicate := <-requests:
 		t.Fatalf("duplicate context injection: %#v", duplicate)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestDescriptionReminderUsesDeveloperHistory(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	requests := make(chan map[string]any, 1)
+	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := websocket.Accept(w, r, nil)
+		defer conn.CloseNow()
+		var request map[string]any
+		if wsjson.Read(ctx, conn, &request) == nil {
+			requests <- request
+			_ = wsjson.Write(ctx, conn, map[string]any{"id": request["id"], "result": map[string]any{}})
+		}
+	}))
+	defer appServer.Close()
+	appConn, _, _ := websocket.Dial(ctx, "ws"+strings.TrimPrefix(appServer.URL, "http"), nil)
+	peerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "repow-native", "description": "fixing bridge lifecycle"})
+	}))
+	defer peerServer.Close()
+	b := &Bridge{ctx: ctx, app: appConn, pending: map[int64]chan rpcReply{}, threads: map[string]*threadPeer{}, daemonHTTP: peerServer.URL}
+	go b.readApp(appConn)
+	p := &threadPeer{bridge: b, id: "thread-description", peerID: "repow-native"}
+	if err := p.injectDescriptionReminder(ctx); err != nil {
+		t.Fatal(err)
+	}
+	request := <-requests
+	params, _ := request["params"].(map[string]any)
+	items, _ := params["items"].([]any)
+	item, _ := items[0].(map[string]any)
+	content, _ := item["content"].([]any)
+	part, _ := content[0].(map[string]any)
+	if stringValue(request, "method") != "thread/inject_items" || stringValue(item, "role") != "developer" || stringValue(part, "text") != `[Repowire] Current description: "fixing bridge lifecycle". Update it if this prompt changes your task.` {
+		t.Fatalf("description reminder request = %#v", request)
 	}
 }
 

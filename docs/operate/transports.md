@@ -36,7 +36,9 @@ per-call `_meta.threadId` MCP identity through a daemon-minted certificate,
 and preserves peer provenance, ask correlation, safe uploaded-image input,
 tool-call summaries, and handoff state. On the idle transition it reads the
 completed turn once, since App Server item events are client-scoped; no polling
-is involved.
+is involved. The same transition appends a model-only developer reminder with
+the current Repowire description for the next turn, asking the agent to call
+`set_description` when it is unset.
 The ordinary Codex TUI remains visible. Tmux is optional placement/lifecycle
 evidence and is not the delivery channel. A reminder-only Stop hook resurfaces
 asks that remain open after a turn; it does not duplicate App Server lifecycle

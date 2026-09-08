@@ -45,11 +45,14 @@ poll.
 
 The bridge injects the mesh identity, peer list, ask/ack conventions, and saved
 handoff directly into the thread's model-visible history without starting a
-turn. Inbound peer content keeps its `<peer-message>` provenance and ask
-correlation id; dashboard, Telegram, and Slack messages remain direct human
-instructions. Uploaded images are also passed as native Codex image input when
-they resolve to a daemon-owned attachment file. Other attachments remain
-visible as text metadata.
+turn. It also injects a model-only description reminder before the first turn
+and after each completed turn for the next prompt. The reminder shows the
+current value, asks Codex to update it when the task changes, and explicitly
+calls for `set_description` when no description is set. Inbound peer content
+keeps its `<peer-message>` provenance and ask correlation id; dashboard,
+Telegram, and Slack messages remain direct human instructions. Uploaded images
+are also passed as native Codex image input when they resolve to a daemon-owned
+attachment file. Other attachments remain visible as text metadata.
 
 App Server shares one MCP subprocess across threads, so Codex includes the
 calling thread as `_meta.threadId` on each tool call. Repowire uses that id only

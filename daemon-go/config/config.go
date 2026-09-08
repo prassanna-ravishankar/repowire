@@ -32,7 +32,6 @@ type DaemonConfig struct {
 	AuthToken               string                   `yaml:"auth_token"`
 	HeartbeatInterval       int                      `yaml:"heartbeat_interval"`
 	PruneMaxAgeHours        float64                  `yaml:"prune_max_age_hours"`
-	DescriptionTTLSeconds   float64                  `yaml:"description_ttl_seconds"`
 	PeerReapTTLSeconds      float64                  `yaml:"peer_reap_ttl_seconds"`
 	StaleBusyTimeoutSeconds float64                  `yaml:"stale_busy_timeout_seconds"`
 	DeliveryQueueTTLSeconds float64                  `yaml:"delivery_queue_ttl_seconds"`
@@ -105,8 +104,8 @@ func Defaults() Config {
 	return Config{
 		Daemon: DaemonConfig{
 			Host: defaultHost, Port: defaultPort, HeartbeatInterval: 30,
-			CircleBoundary:   proto.CircleBoundarySession,
-			PruneMaxAgeHours: 24, DescriptionTTLSeconds: 900,
+			CircleBoundary:     proto.CircleBoundarySession,
+			PruneMaxAgeHours:   24,
 			PeerReapTTLSeconds: 600, StaleBusyTimeoutSeconds: 1800,
 			DeliveryQueueTTLSeconds: 86400, DeliveryQueueMaxPerPeer: 100,
 			OrchestratorRecall: OrchestratorRecallConfig{Enabled: true, MaxHits: 3, MaxChars: 900, MaxFileChars: 12000},
@@ -200,7 +199,6 @@ func applyEnv(cfg *Config) {
 	}
 	setIntEnv(&cfg.Daemon.HeartbeatInterval, "REPOWIRE_DAEMON__HEARTBEAT_INTERVAL")
 	setFloatEnv(&cfg.Daemon.PruneMaxAgeHours, "REPOWIRE_DAEMON__PRUNE_MAX_AGE_HOURS")
-	setFloatEnv(&cfg.Daemon.DescriptionTTLSeconds, "REPOWIRE_DAEMON__DESCRIPTION_TTL_SECONDS")
 	setFloatEnv(&cfg.Daemon.PeerReapTTLSeconds, "REPOWIRE_DAEMON__PEER_REAP_TTL_SECONDS")
 	setFloatEnv(&cfg.Daemon.StaleBusyTimeoutSeconds, "REPOWIRE_DAEMON__STALE_BUSY_TIMEOUT_SECONDS")
 	setFloatEnv(&cfg.Daemon.DeliveryQueueTTLSeconds, "REPOWIRE_DAEMON__DELIVERY_QUEUE_TTL_SECONDS")

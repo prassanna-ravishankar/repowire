@@ -136,8 +136,6 @@ type Registry struct {
 	retiredTTL        time.Duration
 	reapTTL           time.Duration
 	heartbeatInterval time.Duration
-	descriptionTTL    time.Duration
-	descriptionSetAt  map[proto.PeerID]time.Time
 
 	// rec holds the lifecycle-reconciliation seams + state (AskTracker,
 	// PaneProbe, PeerDelivery, strike counters, contradiction dedup).
@@ -186,8 +184,6 @@ func NewRegistry(ctx context.Context, store Store, live Liveness, transport Tran
 		retiredTTL:        defaultRetiredTTL,
 		reapTTL:           defaultReapTTL,
 		heartbeatInterval: defaultHeartbeatInterval,
-		descriptionTTL:    15 * time.Minute,
-		descriptionSetAt:  make(map[proto.PeerID]time.Time),
 		rec: &reconcileState{
 			paneStrikes:   make(map[proto.PeerID]int),
 			contraEmitted: make(map[contraKey]struct{}),
@@ -215,35 +211,13 @@ func NewRegistry(ctx context.Context, store Store, live Liveness, transport Tran
 }
 
 // ConfigureDurations applies the daemon's liveness/read-repair TTLs.
-func (r *Registry) ConfigureDurations(heartbeatInterval, reapTTL, descriptionTTL time.Duration) {
+func (r *Registry) ConfigureDurations(heartbeatInterval, reapTTL time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if heartbeatInterval > 0 {
 		r.heartbeatInterval = heartbeatInterval
 	}
 	r.reapTTL = reapTTL
-	r.descriptionTTL = descriptionTTL
-}
-
-func (r *Registry) applyDescriptionTTLLocked(peer *proto.Peer) {
-	if peer == nil || peer.Description == "" || r.descriptionTTL <= 0 {
-		return
-	}
-	setAt, ok := r.descriptionSetAt[peer.PeerID]
-	if !ok {
-		r.descriptionSetAt[peer.PeerID] = time.Now().UTC()
-		return
-	}
-	if time.Since(setAt) < r.descriptionTTL {
-		return
-	}
-	peer.Description = ""
-	delete(r.descriptionSetAt, peer.PeerID)
-	if mapping := r.mappings[peer.PeerID]; mapping != nil {
-		mapping.Description = ""
-		mapping.UpdatedAt = time.Now().UTC()
-		r.markMappingsDirtyLocked()
-	}
 }
 
 // AllocateAndRegister allocates (or reclaims) a peer identity and registers it
@@ -1089,7 +1063,6 @@ func (r *Registry) GetPeer(id proto.PeerID) (*proto.Peer, bool) {
 	if !ok {
 		return nil, false
 	}
-	r.applyDescriptionTTLLocked(ps.peer)
 	return clonePeer(ps.peer), true
 }
 
@@ -1105,7 +1078,6 @@ func (r *Registry) GetPeerByPane(pane string) (*proto.Peer, bool) {
 	defer r.mu.Unlock()
 	for _, ps := range r.peers {
 		if ps.peer.PaneID != nil && *ps.peer.PaneID == pane {
-			r.applyDescriptionTTLLocked(ps.peer)
 			return clonePeer(ps.peer), true
 		}
 	}

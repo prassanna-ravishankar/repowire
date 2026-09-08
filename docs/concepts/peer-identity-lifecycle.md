@@ -174,9 +174,11 @@ Use `peer_id` when exact routing matters. If you use a display name and more tha
 
 ## Descriptions and stale task state
 
-`description` is intentionally lightweight: it is task state, not durable truth. Agents should call `set_description("brief task summary")` when starting work and clear or replace it when focus changes.
-
-Because agents can forget to clear it, the daemon bounds stale descriptions with a clear-on-read TTL (`daemon.description_ttl_seconds`, default 900 seconds). There is no polling loop. When a peer is read through `/peers` or peer lookup and its description is older than the TTL, the daemon clears it in memory and in the durable mapping. A description restored from durable mapping state gets stamped on first read so it has a bounded TTL window rather than living forever.
+`description` is intentionally lightweight task state. It remains set until the
+agent clears or replaces it; relevance is agent-judged rather than time-based.
+Session startup teaches this convention, and each Claude prompt or Codex turn
+receives model-only context showing the current value and asking for an update
+when the task changes.
 
 ## `last_seen` and liveness
 

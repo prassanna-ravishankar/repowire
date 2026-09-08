@@ -115,11 +115,6 @@ func (r *Registry) UpdateDescription(ctx context.Context, identifier, descriptio
 	}
 	now := time.Now().UTC()
 	p.Description = description
-	if description == "" {
-		delete(r.descriptionSetAt, p.PeerID)
-	} else {
-		r.descriptionSetAt[p.PeerID] = now
-	}
 	p.LastSeen = &now
 	if m, ok := r.mappings[p.PeerID]; ok && m.Description != description {
 		m.Description = description

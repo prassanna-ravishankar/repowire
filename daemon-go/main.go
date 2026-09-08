@@ -334,7 +334,7 @@ func runDaemon() {
 	} else {
 		reg.HydrateEvents(events)
 	}
-	reg.ConfigureDurations(time.Duration(cfg.Daemon.HeartbeatInterval)*time.Second, time.Duration(cfg.Daemon.PeerReapTTLSeconds*float64(time.Second)), time.Duration(cfg.Daemon.DescriptionTTLSeconds*float64(time.Second)))
+	reg.ConfigureDurations(time.Duration(cfg.Daemon.HeartbeatInterval)*time.Second, time.Duration(cfg.Daemon.PeerReapTTLSeconds*float64(time.Second)))
 
 	// (5) NewHubWithTransport wires reg.OnOffline -> tracker.CancelQueriesToPeer
 	// internally, so a terminal/transport offline cascades query cancellation

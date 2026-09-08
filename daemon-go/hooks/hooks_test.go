@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,50 @@ import (
 	"testing"
 	"time"
 )
+
+func TestDescriptionReminder(t *testing.T) {
+	if got := DescriptionReminder("reviewing auth"); got != `[Repowire] Current description: "reviewing auth". Update it if this prompt changes your task.` {
+		t.Fatalf("set reminder = %q", got)
+	}
+	if got := DescriptionReminder("  "); !strings.Contains(got, `Call set_description("brief task summary") now.`) {
+		t.Fatalf("unset reminder = %q", got)
+	}
+	if got := formatSelfContext("repo", "repow-1", "mesh", "fallback", "claude-code", "agent", "/work/repo", "", nil); !strings.Contains(got, "Update your Repowire description when beginning a new task or changing focus.") {
+		t.Fatalf("session context missing description guidance: %q", got)
+	}
+}
+
+func TestPromptInjectsCurrentDescription(t *testing.T) {
+	_, binDir := hookTestEnvironment(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/peers/by-pane/%26":
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "repow-26", "description": "reviewing auth"})
+		case "/session/update":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	configureHookTestDaemon(t, server.URL)
+	t.Setenv("PATH", binDir+":/usr/bin:/bin")
+
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = write
+	handlePrompt(map[string]any{"hook_event_name": "UserPromptSubmit", "prompt": "continue"}, "claude-code")
+	_ = write.Close()
+	os.Stdout = stdout
+	out, _ := io.ReadAll(read)
+	_ = read.Close()
+	if !strings.Contains(string(out), `Current description: \"reviewing auth\". Update it if this prompt changes your task.`) {
+		t.Fatalf("prompt output = %s", out)
+	}
+}
 
 func TestReusablePaneRegistrationRequiresConfirmedLivePeer(t *testing.T) {
 	prior := map[string]any{
