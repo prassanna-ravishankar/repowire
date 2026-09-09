@@ -254,6 +254,14 @@ Update the free-form description visible in `list_peers`. Call this at the start
 set_description("rebuilding docs slice B")
 ```
 
+### `set_name`
+
+```text
+set_name(name: str) -> str
+```
+
+Rename the calling peer. Natural titles are normalized into address-safe lowercase names, so `set_name("Fix circle resume")` assigns `fix-circle-resume`. The rename is rejected if that name is already live in the same circle.
+
 ### `orchestrator_status`
 
 ```text

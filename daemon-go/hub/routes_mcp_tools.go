@@ -9,6 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/repowire/repowire/daemon-go/config"
+	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
@@ -179,6 +180,9 @@ type mcpJobCancelArgs struct {
 type mcpDescriptionArgs struct {
 	Description string `json:"description"`
 }
+type mcpNameArgs struct {
+	Name string `json:"name"`
+}
 type mcpSpawnArgs struct {
 	Path    string `json:"path"`
 	Backend string `json:"backend,omitempty"`
@@ -345,6 +349,24 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 			err = fmt.Errorf("peer not found: %s", caller)
 		}
 		return "description updated: " + a.Description, err
+	})
+	addMCPTool(srv, "set_name", "Rename the caller's Repowire peer from a natural session title.", func(ctx context.Context, caller string, a mcpNameArgs) (string, error) {
+		if err := required("name", a.Name); err != nil {
+			return "", err
+		}
+		p, err := h.reg.GetPeerByName(caller, nil)
+		if err != nil || p == nil {
+			return "", fmt.Errorf("peer not found: %s", caller)
+		}
+		name := peer.NormalizeDisplayName(a.Name)
+		updated, err := h.reg.UpdateDisplayName(ctx, p.PeerID, name)
+		if err != nil {
+			return "", err
+		}
+		if !updated {
+			return "", fmt.Errorf("display name already in use in circle %s: %s", p.Circle, name)
+		}
+		return "name updated: " + string(name), nil
 	})
 	addMCPTool(srv, "spawn_peer", "Spawn a local tmux-backed coding peer.", func(ctx context.Context, caller string, a mcpSpawnArgs) (string, error) {
 		if err := requireMCPAdmin(h, cfg, caller, "spawn_peer"); err != nil {

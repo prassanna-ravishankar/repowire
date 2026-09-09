@@ -1021,7 +1021,7 @@ func (r *Registry) UpdateTmuxSession(ctx context.Context, id proto.PeerID, tmuxS
 }
 
 // UpdateDisplayName renames a peer in place, preserving PeerID and keeping the
-// mapping in sync. Evicts Offline ghosts holding the same (name, backend);
+// mapping in sync. Evicts Offline ghosts holding the same name in the circle;
 // returns false if a live peer already holds the name.
 func (r *Registry) UpdateDisplayName(ctx context.Context, id proto.PeerID, name proto.DisplayName) (bool, error) {
 	r.mu.Lock()
@@ -1032,7 +1032,7 @@ func (r *Registry) UpdateDisplayName(ctx context.Context, id proto.PeerID, name 
 	}
 	var toEvict []proto.PeerID
 	for otherID, other := range r.peers {
-		if otherID == id || other.peer.DisplayName != name || other.peer.Backend != ps.peer.Backend {
+		if otherID == id || other.peer.DisplayName != name || other.peer.Circle != ps.peer.Circle {
 			continue
 		}
 		if other.state == StateOffline {
@@ -1511,4 +1511,13 @@ func sanitizeFolder(name string) string {
 		return out
 	}
 	return "peer"
+}
+
+// NormalizeDisplayName turns a human session title into a valid mesh address.
+func NormalizeDisplayName(name string) proto.DisplayName {
+	name = strings.ToLower(sanitizeFolder(strings.TrimSpace(name)))
+	if len(name) > 64 {
+		name = strings.Trim(name[:64], "-")
+	}
+	return proto.DisplayName(name)
 }

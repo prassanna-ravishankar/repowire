@@ -208,6 +208,26 @@ func TestSanitizeFolderName(t *testing.T) {
 	}
 }
 
+func TestNormalizeDisplayName(t *testing.T) {
+	if got := NormalizeDisplayName(" Fix circle resume "); got != "fix-circle-resume" {
+		t.Fatalf("NormalizeDisplayName() = %q, want fix-circle-resume", got)
+	}
+}
+
+func TestUpdateDisplayNameRejectsCollisionWithinCircle(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newRegistry(t)
+	pathA, pathB := "/work/a", "/work/b"
+	idA, _, _ := r.AllocateAndRegister(ctx, AllocateParams{Circle: "one", Backend: proto.AgentClaudeCode, Path: &pathA, Role: proto.RoleAgent})
+	idB, _, _ := r.AllocateAndRegister(ctx, AllocateParams{Circle: "one", Backend: proto.AgentCodex, Path: &pathB, Role: proto.RoleAgent})
+	if ok, err := r.UpdateDisplayName(ctx, idA, "shared"); err != nil || !ok {
+		t.Fatalf("first rename = %v, %v", ok, err)
+	}
+	if ok, err := r.UpdateDisplayName(ctx, idB, "shared"); err != nil || ok {
+		t.Fatalf("colliding rename = %v, %v; want false, nil", ok, err)
+	}
+}
+
 // TestReconnect_ResetsStaleBusy proves a re-register of a BUSY peer resets it to
 // ONLINE (parity with PeerRegistry applying initial_status on reconnect); a genuine
 // in-progress turn re-reports BUSY via the next UserPromptSubmit.
