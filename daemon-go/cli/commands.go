@@ -19,81 +19,7 @@ import (
 var Version = "0.18.0"
 
 func Run(argv []string) int {
-	if len(argv) == 0 {
-		return help()
-	}
-	for _, arg := range argv[1:] {
-		if arg == "help" || arg == "--help" || arg == "-h" {
-			return commandHelp(argv[0])
-		}
-	}
-	switch argv[0] {
-	case "help", "--help", "-h":
-		return help()
-	case "version", "--version":
-		fmt.Println(Version)
-		return 0
-	case "setup":
-		return runSetup(argv[1:])
-	case "status":
-		return runStatus()
-	case "doctor":
-		return runDoctor()
-	case "link":
-		return runLink(argv[1:])
-	case "peer":
-		return runPeer(argv[1:])
-	case "jobs":
-		return runJobs(argv[1:])
-	case "schedule":
-		return runSchedule(argv[1:])
-	case "session":
-		return runSession(argv[1:])
-	case "trace":
-		return runTrace(argv[1:])
-	case "share":
-		return runShare(argv[1:])
-	case "relay":
-		return runRelay(argv[1:])
-	case "telegram", "slack":
-		return runBot(argv[0], argv[1:])
-	case "agents":
-		return runAgents(argv[1:])
-	case "service":
-		return runService(argv[1:])
-	case "daemon":
-		return runDaemonCommand(argv[1:])
-	case "config":
-		return runConfig(argv[1:])
-	case "hooks":
-		return runRuntimeInstall("claude-code", argv[1:])
-	case "claude":
-		return runRuntimeInstall("claude-code", argv[1:])
-	case "codex", "opencode", "pi":
-		return runRuntimeInstall(argv[0], argv[1:])
-	case "memory":
-		return runMemory(argv[1:])
-	case "orchestrator":
-		return runOrchestrator(argv[1:])
-	case "build-ui":
-		return runBuildUI()
-	case "update":
-		return runUpdate()
-	case "uninstall":
-		return runUninstall(argv[1:])
-	default:
-		return usage("<setup|serve|status|doctor|link|peer|jobs|schedule|session|trace|share|relay|telegram|slack|agents|service|config|memory|orchestrator>")
-	}
-}
-
-func commandHelp(command string) int {
-	fmt.Printf("Usage: repowire %s [options]\n\nSee docs/reference/cli.md for command details.\n", command)
-	return 0
-}
-
-func help() int {
-	fmt.Println("Repowire - mesh network for AI coding agents\n\nCommands: setup, serve, status, doctor, link, peer, jobs, schedule, session, trace, share, relay, telegram, slack, agents, service, config, memory, orchestrator")
-	return 0
+	return executeRoot(argv)
 }
 
 func runStatus() int {
@@ -783,17 +709,6 @@ func runShare(argv []string) int {
 	return 0
 }
 
-func printPeers(result map[string]any) {
-	fmt.Println("peer_id\tname\tproject\tcircle\trole\tstatus\tpath\tbackend\tturn_state\tmodel")
-	for _, raw := range anySlice(result["peers"]) {
-		p, _ := raw.(map[string]any)
-		project := ""
-		if meta, ok := p["metadata"].(map[string]any); ok {
-			project = stringValue(meta, "project")
-		}
-		fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", stringValue(p, "peer_id"), first(stringValue(p, "display_name"), stringValue(p, "name")), project, stringValue(p, "circle"), stringValue(p, "role"), stringValue(p, "status"), stringValue(p, "path"), stringValue(p, "backend"), stringValue(p, "turn_state"), stringValue(p, "model"))
-	}
-}
 func contradictionExit(result map[string]any) int {
 	for _, raw := range anySlice(result["contradictions"]) {
 		item, _ := raw.(map[string]any)

@@ -3,6 +3,13 @@
 The native Go `repowire` command owns setup, daemon operation, hooks, mesh
 control, Telegram and Slack peers, and the hosted relay server.
 
+Run `repowire --help` to browse commands and `repowire <command> --help` for
+command-specific usage and flags. Shell completions are available through
+`repowire completion <bash|zsh|fish|powershell>`.
+
+Interactive peer listings adapt to the terminal width. Redirected output keeps
+the stable tab-separated format for scripts and pipelines.
+
 ## `repowire setup`
 
 ```bash

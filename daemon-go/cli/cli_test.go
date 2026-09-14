@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -154,6 +155,27 @@ func TestSubcommandHelpDoesNotRunCommand(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("setup --help mutated config: %v", err)
+	}
+}
+
+func TestRootHelpShowsCommandTree(t *testing.T) {
+	root := newRootCommand()
+	var output bytes.Buffer
+	root.SetOut(&output)
+	root.SetErr(&output)
+	root.SetArgs([]string{"peer", "--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Inspect and control mesh peers", "list", "restart", "whoami"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("peer help missing %q:\n%s", want, output.String())
+		}
+	}
+	for _, line := range strings.Split(output.String(), "\n") {
+		if len([]rune(line)) > 80 {
+			t.Fatalf("help line exceeds default width: %q", line)
+		}
 	}
 }
 
