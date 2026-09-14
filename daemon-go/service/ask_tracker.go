@@ -66,7 +66,7 @@ type Answer struct {
 
 // Ask is one open ask thread.
 //
-// closeReason ∈ {ack, ack_with_msg, reply_to, answered, evicted, send_failed}.
+// closeReason ∈ {ack, ack_with_msg, declined, reply_to, answered, evicted, send_failed}.
 // PendingReply is the durable home of an ACP-routed reply whose first delivery
 // failed (asker offline); AskerIdentity is captured alongside it for
 // identity-tuple rebind. ReplyDelivery ∈ {"push","pull"}.

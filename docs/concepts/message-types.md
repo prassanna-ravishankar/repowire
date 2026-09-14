@@ -8,7 +8,7 @@ Contact another peer only when its ownership, context, or independent work mater
 
 ## `ask`
 
-Non-blocking. Returns a `correlation_id` immediately. The recipient closes the thread with `ack(corr_id)` (bare) or `ack(corr_id, message)` (reply). Chain follow-ups with `ask(reply_to=corr_id, ...)`, which closes the prior thread and opens a new one referencing it.
+Non-blocking. Returns a `correlation_id` immediately. The recipient closes the thread with `ack(corr_id)` (bare), `ack(corr_id, message)` (reply), or `decline(corr_id, reason)` (return unresolved). Chain follow-ups with `ask(reply_to=corr_id, ...)`, which closes the prior thread and opens a new one referencing it.
 
 Use `ask` when closure matters: worker checkpoints, review requests, pre-commit
 handoffs, status checks you intend to track, and delegated work that should not
@@ -25,6 +25,7 @@ Closes an open ask thread.
 
 - Bare `ack(cid)` signals "seen, no action needed."
 - Reply `ack(cid, message)` delivers the message back to the original asker as a notification framed `[ack #cid from @peer] message`.
+- `decline(cid, reason)` returns work that cannot be handled to the original asker as `[declined #cid from @peer] reason`.
 
 Replies always reach the original asker regardless of circle — the thread was established at ask-time and the routing is locked then.
 

@@ -21,7 +21,19 @@ args = ["mcp"]
 
 [mcp_servers.repowire.env]
 REPOWIRE_BACKEND = "codex"
+
+[mcp_servers.repowire.tools.ack]
+approval_mode = "approve"
+
+[mcp_servers.repowire.tools.answer]
+approval_mode = "approve"
+
+[mcp_servers.repowire.tools.decline]
+approval_mode = "approve"
 ```
+
+Setup pre-approves the ask-resolution tools so a non-interactive approval
+policy cannot leave the Stop hook permanently blocked on an ask it cannot close.
 
 Older Codex releases without `app-server --listen` retain the hooks transport.
 

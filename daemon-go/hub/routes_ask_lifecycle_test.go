@@ -282,6 +282,45 @@ func TestPostAckBareClosesIdempotently(t *testing.T) {
 	}
 }
 
+func TestPostDeclineReturnsAskToAsker(t *testing.T) {
+	asker := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	responder := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	reg := newAskFakeRegistry(asker, responder)
+	f := &fakeTransport{ackFrame: map[string]any{"status": "injected"}}
+	srv, asks := newAskTestHub(t, reg, f)
+
+	cid, err := asks.Register(context.Background(), service.RegisterAskParams{
+		FromPeerID: asker.PeerID, FromPeerName: asker.DisplayName,
+		ToPeerID: responder.PeerID, ToPeerName: responder.DisplayName, Text: "q",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, srv.URL+"/decline", DeclineRequest{CorrelationID: cid, Reason: "tooling failed"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("decline status = %d, want 200", resp.StatusCode)
+	}
+	closed, _ := asks.Get(cid)
+	if !closed.Closed || closed.CloseReason != "declined" || closed.ReplyText == nil || *closed.ReplyText != "tooling failed" {
+		t.Fatalf("ask not declined with reason: %+v", closed)
+	}
+	frame, _ := f.lastFrame.(map[string]any)
+	if text, _ := frame["text"].(string); text != "[declined #"+cid+" from @beta] tooling failed" {
+		t.Fatalf("decline frame = %#v", f.lastFrame)
+	}
+}
+
+func TestPostDeclineRequiresReason(t *testing.T) {
+	srv, _ := newAskTestHub(t, newAskFakeRegistry(), &fakeTransport{})
+	resp := postJSON(t, srv.URL+"/decline", DeclineRequest{CorrelationID: "ask-1"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("decline without reason status = %d, want 422", resp.StatusCode)
+	}
+}
+
 // TestPostAckUnknownIs404: acking an unknown correlation_id is a 404.
 func TestPostAckUnknownIs404(t *testing.T) {
 	reg := newAskFakeRegistry()
@@ -374,6 +413,14 @@ func TestAskManyFansOutAndAggregates(t *testing.T) {
 	if ack.StatusCode != http.StatusOK {
 		t.Fatalf("ack child expected 200, got %d", ack.StatusCode)
 	}
+	decline := postJSON(t, srv.URL+"/decline", DeclineRequest{
+		CorrelationID: *opened.Children[2].CorrelationID,
+		Reason:        "cannot handle this one",
+	})
+	decline.Body.Close()
+	if decline.StatusCode != http.StatusOK {
+		t.Fatalf("decline child expected 200, got %d", decline.StatusCode)
+	}
 
 	res, err := http.Get(srv.URL + "/ask-many/" + opened.ParentID)
 	if err != nil {
@@ -387,12 +434,12 @@ func TestAskManyFansOutAndAggregates(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&agg); err != nil {
 		t.Fatalf("decode aggregate: %v", err)
 	}
-	if agg["state"] != "pending" {
-		t.Fatalf("state = %v, want pending", agg["state"])
+	if agg["state"] != "complete" {
+		t.Fatalf("state = %v, want complete", agg["state"])
 	}
 	rollup := agg["rollup"].(map[string]any)
 	if rollup["total"].(float64) != 3 || rollup["replied"].(float64) != 1 ||
-		rollup["pending"].(float64) != 1 || rollup["failed"].(float64) != 1 {
+		rollup["pending"].(float64) != 0 || rollup["failed"].(float64) != 2 {
 		t.Fatalf("unexpected rollup: %#v", rollup)
 	}
 }

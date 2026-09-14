@@ -105,9 +105,10 @@ repowire peer whoami [--register --backend B --name NAME --circle C --path P]  #
 repowire peer asks [--peer-id ID | --pane-id PANE | --peer NAME] [--direction inbound|outbound|both] [--json]
 repowire peer deliveries [--peer-id ID | --pane-id PANE | --peer NAME] [--json]
 repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
+repowire peer decline CORR_ID --reason REASON [--from-peer NAME]
 ```
 
-`peer whoami`, `peer asks`, `peer deliveries`, and `peer ack` are shellable mesh diagnostics. They wrap daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/deliveries/pending`, `/ack`) and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`.
+`peer whoami`, `peer asks`, `peer deliveries`, `peer ack`, and `peer decline` are shellable mesh diagnostics. They wrap daemon HTTP endpoints and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`.
 
 Commands that need a sender identity resolve `$TMUX_PANE` to its registered canonical `peer_id`; they fail with a registration hint instead of lazily creating another runtime identity. Outside tmux they use the explicit `repowire-cli` admin identity.
 

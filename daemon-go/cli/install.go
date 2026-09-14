@@ -493,6 +493,9 @@ func installCodex() error {
 	content = ensureTomlFeature(content, "hooks", "true")
 	content = replaceTomlSection(content, "mcp_servers.repowire", []string{"command = " + strconv.Quote(executable()), "args = [\"mcp\"]"})
 	content = replaceTomlSection(content, "mcp_servers.repowire.env", []string{"REPOWIRE_BACKEND = \"codex\""})
+	for _, tool := range []string{"ack", "answer", "decline"} {
+		content = replaceTomlSection(content, "mcp_servers.repowire.tools."+tool, []string{"approval_mode = \"approve\""})
+	}
 	for event, spec := range specs {
 		if nativeThreads && event != "Stop" {
 			continue

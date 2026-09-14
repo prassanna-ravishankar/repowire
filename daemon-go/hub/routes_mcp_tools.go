@@ -118,6 +118,10 @@ type mcpAckArgs struct {
 	Message       *string          `json:"message,omitempty"`
 	Attachments   []map[string]any `json:"attachments,omitempty"`
 }
+type mcpDeclineArgs struct {
+	CorrelationID string `json:"correlation_id"`
+	Reason        string `json:"reason"`
+}
 type mcpAnswerArgs struct {
 	CorrelationID string  `json:"correlation_id"`
 	OptionID      *string `json:"option_id,omitempty"`
@@ -283,6 +287,13 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 			suffix = " with reply"
 		}
 		return "acked #" + a.CorrelationID + suffix, nil
+	})
+	addMCPTool(srv, "decline", "Return an ask you cannot handle to its asker with a reason.", func(ctx context.Context, caller string, a mcpDeclineArgs) (string, error) {
+		if err := requireFields("correlation_id", a.CorrelationID, "reason", a.Reason); err != nil {
+			return "", err
+		}
+		err := h.declineDirect(ctx, DeclineRequest{CorrelationID: a.CorrelationID, Reason: a.Reason, FromPeer: &caller})
+		return "declined #" + a.CorrelationID, err
 	})
 	addMCPTool(srv, "answer", "Answer a structured question.", func(ctx context.Context, caller string, a mcpAnswerArgs) (string, error) {
 		if err := required("correlation_id", a.CorrelationID); err != nil {

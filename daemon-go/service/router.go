@@ -162,7 +162,7 @@ func (m *MessageRouter) SendAsk(
 	if question != nil {
 		hint = fmt.Sprintf(`↳ answer("%s", option_id=...) or answer("%s", text="...")`, correlationID, correlationID)
 	} else {
-		hint = fmt.Sprintf(`↳ ack("%s") or ack("%s", "reply")`, correlationID, correlationID)
+		hint = fmt.Sprintf(`↳ ack("%s"), ack("%s", "reply"), or decline("%s", "reason")`, correlationID, correlationID, correlationID)
 	}
 	hintedText := strings.TrimRight(text, " \t\r\n") + "\n" + hint
 

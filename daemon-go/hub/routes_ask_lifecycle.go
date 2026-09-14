@@ -7,6 +7,7 @@ package hub
 //
 //	POST /ask                          register + deliver an ask
 //	POST /ack                          close an ask (bare or with reply body)
+//	POST /decline                      return an unhandled ask to its asker
 //	POST /answer                       answer a structured-question ask
 //	POST /query                        legacy blocking RPC (ask-based shim)
 //	GET  /asks/pending                 the Stop-hook reminder source
@@ -110,6 +111,7 @@ const (
 func (h *Hub) registerAskLifecycleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /ask", h.requireAuth(h.handleAsk))
 	mux.HandleFunc("POST /ack", h.requireAuth(h.handleAck))
+	mux.HandleFunc("POST /decline", h.requireAuth(h.handleDecline))
 	mux.HandleFunc("POST /answer", h.requireAuth(h.handleAnswer))
 	mux.HandleFunc("POST /questions/ask-blocking", h.requireAuth(h.handleAskBlockingQuestion))
 	mux.HandleFunc("POST /query", h.requireAuth(h.handleQuery))
@@ -474,6 +476,12 @@ type AckResponse struct {
 	OK bool `json:"ok"`
 }
 
+type DeclineRequest struct {
+	CorrelationID string  `json:"correlation_id"`
+	Reason        string  `json:"reason"`
+	FromPeer      *string `json:"from_peer,omitempty"`
+}
+
 // handleAck closes an ask. Bare ack → Close(ack), idempotent re-ack of a closed
 // ask → 200. A structured-question ask delegates to /answer. ack-with-message
 // delivers the reply to the ORIGINAL asker first (framed "[ack #cid from
@@ -537,59 +545,10 @@ func (h *Hub) ackDirect(ctx context.Context, req AckRequest) (AckResponse, error
 		return AckResponse{OK: true}, nil
 	}
 
-	// Pull delivery (asker blocked in wait_on_ack): retain the reply on the ask
-	// and let the resolved waiter deliver it, instead of injecting into a pane
-	// nobody is reading.
-	if existing.ReplyDelivery == "pull" && hasBody {
-		h.ask.asks.CaptureReply(ctx, req.CorrelationID, derefOr(req.Message, ""), req.Attachments)
-		_, _ = h.ask.asks.Close(ctx, req.CorrelationID, "ack_with_msg")
-		h.emitAckEvent(ctx, existing, "ack_with_msg", true, true, len(req.Attachments) > 0)
-		h.traceAskClosed(ctx, existing, "ack_with_msg")
-		return AckResponse{OK: true}, nil
-	}
-
 	if hasBody {
-		framed := fmt.Sprintf("[ack #%s from @%s] %s",
-			req.CorrelationID, existing.ToPeerName, derefOr(req.Message, ""))
-		// Routing uses the STORED ask endpoints, never req.FromPeer (compat-only).
-		res, err := h.ask.delivery.Notify(ctx, service.NotifyParams{
-			FromPeer:     string(existing.ToPeerID),
-			ToPeer:       string(existing.FromPeerID),
-			Text:         framed,
-			BypassCircle: true,
-			Attachments:  req.Attachments,
-		})
-		if err != nil {
-			if errors.Is(err, service.ErrNotConnected) {
-				// Asker has no live WS: keep the ask OPEN for retry, 503.
-				return AckResponse{}, routeErr(http.StatusServiceUnavailable, fmt.Sprintf(
-					"Reply delivery failed for %s: %s. Ask remains open; retry when "+
-						"the asker reconnects.", existing.FromPeerName, err))
-			}
-			// CheckAccess failure (asker evicted): close without delivery.
-			_, _ = h.ask.asks.Close(ctx, req.CorrelationID, "ack_with_msg")
-			h.emitAckEvent(ctx, existing, "ack_with_msg", false, true, len(req.Attachments) > 0)
-			h.traceAskClosed(ctx, existing, "ack_with_msg")
-			return AckResponse{OK: true}, nil
+		if err := h.deliverAskResolution(ctx, existing, "ack", "ack_with_msg", derefOr(req.Message, ""), req.Attachments); err != nil {
+			return AckResponse{}, err
 		}
-		if res.Queued() {
-			h.ask.asks.CaptureReply(ctx, req.CorrelationID, derefOr(req.Message, ""), req.Attachments)
-			_, _ = h.ask.asks.Close(ctx, req.CorrelationID, "ack_with_msg")
-			h.emitAckEvent(ctx, existing, "ack_with_msg", false, true, len(req.Attachments) > 0)
-			h.traceAskClosed(ctx, existing, "ack_with_msg")
-			return AckResponse{OK: true}, nil
-		}
-		if !res.Delivered() {
-			// An unaccepted non-delivery stays open for retry.
-			return AckResponse{}, routeErr(http.StatusServiceUnavailable, fmt.Sprintf(
-				"Reply delivery failed for %s: %s. Ask remains open; retry when "+
-					"the asker reconnects.", existing.FromPeerName, res.Reason))
-		}
-		if req.Message != nil {
-			h.ask.asks.CaptureReply(ctx, req.CorrelationID, *req.Message, nil)
-		}
-		_, _ = h.ask.asks.Close(ctx, req.CorrelationID, "ack_with_msg")
-		h.traceAskClosed(ctx, existing, "ack_with_msg")
 		return AckResponse{OK: true}, nil
 	}
 
@@ -598,6 +557,73 @@ func (h *Hub) ackDirect(ctx context.Context, req AckRequest) (AckResponse, error
 	_, _ = h.ask.asks.Close(ctx, req.CorrelationID, "ack")
 	h.traceAskClosed(ctx, existing, "ack")
 	return AckResponse{OK: true}, nil
+}
+
+func (h *Hub) handleDecline(w http.ResponseWriter, r *http.Request) {
+	if !h.askReady(w) {
+		return
+	}
+	var req DeclineRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := h.declineDirect(r.Context(), req); err != nil {
+		writeRouteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, AckResponse{OK: true})
+}
+
+func (h *Hub) declineDirect(ctx context.Context, req DeclineRequest) error {
+	if err := h.askOperationReady(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		return routeErr(http.StatusUnprocessableEntity, "reason is required")
+	}
+	existing, ok := h.ask.asks.Get(req.CorrelationID)
+	if !ok {
+		return routeErr(http.StatusNotFound, "No open ask with correlation_id: "+req.CorrelationID)
+	}
+	if existing.Closed {
+		return routeErr(http.StatusGone, fmt.Sprintf("Ask %s is already closed", req.CorrelationID))
+	}
+	return h.deliverAskResolution(ctx, existing, "declined", "declined", req.Reason, nil)
+}
+
+func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameKind, closeReason, message string, attachments []map[string]any) error {
+	if ask.ReplyDelivery == "pull" {
+		h.ask.asks.CaptureReply(ctx, ask.CorrelationID, message, attachments)
+		_, _ = h.ask.asks.Close(ctx, ask.CorrelationID, closeReason)
+		h.emitAckEvent(ctx, ask, closeReason, true, true, len(attachments) > 0)
+		h.traceAskClosed(ctx, ask, closeReason)
+		return nil
+	}
+
+	framed := fmt.Sprintf("[%s #%s from @%s] %s", frameKind, ask.CorrelationID, ask.ToPeerName, message)
+	res, err := h.ask.delivery.Notify(ctx, service.NotifyParams{
+		FromPeer: string(ask.ToPeerID), ToPeer: string(ask.FromPeerID), Text: framed,
+		BypassCircle: true, Attachments: attachments,
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrNotConnected) {
+			return routeErr(http.StatusServiceUnavailable, fmt.Sprintf(
+				"Reply delivery failed for %s: %s. Ask remains open; retry when the asker reconnects.", ask.FromPeerName, err))
+		}
+		_, _ = h.ask.asks.Close(ctx, ask.CorrelationID, closeReason)
+		h.emitAckEvent(ctx, ask, closeReason, false, true, len(attachments) > 0)
+		h.traceAskClosed(ctx, ask, closeReason)
+		return nil
+	}
+	if !res.Delivered() && !res.Queued() {
+		return routeErr(http.StatusServiceUnavailable, fmt.Sprintf(
+			"Reply delivery failed for %s: %s. Ask remains open; retry when the asker reconnects.", ask.FromPeerName, res.Reason))
+	}
+	h.ask.asks.CaptureReply(ctx, ask.CorrelationID, message, attachments)
+	_, _ = h.ask.asks.Close(ctx, ask.CorrelationID, closeReason)
+	h.emitAckEvent(ctx, ask, closeReason, res.Delivered(), true, len(attachments) > 0)
+	h.traceAskClosed(ctx, ask, closeReason)
+	return nil
 }
 
 // ----------------------------------------------------------------------------

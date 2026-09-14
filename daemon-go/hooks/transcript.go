@@ -170,7 +170,7 @@ func handledCIDs(calls []toolCall) map[string]bool {
 		if i := strings.LastIndex(name, "__"); i >= 0 {
 			name = name[i+2:]
 		}
-		if name == "ack" {
+		if name == "ack" || name == "decline" {
 			cid := firstNonempty(stringValue(call.Input, "correlation_id"), stringValue(call.Input, "corr_id"))
 			out[cid] = cid != ""
 		} else if name == "ask" || name == "ask_peer" {

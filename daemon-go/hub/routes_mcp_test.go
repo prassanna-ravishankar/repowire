@@ -152,7 +152,7 @@ func TestMCPToolsList(t *testing.T) {
 
 	want := map[string]bool{}
 	for _, name := range []string{
-		"ack", "answer", "ask", "ask_many", "ask_many_result", "broadcast",
+		"ack", "answer", "ask", "ask_many", "ask_many_result", "broadcast", "decline",
 		"job_cancel", "job_create", "job_list",
 		"job_result", "job_show", "job_status", "job_update", "kill_peer",
 		"list_peers", "mark_reviewed", "notify_peer", "orchestrator_status",

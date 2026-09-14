@@ -134,6 +134,21 @@ ack("ask-c1a1c7dd")
 ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")
 ```
 
+### `decline`
+
+```text
+decline(correlation_id: str, reason: str) -> str
+```
+
+Return an ask that cannot be handled to its original asker. The ask closes with
+`close_reason="declined"`, the reason is delivered back as a
+`[declined #cid from @peer]` message, and the recipient's Stop-hook reminder
+clears. Unlike a bare `ack`, this tells the asker that the work remains undone.
+
+```text
+decline("ask-c1a1c7dd", "Repowire rejected both acknowledgement attempts")
+```
+
 ### `answer`
 
 ```text

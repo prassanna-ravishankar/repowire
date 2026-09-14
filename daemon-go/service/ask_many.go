@@ -141,7 +141,7 @@ func askManyChildStatus(ask *Ask) string {
 	if !ask.Closed {
 		return "pending"
 	}
-	if ask.CloseReason == "send_failed" {
+	if ask.CloseReason == "send_failed" || ask.CloseReason == "declined" {
 		return "failed"
 	}
 	if ask.ReplyText != nil {

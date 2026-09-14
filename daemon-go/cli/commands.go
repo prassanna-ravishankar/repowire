@@ -420,6 +420,23 @@ func runPeer(argv []string) int {
 		}
 		fmt.Println("acked #" + a.pos[0])
 		return 0
+	case "decline":
+		if len(a.pos) < 1 || a.string("reason", "") == "" {
+			return usage("peer decline CORR_ID --reason REASON")
+		}
+		from := a.string("from-peer", "")
+		if from == "" {
+			from, err = cliPeerIdentity(c)
+			if err != nil {
+				return fatal(err)
+			}
+		}
+		_, err := c.request(http.MethodPost, "/decline", map[string]any{"correlation_id": a.pos[0], "reason": a.string("reason", ""), "from_peer": from})
+		if err != nil {
+			return fatal(err)
+		}
+		fmt.Println("declined #" + a.pos[0])
+		return 0
 	case "claim-role":
 		if len(a.pos) < 1 || a.pos[0] != "orchestrator" {
 			return usage("peer claim-role orchestrator")

@@ -903,8 +903,14 @@ func TestInstallCodexUsesNativeThreadsWhenAppServerIsAvailable(t *testing.T) {
 		t.Fatalf("Stop hooks = %#v", stopEntries)
 	}
 	configRaw, err := os.ReadFile(filepath.Join(homeDir, ".codex", "config.toml"))
-	if err != nil || !strings.Contains(string(configRaw), "[mcp_servers.repowire]") || !strings.Contains(string(configRaw), "hooks.state.") {
+	config := string(configRaw)
+	if err != nil || !strings.Contains(config, "[mcp_servers.repowire]") || !strings.Contains(config, "hooks.state.") {
 		t.Fatalf("Codex MCP config missing: %v %s", err, configRaw)
+	}
+	for _, tool := range []string{"ack", "answer", "decline"} {
+		if !strings.Contains(config, "[mcp_servers.repowire.tools."+tool+"]\napproval_mode = \"approve\"") {
+			t.Fatalf("Codex %s tool is not pre-approved:\n%s", tool, config)
+		}
 	}
 }
 
