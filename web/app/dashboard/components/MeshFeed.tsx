@@ -182,6 +182,8 @@ function lifecycleSummary(event: Event): { verb: string; detail?: string } {
       return { verb: "reaped", detail: joined(event.backend, event.path, event.reason) };
     case "peer_contradiction":
       return { verb: "contradiction", detail: joined(event.severity, event.code, event.detail) };
+    case "peer_updated":
+      return { verb: "updated", detail: joined(event.source, event.addressable === false ? "no input" : undefined, event.addressable_reason) };
     default:
       return { verb: event.type };
   }

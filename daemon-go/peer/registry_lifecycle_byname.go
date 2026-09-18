@@ -124,6 +124,40 @@ func (r *Registry) UpdateDescription(ctx context.Context, identifier, descriptio
 	return true, nil
 }
 
+// UpdateProvenance replaces a live peer's provenance with a fresh
+// classification (for example a bridge demoting a thread whose direct input
+// was denied). It emits peer_updated so dashboards and rosters refresh; the
+// event carries the old and new addressable verdicts.
+func (r *Registry) UpdateProvenance(ctx context.Context, identifier string, provenance proto.Provenance, circle *string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, err := r.resolvePeerLocked(identifier, circle)
+	if err != nil {
+		return false, err
+	}
+	if p == nil {
+		return false, nil
+	}
+	provenance = provenance.Normalized()
+	if p.Provenance == provenance {
+		return true, nil
+	}
+	now := time.Now().UTC()
+	was := p.Provenance
+	p.Provenance = provenance
+	p.LastSeen = &now
+	if m, ok := r.mappings[p.PeerID]; ok {
+		m.Provenance = provenance
+		m.UpdatedAt = now
+		r.markMappingsDirtyLocked()
+	}
+	r.appendEvent(ctx, Event{Type: "peer_updated", Timestamp: now, PeerID: p.PeerID, PeerName: p.DisplayName, SessionID: p.PeerID, Payload: map[string]any{
+		"source": provenance.Source, "addressable": provenance.Addressable, "addressable_reason": provenance.AddressableReason,
+		"was_addressable": was.Addressable,
+	}})
+	return true, nil
+}
+
 // looksLikePeerID reports whether an identifier is a canonical daemon-minted
 // peer_id (repow-<circle>-<hex>) rather than a display_name. Mirrors the Python
 // `identifier.startswith("repow-")` retirement guard in mark_offline.

@@ -1,0 +1,42 @@
+{
+ "agentNickname": "Pascal",
+ "agentRole": "worker",
+ "canAcceptDirectInput": true,
+ "cliVersion": "0.153.3",
+ "createdAt": 1789772663,
+ "cwd": "/home/dev/projects/repowire",
+ "ephemeral": true,
+ "extra": null,
+ "forkedFromId": null,
+ "gitInfo": null,
+ "historyMode": "legacy",
+ "id": "01a0b6b0-e1f5-7ea3-bda6-5a0d7968127e",
+ "model": "gpt-5.6-luna",
+ "modelProvider": "openai",
+ "name": null,
+ "parentThreadId": "01a0b69f-0110-7961-a6a8-2f4fba871217",
+ "path": null,
+ "preview": "",
+ "projectId": null,
+ "reasoningEffort": "low",
+ "recencyAt": 1789772663,
+ "section": null,
+ "sectionEnteredAt": null,
+ "sessionId": "01a0b69f-0110-7961-a6a8-2f4fba871217",
+ "source": {
+  "subAgent": {
+   "thread_spawn": {
+    "agent_nickname": "Pascal",
+    "agent_path": null,
+    "agent_role": "worker",
+    "depth": 1,
+    "parent_thread_id": "01a0b69f-0110-7961-a6a8-2f4fba871217"
+   }
+  }
+ },
+ "status": {
+  "type": "idle"
+ },
+ "threadSource": "subagent",
+ "updatedAt": 1789772663
+}

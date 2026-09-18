@@ -157,6 +157,10 @@ type Peer struct {
 	Metadata    map[string]any `json:"metadata,omitempty"`
 	Description string         `json:"description"`
 	AgentPID    *int           `json:"agent_pid,omitempty"`
+
+	// Provenance is flattened onto the wire (source, parent_runtime_id,
+	// ephemeral, addressable, addressable_reason).
+	Provenance
 }
 
 // SessionMapping is the durable identity row persisted to peer_session_mappings.
@@ -172,6 +176,7 @@ type SessionMapping struct {
 	Description string      `json:"description"`
 	Model       *string     `json:"model,omitempty"`
 	AgentPID    *int        `json:"agent_pid,omitempty"`
+	Provenance  Provenance  `json:"provenance"`
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +259,9 @@ type ConnectFrame struct {
 	ModelDetails map[string]any `json:"model_details,omitempty"`
 	AgentPID     *int           `json:"agent_pid,omitempty"`
 	PeerID       *PeerID        `json:"peer_id,omitempty"` // claimed on reconnect
+	// Provenance is explicit source evidence from native clients (OpenCode and
+	// Pi send {source: "hook"}); absent keeps what the daemon knows.
+	Provenance *Provenance `json:"provenance,omitempty"`
 }
 
 // ConnectedFrame is the daemon's reply. session_id IS the assigned peer_id.

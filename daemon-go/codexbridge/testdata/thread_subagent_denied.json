@@ -1,0 +1,46 @@
+{
+ "agentNickname": "Pasteur",
+ "agentRole": null,
+ "canAcceptDirectInput": false,
+ "cliVersion": "0.153.3",
+ "createdAt": 1789068366,
+ "cwd": "/home/dev/projects/common-obligations",
+ "ephemeral": false,
+ "extra": null,
+ "forkedFromId": null,
+ "gitInfo": {
+  "branch": "main",
+  "originUrl": "https://github.com/example-org/common-obligations.git",
+  "sha": "a29e8979f24037a61df4c5803fe64f7be57daedf"
+ },
+ "historyMode": "paginated",
+ "id": "01a08cc8-d2b3-7301-b426-f0676c14a22c",
+ "model": "gpt-6-astra",
+ "modelProvider": "openai",
+ "name": null,
+ "parentThreadId": "01a082bf-c41e-7251-8f70-74017e02fb54",
+ "path": "/home/dev/.codex/sessions/2026/09/10/rollout-2026-09-10T20-26-06-01a08cc8-d2b3-7301-b426-f0676c14a22c.jsonl",
+ "preview": "",
+ "projectId": null,
+ "reasoningEffort": "medium",
+ "recencyAt": 1789068366,
+ "section": null,
+ "sectionEnteredAt": null,
+ "sessionId": "01a082bf-c41e-7251-8f70-74017e02fb54",
+ "source": {
+  "subAgent": {
+   "thread_spawn": {
+    "agent_nickname": "Pasteur",
+    "agent_path": "/root/artwork",
+    "agent_role": null,
+    "depth": 1,
+    "parent_thread_id": "01a082bf-c41e-7251-8f70-74017e02fb54"
+   }
+  }
+ },
+ "status": {
+  "type": "idle"
+ },
+ "threadSource": "subagent",
+ "updatedAt": 1789068721
+}

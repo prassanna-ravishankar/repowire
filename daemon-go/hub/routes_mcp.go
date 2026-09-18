@@ -156,9 +156,11 @@ func textResult(text string) *mcp.CallToolResult {
 // ---- tool argument shapes ---------------------------------------------------
 
 type mcpListPeersArgs struct {
-	ShowOffline bool   `json:"show_offline,omitempty" jsonschema:"Include offline peers"`
-	IncludeSelf bool   `json:"include_self,omitempty" jsonschema:"Include the calling peer"`
-	Circle      string `json:"circle,omitempty" jsonschema:"Circle name or * for mesh-wide"`
+	ShowOffline   bool   `json:"show_offline,omitempty" jsonschema:"Include offline peers"`
+	IncludeSelf   bool   `json:"include_self,omitempty" jsonschema:"Include the calling peer"`
+	Circle        string `json:"circle,omitempty" jsonschema:"Circle name or * for mesh-wide"`
+	IncludeHidden bool   `json:"include_hidden,omitempty" jsonschema:"Include peers hidden from the default view: ones that cannot receive direct input, runtime-internal (system) threads, and sub-agents whose parent is offline"`
+	Source        string `json:"source,omitempty" jsonschema:"Only peers from this source: hook, codex-app-server, or unknown"`
 }
 
 type mcpNotifyPeerArgs struct {
@@ -218,7 +220,7 @@ func registerMCPTools(srv *mcp.Server, h *Hub, delivery *service.PeerDelivery, c
 // caller shape (name/circle/role, no peer_id) rather than failing the call.
 func (h *Hub) mcpWhoami(fromPeer string) *mcp.CallToolResult {
 	if p, err := h.reg.GetPeerByName(fromPeer, nil); err == nil && p != nil {
-		return textResult(mcpPeerTSV([]*proto.Peer{p}))
+		return textResult(h.mcpPeerTSV([]*proto.Peer{p}))
 	}
 	return textResult(fmt.Sprintf("display_name=%s circle=global backend=mcp-http status=unregistered", fromPeer))
 }
@@ -249,23 +251,40 @@ func (h *Hub) mcpListPeers(ctx context.Context, args mcpListPeersArgs, caller st
 			return p.PeerID != me.PeerID
 		})
 	}
-	return textResult(mcpPeerTSV(peers))
+	// A routing view lists peers someone can send work to; the rest are
+	// hidden unless asked. Independent of show_offline and circle scope.
+	if !args.IncludeHidden {
+		peers = filterPeers(peers, h.listedByDefault)
+	}
+	if args.Source != "" {
+		peers = filterPeers(peers, func(p *proto.Peer) bool {
+			return string(p.Provenance.Normalized().Source) == args.Source
+		})
+	}
+	return textResult(h.mcpPeerTSV(peers))
 }
 
-func mcpPeerTSV(peers []*proto.Peer) string {
+// mcpPeerTSV appends the provenance columns after the historical thirteen so
+// positional consumers keep their indices.
+func (h *Hub) mcpPeerTSV(peers []*proto.Peer) string {
 	var b strings.Builder
-	b.WriteString("peer_id\tname\tproject\tcircle\trole\tstatus\tpath\tmachine\tdescription\tbackend\tlast_seen\tturn_state\tmodel")
+	b.WriteString("peer_id\tname\tproject\tcircle\trole\tstatus\tpath\tmachine\tdescription\tbackend\tlast_seen\tturn_state\tmodel\tsource\tinitiator\taddressable\tparent_peer_id\tnickname")
 	for _, p := range peers {
 		project, _ := p.Metadata["project"].(string)
-		lastSeen, model := "", ""
+		nickname, _ := p.Metadata["agent_nickname"].(string)
+		lastSeen, model, parent := "", "", ""
 		if p.LastSeen != nil {
 			lastSeen = p.LastSeen.Format(time.RFC3339Nano)
 		}
 		if p.Model != nil {
 			model = *p.Model
 		}
-		fmt.Fprintf(&b, "\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
-			p.PeerID, p.DisplayName, project, p.Circle, p.Role, p.Status, p.Path, p.Machine, p.Description, p.Backend, lastSeen, p.TurnState, model)
+		if id := h.parentPeerID(p); id != nil {
+			parent = string(*id)
+		}
+		prov := p.Provenance.Normalized()
+		fmt.Fprintf(&b, "\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%t\t%s\t%s",
+			p.PeerID, p.DisplayName, project, p.Circle, p.Role, p.Status, p.Path, p.Machine, p.Description, p.Backend, lastSeen, p.TurnState, model, prov.Source, prov.Initiator, prov.Addressable, parent, nickname)
 	}
 	return b.String()
 }

@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Search } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
 import type { Peer } from "../types";
-import { peerLabel } from "../types";
+import { peerAddressable, peerLabel, peerListed, peerOriginBadge, peerParent } from "../types";
 import { StatusLabel, TurnStateHint, statusRank } from "./status";
 
 export function PeerRoster({
@@ -20,16 +20,42 @@ export function PeerRoster({
   onFilter: (value: string) => void;
   onSelectPeer: (peer: Peer) => void;
 }) {
+  // Sub-agent threads nest under their parent when the parent is in the same
+  // circle, to any depth. Anything unreachable from a root (an orphan whose
+  // parent is elsewhere, or a cycle) is emitted as a top-level row so every
+  // peer in the inventory is always rendered exactly once.
   const byCircle = useMemo(() => {
     const grouped = new Map<string, Peer[]>();
     for (const peer of peers) {
       const circle = peer.circle || "default";
       grouped.set(circle, [...(grouped.get(circle) ?? []), peer]);
     }
-    for (const list of grouped.values()) {
-      list.sort((a, b) => statusRank(a.status) - statusRank(b.status) || peerLabel(a).localeCompare(peerLabel(b)));
+    const byRank = (a: Peer, b: Peer) => statusRank(a.status) - statusRank(b.status) || peerLabel(a).localeCompare(peerLabel(b));
+    const ordered = new Map<string, RosterRow[]>();
+    for (const [circle, list] of grouped) {
+      const inCircle = new Set(list.map((peer) => peer.peer_id));
+      const parentOf = (peer: Peer) => {
+        const parent = peerParent(peer, list);
+        return parent && inCircle.has(parent.peer_id) ? parent.peer_id : null;
+      };
+      const children = new Map<string, Peer[]>();
+      for (const peer of list) {
+        const parent = parentOf(peer);
+        if (parent) children.set(parent, [...(children.get(parent) ?? []), peer]);
+      }
+      const rows: RosterRow[] = [];
+      const seen = new Set<string>();
+      const visit = (peer: Peer, depth: number) => {
+        if (seen.has(peer.peer_id)) return;
+        seen.add(peer.peer_id);
+        rows.push({ peer, depth });
+        for (const child of (children.get(peer.peer_id) ?? []).sort(byRank)) visit(child, depth + 1);
+      };
+      for (const root of list.filter((peer) => !parentOf(peer)).sort(byRank)) visit(root, 0);
+      for (const leftover of list.filter((peer) => !seen.has(peer.peer_id)).sort(byRank)) visit(leftover, 0);
+      ordered.set(circle, rows);
     }
-    return Array.from(grouped.entries()).sort(([a], [b]) => a.localeCompare(b));
+    return Array.from(ordered.entries()).sort(([a], [b]) => a.localeCompare(b));
   }, [peers]);
 
   return (
@@ -52,10 +78,12 @@ export function PeerRoster({
               <span>circle / {circle}</span>
               <span>{list.length}</span>
             </div>
-            {list.map((peer) => (
+            {list.map(({ peer, depth }) => (
               <PeerRow
                 key={peer.peer_id}
                 peer={peer}
+                depth={depth}
+                listed={peerListed(peer, peers)}
                 active={peer.peer_id === selectedPeerId}
                 onClick={() => onSelectPeer(peer)}
               />
@@ -73,22 +101,64 @@ export function PeerRoster({
   );
 }
 
-function PeerRow({ peer, active, onClick }: { peer: Peer; active: boolean; onClick: () => void }) {
+type RosterRow = { peer: Peer; depth: number };
+
+function PeerRow({
+  peer,
+  depth,
+  listed,
+  active,
+  onClick,
+}: {
+  peer: Peer;
+  depth: number;
+  listed: boolean;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const nested = depth > 0;
   const { folder, parent } = peer.path ? shortPath(peer.path) : { folder: "", parent: "" };
+  const addressable = peerAddressable(peer);
+  const badge = peerOriginBadge(peer);
+  const hiddenReason = !addressable
+    ? `Cannot receive direct input (${peer.addressable_reason || "runtime denied"})`
+    : peer.initiator === "system"
+    ? "Runtime-internal thread; hidden from list_peers by default"
+    : !listed
+    ? "Sub-agent whose parent is offline; hidden from list_peers by default"
+    : undefined;
   return (
     <button
       onClick={onClick}
       aria-pressed={active}
+      title={hiddenReason}
+      style={depth > 1 ? { paddingLeft: `${0.75 + depth}rem` } : undefined}
       className={cn(
-        "block w-full border-b border-border-faint border-l-2 px-3 py-2.5 text-left transition-colors",
+        "block w-full border-b border-border-faint border-l-2 py-2.5 pr-3 text-left transition-colors",
+        nested ? "pl-7" : "pl-3",
+        depth > 1 && `nested-${depth}`,
         active
           ? "border-l-primary bg-primary/10 text-primary-fixed"
-          : "border-l-transparent text-on-surface hover:bg-surface-container"
+          : "border-l-transparent text-on-surface hover:bg-surface-container",
+        !listed && "opacity-60"
       )}
     >
       <div className="mb-1 flex min-w-0 items-center gap-2.5">
+        {nested ? (
+          <span className="shrink-0 font-mono text-[11px] text-outline" aria-hidden="true">↳</span>
+        ) : null}
         <span className={cn("h-2 w-2 shrink-0 rounded-full", statusDot(peer.status))} />
         <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-semibold">{peerLabel(peer)}</span>
+        {badge && (
+          <span
+            className={cn(
+              "shrink-0 border px-1 font-mono text-[9px] uppercase tracking-[0.12em]",
+              addressable ? "border-border-faint text-outline" : "border-error/50 text-error"
+            )}
+          >
+            {badge}
+          </span>
+        )}
         <TurnStateHint turnState={peer.turn_state} />
         <StatusLabel status={peer.status} />
       </div>

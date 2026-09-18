@@ -1,0 +1,36 @@
+{
+ "agentNickname": null,
+ "agentRole": null,
+ "canAcceptDirectInput": true,
+ "cliVersion": "0.153.3",
+ "createdAt": 1788899337,
+ "cwd": "/home/dev/projects/clusterkit",
+ "ephemeral": false,
+ "extra": null,
+ "forkedFromId": null,
+ "gitInfo": {
+  "branch": "main",
+  "originUrl": "git@github.com:example-org/clusterkit.git",
+  "sha": "fe6890367d3d19750d0d2ceee61c4e3e6aa32e40"
+ },
+ "historyMode": "paginated",
+ "id": "01a082b5-a47c-7381-b153-61738518ad8d",
+ "model": "gpt-5.6-terra",
+ "modelProvider": "openai",
+ "name": "example thread",
+ "parentThreadId": null,
+ "path": "/home/dev/.codex/sessions/2026/09/08/rollout-2026-09-08T21-28-57-01a082b5-a47c-7381-b153-61738518ad8d.jsonl",
+ "preview": "",
+ "projectId": null,
+ "reasoningEffort": "medium",
+ "recencyAt": 1789771828,
+ "section": null,
+ "sectionEnteredAt": null,
+ "sessionId": "01a082b5-a47c-7381-b153-61738518ad8d",
+ "source": "vscode",
+ "status": {
+  "type": "idle"
+ },
+ "threadSource": "user",
+ "updatedAt": 1789771840
+}

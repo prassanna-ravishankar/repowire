@@ -235,10 +235,14 @@ ask_many_result(parent)  # shows who replied, who's still pending
 ### `list_peers`
 
 ```text
-list_peers(show_offline: bool = False, include_self: bool = False) -> str
+list_peers(show_offline: bool = False, include_self: bool = False, circle: str = "", include_hidden: bool = False, source: str = "") -> str
 ```
 
-Returns a TSV with columns: `peer_id`, `name`, `project`, `circle`, `role`, `status`, `path`, `machine`, `description`, `backend`, `last_seen`, `turn_state`, `model`.
+Returns a TSV with columns: `peer_id`, `name`, `project`, `circle`, `role`, `status`, `path`, `machine`, `description`, `backend`, `last_seen`, `turn_state`, `model`, `source`, `initiator`, `addressable`, `parent_peer_id`, `nickname`. The five provenance columns are appended after the historical thirteen, so positional consumers keep their indices.
+
+`source` is how the peer reached the mesh: `hook` (a runtime hook in a tmux pane), `codex-app-server` (a thread the codex bridge registered from the Codex App Server, whether ChatGPT desktop, VS Code, or codex CLI), or `unknown` (registered before provenance existed). `initiator` is who opened the session: `user`, `agent` (spawned by another agent, e.g. a Codex sub-agent), `system` (runtime machinery such as helper threads the desktop app spins up), or empty when the runtime did not say. `addressable` is the runtime's own verdict on whether the peer can receive direct input; Codex multi-agent v2 sub-agent threads report `false` (`addressable_reason=subagent_direct_input_denied` on the HTTP record). `parent_peer_id` is the registered parent of a sub-agent thread, empty when the parent is not on the mesh. `nickname` is the runtime's human-readable name for a sub-agent (for example `Pasteur`); it is the only handle such threads have beyond the generated display name.
+
+The default view lists peers someone can send work to. Hidden are non-addressable peers (an `ask` or `notify_peer` to them cannot land), `initiator=system` threads nobody opened, and sub-agents whose parent peer is offline or not registered. Pass `include_hidden=True` to see them; this is independent of `show_offline` and circle scope. `source="hook"` narrows to one source.
 
 `turn_state` is empty when unknown; otherwise `idle`, `working`, `awaiting_input` (peer is mid-turn waiting on user input), or `pending_first_turn` (spawn-seeded peer whose first prompt never landed — re-send via `notify_peer`).
 

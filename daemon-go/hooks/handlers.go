@@ -149,6 +149,9 @@ func handleSession(raw map[string]any, backend string, emitContext bool) int {
 		"name": filepath.Base(cwd), "path": cwd, "circle": circle,
 		"circle_source": circleSource, "backend": backend, "metadata": metadata,
 		"agent_pid": agentPID,
+		// Explicit source evidence; hook_version in metadata is the fallback
+		// inference for older clients.
+		"provenance": map[string]any{"source": "hook", "addressable": true},
 	}
 	if target := tmuxSession(info); target != "" {
 		request["tmux_session"] = target
