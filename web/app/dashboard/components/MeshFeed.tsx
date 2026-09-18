@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { Paperclip } from "lucide-react";
 import { cn } from "../lib/utils";
 import type { AttachmentRef, Event, Peer } from "../types";
-import { peerLabel } from "../types";
+import { isLifecycleEvent, peerLabel } from "../types";
 import { formatTime } from "./status";
 
 export function MeshFeed({
@@ -95,12 +95,18 @@ function EventRow({
   const fromClickable = Boolean(event.from);
   const toClickable = Boolean(event.to);
 
-  if (event.type === "status_change") {
+  if (isLifecycleEvent(event)) {
+    const { verb, detail } = lifecycleSummary(event);
+    const name = event.peer_name || event.display_name || event.peer || event.peer_id || "peer";
     return (
       <div className="grid grid-cols-[62px_1fr] gap-3 border-b border-border-faint/70 py-1.5 font-mono text-xs leading-5">
         <span className="text-outline tabular-nums">{formatTime(event.timestamp)}</span>
-        <span className="truncate text-outline">
-          status {event.peer || event.peer_id || "peer"} {">"} <span className="text-on-surface-variant">{event.new_status}</span>
+        <span className="min-w-0 break-words text-outline [overflow-wrap:anywhere]">
+          {verb}{" "}
+          <button onClick={() => onPickPeer(name)} className="text-on-surface-variant">
+            {name}
+          </button>
+          {detail ? <span> · {detail}</span> : null}
         </span>
       </div>
     );
@@ -134,20 +140,6 @@ function EventRow({
     );
   }
 
-  if (event.type === "peer_reaped") {
-    const label = event.display_name || event.peer || event.peer_id || "peer";
-    const details = [event.backend, event.path, event.reason].filter(Boolean).join(" · ");
-    return (
-      <div className="grid grid-cols-[62px_1fr] gap-3 border-b border-border-faint/70 py-1.5 font-mono text-xs leading-5">
-        <span className="text-outline tabular-nums">{formatTime(event.timestamp)}</span>
-        <span className="min-w-0 break-words text-outline [overflow-wrap:anywhere]">
-          reaped <span className="text-on-surface-variant">{label}</span>
-          {details ? <span> · {details}</span> : null}
-        </span>
-      </div>
-    );
-  }
-
   return (
     <div className="border-b border-border-faint/70 py-1.5 font-mono text-xs leading-5 md:grid md:grid-cols-[62px_minmax(70px,120px)_18px_minmax(70px,120px)_1fr] md:gap-3">
       <div className="flex items-center gap-2 md:contents">
@@ -172,6 +164,27 @@ function EventRow({
       </span>
     </div>
   );
+}
+
+/** One verb plus optional detail per lifecycle event type; the peer name is rendered by the caller. */
+function lifecycleSummary(event: Event): { verb: string; detail?: string } {
+  const joined = (...parts: (string | undefined)[]) => parts.filter(Boolean).join(" · ") || undefined;
+  switch (event.type) {
+    case "peer_online":
+      return { verb: "online" };
+    case "peer_offline":
+      return { verb: "offline", detail: event.reason };
+    case "peer_status":
+      return { verb: "status", detail: event.status };
+    case "status_change":
+      return { verb: "status", detail: event.new_status };
+    case "peer_reaped":
+      return { verb: "reaped", detail: joined(event.backend, event.path, event.reason) };
+    case "peer_contradiction":
+      return { verb: "contradiction", detail: joined(event.severity, event.code, event.detail) };
+    default:
+      return { verb: event.type };
+  }
 }
 
 function ackSummary(event: Event): string {

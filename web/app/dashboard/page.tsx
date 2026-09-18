@@ -14,6 +14,7 @@ import { PendingQuestions } from "./components/PendingQuestions";
 import { TopBar } from "./components/TopBar";
 import { WireTrace } from "./components/WireTrace";
 import type { Event, OrchestratorStatus, Peer } from "./types";
+import { isLifecycleEvent } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 
@@ -129,7 +130,7 @@ function DashboardInner() {
         const next = [...prev, event];
         return next.length > 500 ? next.slice(-500) : next;
       });
-      if (event.type === "status_change") void fetchPeers();
+      if (isLifecycleEvent(event)) void fetchPeers();
     },
     [fetchPeers],
   );

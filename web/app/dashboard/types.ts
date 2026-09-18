@@ -144,6 +144,20 @@ export function peerLabel(peer: Peer): string {
   return peer.display_name || peer.name;
 }
 
+const LIFECYCLE_EVENT_TYPES: ReadonlySet<Event["type"]> = new Set([
+  "peer_online",
+  "peer_offline",
+  "peer_status",
+  "peer_contradiction",
+  "peer_reaped",
+  "status_change",
+]);
+
+/** Registry lifecycle events: they describe one peer rather than a routed message. */
+export function isLifecycleEvent(event: Event): boolean {
+  return LIFECYCLE_EVENT_TYPES.has(event.type);
+}
+
 export interface Event {
   id: string;
   type:
@@ -156,6 +170,10 @@ export interface Event {
     | "chat_turn_delta"
     | "ask"
     | "ack"
+    | "peer_online"
+    | "peer_offline"
+    | "peer_status"
+    | "peer_contradiction"
     | "peer_reaped";
   timestamp: string;
   from?: string;
@@ -164,16 +182,21 @@ export interface Event {
   to_peer_id?: string;
   text?: string;
   attachments?: AttachmentRef[];
-  status?: "pending" | "success" | "error" | "blocked";
+  status?: "pending" | "success" | "error" | "blocked" | Peer["status"];
   delivered?: boolean;
   has_message?: boolean;
   has_attachments?: boolean;
   peer?: string;
   peer_id?: string;
+  peer_name?: string;
   display_name?: string;
   backend?: string;
   path?: string;
   reason?: string;
+  // peer_contradiction fields
+  code?: string;
+  detail?: string;
+  severity?: string;
   role?: "user" | "assistant";
   new_status?: "online" | "busy" | "offline";
   query_id?: string;
