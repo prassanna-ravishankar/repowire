@@ -60,6 +60,7 @@ func TestPromptInjectsCurrentDescription(t *testing.T) {
 }
 
 func TestReusablePaneRegistrationRequiresConfirmedLivePeer(t *testing.T) {
+	t.Setenv(claudeMessagingSocketEnv, "") // host Claude sessions export this; keep the test hermetic
 	prior := map[string]any{
 		"hook_session_id": "session-1", "cwd": "/project", "backend": "claude-code", "peer_id": "repow-1",
 	}
