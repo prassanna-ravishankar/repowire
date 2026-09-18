@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -16,6 +17,64 @@ func TestWindowSplitArgs(t *testing.T) {
 	want := []string{"split-window", "-P", "-F", "#{pane_id}", "-t", "%42", "-c", "/work/project"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("split-window args = %#v, want %#v", got, want)
+	}
+}
+
+func TestTmuxSpawnUsesExactCircle(t *testing.T) {
+	tmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux is not installed")
+	}
+	dir := t.TempDir()
+	project := filepath.Join(dir, "1") // Numeric window names must not resolve as indexes.
+	if err := os.Mkdir(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A private server and empty config keep this test away from live peers/hooks.
+	socket := "repowire-spawn-test-" + sha256Hex16(dir)
+	script := "#!/bin/sh\nexec " + shellQuote(tmux) + " -L " + socket + " -f /dev/null \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("REPOWIRE_CACHE_DIR", dir)
+	t.Cleanup(func() { _ = exec.Command(tmux, "-L", socket, "kill-server").Run() })
+
+	for _, args := range [][]string{
+		{"new-session", "-d", "-s", "0", "-n", "baseline", "sleep 60"},
+		{"set-option", "-g", "base-index", "1"},
+		{"set-option", "-g", "default-shell", "/bin/sh"},
+		{"set-option", "-g", "default-command", "sleep 60"},
+		{"new-session", "-d", "-s", "1", "-n", "baseline", "sleep 60"},
+		{"new-session", "-d", "-s", "mesh", "-n", "baseline", "sleep 60"},
+	} {
+		if _, err := tmuxQuery(args...); err != nil {
+			t.Fatalf("setup %v: %v", args, err)
+		}
+	}
+	for _, circle := range []string{"1", "0", "mes", "1"} {
+		result, err := (realTmuxController{}).Spawn(SpawnConfig{
+			Circle: circle, Path: project, Backend: proto.AgentCodex, Command: "sleep 60",
+		})
+		if err != nil {
+			t.Fatalf("spawn into circle %q: %v", circle, err)
+		}
+		got, err := tmuxQuery("display-message", "-p", "-t", result.PaneID, "#{session_name}:#{window_name}")
+		if err != nil || got != circle+":"+result.DisplayName || got != result.TmuxSession {
+			t.Fatalf("circle %q spawned in %q, result=%+v, err=%v", circle, got, result, err)
+		}
+	}
+	got, err := tmuxQuery("list-windows", "-t", "=mesh", "-F", "#{window_name}")
+	if err != nil || got != "baseline" {
+		t.Fatalf("unrelated circle changed: windows=%q, err=%v", got, err)
+	}
+	// Force a known tmux error and retain both its diagnostic and exit status.
+	_, err = tmuxQuery("new-window", "-t", "=mesh:1")
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || !strings.Contains(err.Error(), "index 1 in use") {
+		t.Fatalf("expected tmux diagnostic and wrapped exit error, got %v", err)
 	}
 }
 

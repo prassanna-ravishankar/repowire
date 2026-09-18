@@ -204,6 +204,18 @@ func TestMCPSpawnCirclePolicy(t *testing.T) {
 	if _, _, err := h.mcpSpawnPlacement(string(agent), "beta"); err == nil {
 		t.Fatal("agent cross-circle spawn was allowed")
 	}
+	for _, circle := range []string{"0", "1"} {
+		numericPane := "%" + circle
+		numericAgent := register(circle, proto.RoleAgent, &numericPane)
+		for _, requested := range []string{"", circle} {
+			if got, sourcePane, err := h.mcpSpawnPlacement(string(numericAgent), requested); err != nil || got != circle || sourcePane != numericPane {
+				t.Fatalf("numeric circle placement = %q, %q, %v; want %q, %q, nil", got, sourcePane, err, circle, numericPane)
+			}
+		}
+		if _, _, err := h.mcpSpawnPlacement(string(numericAgent), "other"); err == nil {
+			t.Fatal("numeric-circle agent cross-circle spawn was allowed")
+		}
+	}
 
 	orchestrator := register("alpha", proto.RoleOrchestrator, &pane)
 	if circle, sourcePane, err := h.mcpSpawnPlacement(string(orchestrator), "beta"); err != nil || circle != "beta" || sourcePane != "" {

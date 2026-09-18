@@ -541,24 +541,26 @@ func (realTmuxController) Spawn(cfg SpawnConfig) (SpawnResult, error) {
 			return SpawnResult{}, fmt.Errorf("tmux could not resolve window for %s: %w", paneID, err)
 		}
 	} else {
-		created, err := ensureSession(cfg.Circle, cfg.Path, displayName)
+		var err error
+		paneID, err = ensureSession(cfg.Circle, cfg.Path, displayName)
 		if err != nil {
 			return SpawnResult{}, err
 		}
 
 		windowName := displayName
-		if !created {
+		if paneID == "" {
 			windowName = uniqueWindowName(cfg.Circle, displayName)
-			if err := tmuxRun("new-window", "-t", cfg.Circle, "-n", windowName, "-c", cfg.Path); err != nil {
+			// Qualify the exact session; a bare numeric circle is a window index.
+			paneID, err = tmuxQuery("new-window", "-P", "-F", "#{pane_id}", "-t", "="+cfg.Circle+":", "-n", windowName, "-c", cfg.Path)
+			if err != nil {
 				return SpawnResult{}, fmt.Errorf("tmux new-window: %w", err)
 			}
 		}
 		spawnDisplayName = windowName
 
 		target = cfg.Circle + ":" + windowName
-		paneID, err = tmuxQuery("display-message", "-t", target, "-p", "#{pane_id}")
-		if err != nil || paneID == "" {
-			return SpawnResult{}, fmt.Errorf("tmux could not resolve pane for %s: %w", target, err)
+		if paneID == "" {
+			return SpawnResult{}, fmt.Errorf("tmux did not return a pane for %s", target)
 		}
 	}
 
@@ -614,24 +616,24 @@ func (realTmuxController) ProbePane(paneID string) *TmuxPaneEvidence {
 	return realProbeTmuxPane(paneID)
 }
 
-// ensureSession returns (created, err): created=true when a new session was made
-// (its first window is the target window), false when an existing session was
-// reused. Mirrors _get_or_create_session.
-func ensureSession(session, dir, windowName string) (bool, error) {
-	if exec.Command("tmux", "has-session", "-t", session).Run() == nil {
-		return false, nil
+// ensureSession returns the first pane of a new session, or an empty string
+// when the exact session already exists.
+func ensureSession(session, dir, windowName string) (string, error) {
+	if exec.Command("tmux", "has-session", "-t", "="+session).Run() == nil {
+		return "", nil
 	}
-	if err := tmuxRun("new-session", "-d", "-s", session, "-c", dir, "-n", windowName); err != nil {
-		return false, fmt.Errorf("tmux new-session: %w", err)
+	paneID, err := tmuxQuery("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", session, "-c", dir, "-n", windowName)
+	if err != nil {
+		return "", fmt.Errorf("tmux new-session: %w", err)
 	}
-	return true, nil
+	return paneID, nil
 }
 
 // uniqueWindowName ports _unique_window_name: append -2, -3, ... until the name
 // is free in the session. Best-effort: a listing failure returns the base name
 // (tmux will still pick a working window).
 func uniqueWindowName(session, base string) string {
-	out, err := tmuxQuery("list-windows", "-t", session, "-F", "#{window_name}")
+	out, err := tmuxQuery("list-windows", "-t", "="+session, "-F", "#{window_name}")
 	if err != nil {
 		return base
 	}
@@ -683,15 +685,14 @@ func shellQuote(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
 }
 
-// tmuxRun runs a tmux subcommand, discarding stdout. Returns the exec error.
-func tmuxRun(args ...string) error {
-	return exec.Command("tmux", args...).Run()
-}
-
-// tmuxQuery runs a tmux subcommand and returns trimmed stdout.
+// tmuxQuery returns trimmed stdout, preserving stderr diagnostics on failure.
 func tmuxQuery(args ...string) (string, error) {
 	out, err := exec.Command("tmux", args...).Output()
 	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil

@@ -350,6 +350,8 @@ spawn_peer(path: str, backend: str, profile: str | None = None, circle: str | No
 
 Spawn a new agent session in a project directory. `backend` must have a launch profile in `daemon.spawn.commands` in `~/.repowire/config.yaml`; spawn is off by default until you configure at least one backend and one allowed path. Pass `profile` to append args from `daemon.spawn.profiles.<backend>.<profile>` for model/profile selection. If `circle` is omitted, the MCP tool uses the registered caller's current circle; anonymous HTTP MCP callers must provide one. In window-boundary mode it also inherits the caller's tmux window. Agents cannot override that scope, while orchestrators may target another circle. With the default session boundary, pass `circle="default"` explicitly to target the `default` tmux session. `command` remains accepted as a deprecated compatibility selector for one release and bypasses profile resolution.
 
+Session-boundary spawns target the exact tmux session named by the authorized circle, including numeric names such as `0` and `1`; they do not fall back to the active session or a prefix match. Session/window creation failures include tmux's diagnostic text.
+
 Claude self-registers via `SessionStart`; OpenCode and Pi register from their native plugin lifecycle. Codex registers from its App Server thread event before the first prompt.
 Its stdio MCP shim validates the bridge's daemon-minted runtime certificate for
 Codex's per-call `_meta.threadId`, so tool calls from a shared App Server MCP
