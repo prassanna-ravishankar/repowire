@@ -25,7 +25,7 @@ var _ peer.Store = (*Store)(nil)
 
 // SchemaVersion is the current user_version. Migrations advance older stores;
 // newer stores fail loud rather than risking corruption.
-const SchemaVersion = 13
+const SchemaVersion = 14
 
 // tsLayout is the exact format the Python daemon writes (strftime %Y-%m-%dT%H:%M:%fZ).
 const tsLayout = "2006-01-02T15:04:05.000Z"
@@ -159,7 +159,7 @@ func strOrNil(value *string) any { return nullable(value) }
 
 // LoadMappings hydrates every peer_session_mappings row.
 func (s *Store) LoadMappings(ctx context.Context) ([]*proto.SessionMapping, error) {
-	const q = `SELECT session_id, display_name, circle, backend, path, role, updated_at, description, model, agent_pid FROM peer_session_mappings`
+	const q = `SELECT session_id, display_name, circle, backend, path, role, updated_at, description, model, agent_pid, provenance FROM peer_session_mappings`
 	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("load mappings: %w", err)
@@ -179,8 +179,9 @@ func (s *Store) LoadMappings(ctx context.Context) ([]*proto.SessionMapping, erro
 			description string
 			model       sql.NullString
 			agentPID    sql.NullInt64
+			provenance  string
 		)
-		if err := rows.Scan(&sessionID, &displayName, &circle, &backend, &path, &role, &updatedAt, &description, &model, &agentPID); err != nil {
+		if err := rows.Scan(&sessionID, &displayName, &circle, &backend, &path, &role, &updatedAt, &description, &model, &agentPID, &provenance); err != nil {
 			return nil, fmt.Errorf("scan mapping: %w", err)
 		}
 		m := &proto.SessionMapping{
@@ -191,6 +192,10 @@ func (s *Store) LoadMappings(ctx context.Context) ([]*proto.SessionMapping, erro
 			Role:        proto.PeerRole(role),
 			Description: description,
 		}
+		// A malformed cell reads as unclassified rather than failing the whole
+		// hydration; Normalized turns '{}' into the unknown/addressable default.
+		_ = json.Unmarshal([]byte(provenance), &m.Provenance)
+		m.Provenance = m.Provenance.Normalized()
 		if path.Valid {
 			p := path.String
 			m.Path = &p
@@ -221,8 +226,8 @@ func (s *Store) LoadMappings(ctx context.Context) ([]*proto.SessionMapping, erro
 // UpsertMapping persists one mapping row.
 func (s *Store) UpsertMapping(ctx context.Context, m *proto.SessionMapping) error {
 	const q = `INSERT OR REPLACE INTO peer_session_mappings
-		(session_id, display_name, circle, backend, path, role, updated_at, description, model, agent_pid)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		(session_id, display_name, circle, backend, path, role, updated_at, description, model, agent_pid, provenance)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	var path any
 	if m.Path != nil {
@@ -240,8 +245,12 @@ func (s *Store) UpsertMapping(ctx context.Context, m *proto.SessionMapping) erro
 	if updatedAt.IsZero() {
 		updatedAt = time.Now()
 	}
+	provenance, err := json.Marshal(m.Provenance.Normalized())
+	if err != nil {
+		return fmt.Errorf("marshal provenance %s: %w", m.SessionID, err)
+	}
 
-	_, err := s.db.ExecContext(ctx, q,
+	_, err = s.db.ExecContext(ctx, q,
 		string(m.SessionID),
 		string(m.DisplayName),
 		m.Circle,
@@ -252,6 +261,7 @@ func (s *Store) UpsertMapping(ctx context.Context, m *proto.SessionMapping) erro
 		m.Description,
 		model,
 		agentPID,
+		string(provenance),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert mapping %s: %w", m.SessionID, err)

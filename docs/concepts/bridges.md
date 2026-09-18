@@ -37,7 +37,7 @@ delivery path when a native bridge is active.
 
 Each bridge implements only the capabilities its runtime provides:
 
-- register a stable runtime session or thread as a peer,
+- register a stable runtime session or thread as a peer, with provenance (`source`, parent thread, ephemeral, and the runtime's addressability verdict; see [peers and circles](peers-and-circles.md#provenance)),
 - report lifecycle and chat events,
 - accept inbound mesh messages natively,
 - return truthful delivery receipts,

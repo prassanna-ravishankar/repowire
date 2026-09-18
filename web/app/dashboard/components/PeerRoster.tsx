@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Search } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
 import type { Peer } from "../types";
-import { peerLabel } from "../types";
+import { peerAddressable, peerLabel, peerOriginBadge } from "../types";
 import { StatusLabel, TurnStateHint, statusRank } from "./status";
 
 export function PeerRoster({
@@ -75,20 +75,34 @@ export function PeerRoster({
 
 function PeerRow({ peer, active, onClick }: { peer: Peer; active: boolean; onClick: () => void }) {
   const { folder, parent } = peer.path ? shortPath(peer.path) : { folder: "", parent: "" };
+  const addressable = peerAddressable(peer);
+  const badge = peerOriginBadge(peer);
   return (
     <button
       onClick={onClick}
       aria-pressed={active}
+      title={addressable ? undefined : `Cannot receive direct input (${peer.addressable_reason || "runtime denied"})`}
       className={cn(
         "block w-full border-b border-border-faint border-l-2 px-3 py-2.5 text-left transition-colors",
         active
           ? "border-l-primary bg-primary/10 text-primary-fixed"
-          : "border-l-transparent text-on-surface hover:bg-surface-container"
+          : "border-l-transparent text-on-surface hover:bg-surface-container",
+        !addressable && "opacity-60"
       )}
     >
       <div className="mb-1 flex min-w-0 items-center gap-2.5">
         <span className={cn("h-2 w-2 shrink-0 rounded-full", statusDot(peer.status))} />
         <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-semibold">{peerLabel(peer)}</span>
+        {badge && (
+          <span
+            className={cn(
+              "shrink-0 border px-1 font-mono text-[9px] uppercase tracking-[0.12em]",
+              addressable ? "border-border-faint text-outline" : "border-error/50 text-error"
+            )}
+          >
+            {badge}
+          </span>
+        )}
         <TurnStateHint turnState={peer.turn_state} />
         <StatusLabel status={peer.status} />
       </div>

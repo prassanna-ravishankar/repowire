@@ -235,10 +235,14 @@ ask_many_result(parent)  # shows who replied, who's still pending
 ### `list_peers`
 
 ```text
-list_peers(show_offline: bool = False, include_self: bool = False) -> str
+list_peers(show_offline: bool = False, include_self: bool = False, circle: str = "", include_non_addressable: bool = False, source: str = "") -> str
 ```
 
-Returns a TSV with columns: `peer_id`, `name`, `project`, `circle`, `role`, `status`, `path`, `machine`, `description`, `backend`, `last_seen`, `turn_state`, `model`.
+Returns a TSV with columns: `peer_id`, `name`, `project`, `circle`, `role`, `status`, `path`, `machine`, `description`, `backend`, `last_seen`, `turn_state`, `model`, `source`, `addressable`, `parent_peer_id`, `nickname`. The four provenance columns are appended after the historical thirteen, so positional consumers keep their indices.
+
+`source` is how the peer reached the mesh: `hook` (a runtime hook in a tmux pane), `codex-app-server` (a thread the codex bridge registered from the Codex App Server, whether ChatGPT desktop, VS Code, or codex CLI), or `unknown` (registered before provenance existed). `addressable` is the runtime's own verdict on whether the peer can receive direct input; Codex multi-agent v2 sub-agent threads report `false` (`addressable_reason=subagent_direct_input_denied` on the HTTP record). `parent_peer_id` is the registered parent of a sub-agent thread, empty when the parent is not on the mesh. `nickname` is the runtime's human-readable name for a sub-agent (for example `Pasteur`); it is the only handle such threads have beyond the generated display name.
+
+Non-addressable peers are hidden by default because an `ask` or `notify_peer` to them cannot land. Pass `include_non_addressable=True` to see them; this is independent of `show_offline` and circle scope. `source="hook"` narrows to one source.
 
 `turn_state` is empty when unknown; otherwise `idle`, `working`, `awaiting_input` (peer is mid-turn waiting on user input), or `pending_first_turn` (spawn-seeded peer whose first prompt never landed — re-send via `notify_peer`).
 

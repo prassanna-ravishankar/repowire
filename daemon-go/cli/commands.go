@@ -174,6 +174,11 @@ func runPeer(argv []string) int {
 		if !a.bool("show-offline") {
 			q.Set("status", "online")
 		}
+		// Routing view: peers that cannot take input are hidden unless asked.
+		if !a.bool("include-non-addressable") {
+			q.Set("addressable", "true")
+		}
+		addQuery(q, "source", a.string("source", ""))
 		result, err := c.request(http.MethodGet, pathQuery("/peers", q), nil)
 		if err != nil {
 			return fatal(err)

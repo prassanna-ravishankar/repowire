@@ -79,6 +79,14 @@ type AllocateParams struct {
 	// and same-id reconnect (parity with the Python initial turn_state). nil leaves
 	// the peer's turn_state untouched on reconnect / zero on fresh.
 	TurnState *proto.TurnState
+	// Provenance, when supplied, is a fresh classification and replaces the
+	// stored one outright (a runtime re-read its own verdict). nil preserves
+	// what is known; only an unknown source is then filled by inference from
+	// Metadata / HookVersion.
+	Provenance *proto.Provenance
+	// HookVersion reports that a runtime hook registered the peer; used only
+	// to infer Source when it is unknown.
+	HookVersion bool
 	// ParentPID is the registering hook's parent process id (SessionStart hooks
 	// send it). Used only by the direct-child pane-hijack guard: a claimant whose
 	// parent_pid is the live pane holder's agent_pid is a subprocess inheriting
@@ -382,8 +390,10 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 			}
 			existing.peer.Metadata = merged
 		}
+		existing.peer.Provenance = existing.peer.Provenance.Merge(params.Provenance).InferSource(existing.peer.Metadata, params.HookVersion)
 		if m := r.mappings[id]; m != nil {
 			m.UpdatedAt = now
+			m.Provenance = existing.peer.Provenance
 			if circleSourceOverridesMapping(params.CircleSource) {
 				m.Circle = params.Circle
 			}
@@ -478,8 +488,10 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	// wins because the runtime may have moved since the mapping was written. model:
 	// caller wins, else mapping. No mapping → a truly fresh mint uses caller values.
 	role, circle, model, description := params.Role, params.Circle, params.Model, ""
+	provenance := proto.DefaultProvenance()
 	if m := r.mappings[id]; m != nil {
 		role, description, displayName = m.Role, m.Description, m.DisplayName
+		provenance = m.Provenance
 		if !circleSourceOverridesMapping(params.CircleSource) {
 			circle = m.Circle
 		}
@@ -503,6 +515,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		Description: description,
 		AgentPID:    params.AgentPID,
 		LastSeen:    &now,
+		Provenance:  provenance.Merge(params.Provenance).InferSource(params.Metadata, params.HookVersion),
 	}
 	if params.TurnState != nil {
 		p.TurnState = *params.TurnState
@@ -529,6 +542,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		Description: description,
 		Model:       model,
 		AgentPID:    params.AgentPID,
+		Provenance:  p.Provenance,
 	}
 	r.markMappingsDirtyLocked()
 

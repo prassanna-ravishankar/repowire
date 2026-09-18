@@ -83,10 +83,17 @@ type threadPeer struct {
 	toolCalls     map[string][]map[string]string
 	seenItems     map[string]map[string]bool
 	completedTurn string
-	mu            sync.Mutex
-	writeMu       sync.Mutex
-	conn          *websocket.Conn
-	cancel        context.CancelFunc
+	// provenance is the last classification of this thread (see
+	// classifyThread). A denial-based demotion is kept here so that every later
+	// register / ConnectFrame carries it; only a fresh thread read that says
+	// canAcceptDirectInput=true restores addressability.
+	provenance   proto.Provenance
+	nickname     string
+	threadSource string
+	mu           sync.Mutex
+	writeMu      sync.Mutex
+	conn         *websocket.Conn
+	cancel       context.CancelFunc
 }
 
 // Run keeps the bridge attached until the service is stopped. App Server
@@ -495,6 +502,9 @@ func (b *Bridge) captureCompletedTurn(threadID string) {
 		return
 	}
 	thread, _ := result["thread"].(map[string]any)
+	if p := b.thread(threadID); p != nil && thread != nil {
+		p.reclassify(thread)
+	}
 	turns := mapSlice(thread["turns"])
 	for i := len(turns) - 1; i >= 0; i-- {
 		if stringValue(turns[i], "status") == "completed" {
@@ -540,6 +550,7 @@ func (b *Bridge) ensureThread(thread map[string]any) {
 	b.threadsMu.Lock()
 	if existing := b.threads[id]; existing != nil {
 		b.threadsMu.Unlock()
+		existing.reclassify(thread)
 		return
 	}
 	cert := cachedBirthCertificate("codex", id)
@@ -577,6 +588,7 @@ func (b *Bridge) ensureThread(thread map[string]any) {
 	if tmux.paneID != "" {
 		p.tmux = map[string]any{"session": tmux.session, "window_id": tmux.windowID, "pane_id": tmux.paneID, "pane_pid": tmux.panePID}
 	}
+	p.provenance, p.nickname, p.threadSource = classifyThread(thread)
 	p.busy = statusType(thread["status"]) == "active"
 	p.activeTurn = activeTurn(thread)
 	b.threads[id] = p
@@ -649,6 +661,7 @@ func (p *threadPeer) connectMesh(ctx context.Context) (*websocket.Conn, error) {
 	}
 	if err := p.ensureContext(ctx); err != nil {
 		log.Printf("codex bridge: inject mesh context for %s: %v", p.id, err)
+		p.demoteIfDenied(ctx, err)
 	}
 	conn, _, err := websocket.Dial(ctx, p.bridge.daemonWS, nil)
 	if err != nil {
@@ -704,6 +717,9 @@ func (p *threadPeer) register(ctx context.Context) error {
 		claim = p.hintedID
 	}
 	p.mu.Unlock()
+	p.mu.Lock()
+	provenance, nickname, threadSource := p.provenance, p.nickname, p.threadSource
+	p.mu.Unlock()
 	metadata := map[string]any{
 		"runtime_session_id": p.id, "runtime_source_uri": "codex:" + p.id,
 		"transport": "codex-app-server", "capabilities": []string{"delivery_receipts", "thread_steering"},
@@ -712,10 +728,16 @@ func (p *threadPeer) register(ctx context.Context) error {
 	if p.tmux != nil {
 		metadata["tmux_evidence"] = p.tmux
 	}
+	if nickname != "" {
+		metadata["agent_nickname"] = nickname
+	}
+	if threadSource != "" {
+		metadata["codex_thread_source"] = threadSource
+	}
 	body := map[string]any{
 		"name": safeName(filepath.Base(p.cwd)), "path": p.cwd, "circle": p.circle,
 		"circle_source": p.circleSrc, "backend": "codex", "role": p.role,
-		"metadata": metadata,
+		"metadata": metadata, "provenance": provenance,
 	}
 	if p.model != "" {
 		body["model"] = p.model
@@ -897,10 +919,97 @@ func (p *threadPeer) inject(ctx context.Context, conn *websocket.Conn, frame map
 		_, err = p.bridge.call(callCtx, "turn/start", map[string]any{"threadId": p.id, "input": input})
 	}
 	if err != nil {
+		p.demoteIfDenied(ctx, err)
 		p.deliveryAck(ctx, conn, deliveryID, kind, "failed", err.Error())
 		return
 	}
 	p.deliveryAck(ctx, conn, deliveryID, kind, "accepted", "codex thread API")
+}
+
+// directInputDenied is the App Server's exact refusal for multi-agent v2
+// sub-agent threads. Only this message demotes; generic -32600 errors (for
+// example "ephemeral threads do not support includeTurns") do not.
+const directInputDenied = "direct app-server input is not allowed for multi-agent v2 sub-agents"
+
+const reasonDirectInputDenied = "subagent_direct_input_denied"
+
+// classifyThread turns a thread/read or thread/started payload into
+// provenance. canAcceptDirectInput is the runtime's own verdict and is taken
+// as-is (a depth-1 sub-agent can have it true); a missing field means true.
+// The raw threadSource ("user", "subagent", "system") and agentNickname are
+// returned for metadata.
+func classifyThread(thread map[string]any) (proto.Provenance, string, string) {
+	accept := true
+	if value, ok := thread["canAcceptDirectInput"].(bool); ok {
+		accept = value
+	}
+	ephemeral, _ := thread["ephemeral"].(bool)
+	threadSource := stringValue(thread, "threadSource")
+	prov := proto.Provenance{
+		Source:          proto.SourceCodexAppServer,
+		ParentRuntimeID: stringValue(thread, "parentThreadId"),
+		Ephemeral:       ephemeral,
+		Addressable:     accept,
+	}
+	if !accept {
+		prov.AddressableReason = reasonDirectInputDenied
+	}
+	return prov, stringValue(thread, "agentNickname"), threadSource
+}
+
+// reclassify applies a fresh thread payload. The runtime's verdict wins in
+// both directions, which is the only way a denial-based demotion is undone.
+// A changed verdict on a registered peer is pushed to the daemon at once.
+func (p *threadPeer) reclassify(thread map[string]any) {
+	prov, nickname, threadSource := classifyThread(thread)
+	p.mu.Lock()
+	changed := prov != p.provenance
+	p.provenance, p.threadSource = prov, threadSource
+	if nickname != "" {
+		p.nickname = nickname
+	}
+	peerID := p.peerID
+	p.mu.Unlock()
+	if changed && peerID != "" {
+		p.pushProvenance(prov)
+	}
+}
+
+// demoteIfDenied marks the thread non-addressable when err is the exact
+// sub-agent denial. It never promotes.
+func (p *threadPeer) demoteIfDenied(ctx context.Context, err error) {
+	if err == nil || !strings.Contains(err.Error(), directInputDenied) {
+		return
+	}
+	p.mu.Lock()
+	if !p.provenance.Addressable {
+		p.mu.Unlock()
+		return
+	}
+	p.provenance.Addressable = false
+	p.provenance.AddressableReason = reasonDirectInputDenied
+	prov, peerID := p.provenance, p.peerID
+	p.mu.Unlock()
+	log.Printf("codex bridge: %s denies direct input; marking peer %s non-addressable", p.id, peerID)
+	if peerID != "" {
+		p.pushProvenance(prov)
+	}
+}
+
+func (p *threadPeer) pushProvenance(prov proto.Provenance) {
+	go func() {
+		ctx, cancel := context.WithTimeout(p.bridge.ctx, 5*time.Second)
+		defer cancel()
+		p.mu.Lock()
+		peerID := p.peerID
+		p.mu.Unlock()
+		if peerID == "" {
+			return
+		}
+		if _, err := p.bridge.daemonRequest(ctx, http.MethodPost, "/peers/"+peerID+"/provenance", prov); err != nil {
+			log.Printf("codex bridge: update provenance for %s: %v", p.id, err)
+		}
+	}()
 }
 
 func attachmentInputs(value any) []any {

@@ -92,7 +92,8 @@ var migrationStatements = []string{
 		updated_at TEXT,
 		description TEXT NOT NULL DEFAULT '',
 		model TEXT,
-		agent_pid INTEGER
+		agent_pid INTEGER,
+		provenance TEXT NOT NULL DEFAULT '{}'
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_peer_session_mappings_identity ON peer_session_mappings(display_name, circle, backend)`,
 	`CREATE INDEX IF NOT EXISTS idx_peer_session_mappings_path ON peer_session_mappings(backend, path)`,
@@ -251,6 +252,7 @@ var migrationLedger = []struct {
 	{11, "observed peer runtime model"},
 	{12, "retired peer identities survive daemon restarts"},
 	{13, "operator-closed peer identities reject live-runtime reclaim"},
+	{14, "peer provenance: source, parent runtime id, ephemeral, addressability"},
 }
 
 // migrate applies the idempotent schema and stamps user_version. Safe to run on
@@ -272,6 +274,9 @@ func migrate(db *sql.DB) error {
 	// `model` when absent. On a fresh DB the CREATE above already has it, so guard
 	// against the "duplicate column" error rather than probing table_info.
 	if err := ensureModelColumn(tx); err != nil {
+		return err
+	}
+	if err := ensureProvenanceColumn(tx); err != nil {
 		return err
 	}
 	if err := ensureRetiredHardColumn(tx); err != nil {
@@ -322,6 +327,25 @@ func ensureModelColumn(tx *sql.Tx) error {
 	if count == 0 {
 		if _, err := tx.Exec(`ALTER TABLE peer_session_mappings ADD COLUMN model TEXT`); err != nil {
 			return fmt.Errorf("add model column: %w", err)
+		}
+	}
+	return nil
+}
+
+// ensureProvenanceColumn adds peer_session_mappings.provenance (migration 14)
+// to databases created before it. The '{}' default reads back as
+// proto.DefaultProvenance: source unknown, addressable. Nothing is inferred
+// here; the registry fills unknown from live registration evidence.
+func ensureProvenanceColumn(tx *sql.Tx) error {
+	var count int
+	if err := tx.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('peer_session_mappings') WHERE name = 'provenance'`,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("check provenance column: %w", err)
+	}
+	if count == 0 {
+		if _, err := tx.Exec(`ALTER TABLE peer_session_mappings ADD COLUMN provenance TEXT NOT NULL DEFAULT '{}'`); err != nil {
+			return fmt.Errorf("add provenance column: %w", err)
 		}
 	}
 	return nil

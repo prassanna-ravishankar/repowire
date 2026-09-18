@@ -22,10 +22,10 @@ func printPeers(result map[string]any) {
 func renderPeers(w io.Writer, result map[string]any, width int) {
 	peers := anySlice(result["peers"])
 	if width <= 0 {
-		fmt.Fprintln(w, "peer_id\tname\tproject\tcircle\trole\tstatus\tpath\tbackend\tturn_state\tmodel")
+		fmt.Fprintln(w, "peer_id\tname\tproject\tcircle\trole\tstatus\tpath\tbackend\tturn_state\tmodel\tsource\taddressable\tparent_peer_id")
 		for _, raw := range peers {
 			p, _ := raw.(map[string]any)
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", peerField(p, "peer_id"), peerName(p), peerProject(p), peerField(p, "circle"), peerField(p, "role"), peerField(p, "status"), peerField(p, "path"), peerField(p, "backend"), peerField(p, "turn_state"), peerField(p, "model"))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%t\t%s\n", peerField(p, "peer_id"), peerName(p), peerProject(p), peerField(p, "circle"), peerField(p, "role"), peerField(p, "status"), peerField(p, "path"), peerField(p, "backend"), peerField(p, "turn_state"), peerField(p, "model"), peerField(p, "source"), peerAddressable(p), peerField(p, "parent_peer_id"))
 		}
 		return
 	}
@@ -40,7 +40,7 @@ func renderPeers(w io.Writer, result map[string]any, width int) {
 			if i > 0 {
 				fmt.Fprintln(w)
 			}
-			fmt.Fprintln(w, truncate(peerName(p)+"  "+peerField(p, "status"), width))
+			fmt.Fprintln(w, truncate(peerName(p)+"  "+peerField(p, "status")+peerOriginTag(p), width))
 			fmt.Fprintln(w, truncate("  "+strings.Join(nonempty(peerField(p, "backend"), peerField(p, "circle"), peerProject(p)), " · "), width))
 			fmt.Fprintln(w, truncate("  "+peerField(p, "peer_id")+"  "+peerField(p, "path"), width))
 		}
@@ -53,7 +53,7 @@ func renderPeers(w io.Writer, result map[string]any, width int) {
 		writePeerRow(w, columns, "NAME", "STATUS", "BACKEND", "CIRCLE")
 		for _, raw := range peers {
 			p, _ := raw.(map[string]any)
-			writePeerRow(w, columns, peerName(p), peerField(p, "status"), peerField(p, "backend"), peerField(p, "circle"))
+			writePeerRow(w, columns, peerName(p), peerField(p, "status"), peerField(p, "backend"), peerField(p, "circle")+peerOriginTag(p))
 		}
 		return
 	}
@@ -61,9 +61,34 @@ func renderPeers(w io.Writer, result map[string]any, width int) {
 	writePeerRow(w, columns, "NAME", "STATUS", "BACKEND", "CIRCLE", "PROJECT / PATH")
 	for _, raw := range peers {
 		p, _ := raw.(map[string]any)
-		location := strings.TrimSpace(peerProject(p) + "  " + peerField(p, "path"))
+		location := strings.TrimSpace(peerProject(p) + "  " + peerField(p, "path") + peerOriginTag(p))
 		writePeerRow(w, columns, peerName(p), peerField(p, "status"), peerField(p, "backend"), peerField(p, "circle"), location)
 	}
+}
+
+// peerAddressable reads the flattened provenance field; a peer that never
+// declared one is addressable.
+func peerAddressable(p map[string]any) bool {
+	if value, ok := p["addressable"].(bool); ok {
+		return value
+	}
+	return true
+}
+
+// peerOriginTag marks rows a reader would otherwise mistake for a normal
+// agent: a sub-agent thread that cannot take input, with its nickname when
+// the runtime gave it one.
+func peerOriginTag(p map[string]any) string {
+	if peerAddressable(p) {
+		return ""
+	}
+	tag := " [no-input]"
+	if meta, _ := p["metadata"].(map[string]any); meta != nil {
+		if nickname, _ := meta["agent_nickname"].(string); nickname != "" {
+			tag = " [no-input " + nickname + "]"
+		}
+	}
+	return tag
 }
 
 func writePeerRow(w io.Writer, widths []int, values ...string) {

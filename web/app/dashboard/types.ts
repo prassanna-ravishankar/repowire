@@ -14,8 +14,18 @@ export interface Peer {
   role?: "agent" | "service" | "orchestrator" | "human";
   last_seen?: string;
   description?: string;
+  // Provenance: where the peer came from and whether the mesh may address it.
+  // Flattened on the wire; a peer registered before provenance existed reads
+  // as source "unknown" and addressable.
+  source?: "hook" | "codex-app-server" | "unknown";
+  parent_runtime_id?: string;
+  parent_peer_id?: string | null;
+  ephemeral?: boolean;
+  addressable?: boolean;
+  addressable_reason?: string;
   metadata?: {
     branch?: string;
+    agent_nickname?: string;
     git_status?: {
       ahead: number;
       behind: number;
@@ -144,12 +154,26 @@ export function peerLabel(peer: Peer): string {
   return peer.display_name || peer.name;
 }
 
+/** False only when the runtime said so; undefined (older daemon) means addressable. */
+export function peerAddressable(peer: Peer): boolean {
+  return peer.addressable !== false;
+}
+
+/** Short origin badge for rosters: the runtime nickname for sub-agent threads, else the source. */
+export function peerOriginBadge(peer: Peer): string | null {
+  if (!peerAddressable(peer)) return `no input${peer.metadata?.agent_nickname ? ` · ${peer.metadata.agent_nickname}` : ""}`;
+  if (peer.metadata?.agent_nickname) return peer.metadata.agent_nickname;
+  if (peer.source === "codex-app-server") return "app-server";
+  return null;
+}
+
 const LIFECYCLE_EVENT_TYPES: ReadonlySet<Event["type"]> = new Set([
   "peer_online",
   "peer_offline",
   "peer_status",
   "peer_contradiction",
   "peer_reaped",
+  "peer_updated",
   "status_change",
 ]);
 
@@ -174,7 +198,8 @@ export interface Event {
     | "peer_offline"
     | "peer_status"
     | "peer_contradiction"
-    | "peer_reaped";
+    | "peer_reaped"
+    | "peer_updated";
   timestamp: string;
   from?: string;
   to?: string;
@@ -197,6 +222,10 @@ export interface Event {
   code?: string;
   detail?: string;
   severity?: string;
+  // peer_updated (provenance) fields
+  source?: string;
+  addressable?: boolean;
+  addressable_reason?: string;
   role?: "user" | "assistant";
   new_status?: "online" | "busy" | "offline";
   query_id?: string;

@@ -40,6 +40,7 @@ func (h *Hub) registerPeerLifecycleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /peers/{name}/offline", h.requireAuth(h.handleMarkOffline))
 	mux.HandleFunc("POST /peers/{name}/touch", h.requireAuth(h.handleTouch))
 	mux.HandleFunc("POST /peers/{name}/description", h.requireAuth(h.handleSetDescription))
+	mux.HandleFunc("POST /peers/{name}/provenance", h.requireAuth(h.handleSetProvenance))
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +66,9 @@ type RegisterPeerRequest struct {
 	AgentPID     *int             `json:"agent_pid"`
 	ParentPID    *int             `json:"parent_pid"`
 	Metadata     map[string]any   `json:"metadata"`
+	// Provenance is an explicit fresh classification (bridge). Omitted keeps
+	// what the daemon already knows; only an unknown source is then inferred.
+	Provenance *proto.Provenance `json:"provenance"`
 }
 
 // RegisterResponse extends the Python-compatible response with the daemon's
@@ -207,6 +211,11 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 		AgentPID:      req.AgentPID,
 		ParentPID:     req.ParentPID,
 		TurnState:     req.TurnState,
+		Provenance:    req.Provenance,
+		HookVersion:   req.Metadata["hook_version"] != nil,
+	}
+	if req.Provenance != nil && !req.Provenance.Source.Valid() {
+		return RegisterResponse{}, http.StatusUnprocessableEntity, "Invalid provenance.source"
 	}
 	peerID, displayName, err := h.reg.AllocateAndRegister(ctx, params)
 	if err != nil {
@@ -539,6 +548,35 @@ func (h *Hub) handleSetDescription(w http.ResponseWriter, r *http.Request) {
 		circle = &c
 	}
 	found, err := h.reg.UpdateDescription(r.Context(), name, req.Description, circle)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "Peer not found: "+name)
+		return
+	}
+	writeJSON(w, http.StatusOK, okResponse{OK: true})
+}
+
+// handleSetProvenance replaces a live peer's provenance with a fresh
+// classification. The bridge uses it to demote a thread whose direct input
+// the runtime denied after registration.
+func (h *Hub) handleSetProvenance(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var req proto.Provenance
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !req.Source.Valid() {
+		writeError(w, http.StatusUnprocessableEntity, "Invalid provenance.source")
+		return
+	}
+	var circle *string
+	if c := r.URL.Query().Get("circle"); c != "" {
+		circle = &c
+	}
+	found, err := h.reg.UpdateProvenance(r.Context(), name, req, circle)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return

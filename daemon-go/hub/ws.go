@@ -217,6 +217,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		Role:          role,
 		ClaimedPeerID: cf.PeerID,
 		AgentPID:      cf.AgentPID,
+		HookVersion:   cf.HookVersion != nil,
 	}
 	if isDaemonMobilePeer(cf.DisplayName, path, role) {
 		params.PreferredDisplayName = &cf.DisplayName
