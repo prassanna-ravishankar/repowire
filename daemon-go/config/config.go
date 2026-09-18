@@ -92,8 +92,8 @@ type ExperimentsConfig struct {
 	ACPBrokerClient    bool                     `yaml:"acp_broker_client"`
 	ChatTurnStreaming  bool                     `yaml:"chat_turn_streaming"`
 	RemoteToolApproval RemoteToolApprovalConfig `yaml:"remote_tool_approval"`
-	// GitTrailers rewrites `git commit` commands in the Claude Code PreToolUse
-	// hook to carry Repowire-Thread / Repowire-Session trailers.
+	// GitTrailers enables the repository prepare-commit-msg hook installed by
+	// setup --git-hooks to add Repowire-Thread / Repowire-Session trailers.
 	GitTrailers bool `yaml:"git_trailers"`
 }
 

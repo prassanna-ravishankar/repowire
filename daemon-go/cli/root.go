@@ -184,6 +184,7 @@ func documentFlags(cmd *cobra.Command, key string) {
 
 var documentedFlags = map[string][]documentedFlag{
 	"setup": {
+		{name: "git-hooks", usage: "Install only the current repository commit-message hook", boolean: true},
 		{name: "relay", usage: "Enable the hosted relay", boolean: true}, {name: "experimental-channels", usage: "Enable the experimental Claude channel transport", boolean: true},
 		{name: "http-mcp", usage: "Accepted for compatibility; HTTP MCP is enabled by default", boolean: true}, {name: "update-checks", usage: "Enable release update checks", boolean: true},
 		{name: "no-update-checks", usage: "Disable release update checks", boolean: true}, {name: "no-service", usage: "Skip user-service installation", boolean: true}, {name: "non-interactive", usage: "Use defaults without prompting", boolean: true},

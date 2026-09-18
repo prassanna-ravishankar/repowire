@@ -955,10 +955,10 @@ func TestOrchestratorTemplateAndPersonaAreStandalone(t *testing.T) {
 	}
 }
 
-func TestPreToolUseMatcherUnionsApprovalAndTrailers(t *testing.T) {
+func TestPreToolUseMatcherOnlyHandlesApproval(t *testing.T) {
 	cfg := config.Defaults()
-	if got := preToolUseMatcher(cfg); got != "Bash" {
-		t.Fatalf("defaults (trailers on): matcher = %q, want Bash", got)
+	if got := preToolUseMatcher(cfg); got != "" {
+		t.Fatalf("trailers must not install PreToolUse: %q", got)
 	}
 	cfg.Experiments.GitTrailers = false
 	if got := preToolUseMatcher(cfg); got != "" {
@@ -970,7 +970,7 @@ func TestPreToolUseMatcherUnionsApprovalAndTrailers(t *testing.T) {
 		t.Fatalf("both on: matcher = %q, want gated tools once with Bash", got)
 	}
 	cfg.Experiments.RemoteToolApproval.GatedTools = []string{"Edit"}
-	if got := preToolUseMatcher(cfg); got != "Edit|Bash" {
-		t.Fatalf("gated without Bash: matcher = %q, want Edit|Bash", got)
+	if got := preToolUseMatcher(cfg); got != "Edit" {
+		t.Fatalf("gated without Bash: matcher = %q, want Edit", got)
 	}
 }

@@ -13,7 +13,7 @@ the stable tab-separated format for scripts and pipelines.
 ## `repowire setup`
 
 ```bash
-repowire setup [--relay] [--experimental-channels] [--http-mcp] [--update-checks|--no-update-checks] [--no-service] [--non-interactive]
+repowire setup [--git-hooks] [--relay] [--experimental-channels] [--http-mcp] [--update-checks|--no-update-checks] [--no-service] [--non-interactive]
 ```
 
 One-time install. Detects Claude Code, Codex, OpenCode,
@@ -26,6 +26,7 @@ migrations on startup, imports legacy `schedules.json`, `events.json`, and
 compatibility. Migrated state is written to `state.db`, not back to those JSON
 files.
 
+- `--git-hooks` installs only the current repository’s `prepare-commit-msg` hook; it does not configure runtimes or restart services. Run ordinary setup separately. Existing hooks and custom `core.hooksPath` are left unchanged with instructions for manual integration.
 - `--relay` opts in to the hosted relay at `repowire.io`.
 - `--experimental-channels` enables the experimental MCP channel / ACP transport for Claude Code (v2.1.80+, claude.ai login, bun).
 - `--http-mcp` is accepted for older setup scripts. Normal setup already enables the localhost `/mcp` implementation and generates `daemon.auth_token` if needed.
@@ -180,7 +181,13 @@ Shows the recorded delivery stages for one message — an ask (use its `correlat
 repowire why [COMMIT] [--json]
 ```
 
-Replays the mesh conversations behind a commit. By default (`experiments.git_trailers`), the Claude Code `PreToolUse` hook rewrites `git commit` commands to carry one `Repowire-Thread: <correlation_id>` trailer per ask the committing peer opened or closed since the previous commit in that repo, plus a `Repowire-Session: <repowire_session_id>` trailer. `why` reads those trailers with `git log --format=%(trailers:...)` (defaulting to `HEAD`), fetches each thread from the delivery trace ledger (`GET /traces/{correlation_id}`), and prints who asked what and how it closed. Threads older than `daemon.prune_max_age_hours` are pruned from the ledger and print an error line instead. Outside a git repository, or for a ref git cannot resolve, it exits non-zero with a clear message. Plain git works too: `git log --format='%h %s%n%(trailers:only)'` lists the trailers without the daemon.
+Replays the mesh conversations behind a commit. Run `repowire setup --git-hooks` in each repository to install a native Git `prepare-commit-msg` hook. With `experiments.git_trailers` enabled (the default), it adds one `Repowire-Thread: <correlation_id>` trailer per closed ask involving the committing pane’s registered peer since that repository’s HEAD commit, plus a `Repowire-Session: <repowire_session_id>` trailer. This works across agent backends that inherit the registered tmux pane; Git supplies the actual repository context, including `git -C` and linked worktrees. No shell commands are rewritten.
+
+The hook preserves messages already carrying Repowire attribution and skips reused messages (`--amend --no-edit`, `-c`/`-C`), merge/squash messages, and rebase/cherry-pick/revert replay. An amend with a fresh `-m` message is treated as a new message. Empty messages stay empty. Missing identity, disabled configuration, or unavailable history leaves the message unchanged; operational errors warn without blocking the commit. Trailers are prepared before the editor opens and can be edited by the author.
+
+For an existing hook or hook manager, add `repowire hook prepare-commit-msg "$@"` to its `prepare-commit-msg` entry point. Setup never overwrites an existing hook or changes `core.hooksPath`. Remove the generated hook to uninstall, or disable `experiments.git_trailers` to leave it inert. Re-run ordinary `repowire setup` when upgrading from the Bash-rewrite version to remove its obsolete PreToolUse registration.
+
+`why` reads those trailers with `git log --format=%(trailers:...)` (defaulting to `HEAD`), fetches each thread from the delivery trace ledger (`GET /traces/{correlation_id}`), and prints who asked what and how it closed. Threads older than `daemon.prune_max_age_hours` are pruned from the ledger and print an error line instead. Outside a git repository, or for a ref git cannot resolve, it exits non-zero with a clear message. Plain git works too: `git log --format='%h %s%n%(trailers:only)'` lists the trailers without the daemon.
 
 ## `repowire share`
 
