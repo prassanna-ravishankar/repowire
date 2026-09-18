@@ -96,10 +96,14 @@ type threadPeer struct {
 	provVersion      uint64
 	publishedVersion uint64
 	publishing       bool
-	mu               sync.Mutex
-	writeMu          sync.Mutex
-	conn             *websocket.Conn
-	cancel           context.CancelFunc
+	// pubMu orders every daemon write that carries provenance (registration
+	// and /provenance pushes) so a stale snapshot can never land after a newer
+	// one. Held across the HTTP request; never while holding mu.
+	pubMu   sync.Mutex
+	mu      sync.Mutex
+	writeMu sync.Mutex
+	conn    *websocket.Conn
+	cancel  context.CancelFunc
 }
 
 // Run keeps the bridge attached until the service is stopped. App Server
@@ -718,13 +722,24 @@ func (p *threadPeer) register(ctx context.Context) error {
 	if err := p.restoreIdentity(ctx); err != nil {
 		return err
 	}
+	// Registration is a provenance write: take the publication lock so it is
+	// ordered with /provenance pushes, then drain anything that changed while
+	// the thread had no peer_id yet.
+	p.pubMu.Lock()
+	err := p.registerLocked(ctx)
+	p.pubMu.Unlock()
+	if err == nil {
+		p.publish()
+	}
+	return err
+}
+
+func (p *threadPeer) registerLocked(ctx context.Context) error {
 	p.mu.Lock()
 	claim := p.peerID
 	if claim == "" {
 		claim = p.hintedID
 	}
-	p.mu.Unlock()
-	p.mu.Lock()
 	provenance, nickname, threadSource, version := p.provenance, p.nickname, p.threadSource, p.provVersion
 	p.mu.Unlock()
 	metadata := map[string]any{
@@ -1055,7 +1070,9 @@ func (p *threadPeer) publish() {
 			}
 			p.mu.Unlock()
 			ctx, cancel := context.WithTimeout(p.bridge.ctx, 5*time.Second)
+			p.pubMu.Lock()
 			_, err := p.bridge.daemonRequest(ctx, http.MethodPost, "/peers/"+peerID+"/provenance", prov)
+			p.pubMu.Unlock()
 			cancel()
 			p.mu.Lock()
 			if err != nil {

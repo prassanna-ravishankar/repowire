@@ -20,30 +20,39 @@ export function PeerRoster({
   onFilter: (value: string) => void;
   onSelectPeer: (peer: Peer) => void;
 }) {
-  // Sub-agent threads nest under their parent when the parent is in the
-  // same circle; otherwise they list as top-level rows (dimmed by PeerRow).
+  // Sub-agent threads nest under their parent when the parent is in the same
+  // circle, to any depth. Anything unreachable from a root (an orphan whose
+  // parent is elsewhere, or a cycle) is emitted as a top-level row so every
+  // peer in the inventory is always rendered exactly once.
   const byCircle = useMemo(() => {
     const grouped = new Map<string, Peer[]>();
     for (const peer of peers) {
       const circle = peer.circle || "default";
-      grouped.set(circle, [...(grouped.get(circle) ?? [])]);
-      grouped.get(circle)!.push(peer);
+      grouped.set(circle, [...(grouped.get(circle) ?? []), peer]);
     }
     const byRank = (a: Peer, b: Peer) => statusRank(a.status) - statusRank(b.status) || peerLabel(a).localeCompare(peerLabel(b));
-    const ordered = new Map<string, { peer: Peer; nested: boolean }[]>();
+    const ordered = new Map<string, RosterRow[]>();
     for (const [circle, list] of grouped) {
       const inCircle = new Set(list.map((peer) => peer.peer_id));
-      const nestedUnder = (peer: Peer) => {
+      const parentOf = (peer: Peer) => {
         const parent = peerParent(peer, list);
         return parent && inCircle.has(parent.peer_id) ? parent.peer_id : null;
       };
-      const rows: { peer: Peer; nested: boolean }[] = [];
-      for (const peer of list.filter((peer) => !nestedUnder(peer)).sort(byRank)) {
-        rows.push({ peer, nested: false });
-        for (const child of list.filter((candidate) => nestedUnder(candidate) === peer.peer_id).sort(byRank)) {
-          rows.push({ peer: child, nested: true });
-        }
+      const children = new Map<string, Peer[]>();
+      for (const peer of list) {
+        const parent = parentOf(peer);
+        if (parent) children.set(parent, [...(children.get(parent) ?? []), peer]);
       }
+      const rows: RosterRow[] = [];
+      const seen = new Set<string>();
+      const visit = (peer: Peer, depth: number) => {
+        if (seen.has(peer.peer_id)) return;
+        seen.add(peer.peer_id);
+        rows.push({ peer, depth });
+        for (const child of (children.get(peer.peer_id) ?? []).sort(byRank)) visit(child, depth + 1);
+      };
+      for (const root of list.filter((peer) => !parentOf(peer)).sort(byRank)) visit(root, 0);
+      for (const leftover of list.filter((peer) => !seen.has(peer.peer_id)).sort(byRank)) visit(leftover, 0);
       ordered.set(circle, rows);
     }
     return Array.from(ordered.entries()).sort(([a], [b]) => a.localeCompare(b));
@@ -69,11 +78,11 @@ export function PeerRoster({
               <span>circle / {circle}</span>
               <span>{list.length}</span>
             </div>
-            {list.map(({ peer, nested }) => (
+            {list.map(({ peer, depth }) => (
               <PeerRow
                 key={peer.peer_id}
                 peer={peer}
-                nested={nested}
+                depth={depth}
                 listed={peerListed(peer, peers)}
                 active={peer.peer_id === selectedPeerId}
                 onClick={() => onSelectPeer(peer)}
@@ -92,19 +101,22 @@ export function PeerRoster({
   );
 }
 
+type RosterRow = { peer: Peer; depth: number };
+
 function PeerRow({
   peer,
-  nested,
+  depth,
   listed,
   active,
   onClick,
 }: {
   peer: Peer;
-  nested: boolean;
+  depth: number;
   listed: boolean;
   active: boolean;
   onClick: () => void;
 }) {
+  const nested = depth > 0;
   const { folder, parent } = peer.path ? shortPath(peer.path) : { folder: "", parent: "" };
   const addressable = peerAddressable(peer);
   const badge = peerOriginBadge(peer);
@@ -120,9 +132,11 @@ function PeerRow({
       onClick={onClick}
       aria-pressed={active}
       title={hiddenReason}
+      style={depth > 1 ? { paddingLeft: `${0.75 + depth}rem` } : undefined}
       className={cn(
         "block w-full border-b border-border-faint border-l-2 py-2.5 pr-3 text-left transition-colors",
         nested ? "pl-7" : "pl-3",
+        depth > 1 && `nested-${depth}`,
         active
           ? "border-l-primary bg-primary/10 text-primary-fixed"
           : "border-l-transparent text-on-surface hover:bg-surface-container",

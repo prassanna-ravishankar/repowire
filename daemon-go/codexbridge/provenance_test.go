@@ -220,3 +220,121 @@ func TestProvenancePublicationRetriesFailedPush(t *testing.T) {
 		t.Fatalf("explicit verdict did not restore: %+v", got)
 	}
 }
+
+// A registration and a provenance push are ordered through the same lock, in
+// both directions: a held registration carrying an accepting snapshot cannot
+// overwrite a denial that arrived meanwhile (the denial is drained after
+// registration completes), and a held denial push blocks a re-registration
+// until it lands, after which the registration carries the denial.
+func TestRegistrationParticipatesInProvenanceOrdering(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	type write struct {
+		path string
+		prov proto.Provenance
+	}
+	var mu sync.Mutex
+	var writes []write
+	var holdRegister, holdProvenance chan struct{}
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		var hold chan struct{}
+		switch r.URL.Path {
+		case "/peers":
+			hold, holdRegister = holdRegister, nil
+		default:
+			hold, holdProvenance = holdProvenance, nil
+		}
+		mu.Unlock()
+		if hold != nil {
+			<-hold
+		}
+		var prov proto.Provenance
+		switch r.URL.Path {
+		case "/peers":
+			raw, _ := json.Marshal(body["provenance"])
+			_ = json.Unmarshal(raw, &prov)
+		default:
+			raw, _ := json.Marshal(body)
+			_ = json.Unmarshal(raw, &prov)
+		}
+		mu.Lock()
+		writes = append(writes, write{r.URL.Path, prov})
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "repow-1-abc", "display_name": "app-codex", "ok": true})
+	}))
+	defer daemon.Close()
+	waitWrites := func(n int) []write {
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			mu.Lock()
+			got := append([]write(nil), writes...)
+			mu.Unlock()
+			if len(got) >= n || time.Now().After(deadline) {
+				return got
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b := &Bridge{ctx: ctx, daemonHTTP: daemon.URL, threads: map[string]*threadPeer{}}
+	p := &threadPeer{bridge: b, id: "thread-1", cwd: t.TempDir(), circle: "c", role: "agent"}
+	p.provenance, _, _ = classifyThread(loadThreadFixture(t, "thread_user.json"), nil)
+	p.provVersion = 1
+
+	// Forward: registration (v1 accepting) held; denial lands meanwhile.
+	release := make(chan struct{})
+	mu.Lock()
+	holdRegister = release
+	mu.Unlock()
+	done := make(chan error, 1)
+	go func() { done <- p.register(ctx) }()
+	time.Sleep(30 * time.Millisecond)
+	p.demoteIfDenied(ctx, errors.New(directInputDenied))
+	if got := waitWrites(1); len(got) != 0 {
+		t.Fatalf("a write landed while registration was held: %+v", got)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	got := waitWrites(2)
+	if len(got) != 2 || got[0].path != "/peers" || !got[0].prov.Addressable || !strings.HasSuffix(got[1].path, "/provenance") || got[1].prov.Addressable {
+		t.Fatalf("forward ordering = %+v, want registration(accepting) then provenance(denied)", got)
+	}
+	p.mu.Lock()
+	if p.publishedVersion != p.provVersion || p.publishing {
+		t.Fatalf("after registration v%d published=%d publishing=%v", p.provVersion, p.publishedVersion, p.publishing)
+	}
+	p.mu.Unlock()
+
+	// Reverse: an accepting re-read is pushed but held; a re-registration must
+	// wait for it, then carry the newest classification (the accepting one),
+	// and no stale write may follow.
+	release = make(chan struct{})
+	mu.Lock()
+	holdProvenance = release
+	mu.Unlock()
+	p.reclassify(loadThreadFixture(t, "thread_user.json")) // v3 accepting, held in flight
+	time.Sleep(30 * time.Millisecond)
+	go func() { done <- p.register(ctx) }()
+	time.Sleep(30 * time.Millisecond)
+	if got := waitWrites(3); len(got) != 2 {
+		t.Fatalf("registration bypassed the held push: %+v", got)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	got = waitWrites(4)
+	if len(got) != 4 || !strings.HasSuffix(got[2].path, "/provenance") || !got[2].prov.Addressable || got[3].path != "/peers" || !got[3].prov.Addressable {
+		t.Fatalf("reverse ordering = %+v, want provenance(accepting) then registration(accepting)", got)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := waitWrites(5); len(got) != 4 {
+		t.Fatalf("stale write after registration: %+v", got)
+	}
+}

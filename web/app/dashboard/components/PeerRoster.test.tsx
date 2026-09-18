@@ -66,4 +66,23 @@ describe("PeerRoster provenance", () => {
     expect(screen.getByRole("button", { name: /app-4-codex/ }).className).toContain("opacity-60");
     expect(screen.getByRole("button", { name: /app-5-codex/ })).toHaveAttribute("title", expect.stringContaining("parent is offline"));
   });
+
+  it("renders every generation of a sub-agent chain and never drops a peer", () => {
+    const a: Peer = { ...BASE, initiator: "user" };
+    const b: Peer = { ...BASE, peer_id: "repow-1-b", name: "app-2-codex", display_name: "app-2-codex", initiator: "agent", parent_runtime_id: "t-a", parent_peer_id: "repow-1-parent" };
+    const c: Peer = { ...BASE, peer_id: "repow-1-c", name: "app-3-codex", display_name: "app-3-codex", initiator: "agent", parent_runtime_id: "t-b", parent_peer_id: "repow-1-b" };
+    // A cycle that can never reach a root must still render.
+    const x: Peer = { ...BASE, peer_id: "repow-1-x", name: "app-4-codex", display_name: "app-4-codex", initiator: "agent", parent_runtime_id: "t-y", parent_peer_id: "repow-1-y" };
+    const y: Peer = { ...BASE, peer_id: "repow-1-y", name: "app-5-codex", display_name: "app-5-codex", initiator: "agent", parent_runtime_id: "t-x", parent_peer_id: "repow-1-x" };
+
+    render(<PeerRoster peers={[c, y, b, x, a]} allCount={5} selectedPeerId={null} filter="" onFilter={vi.fn()} onSelectPeer={vi.fn()} />);
+
+    const buttons = screen.getAllByRole("button", { pressed: false });
+    expect(buttons).toHaveLength(5);
+    const order = buttons.map((button) => button.textContent?.match(/app(-\d)?-codex/)?.[0]);
+    expect(order.slice(0, 3)).toEqual(["app-codex", "app-2-codex", "app-3-codex"]);
+    expect(screen.getByRole("button", { name: /app-3-codex/ }).className).toContain("nested-2");
+    expect(screen.getByRole("button", { name: /app-4-codex/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /app-5-codex/ })).toBeInTheDocument();
+  });
 });
