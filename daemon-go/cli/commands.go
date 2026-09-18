@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -689,6 +690,81 @@ func runTrace(argv []string) int {
 	}
 	return 0
 }
+
+// runWhy replays the ask threads recorded as Repowire-Thread trailers on a
+// commit. Git owns the trailer parsing; the daemon's trace ledger owns the text.
+func runWhy(argv []string) int {
+	a := parse(argv, "json")
+	commit := "HEAD"
+	if len(a.pos) > 0 {
+		commit = a.pos[0]
+	}
+	if out, err := exec.Command("git", "rev-parse", "--is-inside-work-tree").Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
+		return fatal(fmt.Errorf("why: not inside a git repository"))
+	}
+	trailers := func(key string) ([]string, error) {
+		out, err := exec.Command("git", "log", "-1", "--format=%(trailers:key="+key+",valueonly)", commit).Output()
+		if err != nil {
+			return nil, fmt.Errorf("why: git cannot resolve %s", commit)
+		}
+		return strings.Fields(string(out)), nil
+	}
+	threads, err := trailers("Repowire-Thread")
+	if err != nil {
+		return fatal(err)
+	}
+	sessions, _ := trailers("Repowire-Session")
+	if len(threads) == 0 && len(sessions) == 0 {
+		fmt.Println("no Repowire trailers on " + commit)
+		return 0
+	}
+	c, err := newClient()
+	if err != nil {
+		return fatal(err)
+	}
+	report := map[string]any{"commit": commit, "sessions": sessions, "threads": []any{}}
+	for _, cid := range threads {
+		trace, err := c.request(http.MethodGet, "/traces/"+url.PathEscape(cid), nil)
+		if err != nil {
+			trace = map[string]any{"trace_id": cid, "error": err.Error()}
+		}
+		report["threads"] = append(report["threads"].([]any), trace)
+	}
+	if a.bool("json") {
+		printJSON(report)
+		return 0
+	}
+	for _, session := range sessions {
+		fmt.Println("session  " + session)
+	}
+	for _, raw := range report["threads"].([]any) {
+		trace, _ := raw.(map[string]any)
+		fmt.Println()
+		fmt.Println("thread   " + stringValue(trace, "trace_id"))
+		if msg := stringValue(trace, "error"); msg != "" {
+			fmt.Println("         " + msg)
+			continue
+		}
+		for _, rawStage := range anySlice(trace["stages"]) {
+			stage, _ := rawStage.(map[string]any)
+			detail, _ := stage["detail"].(map[string]any)
+			switch stringValue(stage, "stage") {
+			case "created":
+				fmt.Printf("  %s  @%s → @%s\n", stringValue(stage, "ts"), stringValue(detail, "from_peer"), stringValue(detail, "to_peer"))
+				if text := stringValue(detail, "text"); text != "" {
+					fmt.Println("    " + strings.ReplaceAll(text, "\n", "\n    "))
+				}
+			case "closed":
+				fmt.Printf("  %s  %s\n", stringValue(stage, "ts"), stringValue(detail, "close_reason"))
+				if reply := stringValue(detail, "reply"); reply != "" {
+					fmt.Println("    " + strings.ReplaceAll(reply, "\n", "\n    "))
+				}
+			}
+		}
+	}
+	return 0
+}
+
 func runShare(argv []string) int {
 	a := parse(argv, "rw", "list")
 	c, err := newClient()

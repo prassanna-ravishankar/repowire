@@ -57,15 +57,22 @@ var channelLock string
 var orchestratorAssets embed.FS
 
 func runSetup(argv []string) int {
-	a := parse(argv, "relay", "http-mcp", "no-service", "non-interactive", "experimental-channels", "update-checks")
+	a := parse(argv, "git-hooks", "relay", "http-mcp", "no-service", "non-interactive", "experimental-channels", "update-checks")
 	if len(a.pos) > 0 {
-		return usage("setup [--relay] [--experimental-channels] [--http-mcp] [--update-checks|--no-update-checks] [--no-service] [--non-interactive]")
+		return usage("setup [--git-hooks] [--relay] [--experimental-channels] [--http-mcp] [--update-checks|--no-update-checks] [--no-service] [--non-interactive]")
 	}
-	allowed := map[string]bool{"relay": true, "http-mcp": true, "no-service": true, "non-interactive": true, "experimental-channels": true, "update-checks": true}
+	allowed := map[string]bool{"git-hooks": true, "relay": true, "http-mcp": true, "no-service": true, "non-interactive": true, "experimental-channels": true, "update-checks": true}
 	for name := range a.flags {
 		if !allowed[name] {
 			return fatal(fmt.Errorf("unknown setup option --%s", name))
 		}
+	}
+	if a.bool("git-hooks") {
+		if err := installGitHook(); err != nil {
+			return fatal(err)
+		}
+		fmt.Println("installed repository prepare-commit-msg hook")
+		return 0
 	}
 	if err := enableDaemonMCP(a.bool("relay")); err != nil {
 		return fatal(err)
@@ -220,6 +227,14 @@ func homebrewCellarPath(path string) bool {
 }
 func hookCommand(args string) string { return strconv.Quote(executable()) + " " + args }
 
+// PreToolUse only handles remote approval; Git owns commit-message hooks.
+func preToolUseMatcher(cfg config.Config) string {
+	if cfg.Experiments.RemoteToolApproval.Enabled {
+		return strings.Join(cfg.Experiments.RemoteToolApproval.GatedTools, "|")
+	}
+	return ""
+}
+
 func installRuntime(name string) error {
 	switch name {
 	case "claude-code":
@@ -272,8 +287,8 @@ func installClaude() error {
 		"UserPromptSubmit": hookEntry(hookCommand("hook prompt"), "", 0), "Notification": hookEntry(hookCommand("hook notification"), "idle_prompt", 0),
 	}
 	cfg, _ := config.Load()
-	if cfg.Experiments.RemoteToolApproval.Enabled {
-		entries["PreToolUse"] = hookEntry(hookCommand("hook pretooluse"), strings.Join(cfg.Experiments.RemoteToolApproval.GatedTools, "|"), 60)
+	if matcher := preToolUseMatcher(cfg); matcher != "" {
+		entries["PreToolUse"] = hookEntry(hookCommand("hook pretooluse"), matcher, 60)
 	} else {
 		removeRepowireEntries(hooks, "PreToolUse")
 	}

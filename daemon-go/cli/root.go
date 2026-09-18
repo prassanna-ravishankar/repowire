@@ -50,6 +50,7 @@ func newRootCommand() *cobra.Command {
 		simple("doctor", "Check Repowire and host prerequisites", runDoctor),
 		legacy("link --pane PANE --backend BACKEND [flags]", "Link an existing tmux pane to the mesh", nil, runLink),
 		legacy("trace TRACE_ID [--json]", "Show delivery stages for a message", nil, runTrace),
+		legacy("why [COMMIT] [--json]", "Show the mesh conversations behind a commit", nil, runWhy),
 		legacy("share PEER [flags]", "Create, list, or revoke relay share links", nil, runShare),
 		simple("update", "Update Repowire to the latest release", runUpdate),
 		legacy("uninstall [flags]", "Remove Repowire integrations", nil, runUninstall),
@@ -183,12 +184,14 @@ func documentFlags(cmd *cobra.Command, key string) {
 
 var documentedFlags = map[string][]documentedFlag{
 	"setup": {
+		{name: "git-hooks", usage: "Install only the current repository commit-message hook", boolean: true},
 		{name: "relay", usage: "Enable the hosted relay", boolean: true}, {name: "experimental-channels", usage: "Enable the experimental Claude channel transport", boolean: true},
 		{name: "http-mcp", usage: "Accepted for compatibility; HTTP MCP is enabled by default", boolean: true}, {name: "update-checks", usage: "Enable release update checks", boolean: true},
 		{name: "no-update-checks", usage: "Disable release update checks", boolean: true}, {name: "no-service", usage: "Skip user-service installation", boolean: true}, {name: "non-interactive", usage: "Use defaults without prompting", boolean: true},
 	},
 	"link":               {{name: "pane", usage: "tmux pane id"}, {name: "backend", usage: "Agent backend"}, {name: "name", usage: "Display name"}, {name: "circle", usage: "Circle"}, {name: "cwd", usage: "Working directory"}},
 	"trace":              {{name: "json", usage: "Emit JSON", boolean: true}},
+	"why":                {{name: "json", usage: "Emit JSON", boolean: true}},
 	"share":              {{name: "rw", usage: "Create a read-write share", boolean: true}, {name: "list", usage: "List active shares", boolean: true}, {name: "ttl", usage: "Lifetime in seconds"}, {name: "revoke", usage: "Revoke a share id"}},
 	"uninstall":          {{name: "yes", usage: "Also remove Repowire state", boolean: true}},
 	"peer list":          {{name: "show-offline", usage: "Include offline peers", boolean: true}},

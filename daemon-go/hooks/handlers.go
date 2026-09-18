@@ -27,6 +27,9 @@ func Run(args []string) int {
 		return 2
 	}
 	name := args[0]
+	if name == "prepare-commit-msg" {
+		return runPrepareCommitMsg(args[1:])
+	}
 	flags := flag.NewFlagSet("hook "+name, flag.ContinueOnError)
 	backend := flags.String("backend", "claude-code", "agent backend")
 	remindersOnly := flags.Bool("reminders-only", false, "only block on unacked asks")
@@ -406,7 +409,8 @@ func runPreToolUse(backend string) int {
 	}
 	approval := cfg.Experiments.RemoteToolApproval
 	tool := stringValue(raw, "tool_name")
-	if !approval.Enabled || !contains(approval.GatedTools, tool) {
+	gated := approval.Enabled && contains(approval.GatedTools, tool)
+	if !gated {
 		return 0
 	}
 	input := raw["tool_input"]
@@ -445,6 +449,17 @@ func runPreToolUse(backend string) int {
 	}
 	printJSON(denyDecision(reason))
 	return 0
+}
+
+func anyStrings(value any) []string {
+	items, _ := value.([]any)
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok && text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
 }
 
 func denyDecision(reason string) map[string]any {
