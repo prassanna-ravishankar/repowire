@@ -190,6 +190,7 @@ function DashboardInner() {
         peer.description,
         String(peer.metadata?.branch ?? ""),
         peer.source ?? "",
+        peer.initiator ?? "",
         peer.metadata?.agent_nickname ?? "",
         peer.addressable === false ? "no-input sub-agent" : "",
       ]

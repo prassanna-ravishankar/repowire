@@ -156,11 +156,11 @@ func textResult(text string) *mcp.CallToolResult {
 // ---- tool argument shapes ---------------------------------------------------
 
 type mcpListPeersArgs struct {
-	ShowOffline           bool   `json:"show_offline,omitempty" jsonschema:"Include offline peers"`
-	IncludeSelf           bool   `json:"include_self,omitempty" jsonschema:"Include the calling peer"`
-	Circle                string `json:"circle,omitempty" jsonschema:"Circle name or * for mesh-wide"`
-	IncludeNonAddressable bool   `json:"include_non_addressable,omitempty" jsonschema:"Include peers that cannot receive direct input (e.g. Codex multi-agent sub-agent threads); hidden by default"`
-	Source                string `json:"source,omitempty" jsonschema:"Only peers from this source: hook, codex-app-server, or unknown"`
+	ShowOffline   bool   `json:"show_offline,omitempty" jsonschema:"Include offline peers"`
+	IncludeSelf   bool   `json:"include_self,omitempty" jsonschema:"Include the calling peer"`
+	Circle        string `json:"circle,omitempty" jsonschema:"Circle name or * for mesh-wide"`
+	IncludeHidden bool   `json:"include_hidden,omitempty" jsonschema:"Include peers hidden from the default view: ones that cannot receive direct input, runtime-internal (system) threads, and sub-agents whose parent is offline"`
+	Source        string `json:"source,omitempty" jsonschema:"Only peers from this source: hook, codex-app-server, or unknown"`
 }
 
 type mcpNotifyPeerArgs struct {
@@ -251,12 +251,10 @@ func (h *Hub) mcpListPeers(ctx context.Context, args mcpListPeersArgs, caller st
 			return p.PeerID != me.PeerID
 		})
 	}
-	// Non-addressable peers cannot take an ask or notify, so a routing view
-	// hides them unless asked. Independent of show_offline and circle scope.
-	if !args.IncludeNonAddressable {
-		peers = filterPeers(peers, func(p *proto.Peer) bool {
-			return p.Provenance.Normalized().Addressable
-		})
+	// A routing view lists peers someone can send work to; the rest are
+	// hidden unless asked. Independent of show_offline and circle scope.
+	if !args.IncludeHidden {
+		peers = filterPeers(peers, h.listedByDefault)
 	}
 	if args.Source != "" {
 		peers = filterPeers(peers, func(p *proto.Peer) bool {
@@ -270,7 +268,7 @@ func (h *Hub) mcpListPeers(ctx context.Context, args mcpListPeersArgs, caller st
 // positional consumers keep their indices.
 func (h *Hub) mcpPeerTSV(peers []*proto.Peer) string {
 	var b strings.Builder
-	b.WriteString("peer_id\tname\tproject\tcircle\trole\tstatus\tpath\tmachine\tdescription\tbackend\tlast_seen\tturn_state\tmodel\tsource\taddressable\tparent_peer_id\tnickname")
+	b.WriteString("peer_id\tname\tproject\tcircle\trole\tstatus\tpath\tmachine\tdescription\tbackend\tlast_seen\tturn_state\tmodel\tsource\tinitiator\taddressable\tparent_peer_id\tnickname")
 	for _, p := range peers {
 		project, _ := p.Metadata["project"].(string)
 		nickname, _ := p.Metadata["agent_nickname"].(string)
@@ -285,8 +283,8 @@ func (h *Hub) mcpPeerTSV(peers []*proto.Peer) string {
 			parent = string(*id)
 		}
 		prov := p.Provenance.Normalized()
-		fmt.Fprintf(&b, "\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%t\t%s\t%s",
-			p.PeerID, p.DisplayName, project, p.Circle, p.Role, p.Status, p.Path, p.Machine, p.Description, p.Backend, lastSeen, p.TurnState, model, prov.Source, prov.Addressable, parent, nickname)
+		fmt.Fprintf(&b, "\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%t\t%s\t%s",
+			p.PeerID, p.DisplayName, project, p.Circle, p.Role, p.Status, p.Path, p.Machine, p.Description, p.Backend, lastSeen, p.TurnState, model, prov.Source, prov.Initiator, prov.Addressable, parent, nickname)
 	}
 	return b.String()
 }

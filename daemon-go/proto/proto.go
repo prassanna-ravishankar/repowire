@@ -259,6 +259,9 @@ type ConnectFrame struct {
 	ModelDetails map[string]any `json:"model_details,omitempty"`
 	AgentPID     *int           `json:"agent_pid,omitempty"`
 	PeerID       *PeerID        `json:"peer_id,omitempty"` // claimed on reconnect
+	// Provenance is explicit source evidence from native clients (OpenCode and
+	// Pi send {source: "hook"}); absent keeps what the daemon knows.
+	Provenance *Provenance `json:"provenance,omitempty"`
 }
 
 // ConnectedFrame is the daemon's reply. session_id IS the assigned peer_id.

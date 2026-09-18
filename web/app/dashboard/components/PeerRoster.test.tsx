@@ -41,4 +41,29 @@ describe("PeerRoster provenance", () => {
     expect(childRow).toHaveAttribute("title", expect.stringContaining("subagent_direct_input_denied"));
     expect(screen.getByRole("button", { name: /app-claude-code/ })).not.toHaveAttribute("title");
   });
+
+  it("nests sub-agents under a live parent and dims system threads and orphans", () => {
+    const pascal: Peer = {
+      ...BASE, peer_id: "repow-1-pascal", name: "app-3-codex", display_name: "app-3-codex",
+      initiator: "agent", parent_runtime_id: "thread-parent", parent_peer_id: "repow-1-parent", metadata: { agent_nickname: "Pascal" },
+    };
+    const system: Peer = { ...BASE, peer_id: "repow-1-sys", name: "app-4-codex", display_name: "app-4-codex", initiator: "system", ephemeral: true };
+    const orphan: Peer = {
+      ...BASE, peer_id: "repow-1-orphan", name: "app-5-codex", display_name: "app-5-codex",
+      initiator: "agent", parent_runtime_id: "thread-gone", parent_peer_id: null, metadata: { agent_nickname: "Nash" },
+    };
+
+    render(
+      <PeerRoster peers={[system, orphan, pascal, { ...BASE, initiator: "user" }]} allCount={4} selectedPeerId={null} filter="" onFilter={vi.fn()} onSelectPeer={vi.fn()} />,
+    );
+
+    const names = screen.getAllByRole("button", { pressed: false }).map((button) => button.textContent ?? "");
+    const order = names.map((text) => text.match(/app(-\d)?-codex/)?.[0]);
+    expect(order.indexOf("app-3-codex")).toBe(order.indexOf("app-codex") + 1);
+    expect(screen.getByRole("button", { name: /app-3-codex/ }).className).toContain("pl-7");
+    expect(screen.getByRole("button", { name: /app-3-codex/ }).className).not.toContain("opacity-60");
+    expect(screen.getByText("system")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /app-4-codex/ }).className).toContain("opacity-60");
+    expect(screen.getByRole("button", { name: /app-5-codex/ })).toHaveAttribute("title", expect.stringContaining("parent is offline"));
+  });
 });

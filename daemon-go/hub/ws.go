@@ -218,6 +218,12 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		ClaimedPeerID: cf.PeerID,
 		AgentPID:      cf.AgentPID,
 		HookVersion:   cf.HookVersion != nil,
+		Provenance:    cf.Provenance,
+	}
+	if cf.Provenance != nil && !cf.Provenance.Source.Valid() {
+		_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "Invalid provenance.source"})
+		_ = conn.Close(4002, "Invalid provenance")
+		return
 	}
 	if isDaemonMobilePeer(cf.DisplayName, path, role) {
 		params.PreferredDisplayName = &cf.DisplayName

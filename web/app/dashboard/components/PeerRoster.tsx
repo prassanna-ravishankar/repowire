@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Search } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
 import type { Peer } from "../types";
-import { peerAddressable, peerLabel, peerOriginBadge } from "../types";
+import { peerAddressable, peerLabel, peerListed, peerOriginBadge, peerParent } from "../types";
 import { StatusLabel, TurnStateHint, statusRank } from "./status";
 
 export function PeerRoster({
@@ -20,16 +20,33 @@ export function PeerRoster({
   onFilter: (value: string) => void;
   onSelectPeer: (peer: Peer) => void;
 }) {
+  // Sub-agent threads nest under their parent when the parent is in the
+  // same circle; otherwise they list as top-level rows (dimmed by PeerRow).
   const byCircle = useMemo(() => {
     const grouped = new Map<string, Peer[]>();
     for (const peer of peers) {
       const circle = peer.circle || "default";
-      grouped.set(circle, [...(grouped.get(circle) ?? []), peer]);
+      grouped.set(circle, [...(grouped.get(circle) ?? [])]);
+      grouped.get(circle)!.push(peer);
     }
-    for (const list of grouped.values()) {
-      list.sort((a, b) => statusRank(a.status) - statusRank(b.status) || peerLabel(a).localeCompare(peerLabel(b)));
+    const byRank = (a: Peer, b: Peer) => statusRank(a.status) - statusRank(b.status) || peerLabel(a).localeCompare(peerLabel(b));
+    const ordered = new Map<string, { peer: Peer; nested: boolean }[]>();
+    for (const [circle, list] of grouped) {
+      const inCircle = new Set(list.map((peer) => peer.peer_id));
+      const nestedUnder = (peer: Peer) => {
+        const parent = peerParent(peer, list);
+        return parent && inCircle.has(parent.peer_id) ? parent.peer_id : null;
+      };
+      const rows: { peer: Peer; nested: boolean }[] = [];
+      for (const peer of list.filter((peer) => !nestedUnder(peer)).sort(byRank)) {
+        rows.push({ peer, nested: false });
+        for (const child of list.filter((candidate) => nestedUnder(candidate) === peer.peer_id).sort(byRank)) {
+          rows.push({ peer: child, nested: true });
+        }
+      }
+      ordered.set(circle, rows);
     }
-    return Array.from(grouped.entries()).sort(([a], [b]) => a.localeCompare(b));
+    return Array.from(ordered.entries()).sort(([a], [b]) => a.localeCompare(b));
   }, [peers]);
 
   return (
@@ -52,10 +69,12 @@ export function PeerRoster({
               <span>circle / {circle}</span>
               <span>{list.length}</span>
             </div>
-            {list.map((peer) => (
+            {list.map(({ peer, nested }) => (
               <PeerRow
                 key={peer.peer_id}
                 peer={peer}
+                nested={nested}
+                listed={peerListed(peer, peers)}
                 active={peer.peer_id === selectedPeerId}
                 onClick={() => onSelectPeer(peer)}
               />
@@ -73,24 +92,47 @@ export function PeerRoster({
   );
 }
 
-function PeerRow({ peer, active, onClick }: { peer: Peer; active: boolean; onClick: () => void }) {
+function PeerRow({
+  peer,
+  nested,
+  listed,
+  active,
+  onClick,
+}: {
+  peer: Peer;
+  nested: boolean;
+  listed: boolean;
+  active: boolean;
+  onClick: () => void;
+}) {
   const { folder, parent } = peer.path ? shortPath(peer.path) : { folder: "", parent: "" };
   const addressable = peerAddressable(peer);
   const badge = peerOriginBadge(peer);
+  const hiddenReason = !addressable
+    ? `Cannot receive direct input (${peer.addressable_reason || "runtime denied"})`
+    : peer.initiator === "system"
+    ? "Runtime-internal thread; hidden from list_peers by default"
+    : !listed
+    ? "Sub-agent whose parent is offline; hidden from list_peers by default"
+    : undefined;
   return (
     <button
       onClick={onClick}
       aria-pressed={active}
-      title={addressable ? undefined : `Cannot receive direct input (${peer.addressable_reason || "runtime denied"})`}
+      title={hiddenReason}
       className={cn(
-        "block w-full border-b border-border-faint border-l-2 px-3 py-2.5 text-left transition-colors",
+        "block w-full border-b border-border-faint border-l-2 py-2.5 pr-3 text-left transition-colors",
+        nested ? "pl-7" : "pl-3",
         active
           ? "border-l-primary bg-primary/10 text-primary-fixed"
           : "border-l-transparent text-on-surface hover:bg-surface-container",
-        !addressable && "opacity-60"
+        !listed && "opacity-60"
       )}
     >
       <div className="mb-1 flex min-w-0 items-center gap-2.5">
+        {nested ? (
+          <span className="shrink-0 font-mono text-[11px] text-outline" aria-hidden="true">↳</span>
+        ) : null}
         <span className={cn("h-2 w-2 shrink-0 rounded-full", statusDot(peer.status))} />
         <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-semibold">{peerLabel(peer)}</span>
         {badge && (

@@ -18,6 +18,7 @@ export interface Peer {
   // Flattened on the wire; a peer registered before provenance existed reads
   // as source "unknown" and addressable.
   source?: "hook" | "codex-app-server" | "unknown";
+  initiator?: "user" | "agent" | "system";
   parent_runtime_id?: string;
   parent_peer_id?: string | null;
   ephemeral?: boolean;
@@ -162,9 +163,29 @@ export function peerAddressable(peer: Peer): boolean {
 /** Short origin badge for rosters: the runtime nickname for sub-agent threads, else the source. */
 export function peerOriginBadge(peer: Peer): string | null {
   if (!peerAddressable(peer)) return `no input${peer.metadata?.agent_nickname ? ` · ${peer.metadata.agent_nickname}` : ""}`;
+  if (peer.initiator === "system") return "system";
   if (peer.metadata?.agent_nickname) return peer.metadata.agent_nickname;
   if (peer.source === "codex-app-server") return "app-server";
   return null;
+}
+
+/** The registered parent of a sub-agent thread, if it is on the mesh. */
+export function peerParent(peer: Peer, peers: Peer[]): Peer | undefined {
+  return peer.parent_peer_id ? peers.find((candidate) => candidate.peer_id === peer.parent_peer_id) : undefined;
+}
+
+/**
+ * Mirrors the daemon's default-view rule (list_peers, `peer list`): a peer
+ * someone can send work to. The dashboard shows the full inventory and dims
+ * the rest.
+ */
+export function peerListed(peer: Peer, peers: Peer[]): boolean {
+  if (!peerAddressable(peer) || peer.initiator === "system") return false;
+  if (peer.parent_runtime_id) {
+    const parent = peerParent(peer, peers);
+    return Boolean(parent) && parent!.status !== "offline";
+  }
+  return true;
 }
 
 const LIFECYCLE_EVENT_TYPES: ReadonlySet<Event["type"]> = new Set([

@@ -239,6 +239,10 @@ func (h *Hub) listPeers(w http.ResponseWriter, r *http.Request) {
 			return p.Provenance.Normalized().Addressable == want
 		})
 	}
+	if listed := q.Get("listed"); listed != "" {
+		want := listed == "true"
+		peers = filterPeers(peers, func(p *proto.Peer) bool { return h.listedByDefault(p) == want })
+	}
 	if circle := q.Get("circle"); circle != "" && circle != "*" {
 		peers = filterPeers(peers, func(p *proto.Peer) bool {
 			return p.Circle == circle || p.Role.BypassesCircles()
@@ -422,9 +426,9 @@ func peerToInfo(p *proto.Peer) PeerInfo {
 	}
 }
 
-// parentPeerID maps a peer's parent_runtime_id to the registered peer whose
+// parentPeer maps a peer's parent_runtime_id to the registered peer whose
 // runtime_session_id matches. No registered parent → nil; never fabricated.
-func (h *Hub) parentPeerID(p *proto.Peer) *proto.PeerID {
+func (h *Hub) parentPeer(p *proto.Peer) *proto.Peer {
 	if p.ParentRuntimeID == "" {
 		return nil
 	}
@@ -433,11 +437,35 @@ func (h *Hub) parentPeerID(p *proto.Peer) *proto.PeerID {
 			continue
 		}
 		if rid := runtimeSessionIDFromMetadata(candidate.Metadata); rid != nil && *rid == p.ParentRuntimeID {
-			id := candidate.PeerID
-			return &id
+			return candidate
 		}
 	}
 	return nil
+}
+
+func (h *Hub) parentPeerID(p *proto.Peer) *proto.PeerID {
+	if parent := h.parentPeer(p); parent != nil {
+		id := parent.PeerID
+		return &id
+	}
+	return nil
+}
+
+// listedByDefault is the routing view's one rule: a peer someone can send
+// work to. Hidden are peers that cannot take input, runtime-internal
+// (system) threads nobody opened, and sub-agents whose parent is not live on
+// the mesh. HTTP /peers?listed=true, MCP list_peers, and the CLI share it;
+// the dashboard reads the full inventory and dims the rest.
+func (h *Hub) listedByDefault(p *proto.Peer) bool {
+	prov := p.Provenance.Normalized()
+	if !prov.Addressable || prov.Initiator == proto.InitiatorSystem {
+		return false
+	}
+	if prov.ParentRuntimeID != "" {
+		parent := h.parentPeer(p)
+		return parent != nil && parent.Status != proto.StatusOffline
+	}
+	return true
 }
 
 type inboundStatusInputs struct {

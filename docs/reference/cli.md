@@ -93,7 +93,7 @@ the daemon is unavailable; missing optional host tools are reported as warnings.
 
 ```bash
 repowire peer new PATH [--backend BACKEND] [--profile PROFILE] [--circle CIRCLE]
-repowire peer list [--show-offline] [--include-non-addressable] [--source S]  # god-view list (all circles, includes caller)
+repowire peer list [--show-offline] [--include-hidden] [--source S]  # god-view list (all circles, includes caller)
 repowire peer describe NAME_OR_ID [--circle C]  # daemon state for one peer
 repowire peer unregister NAME_OR_ID         # explicitly close and retire this peer identity
 repowire peer ask NAME QUERY [--timeout SEC] [--circle C]  # blocking compatibility ask
@@ -115,7 +115,7 @@ Commands that need a sender identity resolve `$TMUX_PANE` to its registered cano
 
 `peer deliveries` drains one-shot queued deliveries for a peer. Draining deletes the queued rows to avoid duplicate paste/replay. For queued asks, `peer deliveries` shows the original ask text once, while `peer asks` continues to show the open ask until the agent closes it with `peer ack` or the MCP `ack` tool.
 
-`peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP [`list_peers`](mcp-tools.md#list_peers) tool defaults to a peer-facing view (online only, caller hidden). Both hide peers that cannot receive direct input (Codex multi-agent sub-agent threads) unless `--include-non-addressable` is given; interactive output tags such rows `[no-input <nickname>]`, and redirected TSV appends `source`, `addressable`, and `parent_peer_id` columns. `--source hook|codex-app-server|unknown` narrows by origin.
+`peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP [`list_peers`](mcp-tools.md#list_peers) tool defaults to a peer-facing view (online only, caller hidden). Both hide peers nobody can send work to unless `--include-hidden` is given: peers that cannot receive direct input (Codex multi-agent sub-agent threads), runtime-internal `system` threads, and sub-agents whose parent is offline. Interactive output tags such rows, for example `[no-input sub-agent Pasteur]` or `[system]`, and redirected TSV appends `source`, `initiator`, `addressable`, and `parent_peer_id` columns. `--source hook|codex-app-server|unknown` narrows by origin.
 
 `peer unregister` is an explicit operator close, equivalent to the dashboard's **Unregister peer** action. It retires the resolved `peer_id` before removing it, so a stale pane-less bridge or ws-hook cannot immediately recreate the closed peer. A genuinely new runtime session receives a new identity. Internal `POST /peer/unregister` remains the non-terminal service-reconnect primitive.
 

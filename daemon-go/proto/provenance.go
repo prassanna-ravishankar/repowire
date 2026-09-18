@@ -24,13 +24,36 @@ func (s PeerSource) Valid() bool {
 	return false
 }
 
+// PeerInitiator is who opened the runtime session behind a peer. Empty means
+// the runtime did not say (hooks today), which lists like a user session.
+type PeerInitiator string
+
+const (
+	// InitiatorUser: a person opened it (Codex threadSource "user").
+	InitiatorUser PeerInitiator = "user"
+	// InitiatorAgent: another agent spawned it (Codex threadSource "subagent").
+	InitiatorAgent PeerInitiator = "agent"
+	// InitiatorSystem: runtime machinery (Codex threadSource "system", e.g.
+	// helper threads the desktop app spins up). Hidden from the default view.
+	InitiatorSystem PeerInitiator = "system"
+)
+
+func (i PeerInitiator) Valid() bool {
+	switch i {
+	case "", InitiatorUser, InitiatorAgent, InitiatorSystem:
+		return true
+	}
+	return false
+}
+
 // Provenance records where a peer came from and whether the mesh may address
 // it. Fields are orthogonal on purpose: a sub-agent thread can be ephemeral,
 // and an ephemeral thread can still accept direct input. Addressable is the
 // runtime's own verdict (Codex publishes canAcceptDirectInput); a false value
 // is inbound-only, the peer can still ack, reply, and notify.
 type Provenance struct {
-	Source PeerSource `json:"source"`
+	Source    PeerSource    `json:"source"`
+	Initiator PeerInitiator `json:"initiator,omitempty"`
 	// ParentRuntimeID is the parent's runtime thread id (for example a Codex
 	// parentThreadId). It is NOT a peer_id; the hub resolves parent_peer_id at
 	// read time and leaves it empty when the parent is not registered.
@@ -62,6 +85,9 @@ func (p Provenance) Normalized() Provenance {
 	}
 	if !p.Source.Valid() {
 		p.Source = SourceUnknown
+	}
+	if !p.Initiator.Valid() {
+		p.Initiator = ""
 	}
 	return p
 }

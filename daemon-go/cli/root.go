@@ -194,7 +194,7 @@ var documentedFlags = map[string][]documentedFlag{
 	"why":                {{name: "json", usage: "Emit JSON", boolean: true}},
 	"share":              {{name: "rw", usage: "Create a read-write share", boolean: true}, {name: "list", usage: "List active shares", boolean: true}, {name: "ttl", usage: "Lifetime in seconds"}, {name: "revoke", usage: "Revoke a share id"}},
 	"uninstall":          {{name: "yes", usage: "Also remove Repowire state", boolean: true}},
-	"peer list":          {{name: "show-offline", usage: "Include offline peers", boolean: true}, {name: "include-non-addressable", usage: "Include peers that cannot receive direct input (e.g. Codex sub-agent threads)", boolean: true}, {name: "source", usage: "Only peers from this source: hook, codex-app-server, unknown"}},
+	"peer list":          {{name: "show-offline", usage: "Include offline peers", boolean: true}, {name: "include-hidden", usage: "Include peers hidden from the default view (no direct input, runtime-internal threads, sub-agents with an offline parent)", boolean: true}, {name: "source", usage: "Only peers from this source: hook, codex-app-server, unknown"}},
 	"peer describe":      {{name: "circle", usage: "Circle used to disambiguate the name"}},
 	"peer new":           {{name: "backend", usage: "Agent backend"}, {name: "profile", usage: "Spawn profile"}, {name: "circle", usage: "Target circle"}, {name: "message", shorthand: "m", usage: "Initial prompt"}, {name: "command", usage: "Deprecated explicit launch command"}},
 	"peer register":      {{name: "backend", usage: "Agent backend"}, {name: "name", usage: "Display name"}, {name: "circle", usage: "Circle"}, {name: "path", usage: "Working directory"}},

@@ -22,10 +22,10 @@ func printPeers(result map[string]any) {
 func renderPeers(w io.Writer, result map[string]any, width int) {
 	peers := anySlice(result["peers"])
 	if width <= 0 {
-		fmt.Fprintln(w, "peer_id\tname\tproject\tcircle\trole\tstatus\tpath\tbackend\tturn_state\tmodel\tsource\taddressable\tparent_peer_id")
+		fmt.Fprintln(w, "peer_id\tname\tproject\tcircle\trole\tstatus\tpath\tbackend\tturn_state\tmodel\tsource\tinitiator\taddressable\tparent_peer_id")
 		for _, raw := range peers {
 			p, _ := raw.(map[string]any)
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%t\t%s\n", peerField(p, "peer_id"), peerName(p), peerProject(p), peerField(p, "circle"), peerField(p, "role"), peerField(p, "status"), peerField(p, "path"), peerField(p, "backend"), peerField(p, "turn_state"), peerField(p, "model"), peerField(p, "source"), peerAddressable(p), peerField(p, "parent_peer_id"))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%t\t%s\n", peerField(p, "peer_id"), peerName(p), peerProject(p), peerField(p, "circle"), peerField(p, "role"), peerField(p, "status"), peerField(p, "path"), peerField(p, "backend"), peerField(p, "turn_state"), peerField(p, "model"), peerField(p, "source"), peerField(p, "initiator"), peerAddressable(p), peerField(p, "parent_peer_id"))
 		}
 		return
 	}
@@ -76,19 +76,28 @@ func peerAddressable(p map[string]any) bool {
 }
 
 // peerOriginTag marks rows a reader would otherwise mistake for a normal
-// agent: a sub-agent thread that cannot take input, with its nickname when
-// the runtime gave it one.
+// agent: a thread that cannot take input, a runtime-internal thread, or a
+// sub-agent, with its nickname when the runtime gave it one.
 func peerOriginTag(p map[string]any) string {
-	if peerAddressable(p) {
-		return ""
+	var parts []string
+	if !peerAddressable(p) {
+		parts = append(parts, "no-input")
 	}
-	tag := " [no-input]"
+	switch peerField(p, "initiator") {
+	case "system":
+		parts = append(parts, "system")
+	case "agent":
+		parts = append(parts, "sub-agent")
+	}
 	if meta, _ := p["metadata"].(map[string]any); meta != nil {
 		if nickname, _ := meta["agent_nickname"].(string); nickname != "" {
-			tag = " [no-input " + nickname + "]"
+			parts = append(parts, nickname)
 		}
 	}
-	return tag
+	if len(parts) == 0 {
+		return ""
+	}
+	return " [" + strings.Join(parts, " ") + "]"
 }
 
 func writePeerRow(w io.Writer, widths []int, values ...string) {

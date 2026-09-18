@@ -90,10 +90,16 @@ type threadPeer struct {
 	provenance   proto.Provenance
 	nickname     string
 	threadSource string
-	mu           sync.Mutex
-	writeMu      sync.Mutex
-	conn         *websocket.Conn
-	cancel       context.CancelFunc
+	// provVersion counts classification changes; publishedVersion is the last
+	// one the daemon acknowledged. They differ while a push is owed, and
+	// publish() drains that gap in order, one request at a time.
+	provVersion      uint64
+	publishedVersion uint64
+	publishing       bool
+	mu               sync.Mutex
+	writeMu          sync.Mutex
+	conn             *websocket.Conn
+	cancel           context.CancelFunc
 }
 
 // Run keeps the bridge attached until the service is stopped. App Server
@@ -588,7 +594,8 @@ func (b *Bridge) ensureThread(thread map[string]any) {
 	if tmux.paneID != "" {
 		p.tmux = map[string]any{"session": tmux.session, "window_id": tmux.windowID, "pane_id": tmux.paneID, "pane_pid": tmux.panePID}
 	}
-	p.provenance, p.nickname, p.threadSource = classifyThread(thread)
+	p.provenance, p.nickname, p.threadSource = classifyThread(thread, nil)
+	p.provVersion = 1
 	p.busy = statusType(thread["status"]) == "active"
 	p.activeTurn = activeTurn(thread)
 	b.threads[id] = p
@@ -718,7 +725,7 @@ func (p *threadPeer) register(ctx context.Context) error {
 	}
 	p.mu.Unlock()
 	p.mu.Lock()
-	provenance, nickname, threadSource := p.provenance, p.nickname, p.threadSource
+	provenance, nickname, threadSource, version := p.provenance, p.nickname, p.threadSource, p.provVersion
 	p.mu.Unlock()
 	metadata := map[string]any{
 		"runtime_session_id": p.id, "runtime_source_uri": "codex:" + p.id,
@@ -760,6 +767,10 @@ func (p *threadPeer) register(ctx context.Context) error {
 		return err
 	}
 	p.mu.Lock()
+	// The registration body carried this version, so the daemon holds it.
+	if version > p.publishedVersion {
+		p.publishedVersion = version
+	}
 	p.peerID, p.displayName = stringValue(result, "peer_id"), stringValue(result, "display_name")
 	if circle := stringValue(result, "circle"); circle != "" {
 		p.circle = circle
@@ -906,6 +917,7 @@ func (p *threadPeer) inject(ctx context.Context, conn *websocket.Conn, frame map
 	p.mu.Unlock()
 	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	p.publish() // a real request is the retry point for an owed push
 	text = hooks.FormatInboundMessage(firstNonempty(stringValue(frame, "from_peer"), "unknown"), stringValue(frame, "to_peer"), kind, cid, text)
 	input := []any{map[string]any{"type": "text", "text": text}}
 	input = append(input, attachmentInputs(frame["attachments"])...)
@@ -935,44 +947,60 @@ const reasonDirectInputDenied = "subagent_direct_input_denied"
 
 // classifyThread turns a thread/read or thread/started payload into
 // provenance. canAcceptDirectInput is the runtime's own verdict and is taken
-// as-is (a depth-1 sub-agent can have it true); a missing field means true.
-// The raw threadSource ("user", "subagent", "system") and agentNickname are
-// returned for metadata.
-func classifyThread(thread map[string]any) (proto.Provenance, string, string) {
-	accept := true
-	if value, ok := thread["canAcceptDirectInput"].(bool); ok {
-		accept = value
-	}
+// as-is (a depth-1 sub-agent can have it true). When the payload omits the
+// field, prior (the thread's current classification) keeps its verdict and
+// reason, so a denial is only undone by an explicit true; with no prior the
+// thread starts addressable. The raw threadSource ("user", "subagent",
+// "system") and agentNickname are returned for metadata.
+func classifyThread(thread map[string]any, prior *proto.Provenance) (proto.Provenance, string, string) {
 	ephemeral, _ := thread["ephemeral"].(bool)
 	threadSource := stringValue(thread, "threadSource")
 	prov := proto.Provenance{
 		Source:          proto.SourceCodexAppServer,
+		Initiator:       threadInitiator(threadSource),
 		ParentRuntimeID: stringValue(thread, "parentThreadId"),
 		Ephemeral:       ephemeral,
-		Addressable:     accept,
+		Addressable:     true,
 	}
-	if !accept {
+	if accept, ok := thread["canAcceptDirectInput"].(bool); ok {
+		prov.Addressable = accept
+	} else if prior != nil {
+		prov.Addressable, prov.AddressableReason = prior.Addressable, prior.AddressableReason
+	}
+	if !prov.Addressable && prov.AddressableReason == "" {
 		prov.AddressableReason = reasonDirectInputDenied
 	}
 	return prov, stringValue(thread, "agentNickname"), threadSource
 }
 
-// reclassify applies a fresh thread payload. The runtime's verdict wins in
-// both directions, which is the only way a denial-based demotion is undone.
-// A changed verdict on a registered peer is pushed to the daemon at once.
+// threadInitiator maps Codex threadSource onto the runtime-neutral enum.
+func threadInitiator(threadSource string) proto.PeerInitiator {
+	switch threadSource {
+	case "user":
+		return proto.InitiatorUser
+	case "subagent":
+		return proto.InitiatorAgent
+	case "system":
+		return proto.InitiatorSystem
+	}
+	return ""
+}
+
+// reclassify applies a fresh thread payload. An explicit runtime verdict
+// wins in both directions, which is the only way a denial-based demotion is
+// undone; an absent verdict keeps the current one. Any owed push (changed
+// now, or failed earlier) is drained afterwards.
 func (p *threadPeer) reclassify(thread map[string]any) {
-	prov, nickname, threadSource := classifyThread(thread)
 	p.mu.Lock()
-	changed := prov != p.provenance
-	p.provenance, p.threadSource = prov, threadSource
+	prior := p.provenance
+	prov, nickname, threadSource := classifyThread(thread, &prior)
+	p.threadSource = threadSource
 	if nickname != "" {
 		p.nickname = nickname
 	}
-	peerID := p.peerID
+	p.setProvenanceLocked(prov)
 	p.mu.Unlock()
-	if changed && peerID != "" {
-		p.pushProvenance(prov)
-	}
+	p.publish()
 }
 
 // demoteIfDenied marks the thread non-addressable when err is the exact
@@ -982,32 +1010,64 @@ func (p *threadPeer) demoteIfDenied(ctx context.Context, err error) {
 		return
 	}
 	p.mu.Lock()
-	if !p.provenance.Addressable {
+	prov := p.provenance
+	prov.Addressable, prov.AddressableReason = false, reasonDirectInputDenied
+	changed := p.setProvenanceLocked(prov)
+	peerID := p.peerID
+	p.mu.Unlock()
+	if changed {
+		log.Printf("codex bridge: %s denies direct input; marking peer %s non-addressable", p.id, peerID)
+	}
+	p.publish()
+}
+
+// setProvenanceLocked records a classification and bumps the version when it
+// differs. Caller holds p.mu.
+func (p *threadPeer) setProvenanceLocked(prov proto.Provenance) bool {
+	if prov == p.provenance {
+		return false
+	}
+	p.provenance = prov
+	p.provVersion++
+	return true
+}
+
+// publish drains owed provenance to the daemon: one request in flight at a
+// time, newest version last, so an older accepting snapshot can never land
+// after a later denial. A failed request leaves the version owed; the next
+// reclassify, delivery, or reconnect calls publish again and retries it.
+func (p *threadPeer) publish() {
+	p.mu.Lock()
+	if p.peerID == "" || p.publishing || p.provVersion == p.publishedVersion {
 		p.mu.Unlock()
 		return
 	}
-	p.provenance.Addressable = false
-	p.provenance.AddressableReason = reasonDirectInputDenied
-	prov, peerID := p.provenance, p.peerID
+	p.publishing = true
 	p.mu.Unlock()
-	log.Printf("codex bridge: %s denies direct input; marking peer %s non-addressable", p.id, peerID)
-	if peerID != "" {
-		p.pushProvenance(prov)
-	}
-}
-
-func (p *threadPeer) pushProvenance(prov proto.Provenance) {
 	go func() {
-		ctx, cancel := context.WithTimeout(p.bridge.ctx, 5*time.Second)
-		defer cancel()
-		p.mu.Lock()
-		peerID := p.peerID
-		p.mu.Unlock()
-		if peerID == "" {
-			return
-		}
-		if _, err := p.bridge.daemonRequest(ctx, http.MethodPost, "/peers/"+peerID+"/provenance", prov); err != nil {
-			log.Printf("codex bridge: update provenance for %s: %v", p.id, err)
+		for {
+			p.mu.Lock()
+			version, prov, peerID := p.provVersion, p.provenance, p.peerID
+			if peerID == "" || version == p.publishedVersion {
+				p.publishing = false
+				p.mu.Unlock()
+				return
+			}
+			p.mu.Unlock()
+			ctx, cancel := context.WithTimeout(p.bridge.ctx, 5*time.Second)
+			_, err := p.bridge.daemonRequest(ctx, http.MethodPost, "/peers/"+peerID+"/provenance", prov)
+			cancel()
+			p.mu.Lock()
+			if err != nil {
+				p.publishing = false
+				p.mu.Unlock()
+				log.Printf("codex bridge: update provenance for %s (v%d): %v", p.id, version, err)
+				return
+			}
+			if version > p.publishedVersion {
+				p.publishedVersion = version
+			}
+			p.mu.Unlock()
 		}
 	}()
 }

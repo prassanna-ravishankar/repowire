@@ -235,6 +235,7 @@ async function registerPaneLessPeer(conn: PeerConn): Promise<void> {
     circle_source: circleSource, role: "agent",
     agent_pid: process.pid,
     metadata: { runtime_session_id: conn.sessionId },
+    provenance: { source: "hook", addressable: true },
   }
   if (conn.peerId) body.peer_id = conn.peerId
   let registered: Record<string, unknown>
@@ -325,6 +326,7 @@ function connectPeerWebSocket(conn: PeerConn) {
       backend: "opencode",
       path: projectPath,
       agent_pid: process.pid,
+      provenance: { source: "hook", addressable: true },
     }
     const cachedPeerId = conn.peerId || loadIdentity(projectPath, conn.sessionId).peerId
     if (cachedPeerId) connectMsg.peer_id = cachedPeerId

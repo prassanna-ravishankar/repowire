@@ -105,6 +105,9 @@ func TestPeerProvenanceRegistrationListAndDemotion(t *testing.T) {
 	if got := getPeersJSON(t, mux, "/peers?addressable=true"); len(got.Peers) != 2 {
 		t.Fatalf("after demotion addressable=true = %d peers, want 2", len(got.Peers))
 	}
+	if got := getPeersJSON(t, mux, "/peers?listed=true"); len(got.Peers) != 2 {
+		t.Fatalf("listed=true = %d peers, want parent and hook peer", len(got.Peers))
+	}
 	if rec := postLifecycleJSON(t, mux, "/peers/nobody/provenance", proto.Provenance{Source: proto.SourceHook, Addressable: true}); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown peer provenance = %d", rec.Code)
 	}
@@ -125,8 +128,16 @@ func TestMCPListPeersHidesNonAddressableByDefault(t *testing.T) {
 			Provenance: &proto.Provenance{Source: proto.SourceCodexAppServer, Addressable: true}},
 		{Name: "app-codex", Path: &path, Backend: proto.AgentCodex, Circle: strptr("c"),
 			Metadata:   map[string]any{"runtime_session_id": "thread-child", "agent_nickname": "Nash"},
-			Provenance: &proto.Provenance{Source: proto.SourceCodexAppServer, ParentRuntimeID: "thread-parent", Addressable: false, AddressableReason: "subagent_direct_input_denied"}},
+			Provenance: &proto.Provenance{Source: proto.SourceCodexAppServer, Initiator: proto.InitiatorAgent, ParentRuntimeID: "thread-parent", Addressable: false, AddressableReason: "subagent_direct_input_denied"}},
 		{Name: "app-claude-code", Path: &path, Backend: proto.AgentClaudeCode, Circle: strptr("c"), Metadata: map[string]any{"hook_version": 3}},
+		// Runtime machinery: addressable, but nobody opened it.
+		{Name: "app-codex", Path: &path, Backend: proto.AgentCodex, Circle: strptr("c"),
+			Metadata:   map[string]any{"runtime_session_id": "thread-system"},
+			Provenance: &proto.Provenance{Source: proto.SourceCodexAppServer, Initiator: proto.InitiatorSystem, Ephemeral: true, Addressable: true}},
+		// An accepting sub-agent whose parent is not on the mesh.
+		{Name: "app-codex", Path: &path, Backend: proto.AgentCodex, Circle: strptr("c"),
+			Metadata:   map[string]any{"runtime_session_id": "thread-orphan", "agent_nickname": "Pascal"},
+			Provenance: &proto.Provenance{Source: proto.SourceCodexAppServer, Initiator: proto.InitiatorAgent, ParentRuntimeID: "thread-gone", Addressable: true}},
 	} {
 		if rec := postLifecycleJSON(t, mux, "/peers", reg); rec.Code != http.StatusOK {
 			t.Fatalf("register: %d %s", rec.Code, rec.Body.String())
@@ -146,28 +157,28 @@ func TestMCPListPeersHidesNonAddressableByDefault(t *testing.T) {
 	}
 	rows := list(map[string]any{"circle": "*", "show_offline": true})
 	header := strings.Split(rows[0], "\t")
-	if len(header) != 17 || header[12] != "model" || header[13] != "source" || header[14] != "addressable" || header[15] != "parent_peer_id" || header[16] != "nickname" {
+	if len(header) != 18 || header[12] != "model" || header[13] != "source" || header[14] != "initiator" || header[15] != "addressable" || header[16] != "parent_peer_id" || header[17] != "nickname" {
 		t.Fatalf("header = %v", header)
 	}
 	if len(rows) != 3 {
-		t.Fatalf("default view rows = %d, want 2 addressable peers", len(rows)-1)
+		t.Fatalf("default view rows = %d, want the user thread and the hook peer only:\n%s", len(rows)-1, strings.Join(rows, "\n"))
 	}
 	for _, row := range rows[1:] {
-		if strings.Contains(row, "Nash") {
-			t.Fatalf("non-addressable peer shown by default: %q", row)
+		if strings.Contains(row, "Nash") || strings.Contains(row, "Pascal") || strings.Contains(row, "thread-system") || strings.Contains(row, "\tsystem\t") {
+			t.Fatalf("hidden peer shown by default: %q", row)
 		}
 	}
-	rows = list(map[string]any{"circle": "*", "show_offline": true, "include_non_addressable": true})
-	if len(rows) != 4 {
-		t.Fatalf("include_non_addressable rows = %d, want 3", len(rows)-1)
+	rows = list(map[string]any{"circle": "*", "show_offline": true, "include_hidden": true})
+	if len(rows) != 6 {
+		t.Fatalf("include_hidden rows = %d, want 5", len(rows)-1)
 	}
 	var child []string
 	for _, row := range rows[1:] {
-		if cols := strings.Split(row, "\t"); cols[16] == "Nash" {
+		if cols := strings.Split(row, "\t"); cols[17] == "Nash" {
 			child = cols
 		}
 	}
-	if child == nil || child[13] != "codex-app-server" || child[14] != "false" || !strings.HasPrefix(child[15], "repow-") {
+	if child == nil || child[13] != "codex-app-server" || child[14] != "agent" || child[15] != "false" || !strings.HasPrefix(child[16], "repow-") {
 		t.Fatalf("child row = %v", child)
 	}
 	if rows = list(map[string]any{"circle": "*", "show_offline": true, "source": "hook"}); len(rows) != 2 || !strings.Contains(rows[1], "claude-code") {

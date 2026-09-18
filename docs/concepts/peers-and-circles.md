@@ -37,8 +37,9 @@ The CLI `repowire peer list` is god-view: every peer in every circle, caller inc
 Backend says which runtime a peer is; provenance says how it reached the mesh and whether it can be addressed. The fields are orthogonal on purpose:
 
 - `source`: `hook` for a runtime hook registration, `codex-app-server` for a thread the codex bridge found on the Codex App Server socket, `unknown` for peers registered before provenance existed. Unknown is a first-class value; the daemon only fills it from registration evidence, never by guessing.
+- `initiator`: who opened the session: `user`, `agent` (a sub-agent spawned by another agent), or `system` (runtime machinery nobody opened, such as helper threads the ChatGPT desktop app creates). Empty when the runtime does not say.
 - `parent_runtime_id` / `parent_peer_id`: a sub-agent thread's parent. The runtime id is stored; the peer id is resolved when read and is empty if the parent is not registered.
 - `ephemeral`: the runtime does not persist the thread. Ephemeral threads can still accept input.
 - `addressable`: the runtime's own verdict on direct input (Codex publishes `canAcceptDirectInput`). Codex multi-agent v2 sub-agent threads are usually `false` with `addressable_reason=subagent_direct_input_denied`, but a sub-agent the runtime says accepts input stays addressable. Non-addressable is inbound-only: the peer can still ack, reply, and notify.
 
-`list_peers` and `repowire peer list` hide non-addressable peers by default; the dashboard shows them dimmed with a `no input` badge and the runtime nickname. A denial observed after registration demotes the peer; only a fresh runtime verdict restores it.
+`list_peers` and `repowire peer list` show only peers someone can send work to by default: addressable, not `system`, and with a live parent if they have one. The dashboard shows the full inventory, nests sub-agents under their parent, and dims the hidden ones with a badge (`no input`, `system`, or the runtime nickname). A denial observed after registration demotes the peer; only a fresh runtime verdict restores it.

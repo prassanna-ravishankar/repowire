@@ -127,6 +127,16 @@ func TestOrchestratorStartOnlyIncludesSourcePaneForCurrentCircle(t *testing.T) {
 	}
 }
 
+// Native clients register over HTTP and WebSocket without hook_version, so
+// they must carry explicit source evidence on both paths.
+func TestEmbeddedRuntimesDeclareHookProvenance(t *testing.T) {
+	for name, asset := range map[string]string{"pi": piPlugin, "opencode": opencodePlugin} {
+		if got := strings.Count(asset, `provenance: { source: "hook", addressable: true }`); got != 2 {
+			t.Fatalf("%s declares hook provenance %d times, want 2 (POST /peers body and connect frame)", name, got)
+		}
+	}
+}
+
 func TestEmbeddedRuntimesDoNotOfferCircleMutation(t *testing.T) {
 	for name, asset := range map[string]string{"pi": piPlugin, "opencode": opencodePlugin} {
 		if strings.Contains(asset, "set_circle") {

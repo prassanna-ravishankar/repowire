@@ -1,0 +1,16 @@
+{
+ "agentNickname": null,
+ "agentRole": null,
+ "canAcceptDirectInput": true,
+ "cliVersion": "0.153.3",
+ "cwd": "/home/dev/projects/repowire",
+ "ephemeral": true,
+ "gitInfo": {"branch": "main"},
+ "historyMode": "paginated",
+ "id": "01a0b6b6-e08a-7132-9774-b92ddd80bd22",
+ "model": "gpt-6-astra",
+ "parentThreadId": null,
+ "source": "vscode",
+ "status": {"type": "idle"},
+ "threadSource": "system"
+}
