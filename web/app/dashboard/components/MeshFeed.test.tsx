@@ -149,6 +149,35 @@ describe("MeshFeed", () => {
     expect(screen.getByText("fixed in commit abc")).toBeInTheDocument();
   });
 
+  it("renders lifecycle events as a verb plus the peer name, never as an unknown route", () => {
+    const events: Event[] = [
+      { id: "e-online", type: "peer_online", timestamp: "2025-01-01T00:00:01Z", peer_id: "peer-1", peer_name: "alice" },
+      { id: "e-status", type: "peer_status", timestamp: "2025-01-01T00:00:02Z", peer_id: "peer-1", peer_name: "alice", status: "busy" },
+      { id: "e-offline", type: "peer_offline", timestamp: "2025-01-01T00:00:03Z", peer_id: "peer-1", peer_name: "alice", reason: "no_websocket_no_pane" },
+      { id: "e-contra", type: "peer_contradiction", timestamp: "2025-01-01T00:00:04Z", peer_id: "peer-1", peer_name: "alice", severity: "warn", code: "stale_pane", detail: "pane gone" },
+    ];
+    const onPickPeer = vi.fn();
+
+    render(
+      <MeshFeed
+        events={events}
+        peers={[PEER]}
+        apiBase="http://daemon.test"
+        onPickPeer={onPickPeer}
+      />,
+    );
+
+    expect(screen.getByText(/^online/)).toBeInTheDocument();
+    expect(screen.getByText(/· busy/)).toBeInTheDocument();
+    expect(screen.getByText(/· no_websocket_no_pane/)).toBeInTheDocument();
+    expect(screen.getByText(/· warn · stale_pane · pane gone/)).toBeInTheDocument();
+    expect(screen.queryByText("unknown")).not.toBeInTheDocument();
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "alice" })[0]);
+    expect(onPickPeer).toHaveBeenCalledWith(PEER);
+  });
+
   it("renders peer reaped events without unknown actor buttons", () => {
     const event: Event = {
       id: "event-reaped",
