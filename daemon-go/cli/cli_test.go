@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/repowire/repowire/daemon-go/config"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -951,5 +952,24 @@ func TestOrchestratorTemplateAndPersonaAreStandalone(t *testing.T) {
 	}
 	if got := strings.TrimSpace(readText(filepath.Join(workspace, "personas", "ACTIVE_PERSONA"))); got != "focused" {
 		t.Fatalf("active persona = %q", got)
+	}
+}
+
+func TestPreToolUseMatcherUnionsApprovalAndTrailers(t *testing.T) {
+	cfg := config.Defaults()
+	if got := preToolUseMatcher(cfg); got != "" {
+		t.Fatalf("both off: matcher = %q, want empty", got)
+	}
+	cfg.Experiments.GitTrailers = true
+	if got := preToolUseMatcher(cfg); got != "Bash" {
+		t.Fatalf("trailers only: matcher = %q, want Bash", got)
+	}
+	cfg.Experiments.RemoteToolApproval.Enabled = true
+	if got := preToolUseMatcher(cfg); got != "Bash|Edit|Write|MultiEdit|NotebookEdit" {
+		t.Fatalf("both on: matcher = %q, want gated tools once with Bash", got)
+	}
+	cfg.Experiments.RemoteToolApproval.GatedTools = []string{"Edit"}
+	if got := preToolUseMatcher(cfg); got != "Edit|Bash" {
+		t.Fatalf("gated without Bash: matcher = %q, want Edit|Bash", got)
 	}
 }

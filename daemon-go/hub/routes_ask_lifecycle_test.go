@@ -3,9 +3,12 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"github.com/repowire/repowire/daemon-go/state"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/service"
@@ -466,5 +469,77 @@ func TestAskRejectsSelf(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("self ask expected 422, got %d", resp.StatusCode)
+	}
+}
+
+// TestAskHistoryReadsClosedThreadsFromLedger is the git-trailer contract: after
+// an ask closes, /asks/history lists it for both peers from the durable trace
+// ledger, and the created/closed stages carry the text and reply for `why`.
+func TestAskHistoryReadsClosedThreadsFromLedger(t *testing.T) {
+	target := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	from := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	reg := newAskFakeRegistry(from, target)
+	f := &fakeTransport{ackFrame: map[string]any{"status": "accepted"}}
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	asks := service.NewAskTracker(0)
+	h := &Hub{deliveryTraces: store}
+	h.WithReadDeps(asks, store)
+	h.WithAskLifecycle(asks, service.NewPeerDelivery(reg, newRouterWithFake(f), f, asks, nil), reg)
+	mux := http.NewServeMux()
+	h.registerAskLifecycleRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp := postJSON(t, srv.URL+"/ask", AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "ship trailers?"})
+	var out AskResponse
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	before := time.Now().UTC().Add(-time.Second).Format(time.RFC3339)
+	reply := "yes, ship it"
+	ack := postJSON(t, srv.URL+"/ack", AckRequest{CorrelationID: out.CorrelationID, Message: &reply})
+	ack.Body.Close()
+
+	for _, q := range []string{"peer_id=repow-default-aaaa", "peer_id=repow-default-bbbb"} {
+		res, err := http.Get(srv.URL + "/asks/history?" + q + "&since=" + before)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var hist AskHistoryResponse
+		_ = json.NewDecoder(res.Body).Decode(&hist)
+		res.Body.Close()
+		if res.StatusCode != http.StatusOK || len(hist.Threads) != 1 || hist.Threads[0] != out.CorrelationID {
+			t.Fatalf("%s: status=%d threads=%v, want [%s]", q, res.StatusCode, hist.Threads, out.CorrelationID)
+		}
+	}
+	res, _ := http.Get(srv.URL + "/asks/history?peer_id=repow-default-aaaa&since=" + time.Now().UTC().Add(time.Hour).Format(time.RFC3339))
+	var none AskHistoryResponse
+	_ = json.NewDecoder(res.Body).Decode(&none)
+	res.Body.Close()
+	if len(none.Threads) != 0 {
+		t.Fatalf("future since should exclude threads, got %v", none.Threads)
+	}
+	res, _ = http.Get(srv.URL + "/asks/history?since=" + before)
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing identifier status = %d, want 400", res.StatusCode)
+	}
+
+	stages, err := store.StagesFor(context.Background(), out.CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]map[string]any{}
+	for _, row := range stages {
+		got[row.Stage] = row.Detail
+	}
+	if got["created"]["text"] != "ship trailers?" || got["created"]["from_peer"] != "alpha" {
+		t.Fatalf("created detail = %v", got["created"])
+	}
+	if got["closed"]["reply"] != reply || got["closed"]["close_reason"] != "ack_with_msg" {
+		t.Fatalf("closed detail = %v", got["closed"])
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -220,6 +221,20 @@ func homebrewCellarPath(path string) bool {
 }
 func hookCommand(args string) string { return strconv.Quote(executable()) + " " + args }
 
+// preToolUseMatcher is the union of tools the PreToolUse hook must see: gated
+// tools for remote approval, plus Bash when git trailers are on. Empty when
+// neither experiment is enabled, so the hook is not installed at all.
+func preToolUseMatcher(cfg config.Config) string {
+	var tools []string
+	if cfg.Experiments.RemoteToolApproval.Enabled {
+		tools = append(tools, cfg.Experiments.RemoteToolApproval.GatedTools...)
+	}
+	if cfg.Experiments.GitTrailers && !slices.Contains(tools, "Bash") {
+		tools = append(tools, "Bash")
+	}
+	return strings.Join(tools, "|")
+}
+
 func installRuntime(name string) error {
 	switch name {
 	case "claude-code":
@@ -272,8 +287,8 @@ func installClaude() error {
 		"UserPromptSubmit": hookEntry(hookCommand("hook prompt"), "", 0), "Notification": hookEntry(hookCommand("hook notification"), "idle_prompt", 0),
 	}
 	cfg, _ := config.Load()
-	if cfg.Experiments.RemoteToolApproval.Enabled {
-		entries["PreToolUse"] = hookEntry(hookCommand("hook pretooluse"), strings.Join(cfg.Experiments.RemoteToolApproval.GatedTools, "|"), 60)
+	if matcher := preToolUseMatcher(cfg); matcher != "" {
+		entries["PreToolUse"] = hookEntry(hookCommand("hook pretooluse"), matcher, 60)
 	} else {
 		removeRepowireEntries(hooks, "PreToolUse")
 	}

@@ -90,12 +90,28 @@ func (h *Hub) traceAsk(ctx context.Context, cid, stage, status string, ask *serv
 	_ = h.deliveryTraces.RecordTrace(ctx, cid, "ask", stage, status, cid, peerID, fromPeerID, detail)
 }
 
-func (h *Hub) traceAskClosed(ctx context.Context, ask *service.Ask, reason string) {
+// traceAskClosed records the terminal stages. The closing reply text is kept
+// on the closed stage (bounded) so `repowire why` can replay a thread from the
+// ledger after the in-memory ask has been evicted.
+func (h *Hub) traceAskClosed(ctx context.Context, ask *service.Ask, reason, reply string) {
 	if ask == nil {
 		return
 	}
 	h.traceAsk(ctx, ask.CorrelationID, "acked", "", ask, map[string]any{"close_reason": reason})
-	h.traceAsk(ctx, ask.CorrelationID, "closed", "", ask, map[string]any{"close_reason": reason})
+	detail := map[string]any{"close_reason": reason}
+	if reply != "" {
+		detail["reply"] = clipTraceText(reply)
+	}
+	h.traceAsk(ctx, ask.CorrelationID, "closed", "", ask, detail)
+}
+
+// clipTraceText bounds free text stored in trace detail rows.
+func clipTraceText(text string) string {
+	const max = 500
+	if len(text) <= max {
+		return text
+	}
+	return text[:max] + "…"
 }
 
 // askWaitMax mirrors ASK_WAIT_MAX_SECONDS: the hard cap on how long /asks/{cid}/wait
@@ -118,6 +134,7 @@ func (h *Hub) registerAskLifecycleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /ask-many", h.requireAuth(h.handleAskMany))
 	mux.HandleFunc("GET /ask-many/{parent_id}", h.requireAuth(h.handleAskManyResult))
 	mux.HandleFunc("GET /asks/pending", h.requireAuth(h.handlePendingAsks))
+	mux.HandleFunc("GET /asks/history", h.requireAuth(h.handleAskHistory))
 	mux.HandleFunc("POST /asks/{correlation_id}/wait", h.requireAuth(h.handleAskWait))
 }
 
@@ -405,7 +422,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		return AskResponse{}, routeErr(http.StatusInternalServerError, err.Error())
 	}
 	tracked, _ := h.ask.asks.Get(cid)
-	h.traceAsk(ctx, cid, "created", "", tracked, map[string]any{"to_peer": req.ToPeer})
+	h.traceAsk(ctx, cid, "created", "", tracked, map[string]any{"to_peer": req.ToPeer, "from_peer": req.FromPeer, "text": clipTraceText(req.Text)})
 	h.traceAsk(ctx, cid, "resolved_peer", "", tracked, nil)
 	h.traceAsk(ctx, cid, "routed", "", tracked, nil)
 
@@ -555,7 +572,7 @@ func (h *Hub) ackDirect(ctx context.Context, req AckRequest) (AckResponse, error
 	// Bare ack.
 	h.emitAckEvent(ctx, existing, "ack", false, false, false)
 	_, _ = h.ask.asks.Close(ctx, req.CorrelationID, "ack")
-	h.traceAskClosed(ctx, existing, "ack")
+	h.traceAskClosed(ctx, existing, "ack", "")
 	return AckResponse{OK: true}, nil
 }
 
@@ -596,7 +613,7 @@ func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameK
 		h.ask.asks.CaptureReply(ctx, ask.CorrelationID, message, attachments)
 		_, _ = h.ask.asks.Close(ctx, ask.CorrelationID, closeReason)
 		h.emitAckEvent(ctx, ask, closeReason, true, true, len(attachments) > 0)
-		h.traceAskClosed(ctx, ask, closeReason)
+		h.traceAskClosed(ctx, ask, closeReason, message)
 		return nil
 	}
 
@@ -612,7 +629,7 @@ func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameK
 		}
 		_, _ = h.ask.asks.Close(ctx, ask.CorrelationID, closeReason)
 		h.emitAckEvent(ctx, ask, closeReason, false, true, len(attachments) > 0)
-		h.traceAskClosed(ctx, ask, closeReason)
+		h.traceAskClosed(ctx, ask, closeReason, message)
 		return nil
 	}
 	if !res.Delivered() && !res.Queued() {
@@ -622,7 +639,7 @@ func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameK
 	h.ask.asks.CaptureReply(ctx, ask.CorrelationID, message, attachments)
 	_, _ = h.ask.asks.Close(ctx, ask.CorrelationID, closeReason)
 	h.emitAckEvent(ctx, ask, closeReason, res.Delivered(), true, len(attachments) > 0)
-	h.traceAskClosed(ctx, ask, closeReason)
+	h.traceAskClosed(ctx, ask, closeReason, message)
 	return nil
 }
 
@@ -729,7 +746,7 @@ func (h *Hub) answerDirect(ctx context.Context, req AnswerRequest) (AnswerRespon
 		delivered = derr == nil && res.Delivered()
 	}
 	h.emitAckEvent(ctx, existing, "answered", delivered, body != "", len(req.Attachments) > 0)
-	h.traceAskClosed(ctx, existing, "answered")
+	h.traceAskClosed(ctx, existing, "answered", body)
 	return AnswerResponse{OK: true}, nil
 }
 
@@ -1314,4 +1331,72 @@ func derefOr(p *string, fallback string) string {
 		return *p
 	}
 	return fallback
+}
+
+// ----------------------------------------------------------------------------
+// GET /asks/history
+// ----------------------------------------------------------------------------
+
+// AskHistoryResponse lists the closed ask threads a peer took part in since a
+// point in time, plus the peer's durable session id. Backs the git-trailer
+// PreToolUse hook and `repowire why`.
+type AskHistoryResponse struct {
+	PeerID            string   `json:"peer_id"`
+	RepowireSessionID *string  `json:"repowire_session_id"`
+	Threads           []string `json:"threads"`
+}
+
+// handleAskHistory reads the durable trace ledger, not the in-memory tracker,
+// so threads survive the AskTracker TTL. Identify the peer with exactly one of
+// pane_id or peer_id; `since` is RFC-3339 and optional.
+func (h *Hub) handleAskHistory(w http.ResponseWriter, r *http.Request) {
+	if !h.askReady(w) {
+		return
+	}
+	if h.store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "trace ledger unavailable")
+		return
+	}
+	q := r.URL.Query()
+	paneID, peerID := q.Get("pane_id"), q.Get("peer_id")
+	if (paneID == "") == (peerID == "") {
+		writeJSONError(w, http.StatusBadRequest, "Provide exactly one of pane_id or peer_id")
+		return
+	}
+	var since time.Time
+	if raw := q.Get("since"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "since must be RFC-3339")
+			return
+		}
+		since = parsed
+	}
+	var resolved proto.PeerID
+	if paneID != "" {
+		p, ok := h.ask.reg.GetPeerByPane(paneID)
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, "No peer for pane: "+paneID)
+			return
+		}
+		resolved = p.PeerID
+	} else {
+		p, ok := h.ask.reg.GetPeer(proto.PeerID(peerID))
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, "No peer with id: "+peerID)
+			return
+		}
+		resolved = p.PeerID
+	}
+	threads, err := h.store.ClosedAskThreadsSince(r.Context(), string(resolved), since)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if threads == nil {
+		threads = []string{}
+	}
+	writeJSON(w, http.StatusOK, AskHistoryResponse{
+		PeerID: string(resolved), RepowireSessionID: h.sessionIDForPeer(r.Context(), string(resolved)), Threads: threads,
+	})
 }

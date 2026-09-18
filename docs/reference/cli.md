@@ -174,6 +174,14 @@ repowire trace TRACE_ID [--json]
 
 Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`, returned in the `/notify` response). Stages are ordered (`created → resolved_peer → routed → websocket_sent → thread_input_accepted → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). `thread_input_accepted` means a native Codex thread or Claude inbox accepted the input; `injection_failed` records a failed/rejected receipt. Historical ledgers may contain `pane_injected` from releases that supported tmux keystroke delivery. This reads the local delivery trace ledger (`GET /traces/{trace_id}`); rows older than `daemon.prune_max_age_hours` are pruned during lazy repair. Currently covers ask and notify; query/broadcast terminal stages are not yet traced. Exits non-zero if any stage failed.
 
+## `repowire why`
+
+```bash
+repowire why [COMMIT] [--json]
+```
+
+Replays the mesh conversations behind a commit. When the `git_trailers` experiment is on, the Claude Code `PreToolUse` hook rewrites `git commit` commands to carry one `Repowire-Thread: <correlation_id>` trailer per ask the committing peer opened or closed since the previous commit in that repo, plus a `Repowire-Session: <repowire_session_id>` trailer. `why` reads those trailers with `git log --format=%(trailers:...)` (defaulting to `HEAD`), fetches each thread from the delivery trace ledger (`GET /traces/{correlation_id}`), and prints who asked what and how it closed. Threads older than `daemon.prune_max_age_hours` are pruned from the ledger and print an error line instead. Plain git works too: `git log --format='%h %s%n%(trailers:only)'` lists the trailers without the daemon.
+
 ## `repowire share`
 
 ```bash

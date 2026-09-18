@@ -92,6 +92,9 @@ type ExperimentsConfig struct {
 	ACPBrokerClient    bool                     `yaml:"acp_broker_client"`
 	ChatTurnStreaming  bool                     `yaml:"chat_turn_streaming"`
 	RemoteToolApproval RemoteToolApprovalConfig `yaml:"remote_tool_approval"`
+	// GitTrailers rewrites `git commit` commands in the Claude Code PreToolUse
+	// hook to carry Repowire-Thread / Repowire-Session trailers.
+	GitTrailers bool `yaml:"git_trailers"`
 }
 
 type RemoteToolApprovalConfig struct {
@@ -251,6 +254,7 @@ func applyEnv(cfg *Config) {
 	}
 	setBoolEnv(&cfg.Experiments.ACPBrokerClient, "REPOWIRE_EXPERIMENTS__ACP_BROKER_CLIENT")
 	setBoolEnv(&cfg.Experiments.ChatTurnStreaming, "REPOWIRE_EXPERIMENTS__CHAT_TURN_STREAMING")
+	setBoolEnv(&cfg.Experiments.GitTrailers, "REPOWIRE_EXPERIMENTS__GIT_TRAILERS")
 	setBoolEnv(&cfg.Experiments.RemoteToolApproval.Enabled, "REPOWIRE_EXPERIMENTS__REMOTE_TOOL_APPROVAL__ENABLED")
 	setFloatEnv(&cfg.Experiments.RemoteToolApproval.TimeoutSeconds, "REPOWIRE_EXPERIMENTS__REMOTE_TOOL_APPROVAL__TIMEOUT_SECONDS")
 	if v := os.Getenv("REPOWIRE_EXPERIMENTS__REMOTE_TOOL_APPROVAL__GATED_TOOLS"); v != "" {

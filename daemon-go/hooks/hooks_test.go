@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -514,5 +515,54 @@ func TestMCPIdentityDoesNotBorrowAnotherCodexThreadCertificate(t *testing.T) {
 	}
 	if identity == "repow-parent" || proof != "" {
 		t.Fatalf("child borrowed parent identity: identity=%q proof=%q", identity, proof)
+	}
+}
+
+func TestGitTrailerRewriteSplicesThreadsAfterCommitToken(t *testing.T) {
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/asks/history" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		gotQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"peer_id": "repow-1", "repowire_session_id": "rw-sess-1", "threads": []string{"ask-0000prev", "ask-aaaa1111", "ask-bbbb2222"},
+		})
+	}))
+	defer server.Close()
+	configureHookTestDaemon(t, server.URL)
+	t.Setenv("TMUX_PANE", "%7")
+
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base", "--trailer", "Repowire-Thread: ask-0000prev"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	raw := map[string]any{"cwd": repo, "tool_name": "Bash", "tool_input": map[string]any{"command": `git add -A && git commit -m "feat: x" && git push`}}
+	out := gitTrailerRewrite(raw)
+	if out == nil {
+		t.Fatal("expected a rewrite")
+	}
+	updated := out["hookSpecificOutput"].(map[string]any)["updatedInput"].(map[string]any)["command"].(string)
+	want := `git add -A && git commit --trailer "Repowire-Thread: ask-aaaa1111" --trailer "Repowire-Thread: ask-bbbb2222" --trailer "Repowire-Session: rw-sess-1" -m "feat: x" && git push`
+	if updated != want {
+		t.Fatalf("updated command = %s\nwant %s", updated, want)
+	}
+	if !strings.Contains(gotQuery, "pane_id=%257") || !strings.Contains(gotQuery, "since=") {
+		t.Fatalf("history query = %s, want pane_id and since", gotQuery)
+	}
+
+	for name, command := range map[string]string{
+		"no commit":        "git status && git log",
+		"already trailed":  `git commit --trailer "Repowire-Thread: ask-1" -m x`,
+		"commit in a word": "gitx commit -m x",
+	} {
+		raw["tool_input"] = map[string]any{"command": command}
+		if gitTrailerRewrite(raw) != nil {
+			t.Fatalf("%s: expected no rewrite", name)
+		}
 	}
 }

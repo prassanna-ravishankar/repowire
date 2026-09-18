@@ -219,3 +219,33 @@ func nullString(v string) any {
 	}
 	return v
 }
+
+// ClosedAskThreadsSince returns the correlation ids of asks that involved peerID
+// (as asker or recipient) and closed successfully after since, oldest first.
+// This is the durable "which conversations happened" query behind git trailers:
+// the in-memory AskTracker forgets closed asks on TTL, the trace ledger does not.
+// A zero since means "any time still in the ledger".
+func (s *Store) ClosedAskThreadsSince(ctx context.Context, peerID string, since time.Time) ([]string, error) {
+	sinceTS := ""
+	if !since.IsZero() {
+		sinceTS = since.UTC().Format(tsLayout)
+	}
+	const q = `SELECT trace_id FROM delivery_traces
+		WHERE kind = 'ask' AND stage = 'closed' AND status != 'fail'
+		  AND (peer_id = ? OR from_peer_id = ?) AND ts > ?
+		GROUP BY trace_id ORDER BY MIN(ts) ASC`
+	rows, err := s.db.QueryContext(ctx, q, peerID, peerID, sinceTS)
+	if err != nil {
+		return nil, fmt.Errorf("closed ask threads for %s: %w", peerID, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var cid string
+		if err := rows.Scan(&cid); err != nil {
+			return nil, fmt.Errorf("scan closed ask thread: %w", err)
+		}
+		out = append(out, cid)
+	}
+	return out, rows.Err()
+}

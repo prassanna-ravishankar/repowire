@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -406,7 +407,15 @@ func runPreToolUse(backend string) int {
 	}
 	approval := cfg.Experiments.RemoteToolApproval
 	tool := stringValue(raw, "tool_name")
-	if !approval.Enabled || !contains(approval.GatedTools, tool) {
+	gated := approval.Enabled && contains(approval.GatedTools, tool)
+	// ponytail: approval wins when both apply; a gated `git commit` gets no trailers.
+	if !gated && tool == "Bash" && cfg.Experiments.GitTrailers {
+		if out := gitTrailerRewrite(raw); out != nil {
+			printJSON(out)
+		}
+		return 0
+	}
+	if !gated {
 		return 0
 	}
 	input := raw["tool_input"]
@@ -445,6 +454,65 @@ func runPreToolUse(backend string) int {
 	}
 	printJSON(denyDecision(reason))
 	return 0
+}
+
+// gitCommitToken finds the `git commit` invocation whose flags we may extend.
+var gitCommitToken = regexp.MustCompile(`\bgit\s+commit\b`)
+
+// gitTrailerRewrite returns a PreToolUse updatedInput that adds Repowire-Thread
+// and Repowire-Session trailers to a `git commit` command, or nil to leave the
+// command untouched. Fail open: any doubt means no rewrite, never a block.
+func gitTrailerRewrite(raw map[string]any) map[string]any {
+	input, _ := raw["tool_input"].(map[string]any)
+	command := stringValue(input, "command")
+	loc := gitCommitToken.FindStringIndex(command)
+	if loc == nil || strings.Contains(command, "Repowire-Thread") || strings.Contains(command, "Repowire-Session") {
+		return nil
+	}
+	paneID := getPaneID()
+	if paneID == "" {
+		return nil
+	}
+	cwd := stringValue(raw, "cwd")
+	query := "pane_id=" + url.QueryEscape(paneID)
+	if since := gitOutput(cwd, "log", "-1", "--format=%cI"); since != "" {
+		query += "&since=" + url.QueryEscape(since)
+	}
+	history := daemonGet("/asks/history?" + query)
+	if history == nil {
+		return nil
+	}
+	// Git commit times are whole seconds, so a thread closed in the same second
+	// as the previous commit would repeat; the previous trailers settle it exactly.
+	previous := strings.Fields(gitOutput(cwd, "log", "-1", "--format=%(trailers:key=Repowire-Thread,valueonly)"))
+	trailers := ""
+	for _, cid := range anyStrings(history["threads"]) {
+		if contains(previous, cid) {
+			continue
+		}
+		trailers += " --trailer " + strconv.Quote("Repowire-Thread: "+cid)
+	}
+	if session := stringValue(history, "repowire_session_id"); session != "" {
+		trailers += " --trailer " + strconv.Quote("Repowire-Session: "+session)
+	}
+	if trailers == "" {
+		return nil
+	}
+	return map[string]any{"hookSpecificOutput": map[string]any{
+		"hookEventName": "PreToolUse",
+		"updatedInput":  map[string]any{"command": command[:loc[1]] + trailers + command[loc[1]:]},
+	}}
+}
+
+func anyStrings(value any) []string {
+	items, _ := value.([]any)
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok && text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
 }
 
 func denyDecision(reason string) map[string]any {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -221,5 +222,42 @@ func mustInsert(t *testing.T, s *Store, traceID, kind, stage, peerID, ts string)
 	)
 	if err != nil {
 		t.Fatalf("insert fixture: %v", err)
+	}
+}
+
+func TestClosedAskThreadsSince(t *testing.T) {
+	s := newTraceStore(t)
+	ctx := context.Background()
+	rec := func(cid, stage, status, to, from string) {
+		if err := s.RecordTrace(ctx, cid, "ask", stage, status, cid, to, from, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec("ask-old", "closed", "", "peer-a", "peer-b")
+	cut := time.Now().UTC().Add(time.Millisecond)
+	time.Sleep(2 * time.Millisecond)
+	rec("ask-in", "created", "", "peer-a", "peer-b")
+	rec("ask-in", "closed", "", "peer-a", "peer-b")
+	rec("ask-out", "closed", "", "peer-c", "peer-a")
+	rec("ask-failed", "closed", "fail", "peer-a", "peer-b")
+	rec("ask-other", "closed", "", "peer-c", "peer-b")
+	if err := s.RecordTrace(ctx, "notif-1", "notify", "closed", "", "", "peer-a", "peer-b", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ClosedAskThreadsSince(ctx, "peer-a", cut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"ask-in", "ask-out"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("threads = %v, want %v", got, want)
+	}
+	all, err := s.ClosedAskThreadsSince(ctx, "peer-a", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 || all[0] != "ask-old" {
+		t.Fatalf("unbounded threads = %v, want ask-old first of 3", all)
 	}
 }
