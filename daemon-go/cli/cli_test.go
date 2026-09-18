@@ -957,13 +957,14 @@ func TestOrchestratorTemplateAndPersonaAreStandalone(t *testing.T) {
 
 func TestPreToolUseMatcherUnionsApprovalAndTrailers(t *testing.T) {
 	cfg := config.Defaults()
+	if got := preToolUseMatcher(cfg); got != "Bash" {
+		t.Fatalf("defaults (trailers on): matcher = %q, want Bash", got)
+	}
+	cfg.Experiments.GitTrailers = false
 	if got := preToolUseMatcher(cfg); got != "" {
 		t.Fatalf("both off: matcher = %q, want empty", got)
 	}
 	cfg.Experiments.GitTrailers = true
-	if got := preToolUseMatcher(cfg); got != "Bash" {
-		t.Fatalf("trailers only: matcher = %q, want Bash", got)
-	}
 	cfg.Experiments.RemoteToolApproval.Enabled = true
 	if got := preToolUseMatcher(cfg); got != "Bash|Edit|Write|MultiEdit|NotebookEdit" {
 		t.Fatalf("both on: matcher = %q, want gated tools once with Bash", got)

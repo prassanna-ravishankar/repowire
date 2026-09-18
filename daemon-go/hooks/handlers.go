@@ -474,6 +474,9 @@ func gitTrailerRewrite(raw map[string]any) map[string]any {
 		return nil
 	}
 	cwd := stringValue(raw, "cwd")
+	if gitOutput(cwd, "rev-parse", "--is-inside-work-tree") != "true" {
+		return nil // not a repo: let git report that, don't touch the command
+	}
 	query := "pane_id=" + url.QueryEscape(paneID)
 	if since := gitOutput(cwd, "log", "-1", "--format=%cI"); since != "" {
 		query += "&since=" + url.QueryEscape(since)

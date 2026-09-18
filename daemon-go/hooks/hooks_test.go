@@ -555,6 +555,12 @@ func TestGitTrailerRewriteSplicesThreadsAfterCommitToken(t *testing.T) {
 		t.Fatalf("history query = %s, want pane_id and since", gotQuery)
 	}
 
+	raw["cwd"] = t.TempDir()
+	raw["tool_input"] = map[string]any{"command": "git commit -m outside"}
+	if gitTrailerRewrite(raw) != nil {
+		t.Fatal("outside a git repo: expected no rewrite")
+	}
+	raw["cwd"] = repo
 	for name, command := range map[string]string{
 		"no commit":        "git status && git log",
 		"already trailed":  `git commit --trailer "Repowire-Thread: ask-1" -m x`,

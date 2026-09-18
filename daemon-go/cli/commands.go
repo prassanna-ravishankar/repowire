@@ -699,15 +699,21 @@ func runWhy(argv []string) int {
 	if len(a.pos) > 0 {
 		commit = a.pos[0]
 	}
-	trailers := func(key string) []string {
+	if out, err := exec.Command("git", "rev-parse", "--is-inside-work-tree").Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
+		return fatal(fmt.Errorf("why: not inside a git repository"))
+	}
+	trailers := func(key string) ([]string, error) {
 		out, err := exec.Command("git", "log", "-1", "--format=%(trailers:key="+key+",valueonly)", commit).Output()
 		if err != nil {
-			return nil
+			return nil, fmt.Errorf("why: git cannot resolve %s", commit)
 		}
-		return strings.Fields(string(out))
+		return strings.Fields(string(out)), nil
 	}
-	threads := trailers("Repowire-Thread")
-	sessions := trailers("Repowire-Session")
+	threads, err := trailers("Repowire-Thread")
+	if err != nil {
+		return fatal(err)
+	}
+	sessions, _ := trailers("Repowire-Session")
 	if len(threads) == 0 && len(sessions) == 0 {
 		fmt.Println("no Repowire trailers on " + commit)
 		return 0

@@ -182,9 +182,9 @@ experiments:
     enabled: true               # PreToolUse hooks-path remote tool approval (Claude Code)
     gated_tools: [Bash, Edit, Write, MultiEdit, NotebookEdit]
     timeout_seconds: 45
-  git_trailers: true            # PreToolUse rewrite of `git commit` to carry Repowire-Thread/Session trailers (Claude Code)
+  git_trailers: true            # default on: `git commit` carries Repowire-Thread/Session trailers (Claude Code)
 ```
 
 `remote_tool_approval` gates `gated_tools` behind a blocking approval question: before a gated tool runs, a `PreToolUse` hook posts the question to the daemon and waits for an allow/deny from a human surface or peer, denying on timeout. The installer only registers the `PreToolUse` hook when `enabled` is set; toggling it off and re-running `repowire setup` removes the hook. Read-only tools are never gated. See [Structured questions](../concepts/message-types.md#pretooluse-tool-approval-claude-code).
 
-`git_trailers` makes the same `PreToolUse` hook (matcher extended with `Bash`) rewrite `git commit` commands so each commit records the ask threads and Repowire session behind it as git trailers. The rewrite only touches the command input; the normal Bash permission flow still applies to the rewritten command. It fails open: no daemon, no pane, no threads, or a command already carrying trailers means the command runs untouched. When a gated tool would also require remote approval, approval wins and no trailers are added. Re-run `repowire setup` after toggling. Read them back with [`repowire why`](cli.md#repowire-why).
+`git_trailers` is on by default (set `false` to opt out). It makes the same `PreToolUse` hook (matcher extended with `Bash`) rewrite `git commit` commands so each commit records the ask threads and Repowire session behind it as git trailers. The rewrite only touches the command input; the normal Bash permission flow still applies to the rewritten command. It fails open: outside a git repository, no daemon, no pane, no threads, or a command already carrying trailers means the command runs untouched. When a gated tool would also require remote approval, approval wins and no trailers are added. Re-run `repowire setup` after toggling. Read them back with [`repowire why`](cli.md#repowire-why).

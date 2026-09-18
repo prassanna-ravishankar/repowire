@@ -124,7 +124,7 @@ func Defaults() Config {
 		Experiments: ExperimentsConfig{RemoteToolApproval: RemoteToolApprovalConfig{
 			GatedTools:     []string{"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"},
 			TimeoutSeconds: 45,
-		}},
+		}, GitTrailers: true},
 	}
 }
 

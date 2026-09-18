@@ -107,6 +107,7 @@ Full docs: [docs.repowire.io](https://docs.repowire.io).
 - **Durable jobs**: Track one-off and recurring work through CLI/MCP, with dashboard visibility and controls for run, retry, and cancel.
 - **Orchestrator pattern**: A dedicated peer can dispatch work, check status, coordinate reviews, and keep a queue moving.
 - **Scheduled wake-ups**: Send a future notification or ask to yourself, another peer, or an orchestrator.
+- **Git trailers**: Agent commits carry `Repowire-Thread` and `Repowire-Session` trailers; `repowire why` replays the conversations behind a commit.
 - **Optional relay**: Reach the dashboard remotely and bridge machines without opening inbound ports.
 
 ## How It Works
@@ -180,6 +181,15 @@ Schedule a reminder, check-in, or future ask:
 ```bash
 repowire schedule self 10m "check CI"
 repowire schedule create orchestrator 1h "handoff" --from-peer project-a --kind ask
+```
+
+### See why a commit happened
+
+Claude Code commits made through Repowire record the ask threads they closed as git trailers. Replay them:
+
+```bash
+repowire why            # HEAD
+repowire why abc1234    # any commit
 ```
 
 ### Bridge machines
