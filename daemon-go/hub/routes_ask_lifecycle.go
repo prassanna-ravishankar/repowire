@@ -384,9 +384,17 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	// duplicate check below only because this shared seam has already enforced it.
 	from, authorizedTarget, accessErr := h.ask.reg.CheckAccess(ctx, req.FromPeer, string(target.PeerID), req.BypassCircle, nil)
 	if accessErr != nil {
+		if err := h.notAddressableRouteErr(accessErr); err != nil {
+			return AskResponse{}, err
+		}
 		return AskResponse{}, routeErr(http.StatusForbidden, accessErr.Error())
 	}
 	target = authorizedTarget
+	// Explicit gate before AskTracker.Register: a non-addressable target must
+	// never leave a tracker entry or a queued delivery behind (409, not 403).
+	if err := h.notAddressableRouteErr(proto.RequireAddressable(from, target)); err != nil {
+		return AskResponse{}, err
+	}
 	// An unresolved sender is allowed for compatibility; preserve its supplied
 	// identity in that case.
 	fromID := proto.PeerID(req.FromPeer)
@@ -969,6 +977,27 @@ func (h *Hub) handleAskMany(w http.ResponseWriter, r *http.Request) {
 }
 
 // openAskMany is the typed fan-out operation shared by HTTP and MCP callers.
+// notAddressableRouteErr maps proto.NotAddressableError to the 409
+// peer_not_addressable body, carrying the parent peer when it is registered so
+// the caller can reroute by hand. nil for any other error.
+func (h *Hub) notAddressableRouteErr(err error) error {
+	var na *proto.NotAddressableError
+	if !errors.As(err, &na) {
+		return nil
+	}
+	body := map[string]any{
+		"error": "peer_not_addressable", "peer_id": na.PeerID, "display_name": na.DisplayName,
+		"reason": na.Reason, "parent_peer_id": nil,
+		"hint": "This peer cannot receive direct input (for example a Codex multi-agent sub-agent thread). Send to its parent or another addressable peer; nothing was queued.",
+	}
+	if h.reg != nil && na.ParentRuntimeID != "" {
+		if parent := h.reg.ParentPeer(&proto.Peer{PeerID: na.PeerID, Provenance: proto.Provenance{ParentRuntimeID: na.ParentRuntimeID}}); parent != nil {
+			body["parent_peer_id"] = parent.PeerID
+		}
+	}
+	return routeErr(http.StatusConflict, body)
+}
+
 func (h *Hub) openAskMany(ctx context.Context, req AskManyRequest) (AskManyResponse, error) {
 	if err := h.askOperationReady(); err != nil {
 		return AskManyResponse{}, err

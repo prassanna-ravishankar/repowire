@@ -155,11 +155,27 @@ func TestProvenancePublicationIsOrderedUnderOverlap(t *testing.T) {
 	if len(got) != 2 || !got[0].Addressable || got[1].Addressable {
 		t.Fatalf("pushes = %+v, want accepting then denied", got)
 	}
-	p.mu.Lock()
-	if p.publishedVersion != p.provVersion || p.publishing {
-		t.Fatalf("publisher left state v%d published=%d publishing=%v", p.provVersion, p.publishedVersion, p.publishing)
+	waitPublisherIdle(t, p)
+}
+
+// waitPublisherIdle waits for the publisher goroutine to finish its
+// bookkeeping after the daemon has recorded the last push.
+func waitPublisherIdle(t *testing.T, p *threadPeer) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		p.mu.Lock()
+		idle := !p.publishing && p.publishedVersion == p.provVersion
+		version, published, publishing := p.provVersion, p.publishedVersion, p.publishing
+		p.mu.Unlock()
+		if idle {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("publisher left state v%d published=%d publishing=%v", version, published, publishing)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	p.mu.Unlock()
 }
 
 // A failed POST leaves the version owed; the next reconcile with unchanged
@@ -305,11 +321,7 @@ func TestRegistrationParticipatesInProvenanceOrdering(t *testing.T) {
 	if len(got) != 2 || got[0].path != "/peers" || !got[0].prov.Addressable || !strings.HasSuffix(got[1].path, "/provenance") || got[1].prov.Addressable {
 		t.Fatalf("forward ordering = %+v, want registration(accepting) then provenance(denied)", got)
 	}
-	p.mu.Lock()
-	if p.publishedVersion != p.provVersion || p.publishing {
-		t.Fatalf("after registration v%d published=%d publishing=%v", p.provVersion, p.publishedVersion, p.publishing)
-	}
-	p.mu.Unlock()
+	waitPublisherIdle(t, p)
 
 	// Reverse: an accepting re-read is pushed but held; a re-registration must
 	// wait for it, then carry the newest classification (the accepting one),

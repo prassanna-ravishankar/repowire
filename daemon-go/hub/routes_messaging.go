@@ -211,6 +211,18 @@ func (mr *MessagingRoutes) writeNotifyError(w http.ResponseWriter, ctx context.C
 			"from_peer_name": req.FromPeer,
 			"to_peer_name":   req.ToPeer,
 		})
+	case errors.As(err, new(*proto.NotAddressableError)):
+		// Nothing was registered or queued: the target cannot take input.
+		body := accessErrorBody("peer_not_addressable", "failed", "peer_not_addressable", msg, req)
+		var na *proto.NotAddressableError
+		_ = errors.As(err, &na)
+		body["peer_id"], body["parent_peer_id"] = na.PeerID, nil
+		if resolver, ok := mr.reg.(interface{ ParentPeer(*proto.Peer) *proto.Peer }); ok && na.ParentRuntimeID != "" {
+			if parent := resolver.ParentPeer(&proto.Peer{PeerID: na.PeerID, Provenance: proto.Provenance{ParentRuntimeID: na.ParentRuntimeID}}); parent != nil {
+				body["parent_peer_id"] = parent.PeerID
+			}
+		}
+		writeJSON(w, http.StatusConflict, body)
 	case strings.HasPrefix(msg, "Ambiguous peer name"):
 		writeJSON(w, http.StatusConflict, accessErrorBody("ambiguous_peer", "failed", "ambiguous_peer", msg, req))
 	case strings.HasPrefix(msg, "Unknown peer"):

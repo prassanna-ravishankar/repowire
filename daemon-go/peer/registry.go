@@ -390,7 +390,9 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 			}
 			existing.peer.Metadata = merged
 		}
+		wasProvenance := existing.peer.Provenance
 		existing.peer.Provenance = existing.peer.Provenance.Merge(params.Provenance).InferSource(existing.peer.Metadata, params.HookVersion)
+		r.demoteIfLostInputLocked(ctx, existing.peer, wasProvenance)
 		if m := r.mappings[id]; m != nil {
 			m.UpdatedAt = now
 			m.Provenance = existing.peer.Provenance

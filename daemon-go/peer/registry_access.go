@@ -53,6 +53,9 @@ func (r *Registry) CheckAccess(ctx context.Context, fromPeer, toPeer string, byp
 	if cerr := checkCircleAccess(fromObj, target, bypassCircle); cerr != nil {
 		return clonePeer(fromObj), nil, cerr
 	}
+	if aerr := proto.RequireAddressable(fromObj, target); aerr != nil {
+		return clonePeer(fromObj), nil, aerr
+	}
 	// Clone at the public boundary: delivery/broadcast/query callers read these
 	// off-lock while register/status/metadata writers mutate the live structs.
 	return clonePeer(fromObj), clonePeer(target), nil

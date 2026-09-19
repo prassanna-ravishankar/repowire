@@ -2,8 +2,10 @@ package state
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
 )
@@ -38,5 +40,29 @@ func TestMappingProvenanceMigratesToUnknownAndRoundTrips(t *testing.T) {
 	}
 	if got := byID["repow-1-child"].Provenance; got != child.Provenance {
 		t.Fatalf("round trip = %+v, want %+v", got, child.Provenance)
+	}
+}
+
+func TestDeleteDeliveriesForPeerDropsOnlyThatPeer(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC()
+	for _, peerID := range []string{"repow-1-child", "repow-1-child", "repow-1-other"} {
+		if _, err := s.EnqueueDelivery(ctx, QueuedDelivery{DeliveryID: "d-" + peerID + "-" + fmt.Sprint(len(peerID)+int(now.UnixNano()%1000)), PeerID: peerID, Kind: DeliveryNotify, FromPeerName: "a", ToPeerName: "b", Text: "x"}, 3600, 10, now); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(time.Millisecond)
+	}
+	n, err := s.DeleteDeliveriesForPeer(ctx, "repow-1-child")
+	if err != nil || n != 2 {
+		t.Fatalf("deleted %d, %v; want 2", n, err)
+	}
+	left, err := s.ListDeliveries(ctx, "repow-1-other", 10, time.Now().UTC())
+	if err != nil || len(left) != 1 {
+		t.Fatalf("other peer deliveries = %d, %v; want 1", len(left), err)
 	}
 }

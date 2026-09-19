@@ -2,6 +2,8 @@ package peer
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
@@ -155,7 +157,69 @@ func (r *Registry) UpdateProvenance(ctx context.Context, identifier string, prov
 		"source": provenance.Source, "addressable": provenance.Addressable, "addressable_reason": provenance.AddressableReason,
 		"was_addressable": was.Addressable,
 	}})
+	r.demoteIfLostInputLocked(ctx, p, was)
 	return true, nil
+}
+
+// ParentPeer resolves a sub-agent's parent_runtime_id to the registered peer
+// whose runtime_session_id matches. nil when the parent is not on the mesh;
+// never fabricated.
+func (r *Registry) ParentPeer(p *proto.Peer) *proto.Peer {
+	if p == nil || p.ParentRuntimeID == "" {
+		return nil
+	}
+	for _, candidate := range r.GetAllPeers() {
+		if candidate.PeerID == p.PeerID {
+			continue
+		}
+		if rid, _ := candidate.Metadata["runtime_session_id"].(string); rid != "" && rid == p.ParentRuntimeID {
+			return candidate
+		}
+	}
+	return nil
+}
+
+const reasonPeerNotAddressable = "peer_not_addressable"
+
+// demoteIfLostInputLocked runs when a live peer's addressable verdict flips
+// true→false: pending inbound work would otherwise strand (a busy deferral
+// waits for a Stop drain that a restricted thread never produces). Open asks
+// addressed to it are closed with reason peer_not_addressable, its queued
+// deliveries are dropped, each asker is told, and one event records the
+// counts. Caller holds r.mu; the notifies run off-lock.
+func (r *Registry) demoteIfLostInputLocked(ctx context.Context, p *proto.Peer, was proto.Provenance) {
+	if !was.Normalized().Addressable || p.Provenance.Normalized().Addressable {
+		return
+	}
+	rec := r.rec
+	id, name, reason := p.PeerID, p.DisplayName, p.Provenance.AddressableReason
+	var closed []ClosedAsk
+	if rec.asks != nil {
+		closed = rec.asks.CloseInboundForPeer(id, reasonPeerNotAddressable)
+	}
+	r.spawnTracked(func() {
+		ctx := context.WithoutCancel(ctx)
+		dropped := 0
+		if rec.queue != nil {
+			n, err := rec.queue.DropDeliveriesForPeer(ctx, id)
+			if err != nil {
+				log.Printf("demote %s: drop queued deliveries: %v", id, err)
+			}
+			dropped = n
+		}
+		for _, ask := range closed {
+			if rec.delivery == nil || ask.FromPeerID == "" {
+				continue
+			}
+			text := fmt.Sprintf("[ask #%s closed] %s cannot receive direct input (%s); the ask was not delivered. Re-send to its parent or an addressable peer.", ask.CorrelationID, name, reason)
+			if err := rec.delivery.Notify(ctx, id, ask.FromPeerID, text, true); err != nil {
+				log.Printf("demote %s: notify asker %s about ask %s: %v", id, ask.FromPeerID, ask.CorrelationID, err)
+			}
+		}
+		r.appendEvent(ctx, Event{Type: reasonPeerNotAddressable, Timestamp: time.Now().UTC(), PeerID: id, PeerName: name, SessionID: id, Payload: map[string]any{
+			"reason": reason, "asks_closed": len(closed), "deliveries_dropped": dropped,
+		}})
+	})
 }
 
 // looksLikePeerID reports whether an identifier is a canonical daemon-minted

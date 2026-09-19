@@ -359,3 +359,14 @@ func scanDelivery(rows *sql.Rows) (QueuedDelivery, error) {
 	}
 	return d, nil
 }
+
+// DeleteDeliveriesForPeer drops every queued delivery addressed to peerID
+// (a peer that can no longer take input). Returns the number removed.
+func (s *Store) DeleteDeliveriesForPeer(ctx context.Context, peerID string) (int, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM queued_deliveries WHERE peer_id = ?`, peerID)
+	if err != nil {
+		return 0, fmt.Errorf("delete deliveries for %s: %w", peerID, err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}

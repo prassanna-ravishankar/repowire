@@ -667,6 +667,32 @@ func (t *AskTracker) maybeEvictExpired(ctx context.Context) {
 }
 
 // ForgetPeer drops every ask involving id (registry prune path). Returns count.
+// CloseInboundForPeer closes every open ask addressed to id with reason and
+// cancels its waiters with that reason. The records stay (they are closed, not
+// forgotten) so history and traces keep the cid.
+func (t *AskTracker) CloseInboundForPeer(id proto.PeerID, reason string) []ClosedInboundAsk {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var closed []ClosedInboundAsk
+	for cid, ask := range t.asks {
+		if ask.ToPeerID != id || ask.Closed {
+			continue
+		}
+		ask.Closed = true
+		ask.CloseReason = reason
+		r := reason
+		t.cancelWaiter(cid, &r)
+		closed = append(closed, ClosedInboundAsk{CorrelationID: cid, FromPeerID: ask.FromPeerID})
+	}
+	return closed
+}
+
+// ClosedInboundAsk is what CloseInboundForPeer reports per closed ask.
+type ClosedInboundAsk struct {
+	CorrelationID string
+	FromPeerID    proto.PeerID
+}
+
 func (t *AskTracker) ForgetPeer(ctx context.Context, id proto.PeerID) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()

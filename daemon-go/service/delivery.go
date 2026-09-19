@@ -212,6 +212,11 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 	if err != nil {
 		return NotifyResult{}, err
 	}
+	// The registry gates this too; repeated here so a fake registry in tests
+	// and any future registry seam cannot route inbound work past the verdict.
+	if err := proto.RequireAddressable(from, target); err != nil {
+		return NotifyResult{}, err
+	}
 
 	fromName := proto.DisplayName(params.FromPeer)
 	var fromID *proto.PeerID
@@ -385,6 +390,9 @@ func (d *PeerDelivery) sessionIDForPeer(ctx context.Context, peerID *proto.PeerI
 func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) (AskResult, error) {
 	from, target, err := d.reg.CheckAccess(ctx, params.FromPeer, params.ToPeer, params.BypassCircle, params.Circle)
 	if err != nil {
+		return AskResult{}, err
+	}
+	if err := proto.RequireAddressable(from, target); err != nil {
 		return AskResult{}, err
 	}
 
@@ -589,6 +597,13 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 			if p.Circle != fromObj.Circle && !p.Role.BypassesCircles() {
 				excludeIDs[p.PeerID] = struct{}{}
 			}
+		}
+	}
+	// A broadcast is inbound work for each recipient: peers that cannot take
+	// direct input are skipped rather than counted as failures.
+	for _, p := range peers {
+		if proto.RequireAddressable(fromObj, p) != nil {
+			excludeIDs[p.PeerID] = struct{}{}
 		}
 	}
 

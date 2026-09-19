@@ -155,6 +155,7 @@ describe("MeshFeed", () => {
       { id: "e-status", type: "peer_status", timestamp: "2025-01-01T00:00:02Z", peer_id: "peer-1", peer_name: "alice", status: "busy" },
       { id: "e-offline", type: "peer_offline", timestamp: "2025-01-01T00:00:03Z", peer_id: "peer-1", peer_name: "alice", reason: "no_websocket_no_pane" },
       { id: "e-contra", type: "peer_contradiction", timestamp: "2025-01-01T00:00:04Z", peer_id: "peer-1", peer_name: "alice", severity: "warn", code: "stale_pane", detail: "pane gone" },
+      { id: "e-demote", type: "peer_not_addressable", timestamp: "2025-01-01T00:00:05Z", peer_id: "peer-1", peer_name: "alice", reason: "subagent_direct_input_denied", asks_closed: 2, deliveries_dropped: 1 },
     ];
     const onPickPeer = vi.fn();
 
@@ -171,6 +172,7 @@ describe("MeshFeed", () => {
     expect(screen.getByText(/· busy/)).toBeInTheDocument();
     expect(screen.getByText(/· no_websocket_no_pane/)).toBeInTheDocument();
     expect(screen.getByText(/· warn · stale_pane · pane gone/)).toBeInTheDocument();
+    expect(screen.getByText(/· subagent_direct_input_denied · 2 ask\(s\) closed · 1 queued dropped/)).toBeInTheDocument();
     expect(screen.queryByText("unknown")).not.toBeInTheDocument();
     expect(screen.queryByText("—")).not.toBeInTheDocument();
 

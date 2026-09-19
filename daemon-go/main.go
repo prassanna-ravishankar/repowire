@@ -170,6 +170,22 @@ func (a reconcileAsks) EvictExpired(includeStashed bool) int {
 	return a.t.EvictExpired(context.Background(), includeStashed)
 }
 
+func (a reconcileAsks) CloseInboundForPeer(id proto.PeerID, reason string) []peer.ClosedAsk {
+	var out []peer.ClosedAsk
+	for _, c := range a.t.CloseInboundForPeer(id, reason) {
+		out = append(out, peer.ClosedAsk{CorrelationID: c.CorrelationID, FromPeerID: c.FromPeerID})
+	}
+	return out
+}
+
+// reconcileQueue adapts the durable delivery store to the registry's
+// DeliveryQueue seam.
+type reconcileQueue struct{ s *state.Store }
+
+func (q reconcileQueue) DropDeliveriesForPeer(ctx context.Context, peerID proto.PeerID) (int, error) {
+	return q.s.DeleteDeliveriesForPeer(ctx, string(peerID))
+}
+
 func (a reconcileAsks) ForgetPeer(id proto.PeerID) int {
 	return a.t.ForgetPeer(context.Background(), id)
 }
@@ -372,6 +388,9 @@ func runDaemon() {
 		time.Duration(cfg.Daemon.StaleBusyTimeoutSeconds*float64(time.Second)),
 		time.Duration(cfg.Daemon.PruneMaxAgeHours*float64(time.Hour)),
 	)
+	if store != nil {
+		reg.WithDeliveryQueue(reconcileQueue{store})
+	}
 	// Process/tmux probe for the destructive pane-claim proof (hijack guard).
 	reg.WithProcessProbe(realProcessProbe{})
 
