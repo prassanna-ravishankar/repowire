@@ -44,3 +44,26 @@ func TestRenderPeersMarksNonAddressablePeers(t *testing.T) {
 		t.Fatalf("interactive output does not flag the sub-agent: %q", wide.String())
 	}
 }
+
+func TestRenderPeersShowsRoleInteractively(t *testing.T) {
+	result := map[string]any{"peers": []any{
+		map[string]any{"peer_id": "repow-1-orch", "display_name": "orchestrator-claude-code", "status": "online", "role": "orchestrator", "backend": "claude-code", "circle": "1", "path": "/home/dev/.repowire/orchestrator"},
+		map[string]any{"peer_id": "repow-1-agent", "display_name": "app-codex", "status": "busy", "backend": "codex", "circle": "1", "path": "/home/dev/app"},
+	}}
+	for _, width := range []int{140, 100, 60} {
+		var out bytes.Buffer
+		renderPeers(&out, result, width)
+		text := out.String()
+		if !strings.Contains(text, "orchestrator") || !strings.Contains(text, "agent") {
+			t.Fatalf("width %d: roles missing:\n%s", width, text)
+		}
+		if width >= 96 && !strings.Contains(strings.SplitN(text, "\n", 2)[0], "ROLE") {
+			t.Fatalf("width %d: header lacks ROLE column:\n%s", width, text)
+		}
+		for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+			if len([]rune(line)) > width {
+				t.Fatalf("width %d: line exceeds terminal: %q", width, line)
+			}
+		}
+	}
+}

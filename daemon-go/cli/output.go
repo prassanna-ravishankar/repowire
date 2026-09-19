@@ -41,30 +41,34 @@ func renderPeers(w io.Writer, result map[string]any, width int) {
 				fmt.Fprintln(w)
 			}
 			fmt.Fprintln(w, truncate(peerName(p)+"  "+peerField(p, "status")+peerOriginTag(p), width))
-			fmt.Fprintln(w, truncate("  "+strings.Join(nonempty(peerField(p, "backend"), peerField(p, "circle"), peerProject(p)), " · "), width))
+			fmt.Fprintln(w, truncate("  "+strings.Join(nonempty(peerRole(p), peerField(p, "backend"), peerField(p, "circle"), peerProject(p)), " · "), width))
 			fmt.Fprintln(w, truncate("  "+peerField(p, "peer_id")+"  "+peerField(p, "path"), width))
 		}
 		return
 	}
 
-	columns := []int{24, 9, 13, 16, 18}
+	columns := []int{24, 9, 12, 13, 16, 18}
 	if width < 120 {
-		columns = []int{22, 9, 12, width - 49}
-		writePeerRow(w, columns, "NAME", "STATUS", "BACKEND", "CIRCLE")
+		columns = []int{22, 9, 12, 12, width - 63}
+		writePeerRow(w, columns, "NAME", "STATUS", "ROLE", "BACKEND", "CIRCLE")
 		for _, raw := range peers {
 			p, _ := raw.(map[string]any)
-			writePeerRow(w, columns, peerName(p), peerField(p, "status"), peerField(p, "backend"), peerField(p, "circle")+peerOriginTag(p))
+			writePeerRow(w, columns, peerName(p), peerField(p, "status"), peerRole(p), peerField(p, "backend"), peerField(p, "circle")+peerOriginTag(p))
 		}
 		return
 	}
-	columns[4] += width - 88
-	writePeerRow(w, columns, "NAME", "STATUS", "BACKEND", "CIRCLE", "PROJECT / PATH")
+	columns[5] += width - 102
+	writePeerRow(w, columns, "NAME", "STATUS", "ROLE", "BACKEND", "CIRCLE", "PROJECT / PATH")
 	for _, raw := range peers {
 		p, _ := raw.(map[string]any)
 		location := strings.TrimSpace(peerProject(p) + "  " + peerField(p, "path") + peerOriginTag(p))
-		writePeerRow(w, columns, peerName(p), peerField(p, "status"), peerField(p, "backend"), peerField(p, "circle"), location)
+		writePeerRow(w, columns, peerName(p), peerField(p, "status"), peerRole(p), peerField(p, "backend"), peerField(p, "circle"), location)
 	}
 }
+
+// peerRole defaults to agent: the daemon fills the role on registration, so
+// an empty value only appears for pre-role records.
+func peerRole(p map[string]any) string { return first(peerField(p, "role"), "agent") }
 
 // peerAddressable reads the flattened provenance field; a peer that never
 // declared one is addressable.
