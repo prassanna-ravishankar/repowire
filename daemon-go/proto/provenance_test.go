@@ -1,6 +1,10 @@
 package proto
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 func TestProvenanceNormalizedTreatsZeroAsUnknownAddressable(t *testing.T) {
 	got := Provenance{}.Normalized()
@@ -39,5 +43,32 @@ func TestProvenanceInferSourceOnlyFillsUnknown(t *testing.T) {
 	child := Provenance{Source: SourceCodexAppServer, ParentRuntimeID: "p", Ephemeral: true, Addressable: false, AddressableReason: "x"}
 	if got := child.InferSource(map[string]any{"transport": "hook"}, true); got != child {
 		t.Fatalf("inference altered a classified peer: %+v", got)
+	}
+}
+
+func TestRequireAddressableIsInboundOnly(t *testing.T) {
+	child := &Peer{PeerID: "repow-1-child", DisplayName: "app-2-codex", Provenance: Provenance{Source: SourceCodexAppServer, ParentRuntimeID: "thread-parent", Addressable: false, AddressableReason: "subagent_direct_input_denied"}}
+	other := &Peer{PeerID: "repow-1-other", DisplayName: "app-codex", Provenance: Provenance{Source: SourceHook, Addressable: true}}
+	legacy := &Peer{PeerID: "repow-1-legacy", DisplayName: "old"} // zero provenance: addressable
+
+	err := RequireAddressable(other, child)
+	var na *NotAddressableError
+	if !errors.As(err, &na) || na.PeerID != child.PeerID || na.Reason != "subagent_direct_input_denied" || na.ParentRuntimeID != "thread-parent" {
+		t.Fatalf("inbound to child = %v", err)
+	}
+	if !strings.Contains(err.Error(), "peer_not_addressable") || !strings.Contains(err.Error(), "app-2-codex") {
+		t.Fatalf("error text = %q", err.Error())
+	}
+	if err := RequireAddressable(nil, child); err == nil {
+		t.Fatal("unknown sender must still be gated")
+	}
+	if err := RequireAddressable(child, other); err != nil {
+		t.Fatalf("child outbound blocked: %v", err)
+	}
+	if err := RequireAddressable(child, child); err != nil {
+		t.Fatalf("self-target blocked: %v", err)
+	}
+	if err := RequireAddressable(other, legacy); err != nil {
+		t.Fatalf("legacy peer gated: %v", err)
 	}
 }

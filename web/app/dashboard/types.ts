@@ -195,6 +195,7 @@ const LIFECYCLE_EVENT_TYPES: ReadonlySet<Event["type"]> = new Set([
   "peer_contradiction",
   "peer_reaped",
   "peer_updated",
+  "peer_not_addressable",
   "status_change",
 ]);
 
@@ -220,7 +221,8 @@ export interface Event {
     | "peer_status"
     | "peer_contradiction"
     | "peer_reaped"
-    | "peer_updated";
+    | "peer_updated"
+    | "peer_not_addressable";
   timestamp: string;
   from?: string;
   to?: string;
@@ -247,6 +249,9 @@ export interface Event {
   source?: string;
   addressable?: boolean;
   addressable_reason?: string;
+  // peer_not_addressable (demotion) fields
+  asks_closed?: number;
+  deliveries_dropped?: number;
   role?: "user" | "assistant";
   new_status?: "online" | "busy" | "offline";
   query_id?: string;

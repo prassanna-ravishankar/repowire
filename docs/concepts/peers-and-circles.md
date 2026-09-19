@@ -42,4 +42,6 @@ Backend says which runtime a peer is; provenance says how it reached the mesh an
 - `ephemeral`: the runtime does not persist the thread. Ephemeral threads can still accept input.
 - `addressable`: the runtime's own verdict on direct input (Codex publishes `canAcceptDirectInput`). Codex multi-agent v2 sub-agent threads are usually `false` with `addressable_reason=subagent_direct_input_denied`, but a sub-agent the runtime says accepts input stays addressable. Non-addressable is inbound-only: the peer can still ack, reply, and notify.
 
+Addressability is enforced, not just displayed: an ask or notify to a non-addressable peer is refused with `peer_not_addressable` before any tracker entry or queued delivery exists, broadcasts skip it, and a peer that loses addressability while live has its open inbound asks closed (askers are told) and its queued deliveries dropped. Outbound stays open: the peer can still ack, reply, notify, and broadcast.
+
 `list_peers` and `repowire peer list` show only peers someone can send work to by default: addressable, not `system`, and with a live parent if they have one. The dashboard shows the full inventory, nests sub-agents under their parent, and dims the hidden ones with a badge (`no input`, `system`, or the runtime nickname). A denial observed after registration demotes the peer; only a fresh runtime verdict restores it.

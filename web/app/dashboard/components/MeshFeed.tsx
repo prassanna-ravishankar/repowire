@@ -184,6 +184,11 @@ function lifecycleSummary(event: Event): { verb: string; detail?: string } {
       return { verb: "contradiction", detail: joined(event.severity, event.code, event.detail) };
     case "peer_updated":
       return { verb: "updated", detail: joined(event.source, event.addressable === false ? "no input" : undefined, event.addressable_reason) };
+    case "peer_not_addressable":
+      return {
+        verb: "no input",
+        detail: joined(event.reason, `${event.asks_closed ?? 0} ask(s) closed`, `${event.deliveries_dropped ?? 0} queued dropped`),
+      };
     default:
       return { verb: event.type };
   }

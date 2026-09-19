@@ -104,6 +104,23 @@ type AskTracker interface {
 	// ForgetPeer drops every ask involving this peer (bounds tracker memory by
 	// the live peer set). Returns count dropped.
 	ForgetPeer(id proto.PeerID) int
+
+	// CloseInboundForPeer closes every open ask addressed TO this peer with
+	// reason (waiters are cancelled with it) and returns what was closed so the
+	// registry can tell each asker. Used when a peer stops being addressable.
+	CloseInboundForPeer(id proto.PeerID, reason string) []ClosedAsk
+}
+
+// ClosedAsk identifies an ask the tracker closed on the registry's behalf.
+type ClosedAsk struct {
+	CorrelationID string
+	FromPeerID    proto.PeerID
+}
+
+// DeliveryQueue is the durable one-shot delivery store seam: work queued for a
+// peer that can no longer take input is dropped, never stranded.
+type DeliveryQueue interface {
+	DropDeliveriesForPeer(ctx context.Context, peerID proto.PeerID) (int, error)
 }
 
 // PeerDelivery is the notify seam for redelivering a stashed reply to a
@@ -143,6 +160,7 @@ const (
 type reconcileState struct {
 	asks        AskTracker
 	delivery    PeerDelivery
+	queue       DeliveryQueue
 	paneProbe   PaneProbe
 	experiments ExperimentsConfig
 
@@ -176,6 +194,10 @@ func (r *Registry) WithReconciliation(
 	r.rec.staleBusyTTL = staleBusyTTL
 	r.rec.evictMaxAge = evictMaxAge
 }
+
+// WithDeliveryQueue wires the durable delivery store so demotion can drop
+// queued work for a peer that can no longer take input. nil-safe.
+func (r *Registry) WithDeliveryQueue(q DeliveryQueue) { r.rec.queue = q }
 
 // ---------------------------------------------------------------------------
 // Contradiction helpers (transition-only dedup; parallel diagnostics.py).

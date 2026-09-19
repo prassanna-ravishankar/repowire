@@ -16,13 +16,14 @@ import (
 // Evict methods mutate under the lock (mirroring the real tracker's invariant
 // that the Ask is mutated only inside tracker locks).
 type fakeAsks struct {
-	mu        sync.Mutex
-	asks      map[string]*StashedAsk
-	closed    map[string]string // cid -> reason (MarkPendingReplyDelivered)
-	rebound   map[string]proto.PeerID
-	forgotten []proto.PeerID
-	evictedTo int
-	expired   map[string]bool // cids whose created_at < ttl cutoff
+	mu            sync.Mutex
+	asks          map[string]*StashedAsk
+	closed        map[string]string // cid -> reason (MarkPendingReplyDelivered)
+	rebound       map[string]proto.PeerID
+	forgotten     []proto.PeerID
+	evictedTo     int
+	closedInbound []ClosedAsk
+	expired       map[string]bool // cids whose created_at < ttl cutoff
 }
 
 func newFakeAsks() *fakeAsks {
@@ -50,6 +51,20 @@ func (f *fakeAsks) TakePendingRepliesForAsker(asker proto.PeerID) []StashedAsk {
 			out = append(out, *a)
 		}
 	}
+	return out
+}
+
+func (f *fakeAsks) CloseInboundForPeer(id proto.PeerID, reason string) []ClosedAsk {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []ClosedAsk
+	for cid, a := range f.asks {
+		if a.ToPeerID == id {
+			out = append(out, ClosedAsk{CorrelationID: cid, FromPeerID: a.FromPeerID})
+			delete(f.asks, cid)
+		}
+	}
+	f.closedInbound = append(f.closedInbound, out...)
 	return out
 }
 

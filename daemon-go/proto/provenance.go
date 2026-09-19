@@ -1,5 +1,7 @@
 package proto
 
+import "fmt"
+
 // PeerSource is how a peer reached the mesh. It is orthogonal to Backend
 // (which runtime) and to tmux placement (PaneID/TmuxSession).
 type PeerSource string
@@ -117,4 +119,37 @@ func (p Provenance) InferSource(metadata map[string]any, hookVersion bool) Prove
 		p.Source = SourceHook
 	}
 	return p
+}
+
+// NotAddressableError is the fail-loud refusal to route inbound work to a peer
+// whose runtime denies direct input. It carries what a caller needs to reroute
+// by hand: the peer, the runtime's reason, and the parent's runtime id (the hub
+// resolves parent_peer_id when the parent is registered).
+type NotAddressableError struct {
+	PeerID          PeerID
+	DisplayName     DisplayName
+	Reason          string
+	ParentRuntimeID string
+}
+
+func (e *NotAddressableError) Error() string {
+	reason := e.Reason
+	if reason == "" {
+		reason = "runtime denies direct input"
+	}
+	return fmt.Sprintf("peer_not_addressable: %s (%s) cannot receive direct input: %s", e.DisplayName, e.PeerID, reason)
+}
+
+// RequireAddressable is the single inbound gate: nil when to can take direct
+// input, or when from is to itself (non-addressable is inbound-only; a
+// sub-agent keeps outbound ack, reply, notify, and broadcast).
+func RequireAddressable(from, to *Peer) error {
+	if to == nil || to.Provenance.Normalized().Addressable {
+		return nil
+	}
+	if from != nil && from.PeerID == to.PeerID {
+		return nil
+	}
+	prov := to.Provenance.Normalized()
+	return &NotAddressableError{PeerID: to.PeerID, DisplayName: to.DisplayName, Reason: prov.AddressableReason, ParentRuntimeID: prov.ParentRuntimeID}
 }

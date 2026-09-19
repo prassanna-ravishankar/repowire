@@ -426,22 +426,9 @@ func peerToInfo(p *proto.Peer) PeerInfo {
 	}
 }
 
-// parentPeer maps a peer's parent_runtime_id to the registered peer whose
-// runtime_session_id matches. No registered parent → nil; never fabricated.
-func (h *Hub) parentPeer(p *proto.Peer) *proto.Peer {
-	if p.ParentRuntimeID == "" {
-		return nil
-	}
-	for _, candidate := range h.reg.GetAllPeers() {
-		if candidate.PeerID == p.PeerID {
-			continue
-		}
-		if rid := runtimeSessionIDFromMetadata(candidate.Metadata); rid != nil && *rid == p.ParentRuntimeID {
-			return candidate
-		}
-	}
-	return nil
-}
+// parentPeer delegates to the registry's resolution (shared with the 409
+// peer_not_addressable body and the demotion path).
+func (h *Hub) parentPeer(p *proto.Peer) *proto.Peer { return h.reg.ParentPeer(p) }
 
 func (h *Hub) parentPeerID(p *proto.Peer) *proto.PeerID {
 	if parent := h.parentPeer(p); parent != nil {
