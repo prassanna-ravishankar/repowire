@@ -650,6 +650,52 @@ func TestInstallCodexBridgePreservesLoadedBridge(t *testing.T) {
 	}
 }
 
+// A loaded bridge whose plist changed (here: a different program path, as
+// after an update) is reloaded: bootout, wait for the label to leave the
+// domain, bootstrap. launchd caches the old definition otherwise.
+func TestInstallCodexBridgeReloadsWhenDefinitionChanged(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd only")
+	}
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	agents := filepath.Join(homeDir, "Library", "LaunchAgents")
+	if err := os.MkdirAll(agents, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// print reports loaded until bootout has been seen.
+	launchctl := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/launchctl.calls\"\n" +
+		"case \"$1\" in bootout) touch \"$HOME/booted-out\";; print) [ ! -e \"$HOME/booted-out\" ] || exit 1;; esac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\necho --listen\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(agents, codexBridgeLabel()+".plist")
+	if err := os.WriteFile(stale, []byte("<plist>old program path</plist>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", binDir)
+	stubNativeCodexResolver(t, filepath.Join(binDir, "codex"))
+	if err := installCodexBridgeService(binDir, "C.UTF-8"); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ := os.ReadFile(filepath.Join(homeDir, "launchctl.calls"))
+	text := string(calls)
+	bootout, bootstrap := strings.Index(text, "bootout gui/"), strings.Index(text, "bootstrap gui/")
+	if bootout < 0 || bootstrap < 0 || bootstrap < bootout || !strings.Contains(text, codexBridgeLabel()+".plist") {
+		t.Fatalf("changed bridge definition was not reloaded in order: %s", text)
+	}
+	if written, _ := os.ReadFile(stale); strings.Contains(string(written), "old program path") {
+		t.Fatal("plist was not rewritten")
+	}
+}
+
 func TestInstallCodexBridgeBootstrapsWhenAbsent(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("launchd only")

@@ -943,11 +943,10 @@ func installService() error {
 			locale = "en_US.UTF-8"
 		}
 		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>serve</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string><key>LC_ALL</key><string>%s</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, serviceLabel(), executable(), html.EscapeString(pathValue), html.EscapeString(locale), logPath, logPath)
-		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
 		if err := os.WriteFile(path, []byte(plist), 0o600); err != nil {
 			return err
 		}
-		if err := exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run(); err != nil {
+		if err := reloadLaunchAgent(serviceLabel(), path); err != nil {
 			return err
 		}
 		if err := installCodexBridgeService(pathValue, locale); err != nil {
@@ -1036,11 +1035,10 @@ func installMobileService(name, pathValue, locale string) error {
 		path := filepath.Join(dir, mobileServiceLabel(name)+".plist")
 		logPath := home(".repowire", name+".log")
 		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>%s</string><string>start</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string><key>LC_ALL</key><string>%s</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, mobileServiceLabel(name), executable(), name, html.EscapeString(pathValue), html.EscapeString(locale), logPath, logPath)
-		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+mobileServiceLabel(name)).Run()
 		if err := os.WriteFile(path, []byte(plist), 0o600); err != nil {
 			return err
 		}
-		return exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
+		return reloadLaunchAgent(mobileServiceLabel(name), path)
 	}
 	unitName := "repowire-" + name + ".service"
 	unit := fmt.Sprintf("[Unit]\nDescription=Repowire %s peer\nAfter=repowire.service\nWants=repowire.service\n[Service]\nEnvironment=\"PATH=%s\"\nExecStart=%s %s start\nRestart=always\n[Install]\nWantedBy=default.target\n", name, pathValue, executable(), name)
@@ -1087,13 +1085,18 @@ func installCodexBridgeService(pathValue, locale string) error {
 		loaded := launchAgentLoaded(codexBridgeLabel())
 		logPath := home(".repowire", "codex-bridge.log")
 		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>codex-bridge</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string><key>LC_ALL</key><string>%s</string><key>REPOWIRE_CODEX_APP_SERVER_MANAGED</key><string>1</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, codexBridgeLabel(), executable(), html.EscapeString(pathValue), html.EscapeString(locale), logPath, logPath)
+		// A loaded bridge carries live Codex peers, so it is only bounced when
+		// its definition actually changed (for example a new binary path after
+		// an update); an unchanged or absent plist leaves it running.
+		previous, readErr := os.ReadFile(path)
+		unchanged := readErr != nil || string(previous) == plist
 		if err := os.WriteFile(path, []byte(plist), 0o600); err != nil {
 			return err
 		}
-		if loaded {
+		if loaded && unchanged {
 			return nil
 		}
-		return exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
+		return reloadLaunchAgent(codexBridgeLabel(), path)
 	}
 	unit := codexBridgeSystemdUnit(pathValue)
 	path := home(".config", "systemd", "user", "repowire-codex.service")
@@ -1181,6 +1184,30 @@ func resolveNativeCodex() (string, error) {
 
 func launchAgentLoaded(label string) bool {
 	return exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+label).Run() == nil
+}
+
+// reloadLaunchAgent (re)loads a LaunchAgent from a plist that may have just
+// been rewritten. Bootstrapping over an already-loaded label keeps launchd's
+// cached definition (a new program path never takes effect), and bootout is
+// asynchronous: a bootstrap issued right behind it fails with "5: Input/output
+// error". So: bootout, wait for the label to leave the domain, then bootstrap
+// with a few retries, surfacing launchctl's own message on final failure.
+func reloadLaunchAgent(label, path string) error {
+	domain := "gui/" + strconv.Itoa(os.Getuid())
+	_ = exec.Command("launchctl", "bootout", domain+"/"+label).Run()
+	for deadline := time.Now().Add(10 * time.Second); launchAgentLoaded(label) && time.Now().Before(deadline); {
+		time.Sleep(200 * time.Millisecond)
+	}
+	var err error
+	for attempt := 0; attempt < 10; attempt++ {
+		out, runErr := exec.Command("launchctl", "bootstrap", domain, path).CombinedOutput()
+		if runErr == nil {
+			return nil
+		}
+		err = fmt.Errorf("launchctl bootstrap %s: %w: %s", label, runErr, strings.TrimSpace(string(out)))
+		time.Sleep(500 * time.Millisecond)
+	}
+	return err
 }
 
 func systemdServiceActive(unit string) bool {
