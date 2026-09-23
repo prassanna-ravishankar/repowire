@@ -40,7 +40,7 @@ cd ../web && npm test -- --run && npm run build
 
 CI runs Go vet/race tests, web tests/build, release cross-compiles, and the relay image build (`.github/workflows/ci.yml`). Channel server deps: `cd daemon-go/cli/assets/channel && bun install`.
 
-**Release:** update `daemon-go/cli.Version`, commit, tag, push — CI publishes native GitHub Release archives from the tag, and `relay.yml` redeploys the relay/web on relevant changes.
+**Release:** update `daemon-go/cli.Version`, commit, tag, push — CI publishes native GitHub Release archives from the tag, then bumps the Homebrew tap formula (needs the `HOMEBREW_TAP_TOKEN` secret; see `docs/contributing/versioning.md`), and `relay.yml` redeploys the relay/web on relevant changes.
 ```bash
 git tag v0.X.Y && git push origin main --tags
 ```
