@@ -62,18 +62,18 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     steps:
-      - name: Require tap token
+      - name: Require tap deploy key
         env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
-          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
-            echo "::error::HOMEBREW_TAP_TOKEN secret is missing; the release is published but the Homebrew tap was not bumped." >&2
+          if [ -z "$HOMEBREW_TAP_DEPLOY_KEY" ]; then
+            echo "::error::HOMEBREW_TAP_DEPLOY_KEY secret is missing; the release is published but the Homebrew tap was not bumped." >&2
             exit 1
           fi
       - uses: actions/checkout@v5
         with:
           repository: prassanna-ravishankar/homebrew-repowire
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
       - name: Rewrite formula from release checksums
         env:
           SOURCE_REPO: ${{ github.repository }}
