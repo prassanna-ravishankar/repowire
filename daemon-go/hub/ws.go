@@ -336,7 +336,7 @@ func (h *Hub) flushQueuedDeliveries(ctx context.Context, conn *websocket.Conn, i
 	// Replay is inbound delivery, so it obeys the same gate as a fresh notify.
 	// Demotion drops the queue asynchronously; checking the live verdict here
 	// makes the replay safe whichever lands first, and drops what it finds.
-	if h.dropQueuedIfNotAddressable(ctx, id, "ws_replay") {
+	if h.replayGate(ctx, id, "ws_replay") {
 		return
 	}
 	pending, err := h.store.ListDeliveries(ctx, string(id), defaultQueueMax, time.Time{})
@@ -372,6 +372,12 @@ func (h *Hub) flushQueuedDeliveries(ctx context.Context, conn *websocket.Conn, i
 		if len(d.Attachments) > 0 {
 			frame["attachments"] = d.Attachments
 		}
+		// The batch is a snapshot; the verdict can change while it is being
+		// written. Re-check before every frame and stop on denial (the rest of
+		// the batch is dropped by the gate). A frame already in flight stands.
+		if h.replayGate(ctx, id, "ws_replay") {
+			return
+		}
 		writeCtx, cancel := context.WithTimeout(ctx, flushWriteTimeout)
 		err := wsjson.Write(writeCtx, conn, frame)
 		cancel()
@@ -384,6 +390,15 @@ func (h *Hub) flushQueuedDeliveries(ctx context.Context, conn *websocket.Conn, i
 			log.Printf("ws: flush-on-connect delete after replay to %s failed (%s): %v", id, d.DeliveryID, err)
 		}
 	}
+}
+
+// replayGate is dropQueuedIfNotAddressable unless a test installed an
+// override (to demote deterministically between two replay writes).
+func (h *Hub) replayGate(ctx context.Context, id proto.PeerID, via string) bool {
+	if h.replayGateOverride != nil {
+		return h.replayGateOverride(ctx, id, via)
+	}
+	return h.dropQueuedIfNotAddressable(ctx, id, via)
 }
 
 // dropQueuedIfNotAddressable reports whether id cannot take direct input and,

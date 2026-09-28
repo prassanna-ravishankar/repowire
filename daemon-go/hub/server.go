@@ -15,6 +15,7 @@ import (
 	"net/http"
 
 	"github.com/repowire/repowire/daemon-go/peer"
+	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
@@ -35,6 +36,8 @@ type Hub struct {
 	// WithReadDeps from main once the service.AskTracker / state.Store exist.
 	asks  *service.AskTracker
 	store *state.Store
+	// replayGateOverride, when set by a test, replaces replayGate.
+	replayGateOverride func(ctx context.Context, id proto.PeerID, via string) bool
 
 	// messaging is the optional /notify + /broadcast route group, wired via
 	// WithMessaging when the daemon has built a service.PeerDelivery. nil → those

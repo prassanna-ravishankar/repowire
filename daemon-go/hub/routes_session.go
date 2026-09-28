@@ -287,6 +287,13 @@ func (h *Hub) handleDeliveriesPending(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// The verdict can flip between the pre-check and the drain; the rows are
+	// already gone from the store, so a late denial reports them as dropped
+	// rather than handing them to a peer that cannot take input.
+	if target, terr := h.session.reg.GetPeerByName(string(resolved), nil); terr == nil && target != nil && proto.RequireAddressable(nil, target) != nil {
+		writeJSON(w, http.StatusOK, PendingDeliveriesResponse{Deliveries: []PendingDelivery{}, DroppedNotAddressable: len(drained), Reason: "peer_not_addressable"})
+		return
+	}
 	out := PendingDeliveriesResponse{Deliveries: make([]PendingDelivery, 0, len(drained))}
 	for _, d := range drained {
 		attachments := d.Attachments
