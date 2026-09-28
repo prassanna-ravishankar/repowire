@@ -574,32 +574,7 @@ func (r *Registry) evictStalePeers(ctx context.Context) int {
 	}
 	r.mu.RUnlock()
 
-	// Evidence must be exclusive: a pid that another registered peer also
-	// holds belongs to that peer's runtime, not to this record. Without this a
-	// displaced twin of a live peer is spared for as long as the live peer runs.
-	r.mu.RLock()
-	staleIDs := make(map[proto.PeerID]struct{}, len(stale))
-	for _, p := range stale {
-		staleIDs[p.PeerID] = struct{}{}
-	}
-	claimedPIDs := make(map[int]struct{})
-	for id, ps := range r.peers {
-		if _, isStale := staleIDs[id]; isStale || ps.peer.AgentPID == nil {
-			continue
-		}
-		claimedPIDs[*ps.peer.AgentPID] = struct{}{}
-	}
-	r.mu.RUnlock()
-	var probeable []*proto.Peer
-	for _, p := range stale {
-		if p.AgentPID != nil {
-			if _, taken := claimedPIDs[*p.AgentPID]; taken {
-				continue
-			}
-		}
-		probeable = append(probeable, p)
-	}
-	evidence := r.runtimeEvidenceIDs(probeable)
+	evidence := r.runtimeEvidenceIDs(r.exclusiveEvidenceCandidates(stale))
 
 	// Re-validate under the second lock (TOCTOU guard).
 	r.mu.Lock()
@@ -663,6 +638,53 @@ func (r *Registry) evictStalePeers(ctx context.Context) int {
 		log.Printf("spared %d long-offline peers with runtime evidence", len(spared))
 	}
 	return len(evicted)
+}
+
+// exclusiveEvidenceCandidates drops stale peers whose agent_pid another
+// registered record also holds. A pid belongs to one runtime: if any holder is
+// not itself stale, that holder owns the process and the stale record has no
+// evidence of its own (the displaced-twin case). When every holder is stale,
+// the most recently seen record keeps the pid so a live process does not lose
+// its role and description; the rest are duplicates and evict.
+func (r *Registry) exclusiveEvidenceCandidates(stale []*proto.Peer) []*proto.Peer {
+	staleByID := make(map[proto.PeerID]*proto.Peer, len(stale))
+	for _, p := range stale {
+		staleByID[p.PeerID] = p
+	}
+	r.mu.RLock()
+	holders := make(map[int][]*proto.Peer)
+	for _, ps := range r.peers {
+		if ps.peer.AgentPID != nil {
+			holders[*ps.peer.AgentPID] = append(holders[*ps.peer.AgentPID], ps.peer)
+		}
+	}
+	r.mu.RUnlock()
+	var out []*proto.Peer
+	for _, p := range stale {
+		if p.AgentPID != nil && !ownsPID(p, holders[*p.AgentPID], staleByID) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// ownsPID reports whether candidate is the rightful holder of its pid among
+// holders: no live (non-stale) holder exists, and it is the most recently seen
+// stale holder (ties broken by peer_id for determinism).
+func ownsPID(candidate *proto.Peer, holders []*proto.Peer, stale map[proto.PeerID]*proto.Peer) bool {
+	for _, h := range holders {
+		if h.PeerID == candidate.PeerID {
+			continue
+		}
+		if _, isStale := stale[h.PeerID]; !isStale {
+			return false
+		}
+		if lastSeenAfter(h, candidate) || (!lastSeenAfter(candidate, h) && h.PeerID < candidate.PeerID) {
+			return false
+		}
+	}
+	return true
 }
 
 // markSpared records a spare and reports whether it is a new transition.

@@ -1339,7 +1339,7 @@ func (r *Registry) reapDangling(ctx context.Context) {
 	}
 	r.mu.RUnlock()
 
-	evidence := r.runtimeEvidenceIDs(stale)
+	evidence := r.runtimeEvidenceIDs(r.exclusiveEvidenceCandidates(stale))
 
 	now := time.Now().UTC()
 	type reaped struct {
@@ -1384,7 +1384,12 @@ func (r *Registry) reapDangling(ctx context.Context) {
 	r.mu.Unlock()
 
 	for _, peer := range spared {
-		r.emitOfflineStillHasEvidence(ctx, peer, "offline_ttl_with_runtime_evidence", cutoff, r.reapTTL)
+		if rec.markSpared(peer.PeerID) {
+			r.emitOfflineStillHasEvidence(ctx, peer, "offline_ttl_with_runtime_evidence", cutoff, r.reapTTL)
+		}
+	}
+	for _, d := range done {
+		rec.clearSpared(d.id)
 	}
 
 	// Stash-loss ordering: snapshot -> emit -> close transport -> forget.

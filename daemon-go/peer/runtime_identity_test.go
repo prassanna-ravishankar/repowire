@@ -157,3 +157,47 @@ func TestEvictStalePeers_SharedPidIsNotEvidenceAndSpareReportsOnce(t *testing.T)
 		t.Fatalf("spare event must fire once per transition, got %d", n)
 	}
 }
+
+// Two stale ghosts sharing one pid with no live holder: the most recently seen
+// keeps the evidence, the duplicate evicts. Covers both the eviction and the
+// reap path, and the reap emitter also reports once.
+func TestExclusiveEvidence_DuplicateStaleHoldersKeepNewestOnly(t *testing.T) {
+	ctx := context.Background()
+	transport := &pingTransport{connected: map[proto.PeerID]bool{}, pongs: map[proto.PeerID][]map[string]any{}}
+	r, store := newRegistryWith(t, transport, fakeLive{alive: map[int]bool{}})
+	pid, otherPID := 4242, 1
+	paneA, paneB := "%a", "%b"
+	older, _, _ := r.AllocateAndRegister(ctx, AllocateParams{Circle: "c", Backend: proto.AgentClaudeCode, Path: ptr("/p/a"), Machine: "m", Role: proto.RoleAgent, PaneID: &paneA, AgentPID: &pid})
+	newer, _, _ := r.AllocateAndRegister(ctx, AllocateParams{Circle: "c", Backend: proto.AgentClaudeCode, Path: ptr("/p/b"), Machine: "m", Role: proto.RoleAgent, PaneID: &paneB, AgentPID: &otherPID})
+	r.mu.Lock()
+	r.peers[newer].peer.AgentPID = &pid // pre-fix fork left two records on one pid
+	r.mu.Unlock()
+
+	probe := fakeProbe{evidence: map[proto.PeerID]bool{older: true, newer: true}}
+	r.WithReconciliation(newFakeAsks(), &fakeDelivery{}, probe, ExperimentsConfig{}, 0, time.Nanosecond)
+	r.ConfigureDurations(0, time.Nanosecond)
+	for _, id := range []proto.PeerID{older, newer} {
+		if _, err := r.MarkOffline(ctx, id, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	twoHours, oneHour := time.Now().UTC().Add(-2*time.Hour), time.Now().UTC().Add(-time.Hour)
+	r.mu.Lock()
+	r.peers[older].peer.LastSeen = &twoHours
+	r.peers[newer].peer.LastSeen = &oneHour
+	r.mu.Unlock()
+
+	r.reapDangling(ctx)
+	if _, ok := r.GetPeer(older); ok {
+		t.Fatal("older duplicate holder must be reaped")
+	}
+	if _, ok := r.GetPeer(newer); !ok {
+		t.Fatal("most recently seen holder must keep the evidence and be spared")
+	}
+	r.reapDangling(ctx)
+	r.evictStalePeers(ctx)
+	r.reapDangling(ctx)
+	if n := len(eventsOfType(store, "offline_peer_still_has_runtime_evidence")); n != 1 {
+		t.Fatalf("spare must be reported once across reap and evict passes, got %d", n)
+	}
+}
