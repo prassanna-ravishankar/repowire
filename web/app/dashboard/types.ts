@@ -196,6 +196,7 @@ const LIFECYCLE_EVENT_TYPES: ReadonlySet<Event["type"]> = new Set([
   "peer_reaped",
   "peer_updated",
   "peer_not_addressable",
+  "offline_peer_still_has_runtime_evidence",
   "status_change",
 ]);
 
@@ -222,8 +223,10 @@ export interface Event {
     | "peer_contradiction"
     | "peer_reaped"
     | "peer_updated"
-    | "peer_not_addressable";
+    | "peer_not_addressable"
+    | "offline_peer_still_has_runtime_evidence";
   timestamp: string;
+  agent_pid?: number;
   from?: string;
   to?: string;
   from_peer_id?: string;
