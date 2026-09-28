@@ -169,6 +169,10 @@ type reconcileState struct {
 
 	paneStrikes map[proto.PeerID]int
 
+	// spared records offline peers already reported as spared-with-evidence so
+	// the event marks the transition, not every repair pass.
+	spared map[proto.PeerID]struct{}
+
 	contraMu      sync.Mutex
 	contraEmitted map[contraKey]struct{}
 }
@@ -570,7 +574,32 @@ func (r *Registry) evictStalePeers(ctx context.Context) int {
 	}
 	r.mu.RUnlock()
 
-	evidence := r.runtimeEvidenceIDs(stale)
+	// Evidence must be exclusive: a pid that another registered peer also
+	// holds belongs to that peer's runtime, not to this record. Without this a
+	// displaced twin of a live peer is spared for as long as the live peer runs.
+	r.mu.RLock()
+	staleIDs := make(map[proto.PeerID]struct{}, len(stale))
+	for _, p := range stale {
+		staleIDs[p.PeerID] = struct{}{}
+	}
+	claimedPIDs := make(map[int]struct{})
+	for id, ps := range r.peers {
+		if _, isStale := staleIDs[id]; isStale || ps.peer.AgentPID == nil {
+			continue
+		}
+		claimedPIDs[*ps.peer.AgentPID] = struct{}{}
+	}
+	r.mu.RUnlock()
+	var probeable []*proto.Peer
+	for _, p := range stale {
+		if p.AgentPID != nil {
+			if _, taken := claimedPIDs[*p.AgentPID]; taken {
+				continue
+			}
+		}
+		probeable = append(probeable, p)
+	}
+	evidence := r.runtimeEvidenceIDs(probeable)
 
 	// Re-validate under the second lock (TOCTOU guard).
 	r.mu.Lock()
@@ -599,7 +628,12 @@ func (r *Registry) evictStalePeers(ctx context.Context) int {
 	r.mu.Unlock()
 
 	for _, peer := range spared {
-		r.emitOfflineStillHasEvidence(ctx, peer, "stale_evict_with_runtime_evidence", cutoff, rec.evictMaxAge)
+		if rec.markSpared(peer.PeerID) {
+			r.emitOfflineStillHasEvidence(ctx, peer, "stale_evict_with_runtime_evidence", cutoff, rec.evictMaxAge)
+		}
+	}
+	for _, peer := range evicted {
+		rec.clearSpared(peer.PeerID)
 	}
 
 	// Stash-loss ordering: snapshot -> emit -> forget so observers see the loss
@@ -629,6 +663,27 @@ func (r *Registry) evictStalePeers(ctx context.Context) int {
 		log.Printf("spared %d long-offline peers with runtime evidence", len(spared))
 	}
 	return len(evicted)
+}
+
+// markSpared records a spare and reports whether it is a new transition.
+func (rec *reconcileState) markSpared(id proto.PeerID) bool {
+	rec.contraMu.Lock()
+	defer rec.contraMu.Unlock()
+	if rec.spared == nil {
+		rec.spared = make(map[proto.PeerID]struct{})
+	}
+	if _, seen := rec.spared[id]; seen {
+		return false
+	}
+	rec.spared[id] = struct{}{}
+	return true
+}
+
+// clearSpared forgets a spare so a later re-spare is reported again.
+func (rec *reconcileState) clearSpared(id proto.PeerID) {
+	rec.contraMu.Lock()
+	defer rec.contraMu.Unlock()
+	delete(rec.spared, id)
 }
 
 // emitAndEvictExpiredStashes is the single owner of TTL-loss emission: snapshot

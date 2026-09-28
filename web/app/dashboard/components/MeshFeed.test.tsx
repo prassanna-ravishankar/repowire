@@ -207,3 +207,26 @@ describe("MeshFeed", () => {
     expect(screen.queryByRole("button", { name: /unknown/i })).not.toBeInTheDocument();
   });
 });
+
+describe("MeshFeed lifecycle rows", () => {
+  beforeEach(() => {
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  it("renders a spared-with-evidence event as a lifecycle line, not an unknown message", () => {
+    const event = {
+      id: "event-spare",
+      type: "offline_peer_still_has_runtime_evidence",
+      timestamp: "2026-09-28T11:01:41Z",
+      peer_name: "oumi-techdd-claude-code",
+      agent_pid: 40036,
+    } as Event;
+
+    render(<MeshFeed events={[event]} peers={[PEER]} apiBase="http://daemon.test" onPickPeer={vi.fn()} />);
+
+    expect(screen.getByText(/spared/)).toBeInTheDocument();
+    expect(screen.getByText("oumi-techdd-claude-code")).toBeInTheDocument();
+    expect(screen.getByText(/pid 40036/)).toBeInTheDocument();
+    expect(screen.queryByText("unknown")).not.toBeInTheDocument();
+  });
+});
