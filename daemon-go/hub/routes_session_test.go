@@ -89,7 +89,15 @@ func (r *sessionFakeRegistry) UpdateMetadataByName(ctx context.Context, identifi
 type fakeDrainStore struct {
 	rows      []state.QueuedDelivery
 	drainedID string
+	droppedID string
 	drainErr  error
+}
+
+func (s *fakeDrainStore) DeleteDeliveriesForPeer(ctx context.Context, peerID string) (int, error) {
+	s.droppedID = peerID
+	n := len(s.rows)
+	s.rows = nil
+	return n, nil
 }
 
 func (s *fakeDrainStore) DrainDeliveries(ctx context.Context, peerID string, maxResults int, now time.Time) ([]state.QueuedDelivery, error) {
@@ -254,5 +262,34 @@ func TestDeliveriesPendingNilStoreEmpty(t *testing.T) {
 	}
 	if len(out.Deliveries) != 0 {
 		t.Fatalf("expected empty list for nil store, got %d", len(out.Deliveries))
+	}
+}
+
+// /deliveries/pending for a non-addressable peer hands out nothing: the queued
+// rows are dropped and the response says so.
+func TestDeliveriesPendingDropsForNonAddressablePeer(t *testing.T) {
+	child := peerWith("repow-1-child", "app-2-codex", "1", proto.StatusOnline)
+	child.Provenance = proto.Provenance{Source: proto.SourceCodexAppServer, Addressable: false, AddressableReason: "subagent_direct_input_denied"}
+	reg := newSessionFakeRegistry(child)
+	store := &fakeDrainStore{rows: []state.QueuedDelivery{{DeliveryID: "d-1", PeerID: "repow-1-child", Kind: state.DeliveryNotify, FromPeerName: "alpha", ToPeerName: "app-2-codex", Text: "late"}}}
+	srv := newSessionTestHub(t, reg, nil, store)
+
+	resp, err := http.Get(srv.URL + "/deliveries/pending?peer_id=repow-1-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var out PendingDeliveriesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Deliveries) != 0 || out.DroppedNotAddressable != 1 || out.Reason != "peer_not_addressable" {
+		t.Fatalf("response = %+v", out)
+	}
+	if store.droppedID != "repow-1-child" || store.drainedID != "" {
+		t.Fatalf("store: dropped=%q drained=%q", store.droppedID, store.drainedID)
 	}
 }

@@ -60,6 +60,9 @@ type sessionDeps struct {
 // connect path. *state.Store satisfies it via DrainDeliveries. nil → empty list.
 type queuedDrainStore interface {
 	DrainDeliveries(ctx context.Context, peerID string, maxResults int, now time.Time) ([]state.QueuedDelivery, error)
+	// DeleteDeliveriesForPeer drops everything queued for a peer that can no
+	// longer take direct input; the drain must never hand those out.
+	DeleteDeliveriesForPeer(ctx context.Context, peerID string) (int, error)
 }
 
 // WithSessionRoutes wires the session route group onto the hub. The concrete
@@ -207,6 +210,10 @@ type PendingDelivery struct {
 // PendingDeliveriesResponse mirrors asks.py PendingDeliveriesResponse.
 type PendingDeliveriesResponse struct {
 	Deliveries []PendingDelivery `json:"deliveries"`
+	// DroppedNotAddressable counts rows discarded because the peer cannot
+	// take direct input; Reason is "peer_not_addressable" when non-zero.
+	DroppedNotAddressable int    `json:"dropped_not_addressable,omitempty"`
+	Reason                string `json:"reason,omitempty"`
 }
 
 // handleDeliveriesPending drains the durable queued-delivery queue for one peer
@@ -264,6 +271,17 @@ func (h *Hub) handleDeliveriesPending(w http.ResponseWriter, r *http.Request) {
 		resolved = p.PeerID
 	}
 
+	// A drain is inbound delivery: a non-addressable peer gets nothing, and
+	// whatever was queued for it is dropped rather than left to strand.
+	if target, terr := h.session.reg.GetPeerByName(string(resolved), nil); terr == nil && target != nil && proto.RequireAddressable(nil, target) != nil {
+		dropped, derr := h.session.store.DeleteDeliveriesForPeer(r.Context(), string(resolved))
+		if derr != nil {
+			writeJSONError(w, http.StatusInternalServerError, derr.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, PendingDeliveriesResponse{Deliveries: []PendingDelivery{}, DroppedNotAddressable: dropped, Reason: "peer_not_addressable"})
+		return
+	}
 	drained, err := h.session.store.DrainDeliveries(r.Context(), string(resolved), maxResults, time.Time{})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
