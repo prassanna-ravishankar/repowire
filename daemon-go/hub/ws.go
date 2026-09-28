@@ -333,6 +333,12 @@ func (h *Hub) flushQueuedDeliveries(ctx context.Context, conn *websocket.Conn, i
 	// loses an owed delivery if the replay write then fails on a dropping socket.
 	// A row is removed only once its frame has been written. (Parity with the
 	// Python list_for_peer -> send -> delete split.)
+	// Replay is inbound delivery, so it obeys the same gate as a fresh notify.
+	// Demotion drops the queue asynchronously; checking the live verdict here
+	// makes the replay safe whichever lands first, and drops what it finds.
+	if h.replayGate(ctx, id, "ws_replay") {
+		return
+	}
 	pending, err := h.store.ListDeliveries(ctx, string(id), defaultQueueMax, time.Time{})
 	if err != nil {
 		log.Printf("ws: flush-on-connect list for %s failed: %v", id, err)
@@ -366,6 +372,12 @@ func (h *Hub) flushQueuedDeliveries(ctx context.Context, conn *websocket.Conn, i
 		if len(d.Attachments) > 0 {
 			frame["attachments"] = d.Attachments
 		}
+		// The batch is a snapshot; the verdict can change while it is being
+		// written. Re-check before every frame and stop on denial (the rest of
+		// the batch is dropped by the gate). A frame already in flight stands.
+		if h.replayGate(ctx, id, "ws_replay") {
+			return
+		}
 		writeCtx, cancel := context.WithTimeout(ctx, flushWriteTimeout)
 		err := wsjson.Write(writeCtx, conn, frame)
 		cancel()
@@ -378,6 +390,36 @@ func (h *Hub) flushQueuedDeliveries(ctx context.Context, conn *websocket.Conn, i
 			log.Printf("ws: flush-on-connect delete after replay to %s failed (%s): %v", id, d.DeliveryID, err)
 		}
 	}
+}
+
+// replayGate is dropQueuedIfNotAddressable unless a test installed an
+// override (to demote deterministically between two replay writes).
+func (h *Hub) replayGate(ctx context.Context, id proto.PeerID, via string) bool {
+	if h.replayGateOverride != nil {
+		return h.replayGateOverride(ctx, id, via)
+	}
+	return h.dropQueuedIfNotAddressable(ctx, id, via)
+}
+
+// dropQueuedIfNotAddressable reports whether id cannot take direct input and,
+// if so, deletes its queued deliveries instead of replaying them, recording
+// the drop as a peer_not_addressable event (fail loud, never strand).
+func (h *Hub) dropQueuedIfNotAddressable(ctx context.Context, id proto.PeerID, via string) bool {
+	p, ok := h.reg.GetPeer(id)
+	if !ok || proto.RequireAddressable(nil, p) == nil {
+		return false
+	}
+	n, err := h.store.DeleteDeliveriesForPeer(ctx, string(id))
+	if err != nil {
+		log.Printf("%s: drop queued deliveries for non-addressable %s failed: %v", via, id, err)
+	}
+	if n > 0 {
+		h.reg.AddEvent(ctx, "peer_not_addressable", map[string]any{
+			"peer_id": string(p.PeerID), "peer_name": string(p.DisplayName), "reason": p.AddressableReason,
+			"deliveries_dropped": n, "via": via,
+		})
+	}
+	return true
 }
 
 // dispatch routes one inbound frame to the right handler. Unknown / malformed
