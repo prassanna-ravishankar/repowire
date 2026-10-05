@@ -94,6 +94,78 @@ func TestRuntimeIdentity_SessionScopedBackendKeepsSessionsApart(t *testing.T) {
 	if err != nil || again != a {
 		t.Fatalf("same session must reconnect to its own peer: %v %s", err, again)
 	}
+	// A ws reconnect for session b carries the shared pid and its claimed id
+	// but no session metadata: it must land on b, never on a.
+	claimed := b
+	ws, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "c", Backend: proto.AgentOpenCode, Path: ptr("/p/x"), Machine: "m", Role: proto.RoleAgent,
+		AgentPID: &pid, ClaimedPeerID: &claimed,
+	})
+	if err != nil || ws != b {
+		t.Fatalf("session-less reconnect must defer to its claimed id: %v got %s want %s", err, ws, b)
+	}
+}
+
+// Session-scoped peers sharing one host process are distinct runtimes: when
+// both go stale with the process alive, both keep their evidence.
+func TestExclusiveEvidence_SessionScopedSiblingsBothSpared(t *testing.T) {
+	ctx := context.Background()
+	transport := &pingTransport{connected: map[proto.PeerID]bool{}, pongs: map[proto.PeerID][]map[string]any{}}
+	r, _ := newRegistryWith(t, transport, fakeLive{alive: map[int]bool{}})
+	pid := 9001
+	a, _, _ := r.AllocateAndRegister(ctx, AllocateParams{Circle: "c", Backend: proto.AgentOpenCode, Path: ptr("/p/x"), Machine: "m", Role: proto.RoleAgent, AgentPID: &pid, Metadata: map[string]any{"runtime_session_id": "s-a"}})
+	b, _, _ := r.AllocateAndRegister(ctx, AllocateParams{Circle: "c", Backend: proto.AgentOpenCode, Path: ptr("/p/x"), Machine: "m", Role: proto.RoleAgent, AgentPID: &pid, Metadata: map[string]any{"runtime_session_id": "s-b"}})
+	r.WithReconciliation(newFakeAsks(), &fakeDelivery{}, fakeProbe{evidence: map[proto.PeerID]bool{a: true, b: true}}, ExperimentsConfig{}, 0, time.Nanosecond)
+	r.ConfigureDurations(0, time.Nanosecond)
+	old := time.Now().UTC().Add(-time.Hour)
+	for _, id := range []proto.PeerID{a, b} {
+		_, _ = r.MarkOffline(ctx, id, false)
+		r.mu.Lock()
+		r.peers[id].peer.LastSeen = &old
+		r.mu.Unlock()
+	}
+	r.reapDangling(ctx)
+	if n := r.evictStalePeers(ctx); n != 0 {
+		t.Fatalf("evicted %d sibling sessions, want 0", n)
+	}
+	for _, id := range []proto.PeerID{a, b} {
+		if _, ok := r.GetPeer(id); !ok {
+			t.Fatalf("sibling session %s lost its evidence", id)
+		}
+	}
+}
+
+// A spared peer that goes fresh and later crosses the cutoff again is a new
+// transition and is reported again.
+func TestSpareEvent_ReportsAgainAfterPeerWentFresh(t *testing.T) {
+	ctx := context.Background()
+	transport := &pingTransport{connected: map[proto.PeerID]bool{}, pongs: map[proto.PeerID][]map[string]any{}}
+	r, store := newRegistryWith(t, transport, fakeLive{alive: map[int]bool{}})
+	pid, pane := 31337, "%z"
+	id, _, _ := r.AllocateAndRegister(ctx, AllocateParams{Circle: "c", Backend: proto.AgentClaudeCode, Path: ptr("/p/z"), Machine: "m", Role: proto.RoleAgent, PaneID: &pane, AgentPID: &pid})
+	// A 30-minute eviction age keeps "fresh" (now) and "stale" (an hour ago)
+	// unambiguous under the race detector's timing.
+	r.WithReconciliation(newFakeAsks(), &fakeDelivery{}, fakeProbe{evidence: map[proto.PeerID]bool{id: true}}, ExperimentsConfig{}, 0, 30*time.Minute)
+	_, _ = r.MarkOffline(ctx, id, false)
+	backdate := func() {
+		old := time.Now().UTC().Add(-time.Hour)
+		r.mu.Lock()
+		r.peers[id].peer.LastSeen = &old
+		r.mu.Unlock()
+	}
+	backdate()
+	r.evictStalePeers(ctx)
+	r.evictStalePeers(ctx)
+	now := time.Now().UTC()
+	r.mu.Lock()
+	r.peers[id].peer.LastSeen = &now // touched: fresh again, no longer stale
+	r.mu.Unlock()
+	r.evictStalePeers(ctx)
+	backdate()
+	r.evictStalePeers(ctx)
+	if n := len(eventsOfType(store, "offline_peer_still_has_runtime_evidence")); n != 2 {
+		t.Fatalf("expected two spare transitions, got %d", n)
+	}
 }
 
 // A different process in the same pane and path is a real newcomer.

@@ -693,8 +693,10 @@ func (r *Registry) liveRuntimeHolderLocked(params AllocateParams, claimPath stri
 			continue
 		}
 		if !processScopedBackends[params.Backend] {
-			existing := runtimeSessionID(p.Metadata)
-			if existing != "" && incomingSession != "" && existing != incomingSession {
+			// Session-scoped: the pid is shared by every session the bridge hosts,
+			// so only an exact session match identifies the runtime. A registration
+			// without a session id (ws reconnect) defers to its claimed peer_id.
+			if incomingSession == "" || runtimeSessionID(p.Metadata) != incomingSession {
 				continue
 			}
 		}
@@ -1339,6 +1341,7 @@ func (r *Registry) reapDangling(ctx context.Context) {
 	}
 	r.mu.RUnlock()
 
+	rec.forgetSparedExcept(stale)
 	evidence := r.runtimeEvidenceIDs(r.exclusiveEvidenceCandidates(stale))
 
 	now := time.Now().UTC()

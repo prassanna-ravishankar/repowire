@@ -2,6 +2,7 @@ package peer
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"path/filepath"
 	"sync"
@@ -574,6 +575,7 @@ func (r *Registry) evictStalePeers(ctx context.Context) int {
 	}
 	r.mu.RUnlock()
 
+	rec.forgetSparedExcept(stale)
 	evidence := r.runtimeEvidenceIDs(r.exclusiveEvidenceCandidates(stale))
 
 	// Re-validate under the second lock (TOCTOU guard).
@@ -640,28 +642,30 @@ func (r *Registry) evictStalePeers(ctx context.Context) int {
 	return len(evicted)
 }
 
-// exclusiveEvidenceCandidates drops stale peers whose agent_pid another
-// registered record also holds. A pid belongs to one runtime: if any holder is
+// exclusiveEvidenceCandidates drops stale peers whose runtime another
+// registered record also holds. A runtime belongs to one peer: if any holder is
 // not itself stale, that holder owns the process and the stale record has no
 // evidence of its own (the displaced-twin case). When every holder is stale,
-// the most recently seen record keeps the pid so a live process does not lose
-// its role and description; the rest are duplicates and evict.
+// the most recently seen record keeps it so a live process does not lose its
+// role and description; the rest are duplicates and evict. The runtime key is
+// the pid for process-scoped backends and pid+session for session-scoped
+// bridges, so distinct sessions sharing a host process never compete.
 func (r *Registry) exclusiveEvidenceCandidates(stale []*proto.Peer) []*proto.Peer {
 	staleByID := make(map[proto.PeerID]*proto.Peer, len(stale))
 	for _, p := range stale {
 		staleByID[p.PeerID] = p
 	}
 	r.mu.RLock()
-	holders := make(map[int][]*proto.Peer)
+	holders := make(map[string][]*proto.Peer)
 	for _, ps := range r.peers {
-		if ps.peer.AgentPID != nil {
-			holders[*ps.peer.AgentPID] = append(holders[*ps.peer.AgentPID], ps.peer)
+		if key := runtimeKey(ps.peer); key != "" {
+			holders[key] = append(holders[key], ps.peer)
 		}
 	}
 	r.mu.RUnlock()
 	var out []*proto.Peer
 	for _, p := range stale {
-		if p.AgentPID != nil && !ownsPID(p, holders[*p.AgentPID], staleByID) {
+		if key := runtimeKey(p); key != "" && !ownsRuntime(p, holders[key], staleByID) {
 			continue
 		}
 		out = append(out, p)
@@ -669,10 +673,29 @@ func (r *Registry) exclusiveEvidenceCandidates(stale []*proto.Peer) []*proto.Pee
 	return out
 }
 
-// ownsPID reports whether candidate is the rightful holder of its pid among
-// holders: no live (non-stale) holder exists, and it is the most recently seen
-// stale holder (ties broken by peer_id for determinism).
-func ownsPID(candidate *proto.Peer, holders []*proto.Peer, stale map[proto.PeerID]*proto.Peer) bool {
+// runtimeKey identifies the live runtime a peer record claims: machine + backend
+// + pid, plus the runtime session for session-scoped bridges. A session-scoped
+// record without a session id is keyed to itself and never competes. Empty
+// when the record carries no pid.
+func runtimeKey(p *proto.Peer) string {
+	if p.AgentPID == nil || *p.AgentPID <= 0 {
+		return ""
+	}
+	key := fmt.Sprintf("%s|%s|%d", p.Machine, p.Backend, *p.AgentPID)
+	if !processScopedBackends[p.Backend] {
+		session := runtimeSessionID(p.Metadata)
+		if session == "" {
+			session = "peer:" + string(p.PeerID)
+		}
+		key += "|" + session
+	}
+	return key
+}
+
+// ownsRuntime reports whether candidate is the rightful holder of its runtime
+// among holders: no live (non-stale) holder exists, and it is the most recently
+// seen stale holder (ties broken by peer_id for determinism).
+func ownsRuntime(candidate *proto.Peer, holders []*proto.Peer, stale map[proto.PeerID]*proto.Peer) bool {
 	for _, h := range holders {
 		if h.PeerID == candidate.PeerID {
 			continue
@@ -685,6 +708,23 @@ func ownsPID(candidate *proto.Peer, holders []*proto.Peer, stale map[proto.PeerI
 		}
 	}
 	return true
+}
+
+// forgetSparedExcept drops spare markers for peers no longer in the stale set,
+// so a peer that went fresh and later crosses the cutoff again is reported as a
+// new transition.
+func (rec *reconcileState) forgetSparedExcept(stale []*proto.Peer) {
+	rec.contraMu.Lock()
+	defer rec.contraMu.Unlock()
+	keep := make(map[proto.PeerID]struct{}, len(stale))
+	for _, p := range stale {
+		keep[p.PeerID] = struct{}{}
+	}
+	for id := range rec.spared {
+		if _, ok := keep[id]; !ok {
+			delete(rec.spared, id)
+		}
+	}
 }
 
 // markSpared records a spare and reports whether it is a new transition.
