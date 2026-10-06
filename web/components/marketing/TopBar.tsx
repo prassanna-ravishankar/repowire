@@ -1,19 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import Image from "next/image";
 import { Menu, X } from "lucide-react";
 import ThemeToggle from "./ThemeToggle";
 import GitHubMark from "./GitHubMark";
-import { RELAY_DASHBOARD_URL } from "./links";
-
-const GITHUB_URL = "https://github.com/prassanna-ravishankar/repowire";
+import { DOCS_URL, GITHUB_URL, RELAY_DASHBOARD_URL, RELEASES_URL } from "./links";
 
 const NAV_LINKS = [
-  { label: "Product", href: "#features" },
-  { label: "Docs", href: "https://docs.repowire.io" },
+  { label: "How it works", href: "#wire" },
+  { label: "Docs", href: DOCS_URL },
   { label: "Relay", href: RELAY_DASHBOARD_URL },
-  { label: "Changelog", href: "https://github.com/prassanna-ravishankar/repowire/releases" },
+  { label: "Changelog", href: RELEASES_URL },
 ];
 
 export default function TopBar() {
@@ -23,7 +20,7 @@ export default function TopBar() {
     <header className="topbar">
       <div className="topbar-inner">
         <a className="brand" href="#">
-          <Image src="/brand/logo-mark.svg" width={20} height={22} alt="" priority style={{ height: 22, width: "auto" }} />
+          <span className="brand-mark" aria-hidden />
           <span>Repowire</span>
         </a>
         <nav className="topnav">
@@ -36,7 +33,7 @@ export default function TopBar() {
           <a className="icon-btn" href={GITHUB_URL} target="_blank" rel="noreferrer" aria-label="GitHub">
             <GitHubMark size={16} />
           </a>
-          <a className="cta" href="#install">Get started</a>
+          <a className="cta" href="#install">Install</a>
           <button
             className="icon-btn mobile-toggle"
             aria-label={mobileOpen ? "Close menu" : "Open menu"}
@@ -59,7 +56,7 @@ export default function TopBar() {
             GitHub
           </a>
           <a className="mobile-menu-cta" href="#install" onClick={() => setMobileOpen(false)}>
-            Get started
+            Install
           </a>
         </div>
       )}

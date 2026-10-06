@@ -13,6 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@lucasmarkes/hairline": "^0.3.0",
     "@tailwindcss/typography": "^0.5.19",
     "clsx": "^2.1.1",
     "lucide-react": "^0.562.0",

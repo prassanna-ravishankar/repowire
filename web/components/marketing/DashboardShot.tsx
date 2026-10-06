@@ -2,22 +2,22 @@ import Image from "next/image";
 
 export default function DashboardShot() {
   return (
-    <section className="dashboard-shot">
-      <div className="section-head">
-        <span className="eyebrow">The dashboard</span>
-        <h2>See the whole mesh in your browser.</h2>
+    <section className="section dashboard-shot" id="dashboard">
+      <header className="section-head">
+        <p className="section-num">§ 8</p>
+        <h2>The whole mesh, in one tab.</h2>
         <p className="section-sub">
-          Tail every ask, ack, and notify in real time. Open a peer to read its turns, steer it, or
-          step in — from your desk or your phone.
+          Tail every ask, ack and notify as it happens. Open a peer to read its turns, steer it, or
+          step in, from your desk or your phone.
         </p>
-      </div>
-      <div className="shot-frame">
+      </header>
+      <figure className="shot">
         <div className="shot-chrome">
-          <div className="shot-dots">
+          <span className="shot-dots" aria-hidden>
             <span />
             <span />
             <span />
-          </div>
+          </span>
           <span className="shot-url">relay.repowire.io/dashboard</span>
         </div>
         <Image
@@ -28,7 +28,7 @@ export default function DashboardShot() {
           sizes="(max-width: 980px) 100vw, 1200px"
           className="shot-img"
         />
-      </div>
+      </figure>
     </section>
   );
 }

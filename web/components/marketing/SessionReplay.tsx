@@ -159,15 +159,16 @@ export default function SessionReplay() {
     .map(({ s, i }) => lineFor(s, i));
 
   return (
-    <section className="showcase" ref={rootRef}>
-      <div className="section-head">
-        <span className="eyebrow">The wire</span>
-        <h2>Watch two agents close a review loop.</h2>
+    <section className="section showcase" id="wire" ref={rootRef}>
+      <header className="section-head">
+        <p className="section-num">§ 1</p>
+        <h2>Ask, then ack.</h2>
         <p className="section-sub">
-          Claude asks, the wire carries it, Codex picks it up and acks back —
-          every hop visible, nothing copy-pasted between terminals.
+          Claude asks a Codex peer for a review. The question crosses the mesh, Codex reads the code
+          in its own checkout, and the answer comes back as an ack that closes the thread. Nothing
+          is copy-pasted between terminals.
         </p>
-      </div>
+      </header>
       <div
         className="replay-grid"
         role="group"
