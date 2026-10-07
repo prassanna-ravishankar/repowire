@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
 )
@@ -80,16 +79,8 @@ func TestDemotionFailsPendingInboundWorkLoudly(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			deadline := time.Now().Add(2 * time.Second)
-			for time.Now().Before(deadline) {
-				delivery.mu.Lock()
-				n := len(delivery.calls)
-				delivery.mu.Unlock()
-				if n > 0 && len(queue.dropped) > 0 {
-					break
-				}
-				time.Sleep(5 * time.Millisecond)
-			}
+			// The drop, asker notify, and event run on one tracked task, event last.
+			r.wg.Wait()
 			if len(asks.closedInbound) != 1 || asks.closedInbound[0].CorrelationID != "ask-in" {
 				t.Fatalf("closed inbound = %+v, want only ask-in", asks.closedInbound)
 			}
