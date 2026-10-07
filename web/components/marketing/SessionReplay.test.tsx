@@ -83,7 +83,7 @@ describe("SessionReplay", () => {
     });
     // Transcript cleared, codex pane back to idle.
     expect(container.textContent).not.toContain("tests green in 1.4s");
-    expect(container.textContent).toContain("● online — waiting on the wire");
+    expect(container.textContent).toContain("online, waiting on the wire");
 
     playAll();
     expect(container.textContent).toContain("tests green in 1.4s");
@@ -143,7 +143,7 @@ describe("SessionReplay", () => {
       });
       // Replay reset: transcript cleared, codex pane idle, prompt typing.
       expect(container.textContent).not.toContain("tests green in 1.4s");
-      expect(container.textContent).toContain("● online — waiting on the wire");
+      expect(container.textContent).toContain("online, waiting on the wire");
       playAll();
       expect(container.textContent).toContain("tests green in 1.4s");
     } finally {

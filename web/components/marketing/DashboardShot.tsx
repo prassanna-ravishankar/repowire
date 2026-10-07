@@ -4,7 +4,6 @@ export default function DashboardShot() {
   return (
     <section className="section dashboard-shot" id="dashboard">
       <header className="section-head">
-        <p className="section-num">§ 8</p>
         <h2>The whole mesh, in one tab.</h2>
         <p className="section-sub">
           Tail every ask, ack and notify as it happens. Open a peer to read its turns, steer it, or

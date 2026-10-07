@@ -13,7 +13,7 @@ const CHOICES = [
 ];
 
 /** The phone side of the mesh: an ask from an agent with inline answer buttons. Tap one to answer it. */
-export default function PhoneChat({ fig, caption }: { fig: string; caption: string }) {
+export default function PhoneChat({ caption }: { caption: string }) {
   const [choice, setChoice] = useState<(typeof CHOICES)[number] | null>(null);
   const [replied, setReplied] = useState(false);
 
@@ -23,10 +23,10 @@ export default function PhoneChat({ fig, caption }: { fig: string; caption: stri
     return () => clearTimeout(t);
   }, [choice]);
 
-  const read = !choice ? `ask #${CID} · open` : `answered · ${choice.id}`;
+  const read = !choice ? `ask #${CID} open` : `answered: ${choice.id}`;
 
   return (
-    <Plate fig={fig} read={read} caption={caption}>
+    <Plate read={read} caption={caption}>
       <div className="chat-stage">
         <div className="chat-screen" role="group" aria-label="A Repowire ask from an agent, shown in Telegram with answer buttons">
           <div className="chat-head">

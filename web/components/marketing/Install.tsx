@@ -29,7 +29,6 @@ export default function Install() {
   return (
     <section className="section install" id="install">
       <header className="section-head">
-        <p className="section-num">§ 9</p>
         <h2>Four steps to a mesh.</h2>
         <p className="section-sub">
           macOS or Linux. Tmux for the default Claude Code workflow. No Python, no account, no

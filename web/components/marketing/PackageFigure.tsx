@@ -9,11 +9,11 @@ const FIGURES = { branches: Branches, patch: Patch, slow: Slow };
 export type PackageFigureName = keyof typeof FIGURES;
 
 /** One of the @lucasmarkes/hairline figures, on a plate with its live read-out. */
-export default function PackageFigure({ name, fig, caption, label }: { name: PackageFigureName; fig: string; caption: string; label: string }) {
+export default function PackageFigure({ name, caption, label }: { name: PackageFigureName; caption: string; label: string }) {
   const [read, setRead] = useState("rest");
   const Figure = FIGURES[name];
   return (
-    <Plate fig={fig} read={read} caption={caption}>
+    <Plate read={read} caption={caption}>
       <Figure className="plate-stage" label={label} onRead={setRead} />
     </Plate>
   );

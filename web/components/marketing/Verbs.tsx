@@ -26,7 +26,6 @@ export default function Verbs() {
   return (
     <section className="section" id="verbs">
       <header className="section-head">
-        <p className="section-num">§ 2</p>
         <h2>Three verbs. That is the whole protocol.</h2>
         <p className="section-sub">
           You talk to your agent in plain language; it calls these as MCP tools. Every message has a
@@ -34,14 +33,13 @@ export default function Verbs() {
         </p>
       </header>
       <ol className="verbs">
-        {VERBS.map((v, i) => (
+        {VERBS.map((v) => (
           <li className="verb" key={v.name}>
-            <div className="verb-head">
-              <span className="verb-index">0{i + 1}</span>
-              <h3>{v.name}</h3>
+            <h3>{v.name}</h3>
+            <div className="verb-text">
+              <p className="verb-gist">{v.gist}</p>
+              <p className="verb-body">{v.body}</p>
             </div>
-            <p className="verb-gist">{v.gist}</p>
-            <p className="verb-body">{v.body}</p>
             <div className="verb-code">
               <code>{v.call}</code>
               <code className="verb-reply">{v.reply}</code>

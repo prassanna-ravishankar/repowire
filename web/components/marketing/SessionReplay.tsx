@@ -20,9 +20,9 @@ type Step = {
 const STEPS: Step[] = [
   { pane: "claude", kind: "prompt", text: "I just built the pricing card. Ask the codex peer to review it before I ship." },
   { pane: "claude", kind: "reply", text: "I'll ask @ui-codex over the mesh." },
-  { pane: "claude", kind: "tool", text: 'ask(peer: "ui-codex", query: "Review web/components/PricingCard.tsx — a11y, responsive layout, state handling")' },
+  { pane: "claude", kind: "tool", text: 'ask(peer: "ui-codex", query: "Review web/components/PricingCard.tsx: a11y, responsive layout, state handling")' },
   { pane: "claude", kind: "sent", text: "ask #c91f2b sent → @ui-codex", wire: "to-codex" },
-  { pane: "codex", kind: "recv-ask", text: "[ask #c91f2b from @site-claude] Review web/components/PricingCard.tsx — a11y, responsive layout, state handling", pause: 750 },
+  { pane: "codex", kind: "recv-ask", text: "[ask #c91f2b from @site-claude] Review web/components/PricingCard.tsx: a11y, responsive layout, state handling", pause: 750 },
   { pane: "codex", kind: "reply", text: "Reading the component, styles, and tests." },
   { pane: "codex", kind: "tool", text: "Read PricingCard.tsx · PricingCard.test.tsx · tokens.css" },
   { pane: "codex", kind: "reply", text: "Two issues: the CTA label wraps at 360px, and the loading state never sets aria-busy." },
@@ -43,7 +43,7 @@ const SEND_GAP_MS = 400;
  * Scripted replay of a real mesh exchange: Claude asks a Codex peer for a
  * review, the ask crosses the wire, Codex acks back. Server-renders the
  * finished transcript (the demo can never be blank without JS), then resets
- * and types itself out once it scrolls into view — unless the user prefers
+ * and types itself out once it scrolls into view, unless the user prefers
  * reduced motion.
  */
 export default function SessionReplay() {
@@ -161,7 +161,6 @@ export default function SessionReplay() {
   return (
     <section className="section showcase" id="wire" ref={rootRef}>
       <header className="section-head">
-        <p className="section-num">§ 1</p>
         <h2>Ask, then ack.</h2>
         <p className="section-sub">
           Claude asks a Codex peer for a review. The question crosses the mesh, Codex reads the code
@@ -175,7 +174,7 @@ export default function SessionReplay() {
         aria-label="Animated replay of two terminals: Claude asks a Codex peer to review a React component over the Repowire mesh, and Codex replies with an ack listing two fixes"
       >
         <Terminal
-          title="claude — @site-claude"
+          title="claude: @site-claude"
           lines={claudeLines}
           controls={
             <div className="replay-controls">
@@ -213,10 +212,10 @@ export default function SessionReplay() {
           <span className="replay-wire-label">repowire</span>
         </div>
         <Terminal
-          title="codex — @ui-codex"
+          title="codex: @ui-codex"
           lines={codexLines}
           idle={codexLines.length === 0}
-          footer={<div className="replay-status">connected · repowire daemon :8377</div>}
+          footer={<div className="replay-status">connected to the repowire daemon on :8377</div>}
         />
       </div>
     </section>
@@ -258,7 +257,7 @@ function Terminal({
       </div>
       <div className="replay-body">
         <div className="replay-lines">
-          {idle && <div className="replay-idle">● online — waiting on the wire</div>}
+          {idle && <div className="replay-idle">online, waiting on the wire</div>}
           {lines.map(({ step, text, cursor }, i) => {
             const { glyph, cls } = GLYPH[step.kind];
             return (
