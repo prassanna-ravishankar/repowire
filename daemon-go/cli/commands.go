@@ -215,6 +215,11 @@ func runPeer(argv []string) int {
 				body[key] = value
 			}
 		}
+		if body["message"] != nil {
+			if from, ferr := cliPeerIdentity(c); ferr == nil && from != "" {
+				body["from_peer"] = from // the opening message is sent from the spawner once the peer registers
+			}
+		}
 		result, err := c.request(http.MethodPost, "/spawn", body)
 		if err != nil {
 			return fatal(err)

@@ -179,6 +179,10 @@ type NotifyParams struct {
 	Circle       *string
 	Attachments  []map[string]any
 	DeliveryID   string
+	// SkipSeedGate marks the spawn seed itself: the first prompt that settles a
+	// pending_first_turn peer must not wait behind the gate meant to hold other
+	// traffic until that seed has landed.
+	SkipSeedGate bool
 }
 
 // DeliverAskParams are the inputs to DeliverAsk (the ask is ALREADY registered
@@ -226,7 +230,9 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 		fromID = &id
 	}
 
-	d.gateOnSeedSettled(ctx, target)
+	if !params.SkipSeedGate {
+		d.gateOnSeedSettled(ctx, target)
+	}
 	params.Text = addOrchestratorRecall(params.Text, string(fromName), peerIDString(fromID), target, d.recall)
 	fromSessionID := d.sessionIDForPeer(ctx, fromID)
 	toSessionID := d.sessionIDForPeer(ctx, &target.PeerID)

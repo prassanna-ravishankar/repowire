@@ -492,13 +492,16 @@ func TestRegisterKeepsFreshTmuxCircleWhenRestoringIdentity(t *testing.T) {
 	defer daemon.Close()
 	p := &threadPeer{
 		bridge: &Bridge{daemonHTTP: daemon.URL}, id: threadID, cwd: cwd,
-		circle: "new", circleSrc: "tmux", role: "agent", birthCert: cert,
+		circle: "new", circleSrc: "tmux", role: "agent", hintedPane: "%42", birthCert: cert,
 	}
 	if err := p.register(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if registered["circle"] != "new" || registered["circle_source"] != "tmux" {
 		t.Fatalf("registration placement = %#v", registered)
+	}
+	if registered["pane_id"] != "%42" {
+		t.Fatalf("registration pane_id = %#v, want %%42", registered["pane_id"])
 	}
 }
 

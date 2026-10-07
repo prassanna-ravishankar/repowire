@@ -462,12 +462,15 @@ func hintPath(path, backend string) string {
 // path+backend can recover its requested circle/role/peer_id (codex strips TMUX
 // env). Queue-append semantics match write_hint; best-effort (a write failure is
 // swallowed — the hint is a discovery convenience, not load-bearing identity).
-func writeHint(path, backend, circle string, role *string, peerID *proto.PeerID, pendingFirstTurn bool) {
+func writeHint(path, backend, circle, paneID string, role *string, peerID *proto.PeerID, pendingFirstTurn bool) {
 	payload := map[string]any{
 		"path":    NormPath(path),
 		"backend": backend,
 		"circle":  circle,
 		"ts":      float64(time.Now().UnixNano()) / 1e9,
+	}
+	if paneID != "" {
+		payload["pane_id"] = paneID
 	}
 	if role != nil && *role != "" {
 		payload["role"] = *role
@@ -570,7 +573,7 @@ func (realTmuxController) Spawn(cfg SpawnConfig) (SpawnResult, error) {
 		r := string(cfg.Role)
 		rolePtr = &r
 	}
-	writeHint(cfg.Path, string(cfg.Backend), cfg.Circle, rolePtr, cfg.PeerID, cfg.Message != nil)
+	writeHint(cfg.Path, string(cfg.Backend), cfg.Circle, paneID, rolePtr, cfg.PeerID, cfg.Message != nil)
 
 	command := commandWithEnv(cfg.Command, cfg.Env)
 	if err := tmuxStartCommand(paneID, command); err != nil {

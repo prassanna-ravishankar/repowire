@@ -484,6 +484,7 @@ func runDaemon() {
 		WithAskLifecycle(asks, delivery, reg).
 		WithSessionRoutes(reg, store).
 		WithSpawn(spawnService, reg, asks, selfMachine, cfg.Daemon.CircleBoundary).
+		WithSpawnContext(ctx).
 		WithWork(jobRunner, store, reg).
 		WithJobCompletion(jobCompletion).
 		WithSchedules(store, scheduler).

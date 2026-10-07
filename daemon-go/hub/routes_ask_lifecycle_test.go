@@ -30,6 +30,8 @@ func newAskFakeRegistry(peers ...*proto.Peer) *askFakeRegistry {
 }
 
 func (r *askFakeRegistry) GetPeerByPane(pane string) (*proto.Peer, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	p, ok := r.byPane[pane]
 	return p, ok
 }

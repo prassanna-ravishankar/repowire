@@ -19,8 +19,10 @@ package hub
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	clienthooks "github.com/repowire/repowire/daemon-go/hooks"
@@ -50,6 +52,7 @@ type spawnDeps struct {
 	asks        *service.AskTracker
 	selfMachine string
 	boundary    proto.CircleBoundary
+	ctx         context.Context
 }
 
 // WithSpawn attaches the spawn-kill-restart route group. svc owns tmux + ownership;
@@ -63,7 +66,15 @@ func (h *Hub) WithSpawn(svc *service.SpawnService, reg spawnRegistry, asks *serv
 	if svc != nil {
 		svc.WithCircleBoundary(boundary)
 	}
-	h.spawn = &spawnDeps{svc: svc, reg: reg, asks: asks, selfMachine: selfMachine, boundary: boundary}
+	h.spawn = &spawnDeps{svc: svc, reg: reg, asks: asks, selfMachine: selfMachine, boundary: boundary, ctx: context.Background()}
+	return h
+}
+
+// WithSpawnContext ties asynchronous spawn follow-up to the daemon lifetime.
+func (h *Hub) WithSpawnContext(ctx context.Context) *Hub {
+	if h.spawn != nil && ctx != nil {
+		h.spawn.ctx = ctx
+	}
 	return h
 }
 
@@ -157,6 +168,9 @@ type SpawnRequest struct {
 	Message    *string          `json:"message"`
 	Role       proto.PeerRole   `json:"role"`
 	SourcePane string           `json:"source_pane,omitempty"`
+	// FromPeer is the spawner's identity, used as the sender of the opening
+	// message once the new peer registers. Empty → the daemon's MCP identity.
+	FromPeer string `json:"from_peer,omitempty"`
 }
 
 // SpawnResponse mirrors spawn.py SpawnResponse.
@@ -167,6 +181,10 @@ type SpawnResponse struct {
 	PeerID            *string  `json:"peer_id"`
 	RegistrationState string   `json:"registration_state"`
 	Warnings          []string `json:"warnings"`
+	// SeedState reports what happened to the opening message: "" when none was
+	// given, "awaiting_registration" while the daemon waits for the new peer to
+	// register before notifying it, "undeliverable" when it cannot be sent.
+	SeedState string `json:"seed_state,omitempty"`
 }
 
 // Every supported runtime self-registers through its native integration.
@@ -321,7 +339,64 @@ func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, e
 				"so ask/notify delivery queues until the peer drains it with `repowire peer asks` / `repowire peer deliveries`.")
 	}
 
+	if req.Message != nil && strings.TrimSpace(*req.Message) != "" {
+		switch {
+		case h.ask == nil || h.ask.delivery == nil || h.ask.reg == nil:
+			resp.SeedState = "undeliverable"
+			resp.Warnings = append(resp.Warnings, "opening message not delivered: delivery service unavailable")
+		case result.PaneID == "":
+			resp.SeedState = "undeliverable"
+			resp.Warnings = append(resp.Warnings, "opening message not delivered: spawn returned no pane to await")
+		default:
+			resp.SeedState = "awaiting_registration"
+			from := firstNonempty(req.FromPeer, mcpDefaultIdentity)
+			go h.deliverSpawnSeed(h.spawn.ctx, result.PaneID, result.DisplayName, from, *req.Message)
+		}
+	}
+
 	return resp, nil
+}
+
+// spawnSeedTimeout bounds how long the daemon waits for a spawned peer to
+// register before giving up on its opening message. Generous for slow hosts
+// and Codex's late App Server registration.
+var spawnSeedTimeout = 90 * time.Second
+
+// deliverSpawnSeed is the spawn-with-message contract: create the process, wait
+// for it to register on its pane, then deliver the opening message as a normal
+// notify from the spawner. The seed bypasses the first-turn gate (it is the
+// seed); everything else for that peer still waits behind it. Outcomes are
+// journaled so a lost opening prompt is visible instead of silent.
+func (h *Hub) deliverSpawnSeed(ctx context.Context, paneID, displayName, from, text string) {
+	timeout := spawnSeedTimeout
+	deadline := time.Now().Add(timeout)
+	for {
+		if p, ok := h.ask.reg.GetPeerByPane(paneID); ok && p.Status != proto.StatusOffline {
+			res, err := h.ask.delivery.Notify(ctx, service.NotifyParams{
+				FromPeer: from, ToPeer: string(p.PeerID), Text: text, BypassCircle: true, SkipSeedGate: true,
+			})
+			payload := map[string]any{"pane_id": paneID, "peer_id": string(p.PeerID), "peer_name": string(p.DisplayName), "from_peer": from}
+			if err != nil {
+				payload["error"] = err.Error()
+				log.Printf("spawn: opening message for %s (%s) failed: %v", p.DisplayName, p.PeerID, err)
+				h.ask.reg.AddEvent(ctx, "spawn_seed_failed", payload)
+				return
+			}
+			payload["delivery_state"] = res.DeliveryState
+			h.ask.reg.AddEvent(ctx, "spawn_seed_delivered", payload)
+			return
+		}
+		if time.Now().After(deadline) {
+			log.Printf("spawn: %s never registered on pane %s within %s; opening message dropped", displayName, paneID, timeout)
+			h.ask.reg.AddEvent(ctx, "spawn_seed_failed", map[string]any{"pane_id": paneID, "display_name": displayName, "from_peer": from, "error": "peer did not register before timeout"})
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 }
 
 // turnStateRegistry is the optional seam for seeding pending_first_turn after a

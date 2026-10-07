@@ -64,6 +64,10 @@ func TestTmuxCircleFromOutput(t *testing.T) {
 func TestOrchestratorStartOnlyIncludesSourcePaneForCurrentCircle(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/peers/by-pane/%42" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "repow-mesh-spawner"})
+			return
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/spawn" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
@@ -118,6 +122,12 @@ func TestOrchestratorStartOnlyIncludesSourcePaneForCurrentCircle(t *testing.T) {
 	}
 	if got := body["source_pane"]; got != "%42" {
 		t.Fatalf("peer new source_pane = %#v, want %%42", got)
+	}
+	if code := Run([]string{"peer", "new", home, "--circle", "mesh", "-m", "review this"}); code != 0 {
+		t.Fatalf("peer new with message exited %d", code)
+	}
+	if got := body["from_peer"]; got != "repow-mesh-spawner" {
+		t.Fatalf("peer new from_peer = %#v, want registered peer id", got)
 	}
 	if code := Run([]string{"peer", "new", home, "--circle", "other"}); code != 0 {
 		t.Fatalf("cross-circle peer new exited %d", code)

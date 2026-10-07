@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -11,6 +12,22 @@ import (
 
 	"github.com/repowire/repowire/daemon-go/proto"
 )
+
+func TestWriteHintIncludesSpawnedPane(t *testing.T) {
+	t.Setenv("REPOWIRE_CACHE_DIR", t.TempDir())
+	writeHint("/work/repo", "codex", "mesh", "%42", nil, nil, true)
+	raw, err := os.ReadFile(hintPath("/work/repo", "codex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hints []map[string]any
+	if err := json.Unmarshal(raw, &hints); err != nil {
+		t.Fatal(err)
+	}
+	if len(hints) != 1 || hints[0]["pane_id"] != "%42" {
+		t.Fatalf("spawn hints = %#v, want pane_id %%42", hints)
+	}
+}
 
 func TestWindowSplitArgs(t *testing.T) {
 	got := windowSplitArgs("%42", "/work/project")
