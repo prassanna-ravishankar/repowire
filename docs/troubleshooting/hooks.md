@@ -36,8 +36,13 @@ Current Codex releases use App Server for registration, lifecycle, chat, and
 delivery. They retain only a reminder-only Stop hook so unacknowledged asks
 resurface after a turn. Check `repowire service status`,
 `~/.repowire/codex-bridge.log`, and the `Stop` entry in
-`~/.codex/hooks.json`. Older Codex releases without `app-server --listen` retain
-the full hooks transport.
+`~/.codex/hooks.json`. Codex releases without `daemon_auto_start` (before 0.158)
+retain the full hooks transport.
+
+If Codex reports "Background server has incompatible feature settings", the
+shared App Server is older than the Codex CLI. Re-run `repowire setup` if it
+still lists the `io.repowire.codex-app-server` LaunchAgent; otherwise choose
+"Restart" in the prompt or run `codex app-server daemon restart`.
 
 ### OpenCode
 

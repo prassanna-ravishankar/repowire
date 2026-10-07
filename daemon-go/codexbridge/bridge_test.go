@@ -3,14 +3,13 @@ package codexbridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -221,45 +220,6 @@ func TestTurnCompletedBackfillsItemsWithoutDuplicates(t *testing.T) {
 	if matches, _ := filepath.Glob(filepath.Join(os.Getenv("HOME"), ".cache", "repowire", "handoffs", "*.json")); len(matches) != 1 {
 		t.Fatalf("handoff files = %v", matches)
 	}
-}
-
-func TestConfiguredProviderEnvKeys(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("CODEX_HOME", home)
-	config := "model_provider = \"azure\"\n[model_providers.azure]\nenv_key = \"AZURE_TEST_KEY\"\n[model_providers.other]\nenv_key='OTHER_KEY'\n"
-	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(configuredProviderEnvKeys(), ","); got != "AZURE_TEST_KEY,OTHER_KEY" {
-		t.Fatalf("provider env keys = %q", got)
-	}
-	t.Setenv("AZURE_TEST_KEY", "present")
-	t.Setenv("OTHER_KEY", "present-too")
-	env := codexChildEnvironment(context.Background())
-	if !containsEnv(env, "AZURE_TEST_KEY=present") {
-		t.Fatal("existing provider key was not preserved")
-	}
-}
-
-func TestManagedAppServerNeverFallsBackToChildProcess(t *testing.T) {
-	t.Setenv("CODEX_HOME", t.TempDir())
-	t.Setenv("REPOWIRE_CODEX_APP_SERVER_MANAGED", "1")
-	conn, child, err := ensureAppServer(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "managed Codex App Server") {
-		t.Fatalf("ensureAppServer error = %v", err)
-	}
-	if conn != nil || child != nil {
-		t.Fatalf("managed connection unexpectedly returned conn=%v child=%v", conn, child)
-	}
-}
-
-func containsEnv(env []string, value string) bool {
-	for _, item := range env {
-		if item == value {
-			return true
-		}
-	}
-	return false
 }
 
 func TestMeshContextUsesHistoryInjectionOnce(t *testing.T) {
@@ -557,7 +517,7 @@ func TestRegisterRetiredClaimFallsBackToBirthCertificate(t *testing.T) {
 	}
 }
 
-func TestAppServerReadFailureReconnectsWithoutStoppingOwnedServer(t *testing.T) {
+func TestBridgeWaitsForSharedAppServerAndReconnects(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	connections := make(chan int32, 2)
 	var accepted atomic.Int32
@@ -588,18 +548,13 @@ func TestAppServerReadFailureReconnectsWithoutStoppingOwnedServer(t *testing.T) 
 	}))
 	defer appServer.Close()
 
-	child := exec.Command("sleep", "30")
-	if err := child.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer child.Process.Kill()
 	var connects atomic.Int32
-	connect := func(ctx context.Context) (*websocket.Conn, *exec.Cmd, error) {
-		conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(appServer.URL, "http"), nil)
+	connect := func(ctx context.Context) (*websocket.Conn, error) {
 		if connects.Add(1) == 1 {
-			return conn, child, err
+			return nil, errors.New("no shared App Server yet")
 		}
-		return conn, nil, err
+		conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(appServer.URL, "http"), nil)
+		return conn, err
 	}
 	b := &Bridge{ctx: ctx, version: "test", pending: map[int64]chan rpcReply{}, threads: map[string]*threadPeer{}}
 	done := make(chan error, 1)
@@ -611,9 +566,6 @@ func TestAppServerReadFailureReconnectsWithoutStoppingOwnedServer(t *testing.T) 
 			t.Fatal("bridge did not reconnect")
 		}
 	}
-	if err := child.Process.Signal(syscall.Signal(0)); err != nil {
-		t.Fatalf("bridge failure stopped owned App Server: %v", err)
-	}
 	cancel()
 	select {
 	case err := <-done:
@@ -622,12 +574,5 @@ func TestAppServerReadFailureReconnectsWithoutStoppingOwnedServer(t *testing.T) 
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("bridge did not stop")
-	}
-	waited := make(chan error, 1)
-	go func() { waited <- child.Wait() }()
-	select {
-	case <-waited:
-	case <-time.After(2 * time.Second):
-		t.Fatal("intentional shutdown did not stop owned App Server")
 	}
 }

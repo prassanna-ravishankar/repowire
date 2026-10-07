@@ -8,7 +8,7 @@ as the message transport.
 
 | Surface | Purpose |
 | --- | --- |
-| `repowire-codex` user service | Runs the local Codex App Server and thread bridge |
+| `repowire-codex` user service | Runs the thread bridge, which attaches to Codex's shared App Server |
 | `~/.codex/config.toml` | Installs the Repowire MCP tools |
 | `~/.codex/hooks.json` | A reminder-only Stop hook keeps unacknowledged asks visible |
 
@@ -35,13 +35,19 @@ approval_mode = "approve"
 Setup pre-approves the ask-resolution tools so a non-interactive approval
 policy cannot leave the Stop hook permanently blocked on an ask it cannot close.
 
-Older Codex releases without `app-server --listen` retain the hooks transport.
+Codex releases without `daemon_auto_start` (before 0.158, or with the feature
+disabled) retain the hooks transport.
 
 ## Registration and delivery
 
-`repowire setup` installs an independently supervised Codex companion. It starts
-`codex app-server --listen unix://`; plain `codex`, `codex resume`, and the normal
-TUI automatically use that local control socket.
+Codex owns its App Server. Since 0.158 every Codex TUI starts a shared
+background server if none is running (`daemon_auto_start`) and attaches to it,
+and Codex restarts that server across its own upgrades. `repowire setup`
+installs only the bridge, which attaches to the same control socket
+(`$CODEX_HOME/app-server-control/app-server-control.sock`) and waits while no
+server is running. Sessions started with `codex --no-daemon`, or that choose
+"Run without daemon" at startup, use a private embedded server and stay off the
+mesh.
 
 A thread registers as soon as Codex creates it, before its first user prompt.
 There is no warmup prompt or `UserPromptSubmit` one-turn delay. Repowire sends an
@@ -92,17 +98,11 @@ the latest completed turn as handoff context. Registration metadata includes
 branch and git status, plus tmux diagnostics only when exactly one matching
 Codex pane can be identified; ambiguous cwd matches are deliberately omitted.
 
-The App Server companion is separate from the Repowire daemon. `repowire service
-restart` restarts routing without killing Codex threads. On macOS, restarting
-the bridge also preserves the independent App Server. `repowire service stop`
-or `uninstall` stops both services.
-
-On macOS the independent App Server uses Codex's stored login. Custom model
-providers that rely on an `env_key` must expose that variable to the launchd
-user domain (for example with `launchctl setenv KEY VALUE` before service
-installation); Repowire does not copy secrets into its plist. The legacy
-bridge-owned fallback on other platforms still takes a bounded login-shell
-snapshot and forwards only provider variables named in Codex config.
+The bridge is separate from the Repowire daemon, and neither owns the App
+Server. `repowire service restart`, `restart bridge`, `stop`, and `uninstall`
+never stop Codex threads. The App Server runs with the environment of the Codex
+TUI that started it, so custom model providers that rely on an `env_key` work
+as they do in plain Codex.
 
 ## Verifying
 
@@ -116,14 +116,24 @@ repowire peer list
 The Codex peer should already be listed. Its metadata reports
 `transport=codex-app-server`, and its TUI remains interactive.
 
-### macOS process ownership
+### Process ownership
 
-Repowire setup installs the official signed native Codex App Server as the user LaunchAgent `io.repowire.codex-app-server`. The Repowire bridge is a separate client of its Unix socket, not its parent. This matters for macOS privacy controls: tools launched by Codex are attributed to Codex instead of to the Repowire executable. Routine Repowire daemon and bridge restarts preserve the App Server and its live threads. Existing installations have one unavoidable process restart when they first migrate to this layout.
+The App Server is started by Codex from your terminal, so macOS attributes
+privacy prompts for Codex's tools to the terminal, exactly as in plain Codex.
+Repowire never launches it.
+
+Releases before this change ran their own App Server as the LaunchAgent
+`io.repowire.codex-app-server`. Codex did not manage or upgrade that server, so
+after a Codex upgrade new TUIs reported "Background server has incompatible
+feature settings". Setup now removes that LaunchAgent and runs
+`codex app-server daemon start`; open Codex TUIs reconnect to the new server
+with their conversations intact.
 
 ## Troubleshooting
 
 - Codex peer never registers → run `repowire service status`, then inspect
-  `~/.repowire/codex-bridge.log` and `~/.repowire/codex-app-server.log`.
+  `~/.repowire/codex-bridge.log`. `codex app-server daemon version` shows
+  whether Codex's shared server is running and which version it serves.
 - Codex joins `default` instead of a tmux circle → more than one Codex tmux
   circle matched the same working directory, or none did. Spawn it through
   Repowire for an explicit circle.

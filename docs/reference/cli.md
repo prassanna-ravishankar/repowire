@@ -64,15 +64,18 @@ repowire service uninstall
 ```
 
 Manage the installed user services. `install` writes and starts the daemon and,
-when supported, the Codex App Server and its independent Repowire bridge.
+when Codex auto-starts its shared App Server, the Repowire Codex bridge.
 `start` starts installed services. `restart` defaults to the routing daemon;
 `restart bridge` replaces the adapter; and `restart all` replaces both daemon
-and adapter. On macOS all three preserve the separately owned Codex App Server
-and live Codex threads. `status` reports installed services. `stop` through
+and adapter. None of them touch Codex's App Server or live Codex threads. `status` reports installed services. `stop` through
 `repowire daemon stop` and `uninstall` stop every service. Prefer these commands
 over raw `launchctl` or `systemctl` unless troubleshooting the service manager.
 
-On macOS, `service install` also installs `io.repowire.codex-app-server` when an official signed native Codex App Server is available. The LaunchAgent executes Codex directly; the separate `io.repowire.codex-bridge` process only attaches to its Unix socket. `restart daemon`, `restart bridge`, and `restart all` preserve the App Server and live Codex threads. The first migration from a bridge-owned App Server requires a one-time Codex process restart.
+Codex owns its App Server: every Codex TUI starts the shared server when none is
+running, and `io.repowire.codex-bridge` only attaches to its Unix socket. On
+macOS, `service install` removes the `io.repowire.codex-app-server` LaunchAgent
+that earlier releases installed and starts Codex's own server so open Codex
+sessions reconnect.
 
 Generated service environments keep normal executable search paths but omit
 protected user folders (`Desktop`, `Documents`, `Downloads`, `Movies`, `Music`,
@@ -404,8 +407,8 @@ repowire update
 Upgrade through Homebrew when Repowire is Homebrew-managed; otherwise download
 and install the latest checksum-verified native release. Then re-run
 non-interactive setup. SQLite state migrations run when the daemon restarts;
-the updater preserves an already-running Codex bridge/App Server so active Codex
-sessions survive. Verify with `repowire doctor`.
+the updater preserves an already-running Codex bridge, and Codex's App Server
+is never restarted by Repowire, so active Codex sessions survive. Verify with `repowire doctor`.
 
 `repowire update` is the only command that upgrades the installed binary.
 Hooks, MCP calls, daemon routing, `status`, and `doctor` never auto-update

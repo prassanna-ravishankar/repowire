@@ -233,7 +233,7 @@ repowire update                        # explicit package upgrade + hook reinsta
 repowire status                        # show installed components and daemon status
 repowire doctor                        # run diagnostics
 repowire service restart               # restart daemon; preserve Codex sessions
-repowire service restart bridge        # macOS: restart adapter; preserve Codex App Server
+repowire service restart bridge        # restart the Codex adapter; Codex sessions keep running
 repowire peer list                     # list mesh peers
 repowire peer new PATH [--profile P]   # spawn a peer in tmux
 repowire schedule self 10m "check CI"  # wake this peer later
@@ -283,7 +283,7 @@ relay:
   api_key: "rw_..."
 ```
 
-Update checks are off by default. If enabled with `repowire setup --update-checks`, `repowire status` and `repowire doctor` may report that a newer release is available, but they do not rewrite hooks or restart services. Use `repowire update` when you want to upgrade explicitly; Homebrew installs delegate that command to `brew upgrade`. Updates restart the routing daemon but preserve a live Codex bridge and its App Server, so active Codex sessions remain running.
+Update checks are off by default. If enabled with `repowire setup --update-checks`, `repowire status` and `repowire doctor` may report that a newer release is available, but they do not rewrite hooks or restart services. Use `repowire update` when you want to upgrade explicitly; Homebrew installs delegate that command to `brew upgrade`. Updates restart the routing daemon but preserve a live Codex bridge, and never restart Codex's App Server, so active Codex sessions remain running.
 
 Security defaults:
 
@@ -317,7 +317,7 @@ changes, then restart the daemon service:
 
 If service management fails, use `repowire service status` first. Raw `launchctl` on macOS or `systemctl --user` on Linux are fallback troubleshooting tools.
 
-On macOS, setup runs the signed native Codex App Server as its own user LaunchAgent and has the Repowire bridge attach over its Unix socket. This keeps Codex and its tools out of Repowire's process tree, so macOS attributes privacy prompts to the process that actually requested access. Daemon and bridge updates leave that App Server—and its live threads—running. Upgrading an older installation performs one initial App Server handoff, which interrupts existing Codex processes once.
+Codex (0.158+) starts and upgrades its own shared App Server; the Repowire bridge only attaches to its Unix socket. Repowire never launches Codex, so macOS attributes privacy prompts for Codex's tools to your terminal. Setup removes the App Server LaunchAgent that earlier releases installed; open Codex sessions reconnect to Codex's server with their conversations intact.
 
 ## References
 
