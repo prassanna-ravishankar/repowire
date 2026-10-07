@@ -79,3 +79,15 @@ clients use it to drop a registration before reconnecting the same session.
 
 - [CLI](cli.md)
 - [Operations: architecture](../operate/architecture.md)
+
+## Pull-delivery asks
+
+`POST /ask` accepts optional `reply_delivery: "pull"` (default `"push"`). Pull
+mode is set before delivery so an immediate recipient reply is retained for
+`POST /asks/{correlation_id}/wait`. Callers without a registered peer may list
+their outstanding asks with `GET /asks/pending?peer_id=<sender>&direction=outbound`.
+The wait endpoint still requires the original sender identity.
+`GET /health` advertises `capabilities.ask_pull_delivery` when ask handling is wired.
+
+The hosted relay has a separate [OAuth-authenticated MCP surface](relay-mcp.md);
+it does not tunnel the daemon's administrative `/mcp` endpoint.

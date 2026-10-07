@@ -1,0 +1,11 @@
+{
+  "name": "repowire-remote",
+  "version": "0.1.0",
+  "description": "Talk to your local coding agents through the Repowire relay. Discover agents, delegate work, and retrieve replies.",
+  "author": {
+    "name": "Repowire"
+  },
+  "homepage": "https://github.com/prassanna-ravishankar/repowire",
+  "repository": "https://github.com/prassanna-ravishankar/repowire",
+  "license": "MIT"
+}

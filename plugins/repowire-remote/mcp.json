@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "repowire-remote": {
+      "type": "streamable-http",
+      "url": "https://relay.repowire.io/mcp"
+    }
+  }
+}

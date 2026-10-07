@@ -82,3 +82,7 @@ skills:
 - [Cross-agent review workflow](../workflows/cross-agent-review.md)
 - [Claude Code plugin packaging](../../contributing/design-notes/claude-code-plugin-packaging.md)
 - [MCP tools](../../reference/mcp-tools.md)
+
+## Remote companion plugin
+
+See [Relay MCP](../../reference/relay-mcp.md) for the OAuth connection flow, remote tools, token refresh and revocation, and portable/Claude plugin installation. The remote surface is a scoped companion to the local daemon MCP tools.

@@ -252,6 +252,7 @@ func (h *Hub) health(w http.ResponseWriter, r *http.Request) {
 		"status":         "ok",
 		"peers":          peers,
 		"schema_version": state.SchemaVersion,
+		"capabilities":   map[string]bool{"ask_pull_delivery": h.ask != nil},
 	}
 	if h.relayStatus != nil {
 		out["relay"] = h.relayStatus() // also triggers relay lazy self-heal

@@ -194,11 +194,11 @@ func TestShareLifecycleAndViewer(t *testing.T) {
 	}
 }
 
-func TestTokenStoreExpiryAndStableRegistration(t *testing.T) {
+func TestTokenStoreExpiryAndRegistrationIsolation(t *testing.T) {
 	store := newTokenStore()
 	first := store.register("user")
-	if second := store.register("user"); second.Key != first.Key {
-		t.Fatalf("registration was not stable: %q != %q", second.Key, first.Key)
+	if second := store.register("user"); second.Key == first.Key || second.UserID == first.UserID {
+		t.Fatalf("public registration reused an identity: %q != %q", second.Key, first.Key)
 	}
 	share := store.createShare("user", "worker", "ro", time.Nanosecond)
 	time.Sleep(time.Millisecond)

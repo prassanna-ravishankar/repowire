@@ -8,7 +8,12 @@
     {
       "name": "repowire",
       "source": ".",
-      "description": "Repowire mesh usage skills: cross-agent review/plan, delegate, patterns, and install/update — backend-agnostic, parameterised on the agent you choose."
+      "description": "Repowire mesh usage skills: cross-agent review/plan, delegate, patterns, and install/update \u2014 backend-agnostic, parameterised on the agent you choose."
+    },
+    {
+      "name": "repowire-remote",
+      "source": "./plugins/repowire-remote",
+      "description": "Talk to local agents from remote MCP clients, with OAuth and skills for delegation, review, and planning."
     }
   ]
 }

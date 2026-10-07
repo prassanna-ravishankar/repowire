@@ -318,6 +318,8 @@ func (h *Hub) askReady(w http.ResponseWriter) bool {
 
 // AskRequest is the /ask body. Wire shape matches asks.py AskRequest.
 type AskRequest struct {
+	ReplyDelivery string `json:"reply_delivery,omitempty"` // pull callers retrieve replies over HTTP
+
 	FromPeer     string           `json:"from_peer"`
 	ToPeer       string           `json:"to_peer"`
 	Text         string           `json:"text"`
@@ -369,6 +371,9 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		return AskResponse{}, err
 	}
 
+	if req.ReplyDelivery != "" && req.ReplyDelivery != "push" && req.ReplyDelivery != "pull" {
+		return AskResponse{}, routeErr(http.StatusUnprocessableEntity, "reply_delivery must be push or pull")
+	}
 	// Resolve the target FIRST so the service.AskTracker entry is keyed on the canonical
 	// peer_id (display names collide; PendingForPeer / reply routing are
 	// peer_id-keyed). Mirrors AskService.open_ask resolving the peer before
@@ -419,6 +424,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		FromRepowireSessionID: h.sessionIDForPeer(ctx, string(fromID)),
 		ToRepowireSessionID:   h.sessionIDForPeer(ctx, string(target.PeerID)),
 		Question:              req.Question,
+		ReplyDelivery:         req.ReplyDelivery,
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrQuiesced) {
@@ -1184,10 +1190,16 @@ func (h *Hub) handlePendingAsks(w http.ResponseWriter, r *http.Request) {
 	} else {
 		p, ok := h.ask.reg.GetPeer(proto.PeerID(peerID))
 		if !ok {
-			writeJSONError(w, http.StatusNotFound, "No peer with id: "+peerID)
-			return
+			// HTTP callers may open asks without registering a live peer.
+			// They can retrieve their outbound asks using the same identity.
+			if direction != "outbound" {
+				writeJSONError(w, http.StatusNotFound, "No peer with id: "+peerID)
+				return
+			}
+			resolved = proto.PeerID(peerID)
+		} else {
+			resolved = p.PeerID
 		}
-		resolved = p.PeerID
 	}
 
 	// maxResults<0 → uncapped, matching the Python default (no cap on the poll).

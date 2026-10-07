@@ -108,7 +108,7 @@ Full docs: [docs.repowire.io](https://docs.repowire.io).
 - **Orchestrator pattern**: A dedicated peer can dispatch work, check status, coordinate reviews, and keep a queue moving.
 - **Scheduled wake-ups**: Send a future notification or ask to yourself, another peer, or an orchestrator.
 - **Git trailers**: Agent commits carry `Repowire-Thread` and `Repowire-Session` trailers; `repowire why` replays the conversations behind a commit.
-- **Optional relay**: Reach the dashboard remotely and bridge machines without opening inbound ports.
+- **Optional relay**: Reach the dashboard remotely and bridge machines without opening inbound ports. The [remote MCP plugin](docs/reference/relay-mcp.md) adds OAuth-authenticated agent conversations, delegation, and replies from compatible clients.
 
 ## How It Works
 
@@ -290,7 +290,7 @@ Security defaults:
 - Local daemon binds to `127.0.0.1`.
 - Relay is opt-in and uses outbound WebSocket.
 - WebSocket and local HTTP auth are available through `daemon.auth_token`.
-- MCP tools are implemented by the Go daemon at a localhost-only, bearer-authenticated `/mcp`; agent runtimes reach it through a thin stdio identity shim, and the hosted relay rejects it.
+- MCP tools are implemented by the Go daemon at a localhost-only, bearer-authenticated `/mcp`; agent runtimes reach it through a thin stdio identity shim, and the relay tunnel rejects that local endpoint. The relay has its own scoped [remote MCP endpoint](docs/reference/relay-mcp.md) with OAuth.
 - Spawn requires explicit command and path allowlists.
 - Experimental channel/ACP transport is opt-in.
 

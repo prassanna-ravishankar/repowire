@@ -40,3 +40,10 @@ httpRoute:
   gatewayName: clusterkit-gateway
   annotations:
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+
+# MCP OAuth grants must survive restarts. One relay owns the SQLite volume.
+oauth:
+  enabled: true
+  issuer: "https://relay.repowire.io"
+  storage: "1Gi"
+  storageClassName: ""

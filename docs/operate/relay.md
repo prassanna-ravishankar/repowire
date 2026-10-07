@@ -41,3 +41,7 @@ The `relay` block reports the real connection, not just the config flag:
 
 - [Relay access](../use/features/relay-access.md)
 - [Auth and security](security.md)
+
+## Remote MCP and OAuth
+
+See [Relay MCP](../reference/relay-mcp.md) for the OAuth connection flow, remote tools, token refresh and revocation, and portable/Claude plugin installation. The remote surface is a scoped companion to the local daemon MCP tools.
