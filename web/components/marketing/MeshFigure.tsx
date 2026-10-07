@@ -12,7 +12,7 @@ function valueAt(i: number) {
 }
 
 /** The hero figure: four terminals over a mesh, taking turns to send. Mounted on the vendored hairline kernel. */
-export default function MeshFigure({ fig, caption, intensity = 0.5 }: { fig: string; caption: string; intensity?: number }) {
+export default function MeshFigure({ caption, intensity = 0.5 }: { caption: string; intensity?: number }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const [read, setRead] = useState("rest");
 
@@ -31,7 +31,7 @@ export default function MeshFigure({ fig, caption, intensity = 0.5 }: { fig: str
   }, [intensity]);
 
   return (
-    <Plate fig={fig} read={read} caption={caption} className="plate-hero">
+    <Plate read={read} caption={caption} className="plate-hero">
       <div ref={stageRef} className="plate-stage" data-hairline={mesh.name} role="img" aria-label={mesh.means} />
     </Plate>
   );

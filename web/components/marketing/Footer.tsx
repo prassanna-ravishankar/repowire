@@ -43,7 +43,7 @@ export default function Footer() {
         </div>
       </div>
       <div className="footer-bottom">
-        <span>© 2026 Repowire · MIT</span>
+        <span>© 2026 Repowire. MIT licensed.</span>
         <span>
           Figures drawn with <a href="https://hairline.lucasmarkes.com">Hairline</a>.
         </span>

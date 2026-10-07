@@ -11,13 +11,11 @@ export default function UseCases() {
   return (
     <section className="section" id="use-cases">
       <header className="section-head">
-        <p className="section-num">§ 7</p>
         <h2>What people wire up first.</h2>
       </header>
       <ol className="cases">
-        {CASES.map((c, i) => (
+        {CASES.map((c) => (
           <li key={c.title}>
-            <span className="case-index">{String(i + 1).padStart(2, "0")}</span>
             <h3>{c.title}</h3>
             <p>{c.body}</p>
           </li>

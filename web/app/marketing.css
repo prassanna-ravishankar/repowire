@@ -1,30 +1,31 @@
-/* Marketing site: a drafting sheet. Warm paper, ink hairlines, one signal
-   colour. Built around the Hairline figures, whose palette it sets through
-   the --hairline-* variables. Every rule is scoped under .rw-marketing so
-   nothing reaches the dashboard, which shares globals.css. Fonts come from
-   next/font in app/page.tsx as --mk-display, --mk-sans and --mk-mono. */
+/* Marketing site: a drafting sheet. Cool off-white, ink hairlines, one cobalt
+   accent (the logo's colour). Built around the Hairline figures, whose palette
+   it sets through the --hairline-* variables. Every rule is scoped under
+   .rw-marketing so nothing reaches the dashboard, which shares globals.css.
+   Fonts come from next/font in app/page.tsx as --mk-sans and --mk-mono.
+   Radius rule: 6px for every box and control; figure plates are square
+   (drawing sheets); the phone screen and chat bubbles keep device shapes. */
 
 .rw-marketing {
-  --paper: #f3f1eb;
-  --paper-2: #ebe8df;
-  --card: #f8f7f2;
-  --ink: #171714;
-  --ink-2: #4c4a43;
-  --ink-3: #858176;
-  --rule: rgba(23, 23, 20, 0.15);
-  --rule-2: rgba(23, 23, 20, 0.07);
-  --signal: #d4461d;
-  --signal-2: #b43a15;
-  --signal-soft: rgba(212, 70, 29, 0.09);
-  --on-signal: #fff8f3;
+  --paper: #f4f5f6;
+  --paper-2: #eceef0;
+  --card: #fafbfb;
+  --ink: #131417;
+  --ink-2: #4a4d55;
+  --ink-3: #686c75;
+  --rule: rgba(19, 20, 23, 0.14);
+  --rule-2: rgba(19, 20, 23, 0.07);
+  --signal: #2c54dd;
+  --signal-2: #2343b5;
+  --signal-soft: rgba(44, 84, 221, 0.08);
+  --on-signal: #f7f9ff;
 
   --hairline-plate: var(--paper);
   --hairline-hi: var(--signal);
-  --hairline-edge: #8c887d;
-  --hairline-mid: #b8b4a9;
-  --hairline-lo: #d8d4c9;
+  --hairline-edge: #868a93;
+  --hairline-mid: #b6bac2;
+  --hairline-lo: #d7dadf;
 
-  --display: var(--mk-display), "Instrument Serif", Georgia, serif;
   --sans: var(--mk-sans), "Geist", ui-sans-serif, system-ui, sans-serif;
   --mono: var(--mk-mono), "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
@@ -39,22 +40,22 @@
   text-rendering: optimizeLegibility;
 }
 [data-theme="dark"] .rw-marketing {
-  --paper: #0f100e;
-  --paper-2: #171815;
-  --card: #131411;
-  --ink: #ebe9e1;
-  --ink-2: #aaa69b;
-  --ink-3: #6f6c63;
-  --rule: rgba(235, 233, 225, 0.15);
-  --rule-2: rgba(235, 233, 225, 0.07);
-  --signal: #ff7447;
-  --signal-2: #ff8c66;
-  --signal-soft: rgba(255, 116, 71, 0.1);
-  --on-signal: #160a05;
+  --paper: #0e0f12;
+  --paper-2: #16181c;
+  --card: #121418;
+  --ink: #eceef2;
+  --ink-2: #a6abb5;
+  --ink-3: #82878f;
+  --rule: rgba(236, 238, 242, 0.14);
+  --rule-2: rgba(236, 238, 242, 0.07);
+  --signal: #7b95ff;
+  --signal-2: #9aaeff;
+  --signal-soft: rgba(123, 149, 255, 0.12);
+  --on-signal: #0a0d1a;
 
-  --hairline-edge: #6f6c64;
-  --hairline-mid: #46443f;
-  --hairline-lo: #2a2a26;
+  --hairline-edge: #6c717b;
+  --hairline-mid: #43464e;
+  --hairline-lo: #272a30;
 }
 .rw-marketing * { box-sizing: border-box; }
 .rw-marketing a { color: inherit; text-decoration: none; }
@@ -63,7 +64,7 @@
 .rw-marketing :focus-visible { outline: 1.5px solid var(--signal); outline-offset: 3px; }
 .rw-marketing code, .rw-marketing pre { font-family: var(--mono); }
 .rw-marketing p code, .rw-marketing dd code {
-  font-size: 0.86em; padding: 1px 5px; border: 1px solid var(--rule); border-radius: 3px; background: var(--card);
+  font-size: 0.86em; padding: 1px 5px; border: 1px solid var(--rule); border-radius: 6px; background: var(--card);
 }
 
 /* =========================  TOP BAR  ========================= */
@@ -110,19 +111,12 @@
   width: calc(100% - 2 * var(--gutter)); max-width: calc(var(--wrap) - 2 * var(--gutter));
   margin: 0 auto; padding: 112px 0; border-top: 1px solid var(--rule);
 }
-.rw-marketing .section-head {
-  display: grid; grid-template-columns: 96px minmax(0, 1fr); column-gap: 24px;
-  max-width: 880px; margin-bottom: 56px;
-}
-.rw-marketing .section-head > :not(.section-num) { grid-column: 2; }
-.rw-marketing .section-num {
-  grid-row: 1 / span 3; margin: 14px 0 0;
-  font: 500 12px var(--mono); letter-spacing: 0.06em; color: var(--signal);
-}
+.rw-marketing .section-head { max-width: 760px; margin-bottom: 56px; }
 .rw-marketing h1, .rw-marketing h2 {
-  font-family: var(--display); font-weight: 400; letter-spacing: -0.015em; margin: 0; text-wrap: balance;
+  font-family: var(--sans); font-weight: 600; letter-spacing: -0.035em; margin: 0; text-wrap: balance;
 }
-.rw-marketing h2 { font-size: clamp(36px, 4.6vw, 54px); line-height: 1.02; }
+.rw-marketing h2 { font-size: clamp(32px, 3.8vw, 46px); line-height: 1.08; }
+.rw-marketing .soft { color: var(--ink-3); }
 .rw-marketing h3 { font: 500 17px/1.3 var(--sans); letter-spacing: -0.01em; margin: 0; }
 .rw-marketing .section-sub { margin: 18px 0 0; max-width: 620px; font-size: 17px; color: var(--ink-2); text-wrap: pretty; }
 
@@ -149,11 +143,11 @@
 .rw-marketing .copy-btn {
   flex-shrink: 0; height: 28px; padding: 0 9px; display: inline-flex; align-items: center; gap: 6px;
   font: 500 12px var(--mono); color: var(--ink-2); background: transparent;
-  border: 1px solid var(--rule); border-radius: 4px; transition: color 160ms var(--ease), border-color 160ms var(--ease);
+  border: 1px solid var(--rule); border-radius: 6px; transition: color 160ms var(--ease), border-color 160ms var(--ease);
 }
 .rw-marketing .copy-btn:hover { color: var(--ink); border-color: var(--ink-3); }
 .rw-marketing .inline-code {
-  margin: 28px 0 0; padding: 12px 16px; overflow-x: auto; scrollbar-width: none;
+  margin: 24px 0 0; border-radius: 0 6px 6px 0; padding: 12px 16px; overflow-x: auto; scrollbar-width: none;
   border-left: 1px solid var(--signal); background: var(--card); font-size: 13px; color: var(--ink);
 }
 
@@ -179,16 +173,13 @@
 /* =========================  HERO  ========================= */
 .rw-marketing .hero {
   max-width: var(--wrap); margin: 0 auto; padding: 88px var(--gutter) 120px;
-  display: grid; grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.1fr); gap: 64px; align-items: center;
+  display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 56px; align-items: center;
 }
 .rw-marketing .kicker {
-  display: inline-flex; align-items: center; gap: 10px; margin: 0 0 28px;
-  font: 500 12px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2);
+  margin: 0 0 24px; font: 500 12px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2);
 }
-.rw-marketing .kicker-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--signal); }
-.rw-marketing .hero h1 { font-size: clamp(52px, 6.6vw, 88px); line-height: 0.96; }
-.rw-marketing .hero h1 em { font-style: italic; color: var(--ink-2); }
-.rw-marketing .lead { margin: 28px 0 34px; max-width: 520px; font-size: 18px; color: var(--ink-2); text-wrap: pretty; }
+.rw-marketing .hero h1 { font-size: clamp(40px, 4.3vw, 60px); line-height: 1.04; letter-spacing: -0.045em; }
+.rw-marketing .lead { margin: 24px 0 32px; max-width: 500px; font-size: 18px; color: var(--ink-2); text-wrap: pretty; }
 .rw-marketing .hero .codeblock { max-width: 540px; }
 .rw-marketing .hero-links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 6px; margin-top: 22px; }
 .rw-marketing .plate-hero .plate-sheet {
@@ -196,7 +187,7 @@
   background-size: 16px 16px; background-position: 8px 8px;
 }
 
-/* =========================  § 1 THE WIRE  ========================= */
+/* =========================  THE WIRE  ========================= */
 .rw-marketing .replay-grid {
   display: grid; grid-template-columns: minmax(0, 1fr) 80px minmax(0, 1fr); align-items: stretch;
 }
@@ -229,14 +220,14 @@
 .rw-marketing .replay-idle { color: var(--ink-3); }
 .rw-marketing .replay-composer {
   margin-top: 16px; display: flex; gap: 8px; align-items: baseline; min-height: 38px;
-  padding: 8px 10px; border: 1px solid var(--rule); border-radius: 4px; background: var(--paper);
+  padding: 8px 10px; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper);
 }
 .rw-marketing .replay-composer-text { white-space: pre-wrap; word-break: break-word; min-width: 0; }
 .rw-marketing .replay-placeholder { color: var(--ink-3); }
 .rw-marketing .replay-status { margin-top: 16px; padding-top: 10px; font-size: 11px; color: var(--ink-3); border-top: 1px solid var(--rule-2); }
 .rw-marketing .replay-controls { display: flex; gap: 2px; }
 .rw-marketing .replay-controls button {
-  width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: 4px;
+  width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: 6px;
   background: transparent; color: var(--ink-3); transition: color 160ms var(--ease), background 160ms var(--ease);
 }
 .rw-marketing .replay-controls button:hover { color: var(--ink); background: var(--rule-2); }
@@ -260,44 +251,52 @@
 @keyframes rp-wire-down { 0% { top: 0; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { top: calc(100% - 9px); opacity: 0; } }
 @keyframes rp-wire-up { 0% { top: calc(100% - 9px); opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { top: 0; opacity: 0; } }
 
-/* =========================  § 2 VERBS  ========================= */
-.rw-marketing .verbs {
-  list-style: none; margin: 0; padding: 0;
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-  border-top: 1px solid var(--ink); border-bottom: 1px solid var(--rule);
+/* =========================  VERBS: index rows  ========================= */
+.rw-marketing .verbs { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--ink); }
+.rw-marketing .verb {
+  display: grid; grid-template-columns: 220px minmax(0, 1fr) minmax(0, 1.15fr); gap: 40px; align-items: start;
+  padding: 32px 0;
 }
-.rw-marketing .verb { display: flex; flex-direction: column; padding: 28px 28px 32px 0; }
-.rw-marketing .verb + .verb { padding-left: 28px; border-left: 1px solid var(--rule); }
-.rw-marketing .verb-head { display: flex; align-items: baseline; gap: 14px; }
-.rw-marketing .verb-index { font: 500 12px var(--mono); color: var(--ink-3); }
-.rw-marketing .verb h3 { font: italic 400 40px/1 var(--display); letter-spacing: -0.01em; }
-.rw-marketing .verb-gist { margin: 18px 0 6px; font-weight: 500; }
-.rw-marketing .verb-body { margin: 0; color: var(--ink-2); font-size: 15px; flex: 1; }
+.rw-marketing .verb + .verb { border-top: 1px solid var(--rule-2); }
+.rw-marketing .verb h3 { font: 600 34px/1 var(--sans); letter-spacing: -0.035em; color: var(--signal); }
+.rw-marketing .verb-gist { margin: 0 0 6px; font-weight: 500; }
+.rw-marketing .verb-body { margin: 0; color: var(--ink-2); font-size: 15px; }
 .rw-marketing .verb-code {
-  margin-top: 24px; display: flex; flex-direction: column; gap: 6px;
-  padding: 12px 14px; border: 1px solid var(--rule); border-radius: 4px; background: var(--card);
-  font-size: 12px;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 14px; border: 1px solid var(--rule); border-radius: 6px; background: var(--card);
+  font-size: 12.5px;
 }
 .rw-marketing .verb-code code { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
 .rw-marketing .verb-reply { color: var(--ink-3) !important; }
 .rw-marketing .verb-reply::before { content: "⎿ "; }
 
-/* =========================  §§ 3–6 CHAPTERS  ========================= */
-.rw-marketing .chapter {
-  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 72px; align-items: center;
+/* =========================  RUNTIMES: split  ========================= */
+.rw-marketing .split {
+  display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 72px; align-items: center;
 }
-.rw-marketing .chapter.flip .chapter-copy { order: 2; }
-.rw-marketing .chapter-copy .section-num { margin: 0 0 18px; }
-.rw-marketing .chapter-copy h2 { font-size: clamp(34px, 4vw, 48px); }
-.rw-marketing .spec { margin: 30px 0 0; border-top: 1px solid var(--rule); }
-.rw-marketing .spec > div {
-  display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 16px;
-  padding: 11px 0; border-bottom: 1px solid var(--rule-2);
-}
-.rw-marketing .spec dt { font: 500 11.5px/1.9 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
-.rw-marketing .spec dd { margin: 0; font-size: 15px; }
+.rw-marketing .spec { margin: 32px 0 0; padding-top: 8px; border-top: 1px solid var(--rule); }
+.rw-marketing .spec > div { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 16px; padding: 7px 0; }
+.rw-marketing .spec dt { font: 500 13px/1.9 var(--mono); color: var(--ink-3); }
+.rw-marketing .spec dd { margin: 0; font-size: 15.5px; }
 
-/* § 4: the phone side, an ask as the Telegram bot renders it */
+/* =========================  PHONE: a centred moment  ========================= */
+.rw-marketing .moment { display: flex; flex-direction: column; align-items: center; text-align: center; }
+.rw-marketing .moment-head { max-width: 680px; }
+.rw-marketing .moment-head .section-sub { margin-left: auto; margin-right: auto; }
+.rw-marketing .moment-figure { width: min(560px, 100%); margin-top: 48px; text-align: left; }
+.rw-marketing .moment-facts {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 12px 48px; margin: 40px 0 0;
+}
+.rw-marketing .moment-facts dt { font: 500 13px var(--mono); color: var(--ink-3); }
+.rw-marketing .moment-facts dd { margin: 4px 0 0; font-size: 15.5px; }
+.rw-marketing .moment-code { margin-top: 32px; }
+
+/* =========================  JOBS + WHY: an asymmetric pair  ========================= */
+.rw-marketing .pair { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 56px; align-items: start; }
+.rw-marketing .pair-cell h2 { margin-top: 36px; font-size: clamp(28px, 3vw, 36px); }
+.rw-marketing .pair-cell .section-sub { font-size: 16px; }
+
+/* The phone side, an ask as the Telegram bot renders it */
 .rw-marketing .chat-stage {
   aspect-ratio: 5 / 4; display: flex; justify-content: center; align-items: flex-end;
   padding: 44px 20px 0; overflow: hidden;
@@ -347,18 +346,15 @@
 }
 @keyframes chat-in { from { opacity: 0; transform: translateY(6px); } }
 
-/* =========================  § 7 USE CASES  ========================= */
+/* =========================  USE CASES  ========================= */
 .rw-marketing .cases {
-  list-style: none; margin: 0; padding: 0;
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-  border-top: 1px solid var(--ink);
+  list-style: none; margin: 0; padding: 32px 0 0; border-top: 1px solid var(--ink);
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px 72px;
 }
-.rw-marketing .cases li { padding: 26px 28px 30px 0; border-bottom: 1px solid var(--rule); }
-.rw-marketing .cases li:not(:nth-child(3n + 1)) { padding-left: 28px; border-left: 1px solid var(--rule); }
-.rw-marketing .case-index { display: block; margin-bottom: 18px; font: 500 12px var(--mono); color: var(--signal); }
-.rw-marketing .cases p { margin: 8px 0 0; color: var(--ink-2); font-size: 15px; }
+.rw-marketing .cases h3 { font-size: 18px; }
+.rw-marketing .cases p { margin: 6px 0 0; max-width: 46ch; color: var(--ink-2); font-size: 15.5px; }
 
-/* =========================  § 8 DASHBOARD  ========================= */
+/* =========================  DASHBOARD  ========================= */
 .rw-marketing .shot { margin: 0; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; background: var(--card); }
 .rw-marketing .shot-chrome { display: flex; align-items: center; gap: 14px; padding: 10px 14px; border-bottom: 1px solid var(--rule); }
 .rw-marketing .shot-dots { display: flex; gap: 6px; }
@@ -366,13 +362,13 @@
 .rw-marketing .shot-url { font: 400 12px var(--mono); color: var(--ink-3); }
 .rw-marketing .shot-img { display: block; width: 100%; height: auto; }
 
-/* =========================  § 9 INSTALL  ========================= */
+/* =========================  INSTALL  ========================= */
 .rw-marketing .steps { list-style: none; margin: 0; padding: 0; max-width: 880px; border-top: 1px solid var(--ink); }
 .rw-marketing .steps li {
   display: grid; grid-template-columns: 96px minmax(0, 1fr); column-gap: 24px;
   padding: 28px 0; border-bottom: 1px solid var(--rule);
 }
-.rw-marketing .step-index { font: italic 400 44px/1 var(--display); color: var(--signal); }
+.rw-marketing .step-index { font: 600 36px/1 var(--sans); letter-spacing: -0.03em; color: var(--signal); }
 .rw-marketing .step-body h3 { margin-bottom: 14px; }
 .rw-marketing .step-note { margin: 12px 0 0; color: var(--ink-2); font-size: 14.5px; overflow-wrap: anywhere; }
 .rw-marketing .install-more { margin: 32px 0 0 120px; color: var(--ink-2); }
@@ -410,8 +406,8 @@
   .rw-marketing .mobile-toggle { display: grid; }
   .rw-marketing .top-actions .cta { display: none; }
   .rw-marketing .hero { grid-template-columns: minmax(0, 1fr); gap: 48px; padding-top: 56px; padding-bottom: 88px; }
-  .rw-marketing .chapter { grid-template-columns: minmax(0, 1fr); gap: 40px; }
-  .rw-marketing .chapter.flip .chapter-copy { order: 0; }
+  .rw-marketing .split, .rw-marketing .pair { grid-template-columns: minmax(0, 1fr); gap: 48px; }
+  .rw-marketing .verb { grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .rw-marketing .replay-grid { grid-template-columns: minmax(0, 1fr); }
   .rw-marketing .replay-wire { height: 56px; }
   .rw-marketing .replay-wire::before { left: 50%; right: auto; top: 4px; bottom: 4px; border-top: 0; border-left: 1px dashed var(--ink-3); }
@@ -420,17 +416,12 @@
   .rw-marketing .replay-wire-dot.go-codex { animation-name: rp-wire-down; }
   .rw-marketing .replay-wire-dot.go-claude { animation-name: rp-wire-up; }
   .rw-marketing .replay-body { min-height: 0; }
-  .rw-marketing .verbs, .rw-marketing .cases { grid-template-columns: minmax(0, 1fr); }
-  .rw-marketing .verb, .rw-marketing .verb + .verb { padding: 28px 0; border-left: 0; }
-  .rw-marketing .verb + .verb { border-top: 1px solid var(--rule); }
-  .rw-marketing .cases li, .rw-marketing .cases li:not(:nth-child(3n + 1)) { padding: 24px 0; border-left: 0; }
+  .rw-marketing .cases { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 720px) {
   .rw-marketing { --gutter: 16px; }
   .rw-marketing .section { padding-top: 80px; padding-bottom: 80px; }
-  .rw-marketing .section-head, .rw-marketing .steps li { grid-template-columns: minmax(0, 1fr); }
-  .rw-marketing .section-head > :not(.section-num) { grid-column: 1; }
-  .rw-marketing .section-num { grid-row: auto; margin: 0 0 14px; }
+  .rw-marketing .steps li { grid-template-columns: minmax(0, 1fr); }
   .rw-marketing .step-index { margin-bottom: 12px; }
   .rw-marketing .install-more { margin-left: 0; }
   .rw-marketing .spec > div { grid-template-columns: 96px minmax(0, 1fr); }
