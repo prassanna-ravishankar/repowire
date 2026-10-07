@@ -92,7 +92,7 @@ the daemon is unavailable; missing optional host tools are reported as warnings.
 ## `repowire peer`
 
 ```bash
-repowire peer new PATH [--backend BACKEND] [--profile PROFILE] [--circle CIRCLE]
+repowire peer new PATH [--backend BACKEND] [--profile PROFILE] [--circle CIRCLE] [-m MESSAGE]
 repowire peer list [--show-offline] [--include-hidden] [--source S]  # god-view list (all circles, includes caller)
 repowire peer describe NAME_OR_ID [--circle C]  # daemon state for one peer
 repowire peer unregister NAME_OR_ID         # explicitly close and retire this peer identity
@@ -121,7 +121,7 @@ Commands that need a sender identity resolve `$TMUX_PANE` to its registered cano
 
 `peer ask` is a blocking CLI compatibility helper for quick manual checks. It uses the daemon's ask/answer lifecycle under the hood, waits for the recipient to `ack` with a reply, then prints the reply text. `--circle` disambiguates only within the caller's authorized scope; an ordinary registered peer cannot use it to cross a circle boundary. For agent-to-agent work, prefer the MCP [`ask`](mcp-tools.md#ask) tool, which returns a correlation id immediately and lets the conversation continue asynchronously.
 
-`peer new` spawns a tmux-backed peer through the daemon `/spawn` route using the configured `daemon.spawn.commands.<backend>` command. Inside tmux it discovers the current session or window according to `daemon.circle_boundary`; window mode also forwards the current pane internally so the daemon can place the new peer in that window. There is no separate window flag. Outside tmux, pass an explicit circle in session mode; window mode requires tmux window evidence. Pass `--profile NAME` to append args from `daemon.spawn.profiles.<backend>.<name>`, such as a faster or more capable model selection. `--command` remains accepted as a deprecated explicit override and bypasses daemon registration/profile resolution.
+`peer new` spawns a tmux-backed peer through the daemon `/spawn` route using the configured `daemon.spawn.commands.<backend>` command. Inside tmux it discovers the current session or window according to `daemon.circle_boundary`; window mode also forwards the current pane internally so the daemon can place the new peer in that window. There is no separate window flag. Outside tmux, pass an explicit circle in session mode; window mode requires tmux window evidence. Pass `--profile NAME` to append args from `daemon.spawn.profiles.<backend>.<name>`, such as a faster or more capable model selection. `--command` remains accepted as a deprecated explicit override and bypasses daemon registration/profile resolution. `-m MESSAGE` is an opening prompt: the daemon waits for the spawned peer to register, then notifies it from your peer identity (the response's `seed_state` is `awaiting_registration`); the outcome is journaled as a `spawn_seed_delivered` or `spawn_seed_failed` event.
 
 `peer describe` accepts either a display name (`clitcoin-claude-code`) or a peer
 id (`repow-5-abd4d21e`). Pass `--circle` when a display name is ambiguous across

@@ -558,3 +558,28 @@ func TestDeliveryClose_UnblocksSeedGate(t *testing.T) {
 		t.Fatalf("Close did not return within 3s; the deferred seed-gate goroutine was not unblocked")
 	}
 }
+
+// TestNotifySkipSeedGateDeliversSeedImmediately: the spawn seed is the message
+// that settles pending_first_turn, so it must not wait behind the seed gate
+// that holds everyone else. Without SkipSeedGate this Notify would park for
+// seedSettleWait (25s); with it the frame is sent at once.
+func TestNotifySkipSeedGateDeliversSeedImmediately(t *testing.T) {
+	sender := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	seeding := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	seeding.TurnState = proto.TurnPendingFirstTurn
+	reg := &fakeRegistry{peers: []*proto.Peer{sender, seeding}}
+	f := &fakeTransport{sessions: []proto.PeerID{sender.PeerID, seeding.PeerID}, connected: map[proto.PeerID]bool{}}
+	d := NewPeerDelivery(reg, newRouterWithFake(f), f, nil, nil)
+
+	start := time.Now()
+	res, err := d.Notify(context.Background(), NotifyParams{FromPeer: "alpha", ToPeer: "beta", Text: "opening prompt", SkipSeedGate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Delivered() {
+		t.Fatalf("seed must be delivered, got %+v", res)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("seed waited behind the seed gate: %s", elapsed)
+	}
+}

@@ -362,7 +362,7 @@ Claude self-registers via `SessionStart`; OpenCode and Pi register from their na
 Its stdio MCP shim validates the bridge's daemon-minted runtime certificate for
 Codex's per-call `_meta.threadId`, so tool calls from a shared App Server MCP
 process resolve to that same native-thread `peer_id`.
-The optional `message` is an opening prompt for every backend; it is no longer a Codex registration seed.
+The optional `message` is an opening prompt for every backend. The daemon launches the process, waits for the new peer to register on its pane (up to 90 seconds), then delivers the message as a normal notify from the spawner, bypassing the first-turn gate that holds other traffic until the seed lands. The result reports `opening_message=awaiting_registration`; delivery or failure is journaled as `spawn_seed_delivered` / `spawn_seed_failed` events so a lost opening prompt is visible in the dashboard timeline.
 
 ### `kill_peer`
 

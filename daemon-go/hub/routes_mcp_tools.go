@@ -395,11 +395,18 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 			value := proto.AgentType(a.Backend)
 			backend = &value
 		}
-		result, err := h.spawnPeer(ctx, SpawnRequest{Path: a.Path, Backend: backend, Profile: strPtr(a.Profile), Command: strPtr(a.Command), Circle: circle, Message: strPtr(a.Message), SourcePane: sourcePane})
+		result, err := h.spawnPeer(ctx, SpawnRequest{Path: a.Path, Backend: backend, Profile: strPtr(a.Profile), Command: strPtr(a.Command), Circle: circle, Message: strPtr(a.Message), SourcePane: sourcePane, FromPeer: caller})
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("Spawned %s (tmux: %s) peer_id=%s registration_state=%s", result.DisplayName, result.TmuxSession, derefString(result.PeerID), result.RegistrationState), nil
+		out := fmt.Sprintf("Spawned %s (tmux: %s) peer_id=%s registration_state=%s", result.DisplayName, result.TmuxSession, derefString(result.PeerID), result.RegistrationState)
+		if result.SeedState != "" {
+			out += " opening_message=" + result.SeedState
+		}
+		for _, w := range result.Warnings {
+			out += "\nwarning: " + w
+		}
+		return out, nil
 	})
 	addMCPTool(srv, "orchestrator_status", "Check whether a live orchestrator is present in a circle.", func(ctx context.Context, caller string, a mcpCircleArgs) (string, error) {
 		circle := a.Circle
