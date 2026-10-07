@@ -505,14 +505,13 @@ func TestInstallServicePreservesPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\necho --listen\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte(sharedServerCodex), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	pathValue := binDir + ":/opt/homebrew/bin:/usr/bin:/bin"
 	t.Setenv("HOME", homeDir)
 	t.Setenv("PATH", pathValue)
 	t.Setenv("LC_ALL", "C.UTF-8")
-	stubNativeCodexResolver(t, filepath.Join(binDir, "codex"))
 	if err := installService(); err != nil {
 		t.Fatal(err)
 	}
@@ -530,15 +529,8 @@ func TestInstallServicePreservesPath(t *testing.T) {
 	if err != nil || !strings.Contains(string(bridgeRaw), "<string>codex-bridge</string>") {
 		t.Fatalf("Codex bridge plist missing: %v %s", err, bridgeRaw)
 	}
-	appServerRaw, err := os.ReadFile(filepath.Join(homeDir, "Library", "LaunchAgents", codexAppServerLabel()+".plist"))
-	if err != nil || !strings.Contains(string(appServerRaw), "<string>app-server</string><string>--listen</string><string>unix://</string>") {
-		t.Fatalf("Codex App Server plist missing: %v %s", err, appServerRaw)
-	}
-	if strings.Contains(string(appServerRaw), executable()) {
-		t.Fatalf("Codex App Server must execute native Codex directly: %s", appServerRaw)
-	}
-	if !strings.Contains(string(bridgeRaw), "<key>REPOWIRE_CODEX_APP_SERVER_MANAGED</key><string>1</string>") {
-		t.Fatalf("Codex bridge is not attach-only: %s", bridgeRaw)
+	if _, err := os.Stat(filepath.Join(homeDir, "Library", "LaunchAgents", codexAppServerLabel()+".plist")); !os.IsNotExist(err) {
+		t.Fatalf("setup installed a Repowire-owned Codex App Server: %v", err)
 	}
 }
 
@@ -558,59 +550,6 @@ func TestServiceEnvironmentPathDropsProtectedAndEphemeralDirectories(t *testing.
 	want := strings.Join([]string{safe, "/usr/bin"}, string(os.PathListSeparator))
 	if got != want {
 		t.Fatalf("service PATH = %q, want %q", got, want)
-	}
-}
-
-func stubNativeCodexResolver(t *testing.T, path string) {
-	t.Helper()
-	previous := nativeCodexResolver
-	nativeCodexResolver = func() (string, error) { return path, nil }
-	t.Cleanup(func() { nativeCodexResolver = previous })
-}
-
-func TestResolveNativeCodexFromNPMEntrypoint(t *testing.T) {
-	root := t.TempDir()
-	packageRoot := filepath.Join(root, "lib", "node_modules", "@openai", "codex")
-	binDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(filepath.Join(packageRoot, "bin"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(binDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	entrypoint := filepath.Join(packageRoot, "bin", "codex.js")
-	if err := os.WriteFile(entrypoint, []byte("#!/bin/sh\necho wrapper\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(entrypoint, filepath.Join(binDir, "codex")); err != nil {
-		t.Fatal(err)
-	}
-	platformPackage, vendorTriple := "codex-darwin-arm64", "aarch64-apple-darwin"
-	if runtime.GOARCH == "amd64" {
-		platformPackage, vendorTriple = "codex-darwin-x64", "x86_64-apple-darwin"
-	}
-	native := filepath.Join(packageRoot, "node_modules", "@openai", platformPackage, "vendor", vendorTriple, "bin", "codex")
-	if err := os.MkdirAll(filepath.Dir(native), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(native, []byte("#!/bin/sh\necho --listen\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	codesign := filepath.Join(binDir, "codesign")
-	if err := os.WriteFile(codesign, []byte("#!/bin/sh\nprintf 'Identifier=codex\\nTeamIdentifier="+codexTeamIdentifier+"\\n' >&2\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir)
-	got, err := resolveNativeCodex()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := filepath.EvalSymlinks(native)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != want {
-		t.Fatalf("native Codex = %q, want %q", got, want)
 	}
 }
 
@@ -638,12 +577,11 @@ func TestInstallCodexBridgePreservesLoadedBridge(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\necho --listen\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte(sharedServerCodex), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", homeDir)
 	t.Setenv("PATH", binDir)
-	stubNativeCodexResolver(t, filepath.Join(binDir, "codex"))
 	if err := installCodexBridgeService(binDir, "C.UTF-8"); err != nil {
 		t.Fatal(err)
 	}
@@ -682,7 +620,7 @@ func TestInstallCodexBridgeReloadsWhenDefinitionChanged(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\necho --listen\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte(sharedServerCodex), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	stale := filepath.Join(agents, codexBridgeLabel()+".plist")
@@ -691,7 +629,6 @@ func TestInstallCodexBridgeReloadsWhenDefinitionChanged(t *testing.T) {
 	}
 	t.Setenv("HOME", homeDir)
 	t.Setenv("PATH", binDir)
-	stubNativeCodexResolver(t, filepath.Join(binDir, "codex"))
 	if err := installCodexBridgeService(binDir, "C.UTF-8"); err != nil {
 		t.Fatal(err)
 	}
@@ -722,12 +659,11 @@ func TestInstallCodexBridgeBootstrapsWhenAbsent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\necho --listen\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte(sharedServerCodex), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", homeDir)
 	t.Setenv("PATH", binDir)
-	stubNativeCodexResolver(t, filepath.Join(binDir, "codex"))
 	if err := installCodexBridgeService(binDir, "C.UTF-8"); err != nil {
 		t.Fatal(err)
 	}
@@ -737,55 +673,50 @@ func TestInstallCodexBridgeBootstrapsWhenAbsent(t *testing.T) {
 	}
 }
 
-func TestInstallCodexServiceHandsOffLoadedLegacyBridge(t *testing.T) {
+func TestInstallCodexBridgeRetiresLegacyAppServer(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("launchd only")
 	}
 	homeDir := t.TempDir()
 	binDir := filepath.Join(homeDir, "bin")
-	if err := os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o700); err != nil {
+	agents := filepath.Join(homeDir, "Library", "LaunchAgents")
+	if err := os.MkdirAll(agents, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	codex := filepath.Join(binDir, "codex")
-	if err := os.WriteFile(codex, []byte("#!/bin/sh\necho --listen\n"), 0o700); err != nil {
+	codex := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/codex.calls\"\n" + strings.TrimPrefix(sharedServerCodex, "#!/bin/sh\n")
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte(codex), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	domain := "gui/" + strconv.Itoa(os.Getuid()) + "/"
-	launchctl := `#!/bin/sh
-printf '%s\n' "$*" >> "$HOME/launchctl.calls"
-if [ "$1" = print ] && [ "$2" = "` + domain + codexAppServerLabel() + `" ]; then
-  [ -f "$HOME/app.loaded" ]; exit $?
-fi
-if [ "$1" = print ] && [ "$2" = "` + domain + codexBridgeLabel() + `" ]; then
-  [ ! -f "$HOME/bridge.stopped" ]; exit $?
-fi
-if [ "$1" = bootout ]; then
-  /usr/bin/touch "$HOME/bridge.stopped"
-fi
-if [ "$1" = bootstrap ]; then
-  case "$3" in *` + codexAppServerLabel() + `.plist) /usr/bin/touch "$HOME/app.loaded" ;; esac
-fi
-exit 0
-`
+	launchctl := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/launchctl.calls\"\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(agents, codexAppServerLabel()+".plist")
+	if err := os.WriteFile(legacy, []byte("plist"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", homeDir)
 	t.Setenv("PATH", binDir)
-	stubNativeCodexResolver(t, codex)
 	if err := installCodexBridgeService(binDir, "C.UTF-8"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy Codex App Server plist was not removed: %v", err)
+	}
 	calls, _ := os.ReadFile(filepath.Join(homeDir, "launchctl.calls"))
-	text := string(calls)
-	stopAt := strings.Index(text, "bootout gui/")
-	appAt := strings.Index(text, "bootstrap gui/")
-	bridgeAt := strings.LastIndex(text, "bootstrap gui/")
-	if stopAt < 0 || appAt <= stopAt || bridgeAt <= appAt {
-		t.Fatalf("legacy bridge handoff order is wrong: %s", text)
+	if !strings.Contains(string(calls), "bootout gui/"+strconv.Itoa(os.Getuid())+"/"+codexAppServerLabel()) {
+		t.Fatalf("legacy Codex App Server was not unloaded: %s", calls)
+	}
+	codexCalls, _ := os.ReadFile(filepath.Join(homeDir, "codex.calls"))
+	if !strings.Contains(string(codexCalls), "app-server daemon start") {
+		t.Fatalf("Codex's shared App Server was not started after retiring the legacy one: %s", codexCalls)
+	}
+	bridge, err := os.ReadFile(filepath.Join(agents, codexBridgeLabel()+".plist"))
+	if err != nil || strings.Contains(string(bridge), "REPOWIRE_CODEX_APP_SERVER_MANAGED") {
+		t.Fatalf("bridge plist = %v %s", err, bridge)
 	}
 }
 
@@ -901,46 +832,45 @@ func TestExplicitCodexBridgeRestartReplacesBridge(t *testing.T) {
 	}
 }
 
-func TestExplicitCodexBridgeRestartPreservesAppServer(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("launchd only")
-	}
+// sharedServerCodex fakes a Codex whose TUI auto-starts the shared App Server.
+const sharedServerCodex = "#!/bin/sh\n[ \"$1 $2\" = \"features list\" ] && echo 'daemon_auto_start                        stable             true'\nexit 0\n"
+
+func TestCodexWithoutAutoStartKeepsHooks(t *testing.T) {
 	homeDir := t.TempDir()
 	binDir := filepath.Join(homeDir, "bin")
-	if err := os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o700); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, label := range []string{codexBridgeLabel(), codexAppServerLabel()} {
-		if err := os.WriteFile(filepath.Join(homeDir, "Library", "LaunchAgents", label+".plist"), []byte("plist"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	launchctl := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/launchctl.calls\"\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(binDir, "launchctl"), []byte(launchctl), 0o700); err != nil {
+	old := "#!/bin/sh\n[ \"$1 $2\" = \"features list\" ] && echo 'daemon_auto_start                        experimental       false'\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte(old), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", homeDir)
 	t.Setenv("PATH", binDir)
-	if err := restartCodexBridgeService(); err != nil {
+	if codexAutoStartsAppServer() {
+		t.Fatal("Codex without daemon_auto_start must not use the bridge")
+	}
+	if err := installCodex(); err != nil {
 		t.Fatal(err)
 	}
-	calls, _ := os.ReadFile(filepath.Join(homeDir, "launchctl.calls"))
-	if strings.Contains(string(calls), codexAppServerLabel()) {
-		t.Fatalf("bridge restart touched Codex App Server: %s", calls)
+	data, err := readJSON(filepath.Join(homeDir, ".codex", "hooks.json"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks, _ := data["hooks"].(map[string]any)
+	if !strings.Contains(fmt.Sprint(hooks["SessionStart"]), "hook session --backend=codex") {
+		t.Fatalf("SessionStart hook missing without shared App Server: %#v", hooks["SessionStart"])
 	}
 }
 
-func TestInstallCodexUsesNativeThreadsWhenAppServerIsAvailable(t *testing.T) {
+func TestInstallCodexUsesNativeThreadsWhenCodexAutoStartsAppServer(t *testing.T) {
 	homeDir := t.TempDir()
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	codex := filepath.Join(binDir, "codex")
-	if err := os.WriteFile(codex, []byte("#!/bin/sh\necho --listen\n"), 0o700); err != nil {
+	if err := os.WriteFile(codex, []byte(sharedServerCodex), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", homeDir)

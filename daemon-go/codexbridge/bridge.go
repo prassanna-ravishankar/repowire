@@ -37,7 +37,6 @@ const (
 )
 
 var invalidName = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
-var providerEnvKey = regexp.MustCompile(`(?m)^\s*env_key\s*=\s*["']([A-Za-z_][A-Za-z0-9_]*)["']`)
 
 type rpcReply struct {
 	result json.RawMessage
@@ -125,33 +124,29 @@ func Run(ctx context.Context, version string) error {
 		daemonWS: "ws://" + address + "/ws", token: cfg.Daemon.AuthToken, boundary: cfg.Daemon.CircleBoundary,
 	}
 
-	return b.runAppServer(ensureAppServer)
+	return b.runAppServer(dialAppServer)
 }
 
-func (b *Bridge) runAppServer(connect func(context.Context) (*websocket.Conn, *exec.Cmd, error)) error {
-	var child *exec.Cmd
-	defer func() {
-		if child != nil {
-			_ = child.Process.Signal(os.Interrupt)
-		}
-	}()
+// runAppServer attaches to Codex's shared App Server and never starts one:
+// Codex owns that server (every TUI auto-starts it, and Codex restarts it
+// across upgrades). While none is running the bridge waits, logging once.
+func (b *Bridge) runAppServer(connect func(context.Context) (*websocket.Conn, error)) error {
 	failures := 0
+	waiting := false
 	for {
-		conn, started, err := connect(b.ctx)
+		conn, err := connect(b.ctx)
 		if err != nil {
-			if child == nil {
-				return err
+			if !waiting {
+				waiting = true
+				log.Printf("codex bridge: waiting for Codex's shared App Server at %s: %v", appServerSocket(), err)
 			}
 			failures++
-			log.Printf("codex bridge: reconnect to App Server: %v", err)
 			if !wait(b.ctx, backoff(failures)) {
 				return nil
 			}
 			continue
 		}
-		if started != nil {
-			child = started
-		}
+		waiting = false
 		failures = 0
 		err = b.serveApp(conn)
 		b.clearApp(conn)
@@ -210,118 +205,6 @@ func (b *Bridge) clearApp(conn *websocket.Conn) {
 	if b.app == conn {
 		b.app = nil
 	}
-}
-
-func ensureAppServer(ctx context.Context) (*websocket.Conn, *exec.Cmd, error) {
-	if conn, err := dialAppServer(ctx); err == nil {
-		return conn, nil, nil
-	}
-	if os.Getenv("REPOWIRE_CODEX_APP_SERVER_MANAGED") == "1" {
-		return nil, nil, errors.New("managed Codex App Server is not accepting connections")
-	}
-	codex, err := exec.LookPath("codex")
-	if err != nil {
-		return nil, nil, errors.New("codex executable not found")
-	}
-	if err := os.MkdirAll(filepath.Dir(appServerSocket()), 0o700); err != nil {
-		return nil, nil, err
-	}
-	cmd := exec.Command(codex, "app-server", "--listen", "unix://")
-	cmd.Env = codexChildEnvironment(ctx)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Start(); err != nil {
-		return nil, nil, fmt.Errorf("start Codex App Server: %w", err)
-	}
-	go func() { _ = cmd.Wait() }()
-	deadline := time.NewTimer(10 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(100 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		if conn, err := dialAppServer(ctx); err == nil {
-			return conn, cmd, nil
-		}
-		select {
-		case <-ctx.Done():
-			_ = cmd.Process.Kill()
-			return nil, nil, ctx.Err()
-		case <-deadline.C:
-			_ = cmd.Process.Kill()
-			return nil, nil, errors.New("Codex App Server did not create its control socket within 10s")
-		case <-tick.C:
-		}
-	}
-}
-
-func codexChildEnvironment(ctx context.Context) []string {
-	env := os.Environ()
-	keys := configuredProviderEnvKeys()
-	var missing []string
-	for _, key := range keys {
-		if os.Getenv(key) == "" {
-			missing = append(missing, key)
-		}
-	}
-	if len(missing) == 0 {
-		return env
-	}
-	snapshotCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		for _, candidate := range []string{"/bin/zsh", "/bin/bash"} {
-			if _, err := os.Stat(candidate); err == nil {
-				shell = candidate
-				break
-			}
-		}
-	}
-	if shell == "" {
-		log.Printf("codex bridge: provider environment unavailable for %s: no login shell", strings.Join(missing, ", "))
-		return env
-	}
-	out, err := exec.CommandContext(snapshotCtx, shell, "-l", "-i", "-c", "env").Output()
-	if err != nil {
-		log.Printf("codex bridge: provider environment unavailable for %s: %v", strings.Join(missing, ", "), err)
-		return env
-	}
-	values := map[string]string{}
-	for _, line := range strings.Split(string(out), "\n") {
-		key, value, ok := strings.Cut(line, "=")
-		if ok {
-			values[key] = value
-		}
-	}
-	for _, key := range missing {
-		if value := values[key]; value != "" {
-			env = append(env, key+"="+value)
-		} else {
-			log.Printf("codex bridge: provider environment %s is not set; rerun setup from a configured shell", key)
-		}
-	}
-	return env
-}
-
-func configuredProviderEnvKeys() []string {
-	root := os.Getenv("CODEX_HOME")
-	if root == "" {
-		home, _ := os.UserHomeDir()
-		root = filepath.Join(home, ".codex")
-	}
-	raw, err := os.ReadFile(filepath.Join(root, "config.toml"))
-	if err != nil {
-		return nil
-	}
-	seen := map[string]bool{}
-	var keys []string
-	for _, match := range providerEnvKey.FindAllSubmatch(raw, -1) {
-		key := string(match[1])
-		if !seen[key] {
-			seen[key] = true
-			keys = append(keys, key)
-		}
-	}
-	return keys
 }
 
 func appServerSocket() string {
