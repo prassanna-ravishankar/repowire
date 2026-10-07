@@ -83,20 +83,21 @@ const CHAPTERS: Chapter[] = [
   {
     id: "why",
     num: "§ 6",
-    title: "Every commit remembers why.",
+    title: "Commits that remember why.",
     body: (
       <>
-        Agent commits carry <code>Repowire-Thread</code> and <code>Repowire-Session</code> trailers.
-        Months later, <code>repowire why</code> replays the conversations that produced a commit: who
-        asked, who answered, and what they agreed.
+        Turn on the commit hook in a repository and every commit made from a registered agent pane
+        carries <code>Repowire-Thread</code> trailers for the asks it closed since the last commit,
+        plus a <code>Repowire-Session</code> trailer. <code>repowire why</code> then replays those
+        threads: who asked, who answered, and how it closed.
       </>
     ),
     points: [
-      { k: "Trailers", v: "Added by the commit hook" },
-      { k: "Replay", v: "Ask threads behind any commit" },
-      { k: "Output", v: "Readable, or --json" },
+      { k: "Opt-in", v: "Per repository, never overwrites a hook" },
+      { k: "Trailers", v: "One per closed ask since HEAD" },
+      { k: "Replay", v: "repowire why [COMMIT], or --json" },
     ],
-    code: "repowire why HEAD~3",
+    code: "repowire setup --git-hooks",
     figure: {
       name: "branches",
       caption: "A branch forks off main and merges back. Point at a commit to raise its history.",
