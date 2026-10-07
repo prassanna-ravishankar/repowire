@@ -80,20 +80,20 @@ messages into an idle ChatGPT conversation.
 ## OAuth contract
 
 The implementation uses `go-oauth2/oauth2/v4` for authorization codes, PKCE,
-exchange validation, expiry, and refresh rotation, backed by transactional SQLite
+exchange validation, expiry, and refresh rotation, backed by indexed, transactional SQLite
 storage. MCP uses the official Go SDK in stateless JSON-response mode.
 
 - Discovery: `/.well-known/oauth-protected-resource/mcp` (also the root metadata
   path) and `/.well-known/oauth-authorization-server`.
 - Public-client dynamic registration: `POST /oauth/register`, with exact HTTPS
-  redirect URIs (HTTP loopback callbacks allowed), and
+  redirect URIs (HTTP loopback callbacks allow a new ephemeral port, with all other components fixed), and
   `token_endpoint_auth_method: none`. Client registration is rate-limited.
 - Authorization: `/oauth/authorize`, response type `code`, PKCE `S256` only,
   browser-bound consent, and `resource` equal to the canonical issuer plus `/mcp`.
 - Token exchange: `POST /oauth/token` with URL-encoded parameters, including
   `client_id` and `resource`. Supports `authorization_code` and `refresh_token`.
 - Scope: `agents:read` is required; add `agents:write` for messaging. Omitted scope
-  defaults to read-only. Refresh cannot change scope; reconnect to change grants.
+  defaults to read-only. Refresh may narrow scope; reconnect to add messaging access.
 - Access tokens expire after 15 minutes. Refresh tokens rotate on every exchange.
   Grants have an absolute 30-day lifetime, after which consent is required again.
   Refresh works while local daemons are offline.
@@ -150,3 +150,19 @@ state. Losing it invalidates app registrations, grants, and refresh tokens.
 The relay must be reachable by the MCP client, and the agent machine must maintain
 its outbound relay connection. An offline machine produces a tool error; token
 refresh itself does not depend on that machine being online.
+
+Registration stores at most 4,096 unused clients with a 24-hour lifetime; the oldest
+unused registration is evicted when full. Clients with an activated grant remain
+registered for 90 days from their latest token exchange. If a cached registration
+expires, the authorization error directs users to remove and re-add the connector. Total redirect URI text
+is limited to 4 KiB per registration. Consent forms carry signed, browser-bound
+state using Gorilla securecookie; merely opening a form writes no pending records.
+Abandoned authorization codes and inactive grants expire after one minute.
+Token checks perform indexed, read-only lookups. Expiry cleanup runs on writes.
+
+Registration is rate-limited per source IP (five initial requests, replenishing
+one per minute), with a separate global ceiling. Behind an access-controlled
+Cloudflare proxy, set `REPOWIRE_RELAY_TRUST_CF_CONNECTING_IP=true` (Helm:
+`oauth.trustCloudflareIP=true`) only when the origin rejects direct traffic and
+its trusted ingress preserves or sanitizes that header. Otherwise headers are
+ignored and the socket address is used; clients behind one proxy share a bucket.

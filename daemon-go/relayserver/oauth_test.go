@@ -161,7 +161,7 @@ func TestOAuthLifecycleAndRestart(t *testing.T) {
 		}
 	}
 	var raw string
-	if e := store.db.QueryRow("SELECT data FROM oauth_state").Scan(&raw); e != nil {
+	if e := store.db.QueryRow("SELECT group_concat(data) FROM oauth_records").Scan(&raw); e != nil {
 		t.Fatal(e)
 	}
 	for _, secret := range []string{f.key, refresh, access, next["refresh_token"].(string)} {
@@ -285,9 +285,9 @@ func TestOAuthExpiryOfflineRefreshAndStorageFailure(t *testing.T) {
 	tokens := f.tokens(t, oauthRead)
 	access, refresh := tokens["access_token"].(string), tokens["refresh_token"].(string)
 	err := f.s.oauth.store.update(func(d *oauthData) error {
-		token := d.Access[secretHash(access)]
+		token, _ := d.Access.get(secretHash(access))
 		token.AccessCreateAt = time.Now().Add(-time.Hour)
-		d.Access[secretHash(access)] = token
+		d.Access.put(secretHash(access), token)
 		return nil
 	})
 	if err != nil {
@@ -304,9 +304,9 @@ func TestOAuthExpiryOfflineRefreshAndStorageFailure(t *testing.T) {
 		t.Fatalf("offline refresh failed: %v", next)
 	}
 	err = f.s.oauth.store.update(func(d *oauthData) error {
-		for id, g := range d.Grants {
+		for _, g := range d.Grants.list(key.UserID) {
 			g.Expires = time.Now().Add(-time.Second)
-			d.Grants[id] = g
+			d.Grants.put(g.ID, g)
 		}
 		return nil
 	})

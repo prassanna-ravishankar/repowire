@@ -45,3 +45,15 @@ The `relay` block reports the real connection, not just the config flag:
 ## Remote MCP and OAuth
 
 See [Relay MCP](../reference/relay-mcp.md) for the OAuth connection flow, remote tools, token refresh and revocation, and portable/Claude plugin installation. The remote surface is a scoped companion to the local daemon MCP tools.
+
+OAuth-enabled relay deployments use one replica and a retained RWO volume. The
+Recreate rollout briefly disconnects clients while the relay pod restarts; durable
+grants survive, and daemons reconnect through their existing relay transport.
+
+The hosted chart marks its route as Cloudflare-proxied, but this repository does
+not establish that the gateway rejects direct origin traffic or sanitizes
+`CF-Connecting-IP`. Before rolling out public OAuth registration, verify that
+restriction and then enable `oauth.trustCloudflareIP`. It defaults to `false` for
+safe self-hosting. Until configured, clients routed through one gateway share its
+registration bucket, so one caller can exhaust registration capacity temporarily.
+The application cannot safely infer proxy trust from the presence of a header.

@@ -2,6 +2,7 @@ package relayserver
 
 import (
 	"crypto/subtle"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -14,7 +15,7 @@ import (
 	"time"
 
 	"github.com/go-oauth2/oauth2/v4"
-	"golang.org/x/time/rate"
+	"github.com/gorilla/securecookie"
 )
 
 var errInvalidAccess = errors.New("invalid access token")
@@ -27,7 +28,8 @@ const grantLifetime = 30 * 24 * time.Hour
 type relayOAuth struct {
 	issuer            string
 	store             *oauthStore
-	registrationLimit *rate.Limiter
+	registrationLimit *oauthRegistrationLimit
+	consent           *securecookie.SecureCookie
 }
 
 // EnableMCP must run before serving. A stable externally visible issuer and
@@ -45,17 +47,31 @@ func (s *Server) EnableMCP(issuer, statePath string) error {
 	if err != nil {
 		return err
 	}
+	var sealKey string
 	if err := store.update(func(d *oauthData) error {
-		if d.Issuer != "" && d.Issuer != issuer {
+		var previous string
+		err := d.tx.QueryRow("SELECT value FROM oauth_settings WHERE key='issuer'").Scan(&previous)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if previous != "" && previous != issuer {
 			return fmt.Errorf("OAuth database belongs to a different issuer")
 		}
-		d.Issuer = issuer
-		return nil
+		if _, err = d.tx.Exec("INSERT OR IGNORE INTO oauth_settings(key,value) VALUES('issuer',?)", issuer); err != nil {
+			return err
+		}
+		err = d.tx.QueryRow("SELECT value FROM oauth_settings WHERE key='consent_key'").Scan(&sealKey)
+		if errors.Is(err, sql.ErrNoRows) {
+			sealKey = randomID("", 32)
+			_, err = d.tx.Exec("INSERT INTO oauth_settings(key,value) VALUES('consent_key',?)", sealKey)
+		}
+		return err
 	}); err != nil {
 		_ = store.db.Close()
 		return err
 	}
-	s.oauth = &relayOAuth{issuer: issuer, store: store, registrationLimit: rate.NewLimiter(rate.Every(time.Second), 20)}
+	codec := securecookie.New([]byte(sealKey), nil).MaxAge(600).MaxLength(12 << 10).SetSerializer(securecookie.JSONEncoder{})
+	s.oauth = &relayOAuth{issuer: issuer, store: store, registrationLimit: newOAuthRegistrationLimit(), consent: codec}
 	s.oauthRoutes()
 	s.registerRelayMCP()
 	return nil
@@ -107,8 +123,8 @@ func (s *Server) oauthMetadata(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"issuer": base, "authorization_endpoint": base + "/oauth/authorize", "token_endpoint": base + "/oauth/token", "registration_endpoint": base + "/oauth/register", "revocation_endpoint": base + "/oauth/revoke", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "token_endpoint_auth_methods_supported": []string{"none"}, "revocation_endpoint_auth_methods_supported": []string{"none"}, "code_challenge_methods_supported": []string{"S256"}, "scopes_supported": []string{oauthRead, oauthWrite}, "authorization_response_iss_parameter_supported": true})
 }
 func (s *Server) oauthRegister(w http.ResponseWriter, r *http.Request) {
-	if !s.oauth.registrationLimit.Allow() {
-		w.Header().Set("Retry-After", "1")
+	if !s.oauth.registrationLimit.allow(r) {
+		w.Header().Set("Retry-After", "60")
 		oauthError(w, 429, "temporarily_unavailable", "Too many client registrations")
 		return
 	}
@@ -119,9 +135,11 @@ func (s *Server) oauthRegister(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 400, "invalid_client_metadata", "Public clients with redirect_uris are required")
 		return
 	}
+	redirectBytes := 0
 	for _, raw := range c.Redirects {
+		redirectBytes += len(raw)
 		u, e := url.Parse(raw)
-		if e != nil || !validHTTPSOrLoopback(u) || len(raw) > 2048 {
+		if e != nil || !validHTTPSOrLoopback(u) || len(raw) > 2048 || redirectBytes > 4096 {
 			oauthError(w, 400, "invalid_redirect_uri", "Use HTTPS or a loopback HTTP callback without fragments or credentials")
 			return
 		}
@@ -132,10 +150,10 @@ func (s *Server) oauthRegister(w http.ResponseWriter, r *http.Request) {
 		c.Name = "MCP client"
 	}
 	err := s.oauth.store.update(func(d *oauthData) error {
-		if len(d.Clients) >= 10000 {
-			return fmt.Errorf("registration capacity reached")
-		}
-		d.Clients[c.ID] = c
+		// Unused registrations expire after a day. Evict the oldest unlinked
+		// registrations at capacity; anonymous clients cannot permanently fill it.
+		_, d.err = d.tx.Exec(`DELETE FROM oauth_records WHERE kind='client' AND owner='unlinked' AND key IN (SELECT key FROM oauth_records WHERE kind='client' AND owner='unlinked' ORDER BY expires DESC LIMIT -1 OFFSET 4095)`)
+		d.Clients.put(c.ID, storedOAuthClient{oauthClient: c, Expires: time.Now().Add(24 * time.Hour)})
 		return nil
 	})
 	if err != nil {
@@ -174,10 +192,14 @@ func parseOAuthForm(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 func (s *Server) browserNonce(w http.ResponseWriter, r *http.Request) string {
+	nonce := ""
 	if c, e := r.Cookie("rw_oauth_csrf"); e == nil && len(c.Value) == 43 {
-		return c.Value
+		nonce = c.Value
 	}
-	nonce := randomID("", 32)
+	if nonce == "" {
+		nonce = randomID("", 32)
+	}
+	// Renew the same nonce so other open consent tabs remain valid.
 	http.SetCookie(w, &http.Cookie{Name: "rw_oauth_csrf", Value: nonce, Path: "/oauth", HttpOnly: true, Secure: strings.HasPrefix(s.oauth.issuer, "https:"), SameSite: http.SameSiteLaxMode, MaxAge: 600})
 	return nonce
 }
@@ -192,7 +214,7 @@ func (s *Server) sameOrigin(r *http.Request) bool {
 	return r.Header.Get("Origin") == "" || r.Header.Get("Origin") == s.oauth.issuer
 }
 
-var consentTemplate = template.Must(template.New("consent").Parse(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Connect Repowire</title><style>body{font:17px system-ui;max-width:520px;margin:8vh auto;padding:24px;color:#19283a;background:#f6f8fb}input,button{font:inherit;padding:12px;margin:8px 0}input{box-sizing:border-box;width:100%}button{cursor:pointer}small{color:#536275}</style></head><body><h1>Connect to Repowire</h1><p><strong>{{.Name}}</strong> requests access to your relay-connected machines.</p><p>Read agents and replies{{if .Write}}; send messages and work requests{{end}}.</p><p><small>Client-provided name. Callback: {{.Redirect}}</small></p><form method="post" action="/oauth/authorize"><input type="hidden" name="request" value="{{.Request}}">{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}{{if .LoggedIn}}<p>You are signed in to the relay.</p>{{else}}<label>Relay secret<input type="password" name="relay_secret" autocomplete="current-password" placeholder="rw_…" required></label>{{end}}<p>Access lasts up to 30 days. You can revoke it from Connected apps.</p><button name="decision" value="allow">Allow access</button> <button name="decision" value="deny" formnovalidate>Cancel</button></form></body></html>`))
+var consentTemplate = template.Must(template.New("consent").Parse(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Connect Repowire</title><style>body{font:17px system-ui;max-width:520px;margin:8vh auto;padding:24px;color:#19283a;background:#f6f8fb}input,button{font:inherit;padding:12px;margin:8px 0}input{box-sizing:border-box;width:100%}button{cursor:pointer}small{color:#536275}</style></head><body><h1>Connect to Repowire</h1><p><strong>{{.Name}}</strong> requests access to your relay-connected machines.</p><p>Read agents and replies{{if .Write}}; send messages and work requests{{end}}.</p><p><small>Client-provided name. Callback: {{.Redirect}}</small></p><form method="post" action="/oauth/authorize"><input type="hidden" name="request" value="{{.Request}}">{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}{{if .LoggedIn}}<p>You are signed in to the relay.</p>{{else}}<label>Relay secret<input type="password" name="relay_secret" autocomplete="current-password" placeholder="rw_…" required></label>{{end}}<p>Access lasts up to 30 days. You can revoke it from Connected apps. Allowing access also signs this browser into your relay dashboard for 30 days.</p><button name="decision" value="allow">Allow access</button> <button name="decision" value="deny" formnovalidate>Cancel</button></form></body></html>`))
 
 func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 	oauthHeaders(w)
@@ -207,22 +229,26 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nonce := s.browserNonce(w, r)
-	id := randomID("", 32)
-	var c oauthClient
-	err := s.oauth.store.update(func(d *oauthData) error {
+	var c storedOAuthClient
+	err := s.oauth.store.view(func(d *oauthData) error {
 		var ok bool
-		c, ok = d.Clients[q.Get("client_id")]
-		if !ok || !contains(c.Redirects, q.Get("redirect_uri")) {
-			return fmt.Errorf("Unknown client or redirect URI")
+		c, ok = d.Clients.get(q.Get("client_id"))
+		if !ok {
+			return fmt.Errorf("Client registration expired or is unknown. Remove and re-add this connector in your MCP client, then reconnect")
 		}
-		if len(d.Pending) >= 1000 {
-			return fmt.Errorf("Too many pending authorizations")
+		if !matchesRedirect(c.Redirects, q.Get("redirect_uri")) {
+			return fmt.Errorf("Redirect URI is not registered for this client")
 		}
-		d.Pending[secretHash(id)] = oauthPending{c.ID, q.Get("redirect_uri"), q.Get("code_challenge"), scope, q.Get("state"), secretHash(nonce), time.Now().Add(10 * time.Minute)}
 		return nil
 	})
 	if err != nil {
 		oauthError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	p := oauthPending{ID: randomID("", 32), ClientID: c.ID, Redirect: q.Get("redirect_uri"), Challenge: q.Get("code_challenge"), Scope: scope, State: q.Get("state"), Browser: secretHash(nonce), Expires: time.Now().Add(10 * time.Minute)}
+	id, err := s.oauth.consent.Encode("consent", p)
+	if err != nil {
+		oauthError(w, 500, "server_error", "Cannot prepare consent")
 		return
 	}
 	_, logged := s.cookieKey(r)
@@ -246,18 +272,21 @@ func (s *Server) oauthConsent(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 400, "invalid_request", "Choose allow or deny")
 		return
 	}
+	var p oauthPending
+	if s.oauth.consent.Decode("consent", r.PostForm.Get("request"), &p) != nil || !time.Now().Before(p.Expires) || !browserProof(r, p.Browser) {
+		oauthError(w, 400, "invalid_request", "Authorization expired or browser session changed")
+		return
+	}
 	// An arbitrary well-shaped key is a namespace, not proof of an existing mesh.
 	// First authorization requires the daemon holding that exact secret online.
 	if decision == "allow" && (!ok || s.anyDaemon(key.UserID) == nil) {
-		var pending oauthPending
-		var client oauthClient
-		err := s.oauth.store.update(func(d *oauthData) error {
+		var client storedOAuthClient
+		err := s.oauth.store.view(func(d *oauthData) error {
 			var exists bool
-			pending, exists = d.Pending[secretHash(r.PostForm.Get("request"))]
-			if !exists || !browserProof(r, pending.Browser) {
-				return fmt.Errorf("Authorization expired or browser session changed")
+			client, exists = d.Clients.get(p.ClientID)
+			if !exists {
+				return fmt.Errorf("Unknown client")
 			}
-			client = d.Clients[pending.ClientID]
 			return nil
 		})
 		if err != nil {
@@ -266,21 +295,21 @@ func (s *Server) oauthConsent(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusForbidden)
-		_ = consentTemplate.Execute(w, map[string]any{"Name": client.Name, "Redirect": pending.Redirect, "Request": r.PostForm.Get("request"), "Write": contains(strings.Fields(pending.Scope), oauthWrite), "Error": "No connected daemon matches this secret. Check the secret and ensure your daemon is online, then try again."})
+		_ = consentTemplate.Execute(w, map[string]any{"Name": client.Name, "Redirect": p.Redirect, "Request": r.PostForm.Get("request"), "Write": contains(strings.Fields(p.Scope), oauthWrite), "Error": "No connected daemon matches this secret. Check the secret and ensure your daemon is online, then try again."})
 		return
 	}
-	var p oauthPending
 	var code string
 	err := s.oauth.store.update(func(d *oauthData) error {
-		var exists bool
-		p, exists = d.Pending[secretHash(r.PostForm.Get("request"))]
-		if !exists || !browserProof(r, p.Browser) {
-			return fmt.Errorf("Authorization expired or browser session changed")
+		if _, exists := d.Consumed.get(p.ID); exists {
+			return fmt.Errorf("Consent was already used")
 		}
-		delete(d.Pending, secretHash(r.PostForm.Get("request")))
+		if _, exists := d.Clients.get(p.ClientID); !exists {
+			return fmt.Errorf("Unknown client")
+		}
 		if decision == "allow" {
+			d.Consumed.put(p.ID, p)
 			id := randomID("rwg_", 24)
-			d.Grants[id] = oauthGrant{id, key.UserID, p.ClientID, p.Scope, time.Now().Add(grantLifetime), false}
+			d.Grants.put(id, oauthGrant{ID: id, UserID: key.UserID, ClientID: p.ClientID, Scope: p.Scope, Expires: time.Now().Add(time.Minute)})
 			manager, _ := oauthEngine(d)
 			ti, err := manager.GenerateAuthToken(r.Context(), oauth2.Code, &oauth2.TokenGenerateRequest{ClientID: p.ClientID, UserID: id, RedirectURI: p.Redirect, Scope: p.Scope, CodeChallenge: p.Challenge, CodeChallengeMethod: oauth2.CodeChallengeS256})
 			if err != nil {
@@ -327,16 +356,16 @@ func (s *Server) oauthExchange(w http.ResponseWriter, r *http.Request) {
 		// Tombstones retain the grant linkage until absolute expiry. A replay
 		// revokes the whole family in the same transaction as its detection.
 		if f.Get("grant_type") == "refresh_token" {
-			if id, used := d.UsedRefresh[secretHash(f.Get("refresh_token"))]; used {
-				g := d.Grants[id]
-				if g.ClientID == f.Get("client_id") {
+			if replay, used := d.UsedRefresh.get(secretHash(f.Get("refresh_token"))); used {
+				g, ok := d.Grants.get(replay.GrantID)
+				if ok && g.ClientID == f.Get("client_id") {
 					g.Revoked = true
-					d.Grants[id] = g
+					d.Grants.put(g.ID, g)
 				}
 				reject("Refresh token was already used; reconnect")
 				return nil
 			}
-			t, ok := d.Refresh[secretHash(f.Get("refresh_token"))]
+			t, ok := d.Refresh.get(secretHash(f.Get("refresh_token")))
 			if !ok || t.ClientID != f.Get("client_id") {
 				reject("Refresh token does not belong to this client")
 				return nil
@@ -369,15 +398,15 @@ func (s *Server) oauthRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	err := s.oauth.store.update(func(d *oauthData) error {
 		hash := secretHash(r.PostForm.Get("token"))
-		t, ok := d.Refresh[hash]
+		t, ok := d.Refresh.get(hash)
 		if !ok {
-			t, ok = d.Access[hash]
+			t, ok = d.Access.get(hash)
 		}
 		if ok {
-			g := d.Grants[t.UserID]
-			if g.ClientID == r.PostForm.Get("client_id") {
+			g, exists := d.Grants.get(t.UserID)
+			if exists && g.ClientID == r.PostForm.Get("client_id") {
 				g.Revoked = true
-				d.Grants[g.ID] = g
+				d.Grants.put(g.ID, g)
 			}
 		}
 		return nil
@@ -394,15 +423,16 @@ func (s *Server) accessGrant(r *http.Request) (oauthGrant, error) {
 		return grant, errInvalidAccess
 	}
 	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	err := s.oauth.store.update(func(d *oauthData) error {
+	err := s.oauth.store.view(func(d *oauthData) error {
 		manager, _ := oauthEngine(d)
 		ti, err := manager.LoadAccessToken(r.Context(), raw)
 		if err != nil {
 			return nil
 		}
-		g, ok := d.Grants[ti.GetUserID()]
+		g, ok := d.Grants.get(ti.GetUserID())
 		if ok && !g.Revoked {
 			grant = g
+			grant.Scope = ti.GetScope()
 		}
 		return nil
 	})
@@ -423,10 +453,11 @@ func (s *Server) oauthConnections(w http.ResponseWriter, r *http.Request) {
 	nonce := s.browserNonce(w, r)
 	rows := []map[string]string{}
 	if ok {
-		err := s.oauth.store.update(func(d *oauthData) error {
-			for _, g := range d.Grants {
-				if g.UserID == key.UserID && !g.Revoked {
-					rows = append(rows, map[string]string{"ID": g.ID, "Name": d.Clients[g.ClientID].Name, "Scope": g.Scope, "Expires": g.Expires.Format(time.RFC3339)})
+		err := s.oauth.store.view(func(d *oauthData) error {
+			for _, g := range d.Grants.list(key.UserID) {
+				if g.UserID == key.UserID && !g.Revoked && g.Active {
+					client, _ := d.Clients.get(g.ClientID)
+					rows = append(rows, map[string]string{"ID": g.ID, "Name": client.Name, "Scope": g.Scope, "Expires": g.Expires.Format(time.RFC3339)})
 				}
 			}
 			return nil
@@ -449,10 +480,10 @@ func (s *Server) oauthDisconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.oauth.store.update(func(d *oauthData) error {
-		g, ok := d.Grants[r.PostForm.Get("grant")]
+		g, ok := d.Grants.get(r.PostForm.Get("grant"))
 		if ok && g.UserID == key.UserID {
 			g.Revoked = true
-			d.Grants[g.ID] = g
+			d.Grants.put(g.ID, g)
 		}
 		return nil
 	})
@@ -461,4 +492,29 @@ func (s *Server) oauthDisconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/oauth/connections", 303)
+}
+
+// RFC 8252 permits native clients to choose a fresh ephemeral loopback port.
+// All other URI components still match exactly; code exchange remains bound to
+// the actual redirect URI used for that authorization.
+func matchesRedirect(registered []string, actual string) bool {
+	for _, raw := range registered {
+		if raw == actual {
+			return true
+		}
+		want, e1 := url.Parse(raw)
+		got, e2 := url.Parse(actual)
+		if e1 != nil || e2 != nil || want.Scheme != "http" || got.Scheme != "http" || !validHTTPSOrLoopback(want) || !validHTTPSOrLoopback(got) {
+			continue
+		}
+		if want.Hostname() != got.Hostname() {
+			continue
+		}
+		want.Host = want.Hostname()
+		got.Host = got.Hostname()
+		if want.String() == got.String() {
+			return true
+		}
+	}
+	return false
 }

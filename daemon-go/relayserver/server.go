@@ -797,6 +797,7 @@ func ListenAndServe(ctx context.Context, addr, webOut string) error {
 		if err := relay.EnableMCP(issuer, os.Getenv("REPOWIRE_RELAY_OAUTH_DB")); err != nil {
 			return err
 		}
+		relay.oauth.registrationLimit.trustCloudflareIP = os.Getenv("REPOWIRE_RELAY_TRUST_CF_CONNECTING_IP") == "true"
 	}
 	defer relay.Close()
 	server := &http.Server{Addr: addr, Handler: relay.Handler(), ReadHeaderTimeout: 10 * time.Second}

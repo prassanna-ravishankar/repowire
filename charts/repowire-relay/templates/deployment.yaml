@@ -51,6 +51,8 @@ spec:
           value: {{ required "oauth.issuer is required" .Values.oauth.issuer | quote }}
         - name: REPOWIRE_RELAY_OAUTH_DB
           value: /data/oauth.db
+        - name: REPOWIRE_RELAY_TRUST_CF_CONNECTING_IP
+          value: {{ .Values.oauth.trustCloudflareIP | quote }}
         volumeMounts:
         - name: oauth-state
           mountPath: /data
