@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "repowire-remote": {
+      "type": "http",
+      "url": "https://relay.repowire.io/mcp"
+    }
+  }
+}

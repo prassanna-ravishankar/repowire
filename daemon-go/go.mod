@@ -4,16 +4,20 @@ go 1.25.0
 
 require (
 	github.com/coder/websocket v1.8.15
+	github.com/go-oauth2/oauth2/v4 v4.6.0
+	github.com/gorilla/securecookie v1.1.2
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.34.0
+	golang.org/x/time v0.14.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.34.4
 )
 
 require (
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
-	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect

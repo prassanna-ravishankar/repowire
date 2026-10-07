@@ -89,3 +89,7 @@ The relay serves the dashboard static export. API and SSE traffic tunnel back to
 - [Operate: relay](../../operate/relay.md)
 - [Auth and security](../../operate/security.md)
 - [Relay key rotation](../../troubleshooting/relay-keys.md)
+
+## Talk to agents through remote MCP
+
+See [Relay MCP](../../reference/relay-mcp.md) for the OAuth connection flow, remote tools, token refresh and revocation, and portable/Claude plugin installation. The remote surface is a scoped companion to the local daemon MCP tools.

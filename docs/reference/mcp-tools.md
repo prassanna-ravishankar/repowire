@@ -492,3 +492,7 @@ Revoke a share link. Active SSE connections on that link receive a
 - [Message types](../concepts/message-types.md) covers the semantics of `ask`, `ack`, `notify_peer`, and `broadcast` at a higher level.
 - The [orchestrator pattern](../concepts/orchestrator.md) shows where `orchestrator_status`, `review_queue`, and the scheduling tools fit together.
 - [Session sharing](../use/features/session-sharing.md) — full usage guide with examples.
+
+## Relay MCP
+
+See [Relay MCP](relay-mcp.md) for the OAuth connection flow, remote tools, token refresh and revocation, and portable/Claude plugin installation. The remote surface is a scoped companion to the local daemon MCP tools.

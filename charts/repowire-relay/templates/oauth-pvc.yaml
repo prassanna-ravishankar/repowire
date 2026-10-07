@@ -1,0 +1,17 @@
+{{- if .Values.oauth.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-oauth
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if .Values.oauth.storageClassName }}
+  storageClassName: {{ .Values.oauth.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.oauth.storage | quote }}
+{{- end }}

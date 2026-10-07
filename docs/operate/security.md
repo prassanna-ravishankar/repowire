@@ -49,3 +49,14 @@ For the hosted relay at `repowire.io`, this means the operators *could* see your
 - Audit logging on the relay beyond connection-level events.
 
 These are not present in the MVP. If your threat model requires them, the right call is to keep `relay.enabled: false` and run repowire purely local.
+
+## Remote MCP authorization
+
+The relay's separate [MCP endpoint](../reference/relay-mcp.md) uses OAuth code +
+S256 PKCE, scoped grants, rotating refresh tokens, and immediate grant revocation
+for subsequent requests. The full relay secret defines the owner namespace;
+it is entered on the relay login/consent page and never included in the plugin
+package or sent to an MCP client. Protect the persistent OAuth database.
+The daemon's localhost-only administrative MCP endpoint remains blocked by the
+relay tunnel. Remote messaging can cause agents to modify their projects, so
+write tools are marked potentially destructive and require `agents:write`.

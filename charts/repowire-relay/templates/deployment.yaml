@@ -1,3 +1,6 @@
+{{- if and .Values.oauth.enabled (ne (int .Values.replicaCount) 1) }}
+{{- fail "OAuth uses a single SQLite owner; replicaCount must be 1" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,6 +10,10 @@ metadata:
     app: {{ .Release.Name }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  {{- if .Values.oauth.enabled }}
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}
@@ -15,6 +22,14 @@ spec:
       labels:
         app: {{ .Release.Name }}
     spec:
+      {{- if .Values.oauth.enabled }}
+      securityContext:
+        fsGroup: 10001
+      volumes:
+      - name: oauth-state
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-oauth
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -30,6 +45,18 @@ spec:
         ports:
         - containerPort: {{ .Values.relay.port }}
         command: ["repowire", "relay", "start", "--host", "{{ .Values.relay.host }}", "--port", "{{ .Values.relay.port }}"]
+        {{- if .Values.oauth.enabled }}
+        env:
+        - name: REPOWIRE_RELAY_OAUTH_ISSUER
+          value: {{ required "oauth.issuer is required" .Values.oauth.issuer | quote }}
+        - name: REPOWIRE_RELAY_OAUTH_DB
+          value: /data/oauth.db
+        - name: REPOWIRE_RELAY_TRUST_CF_CONNECTING_IP
+          value: {{ .Values.oauth.trustCloudflareIP | quote }}
+        volumeMounts:
+        - name: oauth-state
+          mountPath: /data
+        {{- end }}
         resources:
           {{- toYaml .Values.resources | nindent 10 }}
         livenessProbe:

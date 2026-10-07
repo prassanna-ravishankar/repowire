@@ -543,3 +543,48 @@ func TestAskHistoryReadsClosedThreadsFromLedger(t *testing.T) {
 		t.Fatalf("closed detail = %v", got["closed"])
 	}
 }
+
+// A remote HTTP caller need not have a live peer. Pull delivery must be set
+// before the recipient can reply, not only when a waiter eventually arrives.
+func TestPullAskImmediateReplyAndUnregisteredOutbound(t *testing.T) {
+	target := peerWith("target-id", "worker", "one", proto.StatusOnline)
+	reg := newAskFakeRegistry(target)
+	transport := &fakeTransport{ackFrame: map[string]any{"status": "injected"}}
+	srv, asks := newAskTestHub(t, reg, transport)
+	response := postJSON(t, srv.URL+"/ask", AskRequest{FromPeer: "external-reader", ToPeer: string(target.PeerID), Text: "question", ReplyDelivery: "pull"})
+	defer response.Body.Close()
+	var opened AskResponse
+	if response.StatusCode != 200 || json.NewDecoder(response.Body).Decode(&opened) != nil {
+		t.Fatalf("open: %d", response.StatusCode)
+	}
+	ask, _ := asks.Get(opened.CorrelationID)
+	if ask.ReplyDelivery != "pull" {
+		t.Fatal("pull not set on creation")
+	}
+	reply := "answer before first wait"
+	ack := postJSON(t, srv.URL+"/ack", AckRequest{CorrelationID: opened.CorrelationID, Message: &reply})
+	ack.Body.Close()
+	if ack.StatusCode != 200 {
+		t.Fatalf("ack: %d", ack.StatusCode)
+	}
+	zero := float64(0)
+	wait := postJSON(t, srv.URL+"/asks/"+opened.CorrelationID+"/wait", AskWaitRequest{PeerID: "external-reader", TimeoutSeconds: &zero})
+	defer wait.Body.Close()
+	var result AskWaitResponse
+	_ = json.NewDecoder(wait.Body).Decode(&result)
+	if wait.StatusCode != 200 || result.Reply == nil || *result.Reply != reply {
+		t.Fatalf("reply: %#v", result)
+	}
+	second := postJSON(t, srv.URL+"/ask", AskRequest{FromPeer: "external-reader", ToPeer: string(target.PeerID), Text: "more", ReplyDelivery: "pull"})
+	second.Body.Close()
+	pending, err := http.Get(srv.URL + "/asks/pending?peer_id=external-reader&direction=outbound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pending.Body.Close()
+	var list PendingAsksResponse
+	_ = json.NewDecoder(pending.Body).Decode(&list)
+	if pending.StatusCode != 200 || len(list.Asks) != 1 {
+		t.Fatalf("pending: %d %#v", pending.StatusCode, list)
+	}
+}

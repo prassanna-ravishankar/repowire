@@ -55,13 +55,14 @@ type pendingRequest struct {
 	ch   chan map[string]any
 }
 
-// Server is an in-memory relay. API keys and share links intentionally expire
-// when the process restarts, matching the previous hosted relay contract.
+// Server keeps live tunnel connections and share links in memory. Relay identity
+// is derived from the full secret; optional OAuth grants live in SQLite.
 type Server struct {
 	mu          sync.Mutex
 	connections map[string]*daemonConn
 	users       map[string]map[string]*daemonConn
 	pending     map[string]*pendingRequest
+	oauth       *relayOAuth
 	tokens      *tokenStore
 	webOut      string
 	timeout     time.Duration
@@ -791,7 +792,15 @@ func FindWebOutputDir() string {
 }
 
 func ListenAndServe(ctx context.Context, addr, webOut string) error {
-	server := &http.Server{Addr: addr, Handler: New(webOut).Handler(), ReadHeaderTimeout: 10 * time.Second}
+	relay := New(webOut)
+	if issuer := os.Getenv("REPOWIRE_RELAY_OAUTH_ISSUER"); issuer != "" {
+		if err := relay.EnableMCP(issuer, os.Getenv("REPOWIRE_RELAY_OAUTH_DB")); err != nil {
+			return err
+		}
+		relay.oauth.registrationLimit.trustCloudflareIP = os.Getenv("REPOWIRE_RELAY_TRUST_CF_CONNECTING_IP") == "true"
+	}
+	defer relay.Close()
+	server := &http.Server{Addr: addr, Handler: relay.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	done := make(chan error, 1)
 	go func() { done <- server.ListenAndServe() }()
 	select {

@@ -2,7 +2,9 @@ package relayserver
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"strings"
 	"sync"
 	"time"
@@ -28,48 +30,39 @@ func (t ShareToken) expired(now time.Time) bool {
 
 type tokenStore struct {
 	mu     sync.Mutex
-	keys   map[string]APIKey
 	shares map[string]ShareToken
 }
 
 func newTokenStore() *tokenStore {
-	return &tokenStore{keys: map[string]APIKey{}, shares: map[string]ShareToken{}}
+	return &tokenStore{shares: map[string]ShareToken{}}
 }
 
 func randomID(prefix string, bytes int) string {
 	raw := make([]byte, bytes)
 	if _, err := rand.Read(raw); err != nil {
-		return ""
+		panic("relay: cryptographic randomness unavailable")
 	}
 	return prefix + base64.RawURLEncoding.EncodeToString(raw)
 }
 
-func (s *tokenStore) register(userID string) APIKey {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, key := range s.keys {
-		if key.UserID == userID {
-			return key
-		}
-	}
-	key := APIKey{Key: randomID("rw_", 24), UserID: userID}
-	s.keys[key.Key] = key
-	return key
+// Relay keys are bearer capabilities: the entire secret defines the namespace.
+// Never let the public registration endpoint choose another user's identity.
+func (s *tokenStore) register(_ string) APIKey {
+	key := randomID("rw_", 24)
+	result, _ := s.validate(key)
+	return result
+}
+
+func secretHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *tokenStore) validate(key string) (APIKey, bool) {
-	if !strings.HasPrefix(key, "rw_") || len(key) < 10 {
+	if !strings.HasPrefix(key, "rw_") || len(key) < 10 || len(key) > 512 {
 		return APIKey{}, false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if found, ok := s.keys[key]; ok {
-		return found, true
-	}
-	userID := "token-" + key[len(key)-8:]
-	found := APIKey{Key: key, UserID: userID}
-	s.keys[key] = found
-	return found, true
+	return APIKey{Key: key, UserID: "token-" + secretHash(key)}, true
 }
 
 func (s *tokenStore) createShare(userID, peerName, permissions string, ttl time.Duration) ShareToken {
