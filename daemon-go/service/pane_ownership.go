@@ -66,6 +66,17 @@ type TmuxPaneEvidence struct {
 	TmuxSession string
 	CurrentPath string
 	PanePID     string
+	// ServerStart is the tmux server's start time (unix seconds). Pane ids are
+	// only unique within one server lifetime, so ownership records written
+	// before this instant cannot describe this pane. Zero when unknown.
+	ServerStart float64
+}
+
+// recordPredatesServer reports whether an ownership record was written before
+// the live tmux server started, i.e. it belongs to a pane id recycled by a new
+// server and is stale by construction.
+func recordPredatesServer(rec OwnershipRecord, ev *TmuxPaneEvidence) bool {
+	return ev != nil && ev.ServerStart > 0 && rec.CreatedAt > 0 && rec.CreatedAt < ev.ServerStart
 }
 
 // OwnershipValidation is the result of validating a durable ownership record.
@@ -219,19 +230,20 @@ func (o *fileOwnership) ValidateBootstrap(paneID string) OwnershipValidation {
 	if !ok {
 		return OwnershipValidation{OK: true, Evidence: ev}
 	}
-	// tmux pane ids are only unique for the lifetime of one tmux server. A pane
-	// such as %26 can therefore inherit an ownership record written for an old,
-	// now-unrelated session after tmux restarts. That record must not block a
-	// normal hook bootstrap: without it, this exact live pane would already be
-	// allowed to register from tmux evidence alone. Forget only when the tmux
-	// session itself differs. A window rename within the same session remains a
-	// fail-loud mismatch until UpdatePlacement has reconciled the durable proof.
-	if tmuxSessionName(rec.TmuxSession) != "" && ev.SessionName != "" && tmuxSessionName(rec.TmuxSession) != ev.SessionName {
-		o.Forget(paneID)
-		return OwnershipValidation{OK: true, Evidence: ev}
-	}
 	if rec.Machine != "" && rec.Machine != o.selfMachine {
 		return OwnershipValidation{Record: &rec, Evidence: ev, Error: "ownership_machine_mismatch", Hint: "Ownership proof was written on a different host."}
+	}
+	// tmux pane ids are only unique for the lifetime of one tmux server. A pane
+	// such as %26 can therefore inherit an ownership record written for an old,
+	// now-unrelated pane after tmux restarts. That record must not block a
+	// normal hook bootstrap: without it, this exact live pane would already be
+	// allowed to register from tmux evidence alone. A record older than the
+	// live server is stale by construction; so is one naming a different tmux
+	// session. A window rename within the same session on the same server
+	// remains a fail-loud mismatch until UpdatePlacement has reconciled the proof.
+	if recordPredatesServer(rec, ev) || (tmuxSessionName(rec.TmuxSession) != "" && ev.SessionName != "" && tmuxSessionName(rec.TmuxSession) != ev.SessionName) {
+		o.Forget(paneID)
+		return OwnershipValidation{OK: true, Evidence: ev}
 	}
 	if ev.TmuxSession != rec.TmuxSession || NormPath(ev.CurrentPath) != NormPath(rec.Path) {
 		return OwnershipValidation{Record: &rec, Evidence: ev, Error: "pane_identity_mismatch", Hint: "Live tmux pane evidence does not match the ownership proof."}
@@ -299,9 +311,9 @@ func (o *fileOwnership) validateDirect(p *proto.Peer) OwnershipValidation {
 			Hint: "Ownership proof no longer matches the peer backend/path/circle/role."}
 	}
 	ev := o.probe(paneID)
-	if ev == nil {
+	if ev == nil || recordPredatesServer(rec, ev) {
 		return OwnershipValidation{Record: &rec, Error: "pane_not_live",
-			Hint: "The recorded pane is not visible in tmux; refusing to use stale proof."}
+			Hint: "The recorded pane is not visible in tmux (or predates the running tmux server); refusing to use stale proof."}
 	}
 	if ev.TmuxSession != rec.TmuxSession || NormPath(ev.CurrentPath) != NormPath(rec.Path) {
 		return OwnershipValidation{Record: &rec, Evidence: ev, Error: "pane_identity_mismatch",
@@ -332,7 +344,7 @@ func (o *fileOwnership) findForPeer(p *proto.Peer) OwnershipValidation {
 		}
 		sawIdentity = true
 		ev := o.probe(rec.PaneID)
-		if ev == nil {
+		if ev == nil || recordPredatesServer(rec, ev) {
 			sawDead = true
 			continue
 		}
@@ -491,13 +503,17 @@ func realProbeTmuxPane(paneID string) *TmuxPaneEvidence {
 		return nil
 	}
 	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p",
-		"#{session_name}\t#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_pid}\t#{window_panes}").Output()
+		"#{session_name}\t#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_pid}\t#{window_panes}\t#{start_time}").Output()
 	if err != nil {
 		return nil
 	}
 	parts := strings.Split(strings.TrimRight(string(out), "\n"), "\t")
-	if len(parts) != 6 || parts[0] == "" || parts[1] == "" || parts[2] == "" || parts[4] == "" {
+	if len(parts) < 6 || parts[0] == "" || parts[1] == "" || parts[2] == "" || parts[4] == "" {
 		return nil
+	}
+	serverStart := 0.0
+	if len(parts) >= 7 {
+		serverStart, _ = strconv.ParseFloat(parts[6], 64) // older tmux: no start_time, stays 0
 	}
 	windowPanes, err := strconv.Atoi(parts[5])
 	if err != nil || windowPanes < 1 {
@@ -511,5 +527,6 @@ func realProbeTmuxPane(paneID string) *TmuxPaneEvidence {
 		TmuxSession: parts[0] + ":" + parts[2],
 		CurrentPath: parts[3],
 		PanePID:     parts[4],
+		ServerStart: serverStart,
 	}
 }
