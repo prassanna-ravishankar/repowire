@@ -50,6 +50,8 @@ an inherited environment, or a stale process.
 
 On registration, the daemon allocates a `peer_id` and builds a display name from the working directory and backend. If another active peer in the same circle already holds the display name, the daemon suffixes the new name. Offline same-name peers may be pruned so a fresh session can reclaim the name cleanly.
 
+**One live process is one peer.** Several registrants describe the same agent independently and in any order: the `SessionStart` hook, the MCP stdio proxy's lazy registration, and WebSocket reconnects. Before any name or `peer_id` logic runs, a registration carrying an `agent_pid` is matched against the peer already registered for that process on the same machine, backend, and compatible path. If one exists, the registration converges on it: metadata such as the hook session id is merged, the pane is confirmed, and nothing is suffixed or displaced. The live pid is the strongest evidence a registrant carries, so it wins over a stale `peer_id` claim. For process-scoped backends (Claude Code) the pid alone identifies the runtime, which also keeps a session `/clear` on the same peer. Session-scoped bridges that host many sessions in one process (OpenCode, Pi, Codex App Server) match only on an exact `runtime_session_id`; a registration from such a bridge that carries no session id (a WebSocket reconnect) skips runtime matching and defers to its claimed `peer_id`, so sibling sessions never bind to each other's identity.
+
 During hook-based `SessionStart`, the agent receives a compact self-identity context block from the daemon's effective peer record. That block includes the display name, peer id, circle, backend, role, project path, and branch when known. It is intentionally based on the daemon's `/peers` view, not only local tmux or spawn-hint guesses, so restored circle and role state are visible to the session.
 
 A reconnect may reclaim an existing `peer_id` only when the claim still describes the same peer identity. Today that check is intentionally narrow and v0.13-compatible:
@@ -181,6 +183,8 @@ receives model-only context showing the current value and asking for an update
 when the task changes.
 
 ## `last_seen` and liveness
+
+Stale-eviction evidence is exclusive. An offline peer past the eviction cutoff is spared only when its `agent_pid` is alive **and** no other registered peer holds the same runtime. The runtime is the pid for process-scoped backends and pid plus `runtime_session_id` for session-scoped bridges, so sibling sessions of one host process keep their own evidence. A runtime held by another record belongs to that record, so the offline peer has no evidence of its own and is evicted; when every holder is stale, the most recently seen one is kept and the duplicates evict. The `offline_peer_still_has_runtime_evidence` event marks the transition into the spared state once; it does not repeat on every repair pass.
 
 `last_seen` is the daemon's most recent activity timestamp for the peer. It is refreshed by registration, reconnect, status updates, description updates, role claims, and MCP `touch` calls. MCP tools touch on entry so outbound tool activity refreshes the liveness clock even if an inbound WebSocket hook dropped, but touch does not change the peer's transport status.
 

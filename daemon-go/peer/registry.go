@@ -237,12 +237,18 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	recoveredRetirement := false
+	claimPath := ""
+	if params.Path != nil {
+		claimPath = *params.Path
+	}
+	holder := r.liveRuntimeHolderLocked(params, claimPath)
 
 	// (a) Retirement guard. A claim naming a retired peer_id is an orphan ws-hook
 	// reconnect unless it proves a live agent or presents a daemon-validated
 	// runtime identity. Checked against `retired` (not `peers`) so it covers ids
-	// already evicted from the registry.
-	if params.ClaimedPeerID != nil {
+	// already evicted from the registry. A stale claim attached to a different
+	// live runtime holder is ignored rather than blocking or unretiring that id.
+	if params.ClaimedPeerID != nil && (holder == nil || holder.peer.PeerID == *params.ClaimedPeerID) {
 		if retirement, isRetired := r.retired[*params.ClaimedPeerID]; isRetired {
 			if retirement.Hard {
 				return "", "", ErrPeerRetired
@@ -258,17 +264,28 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 
 	now := time.Now().UTC()
 
+	displayName := r.buildDisplayName(params)
+
+	// (a2) Runtime identity: one live process is one peer. Hooks, the MCP stdio
+	// proxy, and ws reconnects all register the same agent independently and in
+	// any order; whichever lands first owns the identity and the rest converge on
+	// it instead of minting a suffixed twin that displaces the first record. The
+	// pid is the strongest evidence a registrant carries, so it wins over a
+	// stale peer_id claim. Session-scoped runtimes (one process, many sessions)
+	// additionally need the runtime session id to agree.
+	var id proto.PeerID
+	if holder != nil {
+		id = holder.peer.PeerID
+		if params.ClaimedPeerID != nil && *params.ClaimedPeerID != id {
+			log.Printf("repowire: runtime pid %d already registered as %s (%s); ignoring peer_id claim %s",
+				*params.AgentPID, holder.peer.DisplayName, id, *params.ClaimedPeerID)
+		}
+	}
+
 	// (b) Name-collision reclaim: reuse an existing identity when the runtime
 	// peer_id matches, or an existing peer holding the target display_name is
 	// Offline (clean takeover).
-	displayName := r.buildDisplayName(params)
-	claimPath := ""
-	if params.Path != nil {
-		claimPath = *params.Path
-	}
-
-	var id proto.PeerID
-	if params.ClaimedPeerID != nil {
+	if id == "" && params.ClaimedPeerID != nil {
 		cid := *params.ClaimedPeerID
 		// Reuse a claimed peer_id ONLY when it still describes the same identity:
 		// same backend and a compatible path. Stale pane/cert metadata from another
@@ -406,6 +423,9 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 				m.AgentPID = params.AgentPID
 			}
 			r.markMappingsDirtyLocked()
+		}
+		if r.rec != nil {
+			r.rec.clearSpared(id)
 		}
 		r.appendEvent(ctx, Event{Type: "peer_online", Timestamp: now, PeerID: id, PeerName: existing.peer.DisplayName, SessionID: id})
 		r.scheduleRedelivery(ctx, id)
@@ -646,6 +666,63 @@ func claimMatchesIdentity(existingBackend proto.AgentType, existingPath string, 
 	sameBackend := existingBackend == claimBackend
 	samePath := existingPath == "" || claimPath == "" || existingPath == claimPath
 	return sameBackend && samePath
+}
+
+// processScopedBackends run one agent per OS process, so the agent pid alone
+// identifies the runtime. Bridges that host many sessions in one process
+// (OpenCode, Pi, Codex App Server) are session-scoped: same pid, distinct
+// runtime_session_id, distinct peers.
+var processScopedBackends = map[proto.AgentType]bool{proto.AgentClaudeCode: true}
+
+// liveRuntimeHolderLocked returns the non-retired peer already registered for
+// the claimant's live process, or nil. Same machine, same backend, same pid,
+// compatible path; session-scoped backends also require matching runtime
+// session ids when both sides carry one. Must hold r.mu.
+func (r *Registry) liveRuntimeHolderLocked(params AllocateParams, claimPath string) *peerState {
+	if params.AgentPID == nil || *params.AgentPID <= 0 {
+		return nil
+	}
+	incomingSession := runtimeSessionID(params.Metadata)
+	var holder *peerState
+	for _, ps := range r.peers {
+		p := ps.peer
+		if ps.state == StateRetired || p.AgentPID == nil || *p.AgentPID != *params.AgentPID || p.Backend != params.Backend {
+			continue
+		}
+		if params.Machine != "" && p.Machine != "" && params.Machine != "unknown" && p.Machine != "unknown" && p.Machine != params.Machine {
+			continue
+		}
+		if !claimMatchesIdentity(p.Backend, p.Path, params.Backend, claimPath) {
+			continue
+		}
+		if !processScopedBackends[params.Backend] {
+			// Session-scoped: the pid is shared by every session the bridge hosts,
+			// so only an exact session match identifies the runtime. A registration
+			// without a session id (ws reconnect) defers to its claimed peer_id.
+			if incomingSession == "" || runtimeSessionID(p.Metadata) != incomingSession {
+				continue
+			}
+		}
+		if holder == nil || runtimeHolderPreferred(ps, holder) {
+			holder = ps
+		}
+	}
+	return holder
+}
+
+func runtimeHolderPreferred(candidate, current *peerState) bool {
+	candidateLive := candidate.state != StateOffline
+	currentLive := current.state != StateOffline
+	if candidateLive != currentLive {
+		return candidateLive
+	}
+	if lastSeenAfter(candidate.peer, current.peer) {
+		return true
+	}
+	if lastSeenAfter(current.peer, candidate.peer) {
+		return false
+	}
+	return candidate.peer.PeerID < current.peer.PeerID
 }
 
 // WithProcessProbe injects the ps/tmux probe the destructive pane-claim proof
@@ -1279,11 +1356,11 @@ func (r *Registry) reapDangling(ctx context.Context) {
 		}
 		// Value-copy snapshot: off-lock probe must not read the live peer (race),
 		// and the TOCTOU guard below compares this snapshot to the current peer.
-		cp := *ps.peer
-		stale = append(stale, &cp)
+		stale = append(stale, clonePeer(ps.peer))
 	}
 	r.mu.RUnlock()
 
+	r.forgetFreshSpares()
 	evidence := r.runtimeEvidenceIDs(stale)
 
 	now := time.Now().UTC()
@@ -1298,38 +1375,30 @@ func (r *Registry) reapDangling(ctx context.Context) {
 	// got a new runtime in the probe window must survive.
 	r.mu.Lock()
 	cutoff = time.Now().UTC().Add(-r.reapTTL)
-	for _, peer := range stale {
-		ps, ok := r.peers[peer.PeerID]
-		if !ok || ps.state != StateOffline ||
-			ps.peer.LastSeen == nil || !ps.peer.LastSeen.Before(cutoff) {
-			continue
-		}
-		curPID, curPane := runtimeMarker(ps.peer)
-		oldPID, oldPane := runtimeMarker(peer)
-		if curPID != oldPID || curPane != oldPane {
-			continue
-		}
-		if _, ok := evidence[peer.PeerID]; ok {
-			spared = append(spared, clonePeer(ps.peer)) // stays in the map; emitted off-lock
-			continue
-		}
-		next, err := Apply(ps.state, EventReap)
+	spared, doomed := r.partitionStaleByEvidenceLocked(stale, cutoff, evidence)
+	for _, current := range doomed {
+		next, err := Apply(StateOffline, EventReap)
 		if err != nil {
-			r.emitContradictionLocked(ctx, peer.PeerID, ps.peer.DisplayName, ps.state, EventReap)
+			r.emitContradictionLocked(ctx, current.PeerID, current.DisplayName, StateOffline, EventReap)
 			continue
 		}
 		_ = next // peer is being removed; Retired is its terminal state
-		name := ps.peer.DisplayName
-		delete(r.peers, peer.PeerID)
-		delete(r.mappings, peer.PeerID)
-		r.clearAllContradictions(peer.PeerID)
-		r.retired[peer.PeerID] = Retirement{At: now}
-		done = append(done, reaped{peer.PeerID, name})
+		name := current.DisplayName
+		delete(r.peers, current.PeerID)
+		delete(r.mappings, current.PeerID)
+		r.clearAllContradictions(current.PeerID)
+		r.retired[current.PeerID] = Retirement{At: now}
+		done = append(done, reaped{current.PeerID, name})
 	}
 	r.mu.Unlock()
 
 	for _, peer := range spared {
-		r.emitOfflineStillHasEvidence(ctx, peer, "offline_ttl_with_runtime_evidence", cutoff, r.reapTTL)
+		if rec.markSpared(peer.PeerID) {
+			r.emitOfflineStillHasEvidence(ctx, peer, "offline_ttl_with_runtime_evidence", cutoff, r.reapTTL)
+		}
+	}
+	for _, d := range done {
+		rec.clearSpared(d.id)
 	}
 
 	// Stash-loss ordering: snapshot -> emit -> close transport -> forget.
