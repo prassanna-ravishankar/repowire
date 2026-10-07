@@ -293,6 +293,11 @@
 
 /* =========================  JOBS + WHY: an asymmetric pair  ========================= */
 .rw-marketing .pair { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 56px; align-items: start; }
+/* Both drawings share the narrow column's size, so captions and headings line up
+   across the pair; the wide cell's plate keeps the extra room around its drawing.
+   The stage stays 5:4 because Hairline maps the pointer onto a 400 x 320 box. */
+.rw-marketing .pair { container-type: inline-size; }
+.rw-marketing .pair .plate-stage { width: min(100%, calc((100cqw - 56px) / 2.35)); margin: 0 auto; }
 .rw-marketing .pair-cell h2 { margin-top: 36px; font-size: clamp(28px, 3vw, 36px); }
 .rw-marketing .pair-cell .section-sub { font-size: 16px; }
 
@@ -407,6 +412,7 @@
   .rw-marketing .top-actions .cta { display: none; }
   .rw-marketing .hero { grid-template-columns: minmax(0, 1fr); gap: 48px; padding-top: 56px; padding-bottom: 88px; }
   .rw-marketing .split, .rw-marketing .pair { grid-template-columns: minmax(0, 1fr); gap: 48px; }
+  .rw-marketing .pair .plate-stage { width: 100%; }
   .rw-marketing .verb { grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .rw-marketing .replay-grid { grid-template-columns: minmax(0, 1fr); }
   .rw-marketing .replay-wire { height: 56px; }
