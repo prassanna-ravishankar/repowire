@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import PackageFigure, { type PackageFigureName } from "./PackageFigure";
+import PhoneChat from "./PhoneChat";
 
 type Chapter = {
   id: string;
@@ -8,7 +9,7 @@ type Chapter = {
   body: ReactNode;
   points: { k: string; v: string }[];
   code?: string;
-  figure: { name: PackageFigureName; caption: string; label: string };
+  figure: { name: PackageFigureName | "chat"; caption: string; label: string };
 };
 
 const CHAPTERS: Chapter[] = [
@@ -30,7 +31,7 @@ const CHAPTERS: Chapter[] = [
     ],
     figure: {
       name: "patch",
-      caption: "A patch panel: one port per peer. Point at a cable to lift it.",
+      caption: "Claude Code, Codex, OpenCode and Pi each take a port on the same daemon: different transports, one protocol behind them.",
       label: "A patch panel of twenty-four ports with cables, standing for peers plugged into one daemon",
     },
   },
@@ -52,9 +53,9 @@ const CHAPTERS: Chapter[] = [
     ],
     code: "repowire share my-agent --rw --ttl 3600",
     figure: {
-      name: "phone",
-      caption: "A phone in layers. Move across to open it; move down to pick a layer.",
-      label: "A phone taken apart in layers, standing for steering agents from a phone",
+      name: "chat",
+      caption: "An agent's ask, as it lands in Telegram. Tap an answer and it goes straight back to the agent that asked.",
+      label: "A Telegram chat with an ask from an agent and inline answer buttons",
     },
   },
   {
@@ -76,7 +77,7 @@ const CHAPTERS: Chapter[] = [
     code: 'repowire jobs create "Daily brief" --path .repowire/agents/daily-brief --backend codex --cron "@daily" --prompt "Prepare the brief."',
     figure: {
       name: "slow",
-      caption: "Jobs ride the belt through the gate. Hover to slow the clock.",
+      caption: "Jobs keep moving through the queue with their state and results, whether or not anyone is watching.",
       label: "Crates riding a conveyor belt through a gate, standing for durable jobs",
     },
   },
@@ -100,7 +101,7 @@ const CHAPTERS: Chapter[] = [
     code: "repowire setup --git-hooks",
     figure: {
       name: "branches",
-      caption: "A branch forks off main and merges back. Point at a commit to raise its history.",
+      caption: "A commit carries the ask threads that produced it, and repowire why walks back through them.",
       label: "A commit graph with a branch forking off main and merging back",
     },
   },
@@ -133,7 +134,11 @@ export default function Chapters() {
             )}
           </div>
           <div className="chapter-figure">
-            <PackageFigure fig={String(i + 2)} {...c.figure} />
+            {c.figure.name === "chat" ? (
+              <PhoneChat fig={String(i + 2)} caption={c.figure.caption} />
+            ) : (
+              <PackageFigure fig={String(i + 2)} {...c.figure} name={c.figure.name} />
+            )}
           </div>
         </section>
       ))}
