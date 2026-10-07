@@ -77,6 +77,27 @@ func TestDeliverSpawnSeedJournalsTimeout(t *testing.T) {
 	}
 }
 
+func TestDeliverSpawnSeedStopsWithDaemonContext(t *testing.T) {
+	reg := newAskFakeRegistry(peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline))
+	f := &fakeTransport{connected: map[proto.PeerID]bool{}}
+	asks := service.NewAskTracker(0)
+	h := &Hub{}
+	h.WithAskLifecycle(asks, service.NewPeerDelivery(reg, newRouterWithFake(f), f, asks, nil), reg)
+	ctx, cancel := context.WithCancel(context.Background())
+	h.spawn = &spawnDeps{ctx: ctx}
+	done := make(chan struct{})
+	go func() {
+		h.deliverSpawnSeed(h.spawn.ctx, "%99", "ghost", "alpha", "hello")
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("seed waiter survived daemon cancellation")
+	}
+}
+
 func lastEventType(r *askFakeRegistry) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()

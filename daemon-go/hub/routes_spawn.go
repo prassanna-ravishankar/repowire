@@ -52,6 +52,7 @@ type spawnDeps struct {
 	asks        *service.AskTracker
 	selfMachine string
 	boundary    proto.CircleBoundary
+	ctx         context.Context
 }
 
 // WithSpawn attaches the spawn-kill-restart route group. svc owns tmux + ownership;
@@ -65,7 +66,15 @@ func (h *Hub) WithSpawn(svc *service.SpawnService, reg spawnRegistry, asks *serv
 	if svc != nil {
 		svc.WithCircleBoundary(boundary)
 	}
-	h.spawn = &spawnDeps{svc: svc, reg: reg, asks: asks, selfMachine: selfMachine, boundary: boundary}
+	h.spawn = &spawnDeps{svc: svc, reg: reg, asks: asks, selfMachine: selfMachine, boundary: boundary, ctx: context.Background()}
+	return h
+}
+
+// WithSpawnContext ties asynchronous spawn follow-up to the daemon lifetime.
+func (h *Hub) WithSpawnContext(ctx context.Context) *Hub {
+	if h.spawn != nil && ctx != nil {
+		h.spawn.ctx = ctx
+	}
 	return h
 }
 
@@ -341,7 +350,7 @@ func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, e
 		default:
 			resp.SeedState = "awaiting_registration"
 			from := firstNonempty(req.FromPeer, mcpDefaultIdentity)
-			go h.deliverSpawnSeed(context.WithoutCancel(ctx), result.PaneID, result.DisplayName, from, *req.Message)
+			go h.deliverSpawnSeed(h.spawn.ctx, result.PaneID, result.DisplayName, from, *req.Message)
 		}
 	}
 

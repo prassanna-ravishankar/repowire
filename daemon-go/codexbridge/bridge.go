@@ -69,6 +69,7 @@ type threadPeer struct {
 	circleSrc     string
 	role          string
 	hintedID      string
+	hintedPane    string
 	birthCert     map[string]any
 	peerID        string
 	displayName   string
@@ -578,7 +579,7 @@ func (b *Bridge) ensureThread(thread map[string]any) {
 	if configured := os.Getenv("REPOWIRE_CODEX_CIRCLE"); configured != "" {
 		circle, source = configured, "fallback"
 	}
-	role, hintedID := "agent", ""
+	role, hintedID, hintedPane := "agent", "", ""
 	if hint != nil {
 		if value := stringValue(hint, "circle"); value != "" {
 			circle, source = value, "spawn_hint"
@@ -587,11 +588,12 @@ func (b *Bridge) ensureThread(thread map[string]any) {
 			role = value
 		}
 		hintedID = stringValue(hint, "peer_id")
+		hintedPane = stringValue(hint, "pane_id")
 	}
 	peerCtx, cancel := context.WithCancel(b.ctx)
 	gitInfo, _ := thread["gitInfo"].(map[string]any)
 	p := &threadPeer{
-		bridge: b, id: id, cwd: cwd, circle: circle, circleSrc: source, role: role, hintedID: hintedID, birthCert: cert, cancel: cancel,
+		bridge: b, id: id, cwd: cwd, circle: circle, circleSrc: source, role: role, hintedID: hintedID, hintedPane: hintedPane, birthCert: cert, cancel: cancel,
 		model: stringValue(thread, "model"), branch: stringValue(gitInfo, "branch"), gitStatus: repositoryStatus(cwd),
 		toolCalls: map[string][]map[string]string{}, seenItems: map[string]map[string]bool{},
 	}
@@ -686,6 +688,9 @@ func (p *threadPeer) connectMesh(ctx context.Context) (*websocket.Conn, error) {
 		"circle_source": p.circleSrc, "backend": "codex", "path": p.cwd, "role": p.role,
 		"peer_id": peerID, "capabilities": []string{"delivery_receipts", "thread_steering"},
 	}
+	if p.hintedPane != "" {
+		connect["pane_id"] = p.hintedPane
+	}
 	if p.bridge.token != "" {
 		connect["auth_token"] = p.bridge.token
 	}
@@ -760,6 +765,9 @@ func (p *threadPeer) registerLocked(ctx context.Context) error {
 		"name": safeName(filepath.Base(p.cwd)), "path": p.cwd, "circle": p.circle,
 		"circle_source": p.circleSrc, "backend": "codex", "role": p.role,
 		"metadata": metadata, "provenance": provenance,
+	}
+	if p.hintedPane != "" {
+		body["pane_id"] = p.hintedPane
 	}
 	if p.model != "" {
 		body["model"] = p.model
