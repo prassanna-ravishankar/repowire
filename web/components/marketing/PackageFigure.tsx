@@ -1,10 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Branches, Patch, Phone, Slow } from "@lucasmarkes/hairline/react";
+import { Branches, Patch, Slow } from "@lucasmarkes/hairline/react";
 import Plate from "./Plate";
 
-const FIGURES = { branches: Branches, patch: Patch, phone: Phone, slow: Slow };
+const FIGURES = { branches: Branches, patch: Patch, slow: Slow };
 
 export type PackageFigureName = keyof typeof FIGURES;
 

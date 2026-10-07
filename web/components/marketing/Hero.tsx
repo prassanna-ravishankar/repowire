@@ -41,7 +41,7 @@ export default function Hero() {
         </div>
       </div>
       <div className="hero-figure">
-        <MeshFigure fig="1" caption="Four sessions over one daemon, taking turns. Point at a terminal to send from it." />
+        <MeshFigure fig="1" caption="Every agent session gets an address on one local mesh, and a message finds its peer hop by hop through the daemon." />
       </div>
     </section>
   );
