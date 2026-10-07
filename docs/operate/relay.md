@@ -50,10 +50,18 @@ OAuth-enabled relay deployments use one replica and a retained RWO volume. The
 Recreate rollout briefly disconnects clients while the relay pod restarts; durable
 grants survive, and daemons reconnect through their existing relay transport.
 
-The hosted chart marks its route as Cloudflare-proxied, but this repository does
-not establish that the gateway rejects direct origin traffic or sanitizes
-`CF-Connecting-IP`. Before rolling out public OAuth registration, verify that
-restriction and then enable `oauth.trustCloudflareIP`. It defaults to `false` for
-safe self-hosting. Until configured, clients routed through one gateway share its
-registration bucket, so one caller can exhaust registration capacity temporarily.
-The application cannot safely infer proxy trust from the presence of a header.
+The hosted deploy workflow selects `oauth.proxyMode=gclb` and reads the gateway's
+forwarding IP into `oauth.gclbForwardingIP`. Registration limits verify the GFE
+socket source and Google's appended `X-Forwarded-For` suffix. Cloudflare's visitor
+header is trusted only when the load balancer's recorded source is Cloudflare;
+direct-origin requests are limited by the IP Google recorded instead. No
+Cloudflare-only firewall or Cloud Armor policy is required for this selection.
+
+The chart defaults to `direct` for self-hosters. Startup logs state the configured
+mode. After rollout, verify registration budgets through Cloudflare and directly
+through the gateway; the pod-level header path has not been measured on the live
+service yet. Adding a sidecar or changing the gateway type requires revisiting
+this trust chain. Health checks, local daemon endpoints, and established MCP
+connections do not pass through the registration limiter. See the
+[relay MCP reference](../reference/relay-mcp.md) for header fallbacks and CIDR
+maintenance.

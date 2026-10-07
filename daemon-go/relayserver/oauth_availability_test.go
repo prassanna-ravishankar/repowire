@@ -230,16 +230,23 @@ func TestOAuthRegistrationRateFairnessAndProxyTrust(t *testing.T) {
 		t.Fatal("attacker exhausted another client's budget")
 	}
 	limit = newOAuthRegistrationLimit()
-	limit.trustCloudflareIP = true
+	if err := limit.configureProxy("gclb", "192.0.2.10"); err != nil {
+		t.Fatal(err)
+	}
+	trustedRequest := func(ip string) *http.Request {
+		r := request("35.191.1.2:1000", ip)
+		r.Header.Set("X-Forwarded-For", "172.64.1.2, 192.0.2.10")
+		return r
+	}
 	for i := 0; i < 5; i++ {
-		if !limit.allow(request("192.0.2.1:1000", "198.51.100.1")) {
+		if !limit.allow(trustedRequest("198.51.100.1")) {
 			t.Fatal("trusted proxy burst failed")
 		}
 	}
-	if limit.allow(request("192.0.2.1:1000", "198.51.100.1")) {
+	if limit.allow(trustedRequest("198.51.100.1")) {
 		t.Fatal("trusted client limit failed")
 	}
-	if !limit.allow(request("192.0.2.1:1000", "198.51.100.2")) {
+	if !limit.allow(trustedRequest("198.51.100.2")) {
 		t.Fatal("trusted proxy clients share bucket")
 	}
 }

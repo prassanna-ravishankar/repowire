@@ -47,5 +47,6 @@ oauth:
   issuer: "https://relay.repowire.io"
   storage: "1Gi"
   storageClassName: ""
-  # Enable only when ingress restricts origin access and sanitizes this header.
-  trustCloudflareIP: false
+  # Hosted workflow explicitly selects gclb; self-hosters ignore proxy headers.
+  proxyMode: "direct"
+  gclbForwardingIP: ""

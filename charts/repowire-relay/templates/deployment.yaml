@@ -51,8 +51,12 @@ spec:
           value: {{ required "oauth.issuer is required" .Values.oauth.issuer | quote }}
         - name: REPOWIRE_RELAY_OAUTH_DB
           value: /data/oauth.db
-        - name: REPOWIRE_RELAY_TRUST_CF_CONNECTING_IP
-          value: {{ .Values.oauth.trustCloudflareIP | quote }}
+        - name: REPOWIRE_RELAY_OAUTH_PROXY_MODE
+          value: {{ .Values.oauth.proxyMode | quote }}
+        {{- if eq .Values.oauth.proxyMode "gclb" }}
+        - name: REPOWIRE_RELAY_OAUTH_GCLB_FORWARDING_IP
+          value: {{ required "oauth.gclbForwardingIP is required in gclb mode" .Values.oauth.gclbForwardingIP | quote }}
+        {{- end }}
         volumeMounts:
         - name: oauth-state
           mountPath: /data
