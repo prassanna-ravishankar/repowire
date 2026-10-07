@@ -80,3 +80,25 @@ func TestValidateBootstrapForgetsRecordOlderThanTmuxServer(t *testing.T) {
 		t.Fatalf("post-server mismatch = %#v, want pane_identity_mismatch", got)
 	}
 }
+
+func TestValidateBootstrapDoesNotCompareForeignMachineTimestamps(t *testing.T) {
+	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
+	ownership := NewFileOwnership("local", func(string) *TmuxPaneEvidence {
+		return &TmuxPaneEvidence{
+			PaneID: "%76", SessionName: "1", TmuxSession: "1:turns", CurrentPath: "/work/turn-counting",
+			ServerStart: 200,
+		}
+	})
+	ownership.Record(OwnershipRecord{
+		PaneID: "%76", Path: "/work/gen-ui-databook", TmuxSession: "1:gen-ui-databook",
+		Machine: "remote", CreatedAt: 100,
+	})
+
+	got := ownership.ValidateBootstrap("%76")
+	if got.Error != "ownership_machine_mismatch" {
+		t.Fatalf("foreign record bootstrap = %#v, want ownership_machine_mismatch", got)
+	}
+	if _, exists := ownership.loadLocked()["%76"]; !exists {
+		t.Fatal("foreign-machine ownership record was deleted using an incomparable timestamp")
+	}
+}

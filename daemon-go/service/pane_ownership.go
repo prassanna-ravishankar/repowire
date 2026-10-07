@@ -230,6 +230,9 @@ func (o *fileOwnership) ValidateBootstrap(paneID string) OwnershipValidation {
 	if !ok {
 		return OwnershipValidation{OK: true, Evidence: ev}
 	}
+	if rec.Machine != "" && rec.Machine != o.selfMachine {
+		return OwnershipValidation{Record: &rec, Evidence: ev, Error: "ownership_machine_mismatch", Hint: "Ownership proof was written on a different host."}
+	}
 	// tmux pane ids are only unique for the lifetime of one tmux server. A pane
 	// such as %26 can therefore inherit an ownership record written for an old,
 	// now-unrelated pane after tmux restarts. That record must not block a
@@ -241,9 +244,6 @@ func (o *fileOwnership) ValidateBootstrap(paneID string) OwnershipValidation {
 	if recordPredatesServer(rec, ev) || (tmuxSessionName(rec.TmuxSession) != "" && ev.SessionName != "" && tmuxSessionName(rec.TmuxSession) != ev.SessionName) {
 		o.Forget(paneID)
 		return OwnershipValidation{OK: true, Evidence: ev}
-	}
-	if rec.Machine != "" && rec.Machine != o.selfMachine {
-		return OwnershipValidation{Record: &rec, Evidence: ev, Error: "ownership_machine_mismatch", Hint: "Ownership proof was written on a different host."}
 	}
 	if ev.TmuxSession != rec.TmuxSession || NormPath(ev.CurrentPath) != NormPath(rec.Path) {
 		return OwnershipValidation{Record: &rec, Evidence: ev, Error: "pane_identity_mismatch", Hint: "Live tmux pane evidence does not match the ownership proof."}
