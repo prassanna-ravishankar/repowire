@@ -226,6 +226,7 @@ describe("MeshFeed lifecycle rows", () => {
 
     expect(screen.getByText(/spared/)).toBeInTheDocument();
     expect(screen.getByText("oumi-techdd-claude-code")).toBeInTheDocument();
+    expect(screen.getByText(/runtime evidence remains/)).toBeInTheDocument();
     expect(screen.getByText(/pid 40036/)).toBeInTheDocument();
     expect(screen.queryByText("unknown")).not.toBeInTheDocument();
   });

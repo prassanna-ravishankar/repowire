@@ -8,6 +8,10 @@ import (
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
+type runtimeProbeFunc func(*proto.Peer) bool
+
+func (f runtimeProbeFunc) HasRuntimeEvidence(peer *proto.Peer) bool { return f(peer) }
+
 // One Claude process registers twice: first the MCP stdio proxy (pid + pane, no
 // hook session), then SessionStart (pid + pane + hook session). Both must land
 // on one peer with the base name; nothing gets suffixed or displaced.
@@ -60,6 +64,47 @@ func TestRuntimeIdentity_SameProcessConvergesOnOnePeer(t *testing.T) {
 	})
 	if err != nil || fourth != first {
 		t.Fatalf("stale claim should be ignored in favour of the live pid: %v %s", err, fourth)
+	}
+}
+
+func TestRuntimeIdentity_LiveHolderIgnoresRetiredStaleClaim(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newRegistry(t)
+	pid := 40036
+	holder, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "work", Backend: proto.AgentClaudeCode, Path: ptr("/p/oumi"), Machine: "m",
+		Role: proto.RoleAgent, AgentPID: &pid,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := proto.PeerID("repow-work-deadbeef")
+	r.mu.Lock()
+	r.retired[stale] = Retirement{At: time.Now().UTC(), Hard: true}
+	r.mu.Unlock()
+
+	got, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "work", Backend: proto.AgentClaudeCode, Path: ptr("/p/oumi"), Machine: "m",
+		Role: proto.RoleAgent, AgentPID: &pid, ClaimedPeerID: &stale,
+	})
+	if err != nil || got != holder {
+		t.Fatalf("stale retired claim blocked live runtime: %v got %s want %s", err, got, holder)
+	}
+	r.mu.RLock()
+	_, stillRetired := r.retired[stale]
+	r.mu.RUnlock()
+	if !stillRetired {
+		t.Fatal("ignored stale claim must remain retired")
+	}
+}
+
+func TestRuntimeIdentity_PrefersActiveHolderOverOfflineDuplicate(t *testing.T) {
+	now := time.Now().UTC()
+	pid := 40036
+	offline := &peerState{state: StateOffline, peer: &proto.Peer{PeerID: "offline", AgentPID: &pid, LastSeen: &now}}
+	active := &peerState{state: StateOnline, peer: &proto.Peer{PeerID: "active", AgentPID: &pid, LastSeen: &now}}
+	if !runtimeHolderPreferred(active, offline) || runtimeHolderPreferred(offline, active) {
+		t.Fatal("active runtime holder must win over an offline duplicate")
 	}
 }
 
@@ -168,6 +213,28 @@ func TestSpareEvent_ReportsAgainAfterPeerWentFresh(t *testing.T) {
 	}
 }
 
+func TestSpareEvent_EvictPassDoesNotResetReapTransition(t *testing.T) {
+	ctx := context.Background()
+	transport := &pingTransport{connected: map[proto.PeerID]bool{}, pongs: map[proto.PeerID][]map[string]any{}}
+	r, store := newRegistryWith(t, transport, fakeLive{alive: map[int]bool{}})
+	pid := 31337
+	id, _, _ := r.AllocateAndRegister(ctx, AllocateParams{Circle: "c", Backend: proto.AgentClaudeCode, Path: ptr("/p/z"), Machine: "m", Role: proto.RoleAgent, AgentPID: &pid})
+	r.WithReconciliation(newFakeAsks(), &fakeDelivery{}, fakeProbe{evidence: map[proto.PeerID]bool{id: true}}, ExperimentsConfig{}, 0, 2*time.Hour)
+	r.ConfigureDurations(0, 30*time.Minute)
+	_, _ = r.MarkOffline(ctx, id, false)
+	old := time.Now().UTC().Add(-time.Hour)
+	r.mu.Lock()
+	r.peers[id].peer.LastSeen = &old
+	r.mu.Unlock()
+
+	r.reapDangling(ctx)
+	r.evictStalePeers(ctx) // not old enough for this pass
+	r.reapDangling(ctx)
+	if n := len(eventsOfType(store, "offline_peer_still_has_runtime_evidence")); n != 1 {
+		t.Fatalf("eviction pass reset reap transition marker: got %d events", n)
+	}
+}
+
 // A different process in the same pane and path is a real newcomer.
 func TestRuntimeIdentity_DifferentPidIsDifferentPeer(t *testing.T) {
 	ctx := context.Background()
@@ -227,6 +294,35 @@ func TestEvictStalePeers_SharedPidIsNotEvidenceAndSpareReportsOnce(t *testing.T)
 	r.evictStalePeers(ctx)
 	if n := len(eventsOfType(store, "offline_peer_still_has_runtime_evidence")); n != 1 {
 		t.Fatalf("spare event must fire once per transition, got %d", n)
+	}
+}
+
+func TestEvictStalePeers_RechecksExclusiveOwnerAfterProbe(t *testing.T) {
+	ctx := context.Background()
+	transport := &pingTransport{connected: map[proto.PeerID]bool{}, pongs: map[proto.PeerID][]map[string]any{}}
+	r, _ := newRegistryWith(t, transport, fakeLive{alive: map[int]bool{}})
+	sharedPID, otherPID := 40036, 1
+	ghost, _, _ := r.AllocateAndRegister(ctx, AllocateParams{Circle: "c", Backend: proto.AgentClaudeCode, Path: ptr("/p/a"), Machine: "m", Role: proto.RoleAgent, AgentPID: &sharedPID})
+	live, _, _ := r.AllocateAndRegister(ctx, AllocateParams{Circle: "c", Backend: proto.AgentClaudeCode, Path: ptr("/p/b"), Machine: "m", Role: proto.RoleAgent, AgentPID: &otherPID})
+	_, _ = r.MarkOffline(ctx, ghost, false)
+	old := time.Now().UTC().Add(-time.Hour)
+	r.mu.Lock()
+	r.peers[ghost].peer.LastSeen = &old
+	r.mu.Unlock()
+
+	probe := runtimeProbeFunc(func(*proto.Peer) bool {
+		r.mu.Lock()
+		r.peers[live].peer.AgentPID = &sharedPID
+		r.mu.Unlock()
+		return true
+	})
+	r.WithReconciliation(newFakeAsks(), &fakeDelivery{}, probe, ExperimentsConfig{}, 0, time.Nanosecond)
+
+	if n := r.evictStalePeers(ctx); n != 1 {
+		t.Fatalf("evicted %d, want stale peer after runtime changed owners during probe", n)
+	}
+	if _, ok := r.GetPeer(ghost); ok {
+		t.Fatal("stale peer kept evidence after another peer acquired its runtime")
 	}
 }
 

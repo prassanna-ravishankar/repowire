@@ -534,7 +534,7 @@ func (r *Registry) runtimeEvidenceIDs(candidates []*proto.Peer) map[proto.PeerID
 
 // runtimeMarker is the (agent_pid, pane_id) tuple used as the TOCTOU guard: a
 // peer whose runtime changed in the probe window must survive.
-func runtimeMarker(p *proto.Peer) (int, string) {
+func runtimeMarker(p *proto.Peer) (int, string, string) {
 	pid := 0
 	if p.AgentPID != nil {
 		pid = *p.AgentPID
@@ -543,7 +543,7 @@ func runtimeMarker(p *proto.Peer) (int, string) {
 	if p.PaneID != nil {
 		pane = *p.PaneID
 	}
-	return pid, pane
+	return pid, pane, runtimeKey(p)
 }
 
 // evictStalePeers hard-prunes long-OFFLINE peers past prune_max_age_hours,
@@ -570,34 +570,18 @@ func (r *Registry) evictStalePeers(ctx context.Context) int {
 		// not read the live *proto.Peer (data race vs allocate/reconnect/status
 		// writers), and the TOCTOU guard below must compare the snapshot against
 		// the CURRENT live peer — a shared pointer would make that guard a no-op.
-		cp := *ps.peer
-		stale = append(stale, &cp)
+		stale = append(stale, clonePeer(ps.peer))
 	}
 	r.mu.RUnlock()
 
-	rec.forgetSparedExcept(stale)
-	evidence := r.runtimeEvidenceIDs(r.exclusiveEvidenceCandidates(stale))
+	r.forgetFreshSpares()
+	evidence := r.runtimeEvidenceIDs(stale)
 
 	// Re-validate under the second lock (TOCTOU guard).
 	r.mu.Lock()
 	cutoff = time.Now().UTC().Add(-rec.evictMaxAge)
-	var spared, evicted []*proto.Peer
-	for _, peer := range stale {
-		ps, ok := r.peers[peer.PeerID]
-		if !ok || ps.state != StateOffline ||
-			ps.peer.LastSeen == nil || !ps.peer.LastSeen.Before(cutoff) {
-			continue
-		}
-		curPID, curPane := runtimeMarker(ps.peer)
-		oldPID, oldPane := runtimeMarker(peer)
-		if curPID != oldPID || curPane != oldPane {
-			continue // runtime changed in the probe window; survive
-		}
-		if _, ok := evidence[peer.PeerID]; ok {
-			spared = append(spared, clonePeer(ps.peer)) // stays in the map; emitted off-lock
-			continue
-		}
-		evicted = append(evicted, ps.peer) // removed from the map below; no concurrent mutator
+	spared, evicted := r.partitionStaleByEvidenceLocked(stale, cutoff, evidence)
+	for _, peer := range evicted {
 		delete(r.peers, peer.PeerID)
 		delete(r.mappings, peer.PeerID)
 		r.clearAllContradictions(peer.PeerID)
@@ -642,37 +626,6 @@ func (r *Registry) evictStalePeers(ctx context.Context) int {
 	return len(evicted)
 }
 
-// exclusiveEvidenceCandidates drops stale peers whose runtime another
-// registered record also holds. A runtime belongs to one peer: if any holder is
-// not itself stale, that holder owns the process and the stale record has no
-// evidence of its own (the displaced-twin case). When every holder is stale,
-// the most recently seen record keeps it so a live process does not lose its
-// role and description; the rest are duplicates and evict. The runtime key is
-// the pid for process-scoped backends and pid+session for session-scoped
-// bridges, so distinct sessions sharing a host process never compete.
-func (r *Registry) exclusiveEvidenceCandidates(stale []*proto.Peer) []*proto.Peer {
-	staleByID := make(map[proto.PeerID]*proto.Peer, len(stale))
-	for _, p := range stale {
-		staleByID[p.PeerID] = p
-	}
-	r.mu.RLock()
-	holders := make(map[string][]*proto.Peer)
-	for _, ps := range r.peers {
-		if key := runtimeKey(ps.peer); key != "" {
-			holders[key] = append(holders[key], ps.peer)
-		}
-	}
-	r.mu.RUnlock()
-	var out []*proto.Peer
-	for _, p := range stale {
-		if key := runtimeKey(p); key != "" && !ownsRuntime(p, holders[key], staleByID) {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out
-}
-
 // runtimeKey identifies the live runtime a peer record claims: machine + backend
 // + pid, plus the runtime session for session-scoped bridges. A session-scoped
 // record without a session id is keyed to itself and never competes. Empty
@@ -710,6 +663,42 @@ func ownsRuntime(candidate *proto.Peer, holders []*proto.Peer, stale map[proto.P
 	return true
 }
 
+// partitionStaleByEvidenceLocked revalidates the probe snapshot and splits it
+// into peers that still own live runtime evidence and peers safe to remove.
+// Peers changed during the probe are omitted from both sets and survive.
+func (r *Registry) partitionStaleByEvidenceLocked(stale []*proto.Peer, cutoff time.Time, evidence map[proto.PeerID]struct{}) (spared, doomed []*proto.Peer) {
+	currentStale := make(map[proto.PeerID]*proto.Peer, len(stale))
+	for _, peer := range stale {
+		ps, ok := r.peers[peer.PeerID]
+		if !ok || ps.state != StateOffline || ps.peer.LastSeen == nil || !ps.peer.LastSeen.Before(cutoff) {
+			continue
+		}
+		curPID, curPane, curRuntime := runtimeMarker(ps.peer)
+		oldPID, oldPane, oldRuntime := runtimeMarker(peer)
+		if curPID == oldPID && curPane == oldPane && curRuntime == oldRuntime {
+			currentStale[peer.PeerID] = ps.peer
+		}
+	}
+	holders := make(map[string][]*proto.Peer)
+	for _, ps := range r.peers {
+		if key := runtimeKey(ps.peer); key != "" {
+			holders[key] = append(holders[key], ps.peer)
+		}
+	}
+	for _, peer := range stale {
+		current, ok := currentStale[peer.PeerID]
+		if !ok {
+			continue
+		}
+		if _, ok := evidence[peer.PeerID]; ok && ownsRuntime(current, holders[runtimeKey(current)], currentStale) {
+			spared = append(spared, clonePeer(current))
+		} else {
+			doomed = append(doomed, current)
+		}
+	}
+	return spared, doomed
+}
+
 // forgetSparedExcept drops spare markers for peers no longer in the stale set,
 // so a peer that went fresh and later crosses the cutoff again is reported as a
 // new transition.
@@ -725,6 +714,28 @@ func (rec *reconcileState) forgetSparedExcept(stale []*proto.Peer) {
 			delete(rec.spared, id)
 		}
 	}
+}
+
+// forgetFreshSpares resets transition markers only after a peer is no longer
+// stale for either reap path. The two passes use different age thresholds, so
+// either pass's candidate list alone would make the other re-emit every run.
+func (r *Registry) forgetFreshSpares() {
+	now := time.Now().UTC()
+	reapCutoff := now.Add(-r.reapTTL)
+	evictCutoff := now.Add(-r.rec.evictMaxAge)
+	r.mu.RLock()
+	var stale []*proto.Peer
+	for _, ps := range r.peers {
+		if ps.state != StateOffline || ps.peer.LastSeen == nil {
+			continue
+		}
+		if ps.peer.LastSeen.Before(reapCutoff) ||
+			(r.rec.evictMaxAge > 0 && ps.peer.LastSeen.Before(evictCutoff)) {
+			stale = append(stale, ps.peer)
+		}
+	}
+	r.mu.RUnlock()
+	r.rec.forgetSparedExcept(stale)
 }
 
 // markSpared records a spare and reports whether it is a new transition.

@@ -185,7 +185,7 @@ function lifecycleSummary(event: Event): { verb: string; detail?: string } {
     case "peer_updated":
       return { verb: "updated", detail: joined(event.source, event.addressable === false ? "no input" : undefined, event.addressable_reason) };
     case "offline_peer_still_has_runtime_evidence":
-      return { verb: "spared", detail: joined("offline past eviction cutoff, process still alive", event.agent_pid ? `pid ${event.agent_pid}` : undefined) };
+      return { verb: "spared", detail: joined("offline past eviction cutoff, runtime evidence remains", event.agent_pid ? `pid ${event.agent_pid}` : undefined) };
     case "peer_not_addressable":
       return {
         verb: "no input",
