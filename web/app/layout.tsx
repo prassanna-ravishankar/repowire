@@ -28,9 +28,9 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: "Repowire — Coordinate AI coding agents on one local mesh",
+  title: "Repowire · Your coding agents, on speaking terms",
   description:
-    "Repowire gives Claude Code, Codex, OpenCode, and Pi sessions an address. They ask each other questions, post updates, and stay steerable from your browser or phone.",
+    "Repowire puts Claude Code, Codex, OpenCode and Pi sessions on one local mesh. They ask each other questions, answer with an ack, and stay steerable from your browser or phone.",
 };
 
 // Set data-theme before first paint so the marketing site never flashes the

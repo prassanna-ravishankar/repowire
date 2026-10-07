@@ -1,5 +1,24 @@
-import Image from "next/image";
-import { RELAY_DASHBOARD_URL } from "./links";
+import { DOCS_URL, GITHUB_URL, RELAY_DASHBOARD_URL, RELEASES_URL } from "./links";
+
+const COLS = [
+  {
+    title: "Product",
+    links: [
+      { label: "How it works", href: "#wire" },
+      { label: "Install", href: "#install" },
+      { label: "Changelog", href: RELEASES_URL },
+    ],
+  },
+  {
+    title: "Developers",
+    links: [
+      { label: "Docs", href: DOCS_URL },
+      { label: "MCP tools", href: `${DOCS_URL}/reference/mcp-tools/` },
+      { label: "Relay dashboard", href: RELAY_DASHBOARD_URL },
+      { label: "GitHub", href: GITHUB_URL },
+    ],
+  },
+];
 
 export default function Footer() {
   return (
@@ -7,31 +26,27 @@ export default function Footer() {
       <div className="footer-inner">
         <div className="footer-brand">
           <div className="brand">
-            <Image src="/brand/logo-mark.svg" width={20} height={22} alt="" style={{ height: 22, width: "auto" }} />
+            <span className="brand-mark" aria-hidden />
             <span>Repowire</span>
           </div>
-          <p>A peer-to-peer mesh for AI coding agents.</p>
+          <p>A mesh for the coding agents you already run.</p>
         </div>
         <div className="footer-cols">
-          <div>
-            <div className="footer-col-title">Product</div>
-            <a href="#features">Features</a>
-            <a href="#how">How it works</a>
-            <a href="https://github.com/prassanna-ravishankar/repowire/releases">Changelog</a>
-          </div>
-          <div>
-            <div className="footer-col-title">Developers</div>
-            <a href="https://docs.repowire.io">Docs</a>
-            <a href="https://docs.repowire.io/start/install/">Install</a>
-            <a href={RELAY_DASHBOARD_URL}>Relay dashboard</a>
-            <a href="https://github.com/prassanna-ravishankar/repowire">GitHub</a>
-            <a href="https://docs.repowire.io/reference/mcp-tools/">API reference</a>
-          </div>
+          {COLS.map((col) => (
+            <div key={col.title}>
+              <p className="footer-col-title">{col.title}</p>
+              {col.links.map((l) => (
+                <a key={l.label} href={l.href}>{l.label}</a>
+              ))}
+            </div>
+          ))}
         </div>
       </div>
       <div className="footer-bottom">
-        <span>© 2026 Repowire</span>
-        <span>Built with care in the open.</span>
+        <span>© 2026 Repowire · MIT</span>
+        <span>
+          Figures drawn with <a href="https://hairline.lucasmarkes.com">Hairline</a>.
+        </span>
       </div>
     </footer>
   );

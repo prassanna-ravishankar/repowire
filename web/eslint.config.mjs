@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored @lucasmarkes/hairline kernel, kept byte-identical to upstream.
+    "components/marketing/hairline/kernel.js",
   ]),
 ]);
 

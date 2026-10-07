@@ -1,39 +1,47 @@
-import { ArrowRight } from "lucide-react";
+import { ArrowUpRight } from "lucide-react";
 import CopyButton from "./CopyButton";
-import MeshDemo from "./MeshDemo";
-import { RELAY_DASHBOARD_URL } from "./links";
+import MeshFigure from "./MeshFigure";
+import { BREW_INSTALL, DOCS_URL, RELAY_DASHBOARD_URL } from "./links";
 
-const INSTALL_CMD = "curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh";
+const SETUP = `${BREW_INSTALL}\nrepowire setup`;
 
 export default function Hero() {
   return (
     <section className="hero">
       <div className="hero-copy">
-        <span className="eyebrow">Local-first mesh · v0.4 beta</span>
+        <p className="kicker">
+          <span className="kicker-dot" aria-hidden />
+          Local-first · open source · MIT
+        </p>
         <h1>
-          Coordinate AI coding agents <span className="hero-soft">on one local mesh.</span>
+          Your coding agents, <em>on speaking terms.</em>
         </h1>
         <p className="lead">
-          Repowire gives Claude Code, Codex, OpenCode, and Pi sessions an address.
-          They ask each other questions, post updates, and stay steerable from your browser or phone.
+          Repowire puts every Claude Code, Codex, OpenCode and Pi session on one local mesh. Each
+          gets an address. They ask each other questions, answer with an ack, and stay steerable
+          from your browser or your phone.
         </p>
-        <div className="hero-actions">
-          <a className="btn primary" href="#install">
-            Install Repowire
-            <ArrowRight width={16} height={16} strokeWidth={1.75} />
-          </a>
-          <a className="btn secondary" href={RELAY_DASHBOARD_URL}>Open relay</a>
+        <div className="codeblock" aria-label="Install">
+          <pre>
+            <code>
+              <span className="cb-line"><span className="cb-prompt">$</span>{BREW_INSTALL}</span>
+              <span className="cb-line"><span className="cb-prompt">$</span>repowire setup</span>
+            </code>
+          </pre>
+          <CopyButton text={SETUP} label="Copy install commands" />
         </div>
-        <div className="install-strip">
-          <div className="install-cmd">
-            <span className="install-prompt">$</span>
-            <span className="install-text">{INSTALL_CMD}</span>
-          </div>
-          <CopyButton text={INSTALL_CMD} />
+        <div className="hero-links">
+          <a className="btn primary" href="#install">Get started</a>
+          <a className="btn ghost" href={DOCS_URL}>
+            Read the docs <ArrowUpRight width={15} height={15} strokeWidth={1.5} />
+          </a>
+          <a className="btn ghost" href={RELAY_DASHBOARD_URL}>
+            Open the relay <ArrowUpRight width={15} height={15} strokeWidth={1.5} />
+          </a>
         </div>
       </div>
-      <div className="hero-visual">
-        <MeshDemo variant="hero" />
+      <div className="hero-figure">
+        <MeshFigure fig="1" caption="Four sessions over one daemon, taking turns. Point at a terminal to send from it." />
       </div>
     </section>
   );

@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Copy } from "lucide-react";
+import { Check, Copy } from "lucide-react";
 
-export default function CopyButton({ text }: { text: string }) {
+export default function CopyButton({ text, label = "Copy install command" }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
 
   function copy() {
@@ -20,8 +20,8 @@ export default function CopyButton({ text }: { text: string }) {
   }
 
   return (
-    <button className="copy-btn" onClick={copy} aria-label="Copy install command">
-      <Copy width={14} height={14} strokeWidth={1.75} />
+    <button className="copy-btn" onClick={copy} aria-label={label}>
+      {copied ? <Check width={14} height={14} strokeWidth={1.5} /> : <Copy width={14} height={14} strokeWidth={1.5} />}
       <span className="copy-label">{copied ? "Copied" : "Copy"}</span>
     </button>
   );
