@@ -69,8 +69,14 @@ jobs:
 
       - name: Deploy
         run: |
+          relay_gateway_ip="$(kubectl get gateway clusterkit-gateway -n clusterkit -o jsonpath='{.status.addresses[?(@.type=="IPAddress")].value}')"
+          # Fail before Recreate removes the old pod if the gateway has zero,
+          # multiple, or malformed addresses. Dual-stack needs explicit support.
+          python3 -c 'import ipaddress, sys; ipaddress.ip_address(sys.argv[1])' "$relay_gateway_ip"
           helm upgrade --install repowire-relay charts/repowire-relay \
             --namespace repowire \
+            --set oauth.proxyMode=gclb \
+            --set-string oauth.gclbForwardingIP="$relay_gateway_ip" \
             --set image.tag=${{ github.sha }} \
             --set image.repository=gcr.io/${{ secrets.GCP_PROJECT_ID }}/repowire-relay
           kubectl rollout status deployment/repowire-relay -n repowire --timeout=120s

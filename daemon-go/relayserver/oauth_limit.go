@@ -1,8 +1,9 @@
 package relayserver
 
 import (
-	"net"
+	"fmt"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -13,10 +14,11 @@ import (
 // Bounded client-side buckets are checked before the global ceiling, so one
 // noisy address cannot consume every registration slot. No timers or sweeper.
 type oauthRegistrationLimit struct {
-	mu                sync.Mutex
-	clients           *lru.Cache[string, *rate.Limiter]
-	global            *rate.Limiter
-	trustCloudflareIP bool
+	mu               sync.Mutex
+	clients          *lru.Cache[string, *rate.Limiter]
+	global           *rate.Limiter
+	proxyMode        string
+	gclbForwardingIP netip.Addr
 }
 
 func newOAuthRegistrationLimit() *oauthRegistrationLimit {
@@ -24,16 +26,10 @@ func newOAuthRegistrationLimit() *oauthRegistrationLimit {
 	return &oauthRegistrationLimit{clients: clients, global: rate.NewLimiter(5, 20)}
 }
 func (l *oauthRegistrationLimit) allow(r *http.Request) bool {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	// Only explicitly configured, access-controlled proxies may supply identity.
-	// Never trust a forwarded header merely because a caller sent one.
-	if l.trustCloudflareIP {
-		if ip := net.ParseIP(r.Header.Get("CF-Connecting-IP")); ip != nil {
-			host = ip.String()
-		}
+	host := registrationClientIP(r, l.proxyMode, l.gclbForwardingIP)
+	// Keep IPv6 privacy-address rotation within one network bucket.
+	if ip, ok := plainIP(host); ok && ip.Is6() {
+		host = netip.PrefixFrom(ip, 64).Masked().String()
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -42,5 +38,33 @@ func (l *oauthRegistrationLimit) allow(r *http.Request) bool {
 		bucket = rate.NewLimiter(rate.Every(time.Minute), 5)
 		l.clients.Add(host, bucket)
 	}
-	return bucket.Allow() && l.global.Allow()
+	now := time.Now()
+	reservation := bucket.ReserveN(now, 1)
+	if !reservation.OK() || reservation.DelayFrom(now) > 0 {
+		reservation.CancelAt(now)
+		return false
+	}
+	if !l.global.AllowN(now, 1) {
+		reservation.CancelAt(now)
+		return false
+	}
+	return true
+}
+
+func (l *oauthRegistrationLimit) configureProxy(mode, forwardingIP string) error {
+	if mode == "" {
+		mode = "direct"
+	}
+	if mode != "direct" && mode != "gclb" {
+		return fmt.Errorf("REPOWIRE_RELAY_OAUTH_PROXY_MODE must be direct or gclb")
+	}
+	if mode == "gclb" {
+		ip, ok := plainIP(forwardingIP)
+		if !ok {
+			return fmt.Errorf("gclb OAuth proxy mode requires REPOWIRE_RELAY_OAUTH_GCLB_FORWARDING_IP")
+		}
+		l.gclbForwardingIP = ip
+	}
+	l.proxyMode = mode
+	return nil
 }

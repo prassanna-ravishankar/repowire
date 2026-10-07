@@ -160,9 +160,25 @@ state using Gorilla securecookie; merely opening a form writes no pending record
 Abandoned authorization codes and inactive grants expire after one minute.
 Token checks perform indexed, read-only lookups. Expiry cleanup runs on writes.
 
-Registration is rate-limited per source IP (five initial requests, replenishing
-one per minute), with a separate global ceiling. Behind an access-controlled
-Cloudflare proxy, set `REPOWIRE_RELAY_TRUST_CF_CONNECTING_IP=true` (Helm:
-`oauth.trustCloudflareIP=true`) only when the origin rejects direct traffic and
-its trusted ingress preserves or sanitizes that header. Otherwise headers are
-ignored and the socket address is used; clients behind one proxy share a bucket.
+Registration is rate-limited per IPv4 address or IPv6 /64 (five initial requests,
+replenishing one per minute), with a separate global ceiling. The default
+`REPOWIRE_RELAY_OAUTH_PROXY_MODE=direct` ignores forwarding headers.
+
+For a Google global external Application Load Balancer with direct instance-group
+or zonal NEG backends, set `REPOWIRE_RELAY_OAUTH_PROXY_MODE=gclb` and
+`REPOWIRE_RELAY_OAUTH_GCLB_FORWARDING_IP` to its forwarding-rule IP (Helm:
+`oauth.proxyMode` and `oauth.gclbForwardingIP`). The relay checks the socket against
+Google's published GFE ranges, then reads only the two entries Google appends to
+`X-Forwarded-For`, verifying the final entry matches that configured IP. The
+connecting source determines the bucket. Only when that source is in Cloudflare's
+published ranges may `CF-Connecting-IP` supply the visitor address. Thus callers
+bypassing Cloudflare cannot forge their rate-limit identity with that header.
+Missing or malformed headers fall back to the last verified source address.
+
+The hosted workflow reads the gateway IP from Kubernetes and enables this mode.
+Self-hosted defaults and local daemon MCP remain unchanged. A sidecar proxy or
+regional load balancer needs a different trust configuration; do not enable this
+mode for either. Provider CIDRs are embedded from published lists checked on
+2026-10-07; update them when the providers change their ranges. There is no runtime
+network dependency or background polling. These addresses affect rate limiting
+only, never authentication or mesh identity.

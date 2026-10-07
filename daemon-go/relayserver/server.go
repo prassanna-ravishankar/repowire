@@ -797,7 +797,12 @@ func ListenAndServe(ctx context.Context, addr, webOut string) error {
 		if err := relay.EnableMCP(issuer, os.Getenv("REPOWIRE_RELAY_OAUTH_DB")); err != nil {
 			return err
 		}
-		relay.oauth.registrationLimit.trustCloudflareIP = os.Getenv("REPOWIRE_RELAY_TRUST_CF_CONNECTING_IP") == "true"
+		limit := relay.oauth.registrationLimit
+		if err := limit.configureProxy(os.Getenv("REPOWIRE_RELAY_OAUTH_PROXY_MODE"), os.Getenv("REPOWIRE_RELAY_OAUTH_GCLB_FORWARDING_IP")); err != nil {
+			_ = relay.Close()
+			return err
+		}
+		log.Printf("relay OAuth: registration proxy mode=%s", limit.proxyMode)
 	}
 	defer relay.Close()
 	server := &http.Server{Addr: addr, Handler: relay.Handler(), ReadHeaderTimeout: 10 * time.Second}
