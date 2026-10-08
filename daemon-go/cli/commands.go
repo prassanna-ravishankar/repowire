@@ -17,7 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var Version = "0.20.2"
+var Version = "0.21.0"
 
 func Run(argv []string) int {
 	return executeRoot(argv)
