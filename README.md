@@ -98,6 +98,31 @@ repowire agents create daily-brief --backend codex
 repowire jobs create "Daily brief" --path .repowire/agents/daily-brief --backend codex --cron "@daily" --prompt "Prepare the brief."
 ```
 
+**Reach your sessions remotely from Claude or ChatGPT.**
+
+Enable the relay. Your relay secret is written to `~/.repowire/config.yaml` under `relay.api_key`.
+
+```bash
+repowire setup --relay
+```
+
+In Claude Code, install the remote plugin, then authenticate it in `/mcp`:
+
+```text
+/plugin marketplace add prassanna-ravishankar/repowire
+/plugin install repowire-remote@repowire
+```
+
+In Claude.ai, ChatGPT, or another remote MCP client, add `https://relay.repowire.io/mcp` as a custom connector with OAuth. Enter the relay secret on the relay's consent page; the client gets its own scoped credentials, never the secret.
+
+Then, from the remote chat:
+
+```text
+Which of my agents are online? Ask project-b what API endpoints they expose and show me the reply.
+```
+
+The client finds the agent with `list_agents`, sends the question with `ask_agent`, and collects the answer with `get_reply`. See [Relay MCP](docs/reference/relay-mcp.md) for scopes, expiry, and limits.
+
 Full docs: [docs.repowire.io](https://docs.repowire.io).
 
 ## What You Get
