@@ -23,14 +23,20 @@ For the hosted relay at `repowire.io`, this means the operators *could* see your
 
 - The daemon authenticates to the relay with `relay.api_key`. The key is auto-generated and stored in `~/.repowire/config.yaml`.
 - The dashboard authenticates to the relay with a cookie set after submitting the same API key at `/auth`. Possession of the key grants dashboard access; treat it like a password.
+- Native clients such as the [iOS app](../use/features/ios-app.md) send the same key as `Authorization: Bearer` (or `X-API-Key`). The relay strips the key before tunneling, so the daemon never receives it. The app keeps it in the iOS Keychain, readable only on that device after first unlock.
 - Local-daemon `daemon.auth_token` is independent and gates the local WebSocket / HTTP API. `repowire setup` generates one because the MCP identity shim forwards to bearer-authenticated `/mcp`. Set or rotate it manually if other processes on the machine should not have free access.
 - The daemon-served localhost dashboard can use same-origin HTTP routes without exposing that token to browser JavaScript. Cross-origin, remote, WebSocket, and MCP callers remain bearer-gated.
+
+## Push notifications
+
+Push notifications carry the sender's name and up to 240 characters of the message or question text. The text passes through the relay and Apple Push Notification service to reach the device, which is wider exposure than the tunnel alone. Pushes go only to devices registered on your daemon (`/push/devices`), and only for events addressed to the human.
 
 ## Trust boundaries
 
 | Boundary | What protects it |
 | --- | --- |
-| Browser ↔ relay | TLS (you trust the relay's certificate) |
+| Browser or app ↔ relay | TLS (you trust the relay's certificate) |
+| Relay → device (push) | APNs token auth; you trust the relay and Apple with notification text |
 | Relay ↔ daemon | TLS-over-WSS (you trust the relay's network and process) |
 | Daemon ↔ agent (MCP) | Per-agent stdio identity proof, then localhost-only HTTP with bearer auth |
 | Daemon ↔ agent (hooks) | Local HTTP on `127.0.0.1`; gated by `daemon.auth_token` if set |
