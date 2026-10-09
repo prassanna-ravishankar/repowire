@@ -55,6 +55,31 @@ struct Badge: View {
             .padding(.horizontal, Theme.Space.s)
             .padding(.vertical, Theme.Space.xxs)
             .background(Capsule().fill(tint.opacity(0.12)))
+            .lineLimit(1)
+            .fixedSize()
+    }
+}
+
+/// A row header that sits on one line at regular sizes and stacks at
+/// accessibility text sizes, so names and badges never hyphenate or squeeze.
+struct HeaderRow<Leading: View, Trailing: View>: View {
+    @Environment(\.dynamicTypeSize) private var size
+    @ViewBuilder var leading: Leading
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        if size.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                leading
+                trailing
+            }
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
+                leading
+                Spacer(minLength: 0)
+                trailing
+            }
+        }
     }
 }
 
@@ -92,7 +117,7 @@ struct RWButtonStyle: ButtonStyle {
 
     private var foreground: Color {
         switch kind {
-        case .primary: .white
+        case .primary: Theme.Palette.onAccent
         case .secondary: Theme.Palette.foreground
         case .destructive: Theme.Palette.danger
         }
@@ -116,12 +141,13 @@ extension ButtonStyle where Self == RWButtonStyle {
 /// "2m ago" in mono, relative to now, refreshed by the system.
 struct Timestamp: View {
     let date: Date?
+    var tint: Color = Theme.Palette.faint
 
     var body: some View {
         if let date {
             Text(date, format: .relative(presentation: .numeric, unitsStyle: .abbreviated))
                 .font(Theme.Typeface.mono(.caption2))
-                .foregroundStyle(Theme.Palette.faint)
+                .foregroundStyle(tint)
                 .monospacedDigit()
         }
     }

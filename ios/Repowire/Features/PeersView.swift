@@ -59,11 +59,11 @@ struct PeerRow: View {
             StatusDot(status: peer.status)
                 .padding(.top, Theme.Space.s - Theme.Space.xxs)
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
-                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
+                HeaderRow {
                     Text("@\(peer.label)")
                         .font(Theme.Typeface.mono(.body, weight: .semibold))
                         .foregroundStyle(peer.status == .offline ? Theme.Palette.muted : Theme.Palette.foreground)
-                    Spacer(minLength: 0)
+                } trailing: {
                     if let backend = peer.backend {
                         Badge(text: backend)
                     }

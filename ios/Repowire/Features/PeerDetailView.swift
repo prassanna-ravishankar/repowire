@@ -98,13 +98,13 @@ struct TurnBubble: View {
             VStack(alignment: .leading, spacing: Theme.Space.s) {
                 Text(markdown: turn.text)
                     .font(.body)
-                    .foregroundStyle(mine ? Color.white : Theme.Palette.foreground)
+                    .foregroundStyle(mine ? Theme.Palette.onAccent : Theme.Palette.foreground)
                     .textSelection(.enabled)
                 if let tools = turn.toolCalls, !tools.isEmpty {
                     FlowTools(tools: tools)
                 }
-                Timestamp(date: MeshEvent(id: "", type: "", timestamp: turn.timestamp).date)
-                    .opacity(mine ? 0.8 : 1)
+                Timestamp(date: MeshEvent(id: "", type: "", timestamp: turn.timestamp).date,
+                          tint: mine ? Theme.Palette.onAccentMuted : Theme.Palette.faint)
             }
             .padding(Theme.Space.m)
             .background(
@@ -185,7 +185,7 @@ struct Composer: View {
                 Button(action: send) {
                     Image(systemName: sending ? "ellipsis" : "arrow.up")
                         .font(.body.weight(.bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.Palette.onAccent)
                         .frame(width: Theme.Size.tapTarget, height: Theme.Size.tapTarget)
                         .background(Circle().fill(canSend ? Theme.Palette.accent : Theme.Palette.faint))
                 }
