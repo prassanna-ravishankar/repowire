@@ -16,6 +16,8 @@ Then use `https://repowire.io/dashboard` for remote dashboard access.
 
 The relay landing page accepts the relay key from setup and redirects to the dashboard when the matching daemon is connected. Missing, invalid, or disconnected keys return to the landing page with an inline error.
 
+The logged-out landing page plays a decorative dotted orb → Repowire R reveal once on arrival, then holds the mark. It does not reflect peer or connection status. Reduced-motion preferences show the static R, which also remains visible without JavaScript. The relay-key form is available throughout.
+
 ## Self-hosted relay
 
 Self-hosting runs the same relay server under your own deployment and points the daemon at your relay URL.
