@@ -5,6 +5,18 @@ import SwiftUI
 struct PeersView: View {
     @Environment(AppModel.self) private var model
     @State private var query = ""
+    /// Collapsed circle names, remembered across launches.
+    @AppStorage("peers.collapsedCircles") private var collapsedStorage = ""
+
+    private var collapsed: Set<String> {
+        Set(collapsedStorage.split(separator: "\n").map(String.init))
+    }
+
+    private func toggle(_ circle: String) {
+        var next = collapsed
+        if next.remove(circle) == nil { next.insert(circle) }
+        withAnimation(Theme.Motion.standard) { collapsedStorage = next.sorted().joined(separator: "\n") }
+    }
 
     private var circles: [(name: String, peers: [Peer])] {
         let matches = model.listedPeers.filter { peer in
@@ -19,14 +31,18 @@ struct PeersView: View {
         NavigationStack {
             List {
                 ForEach(circles, id: \.name) { circle in
+                    // Searching shows every match, so collapse only applies to browsing.
+                    let isCollapsed = query.isEmpty && collapsed.contains(circle.name)
                     Section {
-                        ForEach(circle.peers) { peer in
-                            NavigationLink(value: peer) { PeerRow(peer: peer) }
-                                .listRowBackground(Theme.Palette.surface)
-                                .accessibilityIdentifier("peer.\(peer.name)")
+                        if !isCollapsed {
+                            ForEach(circle.peers) { peer in
+                                NavigationLink(value: peer) { PeerRow(peer: peer) }
+                                    .listRowBackground(Theme.Palette.surface)
+                                    .accessibilityIdentifier("peer.\(peer.name)")
+                            }
                         }
                     } header: {
-                        Eyebrow(text: circle.name)
+                        CircleHeader(name: circle.name, peers: circle.peers, collapsed: isCollapsed) { toggle(circle.name) }
                     }
                 }
             }
@@ -51,13 +67,48 @@ struct PeersView: View {
     }
 }
 
+/// Tappable circle header: name, how many peers and how many are working, and a
+/// chevron that turns with the collapse.
+struct CircleHeader: View {
+    let name: String
+    let peers: [Peer]
+    let collapsed: Bool
+    let toggle: () -> Void
+
+    private var working: Int { peers.filter(\.isWorking).count }
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: Theme.Space.s) {
+                Eyebrow(text: "\(name) · \(peers.count)")
+                if collapsed && working > 0 {
+                    ThinkingOrb()
+                    Eyebrow(text: "\(working) working", color: Theme.Palette.warning)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.Palette.faint)
+                    .rotationEffect(.degrees(collapsed ? -90 : 0))
+            }
+            .frame(minHeight: Theme.Size.tapTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(name), \(peers.count) peers")
+        .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
+        .accessibilityHint(collapsed ? "Shows the circle's peers" : "Hides the circle's peers")
+        .accessibilityIdentifier("circle.\(name)")
+    }
+}
+
 struct PeerRow: View {
     let peer: Peer
 
     var body: some View {
         HStack(alignment: .top, spacing: Theme.Space.m) {
-            StatusDot(status: peer.status)
-                .padding(.top, Theme.Space.s - Theme.Space.xxs)
+            PeerActivity(peer: peer)
+                .padding(.top, Theme.Space.xxs)
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
                 HeaderRow {
                     Text("@\(peer.label)")
@@ -68,7 +119,7 @@ struct PeerRow: View {
                         Badge(text: backend)
                     }
                 }
-                Text(peer.description ?? peer.status.label)
+                Text(peer.description ?? (peer.isWorking ? "Working" : peer.status.label))
                     .font(.subheadline)
                     .foregroundStyle(Theme.Palette.muted)
                     .lineLimit(2)
@@ -79,5 +130,6 @@ struct PeerRow: View {
         }
         .padding(.vertical, Theme.Space.xs)
         .accessibilityElement(children: .combine)
+        .accessibilityValue(peer.isWorking ? "Working" : peer.status.label)
     }
 }

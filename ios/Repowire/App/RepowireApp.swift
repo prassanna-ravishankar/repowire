@@ -9,6 +9,10 @@ struct RepowireApp: App {
 
     init() {
         let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("-fixtures") {
+            // Fixture runs start from a clean slate so UI tests stay independent.
+            UserDefaults.standard.removeObject(forKey: "peers.collapsedCircles")
+        }
         _model = State(initialValue: AppModel(fixtures: arguments.contains("-fixtures"), onboarding: arguments.contains("-onboarding")))
         let appearance = UserDefaults.standard.string(forKey: "appearance")
         scheme = appearance == "dark" ? .dark : appearance == "light" ? .light : nil
