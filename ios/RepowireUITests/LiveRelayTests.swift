@@ -55,7 +55,8 @@ final class LiveRelayTests: XCTestCase {
         var request = URLRequest(url: relay.appending(path: "questions/ask-blocking"))
         request.httpMethod = "POST"
         request.timeoutInterval = 60
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue(key, forHTTPHeaderField: "X-API-Key")
+        request.setValue("rw_token=\(key)", forHTTPHeaderField: "Cookie")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "prompt": "Bash: rm -rf build/ (live relay e2e)", "scope": "tool_permission", "from_peer": "e2e-claude-code",

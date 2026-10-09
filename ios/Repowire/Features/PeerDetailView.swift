@@ -36,6 +36,7 @@ struct PeerDetailView: View {
                 .padding(Theme.Space.l)
             }
             .defaultScrollAnchor(.bottom)
+            .hardTopScrollEdge()
             .background(Theme.Palette.page)
             .safeAreaInset(edge: .bottom) {
                 Composer(peer: live) { await load() }
@@ -117,13 +118,14 @@ struct TurnBubble: View {
                 if let tools = turn.toolCalls, !tools.isEmpty {
                     FlowTools(tools: tools)
                 }
-                Timestamp(date: MeshEvent(id: "", type: "", timestamp: turn.timestamp).date,
-                          tint: mine ? Theme.Palette.onAccentMuted : Theme.Palette.faint)
+                Timestamp(
+                    date: MeshEvent(id: "", type: "", timestamp: turn.timestamp).date,
+                    tint: mine ? Theme.Palette.onAccentMuted : Theme.Palette.faint)
             }
             .padding(Theme.Space.m)
             .background(
                 RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                    .fill(mine ? Theme.Palette.accent : Theme.Palette.surface)
+                    .fill(mine ? Theme.Palette.accentFill : Theme.Palette.surface)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
@@ -194,14 +196,17 @@ struct Composer: View {
                     .padding(.horizontal, Theme.Space.m)
                     .padding(.vertical, Theme.Space.s + Theme.Space.xxs)
                     .background(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).fill(Theme.Palette.surface))
-                    .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.Palette.border, lineWidth: Theme.Stroke.hairline))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(
+                            Theme.Palette.border, lineWidth: Theme.Stroke.hairline)
+                    )
                     .accessibilityIdentifier("composer.text")
                 Button(action: send) {
                     Image(systemName: sending ? "ellipsis" : "arrow.up")
                         .font(.body.weight(.bold))
                         .foregroundStyle(Theme.Palette.onAccent)
                         .frame(width: Theme.Size.tapTarget, height: Theme.Size.tapTarget)
-                        .background(Circle().fill(canSend ? Theme.Palette.accent : Theme.Palette.faint))
+                        .background(Circle().fill(canSend ? Theme.Palette.accentFill : Theme.Palette.faint))
                 }
                 .disabled(!canSend)
                 .accessibilityLabel("Send")
@@ -229,6 +234,19 @@ struct Composer: View {
                 self.error = error.localizedDescription
                 UINotificationFeedbackGenerator().notificationOccurred(.error)
             }
+        }
+    }
+}
+
+extension View {
+    /// A transcript opens at its newest turn, so older text always sits at the
+    /// top edge; a hard edge keeps it from fading to half contrast (iOS 26+).
+    @ViewBuilder
+    fileprivate func hardTopScrollEdge() -> some View {
+        if #available(iOS 26.0, *) {
+            scrollEdgeEffectStyle(.hard, for: .top)
+        } else {
+            self
         }
     }
 }

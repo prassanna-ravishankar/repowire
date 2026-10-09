@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import RepowireKit
 
 /// Serves canned responses and records requests, keyed per test via a header.
@@ -32,7 +33,9 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         let handler = Self.handlers[id]
         Self.lock.unlock()
         let (status, data) = handler?(captured) ?? (404, Data())
-        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(
+            self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!,
+            cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
     }
@@ -62,7 +65,8 @@ private func json(_ text: String) -> Data { Data(text.utf8) }
         let api = StubProtocol.api("auth.test") { _ in (200, json(#"[{"daemon_id":"studio"}]"#)) }
         try await api.validate()
         let request = try #require(StubProtocol.requests("auth.test").first)
-        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer rw_test_key_123")
+        #expect(request.value(forHTTPHeaderField: "X-API-Key") == "rw_test_key_123")
+        #expect(request.value(forHTTPHeaderField: "Cookie") == "rw_token=rw_test_key_123")
         #expect(request.url?.path() == "/api/v1/daemons")
         await #expect(throws: MeshError.noDaemon) {
             try await StubProtocol.api("nodaemon.test") { _ in (200, json("[]")) }.validate()
@@ -81,7 +85,12 @@ private func json(_ text: String) -> Data { Data(text.utf8) }
 
     @Test func `skips malformed events instead of failing the feed`() async throws {
         let api = StubProtocol.api("events.test") { _ in
-            (200, json(#"[{"id":"1","type":"ask","timestamp":"t","correlation_id":"c1"},{"bogus":true},{"id":"2","type":"ack","timestamp":"t","correlation_id":"c1"}]"#))
+            (
+                200,
+                json(
+                    #"[{"id":"1","type":"ask","timestamp":"t","correlation_id":"c1"},{"bogus":true},{"id":"2","type":"ack","timestamp":"t","correlation_id":"c1"}]"#
+                )
+            )
         }
         let events = try await api.events(since: "0")
         #expect(events.map(\.id) == ["1", "2"])
@@ -128,7 +137,8 @@ private func json(_ text: String) -> Data { Data(text.utf8) }
 
 @Suite struct ModelTests {
     @Test func `derives open questions until acked`() {
-        let question = AskQuestion(kind: "choice", prompt: "ok?", options: [QuestionOption(id: "y", title: "Yes")], blocking: true, scope: "tool_permission")
+        let question = AskQuestion(
+            kind: "choice", prompt: "ok?", options: [QuestionOption(id: "y", title: "Yes")], blocking: true, scope: "tool_permission")
         let events = [
             MeshEvent(id: "1", type: "ask", from: "a", text: "first", correlationId: "c1", question: question),
             MeshEvent(id: "2", type: "ask", from: "b", text: "second", correlationId: "c2", question: question),

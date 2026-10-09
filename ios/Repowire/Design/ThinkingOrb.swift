@@ -44,8 +44,9 @@ struct ThinkingOrb: View {
             let wave = pow((cos(lag < 0 ? lag + .pi * 2 : lag) + 1) / 2, 2)
             let radius = dot * (0.55 + 0.45 * wave)
             let point = CGPoint(x: center.x + orbit * cos(angle - .pi / 2), y: center.y + orbit * sin(angle - .pi / 2))
-            canvas.fill(Path(ellipseIn: CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)),
-                        with: .color(tint.opacity(0.25 + 0.75 * wave)))
+            canvas.fill(
+                Path(ellipseIn: CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)),
+                with: .color(tint.opacity(0.25 + 0.75 * wave)))
         }
     }
 }

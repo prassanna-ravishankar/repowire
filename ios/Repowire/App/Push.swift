@@ -21,13 +21,19 @@ enum PushCategory {
 
     static var all: Set<UNNotificationCategory> {
         [
-            UNNotificationCategory(identifier: approval, actions: [
-                UNNotificationAction(identifier: Action.allow, title: "Allow", options: [.authenticationRequired]),
-                UNNotificationAction(identifier: Action.deny, title: "Deny", options: [.destructive, .authenticationRequired]),
-            ], intentIdentifiers: []),
-            UNNotificationCategory(identifier: question, actions: [
-                UNTextInputNotificationAction(identifier: Action.reply, title: "Reply", options: [.authenticationRequired], textInputButtonTitle: "Send", textInputPlaceholder: "Answer"),
-            ], intentIdentifiers: []),
+            UNNotificationCategory(
+                identifier: approval,
+                actions: [
+                    UNNotificationAction(identifier: Action.allow, title: "Allow", options: [.authenticationRequired]),
+                    UNNotificationAction(identifier: Action.deny, title: "Deny", options: [.destructive, .authenticationRequired]),
+                ], intentIdentifiers: []),
+            UNNotificationCategory(
+                identifier: question,
+                actions: [
+                    UNTextInputNotificationAction(
+                        identifier: Action.reply, title: "Reply", options: [.authenticationRequired], textInputButtonTitle: "Send",
+                        textInputPlaceholder: "Answer")
+                ], intentIdentifiers: []),
             UNNotificationCategory(identifier: message, actions: [], intentIdentifiers: []),
         ]
     }
@@ -37,7 +43,9 @@ enum PushCategory {
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     var model: AppModel?
 
-    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+    func application(
+        _ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.setNotificationCategories(PushCategory.all)
@@ -53,7 +61,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         model?.lastError = "Notifications unavailable: \(error.localizedDescription)"
     }
 
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async
+        -> UNNotificationPresentationOptions
+    {
         [.banner, .list, .sound]
     }
 

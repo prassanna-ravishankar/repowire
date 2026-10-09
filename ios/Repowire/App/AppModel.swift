@@ -1,6 +1,6 @@
 import Foundation
-import Observation
 import OSLog
+import Observation
 import RepowireKit
 
 /// App state. Owns the mesh service, mirrors the daemon's event log, and derives
@@ -42,15 +42,15 @@ final class AppModel {
         self.fixtures = fixtures
         if onboarding { return }
         #if DEBUG
-        // `-relayURL <url> -relayKey <key>`: live end-to-end runs without the Keychain.
-        let defaults = UserDefaults.standard
-        if let raw = defaults.string(forKey: "relayURL"), let url = URL(string: raw), let key = defaults.string(forKey: "relayKey") {
-            attach(RelayAPI(baseURL: url, key: key), host: url.host() ?? "relay")
-            return
-        }
+            // `-relayURL <url> -relayKey <key>`: live end-to-end runs without the Keychain.
+            let defaults = UserDefaults.standard
+            if let raw = defaults.string(forKey: "relayURL"), let url = URL(string: raw), let key = defaults.string(forKey: "relayKey") {
+                attach(RelayAPI(baseURL: url, key: key), host: url.host() ?? "relay")
+                return
+            }
         #endif
         if fixtures {
-            attach(FixtureMesh(), host: "repowire.io")
+            attach(FixtureMesh(), host: "relay.repowire.io")
         } else if let saved = store.load() {
             attach(RelayAPI(baseURL: saved.relayURL, key: saved.key), host: saved.relayURL.host() ?? "relay")
         }
@@ -194,7 +194,11 @@ final class AppModel {
         do {
             try await service.answer(correlationId: question.correlationId, optionId: optionId, outcome: outcome, text: text)
             // Optimistically close it; the ack event from the stream confirms.
-            merge([MeshEvent(id: "local-ack-\(question.correlationId)", type: "ack", timestamp: ISO8601DateFormatter().string(from: .now), correlationId: question.correlationId)])
+            merge([
+                MeshEvent(
+                    id: "local-ack-\(question.correlationId)", type: "ack", timestamp: ISO8601DateFormatter().string(from: .now),
+                    correlationId: question.correlationId)
+            ])
         } catch {
             lastError = error.localizedDescription
         }
@@ -203,7 +207,8 @@ final class AppModel {
     /// Answers by correlation id, for notification actions that arrive before
     /// the event log has loaded.
     func answer(correlationId: String, optionId: String?, outcome: String?, text: String?) async {
-        let question = pendingQuestions.first { $0.correlationId == correlationId }
+        let question =
+            pendingQuestions.first { $0.correlationId == correlationId }
             ?? PendingQuestion(correlationId: correlationId, from: "", text: "", question: AskQuestion(kind: "choice"))
         await answer(question, optionId: optionId, outcome: outcome, text: text)
     }
@@ -221,9 +226,9 @@ final class AppModel {
         pushToken = token
         guard let service else { return }
         #if DEBUG
-        let environment = "sandbox"
+            let environment = "sandbox"
         #else
-        let environment = "production"
+            let environment = "production"
         #endif
         do {
             try await service.registerDevice(token: token, environment: environment, name: DeviceName.current)
@@ -233,8 +238,8 @@ final class AppModel {
     }
 }
 
-private extension Peer.Status {
-    var rank: Int {
+extension Peer.Status {
+    fileprivate var rank: Int {
         switch self {
         case .busy: 0
         case .online: 1

@@ -20,7 +20,8 @@ struct PeersView: View {
 
     private var circles: [(name: String, peers: [Peer])] {
         let matches = model.listedPeers.filter { peer in
-            query.isEmpty || [peer.label, peer.description ?? "", peer.circle ?? ""].contains { $0.localizedCaseInsensitiveContains(query) }
+            query.isEmpty
+                || [peer.label, peer.description ?? "", peer.circle ?? ""].contains { $0.localizedCaseInsensitiveContains(query) }
         }
         return Dictionary(grouping: matches) { $0.circle ?? "global" }
             .map { (name: $0.key, peers: $0.value) }

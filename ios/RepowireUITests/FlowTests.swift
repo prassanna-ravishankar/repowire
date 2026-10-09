@@ -114,6 +114,6 @@ final class FlowTests: XCTestCase {
     }
 }
 
-private extension String {
-    func repeated(_ count: Int) -> String { String(repeating: self, count: count) }
+extension String {
+    fileprivate func repeated(_ count: Int) -> String { String(repeating: self, count: count) }
 }
