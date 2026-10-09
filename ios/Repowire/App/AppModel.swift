@@ -41,6 +41,14 @@ final class AppModel {
         self.store = store
         self.fixtures = fixtures
         if onboarding { return }
+        #if DEBUG
+        // `-relayURL <url> -relayKey <key>`: live end-to-end runs without the Keychain.
+        let defaults = UserDefaults.standard
+        if let raw = defaults.string(forKey: "relayURL"), let url = URL(string: raw), let key = defaults.string(forKey: "relayKey") {
+            attach(RelayAPI(baseURL: url, key: key), host: url.host() ?? "relay")
+            return
+        }
+        #endif
         if fixtures {
             attach(FixtureMesh(), host: "repowire.io")
         } else if let saved = store.load() {
@@ -88,7 +96,7 @@ final class AppModel {
         }
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
         let api = RelayAPI(baseURL: relay, key: key)
-        _ = try await api.health()
+        try await api.validate()
         store.save(Credentials(relayURL: relay, key: key))
         attach(api, host: relay.host() ?? "relay")
     }

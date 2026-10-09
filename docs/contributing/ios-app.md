@@ -46,6 +46,12 @@ Open questions are derived from the event log with the same rule the web dashboa
 - `RepowireKit` tests (Swift Testing) cover the relay client against a `URLProtocol` stub: auth header, request bodies, error mapping, lossy event decoding, SSE framing, question derivation, and fixture behavior.
 - `FlowTests` drive the app on `FixtureMesh`: onboarding rejects a bad key and connects with a good one, Allow and Deny clear an approval, choosing an option answers a question, a sent message appears in the conversation, offline peers cannot be messaged, jobs list, and Disconnect returns to onboarding.
 
+- `LiveRelayTests` run the app against a real relay and daemon. `ios/scripts/live-relay-e2e.sh` starts both under a temporary `HOME` (your own daemon, config, and bots are untouched), raises a blocking tool-permission question on the daemon, and checks that it streams to the app, that tapping Allow resolves it on the daemon, and that the daemon's push frame reaches the relay. Outside that script the test skips.
+
+```bash
+ios/scripts/live-relay-e2e.sh
+```
+
 ### Consistency
 
 `scripts/design-lint.py` fails when feature code bypasses the design system:

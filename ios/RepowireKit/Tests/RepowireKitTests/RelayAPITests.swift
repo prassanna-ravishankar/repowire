@@ -58,12 +58,15 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
 private func json(_ text: String) -> Data { Data(text.utf8) }
 
 @Suite struct RelayAPITests {
-    @Test func `sends the relay key as a bearer token`() async throws {
-        let api = StubProtocol.api("auth.test") { _ in (200, json(#"{"status":"ok"}"#)) }
-        #expect(try await api.health())
+    @Test func `validates the key against the relay's daemon list`() async throws {
+        let api = StubProtocol.api("auth.test") { _ in (200, json(#"[{"daemon_id":"studio"}]"#)) }
+        try await api.validate()
         let request = try #require(StubProtocol.requests("auth.test").first)
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer rw_test_key_123")
-        #expect(request.url?.path() == "/health")
+        #expect(request.url?.path() == "/api/v1/daemons")
+        await #expect(throws: MeshError.noDaemon) {
+            try await StubProtocol.api("nodaemon.test") { _ in (200, json("[]")) }.validate()
+        }
     }
 
     @Test(arguments: [

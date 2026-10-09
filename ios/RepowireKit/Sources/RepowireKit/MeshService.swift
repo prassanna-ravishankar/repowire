@@ -4,7 +4,8 @@ import Foundation
 /// daemon through the relay; `FixtureMesh` serves deterministic data for
 /// previews, UI tests, and design screenshots.
 public protocol MeshService: Sendable {
-    func health() async throws -> Bool
+    /// Proves the key is accepted and a daemon is connected behind it.
+    func validate() async throws
     func peers() async throws -> [Peer]
     func events(since: String?) async throws -> [MeshEvent]
     /// Live events. Ends when the connection drops; callers reconnect.
