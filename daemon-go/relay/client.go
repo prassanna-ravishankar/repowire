@@ -34,6 +34,8 @@ const (
 	dialTimeout    = 10 * time.Second // Python open_timeout
 	tunnelTimeout  = 30 * time.Second // Python HTTP_TUNNEL_TIMEOUT
 	readLimit      = 16 << 20         // 16 MiB; matches Python max_size (attachments)
+
+	maxConcurrentRequests = 32 // in-flight tunneled HTTP requests per relay session
 )
 
 // strippedForwardHeaders are proxy headers removed before forwarding a tunneled
@@ -73,6 +75,9 @@ type Client struct {
 
 type relaySession struct {
 	conn *websocket.Conn
+	// requests bounds concurrent tunneled HTTP requests; a full slot holds the
+	// read loop, which is the backpressure.
+	requests chan struct{}
 
 	writeMu   sync.Mutex
 	streamsMu sync.Mutex
@@ -80,7 +85,7 @@ type relaySession struct {
 }
 
 func newRelaySession(conn *websocket.Conn) *relaySession {
-	return &relaySession{conn: conn, streams: map[string]context.CancelFunc{}}
+	return &relaySession{conn: conn, streams: map[string]context.CancelFunc{}, requests: make(chan struct{}, maxConcurrentRequests)}
 }
 
 func (s *relaySession) write(ctx context.Context, value any) error {
@@ -385,8 +390,9 @@ func (c *Client) connectAndServe(ctx context.Context) (bool, error) {
 		}
 	}()
 
-	// Ordinary requests remain sequential. Streaming requests run in their own
-	// goroutine so the read loop can receive cancellation frames; relaySession
+	// Requests and streams each run in their own goroutine: a long-poll (an
+	// ask waiting for its answer) must not block the request that answers it,
+	// and the read loop must stay free for cancellation frames. relaySession
 	// serializes the resulting WebSocket writes.
 	for {
 		var msg map[string]any
@@ -405,7 +411,11 @@ func (c *Client) handleMessage(ctx context.Context, session *relaySession, msg m
 	case "ping":
 		_ = session.write(ctx, map[string]any{"type": "pong"})
 	case "http_request":
-		c.handleHTTPRequest(ctx, session, msg)
+		session.requests <- struct{}{}
+		go func() {
+			defer func() { <-session.requests }()
+			c.handleHTTPRequest(ctx, session, msg)
+		}()
 	case "http_stream_request":
 		c.startHTTPStream(ctx, session, msg)
 	case "http_stream_cancel":

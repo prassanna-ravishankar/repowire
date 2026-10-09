@@ -330,3 +330,56 @@ func TestClient_StatusAndDisabledNoop(t *testing.T) {
 	}
 	c.Stop() // must not hang
 }
+
+// A long-poll (an ask waiting for its answer) must not block other tunneled
+// requests: the answer that would release it arrives through the same tunnel.
+func TestClient_LongPollDoesNotBlockOtherRequests(t *testing.T) {
+	answered := make(chan struct{})
+	local := fakeLocal(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/questions/ask-blocking":
+			select {
+			case <-answered:
+				_, _ = w.Write([]byte(`{"option_id":"allow"}`))
+			case <-time.After(3 * time.Second):
+				w.WriteHeader(http.StatusGatewayTimeout)
+			}
+		case "/answer":
+			close(answered)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	})
+
+	order := make(chan string, 2)
+	relay, _ := startRelay(t, func(ctx context.Context, c *websocket.Conn) {
+		_ = wsjson.Write(ctx, c, map[string]any{"type": "http_request", "request_id": "wait", "method": "POST", "path": "/questions/ask-blocking"})
+		_ = wsjson.Write(ctx, c, map[string]any{"type": "http_request", "request_id": "answer", "method": "POST", "path": "/answer"})
+		for range 2 {
+			var resp map[string]any
+			if err := wsjson.Read(ctx, c, &resp); err != nil {
+				return
+			}
+			if int(resp["status"].(float64)) != http.StatusOK {
+				t.Errorf("%v status = %v", resp["request_id"], resp["status"])
+			}
+			order <- resp["request_id"].(string)
+		}
+	})
+
+	c := NewClient(wsURL(relay.URL), "rw_test", "d1", local.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+
+	for _, want := range []string{"answer", "wait"} {
+		select {
+		case got := <-order:
+			if got != want {
+				t.Fatalf("response order: got %s, want %s first", got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for %s: the long-poll blocked the tunnel", want)
+		}
+	}
+}
