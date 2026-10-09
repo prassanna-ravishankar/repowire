@@ -1,13 +1,13 @@
 package relayserver
 
 import (
+	_ "embed"
 	"html"
 	"strings"
 )
 
-const landingPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Repowire</title><style>
-body{font:16px system-ui;background:#0a0a0f;color:#c8c8d0;display:grid;place-items:center;min-height:100vh;margin:0}.card{width:min(440px,90vw);text-align:center}input,button{padding:.7rem;border:1px solid #30303f;border-radius:6px;background:#14141f;color:inherit}input{width:65%}button{cursor:pointer}.error{color:#f08080}a{color:#9292c0}
-</style></head><body><main class="card"><h1>repowire</h1><p>Mesh network for AI coding agents</p><form action="/auth" method="post"><input name="token" placeholder="rw_…" autocomplete="off"><button>Open</button></form>{{ERROR}}<p><small>Run <code>repowire setup --relay</code> to get your key.</small></p><p><a href="https://docs.repowire.io/">Docs</a> · <a href="https://github.com/prassanna-ravishankar/repowire">GitHub</a></p></main></body></html>`
+//go:embed assets/landing.html
+var landingPage string
 
 func landingHTML(code string) string {
 	messages := map[string]string{
