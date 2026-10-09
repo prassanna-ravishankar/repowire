@@ -3,6 +3,14 @@ import SwiftUI
 
 /// One screen, one job: paste the relay key and connect. Validates against the
 /// relay before saving so a bad key fails here, inline, not later.
+enum Links {
+    // swift-format-ignore: NeverForceUnwrap
+    // Constant, valid URL literals; the same links as the relay landing page.
+    static let docs = URL(string: "https://docs.repowire.io/")!
+    // swift-format-ignore: NeverForceUnwrap
+    static let github = URL(string: "https://github.com/prassanna-ravishankar/repowire")!
+}
+
 struct OnboardingView: View {
     @Environment(AppModel.self) private var model
     @State private var relay = Credentials.defaultRelay.host() ?? "relay.repowire.io"
@@ -18,25 +26,20 @@ struct OnboardingView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Space.xl) {
-                Image("LogoMark")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(height: Theme.Space.xxl + Theme.Space.l)
-                    .accessibilityHidden(true)
-                    .padding(.top, Theme.Space.xxl)
-
-                VStack(alignment: .leading, spacing: Theme.Space.s) {
-                    Text("Connect to your mesh")
-                        .font(.largeTitle.weight(.bold))
-                        .tracking(-0.6)
+            VStack(spacing: Theme.Space.xl) {
+                // Same mark, words, and hint as the relay landing page.
+                VStack(spacing: Theme.Space.s) {
+                    RelayMark()
+                    Text("repowire")
+                        .font(.title.weight(.semibold))
+                        .tracking(-1.1)
                         .foregroundStyle(Theme.Palette.foreground)
-                    Text(
-                        "Answer questions, approve tool calls, and message your agents from anywhere. The relay key stays in this device's Keychain."
-                    )
-                    .font(.body)
-                    .foregroundStyle(Theme.Palette.muted)
+                        .accessibilityAddTraits(.isHeader)
+                    Text("Mesh network for AI coding agents")
+                        .font(.body)
+                        .foregroundStyle(Theme.Palette.muted)
                 }
+                .padding(.top, Theme.Space.xl)
 
                 Card {
                     field("Relay") {
@@ -71,32 +74,39 @@ struct OnboardingView: View {
                     }
                 }
 
-                if let error {
-                    Label(error, systemImage: "exclamationmark.circle")
-                        .font(.callout)
-                        .foregroundStyle(Theme.Palette.danger)
-                        .accessibilityIdentifier("onboarding.error")
-                        .transition(.opacity)
-                }
-
-                Button(action: connect) {
-                    HStack(spacing: Theme.Space.s) {
-                        if connecting { ProgressView().tint(Theme.Palette.onAccent) }
-                        Text(connecting ? "Connecting" : "Connect")
+                VStack(spacing: Theme.Space.m) {
+                    if let error {
+                        Label(error, systemImage: "exclamationmark.circle")
+                            .font(.callout)
+                            .foregroundStyle(Theme.Palette.danger)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("onboarding.error")
+                            .transition(.opacity)
                     }
-                }
-                .buttonStyle(.rwPrimary)
-                .disabled(!canConnect)
-                .opacity(canConnect || connecting ? 1 : 0.5)
-                .accessibilityIdentifier("onboarding.connect")
 
-                VStack(alignment: .leading, spacing: Theme.Space.xs) {
-                    Eyebrow(text: "Where to find it")
-                    Text(
-                        "Run `repowire setup --relay` on the machine running your agents, then copy `relay.api_key` from `~/.repowire/config.yaml`."
-                    )
+                    Button(action: connect) {
+                        HStack(spacing: Theme.Space.s) {
+                            if connecting { ProgressView().tint(Theme.Palette.onAccent) }
+                            Text(connecting ? "Connecting" : "Connect")
+                        }
+                    }
+                    .buttonStyle(.rwPrimary)
+                    .disabled(!canConnect)
+                    .opacity(canConnect || connecting ? 1 : 0.5)
+                    .accessibilityIdentifier("onboarding.connect")
+                }
+
+                VStack(spacing: Theme.Space.m) {
+                    Text("Run `repowire setup --relay` to get your key. It is `relay.api_key` in `~/.repowire/config.yaml`.")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.Palette.muted)
+                        .multilineTextAlignment(.center)
+                    HStack(spacing: Theme.Space.xs) {
+                        footerLink("Docs", Links.docs)
+                        Text("·").foregroundStyle(Theme.Palette.faint).accessibilityHidden(true)
+                        footerLink("GitHub", Links.github)
+                    }
                     .font(.footnote)
-                    .foregroundStyle(Theme.Palette.muted)
                 }
             }
             .padding(.horizontal, Theme.Space.xl)
@@ -105,6 +115,14 @@ struct OnboardingView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .background(Theme.Palette.page)
+    }
+
+    /// Small text, full-size target.
+    private func footerLink(_ title: String, _ url: URL) -> some View {
+        Link(title, destination: url)
+            .padding(.horizontal, Theme.Space.s)
+            .frame(minWidth: Theme.Size.tapTarget, minHeight: Theme.Size.tapTarget)
+            .contentShape(Rectangle())
     }
 
     private func field(_ label: String, @ViewBuilder content: () -> some View) -> some View {
