@@ -222,3 +222,51 @@ func TestTunnelPathCoversDashboardWithoutExposingMCP(t *testing.T) {
 		}
 	}
 }
+
+func TestTunnelAcceptsBearerKeyAndStripsIt(t *testing.T) {
+	server := httptest.NewServer(New("").Handler())
+	t.Cleanup(server.Close)
+	key := "rw_test-native-client-key"
+	conn := connectDaemon(t, server.URL, key)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var request map[string]any
+		if wsjson.Read(context.Background(), conn, &request) != nil {
+			return
+		}
+		for name := range request["headers"].(map[string]any) {
+			if lower := strings.ToLower(name); lower == "authorization" || lower == "x-api-key" {
+				t.Errorf("relay key forwarded to daemon in %s", name)
+			}
+		}
+		_ = wsjson.Write(context.Background(), conn, map[string]any{
+			"type": "http_response", "request_id": request["request_id"], "status": 200,
+			"headers": map[string]string{}, "body": "",
+		})
+	}()
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/peers", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bearer tunnel status = %d", resp.StatusCode)
+	}
+	<-done
+
+	bad, _ := http.NewRequest(http.MethodGet, server.URL+"/peers", nil)
+	bad.Header.Set("Authorization", "Bearer nope")
+	resp, err = http.DefaultClient.Do(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("invalid bearer status = %d, want 401", resp.StatusCode)
+	}
+}

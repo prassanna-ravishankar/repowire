@@ -274,8 +274,25 @@ func (s *Server) registerToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.tokens.register(req.UserID))
 }
 
+// headerKey reads the relay key a native client sends: X-API-Key or
+// Authorization: Bearer.
 func (s *Server) headerKey(r *http.Request) (APIKey, bool) {
-	return s.tokens.validate(r.Header.Get("X-API-Key"))
+	if key := r.Header.Get("X-API-Key"); key != "" {
+		return s.tokens.validate(key)
+	}
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return APIKey{}, false
+	}
+	return s.tokens.validate(strings.TrimSpace(token))
+}
+
+// clientKey accepts a header key (native apps) or the dashboard cookie.
+func (s *Server) clientKey(r *http.Request) (APIKey, bool) {
+	if key, ok := s.headerKey(r); ok {
+		return key, true
+	}
+	return s.cookieKey(r)
 }
 
 func (s *Server) cookieKey(r *http.Request) (APIKey, bool) {
@@ -446,9 +463,13 @@ func (s *Server) cookieTunnel(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	key, ok := s.cookieKey(r)
+	key, ok := s.clientKey(r)
 	if !ok {
-		http.Redirect(w, r, "/", http.StatusFound)
+		if r.Header.Get("Authorization") != "" || r.Header.Get("X-API-Key") != "" {
+			writeError(w, http.StatusUnauthorized, "Invalid API key")
+		} else {
+			http.Redirect(w, r, "/", http.StatusFound)
+		}
 		return
 	}
 	conn := s.anyDaemon(key.UserID)
@@ -486,7 +507,7 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, conn *daemonConn
 	headers := map[string]string{}
 	for name, values := range r.Header {
 		lower := strings.ToLower(name)
-		if lower == "host" || lower == "connection" || lower == "transfer-encoding" || lower == "cookie" {
+		if lower == "host" || lower == "connection" || lower == "transfer-encoding" || lower == "cookie" || lower == "authorization" || lower == "x-api-key" {
 			continue
 		}
 		headers[name] = strings.Join(values, ", ")
@@ -515,7 +536,7 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, conn *daemonConn
 }
 
 func (s *Server) eventsStream(w http.ResponseWriter, r *http.Request) {
-	key, ok := s.cookieKey(r)
+	key, ok := s.clientKey(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
 		return
