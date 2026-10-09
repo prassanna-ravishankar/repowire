@@ -1,0 +1,9 @@
+// Copy to Config/Local.xcconfig and fill in. Xcode shows your team id under
+// Settings → Accounts → (your Apple ID) → Team, or in the Signing pane.
+
+DEVELOPMENT_TEAM = ABCDE12345
+
+// Free Apple ID (personal team): push notifications are unavailable, and the
+// bundle id must be unique to you. Uncomment both lines.
+// CODE_SIGN_ENTITLEMENTS =
+// PRODUCT_BUNDLE_IDENTIFIER = io.repowire.app.yourname

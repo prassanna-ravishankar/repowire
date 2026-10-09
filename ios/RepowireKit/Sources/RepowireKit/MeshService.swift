@@ -27,7 +27,7 @@ public enum MeshError: LocalizedError, Equatable {
         switch self {
         case .unauthorized: "The relay key was not accepted."
         case .noDaemon: "No daemon is connected to the relay for this key."
-        case let .server(status, message): message.isEmpty ? "Request failed (\(status))." : message
+        case .server(let status, let message): message.isEmpty ? "Request failed (\(status))." : message
         case .invalidURL: "The relay URL is not valid."
         }
     }

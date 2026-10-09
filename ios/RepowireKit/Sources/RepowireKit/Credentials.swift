@@ -3,7 +3,9 @@ import Security
 
 /// Relay connection details. The key lives in the Keychain; the URL is not secret.
 public struct Credentials: Codable, Equatable, Sendable {
-    public static let defaultRelay = URL(string: "https://repowire.io")!
+    // swift-format-ignore: NeverForceUnwrap
+    // A constant, valid URL literal; failing to parse it is a programmer error.
+    public static let defaultRelay = URL(string: "https://relay.repowire.io")!
 
     public var relayURL: URL
     public var key: String
@@ -24,7 +26,9 @@ public struct Credentials: Codable, Equatable, Sendable {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         while text.hasSuffix("/") { text.removeLast() }
         if !text.contains("://") { text = "https://" + text }
-        guard let url = URL(string: text), let scheme = url.scheme, ["https", "http"].contains(scheme), url.host() != nil else { return nil }
+        guard let url = URL(string: text), let scheme = url.scheme, ["https", "http"].contains(scheme), url.host() != nil else {
+            return nil
+        }
         return url
     }
 }

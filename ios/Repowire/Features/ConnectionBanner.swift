@@ -24,8 +24,8 @@ struct ConnectionBanner: View {
         switch model.connection {
         case .live: model.lastError
         case .connecting: "Connecting to the relay"
-        case let .reconnecting(seconds): "Connection lost. Retrying in \(seconds)s."
-        case let .failed(message): message
+        case .reconnecting(let seconds): "Connection lost. Retrying in \(seconds)s."
+        case .failed(let message): message
         }
     }
 

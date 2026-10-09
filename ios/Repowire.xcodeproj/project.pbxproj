@@ -24,6 +24,7 @@
 		81918909E83595C8F4212CCC /* Repowire.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Repowire.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1F621FF867323C311B86E06F /* RepowireUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RepowireUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		5482E0D56B0F234B61D53975 /* Repowire.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Repowire.entitlements; sourceTree = "<group>"; };
+		E8291EBDD202B534E3A8E96D /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -62,6 +63,7 @@
 			isa = PBXGroup;
 			children = (
 				5482E0D56B0F234B61D53975 /* Repowire.entitlements */,
+				7173545D75AC56744F55E81B /* Config */,
 				CE882751F8B3EE4485706ED4 /* Repowire */,
 				59F6CF8C5257B2DF8A912F82 /* RepowireUITests */,
 				1BADDC1D73C1A20F347483E1 /* Products */,
@@ -75,6 +77,14 @@
 				1F621FF867323C311B86E06F /* RepowireUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		7173545D75AC56744F55E81B /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				E8291EBDD202B534E3A8E96D /* Base.xcconfig */,
+			);
+			path = Config;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -255,9 +265,9 @@
 		};
 		72FB3ED29B4639D83EC5DB14 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E8291EBDD202B534E3A8E96D /* Base.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = Repowire.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
@@ -268,7 +278,6 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
 				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = io.repowire.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -280,9 +289,9 @@
 		};
 		191734982F22ABEBB64A1AE0 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E8291EBDD202B534E3A8E96D /* Base.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = Repowire.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
@@ -293,7 +302,6 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
 				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = io.repowire.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;

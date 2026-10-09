@@ -19,7 +19,8 @@ extension Peer.Status {
     }
 }
 
-/// Status is never color alone: the dot pairs with a label for VoiceOver.
+/// Status is never color alone: the dot is decorative and every row that
+/// shows one also shows or announces the status in words.
 struct StatusDot: View {
     let status: Peer.Status
 
@@ -27,7 +28,7 @@ struct StatusDot: View {
         Circle()
             .fill(status.color)
             .frame(width: Theme.Size.statusDot, height: Theme.Size.statusDot)
-            .accessibilityLabel(status.label)
+            .accessibilityHidden(true)
     }
 }
 
@@ -92,7 +93,9 @@ struct Card<Content: View>: View {
             .padding(Theme.Space.l)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).fill(Theme.Palette.surface))
-            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).strokeBorder(Theme.Palette.border, lineWidth: Theme.Stroke.hairline))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).strokeBorder(
+                    Theme.Palette.border, lineWidth: Theme.Stroke.hairline))
     }
 }
 
@@ -109,7 +112,10 @@ struct RWButtonStyle: ButtonStyle {
             .padding(.horizontal, Theme.Space.m)
             .foregroundStyle(foreground)
             .background(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).fill(background))
-            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(border, lineWidth: Theme.Stroke.hairline))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(
+                    border, lineWidth: Theme.Stroke.hairline)
+            )
             .opacity(configuration.isPressed ? 0.75 : 1)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
             .animation(Theme.Motion.quick, value: configuration.isPressed)
@@ -124,7 +130,7 @@ struct RWButtonStyle: ButtonStyle {
     }
 
     private var background: Color {
-        kind == .primary ? Theme.Palette.accent : Theme.Palette.surface
+        kind == .primary ? Theme.Palette.accentFill : Theme.Palette.surface
     }
 
     private var border: Color {

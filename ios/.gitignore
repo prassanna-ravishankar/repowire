@@ -3,3 +3,4 @@ build/
 xcuserdata/
 .build/
 .swiftpm/
+Config/Local.xcconfig

@@ -26,7 +26,10 @@ struct InboxView: View {
                         Eyebrow(text: "Needs you · \(model.pendingQuestions.count)")
                         ForEach(model.pendingQuestions) { question in
                             QuestionCard(question: question)
-                                .transition(reduceMotion ? .opacity : .asymmetric(insertion: .opacity, removal: .opacity.combined(with: .move(edge: .trailing))))
+                                .transition(
+                                    reduceMotion
+                                        ? .opacity
+                                        : .asymmetric(insertion: .opacity, removal: .opacity.combined(with: .move(edge: .trailing))))
                         }
                     }
 
@@ -40,7 +43,9 @@ struct InboxView: View {
                             }
                         }
                         .background(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).fill(Theme.Palette.surface))
-                        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).strokeBorder(Theme.Palette.border, lineWidth: Theme.Stroke.hairline))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).strokeBorder(
+                                Theme.Palette.border, lineWidth: Theme.Stroke.hairline))
                     }
                 }
                 .padding(Theme.Space.l)

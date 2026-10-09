@@ -5,7 +5,7 @@ import SwiftUI
 /// relay before saving so a bad key fails here, inline, not later.
 struct OnboardingView: View {
     @Environment(AppModel.self) private var model
-    @State private var relay = Credentials.defaultRelay.host() ?? "repowire.io"
+    @State private var relay = Credentials.defaultRelay.host() ?? "relay.repowire.io"
     @State private var key = ""
     @State private var connecting = false
     @State private var error: String?
@@ -31,14 +31,16 @@ struct OnboardingView: View {
                         .font(.largeTitle.weight(.bold))
                         .tracking(-0.6)
                         .foregroundStyle(Theme.Palette.foreground)
-                    Text("Answer questions, approve tool calls, and message your agents from anywhere. The relay key stays in this device's Keychain.")
-                        .font(.body)
-                        .foregroundStyle(Theme.Palette.muted)
+                    Text(
+                        "Answer questions, approve tool calls, and message your agents from anywhere. The relay key stays in this device's Keychain."
+                    )
+                    .font(.body)
+                    .foregroundStyle(Theme.Palette.muted)
                 }
 
                 Card {
                     field("Relay") {
-                        TextField("repowire.io", text: $relay)
+                        TextField("relay.repowire.io", text: $relay, axis: .vertical)
                             .textContentType(.URL)
                             .keyboardType(.URL)
                             .textInputAutocapitalization(.never)
@@ -90,9 +92,11 @@ struct OnboardingView: View {
 
                 VStack(alignment: .leading, spacing: Theme.Space.xs) {
                     Eyebrow(text: "Where to find it")
-                    Text("Run `repowire setup --relay` on the machine running your agents, then copy `relay.api_key` from `~/.repowire/config.yaml`.")
-                        .font(.footnote)
-                        .foregroundStyle(Theme.Palette.muted)
+                    Text(
+                        "Run `repowire setup --relay` on the machine running your agents, then copy `relay.api_key` from `~/.repowire/config.yaml`."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(Theme.Palette.muted)
                 }
             }
             .padding(.horizontal, Theme.Space.xl)

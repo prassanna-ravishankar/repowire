@@ -23,14 +23,18 @@ public struct Peer: Codable, Identifiable, Hashable, Sendable {
     public var parentRuntimeId: String?
 
     public var id: String { peerId }
-    public var label: String { displayName?.isEmpty == false ? displayName! : name }
+    public var label: String {
+        guard let displayName, !displayName.isEmpty else { return name }
+        return displayName
+    }
 
     /// Mirrors the dashboard's default roster rule: peers someone can send work to.
     public var isListed: Bool {
         addressable != false && initiator != "system" && role != "human" && role != "service"
     }
 
-    public init(peerId: String, name: String, displayName: String? = nil, status: Status, circle: String? = nil, description: String? = nil) {
+    public init(peerId: String, name: String, displayName: String? = nil, status: Status, circle: String? = nil, description: String? = nil)
+    {
         self.peerId = peerId
         self.name = name
         self.displayName = displayName
@@ -90,7 +94,10 @@ public struct MeshEvent: Codable, Identifiable, Hashable, Sendable {
     public var sessionId: String?
     public var newStatus: String?
 
-    public init(id: String, type: String, timestamp: String = "", from: String? = nil, to: String? = nil, text: String? = nil, correlationId: String? = nil, question: AskQuestion? = nil) {
+    public init(
+        id: String, type: String, timestamp: String = "", from: String? = nil, to: String? = nil, text: String? = nil,
+        correlationId: String? = nil, question: AskQuestion? = nil
+    ) {
         self.id = id
         self.type = type
         self.timestamp = timestamp
@@ -142,7 +149,8 @@ public struct PendingQuestion: Identifiable, Hashable, Sendable {
             guard let cid = event.correlationId else { continue }
             if event.type == "ask", let question = event.question, question.kind != "acknowledge" {
                 if open[cid] == nil { order.append(cid) }
-                open[cid] = PendingQuestion(correlationId: cid, from: event.from ?? "?", text: event.text ?? "", question: question, askedAt: event.date)
+                open[cid] = PendingQuestion(
+                    correlationId: cid, from: event.from ?? "?", text: event.text ?? "", question: question, askedAt: event.date)
             } else if event.type == "ack" {
                 open[cid] = nil
             }

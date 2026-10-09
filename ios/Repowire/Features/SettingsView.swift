@@ -47,6 +47,7 @@ struct SettingsView: View {
                     Eyebrow(text: "Notifications")
                 } footer: {
                     Text("Approvals and questions addressed to you arrive as notifications you can answer from the lock screen.")
+                        .foregroundStyle(Theme.Palette.muted)
                 }
 
                 Section {
@@ -54,6 +55,7 @@ struct SettingsView: View {
                         .accessibilityIdentifier("settings.disconnect")
                 } footer: {
                     Text("Removes the relay key from this device. Your daemon and agents keep running.")
+                        .foregroundStyle(Theme.Palette.muted)
                 }
             }
             .listStyle(.insetGrouped)
@@ -67,7 +69,7 @@ struct SettingsView: View {
     }
 
     private var host: String {
-        if case let .connected(host) = model.phase { return host }
+        if case .connected(let host) = model.phase { return host }
         return "None"
     }
 

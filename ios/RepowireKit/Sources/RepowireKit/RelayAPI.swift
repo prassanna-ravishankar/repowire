@@ -29,7 +29,12 @@ public struct RelayAPI: MeshService {
         guard let url = components.url else { throw MeshError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        // X-API-Key covers the relay's API routes; the rw_token cookie covers
+        // tunnel routes on relays that predate header auth there. Both are
+        // stripped before the request reaches the daemon on current relays.
+        request.setValue(key, forHTTPHeaderField: "X-API-Key")
+        request.setValue("rw_token=\(key)", forHTTPHeaderField: "Cookie")
+        request.httpShouldHandleCookies = false
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -89,7 +94,8 @@ public struct RelayAPI: MeshService {
                     try Self.check(response, data: Data())
                     for try await line in bytes.lines {
                         guard let payload = ServerSentEvents.payload(line),
-                              let event = try? Self.decoder.decode(MeshEvent.self, from: Data(payload.utf8)) else { continue }
+                            let event = try? Self.decoder.decode(MeshEvent.self, from: Data(payload.utf8))
+                        else { continue }
                         continuation.yield(event)
                     }
                     continuation.finish()

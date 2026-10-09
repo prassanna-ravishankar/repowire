@@ -12,10 +12,18 @@ struct JobsView: View {
         NavigationStack {
             List {
                 if !active.isEmpty {
-                    Section { ForEach(active) { JobRow(job: $0) } } header: { Eyebrow(text: "Active") }
+                    Section {
+                        ForEach(active) { JobRow(job: $0) }
+                    } header: {
+                        Eyebrow(text: "Active")
+                    }
                 }
                 if !finished.isEmpty {
-                    Section { ForEach(finished) { JobRow(job: $0) } } header: { Eyebrow(text: "Recent") }
+                    Section {
+                        ForEach(finished) { JobRow(job: $0) }
+                    } header: {
+                        Eyebrow(text: "Recent")
+                    }
                 }
             }
             .listStyle(.insetGrouped)
