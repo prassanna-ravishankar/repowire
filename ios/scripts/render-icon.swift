@@ -1,12 +1,11 @@
 // Renders the App Store icon from the brand mark: cobalt mark on warm paper,
 // cropped to the mark's drawn bounds so SVG padding does not shrink it.
-// Also writes the cropped mark (transparent) for in-app use.
-// Usage: swift scripts/render-icon.swift <logo.svg> <icon.png> <mark.png>
+// Usage: swift scripts/render-icon.swift <logo.svg> <icon.png>
 import AppKit
 
 let args = CommandLine.arguments
-guard args.count == 4, let mark = NSImage(contentsOfFile: args[1]) else {
-    FileHandle.standardError.write(Data("usage: render-icon.swift <logo.svg> <icon.png> <mark.png>\n".utf8))
+guard args.count == 3, let mark = NSImage(contentsOfFile: args[1]) else {
+    FileHandle.standardError.write(Data("usage: render-icon.swift <logo.svg> <icon.png>\n".utf8))
     exit(1)
 }
 
@@ -44,10 +43,3 @@ let icon = bitmap(side) {
 }
 try! icon.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: args[2]))
 
-let markSide = 600
-let markOut = bitmap(markSide) {
-    let scale = CGFloat(markSide) / max(crop.width, crop.height)
-    let size = NSSize(width: crop.width * scale, height: crop.height * scale)
-    markImage.draw(in: NSRect(x: (CGFloat(markSide) - size.width) / 2, y: (CGFloat(markSide) - size.height) / 2, width: size.width, height: size.height))
-}
-try! markOut.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: args[3]))

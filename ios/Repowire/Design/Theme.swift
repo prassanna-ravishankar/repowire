@@ -60,6 +60,8 @@ nonisolated enum Theme {
         /// tunings, never one scaled into the other.
         static let orbCompact: CGFloat = 16
         static let orbLarge: CGFloat = 28
+        /// The landing mark's width; matches the relay landing page.
+        static let relayMark: CGFloat = 220
     }
 
     /// Critically damped by default; nothing here bounces without a gesture behind it.

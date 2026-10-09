@@ -11,6 +11,10 @@ From the app you can:
 - Send a peer an ask (expects an ack) or a notification (fire and forget).
 - Follow running and recent jobs.
 
+## Install
+
+The app is not on the App Store yet. Build it onto your iPhone from Xcode: see [Install on your iPhone](../../contributing/ios-app.md#install-on-your-iphone).
+
 ## Setup
 
 1. Enable the relay on the machine running your agents:
@@ -20,7 +24,7 @@ From the app you can:
     ```
 
 2. Copy `relay.api_key` from `~/.repowire/config.yaml`.
-3. In the app, enter the relay host (`repowire.io` for the hosted relay) and paste the key. The app checks the key against the relay before saving it to the Keychain.
+3. In the app, enter the relay host (`relay.repowire.io` for the hosted relay) and paste the key. The app checks the key against the relay before saving it to the Keychain.
 
 To receive notifications, open **Settings → Turn on notifications**. The app asks for permission there, not at launch.
 

@@ -7,9 +7,19 @@ The native client lives in `ios/`. It is a SwiftUI app that reaches a daemon thr
 | `ios/RepowireKit/` | Swift package: models, `RelayAPI`, the SSE event stream, Keychain credentials, and `FixtureMesh` |
 | `ios/Repowire/` | App target: `App/` (model, push), `Design/` (tokens and shared components), `Features/` (screens) |
 | `ios/RepowireUITests/` | `FlowTests` (functional) and `ScreenshotTour` (design review captures) |
-| `ios/scripts/` | `check.sh`, `design-lint.py`, `contact-sheet.py`, `render-icon.swift` |
+| `ios/Config/` | `Base.xcconfig` (signing defaults) and your gitignored `Local.xcconfig` |
+| `ios/scripts/` | `check.sh`, `live-relay-e2e.sh`, `design-lint.py`, `contact-sheet.py`, `montage.swift`, `mark-dots.py`, `render-icon.swift` |
 
 Requirements: Xcode 26 or later with an iOS simulator runtime. The project uses folder-synchronized groups, so new Swift files under `ios/Repowire/` join the target without editing the project file.
+
+## Install on your iPhone
+
+1. In Xcode, add your Apple ID under **Settings → Accounts**. A free Apple ID works; push notifications need a paid Apple Developer account.
+2. Copy `ios/Config/Local.xcconfig.example` to `ios/Config/Local.xcconfig` and set `DEVELOPMENT_TEAM`. With a free Apple ID, also uncomment the two lines that drop the push entitlement and give the app a bundle id of your own.
+3. On the iPhone, turn on **Settings → Privacy & Security → Developer Mode**, then connect it to the Mac and trust the computer.
+4. Open `ios/Repowire.xcodeproj`, pick your iPhone as the run destination, and press Run. The first launch asks you to trust the developer under **Settings → General → VPN & Device Management**.
+
+Builds signed with a free Apple ID expire after 7 days; run again from Xcode to renew. For a build that lasts, use TestFlight (paid account).
 
 ## Run it
 
@@ -54,6 +64,8 @@ ios/scripts/live-relay-e2e.sh
 
 ### Consistency
 
+`swift format lint --strict` (the formatter in the Swift toolchain, configured by `ios/.swift-format`) enforces layout and safety rules: no force unwraps, no `try!`, no implicitly unwrapped optionals, ordered imports, early `guard` exits. Run `swift format format -i -r <paths>` to apply the layout. A deliberate exception is marked inline with `// swift-format-ignore: <Rule>` and a reason. Builds in `check.sh` also treat compiler warnings as errors.
+
 `scripts/design-lint.py` fails when feature code bypasses the design system:
 
 | Rule | Catches |
@@ -67,6 +79,8 @@ ios/scripts/live-relay-e2e.sh
 Tokens live in `ios/Repowire/Design/Theme.swift` and mirror [Design system](design-system.md): warm-paper neutrals, one cobalt accent, a 4pt grid, 10pt control and 14pt card radii, monospaced type for technical chrome (peer names, ids, timestamps, eyebrows). Add a token instead of a literal.
 
 `ScreenshotTour` also checks consistency across variants: it captures every screen in light, dark, and accessibility-large text, and `contact-sheet.py` lays them out as `ios/build/design-review/index.html` with screens as rows and variants as columns, so a screen that drifts in one variant stands out.
+
+`AccessibilityAuditTests` run Apple's accessibility audit on every screen in light and dark: contrast, hit regions, element descriptions, and clipped text. Exemptions are explicit in the test and each states its reason: text under translucent bars, disabled controls, the system search field, hostnames read as written, and Dynamic Type sizing, which the large-text screenshot variant checks instead.
 
 ### Taste
 
@@ -82,6 +96,10 @@ Taste is reviewed against the contact sheet, not asserted in code. Score each sc
 | Feedback | Every action responds on press, shows progress while busy, and shows an inline error when it fails. |
 | Wayfinding | You can tell where you are, what is tappable, and how to get back. Empty states say what to do next. |
 | Platform | Native navigation, lists, search, and sheets. Nothing a native app would not do. Dark mode reads as warm dark, not inverted. |
+
+## Onboarding mark
+
+The onboarding screen shares the relay landing page's dotted R and its one-time orb-to-mark reveal (`Repowire/Design/RelayMark.swift`). The dots are generated from `daemon-go/relayserver/assets/landing.html`; after changing the landing mark, run `ios/scripts/mark-dots.py`.
 
 ## Push notifications
 
