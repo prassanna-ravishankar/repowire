@@ -79,6 +79,23 @@ final class FlowTests: XCTestCase {
         XCTAssertFalse(app.buttons["composer.send"].waitToAppear().isEnabled)
     }
 
+    func testCollapsingACircleHidesItsPeers() {
+        let app = XCUIApplication.fixtures()
+        app.launch()
+        app.tab("Peers")
+        let backend = app.buttons["peer.backend"].waitToAppear()
+        let circle = app.buttons["circle.repowire"]
+        XCTAssertEqual(circle.value as? String, "Expanded")
+
+        circle.tap()
+        backend.waitToDisappear()
+        XCTAssertEqual(circle.value as? String, "Collapsed")
+        XCTAssertTrue(app.buttons["peer.infra"].exists, "Other circles stay open")
+
+        circle.tap()
+        backend.waitToAppear()
+    }
+
     func testJobsAreGroupedByState() {
         let app = XCUIApplication.fixtures()
         app.launch()

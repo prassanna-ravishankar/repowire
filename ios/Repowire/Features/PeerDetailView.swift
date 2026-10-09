@@ -47,6 +47,25 @@ struct PeerDetailView: View {
         }
         .navigationTitle("@\(live.label)")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            // Status lives in the bar: the conversation opens at its newest turn,
+            // so a header in the scroll view would start off screen.
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: Theme.Space.xxs) {
+                    Text("@\(live.label)")
+                        .font(Theme.Typeface.mono(.subheadline, weight: .semibold))
+                        .foregroundStyle(Theme.Palette.foreground)
+                    HStack(spacing: Theme.Space.xs) {
+                        PeerActivity(peer: live)
+                        Text(live.isWorking ? "Working" : live.status.label)
+                            .font(.caption)
+                            .foregroundStyle(Theme.Palette.muted)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("peer.header")
+            }
+        }
         .task { await load() }
         .refreshable { await load() }
         .onChange(of: model.events.count) { Task { await load() } }
@@ -54,13 +73,8 @@ struct PeerDetailView: View {
 
     private var header: some View {
         Card {
-            HStack(spacing: Theme.Space.s) {
-                StatusDot(status: live.status)
-                Text(live.status.label)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(Theme.Palette.foreground)
-                Spacer()
-                if let backend = live.backend { Badge(text: [backend, live.model].compactMap(\.self).joined(separator: " · ")) }
+            if let backend = live.backend {
+                Badge(text: [backend, live.model].compactMap(\.self).joined(separator: " · "))
             }
             if let description = live.description {
                 Text(description)

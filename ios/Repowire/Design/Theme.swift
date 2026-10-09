@@ -52,6 +52,10 @@ nonisolated enum Theme {
         static let statusDot: CGFloat = 8
         static let avatar: CGFloat = 36
         static let tapTarget: CGFloat = 44
+        /// Thinking orb presets: inline with text, and header scale. Separate
+        /// tunings, never one scaled into the other.
+        static let orbCompact: CGFloat = 16
+        static let orbLarge: CGFloat = 28
     }
 
     /// Critically damped by default; nothing here bounces without a gesture behind it.
