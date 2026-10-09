@@ -13,13 +13,15 @@ struct QuestionCard: View {
 
     var body: some View {
         Card {
-            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
-                Text("@\(question.from)")
-                    .font(Theme.Typeface.mono(.subheadline, weight: .semibold))
-                    .foregroundStyle(Theme.Palette.foreground)
-                Badge(text: question.question.isApproval ? "Approval" : "Question",
-                      tint: question.question.isApproval ? Theme.Palette.warning : Theme.Palette.accent)
-                Spacer(minLength: 0)
+            HeaderRow {
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
+                    Text("@\(question.from)")
+                        .font(Theme.Typeface.mono(.subheadline, weight: .semibold))
+                        .foregroundStyle(Theme.Palette.foreground)
+                    Badge(text: question.question.isApproval ? "Approval" : "Question",
+                          tint: question.question.isApproval ? Theme.Palette.warning : Theme.Palette.accent)
+                }
+            } trailing: {
                 Timestamp(date: question.askedAt)
             }
 

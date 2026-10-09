@@ -4,6 +4,7 @@ import SwiftUI
 /// What needs the human: open questions first, then messages addressed to you.
 struct InboxView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         NavigationStack {
@@ -25,7 +26,7 @@ struct InboxView: View {
                         Eyebrow(text: "Needs you · \(model.pendingQuestions.count)")
                         ForEach(model.pendingQuestions) { question in
                             QuestionCard(question: question)
-                                .transition(.asymmetric(insertion: .opacity, removal: .opacity.combined(with: .move(edge: .trailing))))
+                                .transition(reduceMotion ? .opacity : .asymmetric(insertion: .opacity, removal: .opacity.combined(with: .move(edge: .trailing))))
                         }
                     }
 
@@ -59,11 +60,11 @@ struct MessageRow: View {
 
     var body: some View {
         let content = VStack(alignment: .leading, spacing: Theme.Space.xs) {
-            HStack(alignment: .firstTextBaseline) {
+            HeaderRow {
                 Text("@\(event.from ?? "mesh")")
                     .font(Theme.Typeface.mono(.subheadline, weight: .semibold))
                     .foregroundStyle(Theme.Palette.foreground)
-                Spacer()
+            } trailing: {
                 Timestamp(date: event.date)
             }
             Text(markdown: event.text ?? "")

@@ -37,6 +37,21 @@ The `relay` block reports the real connection, not just the config flag:
 
 `relay_mode` remains the config intent (`relay.enabled`); `relay.status` is the truth. The relay client keeps an application-level keepalive ping so half-open connections are detected and reconnected rather than silently wedging.
 
+## Push notifications
+
+The relay sends APNs pushes for the [iOS app](../use/features/ios-app.md). The daemon decides what is push-worthy and owns the device tokens (`/push/devices`, stored in its SQLite state); each push frame it sends over the relay WebSocket names its target tokens. The relay only holds the APNs key.
+
+Configure the relay with all four variables, or none to leave push off:
+
+| Variable | Value |
+| --- | --- |
+| `REPOWIRE_RELAY_APNS_TEAM_ID` | Apple developer team id |
+| `REPOWIRE_RELAY_APNS_KEY_ID` | Key id of the `.p8` APNs auth key |
+| `REPOWIRE_RELAY_APNS_KEY_PATH` | Path to the `.p8` file |
+| `REPOWIRE_RELAY_APNS_TOPIC` | The app's bundle id (`io.repowire.app`) |
+
+Each push names an environment per device (`sandbox` for development builds, `production` otherwise). The relay sends at most 30 pushes per minute per relay key and 10 devices per push. Tokens APNs rejects as unregistered or invalid are reported back to the daemon, which deletes them. Failures surface in the daemon log as `relay: push failed: …`.
+
 ## Related
 
 - [Relay access](../use/features/relay-access.md)

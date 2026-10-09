@@ -5,7 +5,7 @@ import UIKit
 /// system type for prose and monospaced type for technical chrome. Views take
 /// every color, space, radius, and font from here; `scripts/ios-design-lint.sh`
 /// fails the build on raw values.
-enum Theme {
+nonisolated enum Theme {
     enum Palette {
         static let page = dynamic(light: 0xFCFBFA, dark: 0x0E0E0D)
         static let surface = dynamic(light: 0xFFFFFF, dark: 0x161614)
@@ -19,6 +19,9 @@ enum Theme {
         static let success = dynamic(light: 0x1F8A4C, dark: 0x3DBE74)
         static let warning = dynamic(light: 0xB86E00, dark: 0xE9A23B)
         static let danger = dynamic(light: 0xC2362B, dark: 0xF06A5E)
+        /// Text and icons on a solid accent fill.
+        static let onAccent = Color.white
+        static let onAccentMuted = Color.white.opacity(0.75)
 
         private static func dynamic(light: UInt32, dark: UInt32) -> Color {
             Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(hex: dark) : UIColor(hex: light) })
@@ -67,7 +70,7 @@ enum Theme {
     }
 }
 
-extension UIColor {
+nonisolated extension UIColor {
     convenience init(hex: UInt32) {
         self.init(
             red: CGFloat((hex >> 16) & 0xFF) / 255,

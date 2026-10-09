@@ -79,7 +79,7 @@ struct OnboardingView: View {
 
                 Button(action: connect) {
                     HStack(spacing: Theme.Space.s) {
-                        if connecting { ProgressView().tint(.white) }
+                        if connecting { ProgressView().tint(Theme.Palette.onAccent) }
                         Text(connecting ? "Connecting" : "Connect")
                     }
                 }

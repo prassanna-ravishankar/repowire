@@ -4,10 +4,14 @@ import SwiftUI
 struct RepowireApp: App {
     @UIApplicationDelegateAdaptor private var delegate: AppDelegate
     @State private var model: AppModel
+    /// `-appearance light|dark` pins the scheme for screenshot runs.
+    private let scheme: ColorScheme?
 
     init() {
         let arguments = ProcessInfo.processInfo.arguments
         _model = State(initialValue: AppModel(fixtures: arguments.contains("-fixtures"), onboarding: arguments.contains("-onboarding")))
+        let appearance = UserDefaults.standard.string(forKey: "appearance")
+        scheme = appearance == "dark" ? .dark : appearance == "light" ? .light : nil
     }
 
     var body: some Scene {
@@ -15,6 +19,7 @@ struct RepowireApp: App {
             RootView()
                 .environment(model)
                 .tint(Theme.Palette.accent)
+                .preferredColorScheme(scheme)
                 .onAppear { delegate.model = model }
         }
     }

@@ -41,11 +41,11 @@ struct JobRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
-            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
+            HeaderRow {
                 Text(job.title ?? job.id)
                     .font(.body.weight(.medium))
                     .foregroundStyle(Theme.Palette.foreground)
-                Spacer(minLength: 0)
+            } trailing: {
                 Badge(text: job.state ?? "unknown", tint: tint)
             }
             if let detail = job.phase ?? job.resultSummary {
