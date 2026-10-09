@@ -64,6 +64,7 @@ type Server struct {
 	pending     map[string]*pendingRequest
 	oauth       *relayOAuth
 	tokens      *tokenStore
+	apns        *apnsSender
 	webOut      string
 	timeout     time.Duration
 	mux         *http.ServeMux
@@ -722,7 +723,37 @@ func (s *Server) relayWebSocket(w http.ResponseWriter, r *http.Request) {
 				msg["source_daemon_id"] = daemonID
 				_ = target.write(ctx, msg)
 			}
+		case "push":
+			go s.handlePush(ctx, daemon, msg)
 		}
+	}
+}
+
+// handlePush sends a daemon push frame through APNs and reports the outcome,
+// including dead tokens the daemon should forget.
+func (s *Server) handlePush(ctx context.Context, daemon *daemonConn, msg map[string]any) {
+	result := map[string]any{"type": "push_result", "push_id": msg["push_id"]}
+	defer func() { _ = daemon.write(ctx, result) }()
+	if s.apns == nil {
+		result["error"] = "push is not configured on this relay"
+		return
+	}
+	if !s.apns.allow(daemon.userID, time.Now()) {
+		result["error"] = "push rate limit exceeded"
+		return
+	}
+	raw, _ := json.Marshal(msg)
+	var frame pushFrame
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		result["error"] = "invalid push frame"
+		return
+	}
+	invalid, err := s.apns.send(ctx, frame)
+	if len(invalid) > 0 {
+		result["invalid_tokens"] = invalid
+	}
+	if err != nil {
+		result["error"] = err.Error()
 	}
 }
 
@@ -814,6 +845,14 @@ func FindWebOutputDir() string {
 
 func ListenAndServe(ctx context.Context, addr, webOut string) error {
 	relay := New(webOut)
+	apns, err := apnsFromEnv()
+	if err != nil {
+		return err
+	}
+	if apns != nil {
+		relay.apns = apns
+		log.Printf("relay APNs: enabled for topic %s", apns.topic)
+	}
 	if issuer := os.Getenv("REPOWIRE_RELAY_OAUTH_ISSUER"); issuer != "" {
 		if err := relay.EnableMCP(issuer, os.Getenv("REPOWIRE_RELAY_OAUTH_DB")); err != nil {
 			return err
