@@ -1,0 +1,383 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		412075F9ABAB57E02FC2FD77 /* RepowireKit in Frameworks */ = {isa = PBXBuildFile; productRef = 9A8338CED6C1457ADE6EF606 /* RepowireKit */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		431387EB7262E1CFC79B125E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 46F86FAA6BBF9AC94A7E4595 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 3D4C91345015A4DD0A099400;
+			remoteInfo = Repowire;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		81918909E83595C8F4212CCC /* Repowire.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Repowire.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1F621FF867323C311B86E06F /* RepowireUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RepowireUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5482E0D56B0F234B61D53975 /* Repowire.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Repowire.entitlements; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		CE882751F8B3EE4485706ED4 /* Repowire */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Repowire;
+			sourceTree = "<group>";
+		};
+		59F6CF8C5257B2DF8A912F82 /* RepowireUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = RepowireUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		0248D6DB510EB0F7E9C05175 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				412075F9ABAB57E02FC2FD77 /* RepowireKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		71B04DEBDFCC984DD8794547 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		8D3FC6DB5D0827F168A73277 = {
+			isa = PBXGroup;
+			children = (
+				5482E0D56B0F234B61D53975 /* Repowire.entitlements */,
+				CE882751F8B3EE4485706ED4 /* Repowire */,
+				59F6CF8C5257B2DF8A912F82 /* RepowireUITests */,
+				1BADDC1D73C1A20F347483E1 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		1BADDC1D73C1A20F347483E1 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				81918909E83595C8F4212CCC /* Repowire.app */,
+				1F621FF867323C311B86E06F /* RepowireUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		3D4C91345015A4DD0A099400 /* Repowire */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A7698C201D2A724C7CAD56C8 /* Build configuration list for PBXNativeTarget "Repowire" */;
+			buildPhases = (
+				DA10D9DD089DF2AFEBC5ED5A /* Sources */,
+				0248D6DB510EB0F7E9C05175 /* Frameworks */,
+				82A968CB662751220D4DFE2D /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				CE882751F8B3EE4485706ED4 /* Repowire */,
+			);
+			name = Repowire;
+			packageProductDependencies = (
+				9A8338CED6C1457ADE6EF606 /* RepowireKit */,
+			);
+			productName = Repowire;
+			productReference = 81918909E83595C8F4212CCC /* Repowire.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A5EF87AEB050962628FA95F1 /* RepowireUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B606F340ABF62F72B9A14238 /* Build configuration list for PBXNativeTarget "RepowireUITests" */;
+			buildPhases = (
+				9AFC4F17F051A7F45D9735D8 /* Sources */,
+				71B04DEBDFCC984DD8794547 /* Frameworks */,
+				9AF1D7E5A555BF8929539D56 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				551BDF5D8808EFCFB21091A6 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				59F6CF8C5257B2DF8A912F82 /* RepowireUITests */,
+			);
+			name = RepowireUITests;
+			productName = RepowireUITests;
+			productReference = 1F621FF867323C311B86E06F /* RepowireUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		46F86FAA6BBF9AC94A7E4595 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					3D4C91345015A4DD0A099400 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					A5EF87AEB050962628FA95F1 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 3D4C91345015A4DD0A099400;
+					};
+				};
+			};
+			buildConfigurationList = 56283EBD6DD86A56CED63937 /* Build configuration list for PBXProject "Repowire" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 8D3FC6DB5D0827F168A73277;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				B94A861FF2F6811DF1BCF127 /* XCLocalSwiftPackageReference "RepowireKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 1BADDC1D73C1A20F347483E1 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				3D4C91345015A4DD0A099400 /* Repowire */,
+				A5EF87AEB050962628FA95F1 /* RepowireUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		82A968CB662751220D4DFE2D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9AF1D7E5A555BF8929539D56 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		DA10D9DD089DF2AFEBC5ED5A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9AFC4F17F051A7F45D9735D8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		551BDF5D8808EFCFB21091A6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 3D4C91345015A4DD0A099400 /* Repowire */;
+			targetProxy = 431387EB7262E1CFC79B125E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		FA9139DD8B03E3F922556BF8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		FFE2104CCFAB79205AC64460 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		72FB3ED29B4639D83EC5DB14 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Repowire.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Repowire;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.repowire.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		191734982F22ABEBB64A1AE0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Repowire.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Repowire;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.repowire.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		F6A0D02D7DA7C438837DB9EE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.repowire.app.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = Repowire;
+			};
+			name = Debug;
+		};
+		9BA02ED749A6290129F827AB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.repowire.app.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = Repowire;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		56283EBD6DD86A56CED63937 /* Build configuration list for PBXProject "Repowire" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FA9139DD8B03E3F922556BF8 /* Debug */,
+				FFE2104CCFAB79205AC64460 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A7698C201D2A724C7CAD56C8 /* Build configuration list for PBXNativeTarget "Repowire" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				72FB3ED29B4639D83EC5DB14 /* Debug */,
+				191734982F22ABEBB64A1AE0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B606F340ABF62F72B9A14238 /* Build configuration list for PBXNativeTarget "RepowireUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F6A0D02D7DA7C438837DB9EE /* Debug */,
+				9BA02ED749A6290129F827AB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		B94A861FF2F6811DF1BCF127 /* XCLocalSwiftPackageReference "RepowireKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = RepowireKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		9A8338CED6C1457ADE6EF606 /* RepowireKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = RepowireKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 46F86FAA6BBF9AC94A7E4595 /* Project object */;
+}
