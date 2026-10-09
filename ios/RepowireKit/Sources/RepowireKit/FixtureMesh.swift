@@ -52,7 +52,7 @@ public actor FixtureMesh: MeshService {
         ]
     }
 
-    public func health() async throws -> Bool { true }
+    public func validate() async throws {}
     public func peers() async throws -> [Peer] { peerList }
 
     public func events(since: String?) async throws -> [MeshEvent] {

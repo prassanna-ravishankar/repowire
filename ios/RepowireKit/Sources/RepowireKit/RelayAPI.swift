@@ -57,10 +57,12 @@ public struct RelayAPI: MeshService {
         }
     }
 
-    public func health() async throws -> Bool {
-        let data = try await data(for: request("health"))
-        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        return object?["status"] as? String == "ok"
+    /// The relay answers `/health` itself, so key and daemon checks use its
+    /// own daemon listing: 401 for a bad key, an empty list for no daemon.
+    public func validate() async throws {
+        let data = try await data(for: request("api/v1/daemons"))
+        let daemons = try JSONSerialization.jsonObject(with: data) as? [Any] ?? []
+        if daemons.isEmpty { throw MeshError.noDaemon }
     }
 
     public func peers() async throws -> [Peer] {
