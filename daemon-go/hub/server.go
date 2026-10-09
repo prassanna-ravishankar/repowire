@@ -297,6 +297,7 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 	h.registerAttachmentRoutes(mux)
 	h.registerTraceRoutes(mux)
 	h.registerWireRoutes(mux)
+	h.registerPushRoutes(mux)
 	h.registerSessionControlRoutes(mux)
 }
 
