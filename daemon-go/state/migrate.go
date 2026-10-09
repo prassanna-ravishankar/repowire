@@ -230,6 +230,12 @@ var migrationStatements = []string{
 		retired_at TEXT NOT NULL,
 		hard INTEGER NOT NULL DEFAULT 0
 	)`,
+	`CREATE TABLE IF NOT EXISTS push_devices (
+		token TEXT PRIMARY KEY,
+		environment TEXT NOT NULL,
+		name TEXT NOT NULL DEFAULT '',
+		registered_at TEXT NOT NULL
+	)`,
 }
 
 // migrationLedger mirrors the schema_migrations rows database.py stamps, so a
@@ -253,6 +259,7 @@ var migrationLedger = []struct {
 	{12, "retired peer identities survive daemon restarts"},
 	{13, "operator-closed peer identities reject live-runtime reclaim"},
 	{14, "peer provenance: source, parent runtime id, ephemeral, addressability"},
+	{15, "APNs device tokens for native app push"},
 }
 
 // migrate applies the idempotent schema and stamps user_version. Safe to run on

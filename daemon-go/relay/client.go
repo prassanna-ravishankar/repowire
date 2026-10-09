@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -64,6 +65,10 @@ type Client struct {
 	lastErrorAt   *time.Time
 	cancel        context.CancelFunc
 	done          chan struct{}
+	session       *relaySession
+
+	// onInvalidPushTokens receives APNs tokens the relay reported as dead.
+	onInvalidPushTokens func([]string)
 }
 
 type relaySession struct {
@@ -205,6 +210,47 @@ func (c *Client) EnsureRunning(parent context.Context) bool {
 	return true
 }
 
+// ErrNotConnected reports that the relay socket is down, so a push cannot leave.
+var ErrNotConnected = errors.New("relay not connected")
+
+// WithInvalidPushTokens registers the callback for tokens APNs rejected.
+func (c *Client) WithInvalidPushTokens(fn func([]string)) *Client {
+	c.onInvalidPushTokens = fn
+	return c
+}
+
+// Push hands an APNs push frame to the relay, which holds the APNs key.
+func (c *Client) Push(ctx context.Context, frame map[string]any) error {
+	c.mu.Lock()
+	session := c.session
+	c.mu.Unlock()
+	if session == nil {
+		return ErrNotConnected
+	}
+	out := make(map[string]any, len(frame)+1)
+	for key, value := range frame {
+		out[key] = value
+	}
+	out["type"] = "push"
+	return session.write(ctx, out)
+}
+
+func (c *Client) handlePushResult(msg map[string]any) {
+	raw, _ := msg["invalid_tokens"].([]any)
+	tokens := make([]string, 0, len(raw))
+	for _, value := range raw {
+		if token, ok := value.(string); ok && token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	if errText := stringField(msg, "error"); errText != "" {
+		log.Printf("relay: push failed: %s", errText)
+	}
+	if len(tokens) > 0 && c.onInvalidPushTokens != nil {
+		c.onInvalidPushTokens(tokens)
+	}
+}
+
 // Stop signals shutdown and blocks until the loop exits.
 func (c *Client) Stop() {
 	c.mu.Lock()
@@ -306,11 +352,13 @@ func (c *Client) connectAndServe(ctx context.Context) (bool, error) {
 	c.mu.Lock()
 	c.connected = true
 	c.lastConnected = &now
+	c.session = session
 	c.mu.Unlock()
 	log.Printf("relay: connected to %s", c.relayURL)
 	defer func() {
 		c.mu.Lock()
 		c.connected = false
+		c.session = nil
 		c.mu.Unlock()
 	}()
 
@@ -364,6 +412,8 @@ func (c *Client) handleMessage(ctx context.Context, session *relaySession, msg m
 		session.cancelStream(stringField(msg, "request_id"))
 	case "relay_query", "relay_notify", "relay_broadcast":
 		c.handleRelayMessage(ctx, session, msg)
+	case "push_result":
+		c.handlePushResult(msg)
 	default:
 		// Unknown/opaque — ignore (Python logs at debug).
 	}

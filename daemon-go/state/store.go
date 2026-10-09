@@ -25,7 +25,7 @@ var _ peer.Store = (*Store)(nil)
 
 // SchemaVersion is the current user_version. Migrations advance older stores;
 // newer stores fail loud rather than risking corruption.
-const SchemaVersion = 14
+const SchemaVersion = 15
 
 // tsLayout is the exact format the Python daemon writes (strftime %Y-%m-%dT%H:%M:%fZ).
 const tsLayout = "2006-01-02T15:04:05.000Z"

@@ -31,7 +31,7 @@ const (
 var tunnelRoots = []string{
 	"/ack", "/acp", "/answer", "/ask", "/ask-many", "/asks", "/attachments",
 	"/broadcast", "/circles", "/deliveries", "/events", "/health", "/hooks",
-	"/jobs", "/kill-peer", "/notify", "/panes", "/peer", "/peers", "/query",
+	"/jobs", "/kill-peer", "/notify", "/panes", "/peer", "/peers", "/push", "/query",
 	"/questions", "/reviews", "/schedules", "/session", "/sessions",
 	"/shares", "/spawn", "/traces", "/work", "/ws",
 }
