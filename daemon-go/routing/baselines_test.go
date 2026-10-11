@@ -57,7 +57,7 @@ func TestMajorityLeavesTheScoredRowOut(t *testing.T) {
 	// A lone ask has nothing but itself to vote: leave-one-out must find no
 	// history rather than predicting its own label.
 	lone := []Example{example("ask-1", "repow-c", ArmExplicit, nil)}
-	m := NewMajority(lone)
+	m := NewMajority(lone, false)
 	if res := Run(context.Background(), m, InputFrom("ask-1", lone[0].Decision), time.Second); !res.Fallback || res.FallbackReason != FallbackNoHistory {
 		t.Fatalf("lone ask = %+v, want no_history", res)
 	}
@@ -69,7 +69,7 @@ func TestMajorityLeavesTheScoredRowOut(t *testing.T) {
 		example("ask-2", "repow-b", ArmExplicit, nil),
 		example("ask-3", "repow-c", ArmExplicit, nil),
 	}
-	m = NewMajority(examples)
+	m = NewMajority(examples, false)
 	rep, rows := Replay(context.Background(), examples, "majority", func(ctx context.Context, in Input) RouterResult {
 		return Run(ctx, m, in, time.Second)
 	}, Options{})
@@ -81,12 +81,49 @@ func TestMajorityLeavesTheScoredRowOut(t *testing.T) {
 	}
 }
 
+func TestMajorityPastOnlyCountsEarlierAsks(t *testing.T) {
+	stamp := func(ex Example, ts string) Example { ex.Decision.DecidedAt = ts; return ex }
+	examples := []Example{
+		stamp(example("ask-1", "repow-b", ArmExplicit, nil), "2026-10-11T10:00:00Z"),
+		stamp(example("ask-2", "repow-b", ArmExplicit, nil), "2026-10-11T11:00:00Z"),
+		stamp(example("ask-3", "repow-c", ArmExplicit, nil), "2026-10-11T12:00:00Z"),
+		stamp(example("ask-4", "repow-c", ArmExplicit, nil), "2026-10-11T12:00:00Z"), // same instant as ask-3
+	}
+	past, whole := NewMajority(examples, true), NewMajority(examples, false)
+	top := func(m Majority, i int) string {
+		res := Run(context.Background(), m, InputFrom(examples[i].TraceID, examples[i].Decision), time.Second)
+		if res.Fallback {
+			return res.FallbackReason
+		}
+		return res.Scores[0].PeerID
+	}
+	// The first ask has no past; in the whole window the later asks vote
+	// (b once, c twice), so the future decides it.
+	if got := top(past, 0); got != FallbackNoHistory {
+		t.Fatalf("majority-past on the first ask = %s, want no_history", got)
+	}
+	if got := top(whole, 0); got != "repow-c" {
+		t.Fatalf("whole-window majority on the first ask = %s", got)
+	}
+	// ask-4 shares ask-3's instant: strictly-before excludes it, so only the
+	// two asks to b vote. The whole window sees c (ask-3) as well.
+	if got := top(past, 3); got != "repow-b" {
+		t.Fatalf("majority-past on ask-4 = %s, want repow-b", got)
+	}
+	if res := Run(context.Background(), whole, InputFrom("ask-4", examples[3].Decision), time.Second); len(res.Scores) != 2 {
+		t.Fatalf("whole-window majority on ask-4 = %+v", res)
+	}
+	if past.Name() != "majority-past" || whole.Name() != "majority" {
+		t.Fatal("variant names")
+	}
+}
+
 func TestMajorityCountsOnlyTheSendersOwnLabelledAsks(t *testing.T) {
 	other := example("ask-9", "repow-c", ArmExplicit, nil)
 	other.Decision.Sender = &Candidate{PeerID: "repow-z"}
 	routed := example("ask-8", "repow-c", "jev-attested", nil)
 	examples := []Example{example("ask-1", "repow-b", ArmExplicit, nil), other, routed}
-	m := NewMajority(examples)
+	m := NewMajority(examples, false)
 	res := Run(context.Background(), m, InputFrom("ask-x", examples[0].Decision), time.Second)
 	if res.Fallback || len(res.Scores) != 1 || res.Scores[0].PeerID != "repow-b" {
 		t.Fatalf("majority = %+v, want only repow-b (other senders and routed asks do not vote)", res)
