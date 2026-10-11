@@ -441,14 +441,15 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		return AskResponse{}, err
 	}
 	h.rebaseSender(decision, from, req.BypassCircle)
+	slot := false
 	if routed == nil {
-		h.planShadow(decision)
+		slot = h.planShadow(decision)
 	}
 	h.recordDecision(ctx, cid, decision, target, fromID)
 	// Planned shadow arms run whatever happens to delivery, so a quiesced,
 	// dead or rejecting recipient is still scored, not mistaken for a
 	// deliberate non-sample.
-	defer h.runShadow(cid, decision, target.PeerID, fromID)
+	defer h.runShadow(cid, decision, slot, target.PeerID, fromID)
 
 	registered, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
 		CorrelationID:         cid,

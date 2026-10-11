@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"time"
@@ -127,26 +128,56 @@ func replayArms(a args, examples []routing.Example, recorded bool, usageText str
 	case a.bool("json"):
 		printJSON(reports)
 	default:
-		printReplayTable(reports)
+		printReplayTable(os.Stdout, reports)
 	}
 	return 0
 }
 
-// printReplayTable renders one row per arm. Skip columns show why decisions
-// did not count, including per-arm not_sampled in recorded mode.
-func printReplayTable(reports []routing.Report) {
-	reasons := []string{routing.SkipNotSampled, routing.SkipTextNotRecorded, routing.SkipNoDeclaredTarget, routing.SkipDeclaredIneligible, routing.SkipNotExplicit}
-	fmt.Printf("%-18s %-8s %6s %6s %6s %6s %6s %8s %8s", "arm", "source", "rows", "scored", "fb", "f@1", "f@3", "ans@1", "ms")
-	for _, r := range reasons {
-		fmt.Printf(" %s", r)
-	}
-	fmt.Println()
+// printReplayTable renders one row per arm with a column for every skip
+// reason present in any report, so no category of vanished observation is
+// hidden (including per-arm not_sampled and planned_not_run:*).
+func printReplayTable(w io.Writer, reports []routing.Report) {
+	seen := map[string]bool{}
+	reasons := []string{}
 	for _, rep := range reports {
-		fmt.Printf("%-18s %-8s %6d %6d %6d %6.3f %6.3f %8.3f %8.0f", rep.Arm, rep.Source, rep.Decisions, rep.Scored, rep.Fallbacks, rep.Fidelity1, rep.Fidelity3, rep.AnsweredFidelity1, rep.MeanLatencyMS)
-		for _, r := range reasons {
-			fmt.Printf(" %*d", len(r), rep.Skipped[r])
+		for reason := range rep.Skipped {
+			if !seen[reason] {
+				seen[reason] = true
+				reasons = append(reasons, reason)
+			}
 		}
-		fmt.Println()
+	}
+	sort.Strings(reasons)
+	fmt.Fprintf(w, "%-18s %-8s %6s %6s %6s %6s %6s %8s %8s", "arm", "source", "rows", "scored", "fb", "f@1", "f@3", "ans@1", "ms")
+	for _, r := range reasons {
+		fmt.Fprintf(w, " %s", r)
+	}
+	fmt.Fprintln(w)
+	for _, rep := range reports {
+		fmt.Fprintf(w, "%-18s %-8s %6d %6d %6d %6.3f %6.3f %8.3f %8.0f", rep.Arm, rep.Source, rep.Decisions, rep.Scored, rep.Fallbacks, rep.Fidelity1, rep.Fidelity3, rep.AnsweredFidelity1, rep.MeanLatencyMS)
+		for _, r := range reasons {
+			fmt.Fprintf(w, " %*d", len(r), rep.Skipped[r])
+		}
+		fmt.Fprintln(w)
+	}
+	cohorts := map[string]bool{}
+	for _, rep := range reports {
+		for name := range rep.Cohorts {
+			cohorts[name] = true
+		}
+	}
+	names := make([]string, 0, len(cohorts))
+	for name := range cohorts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Fprintf(w, "\ncohort %s\n", name)
+		for _, rep := range reports {
+			if c := rep.Cohorts[name]; c != nil {
+				fmt.Fprintf(w, "  %-18s scored %d, fallbacks %d, hit@1 %d, hit@3 %d\n", rep.Arm, c.Scored, c.Fallbacks, c.Hit1, c.Hit3)
+			}
+		}
 	}
 }
 

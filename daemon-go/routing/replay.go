@@ -24,7 +24,61 @@ const (
 	DeliveryNoConnection = "no_connection"
 	DeliverySendFailed   = "send_failed"
 	DeliveryNotAttempted = "not_attempted" // resolution failed before registration
+	// DeliverySent: written to the peer's socket, receipt not confirmed.
+	DeliverySent = "sent_unverified"
+	// DeliveryUnknown: neither success nor failure is evidenced (a crash after
+	// the decision, a cancelled request, or delivery still in progress).
+	DeliveryUnknown = "unknown"
 )
+
+// deliveryOutcome classifies an ask from positive evidence only. Any failure
+// stage wins; otherwise an accepted receipt, or the recipient closing the ask,
+// is needed to call it delivered. Absence of evidence stays unknown.
+func deliveryOutcome(stages []state.TraceRow) string {
+	failed, accepted, sent := "", false, false
+	for _, st := range stages {
+		switch st.Stage {
+		case "route_failed":
+			// With a reason: resolution failed before registration (or the
+			// recipient was quiesced). Without one: delivery itself failed.
+			switch reason, _ := st.Detail["reason"].(string); reason {
+			case "":
+				failed = DeliverySendFailed
+			case "quiesced":
+				failed = DeliveryQuiesced
+			default:
+				failed = DeliveryNotAttempted
+			}
+		case "no_connection":
+			failed = DeliveryNoConnection
+		case "injection_failed":
+			if failed == "" {
+				failed = DeliverySendFailed
+			}
+		case "thread_input_accepted", "pane_injected", "acked":
+			accepted = true
+		case "websocket_sent":
+			sent = true
+		case "closed":
+			if reason, _ := st.Detail["close_reason"].(string); reason == "send_failed" {
+				if failed == "" {
+					failed = DeliverySendFailed
+				}
+			} else {
+				accepted = true
+			}
+		}
+	}
+	switch {
+	case failed != "":
+		return failed
+	case accepted:
+		return DeliveryDelivered
+	case sent:
+		return DeliverySent
+	}
+	return DeliveryUnknown
+}
 
 // Outcome is how the ask ended, from its trace's later stages.
 type Outcome struct {
@@ -58,7 +112,6 @@ func LoadExamples(ctx context.Context, ledger Ledger, since time.Time) ([]Exampl
 		if err != nil {
 			return nil, err
 		}
-		ex.Outcome.Delivery = DeliveryDelivered
 		for _, st := range stages {
 			switch st.Stage {
 			case ShadowStage:
@@ -66,26 +119,18 @@ func LoadExamples(ctx context.Context, ledger Ledger, since time.Time) ([]Exampl
 				if remap(st.Detail, &res) == nil {
 					ex.Shadow[res.Arm] = res
 				}
-			case "route_failed":
-				// With a reason: resolution failed before registration (or the
-				// recipient was quiesced). Without one: delivery itself failed.
-				switch reason, _ := st.Detail["reason"].(string); reason {
-				case "":
-					ex.Outcome.Delivery = DeliverySendFailed
-				case "quiesced":
-					ex.Outcome.Delivery = DeliveryQuiesced
-				default:
-					ex.Outcome.Delivery = DeliveryNotAttempted
-				}
-			case "no_connection":
-				ex.Outcome.Delivery = DeliveryNoConnection
 			case "closed":
 				_ = remap(st.Detail, &ex.Outcome)
-				if ex.Outcome.CloseReason == "send_failed" && ex.Outcome.Delivery == DeliveryDelivered {
-					ex.Outcome.Delivery = DeliverySendFailed
-				}
 			}
 		}
+		// Arms the decision itself records as skipped (e.g. a saturated
+		// shadow pool) have no row of their own.
+		for _, skipped := range d.ShadowSkipped {
+			if _, ok := ex.Shadow[skipped.Arm]; !ok {
+				ex.Shadow[skipped.Arm] = skipped
+			}
+		}
+		ex.Outcome.Delivery = deliveryOutcome(stages)
 		out = append(out, ex)
 	}
 	return out, nil

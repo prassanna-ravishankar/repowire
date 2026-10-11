@@ -69,6 +69,13 @@ func NewRouter(cfg config.RouterConfig, arms map[string]Arm) (*Router, error) {
 			return nil, fmt.Errorf("experiments.router: unknown arm %q", name)
 		}
 	}
+	// A misspelled sample_every key would silently leave its arm unsampled
+	// (every ask), so it is an error like any other unknown arm.
+	for name := range cfg.SampleEvery {
+		if _, ok := arms[name]; !ok {
+			return nil, fmt.Errorf("experiments.router.sample_every: unknown arm %q", name)
+		}
+	}
 	return &Router{
 		cfg: cfg, arms: arms, seen: map[string]uint64{}, breakers: map[string]*breaker{},
 		shadow: make(chan struct{}, maxShadowInFlight), now: time.Now,
@@ -154,6 +161,16 @@ func (r *Router) ShadowPlan() []string {
 		r.seen[arm]++
 	}
 	return plan
+}
+
+// Skipped is a fallback for an arm that never ran, stamped with the arm's
+// configured model and template so missing work stays attributable.
+func (r *Router) Skipped(name, reason, msg string) RouterResult {
+	res := fallbackResult(name, reason, msg)
+	if arm, ok := r.arms[name]; ok {
+		res = withIdentity(arm, res)
+	}
+	return res
 }
 
 // Run executes the named arm with the configured timeout behind its

@@ -337,3 +337,21 @@ func TestFrontierIgnoresEnvironmentCredentials(t *testing.T) {
 		t.Fatalf("result %+v auth %q key %q", res, auth, key)
 	}
 }
+
+func TestNewRouterRejectsMisspelledSampleEveryKey(t *testing.T) {
+	cfg := config.RouterConfig{Mode: config.RouterModeShadow, ShadowArms: []string{"frontier-claimed"}, SampleEvery: map[string]int{"frontier-cliamed": 20}}
+	if _, err := NewRouter(cfg, nil); err == nil || !strings.Contains(err.Error(), "frontier-cliamed") {
+		t.Fatalf("typo accepted: %v", err)
+	}
+}
+
+func TestSkippedCarriesArmIdentity(t *testing.T) {
+	r, err := NewRouter(config.RouterConfig{Jev: config.RouterModel{Model: "jev-1.13.0"}, TimeoutSeconds: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := r.Skipped("jev-both", FallbackSaturated, "pool full")
+	if res.Model != "jev-1.13.0" || res.TemplateSHA256 != (Jev{View: ViewBoth}).TemplateSHA256() || !res.Fallback {
+		t.Fatalf("skipped = %+v", res)
+	}
+}

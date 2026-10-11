@@ -3,6 +3,9 @@ package routing
 import (
 	"context"
 	"testing"
+	"time"
+
+	"github.com/repowire/repowire/daemon-go/state"
 )
 
 func example(id, declared string, arm string, shadow map[string]RouterResult) Example {
@@ -123,5 +126,95 @@ func TestReplaySkipsTextArmsWhenTextNotRecorded(t *testing.T) {
 	rep, _ = Replay(context.Background(), []Example{ex}, "random", func(context.Context, Input) RouterResult { return ranked("repow-b") }, false)
 	if rep.Scored != 1 {
 		t.Fatalf("random needs no text: %+v", rep)
+	}
+}
+
+// fakeLedger serves trace rows by trace id.
+type fakeLedger map[string][]state.TraceRow
+
+func (f fakeLedger) TracesWithStage(_ context.Context, stage string, _ time.Time) ([]state.TraceRow, error) {
+	var out []state.TraceRow
+	for _, rows := range f {
+		for _, r := range rows {
+			if r.Stage == stage {
+				out = append(out, r)
+			}
+		}
+	}
+	return out, nil
+}
+
+func (f fakeLedger) StagesFor(_ context.Context, id string) ([]state.TraceRow, error) {
+	return f[id], nil
+}
+
+func trace(id string, d Decision, stages ...string) []state.TraceRow {
+	rows := []state.TraceRow{{TraceID: id, Stage: Stage, Detail: d.Detail()}}
+	for _, st := range stages {
+		row := state.TraceRow{TraceID: id, Stage: st, Detail: map[string]any{}}
+		switch st {
+		case "closed:send_failed":
+			row.Stage, row.Detail["close_reason"] = "closed", "send_failed"
+		case "closed:ack":
+			row.Stage, row.Detail["close_reason"] = "closed", "ack"
+		case "route_failed:quiesced":
+			row.Stage, row.Detail["reason"] = "route_failed", "quiesced"
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// Delivery is called delivered only on positive evidence; a decision with no
+// later stages, or a delivery still in flight, stays unknown.
+func TestLoadExamplesRequiresEvidenceOfDelivery(t *testing.T) {
+	d := example("x", "repow-b", ArmExplicit, nil).Decision
+	cases := map[string][]string{
+		"decision only":     nil,
+		"in progress":       {"created", "resolved_peer", "routed"},
+		"accepted":          {"created", "resolved_peer", "routed", "thread_input_accepted"},
+		"socket only":       {"created", "resolved_peer", "routed", "websocket_sent"},
+		"closed by peer":    {"created", "routed", "websocket_sent", "acked", "closed:ack"},
+		"rejected":          {"created", "routed", "hook_received", "injection_failed", "closed:send_failed"},
+		"no connection":     {"created", "routed", "no_connection", "closed:send_failed"},
+		"quiesced":          {"route_failed:quiesced"},
+		"send_failed close": {"created", "routed", "closed:send_failed"},
+	}
+	want := map[string]string{
+		"decision only": DeliveryUnknown, "in progress": DeliveryUnknown, "accepted": DeliveryDelivered,
+		"socket only": DeliverySent, "closed by peer": DeliveryDelivered, "rejected": DeliverySendFailed,
+		"no connection": DeliveryNoConnection, "quiesced": DeliveryQuiesced, "send_failed close": DeliverySendFailed,
+	}
+	ledger := fakeLedger{}
+	for name, stages := range cases {
+		ledger[name] = trace(name, d, stages...)
+	}
+	examples, err := LoadExamples(context.Background(), ledger, time.Time{})
+	if err != nil || len(examples) != len(cases) {
+		t.Fatalf("examples = %d, %v", len(examples), err)
+	}
+	for _, ex := range examples {
+		if ex.Outcome.Delivery != want[ex.TraceID] {
+			t.Errorf("%s: delivery = %q, want %q", ex.TraceID, ex.Outcome.Delivery, want[ex.TraceID])
+		}
+	}
+	rep, _ := Replay(context.Background(), examples, "stub", func(context.Context, Input) RouterResult { return ranked("repow-b") }, false)
+	if c := rep.Cohorts[DeliveryUnknown]; c == nil || c.Scored != 2 {
+		t.Fatalf("unknown deliveries must form their own cohort: %+v", rep.Cohorts)
+	}
+	if c := rep.Cohorts[DeliveryDelivered]; c == nil || c.Scored != 2 {
+		t.Fatalf("delivered cohort = %+v", rep.Cohorts[DeliveryDelivered])
+	}
+}
+
+// A planned arm skipped at planning time (saturated pool) is carried on the
+// decision, not a row, and replays as planned_not_run:saturated.
+func TestLoadExamplesReadsSkipsFromDecision(t *testing.T) {
+	d := planned(example("x", "repow-b", ArmExplicit, nil), "paid").Decision
+	d.ShadowSkipped = []RouterResult{{Arm: "paid", Fallback: true, FallbackReason: FallbackSaturated, Model: "m", Scores: []Score{}}}
+	examples, _ := LoadExamples(context.Background(), fakeLedger{"ask-1": trace("ask-1", d, "thread_input_accepted")}, time.Time{})
+	rep, _ := Replay(context.Background(), examples, "paid", nil, true)
+	if rep.Skipped["planned_not_run:saturated"] != 1 {
+		t.Fatalf("skipped = %v", rep.Skipped)
 	}
 }

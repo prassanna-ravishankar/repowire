@@ -540,13 +540,19 @@ func TestShadowPanicIsContainedAndLaterArmsRun(t *testing.T) {
 }
 
 func TestShadowPoolSaturationIsRecordedNotQueued(t *testing.T) {
-	rig := newRoutingRig(t, shadowCfg("random"), map[string]routing.Arm{"random": routing.Random{}})
+	cfg := shadowCfg("jev-both")
+	cfg.Jev.Model = "jev-1.13.0"
+	rig := newRoutingRig(t, cfg, nil)
 	for rig.router.TryAcquireShadow() {
 	}
 	_, out, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "x"})
-	rows := rig.tr.find(out.CorrelationID, routing.ShadowStage)
-	if len(rows) != 1 || rows[0].detail["fallback_reason"] != routing.FallbackSaturated {
-		t.Fatalf("shadow rows = %+v", rows)
+	rig.hub.waitShadow()
+	if rows := rig.tr.find(out.CorrelationID, routing.ShadowStage); len(rows) != 0 {
+		t.Fatalf("saturation must not write rows on the request path: %+v", rows)
+	}
+	d := rig.tr.decision(t, out.CorrelationID)
+	if len(d.ShadowSkipped) != 1 || d.ShadowSkipped[0].FallbackReason != routing.FallbackSaturated || d.ShadowSkipped[0].Model != "jev-1.13.0" {
+		t.Fatalf("skipped = %+v", d.ShadowSkipped)
 	}
 }
 

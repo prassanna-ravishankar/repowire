@@ -162,8 +162,12 @@ type Decision struct {
 	// knows which live results are missing by design.
 	ShadowPlanned     []string       `json:"shadow_planned"`
 	ShadowSampleEvery map[string]int `json:"shadow_sample_every,omitempty"`
-	RegistrySize      int            `json:"registry_size"`
-	Candidates        []Candidate    `json:"candidates"`
+	// ShadowSkipped records planned arms that will not run (the shadow pool
+	// was full when the ask was planned), with their configured identity, so
+	// no extra row has to be written on the request path.
+	ShadowSkipped []RouterResult `json:"shadow_skipped,omitempty"`
+	RegistrySize  int            `json:"registry_size"`
+	Candidates    []Candidate    `json:"candidates"`
 }
 
 // Detail renders the Decision as a trace detail map.

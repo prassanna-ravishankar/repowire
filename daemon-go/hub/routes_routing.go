@@ -239,48 +239,50 @@ func (h *Hub) recordRouteFailure(ctx context.Context, cid string, d *routing.Dec
 	h.audit(ctx, cid, "route_failed", "fail", "", string(fromID), detail)
 }
 
-// planShadow samples the shadow arms for a recorded explicit ask.
-func (h *Hub) planShadow(d *routing.Decision) {
+// planShadow samples the shadow arms for a recorded explicit ask and takes a
+// shadow pool slot for them. When the pool is full the sampled arms are
+// recorded on the decision itself as saturated, so overload costs the
+// request path no extra ledger write. It reports whether a slot is held;
+// the caller must hand it to runShadow.
+func (h *Hub) planShadow(d *routing.Decision) bool {
 	r := h.askRouter()
 	if d == nil || !r.Recording() || d.Declared.Resolution != routing.ResolutionResolved {
-		return
+		return false
 	}
 	d.ShadowPlanned = append(d.ShadowPlanned, r.ShadowPlan()...)
-	if len(d.ShadowPlanned) > 0 {
-		d.ShadowSampleEvery = map[string]int{}
-		for _, arm := range d.ShadowPlanned {
-			d.ShadowSampleEvery[arm] = r.SampleEvery(arm)
-		}
+	if len(d.ShadowPlanned) == 0 {
+		return false
 	}
+	d.ShadowSampleEvery = map[string]int{}
+	for _, arm := range d.ShadowPlanned {
+		d.ShadowSampleEvery[arm] = r.SampleEvery(arm)
+	}
+	if r.TryAcquireShadow() {
+		return true
+	}
+	for _, arm := range d.ShadowPlanned {
+		d.ShadowSkipped = append(d.ShadowSkipped, r.Skipped(arm, routing.FallbackSaturated, "shadow pool full"))
+	}
+	return false
 }
 
-// runShadow runs the planned shadow arms off the request path and records
-// each result, success or fallback, as a route_shadow row. Runs are bounded
-// by the router's shadow pool: when it is full every planned arm is recorded
-// as a saturated fallback instead of queuing. A panic anywhere in the run is
-// contained and the remaining arms are recorded.
-func (h *Hub) runShadow(cid string, d *routing.Decision, toID, fromID proto.PeerID) {
-	if d == nil || len(d.ShadowPlanned) == 0 || h.deliveryTraces == nil {
+// runShadow runs the planned shadow arms off the request path, holding the
+// pool slot planShadow took, and records each result, success or fallback,
+// as a route_shadow row. A panic anywhere in the run is contained and the
+// remaining arms are recorded.
+func (h *Hub) runShadow(cid string, d *routing.Decision, slot bool, toID, fromID proto.PeerID) {
+	if !slot {
 		return
 	}
 	r := h.askRouter()
-	record := func(res routing.RouterResult) {
-		h.audit(context.Background(), cid, routing.ShadowStage, "", string(toID), string(fromID), res.Detail())
-	}
-	if !r.TryAcquireShadow() {
-		for _, arm := range d.ShadowPlanned {
-			record(routing.RouterResult{Arm: arm, Scores: []routing.Score{}, Fallback: true,
-				FallbackReason: routing.FallbackSaturated, Error: "shadow pool full"})
-		}
-		return
-	}
 	in := routing.InputFrom(cid, *d)
 	h.routing.shadow.Add(1)
 	go func() {
 		defer h.routing.shadow.Done()
 		defer r.ReleaseShadow()
 		for _, arm := range d.ShadowPlanned {
-			record(h.runShadowArm(r, arm, in))
+			res := h.runShadowArm(r, arm, in)
+			h.audit(context.Background(), cid, routing.ShadowStage, "", string(toID), string(fromID), res.Detail())
 		}
 	}()
 }
@@ -289,8 +291,7 @@ func (h *Hub) runShadow(cid string, d *routing.Decision, toID, fromID proto.Peer
 func (h *Hub) runShadowArm(r *routing.Router, arm string, in routing.Input) (res routing.RouterResult) {
 	defer func() {
 		if p := recover(); p != nil {
-			res = routing.RouterResult{Arm: arm, Scores: []routing.Score{}, Fallback: true,
-				FallbackReason: routing.FallbackPanic, Error: fmt.Sprintf("shadow run panicked: %v", p)}
+			res = r.Skipped(arm, routing.FallbackPanic, fmt.Sprintf("shadow run panicked: %v", p))
 		}
 	}()
 	return r.Run(context.Background(), arm, in)
