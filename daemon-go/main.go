@@ -467,10 +467,14 @@ func runDaemon() {
 	// that is otherwise a nil-guarded no-op in Routes(); the order is
 	// independent (all read from already-built services). traces uses the same
 	// *state.Store delivery-trace store.
+	router, err := routing.NewRouter(cfg.Experiments.Router, nil)
+	if err != nil {
+		log.Fatalf("router config: %v", err)
+	}
 	h.WithReadDeps(asks, store).
 		WithMessaging(delivery, store).
 		WithAskLifecycle(asks, delivery, reg).
-		WithRouting(routing.NewRouter(cfg.Experiments.Router, nil)).
+		WithRouting(router).
 		WithSessionRoutes(reg, store).
 		WithSpawn(spawnService, reg, asks, selfMachine, cfg.Daemon.CircleBoundary).
 		WithSpawnContext(ctx).

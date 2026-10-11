@@ -68,17 +68,47 @@ func TestReplayCountsFallbacksAsMisses(t *testing.T) {
 	}
 }
 
-func TestReplayRecordedUsesShadowRowsAndCountsUnsampled(t *testing.T) {
+func planned(ex Example, arms ...string) Example {
+	ex.Decision.ShadowPlanned = arms
+	return ex
+}
+
+func TestReplayRecordedSeparatesUnsampledFromPlannedNotRun(t *testing.T) {
 	examples := []Example{
-		example("ask-1", "repow-b", ArmExplicit, map[string]RouterResult{"paid": ranked("repow-b")}),
-		example("ask-2", "repow-b", ArmExplicit, map[string]RouterResult{}),
+		planned(example("ask-1", "repow-b", ArmExplicit, map[string]RouterResult{"paid": ranked("repow-b")}), "paid"),
+		planned(example("ask-2", "repow-b", ArmExplicit, map[string]RouterResult{}), "paid"), // planned, row lost
+		example("ask-3", "repow-b", ArmExplicit, map[string]RouterResult{}),                  // not sampled
+		planned(example("ask-4", "repow-b", ArmExplicit, map[string]RouterResult{
+			"paid": {Arm: "paid", Fallback: true, FallbackReason: FallbackSaturated, Scores: []Score{}},
+		}), "paid"),
 	}
+	examples[0].Outcome.Delivery = DeliveryNoConnection
 	runner := func(context.Context, Input) RouterResult {
 		t.Fatal("recorded replay must not call the arm")
 		return RouterResult{}
 	}
 	rep, _ := Replay(context.Background(), examples, "paid", runner, true)
-	if rep.Source != "recorded" || rep.Scored != 1 || rep.Hit1 != 1 || rep.Skipped[SkipNotSampled] != 1 {
+	if rep.Source != "recorded" || rep.Scored != 1 || rep.Hit1 != 1 {
+		t.Fatalf("report = %+v", rep)
+	}
+	want := map[string]int{SkipNotSampled: 1, "planned_not_run:missing": 1, "planned_not_run:saturated": 1}
+	for reason, n := range want {
+		if rep.Skipped[reason] != n {
+			t.Fatalf("skipped = %v, want %v", rep.Skipped, want)
+		}
+	}
+	if c := rep.Cohorts[DeliveryNoConnection]; c == nil || c.Scored != 1 || c.Hit1 != 1 {
+		t.Fatalf("a failed delivery must be scored and reported as its own cohort: %+v", rep.Cohorts)
+	}
+}
+
+// A fallback is a miss even if a future arm leaves scores on it.
+func TestReplayFallbackWithScoresIsAMiss(t *testing.T) {
+	res := ranked("repow-b")
+	res.Fallback, res.FallbackReason = true, FallbackError
+	rep, rows := Replay(context.Background(), []Example{example("ask-1", "repow-b", ArmExplicit, nil)}, "stub",
+		func(context.Context, Input) RouterResult { return res }, false)
+	if rep.Hit1 != 0 || rep.Hit3 != 0 || rep.Fallbacks != 1 || rows[0].Hit3 || rep.AnsweredFidelity1 != 0 {
 		t.Fatalf("report = %+v", rep)
 	}
 }

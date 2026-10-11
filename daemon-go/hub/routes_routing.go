@@ -9,6 +9,8 @@ package hub
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -69,12 +71,14 @@ type askAttempt struct {
 	parentID *string
 }
 
-// beginDecision snapshots the mesh for an ask. nil when nothing will read it:
-// not recording, and not a live @route ask.
-func (h *Hub) beginDecision(ctx context.Context, a askAttempt, liveRoute bool) *routing.Decision {
+// beginDecision mints the ask's cid and snapshots the mesh, but only when
+// something will read it: recording on, or a live @route ask. Otherwise it
+// returns ("", nil) and touches nothing, so the uninstrumented path is the
+// pre-router path (the tracker mints the cid at Register, as before).
+func (h *Hub) beginDecision(_ context.Context, a askAttempt, liveRoute bool) (string, *routing.Decision) {
 	r := h.askRouter()
 	if !r.Recording() && !liveRoute {
-		return nil
+		return "", nil
 	}
 	now := time.Now().UTC()
 	d := &routing.Decision{
@@ -85,14 +89,55 @@ func (h *Hub) beginDecision(ctx context.Context, a askAttempt, liveRoute bool) *
 		Declared:   routing.Declared{Resolution: routing.ResolutionAbsent},
 		Candidates: []routing.Candidate{},
 	}
+	h.snapshotCandidates(d, h.resolveSender(a.fromPeer, a.circle), a.bypass, now)
+	return service.NewAskID(), d
+}
+
+// resolveSender resolves the sender as CheckAccess does before a target is
+// known: circle-scoped first, then unscoped, with an ambiguous name left
+// unresolved (nil) rather than guessed.
+func (h *Hub) resolveSender(raw string, circle *string) *proto.Peer {
 	if h.ask == nil || h.ask.reg == nil {
-		return d
+		return nil
+	}
+	if circle != nil {
+		if p, err := h.ask.reg.GetPeerByName(raw, circle); err == nil && p != nil {
+			return p
+		}
+	}
+	p, err := h.ask.reg.GetPeerByName(raw, nil)
+	if err != nil {
+		return nil
+	}
+	return p
+}
+
+// rebaseSender re-snapshots against the sender CheckAccess actually resolved,
+// when it differs from the pre-resolution guess. Explicit asks only: a live
+// decision keeps the candidate set its arm saw.
+func (h *Hub) rebaseSender(d *routing.Decision, from *proto.Peer, bypass bool) {
+	if d == nil || from == nil || d.Router != nil || (d.Sender != nil && d.Sender.PeerID == string(from.PeerID)) {
+		return
+	}
+	at, err := time.Parse(time.RFC3339Nano, d.DecidedAt)
+	if err != nil {
+		at = time.Now().UTC()
+	}
+	h.snapshotCandidates(d, from, bypass, at)
+}
+
+// snapshotCandidates fills the sender and candidate snapshot. With no
+// resolved sender, every peer the raw sender string names is excluded so the
+// sender can never appear as its own candidate.
+func (h *Hub) snapshotCandidates(d *routing.Decision, sender *proto.Peer, bypass bool, now time.Time) {
+	d.Sender, d.Candidates, d.RegistrySize = nil, []routing.Candidate{}, 0
+	if h.ask == nil || h.ask.reg == nil {
+		return
 	}
 	reg := h.ask.reg
 	clock, _ := reg.(descriptionClock)
-	sender, _ := reg.GetPeerByName(a.fromPeer, nil)
 	var stats map[proto.PeerID]service.AskPeerStats
-	if h.ask != nil && h.ask.asks != nil && sender != nil {
+	if h.ask.asks != nil && sender != nil {
 		stats = h.ask.asks.RoutingStats(sender.PeerID)
 	}
 	snap := func(p *proto.Peer) routing.Candidate {
@@ -107,15 +152,21 @@ func (h *Hub) beginDecision(ctx context.Context, a askAttempt, liveRoute bool) *
 		s := snap(sender)
 		d.Sender = &s
 	}
+	isSender := func(p *proto.Peer) bool {
+		if sender != nil {
+			return p.PeerID == sender.PeerID
+		}
+		return string(p.PeerID) == d.SenderRaw || string(p.DisplayName) == d.SenderRaw
+	}
 	peers := reg.GetAllPeers()
 	d.RegistrySize = len(peers)
 	for _, p := range peers {
-		if sender != nil && p.PeerID == sender.PeerID {
+		if isSender(p) {
 			continue
 		}
 		c := snap(p)
 		switch {
-		case peer.CircleAccess(sender, p, a.bypass) != nil:
+		case peer.CircleAccess(sender, p, bypass) != nil:
 			c.Access = routing.AccessCircleBoundary
 		case proto.RequireAddressable(sender, p) != nil:
 			c.Access = routing.AccessNotAddressable
@@ -125,7 +176,6 @@ func (h *Hub) beginDecision(ctx context.Context, a askAttempt, liveRoute bool) *
 		d.Candidates = append(d.Candidates, c)
 	}
 	sort.Slice(d.Candidates, func(i, j int) bool { return d.Candidates[i].PeerID < d.Candidates[j].PeerID })
-	return d
 }
 
 // declare records the sender's named target and how it resolved.
@@ -140,9 +190,26 @@ func declare(d *routing.Decision, raw string, target *proto.Peer, resolution str
 	}
 }
 
+// auditWriteTimeout bounds one research-ledger write.
+const auditWriteTimeout = 5 * time.Second
+
+// audit writes one routing ledger row under a context detached from the
+// request: a caller hanging up must not cost the ledger its row. Write
+// failures are logged, never swallowed.
+func (h *Hub) audit(ctx context.Context, cid, stage, status, toID, fromID string, detail map[string]any) {
+	if h.deliveryTraces == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), auditWriteTimeout)
+	defer cancel()
+	if err := h.deliveryTraces.RecordTrace(ctx, cid, "ask", stage, status, cid, toID, fromID, detail); err != nil {
+		log.Printf("routing ledger: %s %s not recorded: %v", cid, stage, err)
+	}
+}
+
 // recordDecision writes the route_decision row (seq 0 of the ask's trace).
 func (h *Hub) recordDecision(ctx context.Context, cid string, d *routing.Decision, target *proto.Peer, fromID proto.PeerID) {
-	if d == nil || !h.askRouter().Recording() || h.deliveryTraces == nil {
+	if d == nil || !h.askRouter().Recording() {
 		return
 	}
 	if target != nil {
@@ -156,12 +223,12 @@ func (h *Hub) recordDecision(ctx context.Context, cid string, d *routing.Decisio
 	if target != nil {
 		toID = string(target.PeerID)
 	}
-	_ = h.deliveryTraces.RecordTrace(ctx, cid, "ask", routing.Stage, "", cid, toID, string(fromID), row.Detail())
+	h.audit(ctx, cid, routing.Stage, "", toID, string(fromID), row.Detail())
 }
 
 // recordRouteFailure closes a decision whose ask never registered.
 func (h *Hub) recordRouteFailure(ctx context.Context, cid string, d *routing.Decision, fromID proto.PeerID, reason string, err error) {
-	if d == nil || !h.askRouter().Recording() || h.deliveryTraces == nil {
+	if d == nil || !h.askRouter().Recording() {
 		return
 	}
 	h.recordDecision(ctx, cid, d, nil, fromID)
@@ -169,7 +236,7 @@ func (h *Hub) recordRouteFailure(ctx context.Context, cid string, d *routing.Dec
 	if err != nil {
 		detail["error"] = clipTraceText(err.Error())
 	}
-	_ = h.deliveryTraces.RecordTrace(ctx, cid, "ask", "route_failed", "fail", cid, "", string(fromID), detail)
+	h.audit(ctx, cid, "route_failed", "fail", "", string(fromID), detail)
 }
 
 // planShadow samples the shadow arms for a recorded explicit ask.
@@ -188,21 +255,45 @@ func (h *Hub) planShadow(d *routing.Decision) {
 }
 
 // runShadow runs the planned shadow arms off the request path and records
-// each result, success or fallback, as a route_shadow row.
+// each result, success or fallback, as a route_shadow row. Runs are bounded
+// by the router's shadow pool: when it is full every planned arm is recorded
+// as a saturated fallback instead of queuing. A panic anywhere in the run is
+// contained and the remaining arms are recorded.
 func (h *Hub) runShadow(cid string, d *routing.Decision, toID, fromID proto.PeerID) {
 	if d == nil || len(d.ShadowPlanned) == 0 || h.deliveryTraces == nil {
+		return
+	}
+	r := h.askRouter()
+	record := func(res routing.RouterResult) {
+		h.audit(context.Background(), cid, routing.ShadowStage, "", string(toID), string(fromID), res.Detail())
+	}
+	if !r.TryAcquireShadow() {
+		for _, arm := range d.ShadowPlanned {
+			record(routing.RouterResult{Arm: arm, Scores: []routing.Score{}, Fallback: true,
+				FallbackReason: routing.FallbackSaturated, Error: "shadow pool full"})
+		}
 		return
 	}
 	in := routing.InputFrom(cid, *d)
 	h.routing.shadow.Add(1)
 	go func() {
 		defer h.routing.shadow.Done()
-		ctx := context.Background()
+		defer r.ReleaseShadow()
 		for _, arm := range d.ShadowPlanned {
-			res := h.askRouter().Run(ctx, arm, in)
-			_ = h.deliveryTraces.RecordTrace(ctx, cid, "ask", routing.ShadowStage, "", cid, string(toID), string(fromID), res.Detail())
+			record(h.runShadowArm(r, arm, in))
 		}
 	}()
+}
+
+// runShadowArm is the per-arm panic boundary on the shadow goroutine.
+func (h *Hub) runShadowArm(r *routing.Router, arm string, in routing.Input) (res routing.RouterResult) {
+	defer func() {
+		if p := recover(); p != nil {
+			res = routing.RouterResult{Arm: arm, Scores: []routing.Score{}, Fallback: true,
+				FallbackReason: routing.FallbackPanic, Error: fmt.Sprintf("shadow run panicked: %v", p)}
+		}
+	}()
+	return r.Run(context.Background(), arm, in)
 }
 
 // routeLive runs the live arm for an @route ask and returns the address to

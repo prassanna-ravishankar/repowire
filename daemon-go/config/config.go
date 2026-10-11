@@ -208,7 +208,37 @@ func Load() (Config, error) {
 	if !cfg.Daemon.CircleBoundary.Valid() {
 		return cfg, fmt.Errorf("daemon.circle_boundary must be session or window, got %q", cfg.Daemon.CircleBoundary)
 	}
+	if err := cfg.Experiments.Router.validate(); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
+}
+
+// validate rejects router settings that would silently widen what runs:
+// an unknown mode, a duplicate shadow arm, or a sample period below 1.
+// Arm names are checked against the arm registry by routing.NewRouter.
+func (r RouterConfig) validate() error {
+	switch r.Mode {
+	case RouterModeOff, RouterModeShadow, RouterModeLive:
+	default:
+		return fmt.Errorf("experiments.router.mode must be off, shadow or live, got %q", r.Mode)
+	}
+	seen := map[string]bool{}
+	for _, arm := range r.ShadowArms {
+		if seen[arm] {
+			return fmt.Errorf("experiments.router.shadow_arms lists %q twice", arm)
+		}
+		seen[arm] = true
+	}
+	for arm, n := range r.SampleEvery {
+		if n < 1 {
+			return fmt.Errorf("experiments.router.sample_every.%s must be >= 1, got %d", arm, n)
+		}
+	}
+	if r.TimeoutSeconds <= 0 {
+		return fmt.Errorf("experiments.router.timeout_seconds must be > 0")
+	}
+	return nil
 }
 
 func Path() string {

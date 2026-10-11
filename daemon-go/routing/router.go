@@ -2,6 +2,7 @@ package routing
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -32,21 +33,74 @@ func Arms(cfg config.RouterConfig) map[string]Arm {
 	return arms
 }
 
-// Router holds the configured arms and the per-arm shadow sampling counters.
+// maxShadowInFlight bounds concurrent shadow runs across all asks. A planned
+// shadow arm that finds the pool full is recorded as saturated, not queued.
+const maxShadowInFlight = 4
+
+// providerArm is implemented by arms backed by an external provider; arms
+// sharing a provider share a breaker.
+type providerArm interface{ Provider() string }
+
+// Router holds the configured arms, the per-arm shadow sampling counters, the
+// per-provider breakers and the shadow pool.
 type Router struct {
 	cfg  config.RouterConfig
 	arms map[string]Arm
 
-	mu   sync.Mutex
-	seen map[string]uint64
+	mu       sync.Mutex
+	seen     map[string]uint64
+	breakers map[string]*breaker
+	shadow   chan struct{}
+	now      func() time.Time
 }
 
-// NewRouter returns a router over arms (Arms(cfg) when nil).
-func NewRouter(cfg config.RouterConfig, arms map[string]Arm) *Router {
+// NewRouter returns a router over arms (Arms(cfg) when nil). Every arm the
+// config names must exist.
+func NewRouter(cfg config.RouterConfig, arms map[string]Arm) (*Router, error) {
 	if arms == nil {
 		arms = Arms(cfg)
 	}
-	return &Router{cfg: cfg, arms: arms, seen: map[string]uint64{}}
+	named := append([]string{}, cfg.ShadowArms...)
+	if cfg.Mode == config.RouterModeLive {
+		named = append(named, cfg.Arm)
+	}
+	for _, name := range named {
+		if _, ok := arms[name]; !ok {
+			return nil, fmt.Errorf("experiments.router: unknown arm %q", name)
+		}
+	}
+	return &Router{
+		cfg: cfg, arms: arms, seen: map[string]uint64{}, breakers: map[string]*breaker{},
+		shadow: make(chan struct{}, maxShadowInFlight), now: time.Now,
+	}, nil
+}
+
+// TryAcquireShadow takes a shadow pool slot without blocking.
+func (r *Router) TryAcquireShadow() bool {
+	select {
+	case r.shadow <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// ReleaseShadow returns a slot taken by TryAcquireShadow.
+func (r *Router) ReleaseShadow() { <-r.shadow }
+
+func (r *Router) breakerFor(arm Arm) *breaker {
+	p, ok := arm.(providerArm)
+	if !ok {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b := r.breakers[p.Provider()]
+	if b == nil {
+		b = &breaker{now: r.now}
+		r.breakers[p.Provider()] = b
+	}
+	return b
 }
 
 // Recording reports whether route_decision rows are written.
@@ -74,9 +128,10 @@ func (r *Router) Timeout() time.Duration {
 	return time.Duration(r.cfg.TimeoutSeconds * float64(time.Second))
 }
 
-// SampleEvery is the configured shadow sampling period for arm (>= 1).
+// SampleEvery is the shadow sampling period for arm: the configured value
+// (validated >= 1 at config load), else 1.
 func (r *Router) SampleEvery(arm string) int {
-	if n := r.cfg.SampleEvery[arm]; n > 1 {
+	if n, ok := r.cfg.SampleEvery[arm]; ok {
 		return n
 	}
 	return 1
@@ -101,12 +156,23 @@ func (r *Router) ShadowPlan() []string {
 	return plan
 }
 
-// Run executes the named arm with the configured timeout. An unknown arm is a
-// recorded fallback, never a panic or a silent pick.
+// Run executes the named arm with the configured timeout behind its
+// provider's breaker. An unknown arm or an open breaker is a recorded
+// fallback, never a panic or a silent pick.
 func (r *Router) Run(ctx context.Context, name string, in Input) RouterResult {
 	arm, ok := r.arms[name]
 	if !ok {
-		return RouterResult{Arm: name, Scores: []Score{}, Fallback: true, FallbackReason: FallbackUnknownArm, Error: "unknown arm " + name}
+		return fallbackResult(name, FallbackUnknownArm, "unknown arm "+name)
 	}
-	return Run(ctx, arm, in, r.Timeout())
+	b := r.breakerFor(arm)
+	if b == nil {
+		return Run(ctx, arm, in, r.Timeout())
+	}
+	allowed, probe := b.allow()
+	if !allowed {
+		return withIdentity(arm, fallbackResult(name, FallbackBreakerOpen, "provider breaker open after repeated failures"))
+	}
+	res := Run(ctx, arm, in, r.Timeout())
+	b.record(res, probe)
+	return res
 }

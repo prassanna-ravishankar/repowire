@@ -27,6 +27,13 @@ const (
 	FallbackNoCandidates = "no_candidates"
 	FallbackUnconfigured = "unconfigured"
 	FallbackUnknownArm   = "unknown_arm"
+	FallbackPanic        = "panic"
+	// FallbackBreakerOpen: the arm's provider failed repeatedly and is being
+	// skipped until a probe succeeds.
+	FallbackBreakerOpen = "breaker_open"
+	// FallbackSaturated: a shadow arm was planned but the shadow pool was
+	// full, so it did not run. Never applies to a live decision.
+	FallbackSaturated = "saturated"
 )
 
 // FallbackError classifies an arm failure.
@@ -48,24 +55,75 @@ func fail(reason string, format string, args ...any) error {
 func Run(ctx context.Context, arm Arm, in Input, timeout time.Duration) RouterResult {
 	start := time.Now()
 	if len(in.Candidates) == 0 {
-		return fallback(arm.Name(), start, fail(FallbackNoCandidates, "no eligible candidates"))
+		return withIdentity(arm, fallback(arm.Name(), start, fail(FallbackNoCandidates, "no eligible candidates")))
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	res, err := arm.Rank(ctx, in)
+	res, err := rankSafely(ctx, arm, in)
 	if err == nil {
 		err = validate(res, in)
 	}
 	if err != nil {
-		if ctx.Err() != nil && !isFallback(err, FallbackRateLimited) {
+		if ctx.Err() != nil && !isFallback(err, FallbackRateLimited) && !isFallback(err, FallbackPanic) {
 			err = &FallbackErr{Reason: FallbackTimeout, Err: err}
 		}
-		return fallback(arm.Name(), start, err)
+		return withIdentity(arm, fallback(arm.Name(), start, err))
 	}
 	res.Arm = arm.Name()
 	res.LatencyMS = time.Since(start).Milliseconds()
-	sort.SliceStable(res.Scores, func(i, j int) bool { return res.Scores[i].Score > res.Scores[j].Score })
+	sortScores(res.Scores, in)
 	return res
+}
+
+// sortScores ranks best-first, breaking ties by candidate key order (c1, c2,
+// ... in Input order) so equal scores pick the same peer live and in replay.
+func sortScores(scores []Score, in Input) {
+	pos := make(map[string]int, len(in.Candidates))
+	for i, c := range in.Candidates {
+		pos[c.PeerID] = i
+	}
+	sort.SliceStable(scores, func(i, j int) bool {
+		if scores[i].Score != scores[j].Score {
+			return scores[i].Score > scores[j].Score
+		}
+		return pos[scores[i].PeerID] < pos[scores[j].PeerID]
+	})
+}
+
+// identified arms report their configured model and template.
+type identified interface {
+	Identity() (model, template string)
+}
+
+// withIdentity stamps a failure with the arm's configured model and template,
+// so failures group with the successes of the same configuration.
+func withIdentity(arm Arm, res RouterResult) RouterResult {
+	if id, ok := arm.(identified); ok {
+		model, template := id.Identity()
+		if res.Model == "" {
+			res.Model = model
+		}
+		if res.TemplateSHA256 == "" {
+			res.TemplateSHA256 = template
+		}
+	}
+	return res
+}
+
+// rankSafely is the arm execution boundary: a panicking arm or SDK becomes a
+// recorded panic fallback instead of taking the daemon down.
+func rankSafely(ctx context.Context, arm Arm, in Input) (res RouterResult, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			res, err = RouterResult{}, fail(FallbackPanic, "arm panicked: %v", p)
+		}
+	}()
+	return arm.Rank(ctx, in)
+}
+
+// fallbackResult is a fallback that never reached the arm.
+func fallbackResult(arm, reason, msg string) RouterResult {
+	return RouterResult{Arm: arm, Scores: []Score{}, Fallback: true, FallbackReason: reason, Error: msg}
 }
 
 func fallback(arm string, start time.Time, err error) RouterResult {

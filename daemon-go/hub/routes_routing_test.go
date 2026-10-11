@@ -96,16 +96,50 @@ func (s *stubArm) Rank(context.Context, routing.Input) (routing.RouterResult, er
 }
 
 type routingRig struct {
-	srv   *httptest.Server
-	hub   *Hub
-	asks  *service.AskTracker
-	tr    *rowTracer
-	f     *fakeTransport
-	alpha *proto.Peer
-	beta  *proto.Peer
-	gamma *proto.Peer
-	other *proto.Peer
-	sub   *proto.Peer
+	srv    *httptest.Server
+	hub    *Hub
+	asks   *service.AskTracker
+	tr     *rowTracer
+	f      *fakeTransport
+	alpha  *proto.Peer
+	beta   *proto.Peer
+	gamma  *proto.Peer
+	other  *proto.Peer
+	sub    *proto.Peer
+	reg    *trickyRegistry
+	router *routing.Router
+}
+
+// trickyRegistry wraps the ask fake to count snapshot reads, make a name
+// ambiguous when looked up unscoped, and deny access to chosen peers (a
+// snapshot gone stale between routing and authorization).
+type trickyRegistry struct {
+	*askFakeRegistry
+	mu            sync.Mutex
+	allPeersCalls int
+	ambiguous     map[string]bool
+	deny          map[string]bool
+}
+
+func (r *trickyRegistry) GetAllPeers() []*proto.Peer {
+	r.mu.Lock()
+	r.allPeersCalls++
+	r.mu.Unlock()
+	return r.askFakeRegistry.GetAllPeers()
+}
+
+func (r *trickyRegistry) GetPeerByName(name string, circle *string) (*proto.Peer, error) {
+	if circle == nil && r.ambiguous[name] {
+		return nil, errors.New("ambiguous peer name: " + name)
+	}
+	return r.askFakeRegistry.GetPeerByName(name, circle)
+}
+
+func (r *trickyRegistry) CheckAccess(ctx context.Context, fromPeer, toPeer string, bypass bool, circle *string) (*proto.Peer, *proto.Peer, error) {
+	if r.deny[toPeer] {
+		return r.lookup(fromPeer), nil, errors.New("access denied: " + toPeer)
+	}
+	return r.askFakeRegistry.CheckAccess(ctx, fromPeer, toPeer, bypass, circle)
 }
 
 // newRoutingRig wires a hub over five peers: alpha (sender), beta and gamma in
@@ -129,7 +163,7 @@ func newRoutingRigWith(t *testing.T, cfg *config.RouterConfig, arms map[string]r
 	for _, p := range []*proto.Peer{alpha, beta, gamma, other} {
 		p.Provenance = proto.DefaultProvenance()
 	}
-	reg := newAskFakeRegistry(alpha, beta, gamma, other, sub)
+	reg := &trickyRegistry{askFakeRegistry: newAskFakeRegistry(alpha, beta, gamma, other, sub), ambiguous: map[string]bool{}, deny: map[string]bool{}}
 	f := &fakeTransport{ackFrame: map[string]any{"status": "accepted"}}
 	asks := service.NewAskTracker(0)
 	tr := &rowTracer{}
@@ -138,14 +172,20 @@ func newRoutingRigWith(t *testing.T, cfg *config.RouterConfig, arms map[string]r
 		h.deliveryTraces, h.store = store, store
 	}
 	h.WithAskLifecycle(asks, service.NewPeerDelivery(reg, newRouterWithFake(f), f, asks, nil), reg)
+	var router *routing.Router
 	if cfg != nil {
-		h.WithRouting(routing.NewRouter(*cfg, arms))
+		var err error
+		router, err = routing.NewRouter(*cfg, arms)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.WithRouting(router)
 	}
 	mux := http.NewServeMux()
 	h.registerAskLifecycleRoutes(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &routingRig{srv, h, asks, tr, f, alpha, beta, gamma, other, sub}
+	return &routingRig{srv, h, asks, tr, f, alpha, beta, gamma, other, sub, reg, router}
 }
 
 func (r *routingRig) ask(t *testing.T, req AskRequest) (int, AskResponse, string) {
@@ -193,6 +233,12 @@ func TestRoutingDefaultsLeaveAskUnchanged(t *testing.T) {
 			}
 			if strings.Contains(rig.deliveredText(t), "routed by") {
 				t.Fatal("explicit ask carried a routing note")
+			}
+			// The uninstrumented path must not snapshot the mesh at all, even
+			// for an ask that fails resolution.
+			rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "nobody", Text: "x"})
+			if rig.reg.allPeersCalls != 0 || len(rig.tr.find("", routing.Stage)) != 0 {
+				t.Fatalf("flag off: %d snapshot reads, %d decision rows", rig.reg.allPeersCalls, len(rig.tr.find("", routing.Stage)))
 			}
 		})
 	}
@@ -447,12 +493,144 @@ func TestRecordedAsksReplayFromStateDB(t *testing.T) {
 	if recorded.Scored != 2 || recorded.Hit1 != 2 || recorded.Skipped[routing.SkipNotSampled] != 1 || recorded.Skipped[routing.SkipNoDeclaredTarget] != 1 {
 		t.Fatalf("recorded replay = %+v", recorded)
 	}
-	router := routing.NewRouter(*cfg, map[string]routing.Arm{"oracle-ish": arm})
+	router, err := routing.NewRouter(*cfg, map[string]routing.Arm{"oracle-ish": arm})
+	if err != nil {
+		t.Fatal(err)
+	}
 	rerun, _ := routing.Replay(ctx, examples, "oracle-ish", func(ctx context.Context, in routing.Input) routing.RouterResult {
 		return router.Run(ctx, "oracle-ish", in)
 	}, false)
 	// Re-run scores every labelled ask: beta, gamma, beta → 2 hits of 3.
 	if rerun.Scored != 3 || rerun.Hit1 != 2 || rerun.Hit3 != 3 {
 		t.Fatalf("rerun replay = %+v", rerun)
+	}
+}
+
+type panicky struct{ name string }
+
+func (p panicky) Name() string { return p.name }
+func (p panicky) Rank(context.Context, routing.Input) (routing.RouterResult, error) {
+	panic("provider sdk bug")
+}
+
+func shadowCfg(arms ...string) *config.RouterConfig {
+	cfg := recordCfg()
+	cfg.Mode = config.RouterModeShadow
+	cfg.ShadowArms = arms
+	return cfg
+}
+
+func TestShadowPanicIsContainedAndLaterArmsRun(t *testing.T) {
+	rig := newRoutingRig(t, shadowCfg("boom", "random"), map[string]routing.Arm{"boom": panicky{"boom"}, "random": routing.Random{}})
+	status, out, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "x"})
+	rig.hub.waitShadow()
+	if status != http.StatusOK {
+		t.Fatalf("status %d", status)
+	}
+	byArm := map[string]routing.RouterResult{}
+	for _, row := range rig.tr.find(out.CorrelationID, routing.ShadowStage) {
+		var res routing.RouterResult
+		raw, _ := json.Marshal(row.detail)
+		_ = json.Unmarshal(raw, &res)
+		byArm[res.Arm] = res
+	}
+	if byArm["boom"].FallbackReason != routing.FallbackPanic || byArm["random"].Fallback {
+		t.Fatalf("shadow rows = %+v", byArm)
+	}
+}
+
+func TestShadowPoolSaturationIsRecordedNotQueued(t *testing.T) {
+	rig := newRoutingRig(t, shadowCfg("random"), map[string]routing.Arm{"random": routing.Random{}})
+	for rig.router.TryAcquireShadow() {
+	}
+	_, out, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "x"})
+	rows := rig.tr.find(out.CorrelationID, routing.ShadowStage)
+	if len(rows) != 1 || rows[0].detail["fallback_reason"] != routing.FallbackSaturated {
+		t.Fatalf("shadow rows = %+v", rows)
+	}
+}
+
+func TestPlannedShadowsRunWhenDeliveryFails(t *testing.T) {
+	rig := newRoutingRig(t, shadowCfg("random"), map[string]routing.Arm{"random": routing.Random{}})
+	rig.f.ackFrame = map[string]any{"status": "rejected", "detail": "pane gone"}
+	status, _, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "x"})
+	rig.hub.waitShadow()
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status %d", status)
+	}
+	d := rig.tr.find("", routing.Stage)
+	if len(d) != 1 {
+		t.Fatalf("decisions %d", len(d))
+	}
+	cid := d[0].traceID
+	if rows := rig.tr.find(cid, routing.ShadowStage); len(rows) != 1 || rows[0].detail["fallback"] == true {
+		t.Fatalf("shadow must run for a failed delivery: %+v", rows)
+	}
+	closed := rig.tr.find(cid, "closed")
+	if len(closed) != 1 || closed[0].detail["close_reason"] != "send_failed" || closed[0].detail["time_to_close_ms"] == nil {
+		t.Fatalf("send_failed close must carry outcome fields: %+v", closed)
+	}
+}
+
+// failingTracer rejects writes under a cancelled context, as SQLite would.
+type failingTracer struct{ rowTracer }
+
+func (f *failingTracer) RecordTrace(ctx context.Context, traceID, kind, stage, status, deliveryID, peerID, fromPeerID string, detail map[string]any) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return f.rowTracer.RecordTrace(ctx, traceID, kind, stage, status, deliveryID, peerID, fromPeerID, detail)
+}
+
+func TestAuditRowsSurviveCallerCancellation(t *testing.T) {
+	rig := newRoutingRig(t, recordCfg(), nil)
+	ft := &failingTracer{}
+	rig.hub.deliveryTraces = ft
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cid, d := rig.hub.beginDecision(ctx, askAttempt{surface: routing.SurfaceAsk, fromPeer: "alpha", text: "x"}, false)
+	rig.hub.recordRouteFailure(ctx, cid, d, "repow-a", "unknown", errors.New("Unknown peer"))
+	if got := ft.stages(cid); !equalStrings(got, []string{routing.Stage, "route_failed"}) {
+		t.Fatalf("a cancelled caller lost ledger rows: %v", got)
+	}
+}
+
+func TestAmbiguousSenderNeverListsItself(t *testing.T) {
+	rig := newRoutingRig(t, recordCfg(), nil)
+	rig.reg.ambiguous["alpha"] = true
+	_, out, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "x"})
+	d := rig.tr.decision(t, out.CorrelationID)
+	if d.Sender == nil || d.Sender.PeerID != "repow-a" {
+		t.Fatalf("sender should be the peer CheckAccess resolved: %+v", d.Sender)
+	}
+	for _, c := range d.Candidates {
+		if c.PeerID == "repow-a" {
+			t.Fatal("sender listed as its own candidate")
+		}
+	}
+
+	// A failure before CheckAccess has no resolved sender: exclude by name.
+	rig.tr.rows = nil
+	rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "nobody", Text: "x"})
+	failed := rig.tr.find("", routing.Stage)
+	d, _ = routing.ParseDecision(failed[0].detail)
+	for _, c := range d.Candidates {
+		if c.PeerID == "repow-a" {
+			t.Fatal("unresolved sender listed as a candidate")
+		}
+	}
+}
+
+func TestLiveStalePickWithoutFallbackIsRecordedAsFallback(t *testing.T) {
+	arm := &stubArm{name: "stub", scores: []routing.Score{{PeerID: "repow-c", Score: 0.9}}}
+	rig := newRoutingRig(t, liveCfg("stub"), map[string]routing.Arm{"stub": arm})
+	rig.reg.deny["repow-c"] = true
+	status, _, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "@route", Text: "x"})
+	if status != http.StatusForbidden || rig.f.lastTarget != "" {
+		t.Fatalf("status %d delivered to %q", status, rig.f.lastTarget)
+	}
+	d, _ := routing.ParseDecision(rig.tr.find("", routing.Stage)[0].detail)
+	if d.Router == nil || !d.Router.Fallback || !strings.HasPrefix(d.Router.FallbackReason, "stale_pick:") {
+		t.Fatalf("router = %+v", d.Router)
 	}
 }

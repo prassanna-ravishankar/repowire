@@ -115,6 +115,17 @@ func (h *Hub) traceAskClosed(ctx context.Context, ask *service.Ask, reason, repl
 	h.traceAsk(ctx, ask.CorrelationID, "closed", "", ask, detail)
 }
 
+// traceSendFailed records the terminal stage of an ask whose delivery failed,
+// with the same outcome fields as any other close.
+func (h *Hub) traceSendFailed(ctx context.Context, ask *service.Ask) {
+	if ask == nil {
+		return
+	}
+	detail := map[string]any{"close_reason": "send_failed"}
+	h.closeOutcome(ctx, ask, detail)
+	h.traceAsk(ctx, ask.CorrelationID, "closed", "fail", ask, detail)
+}
+
 // clipTraceText bounds free text stored in trace detail rows.
 func clipTraceText(text string) string {
 	const max = 500
@@ -387,11 +398,11 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	if req.ReplyDelivery != "" && req.ReplyDelivery != "push" && req.ReplyDelivery != "pull" {
 		return AskResponse{}, routeErr(http.StatusUnprocessableEntity, "reply_delivery must be push or pull")
 	}
-	// The cid is minted before resolution so a failed attempt still has a trace.
-	// reply_to closes a PRIOR ask; it is NOT this ask's cid.
-	cid := service.NewAskID()
+	// When routing is instrumented the cid is minted before resolution so a
+	// failed attempt still has a trace; otherwise Register mints it as it
+	// always has. reply_to closes a PRIOR ask; it is NOT this ask's cid.
 	liveRoute := h.askRouter().Live() && routing.IsRouteTarget(req.ToPeer)
-	decision := h.beginDecision(ctx, askAttempt{
+	cid, decision := h.beginDecision(ctx, askAttempt{
 		surface: routing.SurfaceAsk, fromPeer: req.FromPeer, circle: req.Circle, bypass: req.BypassCircle,
 		text: req.Text, replyTo: req.ReplyTo, question: req.Question != nil, attach: len(req.Attachments),
 	}, liveRoute)
@@ -410,11 +421,14 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		}
 	}
 	from, target, reason, err := h.resolveAskTarget(ctx, req, toPeer, declared, decision)
-	if err != nil && routed != nil && !routed.Fallback && req.FallbackTo != "" {
-		// The arm's pick failed authorization (its snapshot went stale): fall
-		// back to the sender's target rather than guess again.
-		routed.Fallback, routed.FallbackReason = true, reason
-		from, target, reason, err = h.resolveAskTarget(ctx, req, req.FallbackTo, declared, decision)
+	if err != nil && routed != nil && !routed.Fallback {
+		// The arm's pick failed authorization (its snapshot went stale). That
+		// is a router fallback whether or not there is somewhere to fall back
+		// to; with fallback_to, deliver there rather than guess again.
+		routed.Fallback, routed.FallbackReason = true, "stale_pick:"+reason
+		if req.FallbackTo != "" {
+			from, target, reason, err = h.resolveAskTarget(ctx, req, req.FallbackTo, declared, decision)
+		}
 	}
 	fromID := proto.PeerID(req.FromPeer)
 	fromName := proto.DisplayName(req.FromPeer)
@@ -426,12 +440,17 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		h.recordRouteFailure(ctx, cid, decision, fromID, reason, err)
 		return AskResponse{}, err
 	}
+	h.rebaseSender(decision, from, req.BypassCircle)
 	if routed == nil {
 		h.planShadow(decision)
 	}
 	h.recordDecision(ctx, cid, decision, target, fromID)
+	// Planned shadow arms run whatever happens to delivery, so a quiesced,
+	// dead or rejecting recipient is still scored, not mistaken for a
+	// deliberate non-sample.
+	defer h.runShadow(cid, decision, target.PeerID, fromID)
 
-	_, err = h.ask.asks.Register(ctx, service.RegisterAskParams{
+	registered, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
 		CorrelationID:         cid,
 		FromPeerID:            fromID,
 		FromPeerName:          fromName,
@@ -446,8 +465,8 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrQuiesced) {
-			if h.askRouter().Recording() {
-				h.traceAsk(ctx, cid, "route_failed", "fail", nil, map[string]any{"reason": "quiesced"})
+			if decision != nil && h.askRouter().Recording() {
+				h.audit(ctx, cid, "route_failed", "fail", string(target.PeerID), string(fromID), map[string]any{"reason": "quiesced"})
 			}
 			return AskResponse{}, routeErr(http.StatusConflict, map[string]any{
 				"error": "peer_switching",
@@ -456,6 +475,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		}
 		return AskResponse{}, routeErr(http.StatusInternalServerError, err.Error())
 	}
+	cid = registered
 	tracked, _ := h.ask.asks.Get(cid)
 	h.traceAsk(ctx, cid, "created", "", tracked, map[string]any{"to_peer": req.ToPeer, "from_peer": req.FromPeer, "text": clipTraceText(req.Text)})
 	h.traceAsk(ctx, cid, "resolved_peer", "", tracked, nil)
@@ -486,7 +506,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 			})
 			_, _ = h.ask.asks.Close(ctx, cid, "send_failed")
 			recordDeliveryOutcome(ctx, h.deliveryTraces, cid, "ask", string(target.PeerID), string(fromID), "ws", di.HookDelivery)
-			h.traceAsk(ctx, cid, "closed", "fail", tracked, map[string]any{"close_reason": "send_failed"})
+			h.traceSendFailed(ctx, tracked)
 			return AskResponse{}, routeErr(http.StatusServiceUnavailable, map[string]any{
 				"error":          "injection_failed",
 				"hint":           fmt.Sprintf("Ask injection failed for %s: %s", req.ToPeer, di.Error()),
@@ -498,18 +518,20 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		_, _ = h.ask.asks.Close(ctx, cid, "send_failed")
 		if errors.Is(err, service.ErrNotConnected) {
 			h.traceAsk(ctx, cid, "no_connection", "fail", tracked, map[string]any{"error": err.Error()})
-			h.traceAsk(ctx, cid, "closed", "fail", tracked, map[string]any{"close_reason": "send_failed"})
+			h.traceSendFailed(ctx, tracked)
 			return AskResponse{}, routeErr(http.StatusServiceUnavailable,
 				fmt.Sprintf("Peer %s has no live connection: %s", req.ToPeer, err))
 		}
 		h.traceAsk(ctx, cid, "route_failed", "fail", tracked, map[string]any{"error": err.Error()})
-		h.traceAsk(ctx, cid, "closed", "fail", tracked, map[string]any{"close_reason": "send_failed"})
+		h.traceSendFailed(ctx, tracked)
 		return AskResponse{}, routeErr(http.StatusNotFound, err.Error())
 	}
 	recordDeliveryOutcome(ctx, h.deliveryTraces, cid, "ask", string(target.PeerID), string(fromID), deliveryResult.Transport, deliveryResult.HookDelivery)
-	h.runShadow(cid, decision, target.PeerID, fromID)
 
 	// reply_to: close the referenced prior ask now that the new one landed.
+	// TODO(trace-coverage): this close writes no closed trace row, so the
+	// ledger cannot tell a reply_to close from an unanswered ask. Predates
+	// the router; tracked in the routing schema notes.
 	if req.ReplyTo != nil {
 		_, _ = h.ask.asks.Close(ctx, *req.ReplyTo, "reply_to")
 	}
@@ -910,8 +932,7 @@ func (h *Hub) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	// CLI requests (no explicit from_peer) auto-bypass circles.
 	bypass := req.BypassCircle || req.FromPeer == nil
-	cid := service.NewAskID()
-	decision := h.beginDecision(ctx, askAttempt{
+	cid, decision := h.beginDecision(ctx, askAttempt{
 		surface: routing.SurfaceQuery, fromPeer: fromPeer, circle: req.Circle, bypass: bypass, text: req.Text, question: true,
 	}, false)
 
@@ -957,6 +978,7 @@ func (h *Hub) handleQuery(w http.ResponseWriter, r *http.Request) {
 	if from, ferr := h.ask.reg.GetPeerByName(fromPeer, &target.Circle); ferr == nil && from != nil {
 		s := string(from.PeerID)
 		fromIDPtr = &s
+		h.rebaseSender(decision, from, bypass)
 	}
 	h.ask.reg.AddEvent(ctx, "query", map[string]any{
 		"from": fromPeer, "to": req.ToPeer, "text": req.Text,
@@ -975,7 +997,7 @@ func (h *Hub) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.recordDecision(ctx, cid, decision, target, proto.PeerID(fromPeer))
-	_, err = h.ask.asks.Register(ctx, service.RegisterAskParams{
+	cid, err = h.ask.asks.Register(ctx, service.RegisterAskParams{
 		CorrelationID: cid,
 		FromPeerID:    proto.PeerID(fromPeer),
 		FromPeerName:  proto.DisplayName(fromPeer),
@@ -1118,8 +1140,7 @@ func (h *Hub) openAskMany(ctx context.Context, req AskManyRequest) (AskManyRespo
 		}
 		seenNames[toPeer] = struct{}{}
 
-		cid := service.NewAskID()
-		decision := h.beginDecision(ctx, askAttempt{
+		cid, decision := h.beginDecision(ctx, askAttempt{
 			surface: routing.SurfaceAskMany, fromPeer: req.FromPeer, circle: req.Circle,
 			bypass: req.BypassCircle, text: req.Text, parentID: &parent.ParentID,
 		}, false)
@@ -1147,6 +1168,7 @@ func (h *Hub) openAskMany(ctx context.Context, req AskManyRequest) (AskManyRespo
 		if from, ferr := h.ask.reg.GetPeerByName(req.FromPeer, &target.Circle); ferr == nil && from != nil {
 			fromID = from.PeerID
 			fromName = from.DisplayName
+			h.rebaseSender(decision, from, req.BypassCircle)
 		}
 		declare(decision, toPeer, target, routing.ResolutionResolved)
 		if fromID == target.PeerID {
@@ -1157,7 +1179,7 @@ func (h *Hub) openAskMany(ctx context.Context, req AskManyRequest) (AskManyRespo
 			continue
 		}
 		h.recordDecision(ctx, cid, decision, target, fromID)
-		_, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
+		cid, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
 			CorrelationID: cid,
 			FromPeerID:    fromID,
 			FromPeerName:  fromName,

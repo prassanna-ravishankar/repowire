@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/repowire/repowire/daemon-go/config"
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
@@ -210,5 +211,129 @@ func TestSnapshotProjectAndClip(t *testing.T) {
 	p.Metadata = map[string]any{"project": "named"}
 	if Snapshot(p, seen, nil, PeerStats{}).Project != "named" {
 		t.Fatal("hook-reported project must win")
+	}
+}
+
+type panicArm struct{}
+
+func (panicArm) Name() string                                      { return "boom" }
+func (panicArm) Rank(context.Context, Input) (RouterResult, error) { panic("sdk exploded") }
+
+func TestRunContainsPanics(t *testing.T) {
+	res := Run(context.Background(), panicArm{}, testInput(), time.Second)
+	if !res.Fallback || res.FallbackReason != FallbackPanic || !strings.Contains(res.Error, "sdk exploded") {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+type tieArm struct{}
+
+func (tieArm) Name() string { return "tie" }
+func (tieArm) Rank(context.Context, Input) (RouterResult, error) {
+	// Reverse key order, equal scores: the tie must resolve to c1 (repow-b).
+	return RouterResult{Scores: []Score{{PeerID: "repow-c", Score: 0.5}, {PeerID: "repow-b", Score: 0.5}}}, nil
+}
+
+func TestEqualScoresBreakByCandidateKey(t *testing.T) {
+	for i := 0; i < 5; i++ {
+		if res := Run(context.Background(), tieArm{}, testInput(), time.Second); res.Scores[0].PeerID != "repow-b" {
+			t.Fatalf("tie resolved to %s", res.Scores[0].PeerID)
+		}
+	}
+}
+
+func TestFailuresKeepModelAndTemplate(t *testing.T) {
+	jev := Jev{View: ViewBoth, Model: "jev-1.13.0"}
+	res := Run(context.Background(), jev, testInput(), time.Second) // no key → unconfigured
+	if !res.Fallback || res.Model != "jev-1.13.0" || res.TemplateSHA256 != jev.TemplateSHA256() {
+		t.Fatalf("failure row lost identity: %+v", res)
+	}
+}
+
+type flakyArm struct {
+	fail  bool
+	calls int
+}
+
+func (f *flakyArm) Name() string     { return "flaky" }
+func (f *flakyArm) Provider() string { return "flaky-provider" }
+func (f *flakyArm) Rank(context.Context, Input) (RouterResult, error) {
+	f.calls++
+	if f.fail {
+		return RouterResult{}, fail(FallbackError, "provider down")
+	}
+	return RouterResult{Scores: []Score{{PeerID: "repow-b", Score: 1}}}, nil
+}
+
+func TestBreakerOpensOnRepeatedProviderFailureAndProbesOnRequest(t *testing.T) {
+	arm := &flakyArm{fail: true}
+	r, err := NewRouter(config.RouterConfig{TimeoutSeconds: 1}, map[string]Arm{"flaky": arm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	r.now = func() time.Time { return now }
+	for i := 0; i < breakerTrip; i++ {
+		r.Run(context.Background(), "flaky", testInput())
+	}
+	if res := r.Run(context.Background(), "flaky", testInput()); res.FallbackReason != FallbackBreakerOpen || arm.calls != breakerTrip {
+		t.Fatalf("breaker should be open: %+v after %d calls", res, arm.calls)
+	}
+	now = now.Add(breakerCooldown)
+	arm.fail = false
+	if res := r.Run(context.Background(), "flaky", testInput()); res.Fallback {
+		t.Fatalf("probe after cooldown should run and close the breaker: %+v", res)
+	}
+	if res := r.Run(context.Background(), "flaky", testInput()); res.Fallback || arm.calls != breakerTrip+2 {
+		t.Fatalf("breaker should be closed: %+v", res)
+	}
+}
+
+func TestNewRouterRejectsUnknownArms(t *testing.T) {
+	if _, err := NewRouter(config.RouterConfig{ShadowArms: []string{"jev-nope"}}, nil); err == nil {
+		t.Fatal("unknown shadow arm accepted")
+	}
+	if _, err := NewRouter(config.RouterConfig{Mode: config.RouterModeLive, Arm: "nope"}, nil); err == nil {
+		t.Fatal("unknown live arm accepted")
+	}
+}
+
+func TestFrontierRejectsPartialOrDuplicateRanking(t *testing.T) {
+	for name, text := range map[string]string{
+		"partial":        `{\"ranking\":[\"c2\"],\"confidence\":0.6}`,
+		"duplicate":      `{\"ranking\":[\"c2\",\"c2\"],\"confidence\":0.6}`,
+		"unknown key":    `{\"ranking\":[\"c2\",\"c9\"],\"confidence\":0.6}`,
+		"no confidence":  `{\"ranking\":[\"c2\",\"c1\"]}`,
+		"confidence > 1": `{\"ranking\":[\"c2\",\"c1\"],\"confidence\":1.5}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"m","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"` + text + `"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+			}))
+			defer srv.Close()
+			res := Run(context.Background(), Frontier{View: ViewClaimed, APIKey: "k", Model: "claude-opus-5-5", BaseURL: srv.URL}, testInput(), 5*time.Second)
+			if !res.Fallback || res.FallbackReason != FallbackUnparseable {
+				t.Fatalf("result = %+v", res)
+			}
+		})
+	}
+}
+
+// The frontier client must ignore ANTHROPIC_* in the daemon environment.
+func TestFrontierIgnoresEnvironmentCredentials(t *testing.T) {
+	var auth, key string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth, key = r.Header.Get("Authorization"), r.Header.Get("X-Api-Key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"m","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"{\"ranking\":[\"c1\",\"c2\"],\"confidence\":0.5}"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "inherited-token")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:1")
+	res := Run(context.Background(), Frontier{View: ViewClaimed, APIKey: "configured", Model: "m", BaseURL: srv.URL}, testInput(), 5*time.Second)
+	if res.Fallback || auth != "" || key != "configured" {
+		t.Fatalf("result %+v auth %q key %q", res, auth, key)
 	}
 }

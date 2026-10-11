@@ -57,3 +57,24 @@ experiments:
 		t.Fatalf("jev = %+v (partial YAML must keep defaults)", r.Jev)
 	}
 }
+
+func TestRouterConfigRejectsWideningMistakes(t *testing.T) {
+	clearRouterEnv(t)
+	for name, yaml := range map[string]string{
+		"duplicate arm":   "shadow_arms: [jev-both, jev-both]",
+		"zero sample":     "sample_every: {frontier-claimed: 0}",
+		"negative sample": "sample_every: {frontier-claimed: -3}",
+		"unknown mode":    "mode: sometimes",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			t.Setenv("REPOWIRE_CONFIG", path)
+			if err := os.WriteFile(path, []byte("experiments:\n  router:\n    "+yaml+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(); err == nil {
+				t.Fatalf("%s accepted", name)
+			}
+		})
+	}
+}

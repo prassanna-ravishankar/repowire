@@ -17,8 +17,18 @@ type Example struct {
 	Outcome Outcome
 }
 
-// Outcome is how the ask ended, from its trace's closed stage.
+// Delivery outcomes of a recorded ask, derived from its trace.
+const (
+	DeliveryDelivered    = "delivered"
+	DeliveryQuiesced     = "quiesced"
+	DeliveryNoConnection = "no_connection"
+	DeliverySendFailed   = "send_failed"
+	DeliveryNotAttempted = "not_attempted" // resolution failed before registration
+)
+
+// Outcome is how the ask ended, from its trace's later stages.
 type Outcome struct {
+	Delivery       string `json:"delivery"`
 	CloseReason    string `json:"close_reason,omitempty"`
 	RecipientTurns *int   `json:"recipient_turns,omitempty"`
 	TimeToCloseMS  *int64 `json:"time_to_close_ms,omitempty"`
@@ -48,6 +58,7 @@ func LoadExamples(ctx context.Context, ledger Ledger, since time.Time) ([]Exampl
 		if err != nil {
 			return nil, err
 		}
+		ex.Outcome.Delivery = DeliveryDelivered
 		for _, st := range stages {
 			switch st.Stage {
 			case ShadowStage:
@@ -55,8 +66,24 @@ func LoadExamples(ctx context.Context, ledger Ledger, since time.Time) ([]Exampl
 				if remap(st.Detail, &res) == nil {
 					ex.Shadow[res.Arm] = res
 				}
+			case "route_failed":
+				// With a reason: resolution failed before registration (or the
+				// recipient was quiesced). Without one: delivery itself failed.
+				switch reason, _ := st.Detail["reason"].(string); reason {
+				case "":
+					ex.Outcome.Delivery = DeliverySendFailed
+				case "quiesced":
+					ex.Outcome.Delivery = DeliveryQuiesced
+				default:
+					ex.Outcome.Delivery = DeliveryNotAttempted
+				}
+			case "no_connection":
+				ex.Outcome.Delivery = DeliveryNoConnection
 			case "closed":
 				_ = remap(st.Detail, &ex.Outcome)
+				if ex.Outcome.CloseReason == "send_failed" && ex.Outcome.Delivery == DeliveryDelivered {
+					ex.Outcome.Delivery = DeliverySendFailed
+				}
 			}
 		}
 		out = append(out, ex)
@@ -70,7 +97,12 @@ const (
 	SkipNoDeclaredTarget   = "no_declared_target"  // nothing named, or it did not resolve
 	SkipDeclaredIneligible = "declared_ineligible" // the label is not among the arm's choices
 	SkipTextNotRecorded    = "text_not_recorded"   // a text-reading arm cannot be re-run
-	SkipNotSampled         = "not_sampled"         // recorded mode: the arm did not run here
+	SkipNotSampled         = "not_sampled"         // recorded mode: the arm was not sampled for this ask
+	// "<prefix>:<reason>" marks an arm meant to run that did not:
+	// planned_not_run:missing (no row: restart, or still in flight), and
+	// saturated / breaker_open in either mode.
+	SkipPlannedNotRun = "planned_not_run"
+	SkipNotRun        = "not_run"
 )
 
 // Result is one example's replay.
@@ -106,13 +138,24 @@ type Report struct {
 	MeanCandidates    float64        `json:"mean_candidates"`
 	MeanLatencyMS     float64        `json:"mean_latency_ms"`
 	Skipped           map[string]int `json:"skipped"`
+	// Cohorts splits the scored asks by delivery outcome. Failed deliveries
+	// stay in the headline numbers and are also reported here on their own.
+	Cohorts map[string]*Cohort `json:"cohorts"`
+}
+
+// Cohort is the scored subset with one delivery outcome.
+type Cohort struct {
+	Scored    int `json:"scored"`
+	Fallbacks int `json:"fallbacks"`
+	Hit1      int `json:"hit1"`
+	Hit3      int `json:"hit3"`
 }
 
 // Replay scores an arm against the sender's declared target on every labelled
 // example. With recorded set it scores the arm's recorded shadow results and
 // makes no calls; otherwise it re-runs runner on the recorded candidate set.
 func Replay(ctx context.Context, examples []Example, armName string, runner func(context.Context, Input) RouterResult, recorded bool) (Report, []Result) {
-	rep := Report{Arm: armName, Source: "rerun", Decisions: len(examples), Skipped: map[string]int{}}
+	rep := Report{Arm: armName, Source: "rerun", Decisions: len(examples), Skipped: map[string]int{}, Cohorts: map[string]*Cohort{}}
 	if recorded {
 		rep.Source = "recorded"
 	}
@@ -137,8 +180,23 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 		} else {
 			res = runner(ctx, in)
 		}
+		if res.Fallback && (res.FallbackReason == FallbackSaturated || res.FallbackReason == FallbackBreakerOpen) {
+			// The arm never ran: no evidence about its routing either way.
+			prefix := SkipNotRun
+			if recorded {
+				prefix = SkipPlannedNotRun
+			}
+			r.Skipped = prefix + ":" + res.FallbackReason
+			rep.Skipped[r.Skipped]++
+			results = append(results, r)
+			continue
+		}
 		r.Fallback, r.FallbackReason, r.LatencyMS = res.Fallback, res.FallbackReason, res.LatencyMS
-		for i, s := range res.Scores {
+		scores := res.Scores
+		if res.Fallback {
+			scores = nil // a fallback is a miss whatever it carries
+		}
+		for i, s := range scores {
 			if i == 3 {
 				break
 			}
@@ -151,14 +209,23 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 		rep.Scored++
 		latency += float64(res.LatencyMS)
 		candidates += float64(r.Candidates)
+		cohort := rep.Cohorts[ex.Outcome.Delivery]
+		if cohort == nil {
+			cohort = &Cohort{}
+			rep.Cohorts[ex.Outcome.Delivery] = cohort
+		}
+		cohort.Scored++
 		if r.Fallback {
 			rep.Fallbacks++
+			cohort.Fallbacks++
 		}
 		if r.Hit1 {
 			rep.Hit1++
+			cohort.Hit1++
 		}
 		if r.Hit3 {
 			rep.Hit3++
+			cohort.Hit3++
 		}
 		results = append(results, r)
 	}
@@ -190,8 +257,15 @@ func skipReason(d Decision, in Input, arm string, recorded bool, shadow map[stri
 		return SkipDeclaredIneligible
 	}
 	if recorded {
-		if _, ok := shadow[arm]; !ok {
+		planned := false
+		for _, name := range d.ShadowPlanned {
+			planned = planned || name == arm
+		}
+		if !planned {
 			return SkipNotSampled
+		}
+		if _, ok := shadow[arm]; !ok {
+			return SkipPlannedNotRun + ":missing"
 		}
 		return ""
 	}

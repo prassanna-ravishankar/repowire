@@ -89,7 +89,10 @@ func replayArms(a args, examples []routing.Example, recorded bool, usageText str
 	if err != nil {
 		return fatal(err)
 	}
-	router := routing.NewRouter(cfg.Experiments.Router, nil)
+	router, err := routing.NewRouter(cfg.Experiments.Router, nil)
+	if err != nil {
+		return fatal(err)
+	}
 	arms := []string{arm}
 	if arm == "all" {
 		arms = armNames(cfg.Experiments.Router)

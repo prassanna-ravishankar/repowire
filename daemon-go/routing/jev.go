@@ -41,6 +41,12 @@ type Jev struct {
 
 func (j Jev) Name() string { return "jev-" + string(j.View) }
 
+// Provider groups the Jev arms under one breaker.
+func (Jev) Provider() string { return "jev" }
+
+// Identity is the configured model and template, kept on failure rows too.
+func (j Jev) Identity() (string, string) { return j.Model, j.TemplateSHA256() }
+
 // TemplateSHA256 fingerprints everything fixed about the request, so results
 // from different prompt versions are never pooled by accident.
 func (j Jev) TemplateSHA256() string {
