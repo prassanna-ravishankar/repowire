@@ -15,12 +15,14 @@ const (
 )
 
 // providerFailure reports whether a fallback reason blames the provider.
-// Input problems (no candidates, unknown arm, missing key) do not trip it; a
-// key the provider rejects (unauthorized) or an unfunded account (billing)
-// does, since every further call would fail the same way.
+// Our own problems (no candidates, unknown arm, missing key, a 4xx
+// request_error from a bad body or template) do not trip it: three template
+// bugs must not suppress every view of a healthy provider. A key the provider
+// rejects (unauthorized) or an unfunded account (billing) does, since every
+// further call would fail the same way.
 func providerFailure(reason string) bool {
 	switch reason {
-	case FallbackTimeout, FallbackRateLimited, FallbackError, FallbackUnparseable, FallbackPanic, FallbackBilling, FallbackUnauthorized:
+	case FallbackTimeout, FallbackRateLimited, FallbackError, FallbackServerError, FallbackUnparseable, FallbackPanic, FallbackBilling, FallbackUnauthorized:
 		return true
 	}
 	return false

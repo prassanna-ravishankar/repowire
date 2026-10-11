@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -100,7 +101,10 @@ func TestJevFailuresFallBack(t *testing.T) {
 		"billing":        {http.StatusPaymentRequired, `{"detail":{"error_type":"billing_error"}}`, FallbackBilling},
 		"unauthorized":   {http.StatusUnauthorized, `{}`, FallbackUnauthorized},
 		"forbidden":      {http.StatusForbidden, `{}`, FallbackUnauthorized},
-		"server error":   {http.StatusInternalServerError, `oops`, FallbackError},
+		"server error":   {http.StatusInternalServerError, `oops`, FallbackServerError},
+		"bad gateway":    {http.StatusBadGateway, `oops`, FallbackServerError},
+		"bad request":    {http.StatusBadRequest, `{}`, FallbackRequestError},
+		"unprocessable":  {http.StatusUnprocessableEntity, `{}`, FallbackRequestError},
 		"malformed":      {http.StatusOK, `not json`, FallbackUnparseable},
 		"missing answer": {http.StatusOK, `{"answers":{"c1":{"type":"noul","noul":0.5}}}`, FallbackUnparseable},
 		"out of range":   {http.StatusOK, `{"answers":{"c1":{"type":"noul","noul":1.5},"c2":{"type":"noul","noul":0.1}}}`, FallbackUnparseable},
@@ -254,8 +258,9 @@ func TestFailuresKeepModelAndTemplate(t *testing.T) {
 }
 
 type flakyArm struct {
-	fail  bool
-	calls int
+	fail   bool
+	reason string // FallbackError when empty
+	calls  int
 }
 
 func (f *flakyArm) Name() string     { return "flaky" }
@@ -263,7 +268,7 @@ func (f *flakyArm) Provider() string { return "flaky-provider" }
 func (f *flakyArm) Rank(context.Context, Input) (RouterResult, error) {
 	f.calls++
 	if f.fail {
-		return RouterResult{}, fail(FallbackError, "provider down")
+		return RouterResult{}, fail(cmp.Or(f.reason, FallbackError), "provider down")
 	}
 	return RouterResult{Scores: []Score{{PeerID: "repow-b", Score: 1}}}, nil
 }
@@ -326,7 +331,8 @@ func TestFrontierRejectsPartialOrDuplicateRanking(t *testing.T) {
 func TestFrontierClassifiesProviderStatuses(t *testing.T) {
 	for status, want := range map[int]string{
 		http.StatusTooManyRequests: FallbackRateLimited, http.StatusUnauthorized: FallbackUnauthorized,
-		http.StatusForbidden: FallbackUnauthorized, http.StatusPaymentRequired: FallbackBilling, http.StatusBadRequest: FallbackError,
+		http.StatusForbidden: FallbackUnauthorized, http.StatusPaymentRequired: FallbackBilling,
+		http.StatusBadRequest: FallbackRequestError, http.StatusNotFound: FallbackRequestError, http.StatusInternalServerError: FallbackServerError,
 	} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -337,6 +343,63 @@ func TestFrontierClassifiesProviderStatuses(t *testing.T) {
 		srv.Close()
 		if !res.Fallback || res.FallbackReason != want {
 			t.Fatalf("status %d: result = %+v, want %s", status, res, want)
+		}
+	}
+}
+
+func TestStatusReason(t *testing.T) {
+	for code, want := range map[int]string{
+		400: FallbackRequestError, 404: FallbackRequestError, 405: FallbackRequestError, 413: FallbackRequestError, 422: FallbackRequestError,
+		401: FallbackUnauthorized, 403: FallbackUnauthorized, 402: FallbackBilling, 429: FallbackRateLimited,
+		500: FallbackServerError, 502: FallbackServerError, 503: FallbackServerError, 529: FallbackServerError,
+	} {
+		if got := statusReason(code); got != want {
+			t.Errorf("statusReason(%d) = %s, want %s", code, got, want)
+		}
+	}
+}
+
+// Our own malformed requests must not open the provider's breaker; the
+// provider's 5xx must.
+func TestRequestErrorsDoNotTripTheBreaker(t *testing.T) {
+	for reason, trips := range map[string]bool{FallbackRequestError: false, FallbackServerError: true} {
+		arm := &flakyArm{fail: true, reason: reason}
+		r, err := NewRouter(config.RouterConfig{TimeoutSeconds: 1}, map[string]Arm{"flaky": arm})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < breakerTrip; i++ {
+			r.Run(context.Background(), "flaky", testInput())
+		}
+		res := r.Run(context.Background(), "flaky", testInput())
+		if open := res.FallbackReason == FallbackBreakerOpen; open != trips {
+			t.Fatalf("%s: breaker open = %v after %d failures, want %v", reason, open, breakerTrip, trips)
+		}
+	}
+}
+
+// A provider refusal whose status arrived before the deadline keeps its
+// reason; the deadline is not the better explanation.
+func TestRefusalWinsOverDeadline(t *testing.T) {
+	// stall serves status (0: nothing at all) and holds the response open
+	// until the test releases it, past the arm's deadline.
+	stall := func(status int) (*httptest.Server, func()) {
+		release := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if status != 0 {
+				w.WriteHeader(status)
+				w.(http.Flusher).Flush()
+			}
+			<-release
+		}))
+		return srv, func() { close(release); srv.Close() }
+	}
+	for status, want := range map[int]string{402: FallbackBilling, 401: FallbackUnauthorized, 403: FallbackUnauthorized, 0: FallbackTimeout} {
+		srv, done := stall(status)
+		res := Run(context.Background(), Jev{View: ViewAttested, APIKey: "k", BaseURL: srv.URL}, testInput(), 50*time.Millisecond)
+		done()
+		if !res.Fallback || res.FallbackReason != want {
+			t.Fatalf("status %d past the deadline: %+v, want %s", status, res, want)
 		}
 	}
 }

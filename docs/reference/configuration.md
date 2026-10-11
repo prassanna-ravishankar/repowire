@@ -206,6 +206,26 @@ Invalid router settings fail config loading: an unknown `mode`, a `shadow_arms` 
 Arms: `random`, and `jev-*` / `frontier-*` over the views `claimed` (descriptions), `attested` (observed state) or `both`. Model arms see candidates under opaque keys, with peer text passed only as data inside a fixed template. `jev.api_key` falls back to `JEV_API_KEY` / `TYPESAFE_API_KEY`, `frontier.api_key` to `ANTHROPIC_API_KEY`. A model arm without a key falls back with reason `unconfigured`.
 
 - `shadow` delivers every ask to its declared target, then runs the sampled `shadow_arms` off the request path and records each result as a `route_shadow` row. Paid arms should carry a `sample_every`.
-- `live` routes only asks addressed to `@route`. The chosen peer still passes the circle and addressability checks, and the delivered ask is prefixed with the arm and its score. On any router failure (timeout, rate limit, billing or authorization refusal, error, unparseable or ineligible answer) the ask goes to the sender's `fallback_to` peer with a note saying so, or, without one, is refused with `503 router_unavailable` and nothing is delivered. Outside `live`, `@route` is an ordinary unknown name. Candidates include service-role peers such as `telegram`, so a live arm can route an ask to a human's phone; decide whether to exclude them before enabling `live`.
+- `live` routes only asks addressed to `@route`. The chosen peer still passes the circle and addressability checks, and the delivered ask is prefixed with the arm and its score. On any router failure (any reason in the table below) the ask goes to the sender's `fallback_to` peer with a note saying so, or, without one, is refused with `503 router_unavailable` and nothing is delivered. Outside `live`, `@route` is an ordinary unknown name. Candidates include service-role peers such as `telegram`, so a live arm can route an ask to a human's phone; decide whether to exclude them before enabling `live`.
+
+A failed arm records one fallback reason, and its error text (the HTTP status and the start of the body, clipped) as `error`. Every fallback is a miss in replay. Reasons marked "breaker" count toward the provider's breaker (3 consecutive failures open it for 30 s).
+
+| Reason | Meaning | Breaker |
+|---|---|---|
+| `timeout` | No usable answer before `timeout_seconds` | yes |
+| `rate_limited` | Provider returned 429 | yes |
+| `billing` | Provider returned 402 (account has no credit) | yes |
+| `unauthorized` | Provider returned 401 or 403 | yes |
+| `server_error` | Provider returned 5xx | yes |
+| `request_error` | Provider returned another 4xx; usually our request body or template | no |
+| `error` | Transport failure with no HTTP status | yes |
+| `unparseable` | Answer did not decode, or ranked an ineligible, unknown or repeated candidate | yes |
+| `panic` | The arm panicked; contained | yes |
+| `no_candidates` | No eligible candidate | no |
+| `unconfigured` | Model arm without an API key | no |
+| `unknown_arm` | Arm name not registered | no |
+| `breaker_open` | Skipped: the provider's breaker is open | no |
+| `saturated` | Skipped: the shadow pool was full (shadow only) | no |
+| `stale_pick:*` | Live only: the chosen peer stopped being eligible before delivery | no |
 
 Every key has a `REPOWIRE_EXPERIMENTS__ROUTER__*` environment override (`SHADOW_ARMS` is comma-separated).

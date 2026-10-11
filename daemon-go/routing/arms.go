@@ -39,17 +39,26 @@ const (
 	// refused the account, as distinct from failing on the request.
 	FallbackBilling      = "billing"
 	FallbackUnauthorized = "unauthorized"
+	// FallbackRequestError: any other 4xx. Almost always our request body or
+	// template, so it does not count against the provider.
+	FallbackRequestError = "request_error"
+	// FallbackServerError: a 5xx. The provider's fault.
+	FallbackServerError = "server_error"
 )
 
 // statusReason classifies a provider's HTTP error status.
 func statusReason(code int) string {
-	switch code {
-	case http.StatusTooManyRequests:
+	switch {
+	case code == http.StatusTooManyRequests:
 		return FallbackRateLimited
-	case http.StatusPaymentRequired:
+	case code == http.StatusPaymentRequired:
 		return FallbackBilling
-	case http.StatusUnauthorized, http.StatusForbidden:
+	case code == http.StatusUnauthorized, code == http.StatusForbidden:
 		return FallbackUnauthorized
+	case code >= 500:
+		return FallbackServerError
+	case code >= 400:
+		return FallbackRequestError
 	}
 	return FallbackError
 }
