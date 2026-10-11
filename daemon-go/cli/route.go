@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
@@ -14,9 +16,9 @@ import (
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
-const routeReplayUsage = "route replay --arm ARM [--recorded] [--since RFC3339] [--limit N] [--db PATH] [--json] [--rows]"
+const routeReplayUsage = "route replay --arm ARM [--recorded] [--mask FIELD,...] [--since RFC3339] [--limit N] [--db PATH] [--json] [--rows]"
 
-const routeDecisionBenchUsage = "route decisionbench --cards DIR --delegations FILE --orchestrator MODEL --arm ARM [--limit N] [--json] [--rows]"
+const routeDecisionBenchUsage = "route decisionbench --cards DIR --delegations FILE --orchestrator MODEL --arm ARM [--mask FIELD,...] [--limit N] [--json] [--rows]"
 
 // runRoute replays routing decisions offline: recorded mesh asks (replay), or
 // DecisionBench delegations as a stateless sanity check (decisionbench).
@@ -80,11 +82,20 @@ func runRouteDecisionBench(a args) int {
 }
 
 // replayArms runs --arm (or every arm for "all") over examples and prints the
-// report table, --json reports, or --rows per-decision lines.
+// report table, --json reports, or --rows per-decision lines. Baselines
+// (random, recent, majority) are computed locally and always re-run, so
+// they sit beside recorded arms at no cost.
 func replayArms(a args, examples []routing.Example, recorded bool, usageText string) int {
 	arm := a.string("arm", "")
 	if arm == "" {
 		return usage(usageText)
+	}
+	mask, err := routing.ParseMask(a.string("mask", ""))
+	if err != nil {
+		return fatal(fmt.Errorf("route: %w", err))
+	}
+	if recorded && len(mask) > 0 {
+		return fatal(fmt.Errorf("route: --mask applies to re-runs; recorded results were scored unmasked"))
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -94,25 +105,32 @@ func replayArms(a args, examples []routing.Example, recorded bool, usageText str
 	if err != nil {
 		return fatal(err)
 	}
+	known := armNames(cfg.Experiments.Router)
 	arms := []string{arm}
 	if arm == "all" {
-		arms = armNames(cfg.Experiments.Router)
-	} else if _, known := routing.Arms(cfg.Experiments.Router)[arm]; !known {
-		return fatal(fmt.Errorf("route: unknown arm %q (known: all, %v)", arm, armNames(cfg.Experiments.Router)))
+		arms = known
+	} else if !slices.Contains(known, arm) {
+		return fatal(fmt.Errorf("route: unknown arm %q (known: all, %v)", arm, known))
 	}
 	if n := a.integer("limit", 0); n > 0 && n < len(examples) {
 		examples = examples[len(examples)-n:]
 	}
+	baselines := routing.BaselineArms(examples)
 	ctx := context.Background()
 	reports := []routing.Report{}
 	enc := json.NewEncoder(os.Stdout)
 	for _, name := range arms {
-		if !recorded && name != "random" {
+		runner := func(ctx context.Context, in routing.Input) routing.RouterResult { return router.Run(ctx, name, in) }
+		opts := routing.Options{Recorded: recorded, Mask: mask}
+		if baseline, ok := baselines[name]; ok {
+			runner = func(ctx context.Context, in routing.Input) routing.RouterResult {
+				return routing.Run(ctx, baseline, in, router.Timeout())
+			}
+			opts.Recorded = false
+		} else if !recorded {
 			fmt.Fprintf(os.Stderr, "re-running %s on up to %d recorded asks; each is one API call\n", name, len(examples))
 		}
-		report, rows := routing.Replay(ctx, examples, name, func(ctx context.Context, in routing.Input) routing.RouterResult {
-			return router.Run(ctx, name, in)
-		}, recorded)
+		report, rows := routing.Replay(ctx, examples, name, runner, opts)
 		reports = append(reports, report)
 		if a.bool("rows") {
 			for _, row := range rows {
@@ -148,6 +166,11 @@ func printReplayTable(w io.Writer, reports []routing.Report) {
 		}
 	}
 	sort.Strings(reasons)
+	for _, rep := range reports {
+		if len(rep.Mask) > 0 {
+			fmt.Fprintf(w, "masked (%s, re-run): %s\n", rep.Arm, strings.Join(rep.Mask, ","))
+		}
+	}
 	fmt.Fprintf(w, "%-18s %-8s %6s %6s %6s %6s %6s %8s %8s", "arm", "source", "rows", "scored", "fb", "f@1", "f@3", "ans@1", "ms")
 	for _, r := range reasons {
 		fmt.Fprintf(w, " %s", r)
@@ -160,32 +183,41 @@ func printReplayTable(w io.Writer, reports []routing.Report) {
 		}
 		fmt.Fprintln(w)
 	}
-	cohorts := map[string]bool{}
+	printSplit(w, "cohort", reports, func(rep routing.Report) map[string]*routing.Cohort { return rep.Cohorts })
+	printSplit(w, "recency", reports, func(rep routing.Report) map[string]*routing.Cohort { return rep.Recency })
+}
+
+// printSplit prints one block per subset name found in any report.
+func printSplit(w io.Writer, label string, reports []routing.Report, split func(routing.Report) map[string]*routing.Cohort) {
+	seen := map[string]bool{}
 	for _, rep := range reports {
-		for name := range rep.Cohorts {
-			cohorts[name] = true
+		for name := range split(rep) {
+			seen[name] = true
 		}
 	}
-	names := make([]string, 0, len(cohorts))
-	for name := range cohorts {
+	names := make([]string, 0, len(seen))
+	for name := range seen {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		fmt.Fprintf(w, "\ncohort %s\n", name)
+		fmt.Fprintf(w, "\n%s %s\n", label, name)
 		for _, rep := range reports {
-			if c := rep.Cohorts[name]; c != nil {
+			if c := split(rep)[name]; c != nil {
 				fmt.Fprintf(w, "  %-18s scored %d, fallbacks %d, hit@1 %d, hit@3 %d\n", rep.Arm, c.Scored, c.Fallbacks, c.Hit1, c.Hit3)
 			}
 		}
 	}
 }
 
+// armNames lists the replay baselines, then every configured arm.
 func armNames(cfg config.RouterConfig) []string {
 	names := []string{}
 	for name := range routing.Arms(cfg) {
-		names = append(names, name)
+		if !routing.IsBaseline(name) {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
-	return names
+	return append(slices.Clone(routing.Baselines), names...)
 }
