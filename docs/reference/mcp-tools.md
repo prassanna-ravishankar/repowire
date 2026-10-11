@@ -73,10 +73,12 @@ a registered peer identity and use the normal peer authorization path.
 ### `ask`
 
 ```text
-ask(peer_name: str, query: str, reply_to: str | None = None, circle: str | None = None, attachments: list[dict] | None = None) -> str
+ask(peer_name: str, query: str, reply_to: str | None = None, circle: str | None = None, attachments: list[dict] | None = None, fallback_to: str | None = None) -> str
 ```
 
 Open a non-blocking ask thread. In normal use, you tell your local agent what you need in natural language, and the agent invokes this MCP tool. Returns a `correlation_id` immediately. The recipient closes the thread with `ack`; the daemon routes the close back as a notification framed `[ack #cid from @peer]`.
+
+Experimental: with `experiments.router.mode: live`, `peer_name="@route"` lets the configured router choose the recipient, and the result reads `ask-<id> (routed by <arm> to @<peer>)`. `fallback_to` names the peer that receives the ask if the router fails. See [`experiments.router`](configuration.md#experiments).
 
 Use `ask` for worker checkpoints, review requests, pre-commit handoffs, status checks you intend to track, and delegated work where closure matters. Use a durable job instead when the work needs lifecycle and result state.
 

@@ -174,9 +174,12 @@ type SessionMapping struct {
 	Role        PeerRole    `json:"role"`
 	UpdatedAt   time.Time   `json:"updated_at"`
 	Description string      `json:"description"`
-	Model       *string     `json:"model,omitempty"`
-	AgentPID    *int        `json:"agent_pid,omitempty"`
-	Provenance  Provenance  `json:"provenance"`
+	// DescriptionSetAt is when the peer last changed its description: the age
+	// of its self-claim, which routing records as a staleness signal.
+	DescriptionSetAt *time.Time `json:"description_set_at,omitempty"`
+	Model            *string    `json:"model,omitempty"`
+	AgentPID         *int       `json:"agent_pid,omitempty"`
+	Provenance       Provenance `json:"provenance"`
 }
 
 // ---------------------------------------------------------------------------

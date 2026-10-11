@@ -35,6 +35,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/routing"
 	"github.com/repowire/repowire/daemon-go/service"
 )
 
@@ -59,6 +60,14 @@ type askRoutesRegistry interface {
 	GetPeerByName(name string, circle *string) (*proto.Peer, error)
 	// AddEvent records a journal event (query/response audit). Best-effort.
 	AddEvent(ctx context.Context, typ string, payload map[string]any) (eventID string)
+	// GetAllPeers snapshots every registered peer: the routing candidate set.
+	GetAllPeers() []*proto.Peer
+}
+
+// descriptionClock is the optional registry capability that dates a peer's
+// self-description (the concrete registry persists it).
+type descriptionClock interface {
+	DescriptionSetAt(id proto.PeerID) *time.Time
 }
 
 // askLifecycleDeps bundles the services the ask-lifecycle routes compose. Wired
@@ -102,6 +111,7 @@ func (h *Hub) traceAskClosed(ctx context.Context, ask *service.Ask, reason, repl
 	if reply != "" {
 		detail["reply"] = clipTraceText(reply)
 	}
+	h.closeOutcome(ctx, ask, detail)
 	h.traceAsk(ctx, ask.CorrelationID, "closed", "", ask, detail)
 }
 
@@ -328,12 +338,15 @@ type AskRequest struct {
 	BypassCircle bool             `json:"bypass_circle,omitempty"`
 	Circle       *string          `json:"circle,omitempty"`
 	Question     map[string]any   `json:"question,omitempty"`
+	// FallbackTo is where an @route ask goes when the live router fails.
+	FallbackTo string `json:"fallback_to,omitempty"`
 }
 
-// AskResponse mirrors asks.py AskResponse.
+// AskResponse mirrors asks.py AskResponse. Routing is set only for @route asks.
 type AskResponse struct {
-	CorrelationID string  `json:"correlation_id"`
-	Error         *string `json:"error,omitempty"`
+	CorrelationID string      `json:"correlation_id"`
+	Error         *string     `json:"error,omitempty"`
+	Routing       *AskRouting `json:"routing,omitempty"`
 }
 
 func (h *Hub) askOperationReady() error {
@@ -374,47 +387,52 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	if req.ReplyDelivery != "" && req.ReplyDelivery != "push" && req.ReplyDelivery != "pull" {
 		return AskResponse{}, routeErr(http.StatusUnprocessableEntity, "reply_delivery must be push or pull")
 	}
-	// Resolve the target FIRST so the service.AskTracker entry is keyed on the canonical
-	// peer_id (display names collide; PendingForPeer / reply routing are
-	// peer_id-keyed). Mirrors AskService.open_ask resolving the peer before
-	// register. An ambiguous name is a 409; an unknown one a 404.
-	target, terr := h.ask.reg.GetPeerByName(req.ToPeer, req.Circle)
-	if terr != nil {
-		return AskResponse{}, routeErr(http.StatusConflict, terr.Error())
-	}
-	if target == nil {
-		return AskResponse{}, routeErr(http.StatusNotFound, "Unknown peer: "+req.ToPeer)
-	}
-	// Authorize the canonical target before registration. Delivery bypasses its
-	// duplicate check below only because this shared seam has already enforced it.
-	from, authorizedTarget, accessErr := h.ask.reg.CheckAccess(ctx, req.FromPeer, string(target.PeerID), req.BypassCircle, nil)
-	if accessErr != nil {
-		if err := h.notAddressableRouteErr(accessErr); err != nil {
-			return AskResponse{}, err
+	// The cid is minted before resolution so a failed attempt still has a trace.
+	// reply_to closes a PRIOR ask; it is NOT this ask's cid.
+	cid := service.NewAskID()
+	liveRoute := h.askRouter().Live() && routing.IsRouteTarget(req.ToPeer)
+	decision := h.beginDecision(ctx, askAttempt{
+		surface: routing.SurfaceAsk, fromPeer: req.FromPeer, circle: req.Circle, bypass: req.BypassCircle,
+		text: req.Text, replyTo: req.ReplyTo, question: req.Question != nil, attach: len(req.Attachments),
+	}, liveRoute)
+
+	toPeer, declared := req.ToPeer, req.ToPeer
+	var routed *routing.RouterResult
+	if liveRoute {
+		declared = req.FallbackTo
+		toPeer, routed = h.routeLive(ctx, cid, decision, req.FallbackTo)
+		if toPeer == "" {
+			h.recordRouteFailure(ctx, cid, decision, proto.PeerID(req.FromPeer), "router_unavailable", nil)
+			return AskResponse{}, routeErr(http.StatusServiceUnavailable, map[string]any{
+				"error": "router_unavailable", "arm": routed.Arm, "reason": routed.FallbackReason,
+				"hint": "The router could not choose a peer and no fallback_to was given; nothing was delivered. Name a peer, or retry with fallback_to.",
+			})
 		}
-		return AskResponse{}, routeErr(http.StatusForbidden, accessErr.Error())
 	}
-	target = authorizedTarget
-	// Explicit gate before AskTracker.Register: a non-addressable target must
-	// never leave a tracker entry or a queued delivery behind (409, not 403).
-	if err := h.notAddressableRouteErr(proto.RequireAddressable(from, target)); err != nil {
-		return AskResponse{}, err
+	from, target, reason, err := h.resolveAskTarget(ctx, req, toPeer, declared, decision)
+	if err != nil && routed != nil && !routed.Fallback && req.FallbackTo != "" {
+		// The arm's pick failed authorization (its snapshot went stale): fall
+		// back to the sender's target rather than guess again.
+		routed.Fallback, routed.FallbackReason = true, reason
+		from, target, reason, err = h.resolveAskTarget(ctx, req, req.FallbackTo, declared, decision)
 	}
-	// An unresolved sender is allowed for compatibility; preserve its supplied
-	// identity in that case.
 	fromID := proto.PeerID(req.FromPeer)
 	fromName := proto.DisplayName(req.FromPeer)
 	if from != nil {
 		fromID = from.PeerID
 		fromName = from.DisplayName
 	}
-	if fromID == target.PeerID {
-		return AskResponse{}, routeErr(http.StatusUnprocessableEntity, "cannot ask the calling peer")
+	if err != nil {
+		h.recordRouteFailure(ctx, cid, decision, fromID, reason, err)
+		return AskResponse{}, err
 	}
+	if routed == nil {
+		h.planShadow(decision)
+	}
+	h.recordDecision(ctx, cid, decision, target, fromID)
 
-	// reply_to closes a PRIOR ask; it is NOT this ask's cid. Register with an
-	// empty CorrelationID so a fresh ask-<hex8> is minted.
-	cid, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
+	_, err = h.ask.asks.Register(ctx, service.RegisterAskParams{
+		CorrelationID:         cid,
 		FromPeerID:            fromID,
 		FromPeerName:          fromName,
 		ToPeerID:              target.PeerID,
@@ -428,6 +446,9 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrQuiesced) {
+			if h.askRouter().Recording() {
+				h.traceAsk(ctx, cid, "route_failed", "fail", nil, map[string]any{"reason": "quiesced"})
+			}
 			return AskResponse{}, routeErr(http.StatusConflict, map[string]any{
 				"error": "peer_switching",
 				"hint":  fmt.Sprintf("Peer %s is mid-switch; retry shortly.", req.ToPeer),
@@ -440,10 +461,14 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	h.traceAsk(ctx, cid, "resolved_peer", "", tracked, nil)
 	h.traceAsk(ctx, cid, "routed", "", tracked, nil)
 
+	text := req.Text
+	if routed != nil {
+		text = routing.DeliveryNote(*routed, eligibleCount(decision)) + text
+	}
 	deliveryResult, err := h.ask.delivery.DeliverAsk(ctx, service.DeliverAskParams{
 		FromPeer:      string(fromID),
 		ToPeer:        string(target.PeerID),
-		Text:          req.Text,
+		Text:          text,
 		CorrelationID: cid,
 		ReplyTo:       req.ReplyTo,
 		BypassCircle:  true, // sender already authorized; deliver_ask bypasses re-gating (asks.py: bypass_circle=True)
@@ -482,12 +507,63 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		return AskResponse{}, routeErr(http.StatusNotFound, err.Error())
 	}
 	recordDeliveryOutcome(ctx, h.deliveryTraces, cid, "ask", string(target.PeerID), string(fromID), deliveryResult.Transport, deliveryResult.HookDelivery)
+	h.runShadow(cid, decision, target.PeerID, fromID)
 
 	// reply_to: close the referenced prior ask now that the new one landed.
 	if req.ReplyTo != nil {
 		_, _ = h.ask.asks.Close(ctx, *req.ReplyTo, "reply_to")
 	}
-	return AskResponse{CorrelationID: cid}, nil
+	return AskResponse{CorrelationID: cid, Routing: routedSummary(routed, target)}, nil
+}
+
+// resolveAskTarget resolves and authorizes an ask's target exactly as the
+// explicit path always has, and records the declared target's resolution on
+// decision. reason names the failure for the trace.
+func (h *Hub) resolveAskTarget(ctx context.Context, req AskRequest, toPeer, declared string, decision *routing.Decision) (from, target *proto.Peer, reason string, err error) {
+	// Resolve the target FIRST so the service.AskTracker entry is keyed on the canonical
+	// peer_id (display names collide; PendingForPeer / reply routing are
+	// peer_id-keyed). Mirrors AskService.open_ask resolving the peer before
+	// register. An ambiguous name is a 409; an unknown one a 404.
+	target, terr := h.ask.reg.GetPeerByName(toPeer, req.Circle)
+	if terr != nil {
+		declare(decision, declared, nil, routing.ResolutionAmbiguous)
+		return nil, nil, routing.ResolutionAmbiguous, routeErr(http.StatusConflict, terr.Error())
+	}
+	if target == nil {
+		declare(decision, declared, nil, routing.ResolutionUnknown)
+		return nil, nil, routing.ResolutionUnknown, routeErr(http.StatusNotFound, "Unknown peer: "+toPeer)
+	}
+	if declared == toPeer {
+		declare(decision, declared, target, routing.ResolutionResolved)
+	} else if declared != "" {
+		fallback, _ := h.ask.reg.GetPeerByName(declared, req.Circle)
+		declare(decision, declared, fallback, routing.ResolutionResolved)
+	}
+	// Authorize the canonical target before registration. Delivery bypasses its
+	// duplicate check below only because this shared seam has already enforced it.
+	from, authorizedTarget, accessErr := h.ask.reg.CheckAccess(ctx, req.FromPeer, string(target.PeerID), req.BypassCircle, nil)
+	if accessErr != nil {
+		if err := h.notAddressableRouteErr(accessErr); err != nil {
+			return from, nil, routing.AccessNotAddressable, err
+		}
+		return from, nil, "access_denied", routeErr(http.StatusForbidden, accessErr.Error())
+	}
+	target = authorizedTarget
+	// Explicit gate before AskTracker.Register: a non-addressable target must
+	// never leave a tracker entry or a queued delivery behind (409, not 403).
+	if err := h.notAddressableRouteErr(proto.RequireAddressable(from, target)); err != nil {
+		return from, nil, routing.AccessNotAddressable, err
+	}
+	// An unresolved sender is allowed for compatibility; preserve its supplied
+	// identity in that case.
+	fromID := proto.PeerID(req.FromPeer)
+	if from != nil {
+		fromID = from.PeerID
+	}
+	if fromID == target.PeerID {
+		return from, nil, "self", routeErr(http.StatusUnprocessableEntity, "cannot ask the calling peer")
+	}
+	return from, target, "", nil
 }
 
 // ----------------------------------------------------------------------------
@@ -828,14 +904,34 @@ func (h *Hub) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
+	fromPeer := "cli"
+	if req.FromPeer != nil && *req.FromPeer != "" {
+		fromPeer = *req.FromPeer
+	}
+	// CLI requests (no explicit from_peer) auto-bypass circles.
+	bypass := req.BypassCircle || req.FromPeer == nil
+	cid := service.NewAskID()
+	decision := h.beginDecision(ctx, askAttempt{
+		surface: routing.SurfaceQuery, fromPeer: fromPeer, circle: req.Circle, bypass: bypass, text: req.Text, question: true,
+	}, false)
+
 	target, err := h.ask.reg.GetPeerByName(req.ToPeer, req.Circle)
 	if err != nil {
+		declare(decision, req.ToPeer, nil, routing.ResolutionAmbiguous)
+		h.recordRouteFailure(ctx, cid, decision, proto.PeerID(fromPeer), routing.ResolutionAmbiguous, err)
 		writeJSON(w, http.StatusOK, QueryResponse{Error: strPtr(err.Error())})
 		return
 	}
 	if target == nil {
+		declare(decision, req.ToPeer, nil, routing.ResolutionUnknown)
+		h.recordRouteFailure(ctx, cid, decision, proto.PeerID(fromPeer), routing.ResolutionUnknown, nil)
 		writeJSON(w, http.StatusOK, QueryResponse{Error: strPtr("Unknown peer: " + req.ToPeer)})
 		return
+	}
+	declare(decision, req.ToPeer, target, routing.ResolutionResolved)
+	switch target.Status {
+	case proto.StatusBusy, proto.StatusOffline:
+		h.recordRouteFailure(ctx, cid, decision, proto.PeerID(fromPeer), string(target.Status), nil)
 	}
 	switch target.Status {
 	case proto.StatusBusy:
@@ -852,12 +948,6 @@ func (h *Hub) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fromPeer := "cli"
-	if req.FromPeer != nil && *req.FromPeer != "" {
-		fromPeer = *req.FromPeer
-	}
-	// CLI requests (no explicit from_peer) auto-bypass circles.
-	bypass := req.BypassCircle || req.FromPeer == nil
 	timeout := defaultQueryTimeout
 	if req.Timeout != nil && *req.Timeout > 0 {
 		timeout = time.Duration(*req.Timeout * float64(time.Second))
@@ -884,13 +974,15 @@ func (h *Hub) handleQuery(w http.ResponseWriter, r *http.Request) {
 		"default_answer":  map[string]any{"outcome": "timed_out", "message": timeoutMsg},
 	}
 
-	cid, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
-		FromPeerID:   proto.PeerID(fromPeer),
-		FromPeerName: proto.DisplayName(fromPeer),
-		ToPeerID:     target.PeerID,
-		ToPeerName:   target.DisplayName,
-		Text:         req.Text,
-		Question:     question,
+	h.recordDecision(ctx, cid, decision, target, proto.PeerID(fromPeer))
+	_, err = h.ask.asks.Register(ctx, service.RegisterAskParams{
+		CorrelationID: cid,
+		FromPeerID:    proto.PeerID(fromPeer),
+		FromPeerName:  proto.DisplayName(fromPeer),
+		ToPeerID:      target.PeerID,
+		ToPeerName:    target.DisplayName,
+		Text:          req.Text,
+		Question:      question,
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrQuiesced) {
@@ -1026,12 +1118,21 @@ func (h *Hub) openAskMany(ctx context.Context, req AskManyRequest) (AskManyRespo
 		}
 		seenNames[toPeer] = struct{}{}
 
+		cid := service.NewAskID()
+		decision := h.beginDecision(ctx, askAttempt{
+			surface: routing.SurfaceAskMany, fromPeer: req.FromPeer, circle: req.Circle,
+			bypass: req.BypassCircle, text: req.Text, parentID: &parent.ParentID,
+		}, false)
 		target, terr := h.ask.reg.GetPeerByName(toPeer, req.Circle)
 		if terr != nil || target == nil {
 			msg := "peer not found: " + toPeer
+			resolution := routing.ResolutionUnknown
 			if terr != nil {
 				msg = terr.Error()
+				resolution = routing.ResolutionAmbiguous
 			}
+			declare(decision, toPeer, nil, resolution)
+			h.recordRouteFailure(ctx, cid, decision, proto.PeerID(req.FromPeer), resolution, errors.New(msg))
 			h.ask.askMany.AddChild(parent.ParentID, service.AskManyChild{PeerName: toPeer, DeliveryError: &msg})
 			out.Children = append(out.Children, AskManyChildResponse{Peer: toPeer, Error: &msg})
 			continue
@@ -1047,19 +1148,23 @@ func (h *Hub) openAskMany(ctx context.Context, req AskManyRequest) (AskManyRespo
 			fromID = from.PeerID
 			fromName = from.DisplayName
 		}
+		declare(decision, toPeer, target, routing.ResolutionResolved)
 		if fromID == target.PeerID {
 			msg := "cannot ask the calling peer"
+			h.recordRouteFailure(ctx, cid, decision, fromID, "self", nil)
 			h.ask.askMany.AddChild(parent.ParentID, service.AskManyChild{PeerName: string(target.DisplayName), PeerID: strPtr(string(target.PeerID)), DeliveryError: &msg})
 			out.Children = append(out.Children, AskManyChildResponse{Peer: string(target.DisplayName), Error: &msg})
 			continue
 		}
-		cid, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
-			FromPeerID:   fromID,
-			FromPeerName: fromName,
-			ToPeerID:     target.PeerID,
-			ToPeerName:   target.DisplayName,
-			Text:         req.Text,
-			ParentID:     &parent.ParentID,
+		h.recordDecision(ctx, cid, decision, target, fromID)
+		_, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
+			CorrelationID: cid,
+			FromPeerID:    fromID,
+			FromPeerName:  fromName,
+			ToPeerID:      target.PeerID,
+			ToPeerName:    target.DisplayName,
+			Text:          req.Text,
+			ParentID:      &parent.ParentID,
 		})
 		if err != nil {
 			msg := err.Error()

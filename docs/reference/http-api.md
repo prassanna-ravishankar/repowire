@@ -89,5 +89,9 @@ their outstanding asks with `GET /asks/pending?peer_id=<sender>&direction=outbou
 The wait endpoint still requires the original sender identity.
 `GET /health` advertises `capabilities.ask_pull_delivery` when ask handling is wired.
 
+## Routed asks (experimental)
+
+With `experiments.router.mode: live`, `POST /ask` with `to_peer: "@route"` lets the configured arm pick the recipient. Optional `fallback_to` names the peer used if the router fails. The response adds `routing: {arm, routed_to, routed_to_peer_id, confidence, fallback, fallback_reason}`. A router failure with no `fallback_to` returns **503** `{"error": "router_unavailable", "arm", "reason", "hint"}` and nothing is registered or delivered. Responses to ordinary asks carry no `routing` key. See [`experiments.router`](configuration.md#experiments).
+
 The hosted relay has a separate [OAuth-authenticated MCP surface](relay-mcp.md);
 it does not tunnel the daemon's administrative `/mcp` endpoint.

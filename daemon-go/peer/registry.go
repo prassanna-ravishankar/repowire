@@ -510,9 +510,11 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	// wins because the runtime may have moved since the mapping was written. model:
 	// caller wins, else mapping. No mapping → a truly fresh mint uses caller values.
 	role, circle, model, description := params.Role, params.Circle, params.Model, ""
+	var descriptionSetAt *time.Time
 	provenance := proto.DefaultProvenance()
 	if m := r.mappings[id]; m != nil {
 		role, description, displayName = m.Role, m.Description, m.DisplayName
+		descriptionSetAt = m.DescriptionSetAt
 		provenance = m.Provenance
 		if !circleSourceOverridesMapping(params.CircleSource) {
 			circle = m.Circle
@@ -565,6 +567,8 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		Model:       model,
 		AgentPID:    params.AgentPID,
 		Provenance:  p.Provenance,
+
+		DescriptionSetAt: descriptionSetAt,
 	}
 	r.markMappingsDirtyLocked()
 

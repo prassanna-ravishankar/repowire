@@ -126,6 +126,10 @@ func NewAskTracker(ttl time.Duration) *AskTracker {
 	}
 }
 
+// NewAskID mints a fresh ask correlation id ("ask-<hex8>"). Callers that need
+// the id before registering (to trace a failed resolution) mint it here.
+func NewAskID() string { return "ask-" + hex8() }
+
 // hex8 mints an 8-char hex token (uuid4().hex[:8] analogue).
 func hex8() string {
 	var b [4]byte
@@ -163,7 +167,7 @@ func (t *AskTracker) Register(ctx context.Context, p RegisterAskParams) (string,
 	}
 	cid := p.CorrelationID
 	if cid == "" {
-		cid = "ask-" + hex8()
+		cid = NewAskID()
 	}
 	if _, ok := t.asks[cid]; ok {
 		// Retry: existing entry preserved (lifecycle state intact).
@@ -784,4 +788,44 @@ func (t *AskTracker) TotalCount() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return len(t.asks)
+}
+
+// AskPeerStats is the tracker's view of one peer relative to a given sender.
+type AskPeerStats struct {
+	OpenInbound  int        // open asks addressed to the peer, from anyone
+	LastExchange *time.Time // newest ask between the sender and the peer, either direction
+}
+
+// RoutingStats summarises load and recent contact for every peer the tracker
+// knows about, relative to sender. Bounded by the tracker TTL.
+func (t *AskTracker) RoutingStats(sender proto.PeerID) map[proto.PeerID]AskPeerStats {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := map[proto.PeerID]AskPeerStats{}
+	touch := func(peer proto.PeerID, at time.Time) {
+		st := out[peer]
+		if st.LastExchange == nil || at.After(*st.LastExchange) {
+			at := at
+			st.LastExchange = &at
+		}
+		out[peer] = st
+	}
+	for _, a := range t.asks {
+		if !a.Closed {
+			st := out[a.ToPeerID]
+			st.OpenInbound++
+			out[a.ToPeerID] = st
+		}
+		at := a.CreatedAt
+		if a.RepliedAt != nil {
+			at = *a.RepliedAt
+		}
+		switch sender {
+		case a.FromPeerID:
+			touch(a.ToPeerID, at)
+		case a.ToPeerID:
+			touch(a.FromPeerID, at)
+		}
+	}
+	return out
 }

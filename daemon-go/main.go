@@ -40,6 +40,7 @@ import (
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/relay"
+	"github.com/repowire/repowire/daemon-go/routing"
 	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
@@ -482,6 +483,7 @@ func runDaemon() {
 	h.WithReadDeps(asks, store).
 		WithMessaging(delivery, store).
 		WithAskLifecycle(asks, delivery, reg).
+		WithRouting(routing.NewRouter(cfg.Experiments.Router, nil)).
 		WithSessionRoutes(reg, store).
 		WithSpawn(spawnService, reg, asks, selfMachine, cfg.Daemon.CircleBoundary).
 		WithSpawnContext(ctx).

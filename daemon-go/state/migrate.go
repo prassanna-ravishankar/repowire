@@ -93,7 +93,8 @@ var migrationStatements = []string{
 		description TEXT NOT NULL DEFAULT '',
 		model TEXT,
 		agent_pid INTEGER,
-		provenance TEXT NOT NULL DEFAULT '{}'
+		provenance TEXT NOT NULL DEFAULT '{}',
+		description_set_at TEXT
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_peer_session_mappings_identity ON peer_session_mappings(display_name, circle, backend)`,
 	`CREATE INDEX IF NOT EXISTS idx_peer_session_mappings_path ON peer_session_mappings(backend, path)`,
@@ -225,6 +226,7 @@ var migrationStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_delivery_traces_trace ON delivery_traces(trace_id, seq)`,
 	`CREATE INDEX IF NOT EXISTS idx_delivery_traces_peer_stage ON delivery_traces(peer_id, stage, ts DESC)`,
 	`CREATE INDEX IF NOT EXISTS idx_delivery_traces_ts ON delivery_traces(ts)`,
+	`CREATE INDEX IF NOT EXISTS idx_delivery_traces_stage_ts ON delivery_traces(stage, ts)`,
 	`CREATE TABLE IF NOT EXISTS retired_peers (
 		peer_id TEXT PRIMARY KEY,
 		retired_at TEXT NOT NULL,
@@ -253,6 +255,7 @@ var migrationLedger = []struct {
 	{12, "retired peer identities survive daemon restarts"},
 	{13, "operator-closed peer identities reject live-runtime reclaim"},
 	{14, "peer provenance: source, parent runtime id, ephemeral, addressability"},
+	{15, "description_set_at for claim staleness; route_decision trace index"},
 }
 
 // migrate applies the idempotent schema and stamps user_version. Safe to run on
@@ -280,6 +283,9 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := ensureRetiredHardColumn(tx); err != nil {
+		return err
+	}
+	if err := ensureDescriptionSetAtColumn(tx); err != nil {
 		return err
 	}
 
@@ -346,6 +352,21 @@ func ensureProvenanceColumn(tx *sql.Tx) error {
 	if count == 0 {
 		if _, err := tx.Exec(`ALTER TABLE peer_session_mappings ADD COLUMN provenance TEXT NOT NULL DEFAULT '{}'`); err != nil {
 			return fmt.Errorf("add provenance column: %w", err)
+		}
+	}
+	return nil
+}
+
+func ensureDescriptionSetAtColumn(tx *sql.Tx) error {
+	var count int
+	if err := tx.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('peer_session_mappings') WHERE name = 'description_set_at'`,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("check description_set_at column: %w", err)
+	}
+	if count == 0 {
+		if _, err := tx.Exec(`ALTER TABLE peer_session_mappings ADD COLUMN description_set_at TEXT`); err != nil {
+			return fmt.Errorf("add description_set_at column: %w", err)
 		}
 	}
 	return nil
