@@ -3,6 +3,7 @@ package routing
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/state"
@@ -167,6 +168,8 @@ type Result struct {
 	// DeclaredIsRecentContact: the sender's pick was the candidate it
 	// exchanged with most recently (from the unmasked snapshot).
 	DeclaredIsRecentContact bool `json:"declared_is_recent_contact"`
+	// Recency is the stratum: recent contact, other, or no exchange data.
+	Recency string `json:"recency"`
 	// Mask lists the candidate fields blanked before the arm ran.
 	Mask []string `json:"mask,omitempty"`
 }
@@ -202,6 +205,9 @@ type Report struct {
 const (
 	StratumRecentContact = "declared_recent_contact"
 	StratumOtherContact  = "declared_other"
+	// StratumNoExchange: no candidate had a recorded exchange with the
+	// sender (e.g. right after a daemon restart), so recency is unknown.
+	StratumNoExchange = "no_exchange_data"
 )
 
 // Options select how Replay scores an arm.
@@ -242,6 +248,7 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 			r.Declared = *d.Declared.PeerID
 			r.DeclaredIsRecentContact = DeclaredIsRecentContact(in, r.Declared)
 		}
+		r.Recency = recencyStratum(in, r.DeclaredIsRecentContact)
 		r.Skipped = skipReason(d, in, armName, recorded, ex.Shadow)
 		if r.Skipped != "" {
 			rep.Skipped[r.Skipped]++
@@ -292,12 +299,8 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 		if r.Hit3 {
 			rep.Hit3++
 		}
-		stratum := StratumOtherContact
-		if r.DeclaredIsRecentContact {
-			stratum = StratumRecentContact
-		}
 		tally(rep.Cohorts, ex.Outcome.Delivery, r)
-		tally(rep.Recency, stratum, r)
+		tally(rep.Recency, r.Recency, r)
 		results = append(results, r)
 	}
 	if rep.Scored > 0 {
@@ -311,6 +314,16 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 		rep.AnsweredFidelity3 = float64(rep.Hit3) / float64(answered)
 	}
 	return rep, results
+}
+
+func recencyStratum(in Input, recent bool) string {
+	switch {
+	case recent:
+		return StratumRecentContact
+	case slices.ContainsFunc(in.Candidates, func(c Candidate) bool { _, ok := exchangedAt(c); return ok }):
+		return StratumOtherContact
+	}
+	return StratumNoExchange
 }
 
 // tally adds a scored result to the named cohort.

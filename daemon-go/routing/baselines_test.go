@@ -148,6 +148,14 @@ func TestReplayRecordsMaskAndStratifiesByRecency(t *testing.T) {
 		t.Fatalf("other stratum = %+v", o)
 	}
 
+	// With no exchange data anywhere, recency is unknown, not "other".
+	blind := example("ask-3", "repow-c", ArmExplicit, nil)
+	blind.Decision.Candidates[0].LastExchangeAt = nil
+	rep, rows = Replay(context.Background(), []Example{blind}, "stub", func(context.Context, Input) RouterResult { return ranked("repow-c") }, Options{})
+	if rows[0].Recency != StratumNoExchange || rep.Recency[StratumNoExchange] == nil || rep.Recency[StratumOtherContact] != nil {
+		t.Fatalf("no-data row = %+v, strata %v", rows[0], rep.Recency)
+	}
+
 	recorded := planned(examples[0], "paid")
 	recorded.Shadow = map[string]RouterResult{"paid": ranked("repow-b")}
 	rep, _ = Replay(context.Background(), []Example{recorded}, "paid", nil, Options{Recorded: true, Mask: []string{"description"}})
