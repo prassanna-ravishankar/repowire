@@ -15,10 +15,12 @@ const (
 )
 
 // providerFailure reports whether a fallback reason blames the provider.
-// Input problems (no candidates, unknown arm, missing key) do not trip it.
+// Input problems (no candidates, unknown arm, missing key) do not trip it; a
+// key the provider rejects (unauthorized) or an unfunded account (billing)
+// does, since every further call would fail the same way.
 func providerFailure(reason string) bool {
 	switch reason {
-	case FallbackTimeout, FallbackRateLimited, FallbackError, FallbackUnparseable, FallbackPanic:
+	case FallbackTimeout, FallbackRateLimited, FallbackError, FallbackUnparseable, FallbackPanic, FallbackBilling, FallbackUnauthorized:
 		return true
 	}
 	return false

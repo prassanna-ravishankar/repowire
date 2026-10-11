@@ -14,11 +14,12 @@ import (
 // its advantage was recency or habit, not state.
 
 // FallbackNoHistory: a baseline had nothing to rank on (no recorded exchange,
-// or no prior asks from this sender). Counted as a miss like any fallback.
+// or no other asks from this sender that may vote). Counted as a miss like
+// any fallback.
 const FallbackNoHistory = "no_history"
 
 // Baselines are the arms replay computes locally, always re-run.
-var Baselines = []string{"random", "recent", "majority"}
+var Baselines = []string{"random", "recent", "majority", "majority-past"}
 
 // IsBaseline reports whether name is a replay-computed baseline.
 func IsBaseline(name string) bool {
@@ -32,7 +33,10 @@ func IsBaseline(name string) bool {
 
 // BaselineArms builds the baselines over the replayed window.
 func BaselineArms(examples []Example) map[string]Arm {
-	return map[string]Arm{"random": Random{}, "recent": Recent{}, "majority": NewMajority(examples)}
+	return map[string]Arm{
+		"random": Random{}, "recent": Recent{},
+		"majority": NewMajority(examples, false), "majority-past": NewMajority(examples, true),
+	}
 }
 
 // Recent ranks candidates by their last exchange with the sender, newest
@@ -85,59 +89,67 @@ func DeclaredIsRecentContact(in Input, declared string) bool {
 	return !mine.IsZero() && mine.Equal(latest)
 }
 
-// Majority ranks candidates by how often the sender addressed them across the
-// replayed window, leaving out the row being scored so its own label never
-// votes for itself. Candidates the sender never addressed are left unranked.
+// Majority ranks candidates by how often the sender addressed them among the
+// replayed asks. The scored ask never votes for itself. Two variants:
+//
+//   - majority (whole window): every other ask in the window votes, including
+//     asks made after the scored one. A retrospective ceiling for habit, not
+//     a predictor anyone could deploy.
+//   - majority-past: only asks decided strictly before the scored one vote,
+//     so it is causal and the fair "deployable history" comparison.
+//
+// Candidates the sender never addressed are left unranked.
 type Majority struct {
-	counts map[string]map[string]int // sender → declared → asks
-	labels map[string]label          // trace → its own vote
+	past  bool
+	votes map[string][]vote // sender → its labelled asks
 }
 
-type label struct{ sender, declared string }
+type vote struct {
+	trace, declared string
+	at              time.Time
+}
 
-// NewMajority counts every labelled explicit ask in examples.
-func NewMajority(examples []Example) Majority {
-	m := Majority{counts: map[string]map[string]int{}, labels: map[string]label{}}
+// NewMajority collects every labelled explicit ask in examples; past selects
+// the causal variant.
+func NewMajority(examples []Example, past bool) Majority {
+	m := Majority{past: past, votes: map[string][]vote{}}
 	for _, ex := range examples {
-		l, ok := labelOf(ex.Decision)
-		if !ok {
+		d := ex.Decision
+		if d.Arm != ArmExplicit || d.Sender == nil || d.Declared.Resolution != ResolutionResolved || d.Declared.PeerID == nil {
 			continue
 		}
-		if m.counts[l.sender] == nil {
-			m.counts[l.sender] = map[string]int{}
-		}
-		m.counts[l.sender][l.declared]++
-		m.labels[ex.TraceID] = l
+		at, _ := time.Parse(time.RFC3339Nano, d.DecidedAt)
+		m.votes[d.Sender.PeerID] = append(m.votes[d.Sender.PeerID], vote{trace: ex.TraceID, declared: *d.Declared.PeerID, at: at})
 	}
 	return m
 }
 
-func labelOf(d Decision) (label, bool) {
-	if d.Arm != ArmExplicit || d.Sender == nil || d.Declared.Resolution != ResolutionResolved || d.Declared.PeerID == nil {
-		return label{}, false
+func (m Majority) Name() string {
+	if m.past {
+		return "majority-past"
 	}
-	return label{sender: d.Sender.PeerID, declared: *d.Declared.PeerID}, true
+	return "majority"
 }
-
-func (Majority) Name() string { return "majority" }
 
 func (m Majority) Rank(_ context.Context, in Input) (RouterResult, error) {
 	if in.Sender == nil {
 		return RouterResult{}, fail(FallbackNoHistory, "no sender")
 	}
-	own, hasOwn := m.labels[in.TraceID]
+	counts := map[string]int{}
+	for _, v := range m.votes[in.Sender.PeerID] {
+		if v.trace == in.TraceID || (m.past && (v.at.IsZero() || in.DecidedAt.IsZero() || !v.at.Before(in.DecidedAt))) {
+			continue
+		}
+		counts[v.declared]++
+	}
 	var scores []Score
 	for _, c := range in.Candidates {
-		n := m.counts[in.Sender.PeerID][c.PeerID]
-		if hasOwn && own.sender == in.Sender.PeerID && own.declared == c.PeerID {
-			n-- // leave one out
-		}
-		if n > 0 {
+		if n := counts[c.PeerID]; n > 0 {
 			scores = append(scores, Score{PeerID: c.PeerID, Score: float64(n)})
 		}
 	}
 	if len(scores) == 0 {
-		return RouterResult{}, fail(FallbackNoHistory, "sender has no other asks to a candidate in the window")
+		return RouterResult{}, fail(FallbackNoHistory, "sender has no other asks to a candidate that may vote")
 	}
 	return RouterResult{Scores: scores}, nil
 }

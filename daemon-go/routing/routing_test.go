@@ -97,6 +97,9 @@ func TestJevFailuresFallBack(t *testing.T) {
 		want   string
 	}{
 		"rate limited":   {http.StatusTooManyRequests, `{}`, FallbackRateLimited},
+		"billing":        {http.StatusPaymentRequired, `{"detail":{"error_type":"billing_error"}}`, FallbackBilling},
+		"unauthorized":   {http.StatusUnauthorized, `{}`, FallbackUnauthorized},
+		"forbidden":      {http.StatusForbidden, `{}`, FallbackUnauthorized},
 		"server error":   {http.StatusInternalServerError, `oops`, FallbackError},
 		"malformed":      {http.StatusOK, `not json`, FallbackUnparseable},
 		"missing answer": {http.StatusOK, `{"answers":{"c1":{"type":"noul","noul":0.5}}}`, FallbackUnparseable},
@@ -317,6 +320,32 @@ func TestFrontierRejectsPartialOrDuplicateRanking(t *testing.T) {
 				t.Fatalf("result = %+v", res)
 			}
 		})
+	}
+}
+
+func TestFrontierClassifiesProviderStatuses(t *testing.T) {
+	for status, want := range map[int]string{
+		http.StatusTooManyRequests: FallbackRateLimited, http.StatusUnauthorized: FallbackUnauthorized,
+		http.StatusForbidden: FallbackUnauthorized, http.StatusPaymentRequired: FallbackBilling, http.StatusBadRequest: FallbackError,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"x","message":"no"}}`))
+		}))
+		res := Run(context.Background(), Frontier{View: ViewClaimed, APIKey: "k", Model: "claude-opus-5-5", BaseURL: srv.URL}, testInput(), 5*time.Second)
+		srv.Close()
+		if !res.Fallback || res.FallbackReason != want {
+			t.Fatalf("status %d: result = %+v, want %s", status, res, want)
+		}
+	}
+}
+
+func TestAccountRefusalsTripTheBreaker(t *testing.T) {
+	for _, reason := range []string{FallbackBilling, FallbackUnauthorized} {
+		if !providerFailure(reason) {
+			t.Fatalf("%s must count toward the breaker", reason)
+		}
 	}
 }
 
