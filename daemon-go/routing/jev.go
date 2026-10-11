@@ -101,11 +101,8 @@ func (j Jev) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	switch {
-	case resp.StatusCode == http.StatusTooManyRequests:
-		return RouterResult{}, fail(FallbackRateLimited, "jev 429")
-	case resp.StatusCode >= 300:
-		return RouterResult{}, fail(FallbackError, "jev status %d: %s", resp.StatusCode, clip(string(raw), 200))
+	if resp.StatusCode >= 300 {
+		return RouterResult{}, fail(statusReason(resp.StatusCode), "jev status %d: %s", resp.StatusCode, clip(string(raw), 200))
 	}
 	var decoded jevResponse
 	if err := json.Unmarshal(raw, &decoded); err != nil {

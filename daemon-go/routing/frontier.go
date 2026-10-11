@@ -97,11 +97,12 @@ func (f Frontier) Rank(ctx context.Context, in Input) (RouterResult, error) {
 		},
 	})
 	if err != nil {
+		reason := FallbackError
 		var apiErr *anthropic.Error
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusTooManyRequests {
-			return RouterResult{}, fail(FallbackRateLimited, "frontier 429")
+		if errors.As(err, &apiErr) {
+			reason = statusReason(apiErr.StatusCode)
 		}
-		return RouterResult{}, fail(FallbackError, "frontier request: %v", err)
+		return RouterResult{}, fail(reason, "frontier request: %v", err)
 	}
 	if resp.StopReason != anthropic.StopReasonEndTurn {
 		return RouterResult{}, fail(FallbackUnparseable, "frontier stop_reason %s", resp.StopReason)

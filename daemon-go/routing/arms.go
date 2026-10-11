@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math/rand"
+	"net/http"
 	"sort"
 	"time"
 )
@@ -34,7 +35,24 @@ const (
 	// FallbackSaturated: a shadow arm was planned but the shadow pool was
 	// full, so it did not run. Never applies to a live decision.
 	FallbackSaturated = "saturated"
+	// FallbackBilling (402) and FallbackUnauthorized (401/403): the provider
+	// refused the account, as distinct from failing on the request.
+	FallbackBilling      = "billing"
+	FallbackUnauthorized = "unauthorized"
 )
+
+// statusReason classifies a provider's HTTP error status.
+func statusReason(code int) string {
+	switch code {
+	case http.StatusTooManyRequests:
+		return FallbackRateLimited
+	case http.StatusPaymentRequired:
+		return FallbackBilling
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return FallbackUnauthorized
+	}
+	return FallbackError
+}
 
 // FallbackError classifies an arm failure.
 type FallbackErr struct {
@@ -64,7 +82,7 @@ func Run(ctx context.Context, arm Arm, in Input, timeout time.Duration) RouterRe
 		err = validate(res, in)
 	}
 	if err != nil {
-		if ctx.Err() != nil && !isFallback(err, FallbackRateLimited) && !isFallback(err, FallbackPanic) {
+		if ctx.Err() != nil && generic(err) {
 			err = &FallbackErr{Reason: FallbackTimeout, Err: err}
 		}
 		return withIdentity(arm, fallback(arm.Name(), start, err))
@@ -138,9 +156,12 @@ func fallback(arm string, start time.Time, err error) RouterResult {
 	}
 }
 
-func isFallback(err error, reason string) bool {
+// generic reports whether err carries no specific reason, so a deadline that
+// expired during the call is the better explanation. Specific provider
+// answers (rate limit, billing, unauthorized) and panics keep their reason.
+func generic(err error) bool {
 	var fe *FallbackErr
-	return errors.As(err, &fe) && fe.Reason == reason
+	return !errors.As(err, &fe) || fe.Reason == FallbackError || fe.Reason == FallbackUnparseable
 }
 
 // validate rejects any answer naming a peer outside the eligible set, or none.
