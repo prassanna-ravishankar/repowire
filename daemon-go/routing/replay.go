@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/state"
@@ -162,8 +163,13 @@ type Result struct {
 	Candidates     int      `json:"candidates"`
 	Fallback       bool     `json:"fallback,omitempty"`
 	FallbackReason string   `json:"fallback_reason,omitempty"`
-	// FallbackDetail is the recorded error (e.g. the HTTP status and the
-	// start of the body), to tell our request bugs from provider faults.
+	// FallbackStatus and FallbackProvider attribute a failure (our request
+	// or their service) without its body.
+	FallbackStatus   int    `json:"fallback_status,omitempty"`
+	FallbackProvider string `json:"fallback_provider,omitempty"`
+	// FallbackDetail is the recorded error, scrubbed again on export: with
+	// credentials and the ask redacted, or, for asks recorded without their
+	// text, only "<status> <reason>".
 	FallbackDetail string  `json:"fallback_detail,omitempty"`
 	LatencyMS      int64   `json:"latency_ms"`
 	Skipped        string  `json:"skipped,omitempty"`
@@ -225,6 +231,9 @@ type Options struct {
 	Recorded bool
 	// Mask blanks these candidate fields (from ParseMask) before a re-run.
 	Mask []string
+	// Secrets are literals (configured API keys) redacted from exported
+	// fallback details, on top of the credential shapes.
+	Secrets []string
 }
 
 // Cohort is the scored subset with one delivery outcome.
@@ -283,7 +292,12 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 		}
 		r.Fallback, r.FallbackReason, r.LatencyMS = res.Fallback, res.FallbackReason, res.LatencyMS
 		if res.Fallback {
+			r.FallbackStatus, r.FallbackProvider = statusOf(res), res.Provider // before the text is scrubbed
+			res = Scrub(res, d.Request.TextRecorded, append(slices.Clone(opts.Secrets), d.Request.Text)...)
 			r.FallbackDetail = res.Error
+			if r.FallbackProvider == "" {
+				r.FallbackProvider = providerOf(armName)
+			}
 			if rep.FallbackDetails == nil {
 				rep.FallbackDetails = map[string]map[string]int{}
 			}
@@ -343,6 +357,18 @@ func recencyStratum(in Input, recent bool) string {
 		return StratumOtherContact
 	}
 	return StratumNoExchange
+}
+
+// providerOf names a model arm's provider from its name, for rows recorded
+// before results carried it.
+func providerOf(arm string) string {
+	switch {
+	case strings.HasPrefix(arm, "jev-"):
+		return Jev{}.Provider()
+	case strings.HasPrefix(arm, "frontier-"):
+		return Frontier{}.Provider()
+	}
+	return ""
 }
 
 // tally adds a scored result to the named cohort.

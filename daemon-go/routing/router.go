@@ -170,7 +170,20 @@ func (r *Router) Skipped(name, reason, msg string) RouterResult {
 	if arm, ok := r.arms[name]; ok {
 		res = withIdentity(arm, res)
 	}
-	return res
+	return r.scrub(res, "")
+}
+
+// scrub prepares a result for persistence: with record_text off the error
+// body is dropped, otherwise configured keys, the ask text and credential
+// shapes are redacted.
+func (r *Router) scrub(res RouterResult, askText string) RouterResult {
+	return Scrub(res, r.cfg.RecordText, r.Secrets(askText)...)
+}
+
+// Secrets are the literals redacted from stored errors: the configured API
+// keys, plus any extra (such as the ask text).
+func (r *Router) Secrets(extra ...string) []string {
+	return append([]string{r.cfg.Jev.APIKey, r.cfg.Frontier.APIKey}, extra...)
 }
 
 // Run executes the named arm with the configured timeout behind its
@@ -183,7 +196,7 @@ func (r *Router) Run(ctx context.Context, name string, in Input) RouterResult {
 	}
 	b := r.breakerFor(arm)
 	if b == nil {
-		return Run(ctx, arm, in, r.Timeout())
+		return r.scrub(Run(ctx, arm, in, r.Timeout()), in.Request.Text)
 	}
 	allowed, probe := b.allow()
 	if !allowed {
@@ -191,5 +204,5 @@ func (r *Router) Run(ctx context.Context, name string, in Input) RouterResult {
 	}
 	res := Run(ctx, arm, in, r.Timeout())
 	b.record(res, probe)
-	return res
+	return r.scrub(res, in.Request.Text)
 }

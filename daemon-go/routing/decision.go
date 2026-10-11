@@ -140,7 +140,11 @@ type RouterResult struct {
 	Seed           *int64             `json:"seed,omitempty"`
 	Fallback       bool               `json:"fallback"`
 	FallbackReason string             `json:"fallback_reason,omitempty"`
-	Error          string             `json:"error,omitempty"`
+	// HTTPStatus and Provider attribute a failure without its body.
+	HTTPStatus int    `json:"http_status,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	// Error is scrubbed before it is stored (see Scrub).
+	Error string `json:"error,omitempty"`
 }
 
 // Decision is the route_decision detail.

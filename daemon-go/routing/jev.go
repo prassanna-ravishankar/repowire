@@ -102,7 +102,7 @@ func (j Jev) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return RouterResult{}, fail(statusReason(resp.StatusCode), "jev status %d: %s", resp.StatusCode, clip(string(raw), 200))
+		return RouterResult{}, failHTTP(statusReason(resp.StatusCode), "jev", resp.StatusCode, string(raw))
 	}
 	var decoded jevResponse
 	if err := json.Unmarshal(raw, &decoded); err != nil {

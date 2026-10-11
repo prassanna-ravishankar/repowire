@@ -63,9 +63,11 @@ func statusReason(code int) string {
 	return FallbackError
 }
 
-// FallbackError classifies an arm failure.
+// FallbackErr classifies an arm failure. Status is the provider's HTTP
+// status, when there was one.
 type FallbackErr struct {
 	Reason string
+	Status int
 	Err    error
 }
 
@@ -74,6 +76,12 @@ func (e *FallbackErr) Unwrap() error { return e.Err }
 
 func fail(reason string, format string, args ...any) error {
 	return &FallbackErr{Reason: reason, Err: fmt.Errorf(format, args...)}
+}
+
+// failHTTP records a provider's error response: its status, and the start of
+// its body (which Scrub redacts or drops before anything is stored).
+func failHTTP(reason, provider string, status int, body string) error {
+	return &FallbackErr{Reason: reason, Status: status, Err: fmt.Errorf("%s status %d: %s", provider, status, clip(body, 200))}
 }
 
 // Run executes arm under timeout and returns a result that is always safe to
@@ -92,7 +100,7 @@ func Run(ctx context.Context, arm Arm, in Input, timeout time.Duration) RouterRe
 	}
 	if err != nil {
 		if ctx.Err() != nil && generic(err) {
-			err = &FallbackErr{Reason: FallbackTimeout, Err: err}
+			err = &FallbackErr{Reason: FallbackTimeout, Err: err} // drops any status: the deadline won
 		}
 		return withIdentity(arm, fallback(arm.Name(), start, err))
 	}
@@ -122,9 +130,13 @@ type identified interface {
 	Identity() (model, template string)
 }
 
-// withIdentity stamps a failure with the arm's configured model and template,
-// so failures group with the successes of the same configuration.
+// withIdentity stamps a failure with the arm's provider and its configured
+// model and template, so failures group with the successes of the same
+// configuration.
 func withIdentity(arm Arm, res RouterResult) RouterResult {
+	if p, ok := arm.(providerArm); ok && res.Provider == "" {
+		res.Provider = p.Provider()
+	}
 	if id, ok := arm.(identified); ok {
 		model, template := id.Identity()
 		if res.Model == "" {
@@ -154,14 +166,14 @@ func fallbackResult(arm, reason, msg string) RouterResult {
 }
 
 func fallback(arm string, start time.Time, err error) RouterResult {
-	reason := FallbackError
+	reason, status := FallbackError, 0
 	var fe *FallbackErr
 	if errors.As(err, &fe) {
-		reason = fe.Reason
+		reason, status = fe.Reason, fe.Status
 	}
 	return RouterResult{
 		Arm: arm, LatencyMS: time.Since(start).Milliseconds(), Scores: []Score{},
-		Fallback: true, FallbackReason: reason, Error: clip(err.Error(), 500),
+		Fallback: true, FallbackReason: reason, HTTPStatus: status, Error: clip(err.Error(), 500),
 	}
 }
 
