@@ -63,7 +63,7 @@ func TestDelegationExamplesReplay(t *testing.T) {
 		}
 	}
 	runner := func(_ context.Context, in Input) RouterResult { return ranked("gamma-model", "beta-model") }
-	rep, _ := Replay(context.Background(), examples, "stub", runner, false)
+	rep, _ := Replay(context.Background(), examples, "stub", runner, Options{})
 	if rep.Scored != 2 || rep.Hit1 != 1 || rep.Hit3 != 2 {
 		t.Fatalf("report = %+v", rep)
 	}

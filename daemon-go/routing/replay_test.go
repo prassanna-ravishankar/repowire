@@ -40,7 +40,7 @@ func TestReplayScoresFidelityAgainstDeclaredTarget(t *testing.T) {
 		example("ask-5", "repow-b", "jev-both", nil),    // live-routed, no human label
 	}
 	runner := func(_ context.Context, in Input) RouterResult { return ranked("repow-c", "repow-b") }
-	rep, rows := Replay(context.Background(), examples, "stub", runner, false)
+	rep, rows := Replay(context.Background(), examples, "stub", runner, Options{})
 	if rep.Scored != 2 || rep.Hit1 != 1 || rep.Hit3 != 2 || rep.Fidelity1 != 0.5 || rep.Fidelity3 != 1 {
 		t.Fatalf("report = %+v", rep)
 	}
@@ -65,7 +65,7 @@ func TestReplayCountsFallbacksAsMisses(t *testing.T) {
 		}
 		return ranked("repow-b")
 	}
-	rep, _ := Replay(context.Background(), examples, "stub", runner, false)
+	rep, _ := Replay(context.Background(), examples, "stub", runner, Options{})
 	if rep.Fallbacks != 1 || rep.Fidelity1 != 0.5 || rep.AnsweredFidelity1 != 1 {
 		t.Fatalf("report = %+v", rep)
 	}
@@ -90,7 +90,7 @@ func TestReplayRecordedSeparatesUnsampledFromPlannedNotRun(t *testing.T) {
 		t.Fatal("recorded replay must not call the arm")
 		return RouterResult{}
 	}
-	rep, _ := Replay(context.Background(), examples, "paid", runner, true)
+	rep, _ := Replay(context.Background(), examples, "paid", runner, Options{Recorded: true})
 	if rep.Source != "recorded" || rep.Scored != 1 || rep.Hit1 != 1 {
 		t.Fatalf("report = %+v", rep)
 	}
@@ -110,7 +110,7 @@ func TestReplayFallbackWithScoresIsAMiss(t *testing.T) {
 	res := ranked("repow-b")
 	res.Fallback, res.FallbackReason = true, FallbackError
 	rep, rows := Replay(context.Background(), []Example{example("ask-1", "repow-b", ArmExplicit, nil)}, "stub",
-		func(context.Context, Input) RouterResult { return res }, false)
+		func(context.Context, Input) RouterResult { return res }, Options{})
 	if rep.Hit1 != 0 || rep.Hit3 != 0 || rep.Fallbacks != 1 || rows[0].Hit3 || rep.AnsweredFidelity1 != 0 {
 		t.Fatalf("report = %+v", rep)
 	}
@@ -119,11 +119,11 @@ func TestReplayFallbackWithScoresIsAMiss(t *testing.T) {
 func TestReplaySkipsTextArmsWhenTextNotRecorded(t *testing.T) {
 	ex := example("ask-1", "repow-b", ArmExplicit, nil)
 	ex.Decision.Request.Text, ex.Decision.Request.TextRecorded = "", false
-	rep, _ := Replay(context.Background(), []Example{ex}, "jev-both", func(context.Context, Input) RouterResult { return ranked("repow-b") }, false)
+	rep, _ := Replay(context.Background(), []Example{ex}, "jev-both", func(context.Context, Input) RouterResult { return ranked("repow-b") }, Options{})
 	if rep.Skipped[SkipTextNotRecorded] != 1 {
 		t.Fatalf("report = %+v", rep)
 	}
-	rep, _ = Replay(context.Background(), []Example{ex}, "random", func(context.Context, Input) RouterResult { return ranked("repow-b") }, false)
+	rep, _ = Replay(context.Background(), []Example{ex}, "random", func(context.Context, Input) RouterResult { return ranked("repow-b") }, Options{})
 	if rep.Scored != 1 {
 		t.Fatalf("random needs no text: %+v", rep)
 	}
@@ -198,7 +198,7 @@ func TestLoadExamplesRequiresEvidenceOfDelivery(t *testing.T) {
 			t.Errorf("%s: delivery = %q, want %q", ex.TraceID, ex.Outcome.Delivery, want[ex.TraceID])
 		}
 	}
-	rep, _ := Replay(context.Background(), examples, "stub", func(context.Context, Input) RouterResult { return ranked("repow-b") }, false)
+	rep, _ := Replay(context.Background(), examples, "stub", func(context.Context, Input) RouterResult { return ranked("repow-b") }, Options{})
 	if c := rep.Cohorts[DeliveryUnknown]; c == nil || c.Scored != 2 {
 		t.Fatalf("unknown deliveries must form their own cohort: %+v", rep.Cohorts)
 	}
@@ -213,7 +213,7 @@ func TestLoadExamplesReadsSkipsFromDecision(t *testing.T) {
 	d := planned(example("x", "repow-b", ArmExplicit, nil), "paid").Decision
 	d.ShadowSkipped = []RouterResult{{Arm: "paid", Fallback: true, FallbackReason: FallbackSaturated, Model: "m", Scores: []Score{}}}
 	examples, _ := LoadExamples(context.Background(), fakeLedger{"ask-1": trace("ask-1", d, "thread_input_accepted")}, time.Time{})
-	rep, _ := Replay(context.Background(), examples, "paid", nil, true)
+	rep, _ := Replay(context.Background(), examples, "paid", nil, Options{Recorded: true})
 	if rep.Skipped["planned_not_run:saturated"] != 1 {
 		t.Fatalf("skipped = %v", rep.Skipped)
 	}

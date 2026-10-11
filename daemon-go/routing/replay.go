@@ -3,6 +3,7 @@ package routing
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/state"
@@ -164,6 +165,13 @@ type Result struct {
 	LatencyMS      int64    `json:"latency_ms"`
 	Skipped        string   `json:"skipped,omitempty"`
 	Outcome        Outcome  `json:"outcome"`
+	// DeclaredIsRecentContact: the sender's pick was the candidate it
+	// exchanged with most recently (from the unmasked snapshot).
+	DeclaredIsRecentContact bool `json:"declared_is_recent_contact"`
+	// Recency is the stratum: recent contact, other, or no exchange data.
+	Recency string `json:"recency"`
+	// Mask lists the candidate fields blanked before the arm ran.
+	Mask []string `json:"mask,omitempty"`
 }
 
 // Report aggregates a replay. Fidelity counts a fallback as a miss; the
@@ -171,6 +179,7 @@ type Result struct {
 type Report struct {
 	Arm               string         `json:"arm"`
 	Source            string         `json:"source"` // "rerun" or "recorded"
+	Mask              []string       `json:"mask,omitempty"`
 	Decisions         int            `json:"decisions"`
 	Scored            int            `json:"scored"`
 	Fallbacks         int            `json:"fallbacks"`
@@ -186,6 +195,27 @@ type Report struct {
 	// Cohorts splits the scored asks by delivery outcome. Failed deliveries
 	// stay in the headline numbers and are also reported here on their own.
 	Cohorts map[string]*Cohort `json:"cohorts"`
+	// Recency splits the scored asks by whether the sender picked its most
+	// recent contact. The rows where it did not are the real test of an
+	// attested arm.
+	Recency map[string]*Cohort `json:"recency"`
+}
+
+// Recency strata.
+const (
+	StratumRecentContact = "declared_recent_contact"
+	StratumOtherContact  = "declared_other"
+	// StratumNoExchange: no candidate had a recorded exchange with the
+	// sender (e.g. right after a daemon restart), so recency is unknown.
+	StratumNoExchange = "no_exchange_data"
+)
+
+// Options select how Replay scores an arm.
+type Options struct {
+	// Recorded scores the arm's recorded shadow results and makes no calls.
+	Recorded bool
+	// Mask blanks these candidate fields (from ParseMask) before a re-run.
+	Mask []string
 }
 
 // Cohort is the scored subset with one delivery outcome.
@@ -197,22 +227,28 @@ type Cohort struct {
 }
 
 // Replay scores an arm against the sender's declared target on every labelled
-// example. With recorded set it scores the arm's recorded shadow results and
-// makes no calls; otherwise it re-runs runner on the recorded candidate set.
-func Replay(ctx context.Context, examples []Example, armName string, runner func(context.Context, Input) RouterResult, recorded bool) (Report, []Result) {
-	rep := Report{Arm: armName, Source: "rerun", Decisions: len(examples), Skipped: map[string]int{}, Cohorts: map[string]*Cohort{}}
+// example. With opts.Recorded it scores the arm's recorded shadow results and
+// makes no calls; otherwise it re-runs runner on the recorded candidate set,
+// masked by opts.Mask.
+func Replay(ctx context.Context, examples []Example, armName string, runner func(context.Context, Input) RouterResult, opts Options) (Report, []Result) {
+	recorded := opts.Recorded
+	rep := Report{Arm: armName, Source: "rerun", Decisions: len(examples), Skipped: map[string]int{}, Cohorts: map[string]*Cohort{}, Recency: map[string]*Cohort{}}
 	if recorded {
 		rep.Source = "recorded"
+	} else {
+		rep.Mask = opts.Mask
 	}
 	var latency, candidates float64
 	results := make([]Result, 0, len(examples))
 	for _, ex := range examples {
 		d := ex.Decision
 		in := InputFrom(ex.TraceID, d)
-		r := Result{TraceID: ex.TraceID, Surface: d.Surface, Candidates: len(in.Candidates), Outcome: ex.Outcome}
+		r := Result{TraceID: ex.TraceID, Surface: d.Surface, Candidates: len(in.Candidates), Outcome: ex.Outcome, Mask: rep.Mask}
 		if d.Declared.PeerID != nil {
 			r.Declared = *d.Declared.PeerID
+			r.DeclaredIsRecentContact = DeclaredIsRecentContact(in, r.Declared)
 		}
+		r.Recency = recencyStratum(in, r.DeclaredIsRecentContact)
 		r.Skipped = skipReason(d, in, armName, recorded, ex.Shadow)
 		if r.Skipped != "" {
 			rep.Skipped[r.Skipped]++
@@ -223,7 +259,7 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 		if recorded {
 			res = ex.Shadow[armName]
 		} else {
-			res = runner(ctx, in)
+			res = runner(ctx, Mask(in, opts.Mask))
 		}
 		if res.Fallback && (res.FallbackReason == FallbackSaturated || res.FallbackReason == FallbackBreakerOpen) {
 			// The arm never ran: no evidence about its routing either way.
@@ -254,24 +290,17 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 		rep.Scored++
 		latency += float64(res.LatencyMS)
 		candidates += float64(r.Candidates)
-		cohort := rep.Cohorts[ex.Outcome.Delivery]
-		if cohort == nil {
-			cohort = &Cohort{}
-			rep.Cohorts[ex.Outcome.Delivery] = cohort
-		}
-		cohort.Scored++
 		if r.Fallback {
 			rep.Fallbacks++
-			cohort.Fallbacks++
 		}
 		if r.Hit1 {
 			rep.Hit1++
-			cohort.Hit1++
 		}
 		if r.Hit3 {
 			rep.Hit3++
-			cohort.Hit3++
 		}
+		tally(rep.Cohorts, ex.Outcome.Delivery, r)
+		tally(rep.Recency, r.Recency, r)
 		results = append(results, r)
 	}
 	if rep.Scored > 0 {
@@ -285,6 +314,35 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 		rep.AnsweredFidelity3 = float64(rep.Hit3) / float64(answered)
 	}
 	return rep, results
+}
+
+func recencyStratum(in Input, recent bool) string {
+	switch {
+	case recent:
+		return StratumRecentContact
+	case slices.ContainsFunc(in.Candidates, func(c Candidate) bool { _, ok := exchangedAt(c); return ok }):
+		return StratumOtherContact
+	}
+	return StratumNoExchange
+}
+
+// tally adds a scored result to the named cohort.
+func tally(cohorts map[string]*Cohort, name string, r Result) {
+	c := cohorts[name]
+	if c == nil {
+		c = &Cohort{}
+		cohorts[name] = c
+	}
+	c.Scored++
+	if r.Fallback {
+		c.Fallbacks++
+	}
+	if r.Hit1 {
+		c.Hit1++
+	}
+	if r.Hit3 {
+		c.Hit3++
+	}
 }
 
 func skipReason(d Decision, in Input, arm string, recorded bool, shadow map[string]RouterResult) string {
@@ -314,7 +372,7 @@ func skipReason(d Decision, in Input, arm string, recorded bool, shadow map[stri
 		}
 		return ""
 	}
-	if !d.Request.TextRecorded && arm != "random" {
+	if !d.Request.TextRecorded && !IsBaseline(arm) {
 		return SkipTextNotRecorded
 	}
 	return ""

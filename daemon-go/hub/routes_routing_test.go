@@ -488,7 +488,7 @@ func TestRecordedAsksReplayFromStateDB(t *testing.T) {
 	if err != nil || len(examples) != 4 {
 		t.Fatalf("examples = %d, %v", len(examples), err)
 	}
-	recorded, _ := routing.Replay(ctx, examples, "oracle-ish", nil, true)
+	recorded, _ := routing.Replay(ctx, examples, "oracle-ish", nil, routing.Options{Recorded: true})
 	// Sampled on asks 1 and 3 (both to beta, both hits); ask 2 unsampled; ask 4 unresolved.
 	if recorded.Scored != 2 || recorded.Hit1 != 2 || recorded.Skipped[routing.SkipNotSampled] != 1 || recorded.Skipped[routing.SkipNoDeclaredTarget] != 1 {
 		t.Fatalf("recorded replay = %+v", recorded)
@@ -499,7 +499,7 @@ func TestRecordedAsksReplayFromStateDB(t *testing.T) {
 	}
 	rerun, _ := routing.Replay(ctx, examples, "oracle-ish", func(ctx context.Context, in routing.Input) routing.RouterResult {
 		return router.Run(ctx, "oracle-ish", in)
-	}, false)
+	}, routing.Options{})
 	// Re-run scores every labelled ask: beta, gamma, beta → 2 hits of 3.
 	if rerun.Scored != 3 || rerun.Hit1 != 2 || rerun.Hit3 != 3 {
 		t.Fatalf("rerun replay = %+v", rerun)
