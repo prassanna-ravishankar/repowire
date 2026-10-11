@@ -181,12 +181,8 @@ func toMap(v any) map[string]any {
 
 // ParseDecision reads a route_decision detail back.
 func ParseDecision(detail map[string]any) (Decision, error) {
-	b, err := json.Marshal(detail)
-	if err != nil {
-		return Decision{}, err
-	}
 	var d Decision
-	err = json.Unmarshal(b, &d)
+	err := remap(detail, &d)
 	return d, err
 }
 

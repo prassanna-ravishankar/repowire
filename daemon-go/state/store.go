@@ -100,6 +100,41 @@ func NewStore(dbPath string) (*Store, error) {
 	return store, nil
 }
 
+// DefaultPath resolves the state DB path: $REPOWIRE_STATE_DB wins, else
+// ~/.repowire/state.db, matching the Python daemon's layout.
+func DefaultPath() string {
+	if p := os.Getenv("REPOWIRE_STATE_DB"); p != "" {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "state.db"
+	}
+	return filepath.Join(home, ".repowire", "state.db")
+}
+
+// OpenReadOnly opens an existing state db for offline analysis. It never
+// migrates or writes, so it is safe beside a running daemon.
+func OpenReadOnly(dbPath string) (*Store, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, fmt.Errorf("open state db: %w", err)
+	}
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(5000)", dbPath))
+	if err != nil {
+		return nil, fmt.Errorf("open state db: %w", err)
+	}
+	var version int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("read user_version: %w", err)
+	}
+	if version > SchemaVersion {
+		_ = db.Close()
+		return nil, fmt.Errorf("state db schema version %d is newer than supported %d", version, SchemaVersion)
+	}
+	return &Store{db: db}, nil
+}
+
 // Close closes the underlying connection pool.
 func (s *Store) Close() error {
 	return s.db.Close()

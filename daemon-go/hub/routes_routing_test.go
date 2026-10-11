@@ -7,14 +7,17 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/routing"
 	"github.com/repowire/repowire/daemon-go/service"
+	"github.com/repowire/repowire/daemon-go/state"
 )
 
 type traceRow struct {
@@ -109,6 +112,12 @@ type routingRig struct {
 // alpha's circle, other in another circle, and sub, a non-addressable thread.
 func newRoutingRig(t *testing.T, cfg *config.RouterConfig, arms map[string]routing.Arm) *routingRig {
 	t.Helper()
+	return newRoutingRigWith(t, cfg, arms, nil)
+}
+
+// newRoutingRigWith records into store (a real state db) when it is non-nil.
+func newRoutingRigWith(t *testing.T, cfg *config.RouterConfig, arms map[string]routing.Arm, store *state.Store) *routingRig {
+	t.Helper()
 	alpha := peerWith("repow-a", "alpha", "default", proto.StatusOnline)
 	beta := peerWith("repow-b", "beta", "default", proto.StatusOnline)
 	gamma := peerWith("repow-c", "gamma", "default", proto.StatusOnline)
@@ -125,6 +134,9 @@ func newRoutingRig(t *testing.T, cfg *config.RouterConfig, arms map[string]routi
 	asks := service.NewAskTracker(0)
 	tr := &rowTracer{}
 	h := &Hub{deliveryTraces: tr}
+	if store != nil {
+		h.deliveryTraces, h.store = store, store
+	}
 	h.WithAskLifecycle(asks, service.NewPeerDelivery(reg, newRouterWithFake(f), f, asks, nil), reg)
 	if cfg != nil {
 		h.WithRouting(routing.NewRouter(*cfg, arms))
@@ -402,5 +414,45 @@ func TestRouteTargetIsOrdinaryNameUnlessLive(t *testing.T) {
 	status, _, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "@route", Text: "x"})
 	if status != http.StatusNotFound || arm.calls != 0 {
 		t.Fatalf("status %d calls %d", status, arm.calls)
+	}
+}
+
+// The static track end to end: asks recorded into a real state db in shadow
+// mode replay offline, both by re-running an arm and from the shadow rows.
+func TestRecordedAsksReplayFromStateDB(t *testing.T) {
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cfg := recordCfg()
+	cfg.Mode = config.RouterModeShadow
+	cfg.ShadowArms = []string{"oracle-ish"}
+	cfg.SampleEvery = map[string]int{"oracle-ish": 2}
+	arm := &stubArm{name: "oracle-ish", scores: []routing.Score{{PeerID: "repow-b", Score: 0.9}, {PeerID: "repow-c", Score: 0.1}}}
+	rig := newRoutingRigWith(t, cfg, map[string]routing.Arm{"oracle-ish": arm}, store)
+
+	for _, to := range []string{"beta", "gamma", "beta", "nobody"} {
+		rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: to, Text: "x"})
+	}
+	rig.hub.waitShadow()
+
+	ctx := context.Background()
+	examples, err := routing.LoadExamples(ctx, store, time.Time{})
+	if err != nil || len(examples) != 4 {
+		t.Fatalf("examples = %d, %v", len(examples), err)
+	}
+	recorded, _ := routing.Replay(ctx, examples, "oracle-ish", nil, true)
+	// Sampled on asks 1 and 3 (both to beta, both hits); ask 2 unsampled; ask 4 unresolved.
+	if recorded.Scored != 2 || recorded.Hit1 != 2 || recorded.Skipped[routing.SkipNotSampled] != 1 || recorded.Skipped[routing.SkipNoDeclaredTarget] != 1 {
+		t.Fatalf("recorded replay = %+v", recorded)
+	}
+	router := routing.NewRouter(*cfg, map[string]routing.Arm{"oracle-ish": arm})
+	rerun, _ := routing.Replay(ctx, examples, "oracle-ish", func(ctx context.Context, in routing.Input) routing.RouterResult {
+		return router.Run(ctx, "oracle-ish", in)
+	}, false)
+	// Re-run scores every labelled ask: beta, gamma, beta → 2 hits of 3.
+	if rerun.Scored != 3 || rerun.Hit1 != 2 || rerun.Hit3 != 3 {
+		t.Fatalf("rerun replay = %+v", rerun)
 	}
 }
