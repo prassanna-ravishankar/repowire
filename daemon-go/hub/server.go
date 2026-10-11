@@ -100,6 +100,10 @@ type Hub struct {
 	// registered. See routes_mcp.go.
 	mcp           *mcpDeps
 	jobCompletion *service.JobCompletion
+
+	// routing is the optional ask router and research ledger, wired via
+	// WithRouting. nil behaves as mode off with recording off.
+	routing *routingDeps
 }
 
 func (h *Hub) WithJobCompletion(completion *service.JobCompletion) *Hub {

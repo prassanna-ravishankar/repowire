@@ -90,6 +90,7 @@ type mcpAskArgs struct {
 	ReplyTo     string           `json:"reply_to,omitempty"`
 	Circle      string           `json:"circle,omitempty"`
 	Attachments []map[string]any `json:"attachments,omitempty"`
+	FallbackTo  string           `json:"fallback_to,omitempty" jsonschema:"Experimental: with peer_name @route, the peer that receives the ask if the router cannot choose"`
 }
 type mcpWaitArgs struct {
 	CorrelationID  string `json:"correlation_id"`
@@ -239,8 +240,8 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := requireFields("peer_name", a.PeerName, "query", a.Query); err != nil {
 			return "", err
 		}
-		result, err := h.openAsk(ctx, AskRequest{FromPeer: caller, ToPeer: a.PeerName, Text: a.Query, ReplyTo: strPtr(a.ReplyTo), Circle: h.mcpSendCircle(caller, a.Circle), Attachments: a.Attachments})
-		return result.CorrelationID, err
+		result, err := h.openAsk(ctx, AskRequest{FromPeer: caller, ToPeer: a.PeerName, Text: a.Query, ReplyTo: strPtr(a.ReplyTo), Circle: h.mcpSendCircle(caller, a.Circle), Attachments: a.Attachments, FallbackTo: a.FallbackTo})
+		return askToolResult(result), err
 	})
 	addMCPTool(srv, "wait_on_ack", "Wait for a tracked ask to resolve.", func(ctx context.Context, caller string, a mcpWaitArgs) (string, error) {
 		if err := required("correlation_id", a.CorrelationID); err != nil {
@@ -591,4 +592,17 @@ func firstNonempty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// askToolResult is the ask tool's reply: the correlation id, plus where a
+// routed ask went and why when the router chose.
+func askToolResult(result AskResponse) string {
+	rt := result.Routing
+	if rt == nil {
+		return result.CorrelationID
+	}
+	if rt.Fallback {
+		return fmt.Sprintf("%s (router %s failed: %s; sent to fallback @%s)", result.CorrelationID, rt.Arm, rt.FallbackReason, rt.RoutedTo)
+	}
+	return fmt.Sprintf("%s (routed by %s to @%s)", result.CorrelationID, rt.Arm, rt.RoutedTo)
 }

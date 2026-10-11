@@ -249,3 +249,45 @@ func (s *Store) ClosedAskThreadsSince(ctx context.Context, peerID string, since 
 	}
 	return out, rows.Err()
 }
+
+// TracesWithStage returns every row recorded at stage after since, oldest
+// first. Routing replay reads route_decision rows through this.
+func (s *Store) TracesWithStage(ctx context.Context, stage string, since time.Time) ([]TraceRow, error) {
+	sinceTS := ""
+	if !since.IsZero() {
+		sinceTS = since.UTC().Format(tsLayout)
+	}
+	const q = `SELECT trace_id, delivery_id, seq, kind, stage, status,
+		       peer_id, from_peer_id, ts, detail_json
+		FROM delivery_traces
+		WHERE stage = ? AND ts > ?
+		ORDER BY ts ASC, trace_id ASC`
+	rows, err := s.db.QueryContext(ctx, q, stage, sinceTS)
+	if err != nil {
+		return nil, fmt.Errorf("load %s traces: %w", stage, err)
+	}
+	defer rows.Close()
+	var out []TraceRow
+	for rows.Next() {
+		tr, err := scanTraceRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, tr)
+	}
+	return out, rows.Err()
+}
+
+// AssistantTurnsBetween counts the assistant chat turns peerID posted in the
+// window (from, to]: the work a recipient spent while an ask was open.
+func (s *Store) AssistantTurnsBetween(ctx context.Context, peerID string, from, to time.Time) (int, error) {
+	const q = `SELECT COUNT(*) FROM events
+		WHERE type = 'chat_turn' AND peer_id = ? AND timestamp > ? AND timestamp <= ?
+		  AND json_extract(payload_json, '$.role') = 'assistant'`
+	var n int
+	err := s.db.QueryRowContext(ctx, q, peerID, formatTS(from), formatTS(to)).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count assistant turns for %s: %w", peerID, err)
+	}
+	return n, nil
+}

@@ -40,6 +40,7 @@ import (
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/relay"
+	"github.com/repowire/repowire/daemon-go/routing"
 	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
@@ -230,19 +231,6 @@ func (r reconcileDelivery) Notify(ctx context.Context, from, to proto.PeerID, te
 	return err
 }
 
-// defaultDBPath resolves the state DB path: $REPOWIRE_STATE_DB wins, else
-// ~/.repowire/state.db, matching the Python daemon's layout.
-func defaultDBPath() string {
-	if p := os.Getenv("REPOWIRE_STATE_DB"); p != "" {
-		return p
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "state.db"
-	}
-	return filepath.Join(home, ".repowire", "state.db")
-}
-
 func main() {
 	if len(os.Args) == 1 {
 		os.Exit(cli.Run(nil))
@@ -291,7 +279,7 @@ func runDaemon() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	dbPath := flag.String("db", defaultDBPath(), "path to the schema-v12 SQLite state DB ($REPOWIRE_STATE_DB)")
+	dbPath := flag.String("db", state.DefaultPath(), "path to the schema-v12 SQLite state DB ($REPOWIRE_STATE_DB)")
 	addr := flag.String("addr", fmt.Sprintf("%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "host:port to serve the hub on")
 	hostAlias := flag.String("host", "", "bind host override (CLI compatibility alias)")
 	portAlias := flag.Int("port", 0, "bind port override (CLI compatibility alias)")
@@ -479,9 +467,14 @@ func runDaemon() {
 	// that is otherwise a nil-guarded no-op in Routes(); the order is
 	// independent (all read from already-built services). traces uses the same
 	// *state.Store delivery-trace store.
+	router, err := routing.NewRouter(cfg.Experiments.Router, nil)
+	if err != nil {
+		log.Fatalf("router config: %v", err)
+	}
 	h.WithReadDeps(asks, store).
 		WithMessaging(delivery, store).
 		WithAskLifecycle(asks, delivery, reg).
+		WithRouting(router).
 		WithSessionRoutes(reg, store).
 		WithSpawn(spawnService, reg, asks, selfMachine, cfg.Daemon.CircleBoundary).
 		WithSpawnContext(ctx).

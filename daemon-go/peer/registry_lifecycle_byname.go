@@ -120,6 +120,7 @@ func (r *Registry) UpdateDescription(ctx context.Context, identifier, descriptio
 	p.LastSeen = &now
 	if m, ok := r.mappings[p.PeerID]; ok && m.Description != description {
 		m.Description = description
+		m.DescriptionSetAt = &now
 		m.UpdatedAt = now
 		r.markMappingsDirtyLocked()
 	}

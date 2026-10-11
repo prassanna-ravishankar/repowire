@@ -183,8 +183,29 @@ experiments:
     gated_tools: [Bash, Edit, Write, MultiEdit, NotebookEdit]
     timeout_seconds: 45
   git_trailers: true            # enables the Git hook installed with setup --git-hooks
+  router:                       # ask-routing research experiment; all off by default
+    record: false               # write a route_decision trace row for every ask
+    record_text: true           # keep the ask body in route_decision rows (off keeps only its SHA-256 there)
+    mode: off                   # off | shadow | live
+    arm: explicit               # live mode: arm that routes asks sent to @route
+    shadow_arms: []             # shadow mode: arms run beside every explicit ask
+    sample_every: {}            # e.g. {frontier-claimed: 20} runs that arm on every 20th ask
+    timeout_seconds: 8
+    jev: {api_key: "", model: jev-1.13.0, base_url: "https://api.typesafe.ai"}
+    frontier: {api_key: "", model: claude-opus-5-5}
 ```
 
 `remote_tool_approval` gates `gated_tools` behind a blocking approval question: before a gated tool runs, a `PreToolUse` hook posts the question to the daemon and waits for an allow/deny from a human surface or peer, denying on timeout. The installer only registers the `PreToolUse` hook when `enabled` is set; toggling it off and re-running `repowire setup` removes the hook. Read-only tools are never gated. See [Structured questions](../concepts/message-types.md#pretooluse-tool-approval-claude-code).
 
 `git_trailers` is on by default, but requires `repowire setup --git-hooks` in each repository (or manual integration with an existing `prepare-commit-msg` hook). The native Git hook adds thread/session trailers using the committing repository’s HEAD and the registered tmux pane’s peer, across supported agent backends. It never rewrites shell input. Existing attribution, reused messages and replay operations are preserved; empty messages stay empty. Without a registered pane or available daemon history it leaves the message unchanged; operational errors warn and never block Git. Set `false` to disable it immediately, without reinstalling. See [`repowire why`](cli.md#repowire-why) for installation and amend/rebase behavior.
+
+`router` instruments and optionally routes asks. With `record` on, every ask attempt (`ask`, each `ask_many` child, and the legacy `/query`) writes a `route_decision` row into its delivery trace in `state.db`: the sender, the declared target and how it resolved, and a snapshot of every registered peer split into attested state (backend, project, path, status, turn state, last-seen age, open inbound asks, last exchange with the sender) and claimed state (description and its age), each labelled with whether the sender may reach it. Outcomes are the trace's later stages; `closed` gains `time_to_close_ms` and `recipient_turns`. Asks whose target fails to resolve are traced too. The rows are never pruned. `record_text: false` stores only a hash of the ask in `route_decision` rows; other trace stages (`created` keeps a clipped copy of the text, `closed` a clipped reply) are unaffected. With `record` off and `mode: off`, asks take the same path as without the router: no snapshot, no extra rows.
+
+Invalid router settings fail config loading: an unknown `mode`, a `shadow_arms` entry listed twice, a `sample_every` below 1, or (at daemon start) an arm name that does not exist, including a misspelled `sample_every` key. Shadow runs are bounded (at most 4 in flight; arms planned while the pool is full are recorded as `saturated` on the decision row itself, so overload adds no write to the ask), and each provider (Jev, Anthropic) sits behind a breaker that opens after 3 consecutive provider failures, rejects calls as `breaker_open` for 30 seconds, then lets the next request through as a probe. A panicking arm is recorded as a `panic` fallback.
+
+Arms: `random`, and `jev-*` / `frontier-*` over the views `claimed` (descriptions), `attested` (observed state) or `both`. Model arms see candidates under opaque keys, with peer text passed only as data inside a fixed template. `jev.api_key` falls back to `JEV_API_KEY` / `TYPESAFE_API_KEY`, `frontier.api_key` to `ANTHROPIC_API_KEY`. A model arm without a key falls back with reason `unconfigured`.
+
+- `shadow` delivers every ask to its declared target, then runs the sampled `shadow_arms` off the request path and records each result as a `route_shadow` row. Paid arms should carry a `sample_every`.
+- `live` routes only asks addressed to `@route`. The chosen peer still passes the circle and addressability checks, and the delivered ask is prefixed with the arm and its score. On any router failure (timeout, rate limit, error, unparseable or ineligible answer) the ask goes to the sender's `fallback_to` peer with a note saying so, or, without one, is refused with `503 router_unavailable` and nothing is delivered. Outside `live`, `@route` is an ordinary unknown name.
+
+Every key has a `REPOWIRE_EXPERIMENTS__ROUTER__*` environment override (`SHADOW_ARMS` is comma-separated).

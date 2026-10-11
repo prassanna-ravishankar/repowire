@@ -176,7 +176,20 @@ gone fail loudly with a non-zero exit instead of starting fresh.
 repowire trace TRACE_ID [--json]
 ```
 
-Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`, returned in the `/notify` response). Stages are ordered (`created → resolved_peer → routed → websocket_sent → thread_input_accepted → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). `thread_input_accepted` means a native Codex thread or Claude inbox accepted the input; `injection_failed` records a failed/rejected receipt. Historical ledgers may contain `pane_injected` from releases that supported tmux keystroke delivery. This reads the local delivery trace ledger (`GET /traces/{trace_id}`); rows older than `daemon.prune_max_age_hours` are pruned during lazy repair. Currently covers ask and notify; query/broadcast terminal stages are not yet traced. Exits non-zero if any stage failed.
+Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`, returned in the `/notify` response). Stages are ordered (`created → resolved_peer → routed → websocket_sent → thread_input_accepted → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). `thread_input_accepted` means a native Codex thread or Claude inbox accepted the input; `injection_failed` records a failed/rejected receipt. Historical ledgers may contain `pane_injected` from releases that supported tmux keystroke delivery. This reads the local delivery trace ledger (`GET /traces/{trace_id}`), which is not pruned. Currently covers ask and notify; query/broadcast terminal stages are not yet traced. Exits non-zero if any stage failed.
+
+## `repowire route`
+
+Offline tools for the ask-routing experiment ([`experiments.router`](configuration.md#experiments)). Neither command touches the daemon.
+
+```bash
+repowire route replay --arm ARM [--recorded] [--since RFC3339] [--limit N] [--db PATH] [--json] [--rows]
+repowire route decisionbench --cards DIR --delegations FILE --orchestrator MODEL --arm ARM [--limit N] [--json] [--rows]
+```
+
+`replay` opens `state.db` read-only, loads every recorded `route_decision`, and scores an arm (or `--arm all`) against the sender's declared target: fidelity@1 and fidelity@3, the same with fallbacks excluded, mean candidates and latency, and per-reason skip counts. Only explicit asks whose declared target was eligible count. By default the arm is re-run on the recorded candidate set, one API call per ask for model arms. `--recorded` instead scores the arm's recorded shadow results and makes no calls. An arm not sampled for an ask is skipped as `not_sampled`; one that was planned but has no row (daemon restart, or still running) is `planned_not_run:missing`; one that never ran because the shadow pool was full or its breaker was open is `planned_not_run:saturated` / `planned_not_run:breaker_open` (`not_run:*` when re-running). A fallback always counts as a miss. Every ask is also placed in a delivery cohort from positive evidence in its trace: `delivered` (an accepted receipt, or the recipient closed it), `sent_unverified` (written to the socket, no receipt), `send_failed`, `no_connection`, `quiesced`, or `unknown` (no evidence either way, e.g. a crash after the decision or a delivery still in flight). All cohorts stay in the scored totals and are listed separately below the table and under `cohorts` in `--json`. The table has a column for every skip reason that occurs. Arms that read the ask text skip rows recorded with `record_text: false`. `--rows` emits one JSON line per decision with its outcome.
+
+`decisionbench` runs the same scoring on [DecisionBench](https://huggingface.co/decisionbench) Stage-2 delegations as a stateless sanity check. Download one card flavor (`decision_bench/profiles/c2_static/` from `decisionbench/code`) and a Stage-2 zip (from `decisionbench/data`); the dataset is not redistributed with Repowire. Each delegation becomes one decision whose label is the orchestrator's own pick, with every other carded model as a candidate described by its card. There is no attested state on that substrate, so attested-only arms are uninformative there.
 
 ## `repowire why`
 
@@ -190,7 +203,7 @@ The hook preserves messages already carrying Repowire attribution and skips reus
 
 For an existing hook or hook manager, add `repowire hook prepare-commit-msg "$@"` to its `prepare-commit-msg` entry point. Setup never overwrites an existing hook or changes `core.hooksPath`. Remove the generated hook to uninstall, or disable `experiments.git_trailers` to leave it inert. Re-run ordinary `repowire setup` when upgrading from the Bash-rewrite version to remove its obsolete PreToolUse registration.
 
-`why` reads those trailers with `git log --format=%(trailers:...)` (defaulting to `HEAD`), fetches each thread from the delivery trace ledger (`GET /traces/{correlation_id}`), and prints who asked what and how it closed. Threads older than `daemon.prune_max_age_hours` are pruned from the ledger and print an error line instead. Outside a git repository, or for a ref git cannot resolve, it exits non-zero with a clear message. Plain git works too: `git log --format='%h %s%n%(trailers:only)'` lists the trailers without the daemon.
+`why` reads those trailers with `git log --format=%(trailers:...)` (defaulting to `HEAD`), fetches each thread from the delivery trace ledger (`GET /traces/{correlation_id}`), and prints who asked what and how it closed. A thread missing from the ledger prints an error line instead. Outside a git repository, or for a ref git cannot resolve, it exits non-zero with a clear message. Plain git works too: `git log --format='%h %s%n%(trailers:only)'` lists the trailers without the daemon.
 
 ## `repowire share`
 
