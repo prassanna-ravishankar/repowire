@@ -1,11 +1,12 @@
 package routing
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
+	"io"
 	"math"
 	"net/http"
 	"sort"
@@ -25,6 +26,36 @@ const frontierSystem = "You route asks between AI coding agents that are already
 	"confidence in the top choice from 0 to 1."
 
 const defaultFrontierBaseURL = "https://api.anthropic.com/"
+
+// anthropicReason classifies an Anthropic error response. Spend limits are
+// account-wide and persistent, but arrive as statuses that otherwise mean
+// something else, so they are recognised by their documented shapes first
+// (platform.claude.com/docs/en/api/rate-limits, "Setting your own spend
+// limit" and "Reaching your spend cap"):
+//   - a limit the organization or workspace set: 400 invalid_request_error,
+//     message beginning "You have reached your specified [workspace] API
+//     usage limits";
+//   - the tier's monthly cap: 429 with error.details.error_code
+//     "enforced_spend_limit_reached".
+func anthropicReason(status int, body string) string {
+	var envelope struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+			Details struct {
+				ErrorCode string `json:"error_code"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(body), &envelope) == nil {
+		e := envelope.Error
+		if e.Details.ErrorCode == "enforced_spend_limit_reached" ||
+			(status == http.StatusBadRequest && strings.HasPrefix(e.Message, "You have reached your specified")) {
+			return FallbackBilling
+		}
+	}
+	return statusReason(status)
+}
 
 // Frontier asks a general-purpose Claude model for a ranking.
 type Frontier struct {
@@ -70,9 +101,26 @@ func (f Frontier) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	if baseURL == "" {
 		baseURL = defaultFrontierBaseURL
 	}
+	// Capture an error response as it arrives: the SDK reports a context
+	// that expired after the response as a bare cancellation, which would
+	// lose a refusal the provider had already sent.
+	var refused struct {
+		status int
+		body   string
+	}
+	capture := func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+		resp, err := next(req)
+		if err == nil && resp.StatusCode >= 400 {
+			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+			resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(raw))
+			refused.status, refused.body = resp.StatusCode, string(raw)
+		}
+		return resp, err
+	}
 	opts := []option.RequestOption{
 		option.WithoutEnvironmentDefaults(), option.WithBaseURL(baseURL),
-		option.WithAPIKey(f.APIKey), option.WithMaxRetries(0),
+		option.WithAPIKey(f.APIKey), option.WithMaxRetries(0), option.WithMiddleware(capture),
 	}
 	if f.HTTP != nil {
 		opts = append(opts, option.WithHTTPClient(f.HTTP))
@@ -97,12 +145,10 @@ func (f Frontier) Rank(ctx context.Context, in Input) (RouterResult, error) {
 		},
 	})
 	if err != nil {
-		reason := FallbackError
-		var apiErr *anthropic.Error
-		if errors.As(err, &apiErr) {
-			reason = statusReason(apiErr.StatusCode)
+		if refused.status != 0 {
+			return RouterResult{}, failHTTP(anthropicReason(refused.status, refused.body), "anthropic", refused.status, refused.body)
 		}
-		return RouterResult{}, fail(reason, "frontier request: %v", err)
+		return RouterResult{}, fail(FallbackError, "frontier request: %v", err)
 	}
 	if resp.StopReason != anthropic.StopReasonEndTurn {
 		return RouterResult{}, fail(FallbackUnparseable, "frontier stop_reason %s", resp.StopReason)

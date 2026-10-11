@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -378,29 +379,98 @@ func TestRequestErrorsDoNotTripTheBreaker(t *testing.T) {
 	}
 }
 
+// cancelAfterResponse is a transport that buffers each response, then
+// cancels the caller's context before handing it back: the status has
+// arrived, and the deadline has passed by the time the arm looks at it. It
+// makes the deadline race deterministic.
+type cancelAfterResponse struct{ cancel context.CancelFunc }
+
+func (c cancelAfterResponse) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	c.cancel()
+	return resp, nil
+}
+
 // A provider refusal whose status arrived before the deadline keeps its
 // reason; the deadline is not the better explanation.
 func TestRefusalWinsOverDeadline(t *testing.T) {
-	// stall serves status (0: nothing at all) and holds the response open
-	// until the test releases it, past the arm's deadline.
-	stall := func(status int) (*httptest.Server, func()) {
-		release := make(chan struct{})
+	cases := map[int]string{402: FallbackBilling, 401: FallbackUnauthorized, 403: FallbackUnauthorized}
+	for status, want := range cases {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			if status != 0 {
-				w.WriteHeader(status)
-				w.(http.Flusher).Flush()
-			}
-			<-release
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"x","message":"refused"}}`))
 		}))
-		return srv, func() { close(release); srv.Close() }
-	}
-	for status, want := range map[int]string{402: FallbackBilling, 401: FallbackUnauthorized, 403: FallbackUnauthorized, 0: FallbackTimeout} {
-		srv, done := stall(status)
-		res := Run(context.Background(), Jev{View: ViewAttested, APIKey: "k", BaseURL: srv.URL}, testInput(), 50*time.Millisecond)
-		done()
-		if !res.Fallback || res.FallbackReason != want {
-			t.Fatalf("status %d past the deadline: %+v, want %s", status, res, want)
+		t.Cleanup(srv.Close)
+		for _, arm := range []func(*http.Client) Arm{
+			func(c *http.Client) Arm { return Jev{View: ViewAttested, APIKey: "k", BaseURL: srv.URL, HTTP: c} },
+			func(c *http.Client) Arm {
+				return Frontier{View: ViewAttested, APIKey: "k", Model: "claude-opus-5-5", BaseURL: srv.URL, HTTP: c}
+			},
+		} {
+			ctx, cancel := context.WithCancel(context.Background())
+			a := arm(&http.Client{Transport: cancelAfterResponse{cancel}})
+			res := Run(ctx, a, testInput(), 5*time.Second)
+			cancel()
+			if ctx.Err() == nil || !res.Fallback || res.FallbackReason != want || res.HTTPStatus != status {
+				t.Fatalf("%s status %d after the deadline: %+v, want %s", a.Name(), status, res, want)
+			}
 		}
+	}
+	// No status at all: the deadline is the explanation.
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	t.Cleanup(func() { close(release); srv.Close() })
+	if res := Run(context.Background(), Jev{View: ViewAttested, APIKey: "k", BaseURL: srv.URL}, testInput(), 50*time.Millisecond); res.FallbackReason != FallbackTimeout {
+		t.Fatalf("no response: %+v, want timeout", res)
+	}
+}
+
+// Anthropic spend limits are account-wide and persistent; they must be
+// billing (breaker), not request_error, despite their 400/429 statuses.
+func TestFrontierSpendLimitsAreBilling(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   string
+		trips  bool
+	}{
+		{"validation 400", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"messages: field required"}}`, FallbackRequestError, false},
+		{"org spend limit 400", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC."}}`, FallbackBilling, true},
+		{"workspace spend limit 400", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified workspace API usage limits. You will regain access on 2026-11-01 at 00:00 UTC."}}`, FallbackBilling, true},
+		{"tier spend cap 429", 429, `{"type":"error","error":{"type":"rate_limit_error","message":"You have reached your API usage limits","details":{"error_code":"enforced_spend_limit_reached"}}}`, FallbackBilling, true},
+		{"rate limit 429", 429, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`, FallbackRateLimited, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			t.Cleanup(srv.Close)
+			cfg := config.RouterConfig{TimeoutSeconds: 5, Frontier: config.RouterModel{APIKey: "k", Model: "claude-opus-5-5", BaseURL: srv.URL}}
+			r, err := NewRouter(cfg, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < breakerTrip; i++ {
+				if res := r.Run(context.Background(), "frontier-claimed", testInput()); res.FallbackReason != tc.want {
+					t.Fatalf("call %d: %+v, want %s", i, res, tc.want)
+				}
+			}
+			res := r.Run(context.Background(), "frontier-claimed", testInput())
+			if open := res.FallbackReason == FallbackBreakerOpen; open != tc.trips {
+				t.Fatalf("breaker open = %v after %d %s, want %v", open, breakerTrip, tc.want, tc.trips)
+			}
+		})
 	}
 }
 
