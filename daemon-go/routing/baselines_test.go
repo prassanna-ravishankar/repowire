@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -157,6 +158,64 @@ func TestMajorityPastVotesFromHistoryBeyondTheScoredWindow(t *testing.T) {
 	}
 	if h := full.History(); h.Asks != 2 || h.From != "2026-10-11T10:00:00Z" || h.To != "2026-10-11T11:00:00Z" {
 		t.Fatalf("history = %+v", h)
+	}
+}
+
+func TestMajorityHistoryOrdersByTimeNotText(t *testing.T) {
+	stamp := func(ex Example, ts string) Example { ex.Decision.DecidedAt = ts; return ex }
+	m := NewMajority([]Example{
+		stamp(example("ask-1", "repow-b", ArmExplicit, nil), "2026-10-11T12:00:00.1Z"),
+		stamp(example("ask-2", "repow-b", ArmExplicit, nil), "2026-10-11T12:00:00Z"),
+		stamp(example("ask-3", "repow-b", ArmExplicit, nil), "2026-10-11T12:30:00+01:00"), // 11:30Z, the earliest
+	}, true)
+	if h := m.History(); h.From != "2026-10-11T11:30:00Z" || h.To != "2026-10-11T12:00:00.1Z" || h.Asks != 3 {
+		t.Fatalf("history = %+v", h)
+	}
+}
+
+func TestRedactAndScrub(t *testing.T) {
+	in := `Authorization: Bearer abc.def x-api-key: sk-ant-api03-XYZ_1 "X-Api-Key":"zzz" apikey_live_123 key=MYKEY123456 ask=route this please`
+	got := Redact(in, "MYKEY123456", "route this please", "short")
+	for _, leak := range []string{"abc.def", "sk-ant", "zzz", "apikey_live", "MYKEY", "route this please"} {
+		if strings.Contains(got, leak) {
+			t.Fatalf("Redact left %q: %s", leak, got)
+		}
+	}
+	if Redact("a short ask", "short") != "a short ask" {
+		t.Fatal("literals under minLiteral must not be redacted")
+	}
+	res := RouterResult{Fallback: true, FallbackReason: FallbackRequestError, HTTPStatus: 422, Error: "request_error: jev status 422: echo"}
+	if got := Scrub(res, false).Error; got != "422 request_error" {
+		t.Fatalf("Scrub without text = %q", got)
+	}
+	legacy := RouterResult{Fallback: true, FallbackReason: FallbackError, Error: "error: jev status 402: {...}"}
+	if got := Scrub(legacy, false).Error; got != "402 error" {
+		t.Fatalf("legacy status from text = %q", got)
+	}
+}
+
+// Rows persisted before scrubbing existed are scrubbed again on export.
+func TestReplayScrubsLegacyRowsOnExport(t *testing.T) {
+	raw := RouterResult{Arm: "jev-attested", Scores: []Score{}, Fallback: true, FallbackReason: FallbackError,
+		Error: "error: jev status 422: Authorization: Bearer LEGACYKEY987 ask Who owns the lexer?"}
+	for _, recorded := range []bool{true, false} {
+		ex := planned(example("ask-1", "repow-b", ArmExplicit, nil), "jev-attested")
+		ex.Shadow = map[string]RouterResult{"jev-attested": raw}
+		ex.Decision.Request.TextRecorded = recorded
+		if !recorded {
+			ex.Decision.Request.Text = ""
+		}
+		rep, rows := Replay(context.Background(), []Example{ex}, "jev-attested", nil, Options{Recorded: true, Secrets: []string{"LEGACYKEY987"}})
+		out, _ := json.Marshal(struct {
+			R []Result
+			P Report
+		}{rows, rep})
+		if strings.Contains(string(out), "LEGACYKEY987") || (!recorded && strings.Contains(string(out), "lexer")) {
+			t.Fatalf("record_text=%v export leaked: %s", recorded, out)
+		}
+		if rows[0].FallbackStatus != 422 || rows[0].FallbackProvider != "jev" {
+			t.Fatalf("legacy attribution = %+v", rows[0])
+		}
 	}
 }
 

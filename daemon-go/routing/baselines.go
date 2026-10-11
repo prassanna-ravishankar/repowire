@@ -104,10 +104,15 @@ func DeclaredIsRecentContact(in Input, declared string) bool {
 // the rows being scored: the replay CLI passes the whole ledger, so --since
 // and --limit narrow what is scored without starving the vote. Given only
 // the scored window, majority-past is cold at the start of it.
+//
+// TODO(scale): each scored row scans the sender's votes, O(scored × history).
+// Fine for thousands of asks; sorted per-sender votes with prefix counts would
+// make majority-past O(log n) per row if the ledger grows past that.
 type Majority struct {
-	past   bool
-	votes  map[string][]vote // sender → its labelled asks
-	window History
+	past     bool
+	votes    map[string][]vote // sender → its labelled asks
+	asks     int
+	from, to time.Time
 }
 
 // History describes the vote population, for disclosure beside results.
@@ -117,8 +122,14 @@ type History struct {
 	To   string `json:"to,omitempty"`
 }
 
-// History is the span of labelled asks this baseline votes from.
-func (m Majority) History() History { return m.window }
+// History is the span of labelled asks this baseline votes from, in UTC.
+func (m Majority) History() History {
+	h := History{Asks: m.asks}
+	if !m.from.IsZero() {
+		h.From, h.To = m.from.UTC().Format(time.RFC3339Nano), m.to.UTC().Format(time.RFC3339Nano)
+	}
+	return h
+}
 
 type vote struct {
 	trace, declared string
@@ -136,12 +147,14 @@ func NewMajority(examples []Example, past bool) Majority {
 		}
 		at, _ := time.Parse(time.RFC3339Nano, d.DecidedAt)
 		m.votes[d.Sender.PeerID] = append(m.votes[d.Sender.PeerID], vote{trace: ex.TraceID, declared: *d.Declared.PeerID, at: at})
-		m.window.Asks++
-		if m.window.From == "" || d.DecidedAt < m.window.From {
-			m.window.From = d.DecidedAt
-		}
-		if d.DecidedAt > m.window.To {
-			m.window.To = d.DecidedAt
+		m.asks++
+		if !at.IsZero() {
+			if m.from.IsZero() || at.Before(m.from) {
+				m.from = at
+			}
+			if at.After(m.to) {
+				m.to = at
+			}
 		}
 	}
 	return m
