@@ -642,71 +642,98 @@ func TestLiveStalePickWithoutFallbackIsRecordedAsFallback(t *testing.T) {
 	}
 }
 
-// Codex's reproduction: a provider that echoes the ask and our bearer token in
-// a 422 body. Neither may reach the persisted route_shadow row, nor replay's
-// --rows / --json export, whether or not the ask text is recorded.
-func TestProviderErrorBodiesAreScrubbedBeforePersistence(t *testing.T) {
+// Codex's reproductions: a provider whose 422 body echoes the ask and our
+// key, raw and in encodings no redactor would catch. The ledger keeps no body
+// at all, so no variant can reach the persisted route_shadow row or replay's
+// export, whatever record_text says; the structured attribution survives.
+func TestProviderErrorBodiesNeverReachTheLedger(t *testing.T) {
 	const askSentinel, keySentinel = "ASK_SENTINEL_7c1e", "KEY_SENTINEL_44ab"
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		_, _ = fmt.Fprintf(w, `{"echo":"Authorization: %s","ask":%q}`, r.Header.Get("Authorization"), raw)
-	}))
-	defer provider.Close()
-
-	for _, recordText := range []bool{true, false} {
-		t.Run(fmt.Sprintf("record_text=%v", recordText), func(t *testing.T) {
-			store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer store.Close()
-			cfg := recordCfg()
-			cfg.RecordText = recordText
-			cfg.Mode = config.RouterModeShadow
-			cfg.ShadowArms = []string{"jev-attested"}
-			cfg.Jev = config.RouterModel{APIKey: keySentinel, Model: "jev-1.13.0", BaseURL: provider.URL}
-			rig := newRoutingRigWith(t, cfg, nil, store)
-			_, out, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "please route " + askSentinel})
-			rig.hub.waitShadow()
-
-			ctx := context.Background()
-			stages, err := store.StagesFor(ctx, out.CorrelationID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var shadow map[string]any
-			for _, st := range stages {
-				if st.Stage == routing.ShadowStage {
-					shadow = st.Detail
+	percent := func(s string) string {
+		var b strings.Builder
+		for _, c := range []byte(s) {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+		return b.String()
+	}
+	bodies := map[string]func(r *http.Request, req []byte) string{
+		"echo": func(r *http.Request, req []byte) string {
+			return fmt.Sprintf(`{"echo":"Authorization: %s","ask":%q}`, r.Header.Get("Authorization"), req)
+		},
+		"url-encoded": func(*http.Request, []byte) string {
+			return fmt.Sprintf(`{"invalid_key":"%s","ask":"%s"}`, percent(keySentinel), percent(askSentinel))
+		},
+		"json-escaped": func(*http.Request, []byte) string {
+			return `{"invalid_key":"\u004bEY_SENTINEL_44ab","ask":"\u0041SK_SENTINEL_7c1e"}`
+		},
+		"padded": func(*http.Request, []byte) string {
+			return fmt.Sprintf(`{"padding":"%s","key":"%s","ask":"%s"}`, strings.Repeat("x", 167), keySentinel, askSentinel)
+		},
+		"lowercase bearer": func(*http.Request, []byte) string {
+			return `{"echo":"authorization: bearer ` + keySentinel + `"}`
+		},
+	}
+	for name, body := range bodies {
+		for _, recordText := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/record_text=%v", name, recordText), func(t *testing.T) {
+				provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					raw, _ := io.ReadAll(r.Body)
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					_, _ = io.WriteString(w, body(r, raw))
+				}))
+				defer provider.Close()
+				store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+				if err != nil {
+					t.Fatal(err)
 				}
-			}
-			persisted, _ := json.Marshal(shadow)
-			if shadow == nil || shadow["fallback_reason"] != routing.FallbackRequestError || shadow["http_status"] != float64(422) || shadow["provider"] != "jev" {
-				t.Fatalf("shadow row = %s", persisted)
-			}
-			examples, err := routing.LoadExamples(ctx, store, time.Time{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			rep, rows := routing.Replay(ctx, examples, "jev-attested", nil, routing.Options{Recorded: true})
-			exported, _ := json.Marshal(struct {
-				Rows   []routing.Result
-				Report routing.Report
-			}{rows, rep})
-			for name, text := range map[string]string{"state.db route_shadow": string(persisted), "replay export": string(exported)} {
-				for _, sentinel := range []string{askSentinel, keySentinel} {
-					if strings.Contains(text, sentinel) {
-						t.Fatalf("%s leaked %s: %s", name, sentinel, text)
+				defer store.Close()
+				cfg := recordCfg()
+				cfg.RecordText = recordText
+				cfg.Mode = config.RouterModeShadow
+				cfg.ShadowArms = []string{"jev-attested"}
+				cfg.Jev = config.RouterModel{APIKey: keySentinel, Model: "jev-1.13.0", BaseURL: provider.URL}
+				rig := newRoutingRigWith(t, cfg, nil, store)
+				_, out, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "please route " + askSentinel})
+				rig.hub.waitShadow()
+
+				ctx := context.Background()
+				stages, err := store.StagesFor(ctx, out.CorrelationID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var shadow map[string]any
+				for _, st := range stages {
+					if st.Stage == routing.ShadowStage {
+						shadow = st.Detail
 					}
 				}
-			}
-			if !recordText && rows[0].FallbackDetail != "422 request_error" {
-				t.Fatalf("record_text off must keep only status and reason, got %q", rows[0].FallbackDetail)
-			}
-			if rows[0].FallbackStatus != 422 || rows[0].FallbackProvider != "jev" {
-				t.Fatalf("attribution lost: %+v", rows[0])
-			}
-		})
+				persisted, _ := json.Marshal(shadow)
+				if _, has := shadow["error"]; has || shadow == nil {
+					t.Fatalf("route_shadow row must carry no error body field: %s", persisted)
+				}
+				if shadow["http_status"] != float64(422) || shadow["provider"] != "jev" ||
+					shadow["fallback_reason"] != routing.FallbackRequestError || shadow["error_code"] != "other" {
+					t.Fatalf("structured attribution lost: %s", persisted)
+				}
+				examples, err := routing.LoadExamples(ctx, store, time.Time{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				rep, rows := routing.Replay(ctx, examples, "jev-attested", nil, routing.Options{Recorded: true})
+				exported, _ := json.Marshal(struct {
+					Rows   []routing.Result
+					Report routing.Report
+				}{rows, rep})
+				for where, text := range map[string]string{"state.db route_shadow": string(persisted), "replay export": string(exported)} {
+					for _, sentinel := range []string{askSentinel, keySentinel, "KEY_SENTINEL", "SK_SENTINEL", percent("KEY")} {
+						if strings.Contains(text, sentinel) {
+							t.Fatalf("%s leaked %s: %s", where, sentinel, text)
+						}
+					}
+				}
+				if r := rows[0]; r.FallbackStatus != 422 || r.FallbackProvider != "jev" || r.FallbackCode != "other" || r.FallbackReason != routing.FallbackRequestError {
+					t.Fatalf("exported attribution = %+v", r)
+				}
+			})
+		}
 	}
 }

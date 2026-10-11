@@ -173,58 +173,69 @@ func TestMajorityHistoryOrdersByTimeNotText(t *testing.T) {
 	}
 }
 
-func TestRedactAndScrub(t *testing.T) {
-	in := `Authorization: Bearer abc.def x-api-key: sk-ant-api03-XYZ_1 "X-Api-Key":"zzz" apikey_live_123 key=MYKEY123456 ask=route this please`
-	got := Redact(in, "MYKEY123456", "route this please", "short")
-	for _, leak := range []string{"abc.def", "sk-ant", "zzz", "apikey_live", "MYKEY", "route this please"} {
-		if strings.Contains(got, leak) {
-			t.Fatalf("Redact left %q: %s", leak, got)
+func TestErrorCodeAllowlist(t *testing.T) {
+	for code, want := range map[string]string{
+		"billing_error": "billing_error", "enforced_spend_limit_reached": "enforced_spend_limit_reached",
+		"overloaded_error": "overloaded_error", "KEY_SENTINEL_44ab": "other", "": "other", "Billing_Error": "other",
+	} {
+		if got := errorCode(code); got != want {
+			t.Errorf("errorCode(%q) = %q, want %q", code, got, want)
 		}
 	}
-	if Redact("a short ask", "short") != "a short ask" {
-		t.Fatal("literals under minLiteral must not be redacted")
-	}
-	res := RouterResult{Fallback: true, FallbackReason: FallbackRequestError, HTTPStatus: 422, Error: "request_error: jev status 422: echo"}
-	if got := Scrub(res, false).Error; got != "422 request_error" {
-		t.Fatalf("Scrub without text = %q", got)
-	}
-	legacy := RouterResult{Fallback: true, FallbackReason: FallbackError, Error: "error: jev status 402: {...}"}
-	if got := Scrub(legacy, false).Error; got != "402 error" {
-		t.Fatalf("legacy status from text = %q", got)
+	// End to end: Jev's declared error_type round-trips; an unknown one is "other".
+	for body, want := range map[string]string{
+		`{"detail":{"error_type":"billing_error","message":"no credits"}}`: "billing_error",
+		`{"detail":{"error_type":"KEY_SENTINEL_44ab"}}`:                    "other",
+		`not json`: "other",
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusPaymentRequired)
+			_, _ = w.Write([]byte(body))
+		}))
+		res := Run(context.Background(), Jev{View: ViewAttested, APIKey: "k", BaseURL: srv.URL}, testInput(), time.Second)
+		srv.Close()
+		if res.ErrorCode != want || res.HTTPStatus != 402 || res.FallbackReason != FallbackBilling || res.Error != "" {
+			t.Fatalf("body %s: %+v, want code %s and no error text", body, res, want)
+		}
 	}
 }
 
-// Rows persisted before scrubbing existed are scrubbed again on export.
-func TestReplayScrubsLegacyRowsOnExport(t *testing.T) {
-	raw := RouterResult{Arm: "jev-attested", Scores: []Score{}, Fallback: true, FallbackReason: FallbackError,
-		Error: "error: jev status 422: Authorization: Bearer LEGACYKEY987 ask Who owns the lexer?"}
-	for _, recorded := range []bool{true, false} {
-		ex := planned(example("ask-1", "repow-b", ArmExplicit, nil), "jev-attested")
-		ex.Shadow = map[string]RouterResult{"jev-attested": raw}
-		ex.Decision.Request.TextRecorded = recorded
-		if !recorded {
-			ex.Decision.Request.Text = ""
-		}
-		rep, rows := Replay(context.Background(), []Example{ex}, "jev-attested", nil, Options{Recorded: true, Secrets: []string{"LEGACYKEY987"}})
+// Legacy rows (pre-#420) hold raw provider text in "error". Export recovers
+// the status and allowlisted codes from both recorded forms and never the text.
+func TestReplayExportsLegacyRowsAsStructureOnly(t *testing.T) {
+	cases := []struct {
+		arm, text, provider, code string
+		status                    int
+	}{
+		{"jev-attested", `error: jev status 402: {"detail":{"error_type":"billing_error","message":"Your organization has no credits. LEGACYKEY987"}}`, "jev", "billing_error", 402},
+		{"frontier-claimed", `error: frontier request: POST "https://api.anthropic.com/v1/messages": 400 Bad Request (Request-ID: req_1) {"type":"error","error":{"type":"invalid_request_error","message":"Who owns the lexer? LEGACYKEY987"}}`, "anthropic", "invalid_request_error", 400},
+		{"jev-attested", `error: jev status 422: {"echo":"Bearer LEGACYKEY987"}`, "jev", "other", 422},
+	}
+	for _, tc := range cases {
+		ex := planned(example("ask-1", "repow-b", ArmExplicit, nil), tc.arm)
+		ex.Shadow = map[string]RouterResult{tc.arm: {Arm: tc.arm, Scores: []Score{}, Fallback: true, FallbackReason: FallbackError, Error: tc.text}}
+		rep, rows := Replay(context.Background(), []Example{ex}, tc.arm, nil, Options{Recorded: true})
 		out, _ := json.Marshal(struct {
 			R []Result
 			P Report
 		}{rows, rep})
-		if strings.Contains(string(out), "LEGACYKEY987") || (!recorded && strings.Contains(string(out), "lexer")) {
-			t.Fatalf("record_text=%v export leaked: %s", recorded, out)
+		for _, leak := range []string{"LEGACYKEY987", "lexer", "Bearer", "organization"} {
+			if strings.Contains(string(out), leak) {
+				t.Fatalf("%s export leaked %q: %s", tc.arm, leak, out)
+			}
 		}
-		if rows[0].FallbackStatus != 422 || rows[0].FallbackProvider != "jev" {
-			t.Fatalf("legacy attribution = %+v", rows[0])
+		if r := rows[0]; r.FallbackStatus != tc.status || r.FallbackProvider != tc.provider || r.FallbackCode != tc.code {
+			t.Fatalf("%s legacy attribution = %+v", tc.arm, r)
 		}
 	}
 }
 
-func TestReplayKeepsFallbackDetail(t *testing.T) {
-	res := RouterResult{Arm: "stub", Scores: []Score{}, Fallback: true, FallbackReason: FallbackRequestError, Error: "request_error: jev status 422: bad field"}
+func TestReplayExportsStructuredFallback(t *testing.T) {
+	res := RouterResult{Arm: "stub", Scores: []Score{}, Fallback: true, FallbackReason: FallbackRequestError, HTTPStatus: 422, Provider: "jev", ErrorCode: "other"}
 	examples := []Example{example("ask-1", "repow-b", ArmExplicit, nil), example("ask-2", "repow-b", ArmExplicit, nil)}
 	rep, rows := Replay(context.Background(), examples, "stub", func(context.Context, Input) RouterResult { return res }, Options{})
-	if rows[0].FallbackDetail != res.Error || rep.FallbackDetails[FallbackRequestError][res.Error] != 2 {
-		t.Fatalf("detail lost: rows %+v details %v", rows[0], rep.FallbackDetails)
+	if r := rows[0]; r.FallbackStatus != 422 || r.FallbackProvider != "jev" || r.FallbackCode != "other" || rep.FallbackCodes[FallbackRequestError]["422 other"] != 2 {
+		t.Fatalf("rows %+v codes %v", rows[0], rep.FallbackCodes)
 	}
 }
 

@@ -165,25 +165,12 @@ func (r *Router) ShadowPlan() []string {
 
 // Skipped is a fallback for an arm that never ran, stamped with the arm's
 // configured model and template so missing work stays attributable.
-func (r *Router) Skipped(name, reason, msg string) RouterResult {
-	res := fallbackResult(name, reason, msg)
+func (r *Router) Skipped(name, reason string) RouterResult {
+	res := fallbackResult(name, reason)
 	if arm, ok := r.arms[name]; ok {
 		res = withIdentity(arm, res)
 	}
-	return r.scrub(res, "")
-}
-
-// scrub prepares a result for persistence: with record_text off the error
-// body is dropped, otherwise configured keys, the ask text and credential
-// shapes are redacted.
-func (r *Router) scrub(res RouterResult, askText string) RouterResult {
-	return Scrub(res, r.cfg.RecordText, r.Secrets(askText)...)
-}
-
-// Secrets are the literals redacted from stored errors: the configured API
-// keys, plus any extra (such as the ask text).
-func (r *Router) Secrets(extra ...string) []string {
-	return append([]string{r.cfg.Jev.APIKey, r.cfg.Frontier.APIKey}, extra...)
+	return res
 }
 
 // Run executes the named arm with the configured timeout behind its
@@ -192,17 +179,17 @@ func (r *Router) Secrets(extra ...string) []string {
 func (r *Router) Run(ctx context.Context, name string, in Input) RouterResult {
 	arm, ok := r.arms[name]
 	if !ok {
-		return fallbackResult(name, FallbackUnknownArm, "unknown arm "+name)
+		return fallbackResult(name, FallbackUnknownArm)
 	}
 	b := r.breakerFor(arm)
 	if b == nil {
-		return r.scrub(Run(ctx, arm, in, r.Timeout()), in.Request.Text)
+		return Run(ctx, arm, in, r.Timeout())
 	}
 	allowed, probe := b.allow()
 	if !allowed {
-		return withIdentity(arm, fallbackResult(name, FallbackBreakerOpen, "provider breaker open after repeated failures"))
+		return withIdentity(arm, fallbackResult(name, FallbackBreakerOpen))
 	}
 	res := Run(ctx, arm, in, r.Timeout())
 	b.record(res, probe)
-	return r.scrub(res, in.Request.Text)
+	return res
 }

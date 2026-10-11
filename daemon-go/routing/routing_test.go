@@ -159,7 +159,7 @@ func TestRunFailsClosed(t *testing.T) {
 		t.Fatalf("no candidates: %+v", res)
 	}
 	var fe *FallbackErr
-	if !errors.As(fail(FallbackError, "x"), &fe) {
+	if !errors.As(fail(FallbackError), &fe) {
 		t.Fatal("fail must produce a FallbackErr")
 	}
 }
@@ -229,7 +229,7 @@ func (panicArm) Rank(context.Context, Input) (RouterResult, error) { panic("sdk 
 
 func TestRunContainsPanics(t *testing.T) {
 	res := Run(context.Background(), panicArm{}, testInput(), time.Second)
-	if !res.Fallback || res.FallbackReason != FallbackPanic || !strings.Contains(res.Error, "sdk exploded") {
+	if !res.Fallback || res.FallbackReason != FallbackPanic || res.Error != "" {
 		t.Fatalf("result = %+v", res)
 	}
 }
@@ -269,7 +269,7 @@ func (f *flakyArm) Provider() string { return "flaky-provider" }
 func (f *flakyArm) Rank(context.Context, Input) (RouterResult, error) {
 	f.calls++
 	if f.fail {
-		return RouterResult{}, fail(cmp.Or(f.reason, FallbackError), "provider down")
+		return RouterResult{}, fail(cmp.Or(f.reason, FallbackError))
 	}
 	return RouterResult{Scores: []Score{{PeerID: "repow-b", Score: 1}}}, nil
 }
@@ -512,7 +512,7 @@ func TestSkippedCarriesArmIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res := r.Skipped("jev-both", FallbackSaturated, "pool full")
+	res := r.Skipped("jev-both", FallbackSaturated)
 	if res.Model != "jev-1.13.0" || res.TemplateSHA256 != (Jev{View: ViewBoth}).TemplateSHA256() || !res.Fallback {
 		t.Fatalf("skipped = %+v", res)
 	}

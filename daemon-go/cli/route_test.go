@@ -42,22 +42,22 @@ func TestReplayTableNamesMaskAndRecencyStrata(t *testing.T) {
 	}
 }
 
-// The table discloses a history baseline's vote population and never prints
-// fallback details.
+// The table discloses a history baseline's vote population; fallback codes
+// are JSON-only.
 func TestReplayTableShowsHistoryNotDetails(t *testing.T) {
 	var out strings.Builder
 	printReplayTable(&out, []routing.Report{{
 		Arm: "majority-past", Source: "rerun", Decisions: 1, Scored: 1, Fallbacks: 1,
 		Skipped: map[string]int{}, Cohorts: map[string]*routing.Cohort{},
-		History:         &routing.History{Asks: 9, From: "2026-10-11T17:01:09Z", To: "2026-10-11T17:26:23Z"},
-		FallbackDetails: map[string]map[string]int{"request_error": {"request_error: jev status 422: secret-ish body": 1}},
+		History:       &routing.History{Asks: 9, From: "2026-10-11T17:01:09Z", To: "2026-10-11T17:26:23Z"},
+		FallbackCodes: map[string]map[string]int{"request_error": {"422 other": 1}},
 	}})
 	text := out.String()
 	if !strings.Contains(text, "history (majority-past votes from): 9 labelled asks, 2026-10-11T17:01:09Z to 2026-10-11T17:26:23Z") {
 		t.Fatalf("history not disclosed:\n%s", text)
 	}
-	if strings.Contains(text, "secret-ish body") {
-		t.Fatalf("table printed a fallback detail:\n%s", text)
+	if strings.Contains(text, "422 other") {
+		t.Fatalf("table printed fallback codes:\n%s", text)
 	}
 }
 

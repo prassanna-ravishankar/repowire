@@ -58,7 +58,7 @@ func (Recent) Rank(_ context.Context, in Input) (RouterResult, error) {
 		}
 	}
 	if len(scores) == 0 {
-		return RouterResult{}, fail(FallbackNoHistory, "no candidate has a recorded exchange with the sender")
+		return RouterResult{}, fail(FallbackNoHistory)
 	}
 	return RouterResult{Scores: scores}, nil
 }
@@ -169,7 +169,7 @@ func (m Majority) Name() string {
 
 func (m Majority) Rank(_ context.Context, in Input) (RouterResult, error) {
 	if in.Sender == nil {
-		return RouterResult{}, fail(FallbackNoHistory, "no sender")
+		return RouterResult{}, fail(FallbackNoHistory)
 	}
 	counts := map[string]int{}
 	for _, v := range m.votes[in.Sender.PeerID] {
@@ -185,7 +185,7 @@ func (m Majority) Rank(_ context.Context, in Input) (RouterResult, error) {
 		}
 	}
 	if len(scores) == 0 {
-		return RouterResult{}, fail(FallbackNoHistory, "sender has no other asks to a candidate that may vote")
+		return RouterResult{}, fail(FallbackNoHistory)
 	}
 	return RouterResult{Scores: scores}, nil
 }

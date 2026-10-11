@@ -3,7 +3,9 @@ package routing
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -163,17 +165,14 @@ type Result struct {
 	Candidates     int      `json:"candidates"`
 	Fallback       bool     `json:"fallback,omitempty"`
 	FallbackReason string   `json:"fallback_reason,omitempty"`
-	// FallbackStatus and FallbackProvider attribute a failure (our request
-	// or their service) without its body.
-	FallbackStatus   int    `json:"fallback_status,omitempty"`
-	FallbackProvider string `json:"fallback_provider,omitempty"`
-	// FallbackDetail is the recorded error, scrubbed again on export: with
-	// credentials and the ask redacted, or, for asks recorded without their
-	// text, only "<status> <reason>".
-	FallbackDetail string  `json:"fallback_detail,omitempty"`
-	LatencyMS      int64   `json:"latency_ms"`
-	Skipped        string  `json:"skipped,omitempty"`
-	Outcome        Outcome `json:"outcome"`
+	// FallbackStatus, FallbackProvider and FallbackCode attribute a failure
+	// (our request or their service). No recorded text is ever exported.
+	FallbackStatus   int     `json:"fallback_status,omitempty"`
+	FallbackProvider string  `json:"fallback_provider,omitempty"`
+	FallbackCode     string  `json:"fallback_code,omitempty"`
+	LatencyMS        int64   `json:"latency_ms"`
+	Skipped          string  `json:"skipped,omitempty"`
+	Outcome          Outcome `json:"outcome"`
 	// DeclaredIsRecentContact: the sender's pick was the candidate it
 	// exchanged with most recently (from the unmasked snapshot).
 	DeclaredIsRecentContact bool `json:"declared_is_recent_contact"`
@@ -201,9 +200,9 @@ type Report struct {
 	MeanCandidates    float64        `json:"mean_candidates"`
 	MeanLatencyMS     float64        `json:"mean_latency_ms"`
 	Skipped           map[string]int `json:"skipped"`
-	// FallbackDetails counts each distinct recorded error per fallback
-	// reason. JSON only; the table shows reasons, not details.
-	FallbackDetails map[string]map[string]int `json:"fallback_details,omitempty"`
+	// FallbackCodes counts fallbacks per reason by "<status> <code>" (or
+	// "<code>" without a status). JSON only.
+	FallbackCodes map[string]map[string]int `json:"fallback_codes,omitempty"`
 	// History is the vote population of a history baseline, which can be
 	// wider than the scored rows.
 	History *History `json:"history,omitempty"`
@@ -231,9 +230,6 @@ type Options struct {
 	Recorded bool
 	// Mask blanks these candidate fields (from ParseMask) before a re-run.
 	Mask []string
-	// Secrets are literals (configured API keys) redacted from exported
-	// fallback details, on top of the credential shapes.
-	Secrets []string
 }
 
 // Cohort is the scored subset with one delivery outcome.
@@ -292,19 +288,19 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 		}
 		r.Fallback, r.FallbackReason, r.LatencyMS = res.Fallback, res.FallbackReason, res.LatencyMS
 		if res.Fallback {
-			r.FallbackStatus, r.FallbackProvider = statusOf(res), res.Provider // before the text is scrubbed
-			res = Scrub(res, d.Request.TextRecorded, append(slices.Clone(opts.Secrets), d.Request.Text)...)
-			r.FallbackDetail = res.Error
+			r.FallbackStatus, r.FallbackCode = Attribution(res)
+			r.FallbackProvider = res.Provider
 			if r.FallbackProvider == "" {
 				r.FallbackProvider = providerOf(armName)
 			}
-			if rep.FallbackDetails == nil {
-				rep.FallbackDetails = map[string]map[string]int{}
+			key := strings.TrimSpace(fmt.Sprintf("%s %s", statusText(r.FallbackStatus), r.FallbackCode))
+			if rep.FallbackCodes == nil {
+				rep.FallbackCodes = map[string]map[string]int{}
 			}
-			if rep.FallbackDetails[res.FallbackReason] == nil {
-				rep.FallbackDetails[res.FallbackReason] = map[string]int{}
+			if rep.FallbackCodes[res.FallbackReason] == nil {
+				rep.FallbackCodes[res.FallbackReason] = map[string]int{}
 			}
-			rep.FallbackDetails[res.FallbackReason][res.Error]++
+			rep.FallbackCodes[res.FallbackReason][key]++
 		}
 		scores := res.Scores
 		if res.Fallback {
@@ -357,6 +353,13 @@ func recencyStratum(in Input, recent bool) string {
 		return StratumOtherContact
 	}
 	return StratumNoExchange
+}
+
+func statusText(status int) string {
+	if status == 0 {
+		return ""
+	}
+	return strconv.Itoa(status)
 }
 
 // providerOf names a model arm's provider from its name, for rows recorded

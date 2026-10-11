@@ -129,7 +129,7 @@ func replayArms(a args, examples, history []routing.Example, recorded bool, usag
 	enc := json.NewEncoder(os.Stdout)
 	for _, name := range arms {
 		runner := func(ctx context.Context, in routing.Input) routing.RouterResult { return router.Run(ctx, name, in) }
-		opts := routing.Options{Recorded: recorded, Mask: mask, Secrets: router.Secrets()}
+		opts := routing.Options{Recorded: recorded, Mask: mask}
 		if baseline, ok := baselines[name]; ok {
 			runner = func(ctx context.Context, in routing.Input) routing.RouterResult {
 				return routing.Run(ctx, baseline, in, router.Timeout())
