@@ -140,7 +140,14 @@ type RouterResult struct {
 	Seed           *int64             `json:"seed,omitempty"`
 	Fallback       bool               `json:"fallback"`
 	FallbackReason string             `json:"fallback_reason,omitempty"`
-	Error          string             `json:"error,omitempty"`
+	// HTTPStatus, Provider and ErrorCode attribute a failure. No provider
+	// body or other free text is ever stored (see attribution.go).
+	HTTPStatus int    `json:"http_status,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	ErrorCode  string `json:"error_code,omitempty"`
+	// Error is never written. Rows recorded before #420 hold raw provider
+	// text here; read them only through Attribution, never export it.
+	Error string `json:"error,omitempty"`
 }
 
 // Decision is the route_decision detail.

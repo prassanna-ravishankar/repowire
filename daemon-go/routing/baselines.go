@@ -31,11 +31,11 @@ func IsBaseline(name string) bool {
 	return false
 }
 
-// BaselineArms builds the baselines over the replayed window.
-func BaselineArms(examples []Example) map[string]Arm {
+// BaselineArms builds the baselines; the majority baselines vote from history.
+func BaselineArms(history []Example) map[string]Arm {
 	return map[string]Arm{
 		"random": Random{}, "recent": Recent{},
-		"majority": NewMajority(examples, false), "majority-past": NewMajority(examples, true),
+		"majority": NewMajority(history, false), "majority-past": NewMajority(history, true),
 	}
 }
 
@@ -58,7 +58,7 @@ func (Recent) Rank(_ context.Context, in Input) (RouterResult, error) {
 		}
 	}
 	if len(scores) == 0 {
-		return RouterResult{}, fail(FallbackNoHistory, "no candidate has a recorded exchange with the sender")
+		return RouterResult{}, fail(FallbackNoHistory)
 	}
 	return RouterResult{Scores: scores}, nil
 }
@@ -99,9 +99,36 @@ func DeclaredIsRecentContact(in Input, declared string) bool {
 //     so it is causal and the fair "deployable history" comparison.
 //
 // Candidates the sender never addressed are left unranked.
+//
+// Votes come from the examples passed to NewMajority, which may be wider than
+// the rows being scored: the replay CLI passes the whole ledger, so --since
+// and --limit narrow what is scored without starving the vote. Given only
+// the scored window, majority-past is cold at the start of it.
+//
+// TODO(scale): each scored row scans the sender's votes, O(scored × history).
+// Fine for thousands of asks; sorted per-sender votes with prefix counts would
+// make majority-past O(log n) per row if the ledger grows past that.
 type Majority struct {
-	past  bool
-	votes map[string][]vote // sender → its labelled asks
+	past     bool
+	votes    map[string][]vote // sender → its labelled asks
+	asks     int
+	from, to time.Time
+}
+
+// History describes the vote population, for disclosure beside results.
+type History struct {
+	Asks int    `json:"asks"`
+	From string `json:"from,omitempty"`
+	To   string `json:"to,omitempty"`
+}
+
+// History is the span of labelled asks this baseline votes from, in UTC.
+func (m Majority) History() History {
+	h := History{Asks: m.asks}
+	if !m.from.IsZero() {
+		h.From, h.To = m.from.UTC().Format(time.RFC3339Nano), m.to.UTC().Format(time.RFC3339Nano)
+	}
+	return h
 }
 
 type vote struct {
@@ -120,6 +147,15 @@ func NewMajority(examples []Example, past bool) Majority {
 		}
 		at, _ := time.Parse(time.RFC3339Nano, d.DecidedAt)
 		m.votes[d.Sender.PeerID] = append(m.votes[d.Sender.PeerID], vote{trace: ex.TraceID, declared: *d.Declared.PeerID, at: at})
+		m.asks++
+		if !at.IsZero() {
+			if m.from.IsZero() || at.Before(m.from) {
+				m.from = at
+			}
+			if at.After(m.to) {
+				m.to = at
+			}
+		}
 	}
 	return m
 }
@@ -133,7 +169,7 @@ func (m Majority) Name() string {
 
 func (m Majority) Rank(_ context.Context, in Input) (RouterResult, error) {
 	if in.Sender == nil {
-		return RouterResult{}, fail(FallbackNoHistory, "no sender")
+		return RouterResult{}, fail(FallbackNoHistory)
 	}
 	counts := map[string]int{}
 	for _, v := range m.votes[in.Sender.PeerID] {
@@ -149,7 +185,7 @@ func (m Majority) Rank(_ context.Context, in Input) (RouterResult, error) {
 		}
 	}
 	if len(scores) == 0 {
-		return RouterResult{}, fail(FallbackNoHistory, "sender has no other asks to a candidate that may vote")
+		return RouterResult{}, fail(FallbackNoHistory)
 	}
 	return RouterResult{Scores: scores}, nil
 }

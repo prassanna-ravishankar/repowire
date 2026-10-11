@@ -1,6 +1,8 @@
 package routing
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -100,7 +102,10 @@ func TestJevFailuresFallBack(t *testing.T) {
 		"billing":        {http.StatusPaymentRequired, `{"detail":{"error_type":"billing_error"}}`, FallbackBilling},
 		"unauthorized":   {http.StatusUnauthorized, `{}`, FallbackUnauthorized},
 		"forbidden":      {http.StatusForbidden, `{}`, FallbackUnauthorized},
-		"server error":   {http.StatusInternalServerError, `oops`, FallbackError},
+		"server error":   {http.StatusInternalServerError, `oops`, FallbackServerError},
+		"bad gateway":    {http.StatusBadGateway, `oops`, FallbackServerError},
+		"bad request":    {http.StatusBadRequest, `{}`, FallbackRequestError},
+		"unprocessable":  {http.StatusUnprocessableEntity, `{}`, FallbackRequestError},
 		"malformed":      {http.StatusOK, `not json`, FallbackUnparseable},
 		"missing answer": {http.StatusOK, `{"answers":{"c1":{"type":"noul","noul":0.5}}}`, FallbackUnparseable},
 		"out of range":   {http.StatusOK, `{"answers":{"c1":{"type":"noul","noul":1.5},"c2":{"type":"noul","noul":0.1}}}`, FallbackUnparseable},
@@ -154,7 +159,7 @@ func TestRunFailsClosed(t *testing.T) {
 		t.Fatalf("no candidates: %+v", res)
 	}
 	var fe *FallbackErr
-	if !errors.As(fail(FallbackError, "x"), &fe) {
+	if !errors.As(fail(FallbackError), &fe) {
 		t.Fatal("fail must produce a FallbackErr")
 	}
 }
@@ -224,7 +229,7 @@ func (panicArm) Rank(context.Context, Input) (RouterResult, error) { panic("sdk 
 
 func TestRunContainsPanics(t *testing.T) {
 	res := Run(context.Background(), panicArm{}, testInput(), time.Second)
-	if !res.Fallback || res.FallbackReason != FallbackPanic || !strings.Contains(res.Error, "sdk exploded") {
+	if !res.Fallback || res.FallbackReason != FallbackPanic || res.Error != "" {
 		t.Fatalf("result = %+v", res)
 	}
 }
@@ -254,8 +259,9 @@ func TestFailuresKeepModelAndTemplate(t *testing.T) {
 }
 
 type flakyArm struct {
-	fail  bool
-	calls int
+	fail   bool
+	reason string // FallbackError when empty
+	calls  int
 }
 
 func (f *flakyArm) Name() string     { return "flaky" }
@@ -263,7 +269,7 @@ func (f *flakyArm) Provider() string { return "flaky-provider" }
 func (f *flakyArm) Rank(context.Context, Input) (RouterResult, error) {
 	f.calls++
 	if f.fail {
-		return RouterResult{}, fail(FallbackError, "provider down")
+		return RouterResult{}, fail(cmp.Or(f.reason, FallbackError))
 	}
 	return RouterResult{Scores: []Score{{PeerID: "repow-b", Score: 1}}}, nil
 }
@@ -326,7 +332,8 @@ func TestFrontierRejectsPartialOrDuplicateRanking(t *testing.T) {
 func TestFrontierClassifiesProviderStatuses(t *testing.T) {
 	for status, want := range map[int]string{
 		http.StatusTooManyRequests: FallbackRateLimited, http.StatusUnauthorized: FallbackUnauthorized,
-		http.StatusForbidden: FallbackUnauthorized, http.StatusPaymentRequired: FallbackBilling, http.StatusBadRequest: FallbackError,
+		http.StatusForbidden: FallbackUnauthorized, http.StatusPaymentRequired: FallbackBilling,
+		http.StatusBadRequest: FallbackRequestError, http.StatusNotFound: FallbackRequestError, http.StatusInternalServerError: FallbackServerError,
 	} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -338,6 +345,132 @@ func TestFrontierClassifiesProviderStatuses(t *testing.T) {
 		if !res.Fallback || res.FallbackReason != want {
 			t.Fatalf("status %d: result = %+v, want %s", status, res, want)
 		}
+	}
+}
+
+func TestStatusReason(t *testing.T) {
+	for code, want := range map[int]string{
+		400: FallbackRequestError, 404: FallbackRequestError, 405: FallbackRequestError, 413: FallbackRequestError, 422: FallbackRequestError,
+		401: FallbackUnauthorized, 403: FallbackUnauthorized, 402: FallbackBilling, 429: FallbackRateLimited,
+		500: FallbackServerError, 502: FallbackServerError, 503: FallbackServerError, 529: FallbackServerError,
+	} {
+		if got := statusReason(code); got != want {
+			t.Errorf("statusReason(%d) = %s, want %s", code, got, want)
+		}
+	}
+}
+
+// Our own malformed requests must not open the provider's breaker; the
+// provider's 5xx must.
+func TestRequestErrorsDoNotTripTheBreaker(t *testing.T) {
+	for reason, trips := range map[string]bool{FallbackRequestError: false, FallbackServerError: true} {
+		arm := &flakyArm{fail: true, reason: reason}
+		r, err := NewRouter(config.RouterConfig{TimeoutSeconds: 1}, map[string]Arm{"flaky": arm})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < breakerTrip; i++ {
+			r.Run(context.Background(), "flaky", testInput())
+		}
+		res := r.Run(context.Background(), "flaky", testInput())
+		if open := res.FallbackReason == FallbackBreakerOpen; open != trips {
+			t.Fatalf("%s: breaker open = %v after %d failures, want %v", reason, open, breakerTrip, trips)
+		}
+	}
+}
+
+// cancelAfterResponse is a transport that buffers each response, then
+// cancels the caller's context before handing it back: the status has
+// arrived, and the deadline has passed by the time the arm looks at it. It
+// makes the deadline race deterministic.
+type cancelAfterResponse struct{ cancel context.CancelFunc }
+
+func (c cancelAfterResponse) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	c.cancel()
+	return resp, nil
+}
+
+// A provider refusal whose status arrived before the deadline keeps its
+// reason; the deadline is not the better explanation.
+func TestRefusalWinsOverDeadline(t *testing.T) {
+	cases := map[int]string{402: FallbackBilling, 401: FallbackUnauthorized, 403: FallbackUnauthorized}
+	for status, want := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"x","message":"refused"}}`))
+		}))
+		t.Cleanup(srv.Close)
+		for _, arm := range []func(*http.Client) Arm{
+			func(c *http.Client) Arm { return Jev{View: ViewAttested, APIKey: "k", BaseURL: srv.URL, HTTP: c} },
+			func(c *http.Client) Arm {
+				return Frontier{View: ViewAttested, APIKey: "k", Model: "claude-opus-5-5", BaseURL: srv.URL, HTTP: c}
+			},
+		} {
+			ctx, cancel := context.WithCancel(context.Background())
+			a := arm(&http.Client{Transport: cancelAfterResponse{cancel}})
+			res := Run(ctx, a, testInput(), 5*time.Second)
+			cancel()
+			if ctx.Err() == nil || !res.Fallback || res.FallbackReason != want || res.HTTPStatus != status {
+				t.Fatalf("%s status %d after the deadline: %+v, want %s", a.Name(), status, res, want)
+			}
+		}
+	}
+	// No status at all: the deadline is the explanation.
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	t.Cleanup(func() { close(release); srv.Close() })
+	if res := Run(context.Background(), Jev{View: ViewAttested, APIKey: "k", BaseURL: srv.URL}, testInput(), 50*time.Millisecond); res.FallbackReason != FallbackTimeout {
+		t.Fatalf("no response: %+v, want timeout", res)
+	}
+}
+
+// Anthropic spend limits are account-wide and persistent; they must be
+// billing (breaker), not request_error, despite their 400/429 statuses.
+func TestFrontierSpendLimitsAreBilling(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   string
+		trips  bool
+	}{
+		{"validation 400", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"messages: field required"}}`, FallbackRequestError, false},
+		{"org spend limit 400", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC."}}`, FallbackBilling, true},
+		{"workspace spend limit 400", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified workspace API usage limits. You will regain access on 2026-11-01 at 00:00 UTC."}}`, FallbackBilling, true},
+		{"tier spend cap 429", 429, `{"type":"error","error":{"type":"rate_limit_error","message":"You have reached your API usage limits","details":{"error_code":"enforced_spend_limit_reached"}}}`, FallbackBilling, true},
+		{"rate limit 429", 429, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`, FallbackRateLimited, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			t.Cleanup(srv.Close)
+			cfg := config.RouterConfig{TimeoutSeconds: 5, Frontier: config.RouterModel{APIKey: "k", Model: "claude-opus-5-5", BaseURL: srv.URL}}
+			r, err := NewRouter(cfg, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < breakerTrip; i++ {
+				if res := r.Run(context.Background(), "frontier-claimed", testInput()); res.FallbackReason != tc.want {
+					t.Fatalf("call %d: %+v, want %s", i, res, tc.want)
+				}
+			}
+			res := r.Run(context.Background(), "frontier-claimed", testInput())
+			if open := res.FallbackReason == FallbackBreakerOpen; open != tc.trips {
+				t.Fatalf("breaker open = %v after %d %s, want %v", open, breakerTrip, tc.want, tc.trips)
+			}
+		})
 	}
 }
 
@@ -379,7 +512,7 @@ func TestSkippedCarriesArmIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res := r.Skipped("jev-both", FallbackSaturated, "pool full")
+	res := r.Skipped("jev-both", FallbackSaturated)
 	if res.Model != "jev-1.13.0" || res.TemplateSHA256 != (Jev{View: ViewBoth}).TemplateSHA256() || !res.Fallback {
 		t.Fatalf("skipped = %+v", res)
 	}

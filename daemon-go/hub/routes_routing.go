@@ -9,7 +9,6 @@ package hub
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sort"
 	"sync"
@@ -261,7 +260,7 @@ func (h *Hub) planShadow(d *routing.Decision) bool {
 		return true
 	}
 	for _, arm := range d.ShadowPlanned {
-		d.ShadowSkipped = append(d.ShadowSkipped, r.Skipped(arm, routing.FallbackSaturated, "shadow pool full"))
+		d.ShadowSkipped = append(d.ShadowSkipped, r.Skipped(arm, routing.FallbackSaturated))
 	}
 	return false
 }
@@ -291,7 +290,7 @@ func (h *Hub) runShadow(cid string, d *routing.Decision, slot bool, toID, fromID
 func (h *Hub) runShadowArm(r *routing.Router, arm string, in routing.Input) (res routing.RouterResult) {
 	defer func() {
 		if p := recover(); p != nil {
-			res = r.Skipped(arm, routing.FallbackPanic, fmt.Sprintf("shadow run panicked: %v", p))
+			res = r.Skipped(arm, routing.FallbackPanic) // the panic value is not recorded
 		}
 	}()
 	return r.Run(context.Background(), arm, in)

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -107,14 +108,134 @@ func TestMajorityPastOnlyCountsEarlierAsks(t *testing.T) {
 	}
 	// ask-4 shares ask-3's instant: strictly-before excludes it, so only the
 	// two asks to b vote. The whole window sees c (ask-3) as well.
-	if got := top(past, 3); got != "repow-b" {
-		t.Fatalf("majority-past on ask-4 = %s, want repow-b", got)
+	if res := Run(context.Background(), past, InputFrom("ask-4", examples[3].Decision), time.Second); res.Fallback ||
+		!slices.Equal(res.Scores, []Score{{PeerID: "repow-b", Score: 2}}) {
+		t.Fatalf("majority-past on ask-4 = %+v, want exactly b=2 and no same-instant c", res)
 	}
 	if res := Run(context.Background(), whole, InputFrom("ask-4", examples[3].Decision), time.Second); len(res.Scores) != 2 {
 		t.Fatalf("whole-window majority on ask-4 = %+v", res)
 	}
 	if past.Name() != "majority-past" || whole.Name() != "majority" {
 		t.Fatal("variant names")
+	}
+}
+
+func TestMajorityPastIgnoresTiedTimeHistory(t *testing.T) {
+	stamp := func(ex Example) Example { ex.Decision.DecidedAt = "2026-10-11T12:00:00Z"; return ex }
+	examples := []Example{
+		stamp(example("ask-1", "repow-b", ArmExplicit, nil)),
+		stamp(example("ask-2", "repow-c", ArmExplicit, nil)),
+	}
+	past := NewMajority(examples, true)
+	for _, ex := range examples {
+		if res := Run(context.Background(), past, InputFrom(ex.TraceID, ex.Decision), time.Second); res.FallbackReason != FallbackNoHistory {
+			t.Fatalf("%s with only same-instant history = %+v, want no_history", ex.TraceID, res)
+		}
+	}
+}
+
+// Scoring a narrow window must not starve the vote: history passed to
+// NewMajority can be wider than the rows scored.
+func TestMajorityPastVotesFromHistoryBeyondTheScoredWindow(t *testing.T) {
+	stamp := func(ex Example, ts string) Example { ex.Decision.DecidedAt = ts; return ex }
+	history := []Example{
+		stamp(example("ask-1", "repow-b", ArmExplicit, nil), "2026-10-11T10:00:00Z"),
+		stamp(example("ask-2", "repow-b", ArmExplicit, nil), "2026-10-11T11:00:00Z"),
+	}
+	window := history[1:]
+	run := func(m Majority) Report {
+		rep, _ := Replay(context.Background(), window, "majority-past", func(ctx context.Context, in Input) RouterResult {
+			return Run(ctx, m, in, time.Second)
+		}, Options{})
+		return rep
+	}
+	if rep := run(NewMajority(window, true)); rep.Hit1 != 0 || rep.Fallbacks != 1 {
+		t.Fatalf("window-only votes should be cold: %+v", rep)
+	}
+	full := NewMajority(history, true)
+	if rep := run(full); rep.Hit1 != 1 {
+		t.Fatalf("full-history votes should hit: %+v", rep)
+	}
+	if h := full.History(); h.Asks != 2 || h.From != "2026-10-11T10:00:00Z" || h.To != "2026-10-11T11:00:00Z" {
+		t.Fatalf("history = %+v", h)
+	}
+}
+
+func TestMajorityHistoryOrdersByTimeNotText(t *testing.T) {
+	stamp := func(ex Example, ts string) Example { ex.Decision.DecidedAt = ts; return ex }
+	m := NewMajority([]Example{
+		stamp(example("ask-1", "repow-b", ArmExplicit, nil), "2026-10-11T12:00:00.1Z"),
+		stamp(example("ask-2", "repow-b", ArmExplicit, nil), "2026-10-11T12:00:00Z"),
+		stamp(example("ask-3", "repow-b", ArmExplicit, nil), "2026-10-11T12:30:00+01:00"), // 11:30Z, the earliest
+	}, true)
+	if h := m.History(); h.From != "2026-10-11T11:30:00Z" || h.To != "2026-10-11T12:00:00.1Z" || h.Asks != 3 {
+		t.Fatalf("history = %+v", h)
+	}
+}
+
+func TestErrorCodeAllowlist(t *testing.T) {
+	for code, want := range map[string]string{
+		"billing_error": "billing_error", "enforced_spend_limit_reached": "enforced_spend_limit_reached",
+		"overloaded_error": "overloaded_error", "KEY_SENTINEL_44ab": "other", "": "other", "Billing_Error": "other",
+	} {
+		if got := errorCode(code); got != want {
+			t.Errorf("errorCode(%q) = %q, want %q", code, got, want)
+		}
+	}
+	// End to end: Jev's declared error_type round-trips; an unknown one is "other".
+	for body, want := range map[string]string{
+		`{"detail":{"error_type":"billing_error","message":"no credits"}}`: "billing_error",
+		`{"detail":{"error_type":"KEY_SENTINEL_44ab"}}`:                    "other",
+		`not json`: "other",
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusPaymentRequired)
+			_, _ = w.Write([]byte(body))
+		}))
+		res := Run(context.Background(), Jev{View: ViewAttested, APIKey: "k", BaseURL: srv.URL}, testInput(), time.Second)
+		srv.Close()
+		if res.ErrorCode != want || res.HTTPStatus != 402 || res.FallbackReason != FallbackBilling || res.Error != "" {
+			t.Fatalf("body %s: %+v, want code %s and no error text", body, res, want)
+		}
+	}
+}
+
+// Legacy rows (pre-#420) hold raw provider text in "error". Export recovers
+// the status and allowlisted codes from both recorded forms and never the text.
+func TestReplayExportsLegacyRowsAsStructureOnly(t *testing.T) {
+	cases := []struct {
+		arm, text, provider, code string
+		status                    int
+	}{
+		{"jev-attested", `error: jev status 402: {"detail":{"error_type":"billing_error","message":"Your organization has no credits. LEGACYKEY987"}}`, "jev", "billing_error", 402},
+		{"frontier-claimed", `error: frontier request: POST "https://api.anthropic.com/v1/messages": 400 Bad Request (Request-ID: req_1) {"type":"error","error":{"type":"invalid_request_error","message":"Who owns the lexer? LEGACYKEY987"}}`, "anthropic", "invalid_request_error", 400},
+		{"jev-attested", `error: jev status 422: {"echo":"Bearer LEGACYKEY987"}`, "jev", "other", 422},
+	}
+	for _, tc := range cases {
+		ex := planned(example("ask-1", "repow-b", ArmExplicit, nil), tc.arm)
+		ex.Shadow = map[string]RouterResult{tc.arm: {Arm: tc.arm, Scores: []Score{}, Fallback: true, FallbackReason: FallbackError, Error: tc.text}}
+		rep, rows := Replay(context.Background(), []Example{ex}, tc.arm, nil, Options{Recorded: true})
+		out, _ := json.Marshal(struct {
+			R []Result
+			P Report
+		}{rows, rep})
+		for _, leak := range []string{"LEGACYKEY987", "lexer", "Bearer", "organization"} {
+			if strings.Contains(string(out), leak) {
+				t.Fatalf("%s export leaked %q: %s", tc.arm, leak, out)
+			}
+		}
+		if r := rows[0]; r.FallbackStatus != tc.status || r.FallbackProvider != tc.provider || r.FallbackCode != tc.code {
+			t.Fatalf("%s legacy attribution = %+v", tc.arm, r)
+		}
+	}
+}
+
+func TestReplayExportsStructuredFallback(t *testing.T) {
+	res := RouterResult{Arm: "stub", Scores: []Score{}, Fallback: true, FallbackReason: FallbackRequestError, HTTPStatus: 422, Provider: "jev", ErrorCode: "other"}
+	examples := []Example{example("ask-1", "repow-b", ArmExplicit, nil), example("ask-2", "repow-b", ArmExplicit, nil)}
+	rep, rows := Replay(context.Background(), examples, "stub", func(context.Context, Input) RouterResult { return res }, Options{})
+	if r := rows[0]; r.FallbackStatus != 422 || r.FallbackProvider != "jev" || r.FallbackCode != "other" || rep.FallbackCodes[FallbackRequestError]["422 other"] != 2 {
+		t.Fatalf("rows %+v codes %v", rows[0], rep.FallbackCodes)
 	}
 }
 

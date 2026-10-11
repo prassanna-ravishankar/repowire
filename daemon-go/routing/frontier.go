@@ -1,11 +1,12 @@
 package routing
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
+	"io"
 	"math"
 	"net/http"
 	"sort"
@@ -25,6 +26,40 @@ const frontierSystem = "You route asks between AI coding agents that are already
 	"confidence in the top choice from 0 to 1."
 
 const defaultFrontierBaseURL = "https://api.anthropic.com/"
+
+// anthropicError classifies an Anthropic error response into a reason and
+// the provider's declared code. Spend limits are account-wide and persistent,
+// but arrive as statuses that otherwise mean something else, so they are
+// recognised by their documented shapes first
+// (platform.claude.com/docs/en/api/rate-limits, "Setting your own spend
+// limit" and "Reaching your spend cap"):
+//   - a limit the organization or workspace set: 400 invalid_request_error,
+//     message beginning "You have reached your specified [workspace] API
+//     usage limits";
+//   - the tier's monthly cap: 429 with error.details.error_code
+//     "enforced_spend_limit_reached".
+func anthropicError(status int, body string) (reason, code string) {
+	var envelope struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+			Details struct {
+				ErrorCode string `json:"error_code"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(body), &envelope) != nil {
+		return statusReason(status), ""
+	}
+	e := envelope.Error
+	switch {
+	case e.Details.ErrorCode == "enforced_spend_limit_reached":
+		return FallbackBilling, e.Details.ErrorCode
+	case status == http.StatusBadRequest && strings.HasPrefix(e.Message, "You have reached your specified"):
+		return FallbackBilling, e.Type
+	}
+	return statusReason(status), e.Type
+}
 
 // Frontier asks a general-purpose Claude model for a ranking.
 type Frontier struct {
@@ -50,12 +85,12 @@ func (f Frontier) TemplateSHA256() string {
 
 func (f Frontier) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	if f.APIKey == "" {
-		return RouterResult{}, fail(FallbackUnconfigured, "frontier api key not configured")
+		return RouterResult{}, fail(FallbackUnconfigured)
 	}
 	state, keys := Project(in, f.View)
 	data, err := json.Marshal(state)
 	if err != nil {
-		return RouterResult{}, fail(FallbackError, "encode frontier input: %v", err)
+		return RouterResult{}, fail(FallbackError)
 	}
 	labels := make([]string, 0, len(keys))
 	for k := range keys {
@@ -70,9 +105,26 @@ func (f Frontier) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	if baseURL == "" {
 		baseURL = defaultFrontierBaseURL
 	}
+	// Capture an error response as it arrives: the SDK reports a context
+	// that expired after the response as a bare cancellation, which would
+	// lose a refusal the provider had already sent.
+	var refused struct {
+		status int
+		body   string
+	}
+	capture := func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+		resp, err := next(req)
+		if err == nil && resp.StatusCode >= 400 {
+			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+			resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(raw))
+			refused.status, refused.body = resp.StatusCode, string(raw)
+		}
+		return resp, err
+	}
 	opts := []option.RequestOption{
 		option.WithoutEnvironmentDefaults(), option.WithBaseURL(baseURL),
-		option.WithAPIKey(f.APIKey), option.WithMaxRetries(0),
+		option.WithAPIKey(f.APIKey), option.WithMaxRetries(0), option.WithMiddleware(capture),
 	}
 	if f.HTTP != nil {
 		opts = append(opts, option.WithHTTPClient(f.HTTP))
@@ -97,15 +149,14 @@ func (f Frontier) Rank(ctx context.Context, in Input) (RouterResult, error) {
 		},
 	})
 	if err != nil {
-		reason := FallbackError
-		var apiErr *anthropic.Error
-		if errors.As(err, &apiErr) {
-			reason = statusReason(apiErr.StatusCode)
+		if refused.status != 0 {
+			reason, code := anthropicError(refused.status, refused.body)
+			return RouterResult{}, failHTTP(reason, refused.status, code)
 		}
-		return RouterResult{}, fail(reason, "frontier request: %v", err)
+		return RouterResult{}, fail(FallbackError)
 	}
 	if resp.StopReason != anthropic.StopReasonEndTurn {
-		return RouterResult{}, fail(FallbackUnparseable, "frontier stop_reason %s", resp.StopReason)
+		return RouterResult{}, fail(FallbackUnparseable)
 	}
 	var text strings.Builder
 	for _, block := range resp.Content {
@@ -118,26 +169,26 @@ func (f Frontier) Rank(ctx context.Context, in Input) (RouterResult, error) {
 		Confidence *float64 `json:"confidence"`
 	}
 	if err := json.Unmarshal([]byte(text.String()), &out); err != nil {
-		return RouterResult{}, fail(FallbackUnparseable, "decode frontier ranking: %v", err)
+		return RouterResult{}, fail(FallbackUnparseable)
 	}
 	// The schema's enum constrains members, not completeness: accept only a
 	// full, duplicate-free permutation, since a partial ranking would inflate
 	// fidelity@3.
 	if len(out.Ranking) != len(keys) {
-		return RouterResult{}, fail(FallbackUnparseable, "frontier ranked %d of %d candidates", len(out.Ranking), len(keys))
+		return RouterResult{}, fail(FallbackUnparseable)
 	}
 	seen := map[string]bool{}
 	scores := make([]Score, 0, len(keys))
 	for i, k := range out.Ranking {
 		peerID, ok := keys[k]
 		if !ok || seen[k] {
-			return RouterResult{}, fail(FallbackUnparseable, "frontier ranking has unknown or repeated key %q", k)
+			return RouterResult{}, fail(FallbackUnparseable)
 		}
 		seen[k] = true
 		scores = append(scores, Score{PeerID: peerID, Score: rankScore(i, len(keys))})
 	}
 	if out.Confidence == nil || math.IsNaN(*out.Confidence) || *out.Confidence < 0 || *out.Confidence > 1 {
-		return RouterResult{}, fail(FallbackUnparseable, "frontier confidence missing or outside [0,1]")
+		return RouterResult{}, fail(FallbackUnparseable)
 	}
 	return RouterResult{Model: string(resp.Model), TemplateSHA256: f.TemplateSHA256(), Scores: scores, Confidence: out.Confidence}, nil
 }

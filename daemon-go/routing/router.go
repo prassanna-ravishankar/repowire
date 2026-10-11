@@ -165,8 +165,8 @@ func (r *Router) ShadowPlan() []string {
 
 // Skipped is a fallback for an arm that never ran, stamped with the arm's
 // configured model and template so missing work stays attributable.
-func (r *Router) Skipped(name, reason, msg string) RouterResult {
-	res := fallbackResult(name, reason, msg)
+func (r *Router) Skipped(name, reason string) RouterResult {
+	res := fallbackResult(name, reason)
 	if arm, ok := r.arms[name]; ok {
 		res = withIdentity(arm, res)
 	}
@@ -179,7 +179,7 @@ func (r *Router) Skipped(name, reason, msg string) RouterResult {
 func (r *Router) Run(ctx context.Context, name string, in Input) RouterResult {
 	arm, ok := r.arms[name]
 	if !ok {
-		return fallbackResult(name, FallbackUnknownArm, "unknown arm "+name)
+		return fallbackResult(name, FallbackUnknownArm)
 	}
 	b := r.breakerFor(arm)
 	if b == nil {
@@ -187,7 +187,7 @@ func (r *Router) Run(ctx context.Context, name string, in Input) RouterResult {
 	}
 	allowed, probe := b.allow()
 	if !allowed {
-		return withIdentity(arm, fallbackResult(name, FallbackBreakerOpen, "provider breaker open after repeated failures"))
+		return withIdentity(arm, fallbackResult(name, FallbackBreakerOpen))
 	}
 	res := Run(ctx, arm, in, r.Timeout())
 	b.record(res, probe)

@@ -70,7 +70,7 @@ type jevResponse struct {
 
 func (j Jev) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	if j.APIKey == "" {
-		return RouterResult{}, fail(FallbackUnconfigured, "jev api key not configured")
+		return RouterResult{}, fail(FallbackUnconfigured)
 	}
 	state, keys := Project(in, j.View)
 	questions := map[string]jevNoul{}
@@ -83,11 +83,11 @@ func (j Jev) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	}
 	body, err := json.Marshal(map[string]any{"state": state, "model": j.Model, "questions": questions})
 	if err != nil {
-		return RouterResult{}, fail(FallbackError, "encode jev request: %v", err)
+		return RouterResult{}, fail(FallbackError)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(j.BaseURL, "/")+"/v1/systemone", bytes.NewReader(body))
 	if err != nil {
-		return RouterResult{}, fail(FallbackError, "build jev request: %v", err)
+		return RouterResult{}, fail(FallbackError)
 	}
 	req.Header.Set("Authorization", "Bearer "+j.APIKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -97,22 +97,22 @@ func (j Jev) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return RouterResult{}, fail(FallbackError, "jev request: %v", err)
+		return RouterResult{}, fail(FallbackError)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return RouterResult{}, fail(statusReason(resp.StatusCode), "jev status %d: %s", resp.StatusCode, clip(string(raw), 200))
+		return RouterResult{}, failHTTP(statusReason(resp.StatusCode), resp.StatusCode, jevCode(raw))
 	}
 	var decoded jevResponse
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return RouterResult{}, fail(FallbackUnparseable, "decode jev response: %v", err)
+		return RouterResult{}, fail(FallbackUnparseable)
 	}
 	scores := make([]Score, 0, len(keys))
 	for k, peerID := range keys {
 		answer, ok := decoded.Answers[k]
 		if !ok || answer.Noul == nil || math.IsNaN(*answer.Noul) || *answer.Noul < 0 || *answer.Noul > 1 {
-			return RouterResult{}, fail(FallbackUnparseable, "jev answer %s missing or out of range", k)
+			return RouterResult{}, fail(FallbackUnparseable)
 		}
 		scores = append(scores, Score{PeerID: peerID, Score: *answer.Noul})
 	}
@@ -130,4 +130,17 @@ func topScore(scores []Score) float64 {
 		best = math.Max(best, s.Score)
 	}
 	return best
+}
+
+// jevCode reads TypeSafe's detail.error_type from an error body.
+func jevCode(body []byte) string {
+	var envelope struct {
+		Detail struct {
+			ErrorType string `json:"error_type"`
+		} `json:"detail"`
+	}
+	if json.Unmarshal(body, &envelope) != nil {
+		return ""
+	}
+	return envelope.Detail.ErrorType
 }

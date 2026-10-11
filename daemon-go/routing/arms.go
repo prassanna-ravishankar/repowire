@@ -39,32 +39,52 @@ const (
 	// refused the account, as distinct from failing on the request.
 	FallbackBilling      = "billing"
 	FallbackUnauthorized = "unauthorized"
+	// FallbackRequestError: any other 4xx. Almost always our request body or
+	// template, so it does not count against the provider.
+	FallbackRequestError = "request_error"
+	// FallbackServerError: a 5xx. The provider's fault.
+	FallbackServerError = "server_error"
 )
 
 // statusReason classifies a provider's HTTP error status.
 func statusReason(code int) string {
-	switch code {
-	case http.StatusTooManyRequests:
+	switch {
+	case code == http.StatusTooManyRequests:
 		return FallbackRateLimited
-	case http.StatusPaymentRequired:
+	case code == http.StatusPaymentRequired:
 		return FallbackBilling
-	case http.StatusUnauthorized, http.StatusForbidden:
+	case code == http.StatusUnauthorized, code == http.StatusForbidden:
 		return FallbackUnauthorized
+	case code >= 500:
+		return FallbackServerError
+	case code >= 400:
+		return FallbackRequestError
 	}
 	return FallbackError
 }
 
-// FallbackError classifies an arm failure.
+// FallbackErr classifies an arm failure. It holds no free text: Status is the
+// provider's HTTP status when there was one, and Code its allowlisted error
+// code (see attribution.go).
 type FallbackErr struct {
 	Reason string
-	Err    error
+	Status int
+	Code   string
 }
 
-func (e *FallbackErr) Error() string { return e.Reason + ": " + e.Err.Error() }
-func (e *FallbackErr) Unwrap() error { return e.Err }
+func (e *FallbackErr) Error() string {
+	if e.Status == 0 {
+		return e.Reason
+	}
+	return fmt.Sprintf("%s (HTTP %d, %s)", e.Reason, e.Status, e.Code)
+}
 
-func fail(reason string, format string, args ...any) error {
-	return &FallbackErr{Reason: reason, Err: fmt.Errorf(format, args...)}
+func fail(reason string) error { return &FallbackErr{Reason: reason} }
+
+// failHTTP records a provider's error response by status and the provider's
+// declared code; the body itself is never kept.
+func failHTTP(reason string, status int, code string) error {
+	return &FallbackErr{Reason: reason, Status: status, Code: errorCode(code)}
 }
 
 // Run executes arm under timeout and returns a result that is always safe to
@@ -73,7 +93,7 @@ func fail(reason string, format string, args ...any) error {
 func Run(ctx context.Context, arm Arm, in Input, timeout time.Duration) RouterResult {
 	start := time.Now()
 	if len(in.Candidates) == 0 {
-		return withIdentity(arm, fallback(arm.Name(), start, fail(FallbackNoCandidates, "no eligible candidates")))
+		return withIdentity(arm, fallback(arm.Name(), start, fail(FallbackNoCandidates)))
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -83,7 +103,7 @@ func Run(ctx context.Context, arm Arm, in Input, timeout time.Duration) RouterRe
 	}
 	if err != nil {
 		if ctx.Err() != nil && generic(err) {
-			err = &FallbackErr{Reason: FallbackTimeout, Err: err}
+			err = fail(FallbackTimeout)
 		}
 		return withIdentity(arm, fallback(arm.Name(), start, err))
 	}
@@ -113,9 +133,13 @@ type identified interface {
 	Identity() (model, template string)
 }
 
-// withIdentity stamps a failure with the arm's configured model and template,
-// so failures group with the successes of the same configuration.
+// withIdentity stamps a failure with the arm's provider and its configured
+// model and template, so failures group with the successes of the same
+// configuration.
 func withIdentity(arm Arm, res RouterResult) RouterResult {
+	if p, ok := arm.(providerArm); ok && res.Provider == "" {
+		res.Provider = p.Provider()
+	}
 	if id, ok := arm.(identified); ok {
 		model, template := id.Identity()
 		if res.Model == "" {
@@ -133,26 +157,28 @@ func withIdentity(arm Arm, res RouterResult) RouterResult {
 func rankSafely(ctx context.Context, arm Arm, in Input) (res RouterResult, err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			res, err = RouterResult{}, fail(FallbackPanic, "arm panicked: %v", p)
+			res, err = RouterResult{}, fail(FallbackPanic) // the panic value is not recorded
 		}
 	}()
 	return arm.Rank(ctx, in)
 }
 
 // fallbackResult is a fallback that never reached the arm.
-func fallbackResult(arm, reason, msg string) RouterResult {
-	return RouterResult{Arm: arm, Scores: []Score{}, Fallback: true, FallbackReason: reason, Error: msg}
+func fallbackResult(arm, reason string) RouterResult {
+	return RouterResult{Arm: arm, Scores: []Score{}, Fallback: true, FallbackReason: reason}
 }
 
+// fallback records err by structure alone; an error that is not a
+// FallbackErr (an arm's own) contributes nothing but the generic reason.
 func fallback(arm string, start time.Time, err error) RouterResult {
-	reason := FallbackError
+	reason, status, code := FallbackError, 0, ""
 	var fe *FallbackErr
 	if errors.As(err, &fe) {
-		reason = fe.Reason
+		reason, status, code = fe.Reason, fe.Status, fe.Code
 	}
 	return RouterResult{
 		Arm: arm, LatencyMS: time.Since(start).Milliseconds(), Scores: []Score{},
-		Fallback: true, FallbackReason: reason, Error: clip(err.Error(), 500),
+		Fallback: true, FallbackReason: reason, HTTPStatus: status, ErrorCode: code,
 	}
 }
 
@@ -167,7 +193,7 @@ func generic(err error) bool {
 // validate rejects any answer naming a peer outside the eligible set, or none.
 func validate(res RouterResult, in Input) error {
 	if len(res.Scores) == 0 {
-		return fail(FallbackUnparseable, "arm returned no scores")
+		return fail(FallbackUnparseable)
 	}
 	eligible := map[string]bool{}
 	for _, c := range in.Candidates {
@@ -175,7 +201,7 @@ func validate(res RouterResult, in Input) error {
 	}
 	for _, s := range res.Scores {
 		if !eligible[s.PeerID] {
-			return fail(FallbackUnparseable, "arm named ineligible peer %q", s.PeerID)
+			return fail(FallbackUnparseable)
 		}
 	}
 	return nil

@@ -3,7 +3,10 @@ package routing
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/state"
@@ -162,9 +165,14 @@ type Result struct {
 	Candidates     int      `json:"candidates"`
 	Fallback       bool     `json:"fallback,omitempty"`
 	FallbackReason string   `json:"fallback_reason,omitempty"`
-	LatencyMS      int64    `json:"latency_ms"`
-	Skipped        string   `json:"skipped,omitempty"`
-	Outcome        Outcome  `json:"outcome"`
+	// FallbackStatus, FallbackProvider and FallbackCode attribute a failure
+	// (our request or their service). No recorded text is ever exported.
+	FallbackStatus   int     `json:"fallback_status,omitempty"`
+	FallbackProvider string  `json:"fallback_provider,omitempty"`
+	FallbackCode     string  `json:"fallback_code,omitempty"`
+	LatencyMS        int64   `json:"latency_ms"`
+	Skipped          string  `json:"skipped,omitempty"`
+	Outcome          Outcome `json:"outcome"`
 	// DeclaredIsRecentContact: the sender's pick was the candidate it
 	// exchanged with most recently (from the unmasked snapshot).
 	DeclaredIsRecentContact bool `json:"declared_is_recent_contact"`
@@ -192,6 +200,12 @@ type Report struct {
 	MeanCandidates    float64        `json:"mean_candidates"`
 	MeanLatencyMS     float64        `json:"mean_latency_ms"`
 	Skipped           map[string]int `json:"skipped"`
+	// FallbackCodes counts fallbacks per reason by "<status> <code>" (or
+	// "<code>" without a status). JSON only.
+	FallbackCodes map[string]map[string]int `json:"fallback_codes,omitempty"`
+	// History is the vote population of a history baseline, which can be
+	// wider than the scored rows.
+	History *History `json:"history,omitempty"`
 	// Cohorts splits the scored asks by delivery outcome. Failed deliveries
 	// stay in the headline numbers and are also reported here on their own.
 	Cohorts map[string]*Cohort `json:"cohorts"`
@@ -273,6 +287,21 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 			continue
 		}
 		r.Fallback, r.FallbackReason, r.LatencyMS = res.Fallback, res.FallbackReason, res.LatencyMS
+		if res.Fallback {
+			r.FallbackStatus, r.FallbackCode = Attribution(res)
+			r.FallbackProvider = res.Provider
+			if r.FallbackProvider == "" {
+				r.FallbackProvider = providerOf(armName)
+			}
+			key := strings.TrimSpace(fmt.Sprintf("%s %s", statusText(r.FallbackStatus), r.FallbackCode))
+			if rep.FallbackCodes == nil {
+				rep.FallbackCodes = map[string]map[string]int{}
+			}
+			if rep.FallbackCodes[res.FallbackReason] == nil {
+				rep.FallbackCodes[res.FallbackReason] = map[string]int{}
+			}
+			rep.FallbackCodes[res.FallbackReason][key]++
+		}
 		scores := res.Scores
 		if res.Fallback {
 			scores = nil // a fallback is a miss whatever it carries
@@ -324,6 +353,25 @@ func recencyStratum(in Input, recent bool) string {
 		return StratumOtherContact
 	}
 	return StratumNoExchange
+}
+
+func statusText(status int) string {
+	if status == 0 {
+		return ""
+	}
+	return strconv.Itoa(status)
+}
+
+// providerOf names a model arm's provider from its name, for rows recorded
+// before results carried it.
+func providerOf(arm string) string {
+	switch {
+	case strings.HasPrefix(arm, "jev-"):
+		return Jev{}.Provider()
+	case strings.HasPrefix(arm, "frontier-"):
+		return Frontier{}.Provider()
+	}
+	return ""
 }
 
 // tally adds a scored result to the named cohort.
