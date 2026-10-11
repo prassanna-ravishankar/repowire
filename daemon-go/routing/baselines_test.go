@@ -107,14 +107,65 @@ func TestMajorityPastOnlyCountsEarlierAsks(t *testing.T) {
 	}
 	// ask-4 shares ask-3's instant: strictly-before excludes it, so only the
 	// two asks to b vote. The whole window sees c (ask-3) as well.
-	if got := top(past, 3); got != "repow-b" {
-		t.Fatalf("majority-past on ask-4 = %s, want repow-b", got)
+	if res := Run(context.Background(), past, InputFrom("ask-4", examples[3].Decision), time.Second); res.Fallback ||
+		!slices.Equal(res.Scores, []Score{{PeerID: "repow-b", Score: 2}}) {
+		t.Fatalf("majority-past on ask-4 = %+v, want exactly b=2 and no same-instant c", res)
 	}
 	if res := Run(context.Background(), whole, InputFrom("ask-4", examples[3].Decision), time.Second); len(res.Scores) != 2 {
 		t.Fatalf("whole-window majority on ask-4 = %+v", res)
 	}
 	if past.Name() != "majority-past" || whole.Name() != "majority" {
 		t.Fatal("variant names")
+	}
+}
+
+func TestMajorityPastIgnoresTiedTimeHistory(t *testing.T) {
+	stamp := func(ex Example) Example { ex.Decision.DecidedAt = "2026-10-11T12:00:00Z"; return ex }
+	examples := []Example{
+		stamp(example("ask-1", "repow-b", ArmExplicit, nil)),
+		stamp(example("ask-2", "repow-c", ArmExplicit, nil)),
+	}
+	past := NewMajority(examples, true)
+	for _, ex := range examples {
+		if res := Run(context.Background(), past, InputFrom(ex.TraceID, ex.Decision), time.Second); res.FallbackReason != FallbackNoHistory {
+			t.Fatalf("%s with only same-instant history = %+v, want no_history", ex.TraceID, res)
+		}
+	}
+}
+
+// Scoring a narrow window must not starve the vote: history passed to
+// NewMajority can be wider than the rows scored.
+func TestMajorityPastVotesFromHistoryBeyondTheScoredWindow(t *testing.T) {
+	stamp := func(ex Example, ts string) Example { ex.Decision.DecidedAt = ts; return ex }
+	history := []Example{
+		stamp(example("ask-1", "repow-b", ArmExplicit, nil), "2026-10-11T10:00:00Z"),
+		stamp(example("ask-2", "repow-b", ArmExplicit, nil), "2026-10-11T11:00:00Z"),
+	}
+	window := history[1:]
+	run := func(m Majority) Report {
+		rep, _ := Replay(context.Background(), window, "majority-past", func(ctx context.Context, in Input) RouterResult {
+			return Run(ctx, m, in, time.Second)
+		}, Options{})
+		return rep
+	}
+	if rep := run(NewMajority(window, true)); rep.Hit1 != 0 || rep.Fallbacks != 1 {
+		t.Fatalf("window-only votes should be cold: %+v", rep)
+	}
+	full := NewMajority(history, true)
+	if rep := run(full); rep.Hit1 != 1 {
+		t.Fatalf("full-history votes should hit: %+v", rep)
+	}
+	if h := full.History(); h.Asks != 2 || h.From != "2026-10-11T10:00:00Z" || h.To != "2026-10-11T11:00:00Z" {
+		t.Fatalf("history = %+v", h)
+	}
+}
+
+func TestReplayKeepsFallbackDetail(t *testing.T) {
+	res := RouterResult{Arm: "stub", Scores: []Score{}, Fallback: true, FallbackReason: FallbackRequestError, Error: "request_error: jev status 422: bad field"}
+	examples := []Example{example("ask-1", "repow-b", ArmExplicit, nil), example("ask-2", "repow-b", ArmExplicit, nil)}
+	rep, rows := Replay(context.Background(), examples, "stub", func(context.Context, Input) RouterResult { return res }, Options{})
+	if rows[0].FallbackDetail != res.Error || rep.FallbackDetails[FallbackRequestError][res.Error] != 2 {
+		t.Fatalf("detail lost: rows %+v details %v", rows[0], rep.FallbackDetails)
 	}
 }
 

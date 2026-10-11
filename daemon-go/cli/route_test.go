@@ -42,6 +42,25 @@ func TestReplayTableNamesMaskAndRecencyStrata(t *testing.T) {
 	}
 }
 
+// The table discloses a history baseline's vote population and never prints
+// fallback details.
+func TestReplayTableShowsHistoryNotDetails(t *testing.T) {
+	var out strings.Builder
+	printReplayTable(&out, []routing.Report{{
+		Arm: "majority-past", Source: "rerun", Decisions: 1, Scored: 1, Fallbacks: 1,
+		Skipped: map[string]int{}, Cohorts: map[string]*routing.Cohort{},
+		History:         &routing.History{Asks: 9, From: "2026-10-11T17:01:09Z", To: "2026-10-11T17:26:23Z"},
+		FallbackDetails: map[string]map[string]int{"request_error": {"request_error: jev status 422: secret-ish body": 1}},
+	}})
+	text := out.String()
+	if !strings.Contains(text, "history (majority-past votes from): 9 labelled asks, 2026-10-11T17:01:09Z to 2026-10-11T17:26:23Z") {
+		t.Fatalf("history not disclosed:\n%s", text)
+	}
+	if strings.Contains(text, "secret-ish body") {
+		t.Fatalf("table printed a fallback detail:\n%s", text)
+	}
+}
+
 func TestArmNamesListBaselinesFirst(t *testing.T) {
 	names := armNames(config.RouterConfig{})
 	if len(names) < 3 || names[0] != "random" || names[1] != "recent" || names[2] != "majority" || slices.Contains(names[3:], "random") {

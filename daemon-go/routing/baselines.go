@@ -31,11 +31,11 @@ func IsBaseline(name string) bool {
 	return false
 }
 
-// BaselineArms builds the baselines over the replayed window.
-func BaselineArms(examples []Example) map[string]Arm {
+// BaselineArms builds the baselines; the majority baselines vote from history.
+func BaselineArms(history []Example) map[string]Arm {
 	return map[string]Arm{
 		"random": Random{}, "recent": Recent{},
-		"majority": NewMajority(examples, false), "majority-past": NewMajority(examples, true),
+		"majority": NewMajority(history, false), "majority-past": NewMajority(history, true),
 	}
 }
 
@@ -99,10 +99,26 @@ func DeclaredIsRecentContact(in Input, declared string) bool {
 //     so it is causal and the fair "deployable history" comparison.
 //
 // Candidates the sender never addressed are left unranked.
+//
+// Votes come from the examples passed to NewMajority, which may be wider than
+// the rows being scored: the replay CLI passes the whole ledger, so --since
+// and --limit narrow what is scored without starving the vote. Given only
+// the scored window, majority-past is cold at the start of it.
 type Majority struct {
-	past  bool
-	votes map[string][]vote // sender → its labelled asks
+	past   bool
+	votes  map[string][]vote // sender → its labelled asks
+	window History
 }
+
+// History describes the vote population, for disclosure beside results.
+type History struct {
+	Asks int    `json:"asks"`
+	From string `json:"from,omitempty"`
+	To   string `json:"to,omitempty"`
+}
+
+// History is the span of labelled asks this baseline votes from.
+func (m Majority) History() History { return m.window }
 
 type vote struct {
 	trace, declared string
@@ -120,6 +136,13 @@ func NewMajority(examples []Example, past bool) Majority {
 		}
 		at, _ := time.Parse(time.RFC3339Nano, d.DecidedAt)
 		m.votes[d.Sender.PeerID] = append(m.votes[d.Sender.PeerID], vote{trace: ex.TraceID, declared: *d.Declared.PeerID, at: at})
+		m.window.Asks++
+		if m.window.From == "" || d.DecidedAt < m.window.From {
+			m.window.From = d.DecidedAt
+		}
+		if d.DecidedAt > m.window.To {
+			m.window.To = d.DecidedAt
+		}
 	}
 	return m
 }

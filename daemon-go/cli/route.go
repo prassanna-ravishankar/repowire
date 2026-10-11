@@ -51,11 +51,19 @@ func runRouteReplay(a args) int {
 		return fatal(err)
 	}
 	defer store.Close()
-	examples, err := routing.LoadExamples(context.Background(), store, since)
+	// The whole ledger is the history baselines vote from; --since (and
+	// --limit, in replayArms) only narrow the rows scored.
+	history, err := routing.LoadExamples(context.Background(), store, time.Time{})
 	if err != nil {
 		return fatal(err)
 	}
-	return replayArms(a, examples, a.bool("recorded"), routeReplayUsage)
+	examples := history
+	if !since.IsZero() {
+		if examples, err = routing.LoadExamples(context.Background(), store, since); err != nil {
+			return fatal(err)
+		}
+	}
+	return replayArms(a, examples, history, a.bool("recorded"), routeReplayUsage)
 }
 
 // runRouteDecisionBench scores arms on DecisionBench delegations, read from
@@ -78,14 +86,14 @@ func runRouteDecisionBench(a args) int {
 	if err != nil {
 		return fatal(err)
 	}
-	return replayArms(a, examples, false, routeDecisionBenchUsage)
+	return replayArms(a, examples, examples, false, routeDecisionBenchUsage)
 }
 
 // replayArms runs --arm (or every arm for "all") over examples and prints the
 // report table, --json reports, or --rows per-decision lines. Baselines
 // (random, recent, majority) are computed locally and always re-run, so
 // they sit beside recorded arms at no cost.
-func replayArms(a args, examples []routing.Example, recorded bool, usageText string) int {
+func replayArms(a args, examples, history []routing.Example, recorded bool, usageText string) int {
 	arm := a.string("arm", "")
 	if arm == "" {
 		return usage(usageText)
@@ -115,7 +123,7 @@ func replayArms(a args, examples []routing.Example, recorded bool, usageText str
 	if n := a.integer("limit", 0); n > 0 && n < len(examples) {
 		examples = examples[len(examples)-n:]
 	}
-	baselines := routing.BaselineArms(examples)
+	baselines := routing.BaselineArms(history)
 	ctx := context.Background()
 	reports := []routing.Report{}
 	enc := json.NewEncoder(os.Stdout)
@@ -131,6 +139,10 @@ func replayArms(a args, examples []routing.Example, recorded bool, usageText str
 			fmt.Fprintf(os.Stderr, "re-running %s on up to %d recorded asks; each is one API call\n", name, len(examples))
 		}
 		report, rows := routing.Replay(ctx, examples, name, runner, opts)
+		if m, ok := baselines[name].(routing.Majority); ok {
+			h := m.History()
+			report.History = &h
+		}
 		reports = append(reports, report)
 		if a.bool("rows") {
 			for _, row := range rows {
@@ -169,6 +181,11 @@ func printReplayTable(w io.Writer, reports []routing.Report) {
 	for _, rep := range reports {
 		if len(rep.Mask) > 0 {
 			fmt.Fprintf(w, "masked (%s, re-run): %s\n", rep.Arm, strings.Join(rep.Mask, ","))
+		}
+	}
+	for _, rep := range reports {
+		if h := rep.History; h != nil {
+			fmt.Fprintf(w, "history (%s votes from): %d labelled asks, %s to %s\n", rep.Arm, h.Asks, h.From, h.To)
 		}
 	}
 	fmt.Fprintf(w, "%-18s %-8s %6s %6s %6s %6s %6s %8s %8s", "arm", "source", "rows", "scored", "fb", "f@1", "f@3", "ans@1", "ms")

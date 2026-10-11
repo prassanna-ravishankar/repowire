@@ -162,9 +162,12 @@ type Result struct {
 	Candidates     int      `json:"candidates"`
 	Fallback       bool     `json:"fallback,omitempty"`
 	FallbackReason string   `json:"fallback_reason,omitempty"`
-	LatencyMS      int64    `json:"latency_ms"`
-	Skipped        string   `json:"skipped,omitempty"`
-	Outcome        Outcome  `json:"outcome"`
+	// FallbackDetail is the recorded error (e.g. the HTTP status and the
+	// start of the body), to tell our request bugs from provider faults.
+	FallbackDetail string  `json:"fallback_detail,omitempty"`
+	LatencyMS      int64   `json:"latency_ms"`
+	Skipped        string  `json:"skipped,omitempty"`
+	Outcome        Outcome `json:"outcome"`
 	// DeclaredIsRecentContact: the sender's pick was the candidate it
 	// exchanged with most recently (from the unmasked snapshot).
 	DeclaredIsRecentContact bool `json:"declared_is_recent_contact"`
@@ -192,6 +195,12 @@ type Report struct {
 	MeanCandidates    float64        `json:"mean_candidates"`
 	MeanLatencyMS     float64        `json:"mean_latency_ms"`
 	Skipped           map[string]int `json:"skipped"`
+	// FallbackDetails counts each distinct recorded error per fallback
+	// reason. JSON only; the table shows reasons, not details.
+	FallbackDetails map[string]map[string]int `json:"fallback_details,omitempty"`
+	// History is the vote population of a history baseline, which can be
+	// wider than the scored rows.
+	History *History `json:"history,omitempty"`
 	// Cohorts splits the scored asks by delivery outcome. Failed deliveries
 	// stay in the headline numbers and are also reported here on their own.
 	Cohorts map[string]*Cohort `json:"cohorts"`
@@ -273,6 +282,16 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 			continue
 		}
 		r.Fallback, r.FallbackReason, r.LatencyMS = res.Fallback, res.FallbackReason, res.LatencyMS
+		if res.Fallback {
+			r.FallbackDetail = res.Error
+			if rep.FallbackDetails == nil {
+				rep.FallbackDetails = map[string]map[string]int{}
+			}
+			if rep.FallbackDetails[res.FallbackReason] == nil {
+				rep.FallbackDetails[res.FallbackReason] = map[string]int{}
+			}
+			rep.FallbackDetails[res.FallbackReason][res.Error]++
+		}
 		scores := res.Scores
 		if res.Fallback {
 			scores = nil // a fallback is a miss whatever it carries
