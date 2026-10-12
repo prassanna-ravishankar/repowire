@@ -253,19 +253,28 @@ func ParseMask(raw string) ([]string, error) {
 	return fields, nil
 }
 
-// Mask returns in with the named fields blanked on every candidate. The
-// sender snapshot is left as recorded. Fields must come from ParseMask.
+// Mask returns in with the named fields blanked on every candidate and on the
+// sender snapshot: the sender block is part of the request body, so a field
+// hidden from candidates must not leak through it. Fields must come from
+// ParseMask.
 func Mask(in Input, fields []string) Input {
 	if len(fields) == 0 {
 		return in
 	}
-	candidates := make([]Candidate, len(in.Candidates))
-	for i, c := range in.Candidates {
+	blank := func(c Candidate) Candidate {
 		for _, f := range fields {
 			maskable[f](&c)
 		}
-		candidates[i] = c
+		return c
+	}
+	candidates := make([]Candidate, len(in.Candidates))
+	for i, c := range in.Candidates {
+		candidates[i] = blank(c)
 	}
 	in.Candidates = candidates
+	if in.Sender != nil {
+		sender := blank(*in.Sender)
+		in.Sender = &sender
+	}
 	return in
 }

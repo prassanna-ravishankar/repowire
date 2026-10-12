@@ -262,7 +262,7 @@ func TestParseMaskRejectsUnknownAndIdentityFields(t *testing.T) {
 	}
 }
 
-func TestMaskBlanksCandidatesWithoutTouchingTheRecord(t *testing.T) {
+func TestMaskBlanksCandidatesAndSenderWithoutTouchingTheRecord(t *testing.T) {
 	in := testInput()
 	masked := Mask(in, []string{"last_exchange_with_sender_at", "description", "last_seen_age_s"})
 	c := masked.Candidates[0]
@@ -272,8 +272,8 @@ func TestMaskBlanksCandidatesWithoutTouchingTheRecord(t *testing.T) {
 	if in.Candidates[0].LastExchangeAt == nil || in.Candidates[0].Description == "" {
 		t.Fatal("Mask mutated the recorded input")
 	}
-	if masked.Sender.Description != "parser" {
-		t.Fatal("the sender snapshot is not masked")
+	if masked.Sender.Description != "" || in.Sender.Description != "parser" {
+		t.Fatal("the sender snapshot must be masked like the candidates, without touching the record")
 	}
 }
 
@@ -411,5 +411,30 @@ func TestNewestRanksSmallestLastSeenAgeFirst(t *testing.T) {
 	}
 	if res := Run(context.Background(), Newest{}, Input{Candidates: []Candidate{{PeerID: "x"}}}, time.Second); !res.Fallback || res.FallbackReason != FallbackNoHistory {
 		t.Fatalf("no last_seen must fall back with no_history: %+v", res)
+	}
+}
+
+// A mask is global to the request body: nothing a masked field carries may
+// reach a model through the sender block either.
+func TestMaskBlanksSenderAndCandidates(t *testing.T) {
+	age, stamp := 42.0, "2026-06-01T12:00:00Z"
+	loud := Candidate{PeerID: "p", LastSeen: &stamp, LastSeenAgeS: &age, TurnState: "working", OpenAsksInbound: 3, LastExchangeAt: &stamp, Project: "keep"}
+	sender := loud
+	in := Input{DecidedAt: time.Date(2026, 6, 1, 12, 5, 0, 0, time.UTC), Sender: &sender, Candidates: []Candidate{loud}}
+	strict := []string{"last_exchange_with_sender_at", "open_asks_inbound", "last_seen_age_s", "turn_state"}
+	state, _ := Project(Mask(in, strict), ViewAttested)
+	blanked := func(who string, f map[string]any) {
+		t.Helper()
+		if f["last_seen_age_s"] != nil || f["turn_state"] != "" || f["open_asks_inbound"] != 0 || f["last_exchange_with_sender_age_s"] != nil {
+			t.Errorf("%s still carries masked state: %+v", who, f)
+		}
+		if f["project"] != "keep" {
+			t.Errorf("%s lost an unmasked field: %+v", who, f)
+		}
+	}
+	blanked("sender", state["sender"].(map[string]any))
+	blanked("candidate", state["candidates"].(map[string]any)["c1"].(map[string]any))
+	if in.Sender.OpenAsksInbound != 3 || sender.LastSeenAgeS == nil {
+		t.Fatal("Mask must not mutate its input")
 	}
 }
