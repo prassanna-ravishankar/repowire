@@ -10,5 +10,4 @@ scripts/pre-pr-hygiene.sh
 
 The checklist is not a mandatory hook. It points contributors at README, reference docs, mirrored
 web docs, and `CLAUDE.md` / `AGENTS.md` when the changed paths suggest a product-surface or
-architecture update. It also flags Beads JSONL ledger churn; use
-`--restore-beads-ledgers` to back up and restore local-only ledger diffs before opening a PR.
+architecture update.

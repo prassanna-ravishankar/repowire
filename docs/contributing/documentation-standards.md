@@ -19,7 +19,7 @@ uvx --from zensical==0.0.43 zensical build --strict
 scripts/pre-pr-hygiene.sh
 ```
 
-If docs are intentionally deferred, file a Beads follow-up and say why in the PR handoff.
+If docs are intentionally deferred, file a GitHub issue and say why in the PR handoff.
 
 ## Related
 

@@ -24,8 +24,6 @@ Things that have cost time before. Not exhaustive, and some may drift — verify
 - **Restarting the daemon bounces the whole mesh.** `repowire service restart` re-registers every peer (including the session you're in and any spawned reviewers). Expected, but it interrupts in-flight work — sequence it deliberately. For a live test, spawn a *throwaway* peer rather than restarting yourself.
 - **Verify UI/behavior changes live, not just by green gates.** A passing build or a 200 response is not proof. A landing-page fix shipped "green" twice while still rendering blank in the browser; a `resume_mode=resumed` field meant nothing until a resumed peer actually recalled prior context. Use agent-browser for web, a real round-trip for delivery/resume.
 - **`gh pr edit` is broken on the installed `gh` (2.54.0)** — it queries deprecated Projects-classic GraphQL and 400s on any edit. Set the PR body/labels via REST instead: `gh api -X PATCH repos/OWNER/REPO/pulls/N -F body=@file`. `gh pr comment` works fine. (gh-pr-flow's "use gh api directly" is the general lesson.)
-- **`.beads/issues.jsonl` churns on every `bd` command** (auto-export). It's local noise — `git checkout .beads/issues.jsonl` before committing product changes; the pre-PR hygiene check fails on ledger churn by design.
-- **bd runs on the dolt backend; don't trust its error hints.** If `bd create` suggests `bd init` or `--no-db`, do neither — `bd list`/`create`/`close` work directly against the existing dolt db. `--no-db` mode is broken here (`issues.jsonl` line 104 is malformed — string comment id — and JSONL-only mode refuses to load; the dolt path just skips it with a warning). A failed bd invocation can leave a blank empty-id issue behind; `bd delete "" --force` doesn't work (no tombstone support), `bd close ""` does.
 - **Backend-detection tests must be env-hermetic.** `detect_mcp_backend` reads the process env, so a test that `patch.dict`s only `PATH` still inherits the ambient `CLAUDE_CODE_*`/`AI_AGENT` of the host session and mis-detects `claude-code`. (This bit the old `TestMcpRegistration` "codex vs claude-code" failures, fixed in #330 by nulling the conflicting markers.) Null the other runtimes' markers when asserting a specific backend.
 - **Codex registers late** (after its first interaction, not at startup); its hook payload still carries the runtime `session_id` like Claude's. MCP lazy registration covers the gap.
 
@@ -85,52 +83,30 @@ Key modules:
 
 ## Docs and memory
 
-- **Public docs (`docs/`) are part of the change.** Behavior changes update the relevant docs in the same PR — README for install/quickstart/major features, `docs/reference/*` for CLI/MCP/HTTP/config surfaces, `docs/guides|capabilities|concepts|patterns|operations/*` for the rest. If you intentionally defer, file a Beads follow-up and say so in the handoff. `scripts/pre-pr-hygiene.sh` is an advisory pre-PR check (points at docs surfaces, fails on beads-ledger churn). Screenshots: browser-generated only, never AI-mockups.
-- **Memory** is project-local at `.claude/memory/` (committed, public) — and `bd remember` for beads-tracked knowledge. Public-repo sanitization: no secrets, no absolute/home paths (repo-relative only), no IPs/hostnames/personal identifiers. When in doubt, omit.
+- **Public docs (`docs/`) are part of the change.** Behavior changes update the relevant docs in the same PR — README for install/quickstart/major features, `docs/reference/*` for CLI/MCP/HTTP/config surfaces, `docs/guides|capabilities|concepts|patterns|operations/*` for the rest. If you intentionally defer, file a GitHub issue and say so in the handoff. `scripts/pre-pr-hygiene.sh` is an advisory pre-PR check that points at docs surfaces. Screenshots: browser-generated only, never AI-mockups.
+- **Memory** is project-local at `.claude/memory/` (committed, public). Public-repo sanitization: no secrets, no absolute/home paths (repo-relative only), no IPs/hostnames/personal identifiers. When in doubt, omit.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
-## Beads Issue Tracker
+## Issue tracking
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
+Work is tracked in GitHub Issues on `prassanna-ravishankar/repowire`. Beads (`bd`) is retired: do not run `bd init`, `bd create`, or `bd remember`, and do not commit `.beads/` or `issues.jsonl` (both are gitignored).
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
+gh issue list                                   # open work
+gh issue view <n>                               # details
+gh issue create --title "..." --body "..." --label bug|enhancement|task --label P2
+gh issue close <n> --comment "Fixed by #<pr>"
 ```
 
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+- Priority labels run `P0` (critical) to `P4` (backlog). Use `deferred` for parked work and say what would reopen it.
+- Close an issue as fixed only when you can name the PR or commit that fixed it.
+- Old bead IDs (`repowire-xxx`) cited in PRs, commits, or code comments resolve through GitHub search; #455 indexes the whole retired ledger.
 
 ## Session Completion
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+Before ending a work session:
 
-**MANDATORY WORKFLOW:**
-
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   bd dolt push
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
-
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
-<!-- END BEADS INTEGRATION -->
+1. File GitHub issues for remaining follow-up work.
+2. Run the quality gates if code changed (see Build, test, release).
+3. Close or update the issues you worked on.
+4. Push: `git pull --rebase && git push`, then confirm `git status` shows the branch up to date with origin.
+5. Hand off with enough context for the next session.
