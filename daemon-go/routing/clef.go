@@ -21,13 +21,15 @@ const (
 var clefContext = map[string]int64{ClefFamily: 65536, ClefFlashFamily: 24576}
 
 // Cloudflare truncates a long state to fit the context without saying so,
-// which would score candidates the model never saw. Two guards keep that from
-// ever becoming a scored result:
-//   - before sending, the request body in bytes (an upper bound on its
-//     tokens: every token covers at least one byte) must leave
-//     clefReserveTokens of the window for Cloudflare's own framing;
-//   - after, an input_tokens count within clefCeilingTokens of the window is
-//     taken as truncation, in case Cloudflare's accounting disagrees with ours.
+// which would score candidates the model never saw. The invariant is the
+// provider's own count: an answer is scored only if usage.input_tokens is
+// positive and more than clefCeilingTokens below the window. Before that, a
+// cheap local heuristic skips paying for an obviously oversized state: the
+// request body in bytes must leave clefReserveTokens of the window. Bytes
+// usually overcount tokens, but not always (the Clef tokenizers NFC-normalize
+// before byte-level BPE, so some characters cost more tokens than bytes), and
+// the server tokenizes its own rendering of the state, not our bytes. No
+// client-side byte budget is a bound; the provider count is.
 const (
 	clefReserveTokens = 1024
 	clefCeilingTokens = 256
@@ -95,10 +97,15 @@ func (c Clef) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	if envelope.Result != nil {
 		decoded = *envelope.Result
 	}
+	// Without a positive count, truncation cannot be ruled out: zero or less
+	// cannot describe a non-empty request.
 	if decoded.Usage == nil || decoded.Usage.InputTokens == nil {
-		return noted, fail(FallbackUnparseable) // without usage, truncation cannot be ruled out
+		return noted, fail(FallbackUnparseable)
 	}
 	signals["input_tokens"] = float64(*decoded.Usage.InputTokens)
+	if *decoded.Usage.InputTokens <= 0 {
+		return noted, fail(FallbackUnparseable)
+	}
 	if *decoded.Usage.InputTokens >= window-clefCeilingTokens {
 		return noted, fail(FallbackStateTruncated)
 	}

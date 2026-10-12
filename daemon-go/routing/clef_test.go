@@ -269,3 +269,49 @@ func TestClefBreakerIsSeparateAndNamesItsModel(t *testing.T) {
 		t.Fatalf("own-model gate: %+v skipped %v", own, rep.Skipped)
 	}
 }
+
+// A count of zero or less cannot describe a non-empty request, so it is no
+// evidence against truncation and is never scored.
+func TestClefNonPositiveInputTokensAreNotScored(t *testing.T) {
+	for _, family := range []string{ClefFamily, ClefFlashFamily} {
+		for _, n := range []string{"0", "-1"} {
+			srv, _ := clefStub(t, 200, `{"result":{"answers":{"c1":{"type":"noul","noul":0.9},"c2":{"type":"noul","noul":0.1}},"usage":{"input_tokens":`+n+`,"output_tokens":2}}}`)
+			res := Run(context.Background(), clefArm(family, ViewBoth, srv.URL), testInput(), time.Second)
+			if !res.Fallback || res.FallbackReason != FallbackUnparseable || len(res.Scores) != 0 {
+				t.Fatalf("%s input_tokens=%s was scored: %+v", family, n, res)
+			}
+		}
+	}
+}
+
+// Every refusal carries the models that opened the breaker, even while the
+// probe's success clears them concurrently: the snapshot is taken with the
+// refusal, not after it.
+func TestBreakerRefusalAttributionIsAtomic(t *testing.T) {
+	for round := 0; round < 200; round++ {
+		now := time.Unix(0, 0)
+		b := &breaker{now: func() time.Time { return now }}
+		for i := 0; i < breakerTrip; i++ {
+			b.record(RouterResult{Fallback: true, FallbackReason: FallbackServerError, Model: "@cf/cloudflare/clef"}, false)
+		}
+		now = now.Add(breakerCooldown)
+		if ok, probe, _ := b.allow(); !ok || !probe {
+			t.Fatal("no probe after cooldown")
+		}
+		done := make(chan struct{})
+		go func() {
+			b.record(RouterResult{Model: "@cf/cloudflare/clef"}, true) // the probe succeeds
+			close(done)
+		}()
+		for {
+			ok, _, gatedBy := b.allow()
+			if ok {
+				break
+			}
+			if !reflect.DeepEqual(gatedBy, []string{"@cf/cloudflare/clef"}) {
+				t.Fatalf("refusal lost its attribution: %v", gatedBy)
+			}
+		}
+		<-done
+	}
+}

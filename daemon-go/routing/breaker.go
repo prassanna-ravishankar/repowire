@@ -40,18 +40,23 @@ type breaker struct {
 	now      func() time.Time
 }
 
-// allow reports whether a call may proceed, and whether it is the probe.
-func (b *breaker) allow() (ok, probe bool) {
+// allow reports whether a call may proceed, and whether it is the probe. A
+// refusal also returns the models whose failures hold the breaker open,
+// sorted, taken under the same lock so a concurrent success cannot clear
+// them between the refusal and its attribution.
+func (b *breaker) allow() (ok, probe bool, gatedBy []string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.failures < breakerTrip {
-		return true, false
+		return true, false, nil
 	}
 	if b.probing || b.now().Sub(b.openedAt) < breakerCooldown {
-		return false, false
+		gatedBy = slices.Clone(b.models)
+		slices.Sort(gatedBy)
+		return false, false, gatedBy
 	}
 	b.probing = true
-	return true, true
+	return true, true, nil
 }
 
 // record feeds back one call's result.
@@ -74,13 +79,4 @@ func (b *breaker) record(res RouterResult, probe bool) {
 	if !res.Fallback {
 		b.failures, b.models = 0, nil
 	}
-}
-
-// gatedBy lists the models whose failures hold the breaker open, sorted.
-func (b *breaker) gatedBy() []string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	models := slices.Clone(b.models)
-	slices.Sort(models)
-	return models
 }

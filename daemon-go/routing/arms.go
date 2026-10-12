@@ -44,9 +44,10 @@ const (
 	FallbackRequestError = "request_error"
 	// FallbackServerError: a 5xx. The provider's fault.
 	FallbackServerError = "server_error"
-	// FallbackStateTooLarge: the request could exceed the model's context,
-	// so it was not sent. FallbackStateTruncated: the provider's token count
-	// says it cut the state to fit. Either way the model would have scored
+	// FallbackStateTooLarge: a local size heuristic says the request is
+	// likely to exceed the model's context, so it was not sent.
+	// FallbackStateTruncated: the provider's token count says it cut the
+	// state to fit. Either way the model would have scored
 	// candidates it never saw. Both are our input's size, not the provider.
 	FallbackStateTooLarge  = "state_too_large"
 	FallbackStateTruncated = "state_truncated"

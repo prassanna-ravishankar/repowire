@@ -250,10 +250,10 @@ func (r *Router) Run(ctx context.Context, name string, in Input) RouterResult {
 	if b == nil {
 		return Run(ctx, arm, in, r.Timeout())
 	}
-	allowed, probe := b.allow()
+	allowed, probe, gatedBy := b.allow()
 	if !allowed {
 		res := withIdentity(arm, fallbackResult(name, FallbackBreakerOpen))
-		res.GatedBy = b.gatedBy()
+		res.GatedBy = gatedBy
 		return res
 	}
 	res := Run(ctx, arm, in, r.Timeout())
