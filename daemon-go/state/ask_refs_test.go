@@ -43,3 +43,52 @@ func TestAskRefsMergesJournalAndTracesOncePerCorrelationID(t *testing.T) {
 		t.Fatalf("refs = %+v", refs)
 	}
 }
+
+// The history scan must not stall the rest of the store: with it paused
+// mid-iteration, a write on the store's own connection still completes.
+func TestAskRefsScanDoesNotBlockStoreWrites(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	at := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	for _, cid := range []string{"ask-1", "ask-2", "ask-3"} {
+		if err := s.AppendEvent(ctx, peer.Event{Type: "ask", Timestamp: at, Payload: map[string]any{"correlation_id": cid, "from_peer_id": "a", "to_peer_id": "b"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	atRow, release := make(chan struct{}), make(chan struct{})
+	scanDone := make(chan error, 1)
+	go func() {
+		first := true
+		scanDone <- s.askRefs(ctx, func(AskRef) error {
+			if first {
+				first = false
+				close(atRow)
+				<-release // hold the scan open mid-iteration
+			}
+			return nil
+		})
+	}()
+	<-atRow
+	wrote := make(chan time.Duration, 1)
+	go func() {
+		began := time.Now()
+		_ = s.AppendEvent(ctx, peer.Event{Type: "chat_turn", Timestamp: at, PeerID: "p", Payload: map[string]any{"role": "assistant"}})
+		wrote <- time.Since(began)
+	}()
+	select {
+	case d := <-wrote:
+		if d > time.Second {
+			t.Fatalf("write took %s beside a running scan", d)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a store write waited on the running AskRefs scan")
+	}
+	close(release)
+	if err := <-scanDone; err != nil {
+		t.Fatal(err)
+	}
+}

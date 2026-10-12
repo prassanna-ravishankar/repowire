@@ -130,3 +130,53 @@ func TestNeverAskedCountsAsksTheCandidateSent(t *testing.T) {
 		t.Fatalf("arrivals = %+v, want only b", got)
 	}
 }
+
+// Every row of novelty and hybrid-arrival says where its never-asked verdicts
+// came from, whether it scored, fell back, or had no arrival to pick.
+func TestNeverAskedSourceSurvivesEveryPath(t *testing.T) {
+	base := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	history := []Example{
+		arrivalExample("h0", base.Add(-time.Minute), "b", map[string]float64{"a": 5, "b": 5}),
+		arrivalExample("h1", base, "a", map[string]float64{"a": 5, "b": 5}),
+		arrivalExample("h2", base.Add(time.Minute), "a", map[string]float64{"a": 5, "b": 5}),
+	}
+	arms := BaselineArms(history, DefaultArrivalSeconds)
+	ctx := context.Background()
+	run := func(name string, ex Example) RouterResult {
+		return Run(ctx, arms[name], InputFrom(ex.TraceID, ex.Decision), time.Second)
+	}
+	// Nobody new in the room, habit has votes: hybrid-arrival scores via habit.
+	veterans := arrivalExample("s1", base.Add(2*time.Minute), "a", map[string]float64{"a": 5, "b": 5})
+	if got := run("hybrid-arrival", veterans); got.Fallback || got.NeverAskedSource != NeverAskedLedger {
+		t.Fatalf("habit path = %+v", got)
+	}
+	// Nobody new and habit has no vote for these candidates: a fallback row still carries the source.
+	strangers := arrivalExample("s2", base.Add(2*time.Minute), "x", map[string]float64{"x": 99999, "y": 99999})
+	strangers.Decision.Sender = &Candidate{PeerID: "other-sender"}
+	zero := 0
+	for i := range strangers.Decision.Candidates {
+		strangers.Decision.Candidates[i].PriorAsksTotal, strangers.Decision.Candidates[i].PriorAsksSent = &zero, &zero
+	}
+	// zero counts make both novel but stale (99999s), so no arrival: habit is asked and has no vote.
+	got := run("hybrid-arrival", strangers)
+	if !got.Fallback || got.FallbackReason != FallbackNoHistory || got.NeverAskedSource != NeverAskedField {
+		t.Fatalf("hybrid-arrival fallback = %+v", got)
+	}
+	// novelty with no never-asked candidate falls back with the source too.
+	if got = run("novelty", veterans); !got.Fallback || got.NeverAskedSource != NeverAskedLedger {
+		t.Fatalf("novelty fallback = %+v", got)
+	}
+	// Through Replay the row exports the source on all three paths.
+	rep, rows := Replay(ctx, []Example{veterans, strangers}, "hybrid-arrival", func(ctx context.Context, in Input) RouterResult {
+		return Run(ctx, arms["hybrid-arrival"], in, time.Second)
+	}, Options{})
+	if rep.Scored != 2 || rows[0].NeverAskedSource != NeverAskedLedger || rows[1].NeverAskedSource != NeverAskedField || !rows[1].Fallback {
+		t.Fatalf("replay rows = %+v (report %+v)", rows, rep)
+	}
+	_, nrows := Replay(ctx, []Example{veterans}, "novelty", func(ctx context.Context, in Input) RouterResult {
+		return Run(ctx, arms["novelty"], in, time.Second)
+	}, Options{})
+	if !nrows[0].Fallback || nrows[0].NeverAskedSource != NeverAskedLedger {
+		t.Fatalf("novelty replay row = %+v", nrows[0])
+	}
+}

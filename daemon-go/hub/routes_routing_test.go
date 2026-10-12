@@ -173,6 +173,12 @@ func newRoutingRigWith(t *testing.T, cfg *config.RouterConfig, arms map[string]r
 	if store != nil {
 		h.deliveryTraces = store
 		h.WithReadDeps(asks, store)
+		historyCtx, stopHistory := context.WithCancel(context.Background())
+		h.StartRoutingHistory(historyCtx)
+		t.Cleanup(func() {
+			stopHistory()
+			h.StopRoutingHistory(time.Second)
+		})
 	}
 	h.WithAskLifecycle(asks, service.NewPeerDelivery(reg, newRouterWithFake(f), f, asks, nil), reg)
 	var router *routing.Router
@@ -996,7 +1002,9 @@ func TestDecisionNeverWaitsForThePriorAskLoad(t *testing.T) {
 	})
 	rig.hub.history = slow
 	rig.hub.asks.SetOnRegister(slow.note)
-	slow.start()
+	slowCtx, stopSlow := context.WithCancel(context.Background())
+	defer stopSlow()
+	slow.start(slowCtx)
 
 	began := time.Now()
 	_, first, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "while loading"})
@@ -1015,5 +1023,79 @@ func TestDecisionNeverWaitsForThePriorAskLoad(t *testing.T) {
 		if c.PeerID == "repow-b" && (c.PriorAsksTotal == nil || *c.PriorAsksTotal != 2) { // the journal ask plus the first live ask
 			t.Fatalf("beta after the load = %+v, want total 2", c)
 		}
+	}
+}
+
+// The loader merges off the lock: a Register (which calls note under the
+// tracker's lock) issued while a slow merge runs returns at once, and the ask
+// is counted exactly once when the index lands.
+func TestRegisterDuringSlowHistoryMergeDoesNotWait(t *testing.T) {
+	merging, release := make(chan struct{}), make(chan struct{})
+	h := newAskHistory(func(context.Context) ([]state.AskRef, error) {
+		return []state.AskRef{{CorrelationID: "ask-old", From: "a", To: "b"}, {CorrelationID: "ask-dup", From: "a", To: "b"}}, nil
+	})
+	h.beforeMerge = func() {
+		close(merging)
+		<-release
+	}
+	asks := service.NewAskTracker(0)
+	asks.SetOnRegister(h.note)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.start(ctx)
+	<-merging
+	registered := make(chan time.Duration, 1)
+	go func() {
+		began := time.Now()
+		_, _ = asks.Register(context.Background(), service.RegisterAskParams{CorrelationID: "ask-dup", FromPeerID: "a", ToPeerID: "b"})
+		_, _ = asks.Register(context.Background(), service.RegisterAskParams{CorrelationID: "ask-live", FromPeerID: "a", ToPeerID: "b"})
+		registered <- time.Since(began)
+	}()
+	select {
+	case d := <-registered:
+		if d > time.Second {
+			t.Fatalf("Register took %s during the merge", d)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Register waited on the history merge")
+	}
+	if _, _, _, ok := h.counts("a", "b"); ok {
+		t.Fatal("counts reported before the load finished")
+	}
+	close(release)
+	h.waitLoaded(t)
+	// ask-old, ask-dup (also registered live: once) and ask-live.
+	if total, sent, fromSender, ok := h.counts("a", "b"); !ok || total != 3 || sent != 0 || fromSender != 3 {
+		t.Fatalf("counts = %d, %d, %d, %v; want 3 addressed, 0 sent, 3 from a", total, sent, fromSender, ok)
+	}
+}
+
+// Shutdown never waits on the loader: cancelling during a backoff returns
+// within the bound instead of sleeping the backoff out.
+func TestHistoryLoaderStopsPromptlyDuringBackoff(t *testing.T) {
+	failed := make(chan struct{}, 1)
+	h := newAskHistory(func(context.Context) ([]state.AskRef, error) {
+		select {
+		case failed <- struct{}{}:
+		default:
+		}
+		return nil, errors.New("disk on fire")
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.start(ctx)
+	<-failed // the first attempt failed; the loader is now in its backoff
+	began := time.Now()
+	h.stop(2 * time.Second)
+	select {
+	case <-h.exited:
+	default:
+		t.Fatal("loader still running after stop")
+	}
+	if d := time.Since(began); d > 500*time.Millisecond {
+		t.Fatalf("stop took %s; the backoff was not cancellable", d)
+	}
+	if _, _, _, ok := h.counts("a", "b"); ok {
+		t.Fatal("a failed load must report counts unavailable")
 	}
 }

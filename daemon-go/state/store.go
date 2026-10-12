@@ -46,6 +46,9 @@ var tsLayouts = []string{
 // Store is the SQLite-backed peer.Store implementation.
 type Store struct {
 	db *sql.DB
+	// path is the db file, "" for an in-memory store; background readers open
+	// their own read-only connection to it (see AskRefs).
+	path string
 }
 
 // NewStore opens the daemon state db, creating and migrating it to
@@ -90,7 +93,7 @@ func NewStore(dbPath string) (*Store, error) {
 			return nil, fmt.Errorf("migrate state db: %w", err)
 		}
 	}
-	store := &Store{db: db}
+	store := &Store{db: db, path: dbPath}
 	if dbPath != ":memory:" {
 		if err := store.importLegacy(context.Background(), filepath.Dir(dbPath)); err != nil {
 			_ = db.Close()
@@ -132,7 +135,7 @@ func OpenReadOnly(dbPath string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("state db schema version %d is newer than supported %d", version, SchemaVersion)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, path: dbPath}, nil
 }
 
 // Close closes the underlying connection pool.

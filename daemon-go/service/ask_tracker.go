@@ -161,6 +161,11 @@ type RegisterAskParams struct {
 	ParentID              *string
 	Question              map[string]any
 	ReplyDelivery         string // "" defaults to "push"
+	// SkipHistory keeps the ask out of the OnRegister callback (the durable
+	// prior-ask counts): ask_many children, /query and blocking questions write
+	// no ledger "created" stage, so counting them live would make the counts
+	// disagree with themselves across a restart.
+	SkipHistory bool
 }
 
 // Register records a new open ask and returns its CID. A supplied CID that
@@ -202,7 +207,7 @@ func (t *AskTracker) Register(ctx context.Context, p RegisterAskParams) (string,
 		ReplyDelivery:         delivery,
 		CreatedAt:             time.Now().UTC(),
 	}
-	if t.onRegister != nil {
+	if t.onRegister != nil && !p.SkipHistory {
 		t.onRegister(cid, p.FromPeerID, p.ToPeerID)
 	}
 	return cid, nil

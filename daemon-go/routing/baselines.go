@@ -382,7 +382,7 @@ func (Novelty) Name() string { return "novelty" }
 func (n Novelty) Rank(_ context.Context, in Input) (RouterResult, error) {
 	scores, source := n.seen.arrivals(in, 0)
 	if len(scores) == 0 || in.DecidedAt.IsZero() {
-		return RouterResult{}, fail(FallbackNoHistory)
+		return RouterResult{NeverAskedSource: source}, fail(FallbackNoHistory)
 	}
 	return RouterResult{Scores: scores, Uniform: true, NeverAskedSource: source}, nil
 }

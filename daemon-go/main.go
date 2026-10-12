@@ -476,6 +476,7 @@ func runDaemon() {
 		log.Printf("WARNING %s", warning)
 	}
 	h.WithReadDeps(asks, store).
+		StartRoutingHistory(ctx).
 		WithMessaging(delivery, store).
 		WithAskLifecycle(asks, delivery, reg).
 		WithRouting(router).
@@ -564,6 +565,7 @@ func runDaemon() {
 	}
 
 	cancelDaemon()
+	h.StopRoutingHistory(2 * time.Second) // before store.Close: the loader reads the db file
 	<-reconcileDone
 	jobRunner.Stop()
 	scheduler.Stop()

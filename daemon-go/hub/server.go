@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
@@ -167,10 +168,22 @@ func (h *Hub) WithReadDeps(asks *service.AskTracker, store *state.Store) *Hub {
 	if asks != nil && store != nil {
 		h.history = newAskHistory(store.AskRefs)
 		asks.SetOnRegister(h.history.note)
-		h.history.start()
 	}
 	return h
 }
+
+// StartRoutingHistory starts the background read of the prior-ask counts
+// under ctx, the daemon's lifetime. Until it finishes, route_decision rows
+// omit the counts. Call once, after WithReadDeps.
+func (h *Hub) StartRoutingHistory(ctx context.Context) *Hub {
+	if h.history != nil {
+		h.history.start(ctx)
+	}
+	return h
+}
+
+// StopRoutingHistory cancels the loader and waits for it at most bound.
+func (h *Hub) StopRoutingHistory(bound time.Duration) { h.history.stop(bound) }
 
 // NewHub constructs the hub over an already-built registry, minting a fresh
 // transport. The transport, tracker, and router are created here; OnOffline is
