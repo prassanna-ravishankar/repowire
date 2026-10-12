@@ -1,0 +1,19 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 0
+  },
+  "body": {
+    "detail": "ask lifecycle not configured"
+  },
+  "calls": [
+    "--- request"
+  ],
+  "delivered_to": [],
+  "events": null,
+  "frame": null,
+  "offlined": null,
+  "status": 503,
+  "traces": null,
+  "tracker": null
+}

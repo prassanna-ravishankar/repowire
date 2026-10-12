@@ -1,0 +1,21 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 0
+  },
+  "body": {
+    "detail": "access denied: repow-b"
+  },
+  "calls": [
+    "--- request",
+    "reg.GetPeerByName(\"beta\", nil) -\u003e repow-b \u003cnil\u003e",
+    "reg.CheckAccess(\"alpha\", \"repow-b\", bypass=false, nil) -\u003e repow-a \u003cnil\u003e access denied: repow-b"
+  ],
+  "delivered_to": [],
+  "events": null,
+  "frame": null,
+  "offlined": null,
+  "status": 403,
+  "traces": null,
+  "tracker": null
+}

@@ -1,0 +1,26 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 1
+  },
+  "body": {
+    "detail": {
+      "error": "peer_switching",
+      "hint": "Peer @route is mid-switch; retry shortly."
+    }
+  },
+  "calls": [
+    "--- request",
+    "reg.GetPeerByName(\"alpha\", nil) -\u003e repow-a \u003cnil\u003e",
+    "reg.GetAllPeers",
+    "reg.GetPeerByName(\"repow-c\", nil) -\u003e repow-c \u003cnil\u003e",
+    "reg.CheckAccess(\"alpha\", \"repow-c\", bypass=false, nil) -\u003e repow-a repow-c \u003cnil\u003e"
+  ],
+  "delivered_to": [],
+  "events": null,
+  "frame": null,
+  "offlined": null,
+  "status": 409,
+  "traces": null,
+  "tracker": null
+}

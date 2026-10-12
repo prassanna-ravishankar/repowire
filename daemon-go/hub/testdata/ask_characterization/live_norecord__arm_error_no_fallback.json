@@ -1,0 +1,26 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 1
+  },
+  "body": {
+    "detail": {
+      "arm": "stub",
+      "error": "router_unavailable",
+      "hint": "The router could not choose a peer and no fallback_to was given; nothing was delivered. Name a peer, or retry with fallback_to.",
+      "reason": "error"
+    }
+  },
+  "calls": [
+    "--- request",
+    "reg.GetPeerByName(\"alpha\", nil) -\u003e repow-a \u003cnil\u003e",
+    "reg.GetAllPeers"
+  ],
+  "delivered_to": [],
+  "events": null,
+  "frame": null,
+  "offlined": null,
+  "status": 503,
+  "traces": null,
+  "tracker": null
+}

@@ -1,0 +1,21 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 0
+  },
+  "body": {
+    "detail": "cannot ask the calling peer"
+  },
+  "calls": [
+    "--- request",
+    "reg.GetPeerByName(\"alpha\", default) -\u003e repow-a \u003cnil\u003e",
+    "reg.CheckAccess(\"alpha\", \"repow-a\", bypass=false, nil) -\u003e repow-a repow-a \u003cnil\u003e"
+  ],
+  "delivered_to": [],
+  "events": null,
+  "frame": null,
+  "offlined": null,
+  "status": 422,
+  "traces": null,
+  "tracker": null
+}

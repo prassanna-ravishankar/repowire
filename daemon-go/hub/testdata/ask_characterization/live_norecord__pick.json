@@ -1,0 +1,108 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 1
+  },
+  "body": {
+    "correlation_id": "\u003ccid1\u003e",
+    "routing": {
+      "arm": "stub",
+      "fallback": false,
+      "routed_to": "gamma",
+      "routed_to_peer_id": "repow-c"
+    }
+  },
+  "calls": [
+    "--- request",
+    "reg.GetPeerByName(\"alpha\", nil) -\u003e repow-a \u003cnil\u003e",
+    "reg.GetAllPeers",
+    "reg.GetPeerByName(\"repow-c\", nil) -\u003e repow-c \u003cnil\u003e",
+    "reg.CheckAccess(\"alpha\", \"repow-c\", bypass=false, nil) -\u003e repow-a repow-c \u003cnil\u003e",
+    "trace \u003ccid1\u003e created ",
+    "trace \u003ccid1\u003e resolved_peer ",
+    "trace \u003ccid1\u003e routed ",
+    "reg.CheckAccess(\"repow-a\", \"repow-c\", bypass=true, nil) -\u003e repow-a repow-c \u003cnil\u003e",
+    "transport.SendAndWaitDeliveryAck(repow-c)",
+    "trace \u003ccid1\u003e thread_input_accepted "
+  ],
+  "delivered_to": [
+    "repow-c"
+  ],
+  "events": null,
+  "frame": {
+    "correlation_id": "\u003ccid1\u003e",
+    "delivery_id": "\u003cdelivery-id\u003e",
+    "from_peer": "alpha",
+    "text": "[routed by stub because you scored 0.81, the highest of 2 candidates (next 0.20); the sender did not name you, decline if this is not yours]\nwho owns the lexer?\n↳ ack(\"\u003ccid1\u003e\"), ack(\"\u003ccid1\u003e\", \"reply\"), or decline(\"\u003ccid1\u003e\", \"reason\")",
+    "to_peer": "gamma",
+    "type": "ask"
+  },
+  "offlined": null,
+  "status": 200,
+  "traces": [
+    {
+      "detail": {
+        "from_peer": "alpha",
+        "text": "who owns the lexer?",
+        "to_peer": "@route"
+      },
+      "from": "repow-a",
+      "peer": "repow-c",
+      "stage": "created",
+      "status": "",
+      "trace": "\u003ccid1\u003e"
+    },
+    {
+      "detail": null,
+      "from": "repow-a",
+      "peer": "repow-c",
+      "stage": "resolved_peer",
+      "status": "",
+      "trace": "\u003ccid1\u003e"
+    },
+    {
+      "detail": null,
+      "from": "repow-a",
+      "peer": "repow-c",
+      "stage": "routed",
+      "status": "",
+      "trace": "\u003ccid1\u003e"
+    },
+    {
+      "detail": {
+        "transport": "ws"
+      },
+      "from": "repow-a",
+      "peer": "repow-c",
+      "stage": "thread_input_accepted",
+      "status": "",
+      "trace": "\u003ccid1\u003e"
+    }
+  ],
+  "tracker": [
+    {
+      "Answer": null,
+      "AskerIdentity": null,
+      "CloseReason": "",
+      "Closed": false,
+      "CorrelationID": "\u003ccid1\u003e",
+      "CreatedAt": "\u003cclock\u003e",
+      "FromPeerID": "repow-a",
+      "FromPeerName": "alpha",
+      "FromRepowireSessionID": null,
+      "ParentID": null,
+      "PendingReply": null,
+      "PendingReplyAt": null,
+      "Question": null,
+      "RepliedAt": null,
+      "ReplyAttachments": null,
+      "ReplyDelivery": "push",
+      "ReplyText": null,
+      "ReplyTo": null,
+      "Text": "who owns the lexer?",
+      "ToPeerID": "repow-c",
+      "ToPeerName": "gamma",
+      "ToRepowireSessionID": null
+    }
+  ]
+}
