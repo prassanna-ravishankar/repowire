@@ -330,7 +330,7 @@ Return one job's current status JSON. `job_show` is an alias for `job_status`.
 job_update(job_id: str, state: str, state_reason: str | None = None, phase: str | None = None, progress: dict | None = None, progress_note: str | None = None, result_summary: str | None = None, result_data: dict | None = None, error: dict | None = None, artifacts: list | None = None, provenance: dict | None = None, attempt_id: str | None = None) -> str
 ```
 
-Update a job lifecycle state through `PATCH /jobs/{job_id}`. Returns the updated status JSON. Terminal jobs cannot move back to non-terminal states; same-terminal updates may add bounded metadata. Runner-managed updates should include the current `attempt_id` from the job prompt/status.
+Update a job lifecycle state through `PATCH /jobs/{job_id}`. Returns the updated status JSON. Terminal jobs cannot move back to non-terminal states; same-terminal updates may add bounded metadata. A cancel-requested job cannot be moved to `queued` (409). Runner-managed updates should include the current `attempt_id` from the job prompt/status.
 
 `job_update` is **optional enrichment**: fire completion is structural (the daemon arms the fire from the dispatch prompt and records the executor's final turn message as the result — see [fire lifecycle](../concepts/jobs-and-schedules.md#fire-lifecycle-structural-completion)). Use it for progress notes and structured `result_data`. The escape hatch: a fire blocked on something outside the mesh can hold itself open across turn ends with `state="running"` plus an explicit `phase`, and must then terminal-report itself.
 

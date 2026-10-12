@@ -17,9 +17,12 @@ import (
 
 // ErrAttemptIDRequired and ErrStaleAttempt mirror the ValueError/RuntimeError that
 // update_state() raises when a runner-managed terminal transition is mis-sequenced.
+// ErrCancelRequested refuses requeueing cancel-requested work: AcquireForDispatch
+// never acquires it, so it would sit queued forever.
 var (
 	ErrAttemptIDRequired = errors.New("attempt_id is required for runner-managed job updates")
 	ErrStaleAttempt      = errors.New("stale_attempt")
+	ErrCancelRequested   = errors.New("cancel_requested work cannot be queued")
 )
 
 // WorkState is one of the eleven tracked-work lifecycle states (work_store.py).
@@ -443,6 +446,9 @@ func (s *Store) UpdateWorkState(ctx context.Context, workID string, u WorkUpdate
 	if existing.Terminal() && u.State != existing.State {
 		return nil, fmt.Errorf("terminal work %s is already %s; terminal state cannot be changed", workID, existing.State)
 	}
+	if existing.CancelRequested && u.State == "queued" {
+		return nil, ErrCancelRequested
+	}
 
 	completedAt := existing.CompletedAt
 	if IsTerminalState(u.State) && completedAt == nil {
@@ -507,9 +513,11 @@ func (s *Store) UpdateWorkState(ctx context.Context, workID string, u WorkUpdate
 	return s.GetWork(ctx, workID)
 }
 
-// CancelWork requests cancellation (cancel()). queued work transitions straight
-// to cancelled; non-terminal in-flight work is flagged for cooperative cancel;
-// terminal work records the request without changing state.
+// CancelWork requests cancellation (cancel()). queued work, and blocked work that
+// was never dispatched, transition straight to cancelled: no executor holds
+// either, so nothing would observe a cooperative cancel (#458). Other
+// non-terminal work is flagged for cooperative cancel; terminal work records the
+// request without changing state.
 func (s *Store) CancelWork(ctx context.Context, workID string, requestedByPeerID *string, reason string) (*TrackedWork, error) {
 	if reason == "" {
 		reason = "cancel_requested"
@@ -537,14 +545,14 @@ func (s *Store) CancelWork(ctx context.Context, workID string, requestedByPeerID
 		return s.GetWork(ctx, workID)
 	}
 
-	if existing.State == "queued" {
+	if existing.State == "queued" || (existing.State == "blocked" && runnerCurrentAttempt(existing) == "") {
 		const q = `UPDATE tracked_work SET
 			state = 'cancelled', state_reason = ?, cancel_requested = 1,
 			cancel_requested_at = ?, cancel_requested_by_peer_id = ?,
 			cancellation_reason = ?, completed_at = ?, updated_at = ?
 			WHERE work_id = ?`
 		if _, err := s.db.ExecContext(ctx, q, reason, requestedAt, strOrNil(requestedByPeerID), reason, requestedAt, requestedAt, workID); err != nil {
-			return nil, fmt.Errorf("cancel queued work %s: %w", workID, err)
+			return nil, fmt.Errorf("cancel queued or blocked work %s: %w", workID, err)
 		}
 		return s.GetWork(ctx, workID)
 	}
