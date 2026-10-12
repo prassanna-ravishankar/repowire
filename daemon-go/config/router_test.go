@@ -273,3 +273,30 @@ func TestRoutingKeepsYAMLMergeAndAliasSemantics(t *testing.T) {
 		})
 	}
 }
+
+// The unusable-strategy recovery is settled after env vars apply: an env
+// var cannot bring the shadows back, but a valid strategy env var repairs
+// the strategy and keeps them.
+func TestUnusableStrategyRecoveryAppliesAfterEnv(t *testing.T) {
+	body := "routing:\n  strategy: [random]\n  record: true\n  shadow_arms: [random]\n"
+
+	clearRouterEnv(t)
+	t.Setenv(routingEnvPrefix+"SHADOW_ARMS", "random")
+	cfg := loadYAML(t, body)
+	if cfg.Routing.Strategy != StrategyStatic || len(cfg.Routing.ShadowArms) != 0 || !cfg.Routing.Record {
+		t.Fatalf("env shadows survived an unusable strategy: %+v", cfg.Routing)
+	}
+	if !strings.Contains(strings.Join(cfg.Warnings, "\n"), "routing.strategy is unusable") {
+		t.Fatalf("warnings %v", cfg.Warnings)
+	}
+
+	clearRouterEnv(t)
+	t.Setenv(routingEnvPrefix+"STRATEGY", "random")
+	cfg = loadYAML(t, body)
+	if cfg.Routing.Strategy != "random" || !reflect.DeepEqual(cfg.Routing.ShadowArms, []string{"random"}) {
+		t.Fatalf("a valid strategy env var did not repair the strategy: %+v", cfg.Routing)
+	}
+	if strings.Contains(strings.Join(cfg.Warnings, "\n"), "routing.strategy is unusable") {
+		t.Fatalf("repaired strategy still warned: %v", cfg.Warnings)
+	}
+}

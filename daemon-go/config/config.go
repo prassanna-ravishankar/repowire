@@ -31,6 +31,10 @@ type Config struct {
 	// Warnings are load-time notices the daemon logs once at startup:
 	// settings that were migrated or dropped rather than refused.
 	Warnings []string `yaml:"-"`
+	// strategyUnusable: routing.strategy in the file did not decode. It is
+	// settled after env vars apply, since REPOWIRE_ROUTING__STRATEGY can
+	// repair it and REPOWIRE_ROUTING__SHADOW_ARMS can add shadows back.
+	strategyUnusable bool
 }
 
 type DaemonConfig struct {

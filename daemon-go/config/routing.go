@@ -105,10 +105,7 @@ func loadRouting(cfg *Config, raw []byte) error {
 	if hasRouting {
 		warnings, failed := decodeKeys(&probe.Routing, &cfg.Routing, "routing")
 		cfg.Warnings = append(cfg.Warnings, warnings...)
-		if slices.Contains(failed, "strategy") && len(cfg.Routing.ShadowArms) > 0 {
-			cfg.Warnings = append(cfg.Warnings, StaticFallbackDropsShadows(cfg.Routing.ShadowArms))
-			cfg.Routing.ShadowArms, cfg.Routing.SampleEvery = nil, nil
-		}
+		cfg.strategyUnusable = slices.Contains(failed, "strategy")
 		if hasLegacy {
 			cfg.Warnings = append(cfg.Warnings, "config: experiments.router is ignored because routing: is set; remove the legacy block")
 		}
@@ -310,6 +307,12 @@ func applyRoutingEnv(cfg *Config) {
 // by routing.NewRouterOrStatic, which degrades the same way.
 func (cfg *Config) settleRouting() error {
 	r := &cfg.Routing
+	// Runs after every source (file, then env) has applied: an unusable
+	// strategy that no env var repaired takes the shadows with it.
+	if cfg.strategyUnusable && os.Getenv(routingEnvPrefix+"STRATEGY") == "" && len(r.ShadowArms) > 0 {
+		cfg.Warnings = append(cfg.Warnings, StaticFallbackDropsShadows(r.ShadowArms))
+		r.ShadowArms, r.SampleEvery = nil, nil
+	}
 	seen := map[string]bool{}
 	var arms []string
 	for _, arm := range r.ShadowArms {
