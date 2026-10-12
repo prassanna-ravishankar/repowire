@@ -139,7 +139,6 @@ func (h *Hub) snapshotCandidates(d *routing.Decision, sender *proto.Peer, bypass
 		return
 	}
 	reg := h.ask.reg
-	ctx := context.Background() // the snapshot has no request; the first call loads history from the store
 	clock, _ := reg.(descriptionClock)
 	var stats map[proto.PeerID]service.AskPeerStats
 	if h.ask.asks != nil && sender != nil {
@@ -156,8 +155,8 @@ func (h *Hub) snapshotCandidates(d *routing.Decision, sender *proto.Peer, bypass
 		if sender != nil {
 			senderID = sender.PeerID
 		}
-		if total, fromSender, ok := h.history.counts(ctx, senderID, p.PeerID); ok {
-			c.PriorAsksTotal = &total
+		if total, sentBy, fromSender, ok := h.history.counts(senderID, p.PeerID); ok {
+			c.PriorAsksTotal, c.PriorAsksSent = &total, &sentBy
 			if sender != nil {
 				c.PriorAsksFromSender = &fromSender
 			}

@@ -167,6 +167,7 @@ func (h *Hub) WithReadDeps(asks *service.AskTracker, store *state.Store) *Hub {
 	if asks != nil && store != nil {
 		h.history = newAskHistory(store.AskRefs)
 		asks.SetOnRegister(h.history.note)
+		h.history.start()
 	}
 	return h
 }

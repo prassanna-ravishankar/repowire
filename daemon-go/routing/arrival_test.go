@@ -69,10 +69,12 @@ func TestNeverAskedPrefersTheSnapshotField(t *testing.T) {
 	base := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
 	history := []Example{arrivalExample("h1", base, "a", map[string]float64{"a": 5, "b": 5})}
 	scored := arrivalExample("s1", base.Add(time.Minute), "b", map[string]float64{"a": 5, "b": 30})
+	// set records the snapshot's counts for id: nil means no field (ledger).
 	set := func(id string, n *int) {
 		for i := range scored.Decision.Candidates {
 			if scored.Decision.Candidates[i].PeerID == id {
 				scored.Decision.Candidates[i].PriorAsksTotal = n
+				scored.Decision.Candidates[i].PriorAsksSent = n // nil stays absent; a value is the count asked and sent
 			}
 		}
 	}
@@ -106,5 +108,25 @@ func TestNeverAskedPrefersTheSnapshotField(t *testing.T) {
 	got = Run(ctx, arm, InputFrom("s1", scored.Decision), time.Second)
 	if got.NeverAskedSource != NeverAskedLedger {
 		t.Fatalf("ledger source = %q (%+v)", got.NeverAskedSource, got)
+	}
+}
+
+// total+sent decides: a peer addressed zero times but that has sent asks has
+// been in the room, so it is not an arrival.
+func TestNeverAskedCountsAsksTheCandidateSent(t *testing.T) {
+	base := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	ex := arrivalExample("s1", base, "b", map[string]float64{"a": 5, "b": 30})
+	zero, three := 0, 3
+	for i := range ex.Decision.Candidates {
+		c := &ex.Decision.Candidates[i]
+		c.PriorAsksTotal = &zero
+		c.PriorAsksSent = &zero
+		if c.PeerID == "a" {
+			c.PriorAsksSent = &three // a never received an ask but has sent three
+		}
+	}
+	got := Run(context.Background(), BaselineArms(nil, DefaultArrivalSeconds)["hybrid-arrival"], InputFrom("s1", ex.Decision), time.Second)
+	if !got.Uniform || len(got.Scores) != 1 || got.Scores[0].PeerID != "b" || got.NeverAskedSource != NeverAskedField {
+		t.Fatalf("arrivals = %+v, want only b", got)
 	}
 }

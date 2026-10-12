@@ -104,10 +104,14 @@ type Candidate struct {
 	OpenAsksInbound   int      `json:"open_asks_inbound"`
 	LastExchangeAt    *string  `json:"last_exchange_with_sender_at"`
 	// PriorAsksTotal counts asks ever addressed to this peer, from anyone
-	// (durable stores, not the 24h tracker); PriorAsksFromSender counts those
-	// the sender sent. Nil in rows recorded before the fields existed and in
-	// reconstructed rows, where replay falls back to the ledger.
+	// (durable stores, not the 24h tracker); PriorAsksSent counts asks it
+	// ever sent; PriorAsksFromSender counts the addressed ones the sender
+	// sent. A peer with total+sent == 0 has never been in an ask. Nil in rows
+	// recorded before the fields existed, in rows made while the history was
+	// still loading, and in reconstructed rows: replay falls back to the
+	// ledger for those.
 	PriorAsksTotal      *int `json:"prior_asks_total,omitempty"`
+	PriorAsksSent       *int `json:"prior_asks_sent,omitempty"`
 	PriorAsksFromSender *int `json:"prior_asks_from_sender,omitempty"`
 
 	// Claimed: written by the peer about itself.
@@ -168,7 +172,7 @@ type RouterResult struct {
 	Uniform bool `json:"uniform,omitempty"`
 	// NeverAskedSource says how novelty and hybrid-arrival decided a
 	// candidate had never been asked: "field" (the snapshot\'s
-	// prior_asks_total), "ledger" (earlier replay rows), or "mixed".
+	// prior-ask counts), "ledger" (earlier replay rows), or "mixed".
 	NeverAskedSource string `json:"never_asked_source,omitempty"`
 	Fallback         bool   `json:"fallback"`
 	FallbackReason   string `json:"fallback_reason,omitempty"`

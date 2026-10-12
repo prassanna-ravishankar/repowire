@@ -330,12 +330,13 @@ const (
 	NeverAskedMixed  = "mixed"
 )
 
-// novel reports whether c has never been in a recorded ask, and whether the
-// verdict came from the snapshot's prior_asks_total (which counts every ask
-// ever addressed to the peer) rather than from earlier ledger rows.
+// novel reports whether c has never been in a recorded ask, as sender or as
+// target, and whether the verdict came from the snapshot's prior-ask counts
+// (every ask ever addressed to or sent by the peer: total+sent == 0) rather
+// than from earlier ledger rows.
 func (s seenIndex) novel(c Candidate, at time.Time) (novel, byField bool) {
-	if c.PriorAsksTotal != nil {
-		return *c.PriorAsksTotal == 0, true
+	if c.PriorAsksTotal != nil && c.PriorAsksSent != nil {
+		return *c.PriorAsksTotal+*c.PriorAsksSent == 0, true
 	}
 	first, ok := s[c.PeerID]
 	return !ok || !first.Before(at), false
