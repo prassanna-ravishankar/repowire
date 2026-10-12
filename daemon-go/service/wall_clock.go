@@ -9,13 +9,15 @@ package service
 // than one chunk, and re-reads the wall clock after each. A chunk does no other
 // work: no store query, no I/O.
 //
-// Bound: a deadline that passes while the machine sleeps is noticed within one
-// chunk (30s) of awake time after it wakes, because no armed timer has more
-// than a chunk left to run. 30s sits under the ~45s DarkWakes macOS grants in
-// clamshell sleep, so an overdue fire normally lands in the first DarkWake
-// after its deadline instead of accumulating across several. And waitUntil
-// never returns before the wall-clock deadline, so a timer that runs a moment
-// fast cannot fire work early (repowire-5je).
+// Bound: a deadline that passes while the machine sleeps is detected within
+// one chunk (30s) of awake time after it wakes, because no armed timer has
+// more than a chunk left to run. That bounds detection by a waiting loop, not
+// delivery: dispatch can take longer if the loop was busy or computing its
+// deadline when the machine slept. 30s sits under the ~45s DarkWakes macOS
+// grants in clamshell sleep, so detection normally lands in the first DarkWake
+// after the deadline. And waitUntil never returns before the wall-clock
+// deadline, so a timer that runs a moment fast cannot fire work early
+// (repowire-5je).
 
 import (
 	"context"
@@ -40,6 +42,18 @@ func (c wallClock) waitUntil(ctx context.Context, deadline time.Time, wake, stop
 	// Round(0) drops the monotonic reading so Sub compares wall clocks.
 	deadline = deadline.Round(0)
 	for {
+		// Stop and ctx are checked first on every iteration, including the
+		// first: an already-due deadline must never starve shutdown. A loop
+		// whose deadline stays in the past (work that cannot advance) would
+		// otherwise never see Stop, and a daemon that cannot stop cannot be
+		// restarted.
+		select {
+		case <-stop:
+			return false, true
+		case <-ctx.Done():
+			return false, true
+		default:
+		}
 		remaining := deadline.Sub(c.now().Round(0))
 		if remaining <= 0 {
 			return false, false

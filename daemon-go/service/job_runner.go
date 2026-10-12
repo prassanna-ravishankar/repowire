@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	jobRunnerOwnerID = "daemon-job-runner"
-	jobLeaseSeconds  = 300
+	jobRunnerOwnerID   = "daemon-job-runner"
+	jobLeaseSeconds    = 300
+	stuckDeadlineRetry = time.Second
 )
 
 // scheduledAskOpener is the PeerDelivery method JobRunner uses. *PeerDelivery
@@ -124,7 +125,15 @@ func (r *JobRunner) loop(ctx context.Context) {
 		}
 		// Wall-clock wait (wall_clock.go): due jobs, recurring-job occurrences
 		// and lease expiry all ride this one deadline (repowire-2ph).
-		deadline := r.clock.now().Add(time.Duration(*delay * float64(time.Second)))
+		wait := time.Duration(*delay * float64(time.Second))
+		if wait <= 0 {
+			// Still due after a full tick means the tick could not advance it
+			// (e.g. a calendar entry whose cron no longer parses). Retry at
+			// most once per stuckDeadlineRetry instead of spinning; Wake still
+			// cuts the wait short.
+			wait = stuckDeadlineRetry
+		}
+		deadline := r.clock.now().Add(wait)
 		if _, stopped := r.clock.waitUntil(ctx, deadline, r.wake, r.stop); stopped {
 			return
 		}
