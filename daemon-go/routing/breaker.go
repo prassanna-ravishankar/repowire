@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"slices"
 	"sync"
 	"time"
 )
@@ -31,6 +32,9 @@ func providerFailure(reason string) bool {
 type breaker struct {
 	mu       sync.Mutex
 	failures int
+	// models are the models behind the current run of failures, so a
+	// breaker_open row can say whether its own model was among them.
+	models   []string
 	openedAt time.Time
 	probing  bool
 	now      func() time.Time
@@ -59,12 +63,24 @@ func (b *breaker) record(res RouterResult, probe bool) {
 	}
 	if res.Fallback && providerFailure(res.FallbackReason) {
 		b.failures++
+		if !slices.Contains(b.models, res.Model) {
+			b.models = append(b.models, res.Model)
+		}
 		if b.failures >= breakerTrip {
 			b.openedAt = b.now()
 		}
 		return
 	}
 	if !res.Fallback {
-		b.failures = 0
+		b.failures, b.models = 0, nil
 	}
+}
+
+// gatedBy lists the models whose failures hold the breaker open, sorted.
+func (b *breaker) gatedBy() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	models := slices.Clone(b.models)
+	slices.Sort(models)
+	return models
 }

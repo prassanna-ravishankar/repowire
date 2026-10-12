@@ -162,6 +162,10 @@ type RouterResult struct {
 	HTTPStatus int    `json:"http_status,omitempty"`
 	Provider   string `json:"provider,omitempty"`
 	ErrorCode  string `json:"error_code,omitempty"`
+	// GatedBy, on a breaker_open result, lists the models whose failures
+	// opened the provider's breaker. Arms of one provider share a breaker,
+	// so it can name a model other than this arm's.
+	GatedBy []string `json:"gated_by,omitempty"`
 	// Error is never written. Rows recorded before #420 hold raw provider
 	// text here; read them only through Attribution, never export it.
 	Error string `json:"error,omitempty"`

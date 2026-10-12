@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -35,6 +36,7 @@ type RouterConfig struct {
 	AllowServiceTargets bool        `yaml:"allow_service_targets"`
 	Jev                 RouterModel `yaml:"jev"`
 	Frontier            RouterModel `yaml:"frontier"`
+	Clef                RouterClef  `yaml:"clef"`
 }
 
 // RouterModel is one model-backed arm's endpoint.
@@ -42,6 +44,14 @@ type RouterModel struct {
 	APIKey  string `yaml:"api_key"`
 	Model   string `yaml:"model"`
 	BaseURL string `yaml:"base_url"`
+}
+
+// RouterClef is the Cloudflare Workers AI endpoint behind the clef-* arms
+// (Model) and the clef-flash-* arms (FlashModel).
+type RouterClef struct {
+	RouterModel `yaml:",inline"`
+	AccountID   string `yaml:"account_id"`
+	FlashModel  string `yaml:"flash_model"`
 }
 
 // StrategyStatic is the default routing strategy.
@@ -60,6 +70,10 @@ func defaultRouting() RouterConfig {
 		Strategy: StrategyStatic, RecordText: true, TimeoutSeconds: 8,
 		Jev:      RouterModel{Model: "jev-1.13.0", BaseURL: "https://api.typesafe.ai"},
 		Frontier: RouterModel{Model: "claude-opus-5-5"},
+		Clef: RouterClef{
+			RouterModel: RouterModel{Model: "@cf/cloudflare/clef", BaseURL: "https://api.cloudflare.com/client/v4"},
+			FlashModel:  "@cf/cloudflare/clef-flash",
+		},
 	}
 }
 
@@ -246,7 +260,7 @@ func (l legacyRouter) migrate() (RouterConfig, error) {
 
 // redactedYAML renders the block as a routing: section with keys hidden.
 func (r RouterConfig) redactedYAML() string {
-	for _, m := range []*RouterModel{&r.Jev, &r.Frontier} {
+	for _, m := range []*RouterModel{&r.Jev, &r.Frontier, &r.Clef.RouterModel} {
 		if m.APIKey != "" {
 			m.APIKey = "<set>"
 		}
@@ -299,6 +313,44 @@ func applyRoutingEnv(cfg *Config) {
 	if v := firstEnv(routingEnvPrefix+"FRONTIER__API_KEY", legacyEnvPrefix+"FRONTIER__API_KEY", "ANTHROPIC_API_KEY"); v != "" {
 		r.Frontier.APIKey = v
 	}
+	// Clef postdates experiments.router, so it has no legacy env vars.
+	clef := routingEnvPrefix + "CLEF__"
+	if v := firstEnv(clef+"API_KEY", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_AUTH_TOKEN"); v != "" {
+		r.Clef.APIKey = v
+	}
+	if v := firstEnv(clef+"ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID"); v != "" {
+		r.Clef.AccountID = v
+	}
+	setStringEnv(&r.Clef.Model, clef+"MODEL")
+	setStringEnv(&r.Clef.FlashModel, clef+"FLASH_MODEL")
+	setStringEnv(&r.Clef.BaseURL, clef+"BASE_URL")
+}
+
+// clefAccountID is Cloudflare's account id format: 32 hex digits.
+var clefAccountID = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
+
+// settleClef clears an account id that is not one, so it never reaches a
+// request path. When a clef arm is configured to run, it also names why the
+// arms will fall back as unconfigured; CLOUDFLARE_* vars set for other tools
+// warn about nothing otherwise.
+func (cfg *Config) settleClef() {
+	r := &cfg.Routing
+	c := &r.Clef
+	used := slices.ContainsFunc(append([]string{r.Strategy}, r.ShadowArms...), func(arm string) bool { return strings.HasPrefix(arm, "clef-") })
+	if c.AccountID != "" && !clefAccountID.MatchString(c.AccountID) {
+		c.AccountID = ""
+		if used {
+			cfg.Warnings = append(cfg.Warnings, "config: routing.clef.account_id is not a 32-digit hex Cloudflare account id; ignored, the clef arms fall back as unconfigured")
+		}
+		return
+	}
+	switch {
+	case !used:
+	case c.APIKey != "" && c.AccountID == "":
+		cfg.Warnings = append(cfg.Warnings, "config: routing.clef.api_key is set but account_id is not (routing.clef.account_id or CLOUDFLARE_ACCOUNT_ID); the clef arms fall back as unconfigured")
+	case c.APIKey == "" && c.AccountID != "":
+		cfg.Warnings = append(cfg.Warnings, "config: routing.clef.account_id is set but api_key is not (routing.clef.api_key or CLOUDFLARE_API_TOKEN); the clef arms fall back as unconfigured")
+	}
 }
 
 // settleRouting drops, with a warning, settings that cannot take effect: a
@@ -307,6 +359,7 @@ func applyRoutingEnv(cfg *Config) {
 // by routing.NewRouterOrStatic, which degrades the same way.
 func (cfg *Config) settleRouting() error {
 	r := &cfg.Routing
+	cfg.settleClef()
 	// Runs after every source (file, then env) has applied: an unusable
 	// strategy that no env var repaired takes the shadows with it.
 	if cfg.strategyUnusable && os.Getenv(routingEnvPrefix+"STRATEGY") == "" && len(r.ShadowArms) > 0 {

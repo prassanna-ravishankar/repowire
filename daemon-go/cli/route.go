@@ -61,6 +61,12 @@ func printRouting(w io.Writer, effective, requested config.RouterConfig, warning
 		}
 		return "key set"
 	}
+	clefState := func(c config.RouterClef) string {
+		if c.AccountID == "" {
+			return keyState(c.RouterModel) + ", no account id"
+		}
+		return keyState(c.RouterModel) + ", account id set"
+	}
 	shadows := "none"
 	if len(effective.ShadowArms) > 0 {
 		var parts []string
@@ -81,6 +87,7 @@ func printRouting(w io.Writer, effective, requested config.RouterConfig, warning
 	fmt.Fprintf(w, "  service targets allowed  %t\n", effective.AllowServiceTargets)
 	fmt.Fprintf(w, "  jev          %s, %s\n", effective.Jev.Model, keyState(effective.Jev))
 	fmt.Fprintf(w, "  frontier     %s, %s\n", effective.Frontier.Model, keyState(effective.Frontier))
+	fmt.Fprintf(w, "  clef         %s, %s, %s\n", effective.Clef.Model, effective.Clef.FlashModel, clefState(effective.Clef))
 	var ignored []string
 	if requested.Strategy != effective.Strategy {
 		ignored = append(ignored, fmt.Sprintf("routing.strategy %q (running %s)", requested.Strategy, effective.Strategy))
@@ -261,13 +268,13 @@ func printReplayTable(w io.Writer, reports []routing.Report) {
 			fmt.Fprintf(w, "history (%s votes from): %d labelled asks, %s to %s\n", rep.Arm, h.Asks, h.From, h.To)
 		}
 	}
-	fmt.Fprintf(w, "%-18s %-8s %6s %6s %6s %6s %6s %8s %8s", "arm", "source", "rows", "scored", "fb", "f@1", "f@3", "ans@1", "ms")
+	fmt.Fprintf(w, "%-20s %-8s %6s %6s %6s %6s %6s %8s %8s", "arm", "source", "rows", "scored", "fb", "f@1", "f@3", "ans@1", "ms")
 	for _, r := range reasons {
 		fmt.Fprintf(w, " %s", r)
 	}
 	fmt.Fprintln(w)
 	for _, rep := range reports {
-		fmt.Fprintf(w, "%-18s %-8s %6d %6d %6d %6.3f %6.3f %8.3f %8.0f", rep.Arm, rep.Source, rep.Decisions, rep.Scored, rep.Fallbacks, rep.Fidelity1, rep.Fidelity3, rep.AnsweredFidelity1, rep.MeanLatencyMS)
+		fmt.Fprintf(w, "%-20s %-8s %6d %6d %6d %6.3f %6.3f %8.3f %8.0f", rep.Arm, rep.Source, rep.Decisions, rep.Scored, rep.Fallbacks, rep.Fidelity1, rep.Fidelity3, rep.AnsweredFidelity1, rep.MeanLatencyMS)
 		for _, r := range reasons {
 			fmt.Fprintf(w, " %*d", len(r), rep.Skipped[r])
 		}
@@ -294,7 +301,7 @@ func printSplit(w io.Writer, label string, reports []routing.Report, split func(
 		fmt.Fprintf(w, "\n%s %s\n", label, name)
 		for _, rep := range reports {
 			if c := split(rep)[name]; c != nil {
-				fmt.Fprintf(w, "  %-18s scored %d, fallbacks %d, hit@1 %d, hit@3 %d\n", rep.Arm, c.Scored, c.Fallbacks, c.Hit1, c.Hit3)
+				fmt.Fprintf(w, "  %-20s scored %d, fallbacks %d, hit@1 %d, hit@3 %d\n", rep.Arm, c.Scored, c.Fallbacks, c.Hit1, c.Hit3)
 			}
 		}
 	}
