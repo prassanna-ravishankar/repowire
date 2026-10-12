@@ -248,6 +248,12 @@ Arms: `random`, and `jev-*` / `frontier-*` over the views `claimed` (description
 | `shadow_arms` with `record: false` | Shadow arms are dropped, because their results exist only in the record. |
 | `routing:` is not a mapping | Defaults (static, nothing recorded) |
 
+Recovery is decided at the end of configuration resolution, against the final values after environment variables apply, never against an intermediate state:
+
+- A valid `REPOWIRE_ROUTING__STRATEGY` repairs a bad YAML strategy, and the shadow arms are kept.
+- `REPOWIRE_ROUTING__SHADOW_ARMS` cannot bring back shadows that an unusable strategy dropped.
+- Environment precedence holds even for a bad value: an unusable `REPOWIRE_ROUTING__STRATEGY` over a valid YAML strategy runs static with no shadows. It does not fall back to the YAML value.
+
 The same rules apply to a legacy `experiments.router` block. `repowire route show` prints the effective config, which is what the daemon runs, followed by every ignored setting and the warnings. A file that is not valid YAML still stops the daemon, as does a mistyped key outside `routing:`.
 
 ### Migrating from `experiments.router`

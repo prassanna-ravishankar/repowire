@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -552,5 +554,32 @@ func TestNewRouterOrStaticDegrades(t *testing.T) {
 	}
 	if _, warnings := NewRouterOrStatic(config.RouterConfig{Strategy: "random", TimeoutSeconds: 1}, nil); len(warnings) != 0 {
 		t.Fatalf("valid config warned: %v", warnings)
+	}
+}
+
+// Corner 4 of the recovery contract, end to end through config.Load: env
+// precedence holds even when the env value is unusable. A bad
+// REPOWIRE_ROUTING__STRATEGY over a valid YAML strategy runs static with
+// the shadows dropped; it never silently falls back to the YAML value the
+// operator overrode.
+func TestBadEnvStrategyOverValidYAMLRunsStatic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("routing:\n  strategy: random\n  record: true\n  shadow_arms: [random]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REPOWIRE_CONFIG", path)
+	t.Setenv("REPOWIRE_ROUTING__STRATEGY", "jev-nope")
+	t.Setenv("REPOWIRE_ROUTING__SHADOW_ARMS", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, warnings := NewRouterOrStatic(cfg.Routing, nil)
+	if r.Strategy() != StrategyStatic || len(r.ShadowPlan()) != 0 || !r.Recording() {
+		t.Fatalf("effective %+v", r.Config())
+	}
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, `routing.strategy "jev-nope" names no arm`) || !strings.Contains(joined, "routing.strategy is unusable") {
+		t.Fatalf("warnings: %s", joined)
 	}
 }
