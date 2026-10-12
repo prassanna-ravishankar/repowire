@@ -207,9 +207,13 @@ Expected behavior:
 
 - `cancel(work_id)` records a cancel request even if the executor is not
   currently reachable.
-- If work is still `queued`, cancellation can move directly to `cancelled`
-  without contacting a transport.
-- If work is `delivered`, `running`, `awaiting_input`, or `blocked`, the daemon
+- If work is still `queued`, or `blocked` without ever having been dispatched
+  (no current attempt), cancellation moves directly to `cancelled` without
+  contacting a transport: no executor holds it.
+- Cancel-requested work cannot be moved back to `queued` through a state
+  update (`409`): dispatch never acquires cancel-requested work, so it would
+  stay queued forever.
+- If work is `delivered`, `running`, `awaiting_input`, or a dispatched `blocked`, the daemon
   should send the runtime/backend cancel instruction when the transport exposes
   one. The current implementation attempts this only for an already-live
   daemon-owned ACP client for `assigned_peer_id`; it does not spawn a client or

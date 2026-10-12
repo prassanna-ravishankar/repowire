@@ -415,6 +415,8 @@ func (h *Hub) jobUpdate(ctx context.Context, workID string, req workUpdateReques
 			return nil, routeErr(http.StatusConflict, "stale attempt_id")
 		case err == state.ErrAttemptIDRequired:
 			return nil, routeErr(http.StatusBadRequest, err.Error())
+		case err == state.ErrCancelRequested:
+			return nil, routeErr(http.StatusConflict, err.Error())
 		default:
 			return nil, routeErr(http.StatusBadRequest, err.Error())
 		}
