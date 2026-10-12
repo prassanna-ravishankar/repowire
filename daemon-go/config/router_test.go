@@ -220,6 +220,8 @@ func TestRoutingTyposDegradeInsteadOfRefusing(t *testing.T) {
 			func(r RouterConfig) bool { return r.Strategy == StrategyStatic && r.Record && len(r.ShadowArms) == 0 }},
 		"strategy of the wrong type": {"routing:\n  strategy: [random]\n  record: true\n", "routing.strategy is ignored",
 			func(r RouterConfig) bool { return r.Strategy == StrategyStatic && r.Record }},
+		"strategy of the wrong type drops the shadows": {"routing:\n  strategy: [random]\n  record: true\n  shadow_arms: [random]\n", "routing.strategy is unusable",
+			func(r RouterConfig) bool { return r.Strategy == StrategyStatic && r.Record && len(r.ShadowArms) == 0 }},
 		"shadow_arms of the wrong type": {"routing:\n  record: true\n  shadow_arms: {jev-attested: 1}\n", "routing.shadow_arms is ignored",
 			func(r RouterConfig) bool { return r.Record && len(r.ShadowArms) == 0 }},
 		"sample_every of the wrong type": {"routing:\n  record: true\n  sample_every: 5\n", "routing.sample_every is ignored",
@@ -237,6 +239,36 @@ func TestRoutingTyposDegradeInsteadOfRefusing(t *testing.T) {
 			}
 			if !c.check(cfg.Routing) || !strings.Contains(strings.Join(cfg.Warnings, "\n"), c.warning) {
 				t.Fatalf("routing %+v warnings %v", cfg.Routing, cfg.Warnings)
+			}
+		})
+	}
+}
+
+// Recovery must not change what a block means: YAML merge keys and aliases
+// resolve exactly as a whole-block decode would, with an explicit key
+// winning over a merged one.
+func TestRoutingKeepsYAMLMergeAndAliasSemantics(t *testing.T) {
+	for name, c := range map[string]struct {
+		body     string
+		strategy string
+		record   bool
+		warning  string
+	}{
+		"explicit key beats a later merge":    {"routing:\n  strategy: static\n  <<: {strategy: random, record: true}\n", StrategyStatic, true, ""},
+		"explicit key beats an earlier merge": {"routing:\n  <<: {strategy: random}\n  strategy: static\n", StrategyStatic, false, ""},
+		"merge fills an unset key":            {"base: &b {strategy: random}\nrouting:\n  <<: *b\n  record: true\n", "random", true, ""},
+		"aliased block":                       {"template: &r {strategy: random, record: true}\nrouting: *r\n", "random", true, ""},
+		"merge with a mistyped key":           {"routing:\n  strategy: static\n  <<: {strategy: random, record: maybe}\n", StrategyStatic, false, "routing.record is ignored"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearRouterEnv(t)
+			cfg := loadYAML(t, c.body)
+			if cfg.Routing.Strategy != c.strategy || cfg.Routing.Record != c.record {
+				t.Fatalf("routing %+v", cfg.Routing)
+			}
+			joined := strings.Join(cfg.Warnings, "\n")
+			if (c.warning == "" && joined != "") || !strings.Contains(joined, c.warning) {
+				t.Fatalf("warnings %q, want %q", joined, c.warning)
 			}
 		})
 	}

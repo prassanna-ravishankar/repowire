@@ -73,10 +73,11 @@ func NewRouter(cfg config.RouterConfig, arms map[string]Arm) (*Router, error) {
 	}, nil
 }
 
-// NewRouterOrStatic is the daemon's constructor: it never fails. A strategy,
-// shadow arm or sample_every key that names no arm is dropped with a
-// warning (an unknown strategy degrades to static), so a typo in an
-// optional feature degrades that feature and never stops the daemon.
+// NewRouterOrStatic is the daemon's constructor: it never fails. A shadow arm
+// or sample_every key that names no arm is dropped with a warning. A
+// strategy that names no arm degrades to static and drops the shadow arms
+// with it. Recording is kept either way. A typo in routing degrades routing
+// and never stops the daemon.
 func NewRouterOrStatic(cfg config.RouterConfig, arms map[string]Arm) (*Router, []string) {
 	if arms == nil {
 		arms = Arms(cfg)
@@ -85,7 +86,10 @@ func NewRouterOrStatic(cfg config.RouterConfig, arms map[string]Arm) (*Router, [
 	if cfg.Strategy != "" && cfg.Strategy != StrategyStatic {
 		if _, ok := arms[cfg.Strategy]; !ok {
 			warnings = append(warnings, fmt.Sprintf("routing.strategy %q names no arm; routing stays static", cfg.Strategy))
-			cfg.Strategy = StrategyStatic
+			if len(cfg.ShadowArms) > 0 {
+				warnings = append(warnings, config.StaticFallbackDropsShadows(cfg.ShadowArms))
+			}
+			cfg.Strategy, cfg.ShadowArms, cfg.SampleEvery = StrategyStatic, nil, nil
 		}
 	}
 	var shadows []string
@@ -141,6 +145,10 @@ func (r *Router) breakerFor(arm Arm) *breaker {
 	}
 	return b
 }
+
+// Config is the effective routing config: what this router actually runs,
+// after NewRouterOrStatic dropped anything unusable.
+func (r *Router) Config() config.RouterConfig { return r.cfg }
 
 // Recording reports whether route_decision rows are written.
 func (r *Router) Recording() bool { return r != nil && r.cfg.Record }

@@ -526,15 +526,26 @@ func TestNewRouterOrStaticDegrades(t *testing.T) {
 		ShadowArms:  []string{"random", "jev-nope"},
 		SampleEvery: map[string]int{"random": 2, "frontier-cliamed": 20},
 	}
+	// An unusable strategy falls back to static and takes the shadows with
+	// it; recording survives.
 	r, warnings := NewRouterOrStatic(cfg, nil)
-	if r == nil || r.Strategy() != StrategyStatic || !r.Recording() || r.SampleEvery("random") != 2 {
+	if r == nil || r.Strategy() != StrategyStatic || !r.Recording() || len(r.ShadowPlan()) != 0 {
+		t.Fatalf("router %+v", r)
+	}
+	if joined := strings.Join(warnings, "\n"); !strings.Contains(joined, `"jev-atested" names no arm; routing stays static`) || !strings.Contains(joined, "are not run because routing.strategy is unusable") {
+		t.Fatalf("warnings: %s", joined)
+	}
+	// Any other bad name drops only itself.
+	cfg.Strategy = "random"
+	r, warnings = NewRouterOrStatic(cfg, nil)
+	if r.Strategy() != "random" || !r.Recording() || r.SampleEvery("random") != 2 {
 		t.Fatalf("router %+v", r)
 	}
 	if plan := r.ShadowPlan(); len(plan) != 1 || plan[0] != "random" {
 		t.Fatalf("shadow plan %v", plan)
 	}
 	joined := strings.Join(warnings, "\n")
-	for _, want := range []string{`"jev-atested" names no arm; routing stays static`, `"jev-nope" names no arm`, `"frontier-cliamed" names no arm`} {
+	for _, want := range []string{`"jev-nope" names no arm`, `"frontier-cliamed" names no arm`} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("warnings missing %q:\n%s", want, joined)
 		}

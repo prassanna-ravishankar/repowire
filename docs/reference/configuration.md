@@ -211,7 +211,7 @@ routing:
 - **`static`** (default) refuses a targetless ask with `400 no_target`. That refusal happens before any trace row or snapshot.
 - **An arm name** (`random`, `jev-*`, `frontier-*`) ranks the eligible candidates. Its pick passes the same circle, addressability and self checks as a named target, and the delivered ask is prefixed with the arm and its score. If the arm fails, the ask goes to the sender's `fallback_to` peer, which is authorized the same way, with a note saying so. If the arm fails and there is no `fallback_to`, the ask is refused with `503 router_unavailable`. If the pick stops being eligible before delivery, the reason is `stale_pick:*` and the same fallback applies. Without `fallback_to`, that ask fails with the pick's own authorization error (403, 404, 409 or 422, as for a named target). Nothing is delivered either way.
 
-A strategy never delivers to a peer whose role is `service` (for example `telegram` or `slack`) or `human`, unless `allow_service_targets: true`. On a targetless decision, those peers are recorded with `access: service_excluded` and are not offered to the arm. Circle and addressability verdicts take precedence. The same rule applies when the pick and `fallback_to` are authorized, so a pick that became a service peer after the snapshot is a `stale_pick:service_excluded` fallback. A `fallback_to` naming one is refused with `403 service_excluded`. The rule does not apply to named asks: name `telegram` and you reach `telegram`. Shadow arms run on named asks, so they still see and score service peers. Each targetless decision row records the policy it ran under in `selection_policy` (`exclude_service_targets` or `allow_service_targets`). The policy is enforced when the pick or fallback is authorized. Delivery then goes to that authorized peer, and no current path changes an existing peer's role. Roles are declared by the peers themselves, so this is an operating policy, not a security boundary.
+A strategy never delivers to a peer whose role is `service` (for example `telegram` or `slack`) or `human`, unless `allow_service_targets: true`. On a targetless decision, those peers are recorded with `access: service_excluded` and are not offered to the arm. Circle and addressability verdicts take precedence. The same rule applies when the pick and `fallback_to` are authorized, so a pick that became a service peer after the snapshot is a `stale_pick:service_excluded` fallback. A `fallback_to` naming one is refused with `403 service_excluded`. The rule does not apply to named asks: name `telegram` and you reach `telegram`. Shadow arms run on named asks, so they still see and score service peers. Each targetless decision row records the policy it ran under in `selection_policy` (`exclude_service_targets` or `allow_service_targets`). The policy is enforced when the pick or fallback is authorized. Delivery then goes to that authorized peer, and no current path turns an existing peer into a service or human peer. Roles are declared by the peers themselves, so this is an operating policy, not a security boundary.
 
 Only an absent target is routed. An empty or whitespace `to_peer`, or JSON `null`, is a named ask to nobody and fails with `404 Unknown peer`, as it always has. `@route`, the experiment's former reserved name, is now an ordinary name. `ask_many` children, the legacy `/query`, scheduled asks, the CLI and the Pi, OpenCode, Telegram, Slack and relay surfaces always name their target.
 
@@ -237,15 +237,18 @@ Named asks record `arm: explicit` under every strategy. With `record` off and no
 
 Arms: `random`, and `jev-*` / `frontier-*` over the views `claimed` (descriptions), `attested` (observed state) or `both`. Model arms see candidates under opaque keys, with peer text passed only as data inside a fixed template. `jev.api_key` falls back to `JEV_API_KEY` / `TYPESAFE_API_KEY`, and `frontier.api_key` to `ANTHROPIC_API_KEY`. A model arm without a key falls back with reason `unconfigured`.
 
-**Routing configuration cannot prevent the daemon from starting.** A `routing:` setting that is mistyped or cannot take effect is dropped with a startup warning that names the key, and the rest of the config still applies. This covers:
+**Routing configuration cannot prevent the daemon from starting.** A `routing:` setting that is mistyped or cannot take effect is dropped with a startup warning naming the key. YAML aliases and merge keys are resolved first, with an explicit key beating a merged one, so recovery never changes what the block means. The recovery rules are:
 
-- a key of the wrong type (for example `strategy: [random]`);
-- a strategy, shadow arm or `sample_every` key that names no arm (an unknown strategy falls back to `static`);
-- a `shadow_arms` entry listed twice;
-- a `sample_every` below 1;
-- `shadow_arms` with `record: false`, because shadow results exist only in the record.
+| Problem | What runs |
+|---|---|
+| `strategy` has the wrong type or names no arm | `strategy: static`, and `shadow_arms` are dropped too, so a rejected config never spends provider calls on a counterfactual. `record` and `record_text` are kept. |
+| A `shadow_arms` entry names no arm, or is listed twice | That entry is dropped (a duplicate runs once). Everything else is kept. |
+| A `sample_every` key names no arm, or its period is below 1 | That key is dropped. A period below 1 also drops that arm. |
+| Any other key has the wrong type | That key keeps its default. Everything else is kept. |
+| `shadow_arms` with `record: false` | Shadow arms are dropped, because their results exist only in the record. |
+| `routing:` is not a mapping | Defaults (static, nothing recorded) |
 
-The same applies to a legacy `experiments.router` block. A file that is not valid YAML still stops the daemon, as does a mistyped key outside `routing:`. `repowire route show` prints the resolved config and any warnings.
+The same rules apply to a legacy `experiments.router` block. `repowire route show` prints the effective config, which is what the daemon runs, followed by every ignored setting and the warnings. A file that is not valid YAML still stops the daemon, as does a mistyped key outside `routing:`.
 
 ### Migrating from `experiments.router`
 

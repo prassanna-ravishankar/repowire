@@ -103,7 +103,12 @@ func loadRouting(cfg *Config, raw []byte) error {
 	hasRouting, hasLegacy := probe.Routing.Kind != 0, probe.Experiments.Router.Kind != 0
 	legacyEnv := envSet(legacyEnvPrefix, append([]string{"MODE", "ARM"}, routerEnvKeys...))
 	if hasRouting {
-		cfg.Warnings = append(cfg.Warnings, decodeKeys(&probe.Routing, &cfg.Routing, "routing")...)
+		warnings, failed := decodeKeys(&probe.Routing, &cfg.Routing, "routing")
+		cfg.Warnings = append(cfg.Warnings, warnings...)
+		if slices.Contains(failed, "strategy") && len(cfg.Routing.ShadowArms) > 0 {
+			cfg.Warnings = append(cfg.Warnings, StaticFallbackDropsShadows(cfg.Routing.ShadowArms))
+			cfg.Routing.ShadowArms, cfg.Routing.SampleEvery = nil, nil
+		}
 		if hasLegacy {
 			cfg.Warnings = append(cfg.Warnings, "config: experiments.router is ignored because routing: is set; remove the legacy block")
 		}
@@ -122,7 +127,8 @@ func loadRouting(cfg *Config, raw []byte) error {
 	}
 	legacy := legacyRouter{RouterConfig: defaultRouting(), Mode: RouterModeOff, Arm: "explicit"}
 	if hasLegacy {
-		cfg.Warnings = append(cfg.Warnings, decodeKeys(&probe.Experiments.Router, &legacy, "experiments.router")...)
+		warnings, _ := decodeKeys(&probe.Experiments.Router, &legacy, "experiments.router")
+		cfg.Warnings = append(cfg.Warnings, warnings...)
 	}
 	applyRouterEnv(&legacy.RouterConfig, legacyEnvPrefix)
 	setStringEnv(&legacy.Mode, legacyEnvPrefix+"MODE")
@@ -142,22 +148,33 @@ func loadRouting(cfg *Config, raw []byte) error {
 	return nil
 }
 
-// decodeKeys decodes a mapping node into dst one key at a time. A key whose
-// value does not decode is skipped with a warning naming path.key, and dst
-// keeps that setting's previous value; the other keys still apply.
-func decodeKeys[T any](node *yaml.Node, dst *T, path string) []string {
-	if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
-		node = node.Content[0]
+// decodeKeys decodes a mapping node into dst. Aliases and merge keys are
+// resolved first by YAML's own generic decode (an explicit key wins over a
+// merged one), so recovery never changes what the block means. If the whole
+// block decodes, it is taken as is. Otherwise it is decoded one key at a
+// time: a key whose value does not decode is skipped with a warning naming
+// path.key, and dst keeps that setting's previous value.
+func decodeKeys[T any](node *yaml.Node, dst *T, path string) (warnings, failed []string) {
+	var generic any
+	if err := node.Decode(&generic); err != nil {
+		return []string{fmt.Sprintf("config: %s is ignored because it cannot be read: %v", path, err)}, []string{""}
 	}
-	if node.Kind != yaml.MappingNode {
-		if node.Tag == "!!null" {
-			return nil
-		}
-		return []string{fmt.Sprintf("config: %s must be a mapping; ignored", path)}
+	if generic == nil {
+		return nil, nil
 	}
-	var warnings []string
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		key, value := node.Content[i], node.Content[i+1]
+	resolved, err := plainNode(generic)
+	if err != nil {
+		return []string{fmt.Sprintf("config: %s is ignored because it cannot be read: %v", path, err)}, []string{""}
+	}
+	if resolved.Kind != yaml.MappingNode {
+		return []string{fmt.Sprintf("config: %s must be a mapping; ignored", path)}, []string{""}
+	}
+	if whole, err := clone(*dst); err == nil && resolved.Decode(&whole) == nil {
+		*dst = whole
+		return nil, nil
+	}
+	for i := 0; i+1 < len(resolved.Content); i += 2 {
+		key, value := resolved.Content[i], resolved.Content[i+1]
 		one := &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{key, value}}
 		trial, err := clone(*dst)
 		if err == nil {
@@ -165,11 +182,38 @@ func decodeKeys[T any](node *yaml.Node, dst *T, path string) []string {
 		}
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("config: %s.%s is ignored: %v", path, key.Value, err))
+			failed = append(failed, key.Value)
 			continue
 		}
 		*dst = trial
 	}
-	return warnings
+	return warnings, failed
+}
+
+// plainNode re-encodes a generically decoded value as a node with no
+// aliases or merge keys left in it.
+func plainNode(v any) (*yaml.Node, error) {
+	raw, err := yaml.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) == 1 {
+		return doc.Content[0], nil
+	}
+	return &doc, nil
+}
+
+// StaticFallbackDropsShadows is the warning for the one recovery that
+// reaches past its own key: when the strategy is unusable, routing falls
+// back to static and the shadow arms are dropped too, so a rejected config
+// never spends provider calls on a counterfactual nobody asked for.
+// Recording is unaffected.
+func StaticFallbackDropsShadows(arms []string) string {
+	return fmt.Sprintf("config: routing.shadow_arms %v are not run because routing.strategy is unusable and routing fell back to static", arms)
 }
 
 // clone deep-copies v through YAML, so a failed decode cannot leave a

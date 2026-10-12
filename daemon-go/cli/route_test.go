@@ -72,16 +72,35 @@ func TestRouteShowReportsKeysOnlyAsSet(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Routing.Record, cfg.Routing.ShadowArms, cfg.Routing.SampleEvery = true, []string{"jev-attested"}, map[string]int{"jev-attested": 3}
 	cfg.Routing.Jev.APIKey = "secret-key"
-	cfg.Warnings = []string{"config: experiments.router is deprecated"}
 	var out strings.Builder
-	printRouting(&out, cfg)
+	printRouting(&out, cfg.Routing, cfg.Routing, []string{"config: experiments.router is deprecated"})
 	text := out.String()
 	for _, want := range []string{"strategy     static", "record       true", "jev-attested (every 3)", "jev-1.13.0, key set", "frontier     claude-opus-5-5, no key", "WARNING config: experiments.router is deprecated"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "secret-key") {
-		t.Fatalf("route show printed a key:\n%s", text)
+	if strings.Contains(text, "secret-key") || strings.Contains(text, "IGNORED") {
+		t.Fatalf("route show:\n%s", text)
+	}
+}
+
+// After a degradation, route show prints what the daemon runs, not what
+// was asked for, and names every ignored setting.
+func TestRouteShowPrintsEffectiveConfigAfterDegradation(t *testing.T) {
+	requested := config.Defaults().Routing
+	requested.Strategy, requested.Record = "jev-atested", true
+	requested.ShadowArms, requested.SampleEvery = []string{"random"}, map[string]int{"frontier-cliamed": 20}
+	router, warnings := routing.NewRouterOrStatic(requested, nil)
+	var out strings.Builder
+	printRouting(&out, router.Config(), requested, warnings)
+	text := out.String()
+	for _, want := range []string{"strategy     static", "record       true", "shadow arms  none", "IGNORED", `routing.strategy "jev-atested" (running static)`, `routing.shadow_arms entry "random"`, `routing.sample_every key "frontier-cliamed"`, "routing.strategy is unusable"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "strategy     jev-atested") {
+		t.Fatalf("route show printed the rejected strategy as running:\n%s", text)
 	}
 }
