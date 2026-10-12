@@ -204,12 +204,18 @@ routing:
   allow_service_targets: false  # let a strategy deliver to service- or human-role peers
   jev: {api_key: "", model: jev-1.13.0, base_url: "https://api.typesafe.ai"}
   frontier: {api_key: "", model: claude-opus-5-5}
+  clef:
+    api_key: ""                 # Cloudflare API token with Workers AI access
+    account_id: ""              # 32-digit hex Cloudflare account id
+    model: "@cf/cloudflare/clef"             # clef-* arms
+    flash_model: "@cf/cloudflare/clef-flash" # clef-flash-* arms
+    base_url: "https://api.cloudflare.com/client/v4"
 ```
 
 **Named asks are never rerouted.** An ask that names a peer is resolved and authorized as named under every strategy. If the name is unknown, ambiguous, denied or not addressable, the ask fails. It never falls through to a strategy. The strategy is consulted only for an ask that names no peer: `/ask` with the `to_peer` key left out, or the MCP `ask` tool without `peer_name`.
 
 - **`static`** (default) refuses a targetless ask with `400 no_target`. That refusal happens before any trace row or snapshot.
-- **An arm name** (`random`, `jev-*`, `frontier-*`) ranks the eligible candidates. Its pick passes the same circle, addressability and self checks as a named target, and the delivered ask is prefixed with the arm and its score. If the arm fails, the ask goes to the sender's `fallback_to` peer, which is authorized the same way, with a note saying so. If the arm fails and there is no `fallback_to`, the ask is refused with `503 router_unavailable`. If the pick stops being eligible before delivery, the reason is `stale_pick:*` and the same fallback applies. Without `fallback_to`, that ask fails with the pick's own authorization error (403, 404, 409 or 422, as for a named target). Nothing is delivered either way.
+- **An arm name** (`random`, `jev-*`, `frontier-*`, `clef-*`, `clef-flash-*`) ranks the eligible candidates. Its pick passes the same circle, addressability and self checks as a named target, and the delivered ask is prefixed with the arm and its score. If the arm fails, the ask goes to the sender's `fallback_to` peer, which is authorized the same way, with a note saying so. If the arm fails and there is no `fallback_to`, the ask is refused with `503 router_unavailable`. If the pick stops being eligible before delivery, the reason is `stale_pick:*` and the same fallback applies. Without `fallback_to`, that ask fails with the pick's own authorization error (403, 404, 409 or 422, as for a named target). Nothing is delivered either way.
 
 A strategy never delivers to a peer whose role is `service` (for example `telegram` or `slack`) or `human`, unless `allow_service_targets: true`. On a targetless decision, those peers are recorded with `access: service_excluded` and are not offered to the arm. Circle and addressability verdicts take precedence. The same rule applies when the pick and `fallback_to` are authorized, so a pick that became a service peer after the snapshot is a `stale_pick:service_excluded` fallback. A `fallback_to` naming one is refused with `403 service_excluded`. The rule does not apply to named asks: name `telegram` and you reach `telegram`. Shadow arms run on named asks, so they still see and score service peers. Each targetless decision row records the policy it ran under in `selection_policy` (`exclude_service_targets` or `allow_service_targets`). The policy is enforced when the pick or fallback is authorized. Delivery then goes to that authorized peer, and no current path turns an existing peer into a service or human peer. Roles are declared by the peers themselves, so this is an operating policy, not a security boundary.
 
@@ -233,9 +239,11 @@ The row's `mode` is derived from the config, so it reads as it did under the exp
 
 Named asks record `arm: explicit` under every strategy. With `record` off and no targetless ask, asks take the same path as without routing: no snapshot and no extra rows. With `record` on, every ask snapshots the mesh, whatever the strategy.
 
-`shadow_arms` run off the request path beside each named ask, and each result is recorded as a `route_shadow` row. Paid arms should carry a `sample_every`. Shadow runs are bounded: at most 4 are in flight, and arms planned while the pool is full are recorded as `saturated` on the decision row itself, so overload adds no write to the ask. Each provider (Jev, Anthropic) sits behind a breaker shared by its shadow and strategy use. The breaker opens after 3 consecutive provider failures, rejects calls as `breaker_open` for 30 seconds, then lets the next request through as a probe. A panicking arm is recorded as a `panic` fallback.
+`shadow_arms` run off the request path beside each named ask, and each result is recorded as a `route_shadow` row. Paid arms should carry a `sample_every`. Shadow runs are bounded: at most 4 are in flight, and arms planned while the pool is full are recorded as `saturated` on the decision row itself, so overload adds no write to the ask. Each provider (Jev, Anthropic, Clef) sits behind a breaker shared by its shadow and strategy use. The breaker opens after 3 consecutive provider failures, rejects calls as `breaker_open` for 30 seconds, then lets the next request through as a probe. The `clef-*` and `clef-flash-*` arms share one breaker, because auth, billing and allocation are per account, so one model's failures can gate the other. A `breaker_open` result lists in `gated_by` the models whose failures opened it. A panicking arm is recorded as a `panic` fallback.
 
-Arms: `random`, and `jev-*` / `frontier-*` over the views `claimed` (descriptions), `attested` (observed state) or `both`. Model arms see candidates under opaque keys, with peer text passed only as data inside a fixed template. `jev.api_key` falls back to `JEV_API_KEY` / `TYPESAFE_API_KEY`, and `frontier.api_key` to `ANTHROPIC_API_KEY`. A model arm without a key falls back with reason `unconfigured`.
+Arms: `random`, and `jev-*` / `frontier-*` / `clef-*` / `clef-flash-*` over the views `claimed` (descriptions), `attested` (observed state) or `both`. Model arms see candidates under opaque keys, with peer text passed only as data inside a fixed template. `jev.api_key` falls back to `JEV_API_KEY` / `TYPESAFE_API_KEY`, `frontier.api_key` to `ANTHROPIC_API_KEY`, `clef.api_key` to `CLOUDFLARE_API_TOKEN` then `CLOUDFLARE_AUTH_TOKEN`, and `clef.account_id` to `CLOUDFLARE_ACCOUNT_ID`. A model arm without a key (or, for Clef, an account id) falls back with reason `unconfigured`. When a configured strategy or shadow arm is a Clef arm, a key without an account id, an account id without a key, or an account id that is not 32 hex digits is named in a startup warning. A malformed account id is never sent.
+
+The Clef arms call Cloudflare Workers AI's [Clef](https://developers.cloudflare.com/workers-ai/models/clef/) decision models through the REST API. They send the same System One template as `jev-*`, so the template hash per view is shared and only the model differs. Cloudflare truncates an oversized state without saying so, and a truncated state would score candidates the model never saw. The hosted endpoint scores at most 64,000 input tokens on `clef` and 24,000 on `clef-flash`, below the documented context windows (65,536 and 24,576). A longer state is cut to that cap and still answered with HTTP 200, reporting `usage.input_tokens` at the cap. These caps are measured (2026-10-12), not documented by Cloudflare, and may change. The guarantee is Cloudflare's own token count: an answer is scored only when `usage.input_tokens` is positive and more than 256 below the measured cap. An answer at or near the cap is refused as `state_truncated`; a missing, zero or negative count is `unparseable`. HTTP 413 (code `3006`, or the undocumented `5021` for a state far past the cap) is `state_too_large`. Before sending, a cheap heuristic skips a body larger than 4 bytes per token of the cap (`state_too_large`). Repowire's request bodies measure about 3.6 bytes per token, so such a body would be truncated anyway. The heuristic is not a bound: the Clef tokenizers normalize text before tokenizing, so some characters cost more tokens than bytes, and the server tokenizes its own rendering of the state. If Cloudflare lowers a cap, truncated answers would score again, so `TestLiveClefHostedCap` (opt-in with `REPOWIRE_CLEF_LIVE=1` and Cloudflare credentials) must be re-run on any Workers AI model change. Each Clef result, failed or not, records `request_bytes`, `context_tokens` (the documented window), `state_cap_tokens` (the measured cap) and, once answered, `input_tokens` under `signals`.
 
 **Routing configuration cannot prevent the daemon from starting.** A `routing:` setting that is mistyped or cannot take effect is dropped with a startup warning naming the key. YAML aliases and merge keys are resolved first, with an explicit key beating a merged one, so recovery never changes what the block means. The recovery rules are:
 
@@ -269,24 +277,26 @@ Routing graduated from the `experiments.router` block. A legacy block is migrate
 
 If both blocks are present, `routing:` wins and the legacy block is ignored with a warning. `REPOWIRE_EXPERIMENTS__ROUTER__*` environment variables are migrated the same way. Under a `routing:` block they still apply per field with a deprecation warning, except `MODE` and `ARM`, which are ignored in favour of `routing.strategy`.
 
-A failed arm is recorded by structure only: the fallback reason, the provider, the HTTP status (`http_status`, absent for a transport failure) and `error_code`, the provider's declared machine code if it is on a fixed allowlist of documented values (Anthropic's `error.type` and `details.error_code`, TypeSafe's `detail.error_type`), otherwise `other`. A provider's error body is never stored: it is untrusted and can echo the ask or our credentials. `record_text` governs only the ask text in `route_decision` rows. Every fallback is a miss in replay. Reasons marked "breaker" count toward the provider's breaker (3 consecutive failures open it for 30 s).
+A failed arm is recorded by structure only: the fallback reason, the provider, the HTTP status (`http_status`, absent for a transport failure) and `error_code`, the provider's declared machine code if it is on a fixed allowlist of documented values (Anthropic's `error.type` and `details.error_code`, TypeSafe's `detail.error_type`, Workers AI's numeric `errors[].code`), otherwise `other`. A provider's error body is never stored: it is untrusted and can echo the ask or our credentials. `record_text` governs only the ask text in `route_decision` rows. Every fallback is a miss in replay. Reasons marked "breaker" count toward the provider's breaker (3 consecutive failures open it for 30 s).
 
 | Reason | Meaning | Breaker |
 |---|---|---|
-| `timeout` | No usable answer before `timeout_seconds` | yes |
+| `timeout` | No usable answer before `timeout_seconds`, or Workers AI returned 408 | yes |
 | `rate_limited` | Provider returned 429 | yes |
-| `billing` | Provider returned 402, or Anthropic's documented spend-limit refusals (400 "You have reached your specified … API usage limits", 429 `enforced_spend_limit_reached`) | yes |
+| `billing` | Provider returned 402, or Anthropic's documented spend-limit refusals (400 "You have reached your specified … API usage limits", 429 `enforced_spend_limit_reached`), or Workers AI's daily allocation (`3036`) or paid-plan (`5035`) refusals | yes |
 | `unauthorized` | Provider returned 401 or 403 | yes |
 | `server_error` | Provider returned 5xx | yes |
-| `request_error` | Provider returned another 4xx; usually our request body or template | no |
+| `request_error` | Provider returned another 4xx (413 from Workers AI is `state_too_large`); usually our request body or template | no |
 | `error` | Transport failure with no HTTP status | yes |
 | `unparseable` | Answer did not decode, or ranked an ineligible, unknown or repeated candidate | yes |
 | `panic` | The arm panicked; contained | yes |
+| `state_too_large` | Clef only: a size heuristic says the request would exceed the hosted cap, so it was not sent, or the provider returned 413 | no |
+| `state_truncated` | Clef only: the provider's token count is at or near the hosted cap, so the state was cut to fit | no |
 | `no_candidates` | No eligible candidate | no |
-| `unconfigured` | Model arm without an API key | no |
+| `unconfigured` | Model arm without an API key (or Clef account id) | no |
 | `unknown_arm` | Arm name not registered | no |
 | `breaker_open` | Skipped: the provider's breaker is open | no |
 | `saturated` | Skipped: the shadow pool was full (shadow only) | no |
 | `stale_pick:*` | Targetless asks only: the chosen peer stopped being eligible before delivery | no |
 
-Every key except `sample_every` has a `REPOWIRE_ROUTING__*` environment override, for example `REPOWIRE_ROUTING__STRATEGY`, `REPOWIRE_ROUTING__JEV__API_KEY` or `REPOWIRE_ROUTING__FRONTIER__BASE_URL`. `SHADOW_ARMS` is comma-separated.
+Every key except `sample_every` has a `REPOWIRE_ROUTING__*` environment override, for example `REPOWIRE_ROUTING__STRATEGY`, `REPOWIRE_ROUTING__JEV__API_KEY`, `REPOWIRE_ROUTING__FRONTIER__BASE_URL` or `REPOWIRE_ROUTING__CLEF__ACCOUNT_ID`. `SHADOW_ARMS` is comma-separated.

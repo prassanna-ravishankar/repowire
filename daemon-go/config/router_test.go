@@ -10,7 +10,11 @@ import (
 
 func clearRouterEnv(t *testing.T) {
 	t.Helper()
-	keys := []string{"JEV_API_KEY", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", routingEnvPrefix + "STRATEGY", legacyEnvPrefix + "MODE", legacyEnvPrefix + "ARM"}
+	keys := []string{"JEV_API_KEY", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", routingEnvPrefix + "STRATEGY", legacyEnvPrefix + "MODE", legacyEnvPrefix + "ARM",
+		"CLOUDFLARE_API_TOKEN", "CLOUDFLARE_AUTH_TOKEN", "CLOUDFLARE_ACCOUNT_ID"}
+	for _, k := range []string{"API_KEY", "ACCOUNT_ID", "MODEL", "FLASH_MODEL", "BASE_URL"} {
+		keys = append(keys, routingEnvPrefix+"CLEF__"+k)
+	}
 	for _, k := range routerEnvKeys {
 		keys = append(keys, routingEnvPrefix+k, legacyEnvPrefix+k)
 	}
@@ -298,5 +302,65 @@ func TestUnusableStrategyRecoveryAppliesAfterEnv(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(cfg.Warnings, "\n"), "routing.strategy is unusable") {
 		t.Fatalf("repaired strategy still warned: %v", cfg.Warnings)
+	}
+}
+
+const cfAccount = "0123456789abcdef0123456789abcdef"
+
+func TestClefDefaultsAndEnv(t *testing.T) {
+	clearRouterEnv(t)
+	c := loadYAML(t, "routing:\n  clef: {api_key: yaml}\n").Routing.Clef
+	if c.APIKey != "yaml" || c.Model != "@cf/cloudflare/clef" || c.FlashModel != "@cf/cloudflare/clef-flash" || c.BaseURL != "https://api.cloudflare.com/client/v4" {
+		t.Fatalf("clef = %+v (partial YAML must keep defaults)", c)
+	}
+	t.Setenv("CLOUDFLARE_AUTH_TOKEN", "auth")
+	t.Setenv("CLOUDFLARE_ACCOUNT_ID", cfAccount)
+	if c := loadYAML(t, "routing:\n  clef: {api_key: yaml}\n").Routing.Clef; c.APIKey != "auth" || c.AccountID != cfAccount {
+		t.Fatalf("bare env: %+v", c)
+	}
+	t.Setenv("CLOUDFLARE_API_TOKEN", "api")
+	if got := loadYAML(t, "").Routing.Clef.APIKey; got != "api" {
+		t.Fatalf("CLOUDFLARE_API_TOKEN must win over CLOUDFLARE_AUTH_TOKEN: %q", got)
+	}
+	t.Setenv(routingEnvPrefix+"CLEF__API_KEY", "prefixed")
+	t.Setenv(routingEnvPrefix+"CLEF__FLASH_MODEL", "@cf/cloudflare/clef-flash-next")
+	r := loadYAML(t, "").Routing
+	if r.Clef.APIKey != "prefixed" || r.Clef.FlashModel != "@cf/cloudflare/clef-flash-next" {
+		t.Fatalf("prefixed env: %+v", r.Clef)
+	}
+	if out := r.redactedYAML(); strings.Contains(out, "prefixed") || !strings.Contains(out, "account_id") {
+		t.Fatal("clef key not redacted")
+	}
+}
+
+// Half-set or malformed Clef credentials name the problem and leave the arms
+// unconfigured; they never stop the daemon, and say nothing when no clef arm
+// is configured to run.
+func TestClefCredentialProblemsWarnNotRefuse(t *testing.T) {
+	cases := map[string]struct {
+		yaml, want string
+		account    string
+	}{
+		"key without account":  {"routing:\n  record: true\n  shadow_arms: [clef-attested]\n  clef: {api_key: k}\n", "account_id is not", ""},
+		"account without key":  {"routing:\n  strategy: clef-flash-both\n  clef: {account_id: " + cfAccount + "}\n", "api_key is not", cfAccount},
+		"malformed account id": {"routing:\n  record: true\n  shadow_arms: [clef-both]\n  clef: {api_key: k, account_id: \"../../zones\"}\n", "not a 32-digit hex", ""},
+		"wrong type":           {"routing:\n  clef: {api_key: [1, 2]}\n", "routing.clef is ignored", ""},
+		"unused":               {"routing:\n  clef: {account_id: nope}\n", "", ""},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			clearRouterEnv(t)
+			cfg, err := tryLoadYAML(t, tc.yaml)
+			if err != nil {
+				t.Fatalf("clef config refused the load: %v", err)
+			}
+			joined := strings.Join(cfg.Warnings, "\n")
+			if (tc.want == "") != (joined == "") || !strings.Contains(joined, tc.want) || strings.Contains(joined, "../../zones") {
+				t.Fatalf("warnings = %q, want %q", joined, tc.want)
+			}
+			if cfg.Routing.Clef.AccountID != tc.account {
+				t.Fatalf("account id = %q, want %q", cfg.Routing.Clef.AccountID, tc.account)
+			}
+		})
 	}
 }

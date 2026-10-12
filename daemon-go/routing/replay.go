@@ -152,6 +152,10 @@ const (
 	// saturated / breaker_open in either mode.
 	SkipPlannedNotRun = "planned_not_run"
 	SkipNotRun        = "not_run"
+	// SkipOtherModel suffixes a breaker_open skip when the breaker was opened
+	// by another model of the same provider (clef by clef-flash, say), so it
+	// does not read as this model's own failure.
+	SkipOtherModel = "other_model"
 )
 
 // Result is one example's replay.
@@ -282,6 +286,9 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 				prefix = SkipPlannedNotRun
 			}
 			r.Skipped = prefix + ":" + res.FallbackReason
+			if res.FallbackReason == FallbackBreakerOpen && len(res.GatedBy) > 0 && !slices.Contains(res.GatedBy, res.Model) {
+				r.Skipped += ":" + SkipOtherModel
+			}
 			rep.Skipped[r.Skipped]++
 			results = append(results, r)
 			continue
@@ -370,6 +377,8 @@ func providerOf(arm string) string {
 		return Jev{}.Provider()
 	case strings.HasPrefix(arm, "frontier-"):
 		return Frontier{}.Provider()
+	case strings.HasPrefix(arm, "clef-"):
+		return Clef{}.Provider()
 	}
 	return ""
 }

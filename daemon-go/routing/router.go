@@ -16,10 +16,16 @@ func Arms(cfg config.RouterConfig) map[string]Arm {
 	httpClient := &http.Client{}
 	arms := map[string]Arm{"random": Random{}}
 	for _, view := range []View{ViewClaimed, ViewAttested, ViewBoth} {
-		jev := Jev{View: view, APIKey: cfg.Jev.APIKey, Model: cfg.Jev.Model, BaseURL: cfg.Jev.BaseURL, HTTP: httpClient}
-		frontier := Frontier{View: view, APIKey: cfg.Frontier.APIKey, Model: cfg.Frontier.Model, BaseURL: cfg.Frontier.BaseURL, HTTP: httpClient}
-		arms[jev.Name()] = jev
-		arms[frontier.Name()] = frontier
+		clef := Clef{Family: ClefFamily, View: view, APIKey: cfg.Clef.APIKey, AccountID: cfg.Clef.AccountID, Model: cfg.Clef.Model, BaseURL: cfg.Clef.BaseURL, HTTP: httpClient}
+		flash := clef
+		flash.Family, flash.Model = ClefFlashFamily, cfg.Clef.FlashModel
+		for _, arm := range []Arm{
+			Jev{View: view, APIKey: cfg.Jev.APIKey, Model: cfg.Jev.Model, BaseURL: cfg.Jev.BaseURL, HTTP: httpClient},
+			Frontier{View: view, APIKey: cfg.Frontier.APIKey, Model: cfg.Frontier.Model, BaseURL: cfg.Frontier.BaseURL, HTTP: httpClient},
+			clef, flash,
+		} {
+			arms[arm.Name()] = arm
+		}
 	}
 	return arms
 }
@@ -244,9 +250,11 @@ func (r *Router) Run(ctx context.Context, name string, in Input) RouterResult {
 	if b == nil {
 		return Run(ctx, arm, in, r.Timeout())
 	}
-	allowed, probe := b.allow()
+	allowed, probe, gatedBy := b.allow()
 	if !allowed {
-		return withIdentity(arm, fallbackResult(name, FallbackBreakerOpen))
+		res := withIdentity(arm, fallbackResult(name, FallbackBreakerOpen))
+		res.GatedBy = gatedBy
+		return res
 	}
 	res := Run(ctx, arm, in, r.Timeout())
 	b.record(res, probe)

@@ -23,6 +23,11 @@ var providerCodes = map[string]bool{
 	"timeout_error": true, "overloaded_error": true, "enforced_spend_limit_reached": true,
 	// TypeSafe (Jev) documents no error body. detail.error_type
 	// "billing_error", observed live on a 402, is listed above.
+	// Workers AI (Clef) errors[].code values, as decimal strings
+	// (developers.cloudflare.com/workers-ai/platform/errors/).
+	"5007": true, "5004": true, "3039": true, "3003": true, "5018": true, "5016": true,
+	"3023": true, "3041": true, "5035": true, "5019": true, "5005": true, "3042": true,
+	"3006": true, "3007": true, "3008": true, "3036": true, "3040": true,
 }
 
 // errorCode returns code if it is allowlisted, else "other".
