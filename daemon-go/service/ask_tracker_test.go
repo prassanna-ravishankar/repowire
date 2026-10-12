@@ -510,3 +510,27 @@ func TestListByParent(t *testing.T) {
 		t.Fatalf("ListByParent = 2, got %d", len(got))
 	}
 }
+
+// The OnRegister callback feeds the durable prior-ask counts, so it fires once
+// per new persisted-style ask and never for retries or SkipHistory asks
+// (ask_many children, /query, blocking questions).
+func TestOnRegisterSkipsRetriesAndSkipHistory(t *testing.T) {
+	tracker := NewAskTracker(0)
+	var got []string
+	tracker.SetOnRegister(func(cid string, from, to proto.PeerID) { got = append(got, cid) })
+	ctx := context.Background()
+	for _, p := range []RegisterAskParams{
+		{CorrelationID: "ask-1", FromPeerID: "a", ToPeerID: "b"},
+		{CorrelationID: "ask-1", FromPeerID: "a", ToPeerID: "b"}, // retry
+		{CorrelationID: "ask-child", FromPeerID: "a", ToPeerID: "b", SkipHistory: true},
+		{CorrelationID: "ask-query", FromPeerID: "a-display-name", ToPeerID: "b", SkipHistory: true},
+		{CorrelationID: "ask-2", FromPeerID: "a", ToPeerID: "c"},
+	} {
+		if _, err := tracker.Register(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(got) != 2 || got[0] != "ask-1" || got[1] != "ask-2" {
+		t.Fatalf("callback saw %v, want ask-1 and ask-2 only", got)
+	}
+}

@@ -171,11 +171,14 @@ type Result struct {
 	Hit3     bool     `json:"hit3"`
 	// ExpectedHit1 and ExpectedHit3 are the hit probabilities of a uniform
 	// arm's pick (see RouterResult.Uniform); zero for ranked arms.
-	ExpectedHit1   float64 `json:"expected_hit1,omitempty"`
-	ExpectedHit3   float64 `json:"expected_hit3,omitempty"`
-	Candidates     int     `json:"candidates"`
-	Fallback       bool    `json:"fallback,omitempty"`
-	FallbackReason string  `json:"fallback_reason,omitempty"`
+	ExpectedHit1 float64 `json:"expected_hit1,omitempty"`
+	ExpectedHit3 float64 `json:"expected_hit3,omitempty"`
+	// NeverAskedSource: where novelty and hybrid-arrival got their
+	// never-asked verdicts (field, ledger or mixed).
+	NeverAskedSource string `json:"never_asked_source,omitempty"`
+	Candidates       int    `json:"candidates"`
+	Fallback         bool   `json:"fallback,omitempty"`
+	FallbackReason   string `json:"fallback_reason,omitempty"`
 	// FallbackStatus, FallbackProvider and FallbackCode attribute a failure
 	// (our request or their service). No recorded text is ever exported.
 	FallbackStatus   int     `json:"fallback_status,omitempty"`
@@ -324,6 +327,7 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 			continue
 		}
 		r.Fallback, r.FallbackReason, r.LatencyMS = res.Fallback, res.FallbackReason, res.LatencyMS
+		r.NeverAskedSource = res.NeverAskedSource
 		if res.Fallback {
 			r.FallbackStatus, r.FallbackCode = Attribution(res)
 			r.FallbackProvider = res.Provider

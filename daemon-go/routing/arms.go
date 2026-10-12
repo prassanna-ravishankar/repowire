@@ -115,6 +115,7 @@ func Run(ctx context.Context, arm Arm, in Input, timeout time.Duration) RouterRe
 		}
 		out := withIdentity(arm, fallback(arm.Name(), start, err))
 		out.Signals = res.Signals
+		out.NeverAskedSource = res.NeverAskedSource
 		return out
 	}
 	res.Arm = arm.Name()

@@ -111,6 +111,16 @@ type AskTracker struct {
 	lastEviction  time.Time
 	quiescing     map[proto.PeerID]struct{}
 	answerWaiters map[string]chan Answer
+	onRegister    func(cid string, from, to proto.PeerID)
+}
+
+// SetOnRegister installs a callback run once for each newly registered ask
+// (not for a retry of an existing cid). It runs under the tracker's lock, so
+// it must be quick and must not call back into the tracker.
+func (t *AskTracker) SetOnRegister(fn func(cid string, from, to proto.PeerID)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onRegister = fn
 }
 
 // NewAskTracker returns an empty tracker. A non-positive ttl falls back to 24h.
@@ -151,6 +161,11 @@ type RegisterAskParams struct {
 	ParentID              *string
 	Question              map[string]any
 	ReplyDelivery         string // "" defaults to "push"
+	// SkipHistory keeps the ask out of the OnRegister callback (the durable
+	// prior-ask counts): ask_many children, /query and blocking questions write
+	// no ledger "created" stage, so counting them live would make the counts
+	// disagree with themselves across a restart.
+	SkipHistory bool
 }
 
 // Register records a new open ask and returns its CID. A supplied CID that
@@ -191,6 +206,9 @@ func (t *AskTracker) Register(ctx context.Context, p RegisterAskParams) (string,
 		Question:              p.Question,
 		ReplyDelivery:         delivery,
 		CreatedAt:             time.Now().UTC(),
+	}
+	if t.onRegister != nil && !p.SkipHistory {
+		t.onRegister(cid, p.FromPeerID, p.ToPeerID)
 	}
 	return cid, nil
 }

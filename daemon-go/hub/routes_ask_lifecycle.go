@@ -216,7 +216,7 @@ func (h *Hub) handleAskBlockingQuestion(w http.ResponseWriter, r *http.Request) 
 	}
 	timeoutMessage := "blocking question timed out"
 	question := map[string]any{"kind": "choice", "prompt": req.Prompt, "options": options, "blocking": true, "timeout_seconds": wait, "default_answer": map[string]any{"outcome": outcome, "message": timeoutMessage}, "scope": req.Scope, "metadata": req.Metadata}
-	registered, err := h.ask.asks.Register(r.Context(), service.RegisterAskParams{FromPeerID: proto.PeerID(from), FromPeerName: proto.DisplayName(from), ToPeerID: proto.PeerID("__repowire_control__"), ToPeerName: proto.DisplayName("human"), Text: req.Prompt, CorrelationID: cid, Question: question})
+	registered, err := h.ask.asks.Register(r.Context(), service.RegisterAskParams{FromPeerID: proto.PeerID(from), FromPeerName: proto.DisplayName(from), ToPeerID: proto.PeerID("__repowire_control__"), ToPeerName: proto.DisplayName("human"), Text: req.Prompt, CorrelationID: cid, Question: question, SkipHistory: true})
 	if err != nil {
 		if errors.Is(err, service.ErrQuiesced) {
 			writeJSONError(w, http.StatusConflict, err.Error())
@@ -1030,6 +1030,7 @@ func (h *Hub) handleQuery(w http.ResponseWriter, r *http.Request) {
 		ToPeerName:    target.DisplayName,
 		Text:          req.Text,
 		Question:      question,
+		SkipHistory:   true, // legacy /query keys FromPeerID by display name and writes no "created" stage
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrQuiesced) {
@@ -1212,6 +1213,7 @@ func (h *Hub) openAskMany(ctx context.Context, req AskManyRequest) (AskManyRespo
 			ToPeerName:    target.DisplayName,
 			Text:          req.Text,
 			ParentID:      &parent.ParentID,
+			SkipHistory:   true, // children write no "created" stage
 		})
 		if err != nil {
 			msg := err.Error()

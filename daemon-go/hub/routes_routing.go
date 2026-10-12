@@ -150,7 +150,18 @@ func (h *Hub) snapshotCandidates(d *routing.Decision, sender *proto.Peer, bypass
 		if clock != nil {
 			setAt = clock.DescriptionSetAt(p.PeerID)
 		}
-		return routing.Snapshot(p, now, setAt, routing.PeerStats{OpenInbound: st.OpenInbound, LastExchange: st.LastExchange})
+		c := routing.Snapshot(p, now, setAt, routing.PeerStats{OpenInbound: st.OpenInbound, LastExchange: st.LastExchange})
+		var senderID proto.PeerID
+		if sender != nil {
+			senderID = sender.PeerID
+		}
+		if total, sentBy, fromSender, ok := h.history.counts(senderID, p.PeerID); ok {
+			c.PriorAsksTotal, c.PriorAsksSent = &total, &sentBy
+			if sender != nil {
+				c.PriorAsksFromSender = &fromSender
+			}
+		}
+		return c
 	}
 	if sender != nil {
 		s := snap(sender)

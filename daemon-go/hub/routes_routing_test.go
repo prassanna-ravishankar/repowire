@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
+	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/routing"
 	"github.com/repowire/repowire/daemon-go/service"
@@ -170,7 +171,14 @@ func newRoutingRigWith(t *testing.T, cfg *config.RouterConfig, arms map[string]r
 	tr := &rowTracer{}
 	h := &Hub{deliveryTraces: tr}
 	if store != nil {
-		h.deliveryTraces, h.store = store, store
+		h.deliveryTraces = store
+		h.WithReadDeps(asks, store)
+		historyCtx, stopHistory := context.WithCancel(context.Background())
+		h.StartRoutingHistory(historyCtx)
+		t.Cleanup(func() {
+			stopHistory()
+			h.StopRoutingHistory(time.Second)
+		})
 	}
 	h.WithAskLifecycle(asks, service.NewPeerDelivery(reg, newRouterWithFake(f), f, asks, nil), reg)
 	var router *routing.Router
@@ -873,5 +881,221 @@ func TestDecodedTargetIsNeverTargetless(t *testing.T) {
 	var req AskRequest
 	if err := json.Unmarshal([]byte(`{"from_peer":"alpha","text":"x"}`), &req); err != nil || !req.ToPeerOmitted {
 		t.Fatalf("absent to_peer: omitted %t err %v", req.ToPeerOmitted, err)
+	}
+}
+
+// Each candidate carries how many asks were ever addressed to it, read from
+// the durable stores (journal and trace ledger, once per correlation id) and
+// kept current as asks are registered; the scored ask never counts itself.
+func TestRecordedDecisionCarriesPriorAskCounts(t *testing.T) {
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	old := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	for _, e := range []struct{ cid, from, to string }{{"ask-j1", "repow-a", "repow-b"}, {"ask-j2", "repow-x", "repow-b"}, {"ask-both", "repow-a", "repow-c"}, {"ask-j3", "repow-b", "repow-c"}} {
+		if err := store.AppendEvent(ctx, peer.Event{Type: "ask", Timestamp: old, Payload: map[string]any{"correlation_id": e.cid, "from_peer_id": e.from, "to_peer_id": e.to}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// ask-both is in the ledger too (the overlap), ask-t1 only there.
+	for _, tr := range [][4]string{{"ask-both", "repow-a", "repow-c", "created"}, {"ask-t1", "repow-a", "repow-b", "created"}} {
+		if err := store.RecordTrace(ctx, tr[0], "ask", tr[3], "ok", tr[0], tr[2], tr[1], nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rig := newRoutingRigWith(t, recordCfg(), nil, store)
+	rig.hub.history.waitLoaded(t) // the load runs in the background; decisions never wait for it
+	prior := func(d routing.Decision, id string) (total, fromSender int) {
+		t.Helper()
+		for _, c := range d.Candidates {
+			if c.PeerID == id {
+				if c.PriorAsksTotal == nil || c.PriorAsksFromSender == nil {
+					t.Fatalf("%s carries no prior-ask counts: %+v", id, c)
+				}
+				return *c.PriorAsksTotal, *c.PriorAsksFromSender
+			}
+		}
+		t.Fatalf("%s not a candidate", id)
+		return 0, 0
+	}
+	_, first, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "one"})
+	d := storedDecision(t, store, first.CorrelationID)
+	if total, fs := prior(d, "repow-b"); total != 3 || fs != 2 {
+		t.Fatalf("beta before the first ask: total %d from sender %d, want 3 and 2", total, fs)
+	}
+	if total, fs := prior(d, "repow-c"); total != 2 || fs != 1 {
+		t.Fatalf("gamma (journal and ledger overlap): total %d from sender %d, want 2 and 1", total, fs)
+	}
+	sent := func(d routing.Decision, id string) int {
+		t.Helper()
+		for _, c := range append([]routing.Candidate{*d.Sender}, d.Candidates...) {
+			if c.PeerID == id && c.PriorAsksSent != nil {
+				return *c.PriorAsksSent
+			}
+		}
+		t.Fatalf("%s carries no prior_asks_sent", id)
+		return 0
+	}
+	if sent(d, "repow-b") != 1 || sent(d, "repow-c") != 0 || sent(d, "repow-a") != 3 {
+		t.Fatalf("sent counts: beta %d (want 1), gamma %d (want 0), alpha %d (want 3)", sent(d, "repow-b"), sent(d, "repow-c"), sent(d, "repow-a"))
+	}
+	if total, _ := prior(d, "repow-o"); total != 0 {
+		t.Fatalf("other was never asked, got %d", total)
+	}
+	if d.Sender == nil || d.Sender.PriorAsksTotal == nil || d.Sender.PriorAsksFromSender == nil {
+		t.Fatalf("sender block = %+v", d.Sender)
+	}
+	// The first ask is now history for the second; its own retry does not double count.
+	_, second, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "two"})
+	if total, fs := prior(storedDecision(t, store, second.CorrelationID), "repow-b"); total != 4 || fs != 3 {
+		t.Fatalf("beta before the second ask: total %d from sender %d, want 4 and 3", total, fs)
+	}
+}
+
+func storedDecision(t *testing.T, store *state.Store, cid string) routing.Decision {
+	t.Helper()
+	stages, err := store.StagesFor(context.Background(), cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range stages {
+		if st.Stage == routing.Stage {
+			d, err := routing.ParseDecision(st.Detail)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return d
+		}
+	}
+	t.Fatalf("no route_decision for %s", cid)
+	return routing.Decision{}
+}
+
+// waitLoaded blocks until the background history load has finished. Tests only:
+// decisions never wait.
+func (a *askHistory) waitLoaded(t *testing.T) {
+	t.Helper()
+	select {
+	case <-a.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("prior-ask history never loaded")
+	}
+}
+
+// A decision made while the history load is still running returns at once
+// without the fields; once it finishes, the next decision carries them.
+func TestDecisionNeverWaitsForThePriorAskLoad(t *testing.T) {
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	rig := newRoutingRigWith(t, recordCfg(), nil, store)
+	rig.hub.history.waitLoaded(t) // let the rig's own load finish, then swap in a blocked one
+	release := make(chan struct{})
+	slow := newAskHistory(func(context.Context) ([]state.AskRef, error) {
+		<-release
+		return []state.AskRef{{CorrelationID: "ask-old", From: "repow-a", To: "repow-b"}}, nil
+	})
+	rig.hub.history = slow
+	rig.hub.asks.SetOnRegister(slow.note)
+	slowCtx, stopSlow := context.WithCancel(context.Background())
+	defer stopSlow()
+	slow.start(slowCtx)
+
+	began := time.Now()
+	_, first, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "while loading"})
+	if elapsed := time.Since(began); elapsed > 2*time.Second {
+		t.Fatalf("decision waited %s for the load", elapsed)
+	}
+	for _, c := range storedDecision(t, store, first.CorrelationID).Candidates {
+		if c.PriorAsksTotal != nil || c.PriorAsksSent != nil || c.PriorAsksFromSender != nil {
+			t.Fatalf("%s carries prior-ask counts before the load finished: %+v", c.PeerID, c)
+		}
+	}
+	close(release)
+	slow.waitLoaded(t)
+	_, second, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "after loading"})
+	for _, c := range storedDecision(t, store, second.CorrelationID).Candidates {
+		if c.PeerID == "repow-b" && (c.PriorAsksTotal == nil || *c.PriorAsksTotal != 2) { // the journal ask plus the first live ask
+			t.Fatalf("beta after the load = %+v, want total 2", c)
+		}
+	}
+}
+
+// The loader merges off the lock: a Register (which calls note under the
+// tracker's lock) issued while a slow merge runs returns at once, and the ask
+// is counted exactly once when the index lands.
+func TestRegisterDuringSlowHistoryMergeDoesNotWait(t *testing.T) {
+	merging, release := make(chan struct{}), make(chan struct{})
+	h := newAskHistory(func(context.Context) ([]state.AskRef, error) {
+		return []state.AskRef{{CorrelationID: "ask-old", From: "a", To: "b"}, {CorrelationID: "ask-dup", From: "a", To: "b"}}, nil
+	})
+	h.beforeMerge = func() {
+		close(merging)
+		<-release
+	}
+	asks := service.NewAskTracker(0)
+	asks.SetOnRegister(h.note)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.start(ctx)
+	<-merging
+	registered := make(chan time.Duration, 1)
+	go func() {
+		began := time.Now()
+		_, _ = asks.Register(context.Background(), service.RegisterAskParams{CorrelationID: "ask-dup", FromPeerID: "a", ToPeerID: "b"})
+		_, _ = asks.Register(context.Background(), service.RegisterAskParams{CorrelationID: "ask-live", FromPeerID: "a", ToPeerID: "b"})
+		registered <- time.Since(began)
+	}()
+	select {
+	case d := <-registered:
+		if d > time.Second {
+			t.Fatalf("Register took %s during the merge", d)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Register waited on the history merge")
+	}
+	if _, _, _, ok := h.counts("a", "b"); ok {
+		t.Fatal("counts reported before the load finished")
+	}
+	close(release)
+	h.waitLoaded(t)
+	// ask-old, ask-dup (also registered live: once) and ask-live.
+	if total, sent, fromSender, ok := h.counts("a", "b"); !ok || total != 3 || sent != 0 || fromSender != 3 {
+		t.Fatalf("counts = %d, %d, %d, %v; want 3 addressed, 0 sent, 3 from a", total, sent, fromSender, ok)
+	}
+}
+
+// Shutdown never waits on the loader: cancelling during a backoff returns
+// within the bound instead of sleeping the backoff out.
+func TestHistoryLoaderStopsPromptlyDuringBackoff(t *testing.T) {
+	failed := make(chan struct{}, 1)
+	h := newAskHistory(func(context.Context) ([]state.AskRef, error) {
+		select {
+		case failed <- struct{}{}:
+		default:
+		}
+		return nil, errors.New("disk on fire")
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.start(ctx)
+	<-failed // the first attempt failed; the loader is now in its backoff
+	began := time.Now()
+	h.stop(2 * time.Second)
+	select {
+	case <-h.exited:
+	default:
+		t.Fatal("loader still running after stop")
+	}
+	if d := time.Since(began); d > 500*time.Millisecond {
+		t.Fatalf("stop took %s; the backoff was not cancellable", d)
+	}
+	if _, _, _, ok := h.counts("a", "b"); ok {
+		t.Fatal("a failed load must report counts unavailable")
 	}
 }
