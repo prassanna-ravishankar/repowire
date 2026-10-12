@@ -17,7 +17,7 @@ import (
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
-const routeReplayUsage = "route replay --arm ARM [--recorded] [--mask FIELD,...] [--since RFC3339] [--limit N] [--db PATH | --input FILE] [--where KEY=VALUE,...] [--allow-paid] [--json] [--rows]"
+const routeReplayUsage = "route replay --arm ARM [--recorded] [--mask FIELD,...] [--since RFC3339] [--limit N] [--db PATH | --input FILE] [--where KEY=VALUE,...] [--arrival-seconds N] [--allow-paid] [--json] [--rows]"
 
 const routeReconstructUsage = "route reconstruct --db PATH --out FILE [--live-window DUR] [--exchange-ttl DUR] [--working-window DUR] [--json]"
 
@@ -316,7 +316,7 @@ func replayArms(a args, examples, history []routing.Example, recorded bool, usag
 	if n := a.integer("limit", 0); n > 0 && n < len(examples) {
 		examples = examples[len(examples)-n:]
 	}
-	baselines := routing.BaselineArms(history)
+	baselines := routing.BaselineArms(history, float64(a.integer("arrival-seconds", routing.DefaultArrivalSeconds)))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	defer printUsage(os.Stderr, router.Usage)
@@ -435,7 +435,7 @@ func printSplit(w io.Writer, label string, reports []routing.Report, split func(
 		fmt.Fprintf(w, "\n%s %s\n", label, name)
 		for _, rep := range reports {
 			if c := split(rep)[name]; c != nil {
-				fmt.Fprintf(w, "  %-20s scored %d, fallbacks %d, hit@1 %d, hit@3 %d\n", rep.Arm, c.Scored, c.Fallbacks, c.Hit1, c.Hit3)
+				fmt.Fprintf(w, "  %-20s scored %d, fallbacks %d, hit@1 %.4g, hit@3 %.4g\n", rep.Arm, c.Scored, c.Fallbacks, float64(c.Hit1)+c.ExpectedHit1, float64(c.Hit3)+c.ExpectedHit3)
 			}
 		}
 	}
