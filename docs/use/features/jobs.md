@@ -75,6 +75,7 @@ Fire completion is automatic: the executor's turn ending ends the run, and its f
 - Per-fire executor cleanup is tied to terminal job lifecycle state, not ack lifecycle, and only applies to the executor the daemon spawned or backend-resumed for that fire.
 - A fire is one executor turn. Executors that must wait on a peer mid-job use `wait_on_ack` inside the turn; a fire blocked on something outside the mesh holds itself open with `jobs update --state running` plus an explicit phase, and must then report its own terminal state.
 - Resume continuity depends on a backend that supports local resume and a captured runtime session id.
+- Nothing is dispatched while the machine sleeps. Deadline waits recheck the wall clock at intervals of at most 30 seconds of awake time, reducing delays after sleep. Dispatch can take longer if deadline computation spans sleep or other work delays the runner. A recurring job that missed several slots creates one occurrence, then continues from the next slot after now.
 
 ## Troubleshooting
 

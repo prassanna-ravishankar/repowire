@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	jobRunnerOwnerID = "daemon-job-runner"
-	jobLeaseSeconds  = 300
+	jobRunnerOwnerID   = "daemon-job-runner"
+	jobLeaseSeconds    = 300
+	stuckDeadlineRetry = time.Second
 )
 
 // scheduledAskOpener is the PeerDelivery method JobRunner uses. *PeerDelivery
@@ -39,6 +40,7 @@ type JobRunner struct {
 	delivery     scheduledAskOpener
 	control      *SessionControl
 	senderPeerID proto.PeerID
+	clock        wallClock
 
 	wake    chan struct{}
 	stop    chan struct{}
@@ -53,6 +55,7 @@ func NewJobRunner(store *state.Store, delivery scheduledAskOpener, control *Sess
 		store:    store,
 		delivery: delivery,
 		control:  control,
+		clock:    systemWallClock(),
 		wake:     make(chan struct{}, 1),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
@@ -110,28 +113,29 @@ func (r *JobRunner) loop(ctx context.Context) {
 		r.tick(ctx)
 
 		delay := r.secondsUntilNextDeadline(ctx)
-		var timer *time.Timer
-		var timerC <-chan time.Time
-		if delay != nil {
-			timer = time.NewTimer(time.Duration(*delay * float64(time.Second)))
-			timerC = timer.C
+		if delay == nil {
+			select {
+			case <-r.stop:
+				return
+			case <-ctx.Done():
+				return
+			case <-r.wake:
+			}
+			continue
 		}
-		select {
-		case <-r.stop:
-			if timer != nil {
-				timer.Stop()
-			}
+		// Wall-clock wait (wall_clock.go): due jobs, recurring-job occurrences
+		// and lease expiry all ride this one deadline (repowire-2ph).
+		wait := time.Duration(*delay * float64(time.Second))
+		if wait <= 0 {
+			// Still due after a full tick means the tick could not advance it
+			// (e.g. a calendar entry whose cron no longer parses). Retry at
+			// most once per stuckDeadlineRetry instead of spinning; Wake still
+			// cuts the wait short.
+			wait = stuckDeadlineRetry
+		}
+		deadline := r.clock.now().Add(wait)
+		if _, stopped := r.clock.waitUntil(ctx, deadline, r.wake, r.stop); stopped {
 			return
-		case <-ctx.Done():
-			if timer != nil {
-				timer.Stop()
-			}
-			return
-		case <-r.wake:
-			if timer != nil {
-				timer.Stop()
-			}
-		case <-timerC:
 		}
 	}
 }

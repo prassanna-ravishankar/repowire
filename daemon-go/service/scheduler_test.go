@@ -206,3 +206,29 @@ func TestSchedulerWakeOnCreate(t *testing.T) {
 
 	waitFor(t, "woken schedule fires", func() bool { return del.notifyCount() == 1 })
 }
+
+// TestSchedulerCronEarlyWakeAdvancesPastFiredSlot: a timer that wakes a moment
+// before fire_at must not leave the cron on the slot it just fired. The live
+// daemon fired a */30 cron at 16:59:59 and again at 17:00:00 (repowire-5je).
+func TestSchedulerCronEarlyWakeAdvancesPastFiredSlot(t *testing.T) {
+	store := newFakeScheduleStore()
+	del := &fakeSchedDelivery{}
+	cron := "*/30 * * * *"
+	slot := time.Date(2026, 10, 11, 17, 0, 0, 0, time.UTC)
+	sched, _ := store.CreateSchedule(context.Background(), "alpha", "beta", "nudge", slot, "notify", nil, &cron)
+
+	s := NewScheduler(store, del)
+	s.clock.now = func() time.Time { return slot.Add(-800 * time.Millisecond) }
+	s.fire(context.Background(), sched)
+
+	got, _ := store.GetSchedule(context.Background(), sched.ScheduleID)
+	if got == nil {
+		t.Fatal("recurring schedule was dropped")
+	}
+	if want := slot.Add(30 * time.Minute).Format(time.RFC3339Nano); got.FireAt != want {
+		t.Fatalf("fire_at after early fire = %s, want %s", got.FireAt, want)
+	}
+	if del.notifyCount() != 1 {
+		t.Fatalf("notifies = %d, want 1", del.notifyCount())
+	}
+}
