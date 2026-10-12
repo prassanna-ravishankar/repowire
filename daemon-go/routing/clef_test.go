@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -79,7 +81,7 @@ func TestClefRequestKeepsUntrustedTextInState(t *testing.T) {
 	if path != "/client/v4/accounts/"+testAccount+"/ai/run/@cf/cloudflare/clef" || auth != "Bearer cf-secret" || body["model"] != "clef" {
 		t.Fatalf("request %s auth %q model %v", path, auth, body["model"])
 	}
-	if res.Signals["input_tokens"] != 900 || res.Signals["request_bytes"] <= 0 || res.Signals["context_tokens"] != 65536 {
+	if res.Signals["input_tokens"] != 900 || res.Signals["request_bytes"] <= 0 || res.Signals["state_cap_tokens"] != 64000 || res.Signals["context_tokens"] != 65536 {
 		t.Fatalf("signals = %v", res.Signals)
 	}
 	questions, _ := json.Marshal(body["questions"])
@@ -130,7 +132,8 @@ func TestClefFailuresAreClassifiedWithoutTheirText(t *testing.T) {
 		"unauthorized":       {401, `{}`, FallbackUnauthorized, "other"},
 		"no such model":      {400, echo("5007"), FallbackRequestError, "5007"},
 		"invalid model id":   {404, echo("3042"), FallbackRequestError, "3042"},
-		"too large":          {413, echo("3006"), FallbackRequestError, "3006"},
+		"too large":          {413, echo("3006"), FallbackStateTooLarge, "3006"},
+		"far past the cap":   {413, echo("5021"), FallbackStateTooLarge, "other"},
 		"server error":       {500, `oops cf-secret`, FallbackServerError, "other"},
 		"undocumented code":  {500, echo("10000"), FallbackServerError, "other"},
 		"malformed":          {200, `not json`, FallbackUnparseable, ""},
@@ -175,7 +178,7 @@ func TestOversizedStateIsNeverScored(t *testing.T) {
 	if !res.Fallback || res.FallbackReason != FallbackStateTooLarge || len(res.Scores) != 0 || calls.Load() != 0 {
 		t.Fatalf("oversized flash state: %+v after %d calls", res, calls.Load())
 	}
-	if res.Signals["request_bytes"] <= 30000 || res.Signals["context_tokens"] != 24576 {
+	if res.Signals["request_bytes"] <= 30000 || res.Signals["state_cap_tokens"] != 24000 {
 		t.Fatalf("size not recorded on the refusal: %v", res.Signals)
 	}
 	// The same state fits clef's larger window.
@@ -183,10 +186,23 @@ func TestOversizedStateIsNeverScored(t *testing.T) {
 		t.Fatalf("clef refused a state that fits: %+v", res)
 	}
 
-	truncated, _ := clefStub(t, 200, `{"result":{"answers":{"c1":{"type":"noul","noul":0.9},"c2":{"type":"noul","noul":0.1}},"usage":{"input_tokens":24400,"output_tokens":2}}}`)
-	res = Run(context.Background(), clefArm(ClefFlashFamily, ViewClaimed, truncated.URL), testInput(), time.Second)
-	if !res.Fallback || res.FallbackReason != FallbackStateTruncated || len(res.Scores) != 0 || res.Signals["input_tokens"] != 24400 {
-		t.Fatalf("count at the ceiling was scored: %+v", res)
+	// Measured on the hosted endpoint 2026-10-12: a state past the cap is cut
+	// to exactly the cap and answered 200, with input_tokens at the cap, well
+	// below the documented window. That count must never score; one just
+	// under the ceiling does.
+	answered := func(n int) string {
+		return `{"result":{"answers":{"c1":{"type":"noul","noul":0.9},"c2":{"type":"noul","noul":0.1}},"usage":{"input_tokens":` + strconv.Itoa(n) + `,"output_tokens":0}}}`
+	}
+	for family, stateCap := range map[string]int{ClefFamily: 64000, ClefFlashFamily: 24000} {
+		truncated, _ := clefStub(t, 200, answered(stateCap))
+		res = Run(context.Background(), clefArm(family, ViewClaimed, truncated.URL), testInput(), time.Second)
+		if !res.Fallback || res.FallbackReason != FallbackStateTruncated || len(res.Scores) != 0 || res.Signals["input_tokens"] != float64(stateCap) {
+			t.Fatalf("%s count at the hosted cap was scored: %+v", family, res)
+		}
+		under, _ := clefStub(t, 200, answered(stateCap-clefCeilingTokens-1))
+		if res := Run(context.Background(), clefArm(family, ViewClaimed, under.URL), testInput(), time.Second); res.Fallback {
+			t.Fatalf("%s count under the ceiling was refused: %+v", family, res)
+		}
 	}
 }
 
@@ -313,5 +329,34 @@ func TestBreakerRefusalAttributionIsAtomic(t *testing.T) {
 			}
 		}
 		<-done
+	}
+}
+
+// TestLiveClefHostedCap calls the real Workers AI endpoint and needs network
+// and credentials, so it skips unless REPOWIRE_CLEF_LIVE=1 and
+// CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are set; it never runs in CI.
+// Re-run it on any Workers AI model change: clefHostedCap is measured, and
+// if Cloudflare lowers it, truncated states would score again. Each family
+// gets a state that passes the byte heuristic but exceeds its cap (U+0344
+// costs more tokens than bytes), which must come back state_truncated, and a
+// small state, which must score.
+func TestLiveClefHostedCap(t *testing.T) {
+	token, account := os.Getenv("CLOUDFLARE_API_TOKEN"), os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	if os.Getenv("REPOWIRE_CLEF_LIVE") != "1" || token == "" || account == "" {
+		t.Skip("live: set REPOWIRE_CLEF_LIVE=1 with CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID")
+	}
+	for family, repeat := range map[string]int{ClefFlashFamily: 9000, ClefFamily: 23000} {
+		arm := Clef{Family: family, View: ViewClaimed, APIKey: token, AccountID: account,
+			Model: "@cf/cloudflare/" + family, BaseURL: "https://api.cloudflare.com/client/v4"}
+		over := testInput()
+		over.Candidates[0].Description = strings.Repeat("̈́", repeat)
+		res := Run(context.Background(), arm, over, 60*time.Second)
+		if res.FallbackReason != FallbackStateTruncated || len(res.Scores) != 0 {
+			t.Errorf("%s past the cap: %s, input_tokens %.0f (cap %.0f); clefHostedCap may have changed",
+				family, res.FallbackReason, res.Signals["input_tokens"], res.Signals["state_cap_tokens"])
+		}
+		if res := Run(context.Background(), arm, testInput(), 60*time.Second); res.Fallback {
+			t.Errorf("%s small state: %s (HTTP %d, %s)", family, res.FallbackReason, res.HTTPStatus, res.ErrorCode)
+		}
 	}
 }
