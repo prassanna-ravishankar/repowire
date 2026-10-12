@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +76,39 @@ type Strata struct {
 	// set. Rows with false are never scored.
 	TargetOnline   bool   `json:"target_online_at_t"`
 	TargetEvidence string `json:"target_evidence"`
+	// SenderType: orchestrator (name starts with "orchestrator"), human_relay
+	// (a phone/dashboard bridge) or peer (every other agent).
+	SenderType string `json:"sender_type"`
+}
+
+// Sender types.
+const (
+	SenderOrchestrator = "orchestrator"
+	SenderHumanRelay   = "human_relay"
+	SenderPeer         = "peer"
+)
+
+func senderType(name string) string {
+	switch {
+	case strings.HasPrefix(name, hubPrefix):
+		return SenderOrchestrator
+	case isServiceName(name):
+		return SenderHumanRelay
+	}
+	return SenderPeer
+}
+
+// Get reads a stratum by its --where key.
+func (s Strata) Get(key string) (string, bool) {
+	switch key {
+	case "hub_bound":
+		return strconv.FormatBool(s.HubBound), true
+	case "sender_type":
+		return s.SenderType, true
+	case "recency":
+		return s.Recency, true
+	}
+	return "", false
 }
 
 // ReconstructedRow is one JSONL line of a reconstructed dataset.
@@ -106,7 +140,9 @@ type Summary struct {
 	TargetNotOnline map[string]int `json:"target_not_online"` // "<evidence>/<hub_bound|worker_bound>"
 	Scorable        int            `json:"scorable"`
 	// Strata counts scorable rows by "<hub_bound|worker_bound>/<recency>".
-	Strata              map[string]int `json:"strata"`
+	Strata map[string]int `json:"strata"`
+	// SenderTypes counts scorable rows by "<sender_type>/<hub_bound|worker_bound>".
+	SenderTypes         map[string]int `json:"sender_types"`
 	CandidateSize       SizeDist       `json:"candidate_size"`
 	DistinctTargets     int            `json:"distinct_targets_peer_id"`
 	DistinctTargetNames int            `json:"distinct_targets_display_name"`
@@ -136,7 +172,7 @@ func Reconstruct(events []state.EventRow, opts ReconstructOptions) ([]Reconstruc
 		opts.WorkingWindow = def.WorkingWindow
 	}
 	h := indexEvents(events)
-	sum := Summary{Excluded: map[string]int{}, TargetNotOnline: map[string]int{}, Strata: map[string]int{}}
+	sum := Summary{Excluded: map[string]int{}, TargetNotOnline: map[string]int{}, Strata: map[string]int{}, SenderTypes: map[string]int{}}
 	var rows []ReconstructedRow
 	var sizes []int
 	targets, targetNames, senders := map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -187,7 +223,7 @@ func Reconstruct(events []state.EventRow, opts ReconstructOptions) ([]Reconstruc
 		hub := strings.HasPrefix(to, hubPrefix)
 		in := InputFrom(str(e.Payload, "correlation_id"), d)
 		st := Strata{
-			HubBound: hub, TargetEvidence: targetState.evidence,
+			HubBound: hub, TargetEvidence: targetState.evidence, SenderType: senderType(from),
 			TargetOnline: targetState.evidence == EvidenceOnline,
 			Recency:      recencyStratum(in, DeclaredIsRecentContact(in, toID)),
 		}
@@ -198,6 +234,7 @@ func Reconstruct(events []state.EventRow, opts ReconstructOptions) ([]Reconstruc
 		}
 		sum.Scorable++
 		sum.Strata[side(hub)+"/"+st.Recency]++
+		sum.SenderTypes[st.SenderType+"/"+side(hub)]++
 		sizes = append(sizes, len(in.Candidates))
 		targets[toID], targetNames[to], senders[fromID] = true, true, true
 		if sum.From == "" || d.DecidedAt < sum.From {
@@ -239,6 +276,9 @@ func WriteSummary(w io.Writer, s Summary) {
 	for _, k := range sortedKeys(s.Strata) {
 		fmt.Fprintf(w, "  %-44s %d\n", k, s.Strata[k])
 	}
+	for _, k := range sortedKeys(s.SenderTypes) {
+		fmt.Fprintf(w, "  sender %-34s %d\n", k, s.SenderTypes[k])
+	}
 	c := s.CandidateSize
 	fmt.Fprintf(w, "candidates per row: min %d p25 %d median %d p75 %d p90 %d max %d mean %.1f\n", c.Min, c.P25, c.Median, c.P75, c.P90, c.Max, c.Mean)
 	fmt.Fprintf(w, "distinct targets: %d peer_ids, %d display names; %d distinct senders\n", s.DistinctTargets, s.DistinctTargetNames, s.DistinctSenders)
@@ -279,14 +319,15 @@ type inbound struct {
 // history indexes the journal for as-of-t queries. All queries are strict:
 // an event at exactly t is not yet known at t.
 type history struct {
-	peers    map[string]*peerLog
-	pairs    map[[2]string][]time.Time
-	inbound  map[string][]inbound
-	closedAt map[string]time.Time // ask correlation id -> earliest ack or reply_to
+	peers     map[string]*peerLog
+	pairs     map[[2]string][]inbound // asks between an unordered pair of peers
+	inbound   map[string][]inbound    // asks addressed to a peer
+	closedAt  map[string]time.Time    // ask correlation id -> earliest ack of any kind, or reply_to ask
+	repliedAt map[string]time.Time    // ask correlation id -> earliest ack that carried a message
 }
 
 func indexEvents(events []state.EventRow) *history {
-	h := &history{peers: map[string]*peerLog{}, pairs: map[[2]string][]time.Time{}, inbound: map[string][]inbound{}, closedAt: map[string]time.Time{}}
+	h := &history{peers: map[string]*peerLog{}, pairs: map[[2]string][]inbound{}, inbound: map[string][]inbound{}, closedAt: map[string]time.Time{}, repliedAt: map[string]time.Time{}}
 	log := func(id string) *peerLog {
 		p := h.peers[id]
 		if p == nil {
@@ -304,13 +345,13 @@ func indexEvents(events []state.EventRow) *history {
 			p.names = append(p.names, nameObs{at, n})
 		}
 	}
-	pair := func(a, b string, at time.Time) {
+	pair := func(a, b string, ask inbound) {
 		if a != "" && b != "" && a != b {
 			k := [2]string{a, b}
 			if b < a {
 				k = [2]string{b, a}
 			}
-			h.pairs[k] = append(h.pairs[k], at)
+			h.pairs[k] = append(h.pairs[k], ask)
 		}
 	}
 	closeAsk := func(cid string, at time.Time) {
@@ -326,21 +367,32 @@ func indexEvents(events []state.EventRow) *history {
 		fromID, toID := str(p, "from_peer_id"), str(p, "to_peer_id")
 		switch e.Type {
 		case "ask", "ack", "notification":
+			// Notifications are liveness evidence only, never exchanges.
 			if fromID != "" {
 				pl := log(fromID)
 				pl.active = append(pl.active, e.At)
 			}
 			name(fromID, str(p, "from"), e.At)
 			name(toID, str(p, "to"), e.At)
-			pair(fromID, toID, e.At)
 			switch e.Type {
 			case "ask":
-				if !boolean(p, "self_target") && toID != "" {
-					h.inbound[toID] = append(h.inbound[toID], inbound{e.At, str(p, "correlation_id")})
+				// The live AskTracker holds asks only: an ask is an exchange
+				// between its endpoints and load on its target.
+				ask := inbound{e.At, str(p, "correlation_id")}
+				pair(fromID, toID, ask)
+				if toID != "" {
+					h.inbound[toID] = append(h.inbound[toID], ask)
 				}
 				closeAsk(str(p, "reply_to"), e.At)
 			case "ack":
-				closeAsk(str(p, "correlation_id"), e.At)
+				cid := str(p, "correlation_id")
+				closeAsk(cid, e.At)
+				// Only an ack with a message captures a reply (RepliedAt).
+				if boolean(p, "has_message") {
+					if prev, ok := h.repliedAt[cid]; !ok || e.At.Before(prev) {
+						h.repliedAt[cid] = e.At
+					}
+				}
 			}
 		case "chat_turn":
 			id := e.PeerID
@@ -439,7 +491,7 @@ func (h *history) candidate(id, sender string, t time.Time, opts ReconstructOpti
 		}
 	}
 	for _, a := range h.inbound[id] {
-		if a.at.Before(t) && t.Sub(a.at) <= opts.ExchangeTTL {
+		if a.at.Before(t) && t.Sub(a.at) <= opts.ExchangeTTL { // expiry is by ask creation
 			if closed, ok := h.closedAt[a.cid]; !ok || !closed.Before(t) {
 				c.OpenAsksInbound++
 			}
@@ -449,7 +501,22 @@ func (h *history) candidate(id, sender string, t time.Time, opts ReconstructOpti
 	if sender < id {
 		k = [2]string{sender, id}
 	}
-	if last, ok := lastBefore(h.pairs[k], t); ok && t.Sub(last) <= opts.ExchangeTTL {
+	// Mirrors AskTracker.RoutingStats: each live ask between the pair counts
+	// at its reply time if a reply was captured, else at creation.
+	var last time.Time
+	for _, a := range h.pairs[k] {
+		if !a.at.Before(t) || t.Sub(a.at) > opts.ExchangeTTL {
+			continue
+		}
+		at := a.at
+		if r, ok := h.repliedAt[a.cid]; ok && r.Before(t) {
+			at = r
+		}
+		if at.After(last) {
+			last = at
+		}
+	}
+	if !last.IsZero() {
 		c.LastExchangeAt, _ = stamp(&last, t)
 	}
 	return c

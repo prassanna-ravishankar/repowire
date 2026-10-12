@@ -194,16 +194,20 @@ type Result struct {
 // Report aggregates a replay. Fidelity counts a fallback as a miss; the
 // answered variants exclude fallbacks.
 type Report struct {
-	Arm               string         `json:"arm"`
-	Source            string         `json:"source"` // "rerun" or "recorded"
-	Mask              []string       `json:"mask,omitempty"`
-	Decisions         int            `json:"decisions"`
-	Scored            int            `json:"scored"`
-	Fallbacks         int            `json:"fallbacks"`
-	Hit1              int            `json:"hit1"`
-	Hit3              int            `json:"hit3"`
-	Fidelity1         float64        `json:"fidelity_at_1"`
-	Fidelity3         float64        `json:"fidelity_at_3"`
+	Arm       string   `json:"arm"`
+	Source    string   `json:"source"` // "rerun" or "recorded"
+	Mask      []string `json:"mask,omitempty"`
+	Decisions int      `json:"decisions"`
+	Scored    int      `json:"scored"`
+	Fallbacks int      `json:"fallbacks"`
+	Hit1      int      `json:"hit1"`
+	Hit3      int      `json:"hit3"`
+	Fidelity1 float64  `json:"fidelity_at_1"`
+	Fidelity3 float64  `json:"fidelity_at_3"`
+	// Chance1 and Chance3 are the expected fidelity of a random ranking over
+	// the same scored rows, analytically (no seed). Read lift against these.
+	Chance1           float64        `json:"chance_at_1"`
+	Chance3           float64        `json:"chance_at_3"`
 	AnsweredFidelity1 float64        `json:"answered_fidelity_at_1"`
 	AnsweredFidelity3 float64        `json:"answered_fidelity_at_3"`
 	MeanCandidates    float64        `json:"mean_candidates"`
@@ -247,6 +251,10 @@ type Cohort struct {
 	Fallbacks int `json:"fallbacks"`
 	Hit1      int `json:"hit1"`
 	Hit3      int `json:"hit3"`
+	// Chance1 and Chance3 sum, over the scored rows, the hit probability of a
+	// uniformly random ranking: 1/n and min(3,n)/n for n candidates.
+	Chance1 float64 `json:"chance_hit1"`
+	Chance3 float64 `json:"chance_hit3"`
 }
 
 // Replay scores an arm against the sender's declared target on every labelled
@@ -348,9 +356,15 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 		}
 		tally(rep.Cohorts, ex.Outcome.Delivery, r)
 		tally(rep.Recency, r.Recency, r)
+		if n := float64(r.Candidates); n > 0 {
+			rep.Chance1 += 1 / n
+			rep.Chance3 += min(3, n) / n
+		}
 		results = append(results, r)
 	}
 	if rep.Scored > 0 {
+		rep.Chance1 /= float64(rep.Scored)
+		rep.Chance3 /= float64(rep.Scored)
 		rep.Fidelity1 = float64(rep.Hit1) / float64(rep.Scored)
 		rep.Fidelity3 = float64(rep.Hit3) / float64(rep.Scored)
 		rep.MeanLatencyMS = latency / float64(rep.Scored)
@@ -402,6 +416,10 @@ func tally(cohorts map[string]*Cohort, name string, r Result) {
 		cohorts[name] = c
 	}
 	c.Scored++
+	if n := float64(r.Candidates); n > 0 {
+		c.Chance1 += 1 / n
+		c.Chance3 += min(3, n) / n
+	}
 	if r.Fallback {
 		c.Fallbacks++
 	}

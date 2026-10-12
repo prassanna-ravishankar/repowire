@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +17,7 @@ import (
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
-const routeReplayUsage = "route replay --arm ARM [--recorded] [--mask FIELD,...] [--since RFC3339] [--limit N] [--db PATH | --input FILE] [--where hub_bound=BOOL] [--allow-paid] [--json] [--rows]"
+const routeReplayUsage = "route replay --arm ARM [--recorded] [--mask FIELD,...] [--since RFC3339] [--limit N] [--db PATH | --input FILE] [--where KEY=VALUE,...] [--allow-paid] [--json] [--rows]"
 
 const routeReconstructUsage = "route reconstruct --db PATH --out FILE [--live-window DUR] [--exchange-ttl DUR] [--working-window DUR] [--json]"
 
@@ -172,13 +171,22 @@ func runRouteReplayInput(a args, input string) int {
 	}
 	examples := history
 	if where := a.string("where", ""); where != "" {
-		want, ok := strings.CutPrefix(where, "hub_bound=")
-		if !ok || (want != "true" && want != "false") {
-			return fatal(fmt.Errorf("route replay: --where supports hub_bound=true|false"))
+		conds := map[string]string{}
+		for _, part := range strings.Split(where, ",") {
+			key, want, ok := strings.Cut(strings.TrimSpace(part), "=")
+			if _, known := (routing.Strata{}).Get(key); !ok || !known {
+				return fatal(fmt.Errorf("route replay: --where takes KEY=VALUE pairs over hub_bound, sender_type, recency (got %q)", part))
+			}
+			conds[key] = want
 		}
 		// Only the scored rows narrow; history baselines still vote from all.
 		examples = slices.DeleteFunc(slices.Clone(history), func(ex routing.Example) bool {
-			return strconv.FormatBool(ex.Strata.HubBound) != want
+			for key, want := range conds {
+				if got, _ := ex.Strata.Get(key); got != want {
+					return true
+				}
+			}
+			return false
 		})
 	}
 	return replayArms(a, examples, history, false, routeReplayUsage)
@@ -394,13 +402,13 @@ func printReplayTable(w io.Writer, reports []routing.Report) {
 			fmt.Fprintf(w, "history (%s votes from): %d labelled asks, %s to %s\n", rep.Arm, h.Asks, h.From, h.To)
 		}
 	}
-	fmt.Fprintf(w, "%-20s %-8s %6s %6s %6s %6s %6s %8s %8s", "arm", "source", "rows", "scored", "fb", "f@1", "f@3", "ans@1", "ms")
+	fmt.Fprintf(w, "%-20s %-8s %6s %6s %6s %6s %6s %6s %6s %8s %8s", "arm", "source", "rows", "scored", "fb", "f@1", "f@3", "ch@1", "ch@3", "ans@1", "ms")
 	for _, r := range reasons {
 		fmt.Fprintf(w, " %s", r)
 	}
 	fmt.Fprintln(w)
 	for _, rep := range reports {
-		fmt.Fprintf(w, "%-20s %-8s %6d %6d %6d %6.3f %6.3f %8.3f %8.0f", rep.Arm, rep.Source, rep.Decisions, rep.Scored, rep.Fallbacks, rep.Fidelity1, rep.Fidelity3, rep.AnsweredFidelity1, rep.MeanLatencyMS)
+		fmt.Fprintf(w, "%-20s %-8s %6d %6d %6d %6.3f %6.3f %6.3f %6.3f %8.3f %8.0f", rep.Arm, rep.Source, rep.Decisions, rep.Scored, rep.Fallbacks, rep.Fidelity1, rep.Fidelity3, rep.Chance1, rep.Chance3, rep.AnsweredFidelity1, rep.MeanLatencyMS)
 		for _, r := range reasons {
 			fmt.Fprintf(w, " %*d", len(r), rep.Skipped[r])
 		}

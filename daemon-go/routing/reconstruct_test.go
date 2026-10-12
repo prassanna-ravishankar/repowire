@@ -175,8 +175,8 @@ func TestReconstructAttestedFields(t *testing.T) {
 	if w1.Project != "alpha" || w1.Backend != "claude-code" || w2.Project != "beta" || w2.Backend != "codex" {
 		t.Errorf("name parse: %+v %+v", w1, w2)
 	}
-	if w1.LastExchangeAt == nil || *w1.LastExchangeAt != atT(-59*m).Format(time.RFC3339Nano) || w2.LastExchangeAt != nil {
-		t.Errorf("last exchange: w1 %v, w2 %v", w1.LastExchangeAt, w2.LastExchangeAt)
+	if w1.LastExchangeAt == nil || *w1.LastExchangeAt != atT(-60*m).Format(time.RFC3339Nano) || w2.LastExchangeAt != nil {
+		t.Errorf("last exchange (bare ack leaves the ask time): w1 %v, w2 %v", w1.LastExchangeAt, w2.LastExchangeAt)
 	}
 	if w2.OpenAsksInbound != 1 || w1.OpenAsksInbound != 0 {
 		t.Errorf("open inbound: w1 %d, w2 %d (want 0, 1: x3 is open, its ack lands at t)", w1.OpenAsksInbound, w2.OpenAsksInbound)
@@ -252,7 +252,55 @@ func TestReconstructedRowsReplay(t *testing.T) {
 	if rep.Scored != 2 || rep.Hit1 != 1 {
 		t.Fatalf("scored %d hit1 %d: %+v", rep.Scored, rep.Hit1, results)
 	}
+	if rep.Chance1 <= 0 || rep.Chance1 > 1 || rep.Chance3 < rep.Chance1 {
+		t.Fatalf("chance = %v, %v", rep.Chance1, rep.Chance3)
+	}
 	if results[1].Strata == nil || results[1].Strata.HubBound {
 		t.Fatalf("result strata = %+v", results[1].Strata)
+	}
+}
+
+// The exchange follows AskTracker.RoutingStats: asks only, each at its captured
+// reply time if an ack carried a message, expiring by ask creation time.
+func TestReconstructExchangeMatchesAskTracker(t *testing.T) {
+	h := time.Hour
+	msg := func(e state.EventRow) state.EventRow { e.Payload["has_message"] = true; return e }
+	events := []state.EventRow{
+		evTurn(-30*h, "s", "orchestrator-codex", "assistant"),
+		evTurn(-30*h, "replied", "replied-codex", "assistant"),
+		evTurn(-30*h, "expired", "expired-codex", "assistant"),
+		evTurn(-30*h, "noted", "noted-codex", "assistant"),
+		// Created 23h before t, reply captured 1h before t: counts at the reply.
+		evAsk(-23*h, "a1", "orchestrator-codex", "s", "replied-codex", "replied", nil),
+		msg(evAck(-h, "a1", "replied-codex", "replied", "orchestrator-codex", "s")),
+		// Created 25h before t: expired by creation, whatever happened since.
+		evAsk(-25*h, "a2", "orchestrator-codex", "s", "expired-codex", "expired", nil),
+		msg(evAck(-h, "a2", "expired-codex", "expired", "orchestrator-codex", "s")),
+		// A notification is not an exchange.
+		{Type: "notification", At: atT(-10 * time.Minute), Payload: map[string]any{"from": "noted-codex", "from_peer_id": "noted", "to": "orchestrator-codex", "to_peer_id": "s"}},
+		evAsk(0, "target", "orchestrator-codex", "s", "replied-codex", "replied", nil),
+	}
+	rows, _ := Reconstruct(events, ReconstructOptions{})
+	r := rowsByTrace(rows)["target"]
+	if c := candOf(t, r, "replied"); c.LastExchangeAt == nil || *c.LastExchangeAt != atT(-h).Format(time.RFC3339Nano) {
+		t.Errorf("replied exchange = %v, want the reply time", c.LastExchangeAt)
+	}
+	if hasCand(r, "expired") {
+		if c := candOf(t, r, "expired"); c.LastExchangeAt != nil {
+			t.Errorf("expired ask still an exchange: %v", *c.LastExchangeAt)
+		}
+	}
+	if hasCand(r, "noted") {
+		if c := candOf(t, r, "noted"); c.LastExchangeAt != nil {
+			t.Errorf("notification counted as an exchange: %v", *c.LastExchangeAt)
+		}
+	}
+}
+
+func TestSenderTypeStratum(t *testing.T) {
+	for name, want := range map[string]string{"orchestrator-2-claude-code": SenderOrchestrator, "telegram-claude-code": SenderHumanRelay, "moltbook-driver-3-claude-code": SenderPeer} {
+		if got := senderType(name); got != want {
+			t.Errorf("senderType(%q) = %s, want %s", name, got, want)
+		}
 	}
 }

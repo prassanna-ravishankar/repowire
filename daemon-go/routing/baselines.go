@@ -19,7 +19,7 @@ import (
 const FallbackNoHistory = "no_history"
 
 // Baselines are the arms replay computes locally, always re-run.
-var Baselines = []string{"random", "recent", "majority", "majority-past"}
+var Baselines = []string{"random", "recent", "majority", "majority-past", "newest"}
 
 // IsBaseline reports whether name is a replay-computed baseline.
 func IsBaseline(name string) bool {
@@ -34,7 +34,7 @@ func IsBaseline(name string) bool {
 // BaselineArms builds the baselines; the majority baselines vote from history.
 func BaselineArms(history []Example) map[string]Arm {
 	return map[string]Arm{
-		"random": Random{}, "recent": Recent{},
+		"random": Random{}, "recent": Recent{}, "newest": Newest{},
 		"majority": NewMajority(history, false), "majority-past": NewMajority(history, true),
 	}
 }
@@ -55,6 +55,28 @@ func (Recent) Rank(_ context.Context, in Input) (RouterResult, error) {
 		if t, ok := exchangedAt(c); ok {
 			age := max(now.Sub(t).Seconds(), 0)
 			scores = append(scores, Score{PeerID: c.PeerID, Score: 1 / (1 + age)})
+		}
+	}
+	if len(scores) == 0 {
+		return RouterResult{}, fail(FallbackNoHistory)
+	}
+	return RouterResult{Scores: scores}, nil
+}
+
+// Newest ranks candidates by how recently the daemon last saw them active
+// (smallest last_seen_age_s first). It needs no history of the sender, so it
+// is the control for "just pick whoever is newest online": a state-reading
+// arm that cannot beat it is reading liveness, not fit. Candidates without a
+// last_seen are left unranked; ties keep candidate (peer_id) order.
+type Newest struct{}
+
+func (Newest) Name() string { return "newest" }
+
+func (Newest) Rank(_ context.Context, in Input) (RouterResult, error) {
+	var scores []Score
+	for _, c := range in.Candidates {
+		if c.LastSeenAgeS != nil {
+			scores = append(scores, Score{PeerID: c.PeerID, Score: 1 / (1 + max(*c.LastSeenAgeS, 0))})
 		}
 	}
 	if len(scores) == 0 {

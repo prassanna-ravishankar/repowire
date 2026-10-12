@@ -397,3 +397,19 @@ func TestMaskedRerunReachesModelTemplates(t *testing.T) {
 		check(t, candidateState(t, state), true)
 	})
 }
+
+func TestNewestRanksSmallestLastSeenAgeFirst(t *testing.T) {
+	age := func(v float64) *float64 { return &v }
+	in := Input{Candidates: []Candidate{
+		{PeerID: "old", LastSeenAgeS: age(3600)},
+		{PeerID: "new", LastSeenAgeS: age(2)},
+		{PeerID: "unknown"},
+	}}
+	res := Run(context.Background(), Newest{}, in, time.Second)
+	if res.Fallback || len(res.Scores) != 2 || res.Scores[0].PeerID != "new" || res.Scores[1].PeerID != "old" {
+		t.Fatalf("newest = %+v", res)
+	}
+	if res := Run(context.Background(), Newest{}, Input{Candidates: []Candidate{{PeerID: "x"}}}, time.Second); !res.Fallback || res.FallbackReason != FallbackNoHistory {
+		t.Fatalf("no last_seen must fall back with no_history: %+v", res)
+	}
+}
