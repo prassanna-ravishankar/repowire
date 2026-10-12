@@ -275,6 +275,15 @@ status.
 
 See the full [CLI reference](https://docs.repowire.io/reference/cli/) and [MCP tools reference](https://docs.repowire.io/reference/mcp-tools/).
 
+## Routing
+
+Repowire is a router whose default strategy is static: an ask goes to the peer it names, and a named peer is never overridden. Other strategies are opt-in. With `routing.strategy` set to an arm (for example `jev-attested`), an ask that names no peer is routed to the arm's pick. The pick passes the same circle and addressability checks, and the sender's `fallback_to` is used if the arm cannot choose. `routing.record` and `routing.shadow_arms` record decisions and run arms beside named asks for offline comparison with `repowire route replay`. See [routing configuration](docs/reference/configuration.md#routing).
+
+```yaml
+routing:
+  strategy: static        # default; or an arm name to route asks that name no peer
+```
+
 ## Configuration and Security
 
 Config lives at `~/.repowire/config.yaml`.

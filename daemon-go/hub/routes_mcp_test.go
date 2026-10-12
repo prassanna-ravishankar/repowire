@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -411,5 +412,56 @@ func TestMCPDisabledNotRegistered(t *testing.T) {
 	}, nil)
 	if status != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (route not registered)", status)
+	}
+}
+
+// peer_name is optional on the ask tool: absent hands the ask to the routing
+// strategy (the default static strategy refuses it as no_target); present but
+// empty is still a missing name.
+func TestMCPAskPeerNameIsOptional(t *testing.T) {
+	h, reg := newMCPTestHub(t, config.MCPHTTPConfig{Enabled: true, RequireAuth: false, AllowUnauthenticatedLocalhost: true})
+	asks := service.NewAskTracker(0)
+	h.WithAskLifecycle(asks, service.NewPeerDelivery(reg, h.Router(), h.Transport(), asks, nil), reg)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	_, envelope := mcpRPC(t, srv.URL+"/mcp", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, nil)
+	var list struct {
+		Tools []struct {
+			Name        string `json:"name"`
+			InputSchema struct {
+				Required []string `json:"required"`
+			} `json:"inputSchema"`
+		} `json:"tools"`
+	}
+	decodeResult(t, envelope, &list)
+	for _, tl := range list.Tools {
+		if tl.Name == "ask" && (slices.Contains(tl.InputSchema.Required, "peer_name") || !slices.Contains(tl.InputSchema.Required, "query")) {
+			t.Fatalf("ask required = %v; want query only", tl.InputSchema.Required)
+		}
+	}
+
+	call := func(args map[string]any) string {
+		_, envelope := mcpRPC(t, srv.URL+"/mcp", map[string]any{
+			"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+			"params": map[string]any{"name": "ask", "arguments": args},
+		}, nil)
+		var result mcpToolCallResult
+		decodeResult(t, envelope, &result)
+		if !result.IsError || len(result.Content) != 1 {
+			t.Fatalf("ask %v: want an error result, got %+v", args, result)
+		}
+		return result.Content[0].Text
+	}
+	if text := call(map[string]any{"query": "who owns the lexer?"}); !strings.Contains(text, "no_target") {
+		t.Fatalf("absent peer_name under static: %q", text)
+	}
+	if text := call(map[string]any{"peer_name": "", "query": "x"}); !strings.Contains(text, "peer_name") {
+		t.Fatalf("empty peer_name: %q", text)
+	}
+	if asks.OpenCount() != 0 {
+		t.Fatal("a refused ask was registered")
 	}
 }

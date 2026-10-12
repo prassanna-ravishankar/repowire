@@ -20,19 +20,65 @@ const routeReplayUsage = "route replay --arm ARM [--recorded] [--mask FIELD,...]
 
 const routeDecisionBenchUsage = "route decisionbench --cards DIR --delegations FILE --orchestrator MODEL --arm ARM [--mask FIELD,...] [--limit N] [--json] [--rows]"
 
-// runRoute replays routing decisions offline: recorded mesh asks (replay), or
-// DecisionBench delegations as a stateless sanity check (decisionbench).
+// runRoute shows the routing config (show) and replays routing decisions
+// offline: recorded mesh asks (replay), or DecisionBench delegations as a
+// stateless sanity check (decisionbench).
 func runRoute(argv []string) int {
 	if len(argv) == 0 {
 		return usage(routeReplayUsage)
 	}
 	switch argv[0] {
+	case "show":
+		return runRouteShow(os.Stdout)
 	case "replay":
 		return runRouteReplay(parse(argv[1:], "recorded", "json", "rows"))
 	case "decisionbench":
 		return runRouteDecisionBench(parse(argv[1:], "json", "rows"))
 	}
 	return usage(routeReplayUsage)
+}
+
+// runRouteShow prints the routing config as config.Load resolves it, with
+// the warnings the daemon would log. API keys are reported as set or not.
+func runRouteShow(w io.Writer) int {
+	cfg, err := config.Load()
+	if err != nil {
+		return fatal(err)
+	}
+	printRouting(w, cfg)
+	return 0
+}
+
+func printRouting(w io.Writer, cfg config.Config) {
+	r := cfg.Routing
+	keyState := func(m config.RouterModel) string {
+		if m.APIKey == "" {
+			return "no key"
+		}
+		return "key set"
+	}
+	shadows := "none"
+	if len(r.ShadowArms) > 0 {
+		var parts []string
+		for _, arm := range r.ShadowArms {
+			n := r.SampleEvery[arm]
+			if n == 0 {
+				n = 1
+			}
+			parts = append(parts, fmt.Sprintf("%s (every %d)", arm, n))
+		}
+		shadows = strings.Join(parts, ", ")
+	}
+	fmt.Fprintf(w, "strategy     %s\n", r.Strategy)
+	fmt.Fprintf(w, "record       %t (ask text %t)\n", r.Record, r.RecordText)
+	fmt.Fprintf(w, "shadow arms  %s\n", shadows)
+	fmt.Fprintf(w, "timeout      %gs\n", r.TimeoutSeconds)
+	fmt.Fprintf(w, "jev          %s, %s\n", r.Jev.Model, keyState(r.Jev))
+	fmt.Fprintf(w, "frontier     %s, %s\n", r.Frontier.Model, keyState(r.Frontier))
+	for _, warning := range cfg.Warnings {
+		fmt.Fprintf(w, "WARNING %s\n", warning)
+	}
+	fmt.Fprintln(w, "(the daemon reads this at startup; restart it to apply changes)")
 }
 
 // runRouteReplay scores arms against recorded asks. It reads state.db
@@ -109,11 +155,11 @@ func replayArms(a args, examples, history []routing.Example, recorded bool, usag
 	if err != nil {
 		return fatal(err)
 	}
-	router, err := routing.NewRouter(cfg.Experiments.Router, nil)
+	router, err := routing.NewRouter(cfg.Routing, nil)
 	if err != nil {
 		return fatal(err)
 	}
-	known := armNames(cfg.Experiments.Router)
+	known := armNames(cfg.Routing)
 	arms := []string{arm}
 	if arm == "all" {
 		arms = known

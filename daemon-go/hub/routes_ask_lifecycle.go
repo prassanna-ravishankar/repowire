@@ -341,19 +341,56 @@ func (h *Hub) askReady(w http.ResponseWriter) bool {
 type AskRequest struct {
 	ReplyDelivery string `json:"reply_delivery,omitempty"` // pull callers retrieve replies over HTTP
 
-	FromPeer     string           `json:"from_peer"`
-	ToPeer       string           `json:"to_peer"`
-	Text         string           `json:"text"`
-	Attachments  []map[string]any `json:"attachments,omitempty"`
-	ReplyTo      *string          `json:"reply_to,omitempty"`
-	BypassCircle bool             `json:"bypass_circle,omitempty"`
-	Circle       *string          `json:"circle,omitempty"`
-	Question     map[string]any   `json:"question,omitempty"`
-	// FallbackTo is where an @route ask goes when the live router fails.
+	FromPeer string `json:"from_peer"`
+	// ToPeer names the target. Leaving the key out (ToPeerOmitted) hands
+	// the ask to the configured routing strategy; an empty or null to_peer
+	// is a named ask to nobody and fails as an unknown peer.
+	ToPeer        string           `json:"to_peer"`
+	ToPeerOmitted bool             `json:"-"`
+	Text          string           `json:"text"`
+	Attachments   []map[string]any `json:"attachments,omitempty"`
+	ReplyTo       *string          `json:"reply_to,omitempty"`
+	BypassCircle  bool             `json:"bypass_circle,omitempty"`
+	Circle        *string          `json:"circle,omitempty"`
+	Question      map[string]any   `json:"question,omitempty"`
+	// FallbackTo is where a targetless ask goes when the strategy cannot
+	// choose or its pick is refused.
 	FallbackTo string `json:"fallback_to,omitempty"`
 }
 
-// AskResponse mirrors asks.py AskResponse. Routing is set only for @route asks.
+// MarshalJSON leaves to_peer out of a targetless ask, so the request
+// round-trips.
+func (a AskRequest) MarshalJSON() ([]byte, error) {
+	type plain AskRequest
+	raw, err := json.Marshal(plain(a))
+	if err != nil || !a.ToPeerOmitted {
+		return raw, err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return nil, err
+	}
+	delete(keys, "to_peer")
+	return json.Marshal(keys)
+}
+
+// UnmarshalJSON records whether to_peer was present at all: only an absent
+// key makes an ask targetless.
+func (a *AskRequest) UnmarshalJSON(raw []byte) error {
+	type plain AskRequest
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, (*plain)(a)); err != nil {
+		return err
+	}
+	_, named := keys["to_peer"]
+	a.ToPeerOmitted = !named
+	return nil
+}
+
+// AskResponse mirrors asks.py AskResponse. Routing is set only for targetless asks.
 type AskResponse struct {
 	CorrelationID string      `json:"correlation_id"`
 	Error         *string     `json:"error,omitempty"`
@@ -403,6 +440,12 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		return AskResponse{}, err
 	}
 	cid, target, fromID, fromName := res.cid, res.target, res.fromID, res.fromName
+	// addressed is how hints name the recipient: as the sender named it, or
+	// as the strategy chose it.
+	addressed := req.ToPeer
+	if res.selection != nil {
+		addressed = string(target.DisplayName)
+	}
 	// Planned shadow arms run whatever happens to delivery, so a quiesced,
 	// dead or rejecting recipient is still scored, not mistaken for a
 	// deliberate non-sample.
@@ -426,7 +469,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 			h.recordQuiesced(ctx, res)
 			return AskResponse{}, routeErr(http.StatusConflict, map[string]any{
 				"error": "peer_switching",
-				"hint":  fmt.Sprintf("Peer %s is mid-switch; retry shortly.", req.ToPeer),
+				"hint":  fmt.Sprintf("Peer %s is mid-switch; retry shortly.", addressed),
 			})
 		}
 		// Unreachable today (Register only refuses with ErrQuiesced); kept so a
@@ -467,7 +510,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 			h.traceSendFailed(ctx, tracked)
 			return AskResponse{}, routeErr(http.StatusServiceUnavailable, map[string]any{
 				"error":          "injection_failed",
-				"hint":           fmt.Sprintf("Ask injection failed for %s: %s", req.ToPeer, di.Error()),
+				"hint":           fmt.Sprintf("Ask injection failed for %s: %s", addressed, di.Error()),
 				"correlation_id": cid,
 			})
 		}
@@ -478,7 +521,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 			h.traceAsk(ctx, cid, "no_connection", "fail", tracked, map[string]any{"error": err.Error()})
 			h.traceSendFailed(ctx, tracked)
 			return AskResponse{}, routeErr(http.StatusServiceUnavailable,
-				fmt.Sprintf("Peer %s has no live connection: %s", req.ToPeer, err))
+				fmt.Sprintf("Peer %s has no live connection: %s", addressed, err))
 		}
 		h.traceAsk(ctx, cid, "route_failed", "fail", tracked, map[string]any{"error": err.Error()})
 		h.traceSendFailed(ctx, tracked)

@@ -67,3 +67,21 @@ func TestArmNamesListBaselinesFirst(t *testing.T) {
 		t.Fatalf("arm names = %v", names)
 	}
 }
+
+func TestRouteShowReportsKeysOnlyAsSet(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Routing.Record, cfg.Routing.ShadowArms, cfg.Routing.SampleEvery = true, []string{"jev-attested"}, map[string]int{"jev-attested": 3}
+	cfg.Routing.Jev.APIKey = "secret-key"
+	cfg.Warnings = []string{"config: experiments.router is deprecated"}
+	var out strings.Builder
+	printRouting(&out, cfg)
+	text := out.String()
+	for _, want := range []string{"strategy     static", "record       true", "jev-attested (every 3)", "jev-1.13.0, key set", "frontier     claude-opus-5-5, no key", "WARNING config: experiments.router is deprecated"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "secret-key") {
+		t.Fatalf("route show printed a key:\n%s", text)
+	}
+}

@@ -302,8 +302,8 @@ func TestNewRouterRejectsUnknownArms(t *testing.T) {
 	if _, err := NewRouter(config.RouterConfig{ShadowArms: []string{"jev-nope"}}, nil); err == nil {
 		t.Fatal("unknown shadow arm accepted")
 	}
-	if _, err := NewRouter(config.RouterConfig{Mode: config.RouterModeLive, Arm: "nope"}, nil); err == nil {
-		t.Fatal("unknown live arm accepted")
+	if _, err := NewRouter(config.RouterConfig{Strategy: "nope"}, nil); err == nil {
+		t.Fatal("unknown strategy accepted")
 	}
 }
 
@@ -501,7 +501,7 @@ func TestFrontierIgnoresEnvironmentCredentials(t *testing.T) {
 }
 
 func TestNewRouterRejectsMisspelledSampleEveryKey(t *testing.T) {
-	cfg := config.RouterConfig{Mode: config.RouterModeShadow, ShadowArms: []string{"frontier-claimed"}, SampleEvery: map[string]int{"frontier-cliamed": 20}}
+	cfg := config.RouterConfig{ShadowArms: []string{"frontier-claimed"}, SampleEvery: map[string]int{"frontier-cliamed": 20}}
 	if _, err := NewRouter(cfg, nil); err == nil || !strings.Contains(err.Error(), "frontier-cliamed") {
 		t.Fatalf("typo accepted: %v", err)
 	}

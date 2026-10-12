@@ -4,20 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
 )
-
-// RouteTarget is the reserved address that asks a live router to choose.
-const RouteTarget = "@route"
-
-// IsRouteTarget reports whether to_peer names the router.
-func IsRouteTarget(toPeer string) bool {
-	return strings.EqualFold(strings.TrimSpace(toPeer), RouteTarget)
-}
 
 // Arms builds every known arm from config. Model arms without a key are still
 // built; they fall back with reason "unconfigured" when run.
@@ -61,19 +52,19 @@ func NewRouter(cfg config.RouterConfig, arms map[string]Arm) (*Router, error) {
 		arms = Arms(cfg)
 	}
 	named := append([]string{}, cfg.ShadowArms...)
-	if cfg.Mode == config.RouterModeLive {
-		named = append(named, cfg.Arm)
+	if cfg.Strategy != "" && cfg.Strategy != StrategyStatic {
+		named = append(named, cfg.Strategy)
 	}
 	for _, name := range named {
 		if _, ok := arms[name]; !ok {
-			return nil, fmt.Errorf("experiments.router: unknown arm %q", name)
+			return nil, fmt.Errorf("routing: unknown arm %q (strategy is static or an arm name)", name)
 		}
 	}
 	// A misspelled sample_every key would silently leave its arm unsampled
 	// (every ask), so it is an error like any other unknown arm.
 	for name := range cfg.SampleEvery {
 		if _, ok := arms[name]; !ok {
-			return nil, fmt.Errorf("experiments.router.sample_every: unknown arm %q", name)
+			return nil, fmt.Errorf("routing.sample_every: unknown arm %q", name)
 		}
 	}
 	return &Router{
@@ -116,33 +107,33 @@ func (r *Router) Recording() bool { return r != nil && r.cfg.Record }
 // RecordText reports whether recorded rows keep the ask body.
 func (r *Router) RecordText() bool { return r != nil && r.cfg.RecordText }
 
-// Mode is the configured mode, "off" for a nil router.
+// Mode is the mode recorded on each decision, derived from the config so
+// rows read as they did under experiments.router: live when a strategy
+// routes targetless asks, else shadow when shadow arms run, else off.
 func (r *Router) Mode() string {
-	if r == nil {
+	switch {
+	case r == nil:
 		return config.RouterModeOff
+	case r.Strategy() != StrategyStatic:
+		return config.RouterModeLive
+	case len(r.cfg.ShadowArms) > 0:
+		return config.RouterModeShadow
 	}
-	return r.cfg.Mode
+	return config.RouterModeOff
 }
-
-// Live reports whether asks to @route are routed.
-func (r *Router) Live() bool { return r.Mode() == config.RouterModeLive }
 
 // StrategyStatic is the default strategy: every ask names its target and a
 // targetless ask has nowhere to go. Any other strategy is the name of the
-// arm that chooses targets for targetless asks.
-const StrategyStatic = "static"
+// arm that chooses a target for an ask that names none.
+const StrategyStatic = config.StrategyStatic
 
-// Strategy is the configured routing strategy: the live arm in live mode,
-// otherwise static.
+// Strategy is the configured routing strategy, static for a nil router.
 func (r *Router) Strategy() string {
-	if r.Live() {
-		return r.cfg.Arm
+	if r == nil || r.cfg.Strategy == "" {
+		return StrategyStatic
 	}
-	return StrategyStatic
+	return r.cfg.Strategy
 }
-
-// LiveArm is the arm that decides @route asks.
-func (r *Router) LiveArm() string { return r.cfg.Arm }
 
 // Timeout bounds one arm call.
 func (r *Router) Timeout() time.Duration {
@@ -159,11 +150,8 @@ func (r *Router) SampleEvery(arm string) int {
 }
 
 // ShadowPlan picks the shadow arms that run for this ask, advancing each arm's
-// sampling counter. Empty unless mode is shadow.
+// sampling counter.
 func (r *Router) ShadowPlan() []string {
-	if r.Mode() != config.RouterModeShadow {
-		return nil
-	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var plan []string

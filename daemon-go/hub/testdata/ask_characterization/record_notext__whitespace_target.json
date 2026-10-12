@@ -1,49 +1,28 @@
 {
   "arm_calls": {
     "shadowstub": 0,
-    "stub": 1
+    "stub": 0
   },
   "body": {
-    "correlation_id": "\u003ccid1\u003e",
-    "routing": {
-      "arm": "stub",
-      "fallback": false,
-      "routed_to": "gamma",
-      "routed_to_peer_id": "repow-c"
-    }
+    "detail": "Unknown peer:    "
   },
   "calls": [
     "--- request",
     "reg.GetPeerByName(\"alpha\", nil) -\u003e repow-a \u003cnil\u003e",
     "reg.GetAllPeers",
-    "reg.GetPeerByName(\"repow-c\", nil) -\u003e repow-c \u003cnil\u003e",
-    "reg.CheckAccess(\"alpha\", \"repow-c\", bypass=false, nil) -\u003e repow-a repow-c \u003cnil\u003e",
+    "reg.GetPeerByName(\"   \", nil) -\u003e \u003cnil\u003e \u003cnil\u003e",
     "trace \u003ccid1\u003e route_decision ",
-    "trace \u003ccid1\u003e created ",
-    "trace \u003ccid1\u003e resolved_peer ",
-    "trace \u003ccid1\u003e routed ",
-    "reg.CheckAccess(\"repow-a\", \"repow-c\", bypass=true, nil) -\u003e repow-a repow-c \u003cnil\u003e",
-    "transport.SendAndWaitDeliveryAck(repow-c)",
-    "trace \u003ccid1\u003e thread_input_accepted "
+    "trace \u003ccid1\u003e route_failed fail"
   ],
-  "delivered_to": [
-    "repow-c"
-  ],
+  "delivered_to": [],
   "events": null,
-  "frame": {
-    "correlation_id": "\u003ccid1\u003e",
-    "delivery_id": "\u003cdelivery-id\u003e",
-    "from_peer": "alpha",
-    "text": "[routed by stub because you scored 0.81, the highest of 2 candidates (next 0.20); the sender did not name you, decline if this is not yours]\nx\n↳ ack(\"\u003ccid1\u003e\"), ack(\"\u003ccid1\u003e\", \"reply\"), or decline(\"\u003ccid1\u003e\", \"reason\")",
-    "to_peer": "gamma",
-    "type": "ask"
-  },
+  "frame": null,
   "offlined": null,
-  "status": 200,
+  "status": 404,
   "traces": [
     {
       "detail": {
-        "arm": "stub",
+        "arm": "explicit",
         "candidates": [
           {
             "access": "ok",
@@ -161,17 +140,14 @@
             "turn_state": ""
           }
         ],
-        "chosen": {
-          "display_name": "gamma",
-          "peer_id": "repow-c"
-        },
+        "chosen": null,
         "decided_at": "\u003cclock\u003e",
         "declared": {
           "peer_id": null,
-          "raw": null,
-          "resolution": "absent"
+          "raw": "   ",
+          "resolution": "unknown"
         },
-        "mode": "live",
+        "mode": "off",
         "parent_id": null,
         "registry_size": 6,
         "request": {
@@ -180,27 +156,12 @@
           "circle": null,
           "has_question": false,
           "reply_to": null,
-          "text": "x",
-          "text_recorded": true,
+          "text": "",
+          "text_recorded": false,
           "text_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
           "text_truncated": false
         },
-        "router": {
-          "arm": "stub",
-          "confidence": null,
-          "fallback": false,
-          "latency_ms": "\u003cclock\u003e",
-          "scores": [
-            {
-              "peer_id": "repow-c",
-              "score": 0.81
-            },
-            {
-              "peer_id": "repow-b",
-              "score": 0.2
-            }
-          ]
-        },
+        "router": null,
         "schema": "repowire.route_decision.v1",
         "sender": {
           "addressable": true,
@@ -228,75 +189,23 @@
         "shadow_planned": [],
         "surface": "ask"
       },
-      "from": "repow-a",
-      "peer": "repow-c",
+      "from": "alpha",
+      "peer": "",
       "stage": "route_decision",
       "status": "",
       "trace": "\u003ccid1\u003e"
     },
     {
       "detail": {
-        "from_peer": "alpha",
-        "text": "x",
-        "to_peer": "  @ROUTE "
+        "error": "Unknown peer:    ",
+        "reason": "unknown"
       },
-      "from": "repow-a",
-      "peer": "repow-c",
-      "stage": "created",
-      "status": "",
-      "trace": "\u003ccid1\u003e"
-    },
-    {
-      "detail": null,
-      "from": "repow-a",
-      "peer": "repow-c",
-      "stage": "resolved_peer",
-      "status": "",
-      "trace": "\u003ccid1\u003e"
-    },
-    {
-      "detail": null,
-      "from": "repow-a",
-      "peer": "repow-c",
-      "stage": "routed",
-      "status": "",
-      "trace": "\u003ccid1\u003e"
-    },
-    {
-      "detail": {
-        "transport": "ws"
-      },
-      "from": "repow-a",
-      "peer": "repow-c",
-      "stage": "thread_input_accepted",
-      "status": "",
+      "from": "alpha",
+      "peer": "",
+      "stage": "route_failed",
+      "status": "fail",
       "trace": "\u003ccid1\u003e"
     }
   ],
-  "tracker": [
-    {
-      "Answer": null,
-      "AskerIdentity": null,
-      "CloseReason": "",
-      "Closed": false,
-      "CorrelationID": "\u003ccid1\u003e",
-      "CreatedAt": "\u003cclock\u003e",
-      "FromPeerID": "repow-a",
-      "FromPeerName": "alpha",
-      "FromRepowireSessionID": null,
-      "ParentID": null,
-      "PendingReply": null,
-      "PendingReplyAt": null,
-      "Question": null,
-      "RepliedAt": null,
-      "ReplyAttachments": null,
-      "ReplyDelivery": "push",
-      "ReplyText": null,
-      "ReplyTo": null,
-      "Text": "x",
-      "ToPeerID": "repow-c",
-      "ToPeerName": "gamma",
-      "ToRepowireSessionID": null
-    }
-  ]
+  "tracker": null
 }

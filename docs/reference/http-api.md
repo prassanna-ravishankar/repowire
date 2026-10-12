@@ -89,9 +89,13 @@ their outstanding asks with `GET /asks/pending?peer_id=<sender>&direction=outbou
 The wait endpoint still requires the original sender identity.
 `GET /health` advertises `capabilities.ask_pull_delivery` when ask handling is wired.
 
-## Routed asks (experimental)
+## Targetless asks and routing
 
-With `experiments.router.mode: live`, `POST /ask` with `to_peer: "@route"` lets the configured arm pick the recipient. Optional `fallback_to` names the peer used if the router fails. The response adds `routing: {arm, routed_to, routed_to_peer_id, confidence, fallback, fallback_reason}`. A router failure with no `fallback_to` returns **503** `{"error": "router_unavailable", "arm", "reason", "hint"}` and nothing is registered or delivered. Responses to ordinary asks carry no `routing` key. See [`experiments.router`](configuration.md#experiments).
+`to_peer` names the recipient. Under the default `routing.strategy: static`, an ask must name one. If the `to_peer` key is left out, the ask is refused with **400** `{"error": "no_target", "hint"}`, and nothing is registered or recorded.
+
+When `routing.strategy` names an arm, an ask with no `to_peer` key is routed: the arm picks the recipient, and the pick is authorized like a named target. Optional `fallback_to` names the peer used if the arm fails or its pick is refused. The response adds `routing: {arm, routed_to, routed_to_peer_id, confidence, fallback, fallback_reason}`. A routing failure with no `fallback_to` returns **503** `{"error": "router_unavailable", "arm", "reason", "hint"}`, and nothing is registered or delivered.
+
+Only an absent key routes. `"to_peer": ""`, whitespace and `"to_peer": null` are named asks to nobody. They return **404** `Unknown peer: …` under every strategy, as before. A named ask is never rerouted, and responses to named asks carry no `routing` key. `@route` is an ordinary name. See [`routing`](configuration.md#routing).
 
 The hosted relay has a separate [OAuth-authenticated MCP surface](relay-mcp.md);
 it does not tunnel the daemon's administrative `/mcp` endpoint.

@@ -3,9 +3,10 @@ package hub
 // Ask routing and its research ledger. Every ask attempt can record a
 // route_decision row (a frozen snapshot of the sender, the declared target,
 // and every peer's attested and claimed state) into its own delivery trace;
-// outcomes land as the trace's later stages. In live mode, asks addressed to
-// @route are routed by the configured arm and fail closed to the sender's
-// fallback_to target. The routed peer still passes CheckAccess.
+// outcomes land as the trace's later stages. Under a non-static strategy, an
+// ask that names no target is routed by the strategy's arm and fails closed
+// to the sender's fallback_to target. The routed peer still passes
+// CheckAccess.
 
 import (
 	"context"
@@ -72,12 +73,12 @@ type askAttempt struct {
 }
 
 // beginDecision mints the ask's cid and snapshots the mesh, but only when
-// something will read it: recording on, or a live @route ask. Otherwise it
+// something will read it: recording on, or a routed targetless ask. Otherwise it
 // returns ("", nil) and touches nothing, so the uninstrumented path is the
 // pre-router path (the tracker mints the cid at Register, as before).
-func (h *Hub) beginDecision(_ context.Context, a askAttempt, liveRoute bool) (string, *routing.Decision) {
+func (h *Hub) beginDecision(_ context.Context, a askAttempt, routed bool) (string, *routing.Decision) {
 	r := h.askRouter()
-	if !r.Recording() && !liveRoute {
+	if !r.Recording() && !routed {
 		return "", nil
 	}
 	now := time.Now().UTC()
@@ -324,7 +325,15 @@ type askResolution struct {
 // before the caller registers the ask.
 func (h *Hub) resolveAsk(ctx context.Context, req AskRequest) (*askResolution, error) {
 	r := h.askRouter()
-	targetless := r.Strategy() != routing.StrategyStatic && routing.IsRouteTarget(req.ToPeer)
+	targetless := req.ToPeerOmitted
+	if targetless && r.Strategy() == routing.StrategyStatic {
+		// Refused before any cid, snapshot or ledger row: under the static
+		// strategy a targetless ask is a caller error, not a decision.
+		return nil, routeErr(http.StatusBadRequest, map[string]any{
+			"error": "no_target",
+			"hint":  "No to_peer was given and routing.strategy is static, so nothing chooses a recipient. Name a peer.",
+		})
+	}
 	// When routing is instrumented the cid is minted before resolution so a
 	// failed attempt still has a trace; otherwise Register mints it as it
 	// always has. reply_to closes a PRIOR ask; it is NOT this ask's cid.
@@ -381,12 +390,12 @@ func (h *Hub) recordQuiesced(ctx context.Context, res *askResolution) {
 	}
 }
 
-// routeLive runs the live arm for an @route ask and returns the address to
-// resolve next: the arm's pick, or the sender's fallback_to when the arm fell
-// back (empty when the sender gave none).
+// routeLive runs the strategy's arm for a targetless ask and returns the
+// address to resolve next: the arm's pick, or the sender's fallback_to when
+// the arm fell back (empty when the sender gave none).
 func (h *Hub) routeLive(ctx context.Context, cid string, d *routing.Decision, fallbackTo string) (string, *routing.RouterResult) {
 	r := h.askRouter()
-	res := r.Run(ctx, r.LiveArm(), routing.InputFrom(cid, *d))
+	res := r.Run(ctx, r.Strategy(), routing.InputFrom(cid, *d))
 	d.Arm = res.Arm
 	d.Router = &res
 	if res.Fallback {

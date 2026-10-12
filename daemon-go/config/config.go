@@ -24,6 +24,11 @@ type Config struct {
 	Telegram    TelegramConfig    `yaml:"telegram"`
 	Slack       SlackConfig       `yaml:"slack"`
 	Experiments ExperimentsConfig `yaml:"experiments"`
+	// Routing is how asks find their target; see RouterConfig.
+	Routing RouterConfig `yaml:"routing"`
+	// Warnings are load-time notices the daemon logs once at startup:
+	// settings that were migrated or dropped rather than refused.
+	Warnings []string `yaml:"-"`
 }
 
 type DaemonConfig struct {
@@ -95,44 +100,7 @@ type ExperimentsConfig struct {
 	// GitTrailers enables the repository prepare-commit-msg hook installed by
 	// setup --git-hooks to add Repowire-Thread / Repowire-Session trailers.
 	GitTrailers bool `yaml:"git_trailers"`
-	// Router is the ask-routing experiment. Everything in it is off by default.
-	Router RouterConfig `yaml:"router"`
 }
-
-// RouterConfig controls ask routing and its research instrumentation.
-//
-// Mode "off" leaves delivery untouched. "shadow" delivers every ask to its
-// declared target and runs ShadowArms beside it for the record. "live" lets
-// Arm choose the target of asks addressed to the reserved @route name.
-type RouterConfig struct {
-	// Record writes a route_decision trace row for every ask.
-	Record bool `yaml:"record"`
-	// RecordText keeps the ask body in those rows; off keeps only its hash.
-	RecordText bool     `yaml:"record_text"`
-	Mode       string   `yaml:"mode"`
-	Arm        string   `yaml:"arm"`
-	ShadowArms []string `yaml:"shadow_arms"`
-	// SampleEvery[arm] = N runs that shadow arm on every Nth ask (default 1),
-	// so paid arms need not run on every message.
-	SampleEvery    map[string]int `yaml:"sample_every"`
-	TimeoutSeconds float64        `yaml:"timeout_seconds"`
-	Jev            RouterModel    `yaml:"jev"`
-	Frontier       RouterModel    `yaml:"frontier"`
-}
-
-// RouterModel is one model-backed arm's endpoint.
-type RouterModel struct {
-	APIKey  string `yaml:"api_key"`
-	Model   string `yaml:"model"`
-	BaseURL string `yaml:"base_url"`
-}
-
-// Router modes.
-const (
-	RouterModeOff    = "off"
-	RouterModeShadow = "shadow"
-	RouterModeLive   = "live"
-)
 
 type RemoteToolApprovalConfig struct {
 	Enabled        bool     `yaml:"enabled"`
@@ -161,11 +129,8 @@ func Defaults() Config {
 		Experiments: ExperimentsConfig{RemoteToolApproval: RemoteToolApprovalConfig{
 			GatedTools:     []string{"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"},
 			TimeoutSeconds: 45,
-		}, GitTrailers: true, Router: RouterConfig{
-			RecordText: true, Mode: RouterModeOff, Arm: "explicit", TimeoutSeconds: 8,
-			Jev:      RouterModel{Model: "jev-1.13.0", BaseURL: "https://api.typesafe.ai"},
-			Frontier: RouterModel{Model: "claude-opus-5-5"},
-		}},
+		}, GitTrailers: true},
+		Routing: defaultRouting(),
 	}
 }
 
@@ -193,52 +158,30 @@ func legacySpawnCommands(commands []string) map[string]string {
 func Load() (Config, error) {
 	cfg := Defaults()
 	path := Path()
+	var raw []byte
 	if b, err := os.ReadFile(path); err == nil {
 		if err := yaml.Unmarshal(b, &cfg); err != nil {
 			return cfg, fmt.Errorf("parse %s: %w", path, err)
 		}
+		raw = b
 	} else if !os.IsNotExist(err) {
 		return cfg, fmt.Errorf("read %s: %w", path, err)
 	}
 	if len(cfg.Daemon.Spawn.Commands) == 0 {
 		cfg.Daemon.Spawn.Commands = legacySpawnCommands(cfg.Daemon.Spawn.AllowedCommands)
 	}
+	if err := migrateLegacyRouter(&cfg, raw); err != nil {
+		return cfg, err
+	}
 	applyEnv(&cfg)
 	normalize(&cfg)
 	if !cfg.Daemon.CircleBoundary.Valid() {
 		return cfg, fmt.Errorf("daemon.circle_boundary must be session or window, got %q", cfg.Daemon.CircleBoundary)
 	}
-	if err := cfg.Experiments.Router.validate(); err != nil {
+	if err := cfg.settleRouting(); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
-}
-
-// validate rejects router settings that would silently widen what runs:
-// an unknown mode, a duplicate shadow arm, or a sample period below 1.
-// Arm names are checked against the arm registry by routing.NewRouter.
-func (r RouterConfig) validate() error {
-	switch r.Mode {
-	case RouterModeOff, RouterModeShadow, RouterModeLive:
-	default:
-		return fmt.Errorf("experiments.router.mode must be off, shadow or live, got %q", r.Mode)
-	}
-	seen := map[string]bool{}
-	for _, arm := range r.ShadowArms {
-		if seen[arm] {
-			return fmt.Errorf("experiments.router.shadow_arms lists %q twice", arm)
-		}
-		seen[arm] = true
-	}
-	for arm, n := range r.SampleEvery {
-		if n < 1 {
-			return fmt.Errorf("experiments.router.sample_every.%s must be >= 1, got %d", arm, n)
-		}
-	}
-	if r.TimeoutSeconds <= 0 {
-		return fmt.Errorf("experiments.router.timeout_seconds must be > 0")
-	}
-	return nil
 }
 
 func Path() string {
@@ -328,23 +271,7 @@ func applyEnv(cfg *Config) {
 	setBoolEnv(&cfg.Experiments.GitTrailers, "REPOWIRE_EXPERIMENTS__GIT_TRAILERS")
 	setBoolEnv(&cfg.Experiments.RemoteToolApproval.Enabled, "REPOWIRE_EXPERIMENTS__REMOTE_TOOL_APPROVAL__ENABLED")
 	setFloatEnv(&cfg.Experiments.RemoteToolApproval.TimeoutSeconds, "REPOWIRE_EXPERIMENTS__REMOTE_TOOL_APPROVAL__TIMEOUT_SECONDS")
-	router := &cfg.Experiments.Router
-	setBoolEnv(&router.Record, "REPOWIRE_EXPERIMENTS__ROUTER__RECORD")
-	setBoolEnv(&router.RecordText, "REPOWIRE_EXPERIMENTS__ROUTER__RECORD_TEXT")
-	setStringEnv(&router.Mode, "REPOWIRE_EXPERIMENTS__ROUTER__MODE")
-	setStringEnv(&router.Arm, "REPOWIRE_EXPERIMENTS__ROUTER__ARM")
-	if v := os.Getenv("REPOWIRE_EXPERIMENTS__ROUTER__SHADOW_ARMS"); v != "" {
-		router.ShadowArms = SplitCSV(v)
-	}
-	setFloatEnv(&router.TimeoutSeconds, "REPOWIRE_EXPERIMENTS__ROUTER__TIMEOUT_SECONDS")
-	if v := firstEnv("REPOWIRE_EXPERIMENTS__ROUTER__JEV__API_KEY", "JEV_API_KEY", "TYPESAFE_API_KEY"); v != "" {
-		router.Jev.APIKey = v
-	}
-	setStringEnv(&router.Jev.Model, "REPOWIRE_EXPERIMENTS__ROUTER__JEV__MODEL")
-	if v := firstEnv("REPOWIRE_EXPERIMENTS__ROUTER__FRONTIER__API_KEY", "ANTHROPIC_API_KEY"); v != "" {
-		router.Frontier.APIKey = v
-	}
-	setStringEnv(&router.Frontier.Model, "REPOWIRE_EXPERIMENTS__ROUTER__FRONTIER__MODEL")
+	applyRoutingEnv(cfg)
 	if v := os.Getenv("REPOWIRE_EXPERIMENTS__REMOTE_TOOL_APPROVAL__GATED_TOOLS"); v != "" {
 		var tools []string
 		if json.Unmarshal([]byte(v), &tools) == nil {
@@ -383,14 +310,11 @@ func normalize(cfg *Config) {
 	if len(cfg.Experiments.RemoteToolApproval.GatedTools) == 0 {
 		cfg.Experiments.RemoteToolApproval.GatedTools = []string{"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"}
 	}
-	if cfg.Experiments.Router.Mode == "" {
-		cfg.Experiments.Router.Mode = RouterModeOff
+	if cfg.Routing.Strategy == "" {
+		cfg.Routing.Strategy = StrategyStatic
 	}
-	if cfg.Experiments.Router.Arm == "" {
-		cfg.Experiments.Router.Arm = "explicit"
-	}
-	if cfg.Experiments.Router.TimeoutSeconds <= 0 {
-		cfg.Experiments.Router.TimeoutSeconds = 8
+	if cfg.Routing.TimeoutSeconds <= 0 {
+		cfg.Routing.TimeoutSeconds = 8
 	}
 	if cfg.Experiments.RemoteToolApproval.TimeoutSeconds <= 0 {
 		cfg.Experiments.RemoteToolApproval.TimeoutSeconds = 45

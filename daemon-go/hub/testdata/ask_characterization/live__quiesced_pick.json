@@ -6,7 +6,7 @@
   "body": {
     "detail": {
       "error": "peer_switching",
-      "hint": "Peer @route is mid-switch; retry shortly."
+      "hint": "Peer gamma is mid-switch; retry shortly."
     }
   },
   "calls": [

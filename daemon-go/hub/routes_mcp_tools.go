@@ -85,12 +85,12 @@ func (h *Hub) mcpSpawnPlacement(caller, requested string) (circle, sourcePane st
 }
 
 type mcpAskArgs struct {
-	PeerName    string           `json:"peer_name"`
+	PeerName    *string          `json:"peer_name,omitempty" jsonschema:"The peer to ask. Omit to let the configured routing strategy choose (the default static strategy refuses an ask with no peer)."`
 	Query       string           `json:"query"`
 	ReplyTo     string           `json:"reply_to,omitempty"`
 	Circle      string           `json:"circle,omitempty"`
 	Attachments []map[string]any `json:"attachments,omitempty"`
-	FallbackTo  string           `json:"fallback_to,omitempty" jsonschema:"Experimental: with peer_name @route, the peer that receives the ask if the router cannot choose"`
+	FallbackTo  string           `json:"fallback_to,omitempty" jsonschema:"With peer_name omitted, the peer that receives the ask if the routing strategy cannot choose"`
 }
 type mcpWaitArgs struct {
 	CorrelationID  string `json:"correlation_id"`
@@ -237,10 +237,15 @@ type mcpShareArgs struct {
 
 func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 	addMCPTool(srv, "ask", "Open a tracked thread only when another peer's context or ownership materially helps and explicit closure is needed; peers may be occupied.", func(ctx context.Context, caller string, a mcpAskArgs) (string, error) {
-		if err := requireFields("peer_name", a.PeerName, "query", a.Query); err != nil {
+		if a.PeerName != nil {
+			if err := required("peer_name", *a.PeerName); err != nil {
+				return "", err
+			}
+		}
+		if err := required("query", a.Query); err != nil {
 			return "", err
 		}
-		result, err := h.openAsk(ctx, AskRequest{FromPeer: caller, ToPeer: a.PeerName, Text: a.Query, ReplyTo: strPtr(a.ReplyTo), Circle: h.mcpSendCircle(caller, a.Circle), Attachments: a.Attachments, FallbackTo: a.FallbackTo})
+		result, err := h.openAsk(ctx, AskRequest{FromPeer: caller, ToPeer: derefString(a.PeerName), ToPeerOmitted: a.PeerName == nil, Text: a.Query, ReplyTo: strPtr(a.ReplyTo), Circle: h.mcpSendCircle(caller, a.Circle), Attachments: a.Attachments, FallbackTo: a.FallbackTo})
 		return askToolResult(result), err
 	})
 	addMCPTool(srv, "wait_on_ack", "Wait for a tracked ask to resolve.", func(ctx context.Context, caller string, a mcpWaitArgs) (string, error) {

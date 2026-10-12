@@ -206,7 +206,7 @@ func (r *routingRig) deliveredText(t *testing.T) string {
 }
 
 func recordCfg() *config.RouterConfig {
-	cfg := config.Defaults().Experiments.Router
+	cfg := config.Defaults().Routing
 	cfg.Record = true
 	return &cfg
 }
@@ -215,7 +215,7 @@ func recordCfg() *config.RouterConfig {
 // nothing a client or the trace ledger can see.
 func TestRoutingDefaultsLeaveAskUnchanged(t *testing.T) {
 	want := []string{"created", "resolved_peer", "routed", "thread_input_accepted", "acked", "closed"}
-	for name, cfg := range map[string]*config.RouterConfig{"unwired": nil, "defaults": ptr(config.Defaults().Experiments.Router)} {
+	for name, cfg := range map[string]*config.RouterConfig{"unwired": nil, "defaults": ptr(config.Defaults().Routing)} {
 		t.Run(name, func(t *testing.T) {
 			rig := newRoutingRig(t, cfg, nil)
 			status, out, raw := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "hi"})
@@ -343,7 +343,6 @@ func TestRecordedFailedResolutionStillTraces(t *testing.T) {
 
 func TestShadowArmsSampledAndRecordedAfterDelivery(t *testing.T) {
 	cfg := recordCfg()
-	cfg.Mode = config.RouterModeShadow
 	cfg.ShadowArms = []string{"random", "paid"}
 	cfg.SampleEvery = map[string]int{"paid": 2}
 	paid := &stubArm{name: "paid", scores: []routing.Score{{PeerID: "repow-c", Score: 0.9}}}
@@ -383,15 +382,14 @@ func TestShadowArmsSampledAndRecordedAfterDelivery(t *testing.T) {
 
 func liveCfg(arm string) *config.RouterConfig {
 	cfg := recordCfg()
-	cfg.Mode = config.RouterModeLive
-	cfg.Arm = arm
+	cfg.Strategy = arm
 	return cfg
 }
 
 func TestLiveRouteDeliversArmPickVisibly(t *testing.T) {
 	arm := &stubArm{name: "stub", scores: []routing.Score{{PeerID: "repow-c", Score: 0.81}, {PeerID: "repow-b", Score: 0.2}}}
 	rig := newRoutingRig(t, liveCfg("stub"), map[string]routing.Arm{"stub": arm})
-	status, out, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "@route", Text: "who owns the lexer?"})
+	status, out, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeerOmitted: true, Text: "who owns the lexer?"})
 	if status != http.StatusOK {
 		t.Fatalf("status %d", status)
 	}
@@ -419,7 +417,7 @@ func TestLiveRouteFailsClosedToFallback(t *testing.T) {
 	for name, arm := range cases {
 		t.Run(name, func(t *testing.T) {
 			rig := newRoutingRig(t, liveCfg("stub"), map[string]routing.Arm{"stub": arm})
-			status, out, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "@route", FallbackTo: "beta", Text: "x"})
+			status, out, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeerOmitted: true, FallbackTo: "beta", Text: "x"})
 			if status != http.StatusOK || rig.f.lastTarget != "repow-b" {
 				t.Fatalf("status %d delivered to %s", status, rig.f.lastTarget)
 			}
@@ -440,7 +438,7 @@ func TestLiveRouteFailsClosedToFallback(t *testing.T) {
 func TestLiveRouteWithoutFallbackRefusesLoudly(t *testing.T) {
 	arm := &stubArm{name: "stub", err: errors.New("down")}
 	rig := newRoutingRig(t, liveCfg("stub"), map[string]routing.Arm{"stub": arm})
-	status, _, raw := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "@route", Text: "x"})
+	status, _, raw := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeerOmitted: true, Text: "x"})
 	if status != http.StatusServiceUnavailable || !strings.Contains(raw, "router_unavailable") {
 		t.Fatalf("status %d body %s", status, raw)
 	}
@@ -452,15 +450,17 @@ func TestLiveRouteWithoutFallbackRefusesLoudly(t *testing.T) {
 	}
 }
 
-func TestRouteTargetIsOrdinaryNameUnlessLive(t *testing.T) {
-	arm := &stubArm{name: "stub", scores: []routing.Score{{PeerID: "repow-c", Score: 1}}}
-	cfg := recordCfg()
-	cfg.Mode = config.RouterModeShadow
-	cfg.Arm = "stub"
-	rig := newRoutingRig(t, cfg, map[string]routing.Arm{"stub": arm})
-	status, _, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "@route", Text: "x"})
-	if status != http.StatusNotFound || arm.calls != 0 {
-		t.Fatalf("status %d calls %d", status, arm.calls)
+// @route was the reserved address of the experiment's live mode. It is gone:
+// under any strategy it is an ordinary name, and only an absent to_peer
+// reaches the strategy.
+func TestRouteTargetIsAnOrdinaryName(t *testing.T) {
+	for _, to := range []string{"@route", " @Route ", "@ROUTE"} {
+		arm := &stubArm{name: "stub", scores: []routing.Score{{PeerID: "repow-c", Score: 1}}}
+		rig := newRoutingRig(t, liveCfg("stub"), map[string]routing.Arm{"stub": arm})
+		status, _, raw := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: to, Text: "x"})
+		if status != http.StatusNotFound || arm.calls != 0 || !strings.Contains(raw, "Unknown peer: "+to) {
+			t.Fatalf("%q: status %d calls %d body %s", to, status, arm.calls, raw)
+		}
 	}
 }
 
@@ -473,7 +473,6 @@ func TestRecordedAsksReplayFromStateDB(t *testing.T) {
 	}
 	defer store.Close()
 	cfg := recordCfg()
-	cfg.Mode = config.RouterModeShadow
 	cfg.ShadowArms = []string{"oracle-ish"}
 	cfg.SampleEvery = map[string]int{"oracle-ish": 2}
 	arm := &stubArm{name: "oracle-ish", scores: []routing.Score{{PeerID: "repow-b", Score: 0.9}, {PeerID: "repow-c", Score: 0.1}}}
@@ -516,7 +515,6 @@ func (p panicky) Rank(context.Context, routing.Input) (routing.RouterResult, err
 
 func shadowCfg(arms ...string) *config.RouterConfig {
 	cfg := recordCfg()
-	cfg.Mode = config.RouterModeShadow
 	cfg.ShadowArms = arms
 	return cfg
 }
@@ -632,7 +630,7 @@ func TestLiveStalePickWithoutFallbackIsRecordedAsFallback(t *testing.T) {
 	arm := &stubArm{name: "stub", scores: []routing.Score{{PeerID: "repow-c", Score: 0.9}}}
 	rig := newRoutingRig(t, liveCfg("stub"), map[string]routing.Arm{"stub": arm})
 	rig.reg.deny["repow-c"] = true
-	status, _, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "@route", Text: "x"})
+	status, _, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeerOmitted: true, Text: "x"})
 	if status != http.StatusForbidden || rig.f.lastTarget != "" {
 		t.Fatalf("status %d delivered to %q", status, rig.f.lastTarget)
 	}
@@ -688,7 +686,6 @@ func TestProviderErrorBodiesNeverReachTheLedger(t *testing.T) {
 				defer store.Close()
 				cfg := recordCfg()
 				cfg.RecordText = recordText
-				cfg.Mode = config.RouterModeShadow
 				cfg.ShadowArms = []string{"jev-attested"}
 				cfg.Jev = config.RouterModel{APIKey: keySentinel, Model: "jev-1.13.0", BaseURL: provider.URL}
 				rig := newRoutingRigWith(t, cfg, nil, store)
@@ -776,20 +773,33 @@ func TestStrategyNeverOverridesANamedTarget(t *testing.T) {
 	}
 }
 
-func TestStrategyIsStaticUnlessLive(t *testing.T) {
+func TestStrategyAndRecordedMode(t *testing.T) {
 	var unwired *routing.Router
-	if unwired.Strategy() != routing.StrategyStatic {
-		t.Fatalf("unwired strategy %q", unwired.Strategy())
+	if unwired.Strategy() != routing.StrategyStatic || unwired.Mode() != config.RouterModeOff {
+		t.Fatalf("unwired: strategy %q mode %q", unwired.Strategy(), unwired.Mode())
 	}
-	for mode, want := range map[string]string{config.RouterModeOff: routing.StrategyStatic, config.RouterModeShadow: routing.StrategyStatic, config.RouterModeLive: "stub"} {
+	for _, c := range []struct {
+		strategy    string
+		shadows     []string
+		strat, mode string
+	}{
+		{"", nil, routing.StrategyStatic, config.RouterModeOff},
+		{routing.StrategyStatic, nil, routing.StrategyStatic, config.RouterModeOff},
+		{routing.StrategyStatic, []string{"stub"}, routing.StrategyStatic, config.RouterModeShadow},
+		{"stub", nil, "stub", config.RouterModeLive},
+		{"stub", []string{"stub"}, "stub", config.RouterModeLive},
+	} {
 		cfg := recordCfg()
-		cfg.Mode, cfg.Arm = mode, "stub"
+		cfg.Strategy, cfg.ShadowArms = c.strategy, c.shadows
 		r, err := routing.NewRouter(*cfg, map[string]routing.Arm{"stub": &stubArm{name: "stub"}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := r.Strategy(); got != want {
-			t.Fatalf("mode %s: strategy %q, want %q", mode, got, want)
+		if r.Strategy() != c.strat || r.Mode() != c.mode {
+			t.Fatalf("%+v: strategy %q mode %q", c, r.Strategy(), r.Mode())
 		}
+	}
+	if _, err := routing.NewRouter(config.RouterConfig{Strategy: "jev-atested"}, map[string]routing.Arm{}); err == nil {
+		t.Fatal("unknown strategy accepted")
 	}
 }

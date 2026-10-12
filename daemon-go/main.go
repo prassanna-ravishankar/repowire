@@ -278,6 +278,9 @@ func runDaemon() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	for _, warning := range cfg.Warnings {
+		log.Printf("WARNING %s", warning)
+	}
 
 	dbPath := flag.String("db", state.DefaultPath(), "path to the schema-v12 SQLite state DB ($REPOWIRE_STATE_DB)")
 	addr := flag.String("addr", fmt.Sprintf("%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "host:port to serve the hub on")
@@ -467,7 +470,7 @@ func runDaemon() {
 	// that is otherwise a nil-guarded no-op in Routes(); the order is
 	// independent (all read from already-built services). traces uses the same
 	// *state.Store delivery-trace store.
-	router, err := routing.NewRouter(cfg.Experiments.Router, nil)
+	router, err := routing.NewRouter(cfg.Routing, nil)
 	if err != nil {
 		log.Fatalf("router config: %v", err)
 	}

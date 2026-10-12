@@ -231,7 +231,7 @@
       "detail": {
         "from_peer": "alpha",
         "text": "x",
-        "to_peer": "@route"
+        "to_peer": ""
       },
       "from": "repow-a",
       "peer": "repow-b",

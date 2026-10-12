@@ -183,30 +183,71 @@ experiments:
     gated_tools: [Bash, Edit, Write, MultiEdit, NotebookEdit]
     timeout_seconds: 45
   git_trailers: true            # enables the Git hook installed with setup --git-hooks
-  router:                       # ask-routing research experiment; all off by default
-    record: false               # write a route_decision trace row for every ask
-    record_text: true           # keep the ask body in route_decision rows (off keeps only its SHA-256 there)
-    mode: off                   # off | shadow | live
-    arm: explicit               # live mode: arm that routes asks sent to @route
-    shadow_arms: []             # shadow mode: arms run beside every explicit ask
-    sample_every: {}            # e.g. {frontier-claimed: 20} runs that arm on every 20th ask
-    timeout_seconds: 8
-    jev: {api_key: "", model: jev-1.13.0, base_url: "https://api.typesafe.ai"}
-    frontier: {api_key: "", model: claude-opus-5-5}
 ```
 
 `remote_tool_approval` gates `gated_tools` behind a blocking approval question: before a gated tool runs, a `PreToolUse` hook posts the question to the daemon and waits for an allow/deny from a human surface or peer, denying on timeout. The installer only registers the `PreToolUse` hook when `enabled` is set; toggling it off and re-running `repowire setup` removes the hook. Read-only tools are never gated. See [Structured questions](../concepts/message-types.md#pretooluse-tool-approval-claude-code).
 
 `git_trailers` is on by default, but requires `repowire setup --git-hooks` in each repository (or manual integration with an existing `prepare-commit-msg` hook). The native Git hook adds thread/session trailers using the committing repository’s HEAD and the registered tmux pane’s peer, across supported agent backends. It never rewrites shell input. Existing attribution, reused messages and replay operations are preserved; empty messages stay empty. Without a registered pane or available daemon history it leaves the message unchanged; operational errors warn and never block Git. Set `false` to disable it immediately, without reinstalling. See [`repowire why`](cli.md#repowire-why) for installation and amend/rebase behavior.
 
-`router` instruments and optionally routes asks. With `record` on, every ask attempt (`ask`, each `ask_many` child, and the legacy `/query`) writes a `route_decision` row into its delivery trace in `state.db`: the sender, the declared target and how it resolved, and a snapshot of every registered peer split into attested state (backend, project, path, status, turn state, last-seen age, open inbound asks, last exchange with the sender) and claimed state (description and its age), each labelled with whether the sender may reach it. Outcomes are the trace's later stages; `closed` gains `time_to_close_ms` and `recipient_turns`. Asks whose target fails to resolve are traced too. The rows are never pruned. `record_text: false` stores only a hash of the ask in `route_decision` rows; other trace stages (`created` keeps a clipped copy of the text, `closed` a clipped reply) are unaffected. With `record` off and `mode: off`, asks take the same path as without the router: no snapshot, no extra rows.
+## `routing`
 
-Invalid router settings fail config loading: an unknown `mode`, a `shadow_arms` entry listed twice, a `sample_every` below 1, or (at daemon start) an arm name that does not exist, including a misspelled `sample_every` key. Shadow runs are bounded (at most 4 in flight; arms planned while the pool is full are recorded as `saturated` on the decision row itself, so overload adds no write to the ask), and each provider (Jev, Anthropic) sits behind a breaker that opens after 3 consecutive provider failures, rejects calls as `breaker_open` for 30 seconds, then lets the next request through as a probe. A panicking arm is recorded as a `panic` fallback.
+How an ask finds its recipient. Repowire is a router whose default strategy is static: every ask goes to the peer it names. Other strategies are opt-in.
 
-Arms: `random`, and `jev-*` / `frontier-*` over the views `claimed` (descriptions), `attested` (observed state) or `both`. Model arms see candidates under opaque keys, with peer text passed only as data inside a fixed template. `jev.api_key` falls back to `JEV_API_KEY` / `TYPESAFE_API_KEY`, `frontier.api_key` to `ANTHROPIC_API_KEY`. A model arm without a key falls back with reason `unconfigured`.
+```yaml
+routing:
+  strategy: static              # static, or the arm that picks a recipient for asks that name none
+  record: false                 # write a route_decision trace row for every ask
+  record_text: true             # keep the ask body in route_decision rows (off keeps only its SHA-256 there)
+  shadow_arms: []               # arms run beside every named ask, for the record (needs record: true)
+  sample_every: {}              # e.g. {frontier-claimed: 20} runs that arm on every 20th ask
+  timeout_seconds: 8
+  jev: {api_key: "", model: jev-1.13.0, base_url: "https://api.typesafe.ai"}
+  frontier: {api_key: "", model: claude-opus-5-5}
+```
 
-- `shadow` delivers every ask to its declared target, then runs the sampled `shadow_arms` off the request path and records each result as a `route_shadow` row. Paid arms should carry a `sample_every`.
-- `live` routes only asks addressed to `@route`. The chosen peer still passes the circle and addressability checks, and the delivered ask is prefixed with the arm and its score. On any router failure (any reason in the table below) the ask goes to the sender's `fallback_to` peer with a note saying so, or, without one, is refused with `503 router_unavailable` and nothing is delivered. Outside `live`, `@route` is an ordinary unknown name. Candidates include service-role peers such as `telegram`, so a live arm can route an ask to a human's phone; decide whether to exclude them before enabling `live`.
+**Named asks are never rerouted.** An ask that names a peer is resolved and authorized as named under every strategy. If the name is unknown, ambiguous, denied or not addressable, the ask fails. It never falls through to a strategy. The strategy is consulted only for an ask that names no peer: `/ask` with the `to_peer` key left out, or the MCP `ask` tool without `peer_name`.
+
+- **`static`** (default) refuses a targetless ask with `400 no_target`. That refusal happens before any trace row or snapshot.
+- **An arm name** (`random`, `jev-*`, `frontier-*`) ranks the eligible candidates. Its pick passes the same circle, addressability and self checks as a named target, and the delivered ask is prefixed with the arm and its score. If the arm fails, the ask goes to the sender's `fallback_to` peer, which is authorized the same way, with a note saying so. If the pick stops being eligible before delivery, the reason is `stale_pick:*` and the same fallback applies. Without `fallback_to` the ask is refused with `503 router_unavailable` and nothing is delivered.
+
+Only an absent target is routed. An empty or whitespace `to_peer`, or JSON `null`, is a named ask to nobody and fails with `404 Unknown peer`, as it always has. `@route`, the experiment's former reserved name, is now an ordinary name. `ask_many` children, the legacy `/query`, scheduled asks, the CLI and the Pi, OpenCode, Telegram, Slack and relay surfaces always name their target.
+
+With `record` on, every ask attempt (`ask`, each `ask_many` child, and the legacy `/query`) writes a `route_decision` row into its delivery trace in `state.db`. The row holds:
+
+- the sender;
+- the declared target and how it resolved;
+- a snapshot of every registered peer, labelled with whether the sender may reach it, and split into:
+  - attested state: backend, project, path, status, turn state, last-seen age, open inbound asks, and last exchange with the sender;
+  - claimed state: description and its age.
+
+Outcomes are the trace's later stages, and `closed` gains `time_to_close_ms` and `recipient_turns`. Asks whose target fails to resolve are traced too. The rows are never pruned. `record_text: false` stores only a hash of the ask in `route_decision` rows. Other trace stages are unaffected: `created` keeps a clipped copy of the text and `closed` a clipped reply.
+
+The row's `mode` is derived from the config, so it reads as it did under the experiment:
+
+- `live` when the strategy is not static;
+- otherwise `shadow` when shadow arms run;
+- otherwise `off`.
+
+Named asks record `arm: explicit` under every strategy. With `record` off and no targetless ask, asks take the same path as without routing: no snapshot and no extra rows. With `record` on, every ask snapshots the mesh, whatever the strategy.
+
+`shadow_arms` run off the request path beside each named ask, and each result is recorded as a `route_shadow` row. Paid arms should carry a `sample_every`. Shadow runs are bounded: at most 4 are in flight, and arms planned while the pool is full are recorded as `saturated` on the decision row itself, so overload adds no write to the ask. Each provider (Jev, Anthropic) sits behind a breaker shared by its shadow and strategy use. The breaker opens after 3 consecutive provider failures, rejects calls as `breaker_open` for 30 seconds, then lets the next request through as a probe. A panicking arm is recorded as a `panic` fallback.
+
+Arms: `random`, and `jev-*` / `frontier-*` over the views `claimed` (descriptions), `attested` (observed state) or `both`. Model arms see candidates under opaque keys, with peer text passed only as data inside a fixed template. `jev.api_key` falls back to `JEV_API_KEY` / `TYPESAFE_API_KEY`, and `frontier.api_key` to `ANTHROPIC_API_KEY`. A model arm without a key falls back with reason `unconfigured`. Candidates include service-role peers such as `telegram`, so a non-static strategy can route an ask to a human's phone.
+
+A routing setting that cannot take effect is dropped with a startup warning; it does not stop the daemon. For example, `shadow_arms` with `record: false` are dropped, because shadow results exist only in the record. Only typo-class mistakes refuse to load, as they always have: a `shadow_arms` entry listed twice, a `sample_every` below 1, or, at daemon start, a strategy, shadow arm or `sample_every` key that names no arm. `repowire route show` prints the resolved config and any warnings.
+
+### Migrating from `experiments.router`
+
+Routing graduated from the `experiments.router` block. A legacy block is migrated in memory at startup with a warning that prints the equivalent `routing:` block, with API keys redacted. The file is never rewritten, so you can move the keys whenever you like:
+
+| `experiments.router` | `routing` |
+|---|---|
+| `mode: off` | `strategy: static`. Shadow arms are dropped; they never ran. |
+| `mode: shadow` | `strategy: static`, `shadow_arms` kept |
+| `mode: live`, `arm: X` | `strategy: X`. Shadow arms are dropped; they never ran in live. |
+| every other key | same key under `routing` |
+
+If both blocks are present, `routing:` wins and the legacy block is ignored with a warning. `REPOWIRE_EXPERIMENTS__ROUTER__*` environment variables are migrated the same way. Under a `routing:` block they still apply per field with a deprecation warning, except `MODE` and `ARM`, which are ignored in favour of `routing.strategy`.
 
 A failed arm is recorded by structure only: the fallback reason, the provider, the HTTP status (`http_status`, absent for a transport failure) and `error_code`, the provider's declared machine code if it is on a fixed allowlist of documented values (Anthropic's `error.type` and `details.error_code`, TypeSafe's `detail.error_type`), otherwise `other`. A provider's error body is never stored: it is untrusted and can echo the ask or our credentials. `record_text` governs only the ask text in `route_decision` rows. Every fallback is a miss in replay. Reasons marked "breaker" count toward the provider's breaker (3 consecutive failures open it for 30 s).
 
@@ -226,6 +267,6 @@ A failed arm is recorded by structure only: the fallback reason, the provider, t
 | `unknown_arm` | Arm name not registered | no |
 | `breaker_open` | Skipped: the provider's breaker is open | no |
 | `saturated` | Skipped: the shadow pool was full (shadow only) | no |
-| `stale_pick:*` | Live only: the chosen peer stopped being eligible before delivery | no |
+| `stale_pick:*` | Targetless asks only: the chosen peer stopped being eligible before delivery | no |
 
-Every key has a `REPOWIRE_EXPERIMENTS__ROUTER__*` environment override (`SHADOW_ARMS` is comma-separated).
+Every key has a `REPOWIRE_ROUTING__*` environment override, for example `REPOWIRE_ROUTING__STRATEGY` or `REPOWIRE_ROUTING__JEV__API_KEY`. `SHADOW_ARMS` is comma-separated.

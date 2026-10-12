@@ -1,0 +1,22 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 0
+  },
+  "body": {
+    "detail": {
+      "error": "no_target",
+      "hint": "No to_peer was given and routing.strategy is static, so nothing chooses a recipient. Name a peer."
+    }
+  },
+  "calls": [
+    "--- request"
+  ],
+  "delivered_to": [],
+  "events": null,
+  "frame": null,
+  "offlined": null,
+  "status": 400,
+  "traces": null,
+  "tracker": null
+}

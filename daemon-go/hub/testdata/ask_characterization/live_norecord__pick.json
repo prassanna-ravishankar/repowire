@@ -44,7 +44,7 @@
       "detail": {
         "from_peer": "alpha",
         "text": "who owns the lexer?",
-        "to_peer": "@route"
+        "to_peer": ""
       },
       "from": "repow-a",
       "peer": "repow-c",

@@ -144,7 +144,7 @@ type charScenario struct {
 
 func charOff() *config.RouterConfig { return nil }
 func charDefaults() *config.RouterConfig {
-	cfg := config.Defaults().Experiments.Router
+	cfg := config.Defaults().Routing
 	return &cfg
 }
 func charRecord() *config.RouterConfig { return recordCfg() }
@@ -425,6 +425,8 @@ func charScenarios() []charScenario {
 				r.f.ackErr = errors.New("socket closed mid-frame")
 			}},
 		{"session_bindings", ok, bindSessions},
+		{"omitted_target", AskRequest{FromPeer: "alpha", ToPeerOmitted: true, FallbackTo: "beta", Text: "x"}, nil},
+		{"whitespace_target", AskRequest{FromPeer: "alpha", ToPeer: "   ", Text: "x"}, nil},
 		{"circle_scoped_target", AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "x", Circle: ptr("default")}, nil},
 	}
 	for _, c := range charConfigs {
@@ -433,25 +435,28 @@ func charScenarios() []charScenario {
 		}
 	}
 	live := []charScenario{
-		{name: "pick", req: AskRequest{FromPeer: "alpha", ToPeer: "@route", Text: "who owns the lexer?"}},
-		{name: "pick_with_fallback_unused", req: AskRequest{FromPeer: "alpha", ToPeer: "@route", FallbackTo: "beta", Text: "x"}},
-		{name: "arm_error_fallback", req: AskRequest{FromPeer: "alpha", ToPeer: "@route", FallbackTo: "beta", Text: "x"},
+		{name: "pick", req: AskRequest{FromPeer: "alpha", ToPeerOmitted: true, Text: "who owns the lexer?"}},
+		{name: "pick_with_fallback_unused", req: AskRequest{FromPeer: "alpha", ToPeerOmitted: true, FallbackTo: "beta", Text: "x"}},
+		{name: "arm_error_fallback", req: AskRequest{FromPeer: "alpha", ToPeerOmitted: true, FallbackTo: "beta", Text: "x"},
 			setup: func(_ *testing.T, r *charRig) { r.arms["stub"].err = errors.New("boom") }},
-		{name: "arm_error_no_fallback", req: AskRequest{FromPeer: "alpha", ToPeer: "@route", Text: "x"},
+		{name: "arm_error_no_fallback", req: AskRequest{FromPeer: "alpha", ToPeerOmitted: true, Text: "x"},
 			setup: func(_ *testing.T, r *charRig) { r.arms["stub"].err = errors.New("boom") }},
-		{name: "ineligible_pick_fallback", req: AskRequest{FromPeer: "alpha", ToPeer: "@route", FallbackTo: "beta", Text: "x"},
+		{name: "ineligible_pick_fallback", req: AskRequest{FromPeer: "alpha", ToPeerOmitted: true, FallbackTo: "beta", Text: "x"},
 			setup: func(_ *testing.T, r *charRig) { r.arms["stub"].scores = []routing.Score{{PeerID: "repow-o", Score: 1}} }},
-		{name: "stale_pick_fallback", req: AskRequest{FromPeer: "alpha", ToPeer: "@route", FallbackTo: "beta", Text: "x"},
+		{name: "stale_pick_fallback", req: AskRequest{FromPeer: "alpha", ToPeerOmitted: true, FallbackTo: "beta", Text: "x"},
 			setup: func(_ *testing.T, r *charRig) { r.reg.deny["repow-c"] = true }},
-		{name: "stale_pick_no_fallback", req: AskRequest{FromPeer: "alpha", ToPeer: "@route", Text: "x"},
+		{name: "stale_pick_no_fallback", req: AskRequest{FromPeer: "alpha", ToPeerOmitted: true, Text: "x"},
 			setup: func(_ *testing.T, r *charRig) { r.reg.deny["repow-c"] = true }},
-		{name: "stale_pick_denied_fallback", req: AskRequest{FromPeer: "alpha", ToPeer: "@route", FallbackTo: "beta", Text: "x"},
+		{name: "stale_pick_denied_fallback", req: AskRequest{FromPeer: "alpha", ToPeerOmitted: true, FallbackTo: "beta", Text: "x"},
 			setup: func(_ *testing.T, r *charRig) { r.reg.deny["repow-c"], r.reg.deny["repow-b"] = true, true }},
-		{name: "fallback_unknown", req: AskRequest{FromPeer: "alpha", ToPeer: "@route", FallbackTo: "nobody", Text: "x"},
+		{name: "fallback_unknown", req: AskRequest{FromPeer: "alpha", ToPeerOmitted: true, FallbackTo: "nobody", Text: "x"},
 			setup: func(_ *testing.T, r *charRig) { r.arms["stub"].err = errors.New("boom") }},
 		{name: "named_target_is_explicit", req: ok},
-		{name: "route_target_case_and_space", req: AskRequest{FromPeer: "alpha", ToPeer: "  @ROUTE ", Text: "x"}},
-		{name: "quiesced_pick", req: AskRequest{FromPeer: "alpha", ToPeer: "@route", Text: "x"},
+		{name: "route_target_is_ordinary_name", req: AskRequest{FromPeer: "alpha", ToPeer: "  @ROUTE ", Text: "x"}},
+		{name: "empty_target_is_named", req: AskRequest{FromPeer: "alpha", ToPeer: "", FallbackTo: "beta", Text: "x"}},
+		{name: "null_target_is_named", body: `{"from_peer":"alpha","to_peer":null,"fallback_to":"beta","text":"x"}`},
+		{name: "whitespace_target_is_named", req: AskRequest{FromPeer: "alpha", ToPeer: "  ", FallbackTo: "beta", Text: "x"}},
+		{name: "quiesced_pick", req: AskRequest{FromPeer: "alpha", ToPeerOmitted: true, Text: "x"},
 			setup: func(t *testing.T, r *charRig) {
 				if err := r.asks.BeginQuiesce(context.Background(), "repow-c"); err != nil {
 					t.Fatal(err)
