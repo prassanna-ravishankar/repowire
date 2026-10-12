@@ -19,7 +19,7 @@ import (
 const FallbackNoHistory = "no_history"
 
 // Baselines are the arms replay computes locally, always re-run.
-var Baselines = []string{"random", "recent", "majority", "majority-past"}
+var Baselines = []string{"random", "recent", "majority", "majority-past", "newest", "novelty", "hybrid-arrival"}
 
 // IsBaseline reports whether name is a replay-computed baseline.
 func IsBaseline(name string) bool {
@@ -31,11 +31,23 @@ func IsBaseline(name string) bool {
 	return false
 }
 
-// BaselineArms builds the baselines; the majority baselines vote from history.
-func BaselineArms(history []Example) map[string]Arm {
+// DefaultArrivalSeconds is the hybrid-arrival threshold, pre-registered on
+// 2026-10-13: a candidate that has never been in a recorded ask and was seen
+// within 600 seconds is a new arrival. It was chosen on the reconstructed
+// historical rows, so it is exploratory there; it must not be re-tuned on
+// live rows, which are its held-out validation.
+const DefaultArrivalSeconds = 600
+
+// BaselineArms builds the baselines; the majority baselines vote from history,
+// and novelty and hybrid-arrival read which peers history has already seen.
+func BaselineArms(history []Example, arrivalSeconds float64) map[string]Arm {
+	seen := newSeenIndex(history)
+	past := NewMajority(history, true)
 	return map[string]Arm{
-		"random": Random{}, "recent": Recent{},
-		"majority": NewMajority(history, false), "majority-past": NewMajority(history, true),
+		"random": Random{}, "recent": Recent{}, "newest": Newest{},
+		"majority": NewMajority(history, false), "majority-past": past,
+		"novelty":        Novelty{seen: seen},
+		"hybrid-arrival": HybridArrival{seen: seen, habit: past, Seconds: arrivalSeconds},
 	}
 }
 
@@ -55,6 +67,28 @@ func (Recent) Rank(_ context.Context, in Input) (RouterResult, error) {
 		if t, ok := exchangedAt(c); ok {
 			age := max(now.Sub(t).Seconds(), 0)
 			scores = append(scores, Score{PeerID: c.PeerID, Score: 1 / (1 + age)})
+		}
+	}
+	if len(scores) == 0 {
+		return RouterResult{}, fail(FallbackNoHistory)
+	}
+	return RouterResult{Scores: scores}, nil
+}
+
+// Newest ranks candidates by how recently the daemon last saw them active
+// (smallest last_seen_age_s first). It needs no history of the sender, so it
+// is the control for "just pick whoever is newest online": a state-reading
+// arm that cannot beat it is reading liveness, not fit. Candidates without a
+// last_seen are left unranked; ties keep candidate (peer_id) order.
+type Newest struct{}
+
+func (Newest) Name() string { return "newest" }
+
+func (Newest) Rank(_ context.Context, in Input) (RouterResult, error) {
+	var scores []Score
+	for _, c := range in.Candidates {
+		if c.LastSeenAgeS != nil {
+			scores = append(scores, Score{PeerID: c.PeerID, Score: 1 / (1 + max(*c.LastSeenAgeS, 0))})
 		}
 	}
 	if len(scores) == 0 {
@@ -231,19 +265,119 @@ func ParseMask(raw string) ([]string, error) {
 	return fields, nil
 }
 
-// Mask returns in with the named fields blanked on every candidate. The
-// sender snapshot is left as recorded. Fields must come from ParseMask.
+// Mask returns in with the named fields blanked on every candidate and on the
+// sender snapshot: the sender block is part of the request body, so a field
+// hidden from candidates must not leak through it. Fields must come from
+// ParseMask.
 func Mask(in Input, fields []string) Input {
 	if len(fields) == 0 {
 		return in
 	}
-	candidates := make([]Candidate, len(in.Candidates))
-	for i, c := range in.Candidates {
+	blank := func(c Candidate) Candidate {
 		for _, f := range fields {
 			maskable[f](&c)
 		}
-		candidates[i] = c
+		return c
+	}
+	candidates := make([]Candidate, len(in.Candidates))
+	for i, c := range in.Candidates {
+		candidates[i] = blank(c)
 	}
 	in.Candidates = candidates
+	if in.Sender != nil {
+		sender := blank(*in.Sender)
+		in.Sender = &sender
+	}
 	return in
+}
+
+// seenIndex records when each peer first appeared in a recorded ask, as the
+// sender or as the declared target. A peer with no earlier entry has "zero
+// prior asks with anyone" as far as the ledger knows, so the answer depends on
+// how far back the ledger goes: early rows of a short ledger see everyone as
+// new.
+type seenIndex map[string]time.Time
+
+func newSeenIndex(history []Example) seenIndex {
+	first := seenIndex{}
+	note := func(id string, at time.Time) {
+		if id == "" {
+			return
+		}
+		if prev, ok := first[id]; !ok || at.Before(prev) {
+			first[id] = at
+		}
+	}
+	for _, ex := range history {
+		at, err := time.Parse(time.RFC3339Nano, ex.Decision.DecidedAt)
+		if err != nil {
+			continue
+		}
+		if ex.Decision.Sender != nil {
+			note(ex.Decision.Sender.PeerID, at)
+		}
+		if ex.Decision.Declared.PeerID != nil {
+			note(*ex.Decision.Declared.PeerID, at)
+		}
+	}
+	return first
+}
+
+// novel reports whether c was in no recorded ask strictly before at.
+func (s seenIndex) novel(c Candidate, at time.Time) bool {
+	first, ok := s[c.PeerID]
+	return !ok || !first.Before(at)
+}
+
+// arrivals are the candidates no recorded ask has involved before the scored
+// one; with maxAge > 0 they must also have been seen within maxAge seconds.
+func (s seenIndex) arrivals(in Input, maxAge float64) []Score {
+	var out []Score
+	for _, c := range in.Candidates {
+		if !s.novel(c, in.DecidedAt) {
+			continue
+		}
+		if maxAge > 0 && (c.LastSeenAgeS == nil || *c.LastSeenAgeS >= maxAge) {
+			continue
+		}
+		out = append(out, Score{PeerID: c.PeerID, Score: 1})
+	}
+	return out
+}
+
+// Novelty picks uniformly among candidates no recorded ask has involved. It
+// is scored by expectation (RouterResult.Uniform), needs no model, and falls
+// back with no_history when every candidate has history.
+type Novelty struct{ seen seenIndex }
+
+func (Novelty) Name() string { return "novelty" }
+
+func (n Novelty) Rank(_ context.Context, in Input) (RouterResult, error) {
+	scores := n.seen.arrivals(in, 0)
+	if len(scores) == 0 || in.DecidedAt.IsZero() {
+		return RouterResult{}, fail(FallbackNoHistory)
+	}
+	return RouterResult{Scores: scores, Uniform: true}, nil
+}
+
+// HybridArrival is habit unless someone new is in the room: it answers like
+// majority-past, except when a candidate has never been in a recorded ask and
+// was seen within Seconds, in which case it picks uniformly among those
+// arrivals. Deterministic and free, so a live validation does not depend on a
+// provider. Seconds is pre-registered (DefaultArrivalSeconds).
+type HybridArrival struct {
+	seen    seenIndex
+	habit   Majority
+	Seconds float64
+}
+
+func (HybridArrival) Name() string { return "hybrid-arrival" }
+
+func (h HybridArrival) Rank(ctx context.Context, in Input) (RouterResult, error) {
+	if !in.DecidedAt.IsZero() {
+		if scores := h.seen.arrivals(in, h.Seconds); len(scores) > 0 {
+			return RouterResult{Scores: scores, Uniform: true}, nil
+		}
+	}
+	return h.habit.Rank(ctx, in)
 }

@@ -19,6 +19,8 @@ type Example struct {
 	// Shadow holds the recorded route_shadow result for each arm that ran.
 	Shadow  map[string]RouterResult
 	Outcome Outcome
+	// Strata is set on reconstructed examples only (see Reconstruct).
+	Strata *Strata
 }
 
 // Delivery outcomes of a recorded ask, derived from its trace.
@@ -147,6 +149,7 @@ const (
 	SkipDeclaredIneligible = "declared_ineligible" // the label is not among the arm's choices
 	SkipTextNotRecorded    = "text_not_recorded"   // a text-reading arm cannot be re-run
 	SkipNotSampled         = "not_sampled"         // recorded mode: the arm was not sampled for this ask
+	SkipTargetNotOnline    = "target_not_online"   // reconstructed: the declared target was not in the candidate set
 	// "<prefix>:<reason>" marks an arm meant to run that did not:
 	// planned_not_run:missing (no row: restart, or still in flight), and
 	// saturated / breaker_open in either mode.
@@ -160,15 +163,19 @@ const (
 
 // Result is one example's replay.
 type Result struct {
-	TraceID        string   `json:"trace_id"`
-	Surface        string   `json:"surface"`
-	Declared       string   `json:"declared,omitempty"`
-	Top            []string `json:"top,omitempty"`
-	Hit1           bool     `json:"hit1"`
-	Hit3           bool     `json:"hit3"`
-	Candidates     int      `json:"candidates"`
-	Fallback       bool     `json:"fallback,omitempty"`
-	FallbackReason string   `json:"fallback_reason,omitempty"`
+	TraceID  string   `json:"trace_id"`
+	Surface  string   `json:"surface"`
+	Declared string   `json:"declared,omitempty"`
+	Top      []string `json:"top,omitempty"`
+	Hit1     bool     `json:"hit1"`
+	Hit3     bool     `json:"hit3"`
+	// ExpectedHit1 and ExpectedHit3 are the hit probabilities of a uniform
+	// arm's pick (see RouterResult.Uniform); zero for ranked arms.
+	ExpectedHit1   float64 `json:"expected_hit1,omitempty"`
+	ExpectedHit3   float64 `json:"expected_hit3,omitempty"`
+	Candidates     int     `json:"candidates"`
+	Fallback       bool    `json:"fallback,omitempty"`
+	FallbackReason string  `json:"fallback_reason,omitempty"`
 	// FallbackStatus, FallbackProvider and FallbackCode attribute a failure
 	// (our request or their service). No recorded text is ever exported.
 	FallbackStatus   int     `json:"fallback_status,omitempty"`
@@ -184,21 +191,31 @@ type Result struct {
 	Recency string `json:"recency"`
 	// Mask lists the candidate fields blanked before the arm ran.
 	Mask []string `json:"mask,omitempty"`
+	// Strata is set for reconstructed examples.
+	Strata *Strata `json:"strata,omitempty"`
 }
 
 // Report aggregates a replay. Fidelity counts a fallback as a miss; the
 // answered variants exclude fallbacks.
 type Report struct {
-	Arm               string         `json:"arm"`
-	Source            string         `json:"source"` // "rerun" or "recorded"
-	Mask              []string       `json:"mask,omitempty"`
-	Decisions         int            `json:"decisions"`
-	Scored            int            `json:"scored"`
-	Fallbacks         int            `json:"fallbacks"`
-	Hit1              int            `json:"hit1"`
-	Hit3              int            `json:"hit3"`
-	Fidelity1         float64        `json:"fidelity_at_1"`
-	Fidelity3         float64        `json:"fidelity_at_3"`
+	Arm       string   `json:"arm"`
+	Source    string   `json:"source"` // "rerun" or "recorded"
+	Mask      []string `json:"mask,omitempty"`
+	Decisions int      `json:"decisions"`
+	Scored    int      `json:"scored"`
+	Fallbacks int      `json:"fallbacks"`
+	Hit1      int      `json:"hit1"`
+	Hit3      int      `json:"hit3"`
+	// ExpectedHit1 and ExpectedHit3 sum the expected hits of uniform arms'
+	// rows; fidelity counts them with the integer hits.
+	ExpectedHit1 float64 `json:"expected_hit1,omitempty"`
+	ExpectedHit3 float64 `json:"expected_hit3,omitempty"`
+	Fidelity1    float64 `json:"fidelity_at_1"`
+	Fidelity3    float64 `json:"fidelity_at_3"`
+	// Chance1 and Chance3 are the expected fidelity of a random ranking over
+	// the same scored rows, analytically (no seed). Read lift against these.
+	Chance1           float64        `json:"chance_at_1"`
+	Chance3           float64        `json:"chance_at_3"`
 	AnsweredFidelity1 float64        `json:"answered_fidelity_at_1"`
 	AnsweredFidelity3 float64        `json:"answered_fidelity_at_3"`
 	MeanCandidates    float64        `json:"mean_candidates"`
@@ -242,6 +259,13 @@ type Cohort struct {
 	Fallbacks int `json:"fallbacks"`
 	Hit1      int `json:"hit1"`
 	Hit3      int `json:"hit3"`
+	// ExpectedHit1 and ExpectedHit3: see Report.
+	ExpectedHit1 float64 `json:"expected_hit1,omitempty"`
+	ExpectedHit3 float64 `json:"expected_hit3,omitempty"`
+	// Chance1 and Chance3 sum, over the scored rows, the hit probability of a
+	// uniformly random ranking: 1/n and min(3,n)/n for n candidates.
+	Chance1 float64 `json:"chance_hit1"`
+	Chance3 float64 `json:"chance_hit3"`
 }
 
 // Replay scores an arm against the sender's declared target on every labelled
@@ -259,15 +283,21 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 	var latency, candidates float64
 	results := make([]Result, 0, len(examples))
 	for _, ex := range examples {
+		if ctx.Err() != nil {
+			break // interrupted: report what was scored
+		}
 		d := ex.Decision
 		in := InputFrom(ex.TraceID, d)
-		r := Result{TraceID: ex.TraceID, Surface: d.Surface, Candidates: len(in.Candidates), Outcome: ex.Outcome, Mask: rep.Mask}
+		r := Result{TraceID: ex.TraceID, Surface: d.Surface, Candidates: len(in.Candidates), Outcome: ex.Outcome, Mask: rep.Mask, Strata: ex.Strata}
 		if d.Declared.PeerID != nil {
 			r.Declared = *d.Declared.PeerID
 			r.DeclaredIsRecentContact = DeclaredIsRecentContact(in, r.Declared)
 		}
 		r.Recency = recencyStratum(in, r.DeclaredIsRecentContact)
 		r.Skipped = skipReason(d, in, armName, recorded, ex.Shadow)
+		if ex.Strata != nil && !ex.Strata.TargetOnline {
+			r.Skipped = SkipTargetNotOnline
+		}
 		if r.Skipped != "" {
 			rep.Skipped[r.Skipped]++
 			results = append(results, r)
@@ -318,10 +348,20 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 				break
 			}
 			r.Top = append(r.Top, s.PeerID)
-			if s.PeerID == r.Declared {
+			if s.PeerID == r.Declared && !res.Uniform { // uniform rows score by expectation below
 				r.Hit3 = true
 				r.Hit1 = r.Hit1 || i == 0
 			}
+		}
+		if res.Uniform && !res.Fallback {
+			for _, sc := range res.Scores {
+				if sc.PeerID == r.Declared {
+					k := float64(len(res.Scores))
+					r.ExpectedHit1, r.ExpectedHit3 = 1/k, min(3, k)/k
+				}
+			}
+			rep.ExpectedHit1 += r.ExpectedHit1
+			rep.ExpectedHit3 += r.ExpectedHit3
 		}
 		rep.Scored++
 		latency += float64(res.LatencyMS)
@@ -337,17 +377,23 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 		}
 		tally(rep.Cohorts, ex.Outcome.Delivery, r)
 		tally(rep.Recency, r.Recency, r)
+		if n := float64(r.Candidates); n > 0 {
+			rep.Chance1 += 1 / n
+			rep.Chance3 += min(3, n) / n
+		}
 		results = append(results, r)
 	}
 	if rep.Scored > 0 {
-		rep.Fidelity1 = float64(rep.Hit1) / float64(rep.Scored)
-		rep.Fidelity3 = float64(rep.Hit3) / float64(rep.Scored)
+		rep.Chance1 /= float64(rep.Scored)
+		rep.Chance3 /= float64(rep.Scored)
+		rep.Fidelity1 = (float64(rep.Hit1) + rep.ExpectedHit1) / float64(rep.Scored)
+		rep.Fidelity3 = (float64(rep.Hit3) + rep.ExpectedHit3) / float64(rep.Scored)
 		rep.MeanLatencyMS = latency / float64(rep.Scored)
 		rep.MeanCandidates = candidates / float64(rep.Scored)
 	}
 	if answered := rep.Scored - rep.Fallbacks; answered > 0 {
-		rep.AnsweredFidelity1 = float64(rep.Hit1) / float64(answered)
-		rep.AnsweredFidelity3 = float64(rep.Hit3) / float64(answered)
+		rep.AnsweredFidelity1 = (float64(rep.Hit1) + rep.ExpectedHit1) / float64(answered)
+		rep.AnsweredFidelity3 = (float64(rep.Hit3) + rep.ExpectedHit3) / float64(answered)
 	}
 	return rep, results
 }
@@ -391,6 +437,10 @@ func tally(cohorts map[string]*Cohort, name string, r Result) {
 		cohorts[name] = c
 	}
 	c.Scored++
+	if n := float64(r.Candidates); n > 0 {
+		c.Chance1 += 1 / n
+		c.Chance3 += min(3, n) / n
+	}
 	if r.Fallback {
 		c.Fallbacks++
 	}
@@ -400,6 +450,8 @@ func tally(cohorts map[string]*Cohort, name string, r Result) {
 	if r.Hit3 {
 		c.Hit3++
 	}
+	c.ExpectedHit1 += r.ExpectedHit1
+	c.ExpectedHit3 += r.ExpectedHit3
 }
 
 func skipReason(d Decision, in Input, arm string, recorded bool, shadow map[string]RouterResult) string {

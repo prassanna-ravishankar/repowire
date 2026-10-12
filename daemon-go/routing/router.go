@@ -47,6 +47,7 @@ type Router struct {
 	mu       sync.Mutex
 	seen     map[string]uint64
 	breakers map[string]*breaker
+	usage    map[string]*ProviderUsage
 	shadow   chan struct{}
 	now      func() time.Time
 }
@@ -74,7 +75,7 @@ func NewRouter(cfg config.RouterConfig, arms map[string]Arm) (*Router, error) {
 		}
 	}
 	return &Router{
-		cfg: cfg, arms: arms, seen: map[string]uint64{}, breakers: map[string]*breaker{},
+		cfg: cfg, arms: arms, seen: map[string]uint64{}, breakers: map[string]*breaker{}, usage: map[string]*ProviderUsage{},
 		shadow: make(chan struct{}, maxShadowInFlight), now: time.Now,
 	}, nil
 }
@@ -258,5 +259,50 @@ func (r *Router) Run(ctx context.Context, name string, in Input) RouterResult {
 	}
 	res := Run(ctx, arm, in, r.Timeout())
 	b.record(res, probe)
+	r.meter(arm.(providerArm).Provider(), res)
 	return res
+}
+
+// ProviderUsage is what one provider was asked for through this router.
+type ProviderUsage struct {
+	// Calls are requests that left the process, answered or not.
+	Calls int `json:"calls"`
+	// InputTokens sums the provider-reported counts; Counted is how many calls
+	// reported one (not every provider or failure does).
+	InputTokens int64 `json:"input_tokens"`
+	Counted     int   `json:"counted"`
+}
+
+// meter counts a finished call. Results that never reached the network
+// (no key, local size refusal) cost nothing and are not counted.
+func (r *Router) meter(provider string, res RouterResult) {
+	if res.Fallback {
+		switch res.FallbackReason {
+		case FallbackUnconfigured, FallbackStateTooLarge, FallbackPanic, FallbackUnknownArm:
+			return
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	u := r.usage[provider]
+	if u == nil {
+		u = &ProviderUsage{}
+		r.usage[provider] = u
+	}
+	u.Calls++
+	if n, ok := res.Signals["input_tokens"]; ok {
+		u.InputTokens += int64(n)
+		u.Counted++
+	}
+}
+
+// Usage returns a copy of the per-provider call counts so far.
+func (r *Router) Usage() map[string]ProviderUsage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]ProviderUsage, len(r.usage))
+	for name, u := range r.usage {
+		out[name] = *u
+	}
+	return out
 }

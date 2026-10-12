@@ -155,8 +155,13 @@ type RouterResult struct {
 	Scores         []Score            `json:"scores"`
 	Signals        map[string]float64 `json:"signals,omitempty"`
 	Seed           *int64             `json:"seed,omitempty"`
-	Fallback       bool               `json:"fallback"`
-	FallbackReason string             `json:"fallback_reason,omitempty"`
+	// Uniform marks Scores as an unordered set: the arm picks uniformly
+	// among them. Replay scores such a row by its expectation (1/k and
+	// min(3,k)/k when the declared target is in the set) instead of by the
+	// tie order, so no seed or draw is involved.
+	Uniform        bool   `json:"uniform,omitempty"`
+	Fallback       bool   `json:"fallback"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
 	// HTTPStatus, Provider and ErrorCode attribute a failure. No provider
 	// body or other free text is ever stored (see attribution.go).
 	HTTPStatus int    `json:"http_status,omitempty"`

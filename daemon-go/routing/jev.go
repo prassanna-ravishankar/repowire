@@ -56,7 +56,11 @@ func (j Jev) Rank(ctx context.Context, in Input) (RouterResult, error) {
 		model = j.Model
 	}
 	top := topScore(scores)
-	return RouterResult{Model: model, TemplateSHA256: j.TemplateSHA256(), Scores: scores, Confidence: &top}, nil
+	res := RouterResult{Model: model, TemplateSHA256: j.TemplateSHA256(), Scores: scores, Confidence: &top}
+	if decoded.Usage != nil && decoded.Usage.InputTokens != nil {
+		res.Signals = map[string]float64{"input_tokens": float64(*decoded.Usage.InputTokens)}
+	}
+	return res, nil
 }
 
 // jevCode reads TypeSafe's detail.error_type from an error body.
