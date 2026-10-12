@@ -201,6 +201,7 @@ routing:
   shadow_arms: []               # arms run beside every named ask, for the record (needs record: true)
   sample_every: {}              # e.g. {frontier-claimed: 20} runs that arm on every 20th ask
   timeout_seconds: 8
+  allow_service_targets: false  # let a strategy deliver to service- or human-role peers
   jev: {api_key: "", model: jev-1.13.0, base_url: "https://api.typesafe.ai"}
   frontier: {api_key: "", model: claude-opus-5-5}
 ```
@@ -209,6 +210,8 @@ routing:
 
 - **`static`** (default) refuses a targetless ask with `400 no_target`. That refusal happens before any trace row or snapshot.
 - **An arm name** (`random`, `jev-*`, `frontier-*`) ranks the eligible candidates. Its pick passes the same circle, addressability and self checks as a named target, and the delivered ask is prefixed with the arm and its score. If the arm fails, the ask goes to the sender's `fallback_to` peer, which is authorized the same way, with a note saying so. If the pick stops being eligible before delivery, the reason is `stale_pick:*` and the same fallback applies. Without `fallback_to` the ask is refused with `503 router_unavailable` and nothing is delivered.
+
+A strategy never delivers to a peer whose role is `service` (for example `telegram` or `slack`) or `human`, unless `allow_service_targets: true`. On a targetless decision, those peers are recorded with `access: service_excluded` and are not offered to the arm. Circle and addressability verdicts take precedence. The same rule applies when the pick and `fallback_to` are authorized, so a pick that became a service peer after the snapshot is a `stale_pick:service_excluded` fallback. A `fallback_to` naming one is refused with `403 service_excluded`. The rule does not apply to named asks: name `telegram` and you reach `telegram`. Shadow arms run on named asks, so they still see and score service peers. Each targetless decision row records the policy it ran under in `selection_policy` (`exclude_service_targets` or `allow_service_targets`). Roles are declared by the peers themselves, so this is an operating policy, not a security boundary.
 
 Only an absent target is routed. An empty or whitespace `to_peer`, or JSON `null`, is a named ask to nobody and fails with `404 Unknown peer`, as it always has. `@route`, the experiment's former reserved name, is now an ordinary name. `ask_many` children, the legacy `/query`, scheduled asks, the CLI and the Pi, OpenCode, Telegram, Slack and relay surfaces always name their target.
 
@@ -232,7 +235,7 @@ Named asks record `arm: explicit` under every strategy. With `record` off and no
 
 `shadow_arms` run off the request path beside each named ask, and each result is recorded as a `route_shadow` row. Paid arms should carry a `sample_every`. Shadow runs are bounded: at most 4 are in flight, and arms planned while the pool is full are recorded as `saturated` on the decision row itself, so overload adds no write to the ask. Each provider (Jev, Anthropic) sits behind a breaker shared by its shadow and strategy use. The breaker opens after 3 consecutive provider failures, rejects calls as `breaker_open` for 30 seconds, then lets the next request through as a probe. A panicking arm is recorded as a `panic` fallback.
 
-Arms: `random`, and `jev-*` / `frontier-*` over the views `claimed` (descriptions), `attested` (observed state) or `both`. Model arms see candidates under opaque keys, with peer text passed only as data inside a fixed template. `jev.api_key` falls back to `JEV_API_KEY` / `TYPESAFE_API_KEY`, and `frontier.api_key` to `ANTHROPIC_API_KEY`. A model arm without a key falls back with reason `unconfigured`. Candidates include service-role peers such as `telegram`, so a non-static strategy can route an ask to a human's phone.
+Arms: `random`, and `jev-*` / `frontier-*` over the views `claimed` (descriptions), `attested` (observed state) or `both`. Model arms see candidates under opaque keys, with peer text passed only as data inside a fixed template. `jev.api_key` falls back to `JEV_API_KEY` / `TYPESAFE_API_KEY`, and `frontier.api_key` to `ANTHROPIC_API_KEY`. A model arm without a key falls back with reason `unconfigured`.
 
 A routing setting that cannot take effect is dropped with a startup warning; it does not stop the daemon. For example, `shadow_arms` with `record: false` are dropped, because shadow results exist only in the record. Only typo-class mistakes refuse to load, as they always have: a `shadow_arms` entry listed twice, a `sample_every` below 1, or, at daemon start, a strategy, shadow arm or `sample_every` key that names no arm. `repowire route show` prints the resolved config and any warnings.
 

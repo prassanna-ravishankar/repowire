@@ -195,6 +195,7 @@
           "scores": []
         },
         "schema": "repowire.route_decision.v1",
+        "selection_policy": "exclude_service_targets",
         "sender": {
           "addressable": true,
           "backend": "claude-code",

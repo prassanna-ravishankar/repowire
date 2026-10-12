@@ -61,9 +61,13 @@ routing:
   record: true
   shadow_arms: [random, jev-attested]
   sample_every: {frontier-claimed: 20}
+  allow_service_targets: true
   jev: {api_key: yaml-key}
 `)
 	r := cfg.Routing
+	if !r.AllowServiceTargets {
+		t.Fatal("allow_service_targets not loaded")
+	}
 	if r.Strategy != StrategyStatic || !r.Record || r.RecordText || r.SampleEvery["frontier-claimed"] != 20 {
 		t.Fatalf("routing = %+v", r)
 	}

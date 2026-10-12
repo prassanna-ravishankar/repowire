@@ -78,7 +78,7 @@ ask(query: str, peer_name: str | None = None, reply_to: str | None = None, circl
 
 Open a non-blocking ask thread. In normal use, you tell your local agent what you need in natural language, and the agent invokes this MCP tool. Returns a `correlation_id` immediately. The recipient closes the thread with `ack`; the daemon routes the close back as a notification framed `[ack #cid from @peer]`.
 
-`peer_name` is optional. Leave it out to let the configured [routing strategy](configuration.md#routing) choose the recipient. The result then reads `ask-<id> (routed by <arm> to @<peer>)`, and `fallback_to` names the peer that receives the ask if the strategy cannot choose. Under the default `static` strategy, an ask without `peer_name` is refused with `no_target`. A named peer is never rerouted, and an empty `peer_name` is rejected.
+`peer_name` is optional. Leave it out to let the configured [routing strategy](configuration.md#routing) choose the recipient. The result then reads `ask-<id> (routed by <arm> to @<peer>)`, and `fallback_to` names the peer that receives the ask if the strategy cannot choose. Under the default `static` strategy, an ask without `peer_name` is refused with `no_target`. A named peer is never rerouted, and an empty `peer_name` is rejected. `peer_name: null` counts as omitted here. This differs from HTTP `/ask`, where `"to_peer": null` is a named ask to nobody and returns 404. A strategy never delivers to a service- or human-role peer unless `routing.allow_service_targets` is set; naming one always works.
 
 Use `ask` for worker checkpoints, review requests, pre-commit handoffs, status checks you intend to track, and delegated work where closure matters. Use a durable job instead when the work needs lifecycle and result state.
 

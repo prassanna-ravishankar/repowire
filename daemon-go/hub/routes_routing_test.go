@@ -803,3 +803,48 @@ func TestStrategyAndRecordedMode(t *testing.T) {
 		t.Fatal("unknown strategy accepted")
 	}
 }
+
+// roleFlipArm picks gamma and, while ranking, turns it into a service peer:
+// the snapshot said agent, the registry now says service.
+type roleFlipArm struct{ rig **routingRig }
+
+func (roleFlipArm) Name() string { return "flip" }
+func (a roleFlipArm) Rank(context.Context, routing.Input) (routing.RouterResult, error) {
+	(*a.rig).gamma.Role = proto.RoleService
+	return routing.RouterResult{Scores: []routing.Score{{PeerID: "repow-c", Score: 1}}}, nil
+}
+
+// The selection policy is enforced at authorization, on the peer as it is
+// now, not only through the snapshot the arm saw: a pick that became a
+// service peer is a stale pick, and falls back.
+func TestRoutedPickIsCheckedAgainstPolicyAtAuthorization(t *testing.T) {
+	var rig *routingRig
+	rig = newRoutingRig(t, liveCfg("flip"), map[string]routing.Arm{"flip": roleFlipArm{&rig}})
+	status, out, raw := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeerOmitted: true, FallbackTo: "beta", Text: "x"})
+	if status != http.StatusOK || rig.f.lastTarget != "repow-b" {
+		t.Fatalf("status %d delivered to %s body %s", status, rig.f.lastTarget, raw)
+	}
+	if out.Routing == nil || !out.Routing.Fallback || out.Routing.FallbackReason != "stale_pick:"+routing.AccessServiceExcluded {
+		t.Fatalf("routing = %+v", out.Routing)
+	}
+	if d := rig.tr.decision(t, out.CorrelationID); d.SelectionPolicy != routing.PolicyExcludeServiceTargets {
+		t.Fatalf("selection policy %q", d.SelectionPolicy)
+	}
+}
+
+// Named asks carry no selection policy and never mark a peer
+// service_excluded: explicit rows read exactly as before the policy.
+func TestNamedAskSnapshotsCarryNoSelectionPolicy(t *testing.T) {
+	rig := newRoutingRig(t, liveCfg("stub"), map[string]routing.Arm{"stub": &stubArm{name: "stub"}})
+	rig.gamma.Role = proto.RoleService
+	_, out, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "gamma", Text: "x"})
+	d := rig.tr.decision(t, out.CorrelationID)
+	if d.SelectionPolicy != "" || d.Arm != routing.ArmExplicit {
+		t.Fatalf("named decision policy %q arm %q", d.SelectionPolicy, d.Arm)
+	}
+	for _, c := range d.Candidates {
+		if c.Access == routing.AccessServiceExcluded {
+			t.Fatalf("named ask snapshot excluded %s", c.PeerID)
+		}
+	}
+}

@@ -104,6 +104,14 @@ func (r *Router) breakerFor(arm Arm) *breaker {
 // Recording reports whether route_decision rows are written.
 func (r *Router) Recording() bool { return r != nil && r.cfg.Record }
 
+// SelectionPolicy is the policy a strategy delivers under.
+func (r *Router) SelectionPolicy() string {
+	if r != nil && r.cfg.AllowServiceTargets {
+		return PolicyAllowServiceTargets
+	}
+	return PolicyExcludeServiceTargets
+}
+
 // RecordText reports whether recorded rows keep the ask body.
 func (r *Router) RecordText() bool { return r != nil && r.cfg.RecordText }
 

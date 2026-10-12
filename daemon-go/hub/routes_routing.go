@@ -90,6 +90,9 @@ func (h *Hub) beginDecision(_ context.Context, a askAttempt, routed bool) (strin
 		Declared:   routing.Declared{Resolution: routing.ResolutionAbsent},
 		Candidates: []routing.Candidate{},
 	}
+	if routed {
+		d.SelectionPolicy = r.SelectionPolicy()
+	}
 	h.snapshotCandidates(d, h.resolveSender(a.fromPeer, a.circle), a.bypass, now)
 	return service.NewAskID(), d
 }
@@ -171,6 +174,8 @@ func (h *Hub) snapshotCandidates(d *routing.Decision, sender *proto.Peer, bypass
 			c.Access = routing.AccessCircleBoundary
 		case proto.RequireAddressable(sender, p) != nil:
 			c.Access = routing.AccessNotAddressable
+		case d.SelectionPolicy == routing.PolicyExcludeServiceTargets && routing.ServiceRole(string(p.Role)):
+			c.Access = routing.AccessServiceExcluded
 		default:
 			c.Access = routing.AccessOK
 		}
@@ -355,14 +360,18 @@ func (h *Hub) resolveAsk(ctx context.Context, req AskRequest) (*askResolution, e
 			})
 		}
 	}
-	from, target, reason, err := h.resolveAskTarget(ctx, req, toPeer, declared, decision)
+	resolve := h.resolveAskTarget
+	if targetless {
+		resolve = h.resolveRoutedTarget
+	}
+	from, target, reason, err := resolve(ctx, req, toPeer, declared, decision)
 	if err != nil && res.selection != nil && !res.selection.Fallback {
 		// The arm's pick failed authorization (its snapshot went stale). That
 		// is a router fallback whether or not there is somewhere to fall back
 		// to; with fallback_to, deliver there rather than guess again.
 		res.selection.Fallback, res.selection.FallbackReason = true, "stale_pick:"+reason
 		if req.FallbackTo != "" {
-			from, target, reason, err = h.resolveAskTarget(ctx, req, req.FallbackTo, declared, decision)
+			from, target, reason, err = resolve(ctx, req, req.FallbackTo, declared, decision)
 		}
 	}
 	res.fromID, res.fromName = proto.PeerID(req.FromPeer), proto.DisplayName(req.FromPeer)
@@ -380,6 +389,21 @@ func (h *Hub) resolveAsk(ctx context.Context, req AskRequest) (*askResolution, e
 	}
 	h.recordDecision(ctx, cid, decision, target, res.fromID)
 	return res, nil
+}
+
+// resolveRoutedTarget authorizes a targetless ask's pick or fallback_to: the
+// named-target checks, then the selection policy, so a strategy never
+// delivers to a service- or human-role peer unless the config allows it.
+// The role is read from the authorized peer, not the snapshot.
+func (h *Hub) resolveRoutedTarget(ctx context.Context, req AskRequest, toPeer, declared string, decision *routing.Decision) (*proto.Peer, *proto.Peer, string, error) {
+	from, target, reason, err := h.resolveAskTarget(ctx, req, toPeer, declared, decision)
+	if err != nil || h.askRouter().SelectionPolicy() == routing.PolicyAllowServiceTargets || !routing.ServiceRole(string(target.Role)) {
+		return from, target, reason, err
+	}
+	return from, nil, routing.AccessServiceExcluded, routeErr(http.StatusForbidden, map[string]any{
+		"error": routing.AccessServiceExcluded, "peer": string(target.DisplayName), "role": string(target.Role),
+		"hint": "A routed ask is never delivered to a service or human peer unless routing.allow_service_targets is set. Name the peer to reach it.",
+	})
 }
 
 // recordQuiesced closes a recorded decision whose ask the tracker refused

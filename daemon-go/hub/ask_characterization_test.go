@@ -155,6 +155,11 @@ func charRecordNoText() *config.RouterConfig {
 }
 func charShadow() *config.RouterConfig { return shadowCfg("shadowstub") }
 func charLive() *config.RouterConfig   { return liveCfg("stub") }
+func charLiveAllowService() *config.RouterConfig {
+	cfg := liveCfg("stub")
+	cfg.AllowServiceTargets = true
+	return cfg
+}
 func charLiveNoRecord() *config.RouterConfig {
 	cfg := liveCfg("stub")
 	cfg.Record = false
@@ -463,11 +468,25 @@ func charScenarios() []charScenario {
 				}
 			}},
 	}
+	asRole := func(name string, role proto.PeerRole) func(*testing.T, *charRig) {
+		return func(_ *testing.T, r *charRig) { r.reg.lookup(name).Role = role }
+	}
+	live = append(live,
+		charScenario{name: "service_pick_excluded", req: AskRequest{FromPeer: "alpha", ToPeerOmitted: true, FallbackTo: "beta", Text: "x"}, setup: asRole("gamma", proto.RoleService)},
+		charScenario{name: "human_pick_excluded", req: AskRequest{FromPeer: "alpha", ToPeerOmitted: true, FallbackTo: "beta", Text: "x"}, setup: asRole("gamma", proto.RoleHuman)},
+		charScenario{name: "service_fallback_excluded", req: AskRequest{FromPeer: "alpha", ToPeerOmitted: true, FallbackTo: "beta", Text: "x"},
+			setup: func(t *testing.T, r *charRig) {
+				asRole("beta", proto.RoleService)(t, r)
+				r.arms["stub"].err = errors.New("boom")
+			}},
+		charScenario{name: "service_named_ask_unaffected", req: AskRequest{FromPeer: "alpha", ToPeer: "gamma", FallbackTo: "beta", Text: "x"}, setup: asRole("gamma", proto.RoleService)},
+		charScenario{name: "orchestrator_pick_allowed", req: AskRequest{FromPeer: "alpha", ToPeerOmitted: true, Text: "x"}, setup: asRole("gamma", proto.RoleOrchestrator)},
+	)
 	for _, sc := range live {
 		for _, c := range []struct {
 			name string
 			cfg  func() *config.RouterConfig
-		}{{"live", charLive}, {"live_norecord", charLiveNoRecord}} {
+		}{{"live", charLive}, {"live_norecord", charLiveNoRecord}, {"live_allow_service", charLiveAllowService}} {
 			s := sc
 			s.name, s.cfg = c.name+"/"+sc.name, c.cfg
 			out = append(out, s)

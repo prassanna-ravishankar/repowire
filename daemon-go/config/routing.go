@@ -28,8 +28,12 @@ type RouterConfig struct {
 	// so paid arms need not run on every message.
 	SampleEvery    map[string]int `yaml:"sample_every"`
 	TimeoutSeconds float64        `yaml:"timeout_seconds"`
-	Jev            RouterModel    `yaml:"jev"`
-	Frontier       RouterModel    `yaml:"frontier"`
+	// AllowServiceTargets lets a strategy deliver a targetless ask to a
+	// service- or human-role peer (a phone bot, a person). Off by default.
+	// Named asks are unaffected.
+	AllowServiceTargets bool        `yaml:"allow_service_targets"`
+	Jev                 RouterModel `yaml:"jev"`
+	Frontier            RouterModel `yaml:"frontier"`
 }
 
 // RouterModel is one model-backed arm's endpoint.
@@ -71,7 +75,7 @@ const (
 )
 
 // routerEnvKeys are the per-field routing env vars, after their prefix.
-var routerEnvKeys = []string{"RECORD", "RECORD_TEXT", "SHADOW_ARMS", "TIMEOUT_SECONDS", "JEV__API_KEY", "JEV__MODEL", "FRONTIER__API_KEY", "FRONTIER__MODEL"}
+var routerEnvKeys = []string{"RECORD", "RECORD_TEXT", "SHADOW_ARMS", "TIMEOUT_SECONDS", "ALLOW_SERVICE_TARGETS", "JEV__API_KEY", "JEV__MODEL", "FRONTIER__API_KEY", "FRONTIER__MODEL"}
 
 // The rule for this block: a research setting must never stop the daemon
 // from starting. Legacy keys are migrated in memory with a warning, and a
@@ -188,6 +192,7 @@ func applyRouterEnv(r *RouterConfig, prefix string) {
 		r.ShadowArms = SplitCSV(v)
 	}
 	setFloatEnv(&r.TimeoutSeconds, prefix+"TIMEOUT_SECONDS")
+	setBoolEnv(&r.AllowServiceTargets, prefix+"ALLOW_SERVICE_TARGETS")
 	setStringEnv(&r.Jev.APIKey, prefix+"JEV__API_KEY")
 	setStringEnv(&r.Jev.Model, prefix+"JEV__MODEL")
 	setStringEnv(&r.Frontier.APIKey, prefix+"FRONTIER__API_KEY")
