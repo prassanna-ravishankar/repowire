@@ -47,6 +47,7 @@ type schedulerDelivery interface {
 type Scheduler struct {
 	store    schedulerStore
 	delivery schedulerDelivery
+	now      func() time.Time
 
 	wake   chan struct{}
 	stop   chan struct{}
@@ -59,6 +60,7 @@ func NewScheduler(store schedulerStore, delivery schedulerDelivery) *Scheduler {
 	return &Scheduler{
 		store:    store,
 		delivery: delivery,
+		now:      time.Now,
 		// Buffered so a Wake() that races the loop's select isn't lost: the loop
 		// always drains+rechecks next_due on each iteration.
 		wake: make(chan struct{}, 1),
@@ -183,7 +185,14 @@ func (s *Scheduler) fire(ctx context.Context, sched *state.Schedule) {
 	// Advance (cron) or drop (one-shot). Always runs regardless of delivery
 	// outcome, mirroring the Python finally block.
 	if sched.Cron != nil {
-		next, err := NextFireAfter(*sched.Cron, time.Now().UTC())
+		// Advance from the slot just fired, never from an earlier now: a timer
+		// can wake a moment before fire_at, and NextFireAfter(now) would then
+		// return the same slot and fire it twice (repowire-5je).
+		after := s.now().UTC()
+		if fireAt, err := parseScheduleFireAt(sched.FireAt); err == nil && fireAt.After(after) {
+			after = fireAt
+		}
+		next, err := NextFireAfter(*sched.Cron, after)
 		if err != nil {
 			log.Printf("scheduler: recurring schedule %s has invalid cron after fire (%v); dropping", sched.ScheduleID, err)
 			_, _ = s.store.DeleteSchedule(ctx, sched.ScheduleID)
