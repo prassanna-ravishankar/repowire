@@ -218,7 +218,7 @@ func TestSchedulerCronEarlyWakeAdvancesPastFiredSlot(t *testing.T) {
 	sched, _ := store.CreateSchedule(context.Background(), "alpha", "beta", "nudge", slot, "notify", nil, &cron)
 
 	s := NewScheduler(store, del)
-	s.now = func() time.Time { return slot.Add(-800 * time.Millisecond) }
+	s.clock.now = func() time.Time { return slot.Add(-800 * time.Millisecond) }
 	s.fire(context.Background(), sched)
 
 	got, _ := store.GetSchedule(context.Background(), sched.ScheduleID)

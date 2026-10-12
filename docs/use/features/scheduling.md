@@ -62,6 +62,7 @@ Schedules deliver mesh messages to existing peers. They do not create durable ex
 - A recurring schedule does not record per-run result state.
 - A scheduled ask still depends on the recipient closing the ask with `ack`.
 - Use jobs, not schedules, when the work should own a worker path/backend or resume runtime context between fires.
+- Nothing fires while the machine sleeps. A delivery that came due during sleep fires within about 30 seconds of the machine waking, including brief macOS maintenance wakes. A recurring schedule that missed several slots fires once, then continues from the next slot after now.
 
 ## Troubleshooting
 

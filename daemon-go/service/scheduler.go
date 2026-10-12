@@ -2,8 +2,8 @@ package service
 
 // Scheduled check-in dispatcher. Port of repowire/daemon/scheduler.py.
 //
-// A single goroutine sleeps until the next-due schedule's fire_at, then fires
-// it. One-shot schedules are deleted after firing; recurring cron schedules
+// A single goroutine waits until the next-due schedule's fire_at by the wall
+// clock (wall_clock.go), then fires it. One-shot schedules are deleted after firing; recurring cron schedules
 // advance to their next fire time. No polling: the wake channel is only
 // signalled when the schedule set changes (create/delete via Wake) or after
 // something fires. Past-due schedules fire immediately.
@@ -22,9 +22,8 @@ import (
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
-// maxSchedulerSleep caps a single sleep so a long horizon doesn't outlive a
-// clock jump unnoticed. Mirrors scheduler._MAX_SLEEP_SECONDS.
-const maxSchedulerSleep = time.Hour
+// storeErrorBackoff is how long the loop waits after next_due fails.
+const storeErrorBackoff = time.Hour
 
 // schedulerStore is the schedule data layer the loop drives. *state.Store
 // satisfies it.
@@ -47,7 +46,7 @@ type schedulerDelivery interface {
 type Scheduler struct {
 	store    schedulerStore
 	delivery schedulerDelivery
-	now      func() time.Time
+	clock    wallClock
 
 	wake   chan struct{}
 	stop   chan struct{}
@@ -60,7 +59,7 @@ func NewScheduler(store schedulerStore, delivery schedulerDelivery) *Scheduler {
 	return &Scheduler{
 		store:    store,
 		delivery: delivery,
-		now:      time.Now,
+		clock:    systemWallClock(),
 		// Buffered so a Wake() that races the loop's select isn't lost: the loop
 		// always drains+rechecks next_due on each iteration.
 		wake: make(chan struct{}, 1),
@@ -111,7 +110,7 @@ func (s *Scheduler) run(ctx context.Context) {
 		nxt, err := s.store.NextDueSchedule(ctx)
 		if err != nil {
 			log.Printf("scheduler: next_due failed: %v; backing off", err)
-			if s.sleep(ctx, maxSchedulerSleep) {
+			if _, stopped := s.clock.waitUntil(ctx, s.clock.now().Add(storeErrorBackoff), nil, s.stop); stopped {
 				return
 			}
 			continue
@@ -133,19 +132,15 @@ func (s *Scheduler) run(ctx context.Context) {
 			continue
 		}
 
-		delay := time.Until(fireAt)
-		if delay > 0 {
-			if delay > maxSchedulerSleep {
-				delay = maxSchedulerSleep
-			}
-			woken, stopped := s.sleepUntil(ctx, delay)
-			if stopped {
-				return
-			}
-			if woken {
-				// Schedule set changed (or sleep was capped): reloop, recompute.
-				continue
-			}
+		// Returns only at the wall-clock fire_at, so neither an early timer nor
+		// a long horizon can fire it ahead of time (repowire-m4s).
+		woken, stopped := s.clock.waitUntil(ctx, fireAt, s.wake, s.stop)
+		if stopped {
+			return
+		}
+		if woken {
+			// Schedule set changed: reloop, recompute.
+			continue
 		}
 
 		// Re-check the schedule still exists (a delete may have raced the sleep).
@@ -188,7 +183,7 @@ func (s *Scheduler) fire(ctx context.Context, sched *state.Schedule) {
 		// Advance from the slot just fired, never from an earlier now: a timer
 		// can wake a moment before fire_at, and NextFireAfter(now) would then
 		// return the same slot and fire it twice (repowire-5je).
-		after := s.now().UTC()
+		after := s.clock.now().UTC()
 		if fireAt, err := parseScheduleFireAt(sched.FireAt); err == nil && fireAt.After(after) {
 			after = fireAt
 		}
@@ -209,42 +204,11 @@ func (s *Scheduler) fire(ctx context.Context, sched *state.Schedule) {
 	}
 }
 
-// sleepUntil sleeps for d, returning (woken, stopped). woken is true if a wake
-// signal arrived first; stopped is true if Stop/ctx fired.
-func (s *Scheduler) sleepUntil(ctx context.Context, d time.Duration) (woken, stopped bool) {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return false, false
-	case <-s.wake:
-		return true, false
-	case <-s.stop:
-		return false, true
-	case <-ctx.Done():
-		return false, true
-	}
-}
-
 // waitForWake blocks until a wake signal, Stop, or ctx cancellation. Returns
 // true if the loop should exit.
 func (s *Scheduler) waitForWake(ctx context.Context) (stopped bool) {
 	select {
 	case <-s.wake:
-		return false
-	case <-s.stop:
-		return true
-	case <-ctx.Done():
-		return true
-	}
-}
-
-// sleep blocks for d unless Stop/ctx fires first; returns true to exit.
-func (s *Scheduler) sleep(ctx context.Context, d time.Duration) (stopped bool) {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
 		return false
 	case <-s.stop:
 		return true
