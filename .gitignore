@@ -21,7 +21,8 @@ bin/
 # docs build output
 site/
 
-# Beads / Dolt files (added by bd init)
+# Retired beads tracker (issues live on GitHub); keep stray ledgers out
+.beads/
+/issues.jsonl
 .dolt/
 *.db
-.beads-credential-key

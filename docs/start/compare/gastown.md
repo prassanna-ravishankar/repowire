@@ -35,6 +35,6 @@ If repowire is a phone call, Gas Town is email plus a project manager.
 
 ## Can you use both?
 
-Possibly. Gas Town and repowire both use beads — Gas Town as its native work-tracking surface, repowire as the recommended issue tracker for any project (including the repowire repo itself, per `CLAUDE.md`). A peer in a repowire mesh could query beads the same way a Gas Town worker does.
+Possibly. Gas Town uses beads as its native work-tracking surface; repowire is tracker-agnostic (the repowire repo itself uses GitHub Issues). A peer in a repowire mesh could still query beads the same way a Gas Town worker does.
 
 The transports don't mix cleanly: Gas Town's mail is its own system and repowire's `ask`/`notify` is its own system, with no bridge in either direction in the MVP. If you want both shapes (sync live mesh + async fleet) at once, run them side by side and treat each tool for what it's good at, rather than trying to make one stand in for the other.

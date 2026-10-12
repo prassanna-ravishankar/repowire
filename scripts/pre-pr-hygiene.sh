@@ -3,12 +3,10 @@
 set -eu
 
 base=origin/main
-restore=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --base) base=$2; shift 2 ;;
-    --restore-beads-ledgers) restore=true; shift ;;
-    *) echo "usage: $0 [--base REF] [--restore-beads-ledgers]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--base REF]" >&2; exit 2 ;;
   esac
 done
 
@@ -21,24 +19,6 @@ changes=$(
     git ls-files --others --exclude-standard
   } | sort -u
 )
-
-ledger=$(printf '%s\n' "$changes" | grep -E '^(\.beads/issues\.jsonl|issues\.jsonl)$' || true)
-if [ -n "$ledger" ]; then
-  if [ "$restore" = true ]; then
-    backup=".beads/backup/pre-pr-hygiene/$(date -u +%Y%m%dT%H%M%SZ)"
-    mkdir -p "$backup"
-    for path in $ledger; do
-      [ ! -f "$path" ] || cp "$path" "$backup/$(printf '%s' "$path" | tr / _)"
-      git restore --staged --worktree -- "$path"
-    done
-    echo "Restored Beads ledger churn; backup: $backup"
-  else
-    echo "ERROR: Beads ledger churn is present:"
-    printf '  %s\n' $ledger
-    echo "Run $0 --restore-beads-ledgers to back it up and restore it."
-    exit 1
-  fi
-fi
 
 echo "Changed files:"
 printf '%s\n' "$changes" | sed 's/^/  - /'
