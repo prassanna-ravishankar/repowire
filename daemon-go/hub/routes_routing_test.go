@@ -737,3 +737,59 @@ func TestProviderErrorBodiesNeverReachTheLedger(t *testing.T) {
 		}
 	}
 }
+
+// Explicit-first is the coordinator's, not the strategy's: under a non-static
+// strategy whose arm always picks gamma, a named target is resolved as named
+// and a named target that fails (unknown, ambiguous, denied, not
+// addressable) fails as named. The strategy is never consulted.
+func TestStrategyNeverOverridesANamedTarget(t *testing.T) {
+	cases := []struct {
+		name   string
+		to     string
+		setup  func(*routingRig)
+		status int
+	}{
+		{"resolves", "beta", nil, http.StatusOK},
+		{"unknown", "nobody", nil, http.StatusNotFound},
+		{"ambiguous", "beta", func(r *routingRig) { r.reg.ambiguous["beta"] = true }, http.StatusConflict},
+		{"denied", "beta", func(r *routingRig) { r.reg.deny["repow-b"] = true }, http.StatusForbidden},
+		{"not addressable", "sub", nil, http.StatusConflict},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			arm := &stubArm{name: "stub", scores: []routing.Score{{PeerID: "repow-c", Score: 1}}}
+			rig := newRoutingRig(t, liveCfg("stub"), map[string]routing.Arm{"stub": arm})
+			if c.setup != nil {
+				c.setup(rig)
+			}
+			status, out, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: c.to, FallbackTo: "gamma", Text: "x"})
+			if status != c.status || arm.calls != 0 || out.Routing != nil {
+				t.Fatalf("status %d (want %d), strategy calls %d, routing %+v", status, c.status, arm.calls, out.Routing)
+			}
+			if c.status == http.StatusOK && rig.f.lastTarget != "repow-b" {
+				t.Fatalf("delivered to %s, want the named repow-b", rig.f.lastTarget)
+			}
+			if c.status != http.StatusOK && rig.f.lastTarget != "" {
+				t.Fatalf("failed named ask delivered to %s", rig.f.lastTarget)
+			}
+		})
+	}
+}
+
+func TestStrategyIsStaticUnlessLive(t *testing.T) {
+	var unwired *routing.Router
+	if unwired.Strategy() != routing.StrategyStatic {
+		t.Fatalf("unwired strategy %q", unwired.Strategy())
+	}
+	for mode, want := range map[string]string{config.RouterModeOff: routing.StrategyStatic, config.RouterModeShadow: routing.StrategyStatic, config.RouterModeLive: "stub"} {
+		cfg := recordCfg()
+		cfg.Mode, cfg.Arm = mode, "stub"
+		r, err := routing.NewRouter(*cfg, map[string]routing.Arm{"stub": &stubArm{name: "stub"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := r.Strategy(); got != want {
+			t.Fatalf("mode %s: strategy %q, want %q", mode, got, want)
+		}
+	}
+}

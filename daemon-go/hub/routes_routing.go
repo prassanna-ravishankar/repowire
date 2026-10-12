@@ -10,6 +10,7 @@ package hub
 import (
 	"context"
 	"log"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
@@ -294,6 +295,90 @@ func (h *Hub) runShadowArm(r *routing.Router, arm string, in routing.Input) (res
 		}
 	}()
 	return r.Run(context.Background(), arm, in)
+}
+
+// askResolution is the coordinator's verdict on one ask: its cid (empty
+// until Register when nothing is recorded), the sender and the authorized
+// target, and how the target was chosen. selection is nil for a named target.
+type askResolution struct {
+	cid       string
+	decision  *routing.Decision
+	fromID    proto.PeerID
+	fromName  proto.DisplayName
+	target    *proto.Peer
+	selection *routing.RouterResult
+	slot      bool // a shadow pool slot is held for runShadow
+}
+
+// resolveAsk is the routing coordinator for /ask. It owns explicit-first
+// dispatch, authorization and the ledger:
+//
+//   - a named target is resolved and authorized by resolveAskTarget, and the
+//     strategy is never consulted, so no strategy can override a named peer;
+//   - a targetless ask goes to the configured strategy, whose pick is only a
+//     proposal: it is authorized through the same resolveAskTarget, and a
+//     pick that fails authorization falls back to the sender's fallback_to,
+//     which is authorized in turn.
+//
+// Every failure is recorded here; on success the decision row is written
+// before the caller registers the ask.
+func (h *Hub) resolveAsk(ctx context.Context, req AskRequest) (*askResolution, error) {
+	r := h.askRouter()
+	targetless := r.Strategy() != routing.StrategyStatic && routing.IsRouteTarget(req.ToPeer)
+	// When routing is instrumented the cid is minted before resolution so a
+	// failed attempt still has a trace; otherwise Register mints it as it
+	// always has. reply_to closes a PRIOR ask; it is NOT this ask's cid.
+	cid, decision := h.beginDecision(ctx, askAttempt{
+		surface: routing.SurfaceAsk, fromPeer: req.FromPeer, circle: req.Circle, bypass: req.BypassCircle,
+		text: req.Text, replyTo: req.ReplyTo, question: req.Question != nil, attach: len(req.Attachments),
+	}, targetless)
+	res := &askResolution{cid: cid, decision: decision}
+
+	toPeer, declared := req.ToPeer, req.ToPeer
+	if targetless {
+		declared = req.FallbackTo
+		toPeer, res.selection = h.routeLive(ctx, cid, decision, req.FallbackTo)
+		if toPeer == "" {
+			h.recordRouteFailure(ctx, cid, decision, proto.PeerID(req.FromPeer), "router_unavailable", nil)
+			return nil, routeErr(http.StatusServiceUnavailable, map[string]any{
+				"error": "router_unavailable", "arm": res.selection.Arm, "reason": res.selection.FallbackReason,
+				"hint": "The router could not choose a peer and no fallback_to was given; nothing was delivered. Name a peer, or retry with fallback_to.",
+			})
+		}
+	}
+	from, target, reason, err := h.resolveAskTarget(ctx, req, toPeer, declared, decision)
+	if err != nil && res.selection != nil && !res.selection.Fallback {
+		// The arm's pick failed authorization (its snapshot went stale). That
+		// is a router fallback whether or not there is somewhere to fall back
+		// to; with fallback_to, deliver there rather than guess again.
+		res.selection.Fallback, res.selection.FallbackReason = true, "stale_pick:"+reason
+		if req.FallbackTo != "" {
+			from, target, reason, err = h.resolveAskTarget(ctx, req, req.FallbackTo, declared, decision)
+		}
+	}
+	res.fromID, res.fromName = proto.PeerID(req.FromPeer), proto.DisplayName(req.FromPeer)
+	if from != nil {
+		res.fromID, res.fromName = from.PeerID, from.DisplayName
+	}
+	if err != nil {
+		h.recordRouteFailure(ctx, cid, decision, res.fromID, reason, err)
+		return nil, err
+	}
+	res.target = target
+	h.rebaseSender(decision, from, req.BypassCircle)
+	if res.selection == nil {
+		res.slot = h.planShadow(decision)
+	}
+	h.recordDecision(ctx, cid, decision, target, res.fromID)
+	return res, nil
+}
+
+// recordQuiesced closes a recorded decision whose ask the tracker refused
+// because an endpoint is mid-switch.
+func (h *Hub) recordQuiesced(ctx context.Context, res *askResolution) {
+	if res.decision != nil && h.askRouter().Recording() {
+		h.audit(ctx, res.cid, "route_failed", "fail", string(res.target.PeerID), string(res.fromID), map[string]any{"reason": "quiesced"})
+	}
 }
 
 // routeLive runs the live arm for an @route ask and returns the address to

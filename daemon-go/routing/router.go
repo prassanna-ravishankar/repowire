@@ -127,6 +127,20 @@ func (r *Router) Mode() string {
 // Live reports whether asks to @route are routed.
 func (r *Router) Live() bool { return r.Mode() == config.RouterModeLive }
 
+// StrategyStatic is the default strategy: every ask names its target and a
+// targetless ask has nowhere to go. Any other strategy is the name of the
+// arm that chooses targets for targetless asks.
+const StrategyStatic = "static"
+
+// Strategy is the configured routing strategy: the live arm in live mode,
+// otherwise static.
+func (r *Router) Strategy() string {
+	if r.Live() {
+		return r.cfg.Arm
+	}
+	return StrategyStatic
+}
+
 // LiveArm is the arm that decides @route asks.
 func (r *Router) LiveArm() string { return r.cfg.Arm }
 

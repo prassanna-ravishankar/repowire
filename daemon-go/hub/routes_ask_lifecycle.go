@@ -398,58 +398,15 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	if req.ReplyDelivery != "" && req.ReplyDelivery != "push" && req.ReplyDelivery != "pull" {
 		return AskResponse{}, routeErr(http.StatusUnprocessableEntity, "reply_delivery must be push or pull")
 	}
-	// When routing is instrumented the cid is minted before resolution so a
-	// failed attempt still has a trace; otherwise Register mints it as it
-	// always has. reply_to closes a PRIOR ask; it is NOT this ask's cid.
-	liveRoute := h.askRouter().Live() && routing.IsRouteTarget(req.ToPeer)
-	cid, decision := h.beginDecision(ctx, askAttempt{
-		surface: routing.SurfaceAsk, fromPeer: req.FromPeer, circle: req.Circle, bypass: req.BypassCircle,
-		text: req.Text, replyTo: req.ReplyTo, question: req.Question != nil, attach: len(req.Attachments),
-	}, liveRoute)
-
-	toPeer, declared := req.ToPeer, req.ToPeer
-	var routed *routing.RouterResult
-	if liveRoute {
-		declared = req.FallbackTo
-		toPeer, routed = h.routeLive(ctx, cid, decision, req.FallbackTo)
-		if toPeer == "" {
-			h.recordRouteFailure(ctx, cid, decision, proto.PeerID(req.FromPeer), "router_unavailable", nil)
-			return AskResponse{}, routeErr(http.StatusServiceUnavailable, map[string]any{
-				"error": "router_unavailable", "arm": routed.Arm, "reason": routed.FallbackReason,
-				"hint": "The router could not choose a peer and no fallback_to was given; nothing was delivered. Name a peer, or retry with fallback_to.",
-			})
-		}
-	}
-	from, target, reason, err := h.resolveAskTarget(ctx, req, toPeer, declared, decision)
-	if err != nil && routed != nil && !routed.Fallback {
-		// The arm's pick failed authorization (its snapshot went stale). That
-		// is a router fallback whether or not there is somewhere to fall back
-		// to; with fallback_to, deliver there rather than guess again.
-		routed.Fallback, routed.FallbackReason = true, "stale_pick:"+reason
-		if req.FallbackTo != "" {
-			from, target, reason, err = h.resolveAskTarget(ctx, req, req.FallbackTo, declared, decision)
-		}
-	}
-	fromID := proto.PeerID(req.FromPeer)
-	fromName := proto.DisplayName(req.FromPeer)
-	if from != nil {
-		fromID = from.PeerID
-		fromName = from.DisplayName
-	}
+	res, err := h.resolveAsk(ctx, req)
 	if err != nil {
-		h.recordRouteFailure(ctx, cid, decision, fromID, reason, err)
 		return AskResponse{}, err
 	}
-	h.rebaseSender(decision, from, req.BypassCircle)
-	slot := false
-	if routed == nil {
-		slot = h.planShadow(decision)
-	}
-	h.recordDecision(ctx, cid, decision, target, fromID)
+	cid, target, fromID, fromName := res.cid, res.target, res.fromID, res.fromName
 	// Planned shadow arms run whatever happens to delivery, so a quiesced,
 	// dead or rejecting recipient is still scored, not mistaken for a
 	// deliberate non-sample.
-	defer h.runShadow(cid, decision, slot, target.PeerID, fromID)
+	defer h.runShadow(cid, res.decision, res.slot, target.PeerID, fromID)
 
 	registered, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
 		CorrelationID:         cid,
@@ -466,14 +423,14 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrQuiesced) {
-			if decision != nil && h.askRouter().Recording() {
-				h.audit(ctx, cid, "route_failed", "fail", string(target.PeerID), string(fromID), map[string]any{"reason": "quiesced"})
-			}
+			h.recordQuiesced(ctx, res)
 			return AskResponse{}, routeErr(http.StatusConflict, map[string]any{
 				"error": "peer_switching",
 				"hint":  fmt.Sprintf("Peer %s is mid-switch; retry shortly.", req.ToPeer),
 			})
 		}
+		// Unreachable today (Register only refuses with ErrQuiesced); kept so a
+		// future Register error fails loud instead of being swallowed.
 		return AskResponse{}, routeErr(http.StatusInternalServerError, err.Error())
 	}
 	cid = registered
@@ -483,8 +440,8 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	h.traceAsk(ctx, cid, "routed", "", tracked, nil)
 
 	text := req.Text
-	if routed != nil {
-		text = routing.DeliveryNote(*routed, eligibleCount(decision)) + text
+	if res.selection != nil {
+		text = routing.DeliveryNote(*res.selection, eligibleCount(res.decision)) + text
 	}
 	deliveryResult, err := h.ask.delivery.DeliverAsk(ctx, service.DeliverAskParams{
 		FromPeer:      string(fromID),
@@ -536,7 +493,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	if req.ReplyTo != nil {
 		_, _ = h.ask.asks.Close(ctx, *req.ReplyTo, "reply_to")
 	}
-	return AskResponse{CorrelationID: cid, Routing: routedSummary(routed, target)}, nil
+	return AskResponse{CorrelationID: cid, Routing: routedSummary(res.selection, target)}, nil
 }
 
 // resolveAskTarget resolves and authorizes an ask's target exactly as the
