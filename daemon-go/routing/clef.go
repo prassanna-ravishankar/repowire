@@ -38,14 +38,15 @@ var clefHostedCap = map[string]int64{ClefFamily: 64000, ClefFlashFamily: 24000}
 // this check, so the live smoke for a model change must show a call just
 // above the cap coming back state_truncated.
 //
-// Before sending, a cheap local heuristic skips paying for an obviously
-// oversized state: the request body in bytes must leave clefReserveTokens of
-// the cap. Bytes usually overcount tokens, but it is not a bound. The Clef tokenizers NFC-normalize before byte-level BPE, so
+// Before sending, a cheap local heuristic skips a body over
+// clefBytesPerToken bytes per token of the cap: our states measured about
+// 3.6 bytes per token live, so such a body would be truncated anyway. It is
+// not a bound. The Clef tokenizers NFC-normalize before byte-level BPE, so
 // some text costs more tokens than bytes (1.4 per byte measured), and the
 // server tokenizes its own rendering of the state, not our bytes. Those
 // cases pass the heuristic and are caught by the provider count.
 const (
-	clefReserveTokens = 1024
+	clefBytesPerToken = 4
 	clefCeilingTokens = 256
 )
 
@@ -88,7 +89,7 @@ func (c Clef) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	}
 	signals := map[string]float64{"request_bytes": float64(len(body)), "context_tokens": float64(window), "state_cap_tokens": float64(stateCap)}
 	noted := RouterResult{Signals: signals}
-	if int64(len(body)) > stateCap-clefReserveTokens {
+	if int64(len(body)) > stateCap*clefBytesPerToken {
 		return noted, fail(FallbackStateTooLarge)
 	}
 	endpoint := strings.TrimRight(c.BaseURL, "/") + "/accounts/" + url.PathEscape(c.AccountID) + "/ai/run/" + c.Model

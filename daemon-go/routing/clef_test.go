@@ -172,13 +172,13 @@ func TestClefFailuresAreClassifiedWithoutTheirText(t *testing.T) {
 // a scored result, whether we catch it before sending or from its count.
 func TestOversizedStateIsNeverScored(t *testing.T) {
 	big := testInput()
-	big.Candidates[0].Description = strings.Repeat("x", 30000)
+	big.Candidates[0].Description = strings.Repeat("x", 100000)
 	srv, calls := clefStub(t, 200, clefAnswered)
 	res := Run(context.Background(), clefArm(ClefFlashFamily, ViewClaimed, srv.URL), big, time.Second)
 	if !res.Fallback || res.FallbackReason != FallbackStateTooLarge || len(res.Scores) != 0 || calls.Load() != 0 {
 		t.Fatalf("oversized flash state: %+v after %d calls", res, calls.Load())
 	}
-	if res.Signals["request_bytes"] <= 30000 || res.Signals["state_cap_tokens"] != 24000 {
+	if res.Signals["request_bytes"] <= 100000 || res.Signals["state_cap_tokens"] != 24000 {
 		t.Fatalf("size not recorded on the refusal: %v", res.Signals)
 	}
 	// The same state fits clef's larger window.
@@ -243,7 +243,7 @@ func TestClefRequestErrorsDoNotTripTheBreaker(t *testing.T) {
 		}
 	}
 	big := testInput()
-	big.Candidates[0].Description = strings.Repeat("x", 30000)
+	big.Candidates[0].Description = strings.Repeat("x", 100000)
 	for i := 0; i < breakerTrip+2; i++ {
 		if res := r.Run(context.Background(), "clef-flash-claimed", big); res.FallbackReason != FallbackStateTooLarge {
 			t.Fatalf("oversized %d: %+v", i, res)
