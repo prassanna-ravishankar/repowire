@@ -492,6 +492,24 @@ func charScenarios() []charScenario {
 			out = append(out, s)
 		}
 	}
+	// encoding/json matches keys case-insensitively: a case-folded to_peer is
+	// a named ask under every strategy. A key that only looks like it is
+	// refused, never read as an omitted target.
+	for _, c := range []struct {
+		name string
+		cfg  func() *config.RouterConfig
+	}{{"off", charOff}, {"record", charRecord}, {"live", charLive}, {"live_norecord", charLiveNoRecord}} {
+		// Labels, not the keys, name the goldens: the keys differ only in
+		// case, and some filesystems do not.
+		for _, k := range []struct{ label, key string }{
+			{"upper", "TO_PEER"}, {"title", "To_Peer"}, {"mixed", "to_PEER"}, {"camel", "toPeer"}, {"dash", "to-peer"},
+		} {
+			out = append(out, charScenario{
+				name: c.name + "/target_key_" + k.label, cfg: c.cfg,
+				body: fmt.Sprintf(`{"from_peer":"alpha",%q:"beta","fallback_to":"beta","text":"x"}`, k.key),
+			})
+		}
+	}
 	out = append(out,
 		charScenario{name: "not_ready", notReady: true, req: ok},
 		charScenario{name: "off/malformed_body", body: `{"to_peer": `},

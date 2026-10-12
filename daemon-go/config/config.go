@@ -24,8 +24,10 @@ type Config struct {
 	Telegram    TelegramConfig    `yaml:"telegram"`
 	Slack       SlackConfig       `yaml:"slack"`
 	Experiments ExperimentsConfig `yaml:"experiments"`
-	// Routing is how asks find their target; see RouterConfig.
-	Routing RouterConfig `yaml:"routing"`
+	// Routing is how asks find their target; see RouterConfig. It is decoded
+	// on its own (loadRouting), so a mistyped routing key can never fail
+	// the load.
+	Routing RouterConfig `yaml:"-"`
 	// Warnings are load-time notices the daemon logs once at startup:
 	// settings that were migrated or dropped rather than refused.
 	Warnings []string `yaml:"-"`
@@ -170,7 +172,7 @@ func Load() (Config, error) {
 	if len(cfg.Daemon.Spawn.Commands) == 0 {
 		cfg.Daemon.Spawn.Commands = legacySpawnCommands(cfg.Daemon.Spawn.AllowedCommands)
 	}
-	if err := migrateLegacyRouter(&cfg, raw); err != nil {
+	if err := loadRouting(&cfg, raw); err != nil {
 		return cfg, err
 	}
 	applyEnv(&cfg)

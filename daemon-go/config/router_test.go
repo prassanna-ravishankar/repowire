@@ -182,18 +182,61 @@ func TestShadowsWithoutRecordAreDroppedNotRefused(t *testing.T) {
 	}
 }
 
-// Typo-class mistakes have always refused to load, and still do.
-func TestRoutingConfigRejectsTypos(t *testing.T) {
+// Real load failures stay fatal: a file that is not YAML, and (until the
+// general decode boundary is reworked) a mistyped key outside routing:.
+func TestNonRoutingLoadFailuresStillRefuse(t *testing.T) {
 	for name, body := range map[string]string{
-		"duplicate arm":       "routing:\n  record: true\n  shadow_arms: [jev-both, jev-both]\n",
-		"zero sample":         "routing:\n  sample_every: {frontier-claimed: 0}\n",
-		"negative sample":     "routing:\n  sample_every: {frontier-claimed: -3}\n",
-		"legacy unknown mode": "experiments:\n  router:\n    mode: sometimes\n",
+		"not yaml":            "routing: [unclosed\n",
+		"mistyped relay flag": "relay:\n  enabled: definitely\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			clearRouterEnv(t)
 			if _, err := tryLoadYAML(t, body); err == nil {
-				t.Fatalf("%s accepted", name)
+				t.Fatalf("%s loaded", name)
+			}
+		})
+	}
+}
+
+// No routing mistake refuses to load: the daemon is a KeepAlive service, so
+// a refusal is a crash loop that takes the mesh down. Each mistake drops
+// the setting it breaks, with a warning.
+func TestRoutingTyposDegradeInsteadOfRefusing(t *testing.T) {
+	for name, c := range map[string]struct {
+		body, warning string
+		check         func(RouterConfig) bool
+	}{
+		"duplicate arm": {"routing:\n  record: true\n  shadow_arms: [jev-both, jev-both]\n", "twice",
+			func(r RouterConfig) bool { return reflect.DeepEqual(r.ShadowArms, []string{"jev-both"}) }},
+		"zero sample": {"routing:\n  record: true\n  shadow_arms: [frontier-claimed, random]\n  sample_every: {frontier-claimed: 0}\n", ">= 1",
+			func(r RouterConfig) bool {
+				return reflect.DeepEqual(r.ShadowArms, []string{"random"}) && len(r.SampleEvery) == 0
+			}},
+		"negative sample": {"routing:\n  sample_every: {frontier-claimed: -3}\n", ">= 1",
+			func(r RouterConfig) bool { return len(r.SampleEvery) == 0 }},
+		"legacy unknown mode": {"experiments:\n  router:\n    mode: sometimes\n    shadow_arms: [random]\n", "must be off, shadow or live",
+			func(r RouterConfig) bool { return r.Strategy == StrategyStatic && len(r.ShadowArms) == 0 }},
+		"legacy key of the wrong type": {"experiments:\n  router:\n    mode: shadow\n    record: true\n    shadow_arms: {not: a list}\n", "experiments.router.shadow_arms is ignored",
+			func(r RouterConfig) bool { return r.Strategy == StrategyStatic && r.Record && len(r.ShadowArms) == 0 }},
+		"strategy of the wrong type": {"routing:\n  strategy: [random]\n  record: true\n", "routing.strategy is ignored",
+			func(r RouterConfig) bool { return r.Strategy == StrategyStatic && r.Record }},
+		"shadow_arms of the wrong type": {"routing:\n  record: true\n  shadow_arms: {jev-attested: 1}\n", "routing.shadow_arms is ignored",
+			func(r RouterConfig) bool { return r.Record && len(r.ShadowArms) == 0 }},
+		"sample_every of the wrong type": {"routing:\n  record: true\n  sample_every: 5\n", "routing.sample_every is ignored",
+			func(r RouterConfig) bool { return r.Record && len(r.SampleEvery) == 0 }},
+		"record of the wrong type": {"routing:\n  record: maybe\n  strategy: random\n", "routing.record is ignored",
+			func(r RouterConfig) bool { return !r.Record && r.Strategy == "random" }},
+		"routing that is not a mapping": {"routing: static\n", "routing must be a mapping",
+			func(r RouterConfig) bool { return r.Strategy == StrategyStatic }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearRouterEnv(t)
+			cfg, err := tryLoadYAML(t, c.body)
+			if err != nil {
+				t.Fatalf("refused to load: %v", err)
+			}
+			if !c.check(cfg.Routing) || !strings.Contains(strings.Join(cfg.Warnings, "\n"), c.warning) {
+				t.Fatalf("routing %+v warnings %v", cfg.Routing, cfg.Warnings)
 			}
 		})
 	}

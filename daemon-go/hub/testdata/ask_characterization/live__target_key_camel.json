@@ -1,0 +1,19 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 0
+  },
+  "body": {
+    "detail": "invalid JSON body: unrecognized key \"toPeer\": the target field is \"to_peer\""
+  },
+  "calls": [
+    "--- request"
+  ],
+  "delivered_to": [],
+  "events": null,
+  "frame": null,
+  "offlined": null,
+  "status": 400,
+  "traces": null,
+  "tracker": null
+}

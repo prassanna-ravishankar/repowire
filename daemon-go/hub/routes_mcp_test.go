@@ -16,6 +16,7 @@ import (
 	"github.com/repowire/repowire/daemon-go/config"
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/routing"
 	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
@@ -432,14 +433,21 @@ func TestMCPAskPeerNameIsOptional(t *testing.T) {
 		Tools []struct {
 			Name        string `json:"name"`
 			InputSchema struct {
-				Required []string `json:"required"`
+				Required   []string                  `json:"required"`
+				Properties map[string]map[string]any `json:"properties"`
 			} `json:"inputSchema"`
 		} `json:"tools"`
 	}
 	decodeResult(t, envelope, &list)
 	for _, tl := range list.Tools {
-		if tl.Name == "ask" && (slices.Contains(tl.InputSchema.Required, "peer_name") || !slices.Contains(tl.InputSchema.Required, "query")) {
+		if tl.Name != "ask" {
+			continue
+		}
+		if slices.Contains(tl.InputSchema.Required, "peer_name") || !slices.Contains(tl.InputSchema.Required, "query") {
 			t.Fatalf("ask required = %v; want query only", tl.InputSchema.Required)
+		}
+		if typ := tl.InputSchema.Properties["peer_name"]["type"]; typ != "string" {
+			t.Fatalf("peer_name schema type = %v; want string, not nullable", typ)
 		}
 	}
 
@@ -461,7 +469,29 @@ func TestMCPAskPeerNameIsOptional(t *testing.T) {
 	if text := call(map[string]any{"peer_name": "", "query": "x"}); !strings.Contains(text, "peer_name") {
 		t.Fatalf("empty peer_name: %q", text)
 	}
+	// null is not omission: it must never reach a strategy.
+	if text := call(map[string]any{"peer_name": nil, "query": "x"}); strings.Contains(text, "no_target") || !strings.Contains(text, "peer_name") {
+		t.Fatalf("null peer_name: %q", text)
+	}
+	// A key that only looks like peer_name is refused, never read as omitted.
+	if text := call(map[string]any{"peerName": "beta", "query": "x"}); strings.Contains(text, "no_target") {
+		t.Fatalf("peerName: %q", text)
+	}
 	if asks.OpenCount() != 0 {
 		t.Fatal("a refused ask was registered")
+	}
+
+	// Under a strategy that would pick a recipient, null and look-alike keys
+	// still never reach it.
+	arm := &stubArm{name: "stub", scores: []routing.Score{{PeerID: "repow-c", Score: 1}}}
+	router, err := routing.NewRouter(*liveCfg("stub"), map[string]routing.Arm{"stub": arm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.WithRouting(router)
+	call(map[string]any{"peer_name": nil, "query": "x"})
+	call(map[string]any{"peerName": "beta", "query": "x"})
+	if arm.calls != 0 || asks.OpenCount() != 0 {
+		t.Fatalf("null or look-alike peer_name reached the strategy: calls %d open %d", arm.calls, asks.OpenCount())
 	}
 }

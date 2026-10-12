@@ -209,9 +209,9 @@ routing:
 **Named asks are never rerouted.** An ask that names a peer is resolved and authorized as named under every strategy. If the name is unknown, ambiguous, denied or not addressable, the ask fails. It never falls through to a strategy. The strategy is consulted only for an ask that names no peer: `/ask` with the `to_peer` key left out, or the MCP `ask` tool without `peer_name`.
 
 - **`static`** (default) refuses a targetless ask with `400 no_target`. That refusal happens before any trace row or snapshot.
-- **An arm name** (`random`, `jev-*`, `frontier-*`) ranks the eligible candidates. Its pick passes the same circle, addressability and self checks as a named target, and the delivered ask is prefixed with the arm and its score. If the arm fails, the ask goes to the sender's `fallback_to` peer, which is authorized the same way, with a note saying so. If the pick stops being eligible before delivery, the reason is `stale_pick:*` and the same fallback applies. Without `fallback_to` the ask is refused with `503 router_unavailable` and nothing is delivered.
+- **An arm name** (`random`, `jev-*`, `frontier-*`) ranks the eligible candidates. Its pick passes the same circle, addressability and self checks as a named target, and the delivered ask is prefixed with the arm and its score. If the arm fails, the ask goes to the sender's `fallback_to` peer, which is authorized the same way, with a note saying so. If the arm fails and there is no `fallback_to`, the ask is refused with `503 router_unavailable`. If the pick stops being eligible before delivery, the reason is `stale_pick:*` and the same fallback applies. Without `fallback_to`, that ask fails with the pick's own authorization error (403, 404, 409 or 422, as for a named target). Nothing is delivered either way.
 
-A strategy never delivers to a peer whose role is `service` (for example `telegram` or `slack`) or `human`, unless `allow_service_targets: true`. On a targetless decision, those peers are recorded with `access: service_excluded` and are not offered to the arm. Circle and addressability verdicts take precedence. The same rule applies when the pick and `fallback_to` are authorized, so a pick that became a service peer after the snapshot is a `stale_pick:service_excluded` fallback. A `fallback_to` naming one is refused with `403 service_excluded`. The rule does not apply to named asks: name `telegram` and you reach `telegram`. Shadow arms run on named asks, so they still see and score service peers. Each targetless decision row records the policy it ran under in `selection_policy` (`exclude_service_targets` or `allow_service_targets`). Roles are declared by the peers themselves, so this is an operating policy, not a security boundary.
+A strategy never delivers to a peer whose role is `service` (for example `telegram` or `slack`) or `human`, unless `allow_service_targets: true`. On a targetless decision, those peers are recorded with `access: service_excluded` and are not offered to the arm. Circle and addressability verdicts take precedence. The same rule applies when the pick and `fallback_to` are authorized, so a pick that became a service peer after the snapshot is a `stale_pick:service_excluded` fallback. A `fallback_to` naming one is refused with `403 service_excluded`. The rule does not apply to named asks: name `telegram` and you reach `telegram`. Shadow arms run on named asks, so they still see and score service peers. Each targetless decision row records the policy it ran under in `selection_policy` (`exclude_service_targets` or `allow_service_targets`). The policy is enforced when the pick or fallback is authorized. Delivery then goes to that authorized peer, and no current path changes an existing peer's role. Roles are declared by the peers themselves, so this is an operating policy, not a security boundary.
 
 Only an absent target is routed. An empty or whitespace `to_peer`, or JSON `null`, is a named ask to nobody and fails with `404 Unknown peer`, as it always has. `@route`, the experiment's former reserved name, is now an ordinary name. `ask_many` children, the legacy `/query`, scheduled asks, the CLI and the Pi, OpenCode, Telegram, Slack and relay surfaces always name their target.
 
@@ -237,7 +237,15 @@ Named asks record `arm: explicit` under every strategy. With `record` off and no
 
 Arms: `random`, and `jev-*` / `frontier-*` over the views `claimed` (descriptions), `attested` (observed state) or `both`. Model arms see candidates under opaque keys, with peer text passed only as data inside a fixed template. `jev.api_key` falls back to `JEV_API_KEY` / `TYPESAFE_API_KEY`, and `frontier.api_key` to `ANTHROPIC_API_KEY`. A model arm without a key falls back with reason `unconfigured`.
 
-A routing setting that cannot take effect is dropped with a startup warning; it does not stop the daemon. For example, `shadow_arms` with `record: false` are dropped, because shadow results exist only in the record. Only typo-class mistakes refuse to load, as they always have: a `shadow_arms` entry listed twice, a `sample_every` below 1, or, at daemon start, a strategy, shadow arm or `sample_every` key that names no arm. `repowire route show` prints the resolved config and any warnings.
+**Routing configuration cannot prevent the daemon from starting.** A `routing:` setting that is mistyped or cannot take effect is dropped with a startup warning that names the key, and the rest of the config still applies. This covers:
+
+- a key of the wrong type (for example `strategy: [random]`);
+- a strategy, shadow arm or `sample_every` key that names no arm (an unknown strategy falls back to `static`);
+- a `shadow_arms` entry listed twice;
+- a `sample_every` below 1;
+- `shadow_arms` with `record: false`, because shadow results exist only in the record.
+
+The same applies to a legacy `experiments.router` block. A file that is not valid YAML still stops the daemon, as does a mistyped key outside `routing:`. `repowire route show` prints the resolved config and any warnings.
 
 ### Migrating from `experiments.router`
 
@@ -246,7 +254,7 @@ Routing graduated from the `experiments.router` block. A legacy block is migrate
 | `experiments.router` | `routing` |
 |---|---|
 | `mode: off` | `strategy: static`. Shadow arms are dropped; they never ran. |
-| `mode: shadow` | `strategy: static`, `shadow_arms` kept |
+| `mode: shadow` | `strategy: static`, `shadow_arms` kept. With no runnable shadow arms, decisions then record `mode: off`, which is what ran. |
 | `mode: live`, `arm: X` | `strategy: X`. Shadow arms are dropped; they never ran in live. |
 | every other key | same key under `routing` |
 
@@ -272,4 +280,4 @@ A failed arm is recorded by structure only: the fallback reason, the provider, t
 | `saturated` | Skipped: the shadow pool was full (shadow only) | no |
 | `stale_pick:*` | Targetless asks only: the chosen peer stopped being eligible before delivery | no |
 
-Every key has a `REPOWIRE_ROUTING__*` environment override, for example `REPOWIRE_ROUTING__STRATEGY` or `REPOWIRE_ROUTING__JEV__API_KEY`. `SHADOW_ARMS` is comma-separated.
+Every key except `sample_every` has a `REPOWIRE_ROUTING__*` environment override, for example `REPOWIRE_ROUTING__STRATEGY`, `REPOWIRE_ROUTING__JEV__API_KEY` or `REPOWIRE_ROUTING__FRONTIER__BASE_URL`. `SHADOW_ARMS` is comma-separated.

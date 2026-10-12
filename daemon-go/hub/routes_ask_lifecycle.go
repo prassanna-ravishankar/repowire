@@ -21,6 +21,7 @@ package hub
 // is alive); an undeliverable ack reply is a 503 with the ask left OPEN for retry.
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -375,7 +376,8 @@ func (a AskRequest) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON records whether to_peer was present at all: only an absent
-// key makes an ask targetless.
+// key makes an ask targetless. Presence follows the decoder's own key
+// matching, so a request that decodes a target can never be targetless.
 func (a *AskRequest) UnmarshalJSON(raw []byte) error {
 	type plain AskRequest
 	var keys map[string]json.RawMessage
@@ -385,9 +387,31 @@ func (a *AskRequest) UnmarshalJSON(raw []byte) error {
 	if err := json.Unmarshal(raw, (*plain)(a)); err != nil {
 		return err
 	}
-	_, named := keys["to_peer"]
-	a.ToPeerOmitted = !named
+	named, _, err := targetKey(keys, "to_peer")
+	if err != nil {
+		return err
+	}
+	a.ToPeerOmitted = !named && a.ToPeer == ""
 	return nil
+}
+
+// targetKey reports whether a JSON object names its target field. present is
+// true for any key encoding/json matches to field (it matches case-
+// insensitively, so TO_PEER counts); null reports a JSON null there. A key
+// that only looks like the field (toPeer, to-peer) is never decoded, so it
+// is an error rather than a silent omission that would route the ask.
+func targetKey(keys map[string]json.RawMessage, field string) (present, null bool, err error) {
+	squash := strings.NewReplacer("_", "", "-", "")
+	for key, value := range keys {
+		switch {
+		case strings.EqualFold(key, field):
+			present = true
+			null = null || string(bytes.TrimSpace(value)) == "null"
+		case strings.EqualFold(squash.Replace(key), squash.Replace(field)):
+			return false, false, fmt.Errorf("unrecognized key %q: the target field is %q", key, field)
+		}
+	}
+	return present, null, nil
 }
 
 // AskResponse mirrors asks.py AskResponse. Routing is set only for targetless asks.

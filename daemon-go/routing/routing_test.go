@@ -517,3 +517,29 @@ func TestSkippedCarriesArmIdentity(t *testing.T) {
 		t.Fatalf("skipped = %+v", res)
 	}
 }
+
+// The daemon's constructor never fails: unknown names are dropped with a
+// warning and the rest of the config still applies.
+func TestNewRouterOrStaticDegrades(t *testing.T) {
+	cfg := config.RouterConfig{
+		Strategy: "jev-atested", Record: true, TimeoutSeconds: 1,
+		ShadowArms:  []string{"random", "jev-nope"},
+		SampleEvery: map[string]int{"random": 2, "frontier-cliamed": 20},
+	}
+	r, warnings := NewRouterOrStatic(cfg, nil)
+	if r == nil || r.Strategy() != StrategyStatic || !r.Recording() || r.SampleEvery("random") != 2 {
+		t.Fatalf("router %+v", r)
+	}
+	if plan := r.ShadowPlan(); len(plan) != 1 || plan[0] != "random" {
+		t.Fatalf("shadow plan %v", plan)
+	}
+	joined := strings.Join(warnings, "\n")
+	for _, want := range []string{`"jev-atested" names no arm; routing stays static`, `"jev-nope" names no arm`, `"frontier-cliamed" names no arm`} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("warnings missing %q:\n%s", want, joined)
+		}
+	}
+	if _, warnings := NewRouterOrStatic(config.RouterConfig{Strategy: "random", TimeoutSeconds: 1}, nil); len(warnings) != 0 {
+		t.Fatalf("valid config warned: %v", warnings)
+	}
+}

@@ -395,6 +395,14 @@ func (h *Hub) resolveAsk(ctx context.Context, req AskRequest) (*askResolution, e
 // named-target checks, then the selection policy, so a strategy never
 // delivers to a service- or human-role peer unless the config allows it.
 // The role is read from the authorized peer, not the snapshot.
+//
+// The policy holds at authorization time. Delivery re-resolves the target by
+// peer_id (PeerDelivery.DeliverAsk, service/delivery.go) without it; that is
+// safe only because no path turns an existing peer into a service or human
+// peer (reconnects keep the durable role; ClaimSpecialRole only claims
+// orchestrator).
+// TODO(routing): if roles ever become mutable on a live peer, enforce the
+// selection policy in DeliverAsk's CheckAccess step as well.
 func (h *Hub) resolveRoutedTarget(ctx context.Context, req AskRequest, toPeer, declared string, decision *routing.Decision) (*proto.Peer, *proto.Peer, string, error) {
 	from, target, reason, err := h.resolveAskTarget(ctx, req, toPeer, declared, decision)
 	if err != nil || h.askRouter().SelectionPolicy() == routing.PolicyAllowServiceTargets || !routing.ServiceRole(string(target.Role)) {

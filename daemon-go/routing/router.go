@@ -73,6 +73,47 @@ func NewRouter(cfg config.RouterConfig, arms map[string]Arm) (*Router, error) {
 	}, nil
 }
 
+// NewRouterOrStatic is the daemon's constructor: it never fails. A strategy,
+// shadow arm or sample_every key that names no arm is dropped with a
+// warning (an unknown strategy degrades to static), so a typo in an
+// optional feature degrades that feature and never stops the daemon.
+func NewRouterOrStatic(cfg config.RouterConfig, arms map[string]Arm) (*Router, []string) {
+	if arms == nil {
+		arms = Arms(cfg)
+	}
+	var warnings []string
+	if cfg.Strategy != "" && cfg.Strategy != StrategyStatic {
+		if _, ok := arms[cfg.Strategy]; !ok {
+			warnings = append(warnings, fmt.Sprintf("routing.strategy %q names no arm; routing stays static", cfg.Strategy))
+			cfg.Strategy = StrategyStatic
+		}
+	}
+	var shadows []string
+	for _, name := range cfg.ShadowArms {
+		if _, ok := arms[name]; ok {
+			shadows = append(shadows, name)
+		} else {
+			warnings = append(warnings, fmt.Sprintf("routing.shadow_arms: %q names no arm; it is not run", name))
+		}
+	}
+	cfg.ShadowArms = shadows
+	sample := map[string]int{}
+	for name, n := range cfg.SampleEvery {
+		if _, ok := arms[name]; ok {
+			sample[name] = n
+		} else {
+			warnings = append(warnings, fmt.Sprintf("routing.sample_every: %q names no arm; ignored", name))
+		}
+	}
+	cfg.SampleEvery = sample
+	r, err := NewRouter(cfg, arms)
+	if err != nil { // unreachable: every name was checked above
+		warnings = append(warnings, fmt.Sprintf("routing disabled: %v", err))
+		r, _ = NewRouter(config.RouterConfig{Strategy: StrategyStatic, TimeoutSeconds: cfg.TimeoutSeconds}, arms)
+	}
+	return r, warnings
+}
+
 // TryAcquireShadow takes a shadow pool slot without blocking.
 func (r *Router) TryAcquireShadow() bool {
 	select {

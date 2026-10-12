@@ -45,6 +45,8 @@ func runRouteShow(w io.Writer) int {
 	if err != nil {
 		return fatal(err)
 	}
+	_, warnings := routing.NewRouterOrStatic(cfg.Routing, nil)
+	cfg.Warnings = append(cfg.Warnings, warnings...)
 	printRouting(w, cfg)
 	return 0
 }

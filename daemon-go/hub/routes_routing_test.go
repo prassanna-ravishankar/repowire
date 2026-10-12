@@ -848,3 +848,30 @@ func TestNamedAskSnapshotsCarryNoSelectionPolicy(t *testing.T) {
 		}
 	}
 }
+
+// The wire invariant: a request that decodes a non-empty to_peer can never
+// be targetless, whatever spelling the decoder accepted.
+func TestDecodedTargetIsNeverTargetless(t *testing.T) {
+	for _, body := range []string{
+		`{"to_peer":"beta"}`, `{"TO_PEER":"beta"}`, `{"To_Peer":"beta"}`, `{"to_PEER":"beta"}`,
+		`{"to_peer":null,"TO_PEER":"beta"}`, `{"TO_PEER":"beta","to_peer":""}`,
+	} {
+		var req AskRequest
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			t.Fatalf("%s: %v", body, err)
+		}
+		if req.ToPeerOmitted || (req.ToPeer != "" && req.ToPeerOmitted) {
+			t.Fatalf("%s decoded to_peer %q but is targetless", body, req.ToPeer)
+		}
+	}
+	for _, body := range []string{`{"toPeer":"beta"}`, `{"to-peer":"beta"}`, `{"TOPEER":"beta"}`} {
+		var req AskRequest
+		if err := json.Unmarshal([]byte(body), &req); err == nil {
+			t.Fatalf("%s accepted as %+v", body, req)
+		}
+	}
+	var req AskRequest
+	if err := json.Unmarshal([]byte(`{"from_peer":"alpha","text":"x"}`), &req); err != nil || !req.ToPeerOmitted {
+		t.Fatalf("absent to_peer: omitted %t err %v", req.ToPeerOmitted, err)
+	}
+}
