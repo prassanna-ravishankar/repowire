@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,9 +18,11 @@ import (
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
-const routeReplayUsage = "route replay --arm ARM [--recorded] [--mask FIELD,...] [--since RFC3339] [--limit N] [--db PATH] [--json] [--rows]"
+const routeReplayUsage = "route replay --arm ARM [--recorded] [--mask FIELD,...] [--since RFC3339] [--limit N] [--db PATH | --input FILE] [--where hub_bound=BOOL] [--allow-paid] [--json] [--rows]"
 
-const routeDecisionBenchUsage = "route decisionbench --cards DIR --delegations FILE --orchestrator MODEL --arm ARM [--mask FIELD,...] [--limit N] [--json] [--rows]"
+const routeReconstructUsage = "route reconstruct --db PATH --out FILE [--live-window DUR] [--exchange-ttl DUR] [--working-window DUR] [--json]"
+
+const routeDecisionBenchUsage = "route decisionbench --cards DIR --delegations FILE --orchestrator MODEL --arm ARM [--mask FIELD,...] [--limit N] [--allow-paid] [--json] [--rows]"
 
 // runRoute shows the routing config (show) and replays routing decisions
 // offline: recorded mesh asks (replay), or DecisionBench delegations as a
@@ -31,9 +35,11 @@ func runRoute(argv []string) int {
 	case "show":
 		return runRouteShow(os.Stdout)
 	case "replay":
-		return runRouteReplay(parse(argv[1:], "recorded", "json", "rows"))
+		return runRouteReplay(parse(argv[1:], "recorded", "json", "rows", "allow-paid"))
+	case "reconstruct":
+		return runRouteReconstruct(parse(argv[1:], "json"))
 	case "decisionbench":
-		return runRouteDecisionBench(parse(argv[1:], "json", "rows"))
+		return runRouteDecisionBench(parse(argv[1:], "json", "rows", "allow-paid"))
 	}
 	return usage(routeReplayUsage)
 }
@@ -126,6 +132,9 @@ func runRouteReplay(a args) int {
 		}
 		since = parsed
 	}
+	if input := a.string("input", ""); input != "" {
+		return runRouteReplayInput(a, input)
+	}
 	store, err := state.OpenReadOnly(a.string("db", state.DefaultPath()))
 	if err != nil {
 		return fatal(err)
@@ -144,6 +153,82 @@ func runRouteReplay(a args) int {
 		}
 	}
 	return replayArms(a, examples, history, a.bool("recorded"), routeReplayUsage)
+}
+
+// runRouteReplayInput replays a dataset written by route reconstruct. There
+// is no ledger behind it, so only the baselines are meaningful.
+func runRouteReplayInput(a args, input string) int {
+	if a.bool("recorded") {
+		return fatal(fmt.Errorf("route replay: --recorded needs a ledger; --input rows carry no shadow results"))
+	}
+	f, err := os.Open(input)
+	if err != nil {
+		return fatal(err)
+	}
+	defer f.Close()
+	history, err := routing.ReadExamples(f)
+	if err != nil {
+		return fatal(err)
+	}
+	examples := history
+	if where := a.string("where", ""); where != "" {
+		want, ok := strings.CutPrefix(where, "hub_bound=")
+		if !ok || (want != "true" && want != "false") {
+			return fatal(fmt.Errorf("route replay: --where supports hub_bound=true|false"))
+		}
+		// Only the scored rows narrow; history baselines still vote from all.
+		examples = slices.DeleteFunc(slices.Clone(history), func(ex routing.Example) bool {
+			return strconv.FormatBool(ex.Strata.HubBound) != want
+		})
+	}
+	return replayArms(a, examples, history, false, routeReplayUsage)
+}
+
+// runRouteReconstruct rebuilds routing inputs for asks that predate
+// route_decision rows from the events journal, and writes them as JSONL for
+// route replay --input. It opens the db read-only; point it at a copy anyway.
+func runRouteReconstruct(a args) int {
+	dbPath, out := a.string("db", ""), a.string("out", "")
+	if dbPath == "" || out == "" {
+		return usage(routeReconstructUsage)
+	}
+	opts := routing.ReconstructOptions{}
+	for name, dst := range map[string]*time.Duration{"live-window": &opts.LiveWindow, "exchange-ttl": &opts.ExchangeTTL, "working-window": &opts.WorkingWindow} {
+		if raw := a.string(name, ""); raw != "" {
+			d, err := time.ParseDuration(raw)
+			if err != nil || d <= 0 {
+				return fatal(fmt.Errorf("route reconstruct: --%s must be a positive duration", name))
+			}
+			*dst = d
+		}
+	}
+	store, err := state.OpenReadOnly(dbPath)
+	if err != nil {
+		return fatal(err)
+	}
+	defer store.Close()
+	events, err := store.EventsOfTypes(context.Background(), routing.ReconstructTypes...)
+	if err != nil {
+		return fatal(err)
+	}
+	rows, summary := routing.Reconstruct(events, opts)
+	f, err := os.Create(out)
+	if err != nil {
+		return fatal(err)
+	}
+	if err := routing.WriteRows(f, rows); err != nil {
+		_ = f.Close()
+		return fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		return fatal(err)
+	}
+	if a.bool("json") {
+		printJSON(summary)
+	} else {
+		routing.WriteSummary(os.Stdout, summary)
+	}
+	return 0
 }
 
 // runRouteDecisionBench scores arms on DecisionBench delegations, read from
@@ -170,7 +255,10 @@ func runRouteDecisionBench(a args) int {
 }
 
 // replayArms runs --arm (or every arm for "all") over examples and prints the
-// report table, --json reports, or --rows per-decision lines. Baselines
+// report table, --json reports, or --rows per-decision lines. Re-running
+// a model arm is one paid provider call per row, so those arms need
+// --allow-paid; without it "all" means every free arm, and a named paid arm
+// is refused. Call counts print on exit, including after Ctrl-C. Baselines
 // (random, recent, majority) are computed locally and always re-run, so
 // they sit beside recorded arms at no cost.
 func replayArms(a args, examples, history []routing.Example, recorded bool, usageText string) int {
@@ -200,11 +288,30 @@ func replayArms(a args, examples, history []routing.Example, recorded bool, usag
 	} else if !slices.Contains(known, arm) {
 		return fatal(fmt.Errorf("route: unknown arm %q (known: all, %v)", arm, known))
 	}
+	if !a.bool("allow-paid") {
+		var skipped []string
+		free := slices.DeleteFunc(slices.Clone(arms), func(name string) bool {
+			paid := !recorded && !routing.IsBaseline(name)
+			if paid {
+				skipped = append(skipped, name)
+			}
+			return paid
+		})
+		if arm != "all" && len(skipped) > 0 {
+			return fatal(fmt.Errorf("route: %s re-runs a paid model once per row; pass --allow-paid to spend, or --recorded to score stored results", arm))
+		}
+		if len(skipped) > 0 {
+			fmt.Fprintf(os.Stderr, "skipping paid arms without --allow-paid: %s\n", strings.Join(skipped, ", "))
+		}
+		arms = free
+	}
 	if n := a.integer("limit", 0); n > 0 && n < len(examples) {
 		examples = examples[len(examples)-n:]
 	}
 	baselines := routing.BaselineArms(history)
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	defer printUsage(os.Stderr, router.Usage)
 	reports := []routing.Report{}
 	enc := json.NewEncoder(os.Stdout)
 	for _, name := range arms {
@@ -240,7 +347,26 @@ func replayArms(a args, examples, history []routing.Example, recorded bool, usag
 	default:
 		printReplayTable(os.Stdout, reports)
 	}
+	if ctx.Err() != nil {
+		fmt.Fprintln(os.Stderr, "interrupted: reports cover only the rows scored before Ctrl-C")
+		return 130
+	}
 	return 0
+}
+
+// printUsage reports provider calls and provider-counted input tokens. It
+// prints nothing when no request left the process.
+func printUsage(w io.Writer, usage func() map[string]routing.ProviderUsage) {
+	all := usage()
+	names := make([]string, 0, len(all))
+	for name := range all {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		u := all[name]
+		fmt.Fprintf(w, "provider calls: %s %d (input_tokens %d, reported on %d of them)\n", name, u.Calls, u.InputTokens, u.Counted)
+	}
 }
 
 // printReplayTable renders one row per arm with a column for every skip

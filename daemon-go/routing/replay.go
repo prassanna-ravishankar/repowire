@@ -19,6 +19,8 @@ type Example struct {
 	// Shadow holds the recorded route_shadow result for each arm that ran.
 	Shadow  map[string]RouterResult
 	Outcome Outcome
+	// Strata is set on reconstructed examples only (see Reconstruct).
+	Strata *Strata
 }
 
 // Delivery outcomes of a recorded ask, derived from its trace.
@@ -147,6 +149,7 @@ const (
 	SkipDeclaredIneligible = "declared_ineligible" // the label is not among the arm's choices
 	SkipTextNotRecorded    = "text_not_recorded"   // a text-reading arm cannot be re-run
 	SkipNotSampled         = "not_sampled"         // recorded mode: the arm was not sampled for this ask
+	SkipTargetNotOnline    = "target_not_online"   // reconstructed: the declared target was not in the candidate set
 	// "<prefix>:<reason>" marks an arm meant to run that did not:
 	// planned_not_run:missing (no row: restart, or still in flight), and
 	// saturated / breaker_open in either mode.
@@ -184,6 +187,8 @@ type Result struct {
 	Recency string `json:"recency"`
 	// Mask lists the candidate fields blanked before the arm ran.
 	Mask []string `json:"mask,omitempty"`
+	// Strata is set for reconstructed examples.
+	Strata *Strata `json:"strata,omitempty"`
 }
 
 // Report aggregates a replay. Fidelity counts a fallback as a miss; the
@@ -259,15 +264,21 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 	var latency, candidates float64
 	results := make([]Result, 0, len(examples))
 	for _, ex := range examples {
+		if ctx.Err() != nil {
+			break // interrupted: report what was scored
+		}
 		d := ex.Decision
 		in := InputFrom(ex.TraceID, d)
-		r := Result{TraceID: ex.TraceID, Surface: d.Surface, Candidates: len(in.Candidates), Outcome: ex.Outcome, Mask: rep.Mask}
+		r := Result{TraceID: ex.TraceID, Surface: d.Surface, Candidates: len(in.Candidates), Outcome: ex.Outcome, Mask: rep.Mask, Strata: ex.Strata}
 		if d.Declared.PeerID != nil {
 			r.Declared = *d.Declared.PeerID
 			r.DeclaredIsRecentContact = DeclaredIsRecentContact(in, r.Declared)
 		}
 		r.Recency = recencyStratum(in, r.DeclaredIsRecentContact)
 		r.Skipped = skipReason(d, in, armName, recorded, ex.Shadow)
+		if ex.Strata != nil && !ex.Strata.TargetOnline {
+			r.Skipped = SkipTargetNotOnline
+		}
 		if r.Skipped != "" {
 			rep.Skipped[r.Skipped]++
 			results = append(results, r)
