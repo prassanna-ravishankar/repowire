@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
+	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/routing"
 	"github.com/repowire/repowire/daemon-go/service"
@@ -170,7 +171,8 @@ func newRoutingRigWith(t *testing.T, cfg *config.RouterConfig, arms map[string]r
 	tr := &rowTracer{}
 	h := &Hub{deliveryTraces: tr}
 	if store != nil {
-		h.deliveryTraces, h.store = store, store
+		h.deliveryTraces = store
+		h.WithReadDeps(asks, store)
 	}
 	h.WithAskLifecycle(asks, service.NewPeerDelivery(reg, newRouterWithFake(f), f, asks, nil), reg)
 	var router *routing.Router
@@ -874,4 +876,80 @@ func TestDecodedTargetIsNeverTargetless(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"from_peer":"alpha","text":"x"}`), &req); err != nil || !req.ToPeerOmitted {
 		t.Fatalf("absent to_peer: omitted %t err %v", req.ToPeerOmitted, err)
 	}
+}
+
+// Each candidate carries how many asks were ever addressed to it, read from
+// the durable stores (journal and trace ledger, once per correlation id) and
+// kept current as asks are registered; the scored ask never counts itself.
+func TestRecordedDecisionCarriesPriorAskCounts(t *testing.T) {
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	old := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	for _, e := range []struct{ cid, from, to string }{{"ask-j1", "repow-a", "repow-b"}, {"ask-j2", "repow-x", "repow-b"}, {"ask-both", "repow-a", "repow-c"}} {
+		if err := store.AppendEvent(ctx, peer.Event{Type: "ask", Timestamp: old, Payload: map[string]any{"correlation_id": e.cid, "from_peer_id": e.from, "to_peer_id": e.to}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// ask-both is in the ledger too (the overlap), ask-t1 only there.
+	for _, tr := range [][4]string{{"ask-both", "repow-a", "repow-c", "created"}, {"ask-t1", "repow-a", "repow-b", "created"}} {
+		if err := store.RecordTrace(ctx, tr[0], "ask", tr[3], "ok", tr[0], tr[2], tr[1], nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rig := newRoutingRigWith(t, recordCfg(), nil, store)
+	prior := func(d routing.Decision, id string) (total, fromSender int) {
+		t.Helper()
+		for _, c := range d.Candidates {
+			if c.PeerID == id {
+				if c.PriorAsksTotal == nil || c.PriorAsksFromSender == nil {
+					t.Fatalf("%s carries no prior-ask counts: %+v", id, c)
+				}
+				return *c.PriorAsksTotal, *c.PriorAsksFromSender
+			}
+		}
+		t.Fatalf("%s not a candidate", id)
+		return 0, 0
+	}
+	_, first, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "one"})
+	d := storedDecision(t, store, first.CorrelationID)
+	if total, fs := prior(d, "repow-b"); total != 3 || fs != 2 {
+		t.Fatalf("beta before the first ask: total %d from sender %d, want 3 and 2", total, fs)
+	}
+	if total, fs := prior(d, "repow-c"); total != 1 || fs != 1 {
+		t.Fatalf("gamma (journal and ledger overlap): total %d from sender %d, want 1 and 1", total, fs)
+	}
+	if total, _ := prior(d, "repow-o"); total != 0 {
+		t.Fatalf("other was never asked, got %d", total)
+	}
+	if d.Sender == nil || d.Sender.PriorAsksTotal == nil || d.Sender.PriorAsksFromSender != nil && *d.Sender.PriorAsksTotal != 0 {
+		t.Fatalf("sender block = %+v", d.Sender)
+	}
+	// The first ask is now history for the second; its own retry does not double count.
+	_, second, _ := rig.ask(t, AskRequest{FromPeer: "alpha", ToPeer: "beta", Text: "two"})
+	if total, fs := prior(storedDecision(t, store, second.CorrelationID), "repow-b"); total != 4 || fs != 3 {
+		t.Fatalf("beta before the second ask: total %d from sender %d, want 4 and 3", total, fs)
+	}
+}
+
+func storedDecision(t *testing.T, store *state.Store, cid string) routing.Decision {
+	t.Helper()
+	stages, err := store.StagesFor(context.Background(), cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range stages {
+		if st.Stage == routing.Stage {
+			d, err := routing.ParseDecision(st.Detail)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return d
+		}
+	}
+	t.Fatalf("no route_decision for %s", cid)
+	return routing.Decision{}
 }

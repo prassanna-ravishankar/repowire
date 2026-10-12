@@ -323,18 +323,38 @@ func newSeenIndex(history []Example) seenIndex {
 	return first
 }
 
-// novel reports whether c was in no recorded ask strictly before at.
-func (s seenIndex) novel(c Candidate, at time.Time) bool {
+// Sources of the "never asked" verdict.
+const (
+	NeverAskedField  = "field"
+	NeverAskedLedger = "ledger"
+	NeverAskedMixed  = "mixed"
+)
+
+// novel reports whether c has never been in a recorded ask, and whether the
+// verdict came from the snapshot's prior_asks_total (which counts every ask
+// ever addressed to the peer) rather than from earlier ledger rows.
+func (s seenIndex) novel(c Candidate, at time.Time) (novel, byField bool) {
+	if c.PriorAsksTotal != nil {
+		return *c.PriorAsksTotal == 0, true
+	}
 	first, ok := s[c.PeerID]
-	return !ok || !first.Before(at)
+	return !ok || !first.Before(at), false
 }
 
-// arrivals are the candidates no recorded ask has involved before the scored
-// one; with maxAge > 0 they must also have been seen within maxAge seconds.
-func (s seenIndex) arrivals(in Input, maxAge float64) []Score {
+// arrivals are the candidates never asked before; with maxAge > 0 they must
+// also have been seen within maxAge seconds. It also reports where the
+// never-asked verdicts came from (NeverAsked*).
+func (s seenIndex) arrivals(in Input, maxAge float64) ([]Score, string) {
 	var out []Score
+	field, ledger := 0, 0
 	for _, c := range in.Candidates {
-		if !s.novel(c, in.DecidedAt) {
+		novel, byField := s.novel(c, in.DecidedAt)
+		if byField {
+			field++
+		} else {
+			ledger++
+		}
+		if !novel {
 			continue
 		}
 		if maxAge > 0 && (c.LastSeenAgeS == nil || *c.LastSeenAgeS >= maxAge) {
@@ -342,7 +362,13 @@ func (s seenIndex) arrivals(in Input, maxAge float64) []Score {
 		}
 		out = append(out, Score{PeerID: c.PeerID, Score: 1})
 	}
-	return out
+	switch {
+	case ledger == 0 && field > 0:
+		return out, NeverAskedField
+	case field == 0:
+		return out, NeverAskedLedger
+	}
+	return out, NeverAskedMixed
 }
 
 // Novelty picks uniformly among candidates no recorded ask has involved. It
@@ -353,11 +379,11 @@ type Novelty struct{ seen seenIndex }
 func (Novelty) Name() string { return "novelty" }
 
 func (n Novelty) Rank(_ context.Context, in Input) (RouterResult, error) {
-	scores := n.seen.arrivals(in, 0)
+	scores, source := n.seen.arrivals(in, 0)
 	if len(scores) == 0 || in.DecidedAt.IsZero() {
 		return RouterResult{}, fail(FallbackNoHistory)
 	}
-	return RouterResult{Scores: scores, Uniform: true}, nil
+	return RouterResult{Scores: scores, Uniform: true, NeverAskedSource: source}, nil
 }
 
 // HybridArrival is habit unless someone new is in the room: it answers like
@@ -374,10 +400,11 @@ type HybridArrival struct {
 func (HybridArrival) Name() string { return "hybrid-arrival" }
 
 func (h HybridArrival) Rank(ctx context.Context, in Input) (RouterResult, error) {
-	if !in.DecidedAt.IsZero() {
-		if scores := h.seen.arrivals(in, h.Seconds); len(scores) > 0 {
-			return RouterResult{Scores: scores, Uniform: true}, nil
-		}
+	scores, source := h.seen.arrivals(in, h.Seconds)
+	if len(scores) > 0 && !in.DecidedAt.IsZero() {
+		return RouterResult{Scores: scores, Uniform: true, NeverAskedSource: source}, nil
 	}
-	return h.habit.Rank(ctx, in)
+	res, err := h.habit.Rank(ctx, in)
+	res.NeverAskedSource = source
+	return res, err
 }

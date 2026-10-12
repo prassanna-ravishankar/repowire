@@ -103,6 +103,12 @@ type Candidate struct {
 	Source            string   `json:"source,omitempty"`
 	OpenAsksInbound   int      `json:"open_asks_inbound"`
 	LastExchangeAt    *string  `json:"last_exchange_with_sender_at"`
+	// PriorAsksTotal counts asks ever addressed to this peer, from anyone
+	// (durable stores, not the 24h tracker); PriorAsksFromSender counts those
+	// the sender sent. Nil in rows recorded before the fields existed and in
+	// reconstructed rows, where replay falls back to the ledger.
+	PriorAsksTotal      *int `json:"prior_asks_total,omitempty"`
+	PriorAsksFromSender *int `json:"prior_asks_from_sender,omitempty"`
 
 	// Claimed: written by the peer about itself.
 	Description      string   `json:"description"`
@@ -159,9 +165,13 @@ type RouterResult struct {
 	// among them. Replay scores such a row by its expectation (1/k and
 	// min(3,k)/k when the declared target is in the set) instead of by the
 	// tie order, so no seed or draw is involved.
-	Uniform        bool   `json:"uniform,omitempty"`
-	Fallback       bool   `json:"fallback"`
-	FallbackReason string `json:"fallback_reason,omitempty"`
+	Uniform bool `json:"uniform,omitempty"`
+	// NeverAskedSource says how novelty and hybrid-arrival decided a
+	// candidate had never been asked: "field" (the snapshot\'s
+	// prior_asks_total), "ledger" (earlier replay rows), or "mixed".
+	NeverAskedSource string `json:"never_asked_source,omitempty"`
+	Fallback         bool   `json:"fallback"`
+	FallbackReason   string `json:"fallback_reason,omitempty"`
 	// HTTPStatus, Provider and ErrorCode attribute a failure. No provider
 	// body or other free text is ever stored (see attribution.go).
 	HTTPStatus int    `json:"http_status,omitempty"`

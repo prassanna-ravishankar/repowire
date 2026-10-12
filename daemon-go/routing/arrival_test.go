@@ -62,3 +62,49 @@ func TestHybridArrivalAndNovelty(t *testing.T) {
 		t.Fatalf("20s window still fired: %+v", got)
 	}
 }
+
+// When the snapshot carries prior_asks_total it decides "never asked", the
+// ledger is only the fallback, and the row says which one spoke.
+func TestNeverAskedPrefersTheSnapshotField(t *testing.T) {
+	base := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	history := []Example{arrivalExample("h1", base, "a", map[string]float64{"a": 5, "b": 5})}
+	scored := arrivalExample("s1", base.Add(time.Minute), "b", map[string]float64{"a": 5, "b": 30})
+	set := func(id string, n *int) {
+		for i := range scored.Decision.Candidates {
+			if scored.Decision.Candidates[i].PeerID == id {
+				scored.Decision.Candidates[i].PriorAsksTotal = n
+			}
+		}
+	}
+	zero, five := 0, 5
+	arm := BaselineArms(history, DefaultArrivalSeconds)["hybrid-arrival"]
+	ctx := context.Background()
+
+	// Field on both: a has 5 prior asks, b has none, though the ledger knows only a.
+	set("a", &five)
+	set("b", &zero)
+	got := Run(ctx, arm, InputFrom("s1", scored.Decision), time.Second)
+	if !got.Uniform || len(got.Scores) != 1 || got.Scores[0].PeerID != "b" || got.NeverAskedSource != NeverAskedField {
+		t.Fatalf("field on both = %+v", got)
+	}
+	// The field overrides the ledger: a is "never asked" by the field even though history saw it.
+	set("a", &zero)
+	set("b", &five)
+	got = Run(ctx, arm, InputFrom("s1", scored.Decision), time.Second)
+	if !got.Uniform || got.Scores[0].PeerID != "a" || got.NeverAskedSource != NeverAskedField {
+		t.Fatalf("field override = %+v", got)
+	}
+	// Field on one candidate only: mixed, with the ledger judging the other.
+	set("a", &five)
+	set("b", nil)
+	got = Run(ctx, arm, InputFrom("s1", scored.Decision), time.Second)
+	if got.NeverAskedSource != NeverAskedMixed {
+		t.Fatalf("mixed source = %q", got.NeverAskedSource)
+	}
+	// No field anywhere: ledger, and the habit path still reports it.
+	set("a", nil)
+	got = Run(ctx, arm, InputFrom("s1", scored.Decision), time.Second)
+	if got.NeverAskedSource != NeverAskedLedger {
+		t.Fatalf("ledger source = %q (%+v)", got.NeverAskedSource, got)
+	}
+}

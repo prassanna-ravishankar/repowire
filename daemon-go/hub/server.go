@@ -36,6 +36,8 @@ type Hub struct {
 	// WithReadDeps from main once the service.AskTracker / state.Store exist.
 	asks  *service.AskTracker
 	store *state.Store
+	// history holds the durable prior-ask counts the routing snapshot records.
+	history *askHistory
 	// replayGateOverride, when set by a test, replaces replayGate.
 	replayGateOverride func(ctx context.Context, id proto.PeerID, via string) bool
 
@@ -162,6 +164,10 @@ func (h *Hub) WithMessaging(delivery *service.PeerDelivery, traces deliveryTrace
 func (h *Hub) WithReadDeps(asks *service.AskTracker, store *state.Store) *Hub {
 	h.asks = asks
 	h.store = store
+	if asks != nil && store != nil {
+		h.history = newAskHistory(store.AskRefs)
+		asks.SetOnRegister(h.history.note)
+	}
 	return h
 }
 
