@@ -1,0 +1,21 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 0
+  },
+  "body": {
+    "detail": "Circle boundary: alpha cannot access repow-o"
+  },
+  "calls": [
+    "--- request",
+    "reg.GetPeerByName(\"other\", nil) -\u003e repow-o \u003cnil\u003e",
+    "reg.CheckAccess(\"alpha\", \"repow-o\", bypass=false, nil) -\u003e repow-a \u003cnil\u003e Circle boundary: alpha cannot access repow-o"
+  ],
+  "delivered_to": [],
+  "events": null,
+  "frame": null,
+  "offlined": null,
+  "status": 403,
+  "traces": null,
+  "tracker": null
+}

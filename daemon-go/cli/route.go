@@ -20,19 +20,92 @@ const routeReplayUsage = "route replay --arm ARM [--recorded] [--mask FIELD,...]
 
 const routeDecisionBenchUsage = "route decisionbench --cards DIR --delegations FILE --orchestrator MODEL --arm ARM [--mask FIELD,...] [--limit N] [--json] [--rows]"
 
-// runRoute replays routing decisions offline: recorded mesh asks (replay), or
-// DecisionBench delegations as a stateless sanity check (decisionbench).
+// runRoute shows the routing config (show) and replays routing decisions
+// offline: recorded mesh asks (replay), or DecisionBench delegations as a
+// stateless sanity check (decisionbench).
 func runRoute(argv []string) int {
 	if len(argv) == 0 {
 		return usage(routeReplayUsage)
 	}
 	switch argv[0] {
+	case "show":
+		return runRouteShow(os.Stdout)
 	case "replay":
 		return runRouteReplay(parse(argv[1:], "recorded", "json", "rows"))
 	case "decisionbench":
 		return runRouteDecisionBench(parse(argv[1:], "json", "rows"))
 	}
 	return usage(routeReplayUsage)
+}
+
+// runRouteShow prints the routing config the daemon would run: the
+// effective config after every degradation, then each setting that was
+// ignored, then the warnings. API keys are reported as set or not.
+func runRouteShow(w io.Writer) int {
+	cfg, err := config.Load()
+	if err != nil {
+		return fatal(err)
+	}
+	router, warnings := routing.NewRouterOrStatic(cfg.Routing, nil)
+	printRouting(w, router.Config(), cfg.Routing, append(cfg.Warnings, warnings...))
+	return 0
+}
+
+// printRouting prints effective, then what requested asked for that
+// effective does not run, then warnings (which also name settings dropped
+// while loading, before requested was built).
+func printRouting(w io.Writer, effective, requested config.RouterConfig, warnings []string) {
+	keyState := func(m config.RouterModel) string {
+		if m.APIKey == "" {
+			return "no key"
+		}
+		return "key set"
+	}
+	shadows := "none"
+	if len(effective.ShadowArms) > 0 {
+		var parts []string
+		for _, arm := range effective.ShadowArms {
+			n := effective.SampleEvery[arm]
+			if n == 0 {
+				n = 1
+			}
+			parts = append(parts, fmt.Sprintf("%s (every %d)", arm, n))
+		}
+		shadows = strings.Join(parts, ", ")
+	}
+	fmt.Fprintln(w, "effective routing (what the daemon runs)")
+	fmt.Fprintf(w, "  strategy     %s\n", effective.Strategy)
+	fmt.Fprintf(w, "  record       %t (ask text %t)\n", effective.Record, effective.RecordText)
+	fmt.Fprintf(w, "  shadow arms  %s\n", shadows)
+	fmt.Fprintf(w, "  timeout      %gs\n", effective.TimeoutSeconds)
+	fmt.Fprintf(w, "  service targets allowed  %t\n", effective.AllowServiceTargets)
+	fmt.Fprintf(w, "  jev          %s, %s\n", effective.Jev.Model, keyState(effective.Jev))
+	fmt.Fprintf(w, "  frontier     %s, %s\n", effective.Frontier.Model, keyState(effective.Frontier))
+	var ignored []string
+	if requested.Strategy != effective.Strategy {
+		ignored = append(ignored, fmt.Sprintf("routing.strategy %q (running %s)", requested.Strategy, effective.Strategy))
+	}
+	for _, arm := range requested.ShadowArms {
+		if !slices.Contains(effective.ShadowArms, arm) {
+			ignored = append(ignored, fmt.Sprintf("routing.shadow_arms entry %q", arm))
+		}
+	}
+	for arm := range requested.SampleEvery {
+		if _, ok := effective.SampleEvery[arm]; !ok {
+			ignored = append(ignored, fmt.Sprintf("routing.sample_every key %q", arm))
+		}
+	}
+	sort.Strings(ignored)
+	if len(ignored) > 0 {
+		fmt.Fprintln(w, "IGNORED (configured but not running)")
+		for _, line := range ignored {
+			fmt.Fprintf(w, "  %s\n", line)
+		}
+	}
+	for _, warning := range warnings {
+		fmt.Fprintf(w, "WARNING %s\n", warning)
+	}
+	fmt.Fprintln(w, "(the daemon reads this at startup; restart it to apply changes)")
 }
 
 // runRouteReplay scores arms against recorded asks. It reads state.db
@@ -109,11 +182,11 @@ func replayArms(a args, examples, history []routing.Example, recorded bool, usag
 	if err != nil {
 		return fatal(err)
 	}
-	router, err := routing.NewRouter(cfg.Experiments.Router, nil)
+	router, err := routing.NewRouter(cfg.Routing, nil)
 	if err != nil {
 		return fatal(err)
 	}
-	known := armNames(cfg.Experiments.Router)
+	known := armNames(cfg.Routing)
 	arms := []string{arm}
 	if arm == "all" {
 		arms = known

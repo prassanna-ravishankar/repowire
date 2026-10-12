@@ -1,0 +1,28 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 0
+  },
+  "body": {
+    "detail": {
+      "display_name": "sub",
+      "error": "peer_not_addressable",
+      "hint": "This peer cannot receive direct input (for example a Codex multi-agent sub-agent thread). Send to its parent or another addressable peer; nothing was queued.",
+      "parent_peer_id": null,
+      "peer_id": "repow-s",
+      "reason": "sub-agent thread"
+    }
+  },
+  "calls": [
+    "--- request",
+    "reg.GetPeerByName(\"sub\", nil) -\u003e repow-s \u003cnil\u003e",
+    "reg.CheckAccess(\"alpha\", \"repow-s\", bypass=false, nil) -\u003e repow-a repow-s \u003cnil\u003e"
+  ],
+  "delivered_to": [],
+  "events": null,
+  "frame": null,
+  "offlined": null,
+  "status": 409,
+  "traces": null,
+  "tracker": null
+}

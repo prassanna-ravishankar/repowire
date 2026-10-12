@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -14,8 +15,20 @@ import (
 )
 
 func addMCPTool[T any](srv *mcp.Server, name, description string, fn func(context.Context, string, T) (string, error)) {
+	addMCPToolRaw(srv, name, description, func(ctx context.Context, caller string, _ json.RawMessage, args T) (string, error) {
+		return fn(ctx, caller, args)
+	})
+}
+
+// addMCPToolRaw also hands the handler the raw arguments, for tools whose
+// meaning depends on whether a key was sent at all.
+func addMCPToolRaw[T any](srv *mcp.Server, name, description string, fn func(context.Context, string, json.RawMessage, T) (string, error)) {
 	mcp.AddTool(srv, &mcp.Tool{Name: name, Description: description}, func(ctx context.Context, req *mcp.CallToolRequest, args T) (*mcp.CallToolResult, any, error) {
-		text, err := fn(ctx, callerIdentity(req), args)
+		var raw json.RawMessage
+		if req != nil && req.Params != nil {
+			raw = req.Params.Arguments
+		}
+		text, err := fn(ctx, callerIdentity(req), raw, args)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -85,12 +98,12 @@ func (h *Hub) mcpSpawnPlacement(caller, requested string) (circle, sourcePane st
 }
 
 type mcpAskArgs struct {
-	PeerName    string           `json:"peer_name"`
+	PeerName    string           `json:"peer_name,omitempty" jsonschema:"The peer to ask. Omit to let the configured routing strategy choose (the default static strategy refuses an ask with no peer)."`
 	Query       string           `json:"query"`
 	ReplyTo     string           `json:"reply_to,omitempty"`
 	Circle      string           `json:"circle,omitempty"`
 	Attachments []map[string]any `json:"attachments,omitempty"`
-	FallbackTo  string           `json:"fallback_to,omitempty" jsonschema:"Experimental: with peer_name @route, the peer that receives the ask if the router cannot choose"`
+	FallbackTo  string           `json:"fallback_to,omitempty" jsonschema:"With peer_name omitted, the peer that receives the ask if the routing strategy cannot choose"`
 }
 type mcpWaitArgs struct {
 	CorrelationID  string `json:"correlation_id"`
@@ -236,11 +249,15 @@ type mcpShareArgs struct {
 }
 
 func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
-	addMCPTool(srv, "ask", "Open a tracked thread only when another peer's context or ownership materially helps and explicit closure is needed; peers may be occupied.", func(ctx context.Context, caller string, a mcpAskArgs) (string, error) {
-		if err := requireFields("peer_name", a.PeerName, "query", a.Query); err != nil {
+	addMCPToolRaw(srv, "ask", "Open a tracked thread only when another peer's context or ownership materially helps and explicit closure is needed; peers may be occupied.", func(ctx context.Context, caller string, raw json.RawMessage, a mcpAskArgs) (string, error) {
+		omitted, err := mcpTargetOmitted(raw, a.PeerName)
+		if err != nil {
 			return "", err
 		}
-		result, err := h.openAsk(ctx, AskRequest{FromPeer: caller, ToPeer: a.PeerName, Text: a.Query, ReplyTo: strPtr(a.ReplyTo), Circle: h.mcpSendCircle(caller, a.Circle), Attachments: a.Attachments, FallbackTo: a.FallbackTo})
+		if err := required("query", a.Query); err != nil {
+			return "", err
+		}
+		result, err := h.openAsk(ctx, AskRequest{FromPeer: caller, ToPeer: a.PeerName, ToPeerOmitted: omitted, Text: a.Query, ReplyTo: strPtr(a.ReplyTo), Circle: h.mcpSendCircle(caller, a.Circle), Attachments: a.Attachments, FallbackTo: a.FallbackTo})
 		return askToolResult(result), err
 	})
 	addMCPTool(srv, "wait_on_ack", "Wait for a tracked ask to resolve.", func(ctx context.Context, caller string, a mcpWaitArgs) (string, error) {
@@ -562,6 +579,32 @@ func required(name, value string) error {
 		return fmt.Errorf("%s is required", name)
 	}
 	return nil
+}
+
+// mcpTargetOmitted reports whether an ask's arguments leave peer_name out
+// entirely, the only form that hands the ask to the routing strategy. A
+// decoded name is never omitted; null and an empty name are errors (the
+// schema already refuses null), as is a key that only looks like peer_name.
+func mcpTargetOmitted(raw json.RawMessage, decoded string) (bool, error) {
+	if decoded != "" {
+		return false, nil
+	}
+	var keys map[string]json.RawMessage
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &keys); err != nil {
+			return false, err
+		}
+	}
+	present, null, err := targetKey(keys, "peer_name")
+	switch {
+	case err != nil:
+		return false, err
+	case null:
+		return false, errors.New("peer_name must be a peer name, or omitted to let the routing strategy choose; null is not accepted")
+	case present:
+		return false, required("peer_name", "")
+	}
+	return true, nil
 }
 
 func requireFields(fields ...string) error {

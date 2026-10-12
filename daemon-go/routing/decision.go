@@ -58,7 +58,24 @@ const (
 	AccessOK             = "ok"
 	AccessCircleBoundary = "circle_boundary"
 	AccessNotAddressable = "not_addressable"
+	// AccessServiceExcluded marks a service- or human-role peer on a
+	// targetless decision: reachable, but not a peer a strategy may deliver
+	// to unless routing.allow_service_targets is set. Named asks never carry
+	// it. Circle and addressability verdicts take precedence.
+	AccessServiceExcluded = "service_excluded"
 )
+
+// Selection policies, stamped on targetless decisions so rows recorded under
+// different policies stay distinguishable.
+const (
+	PolicyExcludeServiceTargets = "exclude_service_targets"
+	PolicyAllowServiceTargets   = "allow_service_targets"
+)
+
+// ServiceRole reports whether role marks a peer a strategy must not deliver
+// to by default: a service (phone bot, relay) or a human. Role is
+// self-declared, so this is operating policy, not a security boundary.
+func ServiceRole(role string) bool { return role == "service" || role == "human" }
 
 // ArmExplicit is the passthrough arm: the sender's declared target is delivered.
 const ArmExplicit = "explicit"
@@ -173,8 +190,11 @@ type Decision struct {
 	// was full when the ask was planned), with their configured identity, so
 	// no extra row has to be written on the request path.
 	ShadowSkipped []RouterResult `json:"shadow_skipped,omitempty"`
-	RegistrySize  int            `json:"registry_size"`
-	Candidates    []Candidate    `json:"candidates"`
+	// SelectionPolicy is set on targetless decisions only: which peers the
+	// strategy was allowed to deliver to.
+	SelectionPolicy string      `json:"selection_policy,omitempty"`
+	RegistrySize    int         `json:"registry_size"`
+	Candidates      []Candidate `json:"candidates"`
 }
 
 // Detail renders the Decision as a trace detail map.

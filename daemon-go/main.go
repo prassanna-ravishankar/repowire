@@ -278,6 +278,9 @@ func runDaemon() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	for _, warning := range cfg.Warnings {
+		log.Printf("WARNING %s", warning)
+	}
 
 	dbPath := flag.String("db", state.DefaultPath(), "path to the schema-v12 SQLite state DB ($REPOWIRE_STATE_DB)")
 	addr := flag.String("addr", fmt.Sprintf("%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "host:port to serve the hub on")
@@ -393,11 +396,9 @@ func runDaemon() {
 	// `repowire serve` populates from config.daemon.spawn.commands. An empty/invalid
 	// map keeps spawn disabled-by-default (SpawnService.Enabled()==false → 503);
 	// allowedPaths gates the rest.
-	spawnCommands := map[proto.AgentType]string{}
-	if s := *spawnCommandsFlag; s != "" {
-		if err := json.Unmarshal([]byte(s), &spawnCommands); err != nil {
-			log.Fatalf("parse -spawn-commands JSON: %v", err)
-		}
+	spawnCommands, spawnWarning := parseSpawnCommands(*spawnCommandsFlag)
+	if spawnWarning != "" {
+		log.Printf("WARNING %s", spawnWarning)
 	}
 	profiles := map[proto.AgentType]map[string][]string{}
 	for backend, items := range cfg.Daemon.Spawn.Profiles {
@@ -467,9 +468,12 @@ func runDaemon() {
 	// that is otherwise a nil-guarded no-op in Routes(); the order is
 	// independent (all read from already-built services). traces uses the same
 	// *state.Store delivery-trace store.
-	router, err := routing.NewRouter(cfg.Experiments.Router, nil)
-	if err != nil {
-		log.Fatalf("router config: %v", err)
+	// Routing is optional: a bad routing setting degrades to static with a
+	// warning and never stops the daemon (a KeepAlive crash loop would take
+	// the whole mesh down).
+	router, routingWarnings := routing.NewRouterOrStatic(cfg.Routing, nil)
+	for _, warning := range routingWarnings {
+		log.Printf("WARNING %s", warning)
 	}
 	h.WithReadDeps(asks, store).
 		WithMessaging(delivery, store).
@@ -709,4 +713,19 @@ func serveExport(w http.ResponseWriter, r *http.Request, webOut string) {
 		return
 	}
 	http.NotFound(w, r)
+}
+
+// parseSpawnCommands decodes -spawn-commands. Spawn is optional, so a bad
+// value disables it with a warning instead of stopping the daemon. The map
+// is discarded whole on error: json.Unmarshal can fill part of it before
+// failing, and a half-populated spawn table is worse than none.
+func parseSpawnCommands(raw string) (map[proto.AgentType]string, string) {
+	commands := map[proto.AgentType]string{}
+	if raw == "" {
+		return commands, ""
+	}
+	if err := json.Unmarshal([]byte(raw), &commands); err != nil {
+		return map[proto.AgentType]string{}, fmt.Sprintf("-spawn-commands (daemon.spawn.commands) is not valid JSON (%v); spawn is disabled", err)
+	}
+	return commands, ""
 }

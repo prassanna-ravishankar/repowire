@@ -1,0 +1,28 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 1
+  },
+  "body": {
+    "detail": {
+      "error": "service_excluded",
+      "hint": "A routed ask is never delivered to a service or human peer unless routing.allow_service_targets is set. Name the peer to reach it.",
+      "peer": "beta",
+      "role": "service"
+    }
+  },
+  "calls": [
+    "--- request",
+    "reg.GetPeerByName(\"alpha\", nil) -\u003e repow-a \u003cnil\u003e",
+    "reg.GetAllPeers",
+    "reg.GetPeerByName(\"beta\", nil) -\u003e repow-b \u003cnil\u003e",
+    "reg.CheckAccess(\"alpha\", \"repow-b\", bypass=false, nil) -\u003e repow-a repow-b \u003cnil\u003e"
+  ],
+  "delivered_to": [],
+  "events": null,
+  "frame": null,
+  "offlined": null,
+  "status": 403,
+  "traces": null,
+  "tracker": null
+}

@@ -1,0 +1,20 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 0
+  },
+  "body": {
+    "detail": "Unknown peer:   "
+  },
+  "calls": [
+    "--- request",
+    "reg.GetPeerByName(\"  \", nil) -\u003e \u003cnil\u003e \u003cnil\u003e"
+  ],
+  "delivered_to": [],
+  "events": null,
+  "frame": null,
+  "offlined": null,
+  "status": 404,
+  "traces": null,
+  "tracker": null
+}

@@ -3,13 +3,15 @@ package hub
 // Ask routing and its research ledger. Every ask attempt can record a
 // route_decision row (a frozen snapshot of the sender, the declared target,
 // and every peer's attested and claimed state) into its own delivery trace;
-// outcomes land as the trace's later stages. In live mode, asks addressed to
-// @route are routed by the configured arm and fail closed to the sender's
-// fallback_to target. The routed peer still passes CheckAccess.
+// outcomes land as the trace's later stages. Under a non-static strategy, an
+// ask that names no target is routed by the strategy's arm and fails closed
+// to the sender's fallback_to target. The routed peer still passes
+// CheckAccess.
 
 import (
 	"context"
 	"log"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
@@ -71,12 +73,12 @@ type askAttempt struct {
 }
 
 // beginDecision mints the ask's cid and snapshots the mesh, but only when
-// something will read it: recording on, or a live @route ask. Otherwise it
+// something will read it: recording on, or a routed targetless ask. Otherwise it
 // returns ("", nil) and touches nothing, so the uninstrumented path is the
 // pre-router path (the tracker mints the cid at Register, as before).
-func (h *Hub) beginDecision(_ context.Context, a askAttempt, liveRoute bool) (string, *routing.Decision) {
+func (h *Hub) beginDecision(_ context.Context, a askAttempt, routed bool) (string, *routing.Decision) {
 	r := h.askRouter()
-	if !r.Recording() && !liveRoute {
+	if !r.Recording() && !routed {
 		return "", nil
 	}
 	now := time.Now().UTC()
@@ -87,6 +89,9 @@ func (h *Hub) beginDecision(_ context.Context, a askAttempt, liveRoute bool) (st
 		Request:    routing.NewRequest(a.text, a.circle, a.replyTo, a.bypass, a.question, a.attach),
 		Declared:   routing.Declared{Resolution: routing.ResolutionAbsent},
 		Candidates: []routing.Candidate{},
+	}
+	if routed {
+		d.SelectionPolicy = r.SelectionPolicy()
 	}
 	h.snapshotCandidates(d, h.resolveSender(a.fromPeer, a.circle), a.bypass, now)
 	return service.NewAskID(), d
@@ -169,6 +174,8 @@ func (h *Hub) snapshotCandidates(d *routing.Decision, sender *proto.Peer, bypass
 			c.Access = routing.AccessCircleBoundary
 		case proto.RequireAddressable(sender, p) != nil:
 			c.Access = routing.AccessNotAddressable
+		case d.SelectionPolicy == routing.PolicyExcludeServiceTargets && routing.ServiceRole(string(p.Role)):
+			c.Access = routing.AccessServiceExcluded
 		default:
 			c.Access = routing.AccessOK
 		}
@@ -296,12 +303,131 @@ func (h *Hub) runShadowArm(r *routing.Router, arm string, in routing.Input) (res
 	return r.Run(context.Background(), arm, in)
 }
 
-// routeLive runs the live arm for an @route ask and returns the address to
-// resolve next: the arm's pick, or the sender's fallback_to when the arm fell
-// back (empty when the sender gave none).
+// askResolution is the coordinator's verdict on one ask: its cid (empty
+// until Register when nothing is recorded), the sender and the authorized
+// target, and how the target was chosen. selection is nil for a named target.
+type askResolution struct {
+	cid       string
+	decision  *routing.Decision
+	fromID    proto.PeerID
+	fromName  proto.DisplayName
+	target    *proto.Peer
+	selection *routing.RouterResult
+	slot      bool // a shadow pool slot is held for runShadow
+}
+
+// resolveAsk is the routing coordinator for /ask. It owns explicit-first
+// dispatch, authorization and the ledger:
+//
+//   - a named target is resolved and authorized by resolveAskTarget, and the
+//     strategy is never consulted, so no strategy can override a named peer;
+//   - a targetless ask goes to the configured strategy, whose pick is only a
+//     proposal: it is authorized through the same resolveAskTarget, and a
+//     pick that fails authorization falls back to the sender's fallback_to,
+//     which is authorized in turn.
+//
+// Every failure is recorded here; on success the decision row is written
+// before the caller registers the ask.
+func (h *Hub) resolveAsk(ctx context.Context, req AskRequest) (*askResolution, error) {
+	r := h.askRouter()
+	targetless := req.ToPeerOmitted
+	if targetless && r.Strategy() == routing.StrategyStatic {
+		// Refused before any cid, snapshot or ledger row: under the static
+		// strategy a targetless ask is a caller error, not a decision.
+		return nil, routeErr(http.StatusBadRequest, map[string]any{
+			"error": "no_target",
+			"hint":  "No to_peer was given and routing.strategy is static, so nothing chooses a recipient. Name a peer.",
+		})
+	}
+	// When routing is instrumented the cid is minted before resolution so a
+	// failed attempt still has a trace; otherwise Register mints it as it
+	// always has. reply_to closes a PRIOR ask; it is NOT this ask's cid.
+	cid, decision := h.beginDecision(ctx, askAttempt{
+		surface: routing.SurfaceAsk, fromPeer: req.FromPeer, circle: req.Circle, bypass: req.BypassCircle,
+		text: req.Text, replyTo: req.ReplyTo, question: req.Question != nil, attach: len(req.Attachments),
+	}, targetless)
+	res := &askResolution{cid: cid, decision: decision}
+
+	toPeer, declared := req.ToPeer, req.ToPeer
+	if targetless {
+		declared = req.FallbackTo
+		toPeer, res.selection = h.routeLive(ctx, cid, decision, req.FallbackTo)
+		if toPeer == "" {
+			h.recordRouteFailure(ctx, cid, decision, proto.PeerID(req.FromPeer), "router_unavailable", nil)
+			return nil, routeErr(http.StatusServiceUnavailable, map[string]any{
+				"error": "router_unavailable", "arm": res.selection.Arm, "reason": res.selection.FallbackReason,
+				"hint": "The router could not choose a peer and no fallback_to was given; nothing was delivered. Name a peer, or retry with fallback_to.",
+			})
+		}
+	}
+	resolve := h.resolveAskTarget
+	if targetless {
+		resolve = h.resolveRoutedTarget
+	}
+	from, target, reason, err := resolve(ctx, req, toPeer, declared, decision)
+	if err != nil && res.selection != nil && !res.selection.Fallback {
+		// The arm's pick failed authorization (its snapshot went stale). That
+		// is a router fallback whether or not there is somewhere to fall back
+		// to; with fallback_to, deliver there rather than guess again.
+		res.selection.Fallback, res.selection.FallbackReason = true, "stale_pick:"+reason
+		if req.FallbackTo != "" {
+			from, target, reason, err = resolve(ctx, req, req.FallbackTo, declared, decision)
+		}
+	}
+	res.fromID, res.fromName = proto.PeerID(req.FromPeer), proto.DisplayName(req.FromPeer)
+	if from != nil {
+		res.fromID, res.fromName = from.PeerID, from.DisplayName
+	}
+	if err != nil {
+		h.recordRouteFailure(ctx, cid, decision, res.fromID, reason, err)
+		return nil, err
+	}
+	res.target = target
+	h.rebaseSender(decision, from, req.BypassCircle)
+	if res.selection == nil {
+		res.slot = h.planShadow(decision)
+	}
+	h.recordDecision(ctx, cid, decision, target, res.fromID)
+	return res, nil
+}
+
+// resolveRoutedTarget authorizes a targetless ask's pick or fallback_to: the
+// named-target checks, then the selection policy, so a strategy never
+// delivers to a service- or human-role peer unless the config allows it.
+// The role is read from the authorized peer, not the snapshot.
+//
+// The policy holds at authorization time. Delivery re-resolves the target by
+// peer_id (PeerDelivery.DeliverAsk, service/delivery.go) without it; that is
+// safe only because no path turns an existing peer into a service or human
+// peer (reconnects keep the durable role; ClaimSpecialRole only claims
+// orchestrator).
+// TODO(routing): if roles ever become mutable on a live peer, enforce the
+// selection policy in DeliverAsk's CheckAccess step as well.
+func (h *Hub) resolveRoutedTarget(ctx context.Context, req AskRequest, toPeer, declared string, decision *routing.Decision) (*proto.Peer, *proto.Peer, string, error) {
+	from, target, reason, err := h.resolveAskTarget(ctx, req, toPeer, declared, decision)
+	if err != nil || h.askRouter().SelectionPolicy() == routing.PolicyAllowServiceTargets || !routing.ServiceRole(string(target.Role)) {
+		return from, target, reason, err
+	}
+	return from, nil, routing.AccessServiceExcluded, routeErr(http.StatusForbidden, map[string]any{
+		"error": routing.AccessServiceExcluded, "peer": string(target.DisplayName), "role": string(target.Role),
+		"hint": "A routed ask is never delivered to a service or human peer unless routing.allow_service_targets is set. Name the peer to reach it.",
+	})
+}
+
+// recordQuiesced closes a recorded decision whose ask the tracker refused
+// because an endpoint is mid-switch.
+func (h *Hub) recordQuiesced(ctx context.Context, res *askResolution) {
+	if res.decision != nil && h.askRouter().Recording() {
+		h.audit(ctx, res.cid, "route_failed", "fail", string(res.target.PeerID), string(res.fromID), map[string]any{"reason": "quiesced"})
+	}
+}
+
+// routeLive runs the strategy's arm for a targetless ask and returns the
+// address to resolve next: the arm's pick, or the sender's fallback_to when
+// the arm fell back (empty when the sender gave none).
 func (h *Hub) routeLive(ctx context.Context, cid string, d *routing.Decision, fallbackTo string) (string, *routing.RouterResult) {
 	r := h.askRouter()
-	res := r.Run(ctx, r.LiveArm(), routing.InputFrom(cid, *d))
+	res := r.Run(ctx, r.Strategy(), routing.InputFrom(cid, *d))
 	d.Arm = res.Arm
 	d.Router = &res
 	if res.Fallback {

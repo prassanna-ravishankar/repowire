@@ -21,6 +21,7 @@ package hub
 // is alive); an undeliverable ack reply is a 503 with the ask left OPEN for retry.
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -341,19 +342,79 @@ func (h *Hub) askReady(w http.ResponseWriter) bool {
 type AskRequest struct {
 	ReplyDelivery string `json:"reply_delivery,omitempty"` // pull callers retrieve replies over HTTP
 
-	FromPeer     string           `json:"from_peer"`
-	ToPeer       string           `json:"to_peer"`
-	Text         string           `json:"text"`
-	Attachments  []map[string]any `json:"attachments,omitempty"`
-	ReplyTo      *string          `json:"reply_to,omitempty"`
-	BypassCircle bool             `json:"bypass_circle,omitempty"`
-	Circle       *string          `json:"circle,omitempty"`
-	Question     map[string]any   `json:"question,omitempty"`
-	// FallbackTo is where an @route ask goes when the live router fails.
+	FromPeer string `json:"from_peer"`
+	// ToPeer names the target. Leaving the key out (ToPeerOmitted) hands
+	// the ask to the configured routing strategy; an empty or null to_peer
+	// is a named ask to nobody and fails as an unknown peer.
+	ToPeer        string           `json:"to_peer"`
+	ToPeerOmitted bool             `json:"-"`
+	Text          string           `json:"text"`
+	Attachments   []map[string]any `json:"attachments,omitempty"`
+	ReplyTo       *string          `json:"reply_to,omitempty"`
+	BypassCircle  bool             `json:"bypass_circle,omitempty"`
+	Circle        *string          `json:"circle,omitempty"`
+	Question      map[string]any   `json:"question,omitempty"`
+	// FallbackTo is where a targetless ask goes when the strategy cannot
+	// choose or its pick is refused.
 	FallbackTo string `json:"fallback_to,omitempty"`
 }
 
-// AskResponse mirrors asks.py AskResponse. Routing is set only for @route asks.
+// MarshalJSON leaves to_peer out of a targetless ask, so the request
+// round-trips.
+func (a AskRequest) MarshalJSON() ([]byte, error) {
+	type plain AskRequest
+	raw, err := json.Marshal(plain(a))
+	if err != nil || !a.ToPeerOmitted {
+		return raw, err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return nil, err
+	}
+	delete(keys, "to_peer")
+	return json.Marshal(keys)
+}
+
+// UnmarshalJSON records whether to_peer was present at all: only an absent
+// key makes an ask targetless. Presence follows the decoder's own key
+// matching, so a request that decodes a target can never be targetless.
+func (a *AskRequest) UnmarshalJSON(raw []byte) error {
+	type plain AskRequest
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, (*plain)(a)); err != nil {
+		return err
+	}
+	named, _, err := targetKey(keys, "to_peer")
+	if err != nil {
+		return err
+	}
+	a.ToPeerOmitted = !named && a.ToPeer == ""
+	return nil
+}
+
+// targetKey reports whether a JSON object names its target field. present is
+// true for any key encoding/json matches to field (it matches case-
+// insensitively, so TO_PEER counts); null reports a JSON null there. A key
+// that only looks like the field (toPeer, to-peer) is never decoded, so it
+// is an error rather than a silent omission that would route the ask.
+func targetKey(keys map[string]json.RawMessage, field string) (present, null bool, err error) {
+	squash := strings.NewReplacer("_", "", "-", "")
+	for key, value := range keys {
+		switch {
+		case strings.EqualFold(key, field):
+			present = true
+			null = null || string(bytes.TrimSpace(value)) == "null"
+		case strings.EqualFold(squash.Replace(key), squash.Replace(field)):
+			return false, false, fmt.Errorf("unrecognized key %q: the target field is %q", key, field)
+		}
+	}
+	return present, null, nil
+}
+
+// AskResponse mirrors asks.py AskResponse. Routing is set only for targetless asks.
 type AskResponse struct {
 	CorrelationID string      `json:"correlation_id"`
 	Error         *string     `json:"error,omitempty"`
@@ -398,58 +459,21 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	if req.ReplyDelivery != "" && req.ReplyDelivery != "push" && req.ReplyDelivery != "pull" {
 		return AskResponse{}, routeErr(http.StatusUnprocessableEntity, "reply_delivery must be push or pull")
 	}
-	// When routing is instrumented the cid is minted before resolution so a
-	// failed attempt still has a trace; otherwise Register mints it as it
-	// always has. reply_to closes a PRIOR ask; it is NOT this ask's cid.
-	liveRoute := h.askRouter().Live() && routing.IsRouteTarget(req.ToPeer)
-	cid, decision := h.beginDecision(ctx, askAttempt{
-		surface: routing.SurfaceAsk, fromPeer: req.FromPeer, circle: req.Circle, bypass: req.BypassCircle,
-		text: req.Text, replyTo: req.ReplyTo, question: req.Question != nil, attach: len(req.Attachments),
-	}, liveRoute)
-
-	toPeer, declared := req.ToPeer, req.ToPeer
-	var routed *routing.RouterResult
-	if liveRoute {
-		declared = req.FallbackTo
-		toPeer, routed = h.routeLive(ctx, cid, decision, req.FallbackTo)
-		if toPeer == "" {
-			h.recordRouteFailure(ctx, cid, decision, proto.PeerID(req.FromPeer), "router_unavailable", nil)
-			return AskResponse{}, routeErr(http.StatusServiceUnavailable, map[string]any{
-				"error": "router_unavailable", "arm": routed.Arm, "reason": routed.FallbackReason,
-				"hint": "The router could not choose a peer and no fallback_to was given; nothing was delivered. Name a peer, or retry with fallback_to.",
-			})
-		}
-	}
-	from, target, reason, err := h.resolveAskTarget(ctx, req, toPeer, declared, decision)
-	if err != nil && routed != nil && !routed.Fallback {
-		// The arm's pick failed authorization (its snapshot went stale). That
-		// is a router fallback whether or not there is somewhere to fall back
-		// to; with fallback_to, deliver there rather than guess again.
-		routed.Fallback, routed.FallbackReason = true, "stale_pick:"+reason
-		if req.FallbackTo != "" {
-			from, target, reason, err = h.resolveAskTarget(ctx, req, req.FallbackTo, declared, decision)
-		}
-	}
-	fromID := proto.PeerID(req.FromPeer)
-	fromName := proto.DisplayName(req.FromPeer)
-	if from != nil {
-		fromID = from.PeerID
-		fromName = from.DisplayName
-	}
+	res, err := h.resolveAsk(ctx, req)
 	if err != nil {
-		h.recordRouteFailure(ctx, cid, decision, fromID, reason, err)
 		return AskResponse{}, err
 	}
-	h.rebaseSender(decision, from, req.BypassCircle)
-	slot := false
-	if routed == nil {
-		slot = h.planShadow(decision)
+	cid, target, fromID, fromName := res.cid, res.target, res.fromID, res.fromName
+	// addressed is how hints name the recipient: as the sender named it, or
+	// as the strategy chose it.
+	addressed := req.ToPeer
+	if res.selection != nil {
+		addressed = string(target.DisplayName)
 	}
-	h.recordDecision(ctx, cid, decision, target, fromID)
 	// Planned shadow arms run whatever happens to delivery, so a quiesced,
 	// dead or rejecting recipient is still scored, not mistaken for a
 	// deliberate non-sample.
-	defer h.runShadow(cid, decision, slot, target.PeerID, fromID)
+	defer h.runShadow(cid, res.decision, res.slot, target.PeerID, fromID)
 
 	registered, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
 		CorrelationID:         cid,
@@ -466,14 +490,14 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrQuiesced) {
-			if decision != nil && h.askRouter().Recording() {
-				h.audit(ctx, cid, "route_failed", "fail", string(target.PeerID), string(fromID), map[string]any{"reason": "quiesced"})
-			}
+			h.recordQuiesced(ctx, res)
 			return AskResponse{}, routeErr(http.StatusConflict, map[string]any{
 				"error": "peer_switching",
-				"hint":  fmt.Sprintf("Peer %s is mid-switch; retry shortly.", req.ToPeer),
+				"hint":  fmt.Sprintf("Peer %s is mid-switch; retry shortly.", addressed),
 			})
 		}
+		// Unreachable today (Register only refuses with ErrQuiesced); kept so a
+		// future Register error fails loud instead of being swallowed.
 		return AskResponse{}, routeErr(http.StatusInternalServerError, err.Error())
 	}
 	cid = registered
@@ -483,8 +507,8 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	h.traceAsk(ctx, cid, "routed", "", tracked, nil)
 
 	text := req.Text
-	if routed != nil {
-		text = routing.DeliveryNote(*routed, eligibleCount(decision)) + text
+	if res.selection != nil {
+		text = routing.DeliveryNote(*res.selection, eligibleCount(res.decision)) + text
 	}
 	deliveryResult, err := h.ask.delivery.DeliverAsk(ctx, service.DeliverAskParams{
 		FromPeer:      string(fromID),
@@ -510,7 +534,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 			h.traceSendFailed(ctx, tracked)
 			return AskResponse{}, routeErr(http.StatusServiceUnavailable, map[string]any{
 				"error":          "injection_failed",
-				"hint":           fmt.Sprintf("Ask injection failed for %s: %s", req.ToPeer, di.Error()),
+				"hint":           fmt.Sprintf("Ask injection failed for %s: %s", addressed, di.Error()),
 				"correlation_id": cid,
 			})
 		}
@@ -521,7 +545,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 			h.traceAsk(ctx, cid, "no_connection", "fail", tracked, map[string]any{"error": err.Error()})
 			h.traceSendFailed(ctx, tracked)
 			return AskResponse{}, routeErr(http.StatusServiceUnavailable,
-				fmt.Sprintf("Peer %s has no live connection: %s", req.ToPeer, err))
+				fmt.Sprintf("Peer %s has no live connection: %s", addressed, err))
 		}
 		h.traceAsk(ctx, cid, "route_failed", "fail", tracked, map[string]any{"error": err.Error()})
 		h.traceSendFailed(ctx, tracked)
@@ -536,7 +560,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	if req.ReplyTo != nil {
 		_, _ = h.ask.asks.Close(ctx, *req.ReplyTo, "reply_to")
 	}
-	return AskResponse{CorrelationID: cid, Routing: routedSummary(routed, target)}, nil
+	return AskResponse{CorrelationID: cid, Routing: routedSummary(res.selection, target)}, nil
 }
 
 // resolveAskTarget resolves and authorizes an ask's target exactly as the

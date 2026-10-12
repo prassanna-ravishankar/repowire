@@ -1,0 +1,19 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 0
+  },
+  "body": {
+    "detail": "reply_delivery must be push or pull"
+  },
+  "calls": [
+    "--- request"
+  ],
+  "delivered_to": [],
+  "events": null,
+  "frame": null,
+  "offlined": null,
+  "status": 422,
+  "traces": null,
+  "tracker": null
+}

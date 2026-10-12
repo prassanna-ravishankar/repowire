@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -302,8 +304,8 @@ func TestNewRouterRejectsUnknownArms(t *testing.T) {
 	if _, err := NewRouter(config.RouterConfig{ShadowArms: []string{"jev-nope"}}, nil); err == nil {
 		t.Fatal("unknown shadow arm accepted")
 	}
-	if _, err := NewRouter(config.RouterConfig{Mode: config.RouterModeLive, Arm: "nope"}, nil); err == nil {
-		t.Fatal("unknown live arm accepted")
+	if _, err := NewRouter(config.RouterConfig{Strategy: "nope"}, nil); err == nil {
+		t.Fatal("unknown strategy accepted")
 	}
 }
 
@@ -501,7 +503,7 @@ func TestFrontierIgnoresEnvironmentCredentials(t *testing.T) {
 }
 
 func TestNewRouterRejectsMisspelledSampleEveryKey(t *testing.T) {
-	cfg := config.RouterConfig{Mode: config.RouterModeShadow, ShadowArms: []string{"frontier-claimed"}, SampleEvery: map[string]int{"frontier-cliamed": 20}}
+	cfg := config.RouterConfig{ShadowArms: []string{"frontier-claimed"}, SampleEvery: map[string]int{"frontier-cliamed": 20}}
 	if _, err := NewRouter(cfg, nil); err == nil || !strings.Contains(err.Error(), "frontier-cliamed") {
 		t.Fatalf("typo accepted: %v", err)
 	}
@@ -515,5 +517,69 @@ func TestSkippedCarriesArmIdentity(t *testing.T) {
 	res := r.Skipped("jev-both", FallbackSaturated)
 	if res.Model != "jev-1.13.0" || res.TemplateSHA256 != (Jev{View: ViewBoth}).TemplateSHA256() || !res.Fallback {
 		t.Fatalf("skipped = %+v", res)
+	}
+}
+
+// The daemon's constructor never fails: unknown names are dropped with a
+// warning and the rest of the config still applies.
+func TestNewRouterOrStaticDegrades(t *testing.T) {
+	cfg := config.RouterConfig{
+		Strategy: "jev-atested", Record: true, TimeoutSeconds: 1,
+		ShadowArms:  []string{"random", "jev-nope"},
+		SampleEvery: map[string]int{"random": 2, "frontier-cliamed": 20},
+	}
+	// An unusable strategy falls back to static and takes the shadows with
+	// it; recording survives.
+	r, warnings := NewRouterOrStatic(cfg, nil)
+	if r == nil || r.Strategy() != StrategyStatic || !r.Recording() || len(r.ShadowPlan()) != 0 {
+		t.Fatalf("router %+v", r)
+	}
+	if joined := strings.Join(warnings, "\n"); !strings.Contains(joined, `"jev-atested" names no arm; routing stays static`) || !strings.Contains(joined, "are not run because routing.strategy is unusable") {
+		t.Fatalf("warnings: %s", joined)
+	}
+	// Any other bad name drops only itself.
+	cfg.Strategy = "random"
+	r, warnings = NewRouterOrStatic(cfg, nil)
+	if r.Strategy() != "random" || !r.Recording() || r.SampleEvery("random") != 2 {
+		t.Fatalf("router %+v", r)
+	}
+	if plan := r.ShadowPlan(); len(plan) != 1 || plan[0] != "random" {
+		t.Fatalf("shadow plan %v", plan)
+	}
+	joined := strings.Join(warnings, "\n")
+	for _, want := range []string{`"jev-nope" names no arm`, `"frontier-cliamed" names no arm`} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("warnings missing %q:\n%s", want, joined)
+		}
+	}
+	if _, warnings := NewRouterOrStatic(config.RouterConfig{Strategy: "random", TimeoutSeconds: 1}, nil); len(warnings) != 0 {
+		t.Fatalf("valid config warned: %v", warnings)
+	}
+}
+
+// Corner 4 of the recovery contract, end to end through config.Load: env
+// precedence holds even when the env value is unusable. A bad
+// REPOWIRE_ROUTING__STRATEGY over a valid YAML strategy runs static with
+// the shadows dropped; it never silently falls back to the YAML value the
+// operator overrode.
+func TestBadEnvStrategyOverValidYAMLRunsStatic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("routing:\n  strategy: random\n  record: true\n  shadow_arms: [random]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REPOWIRE_CONFIG", path)
+	t.Setenv("REPOWIRE_ROUTING__STRATEGY", "jev-nope")
+	t.Setenv("REPOWIRE_ROUTING__SHADOW_ARMS", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, warnings := NewRouterOrStatic(cfg.Routing, nil)
+	if r.Strategy() != StrategyStatic || len(r.ShadowPlan()) != 0 || !r.Recording() {
+		t.Fatalf("effective %+v", r.Config())
+	}
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, `routing.strategy "jev-nope" names no arm`) || !strings.Contains(joined, "routing.strategy is unusable") {
+		t.Fatalf("warnings: %s", joined)
 	}
 }

@@ -1,0 +1,281 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 0
+  },
+  "body": {
+    "correlation_id": "\u003ccid1\u003e"
+  },
+  "calls": [
+    "--- request",
+    "reg.GetPeerByName(\"alpha\", nil) -\u003e repow-a \u003cnil\u003e",
+    "reg.GetAllPeers",
+    "reg.GetPeerByName(\"beta\", nil) -\u003e repow-b \u003cnil\u003e",
+    "reg.CheckAccess(\"alpha\", \"repow-b\", bypass=false, nil) -\u003e repow-a repow-b \u003cnil\u003e",
+    "trace \u003ccid1\u003e route_decision ",
+    "trace \u003ccid1\u003e created ",
+    "trace \u003ccid1\u003e resolved_peer ",
+    "trace \u003ccid1\u003e routed ",
+    "reg.CheckAccess(\"repow-a\", \"repow-b\", bypass=true, nil) -\u003e repow-a repow-b \u003cnil\u003e",
+    "transport.SendAndWaitDeliveryAck(repow-b)",
+    "trace \u003ccid1\u003e thread_input_accepted "
+  ],
+  "delivered_to": [
+    "repow-b"
+  ],
+  "events": null,
+  "frame": {
+    "correlation_id": "\u003ccid1\u003e",
+    "delivery_id": "\u003cdelivery-id\u003e",
+    "from_peer": "alpha",
+    "text": "who owns the lexer?\n↳ ack(\"\u003ccid1\u003e\"), ack(\"\u003ccid1\u003e\", \"reply\"), or decline(\"\u003ccid1\u003e\", \"reason\")",
+    "to_peer": "beta",
+    "type": "ask"
+  },
+  "offlined": null,
+  "status": 200,
+  "traces": [
+    {
+      "detail": {
+        "arm": "explicit",
+        "candidates": [
+          {
+            "access": "ok",
+            "addressable": true,
+            "backend": "codex",
+            "circle": "default",
+            "description": "reviewing PR 12",
+            "description_age_s": null,
+            "description_set_at": null,
+            "display_name": "beta",
+            "ephemeral": false,
+            "last_exchange_with_sender_at": null,
+            "last_seen": null,
+            "last_seen_age_s": null,
+            "machine": "",
+            "open_asks_inbound": 0,
+            "path": "/src/beta",
+            "peer_id": "repow-b",
+            "project": "beta",
+            "role": "agent",
+            "source": "unknown",
+            "status": "online",
+            "turn_state": "idle"
+          },
+          {
+            "access": "ok",
+            "addressable": true,
+            "backend": "",
+            "circle": "default",
+            "description": "",
+            "description_age_s": null,
+            "description_set_at": null,
+            "display_name": "gamma",
+            "ephemeral": false,
+            "last_exchange_with_sender_at": null,
+            "last_seen": null,
+            "last_seen_age_s": null,
+            "machine": "",
+            "open_asks_inbound": 0,
+            "path": "",
+            "peer_id": "repow-c",
+            "project": "",
+            "role": "agent",
+            "source": "unknown",
+            "status": "online",
+            "turn_state": ""
+          },
+          {
+            "access": "circle_boundary",
+            "addressable": true,
+            "backend": "",
+            "circle": "elsewhere",
+            "description": "",
+            "description_age_s": null,
+            "description_set_at": null,
+            "display_name": "other",
+            "ephemeral": false,
+            "last_exchange_with_sender_at": null,
+            "last_seen": null,
+            "last_seen_age_s": null,
+            "machine": "",
+            "open_asks_inbound": 0,
+            "path": "",
+            "peer_id": "repow-o",
+            "project": "",
+            "role": "agent",
+            "source": "unknown",
+            "status": "online",
+            "turn_state": ""
+          },
+          {
+            "access": "not_addressable",
+            "addressable": false,
+            "addressable_reason": "sub-agent thread",
+            "backend": "",
+            "circle": "default",
+            "description": "",
+            "description_age_s": null,
+            "description_set_at": null,
+            "display_name": "sub",
+            "ephemeral": false,
+            "last_exchange_with_sender_at": null,
+            "last_seen": null,
+            "last_seen_age_s": null,
+            "machine": "",
+            "open_asks_inbound": 0,
+            "path": "",
+            "peer_id": "repow-s",
+            "project": "",
+            "role": "agent",
+            "status": "online",
+            "turn_state": ""
+          },
+          {
+            "access": "circle_boundary",
+            "addressable": true,
+            "backend": "",
+            "circle": "elsewhere",
+            "description": "",
+            "description_age_s": null,
+            "description_set_at": null,
+            "display_name": "alpha",
+            "ephemeral": false,
+            "last_exchange_with_sender_at": null,
+            "last_seen": null,
+            "last_seen_age_s": null,
+            "machine": "",
+            "open_asks_inbound": 0,
+            "path": "",
+            "peer_id": "repow-t",
+            "project": "",
+            "role": "agent",
+            "source": "unknown",
+            "status": "online",
+            "turn_state": ""
+          }
+        ],
+        "chosen": {
+          "display_name": "beta",
+          "peer_id": "repow-b"
+        },
+        "decided_at": "\u003cclock\u003e",
+        "declared": {
+          "peer_id": "repow-b",
+          "raw": "beta",
+          "resolution": "resolved"
+        },
+        "mode": "live",
+        "parent_id": null,
+        "registry_size": 6,
+        "request": {
+          "attachment_count": 0,
+          "bypass_circle": false,
+          "circle": null,
+          "has_question": false,
+          "reply_to": null,
+          "text": "who owns the lexer?",
+          "text_recorded": true,
+          "text_sha256": "51e7c05e3f88d3551b342c9b124ace69161164ad5160735f630771308053a566",
+          "text_truncated": false
+        },
+        "router": null,
+        "schema": "repowire.route_decision.v1",
+        "sender": {
+          "addressable": true,
+          "backend": "claude-code",
+          "circle": "default",
+          "description": "writing the parser",
+          "description_age_s": null,
+          "description_set_at": null,
+          "display_name": "alpha",
+          "ephemeral": false,
+          "last_exchange_with_sender_at": null,
+          "last_seen": null,
+          "last_seen_age_s": null,
+          "machine": "",
+          "open_asks_inbound": 0,
+          "path": "/src/alpha",
+          "peer_id": "repow-a",
+          "project": "alpha",
+          "role": "agent",
+          "source": "unknown",
+          "status": "online",
+          "turn_state": ""
+        },
+        "sender_raw": "alpha",
+        "shadow_planned": [],
+        "surface": "ask"
+      },
+      "from": "repow-a",
+      "peer": "repow-b",
+      "stage": "route_decision",
+      "status": "",
+      "trace": "\u003ccid1\u003e"
+    },
+    {
+      "detail": {
+        "from_peer": "alpha",
+        "text": "who owns the lexer?",
+        "to_peer": "beta"
+      },
+      "from": "repow-a",
+      "peer": "repow-b",
+      "stage": "created",
+      "status": "",
+      "trace": "\u003ccid1\u003e"
+    },
+    {
+      "detail": null,
+      "from": "repow-a",
+      "peer": "repow-b",
+      "stage": "resolved_peer",
+      "status": "",
+      "trace": "\u003ccid1\u003e"
+    },
+    {
+      "detail": null,
+      "from": "repow-a",
+      "peer": "repow-b",
+      "stage": "routed",
+      "status": "",
+      "trace": "\u003ccid1\u003e"
+    },
+    {
+      "detail": {
+        "transport": "ws"
+      },
+      "from": "repow-a",
+      "peer": "repow-b",
+      "stage": "thread_input_accepted",
+      "status": "",
+      "trace": "\u003ccid1\u003e"
+    }
+  ],
+  "tracker": [
+    {
+      "Answer": null,
+      "AskerIdentity": null,
+      "CloseReason": "",
+      "Closed": false,
+      "CorrelationID": "\u003ccid1\u003e",
+      "CreatedAt": "\u003cclock\u003e",
+      "FromPeerID": "repow-a",
+      "FromPeerName": "alpha",
+      "FromRepowireSessionID": null,
+      "ParentID": null,
+      "PendingReply": null,
+      "PendingReplyAt": null,
+      "Question": null,
+      "RepliedAt": null,
+      "ReplyAttachments": null,
+      "ReplyDelivery": "push",
+      "ReplyText": null,
+      "ReplyTo": null,
+      "Text": "who owns the lexer?",
+      "ToPeerID": "repow-b",
+      "ToPeerName": "beta",
+      "ToRepowireSessionID": null
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "arm_calls": {
+    "shadowstub": 0,
+    "stub": 0
+  },
+  "body": {
+    "correlation_id": "\u003ccid1\u003e"
+  },
+  "calls": [
+    "--- request",
+    "reg.GetPeerByName(\"other\", nil) -\u003e repow-o \u003cnil\u003e",
+    "reg.CheckAccess(\"alpha\", \"repow-o\", bypass=true, nil) -\u003e repow-a repow-o \u003cnil\u003e",
+    "trace \u003ccid1\u003e created ",
+    "trace \u003ccid1\u003e resolved_peer ",
+    "trace \u003ccid1\u003e routed ",
+    "reg.CheckAccess(\"repow-a\", \"repow-o\", bypass=true, nil) -\u003e repow-a repow-o \u003cnil\u003e",
+    "transport.SendAndWaitDeliveryAck(repow-o)",
+    "trace \u003ccid1\u003e thread_input_accepted "
+  ],
+  "delivered_to": [
+    "repow-o"
+  ],
+  "events": null,
+  "frame": {
+    "correlation_id": "\u003ccid1\u003e",
+    "delivery_id": "\u003cdelivery-id\u003e",
+    "from_peer": "alpha",
+    "text": "x\n↳ ack(\"\u003ccid1\u003e\"), ack(\"\u003ccid1\u003e\", \"reply\"), or decline(\"\u003ccid1\u003e\", \"reason\")",
+    "to_peer": "other",
+    "type": "ask"
+  },
+  "offlined": null,
+  "status": 200,
+  "traces": [
+    {
+      "detail": {
+        "from_peer": "alpha",
+        "text": "x",
+        "to_peer": "other"
+      },
+      "from": "repow-a",
+      "peer": "repow-o",
+      "stage": "created",
+      "status": "",
+      "trace": "\u003ccid1\u003e"
+    },
+    {
+      "detail": null,
+      "from": "repow-a",
+      "peer": "repow-o",
+      "stage": "resolved_peer",
+      "status": "",
+      "trace": "\u003ccid1\u003e"
+    },
+    {
+      "detail": null,
+      "from": "repow-a",
+      "peer": "repow-o",
+      "stage": "routed",
+      "status": "",
+      "trace": "\u003ccid1\u003e"
+    },
+    {
+      "detail": {
+        "transport": "ws"
+      },
+      "from": "repow-a",
+      "peer": "repow-o",
+      "stage": "thread_input_accepted",
+      "status": "",
+      "trace": "\u003ccid1\u003e"
+    }
+  ],
+  "tracker": [
+    {
+      "Answer": null,
+      "AskerIdentity": null,
+      "CloseReason": "",
+      "Closed": false,
+      "CorrelationID": "\u003ccid1\u003e",
+      "CreatedAt": "\u003cclock\u003e",
+      "FromPeerID": "repow-a",
+      "FromPeerName": "alpha",
+      "FromRepowireSessionID": null,
+      "ParentID": null,
+      "PendingReply": null,
+      "PendingReplyAt": null,
+      "Question": null,
+      "RepliedAt": null,
+      "ReplyAttachments": null,
+      "ReplyDelivery": "push",
+      "ReplyText": null,
+      "ReplyTo": null,
+      "Text": "x",
+      "ToPeerID": "repow-o",
+      "ToPeerName": "other",
+      "ToRepowireSessionID": null
+    }
+  ]
+}

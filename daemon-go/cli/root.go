@@ -76,7 +76,8 @@ func newRootCommand() *cobra.Command {
 		{"list [flags]", "List schedules"}, {"delete SCHEDULE_ID", "Delete a schedule"},
 	}))
 	root.AddCommand(group("session", "Control durable sessions", runSession, []leaf{{"resume SESSION_ID [flags]", "Resume a durable session"}}))
-	root.AddCommand(group("route", "Ask-routing experiment tools", runRoute, []leaf{
+	root.AddCommand(group("route", "Ask routing: config and research tools", runRoute, []leaf{
+		{"show", "Show the routing strategy, recording and shadow arms"},
 		{"replay --arm ARM [flags]", "Replay recorded asks through a routing arm offline"},
 		{"decisionbench --cards DIR --delegations FILE --orchestrator MODEL --arm ARM [flags]", "Score a routing arm on DecisionBench delegations"},
 	}))
