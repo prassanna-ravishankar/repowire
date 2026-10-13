@@ -32,6 +32,17 @@ type Telegram struct {
 	labels   map[string]string
 	targets  map[string]string
 	keyboard bool
+
+	// inbox carries inbox_item frames from the daemon read loop to one
+	// worker, so a slow Telegram push never stalls the socket (pings) and
+	// items render in arrival order.
+	inbox chan map[string]any
+	// pushTimeout bounds one item's push, retries included; it stays inside
+	// the daemon's receipt window.
+	pushTimeout time.Duration
+	retryDelay  time.Duration
+	// writeFrame sends a frame (a receipt) to the daemon; tests replace it.
+	writeFrame func(context.Context, any) error
 }
 
 type telegramPending struct {
@@ -42,10 +53,13 @@ type telegramPending struct {
 }
 
 func NewTelegram(token, chatID string, daemon *DaemonPeer) *Telegram {
+	daemon.capabilities = append(daemon.capabilities, inboxSurfaceCapability)
 	return &Telegram{
 		token: token, chatID: chatID, apiBase: "https://api.telegram.org", daemon: daemon,
 		http: &http.Client{Timeout: 40 * time.Second}, options: map[string][]string{},
 		labels: map[string]string{}, targets: map[string]string{}, keyboard: true,
+		inbox: make(chan map[string]any, 64), pushTimeout: 45 * time.Second, retryDelay: time.Second,
+		writeFrame: daemon.Write,
 	}
 }
 
@@ -56,7 +70,10 @@ func (b *Telegram) Run(ctx context.Context) error {
 	if target, label := b.daemon.DefaultTargetInfo(ctx); target != "" {
 		b.setTargetLabel(target, label)
 	}
-	return runTogether(ctx, func(ctx context.Context) error { return b.daemon.Run(ctx, b.onDaemon) }, b.poll)
+	return runTogether(ctx, func(ctx context.Context) error {
+		go b.inboxWorker(ctx)
+		return b.daemon.Run(ctx, b.onDaemon)
+	}, b.poll)
 }
 
 func (b *Telegram) endpoint(method string) string {
@@ -75,19 +92,23 @@ func (b *Telegram) call(ctx context.Context, method string, input any, output an
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := b.http.Do(req)
 	if err != nil {
-		return err
+		return &telegramError{class: "network", msg: b.redact(err.Error())}
 	}
 	defer resp.Body.Close()
 	var envelope struct {
 		OK          bool            `json:"ok"`
+		ErrorCode   int             `json:"error_code"`
 		Description string          `json:"description"`
 		Result      json.RawMessage `json:"result"`
+		Parameters  struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return err
+		return &telegramError{class: "network", msg: b.redact(err.Error())}
 	}
 	if !envelope.OK {
-		return fmt.Errorf("telegram: %s", envelope.Description)
+		return classifyTelegramError(envelope.ErrorCode, envelope.Description, envelope.Parameters.RetryAfter)
 	}
 	if output != nil && len(envelope.Result) > 0 {
 		return json.Unmarshal(envelope.Result, output)
@@ -106,6 +127,9 @@ func (b *Telegram) send(ctx context.Context, text string, markup any) error {
 }
 
 func (b *Telegram) onDaemon(ctx context.Context, message map[string]any) error {
+	if textField(message, "type") == "inbox_item" {
+		return b.enqueueInboxItem(ctx, message)
+	}
 	typ, from, text := textField(message, "type"), textField(message, "from_peer"), textField(message, "text")
 	prefix := map[string]string{"notify": "", "query": "❓ ", "ask": "❓ ", "broadcast": "📢 "}[typ]
 	if _, supported := map[string]bool{"notify": true, "query": true, "ask": true, "broadcast": true}[typ]; !supported {
@@ -249,10 +273,16 @@ func (b *Telegram) onUpdate(ctx context.Context, update map[string]any) error {
 		return b.onPhoto(ctx, textField(photo, "file_id"), textField(message, "caption"), int64(numberOrZero(message["message_id"])))
 	}
 	text := strings.TrimSpace(textField(message, "text"))
-	if text != "" {
-		return b.onText(ctx, text, int64(numberOrZero(message["message_id"])))
+	if text == "" {
+		return nil
 	}
-	return nil
+	messageID := int64(numberOrZero(message["message_id"]))
+	if replyTo, ok := message["reply_to_message"].(map[string]any); ok {
+		if handled, err := b.onReply(ctx, int64(numberOrZero(replyTo["message_id"])), text, messageID); handled || err != nil {
+			return err
+		}
+	}
+	return b.onText(ctx, text, messageID)
 }
 
 func (b *Telegram) matchesChat(message map[string]any) bool {
@@ -265,6 +295,8 @@ func (b *Telegram) matchesChat(message map[string]any) bool {
 
 func (b *Telegram) onCallback(ctx context.Context, data string) error {
 	switch {
+	case strings.HasPrefix(data, "ix:"):
+		return b.onInboxCallback(ctx, strings.TrimPrefix(data, "ix:"))
 	case strings.HasPrefix(data, "target:"):
 		target := strings.TrimPrefix(data, "target:")
 		b.setTarget(target)
@@ -370,7 +402,11 @@ func (b *Telegram) onText(ctx context.Context, text string, messageIDs ...int64)
 		return b.send(ctx, "Message text is required.", nil)
 	}
 	b.setTarget(target)
-	_, err := b.daemon.Send(ctx, target, message, mode, nil)
+	var origin map[string]any
+	if len(messageIDs) > 0 && messageIDs[0] != 0 {
+		origin = map[string]any{"surface": "telegram", "ref": strconv.FormatInt(messageIDs[0], 10)}
+	}
+	_, err := b.daemon.SendFrom(ctx, target, message, mode, nil, origin)
 	if err != nil {
 		b.setPending(&telegramPending{message: message, mode: mode, expiresAt: time.Now().Add(time.Minute)})
 		return b.send(ctx, "✗ Couldn't reach @"+b.displayTarget(target)+": "+err.Error()+"\nTap a peer to retry, or type a new message to cancel.", nil)
@@ -414,7 +450,7 @@ func (b *Telegram) onPhoto(ctx context.Context, fileID, caption string, messageI
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(b.apiBase, "/")+"/file/bot"+b.token+"/"+file.FilePath, nil)
 	resp, err := b.http.Do(req)
 	if err != nil {
-		return err
+		return &telegramError{class: "network", msg: b.redact(err.Error())}
 	}
 	defer resp.Body.Close()
 	content, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
@@ -491,7 +527,7 @@ func (b *Telegram) sendAttachment(ctx context.Context, attachment map[string]any
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	resp, err := b.http.Do(req)
 	if err != nil {
-		return err
+		return &telegramError{class: "network", msg: b.redact(err.Error())}
 	}
 	defer resp.Body.Close()
 	var result struct {

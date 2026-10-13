@@ -75,6 +75,12 @@ func newRootCommand() *cobra.Command {
 		{"self WHEN_OR_CRON TEXT [flags]", "Schedule a message to this peer"}, {"create PEER WHEN_OR_CRON TEXT [flags]", "Schedule a message to another peer"},
 		{"list [flags]", "List schedules"}, {"delete SCHEDULE_ID", "Delete a schedule"},
 	}))
+	inbox := group("inbox", "Read and answer the human inbox", runInbox, []leaf{
+		{"list [--all] [--json] [--limit N]", "List unread items (all with --all)"}, {"show ITEM_ID [--json]", "Show one item and its surface pushes"},
+		{"read ITEM_ID", "Mark an item read on every surface"}, {"reply ITEM_ID TEXT", "Reply: closes an open ask, otherwise asks the sender"},
+	})
+	inbox.RunE = func(*cobra.Command, []string) error { return codeError(runInbox(nil)) }
+	root.AddCommand(inbox)
 	root.AddCommand(group("session", "Control durable sessions", runSession, []leaf{{"resume SESSION_ID [flags]", "Resume a durable session"}}))
 	root.AddCommand(group("route", "Ask routing: config and research tools", runRoute, []leaf{
 		{"show", "Show the routing strategy, recording and shadow arms"},
