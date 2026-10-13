@@ -157,8 +157,12 @@ func (f Frontier) Rank(ctx context.Context, in Input) (RouterResult, error) {
 		}
 		return RouterResult{}, fail(FallbackError)
 	}
+	// Every answered call is billed, so its token counts ride on failures too.
+	noted := RouterResult{Signals: map[string]float64{
+		"input_tokens": float64(resp.Usage.InputTokens), "output_tokens": float64(resp.Usage.OutputTokens),
+	}}
 	if resp.StopReason != anthropic.StopReasonEndTurn {
-		return RouterResult{}, fail(FallbackUnparseable)
+		return noted, fail(FallbackUnparseable)
 	}
 	var text strings.Builder
 	for _, block := range resp.Content {
@@ -171,31 +175,31 @@ func (f Frontier) Rank(ctx context.Context, in Input) (RouterResult, error) {
 		Confidence *float64 `json:"confidence"`
 	}
 	if err := json.Unmarshal([]byte(text.String()), &out); err != nil {
-		return RouterResult{}, fail(FallbackUnparseable)
+		return noted, fail(FallbackUnparseable)
 	}
 	// An empty ranking is the model declining to choose, seen stochastically
 	// on rows it ranks cleanly on resample: record it, but not as a failure.
 	if len(out.Ranking) == 0 {
-		return RouterResult{}, fail(FallbackAbstained)
+		return noted, fail(FallbackAbstained)
 	}
 	// The schema's enum constrains members, not completeness: accept only a
 	// full, duplicate-free permutation, since a partial ranking would inflate
 	// fidelity@3.
 	if len(out.Ranking) != len(keys) {
-		return RouterResult{}, fail(FallbackUnparseable)
+		return noted, fail(FallbackUnparseable)
 	}
 	seen := map[string]bool{}
 	scores := make([]Score, 0, len(keys))
 	for i, k := range out.Ranking {
 		peerID, ok := keys[k]
 		if !ok || seen[k] {
-			return RouterResult{}, fail(FallbackUnparseable)
+			return noted, fail(FallbackUnparseable)
 		}
 		seen[k] = true
 		scores = append(scores, Score{PeerID: peerID, Score: rankScore(i, len(keys))})
 	}
 	if out.Confidence == nil || math.IsNaN(*out.Confidence) || *out.Confidence < 0 || *out.Confidence > 1 {
-		return RouterResult{}, fail(FallbackUnparseable)
+		return noted, fail(FallbackUnparseable)
 	}
-	return RouterResult{Model: string(resp.Model), TemplateSHA256: f.TemplateSHA256(), Scores: scores, Confidence: out.Confidence}, nil
+	return RouterResult{Model: string(resp.Model), TemplateSHA256: f.TemplateSHA256(), Scores: scores, Confidence: out.Confidence, Signals: noted.Signals}, nil
 }

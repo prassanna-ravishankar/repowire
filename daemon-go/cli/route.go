@@ -363,7 +363,7 @@ func replayArms(a args, examples, history []routing.Example, recorded bool, usag
 	return 0
 }
 
-// printUsage reports provider calls and provider-counted input tokens. It
+// printUsage reports provider calls and provider-counted tokens. It
 // prints nothing when no request left the process.
 func printUsage(w io.Writer, usage func() map[string]routing.ProviderUsage) {
 	all := usage()
@@ -374,7 +374,8 @@ func printUsage(w io.Writer, usage func() map[string]routing.ProviderUsage) {
 	sort.Strings(names)
 	for _, name := range names {
 		u := all[name]
-		fmt.Fprintf(w, "provider calls: %s %d (input_tokens %d, reported on %d of them)\n", name, u.Calls, u.InputTokens, u.Counted)
+		fmt.Fprintf(w, "provider calls: %s %d (input_tokens %d reported on %d, output_tokens %d reported on %d)\n",
+			name, u.Calls, u.InputTokens, u.Counted, u.OutputTokens, u.OutputCounted)
 	}
 }
 

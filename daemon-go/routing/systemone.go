@@ -68,8 +68,27 @@ type systemOneResponse struct {
 		Noul *float64 `json:"noul"`
 	} `json:"answers"`
 	Usage *struct {
-		InputTokens *int64 `json:"input_tokens"`
+		InputTokens  *int64 `json:"input_tokens"`
+		OutputTokens *int64 `json:"output_tokens"`
 	} `json:"usage"`
+}
+
+// tokens adds the reported token counts to signals, allocating it if nil. A
+// count the provider left out stays absent rather than reading as zero.
+func (r systemOneResponse) tokens(signals map[string]float64) map[string]float64 {
+	if r.Usage == nil {
+		return signals
+	}
+	for key, n := range map[string]*int64{"input_tokens": r.Usage.InputTokens, "output_tokens": r.Usage.OutputTokens} {
+		if n == nil {
+			continue
+		}
+		if signals == nil {
+			signals = map[string]float64{}
+		}
+		signals[key] = float64(*n)
+	}
+	return signals
 }
 
 // scores reads one yes probability per key back onto its peer, and fails on

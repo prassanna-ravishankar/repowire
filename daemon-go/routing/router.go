@@ -270,10 +270,13 @@ func (r *Router) Run(ctx context.Context, name string, in Input) RouterResult {
 type ProviderUsage struct {
 	// Calls are requests that left the process, answered or not.
 	Calls int `json:"calls"`
-	// InputTokens sums the provider-reported counts; Counted is how many calls
-	// reported one (not every provider or failure does).
-	InputTokens int64 `json:"input_tokens"`
-	Counted     int   `json:"counted"`
+	// InputTokens and OutputTokens sum the provider-reported counts; Counted
+	// and OutputCounted are how many calls reported each (not every provider
+	// or failure does).
+	InputTokens   int64 `json:"input_tokens"`
+	Counted       int   `json:"counted"`
+	OutputTokens  int64 `json:"output_tokens"`
+	OutputCounted int   `json:"output_counted"`
 }
 
 // meter counts a finished call. Results that never reached the network
@@ -296,6 +299,10 @@ func (r *Router) meter(provider string, res RouterResult) {
 	if n, ok := res.Signals["input_tokens"]; ok {
 		u.InputTokens += int64(n)
 		u.Counted++
+	}
+	if n, ok := res.Signals["output_tokens"]; ok {
+		u.OutputTokens += int64(n)
+		u.OutputCounted++
 	}
 }
 

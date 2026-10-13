@@ -49,17 +49,14 @@ func (j Jev) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	}
 	scores, err := decoded.scores(keys)
 	if err != nil {
-		return RouterResult{}, err
+		return RouterResult{Signals: decoded.tokens(nil)}, err
 	}
 	model := decoded.Model
 	if model == "" {
 		model = j.Model
 	}
 	top := topScore(scores)
-	res := RouterResult{Model: model, TemplateSHA256: j.TemplateSHA256(), Scores: scores, Confidence: &top}
-	if decoded.Usage != nil && decoded.Usage.InputTokens != nil {
-		res.Signals = map[string]float64{"input_tokens": float64(*decoded.Usage.InputTokens)}
-	}
+	res := RouterResult{Model: model, TemplateSHA256: j.TemplateSHA256(), Scores: scores, Confidence: &top, Signals: decoded.tokens(nil)}
 	return res, nil
 }
 
