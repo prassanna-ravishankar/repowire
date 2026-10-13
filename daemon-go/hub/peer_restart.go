@@ -56,6 +56,7 @@ const (
 var (
 	restartCancelWait      = 500 * time.Millisecond
 	restartExitTimeout     = 20 * time.Second
+	restartResumeFileWait  = 5 * time.Second
 	restartRegisterTimeout = 90 * time.Second
 	restartPollInterval    = 250 * time.Millisecond
 )
@@ -85,6 +86,14 @@ type RestartLaunch struct {
 	// fill those from daemon.spawn.commands before running Manual by hand.
 	Manual   string   `json:"manual"`
 	Redacted []string `json:"redacted,omitempty"`
+}
+
+// ResumeCheck is where the resume session file was looked for and the outcome.
+type ResumeCheck struct {
+	CheckedPaths []string `json:"checked_paths"`
+	FoundPath    string   `json:"found_path,omitempty"`
+	CheckedAt    string   `json:"checked_at"`
+	WaitedMS     int64    `json:"waited_ms"`
 }
 
 // RestartLastKnown is the evidence captured when a stage fails.
@@ -124,6 +133,7 @@ type RestartResult struct {
 	Defaulted           []string        `json:"defaulted"`
 	Warnings            []string        `json:"warnings"`
 	OpenAsks            int             `json:"open_asks"`
+	ResumeCheck         *ResumeCheck    `json:"resume_check,omitempty"`
 	Failed              *RestartFailure `json:"failed,omitempty"`
 	NeedsManualRelaunch bool            `json:"needs_manual_relaunch"`
 	StartedAt           string          `json:"started_at"`
@@ -648,9 +658,25 @@ func (h *Hub) previewResume(plan *restartPlan, result *RestartResult) {
 	if plan.resumeID == "" {
 		return
 	}
-	if _, ok := service.ResolveLocalResume(plan.peer.Backend, result.WouldRun.CWD, plan.resumeID, plan.repowireSID, plan.capability); !ok {
+	result.ResumeCheck = h.resumeCheck(plan, result.WouldRun.CWD, time.Now())
+	if result.ResumeCheck.FoundPath == "" {
 		result.Warnings = append(result.Warnings, "session file for "+plan.resumeID+" is not present yet; it is re-checked after exit and the launch goes fresh if it is still absent")
 	}
+}
+
+func (h *Hub) resumeFilePresent(plan *restartPlan, cwd string) bool {
+	_, ok := service.ResolveLocalResume(plan.peer.Backend, cwd, plan.resumeID, plan.repowireSID, plan.capability)
+	return ok
+}
+
+// resumeCheck records where the session file was looked for, whether it was
+// found, and when, so a fresh fallback can be audited.
+func (h *Hub) resumeCheck(plan *restartPlan, cwd string, started time.Time) *ResumeCheck {
+	checked, found := service.ResumeFileCandidates(plan.peer.Backend, cwd, plan.resumeID)
+	if !h.resumeFilePresent(plan, cwd) {
+		found = ""
+	}
+	return &ResumeCheck{CheckedPaths: checked, FoundPath: found, CheckedAt: nowISO(), WaitedMS: time.Since(started).Milliseconds()}
 }
 
 // runRestart executes exit → wait → launch → register on the daemon context.
@@ -758,17 +784,22 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 	}
 
 	// launch: the resume id is validated against the post-exit session file.
+	// A runtime may flush its session file after its pid is gone, so absence
+	// is only concluded after a bounded wait.
 	stage(restartStageLaunch)
-	run.update(func(r *RestartResult) {
-		if plan.resumeID == "" {
-			return
-		}
-		if _, ok := service.ResolveLocalResume(plan.peer.Backend, r.WouldRun.CWD, plan.resumeID, plan.repowireSID, plan.capability); !ok {
-			r.ResumeMode, r.ResumeReason = "fresh", "session file absent after exit"
-			plan.resumeID = ""
-		}
-		_ = applyCommand(r, plan) // parsed once already in prepare
-	})
+	if plan.resumeID != "" {
+		cwd, started := run.snapshot().WouldRun.CWD, time.Now()
+		_ = pollUntil(ctx, restartResumeFileWait, func() bool { return h.resumeFilePresent(plan, cwd) })
+		check := h.resumeCheck(plan, cwd, started)
+		run.update(func(r *RestartResult) {
+			r.ResumeCheck = check
+			if check.FoundPath == "" {
+				r.ResumeMode, r.ResumeReason = "fresh", fmt.Sprintf("session file absent after exit (waited %dms)", check.WaitedMS)
+				plan.resumeID = ""
+			}
+			_ = applyCommand(r, plan) // parsed once already in prepare
+		})
+	}
 	if ctx.Err() != nil {
 		abandonReservation()
 		fail(restartStageLaunch, "cancelled", "cancelled after the old runtime exited; nothing was launched", true)

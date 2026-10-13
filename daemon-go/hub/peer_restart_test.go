@@ -250,14 +250,16 @@ func newRestartFixture(t *testing.T, commands map[proto.AgentType]string) *resta
 
 func setRestartTimings(t *testing.T, exit, register time.Duration) {
 	t.Helper()
-	prevExit, prevReg, prevPoll := restartExitTimeout, restartRegisterTimeout, restartPollInterval
-	restartExitTimeout, restartRegisterTimeout, restartPollInterval = exit, register, 5*time.Millisecond
-	t.Cleanup(func() { restartExitTimeout, restartRegisterTimeout, restartPollInterval = prevExit, prevReg, prevPoll })
+	prevExit, prevReg, prevPoll, prevFile := restartExitTimeout, restartRegisterTimeout, restartPollInterval, restartResumeFileWait
+	restartExitTimeout, restartRegisterTimeout, restartPollInterval, restartResumeFileWait = exit, register, 5*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() {
+		restartExitTimeout, restartRegisterTimeout, restartPollInterval, restartResumeFileWait = prevExit, prevReg, prevPoll, prevFile
+	})
 }
 
 func (f *restartFixture) writeClaudeSession(t *testing.T, id string) {
 	t.Helper()
-	dir := filepath.Join(f.home, ".claude", "projects", strings.ReplaceAll(f.project, "/", "-"))
+	dir := service.ClaudeProjectDirs(f.project)[0]
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +390,7 @@ func TestRestartGoesFreshWhenSessionFileAbsentAfterExit(t *testing.T) {
 
 	out := f.restart(t, RestartPeerRequest{})
 
-	if out.Outcome != restartOutcomeRestarted || out.ResumeMode != "fresh" || out.ResumeReason != "session file absent after exit" {
+	if out.Outcome != restartOutcomeRestarted || out.ResumeMode != "fresh" || !strings.HasPrefix(out.ResumeReason, "session file absent after exit (waited ") {
 		t.Fatalf("outcome=%s resume=%s (%s)", out.Outcome, out.ResumeMode, out.ResumeReason)
 	}
 	if got := f.launchedCommands(); len(got) != 1 || got[0] != "claude --dangerously-skip-permissions" {
@@ -950,4 +952,40 @@ func TestRestartWarnsAboutDeliveriesInFlightAtExit(t *testing.T) {
 		t.Fatalf("warnings = %q", out.Warnings)
 	}
 	<-sent
+}
+
+// Smoke regression (rst-9508dc315aca): the cwd contains a dot, which Claude
+// Code's project slug turns into "-", and the runtime writes its session file
+// a second after SIGTERM. Restart must find it and resume.
+func TestRestartResumesWhenSessionFileAppearsAfterExitUnderClaudeSlug(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	dotted := filepath.Join(f.project, "repowire.smoke-restart")
+	if err := os.Mkdir(dotted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.project, f.peer.Path = dotted, dotted
+	f.rt.evidence[restartOldPane].CurrentPath = dotted
+	prev := restartResumeFileWait
+	restartResumeFileWait = 3 * time.Second
+	t.Cleanup(func() { restartResumeFileWait = prev })
+	id := "5e1f0c2a-0000-4000-8000-000000000001"
+	f.rt.onTerm = func(int) {
+		go func() {
+			time.Sleep(time.Second)
+			f.writeClaudeSession(t, id)
+		}()
+	}
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if out.ResumeMode != "resumed" || out.ResumeCheck == nil || out.ResumeCheck.WaitedMS < 900 {
+		t.Fatalf("resume_mode=%s (%s) check=%+v", out.ResumeMode, out.ResumeReason, out.ResumeCheck)
+	}
+	wantDir := filepath.Join(f.home, ".claude", "projects", strings.ReplaceAll(strings.ReplaceAll(dotted, "/", "-"), ".", "-"))
+	if out.ResumeCheck.FoundPath != filepath.Join(wantDir, id+".jsonl") || !strings.Contains(out.ResumeCheck.CheckedPaths[0], "repowire-smoke-restart") {
+		t.Fatalf("check = %+v, want the dot slugged to -", out.ResumeCheck)
+	}
+	if got := f.launchedCommands(); len(got) != 1 || !strings.HasSuffix(got[0], "--resume "+id) {
+		t.Fatalf("launched %q", got)
+	}
 }

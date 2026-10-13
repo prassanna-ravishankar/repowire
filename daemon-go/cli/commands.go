@@ -834,30 +834,30 @@ func runShare(argv []string) int {
 // peerBoolFlags are the `repowire peer` flags that take no value.
 var peerBoolFlags = []string{"show-offline", "dry-run", "json", "fix", "apply", "register", "force", "fresh", "wait", "status", "cancel"}
 
-// printRestartOutcome summarizes a restart result for a human and returns the
-// exit code: 1 when it failed, with the command to finish it by hand.
+// printRestartOutcome summarizes a restart result for a human on stderr (stdout
+// stays the JSON result) and returns the exit code: 1 when it failed.
 func printRestartOutcome(r map[string]any) int {
 	launch, _ := r["would_run"].(map[string]any)
 	for _, warning := range anySlice(r["warnings"]) {
-		fmt.Println("warning:", warning)
+		fmt.Fprintln(os.Stderr, "warning:", warning)
 	}
 	switch stringValue(r, "outcome") {
 	case "restarted":
-		fmt.Printf("restarted %s: %s -> %s (%s)\n", stringValue(r, "display_name"), stringValue(r, "old_peer_id"), stringValue(r, "new_peer_id"), stringValue(r, "resume_mode"))
+		fmt.Fprintf(os.Stderr, "restarted %s: %s -> %s (%s)\n", stringValue(r, "display_name"), stringValue(r, "old_peer_id"), stringValue(r, "new_peer_id"), stringValue(r, "resume_mode"))
 	case "in_progress":
-		fmt.Printf("restart %s in progress at stage %s; check with: repowire peer restart %s --status\n", stringValue(r, "restart_id"), stringValue(r, "stage"), stringValue(r, "display_name"))
+		fmt.Fprintf(os.Stderr, "restart %s in progress at stage %s; check with: repowire peer restart %s --status\n", stringValue(r, "restart_id"), stringValue(r, "stage"), stringValue(r, "display_name"))
 	case "failed":
 		failed, _ := r["failed"].(map[string]any)
-		fmt.Printf("restart failed at %s: %s\n", stringValue(failed, "stage"), stringValue(failed, "reason"))
+		fmt.Fprintf(os.Stderr, "restart failed at %s: %s\n", stringValue(failed, "stage"), stringValue(failed, "reason"))
 		if hint := stringValue(failed, "hint"); hint != "" {
-			fmt.Println(hint)
+			fmt.Fprintln(os.Stderr, hint)
 		}
 		if r["needs_manual_relaunch"] == true {
-			fmt.Println("needs manual relaunch:")
+			fmt.Fprintln(os.Stderr, "needs manual relaunch:")
 		} else {
-			fmt.Println("launch command, for reference (do not run it while a runtime for this session is alive):")
+			fmt.Fprintln(os.Stderr, "launch command, for reference (do not run it while a runtime for this session is alive):")
 		}
-		fmt.Println("  " + stringValue(launch, "manual"))
+		fmt.Fprintln(os.Stderr, "  "+stringValue(launch, "manual"))
 		return 1
 	}
 	return 0

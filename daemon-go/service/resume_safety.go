@@ -66,14 +66,65 @@ func runtimeSessionValidationStatus(peerPath string, backend proto.AgentType, ru
 }
 
 func claudeResumable(peerPath, runtimeSessionID string) bool {
-	if peerPath == "" {
-		return false
+	_, found := ResumeFileCandidates(proto.AgentClaudeCode, peerPath, runtimeSessionID)
+	return found != ""
+}
+
+// ClaudeProjectDirs are the ~/.claude/projects directories Claude Code uses
+// for cwd: the current slug (every character outside [A-Za-z0-9] becomes
+// "-", so /a/b.c -> -a-b-c) and the older slug that only replaced "/".
+func ClaudeProjectDirs(cwd string) []string {
+	root := filepath.Join(homeDir(), ".claude", "projects")
+	current := filepath.Join(root, claudeSlug(cwd))
+	legacy := filepath.Join(root, strings.ReplaceAll(cwd, "/", "-"))
+	if legacy == current {
+		return []string{current}
 	}
-	direct := filepath.Join(homeDir(), ".claude", "projects", encodeClaudeCWD(peerPath), runtimeSessionID+".jsonl")
-	if fileExists(direct) {
-		return true
+	return []string{current, legacy}
+}
+
+func claudeSlug(cwd string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '-'
+	}, cwd)
+}
+
+// ResumeFileCandidates lists where a backend's session file for id is looked
+// for (a glob for stores searched by content) and the one found, if any.
+func ResumeFileCandidates(backend proto.AgentType, peerPath, id string) (checked []string, found string) {
+	switch backend {
+	case proto.AgentClaudeCode:
+		if peerPath == "" {
+			return nil, ""
+		}
+		for _, dir := range ClaudeProjectDirs(peerPath) {
+			path := filepath.Join(dir, id+".jsonl")
+			checked = append(checked, path)
+			if found == "" && fileExists(path) {
+				found = path
+			}
+		}
+		return checked, found
+	case proto.AgentCodex:
+		checked = []string{filepath.Join(homeDir(), ".codex", "sessions", "**", "rollout-*"+id+".jsonl")}
+		if codexResumable(peerPath, id) {
+			found = checked[0]
+		}
+	case proto.AgentOpenCode:
+		checked = []string{filepath.Join(homeDir(), ".local", "share", "opencode", "storage", "session", "*", "ses_*.json")}
+		if opencodeResumable(peerPath, id) {
+			found = checked[0]
+		}
+	case proto.AgentPi:
+		checked = []string{filepath.Join(homeDir(), ".pi", "pi-acp", "session-map.json")}
+		if piResumable(peerPath, id) {
+			found = checked[0]
+		}
 	}
-	return false
+	return checked, found
 }
 
 func codexResumable(peerPath, runtimeSessionID string) bool {
@@ -156,8 +207,6 @@ func codexFileMatchesPeer(path, peerPath string) bool {
 	}
 	return false
 }
-
-func encodeClaudeCWD(path string) string { return strings.ReplaceAll(path, "/", "-") }
 
 func pathsMatch(a, b string) bool {
 	if a == "" || b == "" {

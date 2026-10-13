@@ -183,3 +183,15 @@ func TestBoundedCommandKillsTheProcessGroup(t *testing.T) {
 		t.Fatalf("bounded command took %s", elapsed)
 	}
 }
+
+func TestClaudeProjectDirsMatchClaudeCodeSlug(t *testing.T) {
+	t.Setenv("HOME", "/h")
+	got := ClaudeProjectDirs("/Users/p/projects/repowire.smoke-restart")
+	want := []string{"/h/.claude/projects/-Users-p-projects-repowire-smoke-restart", "/h/.claude/projects/-Users-p-projects-repowire.smoke-restart"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("dirs = %v, want %v", got, want)
+	}
+	if got := ClaudeProjectDirs("/a/b_c"); len(got) != 2 || !strings.HasSuffix(got[0], "-a-b-c") {
+		t.Fatalf("underscore slug = %v", got)
+	}
+}
