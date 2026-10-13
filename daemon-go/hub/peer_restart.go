@@ -52,6 +52,7 @@ const (
 )
 
 var (
+	restartCancelWait      = 500 * time.Millisecond
 	restartExitTimeout     = 20 * time.Second
 	restartRegisterTimeout = 90 * time.Second
 	restartPollInterval    = 250 * time.Millisecond
@@ -78,8 +79,10 @@ type RestartLaunch struct {
 	PermissionModeSource string          `json:"permission_mode_source"`
 	ResumeID             string          `json:"resume_id,omitempty"`
 	EnvKeys              []string        `json:"env_keys,omitempty"`
-	// Manual is the paste-ready line a human runs to finish a failed restart.
-	Manual string `json:"manual"`
+	// Command and Manual have argument values redacted (listed in Redacted);
+	// fill those from daemon.spawn.commands before running Manual by hand.
+	Manual   string   `json:"manual"`
+	Redacted []string `json:"redacted,omitempty"`
 }
 
 // RestartLastKnown is the evidence captured when a stage fails.
@@ -132,6 +135,7 @@ type restartPlan struct {
 	exitMode      string // sigterm | kill_pane | none
 	pid           int
 	base          string
+	command       string // the real launch line; results only show it redacted
 	resumeID      string
 	repowireSID   *string
 	capability    map[string]any
@@ -143,12 +147,10 @@ type restartPlan struct {
 
 // restartRun is one restart; result is guarded by mu, done closes on finish.
 type restartRun struct {
-	mu       sync.Mutex
-	result   RestartResult
-	cancel   context.CancelFunc
-	done     chan struct{}
-	exited   bool      // the old runtime was signalled
-	finished time.Time // set when done closes
+	mu     sync.Mutex
+	result RestartResult
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func (r *restartRun) snapshot() RestartResult {
@@ -175,23 +177,48 @@ func (r *restartRun) active() bool {
 	}
 }
 
-// restartOfflineShield is how long after a restart the old runtime's own
-// terminal offline posts (ws-hook agent_exited, SessionEnd) are ignored; the
-// ws-hook notices its agent's death within ~5s.
-var restartOfflineShield = 30 * time.Second
-
-// shieldsOffline reports whether a terminal offline for this peer is most
-// likely the restarted runtime's own exit noise.
-func (r *restartRun) shieldsOffline() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.exited && (r.finished.IsZero() || time.Since(r.finished) < restartOfflineShield)
-}
-
 // restartTracker keeps the latest run per peer: in flight or finished.
 type restartTracker struct {
-	mu   sync.Mutex
-	runs map[proto.PeerID]*restartRun
+	mu         sync.Mutex
+	runs       map[proto.PeerID]*restartRun
+	superseded map[proto.PeerID][]supersededRuntime
+	closed     bool // set at shutdown: no new runs
+}
+
+// supersededRuntime is an execution a restart replaced. Its pane and pid
+// fence that execution's late offline posts, which share the reused peer_id.
+type supersededRuntime struct {
+	paneID    string
+	pid       int
+	restartID string
+}
+
+const supersededPerPeer = 8
+
+func (t *restartTracker) supersede(id proto.PeerID, rt supersededRuntime) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.superseded == nil {
+		t.superseded = map[proto.PeerID][]supersededRuntime{}
+	}
+	list := append(t.superseded[id], rt)
+	if len(list) > supersededPerPeer {
+		list = list[len(list)-supersededPerPeer:]
+	}
+	t.superseded[id] = list
+}
+
+// supersededBy returns the restart that replaced the execution in paneID (or
+// pid) for id. An execution never superseded is never fenced.
+func (t *restartTracker) supersededBy(id proto.PeerID, paneID string, pid int) (string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, rt := range t.superseded[id] {
+		if (paneID != "" && paneID == rt.paneID) || (pid > 0 && pid == rt.pid) {
+			return rt.restartID, true
+		}
+	}
+	return "", false
 }
 
 func (t *restartTracker) get(id proto.PeerID) *restartRun {
@@ -200,10 +227,14 @@ func (t *restartTracker) get(id proto.PeerID) *restartRun {
 	return t.runs[id]
 }
 
-// start installs run unless one is already in flight for id.
+// start installs run unless one is already in flight for id (returned) or
+// the tracker is closed (nil, false).
 func (t *restartTracker) start(id proto.PeerID, run *restartRun) (*restartRun, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.closed {
+		return nil, false
+	}
 	if current := t.runs[id]; current != nil && current.active() {
 		return current, false
 	}
@@ -214,9 +245,11 @@ func (t *restartTracker) start(id proto.PeerID, run *restartRun) (*restartRun, b
 	return run, true
 }
 
-func (t *restartTracker) active() []*restartRun {
+// close stops intake and returns the runs still in flight.
+func (t *restartTracker) close() []*restartRun {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.closed = true
 	var out []*restartRun
 	for _, run := range t.runs {
 		if run.active() {
@@ -226,14 +259,16 @@ func (t *restartTracker) active() []*restartRun {
 	return out
 }
 
-// StopRestarts cancels in-flight restarts and waits (bounded) for each to
-// record its typed failure; call before the HTTP server drains so handlers
-// waiting on a restart return and the journal is written before the store closes.
+// StopRestarts closes restart intake, cancels in-flight restarts, and waits
+// (bounded) for each to record its typed failure. Call it before the HTTP
+// server drains so handlers waiting on a restart return and the journal is
+// written before the store closes. A run blocked inside a tmux call cannot be
+// joined early; every tmux call is itself bounded by service.TmuxCommand.
 func (h *Hub) StopRestarts(timeout time.Duration) {
 	if h.spawn == nil || h.spawn.restarts == nil {
 		return
 	}
-	runs := h.spawn.restarts.active()
+	runs := h.spawn.restarts.close()
 	for _, run := range runs {
 		run.cancel()
 	}
@@ -248,14 +283,14 @@ func (h *Hub) StopRestarts(timeout time.Duration) {
 	}
 }
 
-// restartShieldsOffline reports whether a terminal offline for id should be
-// ignored because a restart just stopped that peer's runtime.
-func (h *Hub) restartShieldsOffline(id proto.PeerID) bool {
+// restartFencedOffline reports the restart that superseded the execution
+// (pane, pid) an offline post for id comes from. Posts from the current
+// execution, or with no pane/pid, are never fenced.
+func (h *Hub) restartFencedOffline(id proto.PeerID, paneID string, pid int) (string, bool) {
 	if h.spawn == nil || h.spawn.restarts == nil {
-		return false
+		return "", false
 	}
-	run := h.spawn.restarts.get(id)
-	return run != nil && run.shieldsOffline()
+	return h.spawn.restarts.supersededBy(id, paneID, pid)
 }
 
 func newRestartID() string {
@@ -285,27 +320,22 @@ func (h *Hub) restartPeer(ctx context.Context, name string, req RestartPeerReque
 	if req.DryRun {
 		return result, nil
 	}
-	if result.Failed == nil {
-		reserved, rerr := h.spawn.svc.Reserve(plan.spawn)
-		if rerr != nil {
-			h.failPrepare(plan, &result, &RestartFailure{Reason: "pane_reserve_failed", Hint: rerr.Error()})
-		}
-		plan.spawn = reserved
-	}
 	if result.Failed != nil {
 		h.recordFinishedRestart(p.PeerID, result)
 		return result, nil
 	}
-	result.NewPaneID = plan.spawn.Reserved.PaneID
-	result.TmuxSession = plan.spawn.Reserved.TmuxSession
-	result.Outcome, result.Stage = restartOutcomeInProgress, restartStageExit
+	result.Outcome = restartOutcomeInProgress
 
+	// Installed before the pane is reserved, so a cancel during prepare finds it.
 	runCtx, cancel := context.WithCancel(h.spawn.ctx)
 	run := &restartRun{result: result, cancel: cancel, done: make(chan struct{})}
 	if current, ok := h.spawn.restarts.start(p.PeerID, run); !ok {
 		cancel()
-		h.spawn.svc.Tmux().KillPane(plan.spawn.Reserved.PaneID)
-		return current.snapshot(), nil
+		if current != nil {
+			return current.snapshot(), nil
+		}
+		h.failPrepare(plan, &result, &RestartFailure{Reason: "daemon_shutting_down", Hint: "the daemon is stopping; nothing was touched"})
+		return result, nil
 	}
 	h.restartEvent(ctx, "peer_restart_started", run.snapshot(), nil)
 	go h.runRestart(runCtx, run, plan)
@@ -375,7 +405,11 @@ func (h *Hub) cancelRestart(ctx context.Context, name string, circle *string) (R
 		return run.snapshot(), false, nil
 	}
 	run.cancel()
-	<-run.done
+	select { // a run inside a (bounded) tmux call reports cancelled when it returns
+	case <-run.done:
+	case <-ctx.Done():
+	case <-time.After(restartCancelWait):
+	}
 	return run.snapshot(), true, nil
 }
 
@@ -480,27 +514,38 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 		result.Warnings = append(result.Warnings, "no usable daemon.spawn.commands entry ("+cerr.Error()+"); using the built-in "+string(p.Backend)+" template")
 	}
 
-	mode, source := "", ""
+	// Permissions: carry over exactly the permission words the live runtime was
+	// observed with (never more), else the hook-recorded mode, else the template.
+	var observed *service.PermissionObservation
+	source := ""
 	if plan.exitMode == "sigterm" {
-		if mode = service.PermissionModeFromArgs(p.Backend, proc.Args(plan.pid)); mode != "" {
-			source = "argv"
+		if argv := proc.Args(plan.pid); len(argv) > 0 {
+			obs := service.ObservePermission(p.Backend, argv)
+			observed, source = &obs, "argv"
 		}
 	}
-	if mode == "" {
+	if observed == nil {
 		for _, meta := range []map[string]any{p.Metadata, bindingMeta(binding)} {
-			if m, _ := meta["permission_mode"].(string); service.ValidPermissionMode(p.Backend, m) {
-				mode, source = m, "hook"
+			m, _ := meta["permission_mode"].(string)
+			if words, ok := service.PermissionWords(p.Backend, m); ok {
+				observed, source = &service.PermissionObservation{Mode: m, Words: words}, "hook"
 				break
 			}
 		}
 	}
-	if mode != "" {
-		base = service.WithPermissionMode(base, p.Backend, mode)
-	} else if mode = service.PermissionModeFromArgs(p.Backend, base); mode != "" {
-		source = "template"
-		result.Defaulted = append(result.Defaulted, "permission_mode")
+	mode := ""
+	if observed != nil {
+		applied, aerr := service.ApplyPermission(base, p.Backend, observed.Words)
+		if aerr != nil {
+			return plan, &RestartFailure{Reason: "unparseable_command", Hint: aerr.Error()}
+		}
+		base, mode = applied, observed.Mode
 	} else {
-		mode, source = "default", "backend_default"
+		obs, oerr := service.ObservePermissionInCommand(p.Backend, base)
+		if oerr != nil {
+			return plan, &RestartFailure{Reason: "unparseable_command", Hint: oerr.Error()}
+		}
+		mode, source = obs.Mode, "template"
 		result.Defaulted = append(result.Defaulted, "permission_mode")
 	}
 	plan.base = base
@@ -518,10 +563,12 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 		plan.resumeID = ""
 	}
 	result.WouldRun = RestartLaunch{
-		Backend: p.Backend, CWD: service.NormPath(cwd), Command: base, PermissionMode: mode,
-		PermissionModeSource: source, ResumeID: plan.resumeID, EnvKeys: svc.EnvKeys(),
+		Backend: p.Backend, CWD: service.NormPath(cwd), PermissionMode: mode,
+		PermissionModeSource: source, EnvKeys: svc.EnvKeys(),
 	}
-	applyCommand(result, plan)
+	if err := applyCommand(result, plan); err != nil {
+		return plan, &RestartFailure{Reason: "unparseable_command", Hint: err.Error()}
+	}
 
 	if h.spawn.asks != nil {
 		open, _ := h.spawn.asks.PendingForPeer(ctx, p.PeerID, -1, "both")
@@ -532,7 +579,7 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 	}
 	plan.spawn = service.SpawnConfig{
 		Path: cwd, Circle: p.Circle, Backend: p.Backend, Role: p.Role, PeerID: &p.PeerID,
-		TargetPane: plan.proof.paneID, SameWindow: oldPane != nil, Message: req.Message, Command: base, Profile: derefString(profile),
+		TargetPane: plan.proof.paneID, SameWindow: oldPane != nil, Message: req.Message, Profile: derefString(profile),
 	}
 	if oldPane == nil {
 		plan.spawn.TargetPane = ""
@@ -540,15 +587,24 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 	return plan, nil
 }
 
-// applyCommand sets would_run.command from the plan's base and resume id.
-func applyCommand(r *RestartResult, plan *restartPlan) {
-	r.WouldRun.Command, r.WouldRun.ResumeID = plan.base, ""
+// applyCommand builds plan.command from the base and resume id (any session
+// args in the template are replaced; a fresh launch carries none) and shows
+// it redacted in would_run.
+func applyCommand(r *RestartResult, plan *restartPlan) error {
+	var err error
+	r.WouldRun.ResumeID = ""
 	if plan.resumeID != "" {
-		if command, err := service.BuildResumeCommand(plan.base, r.WouldRun.Backend, plan.resumeID); err == nil {
-			r.WouldRun.Command, r.WouldRun.ResumeID = command, plan.resumeID
-		}
+		plan.command, err = service.BuildResumeCommand(plan.base, r.WouldRun.Backend, plan.resumeID)
+		r.WouldRun.ResumeID = plan.resumeID
+	} else {
+		plan.command, err = service.StripResume(plan.base, r.WouldRun.Backend)
 	}
+	if err != nil {
+		return err
+	}
+	r.WouldRun.Command, r.WouldRun.Redacted = service.RedactCommand(plan.command)
 	r.WouldRun.Manual = "cd " + service.ShellQuote(r.WouldRun.CWD) + " && " + r.WouldRun.Command
+	return nil
 }
 
 // previewResume reports, for a dry run, whether the resume id validates now.
@@ -564,10 +620,9 @@ func (h *Hub) previewResume(plan *restartPlan, result *RestartResult) {
 // runRestart executes exit → wait → launch → register on the daemon context.
 func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan) {
 	defer close(run.done)
-	defer run.update(func(*RestartResult) { run.finished = time.Now() })
 	defer run.cancel()
 	svc := h.spawn.svc
-	reserved := plan.spawn.Reserved.PaneID
+	reserved := ""
 	fail := func(stage, reason, hint string, manual bool) {
 		run.update(func(r *RestartResult) {
 			r.Outcome, r.Stage, r.FinishedAt, r.NeedsManualRelaunch = restartOutcomeFailed, stage, nowISO(), manual
@@ -575,11 +630,38 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 		})
 		h.restartEvent(ctx, "peer_restart_failed", run.snapshot(), nil)
 	}
-	abandonReservation := func() { svc.Tmux().KillPane(reserved) }
+	abandonReservation := func() {
+		if reserved != "" {
+			svc.Tmux().KillPane(reserved)
+		}
+	}
 	stage := func(name string) { run.update(func(r *RestartResult) { r.Stage = name }) }
 
-	// exit
-	run.update(func(*RestartResult) { run.exited = plan.exitMode != "none" })
+	// prepare (tail): reserve the new pane beside the old one.
+	reservedCfg, err := svc.Reserve(plan.spawn)
+	if err != nil {
+		fail(restartStagePrepare, "pane_reserve_failed", err.Error(), false)
+		return
+	}
+	plan.spawn, reserved = reservedCfg, reservedCfg.Reserved.PaneID
+	run.update(func(r *RestartResult) { r.NewPaneID, r.TmuxSession = reserved, reservedCfg.Reserved.TmuxSession })
+	if ctx.Err() != nil {
+		abandonReservation()
+		fail(restartStagePrepare, "cancelled", "cancelled before the old runtime was touched", false)
+		return
+	}
+
+	// exit: fence the old execution first, so its own late offline posts can
+	// never retire the peer_id its replacement reclaims.
+	stage(restartStageExit)
+	if plan.exitMode != "none" {
+		h.spawn.restarts.supersede(plan.peer.PeerID, supersededRuntime{paneID: plan.proof.paneID, pid: derefInt(plan.peer.AgentPID), restartID: run.snapshot().RestartID})
+	}
+	if ctx.Err() != nil {
+		abandonReservation()
+		fail(restartStageExit, "cancelled", "cancelled before the old runtime was signalled; nothing was touched", false)
+		return
+	}
 	switch plan.exitMode {
 	case "sigterm":
 		if err := h.spawn.proc.Terminate(plan.pid); err != nil {
@@ -619,7 +701,12 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 			clienthooks.ClearPaneRuntimeState(plan.proof.paneID)
 		}
 	}
+	// Offline with no socket: deliveries in the gap queue durably and replay
+	// when the replacement's ws-hook connects, instead of reaching the dying hook.
 	_, _ = h.spawn.reg.MarkOffline(ctx, plan.peer.PeerID, false)
+	if h.transport != nil {
+		_ = h.transport.Close(plan.peer.PeerID)
+	}
 
 	// launch: the resume id is validated against the post-exit session file.
 	stage(restartStageLaunch)
@@ -631,7 +718,7 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 			r.ResumeMode, r.ResumeReason = "fresh", "session file absent after exit"
 			plan.resumeID = ""
 		}
-		applyCommand(r, plan)
+		_ = applyCommand(r, plan) // parsed once already in prepare
 	})
 	if ctx.Err() != nil {
 		abandonReservation()
@@ -639,7 +726,7 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 		return
 	}
 	cfg := plan.spawn
-	cfg.Command = run.snapshot().WouldRun.Command
+	cfg.Command = plan.command
 	launched, err := svc.Launch(cfg)
 	if err != nil {
 		abandonReservation()
@@ -648,16 +735,20 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 	}
 	h.restartEvent(ctx, "peer_restart_launched", run.snapshot(), map[string]any{"pane_id": launched.PaneID})
 
-	// register
+	// register: the registry sees the new pane AND its ws-hook is the peer's
+	// transport (HTTP registration precedes the ws-hook connect).
 	stage(restartStageRegister)
 	var registered *proto.Peer
 	err = pollUntil(ctx, restartRegisterTimeout, func() bool {
 		p, ok := h.spawn.reg.GetPeerByPane(launched.PaneID)
-		if ok && p.Status != proto.StatusOffline {
-			registered = p
-			return true
+		if !ok || p.Status == proto.StatusOffline {
+			return false
 		}
-		return false
+		if pane, known := h.transportPane(p.PeerID); !known || pane != launched.PaneID {
+			return false
+		}
+		registered = p
+		return true
 	})
 	if err != nil {
 		// Launched but unverified: a hand relaunch now would run two runtimes on one session.
@@ -831,6 +922,28 @@ func exitTarget(plan *restartPlan) string {
 		return fmt.Sprintf("pid %d", plan.pid)
 	}
 	return "pane " + plan.proof.paneID
+}
+
+// transportPane reports which pane holds id's live socket; with no transport
+// wired (hermetic tests) every registration counts as connected.
+func (h *Hub) transportPane(id proto.PeerID) (string, bool) {
+	if h.spawn.transportPane != nil {
+		return h.spawn.transportPane(id)
+	}
+	if h.transport == nil {
+		if p, ok := h.spawn.reg.GetPeer(id); ok && p.PaneID != nil {
+			return *p.PaneID, true
+		}
+		return "", false
+	}
+	return h.transport.ConnectionPaneID(id)
+}
+
+func derefInt(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 func waitReason(err error, timeout string) string {

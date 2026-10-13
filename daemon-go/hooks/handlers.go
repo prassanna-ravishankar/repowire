@@ -71,7 +71,7 @@ func handleSession(raw map[string]any, backend string, emitContext bool) int {
 		if stringValue(raw, "reason") != "clear" {
 			meta := ReadPaneRuntimeMetadata(info.PaneID)
 			peerID := firstNonempty(stringValue(meta, "peer_id"), peerForPane(info.PaneID))
-			markOffline(peerID, "session_end", "session_end_hook", "SessionEnd reason="+firstNonempty(stringValue(raw, "reason"), "unknown"))
+			markOffline(peerID, "session_end", "session_end_hook", "SessionEnd reason="+firstNonempty(stringValue(raw, "reason"), "unknown"), info.PaneID, 0)
 		}
 		return 0
 	}
@@ -211,7 +211,7 @@ func handleSession(raw map[string]any, backend string, emitContext bool) int {
 			_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
 		}
 		if priorPeerID != "" && priorPeerID != peerID {
-			markOffline(priorPeerID, "pane_takeover", "session_start_takeover", "pane "+info.PaneID+" taken over by "+peerID)
+			markOffline(priorPeerID, "pane_takeover", "session_start_takeover", "pane "+info.PaneID+" taken over by "+peerID, info.PaneID, 0)
 		}
 		ClearPaneRuntimeState(info.PaneID)
 	}

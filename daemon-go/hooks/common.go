@@ -586,13 +586,18 @@ func ConsumeSpawnHint(path, backend string) map[string]any {
 
 func consumeSpawnHint(path, backend string) map[string]any { return ConsumeSpawnHint(path, backend) }
 
-func markOffline(peerID, reason, source, detail string) {
+// markOffline retires peerID terminally on behalf of the execution in paneID
+// (agentPID when known); the daemon ignores it if a restart replaced that
+// execution.
+func markOffline(peerID, reason, source, detail, paneID string, agentPID int) {
 	if peerID == "" {
 		return
 	}
-	daemonPost("/peers/"+url.PathEscape(peerID)+"/offline", map[string]any{
-		"reason": reason, "source": source, "detail": detail, "terminal": true,
-	})
+	body := map[string]any{"reason": reason, "source": source, "detail": detail, "terminal": true, "pane_id": paneID}
+	if agentPID > 0 {
+		body["agent_pid"] = agentPID
+	}
+	daemonPost("/peers/"+url.PathEscape(peerID)+"/offline", body)
 }
 
 func stringValue(m map[string]any, key string) string {

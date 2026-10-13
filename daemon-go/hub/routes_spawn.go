@@ -58,8 +58,10 @@ type spawnDeps struct {
 	ctx         context.Context
 	proc        service.ProcessControl
 	restarts    *restartTracker
-	// notify overrides restart-report delivery (tests); nil uses the ask deps.
-	notify func(context.Context, service.NotifyParams) error
+	// notify overrides restart-report delivery and transportPane the live
+	// socket's pane (tests); nil uses the ask deps and the hub transport.
+	notify        func(context.Context, service.NotifyParams) error
+	transportPane func(proto.PeerID) (string, bool)
 }
 
 // WithSpawn attaches the spawn-kill-restart route group. svc owns tmux + ownership;

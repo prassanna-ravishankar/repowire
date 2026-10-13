@@ -112,6 +112,10 @@ type OfflineRequest struct {
 	Source   string  `json:"source"`
 	Detail   *string `json:"detail"`
 	Terminal bool    `json:"terminal"`
+	// PaneID/AgentPID identify the execution posting; a restart fences posts
+	// from the execution it replaced.
+	PaneID   string `json:"pane_id,omitempty"`
+	AgentPID int    `json:"agent_pid,omitempty"`
 }
 
 // OfflineResponse mirrors the Python OfflineResponse.
@@ -508,10 +512,13 @@ func (h *Hub) handleMarkOffline(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
-	if body.Terminal && (body.Source == "ws_hook" || body.Source == "session_end_hook") && h.restartShieldsOffline(proto.PeerID(name)) {
-		// The restarted runtime's own exit: the restart already marked the peer
-		// offline (non-terminal) and its replacement reclaims this peer_id.
-		h.reg.AddEvent(r.Context(), "peer_restart_offline_ignored", map[string]any{"peer_id": name, "reason": body.Reason, "source": body.Source})
+	if restartID, fenced := h.restartFencedOffline(proto.PeerID(name), body.PaneID, body.AgentPID); fenced {
+		// From an execution a restart replaced: the replacement reclaimed this
+		// peer_id, so this post must not retire it or close its socket.
+		h.reg.AddEvent(r.Context(), "peer_restart_offline_ignored", map[string]any{
+			"peer_id": name, "restart_id": restartID, "pane_id": body.PaneID, "agent_pid": body.AgentPID,
+			"reason": body.Reason, "source": body.Source, "terminal": body.Terminal,
+		})
 		writeJSON(w, http.StatusOK, OfflineResponse{OK: true})
 		return
 	}

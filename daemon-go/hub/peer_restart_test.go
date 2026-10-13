@@ -70,10 +70,10 @@ func (f *fakeRuntime) ProbePane(paneID string) *service.TmuxPaneEvidence {
 	return f.evidence[paneID]
 }
 
-func (f *fakeRuntime) Args(pid int) string {
+func (f *fakeRuntime) Args(pid int) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.args[pid]
+	return strings.Fields(f.args[pid])
 }
 
 func (f *fakeRuntime) Alive(pid int) bool {
@@ -565,22 +565,29 @@ func TestRestartRefusesWhenRuntimeMayBeAliveButPaneUnseen(t *testing.T) {
 	}
 }
 
-func TestRestartShieldsTheOldRuntimesTerminalOffline(t *testing.T) {
+// The restart fences the execution it replaced (old pane, old pid), forever;
+// the replacement's own posts are never fenced.
+func TestRestartFencesOnlyTheReplacedExecution(t *testing.T) {
 	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
-	if f.h.restartShieldsOffline(f.peer.PeerID) {
-		t.Fatal("no restart yet, nothing to shield")
+	if _, fenced := f.h.restartFencedOffline(f.peer.PeerID, restartOldPane, 101); fenced {
+		t.Fatal("nothing is fenced before a restart")
 	}
-	if out := f.restart(t, RestartPeerRequest{}); out.Outcome != restartOutcomeRestarted {
+	out := f.restart(t, RestartPeerRequest{})
+	if out.Outcome != restartOutcomeRestarted {
 		t.Fatalf("outcome = %s", out.Outcome)
 	}
-	if !f.h.restartShieldsOffline(f.peer.PeerID) {
-		t.Fatal("the old ws-hook/SessionEnd terminal offline must be ignored right after a restart")
-	}
-	prev := restartOfflineShield
-	restartOfflineShield = 0
-	t.Cleanup(func() { restartOfflineShield = prev })
-	if f.h.restartShieldsOffline(f.peer.PeerID) {
-		t.Fatal("the shield must expire")
+	for _, c := range []struct {
+		pane string
+		pid  int
+		want bool
+	}{
+		{restartOldPane, 0, true}, {"", 101, true}, {restartOldPane, 101, true},
+		{"%11", 0, false}, {"%11", 202, false}, {"", 0, false},
+	} {
+		id, fenced := f.h.restartFencedOffline(proto.PeerID(out.NewPeerID), c.pane, c.pid)
+		if fenced != c.want || (fenced && id != out.RestartID) {
+			t.Errorf("pane=%q pid=%d fenced=%v (%s), want %v", c.pane, c.pid, fenced, id, c.want)
+		}
 	}
 }
 
@@ -611,5 +618,118 @@ func TestStopRestartsCancelsInFlightRuns(t *testing.T) {
 	last, _ := f.h.lastRestart("proj", nil)
 	if last.Outcome != restartOutcomeFailed || last.Failed.Reason != "cancelled" {
 		t.Fatalf("after shutdown: %+v", last)
+	}
+}
+
+func TestRestartCancelledDaemonNeverSignals(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f.h.WithSpawnContext(ctx)
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if len(f.rt.terminated) != 0 || len(f.launchedCommands()) != 0 {
+		t.Fatalf("a cancelled restart signalled %v / launched %v", f.rt.terminated, f.launchedCommands())
+	}
+	if out.Failed == nil || out.Failed.Reason != "cancelled" || out.NeedsManualRelaunch {
+		t.Fatalf("failed = %+v manual=%v", out.Failed, out.NeedsManualRelaunch)
+	}
+	if !slices.Equal(f.rt.killed, []string{"%11"}) {
+		t.Fatalf("killed = %v, want only the reserved pane", f.rt.killed)
+	}
+}
+
+func TestRestartFreshStripsTemplateResume(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude --resume old-session --continue"})
+	f.writeClaudeSession(t, "sess-1")
+
+	if out := f.restart(t, RestartPeerRequest{Fresh: true}); out.ResumeMode != "fresh" {
+		t.Fatalf("resume_mode = %s", out.ResumeMode)
+	}
+	if got := f.launchedCommands(); len(got) != 1 || got[0] != "claude --dangerously-skip-permissions" {
+		t.Fatalf("fresh launch %q must carry no session args", got)
+	}
+}
+
+// An observed permission set restart does not understand is carried over word
+// for word; it never falls back to the (bypass) template.
+func TestRestartPreservesUnknownCodexPermissionsVerbatim(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentCodex: "codex --dangerously-bypass-approvals-and-sandbox resume old"})
+	f.peer.Backend = proto.AgentCodex
+	f.peer.Metadata = map[string]any{"hook_session_id": "new-thread"}
+	f.rt.args[101] = "codex --sandbox read-only --ask-for-approval untrusted"
+
+	out := f.restart(t, RestartPeerRequest{DryRun: true})
+
+	if out.WouldRun.PermissionMode != service.PreservedVerbatim || out.WouldRun.PermissionModeSource != "argv" {
+		t.Fatalf("mode = %s (%s)", out.WouldRun.PermissionMode, out.WouldRun.PermissionModeSource)
+	}
+	want := "codex --sandbox read-only --ask-for-approval untrusted resume new-thread"
+	if out.WouldRun.Command != want {
+		t.Fatalf("command = %q, want %q", out.WouldRun.Command, want)
+	}
+}
+
+func TestRestartRedactsCommandValuesInResultAndJournal(t *testing.T) {
+	const marker = "SYNTHETIC_REVIEW_SECRET"
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude --settings '{\"env\":{\"TOKEN\":\"" + marker + "\"}}'"})
+	f.writeClaudeSession(t, "sess-1")
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	raw, _ := json.Marshal(out)
+	if strings.Contains(string(raw), marker) || !slices.Contains(out.WouldRun.Redacted, "--settings") {
+		t.Fatalf("result leaks or misses redaction: %s", raw)
+	}
+	for _, e := range f.reg.events {
+		if b, _ := json.Marshal(e); strings.Contains(string(b), marker) {
+			t.Fatalf("journal leaks: %s", b)
+		}
+	}
+	if got := f.launchedCommands(); len(got) != 1 || !strings.Contains(got[0], marker) {
+		t.Fatalf("the real launch must keep the value: %q", got)
+	}
+}
+
+func TestRestartCancelIsBoundedWhileLaunchBlocks(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	prev := restartCancelWait
+	restartCancelWait = 50 * time.Millisecond
+	t.Cleanup(func() { restartCancelWait = prev })
+	started, release := make(chan struct{}), make(chan struct{})
+	f.rt.onLaunch = func(service.SpawnConfig) { close(started); <-release }
+	f.restart(t, RestartPeerRequest{Wait: new(bool)})
+	<-started
+
+	begin := time.Now()
+	_, cancelled, err := f.h.cancelRestart(context.Background(), "proj", nil)
+	if err != nil || !cancelled || time.Since(begin) > time.Second {
+		t.Fatalf("cancel = %v, %v after %s", cancelled, err, time.Since(begin))
+	}
+	close(release)
+	run := f.h.spawn.restarts.get(f.peer.PeerID)
+	<-run.done
+	if last := run.snapshot(); last.Failed == nil || last.Failed.Stage != restartStageRegister || last.NeedsManualRelaunch {
+		t.Fatalf("a cancel that lands mid-launch reports launched-unverified: %+v", last.Failed)
+	}
+}
+
+// HTTP registration precedes the ws-hook connect: the restart is not done (and
+// the report is not sent) until the new pane holds the peer's socket.
+func TestRestartWaitsForTheNewTransport(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	setRestartTimings(t, time.Second, 40*time.Millisecond)
+	f.h.spawn.transportPane = func(proto.PeerID) (string, bool) { return restartOldPane, true }
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if out.Failed == nil || out.Failed.Stage != restartStageRegister {
+		t.Fatalf("registered without the new socket: %+v", out)
+	}
+	select {
+	case n := <-f.notes:
+		t.Fatalf("report sent before the new transport connected: %+v", n)
+	default:
 	}
 }
