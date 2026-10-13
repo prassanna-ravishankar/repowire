@@ -92,7 +92,7 @@ Dashboard spawn and backend controls use the same spawn configuration as CLI and
 - Restart falls back to a fresh launch when the resume id is missing or its session file is absent after exit, and says so (`resume_mode=fresh`, `resume_reason`).
 - Restart sends SIGTERM and waits up to 20s; a runtime that has not exited by then is reported and nothing is relaunched. Restart does not send SIGKILL.
 - Restart rebuilds only the permission arguments it models; with any other permission argument it relaunches the observed argv itself (`argv-verbatim`). With nothing observed or recorded it adds no permission arguments. See [`repowire peer restart`](../../reference/cli.md#repowire-peer).
-- A peer whose live socket did not connect with hook version 2 or later is refused (`hook_too_old`); relaunch it once by hand on the current binary.
+- A peer whose live socket did not connect with hook version 2 or later is refused (`hook_too_old`); relaunch it once by hand on the current binary. After upgrading to a restart-capable daemon, every pre-existing peer must be relaunched once by hand before it can be restarted; until then `peer describe` shows `restart.restartable: false` with `hook_too_old`.
 - Deliveries sent while a peer is between runtimes are queued and replay to the replacement; deliveries in flight at the moment of exit may be reported delivered without being read (#472). A runtime that has not registered within 90s reports a `register` failure (not a manual relaunch) even if it is still starting; check the new pane before doing anything by hand.
 - Backend fork preserves the source peer and starts the target as an agent-role sibling; it does not copy backend-native conversation history.
 

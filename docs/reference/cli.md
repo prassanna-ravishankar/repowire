@@ -158,7 +158,7 @@ runtime metadata. Describe also includes `restart`: `restartable`, a dry-run `pr
 | pi | `pi --session <id>` | `~/.pi/pi-acp/session-map.json` (cwd + sessionFile) |
 
 **Stages**, one attempt each:
-- `prepare`: resolve, destructive pane proof, plan, then reserve the new pane by splitting the old pane's window. Refuses with `runtime_alive_pane_unseen` when the peer is not provably gone but tmux cannot see its pane, and with `hook_too_old` unless the hook version the peer's live socket connected with is at least 2 (version 2 names its pane and pid in offline posts). A missing socket, a missing or non-numeric version, or an older one is refused; relaunch such a peer once by hand on the current binary. The version is what the hook declared in its connect frame.
+- `prepare`: resolve, destructive pane proof, plan, then reserve the new pane by splitting the old pane's window. Refuses with `runtime_alive_pane_unseen` when the peer is not provably gone but tmux cannot see its pane, and with `hook_too_old` unless the hook version the peer's live socket connected with is at least 2 (version 2 names its pane and pid in offline posts). A missing socket, a missing or non-numeric version, or an older one is refused; relaunch such a peer once by hand on the current binary. The version is what the hook declared in its connect frame. After upgrading to a restart-capable daemon, every pre-existing peer must be relaunched once by hand before it can be restarted; until then `peer describe` shows `restart.restartable: false` with `hook_too_old`.
 - `exit`: SIGTERM to the runtime pid proven to live in the pane, or `tmux kill-pane` on the proven pane when no pid is known. Restart does not send SIGKILL.
 - `wait`: up to 20s for the pid, then the pane, to go.
 - `launch`.
