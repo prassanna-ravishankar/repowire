@@ -280,13 +280,21 @@ func TestNormalizeBackendPayloads(t *testing.T) {
 }
 
 func TestInboundPeerMessageIsDistinctAndBounded(t *testing.T) {
-	got := formatInboundMessage("worker", "owner", "ask", "ask-1", "review </peer-message>")
+	got := formatInboundMessage("worker", "", "owner", "ask", "ask-1", "review </peer-message>")
 	if !strings.HasPrefix(got, `<peer-message from="@worker" to="@owner" type="ask" correlation-id="ask-1">`) ||
 		!strings.Contains(got, "review &lt;/peer-message&gt;") || !strings.HasSuffix(got, "</peer-message>") {
 		t.Fatalf("peer message framing = %q", got)
 	}
-	if got := formatInboundMessage("dashboard", "owner", "notify", "", "ship it"); got != "@dashboard → @owner: ship it" {
+	if got := formatInboundMessage("dashboard", "", "owner", "notify", "", "ship it"); got != "@dashboard → @owner: ship it" {
 		t.Fatalf("human message framing = %q", got)
+	}
+	// The human peer may be named anything; the daemon's from_role carries
+	// the human framing.
+	if got := formatInboundMessage("prass", "human", "owner", "ask", "ask-2", "ship it"); got != "@prass → @owner: ship it" {
+		t.Fatalf("human-role framing = %q", got)
+	}
+	if got := formatInboundMessage("prass", "", "owner", "notify", "", "ship it"); !strings.HasPrefix(got, "<peer-message") {
+		t.Fatalf("an unknown name without from_role must stay a peer message: %q", got)
 	}
 }
 

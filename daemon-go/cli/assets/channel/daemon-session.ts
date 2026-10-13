@@ -80,6 +80,8 @@ export interface InboundMessage {
   /** Composed delivery text (message text + rendered attachments). */
   content: string;
   fromPeer: string;
+  /** "human" when the daemon's human peer sent it, whatever it is named. */
+  fromRole?: string;
   correlationId?: string;
   replyTo?: string;
 }
@@ -183,6 +185,7 @@ export class DaemonSession {
           type: msg.type,
           content: `${msg.text ?? ""}${attachmentText(msg.attachments)}`,
           fromPeer: msg.from_peer ?? "unknown",
+          fromRole: msg.from_role,
           correlationId: msg.correlation_id,
           replyTo: msg.reply_to,
         });

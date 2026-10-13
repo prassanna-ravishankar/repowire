@@ -97,6 +97,23 @@ func AsDeliveryInjection(err error) (*DeliveryInjectionError, bool) {
 type MessageRouter struct {
 	transport Transport
 	reg       *peer.Registry
+	// human, when set, names the human peer so frames it sends carry
+	// from_role="human". Renderers frame those as the user's instructions
+	// whatever the human peer is called.
+	human interface {
+		Human() (proto.PeerID, proto.DisplayName)
+	}
+}
+
+// stampSender marks a frame sent by the human peer.
+func (m *MessageRouter) stampSender(frame map[string]any, from proto.DisplayName) map[string]any {
+	if m.human == nil {
+		return frame
+	}
+	if _, name := m.human.Human(); name != "" && name == from {
+		frame["from_role"] = string(proto.RoleHuman)
+	}
+	return frame
 }
 
 // NewMessageRouter wires the router to the transport, tracker, and registry. The
@@ -135,6 +152,7 @@ func (m *MessageRouter) SendNotification(
 	if len(attachments) > 0 {
 		frame["attachments"] = attachments
 	}
+	m.stampSender(frame, from)
 	m.logDeliveryTrace("Notify", from, intendedRecipientName, toName, to)
 	return m.transport.SendAndWaitDeliveryAck(ctx, to, frame, deliveryAckTimeout)
 }
@@ -183,6 +201,7 @@ func (m *MessageRouter) SendAsk(
 	if question != nil {
 		frame["question"] = question
 	}
+	m.stampSender(frame, from)
 	m.logDeliveryTrace("Ask", from, intendedRecipientName, toName, to)
 
 	ack, err := m.transport.SendAndWaitDeliveryAck(ctx, to, frame, deliveryAckTimeout)
@@ -207,11 +226,11 @@ func (m *MessageRouter) SendAsk(
 // Used for deferred broadcast to a peer that was pending_first_turn at fanout.
 // Returns ErrNotConnected when the session has no live transport.
 func (m *MessageRouter) BroadcastToSession(ctx context.Context, from proto.DisplayName, text string, to proto.PeerID) error {
-	return m.transport.Send(ctx, to, map[string]any{
+	return m.transport.Send(ctx, to, m.stampSender(map[string]any{
 		"type":      string(proto.FrameBroadcast),
 		"from_peer": string(from),
 		"text":      text,
-	})
+	}, from))
 }
 
 // Broadcast fans out to every connected peer minus exclude (a set of PeerID),
@@ -223,11 +242,11 @@ func (m *MessageRouter) Broadcast(
 	text string,
 	exclude map[proto.PeerID]struct{},
 ) (sent []proto.PeerID, failed []BroadcastFailure) {
-	frame := map[string]any{
+	frame := m.stampSender(map[string]any{
 		"type":      string(proto.FrameBroadcast),
 		"from_peer": string(from),
 		"text":      text,
-	}
+	}, from)
 
 	var (
 		mu sync.Mutex

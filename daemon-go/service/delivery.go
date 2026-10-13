@@ -100,6 +100,9 @@ type PeerDelivery struct {
 // WithInbox routes delivery to the human peer through inbox.
 func (d *PeerDelivery) WithInbox(inbox *Inbox) *PeerDelivery {
 	d.inbox = inbox
+	if d.router != nil && inbox != nil {
+		d.router.human = inbox
+	}
 	return d
 }
 

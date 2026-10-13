@@ -271,6 +271,10 @@ func TestHumanInboxEndToEnd(t *testing.T) {
 	if ask, _ := s.asks.Get(myCID); ask.FromPeerID != s.human {
 		t.Fatalf("an ask typed on telegram must come from the human, got %s", ask.FromPeerID)
 	}
+	humanAsk := agent.waitFrame(func(f map[string]any) bool { return f["type"] == "ask" && f["correlation_id"] == myCID })
+	if humanAsk["from_role"] != "human" || humanAsk["from_peer"] != "prass" {
+		t.Fatalf("the agent must see the human's ask framed as human: %+v", humanAsk)
+	}
 	decodeBody(t, postJSON(t, s.srv.URL+"/ack", map[string]any{"correlation_id": myCID, "message": "all green"}))
 	answer := bridge.waitFrame(func(f map[string]any) bool {
 		item, _ := f["item"].(map[string]any)

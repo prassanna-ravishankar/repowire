@@ -308,6 +308,15 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// queuedSenderRole is "human" for a queued row the human peer sent, so a
+// replayed frame keeps the human framing the live frame would have had.
+func (h *Hub) queuedSenderRole(fromPeerID *string) string {
+	if human, _ := h.inbox.Human(); human != "" && fromPeerID != nil && *fromPeerID == string(human) {
+		return string(proto.RoleHuman)
+	}
+	return ""
+}
+
 // syncInboxPresence republishes the human peer's live surfaces when an inbox
 // surface connects or drops. Event-driven; there is no presence timer.
 func (h *Hub) syncInboxPresence(id proto.PeerID) {
@@ -374,6 +383,9 @@ func (h *Hub) flushQueuedDeliveries(ctx context.Context, conn *websocket.Conn, i
 			}
 		default:
 			continue
+		}
+		if role := h.queuedSenderRole(d.FromPeerID); role != "" {
+			frame["from_role"] = role
 		}
 		if len(d.Attachments) > 0 {
 			frame["attachments"] = d.Attachments

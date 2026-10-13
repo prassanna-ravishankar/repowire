@@ -31,6 +31,8 @@ Read state is shared. Marking an item read on one surface marks it read everywhe
 
 `telegram` and `slack` (by name or by the bridge's `peer_id`) resolve to the human peer. Existing `notify_peer('telegram', ...)` callers keep working and now get receipts. In the other direction, a message the human types on Telegram comes from the human peer, so an agent's reply lands in the inbox and threads under the original message.
 
+Frames the human peer sends carry `from_role: "human"`. Every renderer (Claude hooks and channel, Codex bridge, OpenCode, Pi) frames those as the user's direct instructions, whatever `human.name` is. The legacy names `dashboard`, `telegram`, `slack` and `human` keep that framing too. Renderers built before this change frame only those names, so set a custom `human.name` after updating them (`repowire setup` re-installs the plugins).
+
 ## Items
 
 | Kind | Created by | Threaded |
