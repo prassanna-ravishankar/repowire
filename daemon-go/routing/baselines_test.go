@@ -386,7 +386,7 @@ func TestMaskedRerunReachesModelTemplates(t *testing.T) {
 			_ = json.Unmarshal([]byte(body.Messages[0].Content[0].Text), &state)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5",
-				"content":[{"type":"text","text":"{\"ranking\":[\"c2\",\"c1\"],\"confidence\":0.6}"}],
+				"content":[{"type":"text","text":"{\"scores\":{\"c1\":0.2,\"c2\":0.9},\"confidence\":0.6}"}],
 				"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
 		}))
 		defer srv.Close()

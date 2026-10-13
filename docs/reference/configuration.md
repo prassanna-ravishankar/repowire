@@ -308,7 +308,7 @@ A failed arm is recorded by structure only: the fallback reason, the provider, t
 | `request_error` | Provider returned another 4xx (413 from Workers AI is `state_too_large`); usually our request body or template | no |
 | `error` | Transport failure with no HTTP status | yes |
 | `unparseable` | Answer did not decode, or ranked an ineligible, unknown or repeated candidate, or left one out | yes |
-| `abstained` | Frontier only: the model answered with an empty ranking, declining to choose. A miss in replay | no |
+| `abstained` | Frontier only: a complete, valid answer that declines to choose, with confidence 0 and one score shared by all of two or more candidates. Equal scores with any confidence above 0 are a ranking, ties broken by candidate key order. A miss in replay | no |
 | `panic` | The arm panicked; contained | yes |
 | `state_too_large` | Clef only: a size heuristic says the request would exceed the hosted cap, so it was not sent, or the provider returned 413 | no |
 | `state_truncated` | Clef only: the provider's token count is at or near the hosted cap, so the state was cut to fit | no |

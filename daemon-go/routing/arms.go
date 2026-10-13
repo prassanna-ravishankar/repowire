@@ -25,9 +25,9 @@ const (
 	FallbackRateLimited = "rate_limited"
 	FallbackError       = "error"
 	FallbackUnparseable = "unparseable"
-	// FallbackAbstained: the model answered with an empty ranking, declining
-	// to choose. A miss in replay, but a well-formed answer, so it does not
-	// count against the provider's breaker.
+	// FallbackAbstained: a valid answer that declines to choose (see
+	// abstained in frontier.go). A miss in replay, but a well-formed answer,
+	// so it does not count against the provider's breaker.
 	FallbackAbstained    = "abstained"
 	FallbackNoCandidates = "no_candidates"
 	FallbackUnconfigured = "unconfigured"

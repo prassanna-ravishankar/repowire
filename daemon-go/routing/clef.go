@@ -114,12 +114,13 @@ func (c Clef) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	if envelope.Result != nil {
 		decoded = *envelope.Result
 	}
+	// Record whatever was billed before judging the answer.
+	decoded.tokens(signals)
 	// Without a positive count, truncation cannot be ruled out: zero or less
 	// cannot describe a non-empty request.
 	if decoded.Usage == nil || decoded.Usage.InputTokens == nil {
 		return noted, fail(FallbackUnparseable)
 	}
-	decoded.tokens(signals)
 	if *decoded.Usage.InputTokens <= 0 {
 		return noted, fail(FallbackUnparseable)
 	}

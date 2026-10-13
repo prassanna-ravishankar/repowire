@@ -97,7 +97,7 @@ func (r systemOneResponse) scores(keys map[string]string) ([]Score, error) {
 	scores := make([]Score, 0, len(keys))
 	for k, peerID := range keys {
 		answer, ok := r.Answers[k]
-		if !ok || answer.Noul == nil || math.IsNaN(*answer.Noul) || *answer.Noul < 0 || *answer.Noul > 1 {
+		if !ok || !unit(answer.Noul) {
 			return nil, fail(FallbackUnparseable)
 		}
 		scores = append(scores, Score{PeerID: peerID, Score: *answer.Noul})
@@ -125,6 +125,9 @@ func postJSON(ctx context.Context, client *http.Client, url, token string, body 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return resp.StatusCode, raw, nil
 }
+
+// unit reports whether v is present and within [0, 1].
+func unit(v *float64) bool { return v != nil && !math.IsNaN(*v) && *v >= 0 && *v <= 1 }
 
 func topScore(scores []Score) float64 {
 	best := 0.0

@@ -40,7 +40,7 @@ func TestRouterMetersFrontierTokens(t *testing.T) {
 		if call == 1 {
 			return frontierAbstains
 		}
-		return `{\"confidence\":0.8,\"ranking\":[\"c1\",\"c2\"]}`
+		return frontierRanksC1
 	})
 	for range 2 {
 		r.Run(context.Background(), "frontier-claimed", testInput())
