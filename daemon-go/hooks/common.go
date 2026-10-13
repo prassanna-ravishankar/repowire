@@ -540,9 +540,20 @@ func findExpectedAgentPID(paneID, expectedCommand string) int {
 }
 
 // ConsumeSpawnHint claims the next queued spawn identity for a runtime path.
-// Native transports use the same queue as hooks so a spawned peer keeps its
-// requested circle, role, and durable peer id regardless of transport.
 func ConsumeSpawnHint(path, backend string) map[string]any {
+	return takeSpawnHint(path, backend, func(map[string]any) bool { return true })
+}
+
+// ConsumeSpawnHintFor claims the next queued spawn hint addressed to peerID
+// (a restart relaunching that peer), leaving hints for other spawns queued.
+func ConsumeSpawnHintFor(path, backend, peerID string) map[string]any {
+	if peerID == "" {
+		return nil
+	}
+	return takeSpawnHint(path, backend, func(hint map[string]any) bool { return stringValue(hint, "peer_id") == peerID })
+}
+
+func takeSpawnHint(path, backend string, match func(map[string]any) bool) map[string]any {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		abs = path
@@ -570,11 +581,14 @@ func ConsumeSpawnHint(path, backend string) map[string]any {
 		if !ok || !valid || circle == "" || now.Sub(time.Unix(int64(ts), 0)) > hintTTL {
 			continue
 		}
-		if selected == nil {
+		if selected == nil && match(item) {
 			selected = item
 		} else {
 			fresh = append(fresh, item)
 		}
+	}
+	if selected == nil {
+		return nil // nothing matched: leave the queue as it was
 	}
 	if len(fresh) == 0 {
 		_ = os.Remove(target)

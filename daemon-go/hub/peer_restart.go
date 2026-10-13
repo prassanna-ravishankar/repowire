@@ -852,6 +852,7 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 		fail(restartStageLaunch, "launch_failed", err.Error()+"; run would_run.manual in pane "+reserved, true)
 		return
 	}
+	h.bridgeReregister(run, plan)
 	h.restartEvent(ctx, "peer_restart_launched", run.snapshot(), map[string]any{"pane_id": spawned.PaneID})
 
 	// register: the registry sees the new pane AND its ws-hook is the peer's
@@ -871,7 +872,13 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 	})
 	if err != nil {
 		// Launched but unverified: a hand relaunch now would run two runtimes on one session.
-		fail(restartStageRegister, waitReason(err, "registration_timeout"), fmt.Sprintf("the runtime was launched in pane %s but had not registered when the wait ended (bound %s); inspect that pane and do not relaunch while it runs", spawned.PaneID, restartRegisterTimeout), false)
+		hint := fmt.Sprintf("the runtime was launched in pane %s but had not registered when the wait ended (bound %s); inspect that pane and do not relaunch while it runs", spawned.PaneID, restartRegisterTimeout)
+		if bridgeOwned(plan.peer) {
+			if p, ok := h.spawn.reg.GetPeer(plan.peer.PeerID); ok && p.PaneID != nil && *p.PaneID != spawned.PaneID {
+				hint = fmt.Sprintf("the codex TUI was launched in pane %s, but the codex bridge still registers the thread with pane %s; see ~/.repowire/codex-bridge.log", spawned.PaneID, *p.PaneID)
+			}
+		}
+		fail(restartStageRegister, waitReason(err, "registration_timeout"), hint, false)
 		return
 	}
 	var warnings []string
@@ -910,12 +917,34 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 // retire the peer while it awaits its replacement (automatic or manual).
 func (h *Hub) goneOffline(ctx context.Context, run *restartRun, plan *restartPlan) {
 	_, _ = h.spawn.reg.MarkOffline(ctx, plan.peer.PeerID, false)
-	if h.transport == nil {
-		return
+	if h.transport == nil || bridgeOwned(plan.peer) {
+		return // a bridge-owned socket is closed after launch instead (bridgeReregister)
 	}
 	if n := h.transport.PendingDeliveryAcks(plan.peer.PeerID); n > 0 {
 		run.update(func(r *RestartResult) {
 			r.Warnings = append(r.Warnings, fmt.Sprintf("%d deliveries were in flight at exit; they may be reported delivered without having been read", n))
+		})
+	}
+	_ = h.transport.Close(plan.peer.PeerID)
+}
+
+// bridgeOwned: the peer's socket belongs to the codex bridge, which outlives
+// the TUI (the thread stays loaded), not to a ws-hook that dies with it.
+func bridgeOwned(p *proto.Peer) bool {
+	return p.Provenance.Source == proto.SourceCodexAppServer
+}
+
+// bridgeReregister closes a bridge-owned socket after launch, so the bridge
+// re-registers the thread and picks up the restart's spawn hint (the new
+// pane). Closing it earlier would let the bridge re-register before the hint
+// exists, with the old pane.
+func (h *Hub) bridgeReregister(run *restartRun, plan *restartPlan) {
+	if h.transport == nil || !bridgeOwned(plan.peer) {
+		return
+	}
+	if n := h.transport.PendingDeliveryAcks(plan.peer.PeerID); n > 0 {
+		run.update(func(r *RestartResult) {
+			r.Warnings = append(r.Warnings, fmt.Sprintf("%d deliveries were in flight at the bridge reconnect; they may be reported delivered without having been read", n))
 		})
 	}
 	_ = h.transport.Close(plan.peer.PeerID)

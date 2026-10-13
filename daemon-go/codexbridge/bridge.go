@@ -571,8 +571,11 @@ func (p *threadPeer) connectMesh(ctx context.Context) (*websocket.Conn, error) {
 		"circle_source": p.circleSrc, "backend": "codex", "path": p.cwd, "role": p.role,
 		"peer_id": peerID, "capabilities": []string{"delivery_receipts", "thread_steering"},
 	}
-	if p.hintedPane != "" {
-		connect["pane_id"] = p.hintedPane
+	p.mu.Lock()
+	pane := p.hintedPane
+	p.mu.Unlock()
+	if pane != "" {
+		connect["pane_id"] = pane
 	}
 	if p.bridge.token != "" {
 		connect["auth_token"] = p.bridge.token
@@ -628,6 +631,22 @@ func (p *threadPeer) registerLocked(ctx context.Context) error {
 	if claim == "" {
 		claim = p.hintedID
 	}
+	p.mu.Unlock()
+	// A restart relaunches this thread's TUI in a new pane and leaves a spawn
+	// hint addressed to this peer: register from that pane, not the old one.
+	if claim != "" {
+		p.bridge.hintMu.Lock()
+		hint := hooks.ConsumeSpawnHintFor(p.cwd, "codex", claim)
+		p.bridge.hintMu.Unlock()
+		if pane := stringValue(hint, "pane_id"); pane != "" {
+			p.mu.Lock()
+			p.hintedPane = pane
+			p.mu.Unlock()
+			log.Printf("codex bridge: thread %s moves to pane %s (spawn hint for %s)", p.id, pane, claim)
+		}
+	}
+	p.mu.Lock()
+	pane := p.hintedPane
 	provenance, nickname, threadSource, version := p.provenance, p.nickname, p.threadSource, p.provVersion
 	p.mu.Unlock()
 	metadata := map[string]any{
@@ -649,8 +668,8 @@ func (p *threadPeer) registerLocked(ctx context.Context) error {
 		"circle_source": p.circleSrc, "backend": "codex", "role": p.role,
 		"metadata": metadata, "provenance": provenance,
 	}
-	if p.hintedPane != "" {
-		body["pane_id"] = p.hintedPane
+	if pane != "" {
+		body["pane_id"] = pane
 	}
 	if p.model != "" {
 		body["model"] = p.model
@@ -659,6 +678,17 @@ func (p *threadPeer) registerLocked(ctx context.Context) error {
 		body["peer_id"] = claim
 	}
 	result, err := p.bridge.daemonRequest(ctx, http.MethodPost, "/peers", body)
+	if err != nil && pane != "" && strings.Contains(err.Error(), "pane_not_live") {
+		// The pane this thread was hinted into is gone (its TUI exited while
+		// the thread stayed loaded). Retrying it can never succeed: drop it so
+		// the next attempt registers without a pane.
+		p.mu.Lock()
+		if p.hintedPane == pane {
+			p.hintedPane = ""
+		}
+		p.mu.Unlock()
+		log.Printf("codex bridge: pane %s for thread %s is gone; registering without a pane", pane, p.id)
+	}
 	if err != nil {
 		// A still-running native thread can outlive lazy soft retirement of its
 		// mesh peer. Drop the in-memory claim once so the next retry validates the

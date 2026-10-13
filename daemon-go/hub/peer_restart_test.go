@@ -1071,3 +1071,62 @@ func TestRestartRefusalStillShowsThePreview(t *testing.T) {
 		t.Fatalf("preview missing beside the refusal: %+v", out.WouldRun)
 	}
 }
+
+// connectFakeSocket gives peer id a live socket on tr until the test ends.
+func connectFakeSocket(t *testing.T, tr *service.WebSocketTransport, id proto.PeerID) {
+	t.Helper()
+	connected := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		tr.Connect(context.Background(), &service.ConnectionInfo{SessionID: id, WS: c})
+		close(connected)
+		for {
+			var data map[string]any
+			if wsjson.Read(context.Background(), c, &data) != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client, _, err := websocket.Dial(context.Background(), "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.CloseNow() })
+	go func() { _, _, _ = client.Read(context.Background()) }()
+	<-connected
+}
+
+// Smoke step 9: the codex bridge's socket outlives the TUI. Restart keeps it
+// open through exit and closes it only after launch, once the spawn hint for
+// the new pane exists, so the bridge re-registers from the new pane.
+func TestRestartClosesTheBridgeSocketOnlyAfterLaunch(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentCodex: "codex"})
+	f.peer.Backend, f.peer.AgentPID = proto.AgentCodex, nil
+	f.peer.Provenance = proto.Provenance{Source: proto.SourceCodexAppServer, Addressable: true}
+	f.peer.Metadata = map[string]any{"runtime_session_id": "019a0000-0000-7000-8000-00000000c0de"}
+	f.writeCodexSession(t, "019a0000-0000-7000-8000-00000000c0de")
+	tr := service.NewWebSocketTransport()
+	connectFakeSocket(t, tr, f.peer.PeerID)
+	f.h.transport = tr
+	f.h.spawn.transportPane = func(proto.PeerID) (string, bool) { return "%11", true }
+	connectedAtLaunch := false
+	register := f.rt.onLaunch
+	f.rt.onLaunch = func(cfg service.SpawnConfig) {
+		connectedAtLaunch = tr.IsConnected(f.peer.PeerID)
+		register(cfg)
+	}
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if out.Outcome != restartOutcomeRestarted {
+		t.Fatalf("outcome = %s failed=%+v", out.Outcome, out.Failed)
+	}
+	if !connectedAtLaunch || tr.IsConnected(f.peer.PeerID) {
+		t.Fatalf("bridge socket connected at launch=%v after=%v; want open through exit, closed after launch", connectedAtLaunch, tr.IsConnected(f.peer.PeerID))
+	}
+}
