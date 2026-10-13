@@ -23,7 +23,7 @@ A surface is a client that displays the inbox and answers on the human's behalf.
 
 | Surface | Receives pushes | Read | Reply | Buttons |
 | --- | --- | --- | --- | --- |
-| [Telegram](../use/features/telegram.md) | A chat message per item, threaded as a Telegram reply on its ask | Implicit: a message or tap from you in the chat marks read every item Telegram showed you before it | Telegram's **Reply** on any message (any chunk of a long one) | Only where a bot offers a choice: a choice question's options, or **✓ Ack** for an acknowledge question |
+| [Telegram](../use/features/telegram.md) | A chat message per item, threaded as a Telegram reply on its ask | Implicit: a message or tap from you in the chat marks read every item already in the chat | Telegram's **Reply** on any message (any chunk of a long one) | Only where a bot offers a choice: a choice question's options, or **✓ Ack** for an acknowledge question |
 | [Dashboard](../use/features/dashboard.md) | Live in the **Inbox** view while a dashboard is open, with the unread count in the nav | Opening an item | The reply box under the item | A choice question's options, **✓ Acknowledge** for an acknowledge question |
 | [CLI](../reference/cli.md#repowire-inbox) | No; it reads on demand | `repowire inbox read` | `repowire inbox reply` | None |
 

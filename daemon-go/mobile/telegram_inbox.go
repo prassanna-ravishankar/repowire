@@ -158,6 +158,7 @@ func (b *Telegram) pushInboxItem(ctx context.Context, item map[string]any, reply
 			return refs, err
 		}
 		refs = append(refs, strconv.FormatInt(sent.MessageID, 10))
+		b.noteShown(sent.MessageID)
 	}
 	if attachments, ok := item["attachments"].([]any); ok {
 		for _, raw := range attachments {
@@ -325,15 +326,60 @@ func (b *Telegram) onReply(ctx context.Context, replyTo int64, text string, mess
 	return true, nil
 }
 
+func (b *Telegram) noteShown(id int64) {
+	b.mu.Lock()
+	if id > b.lastShown {
+		b.lastShown = id
+	}
+	b.mu.Unlock()
+}
+
+// tapHorizon is how far a button tap reads. A tap means everything already
+// in the chat was seen, and the tapped message is usually older than that,
+// so the horizon is the newest message the bridge had pushed when the tap
+// arrived (at least the tapped one). After a restart it is learned once,
+// lazily, from the newest item the daemon has receipted for Telegram.
+// Callbacks carry no timestamp, so a tap handled after a later push reads
+// that push too; Telegram expires callbacks quickly, and that small
+// over-read is accepted.
+func (b *Telegram) tapHorizon(ctx context.Context, tapped int64) int64 {
+	b.mu.Lock()
+	known := b.lastShown
+	b.mu.Unlock()
+	if known == 0 {
+		var list struct {
+			Items []struct {
+				Pushes []struct {
+					Surface    string `json:"surface"`
+					SurfaceRef string `json:"surface_ref"`
+				} `json:"pushes"`
+			} `json:"items"`
+		}
+		if resp, err := b.daemon.JSON(ctx, http.MethodGet, "/inbox?surface=telegram&limit=1", nil, &list); err == nil && resp.StatusCode < 300 {
+			for _, item := range list.Items {
+				for _, push := range item.Pushes {
+					if ref, err := strconv.ParseInt(push.SurfaceRef, 10, 64); err == nil && push.Surface == "telegram" {
+						b.noteShown(ref)
+					}
+				}
+			}
+		}
+		b.mu.Lock()
+		known = b.lastShown
+		b.mu.Unlock()
+	}
+	return max(known, tapped)
+}
+
 // markShownRead marks read every unread item this chat showed at or before
 // horizon, a Telegram message id. Telegram has no read state for a bot's
 // messages; the human writing or tapping in the chat is the native sign they
-// have seen it. Message ids grow with every message in the chat, so the
-// update's own id bounds what the human could have seen: an item pushed
-// after it (an agent's answer to this very tap, say) stays unread, and a
-// delayed or replayed update only reads what came before it. It runs before
-// the update is acted on. Best effort: a failure leaves items unread, which
-// only means another surface still shows them as new.
+// have seen it. Message ids grow with every message in the chat. A message
+// reads up to its own id, so an item pushed after it stays unread and a
+// message replayed after an outage reads only what preceded it. A tap reads
+// up to tapHorizon. It runs before the update is acted on, so an agent's
+// answer to this very update stays unread. Best effort: a failure leaves
+// items unread, which only means another surface still shows them as new.
 func (b *Telegram) markShownRead(ctx context.Context, horizon int64) {
 	if horizon <= 0 {
 		return

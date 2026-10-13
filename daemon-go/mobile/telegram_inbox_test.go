@@ -413,8 +413,8 @@ func TestTelegramInboundMessageMarksPushedItemsRead(t *testing.T) {
 
 // TestTelegramChoiceTapDoesNotReadALaterPush (review of #478): answering a
 // choice can wake an agent whose next push lands before the bridge finishes.
-// The sweep runs before the answer, bounded by the tapped message, so that
-// push stays unread.
+// The sweep runs before the answer, bounded by what the bridge had pushed
+// when the tap arrived (300), so that push (400) stays unread.
 func TestTelegramChoiceTapDoesNotReadALaterPush(t *testing.T) {
 	api := newFakeTelegramAPI(t, nil)
 	var mu sync.Mutex
@@ -438,8 +438,9 @@ func TestTelegramChoiceTapDoesNotReadALaterPush(t *testing.T) {
 	t.Cleanup(daemon.Close)
 	bot, _ := newSurfaceBot(t, api.URL, daemon.URL)
 	bot.rememberOptions("inb-choice", []string{"yes"})
+	bot.noteShown(300)
 	tap := map[string]any{"callback_query": map[string]any{"id": "tap", "data": "ix:o:inb-choice:0",
-		"message": map[string]any{"message_id": float64(300), "chat": map[string]any{"id": float64(42)}}}}
+		"message": map[string]any{"message_id": float64(250), "chat": map[string]any{"id": float64(42)}}}}
 	if err := bot.onUpdate(context.Background(), tap); err != nil {
 		t.Fatal(err)
 	}
@@ -482,5 +483,74 @@ func TestTelegramSweepReachesOlderShownItems(t *testing.T) {
 	bot.markShownRead(context.Background(), 999)
 	if strings.Join(reads, ",") != "/inbox/old/read" {
 		t.Fatalf("reads = %v", reads)
+	}
+}
+
+// tapUpdate is a tap on a button of message id in the human's chat.
+func tapUpdate(id int64, data string) map[string]any {
+	return map[string]any{"callback_query": map[string]any{"id": "tap", "data": data,
+		"message": map[string]any{"message_id": float64(id), "chat": map[string]any{"id": float64(42)}}}}
+}
+
+// TestTelegramTapReadsEverythingAlreadyInTheChat (re-review of #478): a tap
+// on an older message's button means everything already in the chat was
+// seen. Choice 100 then notify 101 are pushed; tapping 100 reads 101 too.
+func TestTelegramTapReadsEverythingAlreadyInTheChat(t *testing.T) {
+	api := newFakeTelegramAPI(t, func(n int, _ telegramCall) string {
+		return fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, 99+n)
+	})
+	daemon, requests := fakeInboxDaemon(t, http.StatusOK)
+	bot, _ := newSurfaceBot(t, api.URL, daemon.URL)
+	choice := map[string]any{"kind": "choice", "options": []any{map[string]any{"id": "yes", "title": "Yes"}}}
+	bot.handleInboxItem(context.Background(), inboxFrame("inb-choice", "ask", "ship?", "", map[string]any{"question": choice}))
+	bot.handleInboxItem(context.Background(), inboxFrame("inb-notify", "notify", "fyi", "", nil))
+
+	if err := bot.onUpdate(context.Background(), tapUpdate(100, "ix:o:inb-choice:0")); err != nil {
+		t.Fatal(err)
+	}
+	if sweep := <-requests; sweep.path != "/inbox?unread=1&surface=telegram&through_ref=101&limit=100" {
+		t.Fatalf("a tap must read through the newest pushed message (101): %+v", sweep)
+	}
+}
+
+// TestTelegramTapAfterRestartLearnsTheHorizon: a bridge that has pushed
+// nothing since it started learns the newest receipted message from the
+// daemon, once.
+func TestTelegramTapAfterRestartLearnsTheHorizon(t *testing.T) {
+	api := newFakeTelegramAPI(t, nil)
+	var mu sync.Mutex
+	var seeds int
+	var readShown bool
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		q := r.URL.Query()
+		switch {
+		case r.URL.Path == "/inbox" && q.Get("unread") == "":
+			seeds++
+			_, _ = w.Write([]byte(`{"items":[{"id":"inb-already-shown","pushes":[{"surface":"telegram","status":"pushed","surface_ref":"101"}]}]}`))
+		case r.URL.Path == "/inbox" && q.Get("through_ref") == "101":
+			_, _ = w.Write([]byte(`{"items":[{"id":"inb-already-shown","pushes":[{"surface":"telegram","status":"pushed","surface_ref":"101"}]}]}`))
+		case r.URL.Path == "/inbox":
+			_, _ = w.Write([]byte(`{"items":[]}`))
+		case r.URL.Path == "/inbox/inb-already-shown/read":
+			readShown = true
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			_, _ = w.Write([]byte(`{"action":"answered"}`))
+		}
+	}))
+	t.Cleanup(daemon.Close)
+	bot, _ := newSurfaceBot(t, api.URL, daemon.URL)
+	bot.rememberOptions("inb-choice", []string{"yes"})
+	for range 2 {
+		if err := bot.onUpdate(context.Background(), tapUpdate(100, "ix:o:inb-choice:0")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !readShown || seeds != 1 {
+		t.Fatalf("readShown=%v seeds=%d: the tap must read 101, learning the horizon once", readShown, seeds)
 	}
 }

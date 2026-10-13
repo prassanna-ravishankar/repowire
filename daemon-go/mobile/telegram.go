@@ -41,6 +41,9 @@ type Telegram struct {
 	// the daemon's receipt window.
 	pushTimeout time.Duration
 	retryDelay  time.Duration
+	// lastShown is the highest Telegram message id this bridge has pushed,
+	// the horizon a tap reads up to (see tapHorizon). 0 until known.
+	lastShown int64
 	// writeFrame sends a frame (a receipt) to the daemon; tests replace it.
 	writeFrame func(context.Context, any) error
 }
@@ -261,7 +264,7 @@ func (b *Telegram) onUpdate(ctx context.Context, update map[string]any) error {
 		if !b.matchesChat(message) {
 			return nil
 		}
-		b.markShownRead(ctx, int64(numberOrZero(message["message_id"])))
+		b.markShownRead(ctx, b.tapHorizon(ctx, int64(numberOrZero(message["message_id"]))))
 		_ = b.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": textField(callback, "id")}, nil)
 		return b.onCallback(ctx, textField(callback, "data"))
 	}
