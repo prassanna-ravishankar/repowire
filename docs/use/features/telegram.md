@@ -2,7 +2,7 @@
 
 ## What it is
 
-The Telegram bot is a human control surface that registers as the `telegram` peer. Notifications agents send to it appear in your Telegram chat; messages you send route back into the mesh as tracked asks by default.
+The Telegram bot is a surface of your [human inbox](../../concepts/human-inbox.md). Anything an agent sends you (a notify, an ask, a reply to your ask) is stored in the inbox and pushed to your Telegram chat. Messages you send route back into the mesh as tracked asks by default.
 
 ## When to use it
 
@@ -46,6 +46,8 @@ Send a fire-and-forget nudge:
 /fyi logs are uploaded
 ```
 
+Reply to an agent's message with Telegram's **Reply**: on an ask it acks the ask with your text; on anything else it opens a new ask to that agent. An agent's answer to your ask arrives as a Telegram reply under your original message. Asks carry **✓ Ack** or choice buttons; other messages carry **✓ Seen**, which marks the item read on every surface (Telegram gives bots no read signal of its own).
+
 Send a photo when the target agent should inspect it. The bot uploads it to the daemon and includes it in the outgoing ask. Attachments sent by agents are uploaded back to Telegram as photos or documents.
 
 ## Commands and API
@@ -65,9 +67,10 @@ Agents can reach your phone with:
 
 ```text
 notify_peer("telegram", "deploy finished, green across CI")
+# notif-delivery-1a2b3c4d inbox_item=inb-5e6f7a8b surfaces=telegram
 ```
 
-`telegram` is a canonical service address. A unique service/human display name resolves across circles, so agents do not need to discover or pass the bot's configured service circle. Ordinary agent names remain circle-scoped.
+`telegram` resolves to the human peer, so the message lands in your inbox even when the bot is down, and the sender gets a receipt. `repowire trace <delivery id>` shows whether the push reached Telegram (`surface_pushed`) or failed (`surface_failed` with `network`, `rate_limited`, `rejected`, `too_long`, `overloaded` or `no_receipt`). A unique service/human display name resolves across circles, so agents do not need to discover or pass the bot's configured service circle. Ordinary agent names remain circle-scoped.
 
 ## Limits
 
@@ -75,6 +78,10 @@ notify_peer("telegram", "deploy finished, green across CI")
 - Telegram updates are acknowledged only after Repowire handles them successfully. A transient daemon or Telegram API failure is retried instead of silently consuming the command.
 - Attachments live in `~/.repowire/attachments/` with a 24-hour TTL and 10 MB upload limit.
 - Messages from `@telegram` are framed as human instructions to the receiving agent.
+- Mesh broadcasts reach Telegram only with `human.broadcast: true` and `human.surfaces.telegram.broadcast: true`.
+- The bot retries network failures and rate limits up to three times per message. A retry after a lost response can deliver the same message twice.
+- Long messages are split into chunks of about 3900 characters; a reply-to on the first chunk threads.
+- Bot API errors are logged with the bot token redacted.
 
 ## Troubleshooting
 

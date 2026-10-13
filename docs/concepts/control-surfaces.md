@@ -8,6 +8,10 @@ Messages from `@telegram`, `@slack`, and `@dashboard` are human-originated. Repo
 
 Human surfaces have the `human` role. That role bypasses circle filtering so the human can see and address the mesh without being trapped in one project circle.
 
+## The human inbox
+
+With a human peer registered (the default), the phone bridges are surfaces, not addressees. A message to `telegram`, `slack`, or the human's name is stored in the [human inbox](human-inbox.md) and pushed to every live surface. A reply from any surface acks the ask behind it, and read state is shared across surfaces. Agents never need to know which surface the human is using.
+
 ## Surface state
 
 Control surfaces are clients of the routing API, not sources of truth. The daemon owns peer state, message routing, ask lifecycle, session bindings, and durable state. If a surface crashes or reconnects, it recovers by reading daemon state rather than reconstructing the mesh itself.

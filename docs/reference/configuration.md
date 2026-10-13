@@ -46,7 +46,25 @@ slack:
   bot_token: ""
   app_token: ""
   channel_id: ""
+human:
+  name: human
+  broadcast: false
+  surfaces:
+    telegram:
+      broadcast: false
 ```
+
+## `human`
+
+The daemon-owned human peer and its [inbox](../concepts/human-inbox.md).
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `name` | `human` | The human peer's `display_name`. Must match `[A-Za-z0-9._-]{1,64}`; an invalid name falls back to `human` with a startup warning. |
+| `broadcast` | `false` | Store mesh broadcasts in the inbox. Off means a broadcast never reaches the user. |
+| `surfaces.<name>.broadcast` | `false` | Push stored broadcasts to that surface (`telegram`, `slack`). |
+
+Environment overrides: `REPOWIRE_HUMAN__NAME`, `REPOWIRE_HUMAN__BROADCAST`.
 
 ## Environment variables
 
@@ -202,6 +220,7 @@ routing:
   sample_every: {}              # e.g. {frontier-claimed: 20} runs that arm on every 20th ask
   timeout_seconds: 8
   allow_service_targets: false  # let a strategy deliver to service- or human-role peers
+  allow_human_targets: false    # let a strategy deliver to the human peer (service peers stay excluded)
   jev: {api_key: "", model: jev-1.13.0, base_url: "https://api.typesafe.ai"}
   frontier: {api_key: "", model: claude-opus-5-5}
   clef:
@@ -217,7 +236,7 @@ routing:
 - **`static`** (default) refuses a targetless ask with `400 no_target`. That refusal happens before any trace row or snapshot.
 - **An arm name** (`random`, `jev-*`, `frontier-*`, `clef-*`, `clef-flash-*`) ranks the eligible candidates. Its pick passes the same circle, addressability and self checks as a named target, and the delivered ask is prefixed with the arm and its score. If the arm fails, the ask goes to the sender's `fallback_to` peer, which is authorized the same way, with a note saying so. If the arm fails and there is no `fallback_to`, the ask is refused with `503 router_unavailable`. If the pick stops being eligible before delivery, the reason is `stale_pick:*` and the same fallback applies. Without `fallback_to`, that ask fails with the pick's own authorization error (403, 404, 409 or 422, as for a named target). Nothing is delivered either way.
 
-A strategy never delivers to a peer whose role is `service` (for example `telegram` or `slack`) or `human`, unless `allow_service_targets: true`. On a targetless decision, those peers are recorded with `access: service_excluded` and are not offered to the arm. Circle and addressability verdicts take precedence. The same rule applies when the pick and `fallback_to` are authorized, so a pick that became a service peer after the snapshot is a `stale_pick:service_excluded` fallback. A `fallback_to` naming one is refused with `403 service_excluded`. The rule does not apply to named asks: name `telegram` and you reach `telegram`. Shadow arms run on named asks, so they still see and score service peers. Each targetless decision row records the policy it ran under in `selection_policy` (`exclude_service_targets` or `allow_service_targets`). The policy is enforced when the pick or fallback is authorized. Delivery then goes to that authorized peer, and no current path turns an existing peer into a service or human peer. Roles are declared by the peers themselves, so this is an operating policy, not a security boundary.
+A strategy never delivers to a peer whose role is `service` (for example `telegram` or `slack`) or `human`, unless `allow_service_targets: true`. `allow_human_targets: true` admits only the human peer (its inbox) and keeps service peers excluded; decisions under it record `selection_policy: allow_human_targets`. The refusal hint names only `allow_service_targets`. On a targetless decision, those peers are recorded with `access: service_excluded` and are not offered to the arm. Circle and addressability verdicts take precedence. The same rule applies when the pick and `fallback_to` are authorized, so a pick that became a service peer after the snapshot is a `stale_pick:service_excluded` fallback. A `fallback_to` naming one is refused with `403 service_excluded`. The rule does not apply to named asks: name `telegram` and you reach `telegram`. Shadow arms run on named asks, so they still see and score service peers. Each targetless decision row records the policy it ran under in `selection_policy` (`exclude_service_targets`, `allow_human_targets` or `allow_service_targets`). The policy is enforced when the pick or fallback is authorized. Delivery then goes to that authorized peer, and no current path turns an existing peer into a service or human peer. Roles are declared by the peers themselves, so this is an operating policy, not a security boundary.
 
 Only an absent target is routed. An empty or whitespace `to_peer`, or JSON `null`, is a named ask to nobody and fails with `404 Unknown peer`, as it always has. `@route`, the experiment's former reserved name, is now an ordinary name. `ask_many` children, the legacy `/query`, scheduled asks, the CLI and the Pi, OpenCode, Telegram, Slack and relay surfaces always name their target.
 

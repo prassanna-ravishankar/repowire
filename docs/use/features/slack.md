@@ -61,7 +61,7 @@ Run:
 repowire slack start
 ```
 
-The bot uses the daemon's normal peer registration, ask, notify, and event routes. Messages from `@slack` are framed as human input to the receiving agent, and human inbound Slack messages open tracked asks by default.
+The bot uses the daemon's normal peer registration, ask, notify, and event routes. Messages from `@slack` are framed as human input to the receiving agent, and human inbound Slack messages open tracked asks by default. `slack` resolves to the [human inbox](../../concepts/human-inbox.md): messages agents send to `slack` are stored there and pushed to Slack as plain notifications. Slack does not yet thread replies or send receipts ([#468](https://github.com/prassanna-ravishankar/repowire/issues/468)).
 
 ## Limits
 

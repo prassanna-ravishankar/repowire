@@ -12,6 +12,7 @@ The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and extern
 - `POST /asks/{correlation_id}/wait` blocks (bounded, ~50s per call) until the ask is answered or acked, returning a resolution snapshot `{status, reply, outcome, close_reason, ...}` or `{status: "pending"}` on timeout with nothing recorded. First wait switches the ask to pull reply delivery so the reply is retained on the ask instead of injected at the asker. Backs the MCP `wait_on_ack` tool.
 - `/answer` records a typed answer to a structured question; `POST /questions/ask-blocking` registers a blocking structured question (tool permission) and holds the connection open until it is answered or the daemon's wait cap elapses, then returns the typed answer (fail-closed: a tool-permission question denies on timeout). Used by blocking transports such as the ACP broker and the Claude Code `PreToolUse` approval hook.
 - `/query` is a legacy blocking compatibility route. It opens a structured text ask through the ask lifecycle, waits for the recipient's answer/ack, and returns the old `{text, error, status}` response shape for existing clients.
+- `/inbox` routes read and answer the [human inbox](#human-inbox).
 - `/traces/{trace_id}` returns the recorded delivery stages for an ask (`correlation_id`) or notify (`delivery_id`) from the local delivery trace ledger.
 - `/messages` and WebSocket routes for live delivery.
 - `/schedules` for one-shot and recurring scheduled messages.
@@ -79,6 +80,22 @@ clients use it to drop a registration before reconnecting the same session.
 
 - [CLI](cli.md)
 - [Operations: architecture](../operate/architecture.md)
+
+## Human inbox
+
+Messages to the human peer (its name, `telegram`, or `slack`) are stored in the [human inbox](../concepts/human-inbox.md). `POST /notify` to it adds `inbox_item_id` and `surfaces` to the response; `POST /ask` to it adds `inbox: {item_id, surfaces}`. `POST /ask` accepts an optional `origin: {surface, ref}` naming the surface message an ask from the human was typed in, so the reply threads under it.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /inbox?unread=1&limit=N` | Inbound items, newest first, with per-surface `pushes`. Returns `{human, human_peer_id, items}`. |
+| `GET /inbox/{id}` | One item. |
+| `POST /inbox/{id}/read` | `{surface}`. Marks the item read for every surface (idempotent). |
+| `POST /inbox/{id}/reply` | `{surface, text, option_id?, ref?}`. On an open ask: acks it with `text` (or answers a structured question). Otherwise opens a new ask from the human to the item's sender. Returns `{action: acked\|answered\|asked\|read, correlation_id}`. An empty `text` on a non-ask only marks it read. |
+| `POST /inbox/reply` | Same, finding the item by `{surface, surface_ref}` (for example a Telegram reply-to). 404 when no item was rendered as that ref. |
+
+All routes return 503 when no human peer is registered.
+
+Inbox surfaces connect over `/ws` with `capabilities: ["inbox_surface"]`. The daemon pushes `{type: "inbox_item", delivery_id, item, reply_to_ref}`. The surface answers with `{type: "delivery_ack", delivery_id, status: "pushed", surface_ref}` or `{..., status: "failed", error_class}`. A bridge without the capability gets the item as a plain `notify`/`ask` frame, which proves only the socket write (`verified: false`).
 
 ## Pull-delivery asks
 
