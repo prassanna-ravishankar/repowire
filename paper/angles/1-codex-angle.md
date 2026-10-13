@@ -81,10 +81,12 @@ Add a small sender breakdown in the final paper rather than treating pooled perf
 | Diagnostic set | Jev attested | Past majority | Strict activity mask | Uniform novelty | Analytic uniform chance |
 |---|---:|---:|---:|---:|---:|
 | All switches, n=169 | .385 | .254 | .302 | .082 | .072 |
+| Switches with any recipient/project reference, n=58 | .379 | .466 | .224 | .068 | .084 |
+| Switches without any recipient/project reference, n=111 | .387 | .144 | .342 | .089 | .066 |
 | Novel-recipient switches, n=29 | .414 | .000 | .414 | .478 | .083 |
 | Orchestrator switches, n=62 | .371 | .339 | .242 | .084 | .061 |
 
-Source: H, “Results.” Report the pooled Jev/majority discordant counts, 46 versus 24, with the existing nominal exact paired p=.012; report orchestrator switches, 14 versus 12, p=.845. The strict mask leaves candidate membership activity-selected, so its residual is signal beyond the masked fields, not proof of semantic understanding. Uniform novelty is an analytic expected score; its higher point estimate on novel recipients does not establish statistical equivalence or superiority. The result motivates a cheap control, not a claim that any novelty rule always finds the target. [H]
+Sources: H, “Results,” and the new reference audit R3 in section C for the two reference-filtered rows. Report the pooled Jev/majority discordant counts, 46 versus 24, with nominal row-level p=.012; weekly-block p=.031 and sender-block sign p=.134 show that the inference depends on the assumed dependence unit. The magnitude-weighted sender sign-flip test gives p=.294. Report orchestrator switches, 14 versus 12, nominal p=.845. The strict residual does not collapse after excluding all detected recipient/project references: it scores 38/111=.342. That establishes robustness to this lexical filter, not semantic understanding; candidate membership remains activity-selected. Uniform novelty is an analytic expected score; its higher point estimate on novel recipients does not establish statistical equivalence or superiority. The result motivates a cheap control, not a claim that any novelty rule always finds the target. [H, R3]
 
 **Table 4. Does a diagnostic become an executable policy?** Separate exploratory replay from prospective results.
 
@@ -128,7 +130,7 @@ For stronger routing claims, first add an inexpensive lexical or linear candidat
 
 ### Limitations paragraph for the paper
 
-This study measures agreement with recorded recipients in one user's mesh, not optimal recipients or downstream task utility. Its registry is reconstructed from activity, descriptions are missing, and selection into the scorable set may favor observable peers. Almost all historical switches belong to an early epoch (165 of 169 are in May or June), requests are dependent, and the masks leave activity-selected candidate membership intact. The retrospective diagnostics and thresholds are exploratory, model runs are not replicated, and the DecisionBench adapter uses different history semantics and labels from its published fidelity metric. These boundaries scope the empirical case study while leaving the proposed reporting protocol independently reusable. [H, D]
+This study measures agreement with recorded recipients in one user's mesh, not optimal recipients or downstream task utility. Its registry is reconstructed from activity, descriptions are missing, and selection into the scorable set may favor observable peers. The address audit finds only one literal-recipient reference among switches and retains a .342 strict score after excluding all detected project or address references, but it does not remove indirect identity cues or identify the model's mechanism. Almost all switches belong to an early epoch (165 of 169 are in May or June): the eight occupied weeks are not proven independent, and one sender contributes 16 of Jev's 22 net extra matches. Weekly and sender clustering give different inferential conclusions; after jointly grouping by shared week or sender there are only five blocks, with one holding 145 requests. Thresholds and subgroup analyses are exploratory, model runs are not replicated, masks retain activity-selected candidates, and the DecisionBench adapter differs in history semantics and labels. These boundaries scope the empirical case study while leaving the reporting protocol independently reusable. [H, D, R3]
 
 ### Venue and manuscript shape
 
@@ -208,3 +210,121 @@ Prasanna, I would start writing this paper now, around Table 2 and Figure 1. Tre
 ### Read-order record
 
 Part A's file SHA-256 before the skeleton was opened: `d900468203b0b1d79aa928c63dfdccb93a728397b6e2cd37dd6fe55a744c6fc7`. Part B was appended afterward. This note proposes follow-up analyses and experiments; it does not claim they were run. Work completed here was reading, free recomputation of recorded rows, and this framing note.
+
+## C. Recipient references and dependence-aware uncertainty
+
+Follow-up completed on 2026-10-13, using recorded rows only. Table 3 and the limitations paragraph above have been updated with these results; the earlier proposals to do these two audits are now fulfilled. No provider was called. The remaining proposed experiments are still prospective.
+
+**The strict residual survives the recipient-reference filter. The pooled Jev improvement is sensitive to how dependence is grouped.** Those are complementary findings for the evaluation paper: the apparent routing signal is not explained by literal recipient names, while the strength of an improvement claim requires an explicit sampling unit.
+
+### C1. What counts as a recipient reference
+
+All 555 worker rows have recorded, nonempty, untruncated request text. For each row, match against the declared recipient's candidate metadata as reconstructed at that request, not against its current name. Matching is case-insensitive.
+
+- **Literal address:** a bounded full display name, exact peer ID, or `@` handle using the full display name, the backend-stripped name, or the parsed project name. The full-name rule does not match a longer hyphenated name just because it shares a prefix. A sentence-ending period is allowed.
+- **Project mention:** the complete parsed `project` field with non-alphanumeric boundaries. This deliberately includes the project appearing inside paths and punctuation-separated names. A project mention can be ordinary task content and can identify several candidates; do not label every project match an explicit address.
+- **Any reference:** the union of those two tests. This is the conservative exclusion used below. A stricter sensitivity test requires a standalone project token, excluding its appearance inside a longer dotted or hyphenated token.
+
+These tests detect references, not whether the sender intentionally supplied a routing answer. Inspection of all literal matches found a direct same-project peer reference, roster/status descriptions, and a CLI instruction containing a peer ID. The one literal match on a switch is the CLI instruction; neither Jev arm gets that row right. Shortened aliases, fuzzy spellings, descriptive nicknames, and indirect context are outside this detector.
+
+| Stratum | n | Full display name | Peer ID | `@` handle | Project mention | Any reference, n (%) |
+|---|---:|---:|---:|---:|---:|---:|
+| All worker requests | 555 | 3 | 1 | 0 | 170 | 171 (30.8%) |
+| Continuation | 333 | 3 | 0 | 0 | 93 | 93 (27.9%) |
+| Switch | 169 | 0 | 1 | 0 | 57 | 58 (34.3%) |
+| No exchange history | 53 | 0 | 0 | 0 | 20 | 20 (37.7%) |
+| Novel-target switch | 29 | 0 | 0 | 0 | 7 | 7 (24.1%) |
+
+The detector columns overlap; their sum is not the union. Novel-target switches are a subset of switches. The literal-address union is 4/555 (0.7%) overall, including 3/333 continuations (0.9%) and 1/169 switches (0.6%). Source: R3, `prevalence`.
+
+### C2. Switch scores with and without references
+
+All entries below use the recorded arm outputs; no text was modified and no model rerun. The fractions therefore measure subgroup performance, not the causal effect of deleting a name.
+
+| Switch subset | n | Jev attested, hits / n | Strict, hits / n | Majority-past, hits / n | Analytic chance |
+|---|---:|---:|---:|---:|---:|
+| All switches | 169 | 65/169 (.385) | 51/169 (.302) | 43/169 (.254) | .072 |
+| Literal address present | 1 | 0/1 (.000) | 0/1 (.000) | 0/1 (.000) | .063 |
+| No literal address | 168 | 65/168 (.387) | 51/168 (.304) | 43/168 (.256) | .072 |
+| Any reference present | 58 | 22/58 (.379) | 13/58 (.224) | 27/58 (.466) | .084 |
+| No address or project reference | 111 | 43/111 (.387) | 38/111 (.342) | 16/111 (.144) | .066 |
+
+Under the stricter standalone-project sensitivity definition, 43 switches are flagged and 126 remain: Jev scores 50/126=.397, strict 39/126=.310, majority 26/126=.206, and chance .068. Simple case-insensitive substring matching gives exactly the same flagged rows as the broader any-reference rule. The conclusion is therefore not an artifact of the chosen token boundaries. Source: R3, `switch_audit`.
+
+**Paper wording:** “The strict-mask residual persists after excluding requests that contain the recorded recipient's display name, peer ID, recognized handle, or project token: agreement is .342 against analytic chance .066 on the remaining requests.” This supports residual routing signal beyond detected lexical references. It does not establish that the model performs semantic fit: the retained group has different senders and candidates, and indirect identity cues remain available. Do not claim that removing references improves the router based on these observational subsets.
+
+### C3. Definitions for the dependence analysis
+
+Compare binary hits on the same 169 switches, with fallbacks as misses. For each block, count discordances as **arm-only : majority-only** and use a two-sided exact paired sign test. These within-block tests still treat discordant rows as independent and are descriptive diagnostics. For the test **over blocks**, first sum hit differences within each block, then apply an exact sign test to positive versus negative block sums, discarding zero sums. That gives each informative block equal weight and tests directional consistency, not the traffic-weighted average effect.
+
+As a complementary magnitude-sensitive calculation, swap the arm labels jointly within each block and enumerate the exact distribution of the summed difference. This cluster sign-flip test retains the request-weighted effect statistic but assumes independent, sign-exchangeable cluster contrasts under the null. Neither test proves its independence assumption. No multiplicity correction or confirmation claim is attached to this exploratory collection of tests.
+
+Weekly blocks start Monday at 00:00 UTC. Epochs are May, June, and July onward. Sender clusters use `peer_id`, because display names are reused. The additional display-name analysis deliberately merges those sessions as a coarser sensitivity test. For hybrid-v2, use Jev if the journal-defined 600-second novelty trigger fires **or majority has no vote**, and majority otherwise. This is the Jev-backed exploratory v2, not the free `hybrid-arrival` policy.
+
+### C4. Weekly and epoch results
+
+| UTC week beginning | Switches | Jev-only : majority-only | Within-week p | Hybrid-v2-only : majority-only | Within-week p |
+|---|---:|---:|---:|---:|---:|
+| 2026-05-18 | 33 | 11 : 2 | .0225 | 2 : 1 | 1.0000 |
+| 2026-05-25 | 77 | 21 : 17 | .6271 | 4 : 0 | .1250 |
+| 2026-06-01 | 34 | 9 : 4 | .2668 | 7 : 0 | .0156 |
+| 2026-06-08 | 1 | 1 : 0 | 1.0000 | 0 : 0 | 1.0000 |
+| 2026-06-15 | 16 | 3 : 1 | .6250 | 2 : 0 | .5000 |
+| 2026-06-22 | 4 | 0 : 0 | 1.0000 | 0 : 0 | 1.0000 |
+| 2026-07-06 | 3 | 0 : 0 | 1.0000 | 0 : 0 | 1.0000 |
+| 2026-08-03 | 1 | 1 : 0 | 1.0000 | 0 : 0 | 1.0000 |
+| Pooled rows | 169 | 46 : 24 | .01153 | 15 : 1 | .000519 |
+
+For tests over weeks, Jev has 6 positive, 0 negative, and 2 tied blocks: **p=.03125**. Hybrid-v2 has 4 positive, 0 negative, and 4 tied blocks: **p=.125**. The magnitude-sensitive sign-flip values happen to be identical because all nonzero weekly contrasts have the same sign. Weeks with no switches are absent, not independent negative evidence. Source: R3, `dependence.*.weeks`.
+
+| Epoch | Switches | Jev-only : majority-only | Within-epoch p | Hybrid-v2-only : majority-only | Within-epoch p |
+|---|---:|---:|---:|---:|---:|
+| May | 110 | 32 : 19 | .0919 | 6 : 1 | .1250 |
+| June | 55 | 13 : 5 | .0963 | 9 : 0 | .0039 |
+| July onward | 4 | 1 : 0 | 1.0000 | 0 : 0 | 1.0000 |
+
+Across the three epochs, Jev has 3 positive blocks: **p=.25**. Hybrid-v2 has 2 positive and 1 tied block: **p=.50**. These coarse tests have very little resolution; failure to reject is not evidence of equality. Source: R3, `dependence.*.epochs`.
+
+### C5. Sender clusters and leave-one-sender-out sensitivity
+
+| Contrast | Jev vs majority | Hybrid-v2 vs majority |
+|---|---:|---:|
+| Full-sample difference | +22/169, +13.02 percentage points | +14/169, +8.28 percentage points |
+| Sender peer-ID blocks: positive / negative / tied | 15 / 7 / 30 | 8 / 0 / 44 |
+| Sign test over sender blocks | .13380 | .0078125 |
+| Magnitude-sensitive sender sign-flip p | .29407 | .0078125 |
+| Display-name blocks: positive / negative / tied | 9 / 3 / 9 | 6 / 0 / 15 |
+| Sign test over display-name blocks | .14600 | .03125 |
+| Magnitude-sensitive display-name sign-flip p | .30371 | .03125 |
+| Leave-one-peer-ID-out difference range | +4.44 to +16.25 percentage points | +5.625 to +8.974 percentage points |
+| Leave-one-peer-ID-out nominal row-p range | .001858 to .496617 | .000122 to .011719 |
+| Leave-one-out runs with nominal row p below .05 | 51/52 | 52/52 |
+
+Source: R3, `dependence` and `loso`. Leave-one-out p-values are still row-level diagnostics; they are not an additional clustered test or 52 independent replications.
+
+For Jev, removing sender `repow-default-d0345799` (`repowire-codex`, 34 switches) leaves 49/135 hits versus majority's 43/135, with discordances 30:24 and nominal p=.4966. That sender contributes **16 of the 22 net extra matches**. Every leave-one-sender-out effect remains positive, but the pooled significance is heavily dependent on one sender.
+
+For hybrid-v2, the largest reduction comes from removing `repow-default-02ea620a` (`orchestrator-claude-code`, 9 switches): 50/160 versus 41/160, discordances 10:1, nominal p=.01172. Its direction and row-level significance survive every sender deletion. Its lack of weekly significance and its retrospectively selected trigger still govern what can be claimed.
+
+### C6. How many independent blocks are there?
+
+There are **8 occupied weekly blocks, 3 epochs, 52 sender peer IDs, and 21 sender display names**. These are candidate dependence partitions, not counts of demonstrated independent replications. The study contains one independently operated mesh; independence between any of its blocks cannot be established from these rows alone.
+
+To allow both same-week dependence and dependence across the same sender's requests, take connected components after linking rows that share either week or sender peer ID. This yields **5 disjoint blocks of sizes 145, 16, 4, 3, and 1**. It is a conservative additional partition for those two dependence sources, not a guarantee against shared recipients or shared workstreams.
+
+Jev's net differences in those blocks are +19, +2, 0, 0, +1: 3 informative blocks and **p=.25** for both block-sign and joint sign-flip tests. Hybrid-v2 has +12, +2, 0, 0, 0: 2 informative blocks and **p=.50**. Most rows therefore cannot be treated as independent evidence once both dependence relations are preserved. Source: R3, `dependence.*.sender_week_components`.
+
+**Does p=.012 survive defensible clustering?** It remains nominally below .05 under the explicit weekly independence assumption, at p=.03125. It does not survive sender clustering, coarse epochs, or the joint sender/week partition. Thus there is a defensible weekly sensitivity result, but no dependence-robust significance claim. The original p=.012 should be labeled row-level and exploratory. Hybrid-v2 shows the complementary pattern: sender-cluster evidence remains below .05, but weekly and epoch evidence do not. Neither deserves an unconditional “beats habit” claim on this dataset.
+
+**What this changes in the paper:** keep the observed ranking reversal and decomposition as the main result. Add the reference-filtered residual as a successful control. Report the paired differences with their dependence sensitivities, and reserve claims about general routing improvement for the frozen prospective study. The protocol now demonstrates why both lexical-reference controls and dependence units belong beside routing scores.
+
+### R3. Reproduction and artifacts
+
+The existing local `router-paper/historical-track-2026-10/` research directory now contains:
+
+- `codex-angle-audit-2026-10.py`: deterministic free analysis, including exact tests and declared regex rules.
+- `codex-angle-audit-2026-10.json`: full counts, scores, every sender deletion, all cluster results, input file SHA-256 values, and a digest of journal-derived first-ask times.
+- `codex-angle-reference-flags-2026-10.jsonl`: per-trace match flags for all worker rows, with no message text copied.
+- `codex-angle-audit-2026-10.txt`: readable complete output.
+
+Reproduce with `python3 codex-angle-audit-2026-10.py` from that directory. Inputs are the corrected `historical.jsonl`, recorded `runs/jev-attested.rows`, `runs/jev-attested-strict.rows`, `runs2/majority-past.rows`, and the existing `analyze4.py` loading block, which reads `state-copy.db` in read-only mode for journal novelty. The script checks the original 46:24 discordances and hybrid-v2's 57 correct switch predictions before writing its outputs. No repository source, recorded arm output, or original dataset was edited.
