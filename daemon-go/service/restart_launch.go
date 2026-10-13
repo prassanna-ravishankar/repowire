@@ -6,11 +6,14 @@ package service
 // flags only; everything else comes from the backend's spawn template.
 
 import (
+	"context"
+	"fmt"
+	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
 )
@@ -24,88 +27,171 @@ var DefaultSpawnCommands = map[proto.AgentType]string{
 	proto.AgentPi:         "pi",
 }
 
-// permissionFlag maps one backend permission mode to its launch flags, and the
-// pattern that finds those flags in a command line.
-type permissionFlag struct {
-	mode    string
-	flags   []string
-	pattern *regexp.Regexp
-}
+// PreservedVerbatim labels a permission flag set restart does not fully
+// understand; it is carried over word for word rather than mapped or defaulted.
+const PreservedVerbatim = "preserved-verbatim"
 
-var claudeModeArg = regexp.MustCompile(`(^|\s)--permission-mode(?:=|\s+)(\S+)`)
-
-var permissionFlags = map[proto.AgentType][]permissionFlag{
-	proto.AgentClaudeCode: {
-		{mode: "bypassPermissions", flags: []string{"--dangerously-skip-permissions"}, pattern: regexp.MustCompile(`(^|\s)--dangerously-skip-permissions(\s|$)`)},
-	},
-	proto.AgentCodex: {
-		{mode: "bypass", flags: []string{"--dangerously-bypass-approvals-and-sandbox"}, pattern: regexp.MustCompile(`(^|\s)(--dangerously-bypass-approvals-and-sandbox|--yolo)(\s|$)`)},
-		{mode: "full-auto", flags: []string{"--full-auto"}, pattern: regexp.MustCompile(`(^|\s)--full-auto(\s|$)`)},
-	},
+// PermissionObservation is what a command line says about permissions: the
+// permission-family words it carries (in order) and the mode they mean.
+type PermissionObservation struct {
+	Mode  string
+	Words []string
 }
 
 var claudeNamedModes = map[string]bool{"acceptEdits": true, "plan": true, "default": true, "dontAsk": true, "bypassPermissions": true}
 
-// PermissionModeFromArgs returns the permission mode a command line selects,
-// or "" when it names none.
-func PermissionModeFromArgs(backend proto.AgentType, args string) string {
-	if backend == proto.AgentClaudeCode {
-		if m := claudeModeArg.FindStringSubmatch(args); m != nil && claudeNamedModes[m[2]] {
-			return m[2]
+var permissionKeywords = []string{"permission", "dangerously", "sandbox", "approval", "yolo", "full-auto", "allowedtools", "disallowedtools", "allowed-tools", "disallowed-tools"}
+
+// permissionWord reports whether value (a flag) belongs to the permission
+// family for backend, and whether a following value belongs to it too.
+func permissionWord(backend proto.AgentType, value, next string) (family, takesNext bool) {
+	if !isFlag(value) {
+		return false, false
+	}
+	name := flagName(value)
+	lower := strings.ToLower(name)
+	takes := !strings.Contains(value, "=") && next != "" && !isFlag(next) && !booleanFlags[name]
+	if backend == proto.AgentCodex {
+		switch name {
+		case "-s", "-a":
+			return true, takes
+		case "-c", "--config":
+			v := strings.ToLower(value + " " + next)
+			for _, k := range []string{"sandbox", "approval", "permission"} {
+				if strings.Contains(v, k) {
+					return true, takes
+				}
+			}
+			return false, false
 		}
 	}
-	for _, f := range permissionFlags[backend] {
-		if f.pattern.MatchString(args) {
-			return f.mode
+	for _, k := range permissionKeywords {
+		if strings.Contains(lower, k) {
+			return true, takes
 		}
 	}
-	return ""
+	return false, false
 }
 
-// ValidPermissionMode reports whether mode has a launch flag for backend.
-func ValidPermissionMode(backend proto.AgentType, mode string) bool {
-	return modeFlags(backend, mode) != nil
-}
-
-func modeFlags(backend proto.AgentType, mode string) []string {
-	if backend == proto.AgentClaudeCode && claudeNamedModes[mode] && mode != "bypassPermissions" {
-		return []string{"--permission-mode", mode}
-	}
-	if backend == proto.AgentCodex && mode == "default" {
-		return []string{}
-	}
-	for _, f := range permissionFlags[backend] {
-		if f.mode == mode {
-			return f.flags
+// ObservePermission finds the permission-family words in argv (argv[0] is
+// the program) and names their mode: a canonical mode when every word is
+// understood and they agree, "default" when there are none, else
+// PreservedVerbatim.
+func ObservePermission(backend proto.AgentType, argv []string) PermissionObservation {
+	var words []string
+	for i := 1; i < len(argv); i++ {
+		next := ""
+		if i+1 < len(argv) {
+			next = argv[i+1]
+		}
+		family, takes := permissionWord(backend, argv[i], next)
+		if !family {
+			continue
+		}
+		words = append(words, argv[i])
+		if takes {
+			words = append(words, next)
+			i++
 		}
 	}
-	return nil
+	return PermissionObservation{Mode: permissionMode(backend, words), Words: words}
 }
 
-// WithPermissionMode replaces whatever permission flags base carries with the
-// flags for mode. An unknown mode leaves base unchanged.
-func WithPermissionMode(base string, backend proto.AgentType, mode string) string {
-	flags := modeFlags(backend, mode)
-	if flags == nil {
-		return base
+func permissionMode(backend proto.AgentType, words []string) string {
+	if len(words) == 0 {
+		return "default"
 	}
-	out := " " + strings.TrimSpace(base) + " "
-	if backend == proto.AgentClaudeCode {
-		out = claudeModeArg.ReplaceAllString(out, " ")
+	mode := ""
+	agree := func(m string) bool {
+		if mode != "" && mode != m {
+			return false
+		}
+		mode = m
+		return true
 	}
-	for _, f := range permissionFlags[backend] {
-		for f.pattern.MatchString(out) {
-			out = f.pattern.ReplaceAllString(out, " ")
+	for i := 0; i < len(words); i++ {
+		w, ok := words[i], false
+		switch {
+		case backend == proto.AgentClaudeCode && w == "--dangerously-skip-permissions":
+			ok = agree("bypassPermissions")
+		case backend == proto.AgentClaudeCode && strings.HasPrefix(w, "--permission-mode="):
+			m := strings.TrimPrefix(w, "--permission-mode=")
+			ok = claudeNamedModes[m] && agree(m)
+		case backend == proto.AgentClaudeCode && w == "--permission-mode" && i+1 < len(words):
+			i++
+			ok = claudeNamedModes[words[i]] && agree(words[i])
+		case backend == proto.AgentCodex && (w == "--dangerously-bypass-approvals-and-sandbox" || w == "--yolo"):
+			ok = agree("bypass")
+		case backend == proto.AgentCodex && w == "--full-auto":
+			ok = agree("full-auto")
+		}
+		if !ok {
+			return PreservedVerbatim
 		}
 	}
-	return strings.Join(append(strings.Fields(out), flags...), " ")
+	return mode
+}
+
+// ObservePermissionInCommand is ObservePermission over a shell command line.
+func ObservePermissionInCommand(backend proto.AgentType, command string) (PermissionObservation, error) {
+	words, ok := splitShellWords(command)
+	if !ok {
+		return PermissionObservation{}, fmt.Errorf("launch command has unmatched quotes")
+	}
+	values := []string{}
+	for _, w := range words[programIndex(words):] {
+		values = append(values, w.Value)
+	}
+	return ObservePermission(backend, values), nil
+}
+
+// PermissionWords are the canonical launch words for a named mode.
+func PermissionWords(backend proto.AgentType, mode string) ([]string, bool) {
+	switch {
+	case backend == proto.AgentClaudeCode && mode == "bypassPermissions":
+		return []string{"--dangerously-skip-permissions"}, true
+	case backend == proto.AgentClaudeCode && claudeNamedModes[mode]:
+		return []string{"--permission-mode", mode}, true
+	case backend == proto.AgentCodex && mode == "bypass":
+		return []string{"--dangerously-bypass-approvals-and-sandbox"}, true
+	case backend == proto.AgentCodex && mode == "full-auto":
+		return []string{"--full-auto"}, true
+	}
+	return nil, false
+}
+
+// ApplyPermission removes every permission-family word from command and
+// appends words, so the launch carries exactly the observed permissions and
+// never more. Other words keep their original quoting.
+func ApplyPermission(command string, backend proto.AgentType, words []string) (string, error) {
+	parsed, ok := splitShellWords(command)
+	if !ok {
+		return "", fmt.Errorf("launch command has unmatched quotes")
+	}
+	prog := programIndex(parsed)
+	kept := append([]shellWord{}, parsed[:min(prog+1, len(parsed))]...)
+	for i := prog + 1; i < len(parsed); i++ {
+		next := ""
+		if i+1 < len(parsed) {
+			next = parsed[i+1].Value
+		}
+		family, takes := permissionWord(backend, parsed[i].Value, next)
+		if !family {
+			kept = append(kept, parsed[i])
+			continue
+		}
+		if takes {
+			i++
+		}
+	}
+	return joinShellWords(append(kept, wordsFromValues(words)...)), nil
 }
 
 // ProcessControl is the OS seam restart uses to observe and stop a runtime.
 // The real implementation shells to ps and signals; tests inject a fake.
 type ProcessControl interface {
-	// Args returns the command line of a live pid, "" when unknown.
-	Args(pid int) string
+	// Args returns the argv of a live pid, nil when unknown.
+	Args(pid int) []string
 	Alive(pid int) bool
 	// InTree reports whether pid is root or one of its descendants.
 	InTree(pid, root int) bool
@@ -118,15 +204,30 @@ type realProcessControl struct{}
 // NewProcessControl returns the production ProcessControl.
 func NewProcessControl() ProcessControl { return realProcessControl{} }
 
-func (realProcessControl) Args(pid int) string {
+// processQueryTimeout bounds every ps call on the restart path.
+const processQueryTimeout = 2 * time.Second
+
+func psOutput(args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), processQueryTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ps", args...).Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+// Args reads /proc/<pid>/cmdline where it exists (exact argv); elsewhere ps
+// joins argv with spaces, so words are split on whitespace.
+func (realProcessControl) Args(pid int) []string {
 	if pid <= 0 {
-		return ""
+		return nil
 	}
-	out, err := exec.Command("ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
+	if raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline"); err == nil {
+		return strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+	}
+	out, err := psOutput("-o", "args=", "-p", strconv.Itoa(pid))
 	if err != nil {
-		return ""
+		return nil
 	}
-	return strings.TrimSpace(string(out))
+	return strings.Fields(out)
 }
 
 func (realProcessControl) Alive(pid int) bool {
@@ -138,11 +239,11 @@ func (realProcessControl) InTree(pid, root int) bool {
 		if pid == root {
 			return true
 		}
-		out, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(pid)).Output()
+		out, err := psOutput("-o", "ppid=", "-p", strconv.Itoa(pid))
 		if err != nil {
 			return false
 		}
-		pid, err = strconv.Atoi(strings.TrimSpace(string(out)))
+		pid, err = strconv.Atoi(out)
 		if err != nil {
 			return false
 		}
