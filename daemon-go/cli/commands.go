@@ -163,7 +163,7 @@ func runPeer(argv []string) int {
 	if len(argv) == 0 {
 		return usage("peer <list|describe|new|register|unregister|restart|doctor|rehook|ask|prune|whoami|asks|deliveries|ack|claim-role>")
 	}
-	a := parse(argv[1:], "show-offline", "dry-run", "json", "fix", "apply", "register", "force")
+	a := parse(argv[1:], peerBoolFlags...)
 	c, err := newClient()
 	if err != nil {
 		return fatal(err)
@@ -251,21 +251,40 @@ func runPeer(argv []string) int {
 		return 0
 	case "restart":
 		if len(a.pos) < 1 {
-			return usage("peer restart NAME_OR_ID [--dry-run] [-m MESSAGE]")
+			return usage("peer restart NAME_OR_ID [--fresh] [--dry-run] [--no-wait] [-m MESSAGE] [--status|--cancel]")
 		}
-		body := map[string]any{"dry_run": a.bool("dry-run")}
-		if value := a.string("message", ""); value != "" {
-			body["message"] = value
+		path := "/peers/" + url.PathEscape(a.pos[0]) + "/restart"
+		q := url.Values{}
+		addQuery(q, "circle", a.string("circle", ""))
+		var result map[string]any
+		var err error
+		switch {
+		case a.bool("status"):
+			result, err = c.request(http.MethodGet, pathQuery(path, q), nil)
+		case a.bool("cancel"):
+			result, err = c.request(http.MethodDelete, pathQuery(path, q), nil)
+			if restart, ok := result["restart"].(map[string]any); ok {
+				printJSON(result)
+				return printRestartOutcome(restart)
+			}
+		default:
+			body := map[string]any{"dry_run": a.bool("dry-run"), "fresh": a.bool("fresh"), "wait": a.string("wait", "true") != "false"}
+			if value := a.string("message", ""); value != "" {
+				body["message"] = value
+			}
+			if value := a.string("circle", ""); value != "" {
+				body["circle"] = value
+			}
+			if from, ferr := cliPeerIdentity(c); ferr == nil && from != "" {
+				body["from_peer"] = from
+			}
+			result, err = c.request(http.MethodPost, path, body)
 		}
-		if value := a.string("circle", ""); value != "" {
-			body["circle"] = value
-		}
-		result, err := c.request(http.MethodPost, "/peers/"+url.PathEscape(a.pos[0])+"/restart", body)
 		if err != nil {
 			return fatal(err)
 		}
 		printJSON(result)
-		return 0
+		return printRestartOutcome(result)
 	case "doctor":
 		if len(a.pos) < 1 {
 			return usage("peer doctor NAME_OR_ID")
@@ -809,6 +828,38 @@ func runShare(argv []string) int {
 		return fatal(err)
 	}
 	printJSON(result)
+	return 0
+}
+
+// peerBoolFlags are the `repowire peer` flags that take no value.
+var peerBoolFlags = []string{"show-offline", "dry-run", "json", "fix", "apply", "register", "force", "fresh", "wait", "status", "cancel"}
+
+// printRestartOutcome summarizes a restart result for a human on stderr (stdout
+// stays the JSON result) and returns the exit code: 1 when it failed.
+func printRestartOutcome(r map[string]any) int {
+	launch, _ := r["would_run"].(map[string]any)
+	for _, warning := range anySlice(r["warnings"]) {
+		fmt.Fprintln(os.Stderr, "warning:", warning)
+	}
+	switch stringValue(r, "outcome") {
+	case "restarted":
+		fmt.Fprintf(os.Stderr, "restarted %s: %s -> %s (%s)\n", stringValue(r, "display_name"), stringValue(r, "old_peer_id"), stringValue(r, "new_peer_id"), stringValue(r, "resume_mode"))
+	case "in_progress":
+		fmt.Fprintf(os.Stderr, "restart %s in progress at stage %s; check with: repowire peer restart %s --status\n", stringValue(r, "restart_id"), stringValue(r, "stage"), stringValue(r, "display_name"))
+	case "failed":
+		failed, _ := r["failed"].(map[string]any)
+		fmt.Fprintf(os.Stderr, "restart failed at %s: %s\n", stringValue(failed, "stage"), stringValue(failed, "reason"))
+		if hint := stringValue(failed, "hint"); hint != "" {
+			fmt.Fprintln(os.Stderr, hint)
+		}
+		if r["needs_manual_relaunch"] == true {
+			fmt.Fprintln(os.Stderr, "needs manual relaunch:")
+		} else {
+			fmt.Fprintln(os.Stderr, "launch command, for reference (do not run it while a runtime for this session is alive):")
+		}
+		fmt.Fprintln(os.Stderr, "  "+stringValue(launch, "manual"))
+		return 1
+	}
 	return 0
 }
 

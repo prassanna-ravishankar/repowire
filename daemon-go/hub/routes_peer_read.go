@@ -79,6 +79,8 @@ type PeerInfo struct {
 	OldestPendingAgeSeconds   *float64 `json:"oldest_pending_age_seconds"`
 	PaneSafe                  *bool    `json:"pane_safe"`
 	InboundStatus             string   `json:"inbound_status"`
+	// Restart is set only on single-peer describe (GET /peers/{name}).
+	Restart *PeerRestartInfo `json:"restart,omitempty"`
 }
 
 // PeersResponse wraps the list-peers result.
@@ -192,6 +194,17 @@ func (h *Hub) getPeerDoctor(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if restart := h.restartInfo(r.Context(), peer); restart != nil {
+		report["restart"] = restart
+		if restart.Preview.Failed != nil {
+			contradictions = append(contradictions, contradiction("NOT_RESTARTABLE", "warning", "peer restart would fail at prepare: "+restart.Preview.Failed.Reason))
+		} else if len(restart.Preview.Defaulted) > 0 {
+			contradictions = append(contradictions, contradiction("RESTART_DEFAULTS", "info", "peer restart would default: "+strings.Join(restart.Preview.Defaulted, ", ")))
+		}
+		if last := restart.Last; last != nil && last.Failed != nil && last.NeedsManualRelaunch {
+			contradictions = append(contradictions, contradiction("NEEDS_MANUAL_RELAUNCH", "error", "restart "+last.RestartID+" failed at "+last.Failed.Stage+"; run: "+last.WouldRun.Manual))
+		}
+	}
 	report["contradictions"] = contradictions
 	writeJSON(w, http.StatusOK, report)
 }
@@ -276,7 +289,9 @@ func (h *Hub) getPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	injectionTimes := h.injectionTimesFor(ctx, []*proto.Peer{p})
-	writeJSON(w, http.StatusOK, h.peerToInfoWithHealth(ctx, p, injectionTimes))
+	info := h.peerToInfoWithHealth(ctx, p, injectionTimes)
+	info.Restart = h.restartInfo(ctx, p)
+	writeJSON(w, http.StatusOK, info)
 }
 
 // getPeerByPane handles GET /peers/by-pane/{pane_id}. 404 when no peer owns it.

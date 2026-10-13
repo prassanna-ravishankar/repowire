@@ -66,7 +66,7 @@ Key modules:
 
 - `daemon-go/peer/` — peer state, circle access, events, lazy repair, ghost eviction, contradiction events
 - `daemon-go/service/` — message/transport routing (ACP-before-WS), delivery, asks, spawn, resume safety, sessions, schedules, and jobs
-- `daemon-go/hub/` — HTTP/WebSocket routes plus all 31 MCP tools at `/mcp`
+- `daemon-go/hub/` — HTTP/WebSocket routes plus all 33 MCP tools at `/mcp`
 - `daemon-go/state/` — schema-versioned SQLite state and one-time legacy JSON imports
 - `daemon-go/hooks/` — native session/stop/prompt/notification/pre-tool hooks, ws-hook, transcript parsing, and chat streaming
 - `daemon-go/cli/` — native CLI, setup/installers, and embedded runtime/channel/orchestrator assets

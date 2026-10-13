@@ -2,6 +2,8 @@ package codexbridge
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -578,4 +580,113 @@ func TestBridgeWaitsForSharedAppServerAndReconnects(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("bridge did not stop")
 	}
+}
+
+// writeRestartHint queues the spawn hint a peer restart leaves for peerID.
+func writeRestartHint(t *testing.T, cwd, peerID, pane string) {
+	t.Helper()
+	abs, _ := filepath.Abs(cwd)
+	sum := sha256.Sum256([]byte(abs + "::codex"))
+	dir := filepath.Join(os.Getenv("HOME"), ".cache", "repowire", "spawn-hints")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, hex.EncodeToString(sum[:])[:16]+".json")
+	var queue []map[string]any
+	if raw, err := os.ReadFile(target); err == nil {
+		_ = json.Unmarshal(raw, &queue)
+	}
+	raw, _ := json.Marshal(append(queue, map[string]any{
+		"path": abs, "backend": "codex", "circle": "mesh", "pane_id": pane, "peer_id": peerID,
+		"ts": float64(time.Now().Unix()),
+	}))
+	if err := os.WriteFile(target, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// paneCheckingDaemon rejects a dead pane the way verifiedPaneIdentity does and
+// records each registration body.
+func paneCheckingDaemon(t *testing.T, deadPane string, bodies *[]map[string]any) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/peers" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		*bodies = append(*bodies, body)
+		if body["pane_id"] == deadPane {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"detail":"pane-backed runtime registration rejected: pane_not_live"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "repow-stable", "display_name": "repo-codex", "circle": "mesh", "role": "agent"})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// Smoke step 9: after a restart the bridge re-registers the still-loaded
+// thread. It must use the restart's spawn hint (the new pane), not the pane
+// the thread was born in.
+func TestRegisterMovesToTheRestartHintPane(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
+	writeRestartHint(t, cwd, "repow-other", "%77")
+	writeRestartHint(t, cwd, "repow-stable", "%92")
+	var bodies []map[string]any
+	daemon := paneCheckingDaemon(t, "%91", &bodies)
+	stubTmuxPlacement(t, tmuxPlacement{session: "1", windowID: "@65", paneID: "%92", panePID: 4242})
+	p := &threadPeer{bridge: &Bridge{daemonHTTP: daemon.URL}, id: "thread-1", cwd: cwd, circle: "mesh", role: "agent", peerID: "repow-stable", hintedPane: "%91", tmux: map[string]any{"pane_id": "%91"}}
+
+	if err := p.register(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 1 || bodies[0]["pane_id"] != "%92" {
+		t.Fatalf("registrations = %#v, want one with the hint's pane %%92", bodies)
+	}
+	if evidence := registeredTmuxEvidence(bodies[0]); stringValue(evidence, "pane_id") != "%92" {
+		t.Fatalf("tmux_evidence = %#v, want the new pane's", evidence)
+	}
+	if left := hooks.ConsumeSpawnHint(cwd, "codex"); stringValue(left, "peer_id") != "repow-other" {
+		t.Fatalf("the hint addressed to another peer must stay queued, got %#v", left)
+	}
+}
+
+// Without a hint, a dead pane is dropped after one rejection instead of being
+// retried forever.
+func TestRegisterDropsADeadPaneInsteadOfRetryingIt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var bodies []map[string]any
+	daemon := paneCheckingDaemon(t, "%91", &bodies)
+	stubTmuxPlacement(t, tmuxPlacement{})
+	p := &threadPeer{bridge: &Bridge{daemonHTTP: daemon.URL}, id: "thread-1", cwd: t.TempDir(), circle: "mesh", role: "agent", peerID: "repow-stable", hintedPane: "%91", tmux: map[string]any{"pane_id": "%91"}}
+
+	if err := p.register(context.Background()); err == nil {
+		t.Fatal("the first attempt with the dead pane must fail")
+	}
+	if err := p.register(context.Background()); err != nil {
+		t.Fatalf("second attempt: %v", err)
+	}
+	if len(bodies) != 2 || bodies[1]["pane_id"] != nil {
+		t.Fatalf("registrations = %#v, want the retry without a pane", bodies)
+	}
+	if evidence := registeredTmuxEvidence(bodies[1]); evidence != nil {
+		t.Fatalf("the retry still carries the dead pane's tmux_evidence %#v", evidence)
+	}
+}
+
+func stubTmuxPlacement(t *testing.T, placement tmuxPlacement) {
+	t.Helper()
+	previous := threadTmuxPlacement
+	threadTmuxPlacement = func(string, proto.CircleBoundary) tmuxPlacement { return placement }
+	t.Cleanup(func() { threadTmuxPlacement = previous })
+}
+
+func registeredTmuxEvidence(body map[string]any) map[string]any {
+	metadata, _ := body["metadata"].(map[string]any)
+	evidence, _ := metadata["tmux_evidence"].(map[string]any)
+	return evidence
 }

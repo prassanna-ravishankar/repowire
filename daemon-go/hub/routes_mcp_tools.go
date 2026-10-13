@@ -216,6 +216,13 @@ type mcpKillArgs struct {
 	PeerIdentifier string `json:"peer_identifier"`
 	Circle         string `json:"circle,omitempty"`
 }
+type mcpRestartArgs struct {
+	PeerIdentifier string `json:"peer_identifier"`
+	Circle         string `json:"circle,omitempty"`
+	Fresh          bool   `json:"fresh,omitempty" jsonschema:"Start a fresh session instead of resuming"`
+	DryRun         bool   `json:"dry_run,omitempty" jsonschema:"Return the reconstructed launch without stopping anything"`
+	Message        string `json:"message,omitempty" jsonschema:"Opening message delivered after the peer re-registers"`
+}
 type mcpMarkReviewArgs struct {
 	PRURL           string  `json:"pr_url"`
 	LastReviewedSHA *string `json:"last_reviewed_sha,omitempty"`
@@ -454,6 +461,26 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 			return "", err
 		}
 		result, err := h.killPeer(ctx, KillPeerRequest{PeerIdentifier: a.PeerIdentifier, Circle: circle, FromPeer: &caller})
+		return jsonResult(result), err
+	})
+	addMCPTool(srv, "restart_peer", "Stop a peer and relaunch it with backend resume in a new pane of the same tmux window. Returns a typed result; a caller restarting itself gets in_progress and a report after it re-registers.", func(ctx context.Context, caller string, a mcpRestartArgs) (string, error) {
+		if err := requireMCPAdmin(h, cfg, caller, "restart_peer"); err != nil {
+			return "", err
+		}
+		if err := required("peer_identifier", a.PeerIdentifier); err != nil {
+			return "", err
+		}
+		circle, err := h.mcpKillCircle(caller, a.Circle)
+		if err != nil {
+			return "", err
+		}
+		req := RestartPeerRequest{Circle: circle, FromPeer: &caller, Fresh: a.Fresh, DryRun: a.DryRun, Message: strPtr(a.Message)}
+		if self, _ := h.reg.GetPeerByName(caller, nil); self != nil && h.spawn != nil {
+			if target, terr := h.resolveStrict(a.PeerIdentifier, circle); terr == nil && target.PeerID == self.PeerID {
+				req.Wait = new(bool) // the caller dies at the exit stage
+			}
+		}
+		result, err := h.restartPeer(ctx, a.PeerIdentifier, req)
 		return jsonResult(result), err
 	})
 	addMCPTool(srv, "mark_reviewed", "Record that the caller reviewed a pull request.", func(ctx context.Context, caller string, a mcpMarkReviewArgs) (string, error) {

@@ -160,7 +160,7 @@ the user's login-shell PATH and injects it so launchd/tmux-spawned workers can
 still see tools installed by Homebrew, nvm, and similar shell setup. This env is
 used by MCP/dashboard spawn, backend forking, restart, and durable job workers.
 
-Explicit command overrides still win over profiles. `repowire peer restart` preserves the peer's backend, path, circle, role, and mesh identity, but this slice does not persist the selected profile in peer state. Restart therefore uses the current configured backend command unless a future lane records spawn profile metadata.
+Explicit command overrides still win over profiles. `repowire peer restart` preserves the peer's backend, path, circle, role, and mesh identity. It rebuilds the launch from the current `commands` entry plus the profile recorded on the pane's spawn ownership (when Repowire spawned the pane), then swaps in the observed permission mode. A backend with no `commands` entry falls back to the built-in default (`claude --dangerously-skip-permissions`, `codex --dangerously-bypass-approvals-and-sandbox`, `opencode`, `pi`), reported as `defaulted: command`.
 
 `allowed_commands` is a deprecated compatibility field. When present in an older config, Repowire normalizes it into `commands` while loading config; new configs should not add it.
 

@@ -45,6 +45,9 @@ type ConnectionInfo struct {
 	PaneID      *string
 	DisplayName proto.DisplayName
 	ConnectedAt time.Time
+	// HookVersion is what the connecting ws-hook declared in its connect frame
+	// (0 when it declared none).
+	HookVersion int
 }
 
 // ackKey indexes an in-flight delivery ack by (peer, delivery id). Both halves
@@ -177,6 +180,32 @@ func (t *WebSocketTransport) SendAndWaitDeliveryAck(ctx context.Context, id prot
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// ConnectionHookVersion reports the hook version the peer's live socket
+// connected with.
+func (t *WebSocketTransport) ConnectionHookVersion(id proto.PeerID) (int, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	info, ok := t.conns[id]
+	if !ok {
+		return 0, false
+	}
+	return info.HookVersion, true
+}
+
+// PendingDeliveryAcks counts frames sent to id that still await their
+// delivery_ack.
+func (t *WebSocketTransport) PendingDeliveryAcks(id proto.PeerID) int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	n := 0
+	for key := range t.acks {
+		if key.id == id {
+			n++
+		}
+	}
+	return n
 }
 
 // ResolveDeliveryAck hands a delivery_ack frame to whoever is waiting on it.

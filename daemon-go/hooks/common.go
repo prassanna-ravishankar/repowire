@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	hookVersion           = 1
+	hookVersion           = proto.CurrentHookVersion
 	paneUnsafeStrikeLimit = 3
 	hintTTL               = 5 * time.Minute
 )
@@ -41,6 +41,7 @@ type Payload struct {
 	ResponseText   string
 	Model          string
 	Backend        string
+	PermissionMode string
 }
 
 func Normalize(raw map[string]any, backend string) Payload {
@@ -60,7 +61,7 @@ func Normalize(raw map[string]any, backend string) Payload {
 	return Payload{
 		Event: event, SessionID: stringField("session_id"), CWD: stringField("cwd"),
 		TranscriptPath: stringField("transcript_path"), ResponseText: response,
-		Model: extractModel(raw["model"]), Backend: backend,
+		Model: extractModel(raw["model"]), Backend: backend, PermissionMode: stringField("permission_mode"),
 	}
 }
 
@@ -539,9 +540,20 @@ func findExpectedAgentPID(paneID, expectedCommand string) int {
 }
 
 // ConsumeSpawnHint claims the next queued spawn identity for a runtime path.
-// Native transports use the same queue as hooks so a spawned peer keeps its
-// requested circle, role, and durable peer id regardless of transport.
 func ConsumeSpawnHint(path, backend string) map[string]any {
+	return takeSpawnHint(path, backend, func(map[string]any) bool { return true })
+}
+
+// ConsumeSpawnHintFor claims the next queued spawn hint addressed to peerID
+// (a restart relaunching that peer), leaving hints for other spawns queued.
+func ConsumeSpawnHintFor(path, backend, peerID string) map[string]any {
+	if peerID == "" {
+		return nil
+	}
+	return takeSpawnHint(path, backend, func(hint map[string]any) bool { return stringValue(hint, "peer_id") == peerID })
+}
+
+func takeSpawnHint(path, backend string, match func(map[string]any) bool) map[string]any {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		abs = path
@@ -569,11 +581,14 @@ func ConsumeSpawnHint(path, backend string) map[string]any {
 		if !ok || !valid || circle == "" || now.Sub(time.Unix(int64(ts), 0)) > hintTTL {
 			continue
 		}
-		if selected == nil {
+		if selected == nil && match(item) {
 			selected = item
 		} else {
 			fresh = append(fresh, item)
 		}
+	}
+	if selected == nil {
+		return nil // nothing matched: leave the queue as it was
 	}
 	if len(fresh) == 0 {
 		_ = os.Remove(target)
@@ -585,13 +600,18 @@ func ConsumeSpawnHint(path, backend string) map[string]any {
 
 func consumeSpawnHint(path, backend string) map[string]any { return ConsumeSpawnHint(path, backend) }
 
-func markOffline(peerID, reason, source, detail string) {
+// markOffline retires peerID terminally on behalf of the execution in paneID
+// (agentPID when known); the daemon ignores it if a restart replaced that
+// execution.
+func markOffline(peerID, reason, source, detail, paneID string, agentPID int) {
 	if peerID == "" {
 		return
 	}
-	daemonPost("/peers/"+url.PathEscape(peerID)+"/offline", map[string]any{
-		"reason": reason, "source": source, "detail": detail, "terminal": true,
-	})
+	body := map[string]any{"reason": reason, "source": source, "detail": detail, "terminal": true, "pane_id": paneID}
+	if agentPID > 0 {
+		body["agent_pid"] = agentPID
+	}
+	daemonPost("/peers/"+url.PathEscape(peerID)+"/offline", body)
 }
 
 func stringValue(m map[string]any, key string) string {
@@ -606,6 +626,17 @@ func firstNonempty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// intValue reads a JSON number (decoded as float64) or int.
+func intValue(m map[string]any, key string) int {
+	switch v := m[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	}
+	return 0
 }
 
 func boolValue(m map[string]any, key string) bool {

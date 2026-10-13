@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Bell, Check, Clock, Copy, Paperclip, Play, RefreshCw, RotateCcw, Search, Send, Trash2, X } from "lucide-react";
+import { AlertCircle, Bell, Check, Clock, Copy, Paperclip, Play, RefreshCw, RotateCcw, RotateCw, Search, Send, Trash2, X } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
 import { registerSnapshotProvider, useFrozenThread, useIsPeerProtected } from "../lib/protection";
 import { clearDraft, setDraftFile, setDraftText, useDraftFile, useDraftText } from "../lib/drafts";
@@ -465,6 +465,7 @@ export function PeerView({
         <ForkBackendControl peer={peer} apiBase={apiBase} onForked={onSent} />
         {peer.path ? <OpenInEditorButton path={peer.path} /> : null}
         <CopyPeerName peer={peer} />
+        <RestartPeerControl peer={peer} apiBase={apiBase} onRestarted={onSent} />
         <button
           onClick={unregisterPeer}
           disabled={unregistering}
@@ -2590,6 +2591,109 @@ function TemplatesMenu({
           Save
         </button>
       </div>
+    </div>
+  );
+}
+
+interface RestartResult {
+  outcome: "planned" | "in_progress" | "restarted" | "failed";
+  restart_id: string;
+  stage: string;
+  new_peer_id?: string;
+  resume_mode: string;
+  resume_reason?: string;
+  warnings: string[];
+  needs_manual_relaunch: boolean;
+  would_run: { manual: string };
+  failed?: { stage: string; reason: string; hint?: string };
+}
+
+const RESTART_POLL_MS = 1500;
+const RESTART_POLL_LIMIT = 120;
+
+// RestartPeerControl stops the peer and relaunches it with resume through the
+// daemon. A failed restart shows the stage and the exact command to finish it
+// by hand; clicking again is the retry.
+function RestartPeerControl({ peer, apiBase, onRestarted }: { peer: Peer; apiBase: string; onRestarted: () => void }) {
+  const [result, setResult] = useState<RestartResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const url = `${apiBase}/peers/${encodeURIComponent(peer.peer_id)}/restart`;
+
+  useEffect(() => {
+    setResult(null);
+    setError(null);
+  }, [peer.peer_id]);
+
+  async function readResult(response: Response): Promise<RestartResult> {
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      const detail = body?.detail;
+      throw new Error(typeof detail === "string" ? detail : detail?.hint || detail?.error || `HTTP ${response.status}`);
+    }
+    return (await response.json()) as RestartResult;
+  }
+
+  async function restart() {
+    if (!window.confirm(
+      `Restart @${peerLabel(peer)}? Its runtime is stopped and relaunched with resume in a new pane of the same window.`,
+    )) return;
+    setBusy(true);
+    setError(null);
+    try {
+      let current = await readResult(await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ wait: false }),
+      }));
+      setResult(current);
+      for (let i = 0; current.outcome === "in_progress" && i < RESTART_POLL_LIMIT; i++) {
+        await new Promise((resolve) => setTimeout(resolve, RESTART_POLL_MS));
+        current = await readResult(await fetch(url, { credentials: "include" }));
+        setResult(current);
+      }
+      if (current.outcome === "restarted") onRestarted();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Restart request failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const failed = result?.outcome === "failed" ? result : null;
+  return (
+    <div className="flex max-w-[320px] flex-col items-end gap-1">
+      <button
+        onClick={restart}
+        disabled={busy}
+        aria-label="Restart peer"
+        title="Restart peer with resume"
+        className="flex h-8 w-8 items-center justify-center rounded border border-border text-outline transition-colors hover:border-primary/50 hover:bg-primary/10 hover:text-primary disabled:cursor-wait disabled:opacity-50"
+      >
+        <RotateCw className={cn("h-4 w-4", busy && "animate-spin")} />
+      </button>
+      {busy && result?.outcome === "in_progress" ? (
+        <span role="status" className="font-mono text-[10px] leading-tight text-outline">restarting: {result.stage}</span>
+      ) : null}
+      {!busy && result?.outcome === "restarted" ? (
+        <span role="status" className="font-mono text-[10px] leading-tight text-primary">
+          restarted ({result.resume_mode}{result.resume_reason ? `: ${result.resume_reason}` : ""})
+        </span>
+      ) : null}
+      {error ? <span role="alert" className="font-mono text-[10px] leading-tight text-error">{error}</span> : null}
+      {failed?.failed ? (
+        <div role="alert" className="flex flex-col items-end gap-0.5 font-mono text-[10px] leading-tight text-error">
+          <span>
+            {failed.needs_manual_relaunch ? "needs manual relaunch" : "restart failed"}: {failed.failed.stage} / {failed.failed.reason}
+          </span>
+          {failed.failed.hint ? <span className="text-outline">{failed.failed.hint}</span> : null}
+          <code className="select-all break-all text-on-surface-variant">{failed.would_run.manual}</code>
+        </div>
+      ) : null}
+      {!busy && result && result.warnings.length > 0 ? (
+        <span className="font-mono text-[10px] leading-tight text-outline">{result.warnings.join("; ")}</span>
+      ) : null}
     </div>
   );
 }

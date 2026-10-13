@@ -37,19 +37,17 @@ func TestWindowSplitArgs(t *testing.T) {
 	}
 }
 
-func TestTmuxSpawnUsesExactCircle(t *testing.T) {
+// privateTmux points `tmux` at a private server with an empty config, so a
+// test never touches live peers or hooks. It returns a scratch dir.
+func privateTmux(t *testing.T) string {
+	t.Helper()
 	tmux, err := exec.LookPath("tmux")
 	if err != nil {
 		t.Skip("tmux is not installed")
 	}
 	dir := t.TempDir()
-	project := filepath.Join(dir, "1") // Numeric window names must not resolve as indexes.
-	if err := os.Mkdir(project, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// A private server and empty config keep this test away from live peers/hooks.
 	socket := "repowire-spawn-test-" + sha256Hex16(dir)
-	script := "#!/bin/sh\nexec " + shellQuote(tmux) + " -L " + socket + " -f /dev/null \"$@\"\n"
+	script := "#!/bin/sh\nexec " + ShellQuote(tmux) + " -L " + socket + " -f /dev/null \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +56,40 @@ func TestTmuxSpawnUsesExactCircle(t *testing.T) {
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("REPOWIRE_CACHE_DIR", dir)
 	t.Cleanup(func() { _ = exec.Command(tmux, "-L", socket, "kill-server").Run() })
+	return dir
+}
+
+func TestTmuxReserveThenLaunchSplitsTheOldWindow(t *testing.T) {
+	dir := privateTmux(t)
+	old, err := tmuxQuery("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "mesh", "-n", "work", "sleep 60")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctl := realTmuxController{}
+	cfg := SpawnConfig{Circle: "mesh", Path: dir, Backend: proto.AgentClaudeCode, Command: "sleep 61", TargetPane: old, SameWindow: true}
+	placement, err := ctl.CreatePane(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Reserved = &placement
+	result, err := ctl.Spawn(cfg)
+	if err != nil || result.PaneID != placement.PaneID || result.TmuxSession != "mesh:work" {
+		t.Fatalf("launch = %+v, %v; want reserved pane in mesh:work", result, err)
+	}
+	oldWindow, _ := tmuxQuery("display-message", "-p", "-t", old, "#{window_id}")
+	newWindow, _ := tmuxQuery("display-message", "-p", "-t", result.PaneID, "#{window_id}")
+	command, _ := tmuxQuery("display-message", "-p", "-t", result.PaneID, "#{pane_start_command}")
+	if oldWindow == "" || oldWindow != newWindow || !strings.Contains(command, "sleep 61") {
+		t.Fatalf("new pane window=%q command=%q, want %q running sleep 61", newWindow, command, oldWindow)
+	}
+}
+
+func TestTmuxSpawnUsesExactCircle(t *testing.T) {
+	dir := privateTmux(t)
+	project := filepath.Join(dir, "1") // Numeric window names must not resolve as indexes.
+	if err := os.Mkdir(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, args := range [][]string{
 		{"new-session", "-d", "-s", "0", "-n", "baseline", "sleep 60"},
@@ -98,7 +130,10 @@ func TestTmuxSpawnUsesExactCircle(t *testing.T) {
 type placementTmux struct{ evidence map[string]*TmuxPaneEvidence }
 
 func (t placementTmux) Spawn(SpawnConfig) (SpawnResult, error) { return SpawnResult{}, nil }
-func (t placementTmux) KillPane(string) bool                   { return true }
+func (t placementTmux) CreatePane(SpawnConfig) (PanePlacement, error) {
+	return PanePlacement{}, nil
+}
+func (t placementTmux) KillPane(string) bool { return true }
 func (t placementTmux) ProbePane(target string) *TmuxPaneEvidence {
 	return t.evidence[target]
 }
@@ -116,20 +151,7 @@ func TestPrepareSpawnDerivesAndValidatesWindowTarget(t *testing.T) {
 	if cfg.CircleBoundary != proto.CircleBoundaryWindow || cfg.TargetPane != "@7" {
 		t.Fatalf("prepared config = %+v, want window boundary target @7", cfg)
 	}
-	if _, err := svc.PrepareReplacement(SpawnConfig{Circle: "window-7"}); err != nil {
-		t.Fatalf("two-pane replacement target rejected: %v", err)
-	}
-	replacement, err := svc.PrepareReplacement(SpawnConfig{Circle: "window-7", TargetPane: "%42"})
-	if err != nil || replacement.TargetPane != "@7" {
-		t.Fatalf("replacement target = %+v, err=%v; want stable @7", replacement, err)
-	}
-	tmux.evidence["@7"].WindowPanes = 1
-	_, err = svc.PrepareReplacement(SpawnConfig{Circle: "window-7"})
 	var spawnErr *SpawnError
-	if !errors.As(err, &spawnErr) || spawnErr.Status != 409 {
-		t.Fatalf("last-pane replacement = %v, want 409 SpawnError", err)
-	}
-
 	_, err = svc.PrepareSpawn(SpawnConfig{Circle: "window-8"})
 	if !errors.As(err, &spawnErr) || spawnErr.Status != 409 {
 		t.Fatalf("missing live window target = %v, want 409 SpawnError", err)

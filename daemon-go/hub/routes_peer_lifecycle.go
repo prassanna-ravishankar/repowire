@@ -112,6 +112,10 @@ type OfflineRequest struct {
 	Source   string  `json:"source"`
 	Detail   *string `json:"detail"`
 	Terminal bool    `json:"terminal"`
+	// PaneID/AgentPID identify the execution posting; a restart fences posts
+	// from the execution it replaced.
+	PaneID   string `json:"pane_id,omitempty"`
+	AgentPID int    `json:"agent_pid,omitempty"`
 }
 
 // OfflineResponse mirrors the Python OfflineResponse.
@@ -508,6 +512,16 @@ func (h *Hub) handleMarkOffline(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
+	if restartID, fenced := h.restartFencedOffline(proto.PeerID(name), body.PaneID, body.AgentPID); fenced {
+		// From an execution a restart replaced: the replacement reclaimed this
+		// peer_id, so this post must not retire it or close its socket.
+		h.reg.AddEvent(r.Context(), "peer_restart_offline_ignored", map[string]any{
+			"peer_id": name, "restart_id": restartID, "pane_id": body.PaneID, "agent_pid": body.AgentPID,
+			"reason": body.Reason, "source": body.Source, "terminal": body.Terminal,
+		})
+		writeJSON(w, http.StatusOK, OfflineResponse{OK: true})
+		return
+	}
 	found, cancelled, err := h.reg.MarkOfflineByNameWithReason(r.Context(), name, body.Terminal, body.Reason)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
@@ -635,7 +649,7 @@ func bindingMetadata(m map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, k := range []string{
 		"hook_session_id", "runtime_session_id", "session_id",
-		"runtime_source_uri", "source_uri", "transcript_source_uri",
+		"runtime_source_uri", "source_uri", "transcript_source_uri", "permission_mode",
 	} {
 		if v, ok := m[k]; ok && v != nil {
 			out[k] = v

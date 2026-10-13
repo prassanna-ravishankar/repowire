@@ -480,9 +480,7 @@ func (b *Bridge) ensureThread(thread map[string]any) {
 		model: stringValue(thread, "model"), branch: stringValue(gitInfo, "branch"), gitStatus: repositoryStatus(cwd),
 		toolCalls: map[string][]map[string]string{}, seenItems: map[string]map[string]bool{},
 	}
-	if tmux.paneID != "" {
-		p.tmux = map[string]any{"session": tmux.session, "window_id": tmux.windowID, "pane_id": tmux.paneID, "pane_pid": tmux.panePID}
-	}
+	p.tmux = tmux.evidence()
 	p.provenance, p.nickname, p.threadSource = classifyThread(thread, nil)
 	p.provVersion = 1
 	p.busy = statusType(thread["status"]) == "active"
@@ -571,8 +569,11 @@ func (p *threadPeer) connectMesh(ctx context.Context) (*websocket.Conn, error) {
 		"circle_source": p.circleSrc, "backend": "codex", "path": p.cwd, "role": p.role,
 		"peer_id": peerID, "capabilities": []string{"delivery_receipts", "thread_steering"},
 	}
-	if p.hintedPane != "" {
-		connect["pane_id"] = p.hintedPane
+	p.mu.Lock()
+	pane := p.hintedPane
+	p.mu.Unlock()
+	if pane != "" {
+		connect["pane_id"] = pane
 	}
 	if p.bridge.token != "" {
 		connect["auth_token"] = p.bridge.token
@@ -628,6 +629,20 @@ func (p *threadPeer) registerLocked(ctx context.Context) error {
 	if claim == "" {
 		claim = p.hintedID
 	}
+	p.mu.Unlock()
+	// A restart relaunches this thread's TUI in a new pane and leaves a spawn
+	// hint addressed to this peer: register from that pane, not the old one.
+	if claim != "" {
+		p.bridge.hintMu.Lock()
+		hint := hooks.ConsumeSpawnHintFor(p.cwd, "codex", claim)
+		p.bridge.hintMu.Unlock()
+		if pane := stringValue(hint, "pane_id"); pane != "" {
+			p.movePane(pane)
+			log.Printf("codex bridge: thread %s moves to pane %s (spawn hint for %s)", p.id, pane, claim)
+		}
+	}
+	p.mu.Lock()
+	pane, tmux := p.hintedPane, p.tmux
 	provenance, nickname, threadSource, version := p.provenance, p.nickname, p.threadSource, p.provVersion
 	p.mu.Unlock()
 	metadata := map[string]any{
@@ -635,8 +650,8 @@ func (p *threadPeer) registerLocked(ctx context.Context) error {
 		"transport": "codex-app-server", "capabilities": []string{"delivery_receipts", "thread_steering"},
 		"branch": p.branch, "git_status": p.gitStatus,
 	}
-	if p.tmux != nil {
-		metadata["tmux_evidence"] = p.tmux
+	if tmux != nil {
+		metadata["tmux_evidence"] = tmux
 	}
 	if nickname != "" {
 		metadata["agent_nickname"] = nickname
@@ -649,8 +664,8 @@ func (p *threadPeer) registerLocked(ctx context.Context) error {
 		"circle_source": p.circleSrc, "backend": "codex", "role": p.role,
 		"metadata": metadata, "provenance": provenance,
 	}
-	if p.hintedPane != "" {
-		body["pane_id"] = p.hintedPane
+	if pane != "" {
+		body["pane_id"] = pane
 	}
 	if p.model != "" {
 		body["model"] = p.model
@@ -659,6 +674,20 @@ func (p *threadPeer) registerLocked(ctx context.Context) error {
 		body["peer_id"] = claim
 	}
 	result, err := p.bridge.daemonRequest(ctx, http.MethodPost, "/peers", body)
+	if err != nil && pane != "" && strings.Contains(err.Error(), "pane_not_live") {
+		// The pane this thread was hinted into is gone (its TUI exited while
+		// the thread stayed loaded). Retrying it can never succeed: drop it so
+		// the next attempt registers without a pane.
+		p.mu.Lock()
+		if p.hintedPane == pane {
+			p.hintedPane = ""
+		}
+		if stringValue(p.tmux, "pane_id") == pane {
+			p.tmux = nil
+		}
+		p.mu.Unlock()
+		log.Printf("codex bridge: pane %s for thread %s is gone; registering without a pane", pane, p.id)
+	}
 	if err != nil {
 		// A still-running native thread can outlive lazy soft retirement of its
 		// mesh peer. Drop the in-memory claim once so the next retry validates the
@@ -1240,7 +1269,28 @@ type tmuxPlacement struct {
 	panePID                                   int
 }
 
-func threadTmuxPlacement(cwd string, boundary proto.CircleBoundary) tmuxPlacement {
+// evidence is the tmux_evidence metadata for a single-pane placement.
+func (t tmuxPlacement) evidence() map[string]any {
+	if t.paneID == "" {
+		return nil
+	}
+	return map[string]any{"session": t.session, "window_id": t.windowID, "pane_id": t.paneID, "pane_pid": t.panePID}
+}
+
+// movePane registers the thread from pane, keeping tmux evidence only when a
+// scan finds this thread's cwd running codex in that same pane.
+func (p *threadPeer) movePane(pane string) {
+	evidence := map[string]any(nil)
+	if tmux := threadTmuxPlacement(p.cwd, p.bridge.boundary); tmux.paneID == pane {
+		evidence = tmux.evidence()
+	}
+	p.mu.Lock()
+	p.hintedPane, p.tmux = pane, evidence
+	p.mu.Unlock()
+}
+
+// threadTmuxPlacement is a seam so tests do not read the host tmux server.
+var threadTmuxPlacement = func(cwd string, boundary proto.CircleBoundary) tmuxPlacement {
 	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_current_path}\t#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}").Output()
 	if err != nil {
 		return tmuxPlacement{}

@@ -96,6 +96,36 @@ describe("PeerView lifecycle controls", () => {
     });
   });
 
+  it("restarts the peer and shows the manual command when it fails", async () => {
+    const failed = {
+      outcome: "failed",
+      restart_id: "rst-1",
+      stage: "register",
+      resume_mode: "resumed",
+      warnings: [],
+      needs_manual_relaunch: true,
+      would_run: { manual: "cd /tmp/alice && claude --resume s1" },
+      failed: { stage: "launch", reason: "launch_failed", hint: "respawn-pane failed" },
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/peers/peer-1/restart" && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toEqual({ wait: false });
+        return new Response(JSON.stringify(failed), { status: 200 });
+      }
+      return new Promise<Response>(() => {});
+    });
+    const confirmMock = vi.fn(() => true);
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", confirmMock);
+
+    render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart peer" }));
+
+    expect(confirmMock).toHaveBeenCalledWith(expect.stringContaining("relaunched with resume"));
+    expect(await screen.findByText(/needs manual relaunch: launch \/ launch_failed/)).toBeTruthy();
+    expect(screen.getByText("cd /tmp/alice && claude --resume s1")).toBeTruthy();
+  });
+
   it("keeps close-view non-destructive", () => {
     const onClose = vi.fn();
     render(<PeerView peer={PEER} events={[]} apiBase="" onClose={onClose} onSent={() => {}} />);

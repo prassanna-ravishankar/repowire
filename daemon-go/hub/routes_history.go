@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
@@ -102,13 +103,13 @@ func loadHistory(peer *proto.Peer, binding *state.SessionBinding, sessionID stri
 		}
 	}
 	if backend == "claude-code" {
-		home, _ := os.UserHomeDir()
-		dir := filepath.Join(home, ".claude", "projects", strings.ReplaceAll(peer.Path, "/", "-"))
-		if sessionID != "" {
-			paths = append(paths, filepath.Join(dir, sessionID+".jsonl"))
+		for _, dir := range service.ClaudeProjectDirs(peer.Path) {
+			if sessionID != "" {
+				paths = append(paths, filepath.Join(dir, sessionID+".jsonl"))
+			}
+			found, _ := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+			paths = append(paths, found...)
 		}
-		found, _ := filepath.Glob(filepath.Join(dir, "*.jsonl"))
-		paths = append(paths, found...)
 	} else {
 		home, _ := os.UserHomeDir()
 		found, _ := filepath.Glob(filepath.Join(home, ".codex", "sessions", "*", "*", "*", "rollout-*.jsonl"))

@@ -16,7 +16,6 @@ package service
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -54,7 +53,10 @@ type OwnershipRecord struct {
 	TmuxSession string  `json:"tmux_session"`
 	Machine     string  `json:"machine"`
 	PeerID      *string `json:"peer_id"`
-	CreatedAt   float64 `json:"created_at"`
+	// Profile is the spawn profile the pane was launched with, so restart can
+	// rebuild the same launch line.
+	Profile   string  `json:"profile,omitempty"`
+	CreatedAt float64 `json:"created_at"`
 }
 
 // TmuxPaneEvidence is live tmux evidence for a pane id.
@@ -502,8 +504,10 @@ func realProbeTmuxPane(paneID string) *TmuxPaneEvidence {
 	if paneID == "" {
 		return nil
 	}
-	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p",
-		"#{session_name}\t#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_pid}\t#{window_panes}\t#{start_time}").Output()
+	cmd, cancel := TmuxCommand("display-message", "-t", paneID, "-p",
+		"#{session_name}\t#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_pid}\t#{window_panes}\t#{start_time}")
+	defer cancel()
+	out, err := cmd.Output()
 	if err != nil {
 		return nil
 	}

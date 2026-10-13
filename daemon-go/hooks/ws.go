@@ -215,7 +215,7 @@ func RunWS() int {
 			if replacement := findExpectedAgentPID(paneID, expectedCommand); replacement > 0 && replacement != agentPID {
 				agentPID = replacement
 			} else if safe := paneSafe(paneID, expectedCommand); safe != nil && !*safe {
-				markOffline(lastPeerID, "agent_exited", "ws_hook", fmt.Sprintf("agent pid %d for pane %s exited", agentPID, paneID))
+				markOffline(lastPeerID, "agent_exited", "ws_hook", fmt.Sprintf("agent pid %d for pane %s exited", agentPID, paneID), paneID, agentPID)
 				ClearPaneRuntimeState(paneID)
 				return 0
 			}
@@ -298,7 +298,7 @@ func RunWS() int {
 				select {
 				case gone := <-exited:
 					if gone {
-						markOffline(lastPeerID, "agent_exited", "ws_hook", fmt.Sprintf("agent pid %d for pane %s exited", agentPID, paneID))
+						markOffline(lastPeerID, "agent_exited", "ws_hook", fmt.Sprintf("agent pid %d for pane %s exited", agentPID, paneID), paneID, agentPID)
 						ClearPaneRuntimeState(paneID)
 						_ = conn.CloseNow()
 						cancel()

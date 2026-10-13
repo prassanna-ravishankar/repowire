@@ -272,8 +272,9 @@ func TestNormalizeBackendPayloads(t *testing.T) {
 		"session_id":      "s1",
 		"final_response":  "done",
 		"model":           map[string]any{"modelID": "claude-opus"},
+		"permission_mode": "acceptEdits",
 	}, "claude-code")
-	if p.Event != "Stop" || p.SessionID != "s1" || p.ResponseText != "done" || p.Model != "claude-opus" {
+	if p.Event != "Stop" || p.SessionID != "s1" || p.ResponseText != "done" || p.Model != "claude-opus" || p.PermissionMode != "acceptEdits" {
 		t.Fatalf("unexpected normalization: %+v", p)
 	}
 }
@@ -515,5 +516,44 @@ func TestMCPIdentityDoesNotBorrowAnotherCodexThreadCertificate(t *testing.T) {
 	}
 	if identity == "repow-parent" || proof != "" {
 		t.Fatalf("child borrowed parent identity: identity=%q proof=%q", identity, proof)
+	}
+}
+
+// The Codex App Server's shared MCP subprocess runs outside tmux. Every use of
+// a spawn hint needs a pane, so it must leave a restart's hint queued for the
+// bridge it addresses.
+func TestMCPIdentityWithoutAPaneLeavesTheSpawnHintQueued(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("TMUX", "")
+	noTmux := t.TempDir()
+	if err := os.WriteFile(filepath.Join(noTmux, "tmux"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", noTmux+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("REPOWIRE_BACKEND", "codex")
+	t.Setenv("CODEX_THREAD_ID", "")
+	t.Setenv("REPOWIRE_PEER_ID", "")
+	t.Setenv("REPOWIRE_CONFIG", filepath.Join(homeDir, "missing-config.yaml"))
+	cwd := mustGetwd()
+	hash := sha256.Sum256([]byte(cwd + "::codex"))
+	hintPath := cachePath("spawn-hints", hex.EncodeToString(hash[:])[:16]+".json")
+	if err := os.MkdirAll(filepath.Dir(hintPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hint, _ := json.Marshal([]map[string]any{{"circle": "mesh", "peer_id": "repow-restarted", "pane_id": "%94", "ts": float64(time.Now().Unix())}})
+	if err := os.WriteFile(hintPath, hint, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+	port, _ := strconv.Atoi(strings.TrimPrefix(server.URL, "http://127.0.0.1:"))
+	t.Setenv("REPOWIRE_DAEMON__HOST", "127.0.0.1")
+	t.Setenv("REPOWIRE_DAEMON__PORT", strconv.Itoa(port))
+
+	MCPIdentityProof()
+	if left := ConsumeSpawnHintFor(cwd, "codex", "repow-restarted"); stringValue(left, "pane_id") != "%94" {
+		t.Fatalf("a paneless MCP shim consumed the restart hint; left %#v", left)
 	}
 }
