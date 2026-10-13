@@ -638,13 +638,17 @@ func TestRegisterMovesToTheRestartHintPane(t *testing.T) {
 	writeRestartHint(t, cwd, "repow-stable", "%92")
 	var bodies []map[string]any
 	daemon := paneCheckingDaemon(t, "%91", &bodies)
-	p := &threadPeer{bridge: &Bridge{daemonHTTP: daemon.URL}, id: "thread-1", cwd: cwd, circle: "mesh", role: "agent", peerID: "repow-stable", hintedPane: "%91"}
+	stubTmuxPlacement(t, tmuxPlacement{session: "1", windowID: "@65", paneID: "%92", panePID: 4242})
+	p := &threadPeer{bridge: &Bridge{daemonHTTP: daemon.URL}, id: "thread-1", cwd: cwd, circle: "mesh", role: "agent", peerID: "repow-stable", hintedPane: "%91", tmux: map[string]any{"pane_id": "%91"}}
 
 	if err := p.register(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if len(bodies) != 1 || bodies[0]["pane_id"] != "%92" {
 		t.Fatalf("registrations = %#v, want one with the hint's pane %%92", bodies)
+	}
+	if evidence := registeredTmuxEvidence(bodies[0]); stringValue(evidence, "pane_id") != "%92" {
+		t.Fatalf("tmux_evidence = %#v, want the new pane's", evidence)
 	}
 	if left := hooks.ConsumeSpawnHint(cwd, "codex"); stringValue(left, "peer_id") != "repow-other" {
 		t.Fatalf("the hint addressed to another peer must stay queued, got %#v", left)
@@ -657,7 +661,8 @@ func TestRegisterDropsADeadPaneInsteadOfRetryingIt(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var bodies []map[string]any
 	daemon := paneCheckingDaemon(t, "%91", &bodies)
-	p := &threadPeer{bridge: &Bridge{daemonHTTP: daemon.URL}, id: "thread-1", cwd: t.TempDir(), circle: "mesh", role: "agent", peerID: "repow-stable", hintedPane: "%91"}
+	stubTmuxPlacement(t, tmuxPlacement{})
+	p := &threadPeer{bridge: &Bridge{daemonHTTP: daemon.URL}, id: "thread-1", cwd: t.TempDir(), circle: "mesh", role: "agent", peerID: "repow-stable", hintedPane: "%91", tmux: map[string]any{"pane_id": "%91"}}
 
 	if err := p.register(context.Background()); err == nil {
 		t.Fatal("the first attempt with the dead pane must fail")
@@ -668,4 +673,20 @@ func TestRegisterDropsADeadPaneInsteadOfRetryingIt(t *testing.T) {
 	if len(bodies) != 2 || bodies[1]["pane_id"] != nil {
 		t.Fatalf("registrations = %#v, want the retry without a pane", bodies)
 	}
+	if evidence := registeredTmuxEvidence(bodies[1]); evidence != nil {
+		t.Fatalf("the retry still carries the dead pane's tmux_evidence %#v", evidence)
+	}
+}
+
+func stubTmuxPlacement(t *testing.T, placement tmuxPlacement) {
+	t.Helper()
+	previous := threadTmuxPlacement
+	threadTmuxPlacement = func(string, proto.CircleBoundary) tmuxPlacement { return placement }
+	t.Cleanup(func() { threadTmuxPlacement = previous })
+}
+
+func registeredTmuxEvidence(body map[string]any) map[string]any {
+	metadata, _ := body["metadata"].(map[string]any)
+	evidence, _ := metadata["tmux_evidence"].(map[string]any)
+	return evidence
 }

@@ -50,7 +50,13 @@ func resolveMCPIdentity(codexThreadID string) (string, string) {
 	if stringValue(paneMeta, "backend") == backend && stringValue(paneMeta, "cwd") == cwd && intFromAny(paneMeta["agent_pid"]) == agentPID {
 		panePeerID = stringValue(paneMeta, "peer_id")
 	}
-	hint := consumeSpawnHint(cwd, backend)
+	// Every use of a spawn hint below needs a pane. A paneless shim (the Codex
+	// App Server's shared MCP subprocess) must leave the hint queued for the
+	// runtime it addresses instead of consuming and discarding it.
+	var hint map[string]any
+	if paneID != "" {
+		hint = consumeSpawnHint(cwd, backend)
+	}
 	info := getTmuxInfo()
 	_, circle, source, err := tmuxPlacement(info)
 	if err != nil {
