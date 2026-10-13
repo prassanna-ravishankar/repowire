@@ -540,7 +540,11 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 		}
 		if err := pollUntil(ctx, restartExitTimeout, gone); err != nil {
 			abandonReservation()
-			fail(restartStageWait, waitReason(err, "runtime_still_alive"), fmt.Sprintf("the old runtime did not exit within %s; it was left running and nothing was relaunched", restartExitTimeout), false)
+			if exited := gone(); exited { // cancelled after the runtime went: it needs a hand relaunch
+				fail(restartStageWait, waitReason(err, "runtime_still_alive"), "cancelled after the old runtime exited; nothing was launched", true)
+			} else {
+				fail(restartStageWait, waitReason(err, "runtime_still_alive"), fmt.Sprintf("the old runtime had not exited after SIGTERM (bound %s); it was left as it is and nothing was relaunched", restartExitTimeout), false)
+			}
 			return
 		}
 		if plan.proof.paneID != "" {
