@@ -374,6 +374,15 @@ kill_peer(peer_identifier: str, circle: str | None = None) -> str
 
 Terminate a peer by name or `peer_id`. Ordinary registered peers may only target their own circle; orchestrator, service, and human roles may pass another `circle`. Anonymous HTTP MCP retains the configured admin behavior. The mesh registration is always removed once the peer resolves unambiguously. The tmux pane is killed only when the daemon can prove it belongs to that peer: current/durable Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target peer. Path match alone is not destructive proof. If the pane cannot be verified, the call succeeds with a skipped tmux-kill note so stale/manual peers can be retired from the mesh without touching tmux. If `tmux kill-pane` fails after verification, the call fails loudly and leaves the peer registered for inspection.
 
+### `restart_peer`
+
+```text
+restart_peer(peer_identifier: str, circle: str | None = None, fresh: bool = False,
+             dry_run: bool = False, message: str | None = None) -> str
+```
+
+Stop a peer and relaunch it with backend resume in a new pane of the same tmux window. Same authorization as `kill_peer` (own circle for ordinary peers; destructive pane proof for a live runtime). Returns the typed restart result described under [`repowire peer restart`](cli.md#repowire-peer): `outcome` `planned` / `in_progress` / `restarted` / `failed`, `would_run` (including the paste-ready `manual` line), `defaulted`, `warnings`, and `failed.stage` / `failed.reason` / `failed.last_known` on failure. A caller restarting itself gets `in_progress` immediately; once the resumed session registers, the daemon notifies it with the outcome (`[repowire] you were restarted ...`). `message` is delivered after re-registration.
+
 ## Review queue
 
 ### `mark_reviewed`

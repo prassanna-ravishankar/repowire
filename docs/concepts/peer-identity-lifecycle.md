@@ -82,6 +82,10 @@ A rejected claimant also never inherits the holder's *identity*: name reclaim, m
 
 Known, accepted limits of the proof: the liveness probe and the displacement decision are not atomic, so a holder that dies in that window briefly keeps the pane until lazy repair reconciles it; `pid_alive` can be fooled by pid reuse; and the ancestry walk is capped at 128 levels. Each failure mode degrades to the prior takeover behavior, never to a stuck registration.
 
+## Restart
+
+`peer restart` keeps identity while replacing the runtime process. The daemon reserves a pane beside the old one, stops the old runtime (SIGTERM to a pid proven to live in the pane), and launches the reconstructed backend command with resume into the reserved pane. The spawn hint carries the old `peer_id` and role, so the new runtime registers as the same peer; an orchestrator role is re-claimed if registration did not restore it. Restart itself never writes or deletes a session binding; the resumed runtime's registration records its observation as any registration does, and on failure the old binding stays as it was, with the typed failure kept as the peer's last restart result. Open asks are keyed by `peer_id` and a non-terminal offline does not close them, so they survive the restart.
+
 ## Retirement
 
 Some offlines are *terminal*: the caller knows the agent behind the peer is gone (a `SessionEnd` quit, the ws-hook reporting its agent pid exited, a pane takeover, or three consecutive honest `pane_alive=false` ping verdicts). A terminal offline retires the peer_id: the daemon severs its websocket and rejects any reconnect claiming that id unless the claim carries a *live* `agent_pid`. This is what stops an orphaned ws-hook's reconnect loop from resurrecting a dead peer. A fresh `SessionStart` always carries a live agent pid and therefore reclaims the identity cleanly. Retirement records persist in `~/.repowire/state.db` (pruned after ~72 hours), so a daemon restart cannot hand an orphan hook one free re-registration.

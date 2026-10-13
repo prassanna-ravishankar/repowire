@@ -8,7 +8,7 @@ Spawning starts or restarts agent peers from configured backend commands and all
 
 Use spawning when an orchestrator, dashboard, CLI command, or MCP tool should launch another peer in a known project folder. Use manual launch when you need ad hoc terminal control outside the configured allowed paths.
 
-Use restart when the backend supports resume and the existing peer has a captured runtime session id. Restart is strict: Repowire pre-validates resume data before killing a live pane.
+Use restart to stop a peer and relaunch it with backend resume in a new pane of the same window, keeping its `peer_id`, circle, and role. Restart reconstructs the launch from the backend template, cwd, permission mode, and resume id, defaults whatever is missing (listed in the result), and fails with a typed stage and the exact command to run by hand. A peer can restart itself.
 
 Use dashboard `Fork to…` when you want a second backend to join the same project and circle without stopping the source peer. A fork shares the working tree, not the source runtime's private conversation history, so coordinate before both peers edit overlapping files.
 
@@ -65,10 +65,12 @@ The new peer appears after its runtime starts and registers. Codex registers
 when App Server creates the thread; a spawn message is optional opening context,
 not a registration seed.
 
-Restart a resumable peer:
+Restart a peer (resumes when its session file exists, otherwise a fresh launch):
 
 ```bash
+repowire peer restart <peer> --dry-run   # show the reconstructed launch
 repowire peer restart <peer>
+repowire peer restart <peer> --status    # latest result
 ```
 
 Dashboard spawn and backend controls use the same spawn configuration as CLI and MCP surfaces.
@@ -76,9 +78,9 @@ Dashboard spawn and backend controls use the same spawn configuration as CLI and
 ## Commands and API
 
 - CLI: `repowire peer new`, `repowire peer restart`.
-- MCP: `spawn_peer`, `kill_peer`.
+- MCP: `spawn_peer`, `kill_peer`, `restart_peer`.
 - HTTP: `POST /spawn`, `POST /peers/{peer_id}/fork-backend`, and session-control routes exposed by the daemon.
-- Dashboard: spawn dialog, backend/profile controls, and non-destructive `Fork to…` from a peer header.
+- Dashboard: spawn dialog, backend/profile controls, non-destructive `Fork to…`, and **Restart peer** beside **Unregister peer** in a peer header.
 
 ## Limits
 
@@ -87,14 +89,15 @@ Dashboard spawn and backend controls use the same spawn configuration as CLI and
 - A path outside the allowed roots is rejected.
 - Killing a tmux pane is allowed only when the daemon can prove the pane belongs to the target peer: Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target.
 - Externally attached peers without matching metadata cannot have their pane killed by Repowire.
-- Restart does not fall back to a fresh spawn when resume data is missing or stale.
+- Restart falls back to a fresh launch when the resume id is missing or its session file is absent after exit, and says so (`resume_mode=fresh`, `resume_reason`).
+- Restart sends SIGTERM and waits up to 20s; a runtime that does not exit is left running and nothing is relaunched. A runtime that has not registered within 90s reports a `register` failure even if it is still starting; check the new pane before relaunching by hand.
 - Backend fork preserves the source peer and starts the target as an agent-role sibling; it does not copy backend-native conversation history.
 
 ## Troubleshooting
 
 - Spawn is refused: check `daemon.spawn.allowed_paths` and backend command configuration.
 - Spawned Codex peer is not visible yet: check `repowire service status` and `~/.repowire/codex-bridge.log`.
-- Restart fails before killing the pane: inspect the session binding and backend resume support.
+- Restart failed: `repowire peer restart <peer> --status` shows `failed.stage`, `failed.last_known`, and `would_run.manual`, the command to finish by hand.
 - Kill is refused for an external pane: rehook/link the pane or retire it manually; destructive pane control requires proof.
 
 ## See also
