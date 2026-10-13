@@ -116,15 +116,55 @@ func TestBuildResumeCommandReplacesExistingSessionArgs(t *testing.T) {
 	}
 }
 
-func TestRedactCommandShowsOnlyKnownGrammar(t *testing.T) {
+// Redaction is by position: only the daemon-supplied resume argument, listed
+// permission words and configured model ids are shown. A secret in an allowed
+// position is shown by contract (the shaped-prompt and model cases below).
+func TestRedactCommandShowsOnlyAllowedPositions(t *testing.T) {
 	id := "5e1f0c2a-0000-4000-8000-000000000001"
-	got, redacted := RedactCommand(`env TOKEN=SECRET claude SECRET --model SECRET --settings='{"k":"SECRET"}' --resume SECRET --resume ` + id + ` --model opus -s read-only --permission-mode plan --dangerously-skip-permissions resume ` + id)
-	want := `env TOKEN=<redacted> claude <redacted> --model <redacted> --settings=<redacted> --resume <redacted> --resume ` + id + ` --model opus -s read-only --permission-mode plan --dangerously-skip-permissions resume ` + id
+	shown := RedactShown{ResumeID: id, Models: map[string]bool{"opus": true}}
+	got, redacted := RedactCommand(`env TOKEN=SECRET claude SECRET `+id+` --model SECRET --model opus --settings='{"k":"SECRET"}' --resume 12345678-1234-1234-1234-123456789abc -s read-only --permission-mode plan --dangerously-skip-permissions --resume `+id+` -- `+id, shown)
+	want := `env TOKEN=<redacted> claude <redacted> <redacted> --model <redacted> --model opus --settings=<redacted> --resume <redacted> -s read-only --permission-mode plan --dangerously-skip-permissions --resume ` + id + ` -- <redacted>`
 	if got != want {
 		t.Fatalf("redacted = %q\nwant       %q", got, want)
 	}
-	if strings.Contains(got, "SECRET") || !slices.Contains(redacted, "positional") {
-		t.Fatalf("leak or missing names: %q %v", got, redacted)
+	if !slices.Contains(redacted, "positional") || !slices.Contains(redacted, "--model") {
+		t.Fatalf("names = %v", redacted)
+	}
+	codex, _ := RedactCommand("codex -m gpt-5 resume "+id, RedactShown{ResumeID: id})
+	if codex != "codex -m <redacted> resume "+id {
+		t.Fatalf("codex = %q: an unconfigured model id is redacted, the supplied resume id shown", codex)
+	}
+}
+
+func TestEndOfOptionsIsHonoured(t *testing.T) {
+	for _, argv := range []string{"claude -- --dangerously-skip-permissions", "codex -- --dangerously-bypass-approvals-and-sandbox"} {
+		backend := proto.AgentClaudeCode
+		if strings.HasPrefix(argv, "codex") {
+			backend = proto.AgentCodex
+		}
+		if got := ObservePermission(backend, strings.Fields(argv)); got.Mode != ModeDefault {
+			t.Errorf("%q: a prompt after -- is not a permission flag: %+v", argv, got)
+		}
+	}
+	if got, _ := ApplyPermission("claude --model opus -- --dangerously-skip-permissions", proto.AgentClaudeCode, []string{"--permission-mode", "plan"}); got != "claude --model opus --permission-mode plan -- --dangerously-skip-permissions" {
+		t.Errorf("ApplyPermission across -- = %q", got)
+	}
+	for base, want := range map[string]string{
+		"codex resume -- old-id prompt": "codex resume new",
+		"codex -- resume":               "codex resume new -- resume",
+		"codex -m gpt-5 -- hi":          "codex -m gpt-5 resume new -- hi",
+	} {
+		if got, _ := BuildResumeCommand(base, proto.AgentCodex, "new"); got != want {
+			t.Errorf("BuildResumeCommand(%q) = %q, want %q", base, got, want)
+		}
+	}
+	for base, want := range map[string]string{"codex resume -- old-id prompt": "codex", "codex -- resume": "codex -- resume"} {
+		if got, _ := StripResume(base, proto.AgentCodex); got != want {
+			t.Errorf("StripResume(%q) = %q, want %q", base, got, want)
+		}
+	}
+	if got, _ := BuildResumeCommand("claude -- --resume x", proto.AgentClaudeCode, "new"); got != "claude --resume new -- --resume x" {
+		t.Errorf("claude across -- = %q", got)
 	}
 }
 

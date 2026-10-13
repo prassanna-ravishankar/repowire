@@ -3,6 +3,8 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -219,7 +221,7 @@ func newRestartFixture(t *testing.T, commands map[proto.AgentType]string) *resta
 	p := &proto.Peer{
 		PeerID: "repow-mesh-old", DisplayName: "proj", Path: project, Machine: "test-host",
 		Backend: proto.AgentClaudeCode, Circle: "mesh", Status: proto.StatusOnline, Role: proto.RoleAgent,
-		PaneID: &pane, AgentPID: &pid, Metadata: map[string]any{"hook_session_id": "5e1f0c2a-0000-4000-8000-000000000001"},
+		PaneID: &pane, AgentPID: &pid, Metadata: map[string]any{"hook_session_id": "5e1f0c2a-0000-4000-8000-000000000001", "hook_version": float64(proto.CurrentHookVersion)},
 	}
 	reg := &restartRegistry{fakeSpawnRegistry: fakeSpawnRegistry{peers: []*proto.Peer{p}}}
 	f := &restartFixture{rt: rt, reg: reg, peer: p, project: project, home: home, bin: bin, notes: make(chan service.NotifyParams, 4)}
@@ -512,7 +514,7 @@ func TestRestartDryRunBuildsCodexResumeFromBinding(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	f.h.store = store
-	f.peer.Backend, f.peer.Metadata = proto.AgentCodex, nil
+	f.peer.Backend, f.peer.Metadata = proto.AgentCodex, map[string]any{"hook_version": float64(2)}
 	f.rt.args[101] = "codex --full-auto"
 	pid, runtimeID := string(f.peer.PeerID), "019a0000-0000-7000-8000-00000000c0de"
 	if _, err := store.UpsertObservation(context.Background(), state.Observation{
@@ -676,7 +678,7 @@ func TestRestartRelaunchesUnmodeledPermissionsArgvVerbatim(t *testing.T) {
 		"codex -c approval_policy=never -m gpt-5",
 	} {
 		f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentCodex: "codex --dangerously-bypass-approvals-and-sandbox resume old"})
-		f.peer.Backend, f.peer.Metadata = proto.AgentCodex, map[string]any{"hook_session_id": "019a0000-0000-7000-8000-00000000c0de"}
+		f.peer.Backend, f.peer.Metadata = proto.AgentCodex, map[string]any{"hook_session_id": "019a0000-0000-7000-8000-00000000c0de", "hook_version": float64(2)}
 		f.rt.args[101] = argv
 		f.rt.onLaunch = nil
 		f.writeCodexSession(t, "019a0000-0000-7000-8000-00000000c0de")
@@ -695,7 +697,7 @@ func TestRestartRelaunchesUnmodeledPermissionsArgvVerbatim(t *testing.T) {
 
 func TestRestartRebuildsModeledCodexPermissions(t *testing.T) {
 	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentCodex: "codex --dangerously-bypass-approvals-and-sandbox -m gpt-5"})
-	f.peer.Backend, f.peer.Metadata = proto.AgentCodex, map[string]any{"hook_session_id": "019a0000-0000-7000-8000-00000000c0de"}
+	f.peer.Backend, f.peer.Metadata = proto.AgentCodex, map[string]any{"hook_session_id": "019a0000-0000-7000-8000-00000000c0de", "hook_version": float64(2)}
 	f.rt.args[101] = "codex -s read-only -a never"
 
 	out := f.restart(t, RestartPeerRequest{DryRun: true})
@@ -731,19 +733,40 @@ func TestRestartPrefersRecordedModeOverLossyVerbatimArgv(t *testing.T) {
 	if out.WouldRun.PermissionMode != "plan" || out.WouldRun.PermissionModeSource != "hook" {
 		t.Fatalf("mode=%s source=%s", out.WouldRun.PermissionMode, out.WouldRun.PermissionModeSource)
 	}
+	if !slices.Contains(out.Warnings, "argv read via ps is not exact; used the recorded permission_mode") {
+		t.Fatalf("warnings = %q", out.Warnings)
+	}
 }
 
+// The hook version gate refuses anything not provably current: missing,
+// non-numeric, or older.
 func TestRestartRefusesHookTooOldToFence(t *testing.T) {
-	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
-	f.peer.Metadata["hook_version"] = float64(1)
+	for _, v := range []any{nil, "2", float64(1)} {
+		f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+		f.peer.Metadata["hook_version"] = v
 
-	out := f.restart(t, RestartPeerRequest{})
+		out := f.restart(t, RestartPeerRequest{})
 
-	if out.Failed == nil || out.Failed.Stage != restartStagePrepare || out.Failed.Reason != "hook_too_old" || !strings.Contains(out.Failed.Hint, "by hand") {
-		t.Fatalf("failed = %+v", out.Failed)
+		if out.Failed == nil || out.Failed.Stage != restartStagePrepare || out.Failed.Reason != "hook_too_old" || !strings.Contains(out.Failed.Hint, "by hand") {
+			t.Fatalf("hook_version=%v: failed = %+v", v, out.Failed)
+		}
+		if len(f.rt.terminated) != 0 || len(f.rt.created) != 0 {
+			t.Fatalf("hook_version=%v: nothing may be touched", v)
+		}
 	}
-	if len(f.rt.terminated) != 0 || len(f.rt.created) != 0 {
-		t.Fatal("nothing may be touched")
+}
+
+// With a transport, the version is the one the live socket connected with,
+// not editable peer metadata.
+func TestRestartHookVersionComesFromTheSocket(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	f.h.transport = service.NewWebSocketTransport() // the peer has no live socket
+	f.peer.Metadata["hook_version"] = float64(99)
+
+	out := f.restart(t, RestartPeerRequest{DryRun: true})
+
+	if out.Failed == nil || out.Failed.Reason != "hook_too_old" {
+		t.Fatalf("metadata alone must not pass the gate: %+v", out.Failed)
 	}
 }
 
@@ -798,7 +821,7 @@ func TestRestartCancelIsBoundedWhileLaunchBlocks(t *testing.T) {
 
 	begin := time.Now()
 	_, cancelled, err := f.h.cancelRestart(context.Background(), "proj", nil)
-	if err != nil || !cancelled || time.Since(begin) > time.Second {
+	if err != nil || !cancelled || time.Since(begin) > restartCancelWait+100*time.Millisecond {
 		t.Fatalf("cancel = %v, %v after %s", cancelled, err, time.Since(begin))
 	}
 	close(release)
@@ -826,4 +849,105 @@ func TestRestartWaitsForTheNewTransport(t *testing.T) {
 		t.Fatalf("report sent before the new transport connected: %+v", n)
 	default:
 	}
+}
+
+// A fast runtime can post its exit before Terminate returns: the fence must
+// already be up when the signal is sent.
+func TestRestartFencesBeforeTheSignalLands(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	during := false
+	f.rt.onTerm = func(int) { _, during = f.h.restartFencedOffline(f.peer.PeerID, restartOldPane, 101) }
+
+	if out := f.restart(t, RestartPeerRequest{}); out.Outcome != restartOutcomeRestarted {
+		t.Fatalf("outcome = %s", out.Outcome)
+	}
+	_, after := f.h.restartFencedOffline(f.peer.PeerID, restartOldPane, 101)
+	if !during || !after {
+		t.Fatalf("fenced during signal=%v after=%v, want both", during, after)
+	}
+}
+
+// A runtime that survived SIGTERM and was not replaced is not fenced: its
+// genuine later death must count.
+func TestRestartFailedWaitRemovesTheFence(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	setRestartTimings(t, 20*time.Millisecond, time.Second)
+	f.rt.ignoreTerm = true
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if out.Failed == nil || out.Failed.Stage != restartStageWait || len(f.launchedCommands()) != 0 {
+		t.Fatalf("failed = %+v launched=%v", out.Failed, f.launchedCommands())
+	}
+	if _, fenced := f.h.restartFencedOffline(f.peer.PeerID, restartOldPane, 101); fenced {
+		t.Fatal("a failed wait must remove the fence")
+	}
+}
+
+func TestRestartPromptAfterEndOfOptionsIsNotAPermission(t *testing.T) {
+	for backend, argv := range map[proto.AgentType]string{
+		proto.AgentClaudeCode: "claude -- --dangerously-skip-permissions",
+		proto.AgentCodex:      "codex -- --dangerously-bypass-approvals-and-sandbox",
+	} {
+		prog := strings.Fields(argv)[0]
+		f := newRestartFixture(t, map[proto.AgentType]string{backend: prog})
+		f.peer.Backend = backend
+		f.rt.args[101] = argv
+
+		out := f.restart(t, RestartPeerRequest{DryRun: true})
+
+		if out.WouldRun.PermissionMode != service.ModeDefault || strings.Contains(out.WouldRun.Command, "dangerously") {
+			t.Fatalf("%q: mode=%s command=%q", argv, out.WouldRun.PermissionMode, out.WouldRun.Command)
+		}
+	}
+}
+
+func TestRestartWarnsAboutDeliveriesInFlightAtExit(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	tr := service.NewWebSocketTransport()
+	id := f.peer.PeerID
+	connected := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		tr.Connect(context.Background(), &service.ConnectionInfo{SessionID: id, WS: c, HookVersion: proto.CurrentHookVersion})
+		close(connected)
+		for {
+			var data map[string]any
+			if wsjson.Read(context.Background(), c, &data) != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseNow()
+	<-connected
+	sent := make(chan struct{})
+	go func() {
+		_, _ = tr.SendAndWaitDeliveryAck(ctx, id, map[string]any{"delivery_id": "in-flight", "type": "notify"}, time.Second)
+		close(sent)
+	}()
+	var frame map[string]any
+	if err := wsjson.Read(ctx, client, &frame); err != nil {
+		t.Fatal(err)
+	}
+	client.CloseRead(ctx)
+	f.h.transport = tr
+	f.h.spawn.transportPane = func(proto.PeerID) (string, bool) { return "%11", true }
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if !slices.Contains(out.Warnings, "1 deliveries were in flight at exit; they may be reported delivered without having been read") {
+		t.Fatalf("warnings = %q", out.Warnings)
+	}
+	<-sent
 }

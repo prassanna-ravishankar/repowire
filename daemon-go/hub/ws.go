@@ -272,6 +272,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		PaneID:      connPane,
 		DisplayName: assignedName,
 		ConnectedAt: time.Now().UTC(),
+		HookVersion: derefInt(cf.HookVersion),
 	})
 
 	if err := wsjson.Write(ctx, conn, proto.ConnectedFrame{

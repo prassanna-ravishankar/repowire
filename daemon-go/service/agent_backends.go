@@ -69,11 +69,15 @@ func BuildResumeCommand(command string, backend proto.AgentType, runtimeSessionI
 	if err != nil {
 		return "", err
 	}
-	arg := ShellQuote(runtimeSessionID)
+	resume := []string{spec.flag, runtimeSessionID}
 	if spec.subcommand != "" {
-		return base + " " + spec.subcommand + " " + arg, nil
+		resume = []string{spec.subcommand, runtimeSessionID}
 	}
-	return base + " " + spec.flag + " " + arg, nil
+	// The resume argument goes before any `--`, which ends the options.
+	words, _ := splitShellWords(base)
+	end := endOfOptions(words, programIndex(words)+1)
+	out := append(append(append([]shellWord{}, words[:end]...), wordsFromValues(resume)...), words[end:]...)
+	return joinShellWords(out), nil
 }
 
 // codexValueFlags are the codex options that take a value (`codex --help`,
@@ -100,13 +104,14 @@ func StripResume(command string, backend proto.AgentType) (string, error) {
 	}
 	spec := backendResumeSpecs[backend]
 	prog := programIndex(words)
+	end := endOfOptions(words, prog+1)
 	kept := append([]shellWord{}, words[:min(prog+1, len(words))]...)
-	for i := prog + 1; i < len(words); i++ {
+	for i := prog + 1; i < end; i++ {
 		w := words[i]
 		name := flagName(w.Value)
 		switch {
 		case slices.Contains(spec.stripValue, name):
-			if !strings.Contains(w.Value, "=") && i+1 < len(words) && !isFlag(words[i+1].Value) {
+			if !strings.Contains(w.Value, "=") && i+1 < end && !isFlag(words[i+1].Value) {
 				i++
 			}
 		case slices.Contains(spec.stripBool, w.Value):
@@ -114,7 +119,7 @@ func StripResume(command string, backend proto.AgentType) (string, error) {
 			kept = append(kept, w)
 		}
 	}
-	return joinShellWords(kept), nil
+	return joinShellWords(append(kept, words[end:]...)), nil
 }
 
 func stripCodexResume(words []shellWord) []shellWord {
@@ -123,6 +128,12 @@ func stripCodexResume(words []shellWord) []shellWord {
 	inResume, positionals := false, 0
 	for i := prog + 1; i < len(words); i++ {
 		w := words[i]
+		if w.Value == "--" {
+			if inResume { // SESSION_ID and PROMPT of the old resume follow
+				break
+			}
+			return append(kept, words[i:]...) // a top-level `--`: the rest is the prompt
+		}
 		if isFlag(w.Value) {
 			if inResume && codexResumeSelectors[w.Value] {
 				continue

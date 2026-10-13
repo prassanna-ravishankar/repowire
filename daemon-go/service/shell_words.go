@@ -1,7 +1,6 @@
 package service
 
 import (
-	"regexp"
 	"strings"
 )
 
@@ -63,28 +62,23 @@ func flagName(value string) string {
 	return name
 }
 
-// Redaction is an allowlist: a value or positional is shown only when it
-// matches a grammar that cannot carry a secret.
-var (
-	sessionIDShape = regexp.MustCompile(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|ses_[A-Za-z0-9]{8,})$`)
-	modelIDShape   = regexp.MustCompile(`^(claude|gpt|o[0-9]|gemini|codex|opus|sonnet|haiku|fable)[A-Za-z0-9.-]*$`)
-)
-
-// shownValue reports whether flag's value may be printed.
-func shownValue(flag, value string) bool {
-	switch flag {
-	case "--resume", "-r", "--session", "--session-id":
-		return sessionIDShape.MatchString(value)
-	case "--permission-mode":
-		return claudePermissionModes[value]
-	case "--sandbox", "-s":
-		return codexSandboxModes[value]
-	case "--ask-for-approval", "-a":
-		return codexApprovalPolicies[value]
-	case "--model", "-m":
-		return modelIDShape.MatchString(value)
+// endOfOptions is the index of the first `--` at or after from (len(words)
+// when absent). Words after it are positional, whatever they look like.
+func endOfOptions(words []shellWord, from int) int {
+	for i := from; i < len(words); i++ {
+		if words[i].Value == "--" {
+			return i
+		}
 	}
-	return false
+	return len(words)
+}
+
+// RedactShown is what RedactCommand may print besides the program, `env`,
+// flag names and `--`: the resume argument the daemon itself supplied, the
+// listed permission words, and model ids from the daemon's own config.
+type RedactShown struct {
+	ResumeID string
+	Models   map[string]bool
 }
 
 // booleanFlags take no value, so the word after them is positional.
@@ -96,12 +90,31 @@ var booleanFlags = map[string]bool{
 	"--verbose": true, "--debug": true, "--full-auto": true, "--yolo": true,
 }
 
-// RedactCommand prints a launch line with every value redacted unless it
-// matches a known grammar: env assignment values, flag values (shown only for
-// session ids, listed permission modes, and model ids), and positionals
-// (shown only for the `resume` subcommand and session ids). The program,
-// `env`, and flag names are kept. It returns what it redacted.
-func RedactCommand(command string) (string, []string) {
+func (s RedactShown) value(flag, value string) bool {
+	switch flag {
+	case "--resume", "-r", "--session":
+		return s.ResumeID != "" && value == s.ResumeID
+	case "--permission-mode":
+		return claudePermissionModes[value]
+	case "--sandbox", "-s":
+		return codexSandboxModes[value]
+	case "--ask-for-approval", "-a":
+		return codexApprovalPolicies[value]
+	case "--model", "-m":
+		return s.Models[value]
+	}
+	return false
+}
+
+// RedactCommand prints a launch line for results and the journal. Every value
+// is redacted except: the resume argument the daemon supplied (shown.ResumeID,
+// after a resume flag or codex's `resume` subcommand), listed permission
+// words, and a model argument equal to a model id in the daemon's config.
+// Every other flag value, env value and positional (prompt text included) is
+// <redacted>. This is a contract about positions, not secrecy: a secret placed
+// in an allowed position (for example a prompt shaped like the session id, or
+// a configured model id) is shown, so do not put secrets there.
+func RedactCommand(command string, shown RedactShown) (string, []string) {
 	words, ok := splitShellWords(command)
 	if !ok {
 		return "<redacted: unparseable command>", []string{"*"}
@@ -111,6 +124,7 @@ func RedactCommand(command string) (string, []string) {
 		words[i].Raw, redacted = raw, append(redacted, name)
 	}
 	prog := programIndex(words)
+	end := endOfOptions(words, prog+1)
 	for i := 0; i < len(words); i++ {
 		w := words[i]
 		switch {
@@ -118,22 +132,25 @@ func RedactCommand(command string) (string, []string) {
 			if name, _, found := strings.Cut(w.Value, "="); found {
 				redact(i, name+"=<redacted>", name)
 			}
-		case i == prog:
+		case i == prog, i == end:
+		case i > end:
+			redact(i, "<redacted>", "positional")
 		case isFlag(w.Value):
 			name, value, hasValue := strings.Cut(w.Value, "=")
 			if hasValue {
-				if !shownValue(name, value) {
+				if !shown.value(name, value) {
 					redact(i, name+"=<redacted>", name)
 				}
 				continue
 			}
-			if i+1 < len(words) && !isFlag(words[i+1].Value) && !booleanFlags[name] {
-				if !shownValue(name, words[i+1].Value) {
+			if i+1 < end && !isFlag(words[i+1].Value) && !booleanFlags[name] {
+				if !shown.value(name, words[i+1].Value) {
 					redact(i+1, "<redacted>", name)
 				}
 				i++
 			}
-		case w.Value == "resume" || sessionIDShape.MatchString(w.Value):
+		case w.Value == "resume" && shown.ResumeID != "" && i+1 < len(words) && words[i+1].Value == shown.ResumeID:
+			i++ // the resume argument the daemon supplied
 		default:
 			redact(i, "<redacted>", "positional")
 		}

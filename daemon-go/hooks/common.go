@@ -22,12 +22,8 @@ import (
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
-// HookVersion 2: offline posts carry the posting execution's pane_id and
-// agent_pid, which peer restart uses to fence a replaced execution.
-const HookVersion = 2
-
 const (
-	hookVersion           = HookVersion
+	hookVersion           = proto.CurrentHookVersion
 	paneUnsafeStrikeLimit = 3
 	hintTTL               = 5 * time.Minute
 )

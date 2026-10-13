@@ -187,7 +187,7 @@ type SessionMapping struct {
 // ---------------------------------------------------------------------------
 
 const (
-	CurrentHookVersion    = 1
+	CurrentHookVersion    = 2 // 2: offline posts carry the execution's pane_id and agent_pid
 	CapDeliveryReceipts   = "delivery_receipts"
 	CapRuntimeInbox       = "runtime_inbox"
 	CapThreadSteering     = "thread_steering"

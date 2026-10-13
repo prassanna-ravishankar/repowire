@@ -107,7 +107,7 @@ func ObservePermission(backend proto.AgentType, argv []string) PermissionObserva
 	var words, parts []string
 	verbatim := PermissionObservation{Mode: ModeArgvVerbatim}
 	claudeMode := ""
-	for i := 1; i < len(argv); i++ {
+	for i := 1; i < len(argv) && argv[i] != "--"; i++ { // after `--` words are positional
 		next := ""
 		if i+1 < len(argv) {
 			next = argv[i+1]
@@ -178,10 +178,11 @@ func ApplyPermission(command string, backend proto.AgentType, words []string) (s
 		return "", errors.New("launch command has unmatched quotes")
 	}
 	prog := programIndex(parsed)
+	end := endOfOptions(parsed, prog+1)
 	kept := append([]shellWord{}, parsed[:min(prog+1, len(parsed))]...)
-	for i := prog + 1; i < len(parsed); i++ {
+	for i := prog + 1; i < end; i++ {
 		next := ""
-		if i+1 < len(parsed) {
+		if i+1 < end {
 			next = parsed[i+1].Value
 		}
 		if !isPermissionFlag(backend, parsed[i].Value, next) {
@@ -195,11 +196,12 @@ func ApplyPermission(command string, backend proto.AgentType, words []string) (s
 		if strings.Contains(parsed[i].Value, "=") {
 			continue
 		}
-		for n := 0; (arity < 0 || n < arity) && i+1 < len(parsed) && !isFlag(parsed[i+1].Value); n++ {
+		for n := 0; (arity < 0 || n < arity) && i+1 < end && !isFlag(parsed[i+1].Value); n++ {
 			i++
 		}
 	}
-	return joinShellWords(append(kept, wordsFromValues(words)...)), nil
+	kept = append(kept, wordsFromValues(words)...)
+	return joinShellWords(append(kept, parsed[end:]...)), nil
 }
 
 // ArgvCommand renders an observed argv as a shell command line.

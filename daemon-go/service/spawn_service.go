@@ -193,6 +193,37 @@ func (s *SpawnService) Commands() map[proto.AgentType]string {
 	return commands
 }
 
+// ConfiguredModels lists the model ids that appear after --model/-m in the
+// configured spawn commands and profiles: the only model values a redacted
+// restart command shows.
+func (s *SpawnService) ConfiguredModels() map[string]bool {
+	models := map[string]bool{}
+	collect := func(values []string) {
+		for i, v := range values {
+			if name, value, ok := strings.Cut(v, "="); ok && (name == "--model" || name == "-m") {
+				models[value] = true
+			} else if (v == "--model" || v == "-m") && i+1 < len(values) {
+				models[values[i+1]] = true
+			}
+		}
+	}
+	for _, command := range s.Commands() {
+		if words, ok := splitShellWords(command); ok {
+			values := make([]string, 0, len(words))
+			for _, w := range words {
+				values = append(values, w.Value)
+			}
+			collect(values)
+		}
+	}
+	for _, byName := range s.profiles {
+		for _, args := range byName {
+			collect(args)
+		}
+	}
+	return models
+}
+
 // Profiles returns the configured launch profiles for spawn discovery.
 func (s *SpawnService) Profiles() map[proto.AgentType]map[string][]string { return s.profiles }
 

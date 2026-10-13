@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -137,6 +138,7 @@ type restartPlan struct {
 	pid           int
 	base          string
 	command       string // the real launch line; results only show it redacted
+	models        map[string]bool
 	resumeID      string
 	repowireSID   *string
 	capability    map[string]any
@@ -201,6 +203,16 @@ func (t *restartTracker) supersede(id proto.PeerID, rt supersededRuntime) {
 		t.superseded = map[proto.PeerID][]supersededRuntime{}
 	}
 	t.superseded[id] = append(t.superseded[id], rt)
+}
+
+// unsupersede removes the fence restartID installed for id.
+func (t *restartTracker) unsupersede(id proto.PeerID, restartID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.superseded == nil {
+		return
+	}
+	t.superseded[id] = slices.DeleteFunc(t.superseded[id], func(rt supersededRuntime) bool { return rt.restartID == restartID })
 }
 
 // supersededBy returns the restart that replaced the execution identified by
@@ -498,10 +510,16 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 		return plan, &RestartFailure{Reason: fmt.Sprint(detail["error"]), Hint: fmt.Sprint(detail["hint"])}
 	}
 
-	// Fencing needs the old execution's hook to name its pane and pid.
+	// Fencing needs the old execution's hook to name its pane and pid. The
+	// version is the one its live socket connected with; anything not
+	// provably current (no socket, no version, older) is refused.
 	if plan.exitMode != "none" {
-		if v, known := metadataInt(p.Metadata, "hook_version"); known && v < clienthooks.HookVersion {
-			return plan, &RestartFailure{Reason: "hook_too_old", Hint: fmt.Sprintf("this peer's hook (version %d) predates execution identity (version %d), so its exit could retire the restarted peer. Relaunch it once by hand on the new binary, then restart works.", v, clienthooks.HookVersion)}
+		if v, known := h.connectedHookVersion(p); !known || v < proto.CurrentHookVersion {
+			shown := "unknown"
+			if known {
+				shown = strconv.Itoa(v)
+			}
+			return plan, &RestartFailure{Reason: "hook_too_old", Hint: fmt.Sprintf("this peer's connected hook (version %s) is not provably version %d, which names its pane and pid when it reports an exit; without that its exit could retire the restarted peer. Relaunch it once by hand on the current binary, then restart works.", shown, proto.CurrentHookVersion)}
 		}
 	}
 
@@ -566,7 +584,7 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 			result.Warnings = append(result.Warnings, "argv read via ps loses quoting; arguments containing spaces may be split in the relaunch")
 		}
 	}
-	plan.base = base
+	plan.base, plan.models = base, svc.ConfiguredModels()
 
 	switch {
 	case req.Fresh:
@@ -620,7 +638,7 @@ func applyCommand(r *RestartResult, plan *restartPlan) error {
 	if err != nil {
 		return err
 	}
-	r.WouldRun.Command, r.WouldRun.Redacted = service.RedactCommand(plan.command)
+	r.WouldRun.Command, r.WouldRun.Redacted = service.RedactCommand(plan.command, service.RedactShown{ResumeID: plan.resumeID, Models: plan.models})
 	r.WouldRun.Manual = "cd " + service.ShellQuote(r.WouldRun.CWD) + " && " + r.WouldRun.Command
 	return nil
 }
@@ -640,8 +658,13 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 	defer close(run.done)
 	defer run.cancel()
 	svc := h.spawn.svc
-	reserved := ""
+	reserved, restartID, launched := "", run.snapshot().RestartID, false
 	fail := func(stage, reason, hint string, manual bool) {
+		if !launched {
+			// No replacement is pending any more: the old execution's own
+			// future offline posts must count again.
+			h.spawn.restarts.unsupersede(plan.peer.PeerID, restartID)
+		}
 		current := run.snapshot()
 		evidence := h.restartEvidence(plan, &current) // tmux/ps probes run outside run.mu
 		run.update(func(r *RestartResult) {
@@ -671,16 +694,17 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 		return
 	}
 
-	// exit: once the old execution is signalled, fence it so its own late
-	// offline posts do not retire the peer_id its replacement reclaims.
+	// exit. The fence on the old execution goes up BEFORE the signal (a fast
+	// runtime can post its exit before Terminate returns) and comes down on any
+	// failure before the replacement launches.
 	stage(restartStageExit)
-	fence := func() {
-		h.spawn.restarts.supersede(plan.peer.PeerID, supersededRuntime{paneID: plan.proof.paneID, pid: derefInt(plan.peer.AgentPID), restartID: run.snapshot().RestartID})
-	}
 	if ctx.Err() != nil {
 		abandonReservation()
 		fail(restartStageExit, "cancelled", "cancelled before the old runtime was signalled; nothing was touched", false)
 		return
+	}
+	if plan.exitMode != "none" {
+		h.spawn.restarts.supersede(plan.peer.PeerID, supersededRuntime{paneID: plan.proof.paneID, pid: derefInt(plan.peer.AgentPID), restartID: restartID})
 	}
 	switch plan.exitMode {
 	case "sigterm":
@@ -689,14 +713,12 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 			fail(restartStageExit, "sigterm_failed", err.Error(), false)
 			return
 		}
-		fence()
 	case "kill_pane":
 		if !svc.Tmux().KillPane(plan.proof.paneID) {
 			abandonReservation()
 			fail(restartStageExit, "kill_pane_failed", "tmux kill-pane failed for the verified pane "+plan.proof.paneID, false)
 			return
 		}
-		fence()
 	}
 
 	// wait: the pid first (SIGTERM lets the runtime flush its session file), then the pane.
@@ -754,24 +776,25 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 	}
 	cfg := plan.spawn
 	cfg.Command = plan.command
-	launched, err := svc.Launch(cfg)
+	spawned, err := svc.Launch(cfg)
 	if err != nil {
 		abandonReservation()
 		fail(restartStageLaunch, "launch_failed", err.Error(), true)
 		return
 	}
-	h.restartEvent(ctx, "peer_restart_launched", run.snapshot(), map[string]any{"pane_id": launched.PaneID})
+	launched = true
+	h.restartEvent(ctx, "peer_restart_launched", run.snapshot(), map[string]any{"pane_id": spawned.PaneID})
 
 	// register: the registry sees the new pane AND its ws-hook is the peer's
 	// transport (HTTP registration precedes the ws-hook connect).
 	stage(restartStageRegister)
 	var registered *proto.Peer
 	err = pollUntil(ctx, restartRegisterTimeout, func() bool {
-		p, ok := h.spawn.reg.GetPeerByPane(launched.PaneID)
+		p, ok := h.spawn.reg.GetPeerByPane(spawned.PaneID)
 		if !ok || p.Status == proto.StatusOffline {
 			return false
 		}
-		if pane, known := h.transportPane(p.PeerID); !known || pane != launched.PaneID {
+		if pane, known := h.transportPane(p.PeerID); !known || pane != spawned.PaneID {
 			return false
 		}
 		registered = p
@@ -779,7 +802,7 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 	})
 	if err != nil {
 		// Launched but unverified: a hand relaunch now would run two runtimes on one session.
-		fail(restartStageRegister, waitReason(err, "registration_timeout"), fmt.Sprintf("the runtime was launched in pane %s but had not registered when the wait ended (bound %s); inspect that pane and do not relaunch while it runs", launched.PaneID, restartRegisterTimeout), false)
+		fail(restartStageRegister, waitReason(err, "registration_timeout"), fmt.Sprintf("the runtime was launched in pane %s but had not registered when the wait ended (bound %s); inspect that pane and do not relaunch while it runs", spawned.PaneID, restartRegisterTimeout), false)
 		return
 	}
 	var warnings []string
@@ -806,7 +829,7 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 	result := run.snapshot()
 	h.restartEvent(ctx, "peer_restart_restarted", result, nil)
 	if plan.message != nil && strings.TrimSpace(*plan.message) != "" && h.ask != nil && h.ask.delivery != nil && h.ask.reg != nil {
-		h.deliverSpawnSeed(ctx, launched.PaneID, result.DisplayName, plan.from, *plan.message)
+		h.deliverSpawnSeed(ctx, spawned.PaneID, result.DisplayName, plan.from, *plan.message)
 	}
 	h.notifyRestarted(ctx, result)
 }
@@ -966,8 +989,15 @@ func (h *Hub) transportPane(id proto.PeerID) (string, bool) {
 	return h.transport.ConnectionPaneID(id)
 }
 
-func metadataInt(m map[string]any, key string) (int, bool) {
-	switch v := m[key].(type) {
+// connectedHookVersion is the hook version p's live socket connected with.
+// Hermetic tests without a transport fall back to the numeric
+// metadata.hook_version, which is self-reported.
+func (h *Hub) connectedHookVersion(p *proto.Peer) (int, bool) {
+	if h.transport != nil {
+		v, ok := h.transport.ConnectionHookVersion(p.PeerID)
+		return v, ok && v > 0
+	}
+	switch v := p.Metadata["hook_version"].(type) {
 	case int:
 		return v, true
 	case float64:
