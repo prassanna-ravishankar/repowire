@@ -272,8 +272,9 @@ func TestNormalizeBackendPayloads(t *testing.T) {
 		"session_id":      "s1",
 		"final_response":  "done",
 		"model":           map[string]any{"modelID": "claude-opus"},
+		"permission_mode": "acceptEdits",
 	}, "claude-code")
-	if p.Event != "Stop" || p.SessionID != "s1" || p.ResponseText != "done" || p.Model != "claude-opus" {
+	if p.Event != "Stop" || p.SessionID != "s1" || p.ResponseText != "done" || p.Model != "claude-opus" || p.PermissionMode != "acceptEdits" {
 		t.Fatalf("unexpected normalization: %+v", p)
 	}
 }

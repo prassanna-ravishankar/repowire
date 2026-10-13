@@ -49,7 +49,7 @@ func TestTmuxSpawnUsesExactCircle(t *testing.T) {
 	}
 	// A private server and empty config keep this test away from live peers/hooks.
 	socket := "repowire-spawn-test-" + sha256Hex16(dir)
-	script := "#!/bin/sh\nexec " + shellQuote(tmux) + " -L " + socket + " -f /dev/null \"$@\"\n"
+	script := "#!/bin/sh\nexec " + ShellQuote(tmux) + " -L " + socket + " -f /dev/null \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,10 @@ func TestTmuxSpawnUsesExactCircle(t *testing.T) {
 type placementTmux struct{ evidence map[string]*TmuxPaneEvidence }
 
 func (t placementTmux) Spawn(SpawnConfig) (SpawnResult, error) { return SpawnResult{}, nil }
-func (t placementTmux) KillPane(string) bool                   { return true }
+func (t placementTmux) CreatePane(SpawnConfig) (PanePlacement, error) {
+	return PanePlacement{}, nil
+}
+func (t placementTmux) KillPane(string) bool { return true }
 func (t placementTmux) ProbePane(target string) *TmuxPaneEvidence {
 	return t.evidence[target]
 }
@@ -116,20 +119,7 @@ func TestPrepareSpawnDerivesAndValidatesWindowTarget(t *testing.T) {
 	if cfg.CircleBoundary != proto.CircleBoundaryWindow || cfg.TargetPane != "@7" {
 		t.Fatalf("prepared config = %+v, want window boundary target @7", cfg)
 	}
-	if _, err := svc.PrepareReplacement(SpawnConfig{Circle: "window-7"}); err != nil {
-		t.Fatalf("two-pane replacement target rejected: %v", err)
-	}
-	replacement, err := svc.PrepareReplacement(SpawnConfig{Circle: "window-7", TargetPane: "%42"})
-	if err != nil || replacement.TargetPane != "@7" {
-		t.Fatalf("replacement target = %+v, err=%v; want stable @7", replacement, err)
-	}
-	tmux.evidence["@7"].WindowPanes = 1
-	_, err = svc.PrepareReplacement(SpawnConfig{Circle: "window-7"})
 	var spawnErr *SpawnError
-	if !errors.As(err, &spawnErr) || spawnErr.Status != 409 {
-		t.Fatalf("last-pane replacement = %v, want 409 SpawnError", err)
-	}
-
 	_, err = svc.PrepareSpawn(SpawnConfig{Circle: "window-8"})
 	if !errors.As(err, &spawnErr) || spawnErr.Status != 409 {
 		t.Fatalf("missing live window target = %v, want 409 SpawnError", err)

@@ -1,0 +1,548 @@
+package hub
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/repowire/repowire/daemon-go/peer"
+	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
+	"github.com/repowire/repowire/daemon-go/state"
+)
+
+// fakeRuntime is tmux + the OS process table for restart tests. It records
+// the pane it reserved, the command it was handed, and every signal and kill.
+type fakeRuntime struct {
+	mu         sync.Mutex
+	evidence   map[string]*service.TmuxPaneEvidence
+	nextPane   string
+	created    []service.SpawnConfig
+	launched   []service.SpawnConfig
+	killed     []string
+	alive      map[int]bool
+	args       map[int]string
+	paneRoot   map[int]int // pid -> pane root pid
+	terminated []int
+	ignoreTerm bool
+	onTerm     func(pid int)
+	onLaunch   func(cfg service.SpawnConfig)
+}
+
+func (f *fakeRuntime) Spawn(cfg service.SpawnConfig) (service.SpawnResult, error) {
+	f.mu.Lock()
+	f.launched = append(f.launched, cfg)
+	onLaunch := f.onLaunch
+	f.mu.Unlock()
+	if onLaunch != nil {
+		onLaunch(cfg)
+	}
+	return service.SpawnResult{PaneID: cfg.Reserved.PaneID, TmuxSession: cfg.Reserved.TmuxSession, DisplayName: cfg.Reserved.DisplayName}, nil
+}
+
+func (f *fakeRuntime) CreatePane(cfg service.SpawnConfig) (service.PanePlacement, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.created = append(f.created, cfg)
+	f.evidence[f.nextPane] = &service.TmuxPaneEvidence{PaneID: f.nextPane, SessionName: "mesh", WindowID: "@3", WindowPanes: 2, TmuxSession: "mesh:work", PanePID: "900"}
+	return service.PanePlacement{PaneID: f.nextPane, TmuxSession: "mesh:work", DisplayName: "proj"}, nil
+}
+
+func (f *fakeRuntime) KillPane(paneID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.killed = append(f.killed, paneID)
+	delete(f.evidence, paneID)
+	return true
+}
+
+func (f *fakeRuntime) ProbePane(paneID string) *service.TmuxPaneEvidence {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.evidence[paneID]
+}
+
+func (f *fakeRuntime) Args(pid int) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.args[pid]
+}
+
+func (f *fakeRuntime) Alive(pid int) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.alive[pid]
+}
+
+func (f *fakeRuntime) InTree(pid, root int) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.paneRoot[pid] == root
+}
+
+// Terminate kills the pid and, like an exec'd runtime, its pane.
+func (f *fakeRuntime) Terminate(pid int) error {
+	f.mu.Lock()
+	f.terminated = append(f.terminated, pid)
+	if !f.ignoreTerm {
+		f.alive[pid] = false
+		delete(f.evidence, "%10")
+	}
+	onTerm := f.onTerm
+	f.mu.Unlock()
+	if onTerm != nil {
+		onTerm(pid)
+	}
+	return nil
+}
+
+// restartRegistry is a goroutine-safe registry for the restart sequence.
+type restartRegistry struct {
+	fakeSpawnRegistry
+	mu      sync.Mutex
+	claims  []string
+	events  []map[string]any
+	offline []proto.PeerID
+}
+
+func (r *restartRegistry) GetPeerByPane(paneID string) (*proto.Peer, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.fakeSpawnRegistry.GetPeerByPane(paneID)
+}
+
+func (r *restartRegistry) GetPeer(id proto.PeerID) (*proto.Peer, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.fakeSpawnRegistry.GetPeer(id)
+}
+
+func (r *restartRegistry) MarkOffline(_ context.Context, id proto.PeerID, _ bool) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.offline = append(r.offline, id)
+	for _, p := range r.peers {
+		if p.PeerID == id {
+			p.Status = proto.StatusOffline
+		}
+	}
+	return 0, nil
+}
+
+// register re-registers p under its peer_id, as the real registry reclaims.
+func (r *restartRegistry) register(p *proto.Peer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, existing := range r.peers {
+		if existing.PeerID == p.PeerID {
+			r.peers[i] = p
+			return
+		}
+	}
+	r.peers = append(r.peers, p)
+}
+
+func (r *restartRegistry) ResolvePeerStrict(identifier string, circle *string) []*proto.Peer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.fakeSpawnRegistry.ResolvePeerStrict(identifier, circle)
+}
+
+func (r *restartRegistry) ClaimSpecialRole(_ context.Context, name string, role proto.PeerRole, _ *string, _ bool) (*peer.ClaimResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.claims = append(r.claims, name+"="+string(role))
+	return &peer.ClaimResult{}, nil
+}
+
+func (r *restartRegistry) AddEvent(_ context.Context, kind string, data map[string]any) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	data["type"] = kind
+	r.events = append(r.events, data)
+	return ""
+}
+
+type restartFixture struct {
+	h       *Hub
+	rt      *fakeRuntime
+	reg     *restartRegistry
+	peer    *proto.Peer
+	project string
+	home    string
+	srv     *httptest.Server
+	notes   chan service.NotifyParams
+}
+
+const restartOldPane = "%10"
+
+// newRestartFixture builds a live, daemon-spawned claude-code peer (pid 101
+// inside pane %10 whose root is 100) and a hub wired over the fake runtime.
+func newRestartFixture(t *testing.T, commands map[proto.AgentType]string) *restartFixture {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
+	t.Setenv("REPOWIRE_CACHE_DIR", t.TempDir())
+	setRestartTimings(t, time.Second, time.Second)
+
+	project := service.NormPath(t.TempDir())
+	rt := &fakeRuntime{
+		evidence: map[string]*service.TmuxPaneEvidence{restartOldPane: {PaneID: restartOldPane, SessionName: "mesh", WindowID: "@3", WindowPanes: 1, TmuxSession: "mesh:work", CurrentPath: project, PanePID: "100"}},
+		nextPane: "%11",
+		alive:    map[int]bool{101: true},
+		args:     map[int]string{101: "claude --dangerously-skip-permissions"},
+		paneRoot: map[int]int{101: 100},
+	}
+	own := service.NewFileOwnership("test-host", rt.ProbePane)
+	bin := t.TempDir()
+	for _, name := range []string{"claude", "codex"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := service.NewSpawnService(rt, own, commands, []string{t.TempDir()}).
+		WithRuntimeConfig(nil, map[string]string{"PATH": bin, "SECRET_TOKEN": "s3cr3t"})
+	own.MarkSpawned(restartOldPane)
+
+	pane, pid := restartOldPane, 101
+	p := &proto.Peer{
+		PeerID: "repow-mesh-old", DisplayName: "proj", Path: project, Machine: "test-host",
+		Backend: proto.AgentClaudeCode, Circle: "mesh", Status: proto.StatusOnline, Role: proto.RoleAgent,
+		PaneID: &pane, AgentPID: &pid, Metadata: map[string]any{"hook_session_id": "sess-1"},
+	}
+	reg := &restartRegistry{fakeSpawnRegistry: fakeSpawnRegistry{peers: []*proto.Peer{p}}}
+	f := &restartFixture{rt: rt, reg: reg, peer: p, project: project, home: home, notes: make(chan service.NotifyParams, 4)}
+	// The relaunched runtime registers on its new pane under the claimed peer_id.
+	rt.onLaunch = func(cfg service.SpawnConfig) {
+		newPane := cfg.Reserved.PaneID
+		reg.register(&proto.Peer{
+			PeerID: *cfg.PeerID, DisplayName: "proj", Path: cfg.Path, Backend: cfg.Backend, Circle: cfg.Circle,
+			Status: proto.StatusOnline, Role: proto.RoleAgent, PaneID: &newPane, Metadata: map[string]any{"hook_session_id": "sess-1"},
+		})
+	}
+	h := &Hub{}
+	h.WithSpawn(svc, reg, service.NewAskTracker(0), "test-host", proto.CircleBoundarySession)
+	h.spawn.proc = rt
+	h.spawn.notify = func(_ context.Context, n service.NotifyParams) error {
+		f.notes <- n
+		return nil
+	}
+	f.h = h
+	mux := http.NewServeMux()
+	h.registerSpawnRoutes(mux)
+	f.srv = httptest.NewServer(mux)
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func setRestartTimings(t *testing.T, exit, register time.Duration) {
+	t.Helper()
+	prevExit, prevReg, prevPoll := restartExitTimeout, restartRegisterTimeout, restartPollInterval
+	restartExitTimeout, restartRegisterTimeout, restartPollInterval = exit, register, 5*time.Millisecond
+	t.Cleanup(func() { restartExitTimeout, restartRegisterTimeout, restartPollInterval = prevExit, prevReg, prevPoll })
+}
+
+func (f *restartFixture) writeClaudeSession(t *testing.T, id string) {
+	t.Helper()
+	dir := filepath.Join(f.home, ".claude", "projects", strings.ReplaceAll(f.project, "/", "-"))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *restartFixture) restart(t *testing.T, req RestartPeerRequest) RestartResult {
+	t.Helper()
+	resp := postSpawnJSON(t, f.srv, "/peers/proj/restart", req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("restart status = %d", resp.StatusCode)
+	}
+	var out RestartResult
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func (f *restartFixture) launchedCommands() []string {
+	f.rt.mu.Lock()
+	defer f.rt.mu.Unlock()
+	var out []string
+	for _, cfg := range f.rt.launched {
+		out = append(out, cfg.Command)
+	}
+	return out
+}
+
+func TestRestartRelaunchesWithResumeInSameWindow(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude --dangerously-skip-permissions"})
+	f.writeClaudeSession(t, "sess-1")
+	f.rt.args[101] = "node /opt/claude/cli.js --permission-mode acceptEdits"
+	f.peer.Role = proto.RoleOrchestrator
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if out.Outcome != restartOutcomeRestarted || out.Failed != nil {
+		t.Fatalf("outcome = %s failed=%+v", out.Outcome, out.Failed)
+	}
+	want := "claude --permission-mode acceptEdits --resume sess-1"
+	if got := f.launchedCommands(); len(got) != 1 || got[0] != want {
+		t.Fatalf("launched %q, want [%q]", got, want)
+	}
+	if out.WouldRun.Command != want || out.WouldRun.PermissionModeSource != "argv" || out.ResumeMode != "resumed" {
+		t.Fatalf("would_run = %+v resume_mode=%s", out.WouldRun, out.ResumeMode)
+	}
+	if strings.Contains(out.WouldRun.Command, "s3cr3t") || !slices.Contains(out.WouldRun.EnvKeys, "SECRET_TOKEN") {
+		t.Fatalf("env must be named, not printed: %+v", out.WouldRun)
+	}
+	created := f.rt.created[0]
+	if !created.SameWindow || created.TargetPane != restartOldPane || created.Path != f.project {
+		t.Fatalf("reserved pane cfg = %+v, want a split of %s", created, restartOldPane)
+	}
+	if !slices.Equal(f.rt.terminated, []int{101}) {
+		t.Fatalf("terminated = %v, want SIGTERM to 101 only", f.rt.terminated)
+	}
+	if out.OldPeerID != "repow-mesh-old" || out.NewPeerID != "repow-mesh-old" || out.NewPaneID != "%11" || out.RuntimeSessionID != "sess-1" {
+		t.Fatalf("ids = %+v", out)
+	}
+	if !slices.Equal(f.reg.claims, []string{"repow-mesh-old=orchestrator"}) || out.Role != proto.RoleOrchestrator {
+		t.Fatalf("orchestrator role not re-claimed: claims=%v role=%s", f.reg.claims, out.Role)
+	}
+	for _, e := range f.reg.events {
+		if e["restart_id"] != out.RestartID {
+			t.Fatalf("journal event without restart_id: %v", e)
+		}
+	}
+	note := <-f.notes
+	if note.ToPeer != "repow-mesh-old" || !strings.Contains(note.Text, "you were restarted") || !strings.Contains(note.Text, "resume_mode resumed") {
+		t.Fatalf("restart report = %+v", note)
+	}
+	last, err := f.h.lastRestart("proj", nil)
+	if err != nil || last == nil || last.RestartID != out.RestartID {
+		t.Fatalf("last restart = %+v, %v", last, err)
+	}
+}
+
+// The orchestrator restarting itself: its request dies at the exit stage and
+// the daemon must still finish and tell the resumed session what happened.
+func TestRestartSelfRestartCompletesAfterCallerDies(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude --dangerously-skip-permissions"})
+	f.writeClaudeSession(t, "sess-1")
+	callerCtx, callerDies := context.WithCancel(context.Background())
+	f.rt.onTerm = func(int) { callerDies() }
+
+	out, err := f.h.restartPeer(callerCtx, "proj", RestartPeerRequest{FromPeer: strPtr("proj")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Outcome == restartOutcomeFailed {
+		t.Fatalf("self-restart failed: %+v", out.Failed)
+	}
+	select {
+	case note := <-f.notes:
+		if !strings.Contains(note.Text, "old repow-mesh-old, new repow-mesh-old") {
+			t.Fatalf("report = %q", note.Text)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("resumed session never received the restart report")
+	}
+	last, _ := f.h.lastRestart("proj", nil)
+	if last.Outcome != restartOutcomeRestarted {
+		t.Fatalf("final outcome = %s (%+v)", last.Outcome, last.Failed)
+	}
+	if got := f.launchedCommands(); len(got) != 1 || got[0] != "claude --dangerously-skip-permissions --resume sess-1" {
+		t.Fatalf("launched %q", got)
+	}
+}
+
+func TestRestartGoesFreshWhenSessionFileAbsentAfterExit(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude --dangerously-skip-permissions"})
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if out.Outcome != restartOutcomeRestarted || out.ResumeMode != "fresh" || out.ResumeReason != "session file absent after exit" {
+		t.Fatalf("outcome=%s resume=%s (%s)", out.Outcome, out.ResumeMode, out.ResumeReason)
+	}
+	if got := f.launchedCommands(); len(got) != 1 || got[0] != "claude --dangerously-skip-permissions" {
+		t.Fatalf("launched %q, want a fresh launch", got)
+	}
+}
+
+func TestRestartWaitTimeoutLeavesOldRuntimeAndRelaunchesNothing(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	setRestartTimings(t, 30*time.Millisecond, time.Second)
+	f.rt.ignoreTerm = true
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if out.Failed == nil || out.Failed.Stage != restartStageWait || out.Failed.Reason != "runtime_still_alive" {
+		t.Fatalf("failed = %+v", out.Failed)
+	}
+	if out.NeedsManualRelaunch || len(f.launchedCommands()) != 0 {
+		t.Fatalf("a still-alive runtime must not be relaunched: manual=%v launched=%v", out.NeedsManualRelaunch, f.launchedCommands())
+	}
+	if !slices.Equal(f.rt.killed, []string{"%11"}) {
+		t.Fatalf("killed = %v, want only the reserved pane", f.rt.killed)
+	}
+	if lk := out.Failed.LastKnown; lk.PIDAlive == nil || !*lk.PIDAlive || !lk.OldPaneExists || lk.NewPaneExists {
+		t.Fatalf("last_known = %+v", lk)
+	}
+}
+
+func TestRestartRegisterTimeoutNeedsManualRelaunch(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	setRestartTimings(t, time.Second, 30*time.Millisecond)
+	f.rt.onLaunch = nil
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if out.Failed == nil || out.Failed.Stage != restartStageRegister || out.Failed.Reason != "registration_timeout" || !out.NeedsManualRelaunch {
+		t.Fatalf("failed = %+v manual=%v", out.Failed, out.NeedsManualRelaunch)
+	}
+	if out.WouldRun.Command == "" || out.WouldRun.CWD != f.project || !out.Failed.LastKnown.NewPaneExists {
+		t.Fatalf("failure must carry the exact command and evidence: %+v", out)
+	}
+	if len(f.launchedCommands()) != 1 {
+		t.Fatalf("launch must not be retried: %v", f.launchedCommands())
+	}
+}
+
+func TestRestartRefusesUnprovenLivePane(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	f.h.spawn.svc.Ownership().Forget(restartOldPane)
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if out.Failed == nil || out.Failed.Stage != restartStagePrepare || out.Failed.Reason != "missing_pane_metadata" {
+		t.Fatalf("failed = %+v", out.Failed)
+	}
+	if len(f.rt.created) != 0 || len(f.rt.killed) != 0 || len(f.rt.terminated) != 0 {
+		t.Fatalf("prepare failure touched tmux: created=%d killed=%v term=%v", len(f.rt.created), f.rt.killed, f.rt.terminated)
+	}
+	last, _ := f.h.lastRestart("proj", nil)
+	if last == nil || last.Failed == nil {
+		t.Fatal("a failed restart must be visible to peer describe")
+	}
+}
+
+func TestRestartBestGuessesMissingFields(t *testing.T) {
+	// No command for claude-code, no recorded mode, no resume id, pane gone.
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentCodex: "codex"})
+	f.peer.Status, f.peer.AgentPID, f.peer.Metadata = proto.StatusOffline, nil, nil
+	delete(f.rt.evidence, restartOldPane)
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if out.Outcome != restartOutcomeRestarted {
+		t.Fatalf("outcome = %s failed=%+v", out.Outcome, out.Failed)
+	}
+	if !slices.Equal(out.Defaulted, []string{"command", "permission_mode", "resume_id"}) {
+		t.Fatalf("defaulted = %v", out.Defaulted)
+	}
+	if got := f.launchedCommands(); len(got) != 1 || got[0] != service.DefaultSpawnCommands[proto.AgentClaudeCode] {
+		t.Fatalf("launched %q", got)
+	}
+	if f.rt.created[0].SameWindow || len(f.rt.terminated) != 0 {
+		t.Fatalf("an offline peer with no pane has nothing to stop or split: %+v term=%v", f.rt.created[0], f.rt.terminated)
+	}
+}
+
+func TestRestartCancelStopsTheWait(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	setRestartTimings(t, time.Second, time.Minute)
+	f.rt.onLaunch = nil
+
+	out := f.restart(t, RestartPeerRequest{Wait: new(bool)})
+	if out.Outcome != restartOutcomeInProgress {
+		t.Fatalf("no-wait outcome = %s", out.Outcome)
+	}
+	again := f.restart(t, RestartPeerRequest{})
+	if again.RestartID != out.RestartID {
+		t.Fatalf("a second restart must report the one in flight, got %s vs %s", again.RestartID, out.RestartID)
+	}
+	req, _ := http.NewRequest(http.MethodDelete, f.srv.URL+"/peers/proj/restart", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Cancelled bool          `json:"cancelled"`
+		Restart   RestartResult `json:"restart"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if !body.Cancelled || body.Restart.Failed == nil || body.Restart.Failed.Reason != "cancelled" {
+		t.Fatalf("cancel = %+v", body)
+	}
+}
+
+func TestRestartDryRunBuildsCodexResumeFromBinding(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentCodex: "codex --dangerously-bypass-approvals-and-sandbox"})
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	f.h.store = store
+	f.peer.Backend, f.peer.Metadata = proto.AgentCodex, nil
+	f.rt.args[101] = "codex --full-auto"
+	pid, runtimeID := string(f.peer.PeerID), "019a-thread"
+	if _, err := store.UpsertObservation(context.Background(), state.Observation{
+		PeerID: &pid, Backend: "codex", ProjectPath: &f.project, RuntimeSessionID: &runtimeID,
+		ResumeCapability: map[string]any{"supported": true, "strategy": "codex_resume", "runtime_session_id_arg": runtimeID},
+		Status:           state.BindingActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := f.restart(t, RestartPeerRequest{DryRun: true})
+
+	if out.Outcome != restartOutcomePlanned || out.WouldRun.Command != "codex --full-auto resume 019a-thread" {
+		t.Fatalf("dry run = %s %q", out.Outcome, out.WouldRun.Command)
+	}
+	if len(f.rt.created) != 0 || len(f.rt.terminated) != 0 {
+		t.Fatal("dry run must not touch tmux or processes")
+	}
+}
+
+// The resume id is validated after exit: a runtime that writes its session
+// file while handling SIGTERM still resumes.
+func TestRestartValidatesResumeAfterExit(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	f.rt.onTerm = func(int) { f.writeClaudeSession(t, "sess-1") }
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if out.ResumeMode != "resumed" || out.WouldRun.Command != "claude --dangerously-skip-permissions --resume sess-1" {
+		t.Fatalf("resume_mode=%s (%s) command=%q", out.ResumeMode, out.ResumeReason, out.WouldRun.Command)
+	}
+}
+
+func TestRestartInfoPreviewsWithoutTouchingTheRuntime(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude --dangerously-skip-permissions"})
+	f.writeClaudeSession(t, "sess-1")
+
+	info := f.h.restartInfo(context.Background(), f.peer)
+
+	if info == nil || !info.Restartable || info.Last != nil {
+		t.Fatalf("info = %+v", info)
+	}
+	if info.Preview.WouldRun.Command != "claude --dangerously-skip-permissions --resume sess-1" || info.Preview.WouldRun.PermissionModeSource != "argv" {
+		t.Fatalf("preview = %+v", info.Preview.WouldRun)
+	}
+	if len(f.rt.created) != 0 || len(f.rt.terminated) != 0 {
+		t.Fatal("describe must not reserve panes or signal processes")
+	}
+}

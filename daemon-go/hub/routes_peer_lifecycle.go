@@ -635,7 +635,7 @@ func bindingMetadata(m map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, k := range []string{
 		"hook_session_id", "runtime_session_id", "session_id",
-		"runtime_source_uri", "source_uri", "transcript_source_uri",
+		"runtime_source_uri", "source_uri", "transcript_source_uri", "permission_mode",
 	} {
 		if v, ok := m[k]; ok && v != nil {
 			out[k] = v

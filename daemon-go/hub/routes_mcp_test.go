@@ -158,7 +158,7 @@ func TestMCPToolsList(t *testing.T) {
 		"job_cancel", "job_create", "job_list",
 		"job_result", "job_show", "job_status", "job_update", "kill_peer",
 		"list_peers", "mark_reviewed", "notify_peer", "orchestrator_status",
-		"review_queue", "revoke_share", "schedule_create", "schedule_cron",
+		"restart_peer", "review_queue", "revoke_share", "schedule_create", "schedule_cron",
 		"schedule_delete", "schedule_list", "schedule_self", "set_description", "set_name",
 		"share_session", "spawn_peer", "wait_on_ack", "whoami",
 	} {

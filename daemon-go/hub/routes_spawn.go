@@ -6,7 +6,9 @@ package hub
 //	GET  /spawn/config                    spawn config for UI discovery
 //	POST /spawn                           create an agent session in tmux
 //	POST /kill-peer                       kill a registered peer by mesh identity
-//	POST /peers/{name}/restart            strict kill + backend-resume
+//	POST /peers/{name}/restart            stop + relaunch with resume (peer_restart.go)
+//	GET  /peers/{name}/restart            latest restart result
+//	DELETE /peers/{name}/restart          cancel an in-flight restart
 //	POST /peers/{name}/fork-backend       spawn a sibling on a new backend
 //	POST /peers/{name}/rehook             ws-hook recovery (dry-run/report subset)
 //
@@ -40,6 +42,7 @@ type spawnRegistry interface {
 	ResolvePeerStrict(identifier string, circle *string) []*proto.Peer
 	AllocateAndRegister(ctx context.Context, p peer.AllocateParams) (proto.PeerID, proto.DisplayName, error)
 	GetPeer(id proto.PeerID) (*proto.Peer, bool)
+	GetPeerByPane(paneID string) (*proto.Peer, bool)
 	UnregisterPeer(ctx context.Context, identifier string, circle *string) (bool, error)
 	MarkOffline(ctx context.Context, id proto.PeerID, terminal bool) (int, error)
 }
@@ -53,6 +56,10 @@ type spawnDeps struct {
 	selfMachine string
 	boundary    proto.CircleBoundary
 	ctx         context.Context
+	proc        service.ProcessControl
+	restarts    *restartTracker
+	// notify overrides restart-report delivery (tests); nil uses the ask deps.
+	notify func(context.Context, service.NotifyParams) error
 }
 
 // WithSpawn attaches the spawn-kill-restart route group. svc owns tmux + ownership;
@@ -66,7 +73,8 @@ func (h *Hub) WithSpawn(svc *service.SpawnService, reg spawnRegistry, asks *serv
 	if svc != nil {
 		svc.WithCircleBoundary(boundary)
 	}
-	h.spawn = &spawnDeps{svc: svc, reg: reg, asks: asks, selfMachine: selfMachine, boundary: boundary, ctx: context.Background()}
+	h.spawn = &spawnDeps{svc: svc, reg: reg, asks: asks, selfMachine: selfMachine, boundary: boundary, ctx: context.Background(),
+		proc: service.NewProcessControl(), restarts: &restartTracker{}}
 	return h
 }
 
@@ -86,6 +94,8 @@ func (h *Hub) registerSpawnRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /spawn", h.requireAuth(h.handleSpawn))
 	mux.HandleFunc("POST /kill-peer", h.requireAuth(h.handleKillPeer))
 	mux.HandleFunc("POST /peers/{name}/restart", h.requireAuth(h.handleRestartPeer))
+	mux.HandleFunc("GET /peers/{name}/restart", h.requireAuth(h.handleRestartStatus))
+	mux.HandleFunc("DELETE /peers/{name}/restart", h.requireAuth(h.handleRestartCancel))
 	mux.HandleFunc("POST /peers/{name}/fork-backend", h.requireAuth(h.handleForkBackend))
 	mux.HandleFunc("POST /peers/{name}/rehook", h.requireAuth(h.handleRehookPeer))
 }
@@ -270,7 +280,7 @@ func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, e
 	}
 	result, err := svc.Spawn(service.SpawnConfig{
 		Path: req.Path, Circle: req.Circle, TargetPane: req.SourcePane,
-		Backend: backend, Command: command, Message: req.Message, Role: req.Role,
+		Backend: backend, Command: command, Message: req.Message, Role: req.Role, Profile: derefString(req.Profile),
 	})
 	if err != nil {
 		return SpawnResponse{}, err
@@ -497,231 +507,53 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 }
 
 // ---------------------------------------------------------------------------
-// POST /peers/{name}/restart
+// /peers/{name}/restart (sequence in peer_restart.go)
 // ---------------------------------------------------------------------------
 
-// RestartPeerRequest mirrors spawn.py RestartPeerRequest.
-type RestartPeerRequest struct {
-	Circle   *string `json:"circle"`
-	FromPeer *string `json:"from_peer"`
-	DryRun   bool    `json:"dry_run"`
-	Message  *string `json:"message"`
-}
-
-// RestartPeerResponse mirrors spawn.py RestartPeerResponse.
-type RestartPeerResponse struct {
-	OK                bool            `json:"ok"`
-	Status            string          `json:"status"`
-	Restarted         bool            `json:"restarted"`
-	PeerID            string          `json:"peer_id"`
-	DisplayName       string          `json:"display_name"`
-	Backend           proto.AgentType `json:"backend"`
-	Path              string          `json:"path"`
-	Circle            string          `json:"circle"`
-	TmuxSession       *string         `json:"tmux_session"`
-	ResumeMode        string          `json:"resume_mode"`
-	ResumeWarning     *string         `json:"resume_warning"`
-	UnsupportedReason *string         `json:"unsupported_reason"`
-	Command           *string         `json:"command"`
-}
-
 func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
-	if !h.spawnReady(w) {
-		return
-	}
-	name := r.PathValue("name")
 	var req RestartPeerRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ctx := r.Context()
-	h.spawn.reg.LazyRepair(ctx)
-
-	resolved, err := h.resolveStrict(name, req.Circle)
+	result, err := h.restartPeer(r.Context(), r.PathValue("name"), req)
 	if err != nil {
 		h.writeSpawnError(w, err)
 		return
 	}
-	peerCopy := h.peerWithAdoptedOwnership(resolved)
-
-	if !h.sameHostOK(w, peerCopy, "Peer restart is same-host only in this slice.") {
-		return
-	}
-	if peerCopy.Path == "" {
-		writeJSONError(w, http.StatusConflict, map[string]any{
-			"error": "missing_path",
-			"hint":  "Peer has no recorded working directory; cannot restart.",
-		})
-		return
-	}
-
-	svc := h.spawn.svc
-	resolvedPath, perr := svc.ValidatePath(peerCopy.Path)
-	if perr != nil {
-		h.writeSpawnError(w, perr)
-		return
-	}
-	spawnCircle := peerCopy.Circle
-	if spawnCircle == "" {
-		writeJSONError(w, http.StatusConflict, "peer has no circle; cannot restart")
-		return
-	}
-	resumeCommand, _, rerr := h.restartResumeCommand(ctx, peerCopy, resolvedPath)
-	if rerr != nil {
-		writeJSONError(w, http.StatusConflict, rerr)
-		return
-	}
-	resumeMode := "resumed"
-
-	proof := h.destructivePaneProof(peerCopy)
-	canSkipKill := peerCopy.Status == proto.StatusOffline &&
-		(proof.errCode == "missing_pane" || proof.errCode == "pane_not_live")
-	if !proof.ok && !canSkipKill {
-		writeJSONError(w, http.StatusConflict, h.paneControlErrorDetail(peerCopy, proof))
-		return
-	}
-	spawnConfig := service.SpawnConfig{
-		Path: resolvedPath, Circle: spawnCircle, Backend: peerCopy.Backend,
-		Role: peerCopy.Role, PeerID: &peerCopy.PeerID,
-	}
-	if proof.ok {
-		spawnConfig.TargetPane = proof.paneID
-		spawnConfig, perr = svc.PrepareReplacement(spawnConfig)
-	} else {
-		spawnConfig, perr = svc.PrepareSpawn(spawnConfig)
-	}
-	if perr != nil {
-		h.writeSpawnError(w, perr)
-		return
-	}
-
-	tmuxSession := proof.tmuxSession
-	if tmuxSession == "" && peerCopy.TmuxSession != nil {
-		tmuxSession = *peerCopy.TmuxSession
-	}
-
-	if req.DryRun {
-		ts := tmuxSession
-		writeJSON(w, http.StatusOK, RestartPeerResponse{
-			OK:          true,
-			Status:      "restart_available",
-			Restarted:   false,
-			PeerID:      string(peerCopy.PeerID),
-			DisplayName: string(peerCopy.DisplayName),
-			Backend:     peerCopy.Backend,
-			Path:        resolvedPath,
-			Circle:      spawnCircle,
-			TmuxSession: &ts,
-			Command:     &resumeCommand,
-			ResumeMode:  resumeMode,
-		})
-		return
-	}
-
-	// Quiesce barrier: blocks new asks in either direction + verifies none are
-	// open. service.ErrQuiesceHasOpen → 409 in_flight_asks; service.ErrQuiesced (concurrent
-	// restart) → 409 restart_in_progress.
-	if h.spawn.asks != nil {
-		if qerr := h.spawn.asks.BeginQuiesce(ctx, peerCopy.PeerID); qerr != nil {
-			h.writeQuiesceError(w, qerr, ctx, peerCopy.PeerID, "restart_in_progress",
-				"Another restart/switch is in progress for this peer. Retry shortly.")
-			return
-		}
-		defer h.spawn.asks.EndQuiesce(ctx, peerCopy.PeerID)
-	}
-
-	if proof.ok {
-		if !h.spawn.svc.Tmux().KillPane(proof.paneID) {
-			writeJSONError(w, http.StatusInternalServerError, map[string]any{
-				"error":   "kill_failed",
-				"hint":    "tmux kill-pane failed for the peer's verified pane; the old runtime may still be alive. Aborting restart to avoid duplicates.",
-				"pane_id": proof.paneID,
-			})
-			return
-		}
-		h.spawn.svc.Ownership().Forget(proof.paneID)
-		clienthooks.ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove the reused pane
-		_, _ = h.spawn.reg.MarkOffline(ctx, peerCopy.PeerID, false)
-	}
-
-	spawnConfig.Command = resumeCommand
-	spawnConfig.Message = req.Message
-	result, serr := svc.Spawn(spawnConfig)
-	if serr != nil {
-		h.writeSpawnError(w, serr)
-		return
-	}
-
-	ts := result.TmuxSession
-	cmd := resumeCommand
-	writeJSON(w, http.StatusOK, RestartPeerResponse{
-		OK:                true,
-		Status:            "restarted",
-		Restarted:         true,
-		PeerID:            string(peerCopy.PeerID),
-		DisplayName:       string(peerCopy.DisplayName),
-		Backend:           peerCopy.Backend,
-		Path:              resolvedPath,
-		Circle:            spawnCircle,
-		TmuxSession:       &ts,
-		Command:           &cmd,
-		ResumeMode:        resumeMode,
-		ResumeWarning:     nil,
-		UnsupportedReason: nil,
-	})
+	writeJSON(w, http.StatusOK, result)
 }
 
-func (h *Hub) restartResumeCommand(ctx context.Context, peer *proto.Peer, resolvedPath string) (string, map[string]any, map[string]any) {
-	base, err := h.spawn.svc.ResolveCommand(peer.Backend, nil)
+func (h *Hub) handleRestartStatus(w http.ResponseWriter, r *http.Request) {
+	result, err := h.lastRestart(r.PathValue("name"), queryCircle(r))
 	if err != nil {
-		return "", nil, map[string]any{"error": "command_unavailable", "hint": err.Error()}
+		h.writeSpawnError(w, err)
+		return
 	}
-	runtimeID, repowireSessionID, capability := h.restartResumeTarget(ctx, peer, resolvedPath)
-	if runtimeID == "" {
-		return "", nil, restartResumeUnavailable(peer, "missing_id")
+	if result == nil {
+		writeJSONError(w, http.StatusNotFound, "no restart recorded for "+r.PathValue("name"))
+		return
 	}
-	plan, ok := service.ResolveLocalResume(peer.Backend, resolvedPath, runtimeID, repowireSessionID, capability)
-	if !ok {
-		return "", nil, restartResumeUnavailable(peer, "resume_unavailable")
-	}
-	command, err := service.BuildResumeCommand(base, peer.Backend, runtimeID)
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Hub) handleRestartCancel(w http.ResponseWriter, r *http.Request) {
+	result, cancelled, err := h.cancelRestart(r.Context(), r.PathValue("name"), queryCircle(r))
 	if err != nil {
-		return "", nil, map[string]any{"error": "resume_unavailable", "hint": err.Error(), "peer_id": string(peer.PeerID)}
+		h.writeSpawnError(w, err)
+		return
 	}
-	return command, plan, nil
+	if result.RestartID == "" {
+		writeJSONError(w, http.StatusNotFound, "no restart recorded for "+r.PathValue("name"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cancelled": cancelled, "restart": result})
 }
 
-func (h *Hub) restartResumeTarget(ctx context.Context, peer *proto.Peer, resolvedPath string) (runtimeID string, repowireSessionID *string, capability map[string]any) {
-	capability = map[string]any{}
-	if h.store != nil {
-		bindings, err := h.store.ListBindingsByPeer(ctx, string(peer.PeerID))
-		if err == nil {
-			for _, b := range bindings {
-				if b.RuntimeSessionID == nil || *b.RuntimeSessionID == "" || b.Backend != string(peer.Backend) {
-					continue
-				}
-				if service.NormPath(b.ProjectPath) != service.NormPath(resolvedPath) {
-					continue
-				}
-				return *b.RuntimeSessionID, &b.RepowireSessionID, b.ResumeCapability
-			}
-		}
+func queryCircle(r *http.Request) *string {
+	if c := r.URL.Query().Get("circle"); c != "" {
+		return &c
 	}
-	if id := runtimeSessionIDFromMetadata(peer.Metadata); id != nil {
-		return *id, nil, capability
-	}
-	return "", nil, capability
-}
-
-func restartResumeUnavailable(peer *proto.Peer, reason string) map[string]any {
-	return map[string]any{
-		"error":              "resume_unavailable",
-		"hint":               "Restart is strict kill+resume: Repowire will not kill this peer unless it can first build a validated backend-native resume command.",
-		"peer_id":            string(peer.PeerID),
-		"display_name":       string(peer.DisplayName),
-		"backend":            string(peer.Backend),
-		"unsupported_reason": reason,
-	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

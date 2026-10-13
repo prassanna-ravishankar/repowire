@@ -42,10 +42,25 @@ type SpawnConfig struct {
 	TargetPane     string
 	Backend        proto.AgentType
 	Command        string
+	Profile        string
 	Message        *string
 	Role           proto.PeerRole
 	PeerID         *proto.PeerID
 	Env            map[string]string
+	// SameWindow splits TargetPane's window even under the session boundary
+	// (restart keeps the replacement beside the pane it replaces). A failed
+	// split falls back to the boundary's normal placement.
+	SameWindow bool
+	// Reserved is a pane created earlier by CreatePane; Spawn launches into it
+	// instead of creating one.
+	Reserved *PanePlacement
+}
+
+// PanePlacement is a created-but-unlaunched pane and its tmux locator.
+type PanePlacement struct {
+	PaneID      string
+	TmuxSession string
+	DisplayName string
 }
 
 // SpawnResult is the outcome of a spawn: the (possibly suffixed) display name, the
@@ -65,6 +80,7 @@ type SpawnResult struct {
 // display-message.
 type TmuxController interface {
 	Spawn(cfg SpawnConfig) (SpawnResult, error)
+	CreatePane(cfg SpawnConfig) (PanePlacement, error)
 	KillPane(paneID string) bool
 	ProbePane(paneID string) *TmuxPaneEvidence
 }
@@ -229,7 +245,7 @@ func (s *SpawnService) ResolveCommand(b proto.AgentType, profile *string) (strin
 			}}
 		}
 		for _, arg := range args {
-			command += " " + shellQuote(arg)
+			command += " " + ShellQuote(arg)
 		}
 	}
 	if err := s.validateCommandHead(command); err != nil {
@@ -324,10 +340,6 @@ func commandExists(command, pathValue string) bool {
 
 // PrepareSpawn applies the daemon-wide boundary and proves window placement.
 func (s *SpawnService) PrepareSpawn(cfg SpawnConfig) (SpawnConfig, error) {
-	return s.prepareSpawn(cfg, false)
-}
-
-func (s *SpawnService) prepareSpawn(cfg SpawnConfig, replacement bool) (SpawnConfig, error) {
 	cfg.CircleBoundary = s.boundary
 	if cfg.CircleBoundary != proto.CircleBoundaryWindow {
 		return cfg, nil
@@ -355,17 +367,8 @@ func (s *SpawnService) prepareSpawn(cfg SpawnConfig, replacement bool) (SpawnCon
 	} else if circle != cfg.Circle {
 		return SpawnConfig{}, &SpawnError{Status: 409, Detail: "window-boundary spawn target contradicts the requested circle"}
 	}
-	if replacement && evidence.WindowPanes < 2 {
-		return SpawnConfig{}, &SpawnError{Status: 409, Detail: "cannot replace the last pane in a window-boundary circle without destroying its spawn target"}
-	}
 	cfg.TargetPane = evidence.WindowID
 	return cfg, nil
-}
-
-// PrepareReplacement additionally proves that killing the current pane cannot
-// destroy the window that the replacement spawn targets.
-func (s *SpawnService) PrepareReplacement(cfg SpawnConfig) (SpawnConfig, error) {
-	return s.prepareSpawn(cfg, true)
 }
 
 // Spawn validates, launches through tmux, and records durable pane ownership.
@@ -394,15 +397,56 @@ func (s *SpawnService) Spawn(cfg SpawnConfig) (SpawnResult, error) {
 	}
 	cfg.Path = resolvedPath
 	cfg.Command = command
-	if cfg.Env == nil {
-		cfg.Env = map[string]string{}
-	}
-	for key, value := range s.env {
-		if _, set := cfg.Env[key]; !set {
-			cfg.Env[key] = value
-		}
-	}
+	return s.Launch(s.withEnv(cfg))
+}
 
+func (s *SpawnService) withEnv(cfg SpawnConfig) SpawnConfig {
+	env := map[string]string{}
+	for key, value := range s.env {
+		env[key] = value
+	}
+	for key, value := range cfg.Env {
+		env[key] = value
+	}
+	cfg.Env = env
+	return cfg
+}
+
+// EnvKeys lists the environment variables every launch is prefixed with, so a
+// printed command can name them without leaking their values.
+func (s *SpawnService) EnvKeys() []string {
+	return slices.Sorted(maps.Keys(s.env))
+}
+
+// Reserve proves placement and creates the pane a later Launch fills. It skips
+// the allowed_paths gate: its callers relaunch into a daemon-observed cwd, not
+// a caller-supplied one. cfg.Command must already be resolved.
+func (s *SpawnService) Reserve(cfg SpawnConfig) (SpawnConfig, error) {
+	cfg, err := s.PrepareSpawn(cfg)
+	if err != nil {
+		return SpawnConfig{}, err
+	}
+	cfg.Path = NormPath(cfg.Path)
+	if info, err := os.Stat(cfg.Path); err != nil || !info.IsDir() {
+		return SpawnConfig{}, &SpawnError{Status: 404, Detail: "Path does not exist: " + cfg.Path}
+	}
+	if cfg.Circle == "" {
+		return SpawnConfig{}, &SpawnError{Status: 422, Detail: "Circle is required"}
+	}
+	if cfg.Role == "" {
+		cfg.Role = proto.RoleAgent
+	}
+	placement, err := s.tmux.CreatePane(cfg)
+	if err != nil {
+		return SpawnConfig{}, &SpawnError{Status: 500, Detail: err.Error()}
+	}
+	cfg.Reserved = &placement
+	return s.withEnv(cfg), nil
+}
+
+// Launch starts cfg.Command (in cfg.Reserved when set) and records durable
+// pane ownership.
+func (s *SpawnService) Launch(cfg SpawnConfig) (SpawnResult, error) {
 	result, err := s.tmux.Spawn(cfg)
 	if err != nil {
 		return SpawnResult{}, &SpawnError{Status: 500, Detail: err.Error()}
@@ -417,13 +461,14 @@ func (s *SpawnService) Spawn(cfg SpawnConfig) (SpawnResult, error) {
 		}
 		s.own.Record(OwnershipRecord{
 			PaneID:      result.PaneID,
-			Path:        resolvedPath,
+			Path:        cfg.Path,
 			Backend:     string(cfg.Backend),
 			Circle:      cfg.Circle,
 			Role:        string(cfg.Role),
 			DisplayName: result.DisplayName,
 			TmuxSession: result.TmuxSession,
 			PeerID:      peerID,
+			Profile:     cfg.Profile,
 		})
 	}
 	result.Circle = cfg.Circle
@@ -527,44 +572,16 @@ type realTmuxController struct{}
 // NewRealTmuxController returns the production TmuxController (shells to `tmux`).
 func NewRealTmuxController() TmuxController { return realTmuxController{} }
 
-// Spawn creates a pane according to the configured circle boundary, writes the
-// spawn hint, and replaces the fresh placeholder shell with the launch command.
-func (realTmuxController) Spawn(cfg SpawnConfig) (SpawnResult, error) {
-	displayName := filepath.Base(cfg.Path)
-	spawnDisplayName := displayName
-	paneID, target := "", ""
-	if cfg.CircleBoundary == proto.CircleBoundaryWindow {
-		var err error
-		paneID, err = tmuxQuery(windowSplitArgs(cfg.TargetPane, cfg.Path)...)
-		if err != nil || paneID == "" {
-			return SpawnResult{}, fmt.Errorf("tmux split-window: %w", err)
-		}
-		target, err = tmuxQuery("display-message", "-t", paneID, "-p", "#{session_name}:#{window_name}")
-		if err != nil || target == "" {
-			return SpawnResult{}, fmt.Errorf("tmux could not resolve window for %s: %w", paneID, err)
-		}
-	} else {
-		var err error
-		paneID, err = ensureSession(cfg.Circle, cfg.Path, displayName)
+// Spawn writes the spawn hint and replaces the placeholder shell of a fresh
+// (or reserved) pane with the launch command.
+func (c realTmuxController) Spawn(cfg SpawnConfig) (SpawnResult, error) {
+	placement := cfg.Reserved
+	if placement == nil {
+		created, err := c.CreatePane(cfg)
 		if err != nil {
 			return SpawnResult{}, err
 		}
-
-		windowName := displayName
-		if paneID == "" {
-			windowName = uniqueWindowName(cfg.Circle, displayName)
-			// Qualify the exact session; a bare numeric circle is a window index.
-			paneID, err = tmuxQuery("new-window", "-P", "-F", "#{pane_id}", "-t", "="+cfg.Circle+":", "-n", windowName, "-c", cfg.Path)
-			if err != nil {
-				return SpawnResult{}, fmt.Errorf("tmux new-window: %w", err)
-			}
-		}
-		spawnDisplayName = windowName
-
-		target = cfg.Circle + ":" + windowName
-		if paneID == "" {
-			return SpawnResult{}, fmt.Errorf("tmux did not return a pane for %s", target)
-		}
+		placement = &created
 	}
 
 	// Drop the spawn hint BEFORE launch so a fast-registering runtime sees it.
@@ -573,19 +590,57 @@ func (realTmuxController) Spawn(cfg SpawnConfig) (SpawnResult, error) {
 		r := string(cfg.Role)
 		rolePtr = &r
 	}
-	writeHint(cfg.Path, string(cfg.Backend), cfg.Circle, paneID, rolePtr, cfg.PeerID, cfg.Message != nil)
+	writeHint(cfg.Path, string(cfg.Backend), cfg.Circle, placement.PaneID, rolePtr, cfg.PeerID, cfg.Message != nil)
 
 	command := commandWithEnv(cfg.Command, cfg.Env)
-	if err := tmuxStartCommand(paneID, command); err != nil {
+	if err := tmuxStartCommand(placement.PaneID, command); err != nil {
 		return SpawnResult{}, fmt.Errorf("tmux launch command: %w", err)
 	}
 
 	return SpawnResult{
-		DisplayName: spawnDisplayName,
-		TmuxSession: target,
-		PaneID:      paneID,
+		DisplayName: placement.DisplayName,
+		TmuxSession: placement.TmuxSession,
+		PaneID:      placement.PaneID,
 		Message:     cfg.Message,
 	}, nil
+}
+
+// CreatePane creates a placeholder-shell pane according to the configured
+// circle boundary (or beside TargetPane when SameWindow is set).
+func (realTmuxController) CreatePane(cfg SpawnConfig) (PanePlacement, error) {
+	displayName := filepath.Base(cfg.Path)
+	if cfg.CircleBoundary == proto.CircleBoundaryWindow || (cfg.SameWindow && cfg.TargetPane != "") {
+		paneID, err := tmuxQuery(windowSplitArgs(cfg.TargetPane, cfg.Path)...)
+		if err == nil && paneID != "" {
+			target, err := tmuxQuery("display-message", "-t", paneID, "-p", "#{session_name}:#{window_name}")
+			if err != nil || target == "" {
+				return PanePlacement{}, fmt.Errorf("tmux could not resolve window for %s: %w", paneID, err)
+			}
+			return PanePlacement{PaneID: paneID, TmuxSession: target, DisplayName: displayName}, nil
+		}
+		if cfg.CircleBoundary == proto.CircleBoundaryWindow {
+			return PanePlacement{}, fmt.Errorf("tmux split-window: %w", err)
+		}
+	}
+
+	paneID, err := ensureSession(cfg.Circle, cfg.Path, displayName)
+	if err != nil {
+		return PanePlacement{}, err
+	}
+	windowName := displayName
+	if paneID == "" {
+		windowName = uniqueWindowName(cfg.Circle, displayName)
+		// Qualify the exact session; a bare numeric circle is a window index.
+		paneID, err = tmuxQuery("new-window", "-P", "-F", "#{pane_id}", "-t", "="+cfg.Circle+":", "-n", windowName, "-c", cfg.Path)
+		if err != nil {
+			return PanePlacement{}, fmt.Errorf("tmux new-window: %w", err)
+		}
+	}
+	target := cfg.Circle + ":" + windowName
+	if paneID == "" {
+		return PanePlacement{}, fmt.Errorf("tmux did not return a pane for %s", target)
+	}
+	return PanePlacement{PaneID: paneID, TmuxSession: target, DisplayName: windowName}, nil
 }
 
 // tmuxStartCommand replaces the fresh shell in paneID with command. The pane is
@@ -669,7 +724,7 @@ func commandWithEnv(command string, env map[string]string) string {
 		if key == "" || env[key] == "" {
 			continue
 		}
-		assignments = append(assignments, fmt.Sprintf("%s=%s", key, shellQuote(env[key])))
+		assignments = append(assignments, fmt.Sprintf("%s=%s", key, ShellQuote(env[key])))
 	}
 	if len(assignments) == 0 {
 		return command
@@ -677,8 +732,8 @@ func commandWithEnv(command string, env map[string]string) string {
 	return "env " + strings.Join(assignments, " ") + " " + command
 }
 
-// shellQuote quotes a value for a shell command line only when needed.
-func shellQuote(v string) string {
+// ShellQuote quotes a value for a shell command line only when needed.
+func ShellQuote(v string) string {
 	if v != "" && strings.IndexFunc(v, func(r rune) bool {
 		return !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' ||
 			r == '_' || r == '-' || r == '.' || r == '/' || r == ':' || r == '@' || r == '%')

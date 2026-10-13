@@ -24,15 +24,16 @@ import (
 
 	"github.com/repowire/repowire/daemon-go/config"
 	"github.com/repowire/repowire/daemon-go/mobile"
+	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/relayserver"
+	"github.com/repowire/repowire/daemon-go/service"
 )
 
 var execLookPath = exec.LookPath
 
-const (
-	claudeDefaultSpawnCommand = "claude --dangerously-skip-permissions"
-	claudeChannelOptIn        = "--dangerously-load-development-channels server:repowire-channel"
-)
+var claudeDefaultSpawnCommand = service.DefaultSpawnCommands[proto.AgentClaudeCode]
+
+const claudeChannelOptIn = "--dangerously-load-development-channels server:repowire-channel"
 
 //go:embed assets/opencode.ts
 var opencodePlugin string
@@ -149,17 +150,12 @@ func enableDaemonMCP(relay bool) error {
 	for _, backend := range []string{"gemini", "antigravity", "agy"} {
 		delete(commands, backend)
 	}
-	for backend, spec := range map[string]struct{ binary, command string }{
-		"claude-code": {"claude", claudeDefaultSpawnCommand},
-		"codex":       {"codex", "codex --dangerously-bypass-approvals-and-sandbox"},
-		"opencode":    {"opencode", "opencode"},
-		"pi":          {"pi", "pi"},
-	} {
-		if _, exists := commands[backend]; exists {
+	for backend, command := range service.DefaultSpawnCommands {
+		if _, exists := commands[string(backend)]; exists {
 			continue
 		}
-		if _, err := execLookPath(spec.binary); err == nil {
-			commands[backend] = spec.command
+		if _, err := execLookPath(strings.Fields(command)[0]); err == nil {
+			commands[string(backend)] = command
 		}
 	}
 	if relay {

@@ -14,7 +14,6 @@ import (
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/service"
-	"github.com/repowire/repowire/daemon-go/state"
 )
 
 // ---------------------------------------------------------------------------
@@ -60,6 +59,15 @@ func (r *fakeSpawnRegistry) GetPeer(id proto.PeerID) (*proto.Peer, bool) {
 	return nil, false
 }
 
+func (r *fakeSpawnRegistry) GetPeerByPane(paneID string) (*proto.Peer, bool) {
+	for _, p := range r.peers {
+		if p.PaneID != nil && *p.PaneID == paneID {
+			return p, true
+		}
+	}
+	return nil, false
+}
+
 func (r *fakeSpawnRegistry) UnregisterPeer(_ context.Context, identifier string, _ *string) (bool, error) {
 	r.unregistered = append(r.unregistered, identifier)
 	return true, nil
@@ -89,6 +97,9 @@ type fakeTmux struct {
 func (f *fakeTmux) Spawn(cfg service.SpawnConfig) (service.SpawnResult, error) {
 	f.spawnConfig = cfg
 	return f.spawnResult, f.spawnErr
+}
+func (f *fakeTmux) CreatePane(cfg service.SpawnConfig) (service.PanePlacement, error) {
+	return service.PanePlacement{PaneID: f.spawnResult.PaneID, TmuxSession: f.spawnResult.TmuxSession, DisplayName: f.spawnResult.DisplayName}, f.spawnErr
 }
 func (f *fakeTmux) KillPane(paneID string) bool {
 	f.killed = append(f.killed, paneID)
@@ -524,120 +535,5 @@ func TestDestructivePaneProof_VerifiedByPaneMetadata(t *testing.T) {
 	writeSpawnTestPaneMeta(t, pane, map[string]any{"peer_id": "repow-ops-someoneelse"})
 	if proof := h.destructivePaneProof(p); proof.ok {
 		t.Fatalf("mismatched pane metadata must NOT prove ownership")
-	}
-}
-
-func TestRestartPeerDryRunUsesValidatedBackendResume(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
-	t.Setenv("REPOWIRE_CACHE_DIR", t.TempDir())
-
-	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	projectPath := t.TempDir()
-	runtimeID := "runtime-123"
-	sessionDir := filepath.Join(home, ".codex", "sessions", "2026", "07", "08")
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		t.Fatalf("mkdir codex sessions: %v", err)
-	}
-	sessionPath := filepath.Join(sessionDir, "rollout-"+runtimeID+".jsonl")
-	rawPath, _ := json.Marshal(projectPath)
-	if err := os.WriteFile(sessionPath, []byte(`{"type":"session_meta","payload":{"cwd":`+string(rawPath)+`}}`+"\n"), 0o644); err != nil {
-		t.Fatalf("write codex session: %v", err)
-	}
-
-	peerID := "repow-default-codex1"
-	_, err = store.UpsertObservation(context.Background(), state.Observation{
-		PeerID:           &peerID,
-		Backend:          string(proto.AgentCodex),
-		ProjectPath:      &projectPath,
-		RuntimeSessionID: &runtimeID,
-		ResumeCapability: map[string]any{"supported": true, "strategy": "codex_resume"},
-		Status:           state.BindingResumable,
-	})
-	if err != nil {
-		t.Fatalf("UpsertObservation: %v", err)
-	}
-
-	pane := "%42"
-	tmux := &fakeTmux{killOK: true, evidence: map[string]*service.TmuxPaneEvidence{pane: {TmuxSession: "default:proj"}}}
-	own := service.NewFileOwnership("test-host", tmux.ProbePane)
-	svc := newHermeticSpawnService(t, tmux, own,
-		map[proto.AgentType]string{proto.AgentCodex: "codex --dangerously-bypass-approvals-and-sandbox"},
-		[]string{projectPath},
-	)
-	own.MarkSpawned(pane)
-	peer := &proto.Peer{
-		PeerID:      proto.PeerID(peerID),
-		DisplayName: "codex-1",
-		Path:        projectPath,
-		Machine:     "test-host",
-		Backend:     proto.AgentCodex,
-		Circle:      "default",
-		Status:      proto.StatusOnline,
-		Role:        proto.RoleAgent,
-		PaneID:      &pane,
-	}
-	reg := &fakeSpawnRegistry{peers: []*proto.Peer{peer}}
-	h := &Hub{store: store}
-	h.WithSpawn(svc, reg, service.NewAskTracker(0), "test-host", proto.CircleBoundarySession)
-	mux := http.NewServeMux()
-	h.registerSpawnRoutes(mux)
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	resp := postSpawnJSON(t, srv, "/peers/codex-1/restart", RestartPeerRequest{DryRun: true})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	var out RestartPeerResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if out.ResumeMode != "resumed" {
-		t.Fatalf("resume_mode = %q, want resumed", out.ResumeMode)
-	}
-	want := "codex --dangerously-bypass-approvals-and-sandbox resume " + runtimeID
-	if out.Command == nil || *out.Command != want {
-		t.Fatalf("command = %v, want %q", out.Command, want)
-	}
-	if out.ResumeWarning != nil {
-		t.Fatalf("resume_warning = %q, want nil", *out.ResumeWarning)
-	}
-	if len(tmux.killed) != 0 {
-		t.Fatalf("dry-run killed panes: %v", tmux.killed)
-	}
-
-	peer.Circle = "window-7"
-	tmux.evidence[pane] = &service.TmuxPaneEvidence{PaneID: pane, SessionName: "mesh", WindowID: "@7", WindowPanes: 1, TmuxSession: "mesh:work"}
-	tmux.evidence["@7"] = &service.TmuxPaneEvidence{PaneID: pane, SessionName: "mesh", WindowID: "@7", WindowPanes: 1, TmuxSession: "mesh:work"}
-	h.WithSpawn(svc, reg, service.NewAskTracker(0), "test-host", proto.CircleBoundaryWindow)
-	resp = postSpawnJSON(t, srv, "/peers/codex-1/restart", RestartPeerRequest{})
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("last-pane restart status = %d, want 409", resp.StatusCode)
-	}
-	if len(tmux.killed) != 0 {
-		t.Fatalf("last-pane restart killed before validating its target: %v", tmux.killed)
-	}
-	peer.Circle = "default"
-	h.WithSpawn(svc, reg, service.NewAskTracker(0), "test-host", proto.CircleBoundarySession)
-
-	if err := os.Remove(sessionPath); err != nil {
-		t.Fatalf("remove codex session: %v", err)
-	}
-	resp = postSpawnJSON(t, srv, "/peers/codex-1/restart", RestartPeerRequest{DryRun: true})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("stale session status = %d, want 409", resp.StatusCode)
-	}
-	if len(tmux.killed) != 0 {
-		t.Fatalf("stale dry-run killed panes: %v", tmux.killed)
 	}
 }

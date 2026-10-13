@@ -56,7 +56,7 @@ func BuildResumeCommand(command string, backend proto.AgentType, runtimeSessionI
 	if runtimeSessionID == "" {
 		return "", fmt.Errorf("runtime_session_id is required for backend resume")
 	}
-	arg := shellQuote(runtimeSessionID)
+	arg := ShellQuote(runtimeSessionID)
 	if spec.subcommand != "" {
 		return strings.TrimSpace(command) + " " + spec.subcommand + " " + arg, nil
 	}

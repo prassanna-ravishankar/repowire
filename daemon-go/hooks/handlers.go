@@ -135,6 +135,9 @@ func handleSession(raw map[string]any, backend string, emitContext bool) int {
 	if payload.SessionID != "" {
 		metadata["hook_session_id"] = payload.SessionID
 	}
+	if payload.PermissionMode != "" {
+		metadata["permission_mode"] = payload.PermissionMode // restart rebuilds the launch mode from it
+	}
 	if branch := gitOutput(cwd, "branch", "--show-current"); branch != "" {
 		metadata["branch"] = branch
 	}
