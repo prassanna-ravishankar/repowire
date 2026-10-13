@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -34,7 +33,9 @@ type localPane struct {
 }
 
 func listLocalPanes() []localPane {
-	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{session_name}\t#{window_name}\t#{window_id}").CombinedOutput()
+	cmd, cancel := service.TmuxCommand("list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{session_name}\t#{window_name}\t#{window_id}")
+	defer cancel()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("tmux list-panes failed: %v: %s", err, strings.TrimSpace(string(out)))
 		return nil

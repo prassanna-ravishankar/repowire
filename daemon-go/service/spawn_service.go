@@ -9,6 +9,7 @@ package service
 // into an unexpected directory).
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -649,7 +650,8 @@ func (realTmuxController) CreatePane(cfg SpawnConfig) (PanePlacement, error) {
 // its requested identity. Passing command as respawn-pane's shell-command avoids
 // interactive editor limits while retaining tmux's normal shell parsing.
 func tmuxStartCommand(paneID, command string) error {
-	cmd := exec.Command("tmux", "respawn-pane", "-k", "-t", paneID, command)
+	cmd, cancel := TmuxCommand("respawn-pane", "-k", "-t", paneID, command)
+	defer cancel()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("respawn-pane: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -666,7 +668,9 @@ func (realTmuxController) KillPane(paneID string) bool {
 	if paneID == "" {
 		return false
 	}
-	return exec.Command("tmux", "kill-pane", "-t", paneID).Run() == nil
+	cmd, cancel := TmuxCommand("kill-pane", "-t", paneID)
+	defer cancel()
+	return cmd.Run() == nil
 }
 
 // ProbePane wraps `tmux display-message` (delegates to realProbeTmuxPane).
@@ -677,7 +681,7 @@ func (realTmuxController) ProbePane(paneID string) *TmuxPaneEvidence {
 // ensureSession returns the first pane of a new session, or an empty string
 // when the exact session already exists.
 func ensureSession(session, dir, windowName string) (string, error) {
-	if exec.Command("tmux", "has-session", "-t", "="+session).Run() == nil {
+	if _, err := tmuxQuery("has-session", "-t", "="+session); err == nil {
 		return "", nil
 	}
 	paneID, err := tmuxQuery("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", session, "-c", dir, "-n", windowName)
@@ -743,9 +747,21 @@ func ShellQuote(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
 }
 
+// tmuxTimeout bounds every tmux call the daemon makes, so a wedged tmux
+// server cannot hold a request, a restart, or shutdown indefinitely.
+const tmuxTimeout = 5 * time.Second
+
+// TmuxCommand builds a tmux invocation that is killed after tmuxTimeout.
+func TmuxCommand(args ...string) (*exec.Cmd, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxTimeout)
+	return exec.CommandContext(ctx, "tmux", args...), cancel
+}
+
 // tmuxQuery returns trimmed stdout, preserving stderr diagnostics on failure.
 func tmuxQuery(args ...string) (string, error) {
-	out, err := exec.Command("tmux", args...).Output()
+	cmd, cancel := TmuxCommand(args...)
+	defer cancel()
+	out, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
