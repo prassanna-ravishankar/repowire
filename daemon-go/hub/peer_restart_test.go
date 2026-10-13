@@ -35,7 +35,8 @@ type fakeRuntime struct {
 	paneRoot   map[int]int // pid -> pane root pid
 	terminated []int
 	ignoreTerm bool
-	argsLossy  bool // Args mimics macOS ps (not exact)
+	argsLossy  bool          // Args mimics macOS ps (not exact)
+	dieAfter   time.Duration // >0: the runtime exits this long after SIGTERM
 	onTerm     func(pid int)
 	onLaunch   func(cfg service.SpawnConfig)
 }
@@ -95,7 +96,16 @@ func (f *fakeRuntime) InTree(pid, root int) bool {
 func (f *fakeRuntime) Terminate(pid int) error {
 	f.mu.Lock()
 	f.terminated = append(f.terminated, pid)
-	if !f.ignoreTerm {
+	switch {
+	case f.dieAfter > 0:
+		go func() {
+			time.Sleep(f.dieAfter)
+			f.mu.Lock()
+			f.alive[pid] = false
+			delete(f.evidence, "%10")
+			f.mu.Unlock()
+		}()
+	case !f.ignoreTerm:
 		f.alive[pid] = false
 		delete(f.evidence, "%10")
 	}
@@ -987,5 +997,40 @@ func TestRestartResumesWhenSessionFileAppearsAfterExitUnderClaudeSlug(t *testing
 	}
 	if got := f.launchedCommands(); len(got) != 1 || !strings.HasSuffix(got[0], "--resume "+id) {
 		t.Fatalf("launched %q", got)
+	}
+}
+
+// Smoke regression (rst-b8046b02ad48): a cancel right after SIGTERM must not
+// kill the reserved pane (the window's survivor once the old runtime exits),
+// must report the state after the exit, and must not let the old runtime's
+// own exit posts retire the peer.
+func TestRestartCancelAfterSignalKeepsTheWindowAndReportsTheEndState(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	f.rt.dieAfter = 150 * time.Millisecond
+	f.rt.onTerm = func(int) { go f.h.cancelRestart(context.Background(), "proj", nil) }
+
+	f.restart(t, RestartPeerRequest{Wait: new(bool)})
+	run := f.h.spawn.restarts.get(f.peer.PeerID)
+	<-run.done
+	out := run.snapshot()
+
+	if out.Failed == nil || out.Failed.Stage != restartStageWait || out.Failed.Reason != "cancelled" || !out.NeedsManualRelaunch || !out.CancelRequested {
+		t.Fatalf("result = %+v manual=%v", out.Failed, out.NeedsManualRelaunch)
+	}
+	if f.rt.ProbePane("%11") == nil || slices.Contains(f.rt.killed, "%11") {
+		t.Fatalf("the reserved pane must survive as the window's shell; killed=%v", f.rt.killed)
+	}
+	lk := out.Failed.LastKnown
+	if lk.PIDAlive == nil || *lk.PIDAlive != f.rt.Alive(101) || lk.OldPaneExists != (f.rt.ProbePane(restartOldPane) != nil) || !lk.NewPaneExists {
+		t.Fatalf("last_known %+v does not match the end state (pid alive=%v)", lk, f.rt.Alive(101))
+	}
+	if *lk.PIDAlive || lk.OldPaneExists {
+		t.Fatalf("the old runtime had exited: %+v", lk)
+	}
+	if _, fenced := f.h.restartFencedOffline(f.peer.PeerID, restartOldPane, 101); !fenced {
+		t.Fatal("the stopped runtime's own exit posts must stay fenced so they cannot retire the peer")
+	}
+	if !slices.Contains(f.reg.offline, f.peer.PeerID) || len(f.launchedCommands()) != 0 {
+		t.Fatalf("offline=%v launched=%v", f.reg.offline, f.launchedCommands())
 	}
 }

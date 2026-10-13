@@ -136,8 +136,11 @@ type RestartResult struct {
 	ResumeCheck         *ResumeCheck    `json:"resume_check,omitempty"`
 	Failed              *RestartFailure `json:"failed,omitempty"`
 	NeedsManualRelaunch bool            `json:"needs_manual_relaunch"`
-	StartedAt           string          `json:"started_at"`
-	FinishedAt          string          `json:"finished_at,omitempty"`
+	// CancelRequested: a cancel arrived after the signal; the run keeps
+	// observing the exit and reports the end state.
+	CancelRequested bool   `json:"cancel_requested,omitempty"`
+	StartedAt       string `json:"started_at"`
+	FinishedAt      string `json:"finished_at,omitempty"`
 }
 
 // restartPlan is everything prepare learned; the goroutine owns it afterwards.
@@ -684,13 +687,13 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 	defer close(run.done)
 	defer run.cancel()
 	svc := h.spawn.svc
-	reserved, restartID, launched := "", run.snapshot().RestartID, false
+	reserved, restartID := "", run.snapshot().RestartID
+	// unfence: the old execution was not stopped by this restart (never
+	// signalled, or still alive), so its own future offline posts count again.
+	unfence := func() { h.spawn.restarts.unsupersede(plan.peer.PeerID, restartID) }
+	// fail records the outcome; callers finish cleanup first, so last_known is
+	// the state after cleanup.
 	fail := func(stage, reason, hint string, manual bool) {
-		if !launched {
-			// No replacement is pending any more: the old execution's own
-			// future offline posts must count again.
-			h.spawn.restarts.unsupersede(plan.peer.PeerID, restartID)
-		}
 		current := run.snapshot()
 		evidence := h.restartEvidence(plan, &current) // tmux/ps probes run outside run.mu
 		run.update(func(r *RestartResult) {
@@ -699,11 +702,15 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 		})
 		h.restartEvent(ctx, "peer_restart_failed", run.snapshot(), nil)
 	}
+	// abandonReservation removes the reserved pane. Only while the old
+	// runtime's pane still holds the window: once the old runtime has gone,
+	// the reserved pane is the window's survivor and stays as a shell.
 	abandonReservation := func() {
 		if reserved != "" {
 			svc.Tmux().KillPane(reserved)
 		}
 	}
+	cleanup := context.WithoutCancel(ctx)
 	stage := func(name string) { run.update(func(r *RestartResult) { r.Stage = name }) }
 
 	// prepare (tail): reserve the new pane beside the old one.
@@ -735,12 +742,14 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 	switch plan.exitMode {
 	case "sigterm":
 		if err := h.spawn.proc.Terminate(plan.pid); err != nil {
+			unfence()
 			abandonReservation()
 			fail(restartStageExit, "sigterm_failed", err.Error(), false)
 			return
 		}
 	case "kill_pane":
 		if !svc.Tmux().KillPane(plan.proof.paneID) {
+			unfence()
 			abandonReservation()
 			fail(restartStageExit, "kill_pane_failed", "tmux kill-pane failed for the verified pane "+plan.proof.paneID, false)
 			return
@@ -756,13 +765,23 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 			}
 			return svc.Tmux().ProbePane(plan.proof.paneID) == nil
 		}
-		if err := pollUntil(ctx, restartExitTimeout, gone); err != nil {
+		started := time.Now()
+		err := pollUntil(ctx, restartExitTimeout, gone)
+		cancelled := errors.Is(err, context.Canceled)
+		if cancelled {
+			// The signal cannot be taken back. Keep observing the exit (to the
+			// same bound) without launching, so the result describes the end state.
+			run.update(func(r *RestartResult) { r.CancelRequested = true })
+			err = pollUntil(cleanup, max(restartExitTimeout-time.Since(started), 0), gone)
+		}
+		if err != nil { // still alive at the bound: its pane holds the window
+			unfence()
 			abandonReservation()
-			if gone() { // cancelled after the runtime went: it needs a hand relaunch
-				fail(restartStageWait, waitReason(err, "runtime_still_alive"), "cancelled after the old runtime exited; nothing was launched", true)
-			} else {
-				fail(restartStageWait, waitReason(err, "runtime_still_alive"), fmt.Sprintf("%s was signalled but had not exited when the wait ended (bound %s); it may still exit. Nothing was relaunched: once it is gone, run would_run.manual", exitTarget(plan), restartExitTimeout), false)
+			reason := waitReason(err, "runtime_still_alive")
+			if cancelled {
+				reason = "cancelled"
 			}
+			fail(restartStageWait, reason, fmt.Sprintf("%s was signalled but had not exited when the wait ended (bound %s); it may still exit. Nothing was relaunched: once it is gone, run would_run.manual", exitTarget(plan), restartExitTimeout), false)
 			return
 		}
 		if plan.proof.paneID != "" {
@@ -770,19 +789,17 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 			svc.Ownership().Forget(plan.proof.paneID)
 			clienthooks.ClearPaneRuntimeState(plan.proof.paneID)
 		}
-	}
-	// Offline with no socket: deliveries in the gap queue durably and replay
-	// when the replacement's ws-hook connects, instead of reaching the dying hook.
-	_, _ = h.spawn.reg.MarkOffline(ctx, plan.peer.PeerID, false)
-	if h.transport != nil {
-		if n := h.transport.PendingDeliveryAcks(plan.peer.PeerID); n > 0 {
-			run.update(func(r *RestartResult) {
-				r.Warnings = append(r.Warnings, fmt.Sprintf("%d deliveries were in flight at exit; they may be reported delivered without having been read", n))
-			})
+		if cancelled {
+			h.goneOffline(cleanup, run, plan)
+			fail(restartStageWait, "cancelled", fmt.Sprintf("the old runtime exited after the signal and nothing was launched; pane %s in the same window holds a shell: run would_run.manual there", reserved), true)
+			return
 		}
-		_ = h.transport.Close(plan.peer.PeerID)
 	}
-
+	h.goneOffline(cleanup, run, plan)
+	if ctx.Err() != nil {
+		fail(restartStageLaunch, "cancelled", fmt.Sprintf("cancelled after the old runtime exited; nothing was launched; pane %s in the same window holds a shell: run would_run.manual there", reserved), true)
+		return
+	}
 	// launch: the resume id is validated against the post-exit session file.
 	// A runtime may flush its session file after its pid is gone, so absence
 	// is only concluded after a bounded wait.
@@ -801,19 +818,16 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 		})
 	}
 	if ctx.Err() != nil {
-		abandonReservation()
-		fail(restartStageLaunch, "cancelled", "cancelled after the old runtime exited; nothing was launched", true)
+		fail(restartStageLaunch, "cancelled", fmt.Sprintf("cancelled after the old runtime exited; nothing was launched; pane %s in the same window holds a shell: run would_run.manual there", reserved), true)
 		return
 	}
 	cfg := plan.spawn
 	cfg.Command = plan.command
 	spawned, err := svc.Launch(cfg)
 	if err != nil {
-		abandonReservation()
-		fail(restartStageLaunch, "launch_failed", err.Error(), true)
+		fail(restartStageLaunch, "launch_failed", err.Error()+"; run would_run.manual in pane "+reserved, true)
 		return
 	}
-	launched = true
 	h.restartEvent(ctx, "peer_restart_launched", run.snapshot(), map[string]any{"pane_id": spawned.PaneID})
 
 	// register: the registry sees the new pane AND its ws-hook is the peer's
@@ -863,6 +877,24 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 		h.deliverSpawnSeed(ctx, spawned.PaneID, result.DisplayName, plan.from, *plan.message)
 	}
 	h.notifyRestarted(ctx, result)
+}
+
+// goneOffline runs once the old runtime has exited: the peer goes offline
+// (non-terminal) with no socket, so deliveries in the gap queue durably and
+// replay when the replacement's ws-hook connects instead of reaching the dying
+// hook. The fence on the stopped execution stays, so its own exit posts cannot
+// retire the peer while it awaits its replacement (automatic or manual).
+func (h *Hub) goneOffline(ctx context.Context, run *restartRun, plan *restartPlan) {
+	_, _ = h.spawn.reg.MarkOffline(ctx, plan.peer.PeerID, false)
+	if h.transport == nil {
+		return
+	}
+	if n := h.transport.PendingDeliveryAcks(plan.peer.PeerID); n > 0 {
+		run.update(func(r *RestartResult) {
+			r.Warnings = append(r.Warnings, fmt.Sprintf("%d deliveries were in flight at exit; they may be reported delivered without having been read", n))
+		})
+	}
+	_ = h.transport.Close(plan.peer.PeerID)
 }
 
 // notifyRestarted tells the resumed session what happened to it.
