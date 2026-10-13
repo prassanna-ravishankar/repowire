@@ -162,8 +162,11 @@ func (r *Router) Recording() bool { return r != nil && r.cfg.Record }
 
 // SelectionPolicy is the policy a strategy delivers under.
 func (r *Router) SelectionPolicy() string {
-	if r != nil && r.cfg.AllowServiceTargets {
+	switch {
+	case r != nil && r.cfg.AllowServiceTargets:
 		return PolicyAllowServiceTargets
+	case r != nil && r.cfg.AllowHumanTargets:
+		return PolicyAllowHumanTargets
 	}
 	return PolicyExcludeServiceTargets
 }

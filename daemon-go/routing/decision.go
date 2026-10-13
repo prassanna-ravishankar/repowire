@@ -70,12 +70,27 @@ const (
 const (
 	PolicyExcludeServiceTargets = "exclude_service_targets"
 	PolicyAllowServiceTargets   = "allow_service_targets"
+	// PolicyAllowHumanTargets admits the human peer (its inbox) while
+	// service peers stay excluded.
+	PolicyAllowHumanTargets = "allow_human_targets"
 )
 
 // ServiceRole reports whether role marks a peer a strategy must not deliver
 // to by default: a service (phone bot, relay) or a human. Role is
 // self-declared, so this is operating policy, not a security boundary.
 func ServiceRole(role string) bool { return role == "service" || role == "human" }
+
+// PolicyExcludes reports whether a strategy running under policy must not
+// deliver to a peer with role.
+func PolicyExcludes(policy, role string) bool {
+	switch policy {
+	case PolicyAllowServiceTargets:
+		return false
+	case PolicyAllowHumanTargets:
+		return role == "service"
+	}
+	return ServiceRole(role)
+}
 
 // ArmExplicit is the passthrough arm: the sender's declared target is delivered.
 const ArmExplicit = "explicit"

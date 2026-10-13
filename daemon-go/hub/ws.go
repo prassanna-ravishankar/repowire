@@ -67,6 +67,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 				if transportOwnsLifecycle(p) {
 					_, _ = h.reg.MarkOffline(ctx, sessionID, false)
 				}
+				h.syncInboxPresence(sessionID)
 			}
 		}
 		_ = conn.CloseNow()
@@ -138,8 +139,8 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close(4002, "Invalid backend")
 		return
 	}
-	if backend == proto.AgentMCPHTTP {
-		_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "mcp-http is not a WebSocket backend"})
+	if backend == proto.AgentMCPHTTP || backend == proto.AgentHuman {
+		_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: string(backend) + " is not a WebSocket backend"})
 		_ = conn.Close(4002, "Invalid backend")
 		return
 	}
@@ -186,7 +187,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		if h.spawn.boundary == proto.CircleBoundaryWindow {
 			circleSource = "tmux_window"
 		}
-	} else if h.spawn != nil && !isDaemonMobilePeer(cf.DisplayName, path, role) {
+	} else if h.spawn != nil && !proto.IsMobileBridge(cf.DisplayName, path, role) {
 		if cf.PeerID == nil {
 			_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "Pane-less WebSocket registration requires an existing peer identity"})
 			_ = conn.Close(4003, "Unverified pane-less identity")
@@ -225,7 +226,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close(4002, "Invalid provenance")
 		return
 	}
-	if isDaemonMobilePeer(cf.DisplayName, path, role) {
+	if proto.IsMobileBridge(cf.DisplayName, path, role) {
 		params.PreferredDisplayName = &cf.DisplayName
 	}
 	if len(cf.ModelDetails) > 0 || len(cf.Capabilities) > 0 || cf.HookVersion != nil {
@@ -283,6 +284,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("ws: connected %s@%s (%s, %s)", assignedName, circle, peerID, backend)
+	h.syncInboxPresence(peerID)
 
 	// Flush-on-connect: the moment a polling peer (re)connects, drain its durable
 	// queued-delivery queue and replay each row directly onto this connection.
@@ -306,16 +308,19 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func transportOwnsLifecycle(p *proto.Peer) bool {
-	return p == nil || p.PaneID == nil || *p.PaneID == ""
+// syncInboxPresence republishes the human peer's live surfaces when an inbox
+// surface connects or drops. Event-driven; there is no presence timer.
+func (h *Hub) syncInboxPresence(id proto.PeerID) {
+	if h.inbox == nil {
+		return
+	}
+	if p, ok := h.reg.GetPeer(id); ok && proto.IsInboxSurface(p) {
+		h.inbox.SyncPresence(context.Background())
+	}
 }
 
-func isDaemonMobilePeer(name proto.DisplayName, path *string, role proto.PeerRole) bool {
-	if role != proto.RoleService || path == nil {
-		return false
-	}
-	value := string(name)
-	return (value == "telegram" || value == "slack") && *path == "/"+value
+func transportOwnsLifecycle(p *proto.Peer) bool {
+	return p == nil || p.PaneID == nil || *p.PaneID == ""
 }
 
 // flushQueuedDeliveries replays the durable queued-delivery queue for the freshly

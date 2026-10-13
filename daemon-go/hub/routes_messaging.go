@@ -106,6 +106,9 @@ type notifyResponse struct {
 	ToRepowireSessionID   *string        `json:"to_repowire_session_id"`
 	HookDelivery          map[string]any `json:"hook_delivery"`
 	DeliveryID            *string        `json:"delivery_id"`
+	// InboxItemID and Surfaces are set when the recipient is the human peer.
+	InboxItemID *string  `json:"inbox_item_id,omitempty"`
+	Surfaces    []string `json:"surfaces,omitempty"`
 }
 
 type broadcastRequest struct {
@@ -136,41 +139,24 @@ func (mr *MessagingRoutes) handleNotify(w http.ResponseWriter, r *http.Request) 
 	// Maintenance piggy-backs on the request; never a timer.
 	mr.reg.LazyRepairAsync(context.Background())
 
-	// Mint the delivery id up front — it is also the trace id, recorded on the
-	// "created" stage before the send so a trace exists even if delivery throws.
-	deliveryID := "notif-delivery-" + uuid.NewString()[:8]
-	mr.trace(ctx, deliveryID, "notify", "created", "", deliveryID, "", "", map[string]any{"to_peer": req.ToPeer})
-
-	result, err := mr.delivery.Notify(ctx, service.NotifyParams{
+	result, deliveryID, err := mr.notifyTraced(ctx, service.NotifyParams{
 		FromPeer:     req.FromPeer,
 		ToPeer:       req.ToPeer,
 		Text:         req.Text,
 		BypassCircle: req.BypassCircle,
 		Circle:       req.Circle,
 		Attachments:  req.Attachments,
-		DeliveryID:   deliveryID,
 	})
 	if err != nil {
 		mr.writeNotifyError(w, ctx, req, deliveryID, err)
 		return
 	}
 
-	// Truthful tracing: resolved_peer, an optional pending breadcrumb when the
-	// no-live-transport fallback queued the message, then the terminal outcome
-	// derived from the hook receipt (never assume injection).
-	toPeerID := string(result.ToPeerID)
-	fromPeerID := ""
-	if result.FromPeerID != nil {
-		fromPeerID = string(*result.FromPeerID)
+	var inboxItemID *string
+	var surfaces []string
+	if result.Inbox != nil {
+		inboxItemID, surfaces = strPtr(result.Inbox.ItemID), result.Inbox.Surfaces
 	}
-	mr.trace(ctx, deliveryID, "notify", "resolved_peer", "", deliveryID, toPeerID, fromPeerID, nil)
-	if result.Queued() {
-		mr.trace(ctx, deliveryID, "notify", "pending", "", deliveryID, toPeerID, fromPeerID, map[string]any{"reason": result.Reason})
-	}
-	if result.HookDelivery != nil || !result.Queued() {
-		mr.recordOutcome(ctx, deliveryID, "notify", toPeerID, fromPeerID, result.Transport, result.HookDelivery)
-	}
-
 	writeJSON(w, http.StatusOK, notifyResponse{
 		OK:                    true,
 		Status:                result.Status,
@@ -187,7 +173,44 @@ func (mr *MessagingRoutes) handleNotify(w http.ResponseWriter, r *http.Request) 
 		ToRepowireSessionID:   result.ToRepowireSessionID,
 		HookDelivery:          result.HookDelivery,
 		DeliveryID:            strPtr(deliveryIfEmpty(result.DeliveryID, deliveryID)),
+		InboxItemID:           inboxItemID,
+		Surfaces:              surfaces,
 	})
+}
+
+// notifyTraced is the one notify path HTTP /notify and MCP notify_peer share:
+// mint the delivery id (also the trace id), record created before the send so
+// a trace exists even if delivery throws, then resolved_peer, an optional
+// pending breadcrumb when the queue fallback held the message, and the
+// terminal outcome from the receipt (never assumed). A no-live-transport
+// error records no_connection; other errors are access rejections the caller
+// maps. params.DeliveryID is overwritten.
+func (mr *MessagingRoutes) notifyTraced(ctx context.Context, params service.NotifyParams) (service.NotifyResult, string, error) {
+	deliveryID := "notif-delivery-" + uuid.NewString()[:8]
+	params.DeliveryID = deliveryID
+	mr.trace(ctx, deliveryID, "notify", "created", "", deliveryID, "", "", map[string]any{"to_peer": params.ToPeer})
+
+	result, err := mr.delivery.Notify(ctx, params)
+	if err != nil {
+		if isTransportUnavailable(err) {
+			mr.trace(ctx, deliveryID, "notify", "no_connection", "fail", deliveryID, "", "", map[string]any{"error": err.Error()})
+		}
+		return result, deliveryID, err
+	}
+
+	toPeerID := string(result.ToPeerID)
+	fromPeerID := ""
+	if result.FromPeerID != nil {
+		fromPeerID = string(*result.FromPeerID)
+	}
+	mr.trace(ctx, deliveryID, "notify", "resolved_peer", "", deliveryID, toPeerID, fromPeerID, nil)
+	if result.Queued() {
+		mr.trace(ctx, deliveryID, "notify", "pending", "", deliveryID, toPeerID, fromPeerID, map[string]any{"reason": result.Reason})
+	}
+	if result.HookDelivery != nil || !result.Queued() {
+		mr.recordOutcome(ctx, deliveryID, "notify", toPeerID, fromPeerID, result.Transport, result.HookDelivery)
+	}
+	return result, deliveryID, nil
 }
 
 // writeNotifyError maps a delivery error to the JSON body + status code the
@@ -199,7 +222,6 @@ func (mr *MessagingRoutes) writeNotifyError(w http.ResponseWriter, ctx context.C
 	msg := err.Error()
 	switch {
 	case isTransportUnavailable(err):
-		mr.trace(ctx, deliveryID, "notify", "no_connection", "fail", deliveryID, "", "", map[string]any{"error": msg})
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok":             false,
 			"status":         "unavailable",
@@ -317,6 +339,9 @@ func recordDeliveryOutcome(ctx context.Context, traces deliveryTracer, traceID, 
 		}
 	}
 	switch hookStatus {
+	case "inbox_stored":
+		// The inbox records inbox_stored and the surface stages itself, on
+		// every entry point (HTTP, MCP, ask replies, broadcast).
 	case "injected":
 		rec("hook_received", "", nil)
 		rec("pane_injected", "", nil)

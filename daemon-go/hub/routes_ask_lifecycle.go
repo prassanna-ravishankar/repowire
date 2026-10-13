@@ -357,6 +357,15 @@ type AskRequest struct {
 	// FallbackTo is where a targetless ask goes when the strategy cannot
 	// choose or its pick is refused.
 	FallbackTo string `json:"fallback_to,omitempty"`
+	// Origin names the surface (and its message id) an ask from the human
+	// was typed on, so the reply can thread there.
+	Origin *AskOrigin `json:"origin,omitempty"`
+}
+
+// AskOrigin is where the human typed an ask.
+type AskOrigin struct {
+	Surface string `json:"surface"`
+	Ref     string `json:"ref,omitempty"`
 }
 
 // MarshalJSON leaves to_peer out of a targetless ask, so the request
@@ -419,6 +428,26 @@ type AskResponse struct {
 	CorrelationID string      `json:"correlation_id"`
 	Error         *string     `json:"error,omitempty"`
 	Routing       *AskRouting `json:"routing,omitempty"`
+	// Inbox is set when the recipient is the human peer.
+	Inbox *InboxReceipt `json:"inbox,omitempty"`
+}
+
+// InboxReceipt is the human inbox's synchronous receipt: the stored item and
+// the surfaces a push was started on. Per-surface outcomes are trace stages.
+type InboxReceipt struct {
+	ItemID   string   `json:"item_id"`
+	Surfaces []string `json:"surfaces"`
+}
+
+func inboxReceipt(r *service.InboxReceipt) *InboxReceipt {
+	if r == nil {
+		return nil
+	}
+	surfaces := r.Surfaces
+	if surfaces == nil {
+		surfaces = []string{}
+	}
+	return &InboxReceipt{ItemID: r.ItemID, Surfaces: surfaces}
 }
 
 func (h *Hub) askOperationReady() error {
@@ -560,7 +589,14 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	if req.ReplyTo != nil {
 		_, _ = h.ask.asks.Close(ctx, *req.ReplyTo, "reply_to")
 	}
-	return AskResponse{CorrelationID: cid, Routing: routedSummary(res.selection, target)}, nil
+	if human, _ := h.inbox.Human(); human != "" && fromID == human {
+		surface, ref := "", ""
+		if req.Origin != nil {
+			surface, ref = req.Origin.Surface, req.Origin.Ref
+		}
+		h.inbox.RecordOutbound(ctx, cid, target, req.Text, surface, ref)
+	}
+	return AskResponse{CorrelationID: cid, Routing: routedSummary(res.selection, target), Inbox: inboxReceipt(deliveryResult.Inbox)}, nil
 }
 
 // resolveAskTarget resolves and authorizes an ask's target exactly as the
@@ -755,9 +791,14 @@ func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameK
 	}
 
 	framed := fmt.Sprintf("[%s #%s from @%s] %s", frameKind, ask.CorrelationID, ask.ToPeerName, message)
+	threadText := message
+	if frameKind == "declined" {
+		threadText = "Declined: " + message
+	}
 	res, err := h.ask.delivery.Notify(ctx, service.NotifyParams{
 		FromPeer: string(ask.ToPeerID), ToPeer: string(ask.FromPeerID), Text: framed,
 		BypassCircle: true, Attachments: attachments,
+		CorrelationID: ask.CorrelationID, ThreadText: threadText,
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrNotConnected) {
@@ -872,11 +913,13 @@ func (h *Hub) answerDirect(ctx context.Context, req AnswerRequest) (AnswerRespon
 		framed := fmt.Sprintf("[ack #%s from @%s] %s",
 			req.CorrelationID, existing.ToPeerName, body)
 		res, derr := h.ask.delivery.Notify(ctx, service.NotifyParams{
-			FromPeer:     string(existing.ToPeerID),
-			ToPeer:       string(existing.FromPeerID),
-			Text:         framed,
-			BypassCircle: true,
-			Attachments:  req.Attachments,
+			FromPeer:      string(existing.ToPeerID),
+			ToPeer:        string(existing.FromPeerID),
+			Text:          framed,
+			BypassCircle:  true,
+			Attachments:   req.Attachments,
+			CorrelationID: req.CorrelationID,
+			ThreadText:    body,
 		})
 		// The answer is already recorded (first-answer-wins); a failed notify-back
 		// is logged via the ack event, not surfaced as an error (the answer stands).

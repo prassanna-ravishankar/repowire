@@ -299,20 +299,45 @@ func (h *Hub) mcpNotifyPeer(ctx context.Context, delivery *service.PeerDelivery,
 	if delivery == nil {
 		return nil, fmt.Errorf("notify_peer is not wired (no delivery service configured)")
 	}
-	circle := h.mcpSendCircle(fromPeer, args.Circle)
-	deliveryID := "notif-" + uuid.NewString()[:8]
-	_, err := delivery.Notify(ctx, service.NotifyParams{
+	params := service.NotifyParams{
 		FromPeer:    fromPeer,
 		ToPeer:      args.PeerName,
 		Text:        args.Message,
-		Circle:      circle,
+		Circle:      h.mcpSendCircle(fromPeer, args.Circle),
 		Attachments: args.Attachments,
-		DeliveryID:  deliveryID,
-	})
+	}
+	var result service.NotifyResult
+	var deliveryID string
+	var err error
+	if h.messaging != nil {
+		// Same traced path as HTTP /notify, so an MCP notify leaves a ledger
+		// trail (it used to leave none).
+		result, deliveryID, err = h.messaging.notifyTraced(ctx, params)
+	} else {
+		deliveryID = "notif-delivery-" + uuid.NewString()[:8]
+		params.DeliveryID = deliveryID
+		result, err = delivery.Notify(ctx, params)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("notify failed: %w", err)
 	}
-	return textResult(deliveryID), nil
+	return textResult(notifyToolResult(deliveryID, result)), nil
+}
+
+// notifyToolResult is the delivery id, plus the inbox receipt when the
+// recipient is the human peer.
+func notifyToolResult(deliveryID string, result service.NotifyResult) string {
+	if result.Inbox == nil {
+		return deliveryID
+	}
+	return fmt.Sprintf("%s inbox_item=%s surfaces=%s", deliveryID, result.Inbox.ItemID, surfaceList(result.Inbox.Surfaces))
+}
+
+func surfaceList(surfaces []string) string {
+	if len(surfaces) == 0 {
+		return "none"
+	}
+	return strings.Join(surfaces, ",")
 }
 
 func (h *Hub) mcpSendCircle(caller, requested string) *string {

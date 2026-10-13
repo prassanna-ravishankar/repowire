@@ -61,7 +61,9 @@ func deliveryOutcome(stages []state.TraceRow) string {
 			if failed == "" {
 				failed = DeliverySendFailed
 			}
-		case "thread_input_accepted", "pane_injected", "acked":
+		case "thread_input_accepted", "pane_injected", "acked", "inbox_stored":
+			// inbox_stored: the human's durable inbox holds it, whatever
+			// any surface push later reports.
 			accepted = true
 		case "websocket_sent":
 			sent = true

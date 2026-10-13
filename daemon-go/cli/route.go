@@ -90,6 +90,7 @@ func printRouting(w io.Writer, effective, requested config.RouterConfig, warning
 	fmt.Fprintf(w, "  shadow arms  %s\n", shadows)
 	fmt.Fprintf(w, "  timeout      %gs\n", effective.TimeoutSeconds)
 	fmt.Fprintf(w, "  service targets allowed  %t\n", effective.AllowServiceTargets)
+	fmt.Fprintf(w, "  human targets allowed    %t\n", effective.AllowHumanTargets || effective.AllowServiceTargets)
 	fmt.Fprintf(w, "  jev          %s, %s\n", effective.Jev.Model, keyState(effective.Jev))
 	fmt.Fprintf(w, "  frontier     %s, %s\n", effective.Frontier.Model, keyState(effective.Frontier))
 	fmt.Fprintf(w, "  clef         %s, %s, %s\n", effective.Clef.Model, effective.Clef.FlashModel, clefState(effective.Clef))

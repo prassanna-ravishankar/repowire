@@ -669,6 +669,9 @@ func firstNonempty(values ...string) string {
 func askToolResult(result AskResponse) string {
 	rt := result.Routing
 	if rt == nil {
+		if result.Inbox != nil {
+			return fmt.Sprintf("%s inbox_item=%s surfaces=%s", result.CorrelationID, result.Inbox.ItemID, surfaceList(result.Inbox.Surfaces))
+		}
 		return result.CorrelationID
 	}
 	if rt.Fallback {

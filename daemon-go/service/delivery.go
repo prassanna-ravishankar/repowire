@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/repowire/repowire/daemon-go/config"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/state"
@@ -82,6 +84,9 @@ type PeerDelivery struct {
 	queueTTLSeconds float64
 	queueMax        int
 	recall          config.OrchestratorRecallConfig
+	// inbox, when wired, owns delivery to the human peer: a message to the
+	// human is stored there instead of written to a socket.
+	inbox *Inbox
 
 	// closeMu/closed/wg/closeCh track the deferBroadcastUntilSeedSettled
 	// goroutines so Close can join them without waiting out a 25s seed-gate
@@ -90,6 +95,12 @@ type PeerDelivery struct {
 	closed  bool
 	wg      sync.WaitGroup
 	closeCh chan struct{}
+}
+
+// WithInbox routes delivery to the human peer through inbox.
+func (d *PeerDelivery) WithInbox(inbox *Inbox) *PeerDelivery {
+	d.inbox = inbox
+	return d
 }
 
 func (d *PeerDelivery) WithOrchestratorRecall(settings config.OrchestratorRecallConfig) *PeerDelivery {
@@ -140,16 +151,19 @@ func (d *PeerDelivery) WithOperationStore(store *state.Store) *PeerDelivery {
 // transport_delivered (live WS write), broker_accepted (ACP prompt dispatched),
 // recipient_busy, or queued_delivery (no live transport → durable queue).
 type NotifyResult struct {
-	Status                string // "sent" | "queued"
-	DeliveryState         string // "delivered" | "queued"
-	Reason                string // transport_delivered | broker_accepted | recipient_busy | queued_delivery
-	FromPeerID            *proto.PeerID
-	FromPeerName          proto.DisplayName
-	ToPeerID              proto.PeerID
-	ToPeerName            proto.DisplayName
-	HookDelivery          map[string]any
-	DeliveryID            string
-	Transport             string // "ws" | "acp"
+	Status        string // "sent" | "queued"
+	DeliveryState string // "delivered" | "queued"
+	Reason        string // transport_delivered | broker_accepted | recipient_busy | queued_delivery
+	FromPeerID    *proto.PeerID
+	FromPeerName  proto.DisplayName
+	ToPeerID      proto.PeerID
+	ToPeerName    proto.DisplayName
+	HookDelivery  map[string]any
+	DeliveryID    string
+	Transport     string // "ws" | "acp" | "inbox"
+	// Inbox is set when the recipient is the human peer: the stored item and
+	// the surfaces a push was started on.
+	Inbox                 *InboxReceipt
 	RepowireSessionID     *string
 	FromRepowireSessionID *string
 	ToRepowireSessionID   *string
@@ -165,8 +179,9 @@ func (r NotifyResult) Queued() bool { return r.DeliveryState == "queued" }
 // callers write truthful delivery-trace stages (pane_injected vs
 // injection_failed).
 type AskResult struct {
-	Transport    string // "ws" | "acp"
+	Transport    string // "ws" | "acp" | "deferred" | "inbox"
 	HookDelivery map[string]any
+	Inbox        *InboxReceipt
 }
 
 // NotifyParams are the inputs to Notify. FromPeer/ToPeer are peer_id or
@@ -183,6 +198,13 @@ type NotifyParams struct {
 	// pending_first_turn peer must not wait behind the gate meant to hold other
 	// traffic until that seed has landed.
 	SkipSeedGate bool
+	// CorrelationID marks this notify as a reply on an ask thread. Only the
+	// human inbox uses it (to thread the item); it never reaches a WS frame and
+	// never opens or closes an ask.
+	CorrelationID string
+	// ThreadText is the reply body without the "[ack #cid from @x]" frame, for
+	// a recipient that threads natively. Empty means use Text.
+	ThreadText string
 }
 
 // DeliverAskParams are the inputs to DeliverAsk (the ask is ALREADY registered
@@ -228,6 +250,9 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 		fromName = from.DisplayName
 		id := from.PeerID
 		fromID = &id
+	}
+	if d.inbox.Owns(target) {
+		return d.notifyInbox(ctx, params, fromID, fromName, target)
 	}
 
 	if !params.SkipSeedGate {
@@ -291,6 +316,55 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 		FromRepowireSessionID: fromSessionID,
 		ToRepowireSessionID:   toSessionID,
 	}, nil
+}
+
+// notifyInbox stores a notify (or a threaded reply) in the human inbox. The
+// item is durable once stored, so the result is delivered whether or not a
+// surface is live; pushes to surfaces continue in the background.
+func (d *PeerDelivery) notifyInbox(ctx context.Context, params NotifyParams, fromID *proto.PeerID, fromName proto.DisplayName, target *proto.Peer) (NotifyResult, error) {
+	deliveryID := params.DeliveryID
+	if deliveryID == "" {
+		deliveryID = "notif-delivery-" + uuid.NewString()[:8]
+	}
+	kind, traceID, traceKind, text := InboxNotify, deliveryID, "notify", params.Text
+	if params.CorrelationID != "" {
+		// A reply on an ask thread joins that ask's trace.
+		kind, traceID, traceKind = InboxAnswer, params.CorrelationID, "ask"
+		if params.ThreadText != "" {
+			text = params.ThreadText
+		}
+	}
+	receipt, err := d.inbox.Store(ctx, InboxStoreParams{
+		Kind: kind, TraceID: traceID, TraceKind: traceKind,
+		FromPeerID: peerIDString(fromID), FromName: string(fromName),
+		CorrelationID: params.CorrelationID, Text: text, Attachments: params.Attachments,
+	})
+	if err != nil {
+		return NotifyResult{}, err
+	}
+	return NotifyResult{
+		Status:        "sent",
+		DeliveryState: "delivered",
+		Reason:        "inbox_stored",
+		FromPeerID:    fromID,
+		FromPeerName:  fromName,
+		ToPeerID:      target.PeerID,
+		ToPeerName:    target.DisplayName,
+		HookDelivery:  inboxHookDelivery(receipt),
+		DeliveryID:    deliveryID,
+		Transport:     "inbox",
+		Inbox:         &receipt,
+	}, nil
+}
+
+// inboxHookDelivery is the receipt in the shape callers already record:
+// recordDeliveryOutcome reads status, and the inbox has written its own stage.
+func inboxHookDelivery(receipt InboxReceipt) map[string]any {
+	surfaces := receipt.Surfaces
+	if surfaces == nil {
+		surfaces = []string{}
+	}
+	return map[string]any{"status": "inbox_stored", "item_id": receipt.ItemID, "surfaces": surfaces}
 }
 
 // queueNotify is the no-live-transport fallback: mark the peer offline, enqueue
@@ -406,6 +480,18 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 	if from != nil {
 		fromName = from.DisplayName
 	}
+	if d.inbox.Owns(target) {
+		receipt, err := d.inbox.Store(ctx, InboxStoreParams{
+			Kind: InboxAsk, TraceID: params.CorrelationID, TraceKind: "ask",
+			FromPeerID: stringValuePeer(from), FromName: string(fromName),
+			CorrelationID: params.CorrelationID, Text: params.Text,
+			Attachments: params.Attachments, Question: params.Question,
+		})
+		if err != nil {
+			return AskResult{}, err
+		}
+		return AskResult{Transport: "inbox", HookDelivery: inboxHookDelivery(receipt), Inbox: &receipt}, nil
+	}
 
 	d.gateOnSeedSettled(ctx, target)
 	params.Text = addOrchestratorRecall(params.Text, string(fromName), stringValuePeer(from), target, d.recall)
@@ -503,7 +589,7 @@ func (d *PeerDelivery) completeACPAsk(ctx context.Context, cid string, reply, er
 		body = "ACP error: " + *errText
 	}
 	framed := fmt.Sprintf("[ack #%s from @%s] %s", cid, ask.ToPeerName, body)
-	result, err := d.Notify(ctx, NotifyParams{FromPeer: string(ask.ToPeerID), ToPeer: string(ask.FromPeerID), Text: framed, BypassCircle: true})
+	result, err := d.Notify(ctx, NotifyParams{FromPeer: string(ask.ToPeerID), ToPeer: string(ask.FromPeerID), Text: framed, BypassCircle: true, CorrelationID: cid, ThreadText: body})
 	if err == nil && result.Queued() && !isError {
 		if reply != nil {
 			d.asks.CaptureReply(ctx, cid, *reply, nil)
@@ -612,6 +698,18 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 			excludeIDs[p.PeerID] = struct{}{}
 		}
 	}
+	// With an inbox, the human and the surfaces that render it never take a
+	// broadcast frame directly; the inbox decides (opt-in, default off).
+	if d.inbox != nil {
+		for _, p := range peers {
+			if d.inbox.Owns(p) || proto.IsInboxSurface(p) {
+				excludeIDs[p.PeerID] = struct{}{}
+			}
+		}
+		if name, ok := d.broadcastToInbox(ctx, fromObj, fromPeer, text, excludeNames); ok {
+			sent = append(sent, name)
+		}
+	}
 
 	var fromIDPtr *string
 	if fromObj != nil {
@@ -676,6 +774,33 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 	}
 	sent = append(sent, deferredNames...)
 	return sent, failures
+}
+
+// broadcastToInbox stores a broadcast for the human when human.broadcast is on
+// and the human was neither the sender nor excluded. ok reports a stored item.
+func (d *PeerDelivery) broadcastToInbox(ctx context.Context, from *proto.Peer, fromPeer, text string, exclude map[string]struct{}) (proto.DisplayName, bool) {
+	human, name := d.inbox.Human()
+	if human == "" || !d.inbox.cfg.Broadcast || (from != nil && from.PeerID == human) {
+		return "", false
+	}
+	if _, skip := exclude[string(human)]; skip {
+		return "", false
+	}
+	if _, skip := exclude[string(name)]; skip {
+		return "", false
+	}
+	fromName := fromPeer
+	if from != nil {
+		fromName = string(from.DisplayName)
+	}
+	if _, err := d.inbox.Store(ctx, InboxStoreParams{
+		Kind: InboxBroadcast, TraceKind: "broadcast",
+		FromPeerID: stringValuePeer(from), FromName: fromName, Text: text,
+	}); err != nil {
+		log.Printf("delivery: broadcast to inbox failed: %v", err)
+		return "", false
+	}
+	return name, true
 }
 
 // ----------------------------------------------------------------------------

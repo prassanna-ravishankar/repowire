@@ -173,6 +173,11 @@ type Registry struct {
 	closeMu sync.Mutex
 	closed  bool
 	wg      sync.WaitGroup
+
+	// human is the daemon-owned human peer. Inbox surfaces (the phone
+	// bridges) resolve to it in CheckAccess, so "telegram" stays a working
+	// address and a message typed on the phone comes from the human.
+	human proto.PeerID
 }
 
 const (

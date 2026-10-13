@@ -121,11 +121,14 @@ const (
 	AgentCodex      AgentType = "codex"
 	AgentPi         AgentType = "pi"
 	AgentMCPHTTP    AgentType = "mcp-http"
+	// AgentHuman backs the daemon-owned human peer. Like mcp-http it is never
+	// a WebSocket runtime.
+	AgentHuman AgentType = "human"
 )
 
 func (a AgentType) Valid() bool {
 	switch a {
-	case AgentClaudeCode, AgentOpenCode, AgentCodex, AgentPi, AgentMCPHTTP:
+	case AgentClaudeCode, AgentOpenCode, AgentCodex, AgentPi, AgentMCPHTTP, AgentHuman:
 		return true
 	}
 	return false
@@ -187,10 +190,13 @@ type SessionMapping struct {
 // ---------------------------------------------------------------------------
 
 const (
-	CurrentHookVersion    = 2 // 2: offline posts carry the execution's pane_id and agent_pid
-	CapDeliveryReceipts   = "delivery_receipts"
-	CapRuntimeInbox       = "runtime_inbox"
-	CapThreadSteering     = "thread_steering"
+	CurrentHookVersion  = 2 // 2: offline posts carry the execution's pane_id and agent_pid
+	CapDeliveryReceipts = "delivery_receipts"
+	CapRuntimeInbox     = "runtime_inbox"
+	CapThreadSteering   = "thread_steering"
+	// CapInboxSurface marks a client that renders the human inbox: it
+	// understands inbox_item frames and acks each one.
+	CapInboxSurface       = "inbox_surface"
 	PaneUnsafeStrikeLimit = 3
 )
 
@@ -236,7 +242,34 @@ const (
 	FrameNotify    FrameType = "notify"
 	FrameBroadcast FrameType = "broadcast"
 	FramePing      FrameType = "ping"
+	// FrameInboxItem pushes one human-inbox item to a surface that declared
+	// CapInboxSurface. The surface answers with a delivery_ack whose
+	// status is "pushed" or "failed".
+	FrameInboxItem FrameType = "inbox_item"
 )
+
+// IsMobileBridge reports whether a registration is one of the daemon's own
+// phone bridges, whose public names (telegram, slack) are part of the protocol.
+func IsMobileBridge(name DisplayName, path *string, role PeerRole) bool {
+	if role != RoleService || path == nil {
+		return false
+	}
+	value := string(name)
+	return (value == "telegram" || value == "slack") && *path == "/"+value
+}
+
+// IsInboxSurface reports whether p is a client that renders the human inbox:
+// a phone bridge, or any peer that declared CapInboxSurface.
+func IsInboxSurface(p *Peer) bool {
+	if p == nil {
+		return false
+	}
+	path := p.Path
+	if IsMobileBridge(p.DisplayName, &path, p.Role) {
+		return true
+	}
+	return HasCapability(p.Metadata, CapInboxSurface)
+}
 
 // Envelope is the minimal pre-parse used to read the "type" field, then
 // re-unmarshal into the concrete frame. Use json.RawMessage to defer.
