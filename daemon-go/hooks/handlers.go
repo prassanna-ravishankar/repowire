@@ -584,9 +584,9 @@ func queuedDeliveryBlock(paneID string) string {
 		from, text := firstNonempty(stringValue(delivery, "from_peer"), "?"), strings.TrimSpace(stringValue(delivery, "text"))
 		if stringValue(delivery, "kind") == "ask" && stringValue(delivery, "correlation_id") != "" {
 			cid := stringValue(delivery, "correlation_id")
-			lines = append(lines, formatInboundMessage(from, "", "ask", cid, text), "  ack(\""+cid+"\") or ack(\""+cid+"\", \"reply\")")
+			lines = append(lines, formatInboundMessage(from, stringValue(delivery, "from_role"), "", "ask", cid, text), "  ack(\""+cid+"\") or ack(\""+cid+"\", \"reply\")")
 		} else {
-			lines = append(lines, formatInboundMessage(from, "", "notify", "", text))
+			lines = append(lines, formatInboundMessage(from, stringValue(delivery, "from_role"), "", "notify", "", text))
 		}
 	}
 	return strings.Join(lines, "\n")

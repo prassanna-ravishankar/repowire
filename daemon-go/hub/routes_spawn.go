@@ -162,7 +162,7 @@ func spawnProfiles(profiles map[proto.AgentType]map[string][]string) map[string]
 }
 
 func supportedSpawnBackend(backend proto.AgentType) bool {
-	return backend.Valid() && backend != proto.AgentMCPHTTP
+	return backend.Valid() && backend != proto.AgentMCPHTTP && backend != proto.AgentHuman
 }
 
 // ---------------------------------------------------------------------------

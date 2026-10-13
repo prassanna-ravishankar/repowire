@@ -232,6 +232,46 @@ var migrationStatements = []string{
 		retired_at TEXT NOT NULL,
 		hard INTEGER NOT NULL DEFAULT 0
 	)`,
+	// Human inbox (v16): one row per item, read/replied state once for every
+	// surface, and one push record per (item, surface).
+	`CREATE TABLE IF NOT EXISTS inbox_items (
+		id TEXT PRIMARY KEY,
+		direction TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		trace_id TEXT NOT NULL,
+		trace_kind TEXT NOT NULL,
+		from_peer_id TEXT,
+		from_name TEXT NOT NULL DEFAULT '',
+		to_peer_id TEXT,
+		to_name TEXT NOT NULL DEFAULT '',
+		correlation_id TEXT,
+		priority INTEGER NOT NULL DEFAULT 0,
+		text TEXT NOT NULL DEFAULT '',
+		attachments_json TEXT NOT NULL DEFAULT '[]',
+		question_json TEXT,
+		created_at TEXT NOT NULL,
+		read_at TEXT,
+		read_surface TEXT,
+		replied_at TEXT,
+		reply_surface TEXT
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_inbox_items_unread ON inbox_items(read_at, created_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_inbox_items_cid ON inbox_items(correlation_id)`,
+	`CREATE TABLE IF NOT EXISTS inbox_pushes (
+		item_id TEXT NOT NULL,
+		surface TEXT NOT NULL,
+		status TEXT NOT NULL,
+		error_class TEXT,
+		surface_ref TEXT,
+		ts TEXT NOT NULL,
+		PRIMARY KEY (item_id, surface)
+	)`,
+	`CREATE TABLE IF NOT EXISTS inbox_refs (
+		surface TEXT NOT NULL,
+		ref TEXT NOT NULL,
+		item_id TEXT NOT NULL,
+		PRIMARY KEY (surface, ref)
+	)`,
 }
 
 // migrationLedger mirrors the schema_migrations rows database.py stamps, so a
@@ -256,6 +296,7 @@ var migrationLedger = []struct {
 	{13, "operator-closed peer identities reject live-runtime reclaim"},
 	{14, "peer provenance: source, parent runtime id, ephemeral, addressability"},
 	{15, "description_set_at for claim staleness; route_decision trace index"},
+	{16, "human inbox items, per-surface push records and rendered refs"},
 }
 
 // migrate applies the idempotent schema and stamps user_version. Safe to run on

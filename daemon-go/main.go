@@ -362,6 +362,19 @@ func runDaemon() {
 	if recovered := service.ReconcileACPInflight(ctx, store, cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer); recovered > 0 {
 		log.Printf("acp reconcile: closed %d ask(s) lost across restart", recovered)
 	}
+	// (6b) The human peer and its inbox (#466). Registration is in-memory, so
+	// it never delays startup; a failure leaves the daemon without a human
+	// peer (phone bridges stay plain service peers) rather than stopping it.
+	inbox := service.NewInbox(store, reg, transport, asks, cfg.Human)
+	if humanID, humanName, err := service.RegisterHumanPeer(ctx, reg, cfg.Human.Name, selfMachine); err != nil {
+		log.Printf("WARNING human peer not registered, inbox disabled: %v", err)
+		inbox.Close()
+		inbox = nil
+	} else {
+		inbox.SetHuman(humanID, humanName)
+		delivery.WithInbox(inbox)
+		h.WithInbox(inbox)
+	}
 	transport.SetACPPermissionHandler(service.NewACPPermissionHandler(asks, func(kind string, data map[string]any) {
 		reg.AddEvent(ctx, kind, data)
 	}))
@@ -585,6 +598,7 @@ func runDaemon() {
 	// accepting new connections but does not close already-hijacked sockets. A
 	// live WS read loop can still be running when store.Close() returns; closing
 	// it requires a hub-level socket sweep, which is out of scope for this fix.
+	inbox.Close() // joins in-flight surface pushes before the store closes
 	delivery.Close()
 	transport.CloseACP()
 	reg.Close()

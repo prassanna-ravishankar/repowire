@@ -33,10 +33,14 @@ type RouterConfig struct {
 	// AllowServiceTargets lets a strategy deliver a targetless ask to a
 	// service- or human-role peer (a phone bot, a person). Off by default.
 	// Named asks are unaffected.
-	AllowServiceTargets bool        `yaml:"allow_service_targets"`
-	Jev                 RouterModel `yaml:"jev"`
-	Frontier            RouterModel `yaml:"frontier"`
-	Clef                RouterClef  `yaml:"clef"`
+	AllowServiceTargets bool `yaml:"allow_service_targets"`
+	// AllowHumanTargets lets a strategy deliver a targetless ask to the
+	// human peer (its inbox) while service peers stay excluded. Off by
+	// default until the policy is decided.
+	AllowHumanTargets bool        `yaml:"allow_human_targets"`
+	Jev               RouterModel `yaml:"jev"`
+	Frontier          RouterModel `yaml:"frontier"`
+	Clef              RouterClef  `yaml:"clef"`
 }
 
 // RouterModel is one model-backed arm's endpoint.
@@ -293,6 +297,7 @@ func applyRouterEnv(r *RouterConfig, prefix string) {
 	}
 	setFloatEnv(&r.TimeoutSeconds, prefix+"TIMEOUT_SECONDS")
 	setBoolEnv(&r.AllowServiceTargets, prefix+"ALLOW_SERVICE_TARGETS")
+	setBoolEnv(&r.AllowHumanTargets, prefix+"ALLOW_HUMAN_TARGETS")
 	setStringEnv(&r.Jev.APIKey, prefix+"JEV__API_KEY")
 	setStringEnv(&r.Jev.Model, prefix+"JEV__MODEL")
 	setStringEnv(&r.Jev.BaseURL, prefix+"JEV__BASE_URL")

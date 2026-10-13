@@ -28,6 +28,7 @@ var backendResumeSpecs = map[proto.AgentType]backendResumeSpec{
 	proto.AgentPi: {supported: true, strategy: "pi_session", flag: "--session",
 		stripValue: []string{"--session"}, stripBool: []string{"--continue", "-c", "--resume", "-r"}},
 	proto.AgentMCPHTTP: {supported: false, strategy: "unsupported"},
+	proto.AgentHuman:   {supported: false, strategy: "unsupported"},
 }
 
 // ResumeCapabilityForRegistration mirrors agent_backends.resume_capability_for_registration.

@@ -143,6 +143,7 @@ nav:
       - Peer identity lifecycle: concepts/peer-identity-lifecycle.md
       - Lazy repair: concepts/lazy-repair.md
       - Control surfaces: concepts/control-surfaces.md
+      - Human inbox: concepts/human-inbox.md
       - Orchestrator pattern: concepts/orchestrator.md
       - Session-native roadmap: concepts/session-native-roadmap.md
   - Reference:

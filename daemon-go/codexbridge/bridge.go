@@ -853,7 +853,7 @@ func (p *threadPeer) inject(ctx context.Context, conn *websocket.Conn, frame map
 	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	p.publish() // a real request is the retry point for an owed push
-	text = hooks.FormatInboundMessage(firstNonempty(stringValue(frame, "from_peer"), "unknown"), stringValue(frame, "to_peer"), kind, cid, text)
+	text = hooks.FormatInboundMessage(firstNonempty(stringValue(frame, "from_peer"), "unknown"), stringValue(frame, "from_role"), stringValue(frame, "to_peer"), kind, cid, text)
 	input := []any{map[string]any{"type": "text", "text": text}}
 	input = append(input, attachmentInputs(frame["attachments"])...)
 	var err error

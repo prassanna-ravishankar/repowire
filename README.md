@@ -129,6 +129,7 @@ Full docs: [docs.repowire.io](https://docs.repowire.io).
 
 - **Agent-to-agent asks**: Non-blocking questions with explicit `ack` replies and reminder injection until a thread is closed.
 - **Human control surfaces**: Browser dashboard, Telegram, and Slack can route messages as service peers.
+- **Human inbox**: you are a peer too. Notifies, asks, and replies sent to you are stored in a durable inbox, pushed to Telegram with receipts, and readable with `repowire inbox`.
 - **Durable jobs**: Track one-off and recurring work through CLI/MCP, with dashboard visibility and controls for run, retry, and cancel.
 - **Orchestrator pattern**: A dedicated peer can dispatch work, check status, coordinate reviews, and keep a queue moving.
 - **Scheduled wake-ups**: Send a future notification or ask to yourself, another peer, or an orchestrator.

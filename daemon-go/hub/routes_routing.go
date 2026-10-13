@@ -185,7 +185,7 @@ func (h *Hub) snapshotCandidates(d *routing.Decision, sender *proto.Peer, bypass
 			c.Access = routing.AccessCircleBoundary
 		case proto.RequireAddressable(sender, p) != nil:
 			c.Access = routing.AccessNotAddressable
-		case d.SelectionPolicy == routing.PolicyExcludeServiceTargets && routing.ServiceRole(string(p.Role)):
+		case d.SelectionPolicy != "" && routing.PolicyExcludes(d.SelectionPolicy, string(p.Role)):
 			c.Access = routing.AccessServiceExcluded
 		default:
 			c.Access = routing.AccessOK
@@ -416,7 +416,7 @@ func (h *Hub) resolveAsk(ctx context.Context, req AskRequest) (*askResolution, e
 // selection policy in DeliverAsk's CheckAccess step as well.
 func (h *Hub) resolveRoutedTarget(ctx context.Context, req AskRequest, toPeer, declared string, decision *routing.Decision) (*proto.Peer, *proto.Peer, string, error) {
 	from, target, reason, err := h.resolveAskTarget(ctx, req, toPeer, declared, decision)
-	if err != nil || h.askRouter().SelectionPolicy() == routing.PolicyAllowServiceTargets || !routing.ServiceRole(string(target.Role)) {
+	if err != nil || !routing.PolicyExcludes(h.askRouter().SelectionPolicy(), string(target.Role)) {
 		return from, target, reason, err
 	}
 	return from, nil, routing.AccessServiceExcluded, routeErr(http.StatusForbidden, map[string]any{

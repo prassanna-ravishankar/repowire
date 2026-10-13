@@ -195,13 +195,25 @@ resume-safety check as `peer restart` and jobs, so active sessions, missing
 runtime ids, unsupported backends, and stale ids whose local session file is
 gone fail loudly with a non-zero exit instead of starting fresh.
 
+## `repowire inbox`
+
+```bash
+repowire inbox                       # unread items
+repowire inbox list [--all] [--json] [--limit N]
+repowire inbox show ITEM_ID [--json]
+repowire inbox read ITEM_ID
+repowire inbox reply ITEM_ID TEXT
+```
+
+Read and answer the [human inbox](../concepts/human-inbox.md) from the terminal. Read and replied state is shared with Telegram and every other surface. `reply` on an open ask acks it with `TEXT`; on any other item it opens a new ask from the human to the item's sender. `show` lists each surface's push outcome.
+
 ## `repowire trace`
 
 ```bash
 repowire trace TRACE_ID [--json]
 ```
 
-Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`, returned in the `/notify` response). Stages are ordered (`created → resolved_peer → routed → websocket_sent → thread_input_accepted → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). `thread_input_accepted` means a native Codex thread or Claude inbox accepted the input; `injection_failed` records a failed/rejected receipt. Historical ledgers may contain `pane_injected` from releases that supported tmux keystroke delivery. This reads the local delivery trace ledger (`GET /traces/{trace_id}`), which is not pruned. Currently covers ask and notify; query/broadcast terminal stages are not yet traced. Exits non-zero if any stage failed.
+Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`, returned in the `/notify` response). Stages are ordered (`created → resolved_peer → routed → websocket_sent → thread_input_accepted → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). Messages to the human peer record `inbox_stored`, then one `surface_pushed` or `surface_failed` per surface, and later `inbox_read` / `inbox_replied`; a `surface_failed` makes the command exit non-zero even though the item is stored. `thread_input_accepted` means a native Codex thread or Claude inbox accepted the input; `injection_failed` records a failed/rejected receipt. Historical ledgers may contain `pane_injected` from releases that supported tmux keystroke delivery. This reads the local delivery trace ledger (`GET /traces/{trace_id}`), which is not pruned. Currently covers ask and notify (HTTP `/notify` and MCP `notify_peer` alike), plus broadcasts stored in the human inbox; query and agent broadcast terminal stages are not yet traced. Exits non-zero if any stage failed.
 
 ## `repowire route`
 
@@ -459,7 +471,7 @@ Build the Next.js dashboard into the static export served by the daemon at `/das
 repowire telegram start
 ```
 
-Run the Telegram bot peer manually. Reads `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from the environment or `~/.repowire/config.yaml`. When both values are configured, setup installs Telegram as an OS-managed user service alongside the daemon; this command is for an intentionally separate bot process. The bot registers as the canonical `telegram` peer, and messages from it are framed as human input.
+Run the Telegram bot peer manually. Reads `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from the environment or `~/.repowire/config.yaml`. When both values are configured, setup installs Telegram as an OS-managed user service alongside the daemon; this command is for an intentionally separate bot process. The bot registers as the canonical `telegram` peer and renders the [human inbox](../concepts/human-inbox.md); `telegram` resolves to the human peer, and messages from it are framed as human input.
 
 ## `repowire slack start`
 

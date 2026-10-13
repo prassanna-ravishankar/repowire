@@ -95,6 +95,8 @@ ask("project-b", "What API endpoints do you expose?")
 # returns "ask-c1a1c7dd"
 ```
 
+An ask to the human peer (or `telegram`) is stored in the [human inbox](../concepts/human-inbox.md) as an `ask` item and stays open until the user replies from any surface. The result adds the inbox receipt: `ask-c1a1c7dd inbox_item=inb-5e6f7a8b surfaces=telegram`.
+
 ### `wait_on_ack`
 
 ```text
@@ -159,6 +161,8 @@ answer(correlation_id: str, option_id: str | None = None, text: str | None = Non
 
 Answer a structured question carried on an ask. Pass `option_id` to select a choice, or `text` for a free-text answer. A bare `answer(cid)` records an acknowledged answer. Tool-permission questions also accept a denied outcome through the dashboard and Telegram renderers; ACP permission prompts deny by default on timeout.
 
+When the asker is the human, the answer (like any `ack` reply) is stored in the human inbox as an `answer` item and threads under the human's original message on Telegram.
+
 This is the typed counterpart to `ack` for questions such as tool approvals and future AskUserQuestion-style prompts. Plain asks still use `ack`; `/answer` rejects a plain ask so the existing `ack` retry semantics are not bypassed. If the asking peer is offline after a structured answer is recorded, the readable reply is stashed and redelivered on reconnect.
 
 ```text
@@ -172,7 +176,7 @@ answer("ask-c1a1c7dd", text="Use the staging database")
 notify_peer(peer_name: str, message: str, circle: str | None = None, attachments: list[dict] | None = None) -> str
 ```
 
-Fire-and-forget. No lifecycle, no expected response. Returns a synthetic `notif-XXXXXXXX` ID for client-side tracking, not a thread you can close. Use for FYIs, self-wakes, reminders, human phone updates, and nudges where no closure is expected.
+Fire-and-forget. No lifecycle, no expected response. Returns the `notif-delivery-XXXXXXXX` delivery ID, which is also its trace ID (`repowire trace <id>`), not a thread you can close. Use for FYIs, self-wakes, reminders, human phone updates, and nudges where no closure is expected.
 
 Do not use `notify_peer` for worker checkpoints, review requests, pre-commit handoffs, or delegated work that needs explicit ack; use `ask` or a durable job instead.
 
@@ -190,11 +194,14 @@ For an ACP-brokered peer (experimental), a fire-and-forget `/notify` returns `de
 
 Peer resolution mirrors `ask`: ordinary peers remain in their own circle even when a foreign `circle=` is supplied, while circle-bypassing roles may target another circle explicitly.
 
-The special peer `telegram` routes to the user's phone. The `dashboard` already sees agent turns; you do not need to notify it. Both are human-role peers and resolve mesh-wide regardless of your circle.
+To reach the user, notify the human peer: its name (`human.name`, default `human`) or the legacy address `telegram`. The message is stored in the [human inbox](../concepts/human-inbox.md) and pushed to the user's live surfaces (Telegram today). The result adds the stored item and the surfaces a push was started on:
 
 ```text
 notify_peer("telegram", "deploy finished, green across CI")
+# notif-delivery-1a2b3c4d inbox_item=inb-5e6f7a8b surfaces=telegram
 ```
+
+`surfaces=none` means the item is stored but no surface is live; the user sees it on their next `repowire inbox` or surface connect. Per-surface outcomes are trace stages (`surface_pushed`, `surface_failed` with an error class). A notify to the human never opens an ask; use `ask` when you need the user's reply. The `dashboard` already sees agent turns; you do not need to notify it.
 
 `ask`, reply `ack`, and `notify_peer` accept optional attachment metadata
 objects (`id`, `path`, `filename`, `size`, `content_type`). Text-only calls are
@@ -208,6 +215,8 @@ broadcast(message: str) -> str
 ```
 
 Fan out to every online peer in your circle. No correlation, no reply. Use sparingly — treat it as a soft interrupt for everyone in scope.
+
+The human peer and its surfaces are left out unless the user opted in with `human.broadcast: true`. Then the broadcast is stored in the inbox, and it is pushed only to surfaces whose own `broadcast` flag is on.
 
 ```text
 broadcast("rebasing main, hold pushes for ~5 min")

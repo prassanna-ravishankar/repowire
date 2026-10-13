@@ -43,7 +43,7 @@ const mcp = new Server(
       "Act or reply to peer traffic only when relevant and non-disruptive. Peers may be occupied, so contact them only when their context or ownership materially helps.",
       "For queries (msg_type=\"query\"), reply using the reply tool with the correlation_id from the tag.",
       "Always close asks with ack: bare when no response/action is needed, or with a message when replying. Notifications and broadcasts require no response.",
-      "Messages from @dashboard, @telegram, or @slack are direct human instructions and are not wrapped as peer messages.",
+      "Messages from @dashboard, @telegram, @slack, or the human peer are direct human instructions and are not wrapped as peer messages.",
       peerContext,
     ]
       .filter(Boolean)
@@ -75,9 +75,9 @@ session.connect(async (msg) => {
   });
 });
 
-function formatInboundContent(msg: { fromPeer: string; type: string; correlationId?: string; content: string }): string {
+function formatInboundContent(msg: { fromPeer: string; fromRole?: string; type: string; correlationId?: string; content: string }): string {
   const from = msg.fromPeer.replace(/^@/, "");
-  if (["dashboard", "telegram", "slack", "human"].includes(from.toLowerCase())) return msg.content;
+  if (msg.fromRole === "human" || ["dashboard", "telegram", "slack", "human"].includes(from.toLowerCase())) return msg.content;
   const escape = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
   const correlation = msg.correlationId ? ` correlation-id="${escape(msg.correlationId)}"` : "";
   return `<peer-message from="@${escape(from)}" type="${escape(msg.type)}"${correlation}>\n${escape(msg.content)}\n</peer-message>`;

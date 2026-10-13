@@ -23,6 +23,7 @@ type Config struct {
 	Relay       RelayConfig       `yaml:"relay"`
 	Telegram    TelegramConfig    `yaml:"telegram"`
 	Slack       SlackConfig       `yaml:"slack"`
+	Human       HumanConfig       `yaml:"human"`
 	Experiments ExperimentsConfig `yaml:"experiments"`
 	// Routing is how asks find their target; see RouterConfig. It is decoded
 	// on its own (loadRouting), so a mistyped routing key can never fail
@@ -93,6 +94,30 @@ type TelegramConfig struct {
 	ChatID   string `yaml:"chat_id"`
 }
 
+// HumanConfig shapes the daemon-owned human peer and its inbox. Telegram,
+// the dashboard and the CLI render the inbox; senders address the human.
+type HumanConfig struct {
+	// Name is the human peer's display_name (default "human").
+	Name string `yaml:"name"`
+	// Broadcast stores mesh broadcasts in the inbox. Off by default so a
+	// mesh-wide announcement does not page anyone.
+	Broadcast bool `yaml:"broadcast"`
+	// Surfaces holds per-surface notification policy, keyed by surface name
+	// (telegram, slack).
+	Surfaces map[string]HumanSurfaceConfig `yaml:"surfaces"`
+}
+
+// HumanSurfaceConfig is one surface's notification policy.
+type HumanSurfaceConfig struct {
+	// Broadcast pushes stored broadcasts to this surface (default off).
+	Broadcast bool `yaml:"broadcast"`
+}
+
+// PushesBroadcast reports whether surface opted in to broadcast pushes.
+func (h HumanConfig) PushesBroadcast(surface string) bool {
+	return h.Surfaces[surface].Broadcast
+}
+
 type SlackConfig struct {
 	BotToken  string `yaml:"bot_token"`
 	AppToken  string `yaml:"app_token"`
@@ -132,6 +157,7 @@ func Defaults() Config {
 			},
 		},
 		Relay: RelayConfig{URL: defaultRelayURL},
+		Human: HumanConfig{Name: "human"},
 		Experiments: ExperimentsConfig{RemoteToolApproval: RemoteToolApprovalConfig{
 			GatedTools:     []string{"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"},
 			TimeoutSeconds: 45,
@@ -272,6 +298,8 @@ func applyEnv(cfg *Config) {
 	if v := firstEnv("SLACK_CHANNEL_ID", "REPOWIRE_SLACK__CHANNEL_ID"); v != "" {
 		cfg.Slack.ChannelID = v
 	}
+	setStringEnv(&cfg.Human.Name, "REPOWIRE_HUMAN__NAME")
+	setBoolEnv(&cfg.Human.Broadcast, "REPOWIRE_HUMAN__BROADCAST")
 	setBoolEnv(&cfg.Experiments.ACPBrokerClient, "REPOWIRE_EXPERIMENTS__ACP_BROKER_CLIENT")
 	setBoolEnv(&cfg.Experiments.ChatTurnStreaming, "REPOWIRE_EXPERIMENTS__CHAT_TURN_STREAMING")
 	setBoolEnv(&cfg.Experiments.GitTrailers, "REPOWIRE_EXPERIMENTS__GIT_TRAILERS")

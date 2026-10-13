@@ -50,6 +50,8 @@ func (r *Registry) CheckAccess(ctx context.Context, fromPeer, toPeer string, byp
 		fromObj, _ = r.resolvePeerLocked(fromPeer, nil)
 	}
 
+	target, fromObj = r.inboxAliasLocked(target), r.inboxAliasLocked(fromObj)
+
 	if cerr := checkCircleAccess(fromObj, target, bypassCircle); cerr != nil {
 		return clonePeer(fromObj), nil, cerr
 	}
@@ -59,6 +61,26 @@ func (r *Registry) CheckAccess(ctx context.Context, fromPeer, toPeer string, byp
 	// Clone at the public boundary: delivery/broadcast/query callers read these
 	// off-lock while register/status/metadata writers mutate the live structs.
 	return clonePeer(fromObj), clonePeer(target), nil
+}
+
+// SetHumanPeer makes id the peer that inbox surfaces alias to.
+func (r *Registry) SetHumanPeer(id proto.PeerID) {
+	r.mu.Lock()
+	r.human = id
+	r.mu.Unlock()
+}
+
+// inboxAliasLocked maps an inbox surface (a phone bridge) to the human peer it
+// renders for. Everything else, and every peer before a human is registered,
+// resolves to itself.
+func (r *Registry) inboxAliasLocked(p *proto.Peer) *proto.Peer {
+	if p == nil || r.human == "" || p.PeerID == r.human || !proto.IsInboxSurface(p) {
+		return p
+	}
+	if human, ok := r.peers[r.human]; ok {
+		return human.peer
+	}
+	return p
 }
 
 // checkCircleAccess enforces the circle boundary given already-resolved peers.

@@ -46,6 +46,9 @@ type Hub struct {
 	// WithMessaging when the daemon has built a service.PeerDelivery. nil → those
 	// endpoints are not registered (the spike daemon has no service.PeerDelivery yet).
 	messaging *MessagingRoutes
+	// inbox is the human peer's inbox, wired via WithInbox. nil → no human
+	// peer: /inbox routes 503 and phone bridges are ordinary service peers.
+	inbox *service.Inbox
 	// deliveryTraces is shared by notify and ask lifecycle paths so HTTP and MCP
 	// asks write the same durable breadcrumb sequence as notifications.
 	deliveryTraces deliveryTracer
@@ -158,6 +161,12 @@ func (h *Hub) WithMessaging(delivery *service.PeerDelivery, traces deliveryTrace
 	return h
 }
 
+// WithInbox wires the human inbox (routes, presence on surface connect/drop).
+func (h *Hub) WithInbox(inbox *service.Inbox) *Hub {
+	h.inbox = inbox
+	return h
+}
+
 // WithReadDeps injects the service.AskTracker and state.Store the HTTP read routes use
 // to derive per-peer inbound health (pending-ask counts, last injection
 // success/failure). Returns the hub for chaining. nil-safe: handlers skip the
@@ -231,6 +240,7 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 	h.EventRoutes(mux)
 	h.EventsStreamRoutes(mux)
 	h.registerAskLifecycleRoutes(mux)
+	h.registerInboxRoutes(mux)
 	if h.session != nil {
 		h.registerSessionRoutes(mux)
 	}

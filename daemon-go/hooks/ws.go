@@ -371,7 +371,7 @@ func handleMessage(ctx context.Context, conn *websocket.Conn, data map[string]an
 		return false, unsafeStrikes
 	}
 	from, to, text := firstNonempty(stringValue(data, "from_peer"), "unknown"), stringValue(data, "to_peer"), stringValue(data, "text")+formatAttachments(data["attachments"])
-	injected := formatInboundMessage(from, to, typ, stringValue(data, "correlation_id"), text)
+	injected := formatInboundMessage(from, stringValue(data, "from_role"), to, typ, stringValue(data, "correlation_id"), text)
 	backend := firstNonempty(os.Getenv("REPOWIRE_BACKEND"), "claude-code")
 	detail := "native runtime inbox unavailable"
 	if backend == "claude-code" {
@@ -428,14 +428,14 @@ func injectClaudeInbox(socket, text string) error {
 	})
 }
 
-func formatInboundMessage(from, to, typ, correlationID, text string) string {
+func formatInboundMessage(from, fromRole, to, typ, correlationID, text string) string {
 	from = strings.TrimPrefix(from, "@")
 	to = strings.TrimPrefix(to, "@")
 	toLabel := ""
 	if to != "" {
 		toLabel = " → @" + to
 	}
-	if isHumanSender(from) {
+	if isHumanSender(from, fromRole) {
 		return "@" + from + toLabel + ": " + text
 	}
 	attrs := ` from="@` + html.EscapeString(from) + `"`
@@ -451,11 +451,16 @@ func formatInboundMessage(from, to, typ, correlationID, text string) string {
 
 // FormatInboundMessage preserves the human/peer trust boundary for transports
 // that deliver without terminal injection.
-func FormatInboundMessage(from, to, typ, correlationID, text string) string {
-	return formatInboundMessage(from, to, typ, correlationID, text)
+// fromRole is the frame's from_role ("human" when the daemon's human peer
+// sent it, whatever that peer is named).
+func FormatInboundMessage(from, fromRole, to, typ, correlationID, text string) string {
+	return formatInboundMessage(from, fromRole, to, typ, correlationID, text)
 }
 
-func isHumanSender(from string) bool {
+func isHumanSender(from, fromRole string) bool {
+	if fromRole == "human" {
+		return true
+	}
 	switch strings.TrimPrefix(strings.ToLower(from), "@") {
 	case "dashboard", "telegram", "slack", "human":
 		return true

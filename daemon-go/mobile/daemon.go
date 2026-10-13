@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -27,7 +28,18 @@ type DaemonPeer struct {
 	identity sync.RWMutex
 	name     string
 	peerID   string
+
+	// capabilities are declared on connect (Telegram declares inbox_surface).
+	capabilities []string
+
+	// connMu guards conn, the live daemon socket, so receipts written from a
+	// worker never interleave with the read loop's pongs.
+	connMu sync.Mutex
+	conn   *websocket.Conn
 }
+
+// ErrNotConnected is returned by Write while the daemon socket is down.
+var ErrNotConnected = errors.New("mobile: daemon socket not connected")
 
 func NewDaemonPeer(baseURL, auth, name, path, circle string) *DaemonPeer {
 	return &DaemonPeer{
@@ -107,6 +119,9 @@ func (p *DaemonPeer) runOnce(ctx context.Context, onMessage func(context.Context
 		"type": "connect", "display_name": p.Name(), "circle": p.circle,
 		"backend": "claude-code", "role": "service", "path": p.path,
 	}
+	if len(p.capabilities) > 0 {
+		connect["capabilities"] = p.capabilities
+	}
 	if p.auth != "" {
 		connect["auth_token"] = p.auth
 	}
@@ -124,13 +139,15 @@ func (p *DaemonPeer) runOnce(ctx context.Context, onMessage func(context.Context
 		return false, fmt.Errorf("daemon rejected connection: %v", connected)
 	}
 	p.setIdentity(textField(connected, "display_name"), textField(connected, "session_id"))
+	p.setConn(conn)
+	defer p.setConn(nil)
 	for {
 		var message map[string]any
 		if err := wsjson.Read(ctx, conn, &message); err != nil {
 			return true, err
 		}
 		if message["type"] == "ping" {
-			if err := wsjson.Write(ctx, conn, map[string]string{"type": "pong"}); err != nil {
+			if err := p.Write(ctx, map[string]string{"type": "pong"}); err != nil {
 				return true, err
 			}
 			continue
@@ -139,6 +156,22 @@ func (p *DaemonPeer) runOnce(ctx context.Context, onMessage func(context.Context
 			fmt.Printf("mobile: delivery failed: %v\n", err)
 		}
 	}
+}
+
+func (p *DaemonPeer) setConn(conn *websocket.Conn) {
+	p.connMu.Lock()
+	p.conn = conn
+	p.connMu.Unlock()
+}
+
+// Write sends one frame on the live daemon socket.
+func (p *DaemonPeer) Write(ctx context.Context, frame any) error {
+	p.connMu.Lock()
+	defer p.connMu.Unlock()
+	if p.conn == nil {
+		return ErrNotConnected
+	}
+	return wsjson.Write(ctx, p.conn, frame)
 }
 
 func (p *DaemonPeer) JSON(ctx context.Context, method, path string, input, output any) (*http.Response, error) {
@@ -174,9 +207,18 @@ func (p *DaemonPeer) JSON(ctx context.Context, method, path string, input, outpu
 }
 
 func (p *DaemonPeer) Send(ctx context.Context, target, message, mode string, attachments []map[string]any) (map[string]any, error) {
+	return p.SendFrom(ctx, target, message, mode, attachments, nil)
+}
+
+// SendFrom is Send with the surface message the human typed it in, so the
+// recipient's reply can thread back to it (asks only).
+func (p *DaemonPeer) SendFrom(ctx context.Context, target, message, mode string, attachments []map[string]any, origin map[string]any) (map[string]any, error) {
 	payload := map[string]any{"from_peer": p.Name(), "to_peer": target, "text": message}
 	if len(attachments) > 0 {
 		payload["attachments"] = attachments
+	}
+	if origin != nil && mode == "ask" {
+		payload["origin"] = origin
 	}
 	var result map[string]any
 	resp, err := p.JSON(ctx, http.MethodPost, "/"+mode, payload, &result)

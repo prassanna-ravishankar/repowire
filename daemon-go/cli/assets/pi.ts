@@ -421,10 +421,11 @@ async function buildMeshContext(myPeerName: string): Promise<string | null> {
   }
 }
 
-function formatInboundPeerMessage(from: string, to: string, type: string, text: string, correlationId = ""): string {
+function formatInboundPeerMessage(from: string, to: string, type: string, text: string, correlationId = "", fromRole = ""): string {
   from = from.replace(/^@/, "");
   to = to.replace(/^@/, "");
-  const human = ["dashboard", "telegram", "slack", "human"].includes(from.toLowerCase());
+  // from_role "human" is set by the daemon for its human peer, whatever it is named.
+  const human = fromRole === "human" || ["dashboard", "telegram", "slack", "human"].includes(from.toLowerCase());
   if (human) return "@" + from + " → @" + to + ": " + text;
   const escape = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
   const correlation = correlationId ? ' correlation-id="' + escape(correlationId) + '"' : "";
@@ -511,7 +512,7 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
     const correlationId = data.correlation_id as string;
     const fromPeer = (data.from_peer as string) || "unknown";
     const text = data.text as string;
-    await softInject(formatInboundPeerMessage(fromPeer, conn.peerName, "ask", text, correlationId));
+    await softInject(formatInboundPeerMessage(fromPeer, conn.peerName, "ask", text, correlationId, (data.from_role as string) || ""));
   } else if (msgType === "ping") {
     if (conn.ws?.readyState === WebSocket.OPEN) {
       conn.ws.send(JSON.stringify({ type: "pong", pane_alive: true, circle }));
@@ -519,7 +520,7 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
   } else if (msgType === "notify" || msgType === "broadcast") {
     const fromPeer = (data.from_peer as string) || "unknown";
     const text = data.text as string;
-    await softInject(formatInboundPeerMessage(fromPeer, conn.peerName, msgType, text));
+    await softInject(formatInboundPeerMessage(fromPeer, conn.peerName, msgType, text, "", (data.from_role as string) || ""));
   } else if (msgType === "permission_response") {
     return;
   }

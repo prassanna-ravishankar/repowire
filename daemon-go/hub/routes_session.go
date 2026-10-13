@@ -199,6 +199,7 @@ type PendingDelivery struct {
 	DeliveryID    string           `json:"delivery_id"`
 	Kind          string           `json:"kind"`
 	FromPeer      string           `json:"from_peer"`
+	FromRole      string           `json:"from_role,omitempty"`
 	ToPeer        string           `json:"to_peer"`
 	CorrelationID *string          `json:"correlation_id"`
 	Text          string           `json:"text"`
@@ -304,6 +305,7 @@ func (h *Hub) handleDeliveriesPending(w http.ResponseWriter, r *http.Request) {
 			DeliveryID:    d.DeliveryID,
 			Kind:          string(d.Kind),
 			FromPeer:      d.FromPeerName,
+			FromRole:      h.queuedSenderRole(d.FromPeerID),
 			ToPeer:        d.ToPeerName,
 			CorrelationID: d.CorrelationID,
 			Text:          d.Text,
