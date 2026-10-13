@@ -1,5 +1,5 @@
 import Image from "next/image";
-import { BriefcaseBusiness, Plus, RefreshCw, Settings } from "lucide-react";
+import { BriefcaseBusiness, Inbox, Plus, RefreshCw, Settings } from "lucide-react";
 import { cn } from "../lib/utils";
 import type { ConnectionState } from "../lib/useEventStream";
 import { ThemeToggle } from "./ThemeToggle";
@@ -9,8 +9,10 @@ export function TopBar({
   connection,
   isRefreshing,
   activeView,
+  unread,
   onRefresh,
   onMesh,
+  onInbox,
   onJobs,
   onSpawn,
   onSettings,
@@ -18,9 +20,11 @@ export function TopBar({
   counts: Record<"online" | "busy" | "offline", number>;
   connection: ConnectionState;
   isRefreshing: boolean;
-  activeView: "mesh" | "jobs";
+  activeView: "mesh" | "inbox" | "jobs";
+  unread: number;
   onRefresh: () => void;
   onMesh: () => void;
+  onInbox: () => void;
   onJobs: () => void;
   onSpawn: () => void;
   onSettings: () => void;
@@ -53,7 +57,7 @@ export function TopBar({
         <span className="sm:hidden">{badge.short}</span>
       </div>
 
-      <div className="hidden overflow-hidden rounded border border-border md:flex">
+      <div className="hidden shrink-0 overflow-hidden rounded border border-border md:flex">
         <button
           onClick={onMesh}
           aria-pressed={activeView === "mesh"}
@@ -63,6 +67,21 @@ export function TopBar({
           )}
         >
           Mesh
+        </button>
+        <button
+          onClick={onInbox}
+          aria-pressed={activeView === "inbox"}
+          aria-label={unread > 0 ? `Inbox, ${unread} unread` : "Inbox"}
+          className={cn(
+            "inline-flex h-8 items-center gap-1.5 border-l border-border px-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.12em] transition-colors",
+            activeView === "inbox" ? "bg-surface-container-high text-on-surface" : "text-outline hover:bg-surface-container-high hover:text-on-surface",
+          )}
+        >
+          <Inbox className="h-3.5 w-3.5" />
+          Inbox
+          {unread > 0 && (
+            <span className="rounded-sm bg-primary px-1 text-[9px] tabular-nums text-on-primary">{unread}</span>
+          )}
         </button>
         <button
           onClick={onJobs}

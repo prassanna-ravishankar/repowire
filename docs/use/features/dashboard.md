@@ -6,7 +6,7 @@ The dashboard is a browser control surface served by the daemon at `http://local
 
 ## When to use it
 
-Use the dashboard when you want a visual peer roster, live mesh log, per-peer session timeline, Jobs view, attachments, spawn controls, or session controls without staying inside one agent terminal.
+Use the dashboard when you want a visual peer roster, live mesh log, per-peer session timeline, your inbox, Jobs view, attachments, spawn controls, or session controls without staying inside one agent terminal.
 
 Use Telegram or Slack when you primarily want phone or team-chat access. Use CLI/MCP when you need scriptable commands.
 
@@ -34,6 +34,15 @@ For remote access without inbound ports, enable [Relay access](relay-access.md) 
 4. Attach files or images when the target agent needs local file context.
 5. Inspect the live mesh log for asks, acks, notifications, broadcasts, and structured questions.
 6. Use the Jobs view to inspect, retry, run, or cancel eligible durable work.
+7. Read and answer what agents sent you in the **Inbox** view.
+
+## Inbox
+
+The dashboard is a surface of your [human inbox](../../concepts/human-inbox.md). The **Inbox** tab lists everything agents sent you, newest first, with the sender and kind (message, ask, reply, broadcast); the nav shows the unread count. Items arrive live while the dashboard is open.
+
+- Opening an item marks it read on every surface, Telegram included.
+- The reply box under an item answers it, exactly as `repowire inbox reply` does: on an open ask it closes the ask with your text; on anything else it sends the sender a new ask. A choice question also shows its options.
+- Reads and replies made on Telegram or the CLI show up here as they happen, and the inbox is reread whenever the dashboard reconnects to the daemon.
 
 The peer chat view merges supported persisted local history with realtime `chat_turn` and `chat_turn_delta` events for Claude Code, Codex, and Codex ACP peers. Backends without a supported local history source contribute realtime events and report degraded history state in the timeline response.
 
@@ -41,7 +50,8 @@ The peer chat view merges supported persisted local history with realtime `chat_
 
 The dashboard uses daemon HTTP and SSE routes directly:
 
-- `GET /peers` and event streams for roster and mesh log.
+- `GET /peers` and event streams for roster and mesh log. The dashboard opens `GET /events/stream?surface=dashboard`, which makes it a live inbox surface.
+- `GET /inbox`, `POST /inbox/{id}/read`, and `POST /inbox/{id}/reply` (with `surface: "dashboard"`) for the inbox.
 - Peer timeline, transcript, and search routes for chat history.
 - `POST /ask` and `POST /notify` for compose sends.
 - `POST /attachments` for uploads.

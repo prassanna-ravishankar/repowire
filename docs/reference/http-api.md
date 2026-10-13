@@ -87,7 +87,7 @@ Messages to the human peer (its name, `telegram`, or `slack`) are stored in the 
 
 | Route | Purpose |
 | --- | --- |
-| `GET /inbox?unread=1&limit=N` | Inbound items, newest first, with per-surface `pushes`. Returns `{human, human_peer_id, items}`. |
+| `GET /inbox?unread=1&limit=N` | Inbound items, newest first, with per-surface `pushes` (`surface`, `status`, `surface_ref`). Returns `{human, human_peer_id, items}`. `surface=S` keeps items successfully pushed to S, listed in S's delivery order (newest rendered first, by numeric ref) rather than creation order; with it, `through_ref=N` keeps those whose first message on S has a numeric ref at or below N (Telegram message ids, which grow with every message in a chat). |
 | `GET /inbox/{id}` | One item. |
 | `POST /inbox/{id}/read` | `{surface}`. Marks the item read for every surface (idempotent). |
 | `POST /inbox/{id}/reply` | `{surface, text, option_id?, ref?}`. On an open ask: acks it with `text` (or answers a structured question). Otherwise opens a new ask from the human to the item's sender. Returns `{action: acked\|answered\|asked\|read, correlation_id}`. An empty `text` on a non-ask only marks it read. |
@@ -96,6 +96,8 @@ Messages to the human peer (its name, `telegram`, or `slack`) are stored in the 
 All routes return 503 when no human peer is registered.
 
 Inbox surfaces connect over `/ws` with `capabilities: ["inbox_surface"]`. The daemon pushes `{type: "inbox_item", delivery_id, item, reply_to_ref}`. The surface answers with `{type: "delivery_ack", delivery_id, status: "pushed", surface_ref, surface_refs}` or `{..., status: "failed", error_class}`. `surface_ref` is the first message rendered and anchors later replies on the thread; `surface_refs` lists every message rendered (a long item is split), and a failed push still lists what was sent, so a reply to any of them finds the item. A bridge without the capability gets the item as a plain `notify`/`ask` frame, which proves only the socket write (`verified: false`).
+
+The dashboard is a surface without a socket of its own. `GET /events/stream?surface=dashboard` marks the stream as the dashboard: the dashboard is live while one such stream is open, and a push to it is receipted (`surface_pushed`, `surface: dashboard`) once a stream has flushed the item's `inbox_item` event. The event stream carries `inbox_item` (`item_id`, `kind`, `from`, `from_peer_id`, `correlation_id`) and `inbox_updated` (`item_id`, `read`, `replied`, `surface`), never the text; the dashboard reads the item from `GET /inbox`. Relay share streams never carry inbox events.
 
 ## Pull-delivery asks
 

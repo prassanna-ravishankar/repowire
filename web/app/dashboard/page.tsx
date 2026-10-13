@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "./lib/utils";
 import { useEventStream } from "./lib/useEventStream";
+import { useInbox } from "./lib/useInbox";
 import { activeRuntimeCircles } from "./lib/orchestrators";
 import { SettingsDialog, SpawnDialog } from "./components/DashboardDialogs";
+import { InboxView } from "./components/InboxView";
 import { JobsView } from "./components/JobsView";
 import { MeshFeed } from "./components/MeshFeed";
 import { MobileTabs, type MobileTab } from "./components/MobileTabs";
@@ -14,9 +16,11 @@ import { PendingQuestions } from "./components/PendingQuestions";
 import { TopBar } from "./components/TopBar";
 import { WireTrace } from "./components/WireTrace";
 import type { Event, OrchestratorStatus, Peer } from "./types";
-import { isLifecycleEvent } from "./types";
+import { isInboxEvent, isLifecycleEvent } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
+
+type MainView = "mesh" | "inbox" | "jobs";
 
 const RELAY_DASHBOARD_URL = "https://relay.repowire.io/dashboard";
 
@@ -43,8 +47,10 @@ function DashboardInner() {
   const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [mobileTab, setMobileTab] = useState<MobileTab>("peers");
-  const [mainView, setMainView] = useState<"mesh" | "jobs">("mesh");
+  const [mainView, setMainView] = useState<MainView>("mesh");
   const [refreshSignal, setRefreshSignal] = useState(0);
+  const [inboxSignal, setInboxSignal] = useState(0);
+  const inbox = useInbox(API_BASE, inboxSignal + refreshSignal);
   const [showSpawn, setShowSpawn] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const eventIdsRef = useRef<Set<string>>(new Set());
@@ -131,6 +137,7 @@ function DashboardInner() {
         return next.length > 500 ? next.slice(-500) : next;
       });
       if (isLifecycleEvent(event)) void fetchPeers();
+      if (isInboxEvent(event)) setInboxSignal((value) => value + 1);
     },
     [fetchPeers],
   );
@@ -138,6 +145,10 @@ function DashboardInner() {
   const connection = useEventStream({
     apiBase: API_BASE,
     onEvent: ingestEvent,
+    // Gap recovery replays only the event window; a read or reply made on
+    // another surface during the outage may have fallen out of it, so the
+    // inbox is always reread after a reconnect.
+    onReconnected: useCallback(() => setInboxSignal((value) => value + 1), []),
     getLastSeenId: useCallback(() => lastSeenIdRef.current, []),
   });
 
@@ -225,6 +236,12 @@ function DashboardInner() {
     setMobileTab("jobs");
   }, []);
 
+  const openInbox = useCallback(() => {
+    setSelectedPeerId(null);
+    setMainView("inbox");
+    setMobileTab("inbox");
+  }, []);
+
   const openMesh = useCallback(() => {
     setSelectedPeerId(null);
     setMainView("mesh");
@@ -233,7 +250,7 @@ function DashboardInner() {
 
   const handleMobileTab = useCallback((tab: MobileTab) => {
     setMobileTab(tab);
-    if (tab === "mesh" || tab === "jobs") {
+    if (tab === "mesh" || tab === "jobs" || tab === "inbox") {
       setSelectedPeerId(null);
       setMainView(tab);
     }
@@ -247,8 +264,10 @@ function DashboardInner() {
           connection={connection}
           isRefreshing={isRefreshing}
           activeView={mainView}
+          unread={inbox.unread}
           onRefresh={refreshData}
           onMesh={openMesh}
+          onInbox={openInbox}
           onJobs={openJobs}
           onSpawn={() => setShowSpawn(true)}
           onSettings={() => setShowSettings(true)}
@@ -293,6 +312,8 @@ function DashboardInner() {
               onClose={closePeer}
               onSent={refreshData}
             />
+          ) : mainView === "inbox" ? (
+            <InboxView inbox={inbox} apiBase={API_BASE} />
           ) : mainView === "jobs" ? (
             <JobsView
               apiBase={API_BASE}
@@ -313,6 +334,7 @@ function DashboardInner() {
             activeTab={mobileTab}
             counts={counts}
             eventCount={events.length}
+            unread={inbox.unread}
             onChange={handleMobileTab}
           />
         )}

@@ -13,7 +13,8 @@ import (
 // Human inbox routes (#466). Every surface (Telegram, the dashboard, the CLI)
 // reads and answers the same inbox through these:
 //
-//   GET  /inbox                  inbound items, newest first (?unread=1, ?limit=N)
+//   GET  /inbox                  inbound items, newest first (?unread=1, ?limit=N,
+//                                ?surface=S pushed there, ?through_ref=N up to that ref)
 //   GET  /inbox/{id}             one item with its per-surface push records
 //   POST /inbox/{id}/read        mark read everywhere
 //   POST /inbox/{id}/reply       answer from a surface
@@ -61,9 +62,14 @@ func (h *Hub) handleInboxList(w http.ResponseWriter, r *http.Request) {
 	if !h.inboxReady(w) {
 		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	unread := r.URL.Query().Get("unread")
-	items, err := h.inbox.List(r.Context(), state.InboxFilter{UnreadOnly: unread == "1" || unread == "true", Limit: limit})
+	query := r.URL.Query()
+	limit, _ := strconv.Atoi(query.Get("limit"))
+	throughRef, _ := strconv.ParseInt(query.Get("through_ref"), 10, 64)
+	unread := query.Get("unread")
+	items, err := h.inbox.List(r.Context(), state.InboxFilter{
+		UnreadOnly: unread == "1" || unread == "true", Limit: limit,
+		Surface: query.Get("surface"), ThroughRef: throughRef,
+	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -241,6 +247,9 @@ func inboxItemJSON(item *state.InboxItem) map[string]any {
 	pushes := make([]map[string]any, 0, len(item.Pushes))
 	for _, p := range item.Pushes {
 		push := map[string]any{"surface": p.Surface, "status": p.Status, "ts": p.TS}
+		if p.SurfaceRef != "" {
+			push["surface_ref"] = p.SurfaceRef
+		}
 		if p.ErrorClass != "" {
 			push["error_class"] = p.ErrorClass
 		}

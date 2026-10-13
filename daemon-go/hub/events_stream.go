@@ -43,8 +43,7 @@ func (h *Hub) EventsStreamRoutes(mux *http.ServeMux) {
 // ticker (write a `: keepalive` comment frame). Requires an http.Flusher; 500 if
 // the ResponseWriter cannot flush (fail loud rather than silently buffer forever).
 func (h *Hub) handleEventsStream(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		writeJSONError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
@@ -59,6 +58,14 @@ func (h *Hub) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 	// raise the wake channel for the next loop iteration.
 	wake, unsubscribe := h.reg.SubscribeEvents()
 	defer unsubscribe()
+
+	// A stream the dashboard opens as its inbox surface reports which items it
+	// flushed, which is the dashboard's push receipt.
+	wrote := func([]map[string]any) {}
+	if h.dashboard != nil && r.URL.Query().Get("surface") == "dashboard" {
+		defer h.dashboard.attach()()
+		wrote = h.dashboard.wrote
+	}
 
 	// rc lets us bound each write batch below; SetWriteDeadline may return
 	// ErrNotSupported for exotic ResponseWriter wrappers — best-effort hardening,
@@ -76,7 +83,11 @@ func (h *Hub) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 	if n := len(initial); n > 0 {
 		lastEventID, _ = initial[n-1]["id"].(string)
 	}
-	flusher.Flush()
+	// Only a batch that reached the client counts as the dashboard's receipt.
+	if rc.Flush() != nil {
+		return
+	}
+	wrote(initial)
 	// Drain any wake raised during the initial flush: we have already delivered
 	// everything currently buffered, so collapse a stale signal.
 	select {
@@ -103,13 +114,18 @@ func (h *Hub) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 			if n := len(newEvents); n > 0 {
 				lastEventID, _ = newEvents[n-1]["id"].(string)
 			}
-			flusher.Flush()
+			if rc.Flush() != nil {
+				return
+			}
+			wrote(newEvents)
 		case <-ticker.C:
 			_ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
 				return
 			}
-			flusher.Flush()
+			if rc.Flush() != nil {
+				return
+			}
 		}
 	}
 }

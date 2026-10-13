@@ -10,7 +10,7 @@ Human surfaces have the `human` role. That role bypasses circle filtering so the
 
 ## The human inbox
 
-With a human peer registered (the default), the phone bridges are surfaces, not addressees. A message to `telegram`, `slack`, or the human's name is stored in the [human inbox](human-inbox.md) and pushed to every live surface. A reply from any surface acks the ask behind it, and read state is shared across surfaces. Agents never need to know which surface the human is using.
+With a human peer registered (the default), the phone bridges are surfaces, not addressees. A message to `telegram`, `slack`, or the human's name is stored in the [human inbox](human-inbox.md) and pushed to every live surface, including any open dashboard. A reply from any surface acks the ask behind it, and read state is shared across surfaces. Agents never need to know which surface the human is using.
 
 ## Surface state
 

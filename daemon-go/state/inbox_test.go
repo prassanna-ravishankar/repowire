@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -114,5 +115,88 @@ func TestInboxPushesThreadRefAndLookupBySurfaceRef(t *testing.T) {
 	all, _ := store.ListInbox(ctx, InboxFilter{})
 	if len(all) != 1 || all[0].ID != reply.ID {
 		t.Fatalf("list should hold only the inbound reply: %+v", all)
+	}
+}
+
+// TestListInboxBySurfaceThroughRef: the filter a surface uses to mark what it
+// showed as read finds only items it pushed, at or before a ref, however many
+// other unread items are newer.
+func TestListInboxBySurfaceThroughRef(t *testing.T) {
+	ctx := context.Background()
+	store := newInboxStore(t)
+	add := func(surface, status, ref string) string {
+		item := &InboxItem{Kind: "notify", FromName: "alpha", Text: "x"}
+		if err := store.InsertInboxItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		if surface != "" {
+			if err := store.RecordInboxPush(ctx, item.ID, InboxPush{Surface: surface, Status: status, SurfaceRef: ref}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return item.ID
+	}
+	shown := add("telegram", PushPushed, "100")
+	for n := 0; n < 5; n++ {
+		add("dashboard", PushPushed, "")
+	}
+	add("telegram", PushFailed, "101")
+	later := add("telegram", PushPushed, "205")
+	add("telegram", PushPushed, "abc")
+
+	ids := func(f InboxFilter) []string {
+		items, err := store.ListInbox(ctx, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, it := range items {
+			out = append(out, it.ID)
+		}
+		return out
+	}
+	if got := ids(InboxFilter{UnreadOnly: true, Surface: "telegram", ThroughRef: 200, Limit: 1}); len(got) != 1 || got[0] != shown {
+		t.Fatalf("through 200 = %v, want only %s", got, shown)
+	}
+	if got := ids(InboxFilter{UnreadOnly: true, Surface: "telegram", ThroughRef: 300}); len(got) != 2 || got[0] != later {
+		t.Fatalf("through 300 = %v", got)
+	}
+	if got := ids(InboxFilter{UnreadOnly: true, Surface: "telegram"}); len(got) != 3 {
+		t.Fatalf("any telegram push = %v", got)
+	}
+}
+
+// TestListInboxBySurfaceIsInDeliveryOrder (review of #478): pushes run
+// concurrently, so the item created later can be rendered first. A surface
+// filter lists by the surface's own order, newest rendered first.
+func TestListInboxBySurfaceIsInDeliveryOrder(t *testing.T) {
+	ctx := context.Background()
+	store := newInboxStore(t)
+	for _, v := range []struct{ id, created, ref string }{
+		{"older", "2026-10-13T10:00:00.000Z", "101"},
+		{"newer", "2026-10-13T10:00:01.000Z", "100"},
+		{"text-ref", "2026-10-13T10:00:02.000Z", "abc"},
+	} {
+		item := &InboxItem{ID: v.id, Kind: "notify", FromName: "a", Text: "x", CreatedAt: v.created}
+		if err := store.InsertInboxItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.RecordInboxPush(ctx, item.ID, InboxPush{Surface: "telegram", Status: PushPushed, SurfaceRef: v.ref}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := store.ListInbox(ctx, InboxFilter{Surface: "telegram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, it := range items {
+		got = append(got, it.ID)
+	}
+	if strings.Join(got, ",") != "older,newer,text-ref" {
+		t.Fatalf("order = %v, want delivery order (101, 100, then non-numeric)", got)
+	}
+	if all, _ := store.ListInbox(ctx, InboxFilter{}); all[0].ID != "text-ref" {
+		t.Fatalf("an unfiltered list stays newest created first: %v", all[0].ID)
 	}
 }

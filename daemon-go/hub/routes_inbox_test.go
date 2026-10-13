@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -65,6 +66,7 @@ func newInboxStack(t *testing.T) *inboxStack {
 	h.registerAskLifecycleRoutes(mux)
 	h.registerInboxRoutes(mux)
 	h.registerSessionRoutes(mux)
+	h.EventsStreamRoutes(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(func() {
 		srv.Close()
@@ -407,6 +409,198 @@ func TestHumanQueuedDeliveriesKeepHumanRole(t *testing.T) {
 	if replayed["from_role"] != "human" || replayed["from_peer"] != "prass" {
 		t.Fatalf("replayed frame loses the human framing: %+v", replayed)
 	}
+}
+
+// sseClient is an open /events/stream connection that records every event.
+type sseClient struct {
+	mu     sync.Mutex
+	events []map[string]any
+	cancel context.CancelFunc
+}
+
+func (s *inboxStack) openStream(t *testing.T, query string) *sseClient {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.srv.URL+"/events/stream"+query, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	c := &sseClient{cancel: cancel}
+	go func() {
+		defer resp.Body.Close()
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 1<<20), 1<<20)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			var ev map[string]any
+			if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev) == nil {
+				c.mu.Lock()
+				c.events = append(c.events, ev)
+				c.mu.Unlock()
+			}
+		}
+	}()
+	t.Cleanup(cancel)
+	return c
+}
+
+func (c *sseClient) waitEvent(t *testing.T, match func(map[string]any) bool) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		for _, ev := range c.events {
+			if match(ev) {
+				c.mu.Unlock()
+				return ev
+			}
+		}
+		c.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("event never streamed; have %+v", c.events)
+	return nil
+}
+
+// waitSurfaceStage polls for stage recorded by one surface on traceID.
+func (s *inboxStack) waitSurfaceStage(t *testing.T, traceID, stage, surface string) state.TraceRow {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		rows, _ := s.store.StagesFor(context.Background(), traceID)
+		for _, r := range rows {
+			if r.Stage == stage && r.Detail["surface"] == surface {
+				return r
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rows, _ := s.store.StagesFor(context.Background(), traceID)
+	t.Fatalf("%s never recorded %s by %s; have %v", traceID, stage, surface, rows)
+	return state.TraceRow{}
+}
+
+func (s *inboxStack) dashboardLive(t *testing.T, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if human, ok := s.h.reg.GetPeer(s.human); ok {
+			surfaces, _ := human.Metadata["surfaces"].(map[string]any)
+			dash, _ := surfaces["dashboard"].(map[string]any)
+			if dash["live"] == want && s.h.dashboard.Live() == want {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("dashboard presence never became live=%v", want)
+}
+
+// TestHumanInboxDashboardSurface: an open dashboard is an inbox surface like
+// Telegram. Its event stream is its channel: it is live while a dashboard
+// stream is open, a push is receipted once the stream flushed the item, and
+// opening the item on the dashboard marks it read for every surface,
+// Telegram included.
+func TestHumanInboxDashboardSurface(t *testing.T) {
+	s := newInboxStack(t)
+	bridge := s.connect(t, map[string]any{"display_name": "telegram", "circle": "default", "backend": "claude-code",
+		"role": "service", "path": "/telegram", "capabilities": []string{proto.CapInboxSurface}}, telegramSurface)
+	agent := s.connect(t, map[string]any{"display_name": "alpha", "circle": "1", "backend": "claude-code", "role": "agent", "path": "/work/alpha"}, nil)
+
+	// Any other event-stream reader (a CLI tail, a share viewer) is not the dashboard.
+	s.openStream(t, "")
+	plain := decodeBody(t, postJSON(t, s.srv.URL+"/notify", map[string]any{"from_peer": string(agent.id), "to_peer": "prass", "text": "before"}))
+	if fmt.Sprint(plain["surfaces"]) != "[telegram]" {
+		t.Fatalf("a plain stream must not count as the dashboard: %+v", plain)
+	}
+
+	dash := s.openStream(t, "?surface=dashboard")
+	s.dashboardLive(t, true)
+
+	notified := decodeBody(t, postJSON(t, s.srv.URL+"/notify", map[string]any{"from_peer": string(agent.id), "to_peer": "prass", "text": "deployed"}))
+	itemID := notified["inbox_item_id"].(string)
+	if fmt.Sprint(notified["surfaces"]) != "[dashboard telegram]" {
+		t.Fatalf("receipt surfaces = %+v", notified["surfaces"])
+	}
+	ev := dash.waitEvent(t, func(ev map[string]any) bool { return ev["type"] == "inbox_item" && ev["item_id"] == itemID })
+	if ev["kind"] != "notify" || ev["from_peer_id"] != string(agent.id) || ev["text"] != nil {
+		t.Fatalf("inbox_item event = %+v (it must not carry the text)", ev)
+	}
+	deliveryID := notified["delivery_id"].(string)
+	if row := s.waitSurfaceStage(t, deliveryID, "surface_pushed", "dashboard"); row.Detail["verified"] != true || row.Detail["item_id"] != itemID {
+		t.Fatalf("dashboard surface_pushed = %+v", row)
+	}
+	s.waitSurfaceStage(t, deliveryID, "surface_pushed", "telegram")
+	bridge.waitFrame(func(f map[string]any) bool { return f["delivery_id"] == itemID })
+
+	// Opening the item on the dashboard reads it on every surface.
+	decodeBody(t, postJSON(t, s.srv.URL+"/inbox/"+itemID+"/read", map[string]any{"surface": "dashboard"}))
+	if row := s.waitSurfaceStage(t, deliveryID, "inbox_read", "dashboard"); row.Detail["item_id"] != itemID {
+		t.Fatalf("inbox_read = %+v", row)
+	}
+	for _, raw := range anyList(decodeBody(t, httpGet(t, s.srv.URL+"/inbox?unread=1"))["items"]) {
+		if raw.(map[string]any)["id"] == itemID {
+			t.Fatal("an item opened on the dashboard is still unread for Telegram")
+		}
+	}
+	item := decodeBody(t, httpGet(t, s.srv.URL+"/inbox/"+itemID))
+	if item["read"] != true || item["read_surface"] != "dashboard" {
+		t.Fatalf("item after dashboard read = %+v", item)
+	}
+	dash.waitEvent(t, func(ev map[string]any) bool {
+		return ev["type"] == "inbox_updated" && ev["item_id"] == itemID && ev["read"] == true
+	})
+
+	// A read from Telegram fans out to the dashboard the same way.
+	decodeBody(t, postJSON(t, s.srv.URL+"/inbox/"+plain["inbox_item_id"].(string)+"/read", map[string]any{"surface": "telegram"}))
+	dash.waitEvent(t, func(ev map[string]any) bool {
+		return ev["type"] == "inbox_updated" && ev["item_id"] == plain["inbox_item_id"] && ev["surface"] == "telegram"
+	})
+
+	// Closing the dashboard takes it off the surface list.
+	dash.cancel()
+	s.dashboardLive(t, false)
+	after := decodeBody(t, postJSON(t, s.srv.URL+"/notify", map[string]any{"from_peer": string(agent.id), "to_peer": "prass", "text": "after"}))
+	if fmt.Sprint(after["surfaces"]) != "[telegram]" {
+		t.Fatalf("a closed dashboard still received a push: %+v", after["surfaces"])
+	}
+}
+
+// TestHumanInboxDashboardReplyClosesTheAsk: the dashboard's reply box closes
+// an open ask with the typed text, and on a plain item asks the sender back,
+// exactly as the CLI does.
+func TestHumanInboxDashboardReplyClosesTheAsk(t *testing.T) {
+	s := newInboxStack(t)
+	agent := s.connect(t, map[string]any{"display_name": "alpha", "circle": "1", "backend": "claude-code", "role": "agent", "path": "/work/alpha"}, nil)
+	s.openStream(t, "?surface=dashboard")
+	s.dashboardLive(t, true)
+
+	asked := decodeBody(t, postJSON(t, s.srv.URL+"/ask", map[string]any{"from_peer": string(agent.id), "to_peer": "prass", "text": "merge #12?"}))
+	cid := asked["correlation_id"].(string)
+	itemID := asked["inbox"].(map[string]any)["item_id"].(string)
+	s.waitSurfaceStage(t, cid, "surface_pushed", "dashboard")
+	replied := decodeBody(t, postJSON(t, s.srv.URL+"/inbox/"+itemID+"/reply", map[string]any{"surface": "dashboard", "text": "yes"}))
+	if replied["action"] != "acked" {
+		t.Fatalf("reply = %+v", replied)
+	}
+	agent.waitFrame(func(f map[string]any) bool {
+		return f["type"] == "notify" && strings.Contains(fmt.Sprint(f["text"]), "yes")
+	})
+	s.waitSurfaceStage(t, cid, "inbox_replied", "dashboard")
+
+	notified := decodeBody(t, postJSON(t, s.srv.URL+"/notify", map[string]any{"from_peer": string(agent.id), "to_peer": "prass", "text": "fyi"}))
+	back := decodeBody(t, postJSON(t, s.srv.URL+"/inbox/"+notified["inbox_item_id"].(string)+"/reply", map[string]any{"surface": "dashboard", "text": "why?"}))
+	if back["action"] != "asked" {
+		t.Fatalf("reply to a notify = %+v", back)
+	}
+	agent.waitFrame(func(f map[string]any) bool {
+		return f["type"] == "ask" && f["correlation_id"] == back["correlation_id"] && f["from_role"] == "human"
+	})
 }
 
 func httpGet(t *testing.T, url string) *http.Response {

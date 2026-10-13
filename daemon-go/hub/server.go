@@ -49,6 +49,9 @@ type Hub struct {
 	// inbox is the human peer's inbox, wired via WithInbox. nil → no human
 	// peer: /inbox routes 503 and phone bridges are ordinary service peers.
 	inbox *service.Inbox
+	// dashboard is the inbox surface rendered over the dashboard's event
+	// stream; nil without an inbox.
+	dashboard *dashboardSurface
 	// deliveryTraces is shared by notify and ask lifecycle paths so HTTP and MCP
 	// asks write the same durable breadcrumb sequence as notifications.
 	deliveryTraces deliveryTracer
@@ -161,9 +164,12 @@ func (h *Hub) WithMessaging(delivery *service.PeerDelivery, traces deliveryTrace
 	return h
 }
 
-// WithInbox wires the human inbox (routes, presence on surface connect/drop).
+// WithInbox wires the human inbox (routes, presence on surface connect/drop)
+// and registers the dashboard as one of its surfaces.
 func (h *Hub) WithInbox(inbox *service.Inbox) *Hub {
 	h.inbox = inbox
+	h.dashboard = newDashboardSurface(func() { inbox.SyncPresence(context.Background()) })
+	inbox.AddSurface(h.dashboard)
 	return h
 }
 

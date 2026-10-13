@@ -30,7 +30,7 @@ const (
 
 var tunnelRoots = []string{
 	"/ack", "/acp", "/answer", "/ask", "/ask-many", "/asks", "/attachments",
-	"/broadcast", "/circles", "/deliveries", "/events", "/health", "/hooks",
+	"/broadcast", "/circles", "/deliveries", "/events", "/health", "/hooks", "/inbox",
 	"/jobs", "/kill-peer", "/notify", "/panes", "/peer", "/peers", "/query",
 	"/questions", "/reviews", "/schedules", "/session", "/sessions",
 	"/shares", "/spawn", "/traces", "/work", "/ws",
@@ -525,7 +525,7 @@ func (s *Server) eventsStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "No daemon connected")
 		return
 	}
-	s.streamTunnel(w, r, conn, "")
+	s.streamTunnel(w, r, conn, "", r.URL.RawQuery)
 }
 
 func (s *Server) shareStream(w http.ResponseWriter, r *http.Request) {
@@ -539,10 +539,12 @@ func (s *Server) shareStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "Session owner not connected")
 		return
 	}
-	s.streamTunnel(w, r, conn, share.PeerName)
+	s.streamTunnel(w, r, conn, share.PeerName, "")
 }
 
-func (s *Server) streamTunnel(w http.ResponseWriter, r *http.Request, conn *daemonConn, peerFilter string) {
+// streamTunnel proxies the daemon's event stream. The owner's query passes
+// through (the dashboard opens it with surface=dashboard); a share's never does.
+func (s *Server) streamTunnel(w http.ResponseWriter, r *http.Request, conn *daemonConn, peerFilter, query string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
@@ -552,7 +554,7 @@ func (s *Server) streamTunnel(w http.ResponseWriter, r *http.Request, conn *daem
 	ch := s.addPending(id, conn)
 	defer s.removePending(id)
 	ctx := r.Context()
-	if err := conn.write(ctx, map[string]any{"type": "http_stream_request", "request_id": id, "method": "GET", "path": "/events/stream", "headers": map[string]string{}, "query_string": ""}); err != nil {
+	if err := conn.write(ctx, map[string]any{"type": "http_stream_request", "request_id": id, "method": "GET", "path": "/events/stream", "headers": map[string]string{}, "query_string": query}); err != nil {
 		writeError(w, http.StatusBadGateway, "Failed to reach daemon")
 		return
 	}
@@ -646,7 +648,12 @@ func (f *ssePeerFilter) write(chunk []byte) []byte {
 	return out.Bytes()
 }
 
+// eventMentionsPeer decides what a share viewer sees. The human's inbox is
+// never part of a shared session.
 func eventMentionsPeer(event map[string]any, peerName string) bool {
+	if strings.HasPrefix(stringValue(event["type"]), "inbox_") {
+		return false
+	}
 	for _, key := range []string{"peer", "peer_name", "from", "from_peer", "to", "to_peer", "display_name"} {
 		if stringValue(event[key]) == peerName {
 			return true

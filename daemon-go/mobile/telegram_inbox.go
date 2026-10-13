@@ -15,8 +15,13 @@ import (
 // inbox item as an inbox_item frame; the bridge renders it, threads it under
 // the earlier message on the same ask when the daemon names one, and answers
 // with a delivery_ack receipt: pushed (with the Telegram message_id) or failed
-// (with an error class, never the error text). Replies, ack buttons and the
-// seen button go back through the daemon's /inbox routes, so whatever the
+// (with an error class, never the error text).
+//
+// It renders the way a Telegram bot natively does. A plain item is just a
+// message. A choice question shows its options as buttons; any other ask is
+// answered with Telegram's own Reply. Read state is implicit: whenever the
+// human writes or taps in the chat, every item pushed here is marked read.
+// All of it goes back through the daemon's /inbox routes, so whatever the
 // human does here is visible on every other surface.
 
 // inboxSurfaceCapability matches proto.CapInboxSurface.
@@ -142,7 +147,9 @@ func (b *Telegram) pushInboxItem(ctx context.Context, item map[string]any, reply
 			}
 		}
 		if index == len(chunks)-1 {
-			payload["reply_markup"] = b.inboxMarkup(id, item)
+			if markup := b.inboxMarkup(id, item); markup != nil {
+				payload["reply_markup"] = markup
+			}
 		}
 		var sent struct {
 			MessageID int64 `json:"message_id"`
@@ -151,6 +158,7 @@ func (b *Telegram) pushInboxItem(ctx context.Context, item map[string]any, reply
 			return refs, err
 		}
 		refs = append(refs, strconv.FormatInt(sent.MessageID, 10))
+		b.noteShown(sent.MessageID)
 	}
 	if attachments, ok := item["attachments"].([]any); ok {
 		for _, raw := range attachments {
@@ -197,35 +205,39 @@ func inboxHeader(item map[string]any) string {
 	return prefix + "@" + textField(item, "from")
 }
 
-// inboxMarkup is the reply affordance: choices or an ack for an ask, a seen
-// button for everything else. Callback data stays well under Telegram's 64
+// inboxMarkup is the buttons an item carries: the options of a choice
+// question, a single Ack for an acknowledge question, and nothing otherwise
+// (a reply is Telegram's Reply). Callback data stays well under Telegram's 64
 // bytes ("ix:o:inb-xxxxxxxx:N").
 func (b *Telegram) inboxMarkup(id string, item map[string]any) any {
-	if textField(item, "kind") != "ask" {
-		return map[string]any{"inline_keyboard": []any{[]any{map[string]string{"text": "✓ Seen", "callback_data": "ix:s:" + id}}}}
+	question, _ := item["question"].(map[string]any)
+	switch {
+	case textField(item, "kind") != "ask":
+		return nil
+	case question["kind"] == "acknowledge":
+		return map[string]any{"inline_keyboard": []any{[]any{map[string]string{"text": "✓ Ack", "callback_data": "ix:a:" + id}}}}
+	case question["kind"] != "choice":
+		return nil
 	}
 	rows := []any{}
-	question, _ := item["question"].(map[string]any)
-	if question["kind"] == "choice" {
-		options, _ := question["options"].([]any)
-		ids := []string{}
-		for _, raw := range options {
-			option, _ := raw.(map[string]any)
-			optionID := textField(option, "id")
-			if optionID == "" {
-				continue
-			}
-			title := firstText(textField(option, "title"), optionID)
-			rows = append(rows, []any{map[string]string{"text": title, "callback_data": fmt.Sprintf("ix:o:%s:%d", id, len(ids))}})
-			ids = append(ids, optionID)
+	options, _ := question["options"].([]any)
+	ids := []string{}
+	for _, raw := range options {
+		option, _ := raw.(map[string]any)
+		optionID := textField(option, "id")
+		if optionID == "" {
+			continue
 		}
-		b.rememberOptions(id, ids)
-		if textField(question, "scope") == "tool_permission" {
-			rows = append(rows, []any{map[string]string{"text": "✕ Deny", "callback_data": "deny:" + textField(item, "correlation_id")}})
-		}
+		title := firstText(textField(option, "title"), optionID)
+		rows = append(rows, []any{map[string]string{"text": title, "callback_data": fmt.Sprintf("ix:o:%s:%d", id, len(ids))}})
+		ids = append(ids, optionID)
+	}
+	b.rememberOptions(id, ids)
+	if textField(question, "scope") == "tool_permission" {
+		rows = append(rows, []any{map[string]string{"text": "✕ Deny", "callback_data": "deny:" + textField(item, "correlation_id")}})
 	}
 	if len(rows) == 0 {
-		rows = append(rows, []any{map[string]string{"text": "✓ Ack", "callback_data": "ix:a:" + id}})
+		return nil
 	}
 	return map[string]any{"inline_keyboard": rows}
 }
@@ -242,7 +254,9 @@ func (b *Telegram) rememberOptions(key string, ids []string) {
 	b.options[key] = ids
 }
 
-// onInboxCallback handles "a:<id>" (ack), "o:<id>:<n>" (choice), "s:<id>" (seen).
+// onInboxCallback handles "o:<id>:<n>" (choice) and "a:<id>" (acknowledge).
+// "s:<id>" (seen) is no longer rendered but still works on messages already
+// in a chat.
 func (b *Telegram) onInboxCallback(ctx context.Context, data string) error {
 	parts := strings.Split(data, ":")
 	if len(parts) < 2 {
@@ -310,6 +324,108 @@ func (b *Telegram) onReply(ctx context.Context, replyTo int64, text string, mess
 		_ = b.react(ctx, messageID)
 	}
 	return true, nil
+}
+
+func (b *Telegram) noteShown(id int64) {
+	b.mu.Lock()
+	if id > b.lastShown {
+		b.lastShown = id
+	}
+	b.mu.Unlock()
+}
+
+// tapHorizon is how far a button tap reads. A tap means everything already
+// in the chat was seen, and the tapped message is usually older than that,
+// so the horizon is the newest message the bridge had pushed when the tap
+// arrived (at least the tapped one). After a restart it is learned once,
+// lazily, as the highest Telegram message id the daemon has receipted (a
+// surface-filtered list is in delivery order, not creation order).
+// Callbacks carry no timestamp, so a tap handled after a later push reads
+// that push too; Telegram expires callbacks quickly, and that small
+// over-read is accepted.
+func (b *Telegram) tapHorizon(ctx context.Context, tapped int64) int64 {
+	b.mu.Lock()
+	known := b.lastShown
+	b.mu.Unlock()
+	if known == 0 {
+		var list struct {
+			Items []struct {
+				Pushes []struct {
+					Surface    string `json:"surface"`
+					SurfaceRef string `json:"surface_ref"`
+				} `json:"pushes"`
+			} `json:"items"`
+		}
+		if resp, err := b.daemon.JSON(ctx, http.MethodGet, "/inbox?surface=telegram&limit=1", nil, &list); err == nil && resp.StatusCode < 300 {
+			for _, item := range list.Items {
+				for _, push := range item.Pushes {
+					if ref, err := strconv.ParseInt(push.SurfaceRef, 10, 64); err == nil && push.Surface == "telegram" {
+						b.noteShown(ref)
+					}
+				}
+			}
+		}
+		b.mu.Lock()
+		known = b.lastShown
+		b.mu.Unlock()
+	}
+	return max(known, tapped)
+}
+
+// markShownRead marks read every unread item this chat showed at or before
+// horizon, a Telegram message id. Telegram has no read state for a bot's
+// messages; the human writing or tapping in the chat is the native sign they
+// have seen it. Message ids grow with every message in the chat. A message
+// reads up to its own id, so an item pushed after it stays unread and a
+// message replayed after an outage reads only what preceded it. A tap reads
+// up to tapHorizon. It runs before the update is acted on, so an agent's
+// answer to this very update stays unread. Best effort: a failure leaves
+// items unread, which only means another surface still shows them as new.
+func (b *Telegram) markShownRead(ctx context.Context, horizon int64) {
+	if horizon <= 0 {
+		return
+	}
+	const page = 100
+	query := fmt.Sprintf("/inbox?unread=1&surface=telegram&through_ref=%d&limit=%d", horizon, page)
+	for {
+		var list struct {
+			Items []struct {
+				ID     string `json:"id"`
+				Pushes []struct {
+					Surface    string `json:"surface"`
+					Status     string `json:"status"`
+					SurfaceRef string `json:"surface_ref"`
+				} `json:"pushes"`
+			} `json:"items"`
+		}
+		resp, err := b.daemon.JSON(ctx, http.MethodGet, query, nil, &list)
+		if err != nil || resp.StatusCode >= 300 {
+			return
+		}
+		marked := 0
+		for _, item := range list.Items {
+			shown := false
+			for _, push := range item.Pushes {
+				ref, err := strconv.ParseInt(push.SurfaceRef, 10, 64)
+				if push.Surface == "telegram" && push.Status == "pushed" && (push.SurfaceRef == "" || err == nil && ref <= horizon) {
+					shown = true
+				}
+			}
+			if !shown {
+				continue
+			}
+			if resp, err := b.daemon.JSON(ctx, http.MethodPost, "/inbox/"+item.ID+"/read", map[string]any{"surface": "telegram"}, nil); err != nil || resp.StatusCode >= 300 {
+				fmt.Printf("telegram: mark %s read failed\n", item.ID)
+				continue
+			}
+			marked++
+		}
+		// Every item on a full page was read, so the next page holds the
+		// rest; anything less means the sweep is done (or stuck).
+		if len(list.Items) < page || marked < len(list.Items) {
+			return
+		}
+	}
 }
 
 func daemonDetail(result map[string]any, resp *http.Response, err error) string {

@@ -62,6 +62,15 @@ type inboxRegistry interface {
 	UpdateMetadataByName(ctx context.Context, identifier string, metadata map[string]any) (bool, error)
 }
 
+// LocalSurface is a surface the daemon renders itself, with no peer of its
+// own: the dashboard, over its event stream. Push returns once the surface has
+// the item or fails; its error is the push's receipt.
+type LocalSurface interface {
+	Name() string
+	Live() bool
+	Push(ctx context.Context, item *state.InboxItem) error
+}
+
 // InboxReceipt is what a sender learns synchronously: the item was stored and
 // which surfaces a push was started on. Per-surface outcomes land in traces.
 type InboxReceipt struct {
@@ -93,6 +102,7 @@ type Inbox struct {
 	mu        sync.RWMutex
 	human     proto.PeerID
 	humanName proto.DisplayName
+	local     []LocalSurface
 
 	pushTimeout time.Duration
 	baseCtx     context.Context
@@ -115,6 +125,19 @@ func (i *Inbox) SetHuman(id proto.PeerID, name proto.DisplayName) {
 	i.mu.Lock()
 	i.human, i.humanName = id, name
 	i.mu.Unlock()
+}
+
+// AddSurface adds a surface the daemon renders itself.
+func (i *Inbox) AddSurface(s LocalSurface) {
+	i.mu.Lock()
+	i.local = append(i.local, s)
+	i.mu.Unlock()
+}
+
+func (i *Inbox) localSurfaces() []LocalSurface {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return append([]LocalSurface(nil), i.local...)
 }
 
 // Human returns the human peer's id and name ("" before registration).
@@ -177,13 +200,13 @@ func (i *Inbox) Store(ctx context.Context, params InboxStoreParams) (InboxReceip
 
 	targets := i.pushTargets(item.Kind)
 	names := make([]string, 0, len(targets))
-	for _, surface := range targets {
-		names = append(names, string(surface.DisplayName))
+	for _, target := range targets {
+		names = append(names, target.name)
 	}
 	snapshot := *item
-	for _, surface := range targets {
-		surface := surface
-		i.spawn(func() { i.push(&snapshot, surface) })
+	for _, target := range targets {
+		target := target
+		i.spawn(func() { i.push(&snapshot, target) })
 	}
 	return InboxReceipt{ItemID: item.ID, Surfaces: names}, nil
 }
@@ -269,6 +292,12 @@ func (i *Inbox) SyncPresence(ctx context.Context) {
 		}
 		surfaces[string(p.DisplayName)] = map[string]any{"live": connected}
 	}
+	for _, s := range i.localSurfaces() {
+		if s.Live() {
+			live++
+		}
+		surfaces[s.Name()] = map[string]any{"live": s.Live()}
+	}
 	_, _ = i.reg.UpdateMetadataByName(ctx, string(human), map[string]any{"surfaces": surfaces, "surfaces_live": live})
 }
 
@@ -300,20 +329,39 @@ func (i *Inbox) threadable(cid string) string {
 	return cid
 }
 
+// surfaceTarget is one surface a push goes to: a peer that renders the inbox,
+// or a surface the daemon renders itself.
+type surfaceTarget struct {
+	name  string
+	peer  *proto.Peer
+	local LocalSurface
+}
+
 // pushTargets are the live surfaces this kind of item goes to.
-func (i *Inbox) pushTargets(kind string) []*proto.Peer {
+func (i *Inbox) pushTargets(kind string) []surfaceTarget {
 	human, _ := i.Human()
-	var out []*proto.Peer
+	var out []surfaceTarget
 	for _, p := range i.reg.GetAllPeers() {
 		if p.PeerID == human || !proto.IsInboxSurface(p) || !i.transport.IsConnected(p.PeerID) {
 			continue
 		}
-		if kind == InboxBroadcast && !i.cfg.PushesBroadcast(string(p.DisplayName)) {
-			continue
-		}
-		out = append(out, p)
+		out = append(out, surfaceTarget{name: string(p.DisplayName), peer: p})
 	}
-	sort.Slice(out, func(a, b int) bool { return out[a].DisplayName < out[b].DisplayName })
+	for _, s := range i.localSurfaces() {
+		if s.Live() {
+			out = append(out, surfaceTarget{name: s.Name(), local: s})
+		}
+	}
+	if kind == InboxBroadcast {
+		kept := out[:0]
+		for _, t := range out {
+			if i.cfg.PushesBroadcast(t.name) {
+				kept = append(kept, t)
+			}
+		}
+		out = kept
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].name < out[b].name })
 	return out
 }
 
@@ -330,13 +378,28 @@ func (i *Inbox) spawn(f func()) {
 	}()
 }
 
-// push renders item on one surface and records the outcome. A surface that
-// declared inbox_surface gets an inbox_item frame and must ack it; a legacy
-// bridge gets today's notify frame, which proves only the socket write.
-func (i *Inbox) push(item *state.InboxItem, surface *proto.Peer) {
+// push renders item on one surface and records the outcome. A daemon-rendered
+// surface reports its own receipt. A surface that declared inbox_surface gets
+// an inbox_item frame and must ack it; a legacy bridge gets today's notify
+// frame, which proves only the socket write.
+func (i *Inbox) push(item *state.InboxItem, target surfaceTarget) {
 	ctx, cancel := context.WithTimeout(i.baseCtx, i.pushTimeout+5*time.Second)
 	defer cancel()
-	name := string(surface.DisplayName)
+	name, surface := target.name, target.peer
+
+	if target.local != nil {
+		pushCtx, cancelPush := context.WithTimeout(ctx, i.pushTimeout)
+		defer cancelPush()
+		out := pushOutcome{verified: true}
+		if out.err = target.local.Push(pushCtx, item); out.err != nil {
+			out.errorClass = "network"
+			if errors.Is(out.err, context.DeadlineExceeded) {
+				out.errorClass = "no_receipt"
+			}
+		}
+		i.recordPush(item, name, out)
+		return
+	}
 
 	if !proto.HasCapability(surface.Metadata, proto.CapInboxSurface) {
 		err := i.transport.Send(ctx, surface.PeerID, legacyInboxFrame(item, surface))

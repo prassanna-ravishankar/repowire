@@ -46,7 +46,7 @@ function isValidEvent(value: unknown): value is Event {
 }
 
 /**
- * Subscribe to /events/stream with exponential backoff reconnection and
+ * Subscribe to /events/stream (as the dashboard inbox surface) with exponential backoff reconnection and
  * gap recovery via /events?since=<last_seen_id> on each reconnect.
  *
  * Returns the current connection state for UI rendering.
@@ -113,7 +113,8 @@ export function useEventStream({
     const connect = () => {
       if (disposed) return;
       clearTimers();
-      source = new EventSource(`${apiBase}/events/stream`);
+      // surface=dashboard makes this stream the dashboard's inbox surface.
+      source = new EventSource(`${apiBase}/events/stream?surface=dashboard`);
 
       source.onopen = () => {
         backoffMs = INITIAL_BACKOFF_MS;

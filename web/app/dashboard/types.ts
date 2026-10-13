@@ -224,7 +224,9 @@ export interface Event {
     | "peer_reaped"
     | "peer_updated"
     | "peer_not_addressable"
-    | "offline_peer_still_has_runtime_evidence";
+    | "offline_peer_still_has_runtime_evidence"
+    | "inbox_item"
+    | "inbox_updated";
   timestamp: string;
   agent_pid?: number;
   from?: string;
@@ -269,7 +271,36 @@ export interface Event {
   is_final?: boolean;
   // structured question carried on an ask event (mesh questions primitive)
   question?: AskQuestion | null;
+  // inbox_item / inbox_updated: the item they announce (never its text)
+  item_id?: string;
 }
+
+/** An inbox event announces a change; the item itself is read from /inbox. */
+export function isInboxEvent(event: Event): boolean {
+  return event.type === "inbox_item" || event.type === "inbox_updated";
+}
+
+/** One item in the human's inbox (GET /inbox). */
+export interface InboxItem {
+  id: string;
+  direction: "in" | "out";
+  kind: "notify" | "ask" | "answer" | "broadcast";
+  from: string;
+  from_peer_id?: string;
+  to?: string;
+  text: string;
+  created_at: string;
+  read: boolean;
+  replied: boolean;
+  correlation_id?: string;
+  read_surface?: string;
+  reply_surface?: string;
+  question?: AskQuestion | null;
+  attachments?: AttachmentRef[];
+}
+
+/** POST /inbox/{id}/reply body; the dashboard always names itself. */
+export type InboxReply = { text: string } | { option_id: string };
 
 export interface AskQuestionOption {
   id: string;
