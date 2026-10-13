@@ -973,12 +973,19 @@ func TestPreToolUseMatcherOnlyHandlesApproval(t *testing.T) {
 
 func TestPrintRestartOutcomeFailsLoudly(t *testing.T) {
 	failed := map[string]any{"outcome": "failed", "needs_manual_relaunch": true,
-		"failed": map[string]any{"stage": "register", "reason": "registration_timeout"},
+		"failed":    map[string]any{"stage": "register", "reason": "registration_timeout"},
 		"would_run": map[string]any{"manual": "cd /p && claude --resume s"}}
 	if code := printRestartOutcome(failed); code != 1 {
 		t.Fatalf("failed restart exit = %d, want 1", code)
 	}
 	if code := printRestartOutcome(map[string]any{"outcome": "restarted"}); code != 0 {
 		t.Fatalf("restarted exit = %d, want 0", code)
+	}
+}
+
+func TestPeerRestartFlagsParseAsBooleans(t *testing.T) {
+	a := parse([]string{"--fresh", "orch", "--no-wait"}, peerBoolFlags...)
+	if len(a.pos) != 1 || a.pos[0] != "orch" || !a.bool("fresh") || a.string("wait", "true") != "false" {
+		t.Fatalf("parsed = %+v", a)
 	}
 }

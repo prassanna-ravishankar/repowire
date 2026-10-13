@@ -105,7 +105,7 @@ describe("PeerView lifecycle controls", () => {
       warnings: [],
       needs_manual_relaunch: true,
       would_run: { manual: "cd /tmp/alice && claude --resume s1" },
-      failed: { stage: "register", reason: "registration_timeout" },
+      failed: { stage: "launch", reason: "launch_failed", hint: "respawn-pane failed" },
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input) === "/peers/peer-1/restart" && init?.method === "POST") {
@@ -122,7 +122,7 @@ describe("PeerView lifecycle controls", () => {
     fireEvent.click(screen.getByRole("button", { name: "Restart peer" }));
 
     expect(confirmMock).toHaveBeenCalledWith(expect.stringContaining("relaunched with resume"));
-    expect(await screen.findByText(/needs manual relaunch: register \/ registration_timeout/)).toBeTruthy();
+    expect(await screen.findByText(/needs manual relaunch: launch \/ launch_failed/)).toBeTruthy();
     expect(screen.getByText("cd /tmp/alice && claude --resume s1")).toBeTruthy();
   });
 

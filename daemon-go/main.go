@@ -557,6 +557,7 @@ func runDaemon() {
 		}
 	case <-shutCtx.Done():
 		log.Printf("shutdown signal received, draining...")
+		h.StopRestarts(3 * time.Second) // before the drain: waiting restart handlers return
 		drainCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(drainCtx); err != nil {

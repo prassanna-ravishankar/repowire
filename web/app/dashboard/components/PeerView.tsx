@@ -2685,8 +2685,9 @@ function RestartPeerControl({ peer, apiBase, onRestarted }: { peer: Peer; apiBas
       {failed?.failed ? (
         <div role="alert" className="flex flex-col items-end gap-0.5 font-mono text-[10px] leading-tight text-error">
           <span>
-            {failed.needs_manual_relaunch ? "needs manual relaunch" : "restart failed, old runtime untouched"}: {failed.failed.stage} / {failed.failed.reason}
+            {failed.needs_manual_relaunch ? "needs manual relaunch" : "restart failed"}: {failed.failed.stage} / {failed.failed.reason}
           </span>
+          {failed.failed.hint ? <span className="text-outline">{failed.failed.hint}</span> : null}
           <code className="select-all break-all text-on-surface-variant">{failed.would_run.manual}</code>
         </div>
       ) : null}

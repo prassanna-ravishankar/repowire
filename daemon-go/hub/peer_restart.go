@@ -143,10 +143,12 @@ type restartPlan struct {
 
 // restartRun is one restart; result is guarded by mu, done closes on finish.
 type restartRun struct {
-	mu     sync.Mutex
-	result RestartResult
-	cancel context.CancelFunc
-	done   chan struct{}
+	mu       sync.Mutex
+	result   RestartResult
+	cancel   context.CancelFunc
+	done     chan struct{}
+	exited   bool      // the old runtime was signalled
+	finished time.Time // set when done closes
 }
 
 func (r *restartRun) snapshot() RestartResult {
@@ -173,6 +175,19 @@ func (r *restartRun) active() bool {
 	}
 }
 
+// restartOfflineShield is how long after a restart the old runtime's own
+// terminal offline posts (ws-hook agent_exited, SessionEnd) are ignored; the
+// ws-hook notices its agent's death within ~5s.
+var restartOfflineShield = 30 * time.Second
+
+// shieldsOffline reports whether a terminal offline for this peer is most
+// likely the restarted runtime's own exit noise.
+func (r *restartRun) shieldsOffline() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.exited && (r.finished.IsZero() || time.Since(r.finished) < restartOfflineShield)
+}
+
 // restartTracker keeps the latest run per peer: in flight or finished.
 type restartTracker struct {
 	mu   sync.Mutex
@@ -197,6 +212,50 @@ func (t *restartTracker) start(id proto.PeerID, run *restartRun) (*restartRun, b
 	}
 	t.runs[id] = run
 	return run, true
+}
+
+func (t *restartTracker) active() []*restartRun {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []*restartRun
+	for _, run := range t.runs {
+		if run.active() {
+			out = append(out, run)
+		}
+	}
+	return out
+}
+
+// StopRestarts cancels in-flight restarts and waits (bounded) for each to
+// record its typed failure; call before the HTTP server drains so handlers
+// waiting on a restart return and the journal is written before the store closes.
+func (h *Hub) StopRestarts(timeout time.Duration) {
+	if h.spawn == nil || h.spawn.restarts == nil {
+		return
+	}
+	runs := h.spawn.restarts.active()
+	for _, run := range runs {
+		run.cancel()
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for _, run := range runs {
+		select {
+		case <-run.done:
+		case <-deadline.C:
+			return
+		}
+	}
+}
+
+// restartShieldsOffline reports whether a terminal offline for id should be
+// ignored because a restart just stopped that peer's runtime.
+func (h *Hub) restartShieldsOffline(id proto.PeerID) bool {
+	if h.spawn == nil || h.spawn.restarts == nil {
+		return false
+	}
+	run := h.spawn.restarts.get(id)
+	return run != nil && run.shieldsOffline()
 }
 
 func newRestartID() string {
@@ -397,7 +456,12 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 		plan.exitMode = "sigterm"
 	case plan.proof.ok && oldPane != nil:
 		plan.exitMode, plan.pid = "kill_pane", 0
-	case plan.proof.ok || (paneGone && p.Status == proto.StatusOffline):
+	case oldPane == nil && (plan.proof.ok || paneGone):
+		// Nothing visible to stop: only safe when the runtime is provably gone,
+		// else a tmux probe blip would launch a second runtime on the same id.
+		if p.Status != proto.StatusOffline || (plan.pid > 0 && proc.Alive(plan.pid)) {
+			return plan, &RestartFailure{Reason: "runtime_alive_pane_unseen", Hint: "the peer is not offline (or its pid is alive) but its pane is not visible in tmux; refusing to launch a second runtime"}
+		}
 		plan.exitMode, plan.pid = "none", 0
 	default:
 		detail := h.paneControlErrorDetail(p, plan.proof)
@@ -468,7 +532,7 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 	}
 	plan.spawn = service.SpawnConfig{
 		Path: cwd, Circle: p.Circle, Backend: p.Backend, Role: p.Role, PeerID: &p.PeerID,
-		TargetPane: plan.proof.paneID, SameWindow: oldPane != nil, Message: req.Message, Command: base,
+		TargetPane: plan.proof.paneID, SameWindow: oldPane != nil, Message: req.Message, Command: base, Profile: derefString(profile),
 	}
 	if oldPane == nil {
 		plan.spawn.TargetPane = ""
@@ -500,6 +564,7 @@ func (h *Hub) previewResume(plan *restartPlan, result *RestartResult) {
 // runRestart executes exit → wait → launch → register on the daemon context.
 func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan) {
 	defer close(run.done)
+	defer run.update(func(*RestartResult) { run.finished = time.Now() })
 	defer run.cancel()
 	svc := h.spawn.svc
 	reserved := plan.spawn.Reserved.PaneID
@@ -514,6 +579,7 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 	stage := func(name string) { run.update(func(r *RestartResult) { r.Stage = name }) }
 
 	// exit
+	run.update(func(*RestartResult) { run.exited = plan.exitMode != "none" })
 	switch plan.exitMode {
 	case "sigterm":
 		if err := h.spawn.proc.Terminate(plan.pid); err != nil {
@@ -540,10 +606,10 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 		}
 		if err := pollUntil(ctx, restartExitTimeout, gone); err != nil {
 			abandonReservation()
-			if exited := gone(); exited { // cancelled after the runtime went: it needs a hand relaunch
+			if gone() { // cancelled after the runtime went: it needs a hand relaunch
 				fail(restartStageWait, waitReason(err, "runtime_still_alive"), "cancelled after the old runtime exited; nothing was launched", true)
 			} else {
-				fail(restartStageWait, waitReason(err, "runtime_still_alive"), fmt.Sprintf("the old runtime had not exited after SIGTERM (bound %s); it was left as it is and nothing was relaunched", restartExitTimeout), false)
+				fail(restartStageWait, waitReason(err, "runtime_still_alive"), fmt.Sprintf("%s was signalled but had not exited when the wait ended (bound %s); it may still exit. Nothing was relaunched: once it is gone, run would_run.manual", exitTarget(plan), restartExitTimeout), false)
 			}
 			return
 		}
@@ -594,7 +660,8 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 		return false
 	})
 	if err != nil {
-		fail(restartStageRegister, waitReason(err, "registration_timeout"), fmt.Sprintf("the runtime was launched in %s but did not register within %s", launched.PaneID, restartRegisterTimeout), true)
+		// Launched but unverified: a hand relaunch now would run two runtimes on one session.
+		fail(restartStageRegister, waitReason(err, "registration_timeout"), fmt.Sprintf("the runtime was launched in pane %s but had not registered when the wait ended (bound %s); inspect that pane and do not relaunch while it runs", launched.PaneID, restartRegisterTimeout), false)
 		return
 	}
 	var warnings []string
@@ -757,6 +824,13 @@ func pollUntil(ctx context.Context, timeout time.Duration, cond func() bool) err
 		case <-tick.C:
 		}
 	}
+}
+
+func exitTarget(plan *restartPlan) string {
+	if plan.pid > 0 {
+		return fmt.Sprintf("pid %d", plan.pid)
+	}
+	return "pane " + plan.proof.paneID
 }
 
 func waitReason(err error, timeout string) string {

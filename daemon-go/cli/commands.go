@@ -163,7 +163,7 @@ func runPeer(argv []string) int {
 	if len(argv) == 0 {
 		return usage("peer <list|describe|new|register|unregister|restart|doctor|rehook|ask|prune|whoami|asks|deliveries|ack|claim-role>")
 	}
-	a := parse(argv[1:], "show-offline", "dry-run", "json", "fix", "apply", "register", "force")
+	a := parse(argv[1:], peerBoolFlags...)
 	c, err := newClient()
 	if err != nil {
 		return fatal(err)
@@ -831,6 +831,9 @@ func runShare(argv []string) int {
 	return 0
 }
 
+// peerBoolFlags are the `repowire peer` flags that take no value.
+var peerBoolFlags = []string{"show-offline", "dry-run", "json", "fix", "apply", "register", "force", "fresh", "wait", "status", "cancel"}
+
 // printRestartOutcome summarizes a restart result for a human and returns the
 // exit code: 1 when it failed, with the command to finish it by hand.
 func printRestartOutcome(r map[string]any) int {
@@ -846,10 +849,13 @@ func printRestartOutcome(r map[string]any) int {
 	case "failed":
 		failed, _ := r["failed"].(map[string]any)
 		fmt.Printf("restart failed at %s: %s\n", stringValue(failed, "stage"), stringValue(failed, "reason"))
+		if hint := stringValue(failed, "hint"); hint != "" {
+			fmt.Println(hint)
+		}
 		if r["needs_manual_relaunch"] == true {
 			fmt.Println("needs manual relaunch:")
 		} else {
-			fmt.Println("the old runtime was left as it was; the command restart would have run:")
+			fmt.Println("launch command, for reference (do not run it while a runtime for this session is alive):")
 		}
 		fmt.Println("  " + stringValue(launch, "manual"))
 		return 1

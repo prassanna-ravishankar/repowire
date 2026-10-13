@@ -508,6 +508,13 @@ func (h *Hub) handleMarkOffline(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
+	if body.Terminal && (body.Source == "ws_hook" || body.Source == "session_end_hook") && h.restartShieldsOffline(proto.PeerID(name)) {
+		// The restarted runtime's own exit: the restart already marked the peer
+		// offline (non-terminal) and its replacement reclaims this peer_id.
+		h.reg.AddEvent(r.Context(), "peer_restart_offline_ignored", map[string]any{"peer_id": name, "reason": body.Reason, "source": body.Source})
+		writeJSON(w, http.StatusOK, OfflineResponse{OK: true})
+		return
+	}
 	found, cancelled, err := h.reg.MarkOfflineByNameWithReason(r.Context(), name, body.Terminal, body.Reason)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())

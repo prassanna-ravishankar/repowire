@@ -178,6 +178,7 @@ type restartFixture struct {
 	peer    *proto.Peer
 	project string
 	home    string
+	bin     string
 	srv     *httptest.Server
 	notes   chan service.NotifyParams
 }
@@ -220,7 +221,7 @@ func newRestartFixture(t *testing.T, commands map[proto.AgentType]string) *resta
 		PaneID: &pane, AgentPID: &pid, Metadata: map[string]any{"hook_session_id": "sess-1"},
 	}
 	reg := &restartRegistry{fakeSpawnRegistry: fakeSpawnRegistry{peers: []*proto.Peer{p}}}
-	f := &restartFixture{rt: rt, reg: reg, peer: p, project: project, home: home, notes: make(chan service.NotifyParams, 4)}
+	f := &restartFixture{rt: rt, reg: reg, peer: p, project: project, home: home, bin: bin, notes: make(chan service.NotifyParams, 4)}
 	// The relaunched runtime registers on its new pane under the claimed peer_id.
 	rt.onLaunch = func(cfg service.SpawnConfig) {
 		newPane := cfg.Reserved.PaneID
@@ -401,14 +402,15 @@ func TestRestartWaitTimeoutLeavesOldRuntimeAndRelaunchesNothing(t *testing.T) {
 	}
 }
 
-func TestRestartRegisterTimeoutNeedsManualRelaunch(t *testing.T) {
+func TestRestartRegisterTimeoutIsNotAManualRelaunch(t *testing.T) {
 	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
 	setRestartTimings(t, time.Second, 30*time.Millisecond)
 	f.rt.onLaunch = nil
 
 	out := f.restart(t, RestartPeerRequest{})
 
-	if out.Failed == nil || out.Failed.Stage != restartStageRegister || out.Failed.Reason != "registration_timeout" || !out.NeedsManualRelaunch {
+	// Launched but unverified: a hand relaunch would duplicate the session.
+	if out.Failed == nil || out.Failed.Stage != restartStageRegister || out.Failed.Reason != "registration_timeout" || out.NeedsManualRelaunch {
 		t.Fatalf("failed = %+v manual=%v", out.Failed, out.NeedsManualRelaunch)
 	}
 	if out.WouldRun.Command == "" || out.WouldRun.CWD != f.project || !out.Failed.LastKnown.NewPaneExists {
@@ -544,5 +546,70 @@ func TestRestartInfoPreviewsWithoutTouchingTheRuntime(t *testing.T) {
 	}
 	if len(f.rt.created) != 0 || len(f.rt.terminated) != 0 {
 		t.Fatal("describe must not reserve panes or signal processes")
+	}
+}
+
+// A peer that is not provably gone but whose pane tmux cannot see must not get
+// a second runtime launched beside it.
+func TestRestartRefusesWhenRuntimeMayBeAliveButPaneUnseen(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	delete(f.rt.evidence, restartOldPane) // spawned-set proof stays ok; probe blips
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if out.Failed == nil || out.Failed.Stage != restartStagePrepare || out.Failed.Reason != "runtime_alive_pane_unseen" {
+		t.Fatalf("failed = %+v", out.Failed)
+	}
+	if len(f.rt.created) != 0 || len(f.launchedCommands()) != 0 {
+		t.Fatal("nothing may be reserved or launched")
+	}
+}
+
+func TestRestartShieldsTheOldRuntimesTerminalOffline(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	if f.h.restartShieldsOffline(f.peer.PeerID) {
+		t.Fatal("no restart yet, nothing to shield")
+	}
+	if out := f.restart(t, RestartPeerRequest{}); out.Outcome != restartOutcomeRestarted {
+		t.Fatalf("outcome = %s", out.Outcome)
+	}
+	if !f.h.restartShieldsOffline(f.peer.PeerID) {
+		t.Fatal("the old ws-hook/SessionEnd terminal offline must be ignored right after a restart")
+	}
+	prev := restartOfflineShield
+	restartOfflineShield = 0
+	t.Cleanup(func() { restartOfflineShield = prev })
+	if f.h.restartShieldsOffline(f.peer.PeerID) {
+		t.Fatal("the shield must expire")
+	}
+}
+
+func TestRestartKeepsTheSpawnProfile(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	f.h.spawn.svc.WithRuntimeConfig(map[proto.AgentType]map[string][]string{proto.AgentClaudeCode: {"deep": {"--model", "opus"}}}, map[string]string{"PATH": f.bin})
+	id := string(f.peer.PeerID)
+	f.h.spawn.svc.Ownership().Record(service.OwnershipRecord{PaneID: restartOldPane, Path: f.project, Backend: "claude-code", Circle: "mesh", Role: "agent", TmuxSession: "mesh:work", Machine: "test-host", PeerID: &id, Profile: "deep"})
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if got := f.launchedCommands(); len(got) != 1 || got[0] != "claude --model opus --dangerously-skip-permissions" {
+		t.Fatalf("launched %q (%+v)", got, out.Failed)
+	}
+	if cfg := f.rt.launched[0]; cfg.Profile != "deep" {
+		t.Fatalf("the relaunched pane must keep the profile for the next restart, got %q", cfg.Profile)
+	}
+}
+
+func TestStopRestartsCancelsInFlightRuns(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	setRestartTimings(t, time.Second, time.Minute)
+	f.rt.onLaunch = nil
+	f.restart(t, RestartPeerRequest{Wait: new(bool)})
+
+	f.h.StopRestarts(time.Second)
+
+	last, _ := f.h.lastRestart("proj", nil)
+	if last.Outcome != restartOutcomeFailed || last.Failed.Reason != "cancelled" {
+		t.Fatalf("after shutdown: %+v", last)
 	}
 }

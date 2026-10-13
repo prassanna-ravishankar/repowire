@@ -90,7 +90,7 @@ Dashboard spawn and backend controls use the same spawn configuration as CLI and
 - Killing a tmux pane is allowed only when the daemon can prove the pane belongs to the target peer: Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target.
 - Externally attached peers without matching metadata cannot have their pane killed by Repowire.
 - Restart falls back to a fresh launch when the resume id is missing or its session file is absent after exit, and says so (`resume_mode=fresh`, `resume_reason`).
-- Restart sends SIGTERM and waits up to 20s; a runtime that does not exit is left running and nothing is relaunched. A runtime that has not registered within 90s reports a `register` failure even if it is still starting; check the new pane before relaunching by hand.
+- Restart sends SIGTERM and waits up to 20s; a runtime that does not exit is left running and nothing is relaunched. A runtime that has not registered within 90s reports a `register` failure (not a manual relaunch) even if it is still starting; check the new pane before doing anything by hand.
 - Backend fork preserves the source peer and starts the target as an agent-role sibling; it does not copy backend-native conversation history.
 
 ## Troubleshooting
