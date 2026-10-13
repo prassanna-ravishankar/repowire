@@ -1034,3 +1034,40 @@ func TestRestartCancelAfterSignalKeepsTheWindowAndReportsTheEndState(t *testing.
 		t.Fatalf("offline=%v launched=%v", f.reg.offline, f.launchedCommands())
 	}
 }
+
+// Smoke step 9: a codex app-server peer has no hook and no agent pid. It must
+// pass the execution-identity gate, take the runtime pid from the pane root,
+// and get a full preview.
+func TestRestartCodexAppServerPeerPassesTheGateWithoutAHook(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentCodex: "codex --dangerously-bypass-approvals-and-sandbox"})
+	f.peer.Backend, f.peer.AgentPID = proto.AgentCodex, nil
+	f.peer.Provenance = proto.Provenance{Source: proto.SourceCodexAppServer, Addressable: true}
+	f.peer.Metadata = map[string]any{"runtime_session_id": "019a0000-0000-7000-8000-00000000c0de", "transport": "codex-app-server"}
+	f.rt.alive[100] = true
+	f.rt.args[100] = "codex --dangerously-bypass-approvals-and-sandbox"
+	f.rt.paneRoot[100] = 100
+
+	out := f.restart(t, RestartPeerRequest{DryRun: true})
+
+	if out.Outcome != restartOutcomePlanned || out.Failed != nil {
+		t.Fatalf("outcome = %s failed=%+v", out.Outcome, out.Failed)
+	}
+	if out.WouldRun.PermissionModeSource != "argv" || out.WouldRun.Command != "codex --dangerously-bypass-approvals-and-sandbox resume 019a0000-0000-7000-8000-00000000c0de" {
+		t.Fatalf("would_run = %+v", out.WouldRun)
+	}
+}
+
+// A refusal keeps the reconstructed launch beside it.
+func TestRestartRefusalStillShowsThePreview(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	delete(f.peer.Metadata, "hook_version")
+
+	out := f.restart(t, RestartPeerRequest{DryRun: true})
+
+	if out.Failed == nil || out.Failed.Reason != "hook_too_old" {
+		t.Fatalf("failed = %+v", out.Failed)
+	}
+	if out.WouldRun.Command == "" || out.WouldRun.PermissionMode == "" || out.WouldRun.PermissionModeSource == "" {
+		t.Fatalf("preview missing beside the refusal: %+v", out.WouldRun)
+	}
+}

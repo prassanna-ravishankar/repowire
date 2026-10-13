@@ -503,6 +503,15 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 		plan.pid = *p.AgentPID
 	}
 	proc := h.spawn.proc
+	if plan.pid <= 0 && plan.proof.ok && oldPane != nil {
+		// No recorded agent pid (codex app-server peers report none): the
+		// pane's root process is the runtime when its program is the backend's.
+		if root := atoiOrZero(oldPane.PanePID); root > 0 {
+			if argv, _ := proc.Args(root); len(argv) > 0 && detectPaneBackend(argv[0]) == string(p.Backend) {
+				plan.pid = root
+			}
+		}
+	}
 	pidVerified := plan.proof.ok && oldPane != nil && plan.pid > 0 && proc.Alive(plan.pid) &&
 		proc.InTree(plan.pid, atoiOrZero(oldPane.PanePID))
 	paneGone := plan.proof.errCode == "missing_pane" || plan.proof.errCode == "pane_not_live"
@@ -521,19 +530,6 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 	default:
 		detail := h.paneControlErrorDetail(p, plan.proof)
 		return plan, &RestartFailure{Reason: fmt.Sprint(detail["error"]), Hint: fmt.Sprint(detail["hint"])}
-	}
-
-	// Fencing needs the old execution's hook to name its pane and pid. The
-	// version is the one its live socket connected with; anything not
-	// provably current (no socket, no version, older) is refused.
-	if plan.exitMode != "none" {
-		if v, known := h.connectedHookVersion(p); !known || v < proto.CurrentHookVersion {
-			shown := "unknown"
-			if known {
-				shown = strconv.Itoa(v)
-			}
-			return plan, &RestartFailure{Reason: "hook_too_old", Hint: fmt.Sprintf("this peer's connected hook (version %s) is not provably version %d, which names its pane and pid when it reports an exit; without that its exit could retire the restarted peer. Relaunch it once by hand on the current binary, then restart works.", shown, proto.CurrentHookVersion)}
-		}
 	}
 
 	// Launch template: configured command (+ the spawn profile), else default.
@@ -626,6 +622,7 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 	if p.Circle == "" {
 		return plan, &RestartFailure{Reason: "missing_circle", Hint: "Peer has no circle to relaunch into."}
 	}
+
 	plan.spawn = service.SpawnConfig{
 		Path: cwd, Circle: p.Circle, Backend: p.Backend, Role: p.Role, PeerID: &p.PeerID,
 		TargetPane: plan.proof.paneID, SameWindow: oldPane != nil, Message: req.Message, Profile: derefString(profile),
@@ -633,7 +630,34 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 	if oldPane == nil {
 		plan.spawn.TargetPane = ""
 	}
+	if plan.exitMode != "none" {
+		if failure := h.executionIdentityGate(p); failure != nil {
+			return plan, failure // the preview above stays beside the refusal
+		}
+	}
 	return plan, nil
+}
+
+// executionIdentityGate refuses to stop a runtime whose own exit report could
+// retire the peer_id its replacement reclaims. Hook peers report exits with a
+// terminal offline post, which the fence can only match when the hook names
+// its pane and pid (hook version 2, as declared by its live socket). Codex
+// app-server peers are registered by the bridge, which posts no offlines; such
+// a peer goes offline only through socket teardown, which is non-terminal
+// and ignores a socket that has been replaced.
+func (h *Hub) executionIdentityGate(p *proto.Peer) *RestartFailure {
+	if p.Provenance.Source == proto.SourceCodexAppServer {
+		return nil
+	}
+	v, known := h.connectedHookVersion(p)
+	if known && v >= proto.CurrentHookVersion {
+		return nil
+	}
+	shown := "unknown"
+	if known {
+		shown = strconv.Itoa(v)
+	}
+	return &RestartFailure{Reason: "hook_too_old", Hint: fmt.Sprintf("this peer's connected hook (version %s) is not provably version %d, which names its pane and pid when it reports an exit; without that its exit could retire the restarted peer. Relaunch it once by hand on the current binary, then restart works.", shown, proto.CurrentHookVersion)}
 }
 
 // applyCommand builds plan.command from the base and resume id (any session
