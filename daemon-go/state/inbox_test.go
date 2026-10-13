@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -162,5 +163,40 @@ func TestListInboxBySurfaceThroughRef(t *testing.T) {
 	}
 	if got := ids(InboxFilter{UnreadOnly: true, Surface: "telegram"}); len(got) != 3 {
 		t.Fatalf("any telegram push = %v", got)
+	}
+}
+
+// TestListInboxBySurfaceIsInDeliveryOrder (review of #478): pushes run
+// concurrently, so the item created later can be rendered first. A surface
+// filter lists by the surface's own order, newest rendered first.
+func TestListInboxBySurfaceIsInDeliveryOrder(t *testing.T) {
+	ctx := context.Background()
+	store := newInboxStore(t)
+	for _, v := range []struct{ id, created, ref string }{
+		{"older", "2026-10-13T10:00:00.000Z", "101"},
+		{"newer", "2026-10-13T10:00:01.000Z", "100"},
+		{"text-ref", "2026-10-13T10:00:02.000Z", "abc"},
+	} {
+		item := &InboxItem{ID: v.id, Kind: "notify", FromName: "a", Text: "x", CreatedAt: v.created}
+		if err := store.InsertInboxItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.RecordInboxPush(ctx, item.ID, InboxPush{Surface: "telegram", Status: PushPushed, SurfaceRef: v.ref}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := store.ListInbox(ctx, InboxFilter{Surface: "telegram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, it := range items {
+		got = append(got, it.ID)
+	}
+	if strings.Join(got, ",") != "older,newer,text-ref" {
+		t.Fatalf("order = %v, want delivery order (101, 100, then non-numeric)", got)
+	}
+	if all, _ := store.ListInbox(ctx, InboxFilter{}); all[0].ID != "text-ref" {
+		t.Fatalf("an unfiltered list stays newest created first: %v", all[0].ID)
 	}
 }

@@ -65,7 +65,10 @@ type InboxPush struct {
 type InboxFilter struct {
 	UnreadOnly bool
 	Limit      int
-	// Surface keeps only items successfully pushed to that surface.
+	// Surface keeps only items successfully pushed to that surface, newest
+	// rendered first: by the surface's numeric ref (Telegram message ids),
+	// which is its delivery order. Pushes run concurrently, so an item
+	// created later can be rendered earlier.
 	Surface string
 	// ThroughRef, with Surface, keeps only items whose first message on the
 	// surface has a numeric ref at or below it. Telegram message ids grow
@@ -148,7 +151,7 @@ func (s *Store) ListInbox(ctx context.Context, filter InboxFilter) ([]InboxItem,
 	if limit <= 0 {
 		limit = 50
 	}
-	where := `direction = 'in'`
+	where, order := `direction = 'in'`, `created_at DESC, id DESC`
 	var args []any
 	if filter.UnreadOnly {
 		where += ` AND read_at IS NULL`
@@ -161,9 +164,13 @@ func (s *Store) ListInbox(ctx context.Context, filter InboxFilter) ([]InboxItem,
 			args = append(args, filter.ThroughRef)
 		}
 		where += ` AND EXISTS (` + pushed + `)`
+		order = `(SELECT CASE WHEN p.surface_ref <> '' AND p.surface_ref NOT GLOB '*[^0-9]*'
+			THEN CAST(p.surface_ref AS INTEGER) END FROM inbox_pushes p
+			WHERE p.item_id = inbox_items.id AND p.surface = ?) DESC NULLS LAST, ` + order
+		args = append(args, filter.Surface)
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+inboxColumns+` FROM inbox_items WHERE `+where+
-		` ORDER BY created_at DESC, id DESC LIMIT ?`, append(args, limit)...)
+		` ORDER BY `+order+` LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("list inbox: %w", err)
 	}

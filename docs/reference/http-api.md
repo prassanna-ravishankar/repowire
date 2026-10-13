@@ -87,7 +87,7 @@ Messages to the human peer (its name, `telegram`, or `slack`) are stored in the 
 
 | Route | Purpose |
 | --- | --- |
-| `GET /inbox?unread=1&limit=N` | Inbound items, newest first, with per-surface `pushes` (`surface`, `status`, `surface_ref`). Returns `{human, human_peer_id, items}`. `surface=S` keeps items successfully pushed to S; with it, `through_ref=N` keeps those whose first message on S has a numeric ref at or below N (Telegram message ids, which grow with every message in a chat). |
+| `GET /inbox?unread=1&limit=N` | Inbound items, newest first, with per-surface `pushes` (`surface`, `status`, `surface_ref`). Returns `{human, human_peer_id, items}`. `surface=S` keeps items successfully pushed to S, listed in S's delivery order (newest rendered first, by numeric ref) rather than creation order; with it, `through_ref=N` keeps those whose first message on S has a numeric ref at or below N (Telegram message ids, which grow with every message in a chat). |
 | `GET /inbox/{id}` | One item. |
 | `POST /inbox/{id}/read` | `{surface}`. Marks the item read for every surface (idempotent). |
 | `POST /inbox/{id}/reply` | `{surface, text, option_id?, ref?}`. On an open ask: acks it with `text` (or answers a structured question). Otherwise opens a new ask from the human to the item's sender. Returns `{action: acked\|answered\|asked\|read, correlation_id}`. An empty `text` on a non-ask only marks it read. |

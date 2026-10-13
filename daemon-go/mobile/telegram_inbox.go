@@ -338,7 +338,8 @@ func (b *Telegram) noteShown(id int64) {
 // in the chat was seen, and the tapped message is usually older than that,
 // so the horizon is the newest message the bridge had pushed when the tap
 // arrived (at least the tapped one). After a restart it is learned once,
-// lazily, from the newest item the daemon has receipted for Telegram.
+// lazily, as the highest Telegram message id the daemon has receipted (a
+// surface-filtered list is in delivery order, not creation order).
 // Callbacks carry no timestamp, so a tap handled after a later push reads
 // that push too; Telegram expires callbacks quickly, and that small
 // over-read is accepted.
