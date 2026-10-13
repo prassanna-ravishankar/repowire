@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { Paperclip } from "lucide-react";
 import { cn } from "../lib/utils";
 import type { AttachmentRef, Event, Peer } from "../types";
-import { isLifecycleEvent, peerLabel } from "../types";
+import { isInboxEvent, isLifecycleEvent, peerLabel } from "../types";
 import { formatTime } from "./status";
 
 export function MeshFeed({
@@ -20,7 +20,7 @@ export function MeshFeed({
   const feedEvents = useMemo(
     () =>
       events
-        .filter((event) => event.type !== "chat_turn" && event.type !== "chat_turn_delta")
+        .filter((event) => event.type !== "chat_turn" && event.type !== "chat_turn_delta" && !isInboxEvent(event))
         .sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
     [events]
   );
@@ -228,7 +228,7 @@ function ActorLabel({
   );
 }
 
-function AttachmentChips({
+export function AttachmentChips({
   attachments,
   apiBase,
 }: {
