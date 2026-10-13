@@ -80,7 +80,7 @@ notify_peer("telegram", "deploy finished, green across CI")
 - Messages from `@telegram` are framed as human instructions to the receiving agent.
 - Mesh broadcasts reach Telegram only with `human.broadcast: true` and `human.surfaces.telegram.broadcast: true`.
 - The bot retries network failures and rate limits up to three times per message. A retry after a lost response can deliver the same message twice.
-- Long messages are split into chunks of about 3900 characters; a reply-to on the first chunk threads.
+- Long messages are split into chunks of about 3900 characters. A reply to any chunk acts on the item; later replies on the thread anchor to the first chunk.
 - Bot API errors are logged with the bot token redacted.
 
 ## Troubleshooting

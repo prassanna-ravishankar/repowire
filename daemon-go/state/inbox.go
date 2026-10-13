@@ -49,12 +49,15 @@ type InboxItem struct {
 	Pushes        []InboxPush
 }
 
-// InboxPush is the outcome of pushing one item to one surface.
+// InboxPush is the outcome of pushing one item to one surface. SurfaceRef is
+// the first message the surface rendered (the thread anchor); Refs is every
+// message it rendered, so a reply to any of them finds the item.
 type InboxPush struct {
 	Surface    string
 	Status     string
 	ErrorClass string
 	SurfaceRef string
+	Refs       []string
 	TS         string
 }
 
@@ -171,29 +174,46 @@ func (s *Store) ListInbox(ctx context.Context, filter InboxFilter) ([]InboxItem,
 	return items, nil
 }
 
-// RecordInboxPush upserts the outcome of pushing item to surface.
+// RecordInboxPush upserts the outcome of pushing item to surface and maps
+// each rendered ref back to the item.
 func (s *Store) RecordInboxPush(ctx context.Context, itemID string, push InboxPush) error {
 	if push.TS == "" {
 		push.TS = time.Now().UTC().Format(tsLayout)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO inbox_pushes(item_id, surface, status, error_class, surface_ref, ts)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin inbox push tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO inbox_pushes(item_id, surface, status, error_class, surface_ref, ts)
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(item_id, surface) DO UPDATE SET
 			status = excluded.status, error_class = excluded.error_class,
 			surface_ref = excluded.surface_ref, ts = excluded.ts`,
-		itemID, push.Surface, push.Status, nullString(push.ErrorClass), nullString(push.SurfaceRef), push.TS)
-	if err != nil {
+		itemID, push.Surface, push.Status, nullString(push.ErrorClass), nullString(push.SurfaceRef), push.TS); err != nil {
 		return fmt.Errorf("record inbox push: %w", err)
+	}
+	for _, ref := range append([]string{push.SurfaceRef}, push.Refs...) {
+		if ref == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO inbox_refs(surface, ref, item_id) VALUES (?, ?, ?)`,
+			push.Surface, ref, itemID); err != nil {
+			return fmt.Errorf("record inbox ref: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit inbox push: %w", err)
 	}
 	return nil
 }
 
 // InboxItemBySurfaceRef finds the item a surface rendered as ref (for a
-// Telegram reply-to, the message_id). (nil, nil) when unknown.
+// Telegram reply-to, the message_id of any chunk). (nil, nil) when unknown.
 func (s *Store) InboxItemBySurfaceRef(ctx context.Context, surface, ref string) (*InboxItem, error) {
 	var id string
-	err := s.db.QueryRowContext(ctx, `SELECT item_id FROM inbox_pushes WHERE surface = ? AND surface_ref = ?
-		ORDER BY ts DESC LIMIT 1`, surface, ref).Scan(&id)
+	err := s.db.QueryRowContext(ctx, `SELECT item_id FROM inbox_refs WHERE surface = ? AND ref = ?`,
+		surface, ref).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

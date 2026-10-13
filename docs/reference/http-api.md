@@ -95,7 +95,7 @@ Messages to the human peer (its name, `telegram`, or `slack`) are stored in the 
 
 All routes return 503 when no human peer is registered.
 
-Inbox surfaces connect over `/ws` with `capabilities: ["inbox_surface"]`. The daemon pushes `{type: "inbox_item", delivery_id, item, reply_to_ref}`. The surface answers with `{type: "delivery_ack", delivery_id, status: "pushed", surface_ref}` or `{..., status: "failed", error_class}`. A bridge without the capability gets the item as a plain `notify`/`ask` frame, which proves only the socket write (`verified: false`).
+Inbox surfaces connect over `/ws` with `capabilities: ["inbox_surface"]`. The daemon pushes `{type: "inbox_item", delivery_id, item, reply_to_ref}`. The surface answers with `{type: "delivery_ack", delivery_id, status: "pushed", surface_ref, surface_refs}` or `{..., status: "failed", error_class}`. `surface_ref` is the first message rendered and anchors later replies on the thread; `surface_refs` lists every message rendered (a long item is split), and a failed push still lists what was sent, so a reply to any of them finds the item. A bridge without the capability gets the item as a plain `notify`/`ask` frame, which proves only the socket write (`verified: false`).
 
 ## Pull-delivery asks
 

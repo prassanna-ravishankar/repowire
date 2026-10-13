@@ -266,7 +266,12 @@ var migrationStatements = []string{
 		ts TEXT NOT NULL,
 		PRIMARY KEY (item_id, surface)
 	)`,
-	`CREATE INDEX IF NOT EXISTS idx_inbox_pushes_ref ON inbox_pushes(surface, surface_ref)`,
+	`CREATE TABLE IF NOT EXISTS inbox_refs (
+		surface TEXT NOT NULL,
+		ref TEXT NOT NULL,
+		item_id TEXT NOT NULL,
+		PRIMARY KEY (surface, ref)
+	)`,
 }
 
 // migrationLedger mirrors the schema_migrations rows database.py stamps, so a
@@ -291,7 +296,7 @@ var migrationLedger = []struct {
 	{13, "operator-closed peer identities reject live-runtime reclaim"},
 	{14, "peer provenance: source, parent runtime id, ephemeral, addressability"},
 	{15, "description_set_at for claim staleness; route_decision trace index"},
-	{16, "human inbox items and per-surface push records"},
+	{16, "human inbox items, per-surface push records and rendered refs"},
 }
 
 // migrate applies the idempotent schema and stamps user_version. Safe to run on

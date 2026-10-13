@@ -530,6 +530,15 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		return AskResponse{}, routeErr(http.StatusInternalServerError, err.Error())
 	}
 	cid = registered
+	// The human's own ask is recorded before delivery, so an immediate answer
+	// finds its thread anchor.
+	if human, _ := h.inbox.Human(); human != "" && fromID == human {
+		surface, ref := "", ""
+		if req.Origin != nil {
+			surface, ref = req.Origin.Surface, req.Origin.Ref
+		}
+		h.inbox.RecordOutbound(ctx, cid, target, req.Text, surface, ref)
+	}
 	tracked, _ := h.ask.asks.Get(cid)
 	h.traceAsk(ctx, cid, "created", "", tracked, map[string]any{"to_peer": req.ToPeer, "from_peer": req.FromPeer, "text": clipTraceText(req.Text)})
 	h.traceAsk(ctx, cid, "resolved_peer", "", tracked, nil)
@@ -588,13 +597,6 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	// the router; tracked in the routing schema notes.
 	if req.ReplyTo != nil {
 		_, _ = h.ask.asks.Close(ctx, *req.ReplyTo, "reply_to")
-	}
-	if human, _ := h.inbox.Human(); human != "" && fromID == human {
-		surface, ref := "", ""
-		if req.Origin != nil {
-			surface, ref = req.Origin.Surface, req.Origin.Ref
-		}
-		h.inbox.RecordOutbound(ctx, cid, target, req.Text, surface, ref)
 	}
 	return AskResponse{CorrelationID: cid, Routing: routedSummary(res.selection, target), Inbox: inboxReceipt(deliveryResult.Inbox)}, nil
 }

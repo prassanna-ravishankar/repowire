@@ -105,12 +105,29 @@ type MessageRouter struct {
 	}
 }
 
-// stampSender marks a frame sent by the human peer.
-func (m *MessageRouter) stampSender(frame map[string]any, from proto.DisplayName) map[string]any {
-	if m.human == nil {
+// Sender is a frame's resolved sender. Name goes on the wire as from_peer; ID
+// alone decides from_role, because display names are unique only per circle.
+type Sender struct {
+	ID   proto.PeerID
+	Name proto.DisplayName
+}
+
+// SenderOf returns the canonical sender for a resolved peer, or the raw
+// identifier when the sender is not registered.
+func SenderOf(p *proto.Peer, raw string) Sender {
+	if p == nil {
+		return Sender{Name: proto.DisplayName(raw)}
+	}
+	return Sender{ID: p.PeerID, Name: p.DisplayName}
+}
+
+// stampSender writes from_peer and marks a frame sent by the human peer.
+func (m *MessageRouter) stampSender(frame map[string]any, from Sender) map[string]any {
+	frame["from_peer"] = string(from.Name)
+	if m.human == nil || from.ID == "" {
 		return frame
 	}
-	if _, name := m.human.Human(); name != "" && name == from {
+	if id, _ := m.human.Human(); id == from.ID {
 		frame["from_role"] = string(proto.RoleHuman)
 	}
 	return frame
@@ -131,7 +148,7 @@ func NewMessageRouter(transport Transport, reg *peer.Registry) *MessageRouter {
 // never ack). Mirrors MessageRouter.send_notification.
 func (m *MessageRouter) SendNotification(
 	ctx context.Context,
-	from proto.DisplayName,
+	from Sender,
 	to proto.PeerID,
 	toName proto.DisplayName,
 	intendedRecipientName proto.DisplayName,
@@ -145,7 +162,6 @@ func (m *MessageRouter) SendNotification(
 	frame := map[string]any{
 		"type":        string(proto.FrameNotify),
 		"delivery_id": deliveryID,
-		"from_peer":   string(from),
 		"to_peer":     string(toName),
 		"text":        text,
 	}
@@ -153,7 +169,7 @@ func (m *MessageRouter) SendNotification(
 		frame["attachments"] = attachments
 	}
 	m.stampSender(frame, from)
-	m.logDeliveryTrace("Notify", from, intendedRecipientName, toName, to)
+	m.logDeliveryTrace("Notify", from.Name, intendedRecipientName, toName, to)
 	return m.transport.SendAndWaitDeliveryAck(ctx, to, frame, deliveryAckTimeout)
 }
 
@@ -166,7 +182,7 @@ func (m *MessageRouter) SendNotification(
 // MessageRouter.send_ask.
 func (m *MessageRouter) SendAsk(
 	ctx context.Context,
-	from proto.DisplayName,
+	from Sender,
 	to proto.PeerID,
 	toName proto.DisplayName,
 	intendedRecipientName proto.DisplayName,
@@ -188,7 +204,6 @@ func (m *MessageRouter) SendAsk(
 		"type":           string(proto.FrameAsk),
 		"delivery_id":    "ask-delivery-" + uuid.NewString()[:8],
 		"correlation_id": correlationID,
-		"from_peer":      string(from),
 		"to_peer":        string(toName),
 		"text":           hintedText,
 	}
@@ -202,7 +217,7 @@ func (m *MessageRouter) SendAsk(
 		frame["question"] = question
 	}
 	m.stampSender(frame, from)
-	m.logDeliveryTrace("Ask", from, intendedRecipientName, toName, to)
+	m.logDeliveryTrace("Ask", from.Name, intendedRecipientName, toName, to)
 
 	ack, err := m.transport.SendAndWaitDeliveryAck(ctx, to, frame, deliveryAckTimeout)
 	if err != nil {
@@ -225,11 +240,10 @@ func (m *MessageRouter) SendAsk(
 // BroadcastToSession sends one broadcast envelope to a single live WS session.
 // Used for deferred broadcast to a peer that was pending_first_turn at fanout.
 // Returns ErrNotConnected when the session has no live transport.
-func (m *MessageRouter) BroadcastToSession(ctx context.Context, from proto.DisplayName, text string, to proto.PeerID) error {
+func (m *MessageRouter) BroadcastToSession(ctx context.Context, from Sender, text string, to proto.PeerID) error {
 	return m.transport.Send(ctx, to, m.stampSender(map[string]any{
-		"type":      string(proto.FrameBroadcast),
-		"from_peer": string(from),
-		"text":      text,
+		"type": string(proto.FrameBroadcast),
+		"text": text,
 	}, from))
 }
 
@@ -238,14 +252,13 @@ func (m *MessageRouter) BroadcastToSession(ctx context.Context, from proto.Displ
 // never aborts the fanout. Mirrors MessageRouter.broadcast.
 func (m *MessageRouter) Broadcast(
 	ctx context.Context,
-	from proto.DisplayName,
+	from Sender,
 	text string,
 	exclude map[proto.PeerID]struct{},
 ) (sent []proto.PeerID, failed []BroadcastFailure) {
 	frame := m.stampSender(map[string]any{
-		"type":      string(proto.FrameBroadcast),
-		"from_peer": string(from),
-		"text":      text,
+		"type": string(proto.FrameBroadcast),
+		"text": text,
 	}, from)
 
 	var (

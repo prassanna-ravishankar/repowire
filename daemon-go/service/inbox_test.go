@@ -373,3 +373,59 @@ func containsName(names []proto.DisplayName, want string) bool {
 	}
 	return false
 }
+
+// A broadcast the human sends by peer_id goes out under the human's name and
+// role, live and deferred alike.
+func TestHumanBroadcastByIDKeepsRole(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	f.delivery.Broadcast(context.Background(), string(f.human.PeerID), "human instruction", nil, false)
+	frames := f.transport.framesFor(f.alpha.PeerID)
+	if len(frames) != 1 {
+		t.Fatalf("frames = %+v", frames)
+	}
+	if frames[0]["from_role"] != "human" || frames[0]["from_peer"] != "prass" {
+		t.Fatalf("human broadcast loses identity: %+v", frames[0])
+	}
+}
+
+// Display names are unique only per circle: an agent that shares the human's
+// name is still an agent.
+func TestAgentWithHumanDisplayNameIsNotHuman(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	f.alpha.DisplayName = f.human.DisplayName
+	if _, err := f.delivery.Notify(context.Background(), NotifyParams{FromPeer: string(f.alpha.PeerID), ToPeer: string(f.beta.PeerID), Text: "agent context"}); err != nil {
+		t.Fatal(err)
+	}
+	frames := f.transport.framesFor(f.beta.PeerID)
+	if len(frames) != 1 {
+		t.Fatalf("frames = %+v", frames)
+	}
+	if frames[0]["from_role"] == "human" {
+		t.Fatalf("agent elevated to human: %+v", frames[0])
+	}
+}
+
+// A surface that rendered part of an item before failing still maps every
+// message it sent back to the item, so a reply to any of them is understood.
+func TestInboxPartialRenderMapsEveryRef(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	f.transport.receipts[f.telegram.PeerID] = func(map[string]any) map[string]any {
+		return map[string]any{"status": "failed", "error_class": "too_long", "surface_ref": "700", "surface_refs": []any{"700", "701"}}
+	}
+	res, err := f.delivery.Notify(context.Background(), NotifyParams{FromPeer: "alpha", ToPeer: "prass", Text: "long"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.settle()
+	for _, ref := range []string{"700", "701"} {
+		item, err := f.inbox.BySurfaceRef(context.Background(), "telegram", ref)
+		if err != nil || item == nil || item.ID != res.Inbox.ItemID {
+			t.Fatalf("ref %s = %+v, %v", ref, item, err)
+		}
+		for _, push := range item.Pushes {
+			if push.Surface == "telegram" && (push.Status != state.PushFailed || push.SurfaceRef != "700") {
+				t.Fatalf("telegram push = %+v", push)
+			}
+		}
+	}
+}

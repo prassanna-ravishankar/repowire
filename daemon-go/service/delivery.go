@@ -294,7 +294,7 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 	}
 
 	hookDelivery, err := d.router.SendNotification(
-		ctx, fromName, target.PeerID, target.DisplayName,
+		ctx, SenderOf(from, params.FromPeer), target.PeerID, target.DisplayName,
 		proto.DisplayName(params.ToPeer), params.Text, params.Attachments, params.DeliveryID,
 	)
 	if err != nil {
@@ -537,7 +537,7 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 	}
 
 	hookDelivery, err := d.router.SendAsk(
-		ctx, fromName, target.PeerID, target.DisplayName, proto.DisplayName(params.ToPeer),
+		ctx, SenderOf(from, params.FromPeer), target.PeerID, target.DisplayName, proto.DisplayName(params.ToPeer),
 		params.CorrelationID, params.Text, params.ReplyTo, params.Question, params.Attachments,
 	)
 	if err != nil {
@@ -673,6 +673,7 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 	// Resolve the sender to learn its circle / bypass status. bypass_circle here
 	// so an unknown/cross-circle sender lookup never errors the broadcast.
 	fromObj, _, _ := d.reg.CheckAccess(ctx, fromPeer, fromPeer, true, nil)
+	sender := SenderOf(fromObj, fromPeer)
 
 	peers := d.reg.GetAllPeers()
 	idToName := map[proto.PeerID]proto.DisplayName{}
@@ -765,11 +766,11 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 			continue
 		}
 		excludeIDs[p.PeerID] = struct{}{}
-		d.deferBroadcastUntilSeedSettled(fromPeer, text, p.PeerID)
+		d.deferBroadcastUntilSeedSettled(sender, text, p.PeerID)
 		deferredNames = append(deferredNames, p.DisplayName)
 	}
 
-	sentIDs, failures := d.router.Broadcast(ctx, proto.DisplayName(fromPeer), text, excludeIDs)
+	sentIDs, failures := d.router.Broadcast(ctx, sender, text, excludeIDs)
 	for _, id := range sentIDs {
 		if name, ok := idToName[id]; ok {
 			sent = append(sent, name)
@@ -855,7 +856,7 @@ func (d *PeerDelivery) awaitSeedSettled(ctx context.Context, id proto.PeerID) {
 // connect) would strand the message — instead we wait out the seed gate and
 // send directly. One pending peer must never block the rest of the broadcast
 // fanout. No-op after Close (mirrors peer.Registry.spawnTracked's gate).
-func (d *PeerDelivery) deferBroadcastUntilSeedSettled(fromPeer, text string, id proto.PeerID) {
+func (d *PeerDelivery) deferBroadcastUntilSeedSettled(from Sender, text string, id proto.PeerID) {
 	d.closeMu.Lock()
 	if d.closed {
 		d.closeMu.Unlock()
@@ -867,7 +868,7 @@ func (d *PeerDelivery) deferBroadcastUntilSeedSettled(fromPeer, text string, id 
 		defer d.wg.Done()
 		ctx := context.Background()
 		d.awaitSeedSettled(ctx, id)
-		if err := d.router.BroadcastToSession(ctx, proto.DisplayName(fromPeer), text, id); err != nil {
+		if err := d.router.BroadcastToSession(ctx, from, text, id); err != nil {
 			log.Printf("delivery: deferred broadcast to %s failed after seed gate: %v", id, err)
 		}
 	}()

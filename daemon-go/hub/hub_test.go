@@ -221,7 +221,7 @@ func TestSendAskRealSocketAckWithin750ms(t *testing.T) {
 	}()
 
 	start := time.Now()
-	hook, err := h.router.SendAsk(context.Background(), "alpha", peerID, "beta", "beta",
+	hook, err := h.router.SendAsk(context.Background(), service.Sender{Name: "alpha"}, peerID, "beta", "beta",
 		"cid-real", "real ask", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -256,7 +256,7 @@ func TestSendNotificationRealSocketNoAckTimesOut(t *testing.T) {
 	}()
 
 	start := time.Now()
-	hook, err := h.router.SendNotification(context.Background(), "alpha", peerID, "gamma", "gamma",
+	hook, err := h.router.SendNotification(context.Background(), service.Sender{Name: "alpha"}, peerID, "gamma", "gamma",
 		"fyi no ack", nil, "")
 	if err != nil {
 		t.Fatalf("a missing ack must not error, got %v", err)

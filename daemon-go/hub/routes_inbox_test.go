@@ -48,7 +48,7 @@ func newInboxStack(t *testing.T) *inboxStack {
 	}
 	h := NewHubWithTransport(reg, transport, "")
 	asks := service.NewAskTracker(0)
-	delivery := service.NewPeerDelivery(reg, h.Router(), transport, asks, nil)
+	delivery := service.NewPeerDelivery(reg, h.Router(), transport, asks, store)
 	inbox := service.NewInbox(store, reg, transport, asks, config.HumanConfig{})
 	humanID, humanName, err := service.RegisterHumanPeer(context.Background(), reg, "prass", "m")
 	if err != nil {
@@ -56,13 +56,15 @@ func newInboxStack(t *testing.T) *inboxStack {
 	}
 	inbox.SetHuman(humanID, humanName)
 	delivery.WithInbox(inbox)
-	h.WithMessaging(delivery, store).WithAskLifecycle(asks, delivery, reg).WithInbox(inbox)
+	h.WithMessaging(delivery, store).WithAskLifecycle(asks, delivery, reg).WithInbox(inbox).WithSessionRoutes(reg, store)
+	h.store = store // queued replay on connect
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", h.HandleWS)
 	h.messaging.Register(mux, h.requireAuth)
 	h.registerAskLifecycleRoutes(mux)
 	h.registerInboxRoutes(mux)
+	h.registerSessionRoutes(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(func() {
 		srv.Close()
@@ -212,6 +214,7 @@ func TestHumanInboxEndToEnd(t *testing.T) {
 		t.Fatalf("surface_pushed = %+v", row)
 	}
 	rows, _ := s.store.StagesFor(context.Background(), deliveryID)
+	assertInboxTraceOrder(t, rows)
 	for _, r := range rows {
 		raw, _ := json.Marshal(r.Detail)
 		if strings.Contains(string(raw), "example.test") {
@@ -315,6 +318,94 @@ func TestHumanInboxSurfaceFailureIsRecordedNotFatal(t *testing.T) {
 	item, _ := s.store.InboxItem(context.Background(), body["inbox_item_id"].(string))
 	if item == nil || item.Pushes[0].Status != state.PushFailed {
 		t.Fatalf("item = %+v", item)
+	}
+}
+
+// assertInboxTraceOrder checks the documented partial order: created, then
+// inbox_stored, then each surface stage. The hub's resolved_peer is written
+// when Notify returns, so it may land before or after a fast surface's push.
+func assertInboxTraceOrder(t *testing.T, rows []state.TraceRow) {
+	t.Helper()
+	at := map[string]int{}
+	for i, r := range rows {
+		if _, seen := at[r.Stage]; !seen {
+			at[r.Stage] = i
+		}
+	}
+	created, ok1 := at["created"]
+	stored, ok2 := at["inbox_stored"]
+	_, ok3 := at["resolved_peer"]
+	if !ok1 || !ok2 || !ok3 || created != 0 || stored != 1 {
+		t.Fatalf("trace must start created, inbox_stored and include resolved_peer: %v", rows)
+	}
+	for _, stage := range []string{"surface_pushed", "surface_failed"} {
+		if i, ok := at[stage]; ok && i < stored {
+			t.Fatalf("%s before inbox_stored: %v", stage, rows)
+		}
+	}
+}
+
+// TestHumanInboxReplyToAnyChunk: a long item renders as several Telegram
+// messages; a reply to a later chunk still acks the ask behind it.
+func TestHumanInboxReplyToAnyChunk(t *testing.T) {
+	s := newInboxStack(t)
+	s.connect(t, map[string]any{"display_name": "telegram", "circle": "default", "backend": "claude-code",
+		"role": "service", "path": "/telegram", "capabilities": []string{proto.CapInboxSurface}},
+		func(map[string]any, int) map[string]any {
+			return map[string]any{"status": "pushed", "surface_ref": "500", "surface_refs": []string{"500", "501", "502"}}
+		})
+	agent := s.connect(t, map[string]any{"display_name": "alpha", "circle": "1", "backend": "claude-code", "role": "agent", "path": "/work/alpha"}, nil)
+	asked := decodeBody(t, postJSON(t, s.srv.URL+"/ask", map[string]any{"from_peer": string(agent.id), "to_peer": "prass", "text": strings.Repeat("long ", 2000)}))
+	cid := asked["correlation_id"].(string)
+	s.waitStage(t, cid, "surface_pushed")
+
+	replied := decodeBody(t, postJSON(t, s.srv.URL+"/inbox/reply", map[string]any{
+		"surface": "telegram", "surface_ref": "502", "ref": "600", "text": "ok"}))
+	if replied["action"] != "acked" || replied["correlation_id"] != cid {
+		t.Fatalf("reply to the last chunk = %+v", replied)
+	}
+	if ask, _ := s.asks.Get(cid); !ask.Closed {
+		t.Fatalf("ask still open after a reply to a later chunk: %+v", ask)
+	}
+}
+
+// TestHumanQueuedDeliveriesKeepHumanRole: with a custom human name, a notify
+// the human sent to an offline agent replays over WS, and drains over
+// /deliveries/pending, framed as human.
+func TestHumanQueuedDeliveriesKeepHumanRole(t *testing.T) {
+	s := newInboxStack(t)
+	connect := map[string]any{"display_name": "beta", "circle": "default", "backend": "claude-code", "role": "agent", "path": "/work/beta"}
+	beta := s.connect(t, connect, nil)
+	_ = beta.conn.CloseNow()
+	deadline := time.Now().Add(2 * time.Second)
+	for s.h.transport.IsConnected(beta.id) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	for _, text := range []string{"replay me", "drain me"} {
+		body := decodeBody(t, postJSON(t, s.srv.URL+"/notify", map[string]any{"from_peer": "prass", "to_peer": string(beta.id), "text": text}))
+		if body["queued"] != true {
+			t.Fatalf("notify to an offline agent must queue: %+v", body)
+		}
+	}
+	pending := decodeBody(t, httpGet(t, s.srv.URL+"/deliveries/pending?peer_id="+string(beta.id)))
+	drained := anyList(pending["deliveries"])
+	if len(drained) != 2 {
+		t.Fatalf("pending = %+v", pending)
+	}
+	for _, raw := range drained {
+		d := raw.(map[string]any)
+		if d["from_role"] != "human" || d["from_peer"] != "prass" {
+			t.Fatalf("drained delivery loses the human framing: %+v", d)
+		}
+	}
+
+	decodeBody(t, postJSON(t, s.srv.URL+"/notify", map[string]any{"from_peer": "prass", "to_peer": string(beta.id), "text": "replay me"}))
+	connect["peer_id"] = string(beta.id)
+	again := s.connect(t, connect, nil)
+	replayed := again.waitFrame(func(f map[string]any) bool { return f["type"] == "notify" && f["text"] == "replay me" })
+	if replayed["from_role"] != "human" || replayed["from_peer"] != "prass" {
+		t.Fatalf("replayed frame loses the human framing: %+v", replayed)
 	}
 }
 

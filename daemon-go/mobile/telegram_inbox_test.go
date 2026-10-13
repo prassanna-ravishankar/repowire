@@ -117,7 +117,7 @@ func TestTelegramSurfaceThreadsAskAndReceiptsMessageID(t *testing.T) {
 	}
 }
 
-func TestTelegramSurfaceSplitsLongItemsAndKeepsFirstRef(t *testing.T) {
+func TestTelegramSurfaceSplitsLongItemsAndReceiptsEveryChunk(t *testing.T) {
 	api := newFakeTelegramAPI(t, nil)
 	bot, receipts := newSurfaceBot(t, api.URL, "http://127.0.0.1:1")
 	bot.handleInboxItem(context.Background(), inboxFrame("inb-2", "notify", strings.Repeat("x", 9000), "", nil))
@@ -133,8 +133,30 @@ func TestTelegramSurfaceSplitsLongItemsAndKeepsFirstRef(t *testing.T) {
 			t.Fatalf("markup on chunk %d: %v", i, has)
 		}
 	}
-	if (*receipts)[0]["surface_ref"] != "301" {
-		t.Fatalf("ref must name the first chunk: %+v", *receipts)
+	receipt := (*receipts)[0]
+	if receipt["surface_ref"] != "301" {
+		t.Fatalf("anchor must name the first chunk: %+v", receipt)
+	}
+	if refs, _ := receipt["surface_refs"].([]string); strings.Join(refs, ",") != "301,302,303" {
+		t.Fatalf("every chunk must be receipted: %+v", receipt)
+	}
+}
+
+func TestTelegramSurfacePartialRenderReceiptsSentChunks(t *testing.T) {
+	api := newFakeTelegramAPI(t, func(n int, _ telegramCall) string {
+		if n == 2 {
+			return `{"ok":false,"error_code":400,"description":"Bad Request: message is too long"}`
+		}
+		return ""
+	})
+	bot, receipts := newSurfaceBot(t, api.URL, "http://127.0.0.1:1")
+	bot.handleInboxItem(context.Background(), inboxFrame("inb-5", "notify", strings.Repeat("y", 9000), "", nil))
+	receipt := (*receipts)[0]
+	if receipt["status"] != "failed" || receipt["surface_ref"] != "301" {
+		t.Fatalf("partial render must fail and keep the sent chunk: %+v", receipt)
+	}
+	if refs, _ := receipt["surface_refs"].([]string); strings.Join(refs, ",") != "301" {
+		t.Fatalf("surface_refs = %+v", receipt["surface_refs"])
 	}
 }
 

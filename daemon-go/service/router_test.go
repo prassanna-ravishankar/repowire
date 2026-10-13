@@ -89,7 +89,7 @@ func TestSendAskReturnsHookReceiptWithinAckWindow(t *testing.T) {
 	}
 	m := newRouterWithFake(f)
 
-	hook, err := m.SendAsk(context.Background(), "alpha", "repow-default-bbbb2222", "beta", "beta",
+	hook, err := m.SendAsk(context.Background(), Sender{Name: "alpha"}, "repow-default-bbbb2222", "beta", "beta",
 		"cid-1", "need a hand", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -113,7 +113,7 @@ func TestSendAskNoAckIsNotAnError(t *testing.T) {
 	}
 	m := newRouterWithFake(f)
 
-	hook, err := m.SendAsk(context.Background(), "alpha", "repow-default-cccc3333", "gamma", "gamma",
+	hook, err := m.SendAsk(context.Background(), Sender{Name: "alpha"}, "repow-default-cccc3333", "gamma", "gamma",
 		"cid-2", "ping", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("a missing ack must not be an error, got %v", err)
@@ -135,7 +135,7 @@ func TestSendAskLoudFailureOnReject(t *testing.T) {
 			}
 			m := newRouterWithFake(f)
 
-			hook, err := m.SendAsk(context.Background(), "alpha", "repow-default-dddd4444", "delta", "delta",
+			hook, err := m.SendAsk(context.Background(), Sender{Name: "alpha"}, "repow-default-dddd4444", "delta", "delta",
 				"cid-3", "do the thing", nil, nil, nil)
 			if err == nil {
 				t.Fatalf("expected a loud DeliveryInjectionError for status=%s, got hook=%+v", status, hook)
@@ -165,7 +165,7 @@ func TestSendAskLoudFailureOnReject(t *testing.T) {
 func TestSendAskRejectDetailFallsBackToStatus(t *testing.T) {
 	f := &fakeTransport{ackFrame: map[string]any{"status": "rejected"}, ackDelay: 0}
 	m := newRouterWithFake(f)
-	_, err := m.SendAsk(context.Background(), "a", "repow-default-eeee5555", "e", "e", "cid", "t", nil, nil, nil)
+	_, err := m.SendAsk(context.Background(), Sender{Name: "a"}, "repow-default-eeee5555", "e", "e", "cid", "t", nil, nil, nil)
 	di, ok := AsDeliveryInjection(err)
 	if !ok {
 		t.Fatalf("expected DeliveryInjectionError, got %v", err)
@@ -183,7 +183,7 @@ func TestSendAskMintsDeliveryIDAndCloseHint(t *testing.T) {
 	m := newRouterWithFake(f)
 
 	replyTo := "parent-cid"
-	_, err := m.SendAsk(context.Background(), "alpha", "repow-default-ffff6666", "zeta", "zeta",
+	_, err := m.SendAsk(context.Background(), Sender{Name: "alpha"}, "repow-default-ffff6666", "zeta", "zeta",
 		"cid-9", "review please", &replyTo, map[string]any{"prompt": "ok?"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -214,7 +214,7 @@ func TestSendNotificationMintsDeliveryID(t *testing.T) {
 	f := &fakeTransport{ackFrame: map[string]any{"status": "injected"}, ackDelay: 0}
 	m := newRouterWithFake(f)
 
-	hook, err := m.SendNotification(context.Background(), "alpha", "repow-default-aaaa1111", "beta", "beta",
+	hook, err := m.SendNotification(context.Background(), Sender{Name: "alpha"}, "repow-default-aaaa1111", "beta", "beta",
 		"fyi", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -236,7 +236,7 @@ func TestSendNotificationMintsDeliveryID(t *testing.T) {
 func TestSendNotificationHonorsSuppliedDeliveryID(t *testing.T) {
 	f := &fakeTransport{ackFrame: nil, ackDelay: 0}
 	m := newRouterWithFake(f)
-	_, _ = m.SendNotification(context.Background(), "a", "repow-default-aaaa1111", "b", "b", "hi", nil, "fixed-id")
+	_, _ = m.SendNotification(context.Background(), Sender{Name: "a"}, "repow-default-aaaa1111", "b", "b", "hi", nil, "fixed-id")
 	frame := f.lastFrame.(map[string]any)
 	if frame["delivery_id"] != "fixed-id" {
 		t.Fatalf("supplied delivery_id must be preserved, got %v", frame["delivery_id"])
@@ -253,7 +253,7 @@ func TestBroadcastExcludesAndCollectsFailures(t *testing.T) {
 	m := newRouterWithFake(f)
 
 	// Exclude the sender (a). b and c receive. (No sendErr → both succeed.)
-	sent, failed := m.Broadcast(context.Background(), "alpha", "hello mesh",
+	sent, failed := m.Broadcast(context.Background(), Sender{Name: "alpha"}, "hello mesh",
 		map[proto.PeerID]struct{}{a: {}})
 	if len(failed) != 0 {
 		t.Fatalf("expected no failures, got %+v", failed)
@@ -274,7 +274,7 @@ func TestBroadcastOneFailureDoesNotAbortFanout(t *testing.T) {
 	a := proto.PeerID("repow-default-aaaa1111")
 	f := &fakeTransport{sessions: []proto.PeerID{a}, sendErr: errors.New("boom")}
 	m := newRouterWithFake(f)
-	sent, failed := m.Broadcast(context.Background(), "alpha", "x", nil)
+	sent, failed := m.Broadcast(context.Background(), Sender{Name: "alpha"}, "x", nil)
 	if len(sent) != 0 {
 		t.Fatalf("a failed send must not be counted as sent")
 	}

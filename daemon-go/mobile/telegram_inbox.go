@@ -78,7 +78,7 @@ func (b *Telegram) enqueueInboxItem(ctx context.Context, frame map[string]any) e
 	default:
 		// Never block the read loop. A full queue is a failed push the sender
 		// can see, not a silent drop.
-		return b.writeReceipt(ctx, textField(frame, "delivery_id"), "", errors.New("queue full"), "overloaded")
+		return b.writeReceipt(ctx, textField(frame, "delivery_id"), nil, errors.New("queue full"), "overloaded")
 	}
 }
 
@@ -103,33 +103,37 @@ func (b *Telegram) handleInboxItem(ctx context.Context, frame map[string]any) {
 		return
 	}
 	b.touchRecent(textField(item, "from"))
-	ref, err := b.pushInboxItem(pushCtx, item, textField(frame, "reply_to_ref"))
+	refs, err := b.pushInboxItem(pushCtx, item, textField(frame, "reply_to_ref"))
 	class := ""
 	if err != nil {
 		class = errorClass(err)
 		fmt.Printf("telegram: inbox push %s failed (%s): %s\n", deliveryID, class, b.redact(err.Error()))
 	}
-	if werr := b.writeReceipt(ctx, deliveryID, ref, err, class); werr != nil {
+	if werr := b.writeReceipt(ctx, deliveryID, refs, err, class); werr != nil {
 		fmt.Printf("telegram: inbox receipt %s not sent: %v\n", deliveryID, werr)
 	}
 }
 
-func (b *Telegram) writeReceipt(ctx context.Context, deliveryID, ref string, err error, class string) error {
+// writeReceipt acks a push. surface_ref is the first message (the thread
+// anchor); surface_refs lists every message rendered, even on a partial
+// failure, so a reply to any chunk reaches the item.
+func (b *Telegram) writeReceipt(ctx context.Context, deliveryID string, refs []string, err error, class string) error {
 	receipt := map[string]any{"type": "delivery_ack", "delivery_id": deliveryID, "message_type": "inbox_item", "status": "pushed"}
 	if err != nil {
 		receipt["status"], receipt["error_class"] = "failed", class
-	} else if ref != "" {
-		receipt["surface_ref"] = ref
+	}
+	if len(refs) > 0 {
+		receipt["surface_ref"], receipt["surface_refs"] = refs[0], refs
 	}
 	return b.writeFrame(ctx, receipt)
 }
 
-// pushInboxItem sends the item (split when long) and returns the first
-// message's id, which is what a later reply-to or thread names.
-func (b *Telegram) pushInboxItem(ctx context.Context, item map[string]any, replyToRef string) (string, error) {
+// pushInboxItem sends the item (split when long) and returns the id of every
+// message it rendered, in order.
+func (b *Telegram) pushInboxItem(ctx context.Context, item map[string]any, replyToRef string) ([]string, error) {
 	id := textField(item, "id")
 	chunks := splitMessage(inboxHeader(item)+"\n"+textField(item, "text"), telegramMessageLimit)
-	first := ""
+	var refs []string
 	for index, chunk := range chunks {
 		payload := map[string]any{"chat_id": b.chatID, "text": chunk}
 		if index == 0 && replyToRef != "" {
@@ -144,11 +148,9 @@ func (b *Telegram) pushInboxItem(ctx context.Context, item map[string]any, reply
 			MessageID int64 `json:"message_id"`
 		}
 		if err := b.callWithRetry(ctx, "sendMessage", payload, &sent); err != nil {
-			return first, err
+			return refs, err
 		}
-		if index == 0 {
-			first = strconv.FormatInt(sent.MessageID, 10)
-		}
+		refs = append(refs, strconv.FormatInt(sent.MessageID, 10))
 	}
 	if attachments, ok := item["attachments"].([]any); ok {
 		for _, raw := range attachments {
@@ -160,7 +162,7 @@ func (b *Telegram) pushInboxItem(ctx context.Context, item map[string]any, reply
 			}
 		}
 	}
-	return first, nil
+	return refs, nil
 }
 
 // callWithRetry retries network failures and rate limits a bounded number of

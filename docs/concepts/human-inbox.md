@@ -31,7 +31,7 @@ Read state is shared. Marking an item read on one surface marks it read everywhe
 
 `telegram` and `slack` (by name or by the bridge's `peer_id`) resolve to the human peer. Existing `notify_peer('telegram', ...)` callers keep working and now get receipts. In the other direction, a message the human types on Telegram comes from the human peer, so an agent's reply lands in the inbox and threads under the original message.
 
-Frames the human peer sends carry `from_role: "human"`. Every renderer (Claude hooks and channel, Codex bridge, OpenCode, Pi) frames those as the user's direct instructions, whatever `human.name` is. The legacy names `dashboard`, `telegram`, `slack` and `human` keep that framing too. Renderers built before this change frame only those names, so set a custom `human.name` after updating them (`repowire setup` re-installs the plugins).
+Frames the human peer sends carry `from_role: "human"`. The daemon decides this by `peer_id`, never by name, so an agent that happens to share the human's display name in another circle is still framed as a peer. Every renderer (Claude hooks and channel, Codex bridge, OpenCode, Pi) frames those as the user's direct instructions, whatever `human.name` is. The legacy names `dashboard`, `telegram`, `slack` and `human` keep that framing too. Renderers built before this change frame only those names, so set a custom `human.name` after updating them (`repowire setup` re-installs the plugins).
 
 ## Items
 
@@ -52,7 +52,7 @@ The sender's synchronous receipt is the stored item and the surfaces a push was 
 notif-delivery-1a2b3c4d inbox_item=inb-5e6f7a8b surfaces=telegram
 ```
 
-Pushes run in the background. Each surface acks its push, and the outcome is recorded on the message's own trace (the notify's `delivery_id`, or the ask's `correlation_id`). Stages:
+Pushes run in the background. Each surface acks its push, and the outcome is recorded on the message's own trace (the notify's `delivery_id`, or the ask's `correlation_id`). A trace starts `created`, then `inbox_stored`, and every surface stage follows `inbox_stored`. The request's own `resolved_peer` breadcrumb is written when the send returns, so it can land before or after a fast surface's `surface_pushed`. Stages:
 
 | Stage | Detail |
 | --- | --- |

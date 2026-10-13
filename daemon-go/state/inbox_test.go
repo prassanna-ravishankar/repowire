@@ -93,6 +93,19 @@ func TestInboxPushesThreadRefAndLookupBySurfaceRef(t *testing.T) {
 	if len(found.Pushes) != 1 || found.Pushes[0].Status != PushPushed || found.Pushes[0].ErrorClass != "" {
 		t.Fatalf("push not upserted: %+v", found.Pushes)
 	}
+	// Every chunk a surface rendered maps back to the item; the first stays
+	// the thread anchor.
+	if err := store.RecordInboxPush(ctx, reply.ID, InboxPush{Surface: "telegram", Status: PushPushed, SurfaceRef: "101", Refs: []string{"102", "103"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, chunk := range []string{"101", "102", "103"} {
+		if got, _ := store.InboxItemBySurfaceRef(ctx, "telegram", chunk); got == nil || got.ID != reply.ID {
+			t.Fatalf("chunk %s does not find the item: %+v", chunk, got)
+		}
+	}
+	if got, _ := store.InboxItemBySurfaceRef(ctx, "slack", "102"); got != nil {
+		t.Fatalf("refs are per surface: %+v", got)
+	}
 	if missing, err := store.InboxItemBySurfaceRef(ctx, "telegram", "999"); err != nil || missing != nil {
 		t.Fatalf("unknown ref = %+v, %v", missing, err)
 	}

@@ -365,22 +365,37 @@ func (i *Inbox) push(item *state.InboxItem, surface *proto.Peer) {
 		i.recordPush(item, name, pushOutcome{verified: true, err: errors.New("no receipt"), errorClass: "no_receipt"})
 	default:
 		status, _ := ack["status"].(string)
-		surfaceRef, _ := ack["surface_ref"].(string)
 		errorClass, _ := ack["error_class"].(string)
-		if status == state.PushPushed {
-			i.recordPush(item, name, pushOutcome{verified: true, ref: surfaceRef})
-			return
+		out := pushOutcome{verified: true, refs: receiptRefs(ack)}
+		if status != state.PushPushed {
+			if errorClass == "" {
+				errorClass = "other"
+			}
+			out.err, out.errorClass = errors.New(status), errorClass
 		}
-		if errorClass == "" {
-			errorClass = "other"
-		}
-		i.recordPush(item, name, pushOutcome{verified: true, err: errors.New(status), errorClass: errorClass})
+		i.recordPush(item, name, out)
 	}
+}
+
+// receiptRefs lists the messages a surface rendered, first (the thread
+// anchor) first. A failed push can still carry the refs of a partial render.
+func receiptRefs(ack map[string]any) []string {
+	var refs []string
+	if ref, _ := ack["surface_ref"].(string); ref != "" {
+		refs = append(refs, ref)
+	}
+	list, _ := ack["surface_refs"].([]any)
+	for _, v := range list {
+		if ref, _ := v.(string); ref != "" && (len(refs) == 0 || ref != refs[0]) {
+			refs = append(refs, ref)
+		}
+	}
+	return refs
 }
 
 type pushOutcome struct {
 	verified   bool
-	ref        string
+	refs       []string
 	err        error
 	errorClass string
 }
@@ -391,7 +406,10 @@ type pushOutcome struct {
 func (i *Inbox) recordPush(item *state.InboxItem, surface string, out pushOutcome) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	push := state.InboxPush{Surface: surface, Status: state.PushPushed, SurfaceRef: out.ref}
+	push := state.InboxPush{Surface: surface, Status: state.PushPushed}
+	if len(out.refs) > 0 {
+		push.SurfaceRef, push.Refs = out.refs[0], out.refs[1:]
+	}
 	detail := map[string]any{"item_id": item.ID, "surface": surface, "verified": out.verified}
 	stage, status := "surface_pushed", ""
 	if out.err != nil {
