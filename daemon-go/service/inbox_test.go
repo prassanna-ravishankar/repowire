@@ -434,3 +434,85 @@ func TestInboxPartialRenderMapsEveryRef(t *testing.T) {
 		}
 	}
 }
+
+// fakeLocalSurface is a daemon-rendered surface (the dashboard's shape).
+type fakeLocalSurface struct {
+	mu    sync.Mutex
+	live  bool
+	err   error
+	items []string
+}
+
+func (s *fakeLocalSurface) Name() string { return "dashboard" }
+func (s *fakeLocalSurface) Live() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.live
+}
+func (s *fakeLocalSurface) Push(_ context.Context, item *state.InboxItem) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items = append(s.items, item.ID)
+	return s.err
+}
+
+func TestInboxLocalSurfaceReceiptsPresenceAndBroadcastOptIn(t *testing.T) {
+	ctx := context.Background()
+	f := newInboxFixture(t, config.HumanConfig{Broadcast: true})
+	dash := &fakeLocalSurface{}
+	f.inbox.AddSurface(dash)
+
+	// Closed: no push, presence says so.
+	res, _ := f.delivery.Notify(ctx, NotifyParams{FromPeer: "alpha", ToPeer: "prass", Text: "one"})
+	f.settle()
+	if strings.Join(res.Inbox.Surfaces, ",") != "slack,telegram" || len(dash.items) != 0 {
+		t.Fatalf("closed dashboard pushed: %+v %v", res.Inbox, dash.items)
+	}
+	f.inbox.SyncPresence(ctx)
+	if d, _ := f.human.Metadata["surfaces"].(map[string]any)["dashboard"].(map[string]any); d["live"] != false {
+		t.Fatalf("surfaces = %+v", f.human.Metadata["surfaces"])
+	}
+
+	// Open: pushed and receipted, presence live.
+	dash.live = true
+	f.inbox.SyncPresence(ctx)
+	if f.human.Metadata["surfaces_live"] != 3 {
+		t.Fatalf("surfaces_live = %v", f.human.Metadata["surfaces_live"])
+	}
+	res, _ = f.delivery.Notify(ctx, NotifyParams{FromPeer: "alpha", ToPeer: "prass", Text: "two"})
+	f.settle()
+	if strings.Join(res.Inbox.Surfaces, ",") != "dashboard,slack,telegram" || len(dash.items) != 1 {
+		t.Fatalf("open dashboard: %+v %v", res.Inbox, dash.items)
+	}
+	pushed := false
+	for _, r := range f.stages(t, res.DeliveryID) {
+		if r.Stage == "surface_pushed" && r.Detail["surface"] == "dashboard" && r.Detail["verified"] == true {
+			pushed = true
+		}
+	}
+	if !pushed {
+		t.Fatalf("no dashboard surface_pushed: %v", stageNames(f.stages(t, res.DeliveryID)))
+	}
+
+	// A push that times out is a missing receipt.
+	dash.err = context.DeadlineExceeded
+	res, _ = f.delivery.Notify(ctx, NotifyParams{FromPeer: "alpha", ToPeer: "prass", Text: "three"})
+	f.settle()
+	failed := false
+	for _, r := range f.stages(t, res.DeliveryID) {
+		if r.Stage == "surface_failed" && r.Detail["surface"] == "dashboard" && r.Detail["error_class"] == "no_receipt" {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Fatalf("no dashboard surface_failed: %v", f.stages(t, res.DeliveryID))
+	}
+
+	// Broadcasts reach the dashboard only when it opted in.
+	dash.err, dash.items = nil, nil
+	_, _ = f.delivery.Broadcast(ctx, "alpha", "deploy at noon", nil, true)
+	f.settle()
+	if len(dash.items) != 0 {
+		t.Fatalf("dashboard took a broadcast it did not opt in to: %v", dash.items)
+	}
+}

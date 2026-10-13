@@ -60,6 +60,14 @@ func (h *Hub) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 	wake, unsubscribe := h.reg.SubscribeEvents()
 	defer unsubscribe()
 
+	// A stream the dashboard opens as its inbox surface reports which items it
+	// flushed, which is the dashboard's push receipt.
+	wrote := func([]map[string]any) {}
+	if h.dashboard != nil && r.URL.Query().Get("surface") == "dashboard" {
+		defer h.dashboard.attach()()
+		wrote = h.dashboard.wrote
+	}
+
 	// rc lets us bound each write batch below; SetWriteDeadline may return
 	// ErrNotSupported for exotic ResponseWriter wrappers — best-effort hardening,
 	// so that error is ignored rather than aborting the stream.
@@ -77,6 +85,7 @@ func (h *Hub) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 		lastEventID, _ = initial[n-1]["id"].(string)
 	}
 	flusher.Flush()
+	wrote(initial)
 	// Drain any wake raised during the initial flush: we have already delivered
 	// everything currently buffered, so collapse a stale signal.
 	select {
@@ -104,6 +113,7 @@ func (h *Hub) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 				lastEventID, _ = newEvents[n-1]["id"].(string)
 			}
 			flusher.Flush()
+			wrote(newEvents)
 		case <-ticker.C:
 			_ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {

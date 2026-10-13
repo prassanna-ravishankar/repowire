@@ -129,8 +129,8 @@ func TestTelegramSurfaceSplitsLongItemsAndReceiptsEveryChunk(t *testing.T) {
 		if n := len([]rune(call.payload["text"].(string))); n > 4096 {
 			t.Fatalf("chunk %d has %d runes", i, n)
 		}
-		if _, has := call.payload["reply_markup"]; has != (i == len(sent)-1) {
-			t.Fatalf("markup on chunk %d: %v", i, has)
+		if markup, has := call.payload["reply_markup"]; has {
+			t.Fatalf("a plain notify carries no keyboard, chunk %d has %v", i, markup)
 		}
 	}
 	receipt := (*receipts)[0]
@@ -212,16 +212,22 @@ func TestTelegramFullQueueReportsOverloadedInsteadOfBlocking(t *testing.T) {
 	}
 }
 
-// fakeInboxDaemon answers /inbox/reply with status for reply-to lookups and
-// records every request.
-func fakeInboxDaemon(t *testing.T, replyStatus int) (*httptest.Server, <-chan capturedRequest) {
+// fakeInboxDaemon answers /inbox/reply with status for reply-to lookups,
+// GET /inbox with unread (no items when empty), and records every request.
+func fakeInboxDaemon(t *testing.T, replyStatus int, unread ...string) (*httptest.Server, <-chan capturedRequest) {
 	t.Helper()
 	requests := make(chan capturedRequest, 10)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&payload)
-		requests <- capturedRequest{path: r.URL.Path, payload: payload}
+		requests <- capturedRequest{method: r.Method, path: r.URL.Path, payload: payload}
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/inbox":
+			if len(unread) == 0 {
+				_, _ = w.Write([]byte(`{"items":[]}`))
+				return
+			}
+			_, _ = w.Write([]byte(unread[0]))
 		case r.URL.Path == "/inbox/reply":
 			w.WriteHeader(replyStatus)
 			_, _ = w.Write([]byte(`{"ok":true,"action":"acked"}`))
@@ -255,10 +261,10 @@ func TestTelegramReplyToAnInboxMessageRepliesThroughTheInbox(t *testing.T) {
 	if req.path != "/inbox/reply" || req.payload["surface_ref"] != "301" || req.payload["ref"] != "500" || req.payload["text"] != "yes, merge" {
 		t.Fatalf("reply request = %+v", req)
 	}
-	select {
-	case extra := <-requests:
-		t.Fatalf("a handled reply must not also send an ask: %+v", extra)
-	default:
+	for len(requests) > 0 {
+		if extra := <-requests; extra.path == "/ask" {
+			t.Fatalf("a handled reply must not also send an ask: %+v", extra)
+		}
 	}
 }
 
@@ -300,5 +306,92 @@ func TestTelegramInboxButtonsReplyAndMarkRead(t *testing.T) {
 		if got.path != want.path || string(gotJSON) != string(wantJSON) {
 			t.Fatalf("%s -> %s %s, want %s %s", data, got.path, gotJSON, want.path, wantJSON)
 		}
+	}
+}
+
+func TestTelegramRendersButtonsOnlyForChoices(t *testing.T) {
+	bot, _ := newSurfaceBot(t, "http://127.0.0.1:1", "http://127.0.0.1:1")
+	choice := map[string]any{"kind": "choice", "options": []any{map[string]any{"id": "yes", "title": "Yes"}}}
+	permission := map[string]any{"kind": "choice", "scope": "tool_permission", "options": []any{map[string]any{"id": "allow", "title": "Allow"}}}
+	for name, tc := range map[string]struct {
+		item map[string]any
+		want []string // callback data of every button, in order
+	}{
+		"notify":          {map[string]any{"kind": "notify"}, nil},
+		"answer":          {map[string]any{"kind": "answer"}, nil},
+		"broadcast":       {map[string]any{"kind": "broadcast"}, nil},
+		"free-text ask":   {map[string]any{"kind": "ask", "correlation_id": "c1"}, nil},
+		"choice ask":      {map[string]any{"kind": "ask", "question": choice}, []string{"ix:o:inb-1:0"}},
+		"permission ask":  {map[string]any{"kind": "ask", "correlation_id": "c2", "question": permission}, []string{"ix:o:inb-1:0", "deny:c2"}},
+		"optionless ask":  {map[string]any{"kind": "ask", "question": map[string]any{"kind": "choice"}}, nil},
+		"structured text": {map[string]any{"kind": "ask", "question": map[string]any{"kind": "text"}}, nil},
+		"acknowledge ask": {map[string]any{"kind": "ask", "question": map[string]any{"kind": "acknowledge"}}, []string{"ix:a:inb-1"}},
+	} {
+		markup := bot.inboxMarkup("inb-1", tc.item)
+		var got []string
+		if markup != nil {
+			for _, row := range markup.(map[string]any)["inline_keyboard"].([]any) {
+				got = append(got, row.([]any)[0].(map[string]string)["callback_data"])
+			}
+		}
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("%s: buttons %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+func TestTelegramPlainNotifyIsSentWithoutKeyboard(t *testing.T) {
+	api := newFakeTelegramAPI(t, nil)
+	bot, receipts := newSurfaceBot(t, api.URL, "http://127.0.0.1:1")
+	bot.handleInboxItem(context.Background(), inboxFrame("inb-8", "notify", "deployed", "", nil))
+	sent := api.sent()
+	if len(sent) != 1 || sent[0].payload["text"] != "@orchestrator\ndeployed" {
+		t.Fatalf("sent = %+v", sent)
+	}
+	if markup, has := sent[0].payload["reply_markup"]; has {
+		t.Fatalf("a plain notify carries no keyboard: %v", markup)
+	}
+	if (*receipts)[0]["status"] != "pushed" {
+		t.Fatalf("receipt = %+v", *receipts)
+	}
+}
+
+func TestTelegramInboundMessageMarksPushedItemsRead(t *testing.T) {
+	api := newFakeTelegramAPI(t, nil)
+	unread := `{"items":[
+		{"id":"inb-a","pushes":[{"surface":"telegram","status":"pushed"}]},
+		{"id":"inb-b","pushes":[{"surface":"dashboard","status":"pushed"}]},
+		{"id":"inb-c","pushes":[{"surface":"telegram","status":"failed"}]},
+		{"id":"inb-d","pushes":[{"surface":"dashboard","status":"pushed"},{"surface":"telegram","status":"pushed"}]}]}`
+	daemon, requests := fakeInboxDaemon(t, http.StatusOK, unread)
+	bot, _ := newSurfaceBot(t, api.URL, daemon.URL)
+	bot.setTarget("repow-1-orch")
+	update := map[string]any{"update_id": float64(2), "message": map[string]any{
+		"message_id": float64(501), "text": "on it", "chat": map[string]any{"id": float64(42)},
+	}}
+	if err := bot.onUpdate(context.Background(), update); err != nil {
+		t.Fatal(err)
+	}
+	var reads []string
+	for len(requests) > 0 {
+		req := <-requests
+		if strings.HasSuffix(req.path, "/read") {
+			if req.payload["surface"] != "telegram" {
+				t.Fatalf("read surface = %+v", req)
+			}
+			reads = append(reads, req.path)
+		}
+	}
+	if strings.Join(reads, ",") != "/inbox/inb-a/read,/inbox/inb-d/read" {
+		t.Fatalf("reads = %v: only items Telegram showed are marked read", reads)
+	}
+
+	// A message from another chat is not the human and marks nothing.
+	update["message"].(map[string]any)["chat"] = map[string]any{"id": float64(7)}
+	if err := bot.onUpdate(context.Background(), update); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 0 {
+		t.Fatalf("a foreign chat touched the inbox: %+v", <-requests)
 	}
 }

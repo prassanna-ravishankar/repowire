@@ -261,6 +261,7 @@ func (b *Telegram) onUpdate(ctx context.Context, update map[string]any) error {
 		if !b.matchesChat(message) {
 			return nil
 		}
+		defer b.markPushedRead(ctx)
 		_ = b.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": textField(callback, "id")}, nil)
 		return b.onCallback(ctx, textField(callback, "data"))
 	}
@@ -268,6 +269,7 @@ func (b *Telegram) onUpdate(ctx context.Context, update map[string]any) error {
 	if !b.matchesChat(message) {
 		return nil
 	}
+	defer b.markPushedRead(ctx)
 	if photos, ok := message["photo"].([]any); ok && len(photos) > 0 {
 		photo, _ := photos[len(photos)-1].(map[string]any)
 		return b.onPhoto(ctx, textField(photo, "file_id"), textField(message, "caption"), int64(numberOrZero(message["message_id"])))

@@ -122,18 +122,20 @@ func TestEventStreamUsesStreamFrames(t *testing.T) {
 	key := "rw_test-stream-key"
 	conn := connectDaemon(t, server.URL, key)
 
+	query := make(chan any, 1)
 	go func() {
 		var request map[string]any
 		if wsjson.Read(context.Background(), conn, &request) != nil {
 			return
 		}
+		query <- request["query_string"]
 		id := request["request_id"]
 		_ = wsjson.Write(context.Background(), conn, map[string]any{"type": "http_stream_start", "request_id": id, "status": 200, "headers": map[string]string{"Content-Type": "text/event-stream"}})
 		_ = wsjson.Write(context.Background(), conn, map[string]any{"type": "http_stream_chunk", "request_id": id, "body": base64.StdEncoding.EncodeToString([]byte("data: {\"type\":\"peer_online\"}\n\n"))})
 		_ = wsjson.Write(context.Background(), conn, map[string]any{"type": "http_stream_end", "request_id": id})
 	}()
 
-	resp, err := http.DefaultClient.Do(cookieRequest(t, http.MethodGet, server.URL+"/events/stream", key, nil))
+	resp, err := http.DefaultClient.Do(cookieRequest(t, http.MethodGet, server.URL+"/events/stream?surface=dashboard", key, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,6 +143,26 @@ func TestEventStreamUsesStreamFrames(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "peer_online") {
 		t.Fatalf("stream body = %q", body)
+	}
+	// The owner's dashboard reaches the daemon as its inbox surface.
+	if got := <-query; got != "surface=dashboard" {
+		t.Fatalf("query_string = %v", got)
+	}
+}
+
+func TestShareStreamNeverCarriesTheInbox(t *testing.T) {
+	for _, tc := range []struct {
+		event map[string]any
+		want  bool
+	}{
+		{map[string]any{"type": "chat_turn", "peer": "worker"}, true},
+		{map[string]any{"type": "inbox_item", "from": "worker", "item_id": "inb-1"}, false},
+		{map[string]any{"type": "inbox_updated", "from": "worker", "item_id": "inb-1"}, false},
+		{map[string]any{"type": "chat_turn", "peer": "other"}, false},
+	} {
+		if got := eventMentionsPeer(tc.event, "worker"); got != tc.want {
+			t.Errorf("%v: shown=%v, want %v", tc.event, got, tc.want)
+		}
 	}
 }
 

@@ -31,6 +31,7 @@ func TestParseTargeted(t *testing.T) {
 }
 
 type capturedRequest struct {
+	method  string
 	path    string
 	auth    string
 	payload map[string]any
