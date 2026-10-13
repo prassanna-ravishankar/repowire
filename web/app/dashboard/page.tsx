@@ -145,6 +145,10 @@ function DashboardInner() {
   const connection = useEventStream({
     apiBase: API_BASE,
     onEvent: ingestEvent,
+    // Gap recovery replays only the event window; a read or reply made on
+    // another surface during the outage may have fallen out of it, so the
+    // inbox is always reread after a reconnect.
+    onReconnected: useCallback(() => setInboxSignal((value) => value + 1), []),
     getLastSeenId: useCallback(() => lastSeenIdRef.current, []),
   });
 

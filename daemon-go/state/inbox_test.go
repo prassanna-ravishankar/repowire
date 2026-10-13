@@ -116,3 +116,51 @@ func TestInboxPushesThreadRefAndLookupBySurfaceRef(t *testing.T) {
 		t.Fatalf("list should hold only the inbound reply: %+v", all)
 	}
 }
+
+// TestListInboxBySurfaceThroughRef: the filter a surface uses to mark what it
+// showed as read finds only items it pushed, at or before a ref, however many
+// other unread items are newer.
+func TestListInboxBySurfaceThroughRef(t *testing.T) {
+	ctx := context.Background()
+	store := newInboxStore(t)
+	add := func(surface, status, ref string) string {
+		item := &InboxItem{Kind: "notify", FromName: "alpha", Text: "x"}
+		if err := store.InsertInboxItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		if surface != "" {
+			if err := store.RecordInboxPush(ctx, item.ID, InboxPush{Surface: surface, Status: status, SurfaceRef: ref}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return item.ID
+	}
+	shown := add("telegram", PushPushed, "100")
+	for n := 0; n < 5; n++ {
+		add("dashboard", PushPushed, "")
+	}
+	add("telegram", PushFailed, "101")
+	later := add("telegram", PushPushed, "205")
+	add("telegram", PushPushed, "abc")
+
+	ids := func(f InboxFilter) []string {
+		items, err := store.ListInbox(ctx, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, it := range items {
+			out = append(out, it.ID)
+		}
+		return out
+	}
+	if got := ids(InboxFilter{UnreadOnly: true, Surface: "telegram", ThroughRef: 200, Limit: 1}); len(got) != 1 || got[0] != shown {
+		t.Fatalf("through 200 = %v, want only %s", got, shown)
+	}
+	if got := ids(InboxFilter{UnreadOnly: true, Surface: "telegram", ThroughRef: 300}); len(got) != 2 || got[0] != later {
+		t.Fatalf("through 300 = %v", got)
+	}
+	if got := ids(InboxFilter{UnreadOnly: true, Surface: "telegram"}); len(got) != 3 {
+		t.Fatalf("any telegram push = %v", got)
+	}
+}

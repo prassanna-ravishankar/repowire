@@ -244,3 +244,122 @@ func TestTunnelPathCoversDashboardWithoutExposingMCP(t *testing.T) {
 		}
 	}
 }
+
+// TestTunnelCarriesTheInbox (review of #478): the hosted dashboard reads and
+// answers the inbox through the cookie tunnel, like every other daemon route.
+func TestTunnelCarriesTheInbox(t *testing.T) {
+	server := httptest.NewServer(New("").Handler())
+	t.Cleanup(server.Close)
+	key := "rw_test-inbox-key"
+	conn := connectDaemon(t, server.URL, key)
+
+	type seen struct{ method, path, query, body string }
+	requests := make(chan seen, 3)
+	go func() {
+		for {
+			var request map[string]any
+			if wsjson.Read(context.Background(), conn, &request) != nil {
+				return
+			}
+			body, _ := base64.StdEncoding.DecodeString(stringValue(request["body"]))
+			requests <- seen{stringValue(request["method"]), stringValue(request["path"]), stringValue(request["query_string"]), string(body)}
+			_ = wsjson.Write(context.Background(), conn, map[string]any{
+				"type": "http_response", "request_id": request["request_id"], "status": 200,
+				"headers": map[string]string{"Content-Type": "application/json"},
+				"body":    base64.StdEncoding.EncodeToString([]byte(`{"ok":true}`)),
+			})
+		}
+	}()
+
+	for _, tc := range []struct{ method, url, body string }{
+		{http.MethodGet, "/inbox?limit=100", ""},
+		{http.MethodPost, "/inbox/inb-1/read", `{"surface":"dashboard"}`},
+		{http.MethodPost, "/inbox/inb-1/reply", `{"surface":"dashboard","text":"yes"}`},
+	} {
+		resp, err := http.DefaultClient.Do(cookieRequest(t, tc.method, server.URL+tc.url, key, strings.NewReader(tc.body)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s %s = %d", tc.method, tc.url, resp.StatusCode)
+		}
+		got := <-requests
+		path, query, _ := strings.Cut(tc.url, "?")
+		if got.method != tc.method || got.path != path || got.query != query || got.body != tc.body {
+			t.Fatalf("daemon saw %+v for %s %s", got, tc.method, tc.url)
+		}
+	}
+
+	// Without the owner's cookie the tunnel sends the browser to sign in
+	// rather than 404ing, and never reaches the daemon.
+	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := noFollow.Get(server.URL + "/inbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusFound || len(requests) != 0 {
+		t.Fatalf("unauthenticated /inbox = %d, daemon requests %d", resp.StatusCode, len(requests))
+	}
+}
+
+// TestShareStreamRouteDropsInboxEvents drives a share viewer's stream: the
+// viewer's own query never reaches the daemon (no ?surface=dashboard
+// spoofing), and inbox events are dropped even when split across chunks.
+func TestShareStreamRouteDropsInboxEvents(t *testing.T) {
+	server := httptest.NewServer(New("").Handler())
+	t.Cleanup(server.Close)
+	key := "rw_test-share-inbox-key"
+	conn := connectDaemon(t, server.URL, key)
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/share", strings.NewReader(`{"peer_name":"worker","permissions":"ro"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var share ShareToken
+	_ = json.NewDecoder(resp.Body).Decode(&share)
+	_ = resp.Body.Close()
+	if share.ShareID == "" {
+		t.Fatalf("share not created: %d", resp.StatusCode)
+	}
+
+	query := make(chan string, 1)
+	go func() {
+		var request map[string]any
+		if wsjson.Read(context.Background(), conn, &request) != nil {
+			return
+		}
+		query <- stringValue(request["query_string"])
+		id := request["request_id"]
+		chunk := func(s string) {
+			_ = wsjson.Write(context.Background(), conn, map[string]any{"type": "http_stream_chunk", "request_id": id, "body": base64.StdEncoding.EncodeToString([]byte(s))})
+		}
+		_ = wsjson.Write(context.Background(), conn, map[string]any{"type": "http_stream_start", "request_id": id, "status": 200})
+		chunk(`data: {"type":"inbox_item","from":"wor`)
+		chunk(`ker","item_id":"inb-1"}` + "\n\n" + `data: {"type":"chat_turn","pe`)
+		chunk(`er":"worker","text":"visible"}` + "\n\n" + `data: {"type":"inbox_updated","from":"worker"}` + "\n\n")
+		_ = wsjson.Write(context.Background(), conn, map[string]any{"type": "http_stream_end", "request_id": id})
+	}()
+
+	stream, err := http.Get(server.URL + "/s/" + share.ShareID + "/stream?surface=dashboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Body.Close()
+	body, _ := io.ReadAll(stream.Body)
+	select {
+	case got := <-query:
+		if got != "" {
+			t.Fatalf("a share viewer's query reached the daemon: %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the share stream never reached the daemon (status %d)", stream.StatusCode)
+	}
+	if !strings.Contains(string(body), "visible") || strings.Contains(string(body), "inbox_") {
+		t.Fatalf("share stream body = %q", body)
+	}
+}

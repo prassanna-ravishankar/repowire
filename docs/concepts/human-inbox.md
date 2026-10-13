@@ -23,7 +23,7 @@ A surface is a client that displays the inbox and answers on the human's behalf.
 
 | Surface | Receives pushes | Read | Reply | Buttons |
 | --- | --- | --- | --- | --- |
-| [Telegram](../use/features/telegram.md) | A chat message per item, threaded as a Telegram reply on its ask | Implicit: any message or tap from you in the chat marks every item Telegram showed you read | Telegram's **Reply** on any message (any chunk of a long one) | Only where a bot offers a choice: a choice question's options, or **✓ Ack** for an acknowledge question |
+| [Telegram](../use/features/telegram.md) | A chat message per item, threaded as a Telegram reply on its ask | Implicit: a message or tap from you in the chat marks read every item Telegram showed you before it | Telegram's **Reply** on any message (any chunk of a long one) | Only where a bot offers a choice: a choice question's options, or **✓ Ack** for an acknowledge question |
 | [Dashboard](../use/features/dashboard.md) | Live in the **Inbox** view while a dashboard is open, with the unread count in the nav | Opening an item | The reply box under the item | A choice question's options, **✓ Acknowledge** for an acknowledge question |
 | [CLI](../reference/cli.md#repowire-inbox) | No; it reads on demand | `repowire inbox read` | `repowire inbox reply` | None |
 
@@ -78,6 +78,7 @@ A routing strategy never picks the human unless `routing.allow_human_targets: tr
 
 - A surface that is offline, slow, or failing never blocks the sender, daemon startup, or shutdown. The item is already stored, and the push records `surface_failed`.
 - Shutdown cancels in-flight pushes and records them as failed before the store closes.
+- A surface gets only the items stored while it is live. An item stored while the Telegram bridge is down stays in the inbox (the CLI and dashboard show it) but is not sent to Telegram when the bridge reconnects ([#480](https://github.com/prassanna-ravishankar/repowire/issues/480)).
 - The Telegram bridge retries network failures and rate limits a bounded number of times before it reports a failure. A network retry can duplicate a message whose response was lost.
 
 ## Related

@@ -325,33 +325,58 @@ func (b *Telegram) onReply(ctx context.Context, replyTo int64, text string, mess
 	return true, nil
 }
 
-// markPushedRead marks every unread item this chat was shown as read. Telegram
-// has no read state for a bot's messages; the human writing or tapping in the
-// chat is the native sign they have seen it. Best effort: a failure leaves the
-// items unread, which only means another surface still shows them as new.
-func (b *Telegram) markPushedRead(ctx context.Context) {
-	var list struct {
-		Items []struct {
-			ID     string `json:"id"`
-			Pushes []struct {
-				Surface string `json:"surface"`
-				Status  string `json:"status"`
-			} `json:"pushes"`
-		} `json:"items"`
-	}
-	resp, err := b.daemon.JSON(ctx, http.MethodGet, "/inbox?unread=1&limit=200", nil, &list)
-	if err != nil || resp.StatusCode >= 300 {
+// markShownRead marks read every unread item this chat showed at or before
+// horizon, a Telegram message id. Telegram has no read state for a bot's
+// messages; the human writing or tapping in the chat is the native sign they
+// have seen it. Message ids grow with every message in the chat, so the
+// update's own id bounds what the human could have seen: an item pushed
+// after it (an agent's answer to this very tap, say) stays unread, and a
+// delayed or replayed update only reads what came before it. It runs before
+// the update is acted on. Best effort: a failure leaves items unread, which
+// only means another surface still shows them as new.
+func (b *Telegram) markShownRead(ctx context.Context, horizon int64) {
+	if horizon <= 0 {
 		return
 	}
-	for _, item := range list.Items {
-		for _, push := range item.Pushes {
-			if push.Surface != "telegram" || push.Status != "pushed" {
+	const page = 100
+	query := fmt.Sprintf("/inbox?unread=1&surface=telegram&through_ref=%d&limit=%d", horizon, page)
+	for {
+		var list struct {
+			Items []struct {
+				ID     string `json:"id"`
+				Pushes []struct {
+					Surface    string `json:"surface"`
+					Status     string `json:"status"`
+					SurfaceRef string `json:"surface_ref"`
+				} `json:"pushes"`
+			} `json:"items"`
+		}
+		resp, err := b.daemon.JSON(ctx, http.MethodGet, query, nil, &list)
+		if err != nil || resp.StatusCode >= 300 {
+			return
+		}
+		marked := 0
+		for _, item := range list.Items {
+			shown := false
+			for _, push := range item.Pushes {
+				ref, err := strconv.ParseInt(push.SurfaceRef, 10, 64)
+				if push.Surface == "telegram" && push.Status == "pushed" && (push.SurfaceRef == "" || err == nil && ref <= horizon) {
+					shown = true
+				}
+			}
+			if !shown {
 				continue
 			}
 			if resp, err := b.daemon.JSON(ctx, http.MethodPost, "/inbox/"+item.ID+"/read", map[string]any{"surface": "telegram"}, nil); err != nil || resp.StatusCode >= 300 {
 				fmt.Printf("telegram: mark %s read failed\n", item.ID)
+				continue
 			}
-			break
+			marked++
+		}
+		// Every item on a full page was read, so the next page holds the
+		// rest; anything less means the sweep is done (or stuck).
+		if len(list.Items) < page || marked < len(list.Items) {
+			return
 		}
 	}
 }

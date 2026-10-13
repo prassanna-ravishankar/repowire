@@ -50,7 +50,7 @@ Reply to an agent's message with Telegram's **Reply**: on an ask it acks the ask
 
 Messages carry buttons only where a bot would offer a choice: a choice question shows its options (plus **✕ Deny** for a tool permission), and an acknowledge question shows **✓ Ack**. A plain message or a free-text ask has no buttons; Reply is the answer.
 
-Telegram gives bots no read receipts, so read state is implicit: whenever you send a message or tap a button in the chat, every unread item Telegram showed you is marked read on every surface. Buttons on older messages (**✓ Seen**, **✓ Ack**) keep working.
+Telegram gives bots no read receipts, so read state is implicit: whenever you send a message or tap a button in the chat, every unread item Telegram showed you before that message (or before the message you tapped) is marked read on every surface. An item that arrives afterwards, such as an agent's answer to your tap, stays unread. Items stored while the bot was offline are not sent when it reconnects ([#480](https://github.com/prassanna-ravishankar/repowire/issues/480)); read them on the dashboard or with `repowire inbox`. Buttons on older messages (**✓ Seen**, **✓ Ack**) keep working.
 
 Send a photo when the target agent should inspect it. The bot uploads it to the daemon and includes it in the outgoing ask. Attachments sent by agents are uploaded back to Telegram as photos or documents.
 

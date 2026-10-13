@@ -65,6 +65,13 @@ type InboxPush struct {
 type InboxFilter struct {
 	UnreadOnly bool
 	Limit      int
+	// Surface keeps only items successfully pushed to that surface.
+	Surface string
+	// ThroughRef, with Surface, keeps only items whose first message on the
+	// surface has a numeric ref at or below it. Telegram message ids grow
+	// with every message in a chat, so a message from the human bounds what
+	// they can have seen.
+	ThroughRef int64
 }
 
 const inboxColumns = `id, direction, kind, trace_id, trace_kind, from_peer_id, from_name,
@@ -142,11 +149,21 @@ func (s *Store) ListInbox(ctx context.Context, filter InboxFilter) ([]InboxItem,
 		limit = 50
 	}
 	where := `direction = 'in'`
+	var args []any
 	if filter.UnreadOnly {
 		where += ` AND read_at IS NULL`
 	}
+	if filter.Surface != "" {
+		pushed := `SELECT 1 FROM inbox_pushes p WHERE p.item_id = inbox_items.id AND p.surface = ? AND p.status = 'pushed'`
+		args = append(args, filter.Surface)
+		if filter.ThroughRef > 0 {
+			pushed += ` AND p.surface_ref <> '' AND p.surface_ref NOT GLOB '*[^0-9]*' AND CAST(p.surface_ref AS INTEGER) <= ?`
+			args = append(args, filter.ThroughRef)
+		}
+		where += ` AND EXISTS (` + pushed + `)`
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+inboxColumns+` FROM inbox_items WHERE `+where+
-		` ORDER BY created_at DESC, id DESC LIMIT ?`, limit)
+		` ORDER BY created_at DESC, id DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("list inbox: %w", err)
 	}

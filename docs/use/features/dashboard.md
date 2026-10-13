@@ -42,7 +42,7 @@ The dashboard is a surface of your [human inbox](../../concepts/human-inbox.md).
 
 - Opening an item marks it read on every surface, Telegram included.
 - The reply box under an item answers it, exactly as `repowire inbox reply` does: on an open ask it closes the ask with your text; on anything else it sends the sender a new ask. A choice question also shows its options.
-- Reads and replies made on Telegram or the CLI show up here as they happen.
+- Reads and replies made on Telegram or the CLI show up here as they happen, and the inbox is reread whenever the dashboard reconnects to the daemon.
 
 The peer chat view merges supported persisted local history with realtime `chat_turn` and `chat_turn_delta` events for Claude Code, Codex, and Codex ACP peers. Backends without a supported local history source contribute realtime events and report degraded history state in the timeline response.
 

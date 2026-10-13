@@ -3,6 +3,7 @@ package mobile
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -220,7 +221,7 @@ func fakeInboxDaemon(t *testing.T, replyStatus int, unread ...string) (*httptest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&payload)
-		requests <- capturedRequest{method: r.Method, path: r.URL.Path, payload: payload}
+		requests <- capturedRequest{method: r.Method, path: r.URL.RequestURI(), payload: payload}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/inbox":
 			if len(unread) == 0 {
@@ -243,6 +244,15 @@ func fakeInboxDaemon(t *testing.T, replyStatus int, unread ...string) (*httptest
 	return server, requests
 }
 
+// nextAction skips the read sweep that precedes every inbound update.
+func nextAction(requests <-chan capturedRequest) capturedRequest {
+	for {
+		if req := <-requests; req.method != http.MethodGet {
+			return req
+		}
+	}
+}
+
 func replyUpdate(replyTo int64) map[string]any {
 	return map[string]any{"update_id": float64(1), "message": map[string]any{
 		"message_id": float64(500), "text": "yes, merge", "chat": map[string]any{"id": float64(42)},
@@ -257,7 +267,7 @@ func TestTelegramReplyToAnInboxMessageRepliesThroughTheInbox(t *testing.T) {
 	if err := bot.onUpdate(context.Background(), replyUpdate(301)); err != nil {
 		t.Fatal(err)
 	}
-	req := <-requests
+	req := nextAction(requests)
 	if req.path != "/inbox/reply" || req.payload["surface_ref"] != "301" || req.payload["ref"] != "500" || req.payload["text"] != "yes, merge" {
 		t.Fatalf("reply request = %+v", req)
 	}
@@ -276,7 +286,7 @@ func TestTelegramReplyToAnythingElseFallsBackToAnAskWithOrigin(t *testing.T) {
 	if err := bot.onUpdate(context.Background(), replyUpdate(9)); err != nil {
 		t.Fatal(err)
 	}
-	if req := <-requests; req.path != "/inbox/reply" {
+	if req := nextAction(requests); req.path != "/inbox/reply" {
 		t.Fatalf("first request = %+v", req)
 	}
 	ask := <-requests
@@ -359,10 +369,11 @@ func TestTelegramPlainNotifyIsSentWithoutKeyboard(t *testing.T) {
 func TestTelegramInboundMessageMarksPushedItemsRead(t *testing.T) {
 	api := newFakeTelegramAPI(t, nil)
 	unread := `{"items":[
-		{"id":"inb-a","pushes":[{"surface":"telegram","status":"pushed"}]},
+		{"id":"inb-a","pushes":[{"surface":"telegram","status":"pushed","surface_ref":"300"}]},
 		{"id":"inb-b","pushes":[{"surface":"dashboard","status":"pushed"}]},
-		{"id":"inb-c","pushes":[{"surface":"telegram","status":"failed"}]},
-		{"id":"inb-d","pushes":[{"surface":"dashboard","status":"pushed"},{"surface":"telegram","status":"pushed"}]}]}`
+		{"id":"inb-c","pushes":[{"surface":"telegram","status":"failed","surface_ref":"301"}]},
+		{"id":"inb-d","pushes":[{"surface":"dashboard","status":"pushed"},{"surface":"telegram","status":"pushed","surface_ref":"302"}]},
+		{"id":"inb-e","pushes":[{"surface":"telegram","status":"pushed","surface_ref":"900"}]}]}`
 	daemon, requests := fakeInboxDaemon(t, http.StatusOK, unread)
 	bot, _ := newSurfaceBot(t, api.URL, daemon.URL)
 	bot.setTarget("repow-1-orch")
@@ -373,6 +384,10 @@ func TestTelegramInboundMessageMarksPushedItemsRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	var reads []string
+	first := <-requests
+	if first.method != http.MethodGet || first.path != "/inbox?unread=1&surface=telegram&through_ref=501&limit=100" {
+		t.Fatalf("the sweep must come first, bounded by the message's own id: %+v", first)
+	}
 	for len(requests) > 0 {
 		req := <-requests
 		if strings.HasSuffix(req.path, "/read") {
@@ -383,7 +398,7 @@ func TestTelegramInboundMessageMarksPushedItemsRead(t *testing.T) {
 		}
 	}
 	if strings.Join(reads, ",") != "/inbox/inb-a/read,/inbox/inb-d/read" {
-		t.Fatalf("reads = %v: only items Telegram showed are marked read", reads)
+		t.Fatalf("reads = %v: only items Telegram showed before the message are marked read", reads)
 	}
 
 	// A message from another chat is not the human and marks nothing.
@@ -393,5 +408,79 @@ func TestTelegramInboundMessageMarksPushedItemsRead(t *testing.T) {
 	}
 	if len(requests) != 0 {
 		t.Fatalf("a foreign chat touched the inbox: %+v", <-requests)
+	}
+}
+
+// TestTelegramChoiceTapDoesNotReadALaterPush (review of #478): answering a
+// choice can wake an agent whose next push lands before the bridge finishes.
+// The sweep runs before the answer, bounded by the tapped message, so that
+// push stays unread.
+func TestTelegramChoiceTapDoesNotReadALaterPush(t *testing.T) {
+	api := newFakeTelegramAPI(t, nil)
+	var mu sync.Mutex
+	answered, readLate := false, false
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/inbox/inb-choice/reply":
+			answered = true
+			_, _ = w.Write([]byte(`{"action":"answered"}`))
+		case "/inbox":
+			// The later push is offered even before the answer, as a daemon
+			// that ignored through_ref would: its ref is past the tap.
+			_, _ = w.Write([]byte(`{"items":[{"id":"inb-later","pushes":[{"surface":"telegram","status":"pushed","surface_ref":"400"}]}]}`))
+		case "/inbox/inb-later/read":
+			readLate = true
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	t.Cleanup(daemon.Close)
+	bot, _ := newSurfaceBot(t, api.URL, daemon.URL)
+	bot.rememberOptions("inb-choice", []string{"yes"})
+	tap := map[string]any{"callback_query": map[string]any{"id": "tap", "data": "ix:o:inb-choice:0",
+		"message": map[string]any{"message_id": float64(300), "chat": map[string]any{"id": float64(42)}}}}
+	if err := bot.onUpdate(context.Background(), tap); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !answered || readLate {
+		t.Fatalf("answered=%v readLate=%v: a push after the tapped message must stay unread", answered, readLate)
+	}
+}
+
+// TestTelegramSweepReachesOlderShownItems (review of #478): newer unread
+// items Telegram never showed must not hide an older one it did.
+func TestTelegramSweepReachesOlderShownItems(t *testing.T) {
+	api := newFakeTelegramAPI(t, nil)
+	var mu sync.Mutex
+	var reads []string
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/inbox" {
+			q := r.URL.Query()
+			if q.Get("surface") != "telegram" || q.Get("through_ref") != "999" {
+				t.Errorf("the sweep must filter by surface and horizon on the daemon: %s", r.URL.RawQuery)
+			}
+			items := []map[string]any{}
+			for n := 0; n < 200; n++ {
+				items = append(items, map[string]any{"id": fmt.Sprintf("dash-%d", n), "pushes": []any{map[string]any{"surface": "dashboard", "status": "pushed"}}})
+			}
+			items = append(items, map[string]any{"id": "old", "pushes": []any{map[string]any{"surface": "telegram", "status": "pushed", "surface_ref": "10"}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/read") {
+			mu.Lock()
+			reads = append(reads, r.URL.Path)
+			mu.Unlock()
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(daemon.Close)
+	bot, _ := newSurfaceBot(t, api.URL, daemon.URL)
+	bot.markShownRead(context.Background(), 999)
+	if strings.Join(reads, ",") != "/inbox/old/read" {
+		t.Fatalf("reads = %v", reads)
 	}
 }
