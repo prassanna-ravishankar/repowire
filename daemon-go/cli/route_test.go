@@ -26,6 +26,18 @@ func TestReplayTableShowsEveryPresentSkipReason(t *testing.T) {
 	}
 }
 
+// Fallbacks are broken down by reason, so abstentions read apart from failures.
+func TestReplayTableBreaksDownFallbackReasons(t *testing.T) {
+	var out strings.Builder
+	printReplayTable(&out, []routing.Report{{
+		Arm: "frontier-attested", Source: "rerun", Decisions: 3, Scored: 3, Fallbacks: 3,
+		FallbackCodes: map[string]map[string]int{routing.FallbackAbstained: {"": 2}, routing.FallbackServerError: {"529 overloaded_error": 1}},
+	}})
+	if want := "fallbacks (frontier-attested): abstained 2, server_error 1"; !strings.Contains(out.String(), want) {
+		t.Fatalf("table lacks %q:\n%s", want, out.String())
+	}
+}
+
 // A masked run must say so in the table, and the recency split must print.
 func TestReplayTableNamesMaskAndRecencyStrata(t *testing.T) {
 	var out strings.Builder

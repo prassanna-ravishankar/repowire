@@ -173,6 +173,11 @@ func (f Frontier) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	if err := json.Unmarshal([]byte(text.String()), &out); err != nil {
 		return RouterResult{}, fail(FallbackUnparseable)
 	}
+	// An empty ranking is the model declining to choose, seen stochastically
+	// on rows it ranks cleanly on resample: record it, but not as a failure.
+	if len(out.Ranking) == 0 {
+		return RouterResult{}, fail(FallbackAbstained)
+	}
 	// The schema's enum constrains members, not completeness: accept only a
 	// full, duplicate-free permutation, since a partial ranking would inflate
 	// fidelity@3.

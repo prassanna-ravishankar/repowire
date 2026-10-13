@@ -415,8 +415,29 @@ func printReplayTable(w io.Writer, reports []routing.Report) {
 		}
 		fmt.Fprintln(w)
 	}
+	printFallbackReasons(w, reports)
 	printSplit(w, "cohort", reports, func(rep routing.Report) map[string]*routing.Cohort { return rep.Cohorts })
 	printSplit(w, "recency", reports, func(rep routing.Report) map[string]*routing.Cohort { return rep.Recency })
+}
+
+// printFallbackReasons breaks each arm's fallbacks down by reason, so an arm
+// that abstains reads differently from one that fails.
+func printFallbackReasons(w io.Writer, reports []routing.Report) {
+	for _, rep := range reports {
+		if len(rep.FallbackCodes) == 0 {
+			continue
+		}
+		reasons := make([]string, 0, len(rep.FallbackCodes))
+		for reason, codes := range rep.FallbackCodes {
+			n := 0
+			for _, c := range codes {
+				n += c
+			}
+			reasons = append(reasons, fmt.Sprintf("%s %d", reason, n))
+		}
+		sort.Strings(reasons)
+		fmt.Fprintf(w, "fallbacks (%s): %s\n", rep.Arm, strings.Join(reasons, ", "))
+	}
 }
 
 // printSplit prints one block per subset name found in any report.

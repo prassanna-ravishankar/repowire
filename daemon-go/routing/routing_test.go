@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -581,5 +582,67 @@ func TestBadEnvStrategyOverValidYAMLRunsStatic(t *testing.T) {
 	joined := strings.Join(warnings, "\n")
 	if !strings.Contains(joined, `routing.strategy "jev-nope" names no arm`) || !strings.Contains(joined, "routing.strategy is unusable") {
 		t.Fatalf("warnings: %s", joined)
+	}
+}
+
+// frontierRouter serves the n-th call's model text from answer, wrapped in an
+// end_turn message, behind a router with the frontier arms configured.
+func frontierRouter(t *testing.T, answer func(call int) string) *Router {
+	t.Helper()
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"m","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"` + answer(calls) + `"}],"stop_reason":"end_turn","usage":{"input_tokens":1200,"output_tokens":30}}`))
+	}))
+	t.Cleanup(srv.Close)
+	r, err := NewRouter(config.RouterConfig{TimeoutSeconds: 5, Frontier: config.RouterModel{APIKey: "k", Model: "claude-opus-5-5", BaseURL: srv.URL}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+const frontierAbstains = `{\"confidence\":0,\"ranking\":[]}`
+
+// An empty ranking is the model declining to choose: a recorded miss that
+// leaves the breaker alone, so a run of them cannot stop a replay.
+func TestFrontierAbstentionIsAMissNotAProviderFailure(t *testing.T) {
+	abstain := breakerTrip + 1
+	r := frontierRouter(t, func(call int) string {
+		if call <= abstain {
+			return frontierAbstains
+		}
+		return `{\"confidence\":0.8,\"ranking\":[\"c1\",\"c2\"]}`
+	})
+	examples := []Example{}
+	for i := 0; i < abstain+2; i++ {
+		examples = append(examples, example(fmt.Sprintf("ask-%d", i), "repow-b", ArmExplicit, nil))
+	}
+	rep, rows := Replay(context.Background(), examples, "frontier-claimed", func(ctx context.Context, in Input) RouterResult {
+		return r.Run(ctx, "frontier-claimed", in)
+	}, Options{})
+	if rows[0].FallbackReason != FallbackAbstained {
+		t.Fatalf("row = %+v, want %s", rows[0], FallbackAbstained)
+	}
+	if len(rep.Skipped) != 0 || rep.Scored != abstain+2 || rep.Fallbacks != abstain || rep.Hit1 != 2 {
+		t.Fatalf("report = %+v", rep)
+	}
+	if n := rep.FallbackCodes[FallbackAbstained]; len(n) != 1 || n[""] != abstain {
+		t.Fatalf("fallback codes = %v", rep.FallbackCodes)
+	}
+}
+
+// A partial or repeated ranking is still a malformed answer and still trips
+// the breaker; only the empty ranking is an abstention.
+func TestFrontierDuplicateRankingTripsTheBreaker(t *testing.T) {
+	r := frontierRouter(t, func(int) string { return `{\"confidence\":0.5,\"ranking\":[\"c1\",\"c1\"]}` })
+	for i := 0; i < breakerTrip; i++ {
+		if res := r.Run(context.Background(), "frontier-claimed", testInput()); res.FallbackReason != FallbackUnparseable {
+			t.Fatalf("call %d: %+v", i, res)
+		}
+	}
+	if res := r.Run(context.Background(), "frontier-claimed", testInput()); res.FallbackReason != FallbackBreakerOpen {
+		t.Fatalf("breaker should be open: %+v", res)
 	}
 }
