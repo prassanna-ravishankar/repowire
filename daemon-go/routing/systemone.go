@@ -68,8 +68,27 @@ type systemOneResponse struct {
 		Noul *float64 `json:"noul"`
 	} `json:"answers"`
 	Usage *struct {
-		InputTokens *int64 `json:"input_tokens"`
+		InputTokens  *int64 `json:"input_tokens"`
+		OutputTokens *int64 `json:"output_tokens"`
 	} `json:"usage"`
+}
+
+// tokens adds the reported token counts to signals, allocating it if nil. A
+// count the provider left out stays absent rather than reading as zero.
+func (r systemOneResponse) tokens(signals map[string]float64) map[string]float64 {
+	if r.Usage == nil {
+		return signals
+	}
+	for key, n := range map[string]*int64{"input_tokens": r.Usage.InputTokens, "output_tokens": r.Usage.OutputTokens} {
+		if n == nil {
+			continue
+		}
+		if signals == nil {
+			signals = map[string]float64{}
+		}
+		signals[key] = float64(*n)
+	}
+	return signals
 }
 
 // scores reads one yes probability per key back onto its peer, and fails on
@@ -78,7 +97,7 @@ func (r systemOneResponse) scores(keys map[string]string) ([]Score, error) {
 	scores := make([]Score, 0, len(keys))
 	for k, peerID := range keys {
 		answer, ok := r.Answers[k]
-		if !ok || answer.Noul == nil || math.IsNaN(*answer.Noul) || *answer.Noul < 0 || *answer.Noul > 1 {
+		if !ok || !unit(answer.Noul) {
 			return nil, fail(FallbackUnparseable)
 		}
 		scores = append(scores, Score{PeerID: peerID, Score: *answer.Noul})
@@ -106,6 +125,9 @@ func postJSON(ctx context.Context, client *http.Client, url, token string, body 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return resp.StatusCode, raw, nil
 }
+
+// unit reports whether v is present and within [0, 1].
+func unit(v *float64) bool { return v != nil && !math.IsNaN(*v) && *v >= 0 && *v <= 1 }
 
 func topScore(scores []Score) float64 {
 	best := 0.0

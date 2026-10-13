@@ -21,10 +21,14 @@ type Arm interface {
 // Fallback reasons. Any arm failure maps to one of these and the ask falls
 // back to explicit addressing.
 const (
-	FallbackTimeout      = "timeout"
-	FallbackRateLimited  = "rate_limited"
-	FallbackError        = "error"
-	FallbackUnparseable  = "unparseable"
+	FallbackTimeout     = "timeout"
+	FallbackRateLimited = "rate_limited"
+	FallbackError       = "error"
+	FallbackUnparseable = "unparseable"
+	// FallbackAbstained: a valid answer that declines to choose (see
+	// abstained in frontier.go). A miss in replay, but a well-formed answer,
+	// so it does not count against the provider's breaker.
+	FallbackAbstained    = "abstained"
 	FallbackNoCandidates = "no_candidates"
 	FallbackUnconfigured = "unconfigured"
 	FallbackUnknownArm   = "unknown_arm"

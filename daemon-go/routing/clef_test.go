@@ -360,3 +360,16 @@ func TestLiveClefHostedCap(t *testing.T) {
 		}
 	}
 }
+
+// A usage with no input count is refused, but the output it billed is kept
+// for the meter.
+func TestClefKeepsOutputTokensWithoutInputCount(t *testing.T) {
+	srv, _ := clefStub(t, 200, `{"result":{"answers":{"c1":{"type":"noul","noul":0.9},"c2":{"type":"noul","noul":0.1}},"usage":{"output_tokens":2}}}`)
+	res := Run(context.Background(), clefArm(ClefFamily, ViewBoth, srv.URL), testInput(), time.Second)
+	if res.FallbackReason != FallbackUnparseable || res.Signals["output_tokens"] != 2 {
+		t.Fatalf("result = %+v", res)
+	}
+	if _, ok := res.Signals["input_tokens"]; ok {
+		t.Fatalf("absent input count recorded: %+v", res.Signals)
+	}
+}

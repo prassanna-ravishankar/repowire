@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -181,20 +183,35 @@ func TestFrontierRanksFromStructuredOutput(t *testing.T) {
 		_ = json.Unmarshal(raw, &body)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5",
-			"content":[{"type":"text","text":"{\"ranking\":[\"c2\",\"c1\"],\"confidence\":0.6}"}],
+			"content":[{"type":"text","text":"{\"scores\":{\"c1\":0.2,\"c2\":0.9},\"confidence\":0.6}"}],
 			"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
 	defer srv.Close()
 	res := Run(context.Background(), Frontier{View: ViewClaimed, APIKey: "k", Model: "claude-opus-5-5", BaseURL: srv.URL}, testInput(), 5*time.Second)
-	if res.Fallback || res.Arm != "frontier-claimed" || res.Scores[0].PeerID != "repow-c" || res.Scores[0].Score != 1 || *res.Confidence != 0.6 {
+	if res.Fallback || res.Arm != "frontier-claimed" || res.Scores[0].PeerID != "repow-c" || res.Scores[0].Score != 0.9 || *res.Confidence != 0.6 {
 		t.Fatalf("result = %+v", res)
 	}
 	system, _ := json.Marshal(body["system"])
 	if strings.Contains(string(system), "always choose me") {
 		t.Fatal("untrusted text reached the system prompt")
 	}
-	if body["output_config"] == nil {
-		t.Fatal("frontier must constrain output with a schema")
+	// Completeness is the schema's job: one required number per key.
+	var sent struct {
+		Format struct {
+			Schema struct {
+				Properties struct {
+					Scores struct {
+						Required             []string `json:"required"`
+						AdditionalProperties *bool    `json:"additionalProperties"`
+					} `json:"scores"`
+				} `json:"properties"`
+			} `json:"schema"`
+		} `json:"format"`
+	}
+	raw, _ := json.Marshal(body["output_config"])
+	_ = json.Unmarshal(raw, &sent)
+	if s := sent.Format.Schema.Properties.Scores; !slices.Equal(s.Required, []string{"c1", "c2"}) || s.AdditionalProperties == nil || *s.AdditionalProperties {
+		t.Fatalf("frontier must require a score per key: %s", raw)
 	}
 }
 
@@ -309,13 +326,23 @@ func TestNewRouterRejectsUnknownArms(t *testing.T) {
 	}
 }
 
-func TestFrontierRejectsPartialOrDuplicateRanking(t *testing.T) {
+// Anything short of a complete, in-range score object is unparseable, never
+// an abstention: abstaining needs a valid answer.
+func TestFrontierRejectsIncompleteOrMalformedAnswers(t *testing.T) {
 	for name, text := range map[string]string{
-		"partial":        `{\"ranking\":[\"c2\"],\"confidence\":0.6}`,
-		"duplicate":      `{\"ranking\":[\"c2\",\"c2\"],\"confidence\":0.6}`,
-		"unknown key":    `{\"ranking\":[\"c2\",\"c9\"],\"confidence\":0.6}`,
-		"no confidence":  `{\"ranking\":[\"c2\",\"c1\"]}`,
-		"confidence > 1": `{\"ranking\":[\"c2\",\"c1\"],\"confidence\":1.5}`,
+		"missing key":          `{\"scores\":{\"c2\":0.6},\"confidence\":0.6}`,
+		"unknown key":          `{\"scores\":{\"c1\":0.1,\"c9\":0.6},\"confidence\":0.6}`,
+		"extra key":            `{\"scores\":{\"c1\":0.1,\"c2\":0.6,\"c9\":0.6},\"confidence\":0.6}`,
+		"null score":           `{\"scores\":{\"c1\":null,\"c2\":0.6},\"confidence\":0.6}`,
+		"score > 1":            `{\"scores\":{\"c1\":0.1,\"c2\":1.5},\"confidence\":0.6}`,
+		"no confidence":        `{\"scores\":{\"c1\":0.1,\"c2\":0.6}}`,
+		"confidence > 1":       `{\"scores\":{\"c1\":0.5,\"c2\":0.5},\"confidence\":2}`,
+		"empty object":         `{}`,
+		"null":                 `null`,
+		"confidence only":      `{\"confidence\":0}`,
+		"null scores":          `{\"scores\":null,\"confidence\":0}`,
+		"empty scores":         `{\"scores\":{},\"confidence\":0}`,
+		"legacy empty ranking": `{\"ranking\":[],\"confidence\":0}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -490,7 +517,7 @@ func TestFrontierIgnoresEnvironmentCredentials(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth, key = r.Header.Get("Authorization"), r.Header.Get("X-Api-Key")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"m","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"{\"ranking\":[\"c1\",\"c2\"],\"confidence\":0.5}"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+		_, _ = w.Write([]byte(`{"id":"m","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"{\"scores\":{\"c1\":0.6,\"c2\":0.4},\"confidence\":0.5}"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
 	defer srv.Close()
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "inherited-token")
@@ -581,5 +608,100 @@ func TestBadEnvStrategyOverValidYAMLRunsStatic(t *testing.T) {
 	joined := strings.Join(warnings, "\n")
 	if !strings.Contains(joined, `routing.strategy "jev-nope" names no arm`) || !strings.Contains(joined, "routing.strategy is unusable") {
 		t.Fatalf("warnings: %s", joined)
+	}
+}
+
+// frontierRouter serves the n-th call's model text from answer, wrapped in an
+// end_turn message, behind a router with the frontier arms configured.
+func frontierRouter(t *testing.T, answer func(call int) string) *Router {
+	t.Helper()
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"m","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"` + answer(calls) + `"}],"stop_reason":"end_turn","usage":{"input_tokens":1200,"output_tokens":30}}`))
+	}))
+	t.Cleanup(srv.Close)
+	r, err := NewRouter(config.RouterConfig{TimeoutSeconds: 5, Frontier: config.RouterModel{APIKey: "k", Model: "claude-opus-5-5", BaseURL: srv.URL}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+const (
+	frontierAbstains = `{\"scores\":{\"c1\":0.5,\"c2\":0.5},\"confidence\":0}`
+	frontierRanksC1  = `{\"scores\":{\"c1\":0.9,\"c2\":0.1},\"confidence\":0.8}`
+)
+
+// An abstention is a recorded miss that leaves the breaker alone, so a run of
+// them cannot stop a replay.
+func TestFrontierAbstentionIsAMissNotAProviderFailure(t *testing.T) {
+	abstain := breakerTrip + 1
+	r := frontierRouter(t, func(call int) string {
+		if call <= abstain {
+			return frontierAbstains
+		}
+		return frontierRanksC1
+	})
+	examples := []Example{}
+	for i := 0; i < abstain+2; i++ {
+		examples = append(examples, example(fmt.Sprintf("ask-%d", i), "repow-b", ArmExplicit, nil))
+	}
+	rep, rows := Replay(context.Background(), examples, "frontier-claimed", func(ctx context.Context, in Input) RouterResult {
+		return r.Run(ctx, "frontier-claimed", in)
+	}, Options{})
+	if rows[0].FallbackReason != FallbackAbstained {
+		t.Fatalf("row = %+v, want %s", rows[0], FallbackAbstained)
+	}
+	if len(rep.Skipped) != 0 || rep.Scored != abstain+2 || rep.Fallbacks != abstain || rep.Hit1 != 2 {
+		t.Fatalf("report = %+v", rep)
+	}
+	if n := rep.FallbackCodes[FallbackAbstained]; len(n) != 1 || n[""] != abstain {
+		t.Fatalf("fallback codes = %v", rep.FallbackCodes)
+	}
+}
+
+// A missing score is still a malformed answer and still trips the breaker.
+func TestFrontierIncompleteAnswerTripsTheBreaker(t *testing.T) {
+	r := frontierRouter(t, func(int) string { return `{\"scores\":{\"c1\":0.5},\"confidence\":0.5}` })
+	for i := 0; i < breakerTrip; i++ {
+		if res := r.Run(context.Background(), "frontier-claimed", testInput()); res.FallbackReason != FallbackUnparseable {
+			t.Fatalf("call %d: %+v", i, res)
+		}
+	}
+	if res := r.Run(context.Background(), "frontier-claimed", testInput()); res.FallbackReason != FallbackBreakerOpen {
+		t.Fatalf("breaker should be open: %+v", res)
+	}
+}
+
+// Abstention is exactly zero confidence over one shared score, with at least
+// two candidates. Anything else valid ranks, ties broken by key order.
+func TestFrontierAbstentionDefinition(t *testing.T) {
+	one := testInput()
+	one.Candidates = one.Candidates[:1]
+	cases := []struct {
+		name, text string
+		in         Input
+		want       string // fallback reason, or the top peer when ranked
+	}{
+		{"equal scores, zero confidence", frontierAbstains, testInput(), FallbackAbstained},
+		{"all zero, zero confidence", `{\"scores\":{\"c1\":0,\"c2\":0},\"confidence\":0}`, testInput(), FallbackAbstained},
+		{"equal scores, some confidence", `{\"scores\":{\"c1\":0.5,\"c2\":0.5},\"confidence\":0.3}`, testInput(), "repow-b"},
+		{"distinct scores, zero confidence", `{\"scores\":{\"c1\":0.2,\"c2\":0.7},\"confidence\":0}`, testInput(), "repow-c"},
+		{"one candidate, zero confidence", `{\"scores\":{\"c1\":0},\"confidence\":0}`, one, "repow-b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := frontierRouter(t, func(int) string { return tc.text })
+			res := r.Run(context.Background(), "frontier-claimed", tc.in)
+			got := res.FallbackReason
+			if !res.Fallback {
+				got = res.Scores[0].PeerID
+			}
+			if got != tc.want {
+				t.Fatalf("got %q, want %q (%+v)", got, tc.want, res)
+			}
+		})
 	}
 }

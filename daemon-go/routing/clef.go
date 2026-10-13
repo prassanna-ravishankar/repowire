@@ -74,7 +74,7 @@ func (c Clef) Identity() (string, string) { return c.Model, c.TemplateSHA256() }
 func (c Clef) TemplateSHA256() string { return systemOneTemplate(c.View) }
 
 // Rank records the request size, the documented window, the measured cap and,
-// once answered, the input tokens in Signals, on failures as well as
+// once answered, the token counts in Signals, on failures as well as
 // successes, so a row shows which limit it was judged against.
 func (c Clef) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	window, known := clefContext[c.Family]
@@ -114,12 +114,13 @@ func (c Clef) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	if envelope.Result != nil {
 		decoded = *envelope.Result
 	}
+	// Record whatever was billed before judging the answer.
+	decoded.tokens(signals)
 	// Without a positive count, truncation cannot be ruled out: zero or less
 	// cannot describe a non-empty request.
 	if decoded.Usage == nil || decoded.Usage.InputTokens == nil {
 		return noted, fail(FallbackUnparseable)
 	}
-	signals["input_tokens"] = float64(*decoded.Usage.InputTokens)
 	if *decoded.Usage.InputTokens <= 0 {
 		return noted, fail(FallbackUnparseable)
 	}
