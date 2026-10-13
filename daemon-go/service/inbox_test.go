@@ -378,13 +378,18 @@ func containsName(names []proto.DisplayName, want string) bool {
 // role, live and deferred alike.
 func TestHumanBroadcastByIDKeepsRole(t *testing.T) {
 	f := newInboxFixture(t, config.HumanConfig{})
+	// beta is still seeding, so its copy is deferred behind the seed gate.
+	f.beta.TurnState = proto.TurnPendingFirstTurn
 	f.delivery.Broadcast(context.Background(), string(f.human.PeerID), "human instruction", nil, false)
-	frames := f.transport.framesFor(f.alpha.PeerID)
-	if len(frames) != 1 {
-		t.Fatalf("frames = %+v", frames)
-	}
-	if frames[0]["from_role"] != "human" || frames[0]["from_peer"] != "prass" {
-		t.Fatalf("human broadcast loses identity: %+v", frames[0])
+	f.delivery.Close() // releases the seed gate and joins the deferred send
+	for name, id := range map[string]proto.PeerID{"live": f.alpha.PeerID, "deferred": f.beta.PeerID} {
+		frames := f.transport.framesFor(id)
+		if len(frames) != 1 {
+			t.Fatalf("%s frames = %+v", name, frames)
+		}
+		if frames[0]["from_role"] != "human" || frames[0]["from_peer"] != "prass" {
+			t.Fatalf("%s human broadcast loses identity: %+v", name, frames[0])
+		}
 	}
 }
 
