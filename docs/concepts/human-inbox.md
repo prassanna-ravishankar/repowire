@@ -1,6 +1,6 @@
 # Human inbox
 
-The human is a peer. The daemon registers one human peer per user, and every message sent to that peer lands in a durable inbox. Telegram, the CLI, and (in a follow-up) the dashboard display that inbox. Senders address the human; they never choose a surface.
+The human is a peer. The daemon registers one human peer per user, and every message sent to that peer lands in a durable inbox. Telegram, the dashboard, and the CLI display that inbox. Senders address the human; they never choose a surface.
 
 ## Why
 
@@ -13,19 +13,23 @@ Before the inbox, a person on a phone could only be reached by answering a quest
 | `display_name` | `human.name` from config (default `human`) |
 | `role` / `backend` | `human` / `human` |
 | Status | Always `online`: the inbox always accepts |
-| Surface presence | `metadata.surfaces` (`{telegram: {live: true}}`) and `metadata.surfaces_live` |
+| Surface presence | `metadata.surfaces` (`{telegram: {live: true}, dashboard: {live: false}}`) and `metadata.surfaces_live` |
 
 The peer is registered in-process at daemon start, so liveness sweeps never demote it, and its `peer_id` stays stable across restarts. Presence is republished when a surface connects or drops; nothing polls.
 
 ## Surfaces are renderers
 
-A surface is a client that displays the inbox and answers on the human's behalf:
+A surface is a client that displays the inbox and answers on the human's behalf. Each one behaves the way its medium already does, rather than adding Repowire-specific controls:
 
-- **Telegram** pushes every new item to the chat. A reply on a thread appears as a Telegram reply to the earlier message. See [Telegram](../use/features/telegram.md).
-- **CLI**: `repowire inbox` lists, shows, marks read, and replies. See [CLI reference](../reference/cli.md#repowire-inbox).
-- **Dashboard**: an inbox view is planned as a follow-up.
+| Surface | Receives pushes | Read | Reply | Buttons |
+| --- | --- | --- | --- | --- |
+| [Telegram](../use/features/telegram.md) | A chat message per item, threaded as a Telegram reply on its ask | Implicit: any message or tap from you in the chat marks every item Telegram showed you read | Telegram's **Reply** on any message (any chunk of a long one) | Only where a bot offers a choice: a choice question's options, or **✓ Ack** for an acknowledge question |
+| [Dashboard](../use/features/dashboard.md) | Live in the **Inbox** view while a dashboard is open, with the unread count in the nav | Opening an item | The reply box under the item | A choice question's options, **✓ Acknowledge** for an acknowledge question |
+| [CLI](../reference/cli.md#repowire-inbox) | No; it reads on demand | `repowire inbox read` | `repowire inbox reply` | None |
 
-Read state is shared. Marking an item read on one surface marks it read everywhere. A reply from any surface acks the open ask behind it, or answers it for a structured question, and marks the item replied.
+Read state is shared. Marking an item read on one surface marks it read everywhere, and an open dashboard updates as it happens. A reply from any surface acks the open ask behind it, or answers it for a structured question, and marks the item replied. A reply to anything else asks its sender back.
+
+The dashboard has no peer of its own. Its channel is the event stream it already holds open (`GET /events/stream?surface=dashboard`, which the relay tunnels too), so it is a live surface while at least one dashboard is open, and a push to it is receipted once an open stream has flushed the item.
 
 ## Addressing and the `telegram` alias
 
@@ -57,8 +61,8 @@ Pushes run in the background. Each surface acks its push, and the outcome is rec
 | Stage | Detail |
 | --- | --- |
 | `inbox_stored` | `item_id`, `kind` |
-| `surface_pushed` | `surface`, `item_id`, `verified` (false for a legacy bridge that cannot ack) |
-| `surface_failed` | `surface`, `item_id`, `error_class` (`network`, `rate_limited`, `rejected`, `too_long`, `overloaded`, `no_receipt`, `other`) |
+| `surface_pushed` | `surface`, `item_id`, `verified` (false for a legacy bridge that cannot ack). For the dashboard it means an open dashboard stream flushed the item. |
+| `surface_failed` | `surface`, `item_id`, `error_class` (`network`, `rate_limited`, `rejected`, `too_long`, `overloaded`, `no_receipt`, `other`). A dashboard that closes before its stream flushed the item records `no_receipt`. |
 | `inbox_read` | `surface`, `item_id` |
 | `inbox_replied` | `surface`, `item_id` |
 

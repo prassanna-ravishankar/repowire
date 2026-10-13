@@ -62,7 +62,7 @@ The daemon-owned human peer and its [inbox](../concepts/human-inbox.md).
 | --- | --- | --- |
 | `name` | `human` | The human peer's `display_name`. Must match `[A-Za-z0-9._-]{1,64}`; an invalid name falls back to `human` with a startup warning. |
 | `broadcast` | `false` | Store mesh broadcasts in the inbox. Off means a broadcast never reaches the user. |
-| `surfaces.<name>.broadcast` | `false` | Push stored broadcasts to that surface (`telegram`, `slack`). |
+| `surfaces.<name>.broadcast` | `false` | Push stored broadcasts to that surface (`telegram`, `slack`, `dashboard`). |
 
 Environment overrides: `REPOWIRE_HUMAN__NAME`, `REPOWIRE_HUMAN__BROADCAST`.
 

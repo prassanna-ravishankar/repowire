@@ -46,7 +46,11 @@ Send a fire-and-forget nudge:
 /fyi logs are uploaded
 ```
 
-Reply to an agent's message with Telegram's **Reply**: on an ask it acks the ask with your text; on anything else it opens a new ask to that agent. An agent's answer to your ask arrives as a Telegram reply under your original message. Asks carry **✓ Ack** or choice buttons; other messages carry **✓ Seen**, which marks the item read on every surface (Telegram gives bots no read signal of its own).
+Reply to an agent's message with Telegram's **Reply**: on an ask it acks the ask with your text; on anything else it opens a new ask to that agent. A reply to any part of a long, split message works. An agent's answer to your ask arrives as a Telegram reply under your original message.
+
+Messages carry buttons only where a bot would offer a choice: a choice question shows its options (plus **✕ Deny** for a tool permission), and an acknowledge question shows **✓ Ack**. A plain message or a free-text ask has no buttons; Reply is the answer.
+
+Telegram gives bots no read receipts, so read state is implicit: whenever you send a message or tap a button in the chat, every unread item Telegram showed you is marked read on every surface. Buttons on older messages (**✓ Seen**, **✓ Ack**) keep working.
 
 Send a photo when the target agent should inspect it. The bot uploads it to the daemon and includes it in the outgoing ask. Attachments sent by agents are uploaded back to Telegram as photos or documents.
 
