@@ -9,7 +9,6 @@ package service
 // into an unexpected directory).
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -745,16 +744,6 @@ func ShellQuote(v string) string {
 		return v
 	}
 	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
-}
-
-// tmuxTimeout bounds every tmux call the daemon makes, so a wedged tmux
-// server cannot hold a request, a restart, or shutdown indefinitely.
-const tmuxTimeout = 5 * time.Second
-
-// TmuxCommand builds a tmux invocation that is killed after tmuxTimeout.
-func TmuxCommand(args ...string) (*exec.Cmd, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(context.Background(), tmuxTimeout)
-	return exec.CommandContext(ctx, "tmux", args...), cancel
 }
 
 // tmuxQuery returns trimmed stdout, preserving stderr diagnostics on failure.

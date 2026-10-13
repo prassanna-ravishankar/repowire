@@ -22,8 +22,12 @@ import (
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
+// HookVersion 2: offline posts carry the posting execution's pane_id and
+// agent_pid, which peer restart uses to fence a replaced execution.
+const HookVersion = 2
+
 const (
-	hookVersion           = 1
+	hookVersion           = HookVersion
 	paneUnsafeStrikeLimit = 3
 	hintTTL               = 5 * time.Minute
 )
@@ -612,6 +616,17 @@ func firstNonempty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// intValue reads a JSON number (decoded as float64) or int.
+func intValue(m map[string]any, key string) int {
+	switch v := m[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	}
+	return 0
 }
 
 func boolValue(m map[string]any, key string) bool {

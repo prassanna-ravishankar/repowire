@@ -179,6 +179,20 @@ func (t *WebSocketTransport) SendAndWaitDeliveryAck(ctx context.Context, id prot
 	}
 }
 
+// PendingDeliveryAcks counts frames sent to id that still await their
+// delivery_ack.
+func (t *WebSocketTransport) PendingDeliveryAcks(id proto.PeerID) int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	n := 0
+	for key := range t.acks {
+		if key.id == id {
+			n++
+		}
+	}
+	return n
+}
+
 // ResolveDeliveryAck hands a delivery_ack frame to whoever is waiting on it.
 func (t *WebSocketTransport) ResolveDeliveryAck(id proto.PeerID, deliveryID string, data map[string]any) {
 	if deliveryID == "" {

@@ -71,7 +71,7 @@ func (realPaneProbe) HasRuntimeEvidence(p *proto.Peer) bool {
 	}
 	// tmux display-message -p -t <pane> '#{pane_pid}' exits non-zero if the pane
 	// is gone. Best-effort: any error means "no evidence".
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", *p.PaneID, "#{pane_pid}").Output()
+	out, err := tmuxOutput("display-message", "-p", "-t", *p.PaneID, "#{pane_pid}")
 	return err == nil && len(strings.TrimSpace(string(out))) > 0
 }
 
@@ -83,7 +83,7 @@ func (realPaneProbe) HasRuntimeEvidence(p *proto.Peer) bool {
 type realProcessProbe struct{}
 
 func (realProcessProbe) Ancestors(pid int) (map[int]struct{}, bool) {
-	out, err := exec.Command("ps", "-axo", "pid=,ppid=").Output()
+	out, err := psRaw("-axo", "pid=,ppid=")
 	if err != nil {
 		return nil, false
 	}
@@ -117,7 +117,7 @@ func (realProcessProbe) Ancestors(pid int) (map[int]struct{}, bool) {
 }
 
 func (realProcessProbe) PaneRootPID(paneID string) (int, bool) {
-	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{pane_pid}").Output()
+	out, err := tmuxOutput("display-message", "-t", paneID, "-p", "#{pane_pid}")
 	if err != nil {
 		return 0, false
 	}
@@ -731,4 +731,17 @@ func parseSpawnCommands(raw string) (map[proto.AgentType]string, string) {
 		return map[proto.AgentType]string{}, fmt.Sprintf("-spawn-commands (daemon.spawn.commands) is not valid JSON (%v); spawn is disabled", err)
 	}
 	return commands, ""
+}
+
+// tmuxOutput and psRaw are the bounded forms of the tmux/ps probes above.
+func tmuxOutput(args ...string) ([]byte, error) {
+	cmd, cancel := service.TmuxCommand(args...)
+	defer cancel()
+	return cmd.Output()
+}
+
+func psRaw(args ...string) ([]byte, error) {
+	cmd, cancel := service.BoundedCommand(2*time.Second, "ps", args...)
+	defer cancel()
+	return cmd.Output()
 }

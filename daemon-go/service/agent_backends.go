@@ -76,34 +76,37 @@ func BuildResumeCommand(command string, backend proto.AgentType, runtimeSessionI
 	return base + " " + spec.flag + " " + arg, nil
 }
 
+// codexValueFlags are the codex options that take a value (`codex --help`,
+// `codex resume --help`, codex-cli 0.162), so a value is never mistaken for
+// the subcommand or the session id.
+var codexValueFlags = set("-c", "--config", "--enable", "--disable", "--remote", "--remote-auth-token-env",
+	"-i", "--image", "-m", "--model", "--local-provider", "-p", "--profile", "-s", "--sandbox",
+	"-C", "--cd", "--add-dir", "-a", "--ask-for-approval")
+
+// codexResumeSelectors pick a session inside `codex resume [OPTIONS] [SESSION_ID|--last] [PROMPT]`.
+var codexResumeSelectors = set("--last", "--all", "--include-non-interactive")
+
 // StripResume removes the args that pick a session (resume/continue flags,
-// codex's resume subcommand) so the result always starts a fresh session.
+// codex's `resume` subcommand with its selector, id and prompt) so the result
+// starts a fresh session. Options given to `codex resume` are kept; codex
+// accepts them before the subcommand too.
 func StripResume(command string, backend proto.AgentType) (string, error) {
 	words, ok := splitShellWords(command)
 	if !ok {
 		return "", fmt.Errorf("launch command has unmatched quotes")
 	}
+	if backend == proto.AgentCodex {
+		return joinShellWords(stripCodexResume(words)), nil
+	}
 	spec := backendResumeSpecs[backend]
 	prog := programIndex(words)
-	kept := words[:0:0]
-	for i := 0; i < len(words); i++ {
+	kept := append([]shellWord{}, words[:min(prog+1, len(words))]...)
+	for i := prog + 1; i < len(words); i++ {
 		w := words[i]
-		if i <= prog {
-			kept = append(kept, w)
-			continue
-		}
 		name := flagName(w.Value)
-		hasNext := i+1 < len(words) && !isFlag(words[i+1].Value)
 		switch {
-		case spec.subcommand != "" && w.Value == spec.subcommand:
-			for i+1 < len(words) && (words[i+1].Value == "--last" || words[i+1].Value == "--all") {
-				i++
-			}
-			if i+1 < len(words) && !isFlag(words[i+1].Value) {
-				i++
-			}
 		case slices.Contains(spec.stripValue, name):
-			if !strings.Contains(w.Value, "=") && hasNext {
+			if !strings.Contains(w.Value, "=") && i+1 < len(words) && !isFlag(words[i+1].Value) {
 				i++
 			}
 		case slices.Contains(spec.stripBool, w.Value):
@@ -112,4 +115,33 @@ func StripResume(command string, backend proto.AgentType) (string, error) {
 		}
 	}
 	return joinShellWords(kept), nil
+}
+
+func stripCodexResume(words []shellWord) []shellWord {
+	prog := programIndex(words)
+	kept := append([]shellWord{}, words[:min(prog+1, len(words))]...)
+	inResume, positionals := false, 0
+	for i := prog + 1; i < len(words); i++ {
+		w := words[i]
+		if isFlag(w.Value) {
+			if inResume && codexResumeSelectors[w.Value] {
+				continue
+			}
+			kept = append(kept, w)
+			if codexValueFlags[flagName(w.Value)] && !strings.Contains(w.Value, "=") && i+1 < len(words) {
+				i++
+				kept = append(kept, words[i])
+			}
+			continue
+		}
+		positionals++
+		switch {
+		case positionals == 1 && w.Value == "resume":
+			inResume = true
+		case inResume: // SESSION_ID, then PROMPT
+		default:
+			kept = append(kept, w)
+		}
+	}
+	return kept
 }

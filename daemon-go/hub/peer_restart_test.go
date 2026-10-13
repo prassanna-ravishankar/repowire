@@ -33,6 +33,7 @@ type fakeRuntime struct {
 	paneRoot   map[int]int // pid -> pane root pid
 	terminated []int
 	ignoreTerm bool
+	argsLossy  bool // Args mimics macOS ps (not exact)
 	onTerm     func(pid int)
 	onLaunch   func(cfg service.SpawnConfig)
 }
@@ -70,10 +71,10 @@ func (f *fakeRuntime) ProbePane(paneID string) *service.TmuxPaneEvidence {
 	return f.evidence[paneID]
 }
 
-func (f *fakeRuntime) Args(pid int) []string {
+func (f *fakeRuntime) Args(pid int) ([]string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return strings.Fields(f.args[pid])
+	return strings.Fields(f.args[pid]), !f.argsLossy
 }
 
 func (f *fakeRuntime) Alive(pid int) bool {
@@ -218,7 +219,7 @@ func newRestartFixture(t *testing.T, commands map[proto.AgentType]string) *resta
 	p := &proto.Peer{
 		PeerID: "repow-mesh-old", DisplayName: "proj", Path: project, Machine: "test-host",
 		Backend: proto.AgentClaudeCode, Circle: "mesh", Status: proto.StatusOnline, Role: proto.RoleAgent,
-		PaneID: &pane, AgentPID: &pid, Metadata: map[string]any{"hook_session_id": "sess-1"},
+		PaneID: &pane, AgentPID: &pid, Metadata: map[string]any{"hook_session_id": "5e1f0c2a-0000-4000-8000-000000000001"},
 	}
 	reg := &restartRegistry{fakeSpawnRegistry: fakeSpawnRegistry{peers: []*proto.Peer{p}}}
 	f := &restartFixture{rt: rt, reg: reg, peer: p, project: project, home: home, bin: bin, notes: make(chan service.NotifyParams, 4)}
@@ -227,7 +228,7 @@ func newRestartFixture(t *testing.T, commands map[proto.AgentType]string) *resta
 		newPane := cfg.Reserved.PaneID
 		reg.register(&proto.Peer{
 			PeerID: *cfg.PeerID, DisplayName: "proj", Path: cfg.Path, Backend: cfg.Backend, Circle: cfg.Circle,
-			Status: proto.StatusOnline, Role: proto.RoleAgent, PaneID: &newPane, Metadata: map[string]any{"hook_session_id": "sess-1"},
+			Status: proto.StatusOnline, Role: proto.RoleAgent, PaneID: &newPane, Metadata: map[string]any{"hook_session_id": "5e1f0c2a-0000-4000-8000-000000000001"},
 		})
 	}
 	h := &Hub{}
@@ -263,6 +264,18 @@ func (f *restartFixture) writeClaudeSession(t *testing.T, id string) {
 	}
 }
 
+func (f *restartFixture) writeCodexSession(t *testing.T, id string) {
+	t.Helper()
+	dir := filepath.Join(f.home, ".codex", "sessions", "2026", "10", "13")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd, _ := json.Marshal(f.project)
+	if err := os.WriteFile(filepath.Join(dir, "rollout-"+id+".jsonl"), []byte(`{"type":"session_meta","payload":{"cwd":`+string(cwd)+`}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (f *restartFixture) restart(t *testing.T, req RestartPeerRequest) RestartResult {
 	t.Helper()
 	resp := postSpawnJSON(t, f.srv, "/peers/proj/restart", req)
@@ -289,7 +302,7 @@ func (f *restartFixture) launchedCommands() []string {
 
 func TestRestartRelaunchesWithResumeInSameWindow(t *testing.T) {
 	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude --dangerously-skip-permissions"})
-	f.writeClaudeSession(t, "sess-1")
+	f.writeClaudeSession(t, "5e1f0c2a-0000-4000-8000-000000000001")
 	f.rt.args[101] = "node /opt/claude/cli.js --permission-mode acceptEdits"
 	f.peer.Role = proto.RoleOrchestrator
 
@@ -298,7 +311,7 @@ func TestRestartRelaunchesWithResumeInSameWindow(t *testing.T) {
 	if out.Outcome != restartOutcomeRestarted || out.Failed != nil {
 		t.Fatalf("outcome = %s failed=%+v", out.Outcome, out.Failed)
 	}
-	want := "claude --permission-mode acceptEdits --resume sess-1"
+	want := "claude --permission-mode acceptEdits --resume 5e1f0c2a-0000-4000-8000-000000000001"
 	if got := f.launchedCommands(); len(got) != 1 || got[0] != want {
 		t.Fatalf("launched %q, want [%q]", got, want)
 	}
@@ -315,7 +328,7 @@ func TestRestartRelaunchesWithResumeInSameWindow(t *testing.T) {
 	if !slices.Equal(f.rt.terminated, []int{101}) {
 		t.Fatalf("terminated = %v, want SIGTERM to 101 only", f.rt.terminated)
 	}
-	if out.OldPeerID != "repow-mesh-old" || out.NewPeerID != "repow-mesh-old" || out.NewPaneID != "%11" || out.RuntimeSessionID != "sess-1" {
+	if out.OldPeerID != "repow-mesh-old" || out.NewPeerID != "repow-mesh-old" || out.NewPaneID != "%11" || out.RuntimeSessionID != "5e1f0c2a-0000-4000-8000-000000000001" {
 		t.Fatalf("ids = %+v", out)
 	}
 	if !slices.Equal(f.reg.claims, []string{"repow-mesh-old=orchestrator"}) || out.Role != proto.RoleOrchestrator {
@@ -340,7 +353,7 @@ func TestRestartRelaunchesWithResumeInSameWindow(t *testing.T) {
 // the daemon must still finish and tell the resumed session what happened.
 func TestRestartSelfRestartCompletesAfterCallerDies(t *testing.T) {
 	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude --dangerously-skip-permissions"})
-	f.writeClaudeSession(t, "sess-1")
+	f.writeClaudeSession(t, "5e1f0c2a-0000-4000-8000-000000000001")
 	callerCtx, callerDies := context.WithCancel(context.Background())
 	f.rt.onTerm = func(int) { callerDies() }
 
@@ -363,7 +376,7 @@ func TestRestartSelfRestartCompletesAfterCallerDies(t *testing.T) {
 	if last.Outcome != restartOutcomeRestarted {
 		t.Fatalf("final outcome = %s (%+v)", last.Outcome, last.Failed)
 	}
-	if got := f.launchedCommands(); len(got) != 1 || got[0] != "claude --dangerously-skip-permissions --resume sess-1" {
+	if got := f.launchedCommands(); len(got) != 1 || got[0] != "claude --dangerously-skip-permissions --resume 5e1f0c2a-0000-4000-8000-000000000001" {
 		t.Fatalf("launched %q", got)
 	}
 }
@@ -453,7 +466,8 @@ func TestRestartBestGuessesMissingFields(t *testing.T) {
 	if !slices.Equal(out.Defaulted, []string{"command", "permission_mode", "resume_id"}) {
 		t.Fatalf("defaulted = %v", out.Defaulted)
 	}
-	if got := f.launchedCommands(); len(got) != 1 || got[0] != service.DefaultSpawnCommands[proto.AgentClaudeCode] {
+	// Nothing observed or recorded: no permission arguments at all, never the bypass template.
+	if got := f.launchedCommands(); len(got) != 1 || got[0] != "claude" {
 		t.Fatalf("launched %q", got)
 	}
 	if f.rt.created[0].SameWindow || len(f.rt.terminated) != 0 {
@@ -500,7 +514,7 @@ func TestRestartDryRunBuildsCodexResumeFromBinding(t *testing.T) {
 	f.h.store = store
 	f.peer.Backend, f.peer.Metadata = proto.AgentCodex, nil
 	f.rt.args[101] = "codex --full-auto"
-	pid, runtimeID := string(f.peer.PeerID), "019a-thread"
+	pid, runtimeID := string(f.peer.PeerID), "019a0000-0000-7000-8000-00000000c0de"
 	if _, err := store.UpsertObservation(context.Background(), state.Observation{
 		PeerID: &pid, Backend: "codex", ProjectPath: &f.project, RuntimeSessionID: &runtimeID,
 		ResumeCapability: map[string]any{"supported": true, "strategy": "codex_resume", "runtime_session_id_arg": runtimeID},
@@ -511,7 +525,7 @@ func TestRestartDryRunBuildsCodexResumeFromBinding(t *testing.T) {
 
 	out := f.restart(t, RestartPeerRequest{DryRun: true})
 
-	if out.Outcome != restartOutcomePlanned || out.WouldRun.Command != "codex --full-auto resume 019a-thread" {
+	if out.Outcome != restartOutcomePlanned || out.WouldRun.Command != "codex --full-auto resume 019a0000-0000-7000-8000-00000000c0de" {
 		t.Fatalf("dry run = %s %q", out.Outcome, out.WouldRun.Command)
 	}
 	if len(f.rt.created) != 0 || len(f.rt.terminated) != 0 {
@@ -523,25 +537,25 @@ func TestRestartDryRunBuildsCodexResumeFromBinding(t *testing.T) {
 // file while handling SIGTERM still resumes.
 func TestRestartValidatesResumeAfterExit(t *testing.T) {
 	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
-	f.rt.onTerm = func(int) { f.writeClaudeSession(t, "sess-1") }
+	f.rt.onTerm = func(int) { f.writeClaudeSession(t, "5e1f0c2a-0000-4000-8000-000000000001") }
 
 	out := f.restart(t, RestartPeerRequest{})
 
-	if out.ResumeMode != "resumed" || out.WouldRun.Command != "claude --dangerously-skip-permissions --resume sess-1" {
+	if out.ResumeMode != "resumed" || out.WouldRun.Command != "claude --dangerously-skip-permissions --resume 5e1f0c2a-0000-4000-8000-000000000001" {
 		t.Fatalf("resume_mode=%s (%s) command=%q", out.ResumeMode, out.ResumeReason, out.WouldRun.Command)
 	}
 }
 
 func TestRestartInfoPreviewsWithoutTouchingTheRuntime(t *testing.T) {
 	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude --dangerously-skip-permissions"})
-	f.writeClaudeSession(t, "sess-1")
+	f.writeClaudeSession(t, "5e1f0c2a-0000-4000-8000-000000000001")
 
 	info := f.h.restartInfo(context.Background(), f.peer)
 
 	if info == nil || !info.Restartable || info.Last != nil {
 		t.Fatalf("info = %+v", info)
 	}
-	if info.Preview.WouldRun.Command != "claude --dangerously-skip-permissions --resume sess-1" || info.Preview.WouldRun.PermissionModeSource != "argv" {
+	if info.Preview.WouldRun.Command != "claude --dangerously-skip-permissions --resume 5e1f0c2a-0000-4000-8000-000000000001" || info.Preview.WouldRun.PermissionModeSource != "argv" {
 		t.Fatalf("preview = %+v", info.Preview.WouldRun)
 	}
 	if len(f.rt.created) != 0 || len(f.rt.terminated) != 0 {
@@ -565,8 +579,8 @@ func TestRestartRefusesWhenRuntimeMayBeAliveButPaneUnseen(t *testing.T) {
 	}
 }
 
-// The restart fences the execution it replaced (old pane, old pid), forever;
-// the replacement's own posts are never fenced.
+// The restart fences the execution it replaced: both its pane and its pid must
+// match. A reused pid in another pane, or a post without both, is not fenced.
 func TestRestartFencesOnlyTheReplacedExecution(t *testing.T) {
 	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
 	if _, fenced := f.h.restartFencedOffline(f.peer.PeerID, restartOldPane, 101); fenced {
@@ -581,8 +595,9 @@ func TestRestartFencesOnlyTheReplacedExecution(t *testing.T) {
 		pid  int
 		want bool
 	}{
-		{restartOldPane, 0, true}, {"", 101, true}, {restartOldPane, 101, true},
-		{"%11", 0, false}, {"%11", 202, false}, {"", 0, false},
+		{restartOldPane, 101, true},
+		{restartOldPane, 0, false}, {"", 101, false}, {"%11", 101, false}, {restartOldPane, 102, false},
+		{"%11", 0, false}, {"", 0, false},
 	} {
 		id, fenced := f.h.restartFencedOffline(proto.PeerID(out.NewPeerID), c.pane, c.pid)
 		if fenced != c.want || (fenced && id != out.RestartID) {
@@ -642,7 +657,7 @@ func TestRestartCancelledDaemonNeverSignals(t *testing.T) {
 
 func TestRestartFreshStripsTemplateResume(t *testing.T) {
 	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude --resume old-session --continue"})
-	f.writeClaudeSession(t, "sess-1")
+	f.writeClaudeSession(t, "5e1f0c2a-0000-4000-8000-000000000001")
 
 	if out := f.restart(t, RestartPeerRequest{Fresh: true}); out.ResumeMode != "fresh" {
 		t.Fatalf("resume_mode = %s", out.ResumeMode)
@@ -652,29 +667,108 @@ func TestRestartFreshStripsTemplateResume(t *testing.T) {
 	}
 }
 
-// An observed permission set restart does not understand is carried over word
-// for word; it never falls back to the (bypass) template.
-func TestRestartPreservesUnknownCodexPermissionsVerbatim(t *testing.T) {
-	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentCodex: "codex --dangerously-bypass-approvals-and-sandbox resume old"})
-	f.peer.Backend = proto.AgentCodex
-	f.peer.Metadata = map[string]any{"hook_session_id": "new-thread"}
-	f.rt.args[101] = "codex --sandbox read-only --ask-for-approval untrusted"
+// Any permission argument outside the model relaunches the observed argv
+// verbatim; it never falls back to the (bypass) template.
+func TestRestartRelaunchesUnmodeledPermissionsArgvVerbatim(t *testing.T) {
+	for _, argv := range []string{
+		"codex --sandbox read-only --ask-for-approval untrusted",
+		"codex --full-auto",
+		"codex -c approval_policy=never -m gpt-5",
+	} {
+		f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentCodex: "codex --dangerously-bypass-approvals-and-sandbox resume old"})
+		f.peer.Backend, f.peer.Metadata = proto.AgentCodex, map[string]any{"hook_session_id": "019a0000-0000-7000-8000-00000000c0de"}
+		f.rt.args[101] = argv
+		f.rt.onLaunch = nil
+		f.writeCodexSession(t, "019a0000-0000-7000-8000-00000000c0de")
+		setRestartTimings(t, time.Second, 10*time.Millisecond)
+
+		out := f.restart(t, RestartPeerRequest{})
+
+		if out.WouldRun.PermissionMode != service.ModeArgvVerbatim || out.WouldRun.PermissionModeSource != "argv" {
+			t.Fatalf("%q: mode = %s (%s)", argv, out.WouldRun.PermissionMode, out.WouldRun.PermissionModeSource)
+		}
+		if got := f.launchedCommands(); len(got) != 1 || got[0] != service.ArgvCommand(strings.Fields(argv))+" resume 019a0000-0000-7000-8000-00000000c0de" {
+			t.Fatalf("%q: launched %q", argv, got)
+		}
+	}
+}
+
+func TestRestartRebuildsModeledCodexPermissions(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentCodex: "codex --dangerously-bypass-approvals-and-sandbox -m gpt-5"})
+	f.peer.Backend, f.peer.Metadata = proto.AgentCodex, map[string]any{"hook_session_id": "019a0000-0000-7000-8000-00000000c0de"}
+	f.rt.args[101] = "codex -s read-only -a never"
 
 	out := f.restart(t, RestartPeerRequest{DryRun: true})
 
-	if out.WouldRun.PermissionMode != service.PreservedVerbatim || out.WouldRun.PermissionModeSource != "argv" {
-		t.Fatalf("mode = %s (%s)", out.WouldRun.PermissionMode, out.WouldRun.PermissionModeSource)
-	}
-	want := "codex --sandbox read-only --ask-for-approval untrusted resume new-thread"
-	if out.WouldRun.Command != want {
-		t.Fatalf("command = %q, want %q", out.WouldRun.Command, want)
+	if out.WouldRun.PermissionMode != "sandbox=read-only,approval=never" || out.WouldRun.Command != "codex -m gpt-5 -s read-only -a never resume 019a0000-0000-7000-8000-00000000c0de" {
+		t.Fatalf("mode=%s command=%q", out.WouldRun.PermissionMode, out.WouldRun.Command)
 	}
 }
+
+func TestRestartCodexWithoutObservationLaunchesNoPermissionFlags(t *testing.T) {
+	for _, meta := range []map[string]any{nil, {"permission_mode": "default"}} {
+		f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentCodex: service.DefaultSpawnCommands[proto.AgentCodex]})
+		f.peer.Backend, f.peer.Status, f.peer.AgentPID, f.peer.Metadata = proto.AgentCodex, proto.StatusOffline, nil, meta
+		delete(f.rt.evidence, restartOldPane)
+
+		out := f.restart(t, RestartPeerRequest{DryRun: true})
+
+		if out.WouldRun.Command != "codex" || out.WouldRun.PermissionMode != service.ModeDefault {
+			t.Fatalf("meta=%v: command=%q mode=%s", meta, out.WouldRun.Command, out.WouldRun.PermissionMode)
+		}
+	}
+}
+
+// With lossy (ps) argv and a recorded mode, an unmodeled set prefers the mode.
+func TestRestartPrefersRecordedModeOverLossyVerbatimArgv(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	f.rt.args[101] = "claude --allowedTools Bash(git log) Edit"
+	f.rt.argsLossy = true
+	f.peer.Metadata["permission_mode"] = "plan"
+
+	out := f.restart(t, RestartPeerRequest{DryRun: true})
+
+	if out.WouldRun.PermissionMode != "plan" || out.WouldRun.PermissionModeSource != "hook" {
+		t.Fatalf("mode=%s source=%s", out.WouldRun.PermissionMode, out.WouldRun.PermissionModeSource)
+	}
+}
+
+func TestRestartRefusesHookTooOldToFence(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	f.peer.Metadata["hook_version"] = float64(1)
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if out.Failed == nil || out.Failed.Stage != restartStagePrepare || out.Failed.Reason != "hook_too_old" || !strings.Contains(out.Failed.Hint, "by hand") {
+		t.Fatalf("failed = %+v", out.Failed)
+	}
+	if len(f.rt.terminated) != 0 || len(f.rt.created) != 0 {
+		t.Fatal("nothing may be touched")
+	}
+}
+
+func TestRestartFencesOnlyAfterASuccessfulSignal(t *testing.T) {
+	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"})
+	f.h.spawn.proc = failingTerminate{f.rt}
+
+	out := f.restart(t, RestartPeerRequest{})
+
+	if out.Failed == nil || out.Failed.Reason != "sigterm_failed" {
+		t.Fatalf("failed = %+v", out.Failed)
+	}
+	if _, fenced := f.h.restartFencedOffline(f.peer.PeerID, restartOldPane, 101); fenced {
+		t.Fatal("a runtime that was never signalled must not be fenced; its genuine death must count")
+	}
+}
+
+type failingTerminate struct{ *fakeRuntime }
+
+func (failingTerminate) Terminate(int) error { return os.ErrPermission }
 
 func TestRestartRedactsCommandValuesInResultAndJournal(t *testing.T) {
 	const marker = "SYNTHETIC_REVIEW_SECRET"
 	f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentClaudeCode: "claude --settings '{\"env\":{\"TOKEN\":\"" + marker + "\"}}'"})
-	f.writeClaudeSession(t, "sess-1")
+	f.writeClaudeSession(t, "5e1f0c2a-0000-4000-8000-000000000001")
 
 	out := f.restart(t, RestartPeerRequest{})
 

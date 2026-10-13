@@ -62,6 +62,18 @@ func runSession(backend string) int {
 	return handleSession(raw, backend, true)
 }
 
+// hookAgentPID is the runtime that invoked this hook: the parent process, or
+// the pane's agent when the parent is a wrapping shell.
+func hookAgentPID(paneID string) int {
+	agentPID := os.Getppid()
+	if isShell, known := commandIsShell(agentPID); known && isShell {
+		if pid := findAgentPID(paneID); pid > 0 {
+			agentPID = pid
+		}
+	}
+	return agentPID
+}
+
 func handleSession(raw map[string]any, backend string, emitContext bool) int {
 	payload := Normalize(raw, backend)
 	cwd := firstNonempty(payload.CWD, mustGetwd())
@@ -71,7 +83,7 @@ func handleSession(raw map[string]any, backend string, emitContext bool) int {
 		if stringValue(raw, "reason") != "clear" {
 			meta := ReadPaneRuntimeMetadata(info.PaneID)
 			peerID := firstNonempty(stringValue(meta, "peer_id"), peerForPane(info.PaneID))
-			markOffline(peerID, "session_end", "session_end_hook", "SessionEnd reason="+firstNonempty(stringValue(raw, "reason"), "unknown"), info.PaneID, 0)
+			markOffline(peerID, "session_end", "session_end_hook", "SessionEnd reason="+firstNonempty(stringValue(raw, "reason"), "unknown"), info.PaneID, hookAgentPID(info.PaneID))
 		}
 		return 0
 	}
@@ -112,12 +124,7 @@ func handleSession(raw map[string]any, backend string, emitContext bool) int {
 		lock.Close()
 		return 0
 	}
-	agentPID := os.Getppid()
-	if isShell, known := commandIsShell(agentPID); known && isShell {
-		if pid := findAgentPID(info.PaneID); pid > 0 {
-			agentPID = pid
-		}
-	}
+	agentPID := hookAgentPID(info.PaneID)
 	if certified := validateCertificateIdentity(backend, cwd, info.PaneID, agentPID); certified != nil {
 		hint = map[string]any{
 			"peer_id": stringValue(certified, "peer_id"),
@@ -211,7 +218,7 @@ func handleSession(raw map[string]any, backend string, emitContext bool) int {
 			_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
 		}
 		if priorPeerID != "" && priorPeerID != peerID {
-			markOffline(priorPeerID, "pane_takeover", "session_start_takeover", "pane "+info.PaneID+" taken over by "+peerID, info.PaneID, 0)
+			markOffline(priorPeerID, "pane_takeover", "session_start_takeover", "pane "+info.PaneID+" taken over by "+peerID, info.PaneID, intValue(prior, "agent_pid"))
 		}
 		ClearPaneRuntimeState(info.PaneID)
 	}

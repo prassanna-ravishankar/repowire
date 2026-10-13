@@ -63,59 +63,80 @@ func flagName(value string) string {
 	return name
 }
 
-// simpleWord matches ids, subcommands and paths: words that cannot carry a
-// structured secret such as JSON or a quoted prompt.
-var simpleWord = regexp.MustCompile(`^[A-Za-z0-9._:/@%+-]+$`)
+// Redaction is an allowlist: a value or positional is shown only when it
+// matches a grammar that cannot carry a secret.
+var (
+	sessionIDShape = regexp.MustCompile(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|ses_[A-Za-z0-9]{8,})$`)
+	modelIDShape   = regexp.MustCompile(`^(claude|gpt|o[0-9]|gemini|codex|opus|sonnet|haiku|fable)[A-Za-z0-9.-]*$`)
+)
 
-// redactSafeFlags are the flags whose values a printed restart command keeps.
-var redactSafeFlags = map[string]bool{
-	"--resume": true, "-r": true, "--session": true, "--permission-mode": true, "--model": true, "-m": true,
-	"--sandbox": true, "-s": true, "--ask-for-approval": true, "-a": true,
+// shownValue reports whether flag's value may be printed.
+func shownValue(flag, value string) bool {
+	switch flag {
+	case "--resume", "-r", "--session", "--session-id":
+		return sessionIDShape.MatchString(value)
+	case "--permission-mode":
+		return claudePermissionModes[value]
+	case "--sandbox", "-s":
+		return codexSandboxModes[value]
+	case "--ask-for-approval", "-a":
+		return codexApprovalPolicies[value]
+	case "--model", "-m":
+		return modelIDShape.MatchString(value)
+	}
+	return false
 }
 
-// RedactCommand replaces argument values in a launch line with <redacted>:
-// env assignments, every flag value except redactSafeFlags, and positional
-// words that are not simple (JSON, quoted prompts). It keeps the program, flag
-// names, subcommands and ids, and returns what it redacted.
+// booleanFlags take no value, so the word after them is positional.
+var booleanFlags = map[string]bool{
+	"--dangerously-skip-permissions": true, "--allow-dangerously-skip-permissions": true,
+	"--dangerously-bypass-approvals-and-sandbox": true, "--dangerously-bypass-hook-trust": true, "--approve-for-me": true,
+	"--continue": true, "--fork-session": true, "--last": true, "--all": true, "--include-non-interactive": true,
+	"--strict-config": true, "--oss": true, "--worktree": true, "--search": true, "--no-alt-screen": true, "--no-daemon": true,
+	"--verbose": true, "--debug": true, "--full-auto": true, "--yolo": true,
+}
+
+// RedactCommand prints a launch line with every value redacted unless it
+// matches a known grammar: env assignment values, flag values (shown only for
+// session ids, listed permission modes, and model ids), and positionals
+// (shown only for the `resume` subcommand and session ids). The program,
+// `env`, and flag names are kept. It returns what it redacted.
 func RedactCommand(command string) (string, []string) {
 	words, ok := splitShellWords(command)
 	if !ok {
 		return "<redacted: unparseable command>", []string{"*"}
 	}
 	var redacted []string
+	redact := func(i int, raw, name string) {
+		words[i].Raw, redacted = raw, append(redacted, name)
+	}
 	prog := programIndex(words)
 	for i := 0; i < len(words); i++ {
 		w := words[i]
 		switch {
 		case i < prog:
 			if name, _, found := strings.Cut(w.Value, "="); found {
-				words[i].Raw, redacted = name+"=<redacted>", append(redacted, name)
+				redact(i, name+"=<redacted>", name)
 			}
 		case i == prog:
 		case isFlag(w.Value):
-			name, _, hasValue := strings.Cut(w.Value, "=")
+			name, value, hasValue := strings.Cut(w.Value, "=")
 			if hasValue {
-				if !redactSafeFlags[name] {
-					words[i].Raw, redacted = name+"=<redacted>", append(redacted, name)
+				if !shownValue(name, value) {
+					redact(i, name+"=<redacted>", name)
 				}
 				continue
 			}
 			if i+1 < len(words) && !isFlag(words[i+1].Value) && !booleanFlags[name] {
-				if !redactSafeFlags[name] {
-					words[i+1].Raw, redacted = "<redacted>", append(redacted, name)
+				if !shownValue(name, words[i+1].Value) {
+					redact(i+1, "<redacted>", name)
 				}
 				i++
 			}
-		case !simpleWord.MatchString(w.Value):
-			words[i].Raw, redacted = "<redacted>", append(redacted, "positional")
+		case w.Value == "resume" || sessionIDShape.MatchString(w.Value):
+		default:
+			redact(i, "<redacted>", "positional")
 		}
 	}
 	return joinShellWords(words), redacted
-}
-
-// booleanFlags take no value, so the word after them is positional.
-var booleanFlags = map[string]bool{
-	"--dangerously-skip-permissions": true, "--allow-dangerously-skip-permissions": true,
-	"--dangerously-bypass-approvals-and-sandbox": true, "--yolo": true, "--full-auto": true,
-	"--continue": true, "--verbose": true, "--debug": true, "--last": true, "--all": true,
 }
