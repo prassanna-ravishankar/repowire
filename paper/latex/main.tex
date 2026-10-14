@@ -64,7 +64,7 @@ The contributions are as follows.
 \item \textbf{A history-conditioned evaluation protocol} (Section~\ref{sec:protocol}). Each decision is assigned, from information available before the request, to one of three history conditions: \emph{continuation}, \emph{switch}, or \emph{no history}. Agreement is reported per condition beside the analytic chance level of the decision's candidate set, against temporal baselines that use no future information, with paired tests and an explicit dependence unit.
 \item \textbf{An empirical counterexample} (Sections~\ref{sec:decomp}--\ref{sec:controls}). From 908 decisions reconstructed from a production mesh's event journal, we show that the aggregate ranking of a learned policy against a majority rule is determined by the request mix; that masking activity-derived fields attributes the continuation score of every model tested to recency; and that the residual on switches survives a lexical audit but not every clustering of the paired test.
 \item \textbf{The ceiling of state-based selection} (Section~\ref{sec:frontier}). Three frontier models evaluated under the same protocol establish that the limiting factor on switches is the quality of the reader of the state rather than the information content of the state, and that even the strongest model is dominated by the recent-contact rule when continuations exceed 0.88 of history-bearing traffic.
-\item \textbf{A registered design consequence} (Section~\ref{sec:policy}). The decomposition locates the useful work of a learned policy on switches and on decisions without history. We derive an override policy triggered by peer arrival, fix its parameters, and register a prospective test.
+\item \textbf{A registered design consequence} (Section~\ref{sec:policy}). The decomposition locates the useful work of a learned policy on switches and on decisions without history. We derive an override policy triggered by peer arrival, show by replay that the same trigger in front of a frontier model recovers about half of its switch margin at under a third of its calls, fix the parameters, and register a prospective test.
 \end{enumerate}
 
 Throughout, the measured quantity is termed \emph{recipient agreement}: the rate at which a policy's selection coincides with the recipient recorded in the sender's request. This label is reproducible and behaviourally grounded, but it is not evidence that the sender's choice was optimal, and no result here concerns downstream task outcome.
@@ -459,6 +459,27 @@ Opus 5.5 & .775 & .568 & .500 & Recorded policy, $\sim$70$\times$ cost \\
 Arrival policy, journal history & .568 & .326 & .392 & Exploratory replay \\
 Arrival policy, ledger history & .511 & .258 & .284 & History-availability sensitivity \\
 Arrival policy, later traffic & pending & pending & pending & Prospective, frozen \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Cascades.}
+Because every policy has a recorded row on the same decisions, any cascade of a cheap default with a learned override can be scored by replay without further model calls. Table~\ref{tab:cascade} scores three: past majority with escalation to Opus~5.5 when it has no vote, when the arrival trigger fires, and when the candidate set exceeds twelve. The arrival-triggered cascade recovers approximately half of the frontier model's switch margin over past majority ($23$--$1$ on discordant switches, $p<10^{-4}$) while calling the frontier model on 29\% of decisions; the size-triggered cascade recovers more at 53\%. With Haiku behind the same trigger the switch margin is smaller but the marginal cost is negligible. On the orchestrator's own switches the arrival cascade (0.484) is within two decisions of the frontier model alone (0.500) at under a third of the calls. The triggers and the size threshold were chosen on this data and are exploratory; the arrival cascade is the natural candidate for the prospective test, and its frontier cost is bounded by the trigger rate rather than by traffic.
+
+\begin{table}[t]
+\centering\footnotesize
+\caption{Cascades scored by replay from recorded rows: past majority by default, escalating to a learned policy on a trigger. The call share is the fraction of decisions on which the learned policy is invoked.}
+\label{tab:cascade}
+\begin{tabular}{lrrrrr}
+\toprule
+Policy & Worker 555 & Switch 169 & Orch.\ sender 97 & Orch.\ switch 62 & Call share \\
+\midrule
+Past majority & .560 & .254 & .454 & .339 & 0 \\
+Opus 5.5 & .775 & .568 & .546 & .500 & 1.00 \\
+Majority, Opus when no vote & .629 & .302 & .495 & .371 & 0.14 \\
+Majority, Opus on arrival trigger & .656 & .385 & .546 & .484 & 0.29 \\
+Majority, Opus when $|\C| > 12$ & .708 & .462 & .485 & .435 & 0.53 \\
+Majority, Haiku on arrival trigger & .609 & .355 & .495 & .452 & 0.29 \\
 \bottomrule
 \end{tabular}
 \end{table}
