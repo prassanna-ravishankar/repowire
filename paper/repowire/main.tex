@@ -57,7 +57,7 @@
 \printAffiliationsAndNotice{}
 
 \begin{abstract}
-Coding-agent sessions run in separate repositories and on different runtimes. Coordinating them requires an address for each session and a way to deliver messages into it. We present \sys, a local daemon that connects Claude Code, Codex, OpenCode and Pi sessions through a common protocol. The daemon assigns peer identities independently of display names and runtime sessions. Runtime bridges deliver messages through native input APIs. Only requests require explicit closure; notifications do not. Liveness repair runs on incoming requests rather than a periodic timer. Human control surfaces and orchestrator sessions use the same protocol as other peers. We study one operator's deployment over 146 calendar days, containing 2,810 requests and 370 agent names across 86 projects. One name appears over 144 days and 49 registrations; the median lifetime in the other-agent registration class is 12.6 minutes. Recorded request closure is 87.4\% in the Python era and 98.1\% in the Go era. Of agent-to-agent requests, 52\% cross runtimes. Among requests with a preceding request from the same sender, 74.7\% repeat its recipient. Human surfaces originate 53.5\% of non-machine requests and no notifications. A separate written record contains 76 incidents, of which 34 concern identity, liveness or delivery. \sys{} is open source.
+Coding-agent sessions run in separate repositories and on different runtimes. Coordinating them requires an address for each session and a way to deliver messages into it. We present \sys, a local daemon that connects Claude Code, Codex, OpenCode and Pi sessions through a common protocol. The daemon routes by peer ids distinct from display names and runtime session ids. Runtime bridges deliver messages through native input APIs. Only requests require explicit closure; notifications do not. Liveness repair runs on incoming requests rather than a periodic timer. Human control surfaces and orchestrator sessions use the same protocol as other peers. We study one operator's deployment over 146 calendar days, containing 2,810 requests and 370 agent names across 86 projects. One name appears over 144 days and 49 registrations; the median lifetime in the other-agent registration class is 12.6 minutes. Recorded request closure is 87.4\% in the Python era and 98.1\% in the Go era. Of agent-to-agent requests, 52\% cross runtimes. Among requests with a preceding request from the same sender, 74.7\% repeat its recipient. Human surfaces originate 53.5\% of non-machine requests and no notifications. A separate written record contains 76 incidents, of which 34 concern identity, liveness or delivery. \sys{} is open source.
 \end{abstract}
 
 \section{Introduction}
@@ -73,7 +73,7 @@ The design changed in response to operational failures. Early versions routed by
 
 \paragraph{Contributions.}
 \begin{enumerate}
-\item A design for persistent, addressable coding agents across runtimes (\cref{sec:design}): daemon-minted identity with a proof hierarchy and terminal retirement; a protocol in which only asks have a lifecycle; bridges under a transport-neutral router; lazy repair instead of liveness polling; humans and orchestrators as peers.
+\item A design for persistent, addressable coding agents across runtimes (\cref{sec:design}): daemon-minted identity with separate registration and addressing checks and explicit retirement; a protocol in which only asks have a lifecycle; bridges under a transport-neutral router; lazy repair instead of liveness polling; humans and orchestrators as peers.
 \item An open-source implementation (\cref{sec:impl}) that grew from 5 to 33 tools and from one runtime to six over ten months, with journal schemas that differ across the native cutover.
 \item A measurement study of the mesh from its journal (\cref{sec:eval}): 146 days, 2,810 requests, 2,472 agent registrations. We report lifetime and identity churn, closure and latency, the sender-recipient structure of traffic including the human's share, cross-runtime use, the review loop, and incidents coded against the MAST taxonomy \citep{cemri2025mast}.
 \item Design lessons (\cref{sec:lessons}) stated as claims with the evidence that supports or limits them.
@@ -120,43 +120,43 @@ G5 follows an incident in which timer-driven reconciliation marked live peers of
 \node[lbl, above=0.5mm of cc.north west, anchor=south west] {bridges (runtime side)};
 \node[lbl, below=0.5mm of tg.south west, anchor=north west] {peers (clients of the same protocol)};
 \end{tikzpicture}
-\caption{Components. Bridges translate each runtime's native session API into the peer protocol; the daemon routes at the peer level and never sees runtime detail. Human surfaces, the orchestrator and the relay are clients.}
+\caption{Components. Bridges translate each runtime's native session API into the peer protocol; the daemon resolves peer identities before transport delivery. Human surfaces, the orchestrator and the relay are clients.}
 \label{fig:arch}
 \end{figure*}
 
 \subsection{Peers, circles, roles}
 
-A \emph{peer} is one running agent session: a display name derived from its working directory and runtime (\code{torale-codex}, suffixed on collision to \code{torale-2-codex}), a working path, a runtime (\emph{backend}), a status (online, busy, offline), a per-turn state, a free-text description the agent sets, and a last-seen time. A \emph{circle} is a routing scope that by default maps to a terminal multiplexer session, so agents started together can address each other and agents started elsewhere cannot. A \emph{role} is metadata: \code{agent} by default; \code{human} for control surfaces; \code{orchestrator} for a coordinating session; \code{service} for the job runner and the relay. Roles that bypass circles may name a circle explicitly; an ordinary agent cannot.
+A \emph{peer} is one running agent session: a display name derived from its working directory and runtime (\code{torale-codex}, suffixed on collision to \code{torale-2-codex}), a working path, a runtime (\emph{backend}), a status (online, busy, offline), a per-turn state, a free-text description the agent sets, and a last-seen time. A \emph{circle} is a routing scope that by default maps to a terminal multiplexer session, so agents started together can address each other and agents started elsewhere cannot. A \emph{role} is metadata: \code{agent} by default; \code{human} for control surfaces; \code{orchestrator} for a coordinating session; \code{service} for service clients such as the relay. Roles that bypass circles may name a circle explicitly; an ordinary agent cannot.
 
 \subsection{Identity}
 \label{sec:identity}
 
-The daemon routes by a minted \code{peer\_id}. Display names, working paths and runtime session ids cannot establish identity on their own. Names collide across circles. Sibling terminals and subprocesses share paths. Runtime session ids can be reused on resume and are absent on some runtimes. The incident record includes failures involving these alternatives (\cref{sec:incidents}).
+The daemon routes by a minted \code{peer\_id}. Addressing can resolve a display name to this id; registration also uses names and paths when reclaiming an offline peer or persisted mapping. Names collide across circles. Sibling terminals and subprocesses share paths. Runtime session ids can be reused on resume and are absent on some runtimes. The incident record includes failures involving these alternatives (\cref{sec:incidents}).
 
-\paragraph{Proof hierarchy.}
-A registration or reconnect claiming an identity is resolved against evidence in a fixed order (\cref{tab:proof}). A live process id on the same machine, runtime and compatible path is the strongest evidence a registrant carries: several registrants describe the same agent independently (a session-start hook, the tool server's lazy registration, a socket reconnect), and all of them converge on the peer already registered for that process. A short-lived \emph{birth certificate} minted at registration lets the tool server adopt the identity without a path search. Path and name are hints only; they filter and allocate names but never prove identity, and the daemon refuses ambiguous matches.
+\paragraph{Registration and addressing.}
+Registration and message addressing use different checks (\cref{tab:proof}). Registration first checks retirement, then looks for an existing live-process holder. For Claude Code, matching process and compatible machine, backend and path can identify that holder; Codex, OpenCode and Pi also require a matching runtime session id because one process can host several sessions. The daemon next considers a claimed \code{peer\_id} with compatible backend and path, an offline registration matching name, circle, backend and path, and a persisted mapping matching that tuple. It mints an id if none matches. The tuple-based fallbacks return the first match rather than reject ambiguous matches. Addressing accepts an id or display name and rejects an ambiguous name. A daemon-minted \emph{birth certificate}, valid for 24 hours by default, authenticates the tool server's identity claim.
 
 \begin{table}[t]
-\caption{Identity proof hierarchy. Routing resolves from the strongest available level and fails closed below level 5.}
+\caption{Identity checks by operation. These checks do not form a single ordered proof hierarchy.}
 \label{tab:proof}
 \centering
 \footnotesize
-\setlength{\tabcolsep}{3pt}\begin{tabular}{@{}cp{3.9cm}p{2.9cm}@{}}
+\setlength{\tabcolsep}{3pt}\begin{tabular}{@{}p{1.6cm}p{3.1cm}p{2.5cm}@{}}
 \toprule
-Level & Evidence & Authorises \\
+Operation & Evidence & Effect \\
 \midrule
-1 & live \code{peer\_id} in the registry & routing \\
-2 & daemon-minted birth certificate & identity handoff to the tool server \\
-3 & pane metadata plus live process id & local adoption \\
-4 & durable session mapping & circle, role, history provenance \\
-5 & spawn ownership or pane metadata naming the \code{peer\_id} & kill and restart \\
-6 & name, path, runtime, machine, last seen & hints and filters only \\
+Addressing & peer id or unambiguous name & resolves recipient id \\
+Tool identity & daemon-minted birth certificate & authenticates claim \\
+Local adoption & matching pane metadata and process evidence & recovers local identity \\
+Registration & claimed id, or name, circle, backend and path & reuses compatible registration or mapping \\
+Kill or restart & spawn ownership or pane metadata naming the peer id & authorises pane destruction \\
+Mapping restore & persisted mapping & restores role, circle and description \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \paragraph{Lifecycle.}
-\Cref{fig:lifecycle} shows the states. A clean quit, a hook reporting that its agent process exited, a pane takeover, or three consecutive negative liveness verdicts \emph{retire} the identity: the daemon severs its socket and refuses any reconnect claiming the id unless the claim carries a live process id. Retirement records persist across daemon restarts, so an orphaned reconnect loop cannot resurrect a dead peer. A fresh session start always carries a live process id and reclaims the name cleanly. Retirement prevents a dead session's supervisor from recreating its registration through repeated reconnects.
+\Cref{fig:lifecycle} shows the lifecycle. A clean quit, an agent-exit report, a pane takeover or three negative pane-liveness verdicts can retire an identity and sever its transport. An inconclusive verdict neither adds nor resets a strike. A soft retirement can be lifted by a live process id or daemon-verified runtime identity. An explicit operator close creates a hard retirement that rejects reconnects claiming that id even when its process remains alive. On restart, the daemon reloads retirement records from the preceding 72 hours.
 
 \begin{figure}[t]
 \centering
@@ -164,24 +164,22 @@ Level & Evidence & Authorises \\
 \node[st] (reg) at (0,0) {registering};
 \node[st] (on) at (2.9,0) {online / busy};
 \node[st] (off) at (5.8,0) {offline};
-\node[st, fill=gray!10] (hyd) at (2.9,-1.7) {hydrated};
-\node[st] (ret) at (5.8,-1.7) {retired};
-\draw[arr] (reg) -- node[lbl, above] {socket up} (on);
-\draw[arr] (on) -- node[lbl, above] {socket down} (off);
-\draw[arr] (off.south west) to[bend left=20] node[lbl, below, pos=0.5] {reconnect, same identity} (on.south east);
-\draw[arr] (hyd) -- node[lbl, left] {socket up} (on);
+\node[st, fill=gray!10] (hard) at (2.9,-1.8) {hard retired};
+\node[st] (ret) at (5.8,-1.8) {soft retired};
+\draw[arr] (reg) -- node[lbl, above] {register} (on);
+\draw[arr] (on) -- node[lbl, below] {socket down} (off);
+\draw[arr] (off.north) to[bend right=35] node[lbl, above] {reconnect} (on.north);
+\draw[arr] (on) -- node[lbl, left] {operator\\close} (hard);
 \draw[arr] (off) -- node[lbl, right] {TTL, no\\evidence} (ret);
-\draw[arr] (on.south east) -- node[lbl, above, sloped, pos=0.6] {} (ret.north west);
-\node[lbl, anchor=west] at (3.55,-0.95) {\shortstack[l]{quit, agent exited,\\pane taken, 3 strikes}};
-\draw[arr, dashed] (ret.south) -- ++(0,-0.45) -| node[lbl, below, pos=0.25] {fresh start carrying a live pid} (reg.south);
-\node[lbl, below=1mm of hyd] {daemon start, strict proof};
+\draw[arr] (on.south east) -- node[lbl, sloped, above, pos=0.65] {terminal event} (ret.north west);
+\draw[arr, dashed] (ret.south) -- ++(0,-0.55) -| node[lbl, below, pos=0.3] {live pid or verified runtime identity} (reg.south);
 \end{tikzpicture}
-\caption{Registration lifecycle. Retirement blocks stale reconnects; a fresh start must provide live process evidence.}
+\caption{Go registration lifecycle. Soft retirement permits verified recovery; operator close blocks claims to the old id. Restart reloads mappings and recent retirement records, not live peers.}
 \label{fig:lifecycle}
 \end{figure}
 
 \paragraph{Restart.}
-On daemon start, a one-shot \emph{hydration} pass recreates peers for panes that were alive while the daemon was down, but only when daemon-written pane metadata names the same \code{peer\_id} and the runtime, normalised path, live pane working directory and live process id all agree. Hydrated peers are offline until a socket connects; the daemon does not assume delivery it cannot observe. Unproven panes stay unadopted and are listed for explicit linking by the operator.
+The Go daemon loads durable mappings and recent retirement records at startup, but does not recreate live peers from terminal panes. Peers register when their runtime connects. The Python implementation had a pane-hydration pass; it was removed at the Go cutover and was not ported. The Go daemon still lists orphan panes for explicit linking by the operator.
 
 \paragraph{Descriptions and sessions.}
 A peer's \emph{description} is agent-set task state with no expiry; each turn is shown the current value and asked to update it. A \emph{session} is the durable context behind a peer: a binding from the daemon's session id to the runtime's own session id, which permits resume after the executor is gone.
@@ -191,14 +189,14 @@ A peer's \emph{description} is agent-set task state with no expiry; each turn is
 
 The daemon routes four message types, chosen by lifecycle rather than content.
 \begin{itemize}
-\item \code{ask(to, text)} is non-blocking and returns a correlation id. The recipient closes it with \code{ack(id)} (seen), \code{ack(id, reply)} (reply delivered to the asker), or \code{decline(id, reason)}. Follow-ups chain with \code{ask(reply\_to=id)}. Until it is closed, the recipient sees a reminder at the start of every subsequent turn. Only a real tool call closes an ask; prose mentions do not.
+\item \code{ask(to, text)} is non-blocking and returns a correlation id. The recipient closes it with \code{ack(id)} (seen), \code{ack(id, reply)} (reply delivered to the asker), or \code{decline(id, reason)}. Follow-ups chain with \code{ask(reply\_to=id)}. Runtime integrations remind recipients about open asks at turn boundaries. Claude Code's Stop hook can block turn completion with a reminder when a pane id is available; OpenCode reminds on idle and Pi at a turn boundary. Prose mentions do not count as acknowledgement calls.
 \item \code{notify(to, text)} is fire-and-forget with no lifecycle.
-\item \code{broadcast(text)} fans out within the sender's circle.
-\item A \emph{structured question} is an ask with a typed envelope (choice, text, tool permission) answered through \code{answer}; tool-permission questions deny on timeout.
+\item \code{broadcast(text)} normally reaches peers in the sender's circle and recipients whose roles bypass circles. A sender with a bypass role can reach other circles. Non-addressable peers are skipped, and human-inbox surfaces have separate delivery filtering.
+\item A \emph{structured question} is an ask with a typed envelope (choice, text or acknowledge) answered through \code{answer}. Tool permission is a scope on a choice question and denies on timeout.
 \end{itemize}
 Peer-originated deliveries are framed so that a runtime can distinguish them from its user's instructions; messages from human surfaces are framed as user instructions. An ask to a peer the runtime says cannot accept direct input (a sub-agent thread) is refused before any state is created. Replies always reach the asker regardless of circle, because the route was fixed at ask time.
 
-An ask remains open until an explicit close operation. Notifications create no tracked obligation. Human surfaces sent only asks in the observed journal; agent peers used both types (\cref{sec:traffic}).
+An agent explicitly closes or replies to an ask through the protocol. The daemon can also close asks on expiry, peer eviction, loss of addressability, or a job outcome. The default expiry is 24 hours. Notifications create no tracked obligation. Human surfaces sent only asks in the observed journal; agent peers used both types (\cref{sec:traffic}).
 
 \subsection{Bridges and transports}
 \label{sec:bridges}
@@ -208,7 +206,7 @@ A \emph{bridge} translates between a runtime's session API and the peer protocol
 \subsection{Lazy repair}
 \label{sec:lazy}
 
-Liveness reconciliation runs while the daemon handles requests, at most once per 30 seconds. Clean quits deregister through a session-end hook. A socket supervisor reports an agent process exit, and repair checks for inconsistencies missed by these paths. The registry can therefore be stale until a request triggers repair. The daemon emits a \code{peer\_contradiction} event on a transition to an inconsistent state, such as online status without a socket or a missing pane. An operator can also request reconciliation and inspect reachability and open asks. This policy replaced timer-driven reconciliation after a spurious signal marked 43 peers offline (\cref{sec:incidents}).
+Selected HTTP handlers, WebSocket connections and the MCP \code{list\_peers} tool trigger liveness reconciliation, at most once per 30 seconds. Other MCP tools do not trigger it. Clean quits deregister through a session-end hook. A socket supervisor reports an agent process exit, and repair checks for inconsistencies missed by these paths. The registry can therefore be stale until a request triggers repair. The daemon emits a \code{peer\_contradiction} event when it detects an inconsistency or refuses an illegal lifecycle transition. Repair deduplicates reports by peer and contradiction code. The client-side socket supervisor checks its agent process on a five-second timer; the request-triggered policy applies to daemon reconciliation, not every client activity. An operator can also request reconciliation and inspect reachability and open asks. This policy replaced timer-driven reconciliation after a spurious signal marked 43 peers offline (\cref{sec:incidents}).
 
 \subsection{Humans and orchestrators as peers}
 \label{sec:humans}
@@ -219,14 +217,14 @@ An orchestrator is a peer with \code{role=orchestrator}; coordination is perform
 
 \subsection{Schedules, jobs, and the journal}
 
-A \emph{schedule} delivers a future message (notification or tracked ask). A \emph{job} is a durable work record with its own executor: for a job fire, the daemon dispatches an ask from a built-in \code{@jobs} peer, arms the fire when the executor's turn carrying the marker begins, and completes it from the executor's next assistant turn, so results are captured structurally rather than self-reported. An executor that dies with a fire in flight fails it with \code{executor\_died}; a delivered fire is never reaped by a clock.
+A \emph{schedule} delivers a future notification or tracked ask. A \emph{job} is a durable work record with an executor. In the Go implementation, dispatch uses the unregistered sender id \code{daemon-job-runner}, not a registered \code{@jobs} peer. A user-role chat event containing the work and attempt markers arms the job. The next assistant chat event from the assigned executor completes the armed work. Claude Code's Stop hook posts both events at turn end, so arming and completion can occur during the same Stop; the Codex bridge can post the user event as it occurs. A terminal executor failure closes active work with \code{executor\_died}. Only dispatch is lease-bounded; delivered work is not reaped by a clock.
 
-The journal (G6) is an append-only event table in SQLite plus a per-message delivery-trace ledger recording each stage (created, delivered, closed) with resolved ids and status. It exists so that a misroute can be diagnosed from fields rather than ad hoc logs. \Cref{sec:eval} uses it as the measurement instrument.
+The journal (G6) is an append-only event table in SQLite plus a per-message delivery-trace ledger. Trace stages record creation and recipient resolution, transport outcomes such as \code{websocket\_sent} or \code{thread\_input\_accepted}, and closure. There is no generic \code{delivered} stage. Resolved ids and status fields allow a misroute to be diagnosed from the record. \Cref{sec:eval} uses this journal as the measurement instrument.
 
 \section{Implementation}
 \label{sec:impl}
 
-\sys{} is a single Go binary (daemon, CLI, hooks, bridges, tool server, Telegram and Slack clients, relay client) with an embedded dashboard; the first eight months were Python, and the native cutover (PR \#382, 10 August 2026) splits the journal into two eras with different schemas (\cref{sec:method}). State is SQLite with versioned migrations, which date the journal's own surfaces: event journal (22 May 2026), tracked work (25 May), delivery traces (30 May), retired identities (11 June), peer provenance (18 September), routing decisions (11 October), human inbox (13 October). The tool surface grew from 5 tools in December 2025 (\code{ask\_peer}, \code{notify\_peer}, \code{broadcast}, \code{list\_peers}, \code{register\_peer}) to 33 in October 2026, with the largest step (8 to 28) in May 2026 when asks gained lifecycle (\code{ack}, \code{answer}, \code{ask\_many}), jobs and schedules arrived, and the orchestrator role was introduced. Six runtimes have registered peers; Gemini CLI and Antigravity were later retired as supported backends. A hosted relay tunnels dashboard and socket traffic so that a mesh on a home machine is operable from elsewhere; remote agents can join through a relay-side tool server. The repository has 828 commits and 362 pull requests from December 2025 to October 2026, including 18 pull requests from external contributors, and is Apache-licensed. \todo{artifact URL}
+\sys{} is a single Go binary (daemon, CLI, hooks, bridges, tool server, Telegram and Slack clients, relay client) with an embedded dashboard; the first eight months were Python, and the native cutover (PR \#382, 10 August 2026) splits the journal into two eras with different schemas (\cref{sec:method}). State is SQLite with versioned migrations, whose application dates on the studied host record the journal's schema changes: event journal (22 May 2026), tracked work (25 May), delivery traces (30 May), retired identities (11 June), peer provenance (18 September), routing-decision index (11 October), human inbox (13 October). The tool surface grew from 5 tools in December 2025 (\code{ask\_peer}, \code{notify\_peer}, \code{broadcast}, \code{list\_peers}, \code{register\_peer}) to 33 in October 2026, with the largest step (8 to 28) in May 2026 when asks gained lifecycle (\code{ack}, \code{answer}, \code{ask\_many}), jobs and schedules arrived, and the orchestrator role was introduced. Six runtimes have registered peers; Gemini CLI and Antigravity were later retired as supported backends. A hosted relay tunnels dashboard and socket traffic so that a mesh on a home machine is operable from elsewhere; remote agents can join through a relay-side tool server. The repository has 828 commits and 362 pull requests from December 2025 to October 2026, including 18 pull requests from external contributors, and is Apache-licensed. \todo{artifact URL}
 
 \section{Evaluation}
 \label{sec:eval}

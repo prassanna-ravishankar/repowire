@@ -82,7 +82,7 @@ These changes are explicit scope corrections, not additional results. Original c
 - **Generalisation:** “generalises to any system” is not tested by one deployment. Scope the lessons to registration/delivery across sessions and identify traffic patterns as operator-specific.
 - **Publication state:** “the scripts and aggregate tables are [released]” conflicts with the visible artifact-URL TODO and README's future release language. State intended release and leave a visible artifact-release TODO.
 
-Remaining design assertions were edited for readability, not validated against every current implementation path. In particular the identity table's “proof hierarchy” (which mixes routing, adoption and destructive-operation permissions), current bridge registration timing, reminder timing, and terminal retirement conditions merit an implementation review before submission. These are not established by this measurement inventory.
+The initial prose pass did not validate implementation paths. The subsequent code review below supersedes that limitation for its listed mechanisms; the MAST, framework and protocol research TODOs remain open.
 
 ## Bibliography verification
 
@@ -122,3 +122,28 @@ All 33 entry keys are accounted for below. Primary metadata was checked on 15 Oc
 ## Validation
 
 Build from `paper/repowire` with TeX Live on PATH: `latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex`. Final PDF: 11 pages. No undefined citations/references or overfull boxes. The ICML style emits one harmless empty-anchor warning at the affiliation notice. No runtime code changed; Go/web gates do not apply. PDF pages were rendered with Poppler for layout inspection. Work remains local as requested.
+
+
+## Implementation review incorporated, 15 October 2026
+
+Reviewed against code at `697ed90a`, with findings supplied by `repowire-claude-code` and checked against the cited source. No runtime code or evaluation data changed. All seven wrong claims and eight imprecise claims were addressed. The original table and lifecycle figure remain, with corrected contents.
+
+| Finding | Change and evidence |
+|---|---|
+| W1: ordered proof hierarchy | Replaced with operation-specific checks. Registration order is retirement guard, live-process holder, compatible claimed id, offline tuple reclaim, persisted tuple adoption, then minting (`daemon-go/peer/registry.go:241–341`). Addressing accepts an id or name and rejects ambiguity (`daemon-go/hub/routes_ask_lifecycle.go:612–619`). |
+| W2: names/paths only hints, ambiguity always refused | Explicitly describes name/circle/backend/path adoption and its first-match behavior (`registry.go:929–955`). The ambiguity check belongs to addressing, not these registration helpers. This limitation is tracked in [#490](https://github.com/prassanna-ravishankar/repowire/issues/490); the review reports it as possible, not an observed incident. |
+| W3: live pid always recovers retired identity | Distinguishes soft retirement (live pid or daemon-verified identity) from hard operator closure (rejects a reconnect claiming the id even with a live pid), including the diagram (`registry.go:256–268, 970–975`). |
+| W4: Go startup pane hydration | Removed hydrated live-peer state from the Go diagram; startup loads mappings and recent retirement records (`registry.go:189–224`, `main.go:337–345`). Names Python pane hydration as historical and unported. Related stale-doc issue [#489](https://github.com/prassanna-ravishankar/repowire/issues/489). |
+| W5: open-ask reminders at every turn start | Corrected to runtime-specific boundaries: Claude Stop with pane id, OpenCode idle, Pi turn boundary (`hooks/handlers.go:281–335`, `cli/assets/opencode.ts:496–516`, `cli/assets/pi.ts:435–462`). Description reminder remains a separate turn-start mechanism. |
+| W6: only explicit closure | Added daemon-side expiry, eviction, loss of addressability and job outcomes (`service/ask_tracker.go:718–767`, `peer/registry_lifecycle_byname.go:185–199`, `service/job_completion.go:91,154`). Default expiry 24 hours (`config/config.go:147`). Reminder/closure docs tracked in [#491](https://github.com/prassanna-ravishankar/repowire/issues/491). |
+| W7: registered @jobs dispatch peer | Go dispatch uses unregistered `daemon-job-runner` (`service/job_runner.go:25,302–308`); removed job runner as an example registered service peer. `main.go:452–455` confirms no registered @jobs peer, though its comment saying empty sender is stale relative to the fallback implementation. |
+| I1: PID alone converges all backends | Codex/OpenCode/Pi also require a nonempty matching runtime session id; only Claude Code is process-scoped (`registry.go:681–718`). |
+| I2: short-lived certificate | States default lifetime of 24 hours (`state/runtime_certs.go:15`). |
+| I3: retirement persists indefinitely | States restart reload window of 72 hours (`registry.go:184,218–224`). |
+| I4: question kinds | Uses choice/text/acknowledge; tool permission is a scope on choice (`hub/routes_ask_lifecycle.go:213–218,1060`). |
+| I5: broadcasts confined to circle | Describes bypass roles on sender and recipient, non-addressable exclusion, and separate human-inbox filtering (`service/delivery.go:690–710`). |
+| I6: contradictions only on state transition | Describes detection of inconsistencies and rejection of illegal FSM transitions; repair deduplication is per peer/code (`peer/reconcile.go:144–148,211–232`, `registry.go:1540–1561`). |
+| I7: arming at physical turn start | Describes user chat event markers, then the next assistant event from the assigned executor. Claude Stop posts both at turn end; Codex can post the user item immediately (`service/job_completion.go:27–101`, `hooks/handlers.go:306–311`, `codexbridge/bridge.go:1081–1144`). The review's “same turn” wording was narrowed: completion does not compare turn ids, so it is not a guaranteed pairing. This qualification was sent back to the reviewer. |
+| I8: delivered trace stage | Replaced nonexistent generic `delivered` with creation/resolution, native transport outcome examples and closure. Stage/status are separate fields (`state/migrate.go:213–228`; journal stage inventory supplied by reviewer). |
+
+Additional precision: the 30-second debounce applies to daemon repair, triggered by selected HTTP endpoints, socket connects and MCP `list_peers` (`hub/routes_mcp.go:232`). Other MCP tools do not trigger it. The ws-hook separately checks its client process every five seconds (`hooks/ws.go:323–333`). Schema dates are now explicitly host application dates, and v15 is identified as a routing-decision index rather than the first routing decision. The MAST, framework and protocol comparison TODOs remain visible.
