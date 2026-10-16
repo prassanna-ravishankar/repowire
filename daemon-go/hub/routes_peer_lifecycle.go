@@ -2,6 +2,7 @@ package hub
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"os"
 	"strings"
@@ -35,6 +36,7 @@ func (h *Hub) registerPeerLifecycleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /peer/register", h.requireAuth(h.handleRegisterPeer))
 	mux.HandleFunc("POST /peers", h.requireAuth(h.handleRegisterPeer))
 	mux.HandleFunc("POST /peers/identity/validate", h.requireAuth(h.handleValidateRuntimeIdentity))
+	mux.HandleFunc("POST /peers/identity/renew", h.requireAuth(h.handleRenewRuntimeIdentity))
 	mux.HandleFunc("POST /peer/unregister", h.requireAuth(h.handleUnregisterPeerBody))
 	mux.HandleFunc("DELETE /peers/{name}", h.requireAuth(h.handleDeletePeer))
 	mux.HandleFunc("POST /peers/{name}/offline", h.requireAuth(h.handleMarkOffline))
@@ -478,6 +480,53 @@ func (h *Hub) handleValidateRuntimeIdentity(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, validateBirthCertificateResponse{OK: true, PeerID: string(p.PeerID), DisplayName: string(p.DisplayName), Peer: peerToInfo(p)})
+}
+
+// handleRenewRuntimeIdentity exchanges a runtime's birth certificate for a
+// fresh one while its peer is live: a session-native runtime that stays
+// connected never re-registers, so without renewal its MCP proof expires. The
+// old certificate must still match exactly (expiry aside), must name a
+// runtime session, and the peer must be connected on that same session;
+// renewal never rehydrates an offline or retired identity (that is
+// /peers/identity/validate's job).
+func (h *Hub) handleRenewRuntimeIdentity(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeError(w, http.StatusNotFound, "Runtime identity certificate store is unavailable")
+		return
+	}
+	var req validateBirthCertificateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.BirthCertificate.Nonce == "" {
+		writeError(w, http.StatusUnprocessableEntity, "birth_certificate is required")
+		return
+	}
+	ctx := r.Context()
+	old, err := h.store.RenewableBirthCertificate(ctx, req.BirthCertificate, string(req.Backend), req.Path, req.PaneID, req.AgentPID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if old == nil {
+		writeError(w, http.StatusConflict, "Runtime identity certificate does not match")
+		return
+	}
+	p, ok := h.reg.GetPeer(proto.PeerID(old.PeerID))
+	if !ok || !h.transport.IsConnected(p.PeerID) || derefString(old.RuntimeSessionID) == "" ||
+		derefString(runtimeSessionIDFromMetadata(p.Metadata)) != *old.RuntimeSessionID {
+		writeError(w, http.StatusConflict, "Runtime identity can be renewed only while its peer is connected on the same runtime session")
+		return
+	}
+	metadata := maps.Clone(old.Metadata)
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["circle"], metadata["role"] = p.Circle, string(p.Role)
+	cert, err := h.store.MintBirthCertificate(ctx, old.PeerID, string(p.DisplayName), old.Backend, &old.ProjectPath,
+		old.RuntimeSessionID, old.PaneID, old.AgentPID, old.ParentPID, metadata, 0, time.Time{})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "birth_certificate": certEnvelope(cert)})
 }
 
 func (h *Hub) handleUnregisterPeerBody(w http.ResponseWriter, r *http.Request) {

@@ -38,7 +38,7 @@ func run(in io.Reader, out io.Writer) int {
 		if len(line) == 0 {
 			continue
 		}
-		identity, proof := resolveIdentity(requestThreadID(line))
+		identity, proof, problem := resolveIdentity(requestThreadID(line))
 		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(line))
 		if err != nil {
 			writeError(writer, line, err.Error())
@@ -46,9 +46,16 @@ func run(in io.Reader, out io.Writer) int {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
-		req.Header.Set("X-Repowire-Peer", identity)
-		if proof != "" {
+		// A proven claim, a claim whose proof failed (the daemon then fails
+		// the call loudly), or nothing: a runtime without a mesh identity is
+		// anonymous mcp-http by design, not an unproven claim the daemon drops.
+		switch {
+		case proof != "":
+			req.Header.Set("X-Repowire-Peer", identity)
 			req.Header.Set("X-Repowire-Identity-Proof", proof)
+		case problem != "":
+			req.Header.Set("X-Repowire-Peer", identity)
+			req.Header.Set("X-Repowire-Identity-Problem", problem)
 		}
 		if cfg.Daemon.AuthToken != "" {
 			req.Header.Set("Authorization", "Bearer "+cfg.Daemon.AuthToken)

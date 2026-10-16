@@ -70,6 +70,7 @@ type threadPeer struct {
 	hintedID      string
 	hintedPane    string
 	birthCert     map[string]any
+	renewing      bool
 	peerID        string
 	displayName   string
 	model         string
@@ -370,6 +371,7 @@ func (b *Bridge) handleNotification(method string, params map[string]any) {
 		if p := b.thread(stringValue(params, "threadId")); p != nil {
 			turn, _ := params["turn"].(map[string]any)
 			p.setActiveTurn(stringValue(turn, "id"))
+			go p.renewCertificate()
 		}
 	case "turn/completed":
 		if p := b.thread(stringValue(params, "threadId")); p != nil {
@@ -692,9 +694,9 @@ func (p *threadPeer) registerLocked(ctx context.Context) error {
 		// A still-running native thread can outlive lazy soft retirement of its
 		// mesh peer. Drop the in-memory claim once so the next retry validates the
 		// cached daemon birth certificate and rehydrates the exact identity.
-		if claim != "" && p.birthCert != nil && strings.Contains(err.Error(), "retired peer_id") {
+		if claim != "" && strings.Contains(err.Error(), "retired peer_id") {
 			p.mu.Lock()
-			if p.peerID == claim {
+			if p.birthCert != nil && p.peerID == claim {
 				p.peerID = ""
 			}
 			p.mu.Unlock()
@@ -738,6 +740,72 @@ func cachedBirthCertificate(backend, sessionID string) map[string]any {
 		return nil
 	}
 	return cert
+}
+
+// renewCertificate exchanges the thread's birth certificate for a fresh one
+// once it is past half its lifetime. A connected thread never re-registers, so
+// without this the MCP shim's proof for it expires. It runs at turn start, the
+// activity that precedes any tool call, instead of on a timer; the daemon
+// renews an already-expired certificate as long as the thread is connected.
+func (p *threadPeer) renewCertificate() {
+	p.mu.Lock()
+	cert := p.birthCert
+	if cert == nil || p.renewing || !pastHalfLife(cert, time.Now()) {
+		p.mu.Unlock()
+		return
+	}
+	p.renewing = true
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.renewing = false
+		p.mu.Unlock()
+	}()
+	// Ordered with registration, which also replaces the certificate.
+	p.pubMu.Lock()
+	defer p.pubMu.Unlock()
+	p.mu.Lock()
+	if p.birthCert["nonce"] != cert["nonce"] {
+		p.mu.Unlock()
+		return // registration replaced it meanwhile
+	}
+	p.mu.Unlock()
+	ctx, cancel := context.WithTimeout(p.bridge.ctx, 5*time.Second)
+	defer cancel()
+	result, err := p.bridge.daemonRequest(ctx, http.MethodPost, "/peers/identity/renew", map[string]any{
+		"birth_certificate": cert, "backend": "codex", "path": p.cwd,
+	})
+	fresh, _ := result["birth_certificate"].(map[string]any)
+	if err == nil && fresh == nil {
+		err = errors.New("daemon returned no birth_certificate")
+	}
+	if err != nil {
+		log.Printf("codex bridge: renew runtime identity for %s: %v", p.id, err)
+		return
+	}
+	// Persist first: the MCP shim reads the cache. On failure keep the old
+	// certificate in memory so the next turn retries.
+	if err := hooks.WriteRuntimeIdentity("codex", p.id, map[string]any{"birth_certificate": fresh}); err != nil {
+		log.Printf("codex bridge: persist renewed runtime identity for %s: %v", p.id, err)
+		return
+	}
+	p.mu.Lock()
+	p.birthCert = fresh
+	p.mu.Unlock()
+}
+
+// pastHalfLife reports whether a certificate is due for renewal; one whose
+// timestamps cannot be read is treated as due.
+func pastHalfLife(cert map[string]any, now time.Time) bool {
+	issued, err := time.Parse(time.RFC3339Nano, stringValue(cert, "issued_at"))
+	if err != nil {
+		return true
+	}
+	expires, err := time.Parse(time.RFC3339Nano, stringValue(cert, "expires_at"))
+	if err != nil {
+		return true
+	}
+	return !now.Before(issued.Add(expires.Sub(issued) / 2))
 }
 
 // restoreIdentity rebinds a restarted bridge from the daemon-minted proof for

@@ -56,6 +56,9 @@ idle thread a native `turn/start` request and steers an active thread with
 status, including interrupt and completion boundaries. A thread resumed after
 the bridge starts is discovered from its first status notification, so service
 restarts do not leave its MCP calls under the fallback `mcp-http` identity.
+A thread that stays connected past half its birth certificate's 24 h lifetime
+has the certificate renewed at its next turn start, so long-lived threads keep
+their MCP identity too.
 Because completed-item
 notifications are scoped to the App Server client that started the turn, the
 bridge reads the completed turn once when the thread becomes idle; it does not

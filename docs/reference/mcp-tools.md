@@ -39,6 +39,10 @@ longer needed.
 
 Local clients that cannot launch the identity shim can connect directly. They
 use the daemon-owned `mcp-http` identity, so they do not gain pane/session proof.
+A request that claims a peer (`X-Repowire-Peer`) with an identity proof that
+fails validation is not downgraded to `mcp-http`: its tool calls return an
+error naming the reason (`expired`, `unknown`, `peer_mismatch`,
+`peer_not_registered`) and are journaled as `mcp_identity_proof_rejected`.
 
 Client registration examples:
 
