@@ -394,6 +394,7 @@ func runDaemon() {
 	)
 	if store != nil {
 		reg.WithDeliveryQueue(reconcileQueue{store})
+		reg.WithSessionIndex(store)
 	}
 	// Process/tmux probe for the destructive pane-claim proof (hijack guard).
 	reg.WithProcessProbe(realProcessProbe{})

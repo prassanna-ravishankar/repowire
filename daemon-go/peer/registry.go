@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +45,18 @@ type ProcessProbe interface {
 	// PaneRootPID returns the tmux pane's root process pid. ok=false when the pane
 	// is unprobeable.
 	PaneRootPID(paneID string) (int, bool)
+}
+
+// SessionIndex reads the durable runtime-session bindings (session_bindings)
+// so registration can key identity on the runtime session a registrant
+// reports. Injected like ProcessProbe; nil disables session-keyed reclaim.
+type SessionIndex interface {
+	// PeerForRuntimeSession returns the peer most recently bound to backend's
+	// runtime session and that binding's project path; "" when unbound.
+	PeerForRuntimeSession(ctx context.Context, backend proto.AgentType, runtimeSessionID string) (proto.PeerID, string, error)
+	// RuntimeSessionOf returns the newest runtime session bound to the peer;
+	// "" when it has none.
+	RuntimeSessionOf(ctx context.Context, id proto.PeerID) (string, error)
 }
 
 // paneHeartbeatTolerance bounds how stale a peer's LastSeen may be before it is
@@ -133,6 +146,7 @@ type Registry struct {
 	live      Liveness
 	transport Transport
 	proc      ProcessProbe // optional; nil → pane-claim proof defaults to "let through"
+	sessions  SessionIndex // optional; nil → no session-keyed reclaim
 
 	repairMu   sync.Mutex
 	lastRepair time.Time
@@ -269,7 +283,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 
 	now := time.Now().UTC()
 
-	displayName := r.buildDisplayName(params)
+	displayName := r.buildDisplayName(params, false)
 
 	// (a2) Runtime identity: one live process is one peer. Hooks, the MCP stdio
 	// proxy, and ws reconnects all register the same agent independently and in
@@ -318,27 +332,47 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 			}
 		}
 	}
+
+	// (b1) Runtime-session binding: the peer the reported runtime session is
+	// already bound to (a resume, a bridge reconnect, a daemon restart) keeps
+	// it. Checked before the name tuple, which cannot tell two sessions in one
+	// workspace apart. A soft retirement is lifted: the binding matches the
+	// same backend/session/path facts a birth certificate certifies.
 	if id == "" {
-		if reclaimed, ok := r.reclaimableOfflineLocked(displayName, params.Circle, params.Backend, claimPath); ok {
-			id = reclaimed
+		if bound, ok := r.sessionBoundPeerLocked(ctx, params, claimPath); ok {
+			id = bound
+			if _, isRetired := r.retired[id]; isRetired {
+				r.unretireLocked(ctx, id)
+				recoveredRetirement = true
+			}
 		}
 	}
 
-	// (b2) Durable-mapping adoption by identity. After a restart r.mappings is
-	// hydrated but r.peers is empty, and a SessionStart whose hook metadata lacks
-	// peer_id would otherwise mint a NEW id and lose the peer's durable role/circle/
-	// description. Reuse the persisted mapping keyed on identity, not peer_id, so
-	// the (e) mapping-wins block restores those fields. Parity with
-	// PeerRegistry._find_or_allocate_mapping.
+	// (b2) Name-tuple reclaim: an offline peer, then a durable mapping (after a
+	// restart r.mappings is hydrated but r.peers is empty), so the (e)
+	// mapping-wins block restores role/circle/description. Parity with
+	// PeerRegistry._find_or_allocate_mapping, plus a uniqueness rule: several
+	// candidates are ambiguous, and the registrant gets a fresh id.
+	var ambiguous []proto.PeerID
 	if id == "" {
-		if adopted, ok := r.findReusableMappingLocked(displayName, params.Circle, params.Backend, claimPath); ok {
-			id = adopted
-		}
+		id, ambiguous = r.reclaimByTupleLocked(ctx, params, displayName, claimPath)
 	}
 
-	// (c) Mint a fresh peer_id when not reclaiming/adopting.
+	// (c) Mint a fresh peer_id when not reclaiming/adopting. A minted id never
+	// shares its address with an identity it declined to reclaim.
 	if id == "" {
 		id = proto.PeerID(fmt.Sprintf("repow-%s-%s", params.Circle, uuid.NewString()[:8]))
+		if r.nameHeldLocked(displayName, params.Circle) {
+			displayName = r.buildDisplayName(params, true)
+		}
+		if len(ambiguous) > 0 {
+			candidates := make([]string, len(ambiguous))
+			for i, c := range ambiguous {
+				candidates[i] = string(c)
+			}
+			r.appendEvent(ctx, Event{Type: "identity_reclaim_ambiguous", Timestamp: now, PeerID: id, PeerName: displayName, SessionID: id,
+				Payload: map[string]any{"display_name": string(displayName), "circle": params.Circle, "backend": string(params.Backend), "candidates": candidates}})
+		}
 	}
 
 	// (d) In-place reconnect when the id names a LIVE peer. Preserve durable
@@ -739,6 +773,10 @@ func runtimeHolderPreferred(candidate, current *peerState) bool {
 // path (the Python best-effort default), but production should wire it.
 func (r *Registry) WithProcessProbe(p ProcessProbe) { r.proc = p }
 
+// WithSessionIndex injects the durable runtime-session index registration
+// consults before the name tuple. Optional: nil keeps tuple-only reclaim.
+func (r *Registry) WithSessionIndex(s SessionIndex) { r.sessions = s }
+
 // recentlySeen reports whether a peer's LastSeen is within heartbeat tolerance.
 func recentlySeen(p *proto.Peer, now time.Time) bool {
 	return p.LastSeen != nil && now.Sub(*p.LastSeen) <= paneHeartbeatTolerance
@@ -864,10 +902,12 @@ func (r *Registry) releasePaneLocked(ctx context.Context, paneID string, newID p
 // _build_display_name). Format: {folder}-{backend}, then {folder}-{N}-{backend}
 // for N=2,3,… A candidate held only by an Offline peer (or by the same runtime
 // session) is NOT suffixed — that peer is a clean-takeover/reconnect target and
-// the base name is reclaimed by reclaimableOfflineLocked / the ClaimedPeerID
+// the base name is reclaimed by reclaimByTupleLocked / the ClaimedPeerID
 // path. Without this loop two live peers on the same path collide on one
-// display_name and ask/notify addressing becomes ambiguous. Must hold lock.
-func (r *Registry) buildDisplayName(params AllocateParams) proto.DisplayName {
+// display_name and ask/notify addressing becomes ambiguous. strict (a freshly
+// minted id) treats every holder, offline peer or durable mapping, as a
+// blocker. Must hold lock.
+func (r *Registry) buildDisplayName(params AllocateParams, strict bool) proto.DisplayName {
 	folder := "peer"
 	if params.Path != nil && *params.Path != "" {
 		folder = baseFolder(*params.Path)
@@ -882,22 +922,30 @@ func (r *Registry) buildDisplayName(params AllocateParams) proto.DisplayName {
 
 	candidate := base
 	for suffix := 2; ; suffix++ {
-		var blocker *peerState
-		for _, ps := range r.peers {
-			if ps.peer.DisplayName == proto.DisplayName(candidate) && ps.peer.Circle == params.Circle {
-				blocker = ps
-				break
+		if strict {
+			if !r.nameHeldLocked(proto.DisplayName(candidate), params.Circle) {
+				return proto.DisplayName(candidate)
 			}
-		}
-		if blocker == nil {
-			return proto.DisplayName(candidate)
-		}
-		// Same logical peer reconnecting (matching runtime session) or a dead
-		// peer holding the name: keep the base name — identity reuse is handled
-		// by the ClaimedPeerID / reclaimableOfflineLocked path in caller.
-		sameSession := incomingSession != "" && runtimeSessionID(blocker.peer.Metadata) == incomingSession
-		if sameSession || blocker.state == StateOffline {
-			return proto.DisplayName(candidate)
+		} else {
+			var blocker *peerState
+			for _, ps := range r.peers {
+				if ps.peer.DisplayName == proto.DisplayName(candidate) && ps.peer.Circle == params.Circle {
+					blocker = ps
+					break
+				}
+			}
+			if blocker == nil {
+				return proto.DisplayName(candidate)
+			}
+			// Same logical peer reconnecting (matching runtime session, not a
+			// fork run by another live process) or a dead peer holding the name:
+			// keep the base name. Identity reuse is decided by the caller; a mint
+			// recomputes strictly.
+			sameSession := incomingSession != "" && runtimeSessionID(blocker.peer.Metadata) == incomingSession &&
+				!r.liveElsewhereLocked(blocker, params)
+			if sameSession || blocker.state == StateOffline {
+				return proto.DisplayName(candidate)
+			}
 		}
 		// Held by a distinct live peer — try the next suffix.
 		if preferred {
@@ -924,34 +972,136 @@ func runtimeSessionID(metadata map[string]any) string {
 	return ""
 }
 
-// reclaimableOfflineLocked returns a PeerID whose Offline peer currently holds
-// the given identity — a clean takeover candidate.
-func (r *Registry) reclaimableOfflineLocked(name proto.DisplayName, circle string, backend proto.AgentType, claimPath string) (proto.PeerID, bool) {
-	for id, ps := range r.peers {
-		if ps.peer.DisplayName == name &&
-			ps.peer.Circle == circle &&
-			claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, backend, claimPath) &&
-			ps.state == StateOffline {
-			return id, true
+// nameHeldLocked reports whether any peer or durable mapping in circle holds
+// name. Must hold r.mu.
+func (r *Registry) nameHeldLocked(name proto.DisplayName, circle string) bool {
+	for _, ps := range r.peers {
+		if ps.peer.DisplayName == name && ps.peer.Circle == circle {
+			return true
 		}
 	}
-	return "", false
+	for _, m := range r.mappings {
+		if m.DisplayName == name && m.Circle == circle {
+			return true
+		}
+	}
+	return false
 }
 
-// findReusableMappingLocked adopts a persisted mapping only for the same
-// display name, circle, backend, and compatible path. A missing circle must not
-// silently restore the peer into an older circle.
-func (r *Registry) findReusableMappingLocked(name proto.DisplayName, circle string, backend proto.AgentType, claimPath string) (proto.PeerID, bool) {
-	for sid, m := range r.mappings {
+// liveElsewhereLocked reports whether ps is a live peer whose agent is another
+// running process: the registrant is a fork or a concurrent sibling, never a
+// reconnect of ps. Must hold r.mu.
+func (r *Registry) liveElsewhereLocked(ps *peerState, params AllocateParams) bool {
+	if ps == nil || ps.state == StateOffline || ps.state == StateRetired || ps.peer.AgentPID == nil {
+		return false
+	}
+	if params.AgentPID != nil && *params.AgentPID == *ps.peer.AgentPID {
+		return false
+	}
+	return r.live.PIDAlive(*ps.peer.AgentPID)
+}
+
+// sessionBoundPeerLocked returns the peer the registrant's runtime session is
+// bound to in the durable session index, when that identity is still the same
+// one: same backend, compatible path, not hard-retired, and not live in
+// another process (a fork shares its parent's session id briefly). Must hold
+// r.mu.
+func (r *Registry) sessionBoundPeerLocked(ctx context.Context, params AllocateParams, claimPath string) (proto.PeerID, bool) {
+	session := runtimeSessionID(params.Metadata)
+	if r.sessions == nil || session == "" {
+		return "", false
+	}
+	id, boundPath, err := r.sessions.PeerForRuntimeSession(ctx, params.Backend, session)
+	if err != nil {
+		log.Printf("repowire: session binding lookup for %s session %s failed: %v", params.Backend, session, err)
+		return "", false
+	}
+	if id == "" || !claimMatchesIdentity(params.Backend, boundPath, params.Backend, claimPath) {
+		return "", false
+	}
+	if retirement, ok := r.retired[id]; ok && retirement.Hard {
+		return "", false
+	}
+	if ps, ok := r.peers[id]; ok {
+		if !claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, params.Backend, claimPath) {
+			return "", false
+		}
+		if r.liveElsewhereLocked(ps, params) {
+			log.Printf("repowire: session %s is bound to %s, live in pid %d; registering the fork separately",
+				session, id, *ps.peer.AgentPID)
+			return "", false
+		}
+	}
+	return id, true
+}
+
+// otherSessionLocked reports whether candidate is known to run a different
+// runtime session than the registrant. Only session-scoped backends (one
+// bridge hosting many threads) refuse on it: there a session is the identity,
+// while a Claude process keeps its peer across /clear. Must hold r.mu.
+func (r *Registry) otherSessionLocked(ctx context.Context, params AllocateParams, candidate proto.PeerID) bool {
+	incoming := runtimeSessionID(params.Metadata)
+	if processScopedBackends[params.Backend] || incoming == "" {
+		return false
+	}
+	known := ""
+	if ps, ok := r.peers[candidate]; ok {
+		known = runtimeSessionID(ps.peer.Metadata)
+	}
+	if known == "" && r.sessions != nil {
+		var err error
+		if known, err = r.sessions.RuntimeSessionOf(ctx, candidate); err != nil {
+			log.Printf("repowire: session lookup for %s failed: %v", candidate, err)
+		}
+	}
+	return known != "" && known != incoming
+}
+
+// reclaimByTupleLocked returns the one identity a registrant with no usable
+// peer_id claim or session binding may take over by display name, circle,
+// backend, and compatible path: an offline peer, else a durable mapping.
+// Retired candidates (lifted only by the claim guard or a session binding),
+// candidates known to run another session (session-scoped backends), and
+// candidates live in another process are skipped. When more than one remains it returns them
+// all and no id: the tuple cannot tell which runtime this is. Must hold r.mu.
+func (r *Registry) reclaimByTupleLocked(ctx context.Context, params AllocateParams, name proto.DisplayName, claimPath string) (proto.PeerID, []proto.PeerID) {
+	var offline []proto.PeerID
+	for id, ps := range r.peers {
+		if ps.state == StateOffline && ps.peer.DisplayName == name && ps.peer.Circle == params.Circle &&
+			claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, params.Backend, claimPath) &&
+			!r.otherSessionLocked(ctx, params, id) {
+			offline = append(offline, id)
+		}
+	}
+	if len(offline) > 0 {
+		return uniqueCandidate(offline)
+	}
+	var mapped []proto.PeerID
+	for id, m := range r.mappings {
 		mappingPath := ""
 		if m.Path != nil {
 			mappingPath = *m.Path
 		}
-		if m.DisplayName == name && m.Circle == circle && claimMatchesIdentity(m.Backend, mappingPath, backend, claimPath) {
-			return sid, true
+		if m.DisplayName == name && m.Circle == params.Circle &&
+			claimMatchesIdentity(m.Backend, mappingPath, params.Backend, claimPath) &&
+			!r.isRetiredLocked(id) && !r.liveElsewhereLocked(r.peers[id], params) && !r.otherSessionLocked(ctx, params, id) {
+			mapped = append(mapped, id)
 		}
 	}
-	return "", false
+	return uniqueCandidate(mapped)
+}
+
+func (r *Registry) isRetiredLocked(id proto.PeerID) bool {
+	_, retired := r.retired[id]
+	return retired
+}
+
+func uniqueCandidate(ids []proto.PeerID) (proto.PeerID, []proto.PeerID) {
+	if len(ids) == 1 {
+		return ids[0], nil
+	}
+	slices.Sort(ids)
+	return "", ids
 }
 
 // MarkOffline drives the peer offline. terminal=true retires the identity, severs
