@@ -97,6 +97,15 @@ func (h *sessionHarness) offline(id proto.PeerID, pid int) {
 	delete(h.live.alive, pid)
 }
 
+// disconnect drops the record offline with its process still running (a pane
+// handoff, a WebSocket drop).
+func (h *sessionHarness) disconnect(id proto.PeerID) {
+	h.t.Helper()
+	if _, err := h.r.MarkOffline(context.Background(), id, false); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
 func (h *sessionHarness) status(id proto.PeerID) proto.PeerStatus {
 	h.t.Helper()
 	p, ok := h.r.GetPeer(id)
@@ -212,17 +221,53 @@ func TestSessionIdentity_ResumeAndRetirement(t *testing.T) {
 	}
 }
 
+// Bindings written before this fix can point several threads at one peer. A
+// thread whose binding is historical (the peer has since run another thread)
+// does not reclaim it, while the peer is online on the other thread and after
+// a restart.
+func TestSessionIdentity_HistoricalBindingDoesNotReclaim(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		h := newSessionHarness(t)
+		p, _ := h.register(proto.AgentCodex, "/p/repowire", "thread-A", 0)
+		h.idx.bind(proto.AgentCodex, "thread-B", p, "/p/repowire") // legacy second binding, newest
+		h.r.mu.Lock()
+		h.r.peers[p].peer.Metadata["runtime_session_id"] = "thread-B" // online on thread-B
+		h.r.mu.Unlock()
+		if restart {
+			h.offline(p, 0)
+			h.restart()
+		}
+
+		a, _ := h.register(proto.AgentCodex, "/p/repowire", "thread-A", 0)
+		if a == p {
+			t.Fatalf("restart=%v: thread-A reclaimed %s through a historical binding", restart, p)
+		}
+		if b, _ := h.register(proto.AgentCodex, "/p/repowire", "thread-B", 0); b != p {
+			t.Fatalf("restart=%v: thread-B got %s, want %s", restart, b, p)
+		}
+	}
+}
+
 // A fork briefly reports its parent's session id from another live process.
-// It gets its own peer and address; the parent is untouched.
+// It gets its own peer and address; the parent is untouched, also when the
+// parent's record is offline while its process still runs.
 func TestSessionIdentity_ForkGetsDistinctPeer(t *testing.T) {
+	t.Run("parent online", func(t *testing.T) { testForkGetsDistinctPeer(t, false) })
+	t.Run("parent offline, process alive", func(t *testing.T) { testForkGetsDistinctPeer(t, true) })
+}
+
+func testForkGetsDistinctPeer(t *testing.T, parentOffline bool) {
 	h := newSessionHarness(t)
 	parent, parentName := h.register(proto.AgentClaudeCode, "/p/app", "sess-1", 100)
+	if parentOffline {
+		h.disconnect(parent)
+	}
 
 	fork, forkName := h.register(proto.AgentClaudeCode, "/p/app", "sess-1", 200)
 	if fork == parent || forkName == parentName {
 		t.Fatalf("fork shares the parent's identity: %s/%s", fork, forkName)
 	}
-	if h.status(parent) != proto.StatusOnline {
+	if !parentOffline && h.status(parent) != proto.StatusOnline {
 		t.Fatalf("parent displaced by its fork")
 	}
 	p, _ := h.r.GetPeer(parent)

@@ -988,11 +988,13 @@ func (r *Registry) nameHeldLocked(name proto.DisplayName, circle string) bool {
 	return false
 }
 
-// liveElsewhereLocked reports whether ps is a live peer whose agent is another
-// running process: the registrant is a fork or a concurrent sibling, never a
-// reconnect of ps. Must hold r.mu.
+// liveElsewhereLocked reports whether ps's agent is another running process:
+// the registrant is a fork or a concurrent sibling, never a reconnect of ps.
+// The process is probed whatever the record's state, since Offline also
+// means a pane handoff, a WebSocket drop, or a daemon restart with the agent
+// still running. Must hold r.mu.
 func (r *Registry) liveElsewhereLocked(ps *peerState, params AllocateParams) bool {
-	if ps == nil || ps.state == StateOffline || ps.state == StateRetired || ps.peer.AgentPID == nil {
+	if ps == nil || ps.peer.AgentPID == nil {
 		return false
 	}
 	if params.AgentPID != nil && *params.AgentPID == *ps.peer.AgentPID {
@@ -1003,9 +1005,10 @@ func (r *Registry) liveElsewhereLocked(ps *peerState, params AllocateParams) boo
 
 // sessionBoundPeerLocked returns the peer the registrant's runtime session is
 // bound to in the durable session index, when that identity is still the same
-// one: same backend, compatible path, not hard-retired, and not live in
-// another process (a fork shares its parent's session id briefly). Must hold
-// r.mu.
+// one: same backend, compatible path, not hard-retired, not live in another
+// process (a fork shares its parent's session id briefly), and, for
+// session-scoped backends, not since moved on to another session (older
+// bindings can point several threads at one peer). Must hold r.mu.
 func (r *Registry) sessionBoundPeerLocked(ctx context.Context, params AllocateParams, claimPath string) (proto.PeerID, bool) {
 	session := runtimeSessionID(params.Metadata)
 	if r.sessions == nil || session == "" {
@@ -1020,6 +1023,9 @@ func (r *Registry) sessionBoundPeerLocked(ctx context.Context, params AllocatePa
 		return "", false
 	}
 	if retirement, ok := r.retired[id]; ok && retirement.Hard {
+		return "", false
+	}
+	if r.otherSessionLocked(ctx, params, id) {
 		return "", false
 	}
 	if ps, ok := r.peers[id]; ok {
@@ -1069,7 +1075,7 @@ func (r *Registry) reclaimByTupleLocked(ctx context.Context, params AllocatePara
 	for id, ps := range r.peers {
 		if ps.state == StateOffline && ps.peer.DisplayName == name && ps.peer.Circle == params.Circle &&
 			claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, params.Backend, claimPath) &&
-			!r.otherSessionLocked(ctx, params, id) {
+			!r.liveElsewhereLocked(ps, params) && !r.otherSessionLocked(ctx, params, id) {
 			offline = append(offline, id)
 		}
 	}
