@@ -570,6 +570,8 @@ func TestMCPRejectedIdentityProofFailsLoud(t *testing.T) {
 		{claim(string(id), "invented"), "unknown"},
 		{claim(string(id), otherProof), "peer_mismatch"},
 		{claim("ghost-codex", otherProof), "peer_not_registered"},
+		{map[string]string{"X-Repowire-Peer": string(id), "X-Repowire-Identity-Problem": "expired"}, "expired"},
+		{map[string]string{"X-Repowire-Peer": string(id), "X-Repowire-Identity-Problem": "anything"}, "invalid"},
 	} {
 		got := call(tc.headers, "set_description", map[string]any{"description": "should not land"})
 		if !got.IsError || !strings.Contains(got.Content[0].Text, "rejected ("+tc.reason+")") || strings.Contains(got.Content[0].Text, "mcp-http") {
@@ -585,8 +587,8 @@ func TestMCPRejectedIdentityProofFailsLoud(t *testing.T) {
 			rejected = append(rejected, ev)
 		}
 	}
-	if len(rejected) != 4 {
-		t.Fatalf("want 4 mcp_identity_proof_rejected events, got %d", len(rejected))
+	if len(rejected) != 6 {
+		t.Fatalf("want 6 mcp_identity_proof_rejected events, got %d", len(rejected))
 	}
 	if raw, _ := json.Marshal(rejected); strings.Contains(string(raw), expired) || !strings.Contains(string(raw), `"expired"`) || !strings.Contains(string(raw), "set_description") {
 		t.Fatalf("rejection events must carry reason and tool, never the nonce: %s", raw)
@@ -598,6 +600,7 @@ func TestMCPRejectedIdentityProofFailsLoud(t *testing.T) {
 		nil,
 		{"X-Repowire-Peer": string(id)},
 		{"X-Repowire-Identity-Rejected": "expired", "X-Repowire-Identity-Rejected-Claim": string(id)},
+		{"X-Repowire-Identity-Problem": "expired"},
 	} {
 		if got := call(headers, "whoami", map[string]any{}); got.IsError || !strings.Contains(got.Content[0].Text, "mcp-http") {
 			t.Fatalf("headers %v: whoami = %+v, want anonymous mcp-http", headers, got)
@@ -696,6 +699,13 @@ func TestRenewRuntimeIdentityWhileConnected(t *testing.T) {
 	}
 	if status, _ := renew(wrongSession); status != http.StatusConflict {
 		t.Fatalf("renewal for another session: %d, want 409", status)
+	}
+	sessionless, err := store.MintBirthCertificate(ctx, string(id), string(name), "codex", &path, nil, nil, nil, nil, nil, 0, time.Now().Add(-25*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := renew(sessionless); status != http.StatusConflict {
+		t.Fatalf("renewal of a sessionless certificate: %d, want 409", status)
 	}
 	forged := *old
 	forged.Nonce = "invented"

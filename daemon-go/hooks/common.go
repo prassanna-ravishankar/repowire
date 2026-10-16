@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
@@ -123,9 +124,23 @@ func ReadRuntimeIdentity(backend, sessionID string) map[string]any {
 
 // WriteRuntimeIdentity atomically merges bridge-owned runtime proof and setup
 // state so certificate refreshes do not repeat one-time context injection.
+// The bridge and the MCP shim both write it, so the read-merge-write runs
+// under an exclusive file lock and each write uses its own temp file.
 func WriteRuntimeIdentity(backend, sessionID string, update map[string]any) error {
 	if backend == "" || sessionID == "" {
 		return errors.New("backend and runtime session id are required")
+	}
+	path := runtimeIdentityPath(backend, sessionID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
 	}
 	data := ReadRuntimeIdentity(backend, sessionID)
 	for key, value := range update {
@@ -135,15 +150,21 @@ func WriteRuntimeIdentity(backend, sessionID string, update map[string]any) erro
 	if err != nil {
 		return err
 	}
-	path := runtimeIdentityPath(backend, sessionID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
+	_, err = tmp.Write(raw)
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
 	}
-	return os.Rename(tmp, path)
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp.Name())
+	}
+	return err
 }
 
 func paneToken(paneID string) string {

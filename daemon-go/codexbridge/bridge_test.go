@@ -772,3 +772,43 @@ func TestTurnStartRenewsAgedBirthCertificate(t *testing.T) {
 		t.Fatalf("turn/started past half-life: %d renew requests, want 2", n)
 	}
 }
+
+// A renewed certificate that cannot be cached for the shim is not adopted, so
+// the next turn retries instead of waiting out another half-life.
+func TestRenewalRetriesWhenCacheWriteFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	threadID, cwd := "thread-unwritable", t.TempDir()
+	issued := time.Now().Add(-25 * time.Hour)
+	old := map[string]any{"nonce": "old", "peer_id": "repow-stable", "backend": "codex", "project_path": cwd,
+		"runtime_session_id": threadID, "issued_at": issued.UTC().Format(time.RFC3339Nano),
+		"expires_at": issued.Add(24 * time.Hour).UTC().Format(time.RFC3339Nano)}
+	var renewals atomic.Int32
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		renewals.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "birth_certificate": map[string]any{"nonce": "new",
+			"issued_at": time.Now().UTC().Format(time.RFC3339Nano), "expires_at": time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339Nano)}})
+	}))
+	defer daemon.Close()
+	cache := filepath.Join(home, ".cache", "repowire", "runtime-identities")
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(cache, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(cache, 0o700) })
+
+	p := &threadPeer{bridge: &Bridge{ctx: context.Background(), daemonHTTP: daemon.URL}, id: threadID, cwd: cwd, birthCert: old}
+	p.renewCertificate()
+	if p.birthCert["nonce"] != "old" {
+		t.Fatalf("adopted a certificate the shim cannot read: %v", p.birthCert["nonce"])
+	}
+	if err := os.Chmod(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p.renewCertificate()
+	if renewals.Load() != 2 || p.birthCert["nonce"] != "new" {
+		t.Fatalf("retry: renewals=%d nonce=%v", renewals.Load(), p.birthCert["nonce"])
+	}
+}

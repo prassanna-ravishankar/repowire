@@ -107,21 +107,31 @@ func (h *Hub) handleMCP(w http.ResponseWriter, r *http.Request) {
 
 // validateMCPIdentity canonicalizes a proven X-Repowire-Peer claim to its
 // peer_id. An unproven claim is dropped (the caller is mcp-http by design); a
-// failed proof is dropped and recorded for rejectUnprovenToolCalls, so
+// failed proof, or the shim's report (X-Repowire-Identity-Problem) that its
+// certificate failed, is dropped and recorded for rejectUnprovenToolCalls, so
 // initialize and tools/list still work while every tool call fails loudly.
 func (h *Hub) validateMCPIdentity(r *http.Request) {
 	r.Header.Del(mcpRejectedReasonHeader)
 	r.Header.Del(mcpRejectedClaimHeader)
 	claimed := r.Header.Get("X-Repowire-Peer")
 	proof := r.Header.Get("X-Repowire-Identity-Proof")
+	problem := r.Header.Get("X-Repowire-Identity-Problem")
 	r.Header.Del("X-Repowire-Peer")
 	r.Header.Del("X-Repowire-Identity-Proof")
-	if claimed == "" || proof == "" {
+	r.Header.Del("X-Repowire-Identity-Problem")
+	if claimed == "" || (proof == "" && problem == "") {
 		return
 	}
 	reason := "store_unavailable"
 	peer, _ := h.reg.GetPeerByName(claimed, nil)
 	switch {
+	case proof == "":
+		// The shim holds this peer's certificate but could neither validate
+		// nor renew it; only its two reasons are passed through.
+		reason = "invalid"
+		if problem == "expired" {
+			reason = "expired"
+		}
 	case h.store == nil:
 	case peer == nil:
 		reason = "peer_not_registered"

@@ -694,9 +694,9 @@ func (p *threadPeer) registerLocked(ctx context.Context) error {
 		// A still-running native thread can outlive lazy soft retirement of its
 		// mesh peer. Drop the in-memory claim once so the next retry validates the
 		// cached daemon birth certificate and rehydrates the exact identity.
-		if claim != "" && p.birthCert != nil && strings.Contains(err.Error(), "retired peer_id") {
+		if claim != "" && strings.Contains(err.Error(), "retired peer_id") {
 			p.mu.Lock()
-			if p.peerID == claim {
+			if p.birthCert != nil && p.peerID == claim {
 				p.peerID = ""
 			}
 			p.mu.Unlock()
@@ -761,6 +761,15 @@ func (p *threadPeer) renewCertificate() {
 		p.renewing = false
 		p.mu.Unlock()
 	}()
+	// Ordered with registration, which also replaces the certificate.
+	p.pubMu.Lock()
+	defer p.pubMu.Unlock()
+	p.mu.Lock()
+	if p.birthCert["nonce"] != cert["nonce"] {
+		p.mu.Unlock()
+		return // registration replaced it meanwhile
+	}
+	p.mu.Unlock()
 	ctx, cancel := context.WithTimeout(p.bridge.ctx, 5*time.Second)
 	defer cancel()
 	result, err := p.bridge.daemonRequest(ctx, http.MethodPost, "/peers/identity/renew", map[string]any{
@@ -774,12 +783,15 @@ func (p *threadPeer) renewCertificate() {
 		log.Printf("codex bridge: renew runtime identity for %s: %v", p.id, err)
 		return
 	}
+	// Persist first: the MCP shim reads the cache. On failure keep the old
+	// certificate in memory so the next turn retries.
+	if err := hooks.WriteRuntimeIdentity("codex", p.id, map[string]any{"birth_certificate": fresh}); err != nil {
+		log.Printf("codex bridge: persist renewed runtime identity for %s: %v", p.id, err)
+		return
+	}
 	p.mu.Lock()
 	p.birthCert = fresh
 	p.mu.Unlock()
-	if err := hooks.WriteRuntimeIdentity("codex", p.id, map[string]any{"birth_certificate": fresh}); err != nil {
-		log.Printf("codex bridge: persist renewed runtime identity for %s: %v", p.id, err)
-	}
 }
 
 // pastHalfLife reports whether a certificate is due for renewal; one whose

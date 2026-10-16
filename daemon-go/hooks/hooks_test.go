@@ -444,7 +444,7 @@ func TestMCPIdentityRenewsExpiredCertificateWithoutSplittingPaneIdentity(t *test
 	t.Setenv("REPOWIRE_DAEMON__PORT", strconv.Itoa(port))
 	t.Setenv("REPOWIRE_DAEMON__AUTH_TOKEN", "test-token")
 
-	identity, proof := MCPIdentityProof()
+	identity, proof, _ := MCPIdentityProof()
 	if identity != "repow-old" || proof != "fresh" || registrations != 1 || validations != 1 {
 		t.Fatalf("identity=%q proof=%q registrations=%d validations=%d", identity, proof, registrations, validations)
 	}
@@ -482,7 +482,7 @@ func TestMCPIdentityUsesCodexThreadCertificate(t *testing.T) {
 	t.Setenv("REPOWIRE_DAEMON__HOST", "127.0.0.1")
 	t.Setenv("REPOWIRE_DAEMON__PORT", strconv.Itoa(port))
 
-	identity, proof := MCPIdentityProofForThread("thread-native")
+	identity, proof, _ := MCPIdentityProofForThread("thread-native")
 	if identity != "repow-native" || proof != "native-proof" || registrations != 0 {
 		t.Fatalf("identity=%q proof=%q registrations=%d", identity, proof, registrations)
 	}
@@ -518,7 +518,7 @@ func TestMCPIdentityDoesNotBorrowAnotherCodexThreadCertificate(t *testing.T) {
 	t.Setenv("REPOWIRE_DAEMON__HOST", "127.0.0.1")
 	t.Setenv("REPOWIRE_DAEMON__PORT", strconv.Itoa(port))
 
-	identity, proof := MCPIdentityProofForThread("thread-child")
+	identity, proof, _ := MCPIdentityProofForThread("thread-child")
 	if validations != 0 {
 		t.Fatalf("child thread validated another thread's certificate %d times", validations)
 	}
@@ -563,5 +563,57 @@ func TestMCPIdentityWithoutAPaneLeavesTheSpawnHintQueued(t *testing.T) {
 	MCPIdentityProof()
 	if left := ConsumeSpawnHintFor(cwd, "codex", "repow-restarted"); stringValue(left, "pane_id") != "%94" {
 		t.Fatalf("a paneless MCP shim consumed the restart hint; left %#v", left)
+	}
+}
+
+// #494: a thread whose cached certificate no longer validates renews it
+// through the daemon when the thread is connected, and otherwise reports the
+// problem instead of an empty proof that would make the call anonymous.
+func TestMCPIdentityRenewsOrReportsFailedThreadCertificate(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("REPOWIRE_BACKEND", "codex")
+	t.Setenv("CODEX_THREAD_ID", "")
+	t.Setenv("REPOWIRE_CONFIG", filepath.Join(homeDir, "missing-config.yaml"))
+	expired := map[string]any{"nonce": "old-proof", "peer_id": "repow-native", "backend": "codex", "project_path": mustGetwd(),
+		"runtime_session_id": "thread-native", "expires_at": time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)}
+	fresh := map[string]any{"nonce": "new-proof", "peer_id": "repow-native", "backend": "codex", "project_path": mustGetwd(),
+		"runtime_session_id": "thread-native", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)}
+	renewOK := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/peers/identity/validate":
+			http.Error(w, "Runtime identity certificate is invalid or expired", http.StatusConflict)
+		case "/peers/identity/renew":
+			if !renewOK {
+				http.Error(w, "not connected", http.StatusConflict)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "birth_certificate": fresh})
+		default:
+			http.Error(w, "unexpected "+r.URL.Path, http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	port, _ := strconv.Atoi(strings.TrimPrefix(server.URL, "http://127.0.0.1:"))
+	t.Setenv("REPOWIRE_DAEMON__HOST", "127.0.0.1")
+	t.Setenv("REPOWIRE_DAEMON__PORT", strconv.Itoa(port))
+	if err := WriteRuntimeIdentity("codex", "thread-native", map[string]any{"birth_certificate": expired}); err != nil {
+		t.Fatal(err)
+	}
+
+	identity, proof, problem := MCPIdentityProofForThread("thread-native")
+	if identity != "repow-native" || proof != "" || problem != "expired" {
+		t.Fatalf("refused renewal: identity=%q proof=%q problem=%q", identity, proof, problem)
+	}
+
+	renewOK = true
+	identity, proof, problem = MCPIdentityProofForThread("thread-native")
+	if identity != "repow-native" || proof != "new-proof" || problem != "" {
+		t.Fatalf("renewed: identity=%q proof=%q problem=%q", identity, proof, problem)
+	}
+	if cached, _ := ReadRuntimeIdentity("codex", "thread-native")["birth_certificate"].(map[string]any); cached["nonce"] != "new-proof" {
+		t.Fatalf("renewed certificate not cached: %v", cached)
 	}
 }

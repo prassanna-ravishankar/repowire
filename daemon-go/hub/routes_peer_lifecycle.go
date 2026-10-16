@@ -485,9 +485,10 @@ func (h *Hub) handleValidateRuntimeIdentity(w http.ResponseWriter, r *http.Reque
 // handleRenewRuntimeIdentity exchanges a runtime's birth certificate for a
 // fresh one while its peer is live: a session-native runtime that stays
 // connected never re-registers, so without renewal its MCP proof expires. The
-// old certificate must still match exactly (expiry aside), and the peer must
-// be connected on the same runtime session; renewal never rehydrates an
-// offline or retired identity (that is /peers/identity/validate's job).
+// old certificate must still match exactly (expiry aside), must name a
+// runtime session, and the peer must be connected on that same session;
+// renewal never rehydrates an offline or retired identity (that is
+// /peers/identity/validate's job).
 func (h *Hub) handleRenewRuntimeIdentity(w http.ResponseWriter, r *http.Request) {
 	if h.store == nil {
 		writeError(w, http.StatusNotFound, "Runtime identity certificate store is unavailable")
@@ -509,7 +510,8 @@ func (h *Hub) handleRenewRuntimeIdentity(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	p, ok := h.reg.GetPeer(proto.PeerID(old.PeerID))
-	if !ok || !h.transport.IsConnected(p.PeerID) || (old.RuntimeSessionID != nil && derefString(runtimeSessionIDFromMetadata(p.Metadata)) != *old.RuntimeSessionID) {
+	if !ok || !h.transport.IsConnected(p.PeerID) || derefString(old.RuntimeSessionID) == "" ||
+		derefString(runtimeSessionIDFromMetadata(p.Metadata)) != *old.RuntimeSessionID {
 		writeError(w, http.StatusConflict, "Runtime identity can be renewed only while its peer is connected on the same runtime session")
 		return
 	}

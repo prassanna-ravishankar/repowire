@@ -174,13 +174,16 @@ its certificate through `POST /peers/identity/renew` at the thread's first turn
 start after half the certificate's lifetime (24 h TTL). The daemon renews only
 an exactly matching certificate whose peer is connected on the same runtime
 session, so an expired certificate can be exchanged for a fresh one but never
-used as proof by itself.
+used as proof by itself. The MCP shim does the same at request time when a
+thread's cached certificate fails validation; if renewal is refused it reports
+the failure to the daemon rather than making the call anonymously.
 
 On the HTTP MCP hop, a caller that presents no proof acts as the anonymous
 `mcp-http` identity by design (direct HTTP clients, or a shim whose runtime
 has no mesh identity, which then sends no peer claim). A proof that is
 presented and fails (unknown, expired, another peer's, or for a peer that is
-not registered) is never downgraded to `mcp-http`: `initialize` and
+not registered), or a shim's report that its certificate failed, is never
+downgraded to `mcp-http`: `initialize` and
 `tools/list` still work, every tool call returns an error naming the reason,
 and the daemon journals `mcp_identity_proof_rejected` with the claimed peer,
 the reason, and the tool.
