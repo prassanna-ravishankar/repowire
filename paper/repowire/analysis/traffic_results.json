@@ -1,0 +1,62 @@
+{
+  "alias_recurrence": {
+    "asks_in_recurring_pairs": 134,
+    "definition": "Most frequently observed name per peer id, from inventory reconstruction; alias recurrence is not session or context continuity.",
+    "distinct_pairs": 89,
+    "longest_pair_elapsed_calendar_days": 130,
+    "max_distinct_active_utc_days_per_pair": 6,
+    "pairs_on_multiple_utc_days": 11,
+    "peer_sender_later_day_opportunities": 35,
+    "peer_sender_later_day_repeats": 13
+  },
+  "expanded_dispatch": {
+    "candidate_records_by_channel": {
+      "ask": 2399,
+      "assigned_job_state": 3665,
+      "notification_event": 848,
+      "notify_trace": 13
+    },
+    "definition": "Preceding control-sender asks and notifications (events and resolved notify traces), plus all job-state events naming an assigned executor; not proof of causal dispatch.",
+    "no_prior_dispatch_2h": 184,
+    "no_prior_dispatch_30m": 220,
+    "notify_trace_sender_classes": {
+      "orchestrator": 13,
+      "peer": 23
+    },
+    "peer_to_peer_asks": 348
+  },
+  "human_asks_by_surface": {
+    "dashboard": 18,
+    "telegram": 680
+  },
+  "peer_sender_repeats": {
+    "gaps": {
+      "later_utc_day": {
+        "opportunities": 11,
+        "repeats": 3
+      },
+      "same_day_at_least_1h": {
+        "opportunities": 21,
+        "repeats": 12
+      },
+      "same_day_under_1h": {
+        "opportunities": 269,
+        "repeats": 181
+      }
+    },
+    "null_definition": "Within each sender, iid draws from observed recipient frequencies: sum p_i squared; weighted by n_sender-1.",
+    "observed_rate": 0.6511627906976745,
+    "opportunities": 301,
+    "recipient_frequency_null": 0.5376175211531725,
+    "repeats": 196
+  },
+  "peer_to_peer": {
+    "asks": 348,
+    "both_endpoints_have_unique_retained_path": 224,
+    "different_retained_paths": 99,
+    "distinct_id_pairs": 114,
+    "id_pairs_on_multiple_utc_days": 4,
+    "no_recorded_human_or_orchestrator_dispatch_within_30m": 230,
+    "path_warning": "Distinct retained paths can be worktrees of one repository; not a cross-repository classification."
+  }
+}

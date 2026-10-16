@@ -1,12 +1,13 @@
-\documentclass{article}
+\documentclass[10pt,twocolumn]{article}
 
 \usepackage{microtype}
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{multirow}
 \usepackage{float}
-\usepackage{hyperref}
-\usepackage[accepted]{icml2025}
+\usepackage[hidelinks]{hyperref}
+\usepackage[letterpaper,margin=0.75in]{geometry}
+\usepackage[authoryear,round]{natbib}
 \usepackage{amsmath,amssymb,amsthm}
 \usepackage{tikz}
 \usetikzlibrary{positioning,arrows.meta,fit,backgrounds,calc,shapes.multipart,patterns}
@@ -14,11 +15,6 @@
 \pgfplotsset{compat=1.17}
 \usepackage{xcolor}
 \usepackage[capitalize,noabbrev]{cleveref}
-
-% Preprint notice in place of the ICML "Appearing in" line.
-\makeatletter
-\renewcommand{\Notice@String}{Preprint. Draft 2. 16 October 2026. For review.}
-\makeatother
 
 \newcommand{\todo}[1]{\textcolor{red}{[#1]}}
 \newcommand{\sys}{Repowire}
@@ -31,53 +27,31 @@
   lbl/.style={font=\tiny, align=center, fill=white, inner sep=1pt},
 }
 
-\icmltitlerunning{\sys: A Persistent Mesh for Heterogeneous Coding Agents}
-
+\title{Repowire: Experience with Addressing and Delivery\\in a Persistent Coding-Agent Mesh}
+\author{Prassanna Ganesh Ravishankar\\Independent Researcher\\\texttt{me@prassanna.io}\\\todo{co-author line}}
+\date{16 October 2026. Working draft for arXiv and workshop review.}
 \begin{document}
-
-\twocolumn[
-\icmltitle{\sys: A Persistent Mesh for Heterogeneous Coding Agents}
-
-\icmlsetsymbol{equal}{*}
-
-\begin{icmlauthorlist}
-\icmlauthor{Prassanna Ganesh Ravishankar}{ind}
-\todo{co-author line}
-\end{icmlauthorlist}
-
-\icmlaffiliation{ind}{Independent Researcher}
-
-\icmlcorrespondingauthor{Prassanna Ganesh Ravishankar}{me@prassanna.io}
-
-\icmlkeywords{multi-agent systems, coding agents, agent infrastructure, measurement study}
-
-\vskip 0.3in
-]
-
-\printAffiliationsAndNotice{}
-
+\maketitle
 \begin{abstract}
-Coding-agent sessions run in separate repositories and on different runtimes. Coordinating them requires an address for each session and a way to deliver messages into it. We present \sys, a local daemon that connects Claude Code, Codex, OpenCode and Pi sessions through a common protocol. The daemon routes by peer ids distinct from display names and runtime session ids. Runtime bridges deliver messages through native input APIs. Only requests require explicit closure; notifications do not. Liveness repair runs on incoming requests rather than a periodic timer. Human control surfaces and orchestrator sessions use the same protocol as other peers. We study one operator's deployment over 146 calendar days, containing 2,810 requests and 370 agent names across 86 projects. One name appears over 144 days and 49 registrations; the median lifetime in the other-agent registration class is 12.6 minutes. Recorded request closure is 87.4\% in the Python era and 98.1\% in the Go era. Of agent-to-agent requests, 52\% cross runtimes. Among requests with a preceding request from the same sender, 74.7\% repeat its recipient. Human surfaces originate 53.5\% of non-machine requests and no notifications. A separate written record contains 76 incidents, of which 34 concern identity, liveness or delivery. \sys{} is open source.
+Task-scoped coding-agent workflows delegate work from a parent to temporary workers within one tool. Repowire instead treats coding agents as persistent, directly addressable peers across runtimes and repositories, with humans participating through the same protocol. We report experience with a daemon that maintains this mesh through reconnects and runtime changes. A retrospective audit finds substantial registration churn and stale journal state around restarts. A small residual of address-key collisions is consistent with sibling sessions sharing a folder; its size is stable under two interval sensitivities. Operational records illustrate why runtime evidence matters during eviction and why explicit failure receipts matter during delivery. Cross-runtime exchanges and human use through Telegram show that the communication paths are used. The journal does not measure a benefit from carrying context across tasks. Missing registration evidence prevents replaying identity decisions or establishing session continuity.
 \end{abstract}
 
 \section{Introduction}
 \label{sec:intro}
 
-A developer working across repositories may run a separate coding-agent session in each repository. When a task crosses a repository boundary, the developer relays questions and answers between sessions \citep{vibebottleneck2026}. These relays require the developer to preserve details such as flags and version numbers. Shared documentation and task summaries provide context in advance, but must be updated when the underlying code changes.
+A task-scoped coding workflow starts with an orchestrator that delegates work to subagents, optionally in separate git worktrees, and collects their results. The parent holds the task context and decides what survives the workers' completion. Claude Code documents this delegation pattern and worktree isolation \citep{subagents2026}. It organizes parallel work within a task; our concern is communication among repository sessions that remain useful across tasks.
 
-An agent can instead ask the session working on the relevant repository. The system must resolve the recipient's address even after reconnects or restarts and deliver the question through that runtime's input interface. It must also record whether the recipient answered.
+\sys{} treats those sessions as directly addressable peers. A peer can ask another peer without routing the exchange through a parent or asking a human to relay it. Peers may use different runtimes and work in different repositories; relay clients can connect from another machine. The human is also a peer, reachable through a phone or browser. The intended lifetime of a peer's role and context extends beyond one task, although its process and registration may change.
 
-\sys{} runs as a daemon on the developer's machine. Agent sessions register as \emph{peers}. The daemon routes messages to their native input interfaces and records the exchanges in a journal. A Telegram bot, a Slack bot and a web dashboard register with the \code{human} role. An \emph{orchestrator} is a peer that coordinates work through the same message protocol.
+\paragraph{Task tree and persistent mesh.}
+The contrast is between two organizational patterns: a task tree whose workers return results to their parent, and a mesh whose peers communicate directly across successive tasks. A task tree can stay within one runtime; the mesh connects heterogeneous runtime sessions. These patterns compose: a peer can use its runtime's subagent fan-out internally. They are not exclusive product categories. Claude Code supports subagent resumption and messaging between named subagents; Agent Teams supports direct teammate communication \citep{subagents2026,agentteams2026}. We do not measure which pattern is dominant or compare their task performance.
 
-The design changed in response to operational failures. Early versions routed by display name and terminal pane. The operator's notes record 76 incidents, including stale registrations and messages delivered to the wrong session. We describe the mechanisms introduced to address these failures and use the journal to measure the resulting deployment.
+\sys{} runs as a daemon on the developer's machine. Agent sessions register as peers, and runtime bridges deliver messages through native input interfaces. Telegram, Slack and web control surfaces register with the \code{human} role. An orchestrator coordinates work through the same message protocol as other peers.
+
+The design changed in response to operational failures. Early versions routed by display name and terminal pane. The operator's notes record stale registrations and messages delivered to the wrong session. We describe the mechanisms introduced to address these failures and use the journal to measure the resulting deployment.
 
 \paragraph{Contributions.}
-\begin{enumerate}
-\item A design for persistent, addressable coding agents across runtimes (\cref{sec:design}): daemon-minted identity with separate registration and addressing checks and explicit retirement; a protocol in which only asks have a lifecycle; bridges under a transport-neutral router; lazy repair instead of liveness polling; humans and orchestrators as peers.
-\item An open-source implementation (\cref{sec:impl}) that grew from 5 to 33 tools and from one runtime to six over ten months, with journal schemas that differ across the native cutover.
-\item A measurement study of the mesh from its journal (\cref{sec:eval}): 146 days, 2,810 requests, 2,472 agent registrations. We report lifetime and identity churn, closure and latency, the sender-recipient structure of traffic including the human's share, cross-runtime use, the review loop, and incidents coded against the MAST taxonomy \citep{cemri2025mast}.
-\item Design lessons (\cref{sec:lessons}) stated as claims with the evidence that supports or limits them.
-\end{enumerate}
+The experience raises two questions: what identity cost comes with keeping peers addressable across tasks, and what communication paths are used? We describe the identity and delivery mechanisms developed in this deployment (\cref{sec:design}), and audit the ambiguity that alternative address keys would introduce in its retained records (\cref{sec:eval}). We relate the operational evidence to limits of request-triggered repair and human interaction (\cref{sec:lessons}). The implementation is open source; this paper is an experience report rather than a controlled comparison of implementations.
 
 The study covers one mesh operated by the author (\cref{sec:limits}). The journal records sender and recipient identities, request closure and registration activity. Prior studies examine coding agents through repository activity \citep{agarwal2026velocity,mazloomzadeh2026prs}, practitioner surveys \citep{pan2026measuring}, or collaborative tasks \citep{khatua2026cooperbench}. Our measurements concern a deployment used across successive tasks and sessions.
 
@@ -89,12 +63,12 @@ One developer maintains several repositories (a product, its infrastructure, a f
 
 \paragraph{Goals.}
 \begin{description}
-\item[G1 Address.] A session has a stable address that survives reconnects and daemon restarts, and that no other session can take by sharing a path or a name.
+\item[G1 Address.] The canonical address is a daemon-minted peer id; a display name is a human-facing alias. Reconnects should recover the id when identity evidence permits, without merging distinct live sessions. Session continuity is a goal, not an invariant established by this study.
 \item[G2 Deliver.] A message to a live session reaches its native input, and the sender learns whether it did.
 \item[G3 Heterogeneity.] Runtimes differ in hooks, session models and input paths; the protocol must not.
 \item[G4 Humans as peers.] The person is addressable and addressed by the same primitives as agents, from a phone.
 \item[G5 No polling.] Agents do not send liveness heartbeats.
-\item[G6 Record.] Every request, reply, registration and repair is journaled so that the mesh can be debugged and, later, measured.
+\item[G6 Record.] Journal requests, replies and lifecycle decisions with enough evidence to diagnose failures. The retained records omit registration evidence and restart boundaries, so they do not yet meet this goal fully.
 \end{description}
 G5 follows an incident in which timer-driven reconciliation marked live peers offline. Request-triggered repair can leave stale entries until another request arrives (\cref{sec:lazy}).
 
@@ -136,7 +110,7 @@ The daemon routes by a minted \code{peer\_id}. Addressing can resolve a display 
 \paragraph{Registration and addressing.}
 Registration and message addressing use different checks (\cref{tab:proof}). Registration first checks retirement, then looks for an existing live-process holder. For Claude Code, matching process and compatible machine, backend and path can identify that holder; Codex, OpenCode and Pi also require a matching runtime session id because one process can host several sessions. The daemon next considers a claimed \code{peer\_id} with compatible backend and path. If no id has been selected, it checks the durable binding for the backend and runtime session, subject to path compatibility. It then checks the name, circle, backend and compatible-path tuple, first among offline peers and then among persisted mappings.
 
-Tuple reclaim adopts only a unique eligible candidate. Multiple candidates cause the daemon to mint a fresh id and journal an \code{identity\_reclaim\_ambiguous} event with the candidate ids. The fresh identity receives a distinct address when the proposed name is already held. For session-scoped runtimes, binding and tuple adoption reject candidates known to run a different session when the registrant supplies a session id. They also reject a peer whose process is alive elsewhere, including an offline record whose process still runs. Claude Code can take over a same-directory registration after the old process exits, provided the candidate remains eligible; a live sibling receives a separate, suffixed name. Addressing accepts an id or display name and rejects an ambiguous name. A daemon-minted \emph{birth certificate}, valid for 24 hours by default, authenticates the tool server's identity claim.
+Tuple reclaim adopts only a unique eligible candidate. Multiple candidates cause the daemon to mint a fresh id and journal an \code{identity\_reclaim\_ambiguous} event with the candidate ids. The fresh identity receives a distinct address when the proposed name is already held. For session-scoped runtimes, binding and tuple adoption reject candidates known to run a different session when the registrant supplies a session id. They also reject a peer whose process is alive elsewhere, including an offline record whose process still runs. Claude Code can take over a same-directory registration after the old process exits, provided the candidate remains eligible; a live sibling receives a separate, suffixed name. Addressing accepts an id or display name and rejects an ambiguous name. A daemon-minted \emph{birth certificate}, valid for 24 hours by default, authenticates the tool server's identity claim. An open renewal defect can let a long-lived Codex connection outlast its certificate; subsequent MCP calls then lose peer attribution (issue \href{https://github.com/prassanna-ravishankar/repowire/issues/494}{\#494}).
 
 \begin{table}[t]
 \caption{Identity checks by operation. These checks do not form a single ordered proof hierarchy.}
@@ -198,7 +172,7 @@ The daemon routes four message types, chosen by lifecycle rather than content.
 \end{itemize}
 Peer-originated deliveries are framed so that a runtime can distinguish them from its user's instructions; messages from human surfaces are framed as user instructions. An ask to a peer the runtime says cannot accept direct input (a sub-agent thread) is refused before any state is created. Replies always reach the asker regardless of circle, because the route was fixed at ask time.
 
-An agent explicitly closes or replies to an ask through the protocol. The daemon can also close asks on expiry, peer eviction, loss of addressability, or a job outcome. The default expiry is 24 hours. Notifications create no tracked obligation. Human surfaces sent only asks in the observed journal; agent peers used both types (\cref{sec:traffic}).
+An agent explicitly closes or replies to an ask through the protocol. The daemon can also close asks on expiry, peer eviction, loss of addressability, or a job outcome. The default expiry is 24 hours. Notifications create no tracked obligation. The targeted-message UI defaults to asks; explicit syntax selects notifications.
 
 \subsection{Bridges and transports}
 \label{sec:bridges}
@@ -221,198 +195,130 @@ An orchestrator is a peer with \code{role=orchestrator}; coordination is perform
 
 A \emph{schedule} delivers a future notification or tracked ask. A \emph{job} is a durable work record with an executor. In the Go implementation, dispatch uses the unregistered sender id \code{daemon-job-runner}, not a registered \code{@jobs} peer. A user-role chat event containing the work and attempt markers arms the job. The next assistant chat event from the assigned executor completes the armed work. Claude Code's Stop hook posts both events at turn end, so arming and completion can occur during the same Stop; the Codex bridge can post the user event as it occurs. A terminal executor failure closes active work with \code{executor\_died}. Only dispatch is lease-bounded; delivered work is not reaped by a clock.
 
-The journal (G6) is an append-only event table in SQLite plus a per-message delivery-trace ledger. Trace stages record creation and recipient resolution, transport outcomes such as \code{websocket\_sent} or \code{thread\_input\_accepted}, and closure. There is no generic \code{delivered} stage. Resolved ids and status fields allow a misroute to be diagnosed from the record. \Cref{sec:eval} uses this journal as the measurement instrument.
+The journal (G6) is an append-only event table in SQLite plus a per-message delivery-trace ledger. Trace stages record creation and recipient resolution, transport outcomes such as \code{websocket\_sent} or \code{thread\_input\_accepted}, and closure. There is no generic \code{delivered} stage. Resolved ids and status fields identify the intended recipient and recorded transport outcome. They do not independently establish which runtime session consumed the message. \Cref{sec:eval} uses this journal as the measurement instrument.
 
 \section{Implementation}
 \label{sec:impl}
 
-\sys{} is a single Go binary (daemon, CLI, hooks, bridges, tool server, Telegram and Slack clients, relay client) with an embedded dashboard; the first eight months were Python, and the native cutover (PR \#382, 10 August 2026) splits the journal into two eras with different schemas (\cref{sec:method}). State is SQLite with versioned migrations, whose application dates on the studied host record the journal's schema changes: event journal (22 May 2026), tracked work (25 May), delivery traces (30 May), retired identities (11 June), peer provenance (18 September), routing-decision index (11 October), human inbox (13 October). The tool surface grew from 5 tools in December 2025 (\code{ask\_peer}, \code{notify\_peer}, \code{broadcast}, \code{list\_peers}, \code{register\_peer}) to 33 in October 2026, with the largest step (8 to 28) in May 2026 when asks gained lifecycle (\code{ack}, \code{answer}, \code{ask\_many}), jobs and schedules arrived, and the orchestrator role was introduced. Six runtimes have registered peers; Gemini CLI and Antigravity were later retired as supported backends. A hosted relay tunnels dashboard and socket traffic so that a mesh on a home machine is operable from elsewhere; remote agents can join through a relay-side tool server. The repository has 828 commits and 362 pull requests from December 2025 to October 2026, including 18 pull requests from external contributors, and is Apache-licensed. \todo{artifact URL}
+\sys{} is a single Go binary (daemon, CLI, hooks, bridges, tool server, Telegram and Slack clients, relay client) with an embedded dashboard; the first eight months were Python, and the native cutover (PR \#382, 10 August 2026) splits the journal into two eras with different schemas (\cref{sec:method}). State is SQLite with versioned migrations, whose application dates on the studied host record the journal's schema changes: event journal (22 May 2026), tracked work (25 May), delivery traces (30 May), retired identities (11 June), peer provenance (18 September), routing-decision index (11 October), human inbox (13 October). A hosted relay tunnels dashboard and socket traffic so that a mesh on a home machine is operable from elsewhere; remote agents can join through a relay-side tool server. The repository is Apache-licensed. \todo{artifact URL}
 
-\section{Evaluation}
+\section{Deployment Evidence}
 \label{sec:eval}
-
-We measure registration lifetimes and restart activity (\cref{sec:lifecycle}), request closure (\cref{sec:closure}), traffic by sender and recipient (\cref{sec:traffic}), and cross-runtime use (\cref{sec:hetero}). We then examine the written incident record (\cref{sec:incidents}).
 
 \subsection{Method and data}
 \label{sec:method}
 
-The data are a backup of the daemon's state database taken on 14 October 2026 and opened immutable; the daemon log, from which only start markers were extracted; the repository's history and pull-request record; and the operator's written notes (project file, 150 orchestrator memory files, 46 vault notes, two repository memory directories), from which incidents were compiled. Configuration and credential files were not read. The journal spans 22 May to 14 October 2026 (146 calendar days; 93 with any event; 64 with an active agent peer). It changes shape at the native cutover: era A (22 May to 10 August, Python) journals asks as events and replies as notification text, and has no registration events; era B (10 August to 14 October, Go) has registration and status events, typed ack events, and the delivery-trace ledger. Asks are unified across eras (2,810: 1,505 machine dispatch from the job runner, 1,305 other). We report per era where the measure depends on the schema. Sender classes: \emph{human} (Telegram, dashboard, Slack, inbox), \emph{orchestrator} (role or name), \emph{peer} (other agents), \emph{machine} (job runner), \emph{relay} (remote tool server). Scripts and the backup copy are kept with the paper's working files; the backup is not released because ask text contains the operator's private material. \Cref{sec:limits} lists what the journal cannot answer.
+We use an immutable state-database backup taken on 14 October 2026 and the operator's written incident record. The journal spans 22 May to 14 October: 146 calendar days, 93 with an event and 64 with an active agent peer. The Python implementation (era A) records asks as events and some replies as notification text. The Go implementation (era B, from 10 August) records registration events and typed delivery traces. The job runner was active in era A and retired at the cutover. The workloads and measurement instruments differ.
 
-\paragraph{Activity.}
-\Cref{fig:activity} shows monthly volume by sender class. Two regimes are visible: May and June, when the mesh ran many agents and a job runner (925 of June's 1,321 asks are machine dispatch; July is almost entirely machine), and August to October, when the native daemon ran a smaller mesh without jobs. These periods differ in both traffic volume and workload; the era comparison does not control for those differences.
+The key audit uses era B only. Offline events do not fully record registry loss at daemon restarts; we therefore check event-only intervals against separately extracted daemon-start markers. Its script, tests and aggregate output are in \code{paper/repowire/analysis}. The private backup contains message text and is not released. Other descriptive results follow the evidence inventory's cross-era reconstruction, which excludes job-runner dispatch from human and agent request counts.
 
-\begin{figure}[t]
-\centering
-\begin{tikzpicture}
-\begin{axis}[
-  ybar stacked, width=\columnwidth, height=4.6cm,
-  bar width=9pt, ymin=0, ymax=1400,
-  symbolic x coords={May,Jun,Jul,Aug,Sep,Oct},
-  xtick=data, ylabel={asks}, ylabel near ticks,
-  tick label style={font=\scriptsize}, label style={font=\scriptsize},
-  legend style={font=\tiny, at={(0.02,0.95)}, anchor=north west, draw=none, fill=none},
-  legend cell align=left, legend columns=1, reverse legend,
-  enlarge x limits=0.12]
-\addplot[fill=black!70] coordinates {(May,313) (Jun,239) (Jul,1) (Aug,10) (Sep,34) (Oct,101)};
-\addplot[fill=black!40] coordinates {(May,65) (Jun,80) (Jul,0) (Aug,0) (Sep,10) (Oct,41)};
-\addplot[fill=black!15] coordinates {(May,228) (Jun,77) (Jul,5) (Aug,45) (Sep,19) (Oct,37)};
-\addplot[fill=white, postaction={pattern=north east lines}] coordinates {(May,42) (Jun,925) (Jul,538) (Aug,0) (Sep,0) (Oct,0)};
-\legend{human, orchestrator, peer and relay, machine}
-\end{axis}
-\end{tikzpicture}
-\caption{Asks per month by sender class, May to October 2026 (May from the 22nd, October to the 14th). Machine dispatch is the job runner, which was retired at the native cutover.}
-\label{fig:activity}
-\end{figure}
-
-\subsection{Registration lifetimes and name reuse}
+\subsection{The identity cost: address-key exposure}
 \label{sec:lifecycle}
 
-\paragraph{Lifetimes.}
-A \code{peer\_id} is a registration; one project session can hold several across reconnects, so per-id lifetimes bound session lifetime from below. \Cref{tab:lifetimes} gives the distribution. The median registration in the other-agent class spans 12.6 minutes and 30\% are observed exactly once; the median orchestrator registration lives 16.1 minutes. Job-executor registrations have a median observed lifetime of 35 minutes.
+The audit asks whether an alternative key would identify more than one recorded-online peer when a delivery attempt resolved its recipient. It does not replay registration rules. All 4,203 era-B \code{peer\_online} payloads are empty, and their \code{session\_id} column repeats the peer id. The journal therefore lacks event-time process, path and runtime-session evidence needed to reconstruct identity selection.
+
+\paragraph{Keys and coverage.}
+Observed display names are outputs of the daemon's identity system: it suffixes names to distinguish live peers within a circle. They are not independent baseline keys. Event names and retained mappings agree where both exist. Only 72 of the 232 online peer ids retain circle and path metadata in \code{peer\_session\_mappings}; the backup has no \code{peers} table. Reaping, stale eviction and unregistering delete mappings. This cohort therefore has survivorship bias: 38/72 mapped peers are right-censored in the event-only reconstruction, compared with 83/232 overall. It overrepresents the stale records that inflate uncapped overlap.
+
+We derive a default base name from the final path component and backend using \code{buildDisplayName}'s sanitization. We preserve numeric folder suffixes rather than trying to reverse the daemon's naming decisions. Preferred-name inputs are unavailable. The base, base-plus-circle and base-plus-exact-path comparisons all use the same mapped cohort, with static attributes applied retrospectively.
+
+Backend/session keys come from final \code{session\_bindings}. Updates replace the owner of an existing binding, matched first by source URI and then by runtime session scoped to backend and project. Earlier owners can disappear from the snapshot. We also exclude 31 peers with multiple keys, leaving 171 covered peers. The resulting zero is a snapshot artifact, not a test of a session-id policy. We group it with the peer-id uniqueness control; neither establishes registration correctness. Binding creation and last-seen times are observation bounds, not assignment-validity intervals.
+
+Earliest recipient resolution per message kind and trace id defines an attempt: 303 attempts, including 267 asks and 36 notifications. A key is known for all 303 attempts under observed names, for 134 under mapped keys, and for 112 under backend/session. Eligibility additionally requires an observed target interval. Missing target intervals are unknown, not orphaned deliveries; missing competitor keys reduce coverage.
+
+\paragraph{Interval sensitivities.}
+The event-only reconstruction opens an interval on \code{peer\_online}, closes it on offline or reaped, and leaves repeated online events within an open interval unchanged. Intervals are half-open. This gives 499 intervals for 232 peer ids, of which 83 remain open at the window end. We compare three treatments (\cref{tab:exposure}):
+\begin{enumerate}
+\item \emph{Last-observation cap} (primary): cap each interval at that peer's latest timestamp in the event or delivery-trace peer-id column. This removes silent tails, but a recorded association is not independent proof of process liveness.
+\item \emph{Restart closure}: close all registry intervals at each daemon start, then rebuild from the raw lifecycle events. Later online events reopen intervals. We use 64 Go start markers from the daemon log, interpreting its naive timestamps in the host's Europe/London zone (UTC+1 throughout the window). The offset was checked against same-peer journal observations. This gives 936 intervals and 13 right-censored ids.
+\item \emph{Uncapped}: retain open intervals to the last journal event. This is the stale-record upper scenario, not an estimate of live concurrency.
+\end{enumerate}
+
+Restart closure preserves all 298 eligible observed-name attempts and all 131 mapped-key attempts. Seventy of the 83 originally right-censored ids acquire a restart boundary. This exposes missing lifecycle boundaries in the journal, not evidence of traffic without re-registration. Simply clipping an already-merged interval at its first restart would discard later online events and give the wrong denominator. The artifact also reports a UTC interpretation of the log as a timezone sensitivity.
 
 \begin{table}[t]
-\caption{Registration lifetime (last minus first observation of a \code{peer\_id}), by class. Agent and orchestrator lifetimes are lower bounds on session lifetime.}
-\label{tab:lifetimes}
-\centering
-\scriptsize
-\setlength{\tabcolsep}{3.5pt}
+\caption{Exposure sensitivity. Peers is key coverage out of 232; eligible attempts have an observed target interval. The last-observation cap and restart rebuild preserve the listed eligibility. The last three columns count potential ambiguity, not misdelivery. Snapshot controls are not policy comparisons.}
+\label{tab:exposure}
+\centering\scriptsize
+\setlength{\tabcolsep}{2.7pt}
 \begin{tabular}{@{}lrrrrr@{}}
 \toprule
-class & $n$ & p25 & median & p75 & p90 \\
+key & peers & eligible & cap & restart & uncapped \\
 \midrule
-job executor (era A) & 1,456 & 3.1 m & 35.0 m & 4.4 h & 4.8 d \\
-spawned by mesh (era B) & 56 & 9.3 m & 11.6 m & 38.5 m & 5.7 h \\
-other agent & 823 & 0 & 12.6 m & 56.8 m & 23.5 h \\
-orchestrator & 137 & 0 & 16.1 m & 2.0 h & 37.1 h \\
+observed name & 232 & 298 & 0 & 0 & 66 \\
+observed name + circle & 72 & 131 & 0 & 0 & 0 \\
+observed name + path & 72 & 131 & 0 & 0 & 50 \\
+base name & 72 & 131 & 4 & 4 & 83 \\
+base + circle & 72 & 131 & 4 & 4 & 7 \\
+base + path & 72 & 131 & 4 & 4 & 83 \\
+\midrule
+backend + session & 171 & 110 & 0 & 0 & 0 \\
+peer id & 232 & 298 & 0 & 0 & 0 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\paragraph{Names persist.}
-Seven display names span 138 to 144 days of the 146-day calendar window. The name \code{repowire-claude-code} appears over 49 registrations, \code{orchestrator-claude-code} over 37, \code{repowire-codex} over 30, and \code{torale-codex} over 3. Senders address these names; the daemon resolves them to current registration ids. Reuse of a name does not establish continuity of a runtime session.
+\paragraph{Residual and concentration.}
+The base-name sensitivity range is [4, 83] exposures among 131 eligible attempts; the observed-name range is [0, 66] among 298. These are heuristic scenarios, not statistical bounds on true concurrency. Both sensitivities retain the same four base-name exposures. In each, a competing id shares the target's path and circle but has a different observed display name. The residual is consistent with sibling concurrency distinguished by daemon suffixing; it does not establish misdelivery.
 
-\paragraph{Restarts.}
-Daemon restarts are not journaled, but in era B they are dated from the log: 64 starts on 14 days, 58 of them within five minutes of a burst of five or more \code{peer\_online} events, and 41 of 60 such bursts within five minutes of a start. In era A, 243 job rows were failed by restart reconciliation at six distinct minutes: these rows record reconciliation failures, not a count of processes killed.
+The uncapped base exposures involve nine targets and seven keys. The base key \code{orchestrator-claude-code} contributes 47 of 83, and the corresponding observed name contributes 47 of 66. Uncapped counts are therefore dominated by stale-record exposure and concentrated in one name. They do not support a claim that ambiguity was common among live sessions.
 
-\paragraph{Contradictions and repair.}
-Lazy repair recorded 428 contradictions across the span (online without a socket 130, pane missing 126, agent process dead 5, uncoded 167) and 485 reaps, all by offline time-to-live. Offline reasons in era B are dominated by clean session end (226) and missing socket plus missing pane (115); transport failure accounts for 32. This is 2.9 recorded contradictions per calendar day across the 146-day window.
+Aggregate pair-overlap duration is equally sensitive. For base names it is 61.18 pair-days with the last-observation cap, 115.76 with restart closure and 2,347.22 uncapped. Pair-days sum overlap over unordered pairs, not elapsed wall time. Reuse is distinct from concurrency: 41 of 136 observed-name keys and 14 of 27 derived base keys accumulate multiple peer ids over the window. This does not identify session splits. The artifact retains pair and set counts for each treatment.
 
-\subsection{Closure and latency}
-\label{sec:closure}
+Twenty-one peer/timestamp groups contain both opening and closing events with unknown order. The main reconstruction closes the interval and waits for the next unambiguous online event. Ordering online last instead leaves the uncapped exposure counts unchanged. The interval sensitivities address a larger uncertainty than these timestamp ties.
 
-Of 1,305 non-machine asks, 1,169 have a close record and 136 do not (131 in era A, 5 in era B). Recorded closure rose from 87.4\% in era A to 98.1\% in era B (\cref{tab:closure}). The design includes retirement of dead identities, explicit delivery-failure receipts and queued redelivery to a reconnecting orchestrator. Five era B asks closed with \code{send\_failed}. The era comparison does not isolate the effect of any mechanism. Expiry is not journaled, so the open duration of the 136 unclosed asks is unknown.
+\paragraph{Address versus alias.}
+Across the full journal, the name \code{repowire-claude-code} appears with 49 peer ids. The orchestrator class contains 137 distinct registration identities, not 137 re-registrations of one demonstrated runtime session. These observations motivate separating aliases from addresses. They neither prove nor refute continuity of an individual session. Recovering the same peer id after resume remains a separate implementation obligation (\cref{sec:limits}).
 
-Latency is time to acknowledgement, which in practice often precedes completion (``on it''); it is not task duration. The median is 26 to 29 seconds in both eras, p90 about three minutes. By sender, the human is acknowledged fastest (median 23 s, p90 105 s), peers in 38 s, the orchestrator in 40 s with a p90 of 8.3 minutes.
+\subsection{Runtime evidence and lazy repair}
+\label{sec:repair-evidence}
 
-\begin{table}[t]
-\caption{Ask closure and acknowledgement latency, non-machine asks, by era.}
-\label{tab:closure}
-\centering
-\footnotesize
-\begin{tabular}{@{}lrrrrrr@{}}
-\toprule
-era & asks & closed & p25 & median & p75 & p90 \\
-\midrule
-A (Python) & 1,040 & 87.4\% & 14 s & 26 s & 60 s & 2.7 m \\
-B (Go) & 265 & 98.1\% & 16 s & 29 s & 66 s & 3.1 m \\
-\bottomrule
-\end{tabular}
-\end{table}
+The journal records 706 \code{offline\_peer\_still\_has\_runtime\_evidence} decisions across 33 distinct peer ids. At these decisions, a naive TTL policy without the runtime-evidence check would have proceeded to eviction. This is a one-decision counterfactual: repeated observations of the same peer are not independent prevented evictions, and an earlier eviction would change the later event stream.
 
-\subsection{Who talks to whom}
-\label{sec:traffic}
+Across both eras, recorded offline reasons include 226 clean \code{session\_end} events and 32 \code{transport\_failure} events. Other reasons include missing panes and agent exits. These records show that lifecycle hooks provide a path to update liveness without agent heartbeats (G5). They do not measure detection delay or establish that lazy repair is preferable under every workload. The journal lacks independent death times for such a comparison.
 
-\Cref{tab:flow} gives sender and recipient classes for the 1,305 non-machine asks.
+\subsection{What the mesh supports}
+\label{sec:closure}\label{sec:traffic}\label{sec:hetero}
 
-\begin{table}[t]
-\caption{Sender and recipient class, non-machine asks ($n = 1{,}305$).}
-\label{tab:flow}
-\centering
-\footnotesize
-\begin{tabular}{@{}llrr@{}}
-\toprule
-sender & recipient & asks & share \\
-\midrule
-human & orchestrator & 436 & 33.4\% \\
-peer & peer & 348 & 26.7\% \\
-human & peer & 262 & 20.1\% \\
-orchestrator & peer & 166 & 12.7\% \\
-peer & orchestrator & 53 & 4.1\% \\
-orchestrator & orchestrator & 24 & 1.8\% \\
-relay & orchestrator & 8 & 0.6\% \\
-agent & human & 7 & 0.5\% \\
-peer & machine & 1 & 0.1\% \\
-\bottomrule
-\end{tabular}
-\end{table}
+\paragraph{Visible outcomes.}
+Five ask traces close with \code{send\_failed}. These are visible delivery-failure outcomes, not successful task completions. The distinction matters when interpreting closure: an ask can close because the daemon reports that delivery failed.
 
-\paragraph{Human traffic.}
-Human surfaces originate 53.5\% of non-machine asks over the span and no notifications. Their monthly share ranges from 17\% to 60\%. Only seven asks run from agents to human surfaces. Agents also send ack replies and notifications, but the notification counts here classify senders, not recipients: orchestrators and peers sent 1,635 notifications in May and June.
+Recorded closure is 909/1,040 (87.4\%) in era A and 260/265 (98.1\%) in era B for non-machine asks. Of the combined 1,169 close records, 855 depend on parsing era-A notification text. Era B uses typed events, and the workload also changes at the cutover. We retain these fractions as descriptions of the records, not an estimate of a reliability improvement. A close or acknowledgement does not establish task completion; missing closes do not identify a particular failure mechanism.
 
-\paragraph{Orchestrator traffic.}
-Human-to-orchestrator is the largest flow, at 33.4\% of non-machine asks. Peer-to-peer requests account for 26.7\%. Asks sent by orchestrators rose from 11\% of non-machine traffic in May to 23\% in October. These shares describe the use of the protocol in this deployment.
+\paragraph{Human participation.}
+Human surfaces originate 698 of 1,305 non-machine asks (53.5\%), but only seven asks go from agents to humans. The common protocol therefore carries substantial human-initiated work without showing much agent-initiated consultation. Notification counts are not evidence of human intent: the targeted-message UI defaults to an ask and requires explicit syntax for a notification.
 
-\paragraph{Repeated recipients.}
-We measure repetition over non-machine, non-self asks with a resolved recipient id. Senders are keyed by \code{peer\_id}, except that all human surfaces form one sender. Of the 1,159 asks with a preceding ask from the same sender, 866 (74.7\%) name the same recipient. Monthly shares range from 0.50 to 0.86. The repeat share is 0.859 for the human, 0.651 for peers and 0.423 for orchestrators. The companion routing study \citep{routerpaper2026} uses a different definition: the last exchange in either direction, a 24-hour expiry and an online worker recipient. Its recency rule matches 333 of 555 recipients (0.60); that population is not a subset of the repetition measure here.
+Of the 698 human-origin asks, 680 come through Telegram and 18 through the dashboard; none come through Slack. Telegram supports phone use, but the journal identifies the service rather than the physical device.
 
-\subsection{Cross-runtime traffic and review}
-\label{sec:hetero}
+\paragraph{Cross-runtime exchanges and initiation.}
+Of 591 agent-to-agent asks, 307 (52\%) cross runtimes; 281 of these are between Claude Code and Codex. This demonstrates use of the bridges, not improved task quality. Of 348 peer-to-peer asks, about 220 have no recorded dispatch to the sender in the preceding 30 minutes, falling to 184 with a two-hour window. The proxy includes human, orchestrator and machine asks, their notifications (events and resolved notify traces), and assigned-job state events. This is consistent with agent-initiated requests, but status notifications need not dispatch work, and earlier or unrecorded dispatch is invisible. The eight relay-origin asks show use of the remote entry point; they do not establish a distribution of work across machines.
 
-Of 591 agent-to-agent asks, 307 (52\%) cross runtimes. The recorded pairs include 177 from Claude Code to Codex, 104 in the reverse direction, 13 from Codex to Pi and 9 from Codex to Antigravity. Message-text matching identifies review traffic for 64 of the 152 repository pull requests opened during the journal span; 37 have a verdict message. Thirty have a requester and reviewer on different runtimes or verdicts from two runtimes (23 Claude Code requesters with Codex reviewers and 7 in the reverse direction). Among the 37 PRs with a verdict, 27 have one observed review round, 5 have two, 3 have three and 2 have five or more; all were merged. Some review messages postdate merge, so these counts do not establish that each review preceded it. The operator's notes estimate about 12 orchestrator turns and 30k tokens for a mediated three-round review, with about 75\% saved by direct peer review. These estimates were not measured from the journal. Separately, over the repository history, the automated review bot produced 714 inline findings on 284 PRs; 80\% carry a medium-severity badge.
+Recipient repetition is treated in the companion routing study \citep{routerpaper2026}; the artifact supplies peer-only repetition, gap splits and a per-sender recipient-frequency null rather than using pooled human traffic as evidence of persistence.
 
-\subsection{Where failures come from}
+\subsection{Operational failures}
 \label{sec:incidents}
 
-The written record contains 76 operational incidents, dated from note text where available. Three are dated before May and four are undated; the monthly inventory does not establish how many May incidents fall after the journal's 22 May start. \Cref{tab:incidents} groups incidents by proximate cause and proposes correspondences with MAST \citep{cemri2025mast}. \todo{Validate the incident-level MAST coding; the evidence inventory contains class counts, not a coding audit.}
+The operator's notes describe phantom registrations, wrong-recipient delivery, dropped replies and state lost across daemon restarts. Configuration drift also caused the installed executable to differ from the checkout. We use these cases to explain design changes rather than estimate failure frequencies. \Cref{app:incidents} gives examples. The evidence inventory links note incidents to journal or daemon-log signatures, including the mass-offline incident that motivated removing periodic reconciliation.
 
-\begin{table}[t]
-\caption{Incidents from the written record by class, with the MAST mode they map to when one exists. Counts follow note density and are not a rate.}
-\label{tab:incidents}
-\centering
-\footnotesize
-\begin{tabular}{@{}lrp{3.3cm}@{}}
-\toprule
-class & $n$ & MAST mapping \\
-\midrule
-peer leak or phantom identity & 13 & none (lifecycle) \\
-config or binary drift & 10 & none (deployment) \\
-delivery drop & 8 & FM-2.4 withholding, at best \\
-misroute & 7 & none (lifecycle) \\
-job or schedule failure & 7 & FM-3.1 premature termination, partly \\
-daemon restart disruption & 4 & FM-1.4 history loss, partly \\
-auth expiry & 2 & none (lifecycle) \\
-other & 25 & 4 credential exposures; worktree crossing; stale descriptions; review process; quota \\
-\midrule
-total & 76 & 34 lifecycle or delivery \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Thirty-four incidents fall in five classes: phantom registrations (13), delivery drops (8), misroutes (7), restart disruption (4) and authentication expiry (2). These classes concern the infrastructure that keeps a recipient addressable and delivers its messages. The proposed MAST correspondences are partial: loss of history can describe a restart's effect, but does not identify the registration or delivery failure that caused it. Of the remaining 42 incidents, ten concern configuration or binary drift, seven concern jobs or schedules, and 25 are grouped as other. The latter group includes four credential exposures into transcripts or logs in October 2026. The inventory does not supply a separate count of reasoning or verification failures.
-
-The inventory lists six matches between note incidents or incident groups and journal or log signatures. These include 43 peers marked offline on 21 June 2026 and eleven daemon starts on 13 October during a group of binary and configuration incidents. Some bursts have no matching note, and some notes have no matching burst.
-
-\subsection{Cost}
-
-The routing ledger covers roughly three days of shadow routing and records tokens rather than money. The operator's notes place the cluster hosting the relay, web and other projects at about 27 to 37 GBP per month; this is not a mesh-only cost. The inventory reports offline routing costs of 0.28 USD for Haiku, 3.67 USD for Sonnet and 7.37 USD for Opus, each over 555 decisions. Agent subscription and runtime API costs are absent from the journal.
+MAST describes failures in multi-agent execution traces \citep{cemri2025mast}. A dropped reply can resemble withholding information, but that label alone does not identify a closed request or failed transport as the cause. Lifecycle evidence is needed to distinguish these cases. \todo{Validate the incident-level MAST coding; the evidence inventory contains class counts, not a coding audit.}
 
 \section{Lessons}
 \label{sec:lessons}
 
-\paragraph{Registration identity.}
-The 34 identity, liveness and delivery incidents motivate separating a routable registration from its display name and runtime session. In \sys, the daemon assigns ids, checks process evidence during adoption and records retirement. Gastown also separates persistent worker identity from sessions \citep{gastown2026}; Claude Code Agent Teams documents limitations on in-process teammate resumption \citep{agentteams2026}. The observed closure increase does not establish which identity or delivery change caused it.
+\paragraph{Separate address selection from alias resolution.}
+Registration churn and stale records dominate the identity evidence. A small residual of shared-base-name exposures remains under both interval sensitivities, consistent with sibling concurrency. Canonical peer ids let the daemon record a specific intended recipient. Registration still has to decide whether a reconnect belongs to that identity; unique ids alone cannot make that decision correct.
 
-\paragraph{Request tracking.}
-The ask/notify split matches the recorded traffic: humans originate asks, while agents send both asks and notifications. Explicit closure and reminders make open requests inspectable. The journal does not measure how much either mechanism contributes to the closure rate.
+\paragraph{Preserve evidence at the decision point.}
+Retained mappings recover only part of the population and are not historical registration inputs. Recording the identity rule and its inputs when registration occurs would permit future policy replay. Restart loss also needs an explicit journal boundary: the event-only reconstruction leaves 83 ids open, whereas rebuilding with daemon starts leaves 13. The current audit cannot recover misbinds or session splits.
 
-\paragraph{Request-triggered repair.}
-Lazy repair avoids the periodic reconciliation path implicated in the mass-offline incident. It leaves registry entries stale until a request or runtime event updates them. The journal records 428 contradictions, but does not measure a bound on detection delay.
+\paragraph{Check runtime evidence before expiry.}
+The spared-event records show decisions at which a TTL alone would discard an identity that still had runtime evidence. Request-triggered repair avoids continuous liveness polling but leaves stale registry state until another request or lifecycle event arrives. A useful next measurement is the delay from independently observed process death to registry repair.
 
-\paragraph{Recipient repetition.}
-Human senders repeat their previous recipient in 86\% of eligible asks, compared with 42\% for orchestrators. A routing evaluation should report switches separately so that repeated recipients do not dominate its score \citep{routerpaper2026}.
+\paragraph{Distinguish addressability from consultation.}
+Human endpoints are widely used to initiate work, while agent-to-human asks are rare in this deployment. Exposing a human peer does not by itself produce a workflow in which agents seek human input.
 
-\paragraph{Scope.}
-The design addresses registration and delivery across successive sessions. The traffic shares and recipient repetition describe one operator's deployment. They do not estimate how other operators would use the same protocol.
+\paragraph{Feasibility is not a measured persistence benefit.}
+Cross-runtime requests and Telegram participation demonstrate usable communication paths. Pairs recur across UTC days at the alias level: 11 of 89 observed-name pairs, carrying 134 of the 348 peer-to-peer asks. At the registration level, only four of 114 peer-id pairs recur. Churn splits relationships across registrations, while alias reuse can join different sessions. Neither measure establishes that context carried over or identifies task boundaries. The deployment therefore supports the feasibility of the mesh and documents its identity costs; a task-level study is needed to measure whether persistence improves work.
 
 \section{Related Work}
 \label{sec:related}
@@ -432,103 +338,28 @@ Pan et al.\ \citep{pan2026measuring} study deployed agents through interviews an
 \paragraph{Persistent state.}
 InfiAgent reconstructs context from file-backed state \citep{infiagent2026}, while Omri et al.\ characterise agent memory systems \citep{agentmemory2026}. \sys{} stores orchestrator memory and runtime session bindings outside the current prompt. The learned-recall experiment is reported separately.
 
-\section{Limitations}
+\section{Limitations and Future Work}
 \label{sec:limits}
 
-The author operates the only mesh studied. Traffic structure may reflect that operator's habits. Incident counts depend on note density and are not failure rates. Era A has no registration events or delivery traces; 855 of the 1,169 close records depend on parsed notification text. The log cannot date most earlier daemon restarts. Ask expiry is not journaled, so 136 asks have no measured close time. Acknowledgement does not establish completion. Shared commit credentials prevent attribution of code to agents or the human. Reviews conducted only in a terminal or on GitHub are absent from the mesh review count. Fifty-three calendar days have no journal event. Runtime costs are not recorded. The private backup cannot be released; the scripts and aggregate tables are intended for the artifact. \todo{artifact release}
+The author operates the only mesh studied. Its workload and incident notes are not a population sample. The key audit uses retrospective static attributes and censored registry intervals. It measures exposure to ambiguity, not actual misdelivery. Missing registration inputs prevent replaying the shipped identity rules; missing runtime-consumption evidence prevents identifying orphaned deliveries. Unjournaled restart boundaries inflate event-only intervals. Issue \href{https://github.com/prassanna-ravishankar/repowire/issues/493}{\#493} proposes registration-decision evidence and daemon-run identifiers. Certificate expiry without renewal can also leave long-lived Codex MCP calls unattributed (\href{https://github.com/prassanna-ravishankar/repowire/issues/494}{\#494}). The private backup cannot be released; aggregate results, analytical code and synthetic tests accompany this draft. \todo{artifact release}
 
-Identity continuity still depends on registration order. A PID-only registration can mint a new peer before the session-start hook supplies the runtime session id. The later registration can then select that live-process holder before consulting the durable session binding, so resume does not always recover the earlier peer id (issue \href{https://github.com/prassanna-ravishankar/repowire/issues/474}{\#474}). The ambiguity fix in commit \code{880690f8} postdates the journal window; the reported closure rates do not evaluate it.
+Identity continuity still depends on registration order. A PID-only registration can mint a new peer before the session-start hook supplies the runtime session id. The later registration can select that live-process holder before consulting the durable session binding, so resume does not always recover the earlier peer id (issue \href{https://github.com/prassanna-ravishankar/repowire/issues/474}{\#474}). The ambiguity fix in commit \code{880690f8} postdates the journal window. The address-key audit does not evaluate that fix.
+
+Controlled fault injection is future work. Tests should cover a pane exiting during an ask, daemon restart with an open request, session resume, sibling terminals sharing a path and expired credentials. Independent process-death timestamps would support a staleness study. We have not measured daemon CPU, memory overhead or a controlled delivery-latency baseline.
 
 \section{Conclusion}
 
-\sys{} connects coding-agent sessions through a daemon that resolves peer identities and delivers messages through runtime bridges. Humans and orchestrators use the same request protocol. The journal records communication across six runtimes and substantial reuse of names across registrations. The incident record documents failures in identity and delivery that informed the current design. Recorded request closure increased from 87.4\% to 98.1\% across the Python and Go eras, but the observational comparison cannot attribute that change to individual mechanisms.
+\sys{} connects coding-agent peers through a common request protocol across runtimes and human control surfaces. The deployment records frequent identity churn and missing restart boundaries. A small residual of same-folder sibling exposure survives two interval sensitivities; the much larger uncapped counts mostly reflect stale records. Cross-runtime exchanges and Telegram use establish communication feasibility. The journal does not establish a benefit from persistent context, which requires a task-level study.
 
 \section*{Acknowledgements}
 \todo{Acknowledge the model vendors whose agents are the peers; the review bots.}
 
 \bibliography{refs}
-\bibliographystyle{icml2025}
+\bibliographystyle{plainnat}
 
 \newpage
 \appendix
 \onecolumn
-
-\section{Tool surface over time}
-\label{app:tools}
-
-\begin{table}[H]
-\caption{MCP tools exposed to agents at month end. The Python era counts tool functions; the Go era counts registrations.}
-\centering
-\footnotesize
-\begin{tabular}{@{}lrp{8cm}p{3cm}@{}}
-\toprule
-month end & tools & added & removed \\
-\midrule
-2025-12 & 5 & \code{ask\_peer, broadcast, list\_peers, notify\_peer, register\_peer} & \\
-2026-01 & 6 & \code{set\_circle, whoami} & \code{register\_peer} \\
-2026-02 & 7 & \code{kill\_peer, spawn\_peer} & \code{set\_circle} \\
-2026-03 & 8 & \code{set\_description} & \\
-2026-05 & 28 & \code{ack, answer, ask, ask\_many, ask\_many\_result, claim\_\allowbreak orchestrator\_\allowbreak role, job\_*} (7), \code{mark\_reviewed, orchestrator\_status, review\_queue, schedule\_*} (5) & \code{ask\_peer} \\
-2026-06 & 31 & \code{revoke\_share, share\_session, wait\_on\_ack} & \\
-2026-08 & 30 & & \code{claim\_\allowbreak orchestrator\_\allowbreak role} \\
-2026-09 & 32 & \code{decline, set\_name} & \\
-2026-10 & 33 & \code{restart\_peer} & \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\section{Surfaces by first commit}
-
-\begin{table}[H]
-\caption{First commit introducing each surface.}
-\centering
-\footnotesize
-\begin{tabular}{@{}llr@{}}
-\toprule
-surface & date & PR \\
-\midrule
-MCP server with inter-agent tools & 2025-12-23 & \\
-hosted relay & 2025-12-25 & \\
-web dashboard & 2026-01-23 & \#2 \\
-circles & 2026-01-25 & \#5 \\
-peer spawn & 2026-01-27 & \#6 \\
-Telegram bot & 2026-03-23 & \#30 \\
-Slack bot & 2026-03-26 & \#32 \\
-schedules & 2026-05-14 & \#133 \\
-SQLite state & 2026-05-20 & \#235 \\
-orchestrator role & 2026-05-21 & \#264 \\
-jobs & 2026-05-25 & \#310 \\
-delivery trace ledger & 2026-05-30 & \#318 \\
-fan-out asks & 2026-05-31 & \#334 \\
-structured questions & 2026-05-31 & \#335 \\
-session sharing & 2026-06-11 & \#360 \\
-native Go daemon & 2026-08-10 & \#382 \\
-relay-side tool server (remote agents) & 2026-10-07 & \#410 \\
-routing decision ledger & 2026-10-11 & \#417 \\
-human inbox & 2026-10-13 & \#469 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\section{Lifecycle events by month}
-
-\begin{table}[H]
-\caption{Lifecycle events in the journal. Registration events exist only in era B.}
-\centering
-\footnotesize
-\begin{tabular}{@{}lrrrrr@{}}
-\toprule
-month & online & offline & reaped & contradiction & spared by runtime evidence \\
-\midrule
-2026-05 & 0 & 0 & 279 & 27 & 0 \\
-2026-06 & 0 & 318 & 66 & 122 & 493 \\
-2026-07 & 0 & 132 & 30 & 8 & 16 \\
-2026-08 & 450 & 96 & 29 & 53 & 100 \\
-2026-09 & 1,900 & 165 & 40 & 55 & 97 \\
-2026-10 & 1,853 & 179 & 41 & 163 & 0 \\
-\bottomrule
-\end{tabular}
-\end{table}
 
 \section{Incident examples}
 \label{app:incidents}
