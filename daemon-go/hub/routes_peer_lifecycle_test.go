@@ -481,3 +481,48 @@ func TestRegisterPeerPersistsResumeCapability(t *testing.T) {
 }
 
 func strptr(s string) *string { return &s }
+
+// #490 end to end: with the registry reading the real session_bindings, a
+// second Codex thread in the same workspace gets its own peer, and the first
+// thread returns to its own.
+func TestRegisterCodexThreadsKeyIdentityOnSessionBinding(t *testing.T) {
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	h := newTestHub(t)
+	h.store = store
+	h.reg.WithSessionIndex(store)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	path := "/work/repowire"
+	register := func(thread string) RegisterResponse {
+		t.Helper()
+		rec := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{
+			Name: "repowire", Path: &path, Backend: proto.AgentCodex, Circle: strptr("0"),
+			Metadata: map[string]any{"runtime_session_id": thread},
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("register %s: %d %s", thread, rec.Code, rec.Body.String())
+		}
+		var resp RegisterResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	a := register("thread-A")
+	if _, err := h.reg.MarkOffline(context.Background(), proto.PeerID(a.PeerID), false); err != nil {
+		t.Fatal(err)
+	}
+	b := register("thread-B")
+	if b.PeerID == a.PeerID || b.DisplayName == a.DisplayName {
+		t.Fatalf("thread-B took thread-A's identity: %+v vs %+v", b, a)
+	}
+	if back := register("thread-A"); back.PeerID != a.PeerID || back.DisplayName != a.DisplayName {
+		t.Fatalf("thread-A came back as %+v, want %+v", back, a)
+	}
+}

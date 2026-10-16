@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/repowire/repowire/daemon-go/proto"
 )
 
 // BindingStatus is the lifecycle state of a session binding. Mirrors the Python
@@ -322,6 +324,33 @@ func (s *Store) GetByRuntimeSession(ctx context.Context, runtimeSessionID string
 		return nil, fmt.Errorf("get binding by runtime session: %w", err)
 	}
 	return b, nil
+}
+
+// PeerForRuntimeSession implements peer.SessionIndex: the peer most recently
+// bound to backend's runtime session and that binding's project path, or ""
+// when the session is unbound.
+func (s *Store) PeerForRuntimeSession(ctx context.Context, backend proto.AgentType, runtimeSessionID string) (proto.PeerID, string, error) {
+	bk := string(backend)
+	b, err := s.GetByRuntimeSession(ctx, runtimeSessionID, &bk, nil)
+	if err != nil || b == nil || b.PeerID == nil {
+		return "", "", err
+	}
+	return proto.PeerID(*b.PeerID), b.ProjectPath, nil
+}
+
+// RuntimeSessionOf implements peer.SessionIndex: the newest runtime session id
+// bound to the peer, or "" when it has none.
+func (s *Store) RuntimeSessionOf(ctx context.Context, id proto.PeerID) (string, error) {
+	bindings, err := s.ListBindingsByPeer(ctx, string(id))
+	if err != nil {
+		return "", err
+	}
+	for _, b := range bindings {
+		if b.RuntimeSessionID != nil && *b.RuntimeSessionID != "" {
+			return *b.RuntimeSessionID, nil
+		}
+	}
+	return "", nil
 }
 
 // GetBySourceURI returns the newest binding for a runtime source URI, or nil.

@@ -250,3 +250,31 @@ func TestGetSessionBindingRejectsCorruptJSON(t *testing.T) {
 		t.Fatalf("corrupt metadata error = %v", err)
 	}
 }
+
+func TestSessionIndexLookups(t *testing.T) {
+	s := newBindingStore(t)
+	ctx := context.Background()
+	for _, obs := range []Observation{
+		{PeerID: sbPtr("peer-1"), Backend: "codex", ProjectPath: sbPtr("/work/a"), RuntimeSessionID: sbPtr("thread-1"), ObservedAt: "2026-10-16T10:00:00"},
+		{PeerID: sbPtr("peer-1"), Backend: "codex", ProjectPath: sbPtr("/work/a"), RuntimeSessionID: sbPtr("thread-2"), ObservedAt: "2026-10-16T11:00:00"},
+		{PeerID: sbPtr("peer-2"), Backend: "codex", ProjectPath: sbPtr("/work/a")},
+	} {
+		if _, err := s.UpsertObservation(ctx, obs); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	id, path, err := s.PeerForRuntimeSession(ctx, "codex", "thread-1")
+	if err != nil || id != "peer-1" || path != "/work/a" {
+		t.Fatalf("PeerForRuntimeSession(thread-1) = %q %q %v", id, path, err)
+	}
+	if id, _, err := s.PeerForRuntimeSession(ctx, "claude-code", "thread-1"); err != nil || id != "" {
+		t.Fatalf("lookup must be scoped by backend, got %q %v", id, err)
+	}
+	if session, err := s.RuntimeSessionOf(ctx, "peer-1"); err != nil || session != "thread-2" {
+		t.Fatalf("RuntimeSessionOf(peer-1) = %q %v, want newest thread-2", session, err)
+	}
+	if session, err := s.RuntimeSessionOf(ctx, "peer-2"); err != nil || session != "" {
+		t.Fatalf("RuntimeSessionOf(peer-2) = %q %v, want none", session, err)
+	}
+}
