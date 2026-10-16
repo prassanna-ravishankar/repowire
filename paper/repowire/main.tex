@@ -17,7 +17,7 @@
 
 % Preprint notice in place of the ICML "Appearing in" line.
 \makeatletter
-\renewcommand{\Notice@String}{Preprint. Draft 2. 15 October 2026. For review.}
+\renewcommand{\Notice@String}{Preprint. Draft 2. 16 October 2026. For review.}
 \makeatother
 
 \newcommand{\todo}[1]{\textcolor{red}{[#1]}}
@@ -101,7 +101,7 @@ G5 follows an incident in which timer-driven reconciliation marked live peers of
 \section{Design}
 \label{sec:design}
 
-\Cref{fig:arch} shows the components. The daemon is the only routing hub. Everything else, including human surfaces and the hosted relay, is a client.
+\Cref{fig:arch} shows the components. The daemon is the only routing hub. Everything else, including human surfaces and the hosted relay, is a client. The identity rules below describe commit \code{880690f8} (16 October 2026), after the journal window used in the evaluation.
 
 \begin{figure*}[t]
 \centering
@@ -134,7 +134,9 @@ A \emph{peer} is one running agent session: a display name derived from its work
 The daemon routes by a minted \code{peer\_id}. Addressing can resolve a display name to this id; registration also uses names and paths when reclaiming an offline peer or persisted mapping. Names collide across circles. Sibling terminals and subprocesses share paths. Runtime session ids can be reused on resume and are absent on some runtimes. The incident record includes failures involving these alternatives (\cref{sec:incidents}).
 
 \paragraph{Registration and addressing.}
-Registration and message addressing use different checks (\cref{tab:proof}). Registration first checks retirement, then looks for an existing live-process holder. For Claude Code, matching process and compatible machine, backend and path can identify that holder; Codex, OpenCode and Pi also require a matching runtime session id because one process can host several sessions. The daemon next considers a claimed \code{peer\_id} with compatible backend and path, an offline registration matching name, circle, backend and path, and a persisted mapping matching that tuple. It mints an id if none matches. The tuple-based fallbacks return the first match rather than reject ambiguous matches. Addressing accepts an id or display name and rejects an ambiguous name. A daemon-minted \emph{birth certificate}, valid for 24 hours by default, authenticates the tool server's identity claim.
+Registration and message addressing use different checks (\cref{tab:proof}). Registration first checks retirement, then looks for an existing live-process holder. For Claude Code, matching process and compatible machine, backend and path can identify that holder; Codex, OpenCode and Pi also require a matching runtime session id because one process can host several sessions. The daemon next considers a claimed \code{peer\_id} with compatible backend and path. If no id has been selected, it checks the durable binding for the backend and runtime session, subject to path compatibility. It then checks the name, circle, backend and compatible-path tuple, first among offline peers and then among persisted mappings.
+
+Tuple reclaim adopts only a unique eligible candidate. Multiple candidates cause the daemon to mint a fresh id and journal an \code{identity\_reclaim\_ambiguous} event with the candidate ids. The fresh identity receives a distinct address when the proposed name is already held. For session-scoped runtimes, binding and tuple adoption reject candidates known to run a different session when the registrant supplies a session id. They also reject a peer whose process is alive elsewhere, including an offline record whose process still runs. Claude Code can take over a same-directory registration after the old process exits, provided the candidate remains eligible; a live sibling receives a separate, suffixed name. Addressing accepts an id or display name and rejects an ambiguous name. A daemon-minted \emph{birth certificate}, valid for 24 hours by default, authenticates the tool server's identity claim.
 
 \begin{table}[t]
 \caption{Identity checks by operation. These checks do not form a single ordered proof hierarchy.}
@@ -148,7 +150,7 @@ Operation & Evidence & Effect \\
 Addressing & peer id or unambiguous name & resolves recipient id \\
 Tool identity & daemon-minted birth certificate & authenticates claim \\
 Local adoption & matching pane metadata and process evidence & recovers local identity \\
-Registration & claimed id, or name, circle, backend and path & reuses compatible registration or mapping \\
+Registration & claimed id, session binding, or unique eligible name tuple & reuses compatible identity \\
 Kill or restart & spawn ownership or pane metadata naming the peer id & authorises pane destruction \\
 Mapping restore & persisted mapping & restores role, circle and description \\
 \bottomrule
@@ -156,7 +158,7 @@ Mapping restore & persisted mapping & restores role, circle and description \\
 \end{table}
 
 \paragraph{Lifecycle.}
-\Cref{fig:lifecycle} shows the lifecycle. A clean quit, an agent-exit report, a pane takeover or three negative pane-liveness verdicts can retire an identity and sever its transport. An inconclusive verdict neither adds nor resets a strike. A soft retirement can be lifted by a live process id or daemon-verified runtime identity. An explicit operator close creates a hard retirement that rejects reconnects claiming that id even when its process remains alive. On restart, the daemon reloads retirement records from the preceding 72 hours.
+\Cref{fig:lifecycle} shows the lifecycle. A clean quit, an agent-exit report, a pane takeover or three negative pane-liveness verdicts can retire an identity and sever its transport. An inconclusive verdict neither adds nor resets a strike. A soft retirement can be lifted by a live-process claim, a daemon-verified birth certificate or a compatible session binding. Tuple reclaim does not revive a retired identity. An explicit operator close creates a hard retirement that rejects reconnects claiming that id even when its process remains alive. On restart, the daemon reloads retirement records from the preceding 72 hours.
 
 \begin{figure}[t]
 \centering
@@ -172,7 +174,7 @@ Mapping restore & persisted mapping & restores role, circle and description \\
 \draw[arr] (on) -- node[lbl, left] {operator\\close} (hard);
 \draw[arr] (off) -- node[lbl, right] {TTL, no\\evidence} (ret);
 \draw[arr] (on.south east) -- node[lbl, sloped, above, pos=0.65] {terminal event} (ret.north west);
-\draw[arr, dashed] (ret.south) -- ++(0,-0.55) -| node[lbl, below, pos=0.3] {live pid or verified runtime identity} (reg.south);
+\draw[arr, dashed] (ret.south) -- ++(0,-0.55) -| node[lbl, below, pos=0.3] {live pid, certificate or session binding} (reg.south);
 \end{tikzpicture}
 \caption{Go registration lifecycle. Soft retirement permits verified recovery; operator close blocks claims to the old id. Restart reloads mappings and recent retirement records, not live peers.}
 \label{fig:lifecycle}
@@ -434,6 +436,8 @@ InfiAgent reconstructs context from file-backed state \citep{infiagent2026}, whi
 \label{sec:limits}
 
 The author operates the only mesh studied. Traffic structure may reflect that operator's habits. Incident counts depend on note density and are not failure rates. Era A has no registration events or delivery traces; 855 of the 1,169 close records depend on parsed notification text. The log cannot date most earlier daemon restarts. Ask expiry is not journaled, so 136 asks have no measured close time. Acknowledgement does not establish completion. Shared commit credentials prevent attribution of code to agents or the human. Reviews conducted only in a terminal or on GitHub are absent from the mesh review count. Fifty-three calendar days have no journal event. Runtime costs are not recorded. The private backup cannot be released; the scripts and aggregate tables are intended for the artifact. \todo{artifact release}
+
+Identity continuity still depends on registration order. A PID-only registration can mint a new peer before the session-start hook supplies the runtime session id. The later registration can then select that live-process holder before consulting the durable session binding, so resume does not always recover the earlier peer id (issue \href{https://github.com/prassanna-ravishankar/repowire/issues/474}{\#474}). The ambiguity fix in commit \code{880690f8} postdates the journal window; the reported closure rates do not evaluate it.
 
 \section{Conclusion}
 
