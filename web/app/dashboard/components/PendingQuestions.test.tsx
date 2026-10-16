@@ -48,7 +48,7 @@ describe("PendingQuestions", () => {
   });
 
   it("POSTs the chosen option to /answer", async () => {
-    const fetchMock = vi.fn(() => Promise.resolve({ ok: true } as Response));
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve({ ok: true } as Response));
     vi.stubGlobal("fetch", fetchMock);
     render(<PendingQuestions events={[askEvent("ask-1")]} apiBase="http://x" />);
     fireEvent.click(screen.getByText("Deny"));
@@ -64,7 +64,7 @@ describe("PendingQuestions", () => {
 
 describe("PendingQuestions tool-permission Deny", () => {
   it("renders a Deny button for a tool_permission question and POSTs denied", async () => {
-    const fetchMock = vi.fn(() => Promise.resolve({ ok: true } as Response));
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve({ ok: true } as Response));
     vi.stubGlobal("fetch", fetchMock);
     const ev: Event = {
       id: "p1", type: "ask", timestamp: "2026-05-31T00:00:00Z",
