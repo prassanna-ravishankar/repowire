@@ -48,7 +48,7 @@ const FAILED_JOB = {
   job_id: "work-failed",
   title: "Fix CI",
   state: "failed",
-  result_summary: "pytest failed",
+  result_summary: "pytest failed" as string | null,
   progress_events: [{ at: "2026-05-01T10:10:00Z", note: "runner failed" }],
 };
 

@@ -885,7 +885,7 @@ describe("PeerView MCP config scope", () => {
 
 describe("PeerView session controls", () => {
   it("notifies the active session through the session control endpoint", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
       const url = String(input);
       if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
       if (url.includes("/transcript")) {
@@ -954,7 +954,7 @@ describe("PeerView session controls", () => {
   });
 
   it("keeps the plain ask composer on /ask alongside session controls", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
       const url = String(input);
       if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
       if (url.includes("/transcript")) {
@@ -1108,7 +1108,7 @@ describe("PeerView session controls", () => {
   });
 
   it("resumes captured sessions without a running agent", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
       const url = String(input);
       if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
       if (url.includes("/transcript")) {

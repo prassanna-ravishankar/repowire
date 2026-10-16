@@ -1,0 +1,20 @@
+# Only the manifests that ship: the web dashboard (static export) and the Go
+# daemon/relay/bridges. Python was removed in #382.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      web-minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: gomod
+    directory: /daemon-go
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      go-minor-and-patch:
+        update-types: [minor, patch]
