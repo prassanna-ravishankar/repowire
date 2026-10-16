@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/repowire/repowire/daemon-go/config"
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
@@ -493,5 +495,211 @@ func TestMCPAskPeerNameIsOptional(t *testing.T) {
 	call(map[string]any{"peerName": "beta", "query": "x"})
 	if arm.calls != 0 || asks.OpenCount() != 0 {
 		t.Fatalf("null or look-alike peer_name reached the strategy: calls %d open %d", arm.calls, asks.OpenCount())
+	}
+}
+
+// #494: a presented identity proof that fails is never downgraded to
+// mcp-http. Session setup still works, every tool call fails with the reason
+// and is journaled, and callers presenting no proof stay anonymous by design.
+func TestMCPRejectedIdentityProofFailsLoud(t *testing.T) {
+	h, reg := newMCPTestHub(t, config.MCPHTTPConfig{Enabled: true, AllowUnauthenticatedLocalhost: true})
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	h.store = store
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx := context.Background()
+	path, thread := "/work/paper", "thread-1"
+	id, name, err := reg.AllocateAndRegister(ctx, peer.AllocateParams{
+		Circle: "1", Backend: proto.AgentCodex, Role: proto.RoleAgent, Path: &path,
+		Metadata: map[string]any{"runtime_session_id": thread},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPath := "/work/other"
+	other, otherName, err := reg.AllocateAndRegister(ctx, peer.AllocateParams{
+		Circle: "1", Backend: proto.AgentCodex, Role: proto.RoleAgent, Path: &otherPath,
+		Metadata: map[string]any{"runtime_session_id": "thread-2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mint := func(peerID proto.PeerID, display proto.DisplayName, issued time.Time) string {
+		cert, err := store.MintBirthCertificate(ctx, string(peerID), string(display), "codex", &path, &thread, nil, nil, nil, nil, 0, issued)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cert.Nonce
+	}
+	expired := mint(id, name, time.Now().Add(-25*time.Hour))
+	otherProof := mint(other, otherName, time.Time{})
+
+	rpc := func(headers map[string]string, method string, params map[string]any) (int, map[string]json.RawMessage) {
+		return mcpRPC(t, srv.URL+"/mcp", map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, headers)
+	}
+	call := func(headers map[string]string, tool string, args map[string]any) mcpToolCallResult {
+		t.Helper()
+		_, env := rpc(headers, "tools/call", map[string]any{"name": tool, "arguments": args})
+		var r mcpToolCallResult
+		decodeResult(t, env, &r)
+		if len(r.Content) != 1 {
+			t.Fatalf("%s content = %+v", tool, r.Content)
+		}
+		return r
+	}
+	claim := func(peer, proof string) map[string]string {
+		return map[string]string{"X-Repowire-Peer": peer, "X-Repowire-Identity-Proof": proof}
+	}
+
+	expiredClaim := claim(string(id), expired)
+	if status, env := rpc(expiredClaim, "tools/list", map[string]any{}); status != http.StatusOK || env["error"] != nil {
+		t.Fatalf("tools/list with an expired proof must still work: %d %s", status, env["error"])
+	}
+	for _, tc := range []struct {
+		headers map[string]string
+		reason  string
+	}{
+		{expiredClaim, "expired"},
+		{claim(string(id), "invented"), "unknown"},
+		{claim(string(id), otherProof), "peer_mismatch"},
+		{claim("ghost-codex", otherProof), "peer_not_registered"},
+	} {
+		got := call(tc.headers, "set_description", map[string]any{"description": "should not land"})
+		if !got.IsError || !strings.Contains(got.Content[0].Text, "rejected ("+tc.reason+")") || strings.Contains(got.Content[0].Text, "mcp-http") {
+			t.Fatalf("reason %s: result = %+v", tc.reason, got)
+		}
+	}
+	if p, _ := reg.GetPeer(id); p.Description != "" {
+		t.Fatalf("rejected call ran: description = %q", p.Description)
+	}
+	var rejected []map[string]any
+	for _, ev := range reg.EventsSince("") {
+		if ev["type"] == "mcp_identity_proof_rejected" {
+			rejected = append(rejected, ev)
+		}
+	}
+	if len(rejected) != 4 {
+		t.Fatalf("want 4 mcp_identity_proof_rejected events, got %d", len(rejected))
+	}
+	if raw, _ := json.Marshal(rejected); strings.Contains(string(raw), expired) || !strings.Contains(string(raw), `"expired"`) || !strings.Contains(string(raw), "set_description") {
+		t.Fatalf("rejection events must carry reason and tool, never the nonce: %s", raw)
+	}
+
+	// No proof presented: anonymous mcp-http, deliberately. A client cannot
+	// forge the rejection marker either.
+	for _, headers := range []map[string]string{
+		nil,
+		{"X-Repowire-Peer": string(id)},
+		{"X-Repowire-Identity-Rejected": "expired", "X-Repowire-Identity-Rejected-Claim": string(id)},
+	} {
+		if got := call(headers, "whoami", map[string]any{}); got.IsError || !strings.Contains(got.Content[0].Text, "mcp-http") {
+			t.Fatalf("headers %v: whoami = %+v, want anonymous mcp-http", headers, got)
+		}
+	}
+}
+
+// #494: a connected thread exchanges an expired certificate for a fresh one
+// that works as MCP proof; renewal refuses a disconnected peer, another
+// session, and a certificate that does not match.
+func TestRenewRuntimeIdentityWhileConnected(t *testing.T) {
+	h, reg := newMCPTestHub(t, config.MCPHTTPConfig{Enabled: true, AllowUnauthenticatedLocalhost: true})
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	h.store = store
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx := context.Background()
+	path, thread := "/work/paper", "thread-1"
+	id, name, err := reg.AllocateAndRegister(ctx, peer.AllocateParams{
+		Circle: "1", Backend: proto.AgentCodex, Role: proto.RoleAgent, Path: &path,
+		Metadata: map[string]any{"runtime_session_id": thread},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := store.MintBirthCertificate(ctx, string(id), string(name), "codex", &path, &thread, nil, nil, nil, nil, 0, time.Now().Add(-25*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	renew := func(cert *state.RuntimeIdentityCertificate) (int, map[string]any) {
+		t.Helper()
+		var body bytes.Buffer
+		_ = json.NewEncoder(&body).Encode(map[string]any{"birth_certificate": certEnvelope(cert), "backend": "codex", "path": path})
+		resp, err := http.Post(srv.URL+"/peers/identity/renew", "application/json", &body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+
+	if status, _ := renew(old); status != http.StatusConflict {
+		t.Fatalf("renewal for a disconnected peer: %d, want 409", status)
+	}
+
+	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(dialCtx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	if err := wsjson.Write(dialCtx, conn, proto.ConnectFrame{Type: proto.FrameConnect, DisplayName: name, Circle: "1",
+		Backend: proto.AgentCodex, Role: proto.RoleAgent, Path: &path, PeerID: &id}); err != nil {
+		t.Fatal(err)
+	}
+	var connected proto.ConnectedFrame
+	if err := wsjson.Read(dialCtx, conn, &connected); err != nil || connected.SessionID != id {
+		t.Fatalf("connect: %+v %v", connected, err)
+	}
+	for deadline := time.Now().Add(2 * time.Second); !h.transport.IsConnected(id) && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	status, out := renew(old)
+	fresh, _ := out["birth_certificate"].(map[string]any)
+	nonce, _ := fresh["nonce"].(string)
+	if status != http.StatusOK || nonce == "" || nonce == old.Nonce {
+		t.Fatalf("renewal while connected: %d %v", status, out)
+	}
+	if problem, err := store.MCPIdentityProofProblem(ctx, nonce, string(id)); err != nil || problem != "" {
+		t.Fatalf("renewed proof does not validate: %q %v", problem, err)
+	}
+	_, env := mcpRPC(t, srv.URL+"/mcp", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "set_description", "arguments": map[string]any{"description": "renewed"}}},
+		map[string]string{"X-Repowire-Peer": string(id), "X-Repowire-Identity-Proof": nonce})
+	var result mcpToolCallResult
+	decodeResult(t, env, &result)
+	if p, _ := reg.GetPeer(id); result.IsError || p.Description != "renewed" {
+		t.Fatalf("set_description with the renewed proof: %+v (description %q)", result, p.Description)
+	}
+
+	otherThread := "thread-2"
+	wrongSession, err := store.MintBirthCertificate(ctx, string(id), string(name), "codex", &path, &otherThread, nil, nil, nil, nil, 0, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := renew(wrongSession); status != http.StatusConflict {
+		t.Fatalf("renewal for another session: %d, want 409", status)
+	}
+	forged := *old
+	forged.Nonce = "invented"
+	if status, _ := renew(&forged); status != http.StatusConflict {
+		t.Fatalf("renewal with an unknown certificate: %d, want 409", status)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -689,4 +690,85 @@ func registeredTmuxEvidence(body map[string]any) map[string]any {
 	metadata, _ := body["metadata"].(map[string]any)
 	evidence, _ := metadata["tmux_evidence"].(map[string]any)
 	return evidence
+}
+
+// #494: a connected thread never re-registers, so its birth certificate is
+// renewed at turn start once past half its lifetime, including after it has
+// expired. A fresh certificate is left alone.
+func TestTurnStartRenewsAgedBirthCertificate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	threadID, cwd := "thread-long-lived", t.TempDir()
+	certAt := func(issued time.Time) map[string]any {
+		return map[string]any{
+			"nonce": "n-" + issued.Format(time.RFC3339Nano), "peer_id": "repow-stable", "display_name": "repo-codex",
+			"backend": "codex", "project_path": cwd, "runtime_session_id": threadID,
+			"issued_at":  issued.UTC().Format(time.RFC3339Nano),
+			"expires_at": issued.Add(24 * time.Hour).UTC().Format(time.RFC3339Nano),
+		}
+	}
+	fresh := certAt(time.Now())
+	var (
+		mu       sync.Mutex
+		renewals []map[string]any
+	)
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(renewals)
+	}
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/peers/identity/renew" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		renewals = append(renewals, body)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "birth_certificate": fresh})
+	}))
+	defer daemon.Close()
+
+	b := &Bridge{ctx: context.Background(), daemonHTTP: daemon.URL, threads: map[string]*threadPeer{}}
+	old := certAt(time.Now().Add(-25 * time.Hour))
+	p := &threadPeer{bridge: b, id: threadID, cwd: cwd, birthCert: old, peerID: "repow-stable"}
+	b.threads[threadID] = p
+
+	p.renewCertificate() // the turn/started handler runs this asynchronously
+	if count() != 1 {
+		t.Fatalf("expired certificate: %d renew requests, want 1", count())
+	}
+	sent, _ := renewals[0]["birth_certificate"].(map[string]any)
+	if sent["nonce"] != old["nonce"] || renewals[0]["backend"] != "codex" || renewals[0]["path"] != cwd {
+		t.Fatalf("renew request = %#v", renewals[0])
+	}
+	if got := cachedBirthCertificate("codex", threadID); got == nil || got["nonce"] != fresh["nonce"] {
+		t.Fatalf("renewed certificate not persisted for the MCP shim: %#v", got)
+	}
+	p.mu.Lock()
+	inMemory := p.birthCert["nonce"]
+	p.mu.Unlock()
+	if inMemory != fresh["nonce"] {
+		t.Fatalf("bridge kept the old certificate in memory: %v", inMemory)
+	}
+
+	p.renewCertificate()
+	if count() != 1 {
+		t.Fatalf("fresh certificate was renewed again (%d requests)", count())
+	}
+
+	// The notification path triggers it.
+	p.mu.Lock()
+	p.birthCert = certAt(time.Now().Add(-13 * time.Hour))
+	p.mu.Unlock()
+	b.handleNotification("turn/started", map[string]any{"threadId": threadID, "turn": map[string]any{"id": "turn-1"}})
+	deadline := time.Now().Add(2 * time.Second)
+	for count() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := count(); n != 2 {
+		t.Fatalf("turn/started past half-life: %d renew requests, want 2", n)
+	}
 }

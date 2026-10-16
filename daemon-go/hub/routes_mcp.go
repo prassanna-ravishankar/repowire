@@ -32,18 +32,30 @@ import (
 // means the route is never registered.
 //
 // Identity: the caller's peer arrives via the X-Repowire-Peer header stamped
-// by the thin stdio shim. Absent that header, callers act as the daemon-
-// owned "mcp-http" identity — mirrors repowire/mcp/server.py's
+// by the thin stdio shim, proven by X-Repowire-Identity-Proof (the nonce of a
+// daemon-minted birth certificate). A caller that presents no proof (a direct
+// HTTP client, or a shim whose runtime has no mesh identity) acts as the
+// daemon-owned "mcp-http" identity — mirrors repowire/mcp/server.py's
 // _http_mcp_identity (name="mcp-http", circle="global", role="human"), the
-// existing Python HTTP-MCP default. Tool handlers read the header straight off
+// existing Python HTTP-MCP default. A proof that is presented and fails
+// (unknown, expired, another peer's, or for a peer not registered) is never
+// downgraded to mcp-http: every tool call fails with the reason and the
+// rejection is journaled (mcp_identity_proof_rejected). Tool handlers read the header straight off
 // req.Extra.Header (populated by the SDK's streamable transport per-request;
 // no context plumbing needed).
 //
 // ============================================================================
 
 // mcpDefaultIdentity mirrors Python's _http_mcp_identity default name: the
-// caller identity assumed when no X-Repowire-Peer header is present.
+// caller identity assumed when no proven X-Repowire-Peer header is present.
 const mcpDefaultIdentity = "mcp-http"
+
+// Daemon-set request headers recording a rejected identity proof for the
+// tool-call middleware. Client-supplied copies are always removed first.
+const (
+	mcpRejectedReasonHeader = "X-Repowire-Identity-Rejected"
+	mcpRejectedClaimHeader  = "X-Repowire-Identity-Rejected-Claim"
+)
 
 // mcpDeps holds the /mcp route's config and the built SDK HTTP handler.
 // Wired via WithMCP; nil -> registerMCPRoutes is a no-op.
@@ -60,6 +72,7 @@ type mcpDeps struct {
 func (h *Hub) WithMCP(cfg config.MCPHTTPConfig, delivery *service.PeerDelivery) *Hub {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "repowire", Version: "0.1"}, nil)
 	registerMCPTools(srv, h, delivery, cfg)
+	srv.AddReceivingMiddleware(h.rejectUnprovenToolCalls)
 
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return srv
@@ -92,22 +105,69 @@ func (h *Hub) handleMCP(w http.ResponseWriter, r *http.Request) {
 	h.mcp.handler.ServeHTTP(w, r)
 }
 
+// validateMCPIdentity canonicalizes a proven X-Repowire-Peer claim to its
+// peer_id. An unproven claim is dropped (the caller is mcp-http by design); a
+// failed proof is dropped and recorded for rejectUnprovenToolCalls, so
+// initialize and tools/list still work while every tool call fails loudly.
 func (h *Hub) validateMCPIdentity(r *http.Request) {
+	r.Header.Del(mcpRejectedReasonHeader)
+	r.Header.Del(mcpRejectedClaimHeader)
 	claimed := r.Header.Get("X-Repowire-Peer")
-	if claimed == "" {
+	proof := r.Header.Get("X-Repowire-Identity-Proof")
+	r.Header.Del("X-Repowire-Peer")
+	r.Header.Del("X-Repowire-Identity-Proof")
+	if claimed == "" || proof == "" {
 		return
 	}
-	proof := r.Header.Get("X-Repowire-Identity-Proof")
+	reason := "store_unavailable"
 	peer, _ := h.reg.GetPeerByName(claimed, nil)
-	if h.store == nil || peer == nil || !h.store.ValidateMCPIdentityProof(r.Context(), proof, string(peer.PeerID)) {
-		r.Header.Del("X-Repowire-Peer")
-		r.Header.Del("X-Repowire-Identity-Proof")
+	switch {
+	case h.store == nil:
+	case peer == nil:
+		reason = "peer_not_registered"
+	default:
+		var err error
+		if reason, err = h.store.MCPIdentityProofProblem(r.Context(), proof, string(peer.PeerID)); err != nil {
+			reason = "lookup_failed"
+		}
+	}
+	if reason != "" {
+		r.Header.Set(mcpRejectedReasonHeader, reason)
+		r.Header.Set(mcpRejectedClaimHeader, claimed)
 		return
 	}
 	// Canonicalize display-name claims before the tool layer sees them.
 	peerID := string(peer.PeerID)
 	r.Header.Set("X-Repowire-Peer", peerID)
 	_, _ = h.reg.TouchLastSeen(r.Context(), peerID, nil)
+}
+
+// rejectUnprovenToolCalls fails a tools/call whose identity proof was
+// rejected, naming the reason, instead of running it as mcp-http (which would
+// misattribute sends and break self-scoped tools). Each rejection is journaled.
+func (h *Hub) rejectUnprovenToolCalls(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		if method != "tools/call" {
+			return next(ctx, method, req)
+		}
+		var header http.Header
+		if extra := req.GetExtra(); extra != nil {
+			header = extra.Header
+		}
+		reason := header.Get(mcpRejectedReasonHeader)
+		if reason == "" {
+			return next(ctx, method, req)
+		}
+		claimed, tool := header.Get(mcpRejectedClaimHeader), ""
+		if call, ok := req.(*mcp.CallToolRequest); ok && call.Params != nil {
+			tool = call.Params.Name
+		}
+		h.reg.AddEvent(ctx, "mcp_identity_proof_rejected", map[string]any{"claimed_peer": claimed, "reason": reason, "tool": tool})
+		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf(
+			"repowire identity proof for %s was rejected (%s); %s was not run. "+
+				"A Codex thread renews its proof at its next turn; a restarted session registers a fresh one.",
+			claimed, reason, tool)}}}, nil
+	}
 }
 
 // mcpAuthorized enforces the /mcp auth policy. RequireAuth demands a bearer

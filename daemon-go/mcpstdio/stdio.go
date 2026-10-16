@@ -46,8 +46,10 @@ func run(in io.Reader, out io.Writer) int {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
-		req.Header.Set("X-Repowire-Peer", identity)
+		// Without a proof the daemon treats the caller as anonymous mcp-http,
+		// so say so explicitly rather than send a claim it will drop.
 		if proof != "" {
+			req.Header.Set("X-Repowire-Peer", identity)
 			req.Header.Set("X-Repowire-Identity-Proof", proof)
 		}
 		if cfg.Daemon.AuthToken != "" {

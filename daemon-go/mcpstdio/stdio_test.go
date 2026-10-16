@@ -11,9 +11,10 @@ import (
 )
 
 func TestRunRefreshesIdentityForEveryRequest(t *testing.T) {
-	var proofs []string
+	var proofs, peers []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proofs = append(proofs, r.Header.Get("X-Repowire-Identity-Proof"))
+		peers = append(peers, r.Header.Get("X-Repowire-Peer"))
 		fmt.Fprintln(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
 	}))
 	defer server.Close()
@@ -30,17 +31,25 @@ func TestRunRefreshesIdentityForEveryRequest(t *testing.T) {
 	resolveIdentity = func(threadID string) (string, string) {
 		calls++
 		threadIDs = append(threadIDs, threadID)
+		if calls == 3 {
+			return "unregistered-folder", "" // no mesh identity resolved
+		}
 		return "repow-test", fmt.Sprintf("proof-%d", calls)
 	}
 
 	var out bytes.Buffer
-	if code := run(strings.NewReader("{}\n{\"params\":{\"_meta\":{\"threadId\":\"thread-live\"}}}\n"), &out); code != 0 {
+	if code := run(strings.NewReader("{}\n{\"params\":{\"_meta\":{\"threadId\":\"thread-live\"}}}\n{}\n"), &out); code != 0 {
 		t.Fatalf("run returned %d", code)
 	}
-	if got := strings.Join(proofs, ","); got != "proof-1,proof-2" {
+	if got := strings.Join(proofs, ","); got != "proof-1,proof-2," {
 		t.Fatalf("proofs = %q", got)
 	}
-	if got := strings.Join(threadIDs, ","); got != ",thread-live" {
+	// Without a proof the shim sends no identity claim: the caller is
+	// explicitly anonymous rather than an unproven claim the daemon drops.
+	if got := strings.Join(peers, ","); got != "repow-test,repow-test," {
+		t.Fatalf("peer headers = %q", got)
+	}
+	if got := strings.Join(threadIDs, ","); got != ",thread-live," {
 		t.Fatalf("thread ids = %q", got)
 	}
 }

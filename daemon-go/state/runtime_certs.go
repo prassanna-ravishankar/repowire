@@ -172,6 +172,25 @@ func (s *Store) ValidateBirthCertificate(
 	paneID *string,
 	agentPID *int,
 ) (*RuntimeIdentityCertificate, error) {
+	cert, err := s.RenewableBirthCertificate(ctx, envelope, backend, projectPath, paneID, agentPID)
+	if err != nil || cert == nil || !certUnexpired(cert) {
+		return nil, err
+	}
+	return cert, nil
+}
+
+// RenewableBirthCertificate applies every ValidateBirthCertificate check
+// except expiry. Renewal uses it: the caller holds the previous nonce and the
+// daemon separately requires the peer to be live, so an expired certificate
+// can be exchanged for a fresh one but never used as proof by itself.
+func (s *Store) RenewableBirthCertificate(
+	ctx context.Context,
+	envelope CertEnvelope,
+	backend string,
+	projectPath *string,
+	paneID *string,
+	agentPID *int,
+) (*RuntimeIdentityCertificate, error) {
 	if envelope.Nonce == "" {
 		return nil, nil
 	}
@@ -180,14 +199,6 @@ func (s *Store) ValidateBirthCertificate(
 		return nil, err
 	}
 	if cert == nil {
-		return nil, nil
-	}
-
-	expires, err := parseTS(cert.ExpiresAt)
-	if err != nil {
-		return nil, nil
-	}
-	if !expires.After(time.Now().UTC()) {
 		return nil, nil
 	}
 
@@ -239,18 +250,30 @@ func (s *Store) ValidateBirthCertificate(
 	return cert, nil
 }
 
-// ValidateMCPIdentityProof checks the unguessable nonce carried by the local
+// MCPIdentityProofProblem checks the unguessable nonce carried by the local
 // stdio MCP shim. Full runtime evidence was validated when the shim resolved
 // the certificate; the HTTP hop only needs to bind that current certificate to
-// the claimed peer and reject expired or invented claims.
-func (s *Store) ValidateMCPIdentityProof(ctx context.Context, nonce, peerID string) bool {
-	if nonce == "" || peerID == "" {
-		return false
+// the claimed peer. It returns "" for a valid proof, else why it is not:
+// "unknown", "expired", or "peer_mismatch".
+func (s *Store) MCPIdentityProofProblem(ctx context.Context, nonce, peerID string) (string, error) {
+	if nonce == "" {
+		return "unknown", nil
 	}
 	cert, err := s.getCertByNonce(ctx, nonce)
-	if err != nil || cert == nil || cert.PeerID != peerID {
-		return false
+	switch {
+	case err != nil:
+		return "", err
+	case cert == nil:
+		return "unknown", nil
+	case cert.PeerID != peerID:
+		return "peer_mismatch", nil
+	case !certUnexpired(cert):
+		return "expired", nil
 	}
+	return "", nil
+}
+
+func certUnexpired(cert *RuntimeIdentityCertificate) bool {
 	expires, err := parseTS(cert.ExpiresAt)
 	return err == nil && expires.After(time.Now().UTC())
 }
