@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -615,5 +617,25 @@ func TestMCPIdentityRenewsOrReportsFailedThreadCertificate(t *testing.T) {
 	}
 	if cached, _ := ReadRuntimeIdentity("codex", "thread-native")["birth_certificate"].(map[string]any); cached["nonce"] != "new-proof" {
 		t.Fatalf("renewed certificate not cached: %v", cached)
+	}
+}
+
+// The bridge and the MCP shim write one thread's runtime-identity cache
+// concurrently; every merged key must survive.
+func TestWriteRuntimeIdentityConcurrentMergesKeepEveryKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := WriteRuntimeIdentity("codex", "thread-shared", map[string]any{fmt.Sprintf("k%d", i): i}); err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if got := ReadRuntimeIdentity("codex", "thread-shared"); len(got) != 32 {
+		t.Fatalf("merged %d of 32 keys", len(got))
 	}
 }
