@@ -313,7 +313,14 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		// guards (live peer + persisted mapping). On mismatch, fall through to
 		// reclaim/mint.
 		if ps, ok := r.peers[cid]; ok {
-			if claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, params.Backend, claimPath) {
+			if holderPID, foreign := r.foreignLiveHolderLocked(ps, params.AgentPID); foreign {
+				// A different running process owns this id: reusing it would make
+				// the two sessions trade one peer on every reconnect (#503).
+				log.Printf("repowire: rejecting peer_id claim %s from pid %d: held by live pid %d",
+					cid, *params.AgentPID, holderPID)
+				r.appendEvent(ctx, Event{Type: "peer_id_claim_rejected", Timestamp: now, PeerID: cid, PeerName: ps.peer.DisplayName, SessionID: cid,
+					Payload: map[string]any{"claimant_pid": *params.AgentPID, "holder_pid": holderPID}})
+			} else if claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, params.Backend, claimPath) {
 				id = cid
 			} else {
 				log.Printf("repowire: ignoring stale peer_id claim %s (existing=%s backend=%s/%s path=%q/%q)",
@@ -705,6 +712,16 @@ func (r *Registry) releaseRedelivery(id proto.PeerID) {
 // incoming registration: same backend, and a compatible path (a path matches
 // when either side is unset, mirroring the Python guard). Same rule for a live
 // peer and a persisted mapping.
+// foreignLiveHolderLocked reports whether ps is held by a running process other
+// than the claimant. Unknown pids on either side are not evidence. Must hold lock.
+func (r *Registry) foreignLiveHolderLocked(ps *peerState, claimantPID *int) (int, bool) {
+	if claimantPID == nil || ps.peer.AgentPID == nil || *ps.peer.AgentPID == *claimantPID {
+		return 0, false
+	}
+	holder := *ps.peer.AgentPID
+	return holder, r.live.PIDAlive(holder)
+}
+
 func claimMatchesIdentity(existingBackend proto.AgentType, existingPath string, claimBackend proto.AgentType, claimPath string) bool {
 	sameBackend := existingBackend == claimBackend
 	samePath := existingPath == "" || claimPath == "" || existingPath == claimPath

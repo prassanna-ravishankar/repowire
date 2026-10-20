@@ -340,3 +340,39 @@ func TestSessionIdentity_SameDirectoryClaudeTakeover(t *testing.T) {
 		t.Fatalf("takeover after restart got %s, want %s", again, old)
 	}
 }
+
+// #503: a claim for a peer_id held by a different live process must not
+// merge the claimant into that peer; the holder's own reconnect still reuses it.
+func TestSessionIdentity_ClaimHeldByOtherLivePIDMints(t *testing.T) {
+	h := newSessionHarness(t)
+	holder, _ := h.register(proto.AgentClaudeCode, "/p/app", "sess-a", 100)
+
+	claim := func(pid int, pane string) proto.PeerID {
+		t.Helper()
+		h.live.alive[pid] = true
+		id, _, err := h.r.AllocateAndRegister(context.Background(), AllocateParams{
+			Circle: "work", Backend: proto.AgentClaudeCode, Path: ptr("/p/app"), Machine: "m",
+			Role: proto.RoleAgent, ClaimedPeerID: &holder, AgentPID: &pid, PaneID: ptr(pane),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+
+	if got := claim(200, "%b"); got == holder {
+		t.Fatalf("claim from live pid 200 reused holder %s", holder)
+	}
+	if got := claim(100, "%a"); got != holder {
+		t.Fatalf("holder reconnect got %s, want %s", got, holder)
+	}
+	if p, _ := h.r.GetPeer(holder); p.AgentPID == nil || *p.AgentPID != 100 {
+		t.Fatalf("holder pid changed: %v", p.AgentPID)
+	}
+
+	// A dead holder is a takeover, not a twin.
+	delete(h.live.alive, 100)
+	if got := claim(300, "%a"); got != holder {
+		t.Fatalf("claim over dead holder got %s, want %s", got, holder)
+	}
+}
