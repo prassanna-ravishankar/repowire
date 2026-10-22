@@ -58,7 +58,7 @@ A reconnect may reclaim an existing `peer_id` only when the claim still describe
 
 - backend must match;
 - path must match when both the existing peer and the reconnect claim provide one;
-- the id must not be held by a different running process: when the live peer's recorded `agent_pid` is alive and differs from the claimant's, the claim is refused and a `peer_id_claim_rejected` event records both pids. Two live sessions therefore cannot share one `peer_id`, and a pair that already does separates on the next reconnect;
+- the id must not be held by a live session in another pane: when the peer runs in a different pane and its recorded agent is still alive, the claim is refused before any reuse and a `peer_id_claim_rejected` event records both panes. A different pid in the same pane (a wrapper such as `caffeinate`) is still a reconnect. Two live sessions therefore cannot share one `peer_id`, and a pair that already does separates on the next reconnect;
 - pane ownership is updated only after that identity check passes.
 
 If the check fails, the stale `peer_id` claim is ignored and the daemon allocates or adopts a different identity. This prevents an old environment variable or stale pane metadata from binding a different session's WebSocket to the wrong peer. The ws-hook reconnects with the `peer_id` the daemon last assigned it, not the one it started with, so a refused claim settles on its new identity instead of minting another on every reconnect.
