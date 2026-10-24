@@ -262,6 +262,21 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	}
 	holder := r.liveRuntimeHolderLocked(params, claimPath)
 
+	// (a0) Twin guard (#503): a claim for an id another live session holds is
+	// dropped before any reuse, so two sessions never trade one peer on each
+	// reconnect. Runs ahead of the retirement guard so a refused claim cannot
+	// unretire the holder; stale backend/path claims are left to step (b).
+	if params.ClaimedPeerID != nil {
+		cid := *params.ClaimedPeerID
+		if ps, ok := r.peers[cid]; ok && claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, params.Backend, claimPath) && r.claimHeldElsewhereLocked(ps, params) {
+			log.Printf("repowire: rejecting peer_id claim %s from pane %s: held by live %s in pane %s",
+				cid, *params.PaneID, ps.peer.DisplayName, *ps.peer.PaneID)
+			r.appendEvent(ctx, Event{Type: "peer_id_claim_rejected", Timestamp: time.Now().UTC(), PeerID: cid, PeerName: ps.peer.DisplayName, SessionID: cid,
+				Payload: map[string]any{"claimant_pane": *params.PaneID, "holder_pane": *ps.peer.PaneID}})
+			params.ClaimedPeerID = nil
+		}
+	}
+
 	// (a) Retirement guard. A claim naming a retired peer_id is an orphan ws-hook
 	// reconnect unless it proves a live agent or presents a daemon-validated
 	// runtime identity. Checked against `retired` (not `peers`) so it covers ids
@@ -705,6 +720,17 @@ func (r *Registry) releaseRedelivery(id proto.PeerID) {
 // incoming registration: same backend, and a compatible path (a path matches
 // when either side is unset, mirroring the Python guard). Same rule for a live
 // peer and a persisted mapping.
+// claimHeldElsewhereLocked reports whether a peer_id claim comes from a second
+// live session: the holder runs in another pane and its agent is still alive.
+// Pane, not pid, tells sessions apart, because the ws-hook may report a
+// wrapper's pid (caffeinate, op run) for the same agent. Must hold r.mu.
+func (r *Registry) claimHeldElsewhereLocked(ps *peerState, params AllocateParams) bool {
+	if ps.peer.PaneID == nil || params.PaneID == nil || *ps.peer.PaneID == "" || *params.PaneID == "" || *ps.peer.PaneID == *params.PaneID {
+		return false
+	}
+	return r.liveElsewhereLocked(ps, params)
+}
+
 func claimMatchesIdentity(existingBackend proto.AgentType, existingPath string, claimBackend proto.AgentType, claimPath string) bool {
 	sameBackend := existingBackend == claimBackend
 	samePath := existingPath == "" || claimPath == "" || existingPath == claimPath

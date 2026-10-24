@@ -238,8 +238,10 @@ func RunWS() int {
 		if target := tmuxSession(info); target != "" {
 			connect["tmux_session"] = target
 		}
-		if peerID != "" {
-			connect["peer_id"] = peerID
+		// Reclaim the id the daemon last assigned: it may have refused the
+		// original claim and minted a new one (#503).
+		if lastPeerID != "" {
+			connect["peer_id"] = lastPeerID
 		}
 		if agentPID > 0 {
 			connect["agent_pid"] = agentPID
