@@ -375,6 +375,16 @@ func runDaemon() {
 		delivery.WithInbox(inbox)
 		h.WithInbox(inbox)
 	}
+	// (6c) Hosted agents: managed peers on the hosted runtime. Restore
+	// re-registers them from their durable mappings and resumes waiting on
+	// submissions the last daemon left unsettled.
+	var hosted *service.Hosted
+	if cfg.Hosted.URL != "" && cfg.Hosted.Token != "" {
+		hosted = service.NewHosted(reg, service.NewHostedClient(cfg.Hosted.URL, cfg.Hosted.Token), store, selfMachine)
+		delivery.WithHosted(hosted)
+		h.WithHosted(hosted)
+		hosted.Restore(ctx)
+	}
 	transport.SetACPPermissionHandler(service.NewACPPermissionHandler(asks, func(kind string, data map[string]any) {
 		reg.AddEvent(ctx, kind, data)
 	}))
@@ -599,7 +609,8 @@ func runDaemon() {
 	// accepting new connections but does not close already-hijacked sockets. A
 	// live WS read loop can still be running when store.Close() returns; closing
 	// it requires a hub-level socket sweep, which is out of scope for this fix.
-	inbox.Close() // joins in-flight surface pushes before the store closes
+	inbox.Close()  // joins in-flight surface pushes before the store closes
+	hosted.Close() // stops waits; unsettled submissions resume on next start
 	delivery.Close()
 	transport.CloseACP()
 	reg.Close()

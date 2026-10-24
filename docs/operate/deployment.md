@@ -22,7 +22,7 @@ workspaces have separate sandbox lifetimes and may be shared by several agents.
 A command checkpoints its workspace before the sandbox stops; agents without a
 workspace do not start containers.
 
-This is not connected to daemon/relay routing yet. SaaS login, billing, quotas,
+The daemon reaches it through `hosted.url` and `hosted.token`: `spawn_peer(backend="hosted")` registers a managed peer, and mesh deliveries become durable submissions (see [agent backends](../concepts/agent-backends.md#hosted-agents)). SaaS login, billing, quotas,
 Composio connector execution, and AI Gateway configuration are follow-up work.
 See `hosted/README.md` in the repository for configuration, endpoints, and limits.
 

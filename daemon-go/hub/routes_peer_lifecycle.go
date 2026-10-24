@@ -163,6 +163,11 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 	if backend == "" {
 		backend = proto.AgentClaudeCode
 	}
+	if backend == proto.AgentHosted {
+		// Only the daemon registers hosted peers, at spawn: delivery to one
+		// reaches the hosted runtime under its peer_id.
+		return RegisterResponse{}, http.StatusUnprocessableEntity, "hosted peers are registered by spawn, not POST /peers"
+	}
 	role, circle, circleSource := req.Role, "", derefString(req.CircleSource)
 	if req.PaneID != nil && *req.PaneID != "" {
 		var code int

@@ -10,8 +10,21 @@ An agent backend is the runtime family Repowire knows how to install, spawn, res
 | `codex` | Codex | App Server threads + MCP |
 | `opencode` | OpenCode | TypeScript plugin + WebSocket |
 | `pi` | Pi | Native Repowire extension + WebSocket |
+| `hosted` | Pi Durable on Cloudflare (prototype) | Daemon-owned; no local process |
 
 Gemini CLI and Antigravity were retired as supported backends. Running `repowire setup` removes only Repowire-owned legacy entries from their configuration; existing persisted peer rows remain readable as historical data but cannot be spawned or resumed.
+
+## Hosted agents
+
+A hosted agent is a managed peer whose runtime is a durable agent on the hosted service, spawned with `spawn_peer(backend="hosted")`. It is a prototype.
+
+- **Identity.** The daemon registers the peer itself, like the human peer. Its `peer_id` is also the hosted agent's id. Hosted peers cannot register through `POST /peers` or the WebSocket.
+- **Sleeping is not offline.** A hosted peer holds no socket and stays `online` while its runtime sleeps. It is `busy` while a submission is in flight.
+- **Delivery.** An ask, notify, or broadcast becomes a durable submission keyed by an operation id (the ask's correlation id for asks), framed as an untrusted `<peer-message>`. Delivery succeeds only once the runtime accepts it; a refusal fails the send.
+- **Replies.** The runtime's final answer closes the ask as `ack_with_msg`; a run that ends unanswered closes it `send_failed`. Notify and broadcast results are not sent anywhere.
+- **Restarts.** Each submission is a `hosted_delivery` operation until it settles. A restarted daemon re-registers hosted peers from their durable mappings and resumes waiting. A reply that arrives after the restart goes to the asker's durable delivery queue if the asker has not reconnected.
+
+The hosted runtime lives in `hosted/` in the repository. Configure it under [`hosted`](../reference/configuration.md#hosted).
 
 ## Why it exists
 
