@@ -384,6 +384,8 @@ func runDaemon() {
 		delivery.WithHosted(hosted)
 		h.WithHosted(hosted)
 		hosted.Restore(ctx)
+		// Tool calls the agents make run through the hub's MCP handlers.
+		hosted.Connect(cfg.Hosted.URL, cfg.Hosted.Token, h)
 	}
 	transport.SetACPPermissionHandler(service.NewACPPermissionHandler(asks, func(kind string, data map[string]any) {
 		reg.AddEvent(ctx, kind, data)
@@ -610,7 +612,7 @@ func runDaemon() {
 	// live WS read loop can still be running when store.Close() returns; closing
 	// it requires a hub-level socket sweep, which is out of scope for this fix.
 	inbox.Close()  // joins in-flight surface pushes before the store closes
-	hosted.Close() // stops waits; unsettled submissions resume on next start
+	hosted.Close() // stops waits and the gateway; unsettled submissions resume on next start
 	delivery.Close()
 	transport.CloseACP()
 	reg.Close()
