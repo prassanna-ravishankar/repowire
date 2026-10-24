@@ -20,6 +20,7 @@ interface Env {
 interface AgentConfig { owner: string; id: string; workspace: string | null }
 
 export class HostedAgent extends DurableObject<Env> {
+  private runtimeId = crypto.randomUUID();
   private ai = createAI({ binding: this.env.AI });
   private registry = createRegistry();
   private harness = new PiHarness({
@@ -73,7 +74,7 @@ export class HostedAgent extends DurableObject<Env> {
     return this.harness.submit(text, { operationId });
   }
   async status() {
-    return { agent: await this.config(), busy: await this.harness.session().busy(), pending: await this.harness.pending() };
+    return { runtimeId: this.runtimeId, agent: await this.config(), busy: await this.harness.session().busy(), pending: await this.harness.pending() };
   }
   wait(operationId: string) { return this.harness.wait(operationId); }
   async messages(): Promise<string> { return JSON.stringify(await this.harness.messages()); }

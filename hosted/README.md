@@ -24,7 +24,11 @@ npm test
 
 With the dev server running, exercise the HTTP boundary with
 `node --env-file=.dev.vars scripts/smoke.mjs`. Add `--model` for a real model
-turn and durable message deduplication (requires Workers AI access).
+turn and durable message deduplication (requires Workers AI access). After a
+redeploy, pass `--recall <agent-id>` using the ID printed by the model test to
+verify conversation recovery. Pass `--workspace` to test two agents sharing files
+across sandbox checkpoint/stop/restore. Set `HOSTED_URL` to test a deployment.
+These tests invoke billable model/container resources when run against Cloudflare.
 
 Create an ignored `.dev.vars` with a random `HOSTED_TOKEN` and a stable
 `HOSTED_OWNER`. The owner is server-configured; callers cannot override it.
