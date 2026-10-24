@@ -49,6 +49,26 @@ export async function body(request: Request): Promise<Record<string, unknown>> {
   } catch { throw new HttpError(400, 'JSON object required'); }
 }
 
+// The sender a mesh delivery names, bounded and shape-checked. Absent for
+// direct API callers.
+export function source(value: unknown) {
+  if (value == null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) throw new HttpError(400, 'source must be an object');
+  const input = value as Record<string, unknown>;
+  const field = (key: string, required: boolean) => {
+    const item = input[key];
+    if (item == null && !required) return undefined;
+    if (typeof item !== 'string' || !item || item.length > 200) throw new HttpError(400, `source.${key} must be 1–200 characters`);
+    return item;
+  };
+  const result: Record<string, string> = { from: field('from', true)!, type: field('type', true)! };
+  for (const key of ['fromPeerId', 'correlationId']) {
+    const item = field(key, false);
+    if (item) result[key] = item;
+  }
+  return result;
+}
+
 export function scopedName(owner: string, id: string): string {
   return JSON.stringify([owner, id]);
 }
