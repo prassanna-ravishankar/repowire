@@ -15,6 +15,14 @@ export interface GatewayReport {
   agent: string; operationId: string; status: string; reason?: string; text?: string; usage?: TokenUsage;
   // The run's admission, so a report that arrives first can create its row.
   source?: string | null; startedAt?: string;
+  // Who submitted it. Only the daemon's runs go to its outbox; the relay's
+  // are answered from the run log.
+  via?: Via;
+}
+export type Via = 'daemon' | 'control';
+export interface RelayRequest {
+  id: string; agent: string; kind: 'ask' | 'notify'; requester: string; text: string;
+  created_at: string; state: 'submitting' | 'accepted' | 'not_delivered';
 }
 // A finished command as the agent reports it: the workspace's own outcome, or
 // when the workspace could not answer, the agent's elapsed time and no state.
@@ -45,6 +53,10 @@ CREATE TABLE IF NOT EXISTS usage_day (
   day TEXT NOT NULL, agent TEXT NOT NULL, kind TEXT NOT NULL, events INTEGER NOT NULL DEFAULT 0,
   tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, wall_ms INTEGER NOT NULL DEFAULT 0,
   cost_usd REAL NOT NULL DEFAULT 0, PRIMARY KEY (day, agent, kind));
+CREATE TABLE IF NOT EXISTS requests (
+  id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, requester TEXT NOT NULL, text TEXT NOT NULL,
+  created_at TEXT NOT NULL, state TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS requests_requester ON requests (requester, created_at);
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY, exec_count INTEGER NOT NULL DEFAULT 0, container_ms INTEGER NOT NULL DEFAULT 0,
   last_exec_at TEXT, running INTEGER NOT NULL DEFAULT 0, snapshot_at TEXT, dirty INTEGER NOT NULL DEFAULT 0);
@@ -53,7 +65,11 @@ CREATE TABLE IF NOT EXISTS workspaces (
 const ADDED_COLUMNS = [
   'ALTER TABLE workspaces ADD COLUMN snapshot_at TEXT',
   'ALTER TABLE workspaces ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE runs ADD COLUMN answer TEXT',
 ];
+
+// A run as listed and pushed; its answer is fetched one run at a time.
+const RUN = 'agent, op, source, started_at, settled_at, status, reason, tokens_in, tokens_out, cost_usd';
 
 type Row = Record<string, SqlStorageValue>;
 type Usage = ReturnType<typeof emptyUsage>;
@@ -162,7 +178,41 @@ export class Gateway extends DurableObject {
   }
 
   runs(agent: string) {
-    return this.sql.exec('SELECT * FROM runs WHERE agent = ? ORDER BY started_at DESC LIMIT 100', agent).toArray();
+    return this.sql.exec(`SELECT ${RUN} FROM runs WHERE agent = ? ORDER BY started_at DESC LIMIT 100`, agent).toArray();
+  }
+
+  run(agent: string, op: string, answer = false) {
+    return this.sql.exec(`SELECT ${RUN}${answer ? ', answer' : ''} FROM runs WHERE agent = ? AND op = ?`, agent, op).toArray()[0] ?? null;
+  }
+
+  // ---- requests -----------------------------------------------------------
+  // The relay's asks and notifies. A request's id is its run's operation id,
+  // so its result is that run.
+
+  request(id: string): RelayRequest | null {
+    const row = this.sql.exec('SELECT * FROM requests WHERE id = ?', id).toArray()[0];
+    return row ? (row as unknown as RelayRequest) : null;
+  }
+
+  // Records a request before it is submitted. Returns the existing one for a
+  // known id, so a retry never resubmits.
+  openRequest(init: Omit<RelayRequest, 'state' | 'created_at'>): { request: RelayRequest; created: boolean } {
+    const created = this.sql.exec(
+      `INSERT OR IGNORE INTO requests (id, agent, kind, requester, text, created_at, state) VALUES (?, ?, ?, ?, ?, ?, 'submitting')`,
+      init.id, init.agent, init.kind, init.requester, init.text, now()).rowsWritten > 0;
+    return { request: this.request(init.id)!, created };
+  }
+
+  acceptRequest(id: string) { this.sql.exec("UPDATE requests SET state = 'accepted' WHERE id = ? AND state = 'submitting'", id); }
+
+  // A request the agent refused as retired before recording it: forgotten.
+  dropRequest(id: string) { this.sql.exec("DELETE FROM requests WHERE id = ? AND state = 'submitting'", id); }
+
+  // A requester's asks that have not settled, newest last.
+  openRequests(requester: string) {
+    return this.sql.exec(
+      `SELECT q.id, q.agent, q.text, q.created_at FROM requests q LEFT JOIN runs r ON r.agent = q.agent AND r.op = q.id
+       WHERE q.requester = ? AND q.kind = 'ask' AND r.settled_at IS NULL ORDER BY q.created_at LIMIT 100`, requester).toArray();
   }
 
   workspaces() {
@@ -215,29 +265,31 @@ export class Gateway extends DurableObject {
   // A pending start the agent could not admit, so the run never ran.
   runWithdrawn(agent: string, op: string) {
     this.sql.exec('DELETE FROM runs WHERE agent = ? AND op = ? AND settled_at IS NULL', agent, op);
+    this.sql.exec("UPDATE requests SET state = 'not_delivered' WHERE id = ? AND agent = ? AND state = 'submitting'", op, agent);
     return this.refresh(agent);
   }
 
   async report(report: GatewayReport) {
     const id = `outbox:${report.agent}:${report.operationId}`;
-    const { source, startedAt, ...settled } = report;
+    const { source, startedAt, via, ...settled } = report;
     const stored = { ...settled, text: report.text?.slice(0, REPORT_TEXT_LIMIT) };
     const usage = report.usage;
     const cost = usage ? modelCost(usage) : 0;
     const tokensIn = usage ? usage.input + usage.cacheRead : 0;
     const at = now();
     this.sql.exec(
-      `INSERT INTO runs (agent, op, source, started_at, settled_at, status, reason, tokens_in, tokens_out, cost_usd)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO runs (agent, op, source, started_at, settled_at, status, reason, tokens_in, tokens_out, cost_usd, answer)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (agent, op) DO UPDATE SET settled_at = excluded.settled_at, status = excluded.status,
-         reason = excluded.reason, tokens_in = excluded.tokens_in, tokens_out = excluded.tokens_out, cost_usd = excluded.cost_usd
+         reason = excluded.reason, tokens_in = excluded.tokens_in, tokens_out = excluded.tokens_out,
+         cost_usd = excluded.cost_usd, answer = excluded.answer
        WHERE runs.settled_at IS NULL`,
       report.agent, report.operationId, source ?? null, startedAt ?? at, at, report.status, report.reason ?? null,
-      tokensIn, usage?.output ?? 0, cost);
+      tokensIn, usage?.output ?? 0, cost, stored.text ?? null);
     if (usage) this.meter(`run:${report.agent}:${report.operationId}`, report.agent, 'model', { tokensIn, tokensOut: usage.output, cost });
-    // Runs started from the web were never queued by the daemon; their result
-    // is in the transcript and the run log, so the outbox does not carry them.
-    if (!report.operationId.startsWith('web-')) {
+    // The relay's runs were never queued by the daemon; their answer is in the
+    // run log, so the outbox does not carry them.
+    if ((via ?? 'daemon') === 'daemon') {
       await this.ctx.storage.put(id, stored);
       this.daemon()?.send(JSON.stringify({ type: 'settled', id, ...stored }));
     }
@@ -372,10 +424,6 @@ export class Gateway extends DurableObject {
     this.pending.delete(key);
     if (outcome instanceof Error) pending.reject(outcome);
     else pending.resolve(outcome);
-  }
-
-  private run(agent: string, op: string) {
-    return this.sql.exec('SELECT * FROM runs WHERE agent = ? AND op = ?', agent, op).toArray()[0] ?? null;
   }
 
   // Recomputes an agent's state from its runs after any change.

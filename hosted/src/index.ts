@@ -6,7 +6,7 @@ import { PiHarness, type PiOperationResult } from 'agents/harness/pi';
 import { Lifecycle, type LifecycleJobContext, type LifecycleJobOutcome } from 'agents/lifecycle';
 import { createAI } from 'agents/models/pi-ai';
 import { authorize, body, HttpError, identifier, scopedName, source, type Caller } from './http';
-import { Gateway, Registry } from './gateway';
+import { Gateway, Registry, type RelayRequest, type Via } from './gateway';
 import { addResponse, reportDelay, usageSince, zeroUsage, type Cumulative } from './ledger';
 import { LIMITS, type TokenUsage } from './prices';
 import { serial } from './serial';
@@ -28,7 +28,7 @@ interface Env {
 interface AgentConfig { owner: string; id: string; workspace: string | null; retired?: boolean }
 // An admitted operation whose report the gateway has not accepted yet, under
 // `report:<op>`. `usage` is allocated once, when it settles, and resent as is.
-interface Unreported { source: string | null; startedAt?: string; usage?: TokenUsage }
+interface Unreported { source: string | null; startedAt?: string; usage?: TokenUsage; via?: Via }
 
 const REPORT_JOB = 'report';
 
@@ -145,7 +145,7 @@ export class HostedAgent extends DurableObject<Env> {
   // The Worker checks the budget first; retirement is checked here, in turn
   // with retire(). A new operation records its report and its run row before
   // pi admits it, so a crash in between still reports.
-  async submit(text: string, operationId: string, source?: Record<string, string>) {
+  async submit(text: string, operationId: string, source: Record<string, string> | undefined, via: Via) {
     return this.admission(async () => {
       const config = await this.config();
       if (!config) throw new Error('Agent does not exist');
@@ -154,11 +154,11 @@ export class HostedAgent extends DurableObject<Env> {
       const key = `report:${operationId}`;
       const fresh = !this.kv.get(key) && !this.kv.get(`reported:${operationId}`);
       const owner = this.owner(config);
-      const from = source?.from ?? (operationId.startsWith('web-') ? 'web' : null);
+      const from = source?.from ?? (via === 'control' ? 'web' : null);
       try {
         if (fresh) {
           const startedAt = new Date().toISOString();
-          this.kv.put<Unreported>(key, { source: from, startedAt });
+          this.kv.put<Unreported>(key, { source: from, startedAt, via });
           await this.armReports();
           await owner.runStarted(config.id, operationId, from, startedAt);
         }
@@ -264,7 +264,9 @@ export class HostedAgent extends DurableObject<Env> {
     const key = `report:${operationId}`;
     const stored = this.kv.get<Unreported | true>(key);
     if (!stored) return;
+    // Records from before `via` existed: the web's runs carried a web- id.
     let pending: Unreported = stored === true ? { source: null } : stored;
+    const via = pending.via ?? (operationId.startsWith('web-') ? 'control' : 'daemon');
     if (!pending.usage) {
       const total = this.kv.get<Cumulative>('usage:total') ?? zeroUsage();
       pending = { ...pending, usage: usageSince(total, this.kv.get<Cumulative>('usage:reported') ?? zeroUsage()) };
@@ -279,7 +281,7 @@ export class HostedAgent extends DurableObject<Env> {
     const limited = result.status === 'unanswered' && (this.kv.get<number>(`steps:${operationId}`) ?? 0) > LIMITS.stepsPerRun;
     const reason = limited ? stepLimitReason(LIMITS.stepsPerRun) : result.reason;
     await this.owner(config).report({
-      agent: config.id, ...result, reason, usage: pending.usage, source: pending.source, startedAt: pending.startedAt,
+      agent: config.id, ...result, reason, usage: pending.usage, source: pending.source, startedAt: pending.startedAt, via,
     });
     this.ctx.storage.transactionSync(() => {
       this.kv.delete(key);
@@ -371,7 +373,7 @@ async function agentRoute(env: Env, caller: Caller, request: Request, id: string
     if (config.retired) throw new HttpError(410, 'Agent is retired');
     const refusal = await directory.admit(id);
     if (refusal) throw new HttpError(402, refusal);
-    const receipt = await agent.submit(input.text, operationId, source(input.source));
+    const receipt = await agent.submit(input.text, operationId, source(input.source), caller.role);
     if ('retired' in receipt) throw new HttpError(410, 'Agent is retired');
     return json(receipt, 202);
   }
@@ -384,6 +386,109 @@ async function agentRoute(env: Env, caller: Caller, request: Request, id: string
   const operation = /^operations\/([^/]+)$/.exec(rest ?? '');
   if (operation && request.method === 'GET') return json(await agent.wait(identifier(operation[1], 'operationId')));
   throw new HttpError(405, 'Method not allowed');
+}
+
+// ---- relay requests ----------------------------------------------------------
+// The relay's asks and notifies to managed agents, answering the same contract
+// as a daemon's ask wait. The relay names the requester; only it reads back.
+
+const REQUEST_ID = /^rq-[0-9a-f]{32}$/;
+const escape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+function requesterOf(value: unknown): string {
+  if (typeof value !== 'string' || !/^[a-zA-Z0-9_.:-]{1,200}$/.test(value)) throw new HttpError(400, 'requester is required');
+  return value;
+}
+
+async function requestRoute(env: Env, owner: string, request: Request, url: URL) {
+  const directory = env.GATEWAYS.getByName(owner);
+  if (url.pathname === '/requests' && request.method === 'GET') {
+    const rows = await directory.openRequests(requesterOf(url.searchParams.get('requester')));
+    return json({ items: rows.map((row) => ({ request_id: row.id, to_agent: row.agent, message: row.text, created_at: row.created_at })) });
+  }
+  if (url.pathname === '/requests' && request.method === 'POST') return submitRequest(env, owner, await body(request));
+  const match = /^\/requests\/([^/]+)$/.exec(url.pathname);
+  if (match && request.method === 'GET') {
+    const wait = Math.max(0, Math.min(Number(url.searchParams.get('wait') ?? 0) || 0, 20));
+    return json(await waitRequest(env, owner, match[1], requesterOf(url.searchParams.get('requester')), wait));
+  }
+  throw new HttpError(404, 'Not found');
+}
+
+async function submitRequest(env: Env, owner: string, input: Record<string, unknown>) {
+  if (typeof input.id !== 'string' || !REQUEST_ID.test(input.id)) throw new HttpError(400, 'id must be rq- followed by 32 hex digits');
+  const id = input.id;
+  const agentId = identifier(input.agent, 'agent');
+  const kind = input.kind === 'ask' || input.kind === 'notify' ? input.kind : null;
+  if (!kind) throw new HttpError(400, 'kind must be ask or notify');
+  const requester = requesterOf(input.requester);
+  if (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 16000) throw new HttpError(400, 'text must contain 1–16000 characters');
+  const directory = env.GATEWAYS.getByName(owner);
+  // A known id answers with its receipt before today's budget or retirement
+  // is checked again: it was already accepted, or is still being settled.
+  const receipt = (known: RelayRequest) => {
+    if (known.agent !== agentId || known.kind !== kind || known.requester !== requester || known.text !== input.text) {
+      throw new HttpError(409, 'Request id already used for a different request');
+    }
+    return json({ request_id: id, state: known.state, created: false }, 202);
+  };
+  const known = await directory.request(id);
+  if (known) return receipt(known);
+  const agent = env.AGENTS.getByName(scopedName(owner, agentId));
+  const config = await agent.config();
+  const row = config && await directory.agent(agentId);
+  if (!config || !row || row.home_machine) throw new HttpError(404, 'Agent not found on the managed machine');
+  if (config.retired) throw new HttpError(410, 'Agent is retired');
+  const refusal = await directory.admit(agentId);
+  if (refusal) throw new HttpError(402, refusal);
+  const opened = await directory.openRequest({ id, agent: agentId, kind, requester, text: input.text });
+  if (!opened.created) return receipt(opened.request);
+  const framed = `<peer-message from="@${escape(requester)}" type="${kind}" correlation-id="${id}">\n${escape(input.text)}\n</peer-message>`;
+  let accepted;
+  try {
+    accepted = await agent.submit(framed, id, { from: requester, type: kind, correlationId: id }, 'control');
+  } catch (error) {
+    // The agent withdraws what pi never took; the request then reads as
+    // not delivered. Either way the relay must not resend.
+    console.error('Relay request submit failed', id, error);
+    throw new HttpError(502, `Delivery is uncertain; read request ${id} for its outcome and do not resend`);
+  }
+  if ('retired' in accepted) {
+    await directory.dropRequest(id);
+    throw new HttpError(410, 'Agent is retired');
+  }
+  await directory.acceptRequest(id);
+  return json({ request_id: id, state: 'accepted', created: true }, 202);
+}
+
+// pending, or resolved with how the run ended. A request whose run the
+// runtime never admitted resolves as not_delivered.
+async function waitRequest(env: Env, owner: string, id: string, requester: string, wait: number) {
+  const directory = env.GATEWAYS.getByName(owner);
+  const known = await directory.request(id);
+  if (!known || known.requester !== requester) throw new HttpError(404, 'Request not found');
+  const pending = { correlation_id: id, status: 'pending' };
+  const resolved = (status: string, reason: string | null, text: string | null) => ({
+    correlation_id: id, status: 'resolved', responder: known.agent,
+    close_reason: status === 'done' ? 'answered' : reason ?? 'unanswered',
+    ...(status === 'done' && text ? { reply: text } : {}),
+  });
+  if (known.state === 'not_delivered') return resolved('unanswered', 'not_delivered', null);
+  const run = await directory.run(known.agent, id, true);
+  if (run?.settled_at) return resolved(String(run.status), run.reason as string | null, run.answer as string | null);
+  const agent = env.AGENTS.getByName(scopedName(owner, known.agent));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    agent.wait(id),
+    new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), wait * 1000); }),
+  ]).finally(() => clearTimeout(timer));
+  if (!result) return pending;
+  // pi does not have it: still being submitted, or withdrawn as never admitted.
+  if (result.reason === 'not_found') {
+    const now = await directory.request(id);
+    return now?.state === 'not_delivered' ? resolved('unanswered', 'not_delivered', null) : pending;
+  }
+  return resolved(result.status, result.reason ?? null, result.text ?? null);
 }
 
 // Admin views fan out over the owners the registry knows. Few owners today.
@@ -444,6 +549,10 @@ export default {
         if (request.method === 'POST') return await createAgent(env, caller, request, await body(request));
       }
       if (url.pathname === '/workspaces' && request.method === 'GET') return json({ items: await directory().workspaces() });
+      if (url.pathname.startsWith('/requests')) {
+        if (caller.role !== 'control') throw new HttpError(403, 'Requests are for the relay');
+        return await requestRoute(env, ownerOf(caller), request, url);
+      }
       if (url.pathname === '/clients' && request.method === 'GET') return json(await directory().clients());
       const match = /^\/agents\/([^/]+)(?:\/(.+))?$/.exec(url.pathname);
       if (!match) throw new HttpError(404, 'Not found');
