@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
@@ -10,12 +11,16 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+
+	"github.com/repowire/repowire/daemon-go/proto"
 )
 
 // ============================================================================
-// Hosted gateway: the daemon's one WebSocket to the runtime. A settled frame
-// arrives on it when a run finishes; the daemon settles it and acknowledges,
-// and the runtime resends it on every connect until then. The runtime side hibernates the socket, so an idle mesh costs
+// Hosted gateway: the daemon's one WebSocket to the runtime. Two frames
+// arrive on it: a call (a mesh tool the agent invoked, run as that hosted
+// peer and answered with a result), and settled (a run finished; the daemon
+// settles it and acknowledges, and the runtime resends it on every connect
+// until then). The runtime side hibernates the socket, so an idle mesh costs
 // nothing and a sleeping agent stays asleep.
 // ============================================================================
 
@@ -29,28 +34,38 @@ const (
 	gatewayReadLimit  = 1 << 20
 )
 
-// gatewayFrame is every frame of the gateway protocol: settled from the
-// runtime, ack from the daemon.
+// HostedToolRunner runs one mesh tool on behalf of a hosted peer and returns
+// the text for the model, flagged when it is an error.
+type HostedToolRunner interface {
+	RunHostedTool(ctx context.Context, peerID proto.PeerID, tool string, args json.RawMessage) (text string, isError bool)
+}
+
+// gatewayFrame is every frame of the gateway protocol: call and settled from
+// the runtime, result and ack from the daemon.
 type gatewayFrame struct {
-	Type        string `json:"type"`
-	ID          string `json:"id"`
-	Agent       string `json:"agent,omitempty"`
-	OperationID string `json:"operationId,omitempty"`
-	Status      string `json:"status,omitempty"`
-	Reason      string `json:"reason,omitempty"`
-	Text        string `json:"text,omitempty"`
+	Type        string          `json:"type"`
+	ID          string          `json:"id"`
+	Agent       string          `json:"agent,omitempty"`
+	Tool        string          `json:"tool,omitempty"`
+	Args        json.RawMessage `json:"args,omitempty"`
+	OperationID string          `json:"operationId,omitempty"`
+	Status      string          `json:"status,omitempty"`
+	Reason      string          `json:"reason,omitempty"`
+	Text        string          `json:"text,omitempty"`
+	Error       bool            `json:"error,omitempty"`
 }
 
 // Connect holds the gateway socket at base/gateway until Close, reconnecting
-// after a drop. Reports wait in the runtime while it is down.
-func (h *Hosted) Connect(base, token string) {
+// after a drop. Calls are served while it is up; while it is down the
+// runtime fails them loudly instead of queueing.
+func (h *Hosted) Connect(base, token string, tools HostedToolRunner) {
 	url := strings.TrimRight(base, "/") + "/gateway"
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
 		backoff := gatewayBackoff
 		for h.ctx.Err() == nil {
-			connected, err := h.serveGateway(url, token)
+			connected, err := h.serveGateway(url, token, tools)
 			if h.ctx.Err() != nil {
 				return
 			}
@@ -68,7 +83,7 @@ func (h *Hosted) Connect(base, token string) {
 	}()
 }
 
-func (h *Hosted) serveGateway(url, token string) (bool, error) {
+func (h *Hosted) serveGateway(url, token string, tools HostedToolRunner) (bool, error) {
 	dial, cancel := context.WithTimeout(h.ctx, gatewayDial)
 	conn, _, err := websocket.Dial(dial, url, &websocket.DialOptions{
 		HTTPHeader: http.Header{"Authorization": {"Bearer " + token}},
@@ -113,14 +128,19 @@ func (h *Hosted) serveGateway(url, token string) (bool, error) {
 		if err := wsjson.Read(ctx, conn, &frame); err != nil {
 			return true, err
 		}
-		if frame.Type != "settled" {
+		if frame.Type != "call" && frame.Type != "settled" {
 			continue
 		}
 		h.wg.Add(1)
 		go func() {
 			defer h.wg.Done()
-			h.Report(h.ctx, frame.Agent, frame.OperationID, HostedResult{Status: frame.Status, Reason: frame.Reason, Text: frame.Text})
-			reply(gatewayFrame{Type: "ack", ID: frame.ID})
+			if frame.Type == "settled" {
+				h.Report(h.ctx, frame.Agent, frame.OperationID, HostedResult{Status: frame.Status, Reason: frame.Reason, Text: frame.Text})
+				reply(gatewayFrame{Type: "ack", ID: frame.ID})
+				return
+			}
+			text, isError := tools.RunHostedTool(h.ctx, proto.PeerID(frame.Agent), frame.Tool, frame.Args)
+			reply(gatewayFrame{Type: "result", ID: frame.ID, Text: text, Error: isError})
 		}()
 	}
 }

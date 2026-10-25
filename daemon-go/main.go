@@ -469,8 +469,9 @@ func runDaemon() {
 	reg.OnTerminalOffline = jobCompletion.OnPeerTerminalOffline
 	scheduler := service.NewScheduler(store, delivery)
 	// Hosted runs report like hook turns: to the chat feed. Restore
-	// re-registers hosted peers and marks the ones with unsettled work busy;
-	// the gateway carries their reports.
+	// re-registers hosted peers and resumes the waits the last daemon left
+	// unsettled; tool calls the agents make run through the hub's MCP
+	// handlers.
 	if hosted != nil {
 		hosted.OnSettled(func(ctx context.Context, run service.HostedDelivery, result service.HostedResult) {
 			turn := func(role, text string) {
@@ -482,7 +483,7 @@ func runDaemon() {
 			}
 		})
 		hosted.Restore(ctx)
-		hosted.Connect(cfg.Hosted.URL, cfg.Hosted.Token)
+		hosted.Connect(cfg.Hosted.URL, cfg.Hosted.Token, h)
 	}
 
 	// (10) Relay/shares config. A nil-or-keyless RelayConfig leaves /shares as
