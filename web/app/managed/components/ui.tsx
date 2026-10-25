@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, Check, X } from "lucide-react";
 import { cn } from "../../dashboard/lib/utils";
 import type { AgentState } from "../lib/api";
@@ -91,22 +91,44 @@ export function EmptyState({ icon, title, children }: { icon: ReactNode; title: 
   );
 }
 
-/** Centered dialog on desktop, bottom sheet under 640px. Escape closes. */
+/**
+ * Centered dialog on desktop, bottom sheet under 640px. A native <dialog>
+ * opened with showModal(): the browser makes the page behind it inert and
+ * keeps keyboard focus inside. Escape and a backdrop click close it, and
+ * focus returns to whatever opened it.
+ */
 export function Modal({ title, onClose, children, footer }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  // Captured at first render: autoFocus inside the dialog moves focus before effects run.
+  const [opener] = useState(() => (typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null));
+  const onCloseRef = useRef(onClose);
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => event.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    onCloseRef.current = onClose;
   }, [onClose]);
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", ""); // jsdom
+    const onCancel = (event: Event) => {
+      event.preventDefault();
+      onCloseRef.current();
+    };
+    dialog.addEventListener("cancel", onCancel);
+    return () => {
+      dialog.removeEventListener("cancel", onCancel);
+      if (dialog.open && typeof dialog.close === "function") dialog.close();
+      opener?.focus();
+    };
+  }, [opener]);
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 sm:items-center sm:p-4" onClick={onClose}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className="max-h-[90dvh] w-full overflow-y-auto rounded-t-[10px] border border-border bg-surface-container-low pb-[env(safe-area-inset-bottom)] shadow-[var(--shadow-xl)] sm:max-w-md sm:rounded-[10px] sm:pb-0"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <dialog
+      ref={ref}
+      aria-label={title}
+      onClick={(event) => event.target === event.currentTarget && onClose()}
+      className="fixed inset-0 z-50 m-0 h-full max-h-none w-full max-w-none items-end justify-center border-0 bg-transparent p-0 backdrop:bg-black/50 open:flex sm:items-center sm:p-4"
+    >
+      <div className="max-h-[90dvh] w-full overflow-y-auto rounded-t-[10px] border border-border bg-surface-container-low pb-[env(safe-area-inset-bottom)] shadow-[var(--shadow-xl)] sm:max-w-md sm:rounded-[10px] sm:pb-0">
         <div className="flex items-center justify-between border-b border-border-faint px-5 py-4">
           <h2 className="font-mono text-xs font-bold uppercase tracking-[0.2em] text-on-surface">{title}</h2>
           <button onClick={onClose} className="text-outline transition-colors hover:text-on-surface" aria-label="Close">
@@ -116,7 +138,7 @@ export function Modal({ title, onClose, children, footer }: { title: string; onC
         <div className="space-y-4 p-5">{children}</div>
         {footer && <div className="flex justify-end gap-2 border-t border-border-faint px-5 py-3">{footer}</div>}
       </div>
-    </div>
+    </dialog>
   );
 }
 
