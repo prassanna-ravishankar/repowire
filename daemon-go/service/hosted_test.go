@@ -542,32 +542,29 @@ func TestHostedRestoreResubmitsUnsettledDeliveries(t *testing.T) {
 	}
 }
 
-// A resubmission the runtime refuses settles unanswered, so its asker or job
-// hears instead of waiting on a report that will not come.
-func TestHostedRestoreSettlesARefusedResubmission(t *testing.T) {
+// A resubmission that fails does not settle the delivery: the runtime may
+// hold the original, and its genuine report closes the ask with the real
+// reply.
+func TestHostedRestoreLeavesAFailedResubmissionForItsReport(t *testing.T) {
 	f := newHostedFixture(t)
 	cid := f.ask(t)
 	f.hosted.Close()
 
 	runtime := newFakeHostedRuntime()
-	runtime.submitErr = &HostedError{Status: 410, Message: "Agent retired"}
+	runtime.submitErr = &HostedError{Status: 503, Message: "Service Unavailable"}
 	reg := &fakeHostedRegistry{}
 	next := NewHosted(reg, runtime, f.store, "test")
 	t.Cleanup(next.Close)
-	settled := make(chan HostedResult, 1)
-	next.OnSettled("record", func(_ context.Context, d HostedDelivery, result HostedResult) error {
-		if d.CorrelationID == cid {
-			settled <- result
-		}
-		return nil
-	})
+	next.OnSettled("reply", f.delivery.completeHosted)
 	next.Restore(context.Background())
-	select {
-	case result := <-settled:
-		if result.Status != "unanswered" || result.Reason != "submit_failed" {
-			t.Fatalf("a refused resubmission must settle unanswered, got %+v", result)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("a refused resubmission was not settled")
+	next.wg.Wait() // the resubmission has run and failed
+	if f.openDeliveries(t) != 1 || reg.lastStatus() != proto.StatusBusy {
+		t.Fatalf("a failed resubmission must leave the delivery open and its peer busy: open=%d status=%q", f.openDeliveries(t), reg.lastStatus())
+	}
+	if err := next.Report(context.Background(), string(f.target.PeerID), cid, HostedResult{Status: "done", Text: "the real answer"}); err != nil {
+		t.Fatal(err)
+	}
+	if ask := waitClosed(t, f.asks, cid); ask.CloseReason != "ack_with_msg" || ask.ReplyText == nil || *ask.ReplyText != "the real answer" {
+		t.Fatalf("the genuine report must close the ask with its reply, got %+v", ask)
 	}
 }

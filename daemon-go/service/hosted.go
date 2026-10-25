@@ -353,24 +353,16 @@ func (h *Hosted) Restore(ctx context.Context) {
 	}()
 }
 
-// resubmit sends an unsettled submission again. A refusal settles it
-// unanswered, so its asker or job hears; a transport error leaves it open
-// for the runtime's report or the next start.
+// resubmit sends an unsettled submission again. It never decides an
+// outcome: a failed resubmission does not prove the original failed, since
+// its report may still be on its way, so the submission stays open and its
+// peer busy until a genuine report settles it.
 func (h *Hosted) resubmit(op *state.Operation) {
 	str := func(key string) string { value, _ := op.Target[key].(string); return value }
 	agent, operationID := str("agent_id"), str("operation_id")
-	_, err := h.runtime.Submit(h.ctx, agent, operationID, str("text"), HostedSource{
-		From: str("from_peer_name"), FromPeerID: str("from_peer_id"), Type: str("kind"), CorrelationID: str("correlation_id")})
-	var refused *HostedError
-	switch {
-	case err == nil:
-	case errors.As(err, &refused):
-		log.Printf("hosted: resubmit %s/%s refused: %v", agent, operationID, err)
-		if err := h.Report(h.ctx, agent, operationID, HostedResult{Status: "unanswered", Reason: "submit_failed"}); err != nil {
-			log.Printf("hosted: settle refused resubmit %s/%s: %v", agent, operationID, err)
-		}
-	default:
-		log.Printf("hosted: resubmit %s/%s: %v; left for the runtime's report or the next start", agent, operationID, err)
+	if _, err := h.runtime.Submit(h.ctx, agent, operationID, str("text"), HostedSource{
+		From: str("from_peer_name"), FromPeerID: str("from_peer_id"), Type: str("kind"), CorrelationID: str("correlation_id")}); err != nil {
+		log.Printf("hosted: WARNING resubmit %s/%s failed (%v); left open for its report", agent, operationID, err)
 	}
 }
 
