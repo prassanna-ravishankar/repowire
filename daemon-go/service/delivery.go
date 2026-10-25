@@ -576,6 +576,13 @@ func stringValuePeer(value *proto.Peer) string {
 }
 
 func (d *PeerDelivery) completeACPAsk(ctx context.Context, cid string, reply, errText *string) {
+	d.completeRuntimeAsk(ctx, cid, reply, errText, "ACP error: ")
+}
+
+// completeRuntimeAsk closes an ask a runtime answered on the daemon's side
+// (ACP): it notifies the asker with the framed reply, or stashes it when the
+// asker cannot take it now.
+func (d *PeerDelivery) completeRuntimeAsk(ctx context.Context, cid string, reply, errText *string, errPrefix string) {
 	if d.asks == nil {
 		return
 	}
@@ -589,7 +596,18 @@ func (d *PeerDelivery) completeACPAsk(ctx context.Context, cid string, reply, er
 		body = *reply
 	}
 	if isError {
-		body = "ACP error: " + *errText
+		body = errPrefix + *errText
+	}
+	// A pull asker (relay MCP, jobs) retrieves the reply from the ask itself,
+	// exactly as an ack would leave it; it has no socket to push to.
+	if ask.ReplyDelivery == "pull" {
+		reason := "ack_with_msg"
+		if isError {
+			reason = "send_failed"
+		}
+		d.asks.CaptureReply(ctx, cid, body, nil)
+		_, _ = d.asks.Close(ctx, cid, reason)
+		return
 	}
 	framed := fmt.Sprintf("[ack #%s from @%s] %s", cid, ask.ToPeerName, body)
 	result, err := d.Notify(ctx, NotifyParams{FromPeer: string(ask.ToPeerID), ToPeer: string(ask.FromPeerID), Text: framed, BypassCircle: true, CorrelationID: cid, ThreadText: body})
