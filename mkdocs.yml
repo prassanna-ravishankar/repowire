@@ -150,6 +150,7 @@ nav:
       - reference/index.md
       - MCP tools: reference/mcp-tools.md
       - Relay MCP and OAuth: reference/relay-mcp.md
+      - Relay HTTP API: reference/relay-http.md
       - CLI: reference/cli.md
       - Configuration: reference/configuration.md
       - HTTP API: reference/http-api.md
