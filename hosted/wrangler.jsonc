@@ -7,9 +7,13 @@
   "ai": {"binding": "AI"},
   "durable_objects": {"bindings": [
     {"name": "AGENTS", "class_name": "HostedAgent"},
-    {"name": "WORKSPACES", "class_name": "Workspace"}
+    {"name": "WORKSPACES", "class_name": "Workspace"},
+    {"name": "GATEWAYS", "class_name": "Gateway"}
   ]},
-  "migrations": [{"tag": "v1", "new_sqlite_classes": ["HostedAgent", "Workspace"]}],
+  "migrations": [
+    {"tag": "v1", "new_sqlite_classes": ["HostedAgent", "Workspace"]},
+    {"tag": "v2", "new_sqlite_classes": ["Gateway"]}
+  ],
   "containers": [{"class_name": "Workspace", "scheduling_policy": "durable_object"}],
   "vars": {"MODEL": "@cf/zai-org/glm-5.3-flash"}
 }

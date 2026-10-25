@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { authenticate, body, identifier, scopedName } from '../src/http';
+import { authenticate, body, identifier, scopedName, source } from '../src/http';
 
 test('private routes fail closed, including when configuration is missing', async () => {
   const request = new Request('https://example.test');
@@ -23,4 +23,13 @@ test('body limits apply without Content-Length', async () => {
   await assert.rejects(body(request('x'.repeat(65537))), { status: 413 });
   for (const value of ['null', '[]', '{broken']) await assert.rejects(body(request(value)), { status: 400 });
   assert.deepEqual(await body(request('{"text":"hello"}')), { text: 'hello' });
+});
+
+test('mesh source is optional, bounded, and requires a sender and type', () => {
+  assert.equal(source(undefined), undefined);
+  assert.deepEqual(source({ from: 'planner', type: 'ask', correlationId: 'ask-1' }),
+    { from: 'planner', type: 'ask', correlationId: 'ask-1' });
+  for (const value of ['x', [], { type: 'ask' }, { from: 'a', type: 'x'.repeat(201) }]) {
+    assert.throws(() => source(value), { status: 400 });
+  }
 });

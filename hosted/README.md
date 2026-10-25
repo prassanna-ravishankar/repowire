@@ -1,7 +1,9 @@
 # Hosted agents spike
 
 A separate deployable package in the Repowire repository. This is a private,
-single-owner runtime prototype, not the public SaaS or a mesh transport yet.
+single-owner runtime prototype, not the public SaaS. The daemon reaches it as the
+`hosted` backend: `spawn_peer(backend="hosted")` registers a managed peer whose
+`peer_id` is the agent id here, and mesh deliveries arrive as messages.
 
 - `HostedAgent` stores a Pi Durable conversation and durable message receipts.
 - `Workspace` owns an on-demand Linux sandbox. Several agents may attach to the
@@ -44,9 +46,10 @@ All routes except `GET /health` require `Authorization: Bearer <HOSTED_TOKEN>`.
 | --- | --- |
 | `POST /agents` with `{"id":"helper","workspace":"project"}` | Create or retrieve an agent; omit workspace for a tool-only agent |
 | `GET /agents/helper` | Config, busy state, and pending operations |
-| `POST /agents/helper/messages` with `{"operationId":"request-1","text":"Hello"}` | Durably accept input and return a receipt (202) |
+| `POST /agents/helper/messages` with `{"operationId":"request-1","text":"Hello"}` | Durably accept input and return a receipt (202). Optional `source` (`from`, `type`, `fromPeerId`, `correlationId`) labels a mesh delivery in the transcript |
 | `GET /agents/helper/operations/request-1` | Wait for the result; reconnect using the same operation ID |
 | `GET /agents/helper/messages` | Read Pi's transcript |
+| `GET /gateway` (WebSocket) | The daemon's link for agents' mesh tool calls; one per owner, a new connection replaces the old |
 
 Reusing an operation ID does not submit a second message. Reusing an agent ID
 with a different workspace is a conflict. Workspace attachment is immutable.
@@ -60,11 +63,18 @@ intentionally simple; it costs latency and will need tuning for real workloads.
 Shell tools are not declared replay-safe.
 
 Authentication is one operator token, not SaaS login. There is no billing,
-per-user quota, connector runtime, AI Gateway configuration, or daemon/relay
-adapter yet. Composio project context is local and ignored. No connector
+per-user quota, connector runtime, or AI Gateway configuration yet. Composio project context is local and ignored. No connector
 credentials belong in a sandbox. Budget alerts are notifications, not hard caps.
 
-The next integration is a transport adapter into the existing daemon, preserving
-`peer_id` routing and message provenance. The hosted runtime must not become a
-second mesh hub. SaaS identity should replace the fixed owner before multi-user
+The daemon is the only mesh hub. It submits each delivery with the ask's
+correlation id as the operation id, holds a wait per in-flight operation, and
+closes the ask with the answer. Agents reach the mesh through the `Gateway`
+Durable Object: the daemon dials `GET /gateway` and holds a hibernating
+WebSocket, the agent's mesh tools (`list_peers`, `whoami`, `notify_peer`,
+`ask_peer`, `set_description`) send a call frame over it, and the daemon runs
+the call as that agent's peer and answers with a result frame. Protocol pings
+do not wake the object. With no daemon connected the tools fail at once; a call
+unanswered after 60 seconds fails and may still have run. Mesh tools are not
+replay-safe, so an interrupted run does not send a message twice. `source` is a transcript label, not an authorization; peer text arrives
+framed as an untrusted `<peer-message>`. SaaS identity should replace the fixed owner before multi-user
 access; Composio sessions must derive their user ID from that authenticated owner.
