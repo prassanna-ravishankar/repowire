@@ -472,8 +472,8 @@ func runDaemon() {
 	// feed. Restore and Connect run after the hub is wired, below.
 	if hosted != nil {
 		sessionControl.WithHosted(hosted)
-		hosted.OnSettled(jobCompletion.OnHostedRun)
-		hosted.OnSettled(func(ctx context.Context, run service.HostedDelivery, result service.HostedResult) {
+		hosted.OnSettled("jobs", jobCompletion.OnHostedRun)
+		hosted.OnSettled("chat", func(ctx context.Context, run service.HostedDelivery, result service.HostedResult) error {
 			turn := func(role, text string) {
 				reg.AddEvent(ctx, "chat_turn", map[string]any{"peer": run.ToPeerName, "peer_id": run.ToPeerID, "role": role, "text": text})
 			}
@@ -481,6 +481,7 @@ func runDaemon() {
 			if result.Status == "done" {
 				turn("assistant", result.Text)
 			}
+			return nil
 		})
 	}
 

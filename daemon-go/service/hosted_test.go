@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -239,7 +240,7 @@ func TestHostedRepeatedReportSettlesOnce(t *testing.T) {
 	f := newHostedFixture(t)
 	cid := f.ask(t)
 	settled := 0
-	f.hosted.OnSettled(func(context.Context, HostedDelivery, HostedResult) { settled++ })
+	f.hosted.OnSettled("count", func(context.Context, HostedDelivery, HostedResult) error { settled++; return nil })
 	f.report(cid, HostedResult{Status: "done", Text: "ok"})
 	f.report(cid, HostedResult{Status: "done", Text: "ok"})
 	if settled != 1 || f.hostReg.lastStatus() != proto.StatusOnline {
@@ -268,7 +269,10 @@ func TestHostedRestoreSettlesAReportAfterRestart(t *testing.T) {
 	next := NewHosted(reg, newFakeHostedRuntime(), f.store, "test")
 	t.Cleanup(next.Close)
 	var settled []HostedDelivery
-	next.OnSettled(func(_ context.Context, d HostedDelivery, _ HostedResult) { settled = append(settled, d) })
+	next.OnSettled("record", func(_ context.Context, d HostedDelivery, _ HostedResult) error {
+		settled = append(settled, d)
+		return nil
+	})
 	next.Restore(context.Background())
 	if reg.lastStatus() != proto.StatusBusy {
 		t.Fatalf("a peer with unsettled work must restore busy, got %q", reg.lastStatus())
@@ -353,12 +357,13 @@ func TestHostedReportReplaysWhenSettlementIsInterrupted(t *testing.T) {
 	f := newHostedFixture(t)
 	stopped, stop := context.WithCancel(context.Background())
 	seen := 0
-	f.hosted.OnSettled(func(context.Context, HostedDelivery, HostedResult) {
+	f.hosted.OnSettled("probe", func(context.Context, HostedDelivery, HostedResult) error {
 		seen++
 		if f.openDeliveries(t) != 1 {
 			t.Error("an observer must run while the delivery is still open")
 		}
 		stop() // the daemon stops mid-settlement
+		return nil
 	})
 	cid := f.ask(t)
 	if err := f.hosted.Report(stopped, string(f.target.PeerID), cid, HostedResult{Status: "done", Text: "42"}); err == nil {
@@ -422,5 +427,44 @@ func TestHostedResendOfAnOpenDeliveryReusesItsRecord(t *testing.T) {
 	f.report(cid, HostedResult{Status: "done", Text: "42"})
 	if got := f.hostReg.lastStatus(); got != proto.StatusOnline || f.openDeliveries(t) != 0 {
 		t.Fatalf("the report must settle the only record: status=%q open=%d", got, f.openDeliveries(t))
+	}
+}
+
+// A failing observer leaves the report unacknowledged; the resent report
+// runs only the observers that had not succeeded, so a reply already sent is
+// not sent again.
+func TestHostedReportResumesAtTheFailedObserver(t *testing.T) {
+	f := newHostedFixture(t)
+	first, flaky := 0, 0
+	f.hosted.OnSettled("first", func(context.Context, HostedDelivery, HostedResult) error { first++; return nil })
+	f.hosted.OnSettled("flaky", func(context.Context, HostedDelivery, HostedResult) error {
+		if flaky++; flaky == 1 {
+			return errors.New("store unavailable")
+		}
+		return nil
+	})
+	cid := f.ask(t)
+	if err := f.hosted.Report(context.Background(), string(f.target.PeerID), cid, HostedResult{Status: "done", Text: "42"}); err == nil {
+		t.Fatal("a failed observer must leave the report unacknowledged")
+	}
+	if f.openDeliveries(t) != 1 {
+		t.Fatal("a failed observer must leave the delivery open")
+	}
+	f.report(cid, HostedResult{Status: "done", Text: "42"})
+	if first != 1 || flaky != 2 || f.openDeliveries(t) != 0 {
+		t.Fatalf("the resend must resume at the failed observer: first=%d flaky=%d open=%d", first, flaky, f.openDeliveries(t))
+	}
+}
+
+// A reply that cannot be held for an absent asker fails its observer, so the
+// report is resent rather than dropped.
+func TestHostedReplyQueueFailureIsResent(t *testing.T) {
+	f := newHostedFixture(t)
+	f.delivery.store = &fakeQueue{enqueueErr: errors.New("disk full")}
+	err := f.delivery.completeHosted(context.Background(), HostedDelivery{Kind: "ask", CorrelationID: "ask-gone",
+		FromPeerID: "repow-default-gone", FromPeerName: "gone", ToPeerID: string(f.target.PeerID), ToPeerName: string(f.target.DisplayName)},
+		HostedResult{Status: "done", Text: "late answer"})
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("a reply the queue refused must fail the observer, got %v", err)
 	}
 }

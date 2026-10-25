@@ -116,3 +116,46 @@ func TestJobCompletionFromHostedRuns(t *testing.T) {
 		t.Fatalf("unanswered run did not fail the job: %#v", work)
 	}
 }
+
+// A replayed hosted run finishes the job wherever the last try stopped: after
+// the attempt was written but not the work, and after the work was written
+// but not what follows it.
+func TestJobCompletionHostedRunIsReplaySafe(t *testing.T) {
+	ctx := context.Background()
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	completion := NewJobCompletion(store, nil, nil, nil, nil)
+	const attemptID, peerID = "attempt-000000000003", "repow-default-h0st"
+	work, err := store.CreateWork(ctx, state.WorkCreate{Title: "replayed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcquireForDispatch(ctx, work.WorkID, state.AcquireOptions{RunnerOwnerID: "test", AttemptID: attemptID, IgnoreDueAt: true}); err != nil {
+		t.Fatal(err)
+	}
+	delivered, assigned := "delivered", peerID
+	if _, err := store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{Status: &delivered, Phase: &delivered, AssignedPeerID: &assigned}); err != nil {
+		t.Fatal(err)
+	}
+	// The last try armed the work and wrote the attempt, then stopped.
+	running, started := "running", "turn_started"
+	if _, err := store.UpdateWorkState(ctx, work.WorkID, state.WorkUpdate{State: running, Phase: &started, AttemptID: strPtr(attemptID)}); err != nil {
+		t.Fatal(err)
+	}
+	completed := "completed"
+	if _, err := store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{Status: &completed, Phase: &completed}); err != nil {
+		t.Fatal(err)
+	}
+	run := HostedDelivery{Kind: "ask", ToPeerID: peerID, Text: "job_id: " + work.WorkID + "\nattempt_id: " + attemptID}
+	for try := 1; try <= 2; try++ {
+		if err := completion.OnHostedRun(ctx, run, HostedResult{Status: "done", Text: "all green"}); err != nil {
+			t.Fatalf("try %d: %v", try, err)
+		}
+		if got, _ := store.GetWork(ctx, work.WorkID); got.State != "completed" || got.ResultSummary == nil || *got.ResultSummary != "all green" {
+			t.Fatalf("try %d did not leave the job completed: %#v", try, got)
+		}
+	}
+}

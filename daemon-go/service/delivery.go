@@ -114,7 +114,7 @@ func (d *PeerDelivery) WithInbox(inbox *Inbox) *PeerDelivery {
 func (d *PeerDelivery) WithHosted(hosted *Hosted) *PeerDelivery {
 	d.hosted = hosted
 	if hosted != nil {
-		hosted.OnSettled(d.completeHosted)
+		hosted.OnSettled("reply", d.completeHosted)
 	}
 	return d
 }
@@ -612,8 +612,10 @@ func (d *PeerDelivery) completeACPAsk(ctx context.Context, cid string, reply, er
 
 // completeHosted closes an ask with the hosted runtime's answer, or with its
 // failure. An ask the tracker no longer holds (the daemon restarted while the
-// runtime worked) still reaches its asker as a framed reply.
-func (d *PeerDelivery) completeHosted(ctx context.Context, delivery HostedDelivery, result HostedResult) {
+// runtime worked) still reaches its asker as a framed reply. It fails only
+// when the reply could not be held for an absent asker, so the report is
+// resent.
+func (d *PeerDelivery) completeHosted(ctx context.Context, delivery HostedDelivery, result HostedResult) error {
 	var reply, errText *string
 	if result.Status != "done" {
 		text := "no answer (" + result.Reason + ")"
@@ -625,16 +627,16 @@ func (d *PeerDelivery) completeHosted(ctx context.Context, delivery HostedDelive
 		if errText != nil {
 			log.Printf("delivery: hosted %s to %s failed: %s", delivery.Kind, delivery.ToPeerID, *errText)
 		}
-		return
+		return nil
 	}
 	if d.asks == nil {
-		return
+		return nil
 	}
 	// An ask still tracked closes here; one already closed (a job's completion
 	// closed it first) needs nothing more.
 	if _, ok := d.asks.Get(delivery.CorrelationID); ok {
 		d.completeRuntimeAsk(ctx, delivery.CorrelationID, reply, errText, "Hosted error: ")
-		return
+		return nil
 	}
 	body := ""
 	if reply != nil {
@@ -645,21 +647,25 @@ func (d *PeerDelivery) completeHosted(ctx context.Context, delivery HostedDelive
 	framed := fmt.Sprintf("[ack #%s from @%s] %s", delivery.CorrelationID, delivery.ToPeerName, body)
 	if _, err := d.Notify(ctx, NotifyParams{FromPeer: delivery.ToPeerID, ToPeer: delivery.FromPeerID, Text: framed,
 		BypassCircle: true, CorrelationID: delivery.CorrelationID, ThreadText: body}); err == nil {
-		return
+		return nil
 	}
 	// The asker has not re-registered since the restart: hold the reply in its
 	// durable queue, which drains when it reconnects.
 	if d.store == nil || delivery.FromPeerID == "" {
 		log.Printf("delivery: hosted reply %s to %s undeliverable: no durable queue", delivery.CorrelationID, delivery.FromPeerName)
-		return
+		return nil
 	}
 	queued, err := d.store.EnqueueDelivery(ctx, state.QueuedDelivery{
 		PeerID: delivery.FromPeerID, Kind: state.DeliveryNotify, FromPeerID: stringPtr(delivery.ToPeerID),
 		FromPeerName: delivery.ToPeerName, ToPeerName: delivery.FromPeerName, Text: framed,
 	}, d.queueTTLSeconds, d.queueMax, time.Time{})
-	if err != nil || queued == nil {
-		log.Printf("delivery: hosted reply %s to %s undeliverable: %v", delivery.CorrelationID, delivery.FromPeerID, err)
+	if err != nil {
+		return fmt.Errorf("queue hosted reply %s for %s: %w", delivery.CorrelationID, delivery.FromPeerID, err)
 	}
+	if queued == nil {
+		log.Printf("delivery: hosted reply %s to %s undeliverable: the durable queue is disabled", delivery.CorrelationID, delivery.FromPeerID)
+	}
+	return nil
 }
 
 // completeRuntimeAsk closes an ask a runtime answered on the daemon's side

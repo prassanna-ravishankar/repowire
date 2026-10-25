@@ -81,8 +81,7 @@ type fastHostedOpener struct {
 }
 
 func (o *fastHostedOpener) OpenScheduledAsk(ctx context.Context, cid, _, toPeer, text string, _ *string, _ string) (string, error) {
-	o.completion.OnHostedRun(ctx, HostedDelivery{Kind: "ask", CorrelationID: cid, ToPeerID: toPeer, Text: text}, o.result)
-	return cid, nil
+	return cid, o.completion.OnHostedRun(ctx, HostedDelivery{Kind: "ask", CorrelationID: cid, ToPeerID: toPeer, Text: text}, o.result)
 }
 
 // A hosted run that reports before dispatch returns still completes or fails

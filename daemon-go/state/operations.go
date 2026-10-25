@@ -242,6 +242,24 @@ func (s *Store) StartAttempt(ctx context.Context, operationID string, strategy *
 	return s.updateOperation(ctx, op, "running", nextStrategy, attempts, nil, nil, nil)
 }
 
+// MarkOperationStep records that step of a still-open operation is done,
+// under result.steps, without changing its state, so a replayed operation
+// can skip the steps it already took. Returns (nil, nil) when missing.
+func (s *Store) MarkOperationStep(ctx context.Context, operationID, step string) (*Operation, error) {
+	op, err := s.GetOperation(ctx, operationID)
+	if err != nil || op == nil {
+		return op, err
+	}
+	result := opCloneMap(op.Result)
+	steps := map[string]any{}
+	if done, ok := result["steps"].(map[string]any); ok {
+		steps = opCloneMap(done)
+	}
+	steps[step] = nowISO()
+	result["steps"] = steps
+	return s.updateOperation(ctx, op, op.State, op.Strategy, nil, result, nil, op.CompletedAt)
+}
+
 // CompleteOperation mirrors SQLiteOperationStore.complete: marks the last attempt
 // and the operation completed. Returns (nil, nil) when missing.
 func (s *Store) CompleteOperation(ctx context.Context, operationID string, strategy *string, result map[string]any) (*Operation, error) {

@@ -191,7 +191,7 @@ type Hosted struct {
 	machine string
 
 	// settled observers run in order once per submission the runtime settles.
-	settled []HostedObserver
+	settled []namedObserver
 
 	mu       sync.Mutex
 	inflight map[proto.PeerID]int
@@ -213,12 +213,21 @@ func NewHosted(reg hostedRegistry, runtime HostedRuntime, store *state.Store, ma
 }
 
 // HostedObserver sees one settled submission: done with the final text, or
-// unanswered with the runtime's reason.
-type HostedObserver func(ctx context.Context, delivery HostedDelivery, result HostedResult)
+// unanswered with the runtime's reason. An error leaves the report
+// unacknowledged, so the runtime resends it and the observer runs again.
+type HostedObserver func(ctx context.Context, delivery HostedDelivery, result HostedResult) error
 
-// OnSettled adds an observer. Wire observers before Restore and Deliver.
-func (h *Hosted) OnSettled(observer HostedObserver) {
-	h.settled = append(h.settled, observer)
+type namedObserver struct {
+	name string
+	run  HostedObserver
+}
+
+// OnSettled adds an observer under a name unique among the observers; a
+// delivery records each name as its observer succeeds, so a replayed report
+// runs only the observers that had not. Wire observers before Restore and
+// Deliver.
+func (h *Hosted) OnSettled(name string, observer HostedObserver) {
+	h.settled = append(h.settled, namedObserver{name: name, run: observer})
 }
 
 // Close drops the gateway. Unsettled operations stay running; their reports
@@ -411,10 +420,11 @@ func (h *Hosted) fail(opID, reason, detail string) {
 }
 
 // Report settles the submission the runtime reports for agent and operation
-// id. Observers run before the operation turns terminal, so a daemon that
-// stops between the two settles the report again when the runtime resends
-// it; observers tolerate that replay (a closed ask or finished job ignores
-// it). A nil error means the report is handled, or was already settled or is
+// id. Each observer's success is recorded on the open operation, and the
+// operation turns terminal only after all of them, so a report cut short
+// (an observer failed, or the daemon stopped) is resent and resumes at the
+// first observer that had not succeeded. An observer stopped partway runs
+// again from its start. A nil error means the report is handled, or was already settled or is
 // unknown here, and the runtime may drop it; an error means it must resend.
 func (h *Hosted) Report(ctx context.Context, agentID, operationID string, result HostedResult) error {
 	if h.store == nil {
@@ -432,13 +442,25 @@ func (h *Hosted) Report(ctx context.Context, agentID, operationID string, result
 	delivery := HostedDelivery{Kind: str("kind"), Text: str("text"), CorrelationID: str("correlation_id"),
 		FromPeerID: str("from_peer_id"), FromPeerName: str("from_peer_name"),
 		ToPeerID: str("to_peer_id"), ToPeerName: str("to_peer_name")}
+	steps, _ := op.Result["steps"].(map[string]any)
 	for _, observer := range h.settled {
-		observer(ctx, delivery, result)
+		if _, done := steps[observer.name]; done {
+			continue
+		}
+		if err := observer.run(ctx, delivery, result); err != nil {
+			return fmt.Errorf("settle hosted delivery %s: %s: %w", op.OperationID, observer.name, err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		marked, err := h.store.MarkOperationStep(ctx, op.OperationID, observer.name)
+		if err != nil || marked == nil {
+			return fmt.Errorf("settle hosted delivery %s: record %s: %w", op.OperationID, observer.name, err)
+		}
+		op = marked
+		steps, _ = op.Result["steps"].(map[string]any)
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	report := map[string]any{"outcome": result.Status, "reason": result.Reason, "text": result.Text}
+	report := map[string]any{"outcome": result.Status, "reason": result.Reason, "text": result.Text, "steps": steps}
 	if result.Status != "done" {
 		_, err = h.store.FailOperation(ctx, op.OperationID, "", nil, report)
 	} else {
