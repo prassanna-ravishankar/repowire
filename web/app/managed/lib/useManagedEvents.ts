@@ -14,27 +14,32 @@ const OFFLINE_AFTER = 3;
 
 /**
  * Subscribes to the relay's managed SSE bridge. Each `data:` line is one
- * Worker frame; a fresh snapshot arrives on every (re)connect, so no gap
- * recovery is needed. `event: relay` frames (relay-side daemon connect and
- * disconnect) are passed to `onRelay`. Reconnecting uses the dashboard's
- * backoff; it is not polling.
+ * Worker frame; `event: relay` frames (relay daemons, and the relay's own
+ * link to the Worker) go to `onRelay`. A snapshot is not guaranteed on
+ * reconnect, so `onOpen(true)` tells the caller to resync over HTTP.
+ * Reconnecting uses the dashboard's backoff; it is not polling.
  */
 export function useManagedEvents({
   enabled,
   onFrame,
   onRelay,
+  onOpen,
 }: {
   enabled: boolean;
   onFrame: (frame: ManagedFrame) => void;
   onRelay?: (data: unknown) => void;
+  /** Called on every open; `reconnected` is false only for the first. */
+  onOpen?: (reconnected: boolean) => void;
 }): LiveConnection {
   const [state, setState] = useState<LiveConnection>({ status: "connecting" });
   const onFrameRef = useRef(onFrame);
   const onRelayRef = useRef(onRelay);
+  const onOpenRef = useRef(onOpen);
   useEffect(() => {
     onFrameRef.current = onFrame;
     onRelayRef.current = onRelay;
-  }, [onFrame, onRelay]);
+    onOpenRef.current = onOpen;
+  }, [onFrame, onRelay, onOpen]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -44,6 +49,7 @@ export function useManagedEvents({
     let countdown: ReturnType<typeof setInterval> | null = null;
     let backoffMs = INITIAL_BACKOFF_MS;
     let failures = 0;
+    let opened = false;
 
     const clearTimers = () => {
       if (reconnectTimer) clearTimeout(reconnectTimer);
@@ -68,6 +74,8 @@ export function useManagedEvents({
         backoffMs = INITIAL_BACKOFF_MS;
         failures = 0;
         setState({ status: "live" });
+        onOpenRef.current?.(opened);
+        opened = true;
       };
       source.onmessage = (event) => {
         const frame = parse(event.data);
@@ -76,6 +84,7 @@ export function useManagedEvents({
       source.addEventListener("relay", (event) => {
         onRelayRef.current?.(parse((event as MessageEvent<string>).data));
       });
+      // Also fires for the relay's `event: error` ("subscriber fell behind"): reconnect and resync.
       source.onerror = () => {
         if (disposed) return;
         source?.close();

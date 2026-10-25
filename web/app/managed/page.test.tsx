@@ -5,22 +5,43 @@ import ManagedPage from "./page";
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
+  static get latest() {
+    return FakeEventSource.instances[FakeEventSource.instances.length - 1];
+  }
   onopen: (() => void) | null = null;
   onmessage: ((e: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
+  listeners = new Map<string, (e: { data: string }) => void>();
   constructor(readonly url: string) {
     FakeEventSource.instances.push(this);
   }
-  addEventListener() {}
+  addEventListener(type: string, fn: (e: { data: string }) => void) {
+    this.listeners.set(type, fn);
+  }
   close() {}
+  open() {
+    act(() => this.onopen?.());
+  }
+  fail() {
+    act(() => this.onerror?.());
+  }
   emit(frame: unknown) {
     act(() => this.onmessage?.({ data: JSON.stringify(frame) }));
   }
+  relay(frame: unknown) {
+    act(() => this.listeners.get("relay")?.({ data: JSON.stringify(frame) }));
+  }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
 }
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
-function stubApi(overrides: (url: string, init?: RequestInit) => Response | undefined = () => undefined) {
+function stubApi(overrides: (url: string, init?: RequestInit) => Response | Promise<Response> | undefined = () => undefined) {
   const f = fixtures();
   const calls: { url: string; init?: RequestInit }[] = [];
   vi.stubGlobal(
@@ -137,5 +158,81 @@ describe("Managed page", () => {
     stubApi((url) => (url.endsWith("/me") ? json({ error: "unauthorized" }, 401) : undefined));
     render(<ManagedPage />);
     expect(await screen.findByText("Sign in to continue")).toBeInTheDocument();
+  });
+});
+
+describe("Managed page live state", () => {
+  const listed = (name: string) => within(screen.getByRole("complementary")).getByText(name).closest("button")!;
+
+  it("does not let a slow HTTP bootstrap overwrite a newer stream frame", async () => {
+    const f = fixtures();
+    const agents = deferred<Response>();
+    stubApi((url, init) => (url.endsWith("/api/v1/managed/agents") && !init?.method ? agents.promise : undefined));
+    render(<ManagedPage />);
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    const es = FakeEventSource.latest;
+    es.open();
+    // The stream says helper settled while the slow /agents read still says working.
+    es.emit({ type: "agent", agent: { ...f.agents[0], state: "idle", state_at: new Date().toISOString() } });
+    await act(async () => agents.resolve(json({ items: f.agents })));
+    await waitFor(() => expect(listed("helper")).toHaveTextContent("IDLE"));
+    expect(listed("helper")).not.toHaveTextContent("WORKING");
+  });
+
+  it("resyncs over HTTP on every reconnect", async () => {
+    const f = fixtures();
+    let agentReads = 0;
+    stubApi((url, init) => {
+      if (url.endsWith("/api/v1/managed/agents") && !init?.method) {
+        agentReads += 1;
+        return json({ items: agentReads === 1 ? f.agents : [...f.agents, { ...f.agents[4], id: "made-while-away" }] });
+      }
+    });
+    render(<ManagedPage />);
+    await screen.findByText("helper");
+    FakeEventSource.latest.open();
+    expect(agentReads).toBe(1);
+    FakeEventSource.latest.fail();
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(2), { timeout: 3000 });
+    FakeEventSource.latest.open();
+    await waitFor(() => expect(agentReads).toBe(2));
+    expect(await screen.findByText("made-while-away")).toBeInTheDocument();
+  });
+
+  it("shows DEGRADED while the relay has lost the Worker, and resyncs when it returns", async () => {
+    let agentReads = 0;
+    stubApi((url, init) => {
+      if (url.endsWith("/api/v1/managed/agents") && !init?.method) agentReads += 1;
+      return undefined;
+    });
+    render(<ManagedPage />);
+    await screen.findByText("helper");
+    const es = FakeEventSource.latest;
+    es.open();
+    expect(screen.getByText("LIVE")).toBeInTheDocument();
+    es.relay({ type: "gateway", connected: false, error: "upstream closed" });
+    expect(screen.getByText("DEGRADED")).toHaveAttribute("title", expect.stringContaining("upstream closed"));
+    es.relay({ type: "gateway", connected: true });
+    expect(screen.getByText("LIVE")).toBeInTheDocument();
+    await waitFor(() => expect(agentReads).toBe(2));
+  });
+
+  it("refetches open runs when a snapshot invalidates them", async () => {
+    const f = fixtures();
+    let runReads = 0;
+    stubApi((url) => {
+      if (url.endsWith("/agents/helper/runs")) {
+        runReads += 1;
+        return json({ items: runReads === 1 ? f.runs : [{ ...f.runs[0], status: "done", settled_at: new Date().toISOString() }, ...f.runs.slice(1)] });
+      }
+    });
+    window.location.hash = "#/agents/helper/runs";
+    render(<ManagedPage />);
+    expect((await screen.findAllByText("WORKING")).length).toBeGreaterThan(0);
+    await waitFor(() => expect(runReads).toBeGreaterThanOrEqual(1));
+    const before = runReads;
+    FakeEventSource.latest.emit({ type: "snapshot", agents: [{ ...f.agents[0], state: "idle" }], workspaces: f.workspaces, clients: f.clients.gateway, outbox: 0, at: "now" });
+    await waitFor(() => expect(runReads).toBe(before + 1));
+    await waitFor(() => expect(screen.getAllByText("ANSWERED").length).toBeGreaterThanOrEqual(2));
   });
 });

@@ -7,12 +7,15 @@ const ID_PATTERN = /^[a-zA-Z0-9_-]{1,80}$/;
 
 export function CreateAgentDialog({
   workspaces,
+  since,
   onClose,
   onCreated,
 }: {
   workspaces: Workspace[];
+  /** Stream position before the request, so a stale reply can be dropped. */
+  since: () => number;
   onClose: () => void;
-  onCreated: (agent: Agent, existed: boolean) => void;
+  onCreated: (agent: Agent, existed: boolean, token: number) => void;
 }) {
   const [id, setId] = useState("");
   const [workspace, setWorkspace] = useState("");
@@ -26,9 +29,10 @@ export function CreateAgentDialog({
     if (!idValid || !wsValid || busy) return;
     setBusy(true);
     setError(null);
+    const token = since();
     try {
       const res = await managedApi.createAgent({ id, ...(workspace ? { workspace } : {}) });
-      onCreated(res.agent, !res.created);
+      onCreated(res.agent, !res.created, token);
     } catch (err) {
       setError(err instanceof ApiError && err.status === 409 ? `${err.message} (409: this id is attached to a different workspace)` : (err as Error).message);
       setBusy(false);
@@ -83,13 +87,15 @@ export function CreateAgentDialog({
 export function RetireDialog({
   agent,
   workspace,
+  since,
   onClose,
   onRetired,
 }: {
   agent: Agent;
   workspace: Workspace | null;
+  since: () => number;
   onClose: () => void;
-  onRetired: (agent: Agent) => void;
+  onRetired: (agent: Agent, token: number) => void;
 }) {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -101,8 +107,9 @@ export function RetireDialog({
     if (!confirmed || busy) return;
     setBusy(true);
     setError(null);
+    const token = since();
     try {
-      onRetired(await managedApi.retire(agent.id));
+      onRetired(await managedApi.retire(agent.id), token);
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);

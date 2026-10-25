@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bot, Plus, Shield } from "lucide-react";
 import { cn } from "../dashboard/lib/utils";
 import { ThemeToggle } from "../dashboard/components/ThemeToggle";
@@ -10,12 +10,12 @@ import { ClientsView } from "./components/ClientsView";
 import { CreateAgentDialog, RetireDialog } from "./components/Dialogs";
 import { GateScreen } from "./components/Gate";
 import { Banner, Brand, ConnectionBadge, EmptyState, InlineError, Toasts, primaryButtonClass, useToasts } from "./components/ui";
-import { managedApi, type Agent, type Clients, type Me, type OAuthApp } from "./lib/api";
+import { managedApi, type Agent, type Me, type OAuthApp } from "./lib/api";
 import { deliver, draft, reconcile, retrying, type Outgoing } from "./lib/composer";
 import { useHashRoute, type Route } from "./lib/hashRoute";
-import { EMPTY_LIVE, applyFrame, connectedDaemon, formatClock, visibleAgents } from "./lib/state";
+import { connectedDaemon, formatClock, visibleAgents } from "./lib/state";
 import type { TranscriptItem } from "./lib/transcript";
-import { useManagedEvents } from "./lib/useManagedEvents";
+import { useManagedLive } from "./lib/useManagedLive";
 import { useMe } from "./lib/useMe";
 
 export default function ManagedPage() {
@@ -35,55 +35,12 @@ function useNow(fast: boolean) {
 }
 
 function ManagedApp({ me }: { me: Me }) {
-  const [live, dispatch] = useReducer(applyFrame, EMPTY_LIVE);
-  const [loaded, setLoaded] = useState(false);
-  const [listError, setListError] = useState<string | null>(null);
-  const [clients, setClients] = useState<Clients | null>(null);
-  const [clientsError, setClientsError] = useState<string | null>(null);
+  const { live, dispatch, since, applyAgent, loaded, listError, clients, clientsError, loadClients, resync, connection, upstream } = useManagedLive();
   const [outgoing, setOutgoing] = useState<Outgoing[]>([]);
   const [showRetired, setShowRetired] = useState(false);
   const [dialog, setDialog] = useState<null | "create" | "retire">(null);
   const [route, navigate] = useHashRoute();
   const { toasts, push } = useToasts();
-
-  const loadClients = useCallback(() => {
-    managedApi.clients().then(
-      (data) => {
-        setClients(data);
-        setClientsError(null);
-      },
-      (err: Error) => setClientsError(err.message),
-    );
-  }, []);
-
-  // Load on mount over HTTP; the SSE snapshot then replaces it, and every
-  // reconnect brings a fresh snapshot.
-  const loadAll = useCallback(
-    () =>
-      Promise.all([managedApi.agents(), managedApi.workspaces(), managedApi.clients()]).then(
-        ([agents, workspaces, clientData]) => {
-          setListError(null);
-          setClients(clientData);
-          dispatch({ type: "snapshot", agents, workspaces, clients: clientData.gateway, outbox: clientData.outbox, at: new Date().toISOString() });
-          setLoaded(true);
-        },
-        (err: Error) => setListError(err.message),
-      ),
-    [],
-  );
-
-  useEffect(() => {
-    void loadAll();
-  }, [loadAll]);
-
-  const connection = useManagedEvents({
-    enabled: true,
-    onFrame: useCallback((frame) => {
-      dispatch(frame);
-      if (frame.type === "snapshot") setLoaded(true);
-    }, []),
-    onRelay: loadClients,
-  });
 
   const anyWorking = live.agents.some((a) => a.state === "working");
   const now = useNow(anyWorking);
@@ -93,15 +50,20 @@ function ManagedApp({ me }: { me: Me }) {
   const shown = useMemo(() => visibleAgents(live.agents, showRetired || selected?.state === "retired"), [live.agents, showRetired, selected?.state]);
   const retiredCount = live.agents.filter((a) => a.state === "retired").length;
   const daemon = connectedDaemon(live.clients);
-  const stale = connection.status === "offline";
+  const degraded = connection.status === "live" && !upstream.connected;
+  const stale = connection.status === "offline" || degraded;
 
-  const refreshAgent = useCallback(async (id: string) => {
-    try {
-      dispatch({ type: "agent", agent: await managedApi.agent(id) });
-    } catch {
-      // The live stream will carry the change; a failed refresh is not an error to show.
-    }
-  }, []);
+  const refreshAgent = useCallback(
+    async (id: string) => {
+      const token = since();
+      try {
+        applyAgent(await managedApi.agent(id), token);
+      } catch {
+        // The live stream will carry the change; a failed refresh is not an error to show.
+      }
+    },
+    [since, applyAgent],
+  );
 
   const send = (text: string) => {
     if (!selected) return;
@@ -163,7 +125,7 @@ function ManagedApp({ me }: { me: Me }) {
         </nav>
         <div className="ml-auto flex items-center gap-2">
           {stale && live.at && <span className="hidden font-mono text-[10px] text-outline sm:inline">as of {formatClock(live.at)}</span>}
-          <ConnectionBadge connection={connection} />
+          <ConnectionBadge connection={connection} upstream={upstream} />
           {me.admin && (
             <a href="/admin" title="Admin" className="hidden h-8 w-8 items-center justify-center rounded border border-border text-outline hover:bg-surface-container-high hover:text-on-surface sm:inline-flex">
               <Shield className="h-3.5 w-3.5" />
@@ -184,7 +146,7 @@ function ManagedApp({ me }: { me: Me }) {
           <a href="#/clients" className="font-semibold underline underline-offset-2">Clients</a>
         </Banner>
       )}
-      {listError && <InlineError className="mx-4 mt-3" error={listError} onRetry={loadAll} />}
+      {listError && <InlineError className="mx-4 mt-3" error={listError} onRetry={() => void resync()} />}
 
       <div className={cn("flex min-h-0 flex-1 transition-opacity", stale && "opacity-60")}>
         {route.view === "clients" ? (
@@ -245,10 +207,11 @@ function ManagedApp({ me }: { me: Me }) {
       {dialog === "create" && (
         <CreateAgentDialog
           workspaces={live.workspaces}
+          since={since}
           onClose={() => setDialog(null)}
-          onCreated={(agent, existed) => {
+          onCreated={(agent, existed, token) => {
             setDialog(null);
-            dispatch({ type: "agent", agent });
+            applyAgent(agent, token);
             push(existed ? `Agent ${agent.id} already exists` : `Created ${agent.id}`);
             go({ view: "agents", agent: agent.id, tab: "chat" });
             void managedApi.workspaces().then((items) => items.forEach((workspace) => dispatch({ type: "workspace", workspace })), () => undefined);
@@ -259,10 +222,11 @@ function ManagedApp({ me }: { me: Me }) {
         <RetireDialog
           agent={selected}
           workspace={live.workspaces.find((w) => w.id === selected.workspace) ?? null}
+          since={since}
           onClose={() => setDialog(null)}
-          onRetired={(agent) => {
+          onRetired={(agent, token) => {
             setDialog(null);
-            dispatch({ type: "agent", agent });
+            applyAgent(agent, token);
             push(`Retired ${agent.id}`);
           }}
         />

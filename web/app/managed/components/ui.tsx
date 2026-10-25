@@ -5,6 +5,7 @@ import { cn } from "../../dashboard/lib/utils";
 import type { AgentState } from "../lib/api";
 import { STATE_META } from "../lib/state";
 import type { LiveConnection } from "../lib/useManagedEvents";
+import type { Upstream } from "../lib/useManagedLive";
 
 export const buttonClass =
   "inline-flex h-8 items-center justify-center gap-1.5 rounded border border-border px-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface disabled:opacity-50 disabled:hover:bg-transparent";
@@ -142,9 +143,16 @@ export function Modal({ title, onClose, children, footer }: { title: string; onC
   );
 }
 
-export function ConnectionBadge({ connection }: { connection: LiveConnection }) {
+export function ConnectionBadge({ connection, upstream }: { connection: LiveConnection; upstream?: Upstream }) {
   const spec =
-    connection.status === "live"
+    connection.status === "live" && upstream && !upstream.connected
+      ? {
+          cls: "border-tertiary-fixed-dim/30 bg-tertiary-fixed-dim/10 text-tertiary-fixed-dim",
+          dot: "bg-tertiary-fixed-dim",
+          text: "DEGRADED",
+          title: `The relay lost its link to the agent runtime${upstream.error ? `: ${upstream.error}` : ""}. Showing the last known state; actions still work.`,
+        }
+      : connection.status === "live"
       ? { cls: "border-secondary/25 bg-secondary/10 text-secondary", dot: "bg-secondary pulse-online", text: "LIVE", title: "Receiving live updates" }
       : connection.status === "reconnecting"
         ? { cls: "border-tertiary-fixed-dim/30 bg-tertiary-fixed-dim/10 text-tertiary-fixed-dim", dot: "bg-tertiary-fixed-dim", text: `RECONNECTING ${connection.retryInSec}s`, title: "Live updates dropped; reconnecting" }
