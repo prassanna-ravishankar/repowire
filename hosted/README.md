@@ -68,8 +68,10 @@ price; each workspace command records the container wall time the workspace
 measured, so waiting behind another agent's command is not charged. Costs are
 estimates (`prices.ts` names the source and date). Guardrails refuse rather
 than notify: a submission over the owner's daily ($2) or monthly ($20) budget,
-or the agent's daily budget ($1), returns 402 `budget_exceeded`; a run that
-makes more than 24 model requests is aborted and fails with `step_limit`; more than 30
+or the agent's daily budget ($1), returns 402 `budget_exceeded`; a run is
+aborted at its 25th model request, before that request is sent, and fails
+with `step_limit` (if the abort fails, the request stays held and the abort is
+retried, so nothing past the limit is sent); more than 30
 agent-originated mesh messages per owner in 10 minutes fail with
 `mesh_rate_limited`. Runs started from the web use `web-` operation ids and are
 not sent to the daemon's outbox.
@@ -105,7 +107,9 @@ it. The run's model usage is allocated once, when it settles, and a retry
 resends that same allocation. While any report is outstanding a durable job
 retries it, every minute while runs are in flight and backing off to ten
 minutes while the gateway fails, so neither an eviction nor a failed report
-loses a result. Retirement is checked as the agent admits each submission,
+loses a result. An operation recorded but never admitted (pi has no such
+submission) never ran: its pending run row is withdrawn with no report, so a
+retry of the same id runs as a first admission. Retirement is checked as the agent admits each submission,
 so a retire cannot race a submission into a new run. The gateway keeps each report in a durable
 outbox, sends it to the daemon, and resends everything unacknowledged on
 every connect. The daemon settles a report once and acknowledges it, so a run
