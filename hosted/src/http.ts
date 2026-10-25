@@ -47,10 +47,15 @@ export async function authorize(request: Request, env: { HOSTED_TOKEN?: string; 
   throw new HttpError(401, 'Unauthorized');
 }
 
-export async function body(request: Request): Promise<Record<string, unknown>> {
+// A JSON object body. With optional, an empty body reads as {}; anything else
+// still has to be a valid object.
+export async function body(request: Request, optional = false): Promise<Record<string, unknown>> {
   // Bound the streamed body too: Content-Length is optional and untrusted.
   const reader = request.body?.getReader();
-  if (!reader) throw new HttpError(400, 'JSON body required');
+  if (!reader) {
+    if (optional) return {};
+    throw new HttpError(400, 'JSON body required');
+  }
   const chunks: Uint8Array[] = [];
   let size = 0;
   for (;;) {
@@ -66,6 +71,7 @@ export async function body(request: Request): Promise<Record<string, unknown>> {
   const bytes = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  if (optional && size === 0) return {};
   try {
     const value = JSON.parse(new TextDecoder().decode(bytes));
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();

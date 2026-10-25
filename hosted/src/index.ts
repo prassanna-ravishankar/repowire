@@ -258,7 +258,7 @@ async function agentRoute(env: Env, caller: Caller, request: Request, id: string
   }
   if (rest === 'runs' && request.method === 'GET') return json({ items: await directory.runs(id) });
   if (rest === 'abort' && request.method === 'POST') {
-    const input = await body(request).catch(() => ({} as Record<string, unknown>));
+    const input = await body(request, true);
     const operationId = input.operationId == null ? undefined : identifier(input.operationId, 'operationId');
     return json({ aborted: await agent.abort(operationId) });
   }

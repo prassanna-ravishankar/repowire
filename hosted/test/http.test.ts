@@ -25,6 +25,15 @@ test('body limits apply without Content-Length', async () => {
   assert.deepEqual(await body(request('{"text":"hello"}')), { text: 'hello' });
 });
 
+test('an optional body is empty or a valid object, never a parse failure', async () => {
+  const request = (value?: string) => new Request('https://example.test', { method: 'POST', body: value });
+  assert.deepEqual(await body(request(), true), {});
+  assert.deepEqual(await body(request(''), true), {});
+  for (const value of ['{broken', 'null', '[]']) await assert.rejects(body(request(value), true), { status: 400 });
+  await assert.rejects(body(request('x'.repeat(65537)), true), { status: 413 });
+  assert.deepEqual(await body(request('{"operationId":"op-1"}'), true), { operationId: 'op-1' });
+});
+
 test('mesh source is optional, bounded, and requires a sender and type', () => {
   assert.equal(source(undefined), undefined);
   assert.deepEqual(source({ from: 'planner', type: 'ask', correlationId: 'ask-1' }),
