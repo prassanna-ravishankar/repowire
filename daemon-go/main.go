@@ -469,9 +469,7 @@ func runDaemon() {
 	reg.OnTerminalOffline = jobCompletion.OnPeerTerminalOffline
 	scheduler := service.NewScheduler(store, delivery)
 	// Hosted runs report like hook turns: to job completion and the chat
-	// feed. Restore re-registers hosted peers and keeps the ones with
-	// unsettled work busy; their reports arrive after the gateway connects.
-	// Tool calls the agents make run through the hub's MCP handlers.
+	// feed. Restore and Connect run after the hub is wired, below.
 	if hosted != nil {
 		sessionControl.WithHosted(hosted)
 		hosted.OnSettled(jobCompletion.OnHostedRun)
@@ -484,8 +482,6 @@ func runDaemon() {
 				turn("assistant", result.Text)
 			}
 		})
-		hosted.Restore(ctx)
-		hosted.Connect(cfg.Hosted.URL, cfg.Hosted.Token, cli.Version, h)
 	}
 
 	// (10) Relay/shares config. A nil-or-keyless RelayConfig leaves /shares as
@@ -539,6 +535,14 @@ func runDaemon() {
 		WithLifecycle(hub.NewLifecycleHandler(reg, transport, hub.TmuxPaneLister{}, spawnService.Ownership().Forget, nil, cfg.Daemon.CircleBoundary).
 			WithPlacementUpdater(spawnService.Ownership().UpdatePlacement))
 	// Reviews defaults its JSON store at Routes() time if unset; leave it.
+
+	// Restore re-registers hosted peers and keeps the ones with unsettled work
+	// busy; their reports arrive after the gateway connects. Connect waits for
+	// the fully wired hub: a running agent can call a mesh tool at once.
+	if hosted != nil {
+		hosted.Restore(ctx)
+		hosted.Connect(cfg.Hosted.URL, cfg.Hosted.Token, cli.Version, h)
+	}
 
 	// Surface relay-client status on /health and drive its lazy self-heal there
 	// (mirrors the Python /health relay block + ensure_running).
