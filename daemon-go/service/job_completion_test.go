@@ -159,3 +159,46 @@ func TestJobCompletionHostedRunIsReplaySafe(t *testing.T) {
 		}
 	}
 }
+
+// A run the runtime accepted before the daemon stopped, recovered as
+// runner_interrupted, still completes its attempt; one a newer attempt
+// replaced does not.
+func TestJobCompletionHostedRunSettlesARecoveredAttempt(t *testing.T) {
+	ctx := context.Background()
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	completion := NewJobCompletion(store, nil, nil, nil, nil)
+	const attemptID, peerID = "attempt-000000000004", "repow-default-h0st"
+	work, err := store.CreateWork(ctx, state.WorkCreate{Title: "interrupted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcquireForDispatch(ctx, work.WorkID, state.AcquireOptions{RunnerOwnerID: "test", AttemptID: attemptID, LeaseUntil: "2026-01-01T00:00:00+00:00", IgnoreDueAt: true}); err != nil {
+		t.Fatal(err)
+	}
+	delivered, pending, assigned := "delivered", "pending", peerID
+	if _, err := store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{Status: &delivered, Phase: &delivered, DeliveryState: &pending, AssignedPeerID: &assigned}); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := store.RecoverStaleDispatching(ctx, "2026-06-01T00:00:00+00:00"); err != nil || len(recovered) != 1 {
+		t.Fatalf("expected the unconfirmed send recovered: %v %v", recovered, err)
+	}
+	run := HostedDelivery{Kind: "ask", ToPeerID: peerID, Text: "job_id: " + work.WorkID + "\nattempt_id: " + attemptID}
+	if err := completion.OnHostedRun(ctx, run, HostedResult{Status: "done", Text: "made it"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.GetWork(ctx, work.WorkID); got.State != "completed" || got.ResultSummary == nil || *got.ResultSummary != "made it" {
+		t.Fatalf("a recovered attempt must take its run's result: %#v", got)
+	}
+
+	stale := HostedDelivery{Kind: "ask", ToPeerID: peerID, Text: "job_id: " + work.WorkID + "\nattempt_id: attempt-00000000dead"}
+	if err := completion.OnHostedRun(ctx, stale, HostedResult{Status: "unanswered", Reason: "late"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.GetWork(ctx, work.WorkID); got.State != "completed" {
+		t.Fatalf("a run for a replaced attempt must change nothing, got %q", got.State)
+	}
+}

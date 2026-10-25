@@ -113,8 +113,12 @@ func (c *JobCompletion) afterTerminal(ctx context.Context, work *state.TrackedWo
 	}
 	c.emit(work, prior)
 	if c.control != nil {
-		if _, err := c.control.ReleaseExecutorForWork(ctx, work, releaseReason); err != nil {
+		released, err := c.control.ReleaseExecutorForWork(ctx, work, releaseReason)
+		if err != nil {
 			return fmt.Errorf("release %s: %w", work.WorkID, err)
+		}
+		if released["status"] == "failed" {
+			return fmt.Errorf("release %s: %v", work.WorkID, released["reason"])
 		}
 	}
 	c.notifyOwner(ctx, work)
@@ -152,6 +156,9 @@ func (c *JobCompletion) OnPeerTerminalOffline(peerID proto.PeerID, detail string
 // attempt markers in its prompt: an answer completes it and a run without
 // one fails it as hosted_unanswered. The settlement observer reruns it when
 // a report is replayed, so each step tolerates finding its work further on.
+// An attempt recovered as runner_interrupted (the daemon stopped before the
+// send confirmed, but the runtime had it) still takes its run's result, as
+// long as no newer attempt replaced it.
 func (c *JobCompletion) OnHostedRun(ctx context.Context, delivery HostedDelivery, result HostedResult) error {
 	if c == nil || c.store == nil || delivery.ToPeerID == "" {
 		return nil
@@ -160,8 +167,9 @@ func (c *JobCompletion) OnHostedRun(ctx context.Context, delivery HostedDelivery
 	if err != nil || work == nil {
 		return err
 	}
-	switch work.State {
-	case "delivered", "running":
+	recovered := work.State == "unavailable" && strOrEmpty(work.StateReason) == "runner_interrupted"
+	switch {
+	case work.State == "delivered" || work.State == "running" || recovered:
 		if result.Status != "done" {
 			return c.failWork(ctx, work, attemptID, "hosted_unanswered", result.Reason)
 		}
@@ -173,9 +181,9 @@ func (c *JobCompletion) OnHostedRun(ctx context.Context, delivery HostedDelivery
 			c.emit(work, "delivered")
 		}
 		return c.finish(ctx, work, attemptID, result.Text)
-	case "completed":
+	case work.State == "completed":
 		return c.afterTerminal(ctx, work, "running", "fire_completed", "completed")
-	case "failed":
+	case work.State == "failed":
 		return c.afterTerminal(ctx, work, "running", "hosted_unanswered", "hosted_unanswered")
 	}
 	return nil
