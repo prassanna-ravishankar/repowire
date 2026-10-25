@@ -5,9 +5,9 @@ import { Lock, RefreshCw } from "lucide-react";
 import { cn } from "../dashboard/lib/utils";
 import { ThemeToggle } from "../dashboard/components/ThemeToggle";
 import { GateScreen } from "../managed/components/Gate";
-import { Brand, InlineError, PageMessage, SkeletonRows, buttonClass, labelClass } from "../managed/components/ui";
+import { Brand, CopyId, InlineError, PageMessage, SkeletonRows, Toasts, buttonClass, labelClass, useToasts } from "../managed/components/ui";
 import { ApiError, adminApi, type AdminOwner, type AdminSandbox, type AdminSummary, type Costs } from "../managed/lib/api";
-import { formatAgo, formatClock, formatDuration, formatUsd, formatWhen } from "../managed/lib/state";
+import { formatAgo, formatClock, formatDuration, formatUsd, formatWhen, shortId } from "../managed/lib/state";
 import { useMe } from "../managed/lib/useMe";
 import { CostChart } from "./components/CostChart";
 import { alertLevel } from "./lib/costs";
@@ -50,6 +50,8 @@ function AdminApp() {
   const [forbidden, setForbidden] = useState(false);
   const [refreshing, setRefreshing] = useState(true);
   const [asOf, setAsOf] = useState<number | null>(null);
+  const { toasts, push } = useToasts();
+  const copied = () => push("Copied");
   const now = asOf ?? 0;
 
   // Load on open and on Refresh only; admin data has no push.
@@ -111,11 +113,11 @@ function AdminApp() {
         </Section>
 
         <Section id="sandboxes" title="Sandboxes" error={sandboxes.error} count={sandboxes.data?.length}>
-          {sandboxes.data ? <SandboxTable rows={sandboxes.data} now={now} /> : !sandboxes.error && <SkeletonRows />}
+          {sandboxes.data ? <SandboxTable rows={sandboxes.data} now={now} onCopied={copied} /> : !sandboxes.error && <SkeletonRows />}
         </Section>
 
         <Section id="owners" title="Owners" error={owners.error} count={owners.data?.length}>
-          {owners.data ? <OwnerTable rows={owners.data} now={now} /> : !owners.error && <SkeletonRows />}
+          {owners.data ? <OwnerTable rows={owners.data} now={now} onCopied={copied} /> : !owners.error && <SkeletonRows />}
         </Section>
 
         <Section id="costs" title="Costs" note="daily, last 30 days, estimates from metered units" error={costs.error}>
@@ -138,6 +140,7 @@ function AdminApp() {
           {summary.data && <Connections summary={summary.data} />}
         </Section>
       </main>
+      <Toasts toasts={toasts} />
     </div>
   );
 }
@@ -194,11 +197,20 @@ function Tiles({ summary, sandboxes, costs }: { summary: AdminSummary; sandboxes
         </div>
       </Tile>
       <Tile label="Today" value={formatUsd(summary.today.cost_usd)} sub={`est. · ${summary.today.runs} runs`} />
-      <Tile label="Agents" value={live} sub={[`${s.working} working`, s.failed ? `${s.failed} failed` : null, `${s.retired} retired`].filter(Boolean).join(" · ")} />
+      <Tile
+        label="Agents"
+        value={live + s.retired}
+        sub={[`${live} active`, `${s.working} working`, s.failed ? `${s.failed} failed` : null, `${s.retired} retired`].filter(Boolean).join(" · ")}
+      />
       <Tile label="Sandboxes" value={summary.workspaces} sub={[`${summary.running_containers} running`, repair ? `${repair} need repair` : null].filter(Boolean).join(" · ")} />
       <Tile label="Owners" value={summary.owners} sub={`${summary.connected_daemons} gateway daemon${summary.connected_daemons === 1 ? "" : "s"} connected`} />
     </div>
   );
+}
+
+/** A long relay owner id, shortened, with the full id on hover and click-to-copy. */
+function OwnerId({ id, onCopied, className }: { id: string; onCopied: () => void; className?: string }) {
+  return <CopyId value={id} display={shortId(id)} onCopied={onCopied} className={className} />;
 }
 
 const SANDBOX_STATE: Record<AdminSandbox["state"], { label: string; cls: string }> = {
@@ -252,7 +264,7 @@ function PhoneCards({ rows }: { rows: { key: string; title: ReactNode; state: Re
   );
 }
 
-function SandboxTable({ rows, now }: { rows: AdminSandbox[]; now: number }) {
+function SandboxTable({ rows, now, onCopied }: { rows: AdminSandbox[]; now: number; onCopied: () => void }) {
   if (rows.length === 0) return <Card className="p-4 font-mono text-[11px] text-outline">No sandboxes yet.</Card>;
   const order = { needs_repair: 0, running: 1, idle: 2 };
   const sorted = [...rows].sort((a, b) => order[a.state] - order[b.state] || (b.last_exec_at ?? "").localeCompare(a.last_exec_at ?? ""));
@@ -268,7 +280,7 @@ function SandboxTable({ rows, now }: { rows: AdminSandbox[]; now: number }) {
         numeric={[4, 5, 6]}
         rows={sorted.map((row) => ({
           key: `${row.owner}/${row.id}`,
-          cells: [<span key="id" className="font-semibold text-on-surface">{row.id}</span>, row.owner, state(row), snap(row), row.agents.length, row.exec_count, formatDuration(row.container_ms), formatWhen(row.last_exec_at, now)],
+          cells: [<span key="id" className="font-semibold text-on-surface">{row.id}</span>, <OwnerId key="o" id={row.owner} onCopied={onCopied} />, state(row), snap(row), row.agents.length, row.exec_count, formatDuration(row.container_ms), formatWhen(row.last_exec_at, now)],
         }))}
       />
       <PhoneCards
@@ -276,14 +288,14 @@ function SandboxTable({ rows, now }: { rows: AdminSandbox[]; now: number }) {
           key: `${row.owner}/${row.id}`,
           title: row.id,
           state: state(row),
-          sub: <>{row.owner} · {row.agents.length} agents · snapshot {snap(row)}</>,
+          sub: <><OwnerId id={row.owner} onCopied={onCopied} /> · {row.agents.length} agents · snapshot {snap(row)}</>,
         }))}
       />
     </Card>
   );
 }
 
-function OwnerTable({ rows, now }: { rows: AdminOwner[]; now: number }) {
+function OwnerTable({ rows, now, onCopied }: { rows: AdminOwner[]; now: number; onCopied: () => void }) {
   if (rows.length === 0) return <Card className="p-4 font-mono text-[11px] text-outline">No owners yet.</Card>;
   const sorted = [...rows].sort((a, b) => b.month.cost_usd - a.month.cost_usd);
   const live = (row: AdminOwner) => row.agents - row.agents_by_state.retired;
@@ -301,7 +313,7 @@ function OwnerTable({ rows, now }: { rows: AdminOwner[]; now: number }) {
         rows={sorted.map((row) => ({
           key: row.owner,
           cells: [
-            <span key="o" className="font-semibold text-on-surface">{row.owner}</span>,
+            <OwnerId key="o" id={row.owner} onCopied={onCopied} className="font-semibold text-on-surface" />,
             live(row),
             row.agents_by_state.working,
             <span key="f" className={cn(row.agents_by_state.failed > 0 && "text-error")}>{row.agents_by_state.failed}</span>,
@@ -317,7 +329,7 @@ function OwnerTable({ rows, now }: { rows: AdminOwner[]; now: number }) {
       <PhoneCards
         rows={sorted.map((row) => ({
           key: row.owner,
-          title: row.owner,
+          title: <OwnerId id={row.owner} onCopied={onCopied} />,
           state: <span className="tabular-nums text-on-surface">{formatUsd(row.month.cost_usd)}</span>,
           sub: (
             <>

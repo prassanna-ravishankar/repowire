@@ -103,7 +103,7 @@ export function fixtures(now = Date.now()) {
   const owners: AdminOwner[] = [
     owner("token-3f9a2c", { idle: 2, working: 1, parked: 1, failed: 1, retired: 1 }, 3, 1, 1, 1, 0.48, 9.2),
     owner("token-81bd07", { idle: 1, working: 1, parked: 0, failed: 0, retired: 1 }, 1, 0, 1, 60 * 5, 0.14, 2.1),
-    owner("token-c0ffee", { idle: 1, working: 0, parked: 0, failed: 0, retired: 1 }, 1, 0, 0, 60 * 24 * 9, 0, 0.54),
+    owner(`token-c0ffee${"5e".repeat(26)}08e6`, { idle: 1, working: 0, parked: 0, failed: 0, retired: 1 }, 1, 0, 0, 60 * 24 * 9, 0, 0.54),
   ];
 
   const sandboxes: AdminSandbox[] = [

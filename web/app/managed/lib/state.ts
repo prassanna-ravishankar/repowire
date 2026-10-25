@@ -171,6 +171,14 @@ export function formatUsd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
+/** `token-99209d…08e6`: long ids keep a recognisable prefix and suffix. */
+export function shortId(id: string, head = 6, tail = 4): string {
+  const dash = id.indexOf("-") + 1;
+  const body = id.slice(dash);
+  if (body.length <= head + tail + 1) return id;
+  return `${id.slice(0, dash)}${body.slice(0, head)}…${body.slice(-tail)}`;
+}
+
 export function formatTokens(value: number): string {
   return value.toLocaleString("en-US");
 }

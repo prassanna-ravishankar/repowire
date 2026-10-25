@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Agent, Client, Run } from "./api";
 import { fixtures } from "./fixtures";
-import { EMPTY_LIVE, agentSubline, applyFrame, connectedDaemon, formatAgo, formatDuration, formatUsd, runStatus, sortAgents, stateCounts, visibleAgents } from "./state";
+import { EMPTY_LIVE, agentSubline, applyFrame, connectedDaemon, formatAgo, formatDuration, formatUsd, runStatus, shortId, sortAgents, stateCounts, visibleAgents } from "./state";
 
 const NOW = Date.parse("2026-10-25T14:05:00Z");
 const f = fixtures(NOW);
@@ -88,6 +88,14 @@ describe("applyFrame", () => {
     const next = applyFrame(snapshot, { type: "client", client: gone });
     expect(next.clients).toHaveLength(1);
     expect(connectedDaemon(next.clients)).toBeNull();
+  });
+});
+
+describe("shortId", () => {
+  it("keeps prefix and suffix of long relay ids", () => {
+    expect(shortId(`token-99209d${"a".repeat(54)}08e6`)).toBe("token-99209d…08e6");
+    expect(shortId("token-3f9a2c")).toBe("token-3f9a2c");
+    expect(shortId("abcdefghijklmnopqrstuvwxyz")).toBe("abcdef…wxyz");
   });
 });
 
