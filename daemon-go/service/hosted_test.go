@@ -468,3 +468,20 @@ func TestHostedReplyQueueFailureIsResent(t *testing.T) {
 		t.Fatalf("a reply the queue refused must fail the observer, got %v", err)
 	}
 }
+
+// A reply the asker could not take, held only in memory, fails the reply
+// step so the report is resent; it stays on the ask meanwhile.
+func TestHostedReplyHeldOnlyInMemoryIsResent(t *testing.T) {
+	f := newHostedFixture(t)
+	cid := f.ask(t)
+	f.wire.ackErr, f.wire.sendErr = ErrNotConnected, ErrNotConnected
+	if err := f.hosted.Report(context.Background(), string(f.target.PeerID), cid, HostedResult{Status: "done", Text: "42"}); err == nil {
+		t.Fatal("a reply held only in memory must leave the report unacknowledged")
+	}
+	if ask, ok := f.asks.Get(cid); !ok || ask.Closed || ask.PendingReply == nil {
+		t.Fatalf("the reply must wait on the open ask, got %+v", ask)
+	}
+	if f.openDeliveries(t) != 1 {
+		t.Fatal("the delivery must stay open for the resend")
+	}
+}
