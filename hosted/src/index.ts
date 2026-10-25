@@ -155,29 +155,24 @@ export class HostedAgent extends DurableObject<Env> {
       const fresh = !this.kv.get(key) && !this.kv.get(`reported:${operationId}`);
       const owner = this.owner(config);
       const from = source?.from ?? (operationId.startsWith('web-') ? 'web' : null);
-      const record = async () => {
-        const startedAt = new Date().toISOString();
-        this.kv.put<Unreported>(key, { source: from, startedAt });
-        this.kv.delete(`reported:${operationId}`);
-        await this.armReports();
-        await owner.runStarted(config.id, operationId, from, startedAt);
-      };
       try {
-        if (fresh) await record();
+        if (fresh) {
+          const startedAt = new Date().toISOString();
+          this.kv.put<Unreported>(key, { source: from, startedAt });
+          await this.armReports();
+          await owner.runStarted(config.id, operationId, from, startedAt);
+        }
         // A label for transcripts, not a permission: the model still reads the text.
         const entry = source && { kind: 'repowire.message', data: source };
         const receipt = await this.harness.submit(text, { operationId, entry });
-        // pi took an operation the report job settled as not_found before it
-        // ever ran: it is new work and reports again.
-        if (receipt.accepted && !this.kv.get(key)) await record();
         this.watch(operationId);
         return receipt;
       } catch (error) {
-        // Withdraw the pending run only when pi does not have the operation.
+        // Withdraw the pending run only when pi does not have the operation;
+        // if that fails, the report job withdraws it later.
         const known = await this.harness.pending().then((ops) => ops.some((op) => op.operationId === operationId), () => true);
         if (fresh && !known) {
-          this.kv.delete(key);
-          try { await owner.runWithdrawn(config.id, operationId); } catch (cause) { console.error('Hosted run withdrawal failed', operationId, cause); }
+          await this.withdraw(config, operationId).catch((cause) => console.error('Hosted run withdrawal failed', operationId, cause));
         }
         throw error;
       }
@@ -248,7 +243,7 @@ export class HostedAgent extends DurableObject<Env> {
       if (running.has(operationId) || this.watching.has(operationId)) continue;
       try {
         await this.deliver(operationId, await this.harness.wait(operationId));
-        remaining--;
+        if (!this.kv.get(key)) remaining--;
       } catch (error) {
         failed = true;
         console.error('Hosted report failed; retrying later', operationId, error);
@@ -261,7 +256,11 @@ export class HostedAgent extends DurableObject<Env> {
   // allocated in one synchronous step and stored with the report, so a retry
   // or a concurrent report sends the same delta. Runs overlapping in time
   // share it approximately; the totals stay exact.
-  private async deliver(operationId: string, result: PiOperationResult) {
+  private async deliver(operationId: string, result: PiOperationResult): Promise<void> {
+    // pi keeps every submission it accepts, so not_found means the operation
+    // was recorded but never admitted (an eviction or a failed submit in
+    // between). It never ran: nothing is reported, metered or tombstoned.
+    if (result.reason === 'not_found') return this.admission(() => this.unadmitted(operationId));
     const key = `report:${operationId}`;
     const stored = this.kv.get<Unreported | true>(key);
     if (!stored) return;
@@ -286,6 +285,26 @@ export class HostedAgent extends DurableObject<Env> {
       this.kv.delete(key);
       this.kv.delete(`steps:${operationId}`);
       this.kv.put(`reported:${operationId}`, true);
+    });
+  }
+
+  // Re-checked in turn with admission, which may have handed it to pi since.
+  private async unadmitted(operationId: string) {
+    if (!this.kv.get(`report:${operationId}`)) return;
+    if ((await this.harness.pending()).some((op) => op.operationId === operationId)) return this.watch(operationId);
+    const result = await this.harness.wait(operationId);
+    if (result.reason !== 'not_found') return this.deliver(operationId, result);
+    const config = await this.config();
+    if (config) await this.withdraw(config, operationId);
+  }
+
+  // Forgets an operation pi never admitted: its pending run row goes first,
+  // then its record, so a retry of the same id is a first admission.
+  private async withdraw(config: AgentConfig, operationId: string) {
+    await this.owner(config).runWithdrawn(config.id, operationId);
+    this.ctx.storage.transactionSync(() => {
+      this.kv.delete(`report:${operationId}`);
+      this.kv.delete(`steps:${operationId}`);
     });
   }
 

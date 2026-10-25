@@ -106,7 +106,9 @@ it. The run's model usage is allocated once, when it settles, and a retry
 resends that same allocation. While any report is outstanding a durable job
 retries it, every minute while runs are in flight and backing off to ten
 minutes while the gateway fails, so neither an eviction nor a failed report
-loses a result. Retirement is checked as the agent admits each submission,
+loses a result. An operation recorded but never admitted (pi has no such
+submission) never ran: its pending run row is withdrawn with no report, so a
+retry of the same id runs as a first admission. Retirement is checked as the agent admits each submission,
 so a retire cannot race a submission into a new run. The gateway keeps each report in a durable
 outbox, sends it to the daemon, and resends everything unacknowledged on
 every connect. The daemon settles a report once and acknowledges it, so a run
