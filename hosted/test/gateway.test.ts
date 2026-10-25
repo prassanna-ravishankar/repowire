@@ -45,3 +45,39 @@ test('a directory created before the workspace columns gains them', () => {
 function pick(workspace: { state: string; snapshot_at: unknown; container_ms: number }) {
   return { state: workspace.state, snapshot_at: workspace.snapshot_at, container_ms: workspace.container_ms };
 }
+
+test('a run settles whether its start or its report arrives first', async () => {
+  const owner = gateway();
+  owner.addAgent({ id: 'a', workspace: null, created_by: 'daemon' });
+  const usage = { input: 10, cacheRead: 0, output: 5, cost: { total: 0.01 } };
+
+  owner.runStarted('a', 'op-1', 'planner');
+  await owner.report({ agent: 'a', operationId: 'op-1', status: 'done', text: 'hi', usage });
+  // The report arrives first: it creates the row, and the late start keeps it settled.
+  await owner.report({ agent: 'a', operationId: 'op-2', status: 'done', usage, source: 'planner', startedAt: '2026-10-25T09:00:00.000Z' });
+  owner.runStarted('a', 'op-2', 'planner');
+  // A resent report changes nothing.
+  await owner.report({ agent: 'a', operationId: 'op-2', status: 'unanswered', reason: 'aborted', usage });
+
+  const runs = Object.fromEntries(owner.runs('a').map((run) => [run.op, run]));
+  assert.equal(runs['op-1'].status, 'done');
+  assert.equal(runs['op-2'].status, 'done');
+  assert.equal(runs['op-2'].source, 'planner');
+  assert.equal(runs['op-2'].started_at, '2026-10-25T09:00:00.000Z');
+  assert.ok(runs['op-2'].settled_at);
+  assert.equal(owner.agent('a')?.state, 'idle');
+  assert.equal(owner.usage(1)[0].runs, 2);
+});
+
+test('a withdrawn start leaves no working run behind, and never removes a settled one', async () => {
+  const owner = gateway();
+  owner.addAgent({ id: 'a', workspace: null, created_by: 'daemon' });
+  owner.runStarted('a', 'op-1', null);
+  assert.equal(owner.agent('a')?.state, 'working');
+  owner.runWithdrawn('a', 'op-1');
+  assert.equal(owner.runs('a').length, 0);
+  assert.equal(owner.agent('a')?.state, 'idle');
+  await owner.report({ agent: 'a', operationId: 'op-2', status: 'done' });
+  owner.runWithdrawn('a', 'op-2');
+  assert.equal(owner.runs('a').length, 1);
+});

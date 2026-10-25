@@ -13,6 +13,8 @@ const MESH_TOOLS = new Set(['notify_peer', 'ask']);
 export interface GatewayCall { id: string; agent: string; tool: string; args: Record<string, unknown> }
 export interface GatewayReport {
   agent: string; operationId: string; status: string; reason?: string; text?: string; usage?: TokenUsage;
+  // The run's admission, so a report that arrives first can create its row.
+  source?: string | null; startedAt?: string;
 }
 // A finished command as the agent reports it: the workspace's own outcome, or
 // when the workspace could not answer, the agent's elapsed time and no state.
@@ -198,25 +200,40 @@ export class Gateway extends DurableObject {
     return reason;
   }
 
-  runStarted(agent: string, op: string, source: string | null) {
+  // A run's start and its report may arrive in either order: neither regresses
+  // the other. A start never touches an existing row, and a report creates
+  // the row when the start was lost.
+  runStarted(agent: string, op: string, source: string | null, startedAt = now()) {
     this.sql.exec(
       `INSERT INTO runs (agent, op, source, started_at, status) VALUES (?, ?, ?, ?, 'working')
-       ON CONFLICT (agent, op) DO NOTHING`, agent, op, source, now());
+       ON CONFLICT (agent, op) DO NOTHING`, agent, op, source, startedAt);
     const run = this.run(agent, op);
     if (run) this.ui({ type: 'run', agent, run });
     return this.refresh(agent, op);
   }
 
+  // A pending start the agent could not admit, so the run never ran.
+  runWithdrawn(agent: string, op: string) {
+    this.sql.exec('DELETE FROM runs WHERE agent = ? AND op = ? AND settled_at IS NULL', agent, op);
+    return this.refresh(agent);
+  }
+
   async report(report: GatewayReport) {
     const id = `outbox:${report.agent}:${report.operationId}`;
-    const stored = { ...report, text: report.text?.slice(0, REPORT_TEXT_LIMIT) };
+    const { source, startedAt, ...settled } = report;
+    const stored = { ...settled, text: report.text?.slice(0, REPORT_TEXT_LIMIT) };
     const usage = report.usage;
     const cost = usage ? modelCost(usage) : 0;
     const tokensIn = usage ? usage.input + usage.cacheRead : 0;
+    const at = now();
     this.sql.exec(
-      `UPDATE runs SET settled_at = ?, status = ?, reason = ?, tokens_in = ?, tokens_out = ?, cost_usd = ?
-       WHERE agent = ? AND op = ? AND settled_at IS NULL`,
-      now(), report.status, report.reason ?? null, tokensIn, usage?.output ?? 0, cost, report.agent, report.operationId);
+      `INSERT INTO runs (agent, op, source, started_at, settled_at, status, reason, tokens_in, tokens_out, cost_usd)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (agent, op) DO UPDATE SET settled_at = excluded.settled_at, status = excluded.status,
+         reason = excluded.reason, tokens_in = excluded.tokens_in, tokens_out = excluded.tokens_out, cost_usd = excluded.cost_usd
+       WHERE runs.settled_at IS NULL`,
+      report.agent, report.operationId, source ?? null, startedAt ?? at, at, report.status, report.reason ?? null,
+      tokensIn, usage?.output ?? 0, cost);
     if (usage) this.meter(`run:${report.agent}:${report.operationId}`, report.agent, 'model', { tokensIn, tokensOut: usage.output, cost });
     // Runs started from the web were never queued by the daemon; their result
     // is in the transcript and the run log, so the outbox does not carry them.
