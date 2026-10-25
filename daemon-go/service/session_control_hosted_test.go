@@ -72,3 +72,52 @@ func TestSessionControlRunsJobsOnHostedAgents(t *testing.T) {
 		t.Fatalf("release = %v, retired %v", result, hosted.retired)
 	}
 }
+
+// fastHostedOpener reports the hosted run from inside the send, as a runtime
+// that settles before the send returns would.
+type fastHostedOpener struct {
+	completion *JobCompletion
+	result     HostedResult
+}
+
+func (o *fastHostedOpener) OpenScheduledAsk(ctx context.Context, cid, _, toPeer, text string, _ *string, _ string) (string, error) {
+	o.completion.OnHostedRun(ctx, HostedDelivery{Kind: "ask", CorrelationID: cid, ToPeerID: toPeer, Text: text}, o.result)
+	return cid, nil
+}
+
+// A hosted run that reports before dispatch returns still completes or fails
+// its job: dispatch records the ask id and delivered state before the send,
+// and does not overwrite the outcome after it.
+func TestJobDispatchSurvivesAHostedReportBeforeTheSendReturns(t *testing.T) {
+	for _, tc := range []struct {
+		result    HostedResult
+		wantState string
+	}{
+		{HostedResult{Status: "done", Text: "all green"}, "completed"},
+		{HostedResult{Status: "unanswered", Reason: "budget_exceeded"}, "failed"},
+	} {
+		t.Run(tc.wantState, func(t *testing.T) {
+			ctx := context.Background()
+			store := scStore(t)
+			reg := &scRegistry{}
+			control := NewSessionControl(reg, nil, store)
+			control.hosted = &scHosted{reg: reg}
+			opener := &fastHostedOpener{completion: NewJobCompletion(store, nil, nil, nil, nil), result: tc.result}
+			runner := NewJobRunner(store, opener, control)
+			circle := "default"
+			work, err := store.CreateWork(ctx, state.WorkCreate{Title: "digest", Circle: &circle, Request: map[string]any{"execution": map[string]any{
+				"target": map[string]any{"path": "/jobs/digest", "backend": string(proto.AgentHosted)}, "continuity": "resume",
+			}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runner.RunJob(ctx, work.WorkID, true, false); err != nil {
+				t.Fatal(err)
+			}
+			got, err := store.GetWork(ctx, work.WorkID)
+			if err != nil || got.State != tc.wantState {
+				t.Fatalf("job state = %q, want %q (%v): %#v", got.State, tc.wantState, err, got)
+			}
+		})
+	}
+}
