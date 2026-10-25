@@ -83,7 +83,7 @@ function AgentRow({ agent, active, now, onClick }: { agent: Agent; active: boole
         {agentSubline(agent, now)}
       </div>
       <div className="ml-[18px] truncate font-mono text-[11px] leading-5 text-outline">
-        {[agent.workspace ? `ws ${agent.workspace}` : "no workspace", agent.home_machine ?? "not on mesh"].join(" · ")}
+        {[agent.workspace ? `ws ${agent.workspace}` : "no workspace", agent.home_machine ?? "managed"].join(" · ")}
       </div>
     </button>
   );

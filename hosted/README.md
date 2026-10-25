@@ -60,6 +60,9 @@ service through the relay, which names them; they never choose the owner.
 | `DELETE /agents/helper` | Retire: abort, then refuse new input with 410; the transcript stays readable |
 | `GET /workspaces`, `GET /clients` | Workspaces with command counts, container time, the last successful snapshot and a state (`idle`, `running`, or `needs_repair` after a checkpoint failed); the connected daemon and recent disconnects, with the outbox depth |
 | `GET /events` (WebSocket) | A snapshot of agents, workspaces and clients, then each change (`agent`, `run`, `workspace`, `client`, `outbox` frames). The relay holds it while someone is watching |
+| `POST /requests` with `{"id":"rq-<32 hex>","agent":"helper","kind":"ask","requester":"relay-mcp-…","text":"…"}` | Control token only. The relay's ask or notify to an agent no daemon owns, recorded before it is submitted. A known id returns its receipt (202) before budget or retirement is checked again; a known id with a different body is 409; 404 unknown agent, 410 retired, 402 over budget, 502 delivery uncertain |
+| `GET /requests/rq-…?requester=…&wait=0..20` | The daemon's ask-wait contract: `pending`, or `resolved` with `close_reason` (`answered` with `reply`, `not_delivered`, or the run's unanswered reason). 404 unless `requester` sent it |
+| `GET /requests?requester=…` | That requester's unsettled asks |
 | `GET /admin/summary`, `/admin/owners`, `/admin/sandboxes`, `/admin/usage?days=30` | Control token without an owner: totals, agents by state, sandboxes, and daily usage across owners |
 
 The owner's `Gateway` Durable Object holds the directory, run log and usage
@@ -73,8 +76,9 @@ aborted at its 25th model request, before that request is sent, and fails
 with `step_limit` (if the abort fails, the request stays held and the abort is
 retried, so nothing past the limit is sent); more than 30
 agent-originated mesh messages per owner in 10 minutes fail with
-`mesh_rate_limited`. Runs started from the web use `web-` operation ids and are
-not sent to the daemon's outbox.
+`mesh_rate_limited`. Each run records who submitted it; only the daemon's runs
+are sent to its outbox, and the relay's are answered from the run log, which
+keeps each run's final text.
 
 Reusing an operation ID does not submit a second message. Reusing an agent ID
 with a different workspace is a conflict. Workspace attachment is immutable.

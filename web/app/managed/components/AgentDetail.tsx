@@ -81,7 +81,7 @@ export function AgentDetail({
               <span title="Estimated from metered tokens and container time">est. {formatUsd(agent.cost_usd)}</span>
               <span className="hidden sm:inline">{formatTokens(agent.tokens_in + agent.tokens_out)} tokens</span>
               <span className="hidden sm:inline">created {formatDate(agent.created_at)} by {agent.created_by}</span>
-              <span>{agent.home_machine ? `home ${agent.home_machine}` : "not on mesh"}</span>
+              <span>{`home ${agent.home_machine ?? "managed"}`}</span>
             </div>
             {agent.description && <p className="mt-1 truncate font-mono text-[11px] text-tertiary-fixed-dim">↳ {agent.description}</p>}
           </div>

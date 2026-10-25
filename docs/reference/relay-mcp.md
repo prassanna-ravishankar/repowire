@@ -46,7 +46,7 @@ claude plugin validate ./plugins/repowire-remote
 
 | Tool | Purpose | Required scope |
 | --- | --- | --- |
-| `list_machines()` | Connected machines, including exact daemon IDs | `agents:read` |
+| `list_machines()` | Connected daemons and, when the relay runs managed agents, the `managed` machine, with exact IDs and `kind` | `agents:read` |
 | `list_agents(daemon_id, circle?)` | Online, addressable agents and current work | `agents:read` |
 | `ask_agent(daemon_id, peer_id, message)` | Send a task/question requiring a reply | `agents:write` |
 | `send_message(daemon_id, peer_id, message)` | Send information without requiring a reply | `agents:write` |
@@ -71,8 +71,28 @@ exactly-once guarantee. Every new ask is a new task; include prior context in
 follow-ups. Tools expose no spawn, kill, shell, file-read, broadcast, or approval
 capability.
 
-Requests live in the local daemon's in-memory ask tracker and follow its retention
-rules. A daemon restart can lose them. OAuth refresh preserves the connection's
+Requests live on the machine that received them. On a daemon they live in its
+in-memory ask tracker and follow its retention rules; a daemon restart can lose
+them.
+
+## Managed machine
+
+When the relay is configured for managed agents, `list_machines` also returns
+`{"daemon_id": "managed", "kind": "managed"}`. It is always online. Its agents
+are the managed agents no daemon owns (created from `/managed` or the managed
+API); an agent a daemon spawned stays on that daemon's machine. They are listed
+in circle `managed`, with `backend: "hosted"`; retired agents are not listed.
+
+Requests to the managed machine are durable: the managed service records each
+one before submitting it and keeps its result in the agent's run log, so
+`get_reply` works after a restart on either side. Only the app connection that
+sent a request can read it. A resolved request's `close_reason` is `answered`
+(with `reply`), `not_delivered` (the agent never took it), or how the run ended
+unanswered (`aborted`, `step_limit: …`, or an error). A refusal (unknown or
+retired agent, budget exceeded) fails the call and nothing is sent. If the
+service fails after the request left the relay, `ask_agent` returns
+`status: "uncertain"` with the `request_id`: use `get_reply` to learn the
+outcome, and do not resend. OAuth refresh preserves the connection's
 asker identity; a newly authorized grant receives a different identity and cannot
 retrieve the old grant's replies. This version does not push unsolicited agent
 messages into an idle ChatGPT conversation.
