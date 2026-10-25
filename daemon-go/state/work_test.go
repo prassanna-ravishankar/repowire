@@ -333,3 +333,38 @@ func TestAcquireForDispatchAndRetry(t *testing.T) {
 		t.Fatal("cancel-requested work must not be acquired")
 	}
 }
+
+// Dispatch records delivered just before its send: a send that never
+// confirmed (the daemon stopped mid-send) is recovered like stale dispatching
+// once the lease expires; a confirmed one belongs to its executor.
+func TestRecoverStaleDispatchingRecoversUnconfirmedDelivery(t *testing.T) {
+	ctx := context.Background()
+	s := newWorkStore(t)
+	deliver := func(deliveryState string) string {
+		t.Helper()
+		work, err := s.CreateWork(ctx, WorkCreate{Title: deliveryState})
+		if err != nil {
+			t.Fatal(err)
+		}
+		attemptID := "attempt-" + deliveryState
+		if _, err := s.AcquireForDispatch(ctx, work.WorkID, AcquireOptions{RunnerOwnerID: "test", AttemptID: attemptID, LeaseUntil: "2026-01-01T00:00:00+00:00", IgnoreDueAt: true}); err != nil {
+			t.Fatal(err)
+		}
+		status := "delivered"
+		if _, err := s.UpdateAttempt(ctx, work.WorkID, attemptID, AttemptUpdate{Status: &status, Phase: &status, DeliveryState: &deliveryState}); err != nil {
+			t.Fatal(err)
+		}
+		return work.WorkID
+	}
+	unconfirmed, confirmed := deliver("pending"), deliver("delivered")
+	recovered, err := s.RecoverStaleDispatching(ctx, "2026-06-01T00:00:00+00:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered) != 1 || recovered[0].WorkID != unconfirmed || recovered[0].State != "unavailable" {
+		t.Fatalf("expected only the unconfirmed delivery recovered, got %+v", recovered)
+	}
+	if work, _ := s.GetWork(ctx, confirmed); work.State != "delivered" {
+		t.Fatalf("a confirmed delivery must stay with its executor, got %q", work.State)
+	}
+}
