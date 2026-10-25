@@ -57,15 +57,16 @@ type gatewayFrame struct {
 
 // Connect holds the gateway socket at base/gateway until Close, reconnecting
 // after a drop. Calls are served while it is up; while it is down the
-// runtime fails them loudly instead of queueing.
-func (h *Hosted) Connect(base, token string, tools HostedToolRunner) {
+// runtime fails them loudly instead of queueing. The daemon names its
+// machine and version on the upgrade; the runtime lists it as a client.
+func (h *Hosted) Connect(base, token, version string, tools HostedToolRunner) {
 	url := strings.TrimRight(base, "/") + "/gateway"
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
 		backoff := gatewayBackoff
 		for h.ctx.Err() == nil {
-			connected, err := h.serveGateway(url, token, tools)
+			connected, err := h.serveGateway(url, token, version, tools)
 			if h.ctx.Err() != nil {
 				return
 			}
@@ -83,10 +84,15 @@ func (h *Hosted) Connect(base, token string, tools HostedToolRunner) {
 	}()
 }
 
-func (h *Hosted) serveGateway(url, token string, tools HostedToolRunner) (bool, error) {
+func (h *Hosted) serveGateway(url, token, version string, tools HostedToolRunner) (bool, error) {
 	dial, cancel := context.WithTimeout(h.ctx, gatewayDial)
 	conn, _, err := websocket.Dial(dial, url, &websocket.DialOptions{
-		HTTPHeader: http.Header{"Authorization": {"Bearer " + token}},
+		HTTPHeader: http.Header{
+			"Authorization":        {"Bearer " + token},
+			"X-Repowire-Machine":   {h.machine},
+			"X-Repowire-Daemon-Id": {h.machine},
+			"X-Repowire-Version":   {version},
+		},
 	})
 	cancel()
 	if err != nil {

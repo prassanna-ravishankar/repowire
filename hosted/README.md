@@ -40,7 +40,11 @@ then `npm run deploy`. Configure the account via `CLOUDFLARE_ACCOUNT_ID`.
 
 ## HTTP API
 
-All routes except `GET /health` require `Authorization: Bearer <HOSTED_TOKEN>`.
+All routes except `GET /health` need a bearer token. `HOSTED_TOKEN` is the
+daemon's and is bound to the server-configured `HOSTED_OWNER`. `CONTROL_TOKEN`
+is the relay's: it names the owner per request with `X-Repowire-Owner`, and
+without one it reaches only the `/admin/*` routes. End users reach this
+service through the relay, which names them; they never choose the owner.
 
 | Request | Behavior |
 | --- | --- |
@@ -49,7 +53,25 @@ All routes except `GET /health` require `Authorization: Bearer <HOSTED_TOKEN>`.
 | `POST /agents/helper/messages` with `{"operationId":"request-1","text":"Hello"}` | Durably accept input and return a receipt (202). Optional `source` (`from`, `type`, `fromPeerId`, `correlationId`) labels a mesh delivery in the transcript |
 | `GET /agents/helper/operations/request-1` | Wait for the result; reconnect using the same operation ID |
 | `GET /agents/helper/messages` | Read Pi's transcript |
-| `GET /gateway` (WebSocket) | The daemon's link for agents' mesh tool calls; one per owner, a new connection replaces the old |
+| `GET /gateway` (WebSocket, daemon token) | The daemon's link for agents' mesh tool calls and run reports; one per owner, a new connection replaces the old. The upgrade names `X-Repowire-Machine`, `X-Repowire-Daemon-Id` and `X-Repowire-Version` |
+| `GET /agents` | The owner's directory: each agent's state (`idle`, `working`, `failed`, `retired`), workspace, home machine, run count, tokens and estimated cost. Never wakes an agent |
+| `GET /agents/helper/runs` | The run log: source, start and settle times, status, reason, tokens, estimated cost |
+| `POST /agents/helper/abort` with optional `{"operationId": ...}` | Stop one run, or everything the agent is doing; it settles `unanswered` with reason `aborted` |
+| `DELETE /agents/helper` | Retire: abort, then refuse new input with 410; the transcript stays readable |
+| `GET /workspaces`, `GET /clients` | Workspaces with command counts and container time; the connected daemon and recent disconnects, with the outbox depth |
+| `GET /events` (WebSocket) | A snapshot of agents, workspaces and clients, then each change (`agent`, `run`, `workspace`, `client`, `outbox` frames). The relay holds it while someone is watching |
+| `GET /admin/summary`, `/admin/owners`, `/admin/sandboxes`, `/admin/usage?days=30` | Control token without an owner: totals, agents by state, sandboxes, and daily usage across owners |
+
+The owner's `Gateway` Durable Object holds the directory, run log and usage
+ledger. Each run's model usage comes from Pi's per-response usage at list
+price; each workspace command records its container wall time. Costs are
+estimates (`prices.ts` names the source and date). Guardrails refuse rather
+than notify: a submission over the owner's daily ($2) or monthly ($20) budget,
+or the agent's daily budget ($1), returns 402 `budget_exceeded`; a run that
+makes more than 24 model requests fails with `step_limit`; more than 30
+agent-originated mesh messages per owner in 10 minutes fail with
+`mesh_rate_limited`. Runs started from the web use `web-` operation ids and are
+not sent to the daemon's outbox.
 
 Reusing an operation ID does not submit a second message. Reusing an agent ID
 with a different workspace is a conflict. Workspace attachment is immutable.

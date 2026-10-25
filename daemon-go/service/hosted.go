@@ -67,19 +67,22 @@ type HostedResult struct {
 
 // HostedRuntime is the hosted service's API. *HostedClient implements it.
 type HostedRuntime interface {
-	CreateAgent(ctx context.Context, id string, workspace *string) error
+	CreateAgent(ctx context.Context, id, displayName string, workspace *string) error
+	RetireAgent(ctx context.Context, id string) error
 	Submit(ctx context.Context, id, operationID, text string, source HostedSource) (accepted bool, err error)
 }
 
-// HostedClient speaks the hosted runtime's HTTP API with its bearer token.
+// HostedClient speaks the hosted runtime's HTTP API with its bearer token,
+// naming this daemon's machine so agents it creates record their home.
 type HostedClient struct {
-	base  string
-	token string
-	http  *http.Client
+	base    string
+	token   string
+	machine string
+	http    *http.Client
 }
 
-func NewHostedClient(base, token string) *HostedClient {
-	return &HostedClient{base: strings.TrimRight(base, "/"), token: token, http: &http.Client{}}
+func NewHostedClient(base, token, machine string) *HostedClient {
+	return &HostedClient{base: strings.TrimRight(base, "/"), token: token, machine: machine, http: &http.Client{}}
 }
 
 func (c *HostedClient) do(ctx context.Context, method, path string, body, out any) error {
@@ -97,6 +100,7 @@ func (c *HostedClient) do(ctx context.Context, method, path string, body, out an
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Repowire-Machine", c.machine)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -127,12 +131,17 @@ func agentPath(id string, rest ...string) string {
 	return strings.Join(parts, "/")
 }
 
-func (c *HostedClient) CreateAgent(ctx context.Context, id string, workspace *string) error {
-	body := map[string]any{"id": id}
+func (c *HostedClient) CreateAgent(ctx context.Context, id, displayName string, workspace *string) error {
+	body := map[string]any{"id": id, "display_name": displayName}
 	if workspace != nil {
 		body["workspace"] = *workspace
 	}
 	return c.do(ctx, http.MethodPost, "/agents", body, nil)
+}
+
+// RetireAgent stops the runtime agent taking input. Its transcript remains.
+func (c *HostedClient) RetireAgent(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, agentPath(id), nil, nil)
 }
 
 func (c *HostedClient) Submit(ctx context.Context, id, operationID, text string, source HostedSource) (bool, error) {
@@ -253,16 +262,23 @@ func (h *Hosted) Spawn(ctx context.Context, params HostedSpawnParams) (proto.Pee
 	if err != nil {
 		return "", "", err
 	}
-	if err := h.runtime.CreateAgent(ctx, string(id), params.Workspace); err != nil {
+	if err := h.runtime.CreateAgent(ctx, string(id), string(name), params.Workspace); err != nil {
 		_, _ = h.reg.MarkOffline(ctx, id, true)
 		return "", "", fmt.Errorf("create hosted agent: %w", err)
 	}
 	return id, name, nil
 }
 
-// Retire takes a hosted peer off the mesh for good. Its runtime agent and
-// transcript remain on the hosted service.
+// Retire takes a hosted peer off the mesh for good: the runtime agent stops
+// taking input first, then the peer is retired here, so a failed remote call
+// leaves a usable peer rather than an agent the mesh can no longer reach. An
+// agent the runtime does not know is retired here regardless. The transcript
+// remains on the hosted service.
 func (h *Hosted) Retire(ctx context.Context, id proto.PeerID) error {
+	var refused *HostedError
+	if err := h.runtime.RetireAgent(ctx, string(id)); err != nil && !(errors.As(err, &refused) && refused.Status == http.StatusNotFound) {
+		return fmt.Errorf("retire hosted agent %s: %w", id, err)
+	}
 	_, err := h.reg.MarkOffline(ctx, id, true)
 	return err
 }
