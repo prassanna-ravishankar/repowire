@@ -58,17 +58,18 @@ service through the relay, which names them; they never choose the owner.
 | `GET /agents/helper/runs` | The run log: source, start and settle times, status, reason, tokens, estimated cost |
 | `POST /agents/helper/abort` with optional `{"operationId": ...}` | Stop one run, or everything the agent is doing; it settles `unanswered` with reason `aborted` |
 | `DELETE /agents/helper` | Retire: abort, then refuse new input with 410; the transcript stays readable |
-| `GET /workspaces`, `GET /clients` | Workspaces with command counts and container time; the connected daemon and recent disconnects, with the outbox depth |
+| `GET /workspaces`, `GET /clients` | Workspaces with command counts, container time, the last successful snapshot and a state (`idle`, `running`, or `needs_repair` after a checkpoint failed); the connected daemon and recent disconnects, with the outbox depth |
 | `GET /events` (WebSocket) | A snapshot of agents, workspaces and clients, then each change (`agent`, `run`, `workspace`, `client`, `outbox` frames). The relay holds it while someone is watching |
 | `GET /admin/summary`, `/admin/owners`, `/admin/sandboxes`, `/admin/usage?days=30` | Control token without an owner: totals, agents by state, sandboxes, and daily usage across owners |
 
 The owner's `Gateway` Durable Object holds the directory, run log and usage
 ledger. Each run's model usage comes from Pi's per-response usage at list
-price; each workspace command records its container wall time. Costs are
+price; each workspace command records the container wall time the workspace
+measured, so waiting behind another agent's command is not charged. Costs are
 estimates (`prices.ts` names the source and date). Guardrails refuse rather
 than notify: a submission over the owner's daily ($2) or monthly ($20) budget,
 or the agent's daily budget ($1), returns 402 `budget_exceeded`; a run that
-makes more than 24 model requests fails with `step_limit`; more than 30
+makes more than 24 model requests is aborted and fails with `step_limit`; more than 30
 agent-originated mesh messages per owner in 10 minutes fail with
 `mesh_rate_limited`. Runs started from the web use `web-` operation ids and are
 not sent to the daemon's outbox.
@@ -84,19 +85,28 @@ loudly instead of silently restoring stale files. Snapshotting each command is
 intentionally simple; it costs latency and will need tuning for real workloads.
 Shell tools are not declared replay-safe.
 
-Authentication is one operator token, not SaaS login. There is no billing,
-per-user quota, connector runtime, or AI Gateway configuration yet. Composio project context is local and ignored. No connector
-credentials belong in a sandbox. Budget alerts are notifications, not hard caps.
+Authentication is one operator token for the daemon and one control token for
+the relay, not SaaS login. The guardrails above are the only spending caps:
+fixed per-owner and per-agent budgets on estimated cost, with no billing,
+per-plan quotas, connector runtime, or AI Gateway configuration yet. A run in
+flight can overshoot a budget by its remaining requests. Cloudflare budget
+alerts only notify. Composio project context is local and ignored. No
+connector credentials belong in a sandbox.
 
 The daemon is the only mesh hub. It submits each delivery with the ask's
 correlation id as the operation id and closes the ask with the answer. The
 daemon reaches the agents through the `Gateway` Durable Object: it dials
 `GET /gateway` and holds a hibernating WebSocket.
 
-Results are reported, not waited on. An agent records each operation id
-before admitting it, and when the run settles it reports the result to the
-gateway. Each wake of the agent re-arms reports still outstanding, so an
-eviction mid-run still reports. The gateway keeps each report in a durable
+Results are reported, not waited on. An agent records each operation id and
+its pending run row before admitting it, and when the run settles it reports
+the result to the gateway; a report that arrives before its run row creates
+it. The run's model usage is allocated once, when it settles, and a retry
+resends that same allocation. While any report is outstanding a durable job
+retries it, every minute while runs are in flight and backing off to ten
+minutes while the gateway fails, so neither an eviction nor a failed report
+loses a result. Retirement is checked as the agent admits each submission,
+so a retire cannot race a submission into a new run. The gateway keeps each report in a durable
 outbox, sends it to the daemon, and resends everything unacknowledged on
 every connect. The daemon settles a report once and acknowledges it, so a run
 that finishes while the daemon is down is delivered when it reconnects.

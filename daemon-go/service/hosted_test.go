@@ -24,6 +24,9 @@ type fakeHostedRuntime struct {
 	submitErr error
 	createErr error
 	retireErr error
+	// onSubmit runs after a submission is recorded, before Submit returns,
+	// as a runtime that settles fast would.
+	onSubmit func(op string)
 }
 
 func newFakeHostedRuntime() *fakeHostedRuntime {
@@ -52,6 +55,11 @@ func (f *fakeHostedRuntime) Submit(_ context.Context, _, op, text string, source
 	}
 	_, seen := f.submitted[op]
 	f.submitted[op], f.sources[op] = text, source
+	if f.onSubmit != nil {
+		f.mu.Unlock()
+		f.onSubmit(op)
+		f.mu.Lock()
+	}
 	return !seen, nil
 }
 
@@ -151,7 +159,23 @@ func (f *hostedFixture) ask(t *testing.T) string {
 
 // report settles a submission the way a gateway report does.
 func (f *hostedFixture) report(op string, result HostedResult) {
-	f.hosted.Report(context.Background(), string(f.target.PeerID), op, result)
+	if err := f.hosted.Report(context.Background(), string(f.target.PeerID), op, result); err != nil {
+		panic(err)
+	}
+}
+
+// openDeliveries counts hosted deliveries not yet settled.
+func (f *hostedFixture) openDeliveries(t *testing.T) int {
+	t.Helper()
+	open := 0
+	for _, status := range []string{"queued", "running"} {
+		ops, err := f.store.ListOperations(context.Background(), hostedDeliveryKind, status)
+		if err != nil {
+			t.Fatal(err)
+		}
+		open += len(ops)
+	}
+	return open
 }
 
 func waitClosed(t *testing.T, asks *AskTracker, cid string) *Ask {
@@ -230,8 +254,8 @@ func TestHostedSubmitFailureFailsLoud(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Agent not found") {
 		t.Fatalf("expected the runtime refusal to propagate, got %v", err)
 	}
-	if f.hostReg.lastStatus() != "" {
-		t.Fatalf("a refused submission must not mark the peer busy, got %q", f.hostReg.lastStatus())
+	if got := f.hostReg.lastStatus(); got == proto.StatusBusy {
+		t.Fatalf("a refused submission must not leave the peer busy, got %q", got)
 	}
 }
 
@@ -319,5 +343,67 @@ func TestHostedRetireIsRemoteFirst(t *testing.T) {
 	f.runtime.retireErr = &HostedError{Status: 404, Message: "Agent not found"}
 	if err := f.hosted.Retire(context.Background(), f.target.PeerID); err != nil || len(f.hostReg.offline) != 1 {
 		t.Fatalf("an unknown remote agent must still retire locally: err=%v offline=%v", err, f.hostReg.offline)
+	}
+}
+
+// Observers run before the delivery turns terminal: a settlement cut short
+// leaves the delivery open and unacknowledged, and the resent report settles
+// it, keeping the runtime's answer.
+func TestHostedReportReplaysWhenSettlementIsInterrupted(t *testing.T) {
+	f := newHostedFixture(t)
+	stopped, stop := context.WithCancel(context.Background())
+	seen := 0
+	f.hosted.OnSettled(func(context.Context, HostedDelivery, HostedResult) {
+		seen++
+		if f.openDeliveries(t) != 1 {
+			t.Error("an observer must run while the delivery is still open")
+		}
+		stop() // the daemon stops mid-settlement
+	})
+	cid := f.ask(t)
+	if err := f.hosted.Report(stopped, string(f.target.PeerID), cid, HostedResult{Status: "done", Text: "42"}); err == nil {
+		t.Fatal("an interrupted settlement must not be acknowledged")
+	}
+	if f.openDeliveries(t) != 1 {
+		t.Fatal("an interrupted settlement must leave the delivery open")
+	}
+	f.report(cid, HostedResult{Status: "done", Text: "42"})
+	if seen != 2 || f.openDeliveries(t) != 0 {
+		t.Fatalf("the resent report must settle the delivery: observers=%d open=%d", seen, f.openDeliveries(t))
+	}
+	ops, err := f.store.ListOperations(context.Background(), hostedDeliveryKind, "completed")
+	if err != nil || len(ops) != 1 || ops[0].Result["text"] != "42" {
+		t.Fatalf("the settled delivery must keep the report, got %+v (%v)", ops, err)
+	}
+	if ask := waitClosed(t, f.asks, cid); ask.ReplyText == nil || *ask.ReplyText != "42" {
+		t.Fatalf("the ask must close with the answer once, got %+v", ask)
+	}
+}
+
+// A report that cannot be looked up is not acknowledged, so the runtime keeps it.
+func TestHostedReportFailsWhenStorageFails(t *testing.T) {
+	f := newHostedFixture(t)
+	cid := f.ask(t)
+	_ = f.store.Close()
+	if err := f.hosted.Report(context.Background(), string(f.target.PeerID), cid, HostedResult{Status: "done", Text: "42"}); err == nil {
+		t.Fatal("a report the daemon could not look up must return an error")
+	}
+}
+
+// A report that lands while Submit is still returning leaves the peer idle,
+// and a duplicate submission does not hold it busy.
+func TestHostedFastReportAndDuplicateLeavePeerIdle(t *testing.T) {
+	f := newHostedFixture(t)
+	f.runtime.onSubmit = func(op string) { f.report(op, HostedResult{Status: "done", Text: "fast"}) }
+	cid := f.ask(t)
+	if got := f.hostReg.lastStatus(); got != proto.StatusOnline {
+		t.Fatalf("a fast report must leave the peer online, got %q", got)
+	}
+	f.runtime.onSubmit = nil
+	if _, err := f.delivery.DeliverAsk(context.Background(), DeliverAskParams{FromPeer: "alpha", ToPeer: "helper-hosted", Text: "again", CorrelationID: cid}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.hostReg.lastStatus(); got != proto.StatusOnline || f.openDeliveries(t) != 0 {
+		t.Fatalf("a duplicate submission must settle at once: status=%q open=%d", got, f.openDeliveries(t))
 	}
 }

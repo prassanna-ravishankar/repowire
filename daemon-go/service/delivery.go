@@ -723,15 +723,16 @@ func (d *PeerDelivery) completeRuntimeAsk(ctx context.Context, cid string, reply
 	_, _ = d.asks.Close(ctx, cid, reason)
 }
 
-// OpenScheduledAsk registers and delivers a scheduled ask, rolling back the
-// AskTracker entry on send failure. Job dispatch passes replyDelivery="pull":
+// OpenScheduledAsk registers and delivers a scheduled ask under cid (minted
+// when empty), rolling back the AskTracker entry on send failure. Job dispatch passes replyDelivery="pull":
 // the @jobs sender has no transport, so the executor's ack reply is retained on
 // the ask instead of attempting a notify back to a peer that cannot receive it.
-func (d *PeerDelivery) OpenScheduledAsk(ctx context.Context, fromPeer, toPeer, text string, circle *string, replyDelivery string) (string, error) {
+func (d *PeerDelivery) OpenScheduledAsk(ctx context.Context, cid, fromPeer, toPeer, text string, circle *string, replyDelivery string) (string, error) {
 	if d.asks == nil {
 		return "", errors.New("delivery: AskTracker is required to open scheduled asks")
 	}
 	cid, err := d.asks.Register(ctx, RegisterAskParams{
+		CorrelationID: cid,
 		FromPeerID:    proto.PeerID(fromPeer),
 		FromPeerName:  proto.DisplayName(fromPeer),
 		ToPeerID:      proto.PeerID(toPeer),

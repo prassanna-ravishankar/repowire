@@ -110,7 +110,7 @@ func (d *fakeSchedDelivery) Notify(_ context.Context, p NotifyParams) (NotifyRes
 	return NotifyResult{Status: "sent", DeliveryState: "delivered"}, nil
 }
 
-func (d *fakeSchedDelivery) OpenScheduledAsk(_ context.Context, _, _, text string, _ *string, _ string) (string, error) {
+func (d *fakeSchedDelivery) OpenScheduledAsk(_ context.Context, _, _, _, text string, _ *string, _ string) (string, error) {
 	d.mu.Lock()
 	d.asks = append(d.asks, text)
 	d.mu.Unlock()
