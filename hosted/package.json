@@ -6,7 +6,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "check": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --import ./test/support/register.mjs --test test/*.test.ts"
   },
   "dependencies": {
     "agents": "0.30.1",

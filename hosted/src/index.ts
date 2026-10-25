@@ -8,7 +8,7 @@ import { createAI } from 'agents/models/pi-ai';
 import { authorize, body, HttpError, identifier, scopedName, source, type Caller } from './http';
 import { Gateway, Registry } from './gateway';
 import { LIMITS, type TokenUsage } from './prices';
-import { Workspace } from './workspace';
+import { Workspace, type ExecOutcome } from './workspace';
 export { Gateway, Registry, Workspace };
 
 interface Env {
@@ -86,13 +86,18 @@ export class HostedAgent extends DurableObject<Env> {
             const workspace = this.env.WORKSPACES.getByName(scopedName(config.owner, config.workspace));
             await owner.execStarted(config.workspace);
             const started = Date.now();
+            let outcome: ExecOutcome | undefined;
             try {
-              const result = await workspace.exec(command);
-              return { output: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+              outcome = await workspace.exec(command);
             } finally {
               // The container ran either way, so a failed command is metered too.
-              await owner.execFinished(config.id, config.workspace, api.callId, Date.now() - started);
+              // The workspace times its own run; when it cannot answer, the
+              // elapsed time here, its queue included, is the upper bound.
+              await owner.execFinished(config.id, config.workspace, api.callId,
+                outcome ?? { wall_ms: Date.now() - started, dirty: null, snapshot_at: null });
             }
+            if (!outcome.ok) throw new Error(outcome.error);
+            return { output: [{ type: 'text' as const, text: JSON.stringify(outcome.result) }] };
           },
         }],
     });

@@ -58,13 +58,14 @@ service through the relay, which names them; they never choose the owner.
 | `GET /agents/helper/runs` | The run log: source, start and settle times, status, reason, tokens, estimated cost |
 | `POST /agents/helper/abort` with optional `{"operationId": ...}` | Stop one run, or everything the agent is doing; it settles `unanswered` with reason `aborted` |
 | `DELETE /agents/helper` | Retire: abort, then refuse new input with 410; the transcript stays readable |
-| `GET /workspaces`, `GET /clients` | Workspaces with command counts and container time; the connected daemon and recent disconnects, with the outbox depth |
+| `GET /workspaces`, `GET /clients` | Workspaces with command counts, container time, the last successful snapshot and a state (`idle`, `running`, or `needs_repair` after a checkpoint failed); the connected daemon and recent disconnects, with the outbox depth |
 | `GET /events` (WebSocket) | A snapshot of agents, workspaces and clients, then each change (`agent`, `run`, `workspace`, `client`, `outbox` frames). The relay holds it while someone is watching |
 | `GET /admin/summary`, `/admin/owners`, `/admin/sandboxes`, `/admin/usage?days=30` | Control token without an owner: totals, agents by state, sandboxes, and daily usage across owners |
 
 The owner's `Gateway` Durable Object holds the directory, run log and usage
 ledger. Each run's model usage comes from Pi's per-response usage at list
-price; each workspace command records its container wall time. Costs are
+price; each workspace command records the container wall time the workspace
+measured, so waiting behind another agent's command is not charged. Costs are
 estimates (`prices.ts` names the source and date). Guardrails refuse rather
 than notify: a submission over the owner's daily ($2) or monthly ($20) budget,
 or the agent's daily budget ($1), returns 402 `budget_exceeded`; a run that

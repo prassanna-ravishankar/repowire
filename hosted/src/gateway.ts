@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { admission, deriveState, meshWindow, utcDay, type AgentState } from './ledger';
 import { execCost, modelCost, type TokenUsage } from './prices';
+import type { ExecOutcome } from './workspace';
 
 // How long an agent's tool call waits for the daemon before failing.
 const CALL_TIMEOUT_MS = 60_000;
@@ -13,6 +14,9 @@ export interface GatewayCall { id: string; agent: string; tool: string; args: Re
 export interface GatewayReport {
   agent: string; operationId: string; status: string; reason?: string; text?: string; usage?: TokenUsage;
 }
+// A finished command as the agent reports it: the workspace's own outcome, or
+// when the workspace could not answer, the agent's elapsed time and no state.
+export type ExecReport = Pick<ExecOutcome, 'wall_ms' | 'snapshot_at'> & { dirty: boolean | null };
 export interface AgentInit { id: string; workspace: string | null; display_name?: string | null; created_by: string; home_machine?: string | null }
 interface Pending { socket: WebSocket; resolve(text: string): void; reject(error: Error): void }
 export interface Client {
@@ -41,8 +45,13 @@ CREATE TABLE IF NOT EXISTS usage_day (
   cost_usd REAL NOT NULL DEFAULT 0, PRIMARY KEY (day, agent, kind));
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY, exec_count INTEGER NOT NULL DEFAULT 0, container_ms INTEGER NOT NULL DEFAULT 0,
-  last_exec_at TEXT, running INTEGER NOT NULL DEFAULT 0);
+  last_exec_at TEXT, running INTEGER NOT NULL DEFAULT 0, snapshot_at TEXT, dirty INTEGER NOT NULL DEFAULT 0);
 `;
+// Columns added after the first deploy, for directories created before them.
+const ADDED_COLUMNS = [
+  'ALTER TABLE workspaces ADD COLUMN snapshot_at TEXT',
+  'ALTER TABLE workspaces ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0',
+];
 
 type Row = Record<string, SqlStorageValue>;
 type Usage = ReturnType<typeof emptyUsage>;
@@ -79,6 +88,11 @@ export class Gateway extends DurableObject {
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
     this.sql.exec(SCHEMA);
+    for (const statement of ADDED_COLUMNS) {
+      try { this.sql.exec(statement); } catch (error) {
+        if (!/duplicate column/i.test(String(error))) throw error;
+      }
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -157,8 +171,9 @@ export class Gateway extends DurableObject {
     }
     return this.sql.exec('SELECT * FROM workspaces ORDER BY id').toArray().map((row) => ({
       id: row.id as string, agents: users.get(row.id as string) ?? [], exec_count: Number(row.exec_count),
-      container_ms: Number(row.container_ms), last_exec_at: row.last_exec_at, snapshot_at: row.last_exec_at,
-      state: row.running ? 'running' : 'idle',
+      container_ms: Number(row.container_ms), last_exec_at: row.last_exec_at, snapshot_at: row.snapshot_at,
+      // A failed checkpoint outranks activity: the files cannot be restored.
+      state: row.dirty ? 'needs_repair' : row.running ? 'running' : 'idle',
     }));
   }
 
@@ -220,10 +235,13 @@ export class Gateway extends DurableObject {
     this.publishWorkspace(workspace);
   }
 
-  execFinished(agent: string, workspace: string, callId: string, wallMs: number) {
+  execFinished(agent: string, workspace: string, callId: string, report: ExecReport) {
+    const wallMs = Math.round(report.wall_ms);
     this.sql.exec(
       `UPDATE workspaces SET running = MAX(running - 1, 0), exec_count = exec_count + 1,
-         container_ms = container_ms + ?, last_exec_at = ? WHERE id = ?`, Math.round(wallMs), now(), workspace);
+         container_ms = container_ms + ?, last_exec_at = ?, snapshot_at = COALESCE(?, snapshot_at),
+         dirty = COALESCE(?, dirty) WHERE id = ?`,
+      wallMs, now(), report.snapshot_at, report.dirty == null ? null : Number(report.dirty), workspace);
     this.meter(`exec:${agent}:${callId}`, agent, 'exec', { wallMs, cost: execCost(wallMs) });
     this.publishWorkspace(workspace);
   }
