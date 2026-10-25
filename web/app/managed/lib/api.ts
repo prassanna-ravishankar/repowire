@@ -243,7 +243,7 @@ export const managedApi = {
   retire: (id: string) => request<{ agent: Agent }>(`${M}/agents/${seg(id)}`, json("DELETE")).then((r) => r.agent),
   messages: (id: string) => request<unknown>(`${M}/agents/${seg(id)}/messages`),
   send: (id: string, operationId: string, text: string) =>
-    request<Receipt>(`${M}/agents/${seg(id)}/messages`, json("POST", { operationId, text, source: "web" })),
+    request<Receipt>(`${M}/agents/${seg(id)}/messages`, json("POST", { operationId, text })),
   runs: (id: string) => request<{ items: Run[] }>(`${M}/agents/${seg(id)}/runs`).then((r) => r.items),
   abort: (id: string, operationId?: string) =>
     request<{ aborted: boolean }>(`${M}/agents/${seg(id)}/abort`, json("POST", operationId ? { operationId } : {})),

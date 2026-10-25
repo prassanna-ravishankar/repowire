@@ -95,6 +95,8 @@ describe("Managed page", () => {
     await waitFor(() => expect(posts).toBe(2));
 
     const bodies = calls.filter((c) => c.init?.method === "POST").map((c) => JSON.parse(String(c.init?.body)));
+    // source is a mesh-delivery label object the Worker validates; web sends never set it.
+    expect(Object.keys(bodies[0]).sort()).toEqual(["operationId", "text"]);
     expect(bodies[0].operationId).toMatch(/^web-/);
     expect(bodies[1].operationId).toBe(bodies[0].operationId);
     expect(bodies[1].text).toBe("And the flaky one?");
