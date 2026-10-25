@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -62,6 +63,8 @@ func newFakeWorker(t *testing.T) *fakeWorker {
 			if err != nil {
 				return
 			}
+			// Like the Worker, every events socket opens with its own snapshot.
+			_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"snapshot","agents":[],"n":`+strconv.Itoa(int(f.dials.Load()))+`}`))
 			f.sockets <- conn
 			_, _, _ = conn.Read(context.Background())
 			f.closed <- struct{}{}
@@ -318,54 +321,77 @@ func openEvents(t *testing.T, f *managedFixture, key string) (<-chan string, con
 	return sseReader(t, res.Body), release
 }
 
-func TestManagedEventsBridgeOpensLazilyAndShares(t *testing.T) {
+func TestManagedEventsEachSubscriberGetsSnapshot(t *testing.T) {
 	f := newManagedFixture(t, true)
 	if f.worker.dials.Load() != 0 {
 		t.Fatal("upstream opened without a subscriber")
 	}
+	upstream := func() *websocket.Conn {
+		t.Helper()
+		select {
+		case conn := <-f.worker.sockets:
+			return conn
+		case <-time.After(5 * time.Second):
+			t.Fatal("worker events socket not opened")
+			return nil
+		}
+	}
+
 	first, closeFirst := openEvents(t, f, managedKey)
 	nextFrame(t, first, `"type":"daemons"`)
 	if frame := nextFrame(t, first, `"type":"gateway"`); !strings.Contains(frame, `"connected":true`) {
 		t.Fatalf("gateway frame = %q", frame)
 	}
-	var upstream *websocket.Conn
-	select {
-	case upstream = <-f.worker.sockets:
-	case <-time.After(5 * time.Second):
-		t.Fatal("worker events socket not opened")
+	if frame := nextFrame(t, first, `"type":"snapshot"`); frame != "data: {\"type\":\"snapshot\",\"agents\":[],\"n\":1}\n" {
+		t.Fatalf("first snapshot = %q", frame)
 	}
+	firstUp := upstream()
 	req, _ := f.worker.last()
 	if req.Header.Get("X-Repowire-Owner") != userID(managedKey) {
 		t.Fatalf("events owner = %q", req.Header.Get("X-Repowire-Owner"))
 	}
 
+	// A second tab, opened while the first stays connected, gets its own snapshot.
 	second, closeSecond := openEvents(t, f, managedKey)
 	nextFrame(t, second, `"type":"daemons"`)
+	if frame := nextFrame(t, second, `"type":"snapshot"`); !strings.Contains(frame, `"n":2`) {
+		t.Fatalf("second snapshot = %q", frame)
+	}
+	secondUp := upstream()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := upstream.Write(ctx, websocket.MessageText, []byte("{\n \"type\": \"agent\", \"agent\": {\"id\": \"a1\"}\n}")); err != nil {
+	if err := firstUp.Write(ctx, websocket.MessageText, []byte("{\n \"type\": \"agent\", \"agent\": {\"id\": \"a1\"}\n}")); err != nil {
 		t.Fatal(err)
 	}
-	for _, frames := range []<-chan string{first, second} {
-		if frame := nextFrame(t, frames, `"type":"agent"`); frame != "data: {\"type\":\"agent\",\"agent\":{\"id\":\"a1\"}}\n" {
-			t.Fatalf("agent frame = %q", frame)
-		}
+	if frame := nextFrame(t, first, `"type":"agent"`); frame != "data: {\"type\":\"agent\",\"agent\":{\"id\":\"a1\"}}\n" {
+		t.Fatalf("agent frame = %q", frame)
 	}
+	if err := secondUp.Write(ctx, websocket.MessageText, []byte(`{"type":"outbox","depth":3}`)); err != nil {
+		t.Fatal(err)
+	}
+	nextFrame(t, second, `"type":"outbox"`)
 
 	f.relay.registerConn(&daemonConn{userID: userID(managedKey), daemonID: "laptop", connectedAt: time.Now()})
-	if frame := nextFrame(t, first, `"type":"daemon"`); !strings.HasPrefix(frame, "event: relay\n") || !strings.Contains(frame, `"connected":true`) {
-		t.Fatalf("daemon frame = %q", frame)
-	}
-	if f.worker.dials.Load() != 1 {
-		t.Fatalf("dials = %d, want one shared upstream", f.worker.dials.Load())
+	for _, frames := range []<-chan string{first, second} {
+		if frame := nextFrame(t, frames, `"type":"daemon"`); !strings.HasPrefix(frame, "event: relay\n") || !strings.Contains(frame, `"connected":true`) {
+			t.Fatalf("daemon frame = %q", frame)
+		}
 	}
 
 	closeFirst()
 	closeSecond()
-	select {
-	case <-f.worker.closed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("upstream not closed after the last subscriber left")
+	for range 2 {
+		select {
+		case <-f.worker.closed:
+		case <-time.After(5 * time.Second):
+			t.Fatal("upstream not closed after its subscriber left")
+		}
+	}
+	f.relay.events.mu.Lock()
+	defer f.relay.events.mu.Unlock()
+	if len(f.relay.events.owners) != 0 {
+		t.Fatalf("subscribers left registered: %v", f.relay.events.owners)
 	}
 }
 
@@ -381,21 +407,21 @@ func TestManagedEventsReportUpstreamFailure(t *testing.T) {
 	}
 }
 
-func TestOwnerStreamDropsSlowSubscriber(t *testing.T) {
+func TestRelayFrameOverflowAsksSubscriberToReconnect(t *testing.T) {
 	e := newManagedEvents()
 	e.dial = func(ctx context.Context, _ string) (*websocket.Conn, error) { <-ctx.Done(); return nil, ctx.Err() }
-	frames, release := e.subscribe("o")
+	sub, release := e.subscribe("o")
 	defer release()
-	stream := e.owners["o"]
 	for range managedSubscriberBuffer + 1 {
-		stream.publish([]byte("data: {}\n\n"))
+		e.publishDaemon("o", relayDaemon{DaemonID: "d"})
 	}
-	count := 0
-	for range frames {
-		count++
+	select {
+	case <-sub.overflow:
+	default:
+		t.Fatal("full subscriber not flagged")
 	}
-	if count != managedSubscriberBuffer {
-		t.Fatalf("delivered %d before closing, want %d", count, managedSubscriberBuffer)
+	if len(sub.frames) != managedSubscriberBuffer {
+		t.Fatalf("buffered %d, want %d", len(sub.frames), managedSubscriberBuffer)
 	}
 }
 

@@ -14,10 +14,10 @@ import (
 	"github.com/coder/websocket"
 )
 
-// The Worker pushes owner state over one WebSocket per owner. The relay opens
-// it when the first browser subscribes, fans each frame out as an SSE data
-// line, and closes it after the last subscriber leaves. Relay-side daemon
-// changes go to the same subscribers as `event: relay` frames.
+// Each browser SSE stream gets its own Worker /events WebSocket, so every
+// subscriber starts from the Worker's snapshot. The Worker's UI sockets
+// hibernate, so an idle stream costs nothing. Relay-side daemon changes are
+// delivered to each of the owner's subscribers as `event: relay` frames.
 
 const (
 	managedSubscriberBuffer = 64
@@ -29,18 +29,18 @@ type eventDialer func(ctx context.Context, owner string) (*websocket.Conn, error
 
 type managedEvents struct {
 	mu     sync.Mutex
-	owners map[string]*ownerStream
+	owners map[string]map[*eventSubscriber]struct{}
 	dial   eventDialer
 }
 
-type ownerStream struct {
-	mu     sync.Mutex
-	subs   map[chan []byte]struct{}
-	cancel context.CancelFunc
+type eventSubscriber struct {
+	frames   chan []byte
+	overflow chan struct{}
+	once     sync.Once
 }
 
 func newManagedEvents() *managedEvents {
-	return &managedEvents{owners: map[string]*ownerStream{}}
+	return &managedEvents{owners: map[string]map[*eventSubscriber]struct{}{}}
 }
 
 func (m *managedWorker) dialEvents(ctx context.Context, owner string) (*websocket.Conn, error) {
@@ -54,61 +54,54 @@ func (m *managedWorker) dialEvents(ctx context.Context, owner string) (*websocke
 	return conn, nil
 }
 
-// subscribe returns a frame channel that closes if the subscriber falls behind,
-// and a release func. The first subscriber for an owner starts the upstream.
-func (e *managedEvents) subscribe(owner string) (<-chan []byte, func()) {
-	ch := make(chan []byte, managedSubscriberBuffer)
+// subscribe starts this subscriber's upstream; release stops it.
+func (e *managedEvents) subscribe(owner string) (*eventSubscriber, func()) {
+	sub := &eventSubscriber{frames: make(chan []byte, managedSubscriberBuffer), overflow: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
 	e.mu.Lock()
-	stream := e.owners[owner]
-	if stream == nil {
-		ctx, cancel := context.WithCancel(context.Background())
-		stream = &ownerStream{subs: map[chan []byte]struct{}{}, cancel: cancel}
-		e.owners[owner] = stream
-		go e.pump(ctx, owner, stream)
+	if e.owners[owner] == nil {
+		e.owners[owner] = map[*eventSubscriber]struct{}{}
 	}
-	stream.mu.Lock()
-	stream.subs[ch] = struct{}{}
-	stream.mu.Unlock()
+	e.owners[owner][sub] = struct{}{}
 	e.mu.Unlock()
-
-	return ch, func() {
+	go e.pump(ctx, owner, sub)
+	return sub, func() {
+		cancel()
 		e.mu.Lock()
-		defer e.mu.Unlock()
-		stream.mu.Lock()
-		if _, ok := stream.subs[ch]; ok {
-			delete(stream.subs, ch)
-			close(ch)
-		}
-		empty := len(stream.subs) == 0
-		stream.mu.Unlock()
-		if empty && e.owners[owner] == stream {
+		delete(e.owners[owner], sub)
+		if len(e.owners[owner]) == 0 {
 			delete(e.owners, owner)
-			stream.cancel()
 		}
+		e.mu.Unlock()
 	}
 }
 
-// publish never blocks: a subscriber whose buffer is full is dropped (its
-// channel closes) so one slow browser cannot stall the owner's stream.
-func (o *ownerStream) publish(frame []byte) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	for ch := range o.subs {
-		select {
-		case ch <- frame:
-		default:
-			delete(o.subs, ch)
-			close(ch)
-		}
+// send applies backpressure to this subscriber's own upstream.
+func (s *eventSubscriber) send(ctx context.Context, frame []byte) bool {
+	select {
+	case s.frames <- frame:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// offer never blocks the daemon tunnel: a subscriber too far behind to take a
+// relay frame is told to reconnect instead of silently missing it.
+func (s *eventSubscriber) offer(frame []byte) {
+	select {
+	case s.frames <- frame:
+	default:
+		s.once.Do(func() { close(s.overflow) })
 	}
 }
 
 func (e *managedEvents) publishDaemon(owner string, daemon relayDaemon) {
+	frame := relayFrame(map[string]any{"type": "daemon", "daemon": daemon})
 	e.mu.Lock()
-	stream := e.owners[owner]
-	e.mu.Unlock()
-	if stream != nil {
-		stream.publish(relayFrame(map[string]any{"type": "daemon", "daemon": daemon}))
+	defer e.mu.Unlock()
+	for sub := range e.owners[owner] {
+		sub.offer(frame)
 	}
 }
 
@@ -121,23 +114,23 @@ func relayFrame(value any) []byte {
 	return append([]byte("event: relay\n"), dataFrame(payload)...)
 }
 
-// pump holds the Worker socket for one owner until ctx ends, reconnecting with
-// backoff. Subscribers see each upstream transition as a `gateway` relay frame.
-func (e *managedEvents) pump(ctx context.Context, owner string, stream *ownerStream) {
+// pump holds one subscriber's Worker socket until ctx ends, reconnecting with
+// backoff. Each upstream transition is reported as a `gateway` relay frame.
+func (e *managedEvents) pump(ctx context.Context, owner string, sub *eventSubscriber) {
 	backoff := time.Second
 	for {
 		conn, err := e.dial(ctx, owner)
 		if err == nil {
 			backoff = time.Second
-			stream.publish(relayFrame(map[string]any{"type": "gateway", "connected": true}))
-			err = forwardFrames(ctx, conn, stream)
+			sub.send(ctx, relayFrame(map[string]any{"type": "gateway", "connected": true}))
+			err = forwardFrames(ctx, conn, sub)
 			_ = conn.CloseNow()
 		}
 		if ctx.Err() != nil {
 			return
 		}
 		log.Printf("relay managed events: owner %s upstream: %v", owner, err)
-		stream.publish(relayFrame(map[string]any{"type": "gateway", "connected": false, "error": err.Error()}))
+		sub.send(ctx, relayFrame(map[string]any{"type": "gateway", "connected": false, "error": err.Error()}))
 		select {
 		case <-ctx.Done():
 			return
@@ -147,7 +140,7 @@ func (e *managedEvents) pump(ctx context.Context, owner string, stream *ownerStr
 	}
 }
 
-func forwardFrames(ctx context.Context, conn *websocket.Conn, stream *ownerStream) error {
+func forwardFrames(ctx context.Context, conn *websocket.Conn, sub *eventSubscriber) error {
 	pingCtx, stopPing := context.WithCancel(ctx)
 	defer stopPing()
 	go func() {
@@ -175,7 +168,9 @@ func forwardFrames(ctx context.Context, conn *websocket.Conn, stream *ownerStrea
 			log.Printf("relay managed events: dropped non-JSON frame: %v", err)
 			continue
 		}
-		stream.publish(dataFrame(compact.Bytes()))
+		if !sub.send(ctx, dataFrame(compact.Bytes())) {
+			return ctx.Err()
+		}
 	}
 }
 
@@ -188,7 +183,7 @@ func (s *Server) managedEventsStream(w http.ResponseWriter, r *http.Request, use
 		managedError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
-	frames, release := s.events.subscribe(user)
+	sub, release := s.events.subscribe(user)
 	defer release()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -204,15 +199,13 @@ func (s *Server) managedEventsStream(w http.ResponseWriter, r *http.Request, use
 		select {
 		case <-r.Context().Done():
 			return
+		case <-sub.overflow:
+			_, _ = io.WriteString(w, "event: error\ndata: {\"error\":\"subscriber fell behind; reconnect\"}\n\n")
+			flusher.Flush()
+			return
 		case <-heartbeat.C:
 			chunk = []byte(": keepalive\n\n")
-		case frame, open := <-frames:
-			if !open {
-				_, _ = io.WriteString(w, "event: error\ndata: {\"error\":\"subscriber fell behind; reconnect\"}\n\n")
-				flusher.Flush()
-				return
-			}
-			chunk = frame
+		case chunk = <-sub.frames:
 		}
 		if _, err := w.Write(chunk); err != nil {
 			return

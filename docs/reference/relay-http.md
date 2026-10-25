@@ -66,11 +66,11 @@ Proxied routes keep the Worker path below `/api/v1/managed`, forward the query s
 - Relay frames use `event: relay`:
   - `{"type":"daemons","daemons":[...]}` first, listing relay tunnel connections.
   - `{"type":"daemon","daemon":{daemon_id, connected_at, connected}}` when a relay tunnel connects or disconnects.
-  - `{"type":"gateway","connected":true|false,"error"?}` when the Worker socket opens or drops. The relay reconnects with backoff up to 30 s, and the Worker sends a fresh `snapshot` on each connect.
+  - `{"type":"gateway","connected":true|false,"error"?}` when the stream's Worker socket opens or drops. The relay reconnects with backoff up to 30 s, and the Worker sends a fresh `snapshot` on each connect.
 - `: keepalive` comments every 15 s.
-- `event: error` followed by end of stream when the client falls more than 64 frames behind. `EventSource` reconnects on its own.
+- `event: error` followed by end of stream when the client is more than 64 frames behind as a relay frame arrives. `EventSource` reconnects on its own and starts from a new snapshot.
 
-The relay opens one Worker `/events` WebSocket per owner when the first stream subscribes and closes it when the last one leaves. Nothing polls.
+Each SSE stream has its own Worker `/events` WebSocket, opened when the stream starts and closed when it ends, so every stream (a second tab, a reconnect) begins with its own `snapshot`. A slow reader slows only its own upstream. Nothing polls.
 
 ## Admin
 
