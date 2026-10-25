@@ -630,7 +630,8 @@ func (d *PeerDelivery) completeHosted(ctx context.Context, delivery HostedDelive
 	if d.asks == nil {
 		return
 	}
-	// An ask still tracked closes here; one already closed needs nothing more.
+	// An ask still tracked closes here; one already closed (a job's completion
+	// closed it first) needs nothing more.
 	if _, ok := d.asks.Get(delivery.CorrelationID); ok {
 		d.completeRuntimeAsk(ctx, delivery.CorrelationID, reply, errText, "Hosted error: ")
 		return

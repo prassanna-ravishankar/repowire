@@ -153,8 +153,8 @@ type hostedRegistry interface {
 }
 
 // HostedDelivery is one settled submission, handed to observers: the
-// delivery layer closes an ask with the runtime's answer, and the chat feed
-// records the run.
+// delivery layer closes an ask with the runtime's answer, and job completion
+// and the chat feed record the run.
 type HostedDelivery struct {
 	Kind          string // "ask" | "notify" | "broadcast"
 	Text          string // the framed text the runtime received
@@ -258,6 +258,13 @@ func (h *Hosted) Spawn(ctx context.Context, params HostedSpawnParams) (proto.Pee
 		return "", "", fmt.Errorf("create hosted agent: %w", err)
 	}
 	return id, name, nil
+}
+
+// Retire takes a hosted peer off the mesh for good. Its runtime agent and
+// transcript remain on the hosted service.
+func (h *Hosted) Retire(ctx context.Context, id proto.PeerID) error {
+	_, err := h.reg.MarkOffline(ctx, id, true)
+	return err
 }
 
 // Restore re-registers every hosted peer from its durable mapping and marks

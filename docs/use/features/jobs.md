@@ -59,6 +59,8 @@ repowire jobs cancel job-...
 
 Unassigned path/backend jobs run with per-fire executors by default: Repowire spawns or backend-resumes an executor for the run, delivers the job ask, and releases that executor when the fire completes. Reused persistent executors and explicitly assigned peers stay live. Recurring jobs can use `continuity=resume` to keep the backend-native runtime session id as the continuity handle for the next fire. Use `--continuity fresh` when a run should start without prior runtime context.
 
+With `backend=hosted` (prototype), a job runs on a [hosted agent](../../concepts/agent-backends.md#hosted-agents) named by its `path`. `continuity=resume` reuses that agent and its conversation on every fire. `continuity=fresh` gives each fire its own agent (named after the path plus the attempt), which is retired when the attempt ends; the runtime keeps its transcript. The run's answer completes the job, and a run that ends unanswered fails it as `hosted_unanswered`. Triggers still fire from the local daemon, so a hosted job does not start while the daemon is down; a run already started finishes in the cloud and its result is recorded when the daemon reconnects.
+
 Fire completion is automatic: the executor's turn ending ends the run, and its final message is recorded as the result. `jobs update` is optional progress/result enrichment, not a reporting requirement. Terminal results emit a `job_state_changed` event and best-effort notify the job's owner (falling back to the creator, then the circle's orchestrator).
 
 ## Commands and API

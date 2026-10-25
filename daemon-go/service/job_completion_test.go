@@ -75,3 +75,44 @@ func TestJobCompletionFailsWorkWhenExecutorDies(t *testing.T) {
 		t.Fatalf("terminal reason not preserved: %#v", failed.Error)
 	}
 }
+
+// A hosted run reports its prompt and answer as the turns a hook runtime
+// posts; a run that ends unanswered fails the job it carried.
+func TestJobCompletionFromHostedRuns(t *testing.T) {
+	ctx := context.Background()
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	completion := NewJobCompletion(store, nil, nil, nil, nil)
+	deliver := func(title, attemptID, cid string) string {
+		work, err := store.CreateWork(ctx, state.WorkCreate{Title: title})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.AcquireForDispatch(ctx, work.WorkID, state.AcquireOptions{RunnerOwnerID: "test", AttemptID: attemptID, IgnoreDueAt: true}); err != nil {
+			t.Fatal(err)
+		}
+		status, assigned := "delivered", "repow-default-h0st"
+		if _, err := store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{Status: &status, Phase: &status, AssignedPeerID: &assigned, CorrelationID: &cid}); err != nil {
+			t.Fatal(err)
+		}
+		return work.WorkID
+	}
+	run := func(workID, attemptID, cid string) HostedDelivery {
+		return HostedDelivery{Kind: "ask", CorrelationID: cid, ToPeerID: "repow-default-h0st", Text: "job_id: " + workID + "\nattempt_id: " + attemptID}
+	}
+
+	done := deliver("answered", "attempt-000000000001", "ask-done")
+	completion.OnHostedRun(ctx, run(done, "attempt-000000000001", "ask-done"), HostedResult{Status: "done", Text: "all green"})
+	if work, _ := store.GetWork(ctx, done); work.State != "completed" || work.ResultSummary == nil || *work.ResultSummary != "all green" {
+		t.Fatalf("answered run did not complete the job: %#v", work)
+	}
+
+	lost := deliver("unanswered", "attempt-000000000002", "ask-lost")
+	completion.OnHostedRun(ctx, run(lost, "attempt-000000000002", "ask-lost"), HostedResult{Status: "unanswered", Reason: "run_failed"})
+	if work, _ := store.GetWork(ctx, lost); work.State != "failed" || work.Phase == nil || *work.Phase != "hosted_unanswered" || work.Error["detail"] != "run_failed" {
+		t.Fatalf("unanswered run did not fail the job: %#v", work)
+	}
+}

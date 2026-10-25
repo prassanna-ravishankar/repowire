@@ -376,7 +376,7 @@ func runDaemon() {
 		h.WithInbox(inbox)
 	}
 	// (6c) Hosted agents: managed peers on the hosted runtime. They start
-	// after the services in (9), which observe their runs.
+	// after the job services in (9), which observe their runs.
 	var hosted *service.Hosted
 	if cfg.Hosted.URL != "" && cfg.Hosted.Token != "" {
 		hosted = service.NewHosted(reg, service.NewHostedClient(cfg.Hosted.URL, cfg.Hosted.Token), store, selfMachine)
@@ -468,11 +468,13 @@ func runDaemon() {
 	jobCompletion := service.NewJobCompletion(store, asks, sessionControl, reg, delivery)
 	reg.OnTerminalOffline = jobCompletion.OnPeerTerminalOffline
 	scheduler := service.NewScheduler(store, delivery)
-	// Hosted runs report like hook turns: to the chat feed. Restore
-	// re-registers hosted peers and resumes the waits the last daemon left
-	// unsettled; tool calls the agents make run through the hub's MCP
-	// handlers.
+	// Hosted runs report like hook turns: to job completion and the chat
+	// feed. Restore re-registers hosted peers and resumes the waits the last
+	// daemon left unsettled; tool calls the agents make run through the hub's
+	// MCP handlers.
 	if hosted != nil {
+		sessionControl.WithHosted(hosted)
+		hosted.OnSettled(jobCompletion.OnHostedRun)
 		hosted.OnSettled(func(ctx context.Context, run service.HostedDelivery, result service.HostedResult) {
 			turn := func(role, text string) {
 				reg.AddEvent(ctx, "chat_turn", map[string]any{"peer": run.ToPeerName, "peer_id": run.ToPeerID, "role": role, "text": text})
