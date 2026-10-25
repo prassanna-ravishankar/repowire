@@ -469,9 +469,9 @@ func runDaemon() {
 	reg.OnTerminalOffline = jobCompletion.OnPeerTerminalOffline
 	scheduler := service.NewScheduler(store, delivery)
 	// Hosted runs report like hook turns: to job completion and the chat
-	// feed. Restore re-registers hosted peers and resumes the waits the last
-	// daemon left unsettled; tool calls the agents make run through the hub's
-	// MCP handlers.
+	// feed. Restore re-registers hosted peers and keeps the ones with
+	// unsettled work busy; their reports arrive after the gateway connects.
+	// Tool calls the agents make run through the hub's MCP handlers.
 	if hosted != nil {
 		sessionControl.WithHosted(hosted)
 		hosted.OnSettled(jobCompletion.OnHostedRun)

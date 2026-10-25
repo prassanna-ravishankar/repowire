@@ -14,17 +14,20 @@ Repowire also ships hosted surfaces:
 
 ## Hosted agent prototype
 
-The `hosted/` package is a separate Cloudflare Worker deployment in this repo.
-It provides an authenticated, single-owner HTTP prototype for spawning Pi Durable
-agents, submitting messages with idempotency keys, and retrieving results.
-Agent conversation state lives in SQLite-backed Durable Objects. Optional Linux
-workspaces have separate sandbox lifetimes and may be shared by several agents.
-A command checkpoints its workspace before the sandbox stops; agents without a
+The `hosted/` package is a separate Cloudflare Worker deployment in this repo:
+a single-owner runtime for [hosted agents](../concepts/agent-backends.md#hosted-agents).
+Each agent is a Pi Durable conversation in a SQLite-backed Durable Object.
+Optional Linux workspaces have their own sandbox lifetimes, may be shared by
+several agents, and are checkpointed after each command; agents without a
 workspace do not start containers.
 
-The daemon reaches it through `hosted.url` and `hosted.token`: `spawn_peer(backend="hosted")` registers a managed peer, and mesh deliveries become durable submissions (see [agent backends](../concepts/agent-backends.md#hosted-agents)). SaaS login, billing, quotas,
-Composio connector execution, and AI Gateway configuration are follow-up work.
-See `hosted/README.md` in the repository for configuration, endpoints, and limits.
+The daemon connects to it when both `hosted.url` and `hosted.token` are set (see
+[configuration](../reference/configuration.md#hosted)). It creates, submits to,
+and retires agents over HTTP, and holds one WebSocket to the Worker's `/gateway`
+for the agents' mesh tool calls and their run reports. The Worker enforces
+per-owner and per-agent budgets and run limits. SaaS login, billing, and
+connector execution are follow-up work. See `hosted/README.md` in the
+repository for deployment, endpoints, and limits.
 
 ## Contributor notes
 
