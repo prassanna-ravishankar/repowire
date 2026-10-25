@@ -73,11 +73,16 @@ export interface LiveState {
   workspaces: Workspace[];
   clients: Client[];
   outbox: number;
+  /** Loaded run lists, per agent. Absent means "fetch when shown". */
   runs: Record<string, Run[]>;
+  /** Run deltas for agents whose runs are not loaded yet, merged into the next load. */
+  pendingRuns: Record<string, Run[]>;
   at: string | null;
 }
 
-export const EMPTY_LIVE: LiveState = { agents: [], workspaces: [], clients: [], outbox: 0, runs: {}, at: null };
+export const EMPTY_LIVE: LiveState = { agents: [], workspaces: [], clients: [], outbox: 0, runs: {}, pendingRuns: {}, at: null };
+
+const PENDING_RUNS_CAP = 50;
 
 function upsert<T>(items: T[], next: T, same: (item: T) => boolean): T[] {
   const index = items.findIndex(same);
@@ -87,6 +92,21 @@ function upsert<T>(items: T[], next: T, same: (item: T) => boolean): T[] {
   return copy;
 }
 
+/**
+ * Runs only move forward (working, then done or unanswered), so a settled
+ * run never goes back to working however frames and fetches interleave.
+ */
+export function mergeRun(prev: Run | undefined, next: Run): Run {
+  if (prev && prev.status !== "working" && next.status === "working") return prev;
+  return next;
+}
+
+function upsertRun(runs: Run[], next: Run): Run[] {
+  const prev = runs.find((r) => r.op === next.op);
+  const merged = mergeRun(prev, next);
+  return merged === prev ? runs : upsert(runs, merged, (r) => r.op === next.op);
+}
+
 const clientKey = (client: Client) => client.daemon_id ?? client.machine ?? client.connected_at;
 
 /** A live frame, or runs fetched over HTTP for one agent's Runs tab. */
@@ -94,22 +114,27 @@ export type LiveAction = ManagedFrame | { type: "runs"; agent: string; runs: Run
 
 /**
  * Fold one live frame into page state. A snapshot replaces everything it
- * carries (there is no event cursor to recover), deltas upsert by id.
+ * carries (there is no event cursor to recover) and invalidates loaded runs,
+ * which the Runs tab then refetches; deltas upsert by id.
  */
 export function applyFrame(state: LiveState, frame: LiveAction): LiveState {
   switch (frame.type) {
-    case "runs":
-      return { ...state, runs: { ...state.runs, [frame.agent]: frame.runs } };
+    case "runs": {
+      // Deltas that raced the fetch are merged in, monotonically.
+      const merged = (state.pendingRuns[frame.agent] ?? []).reduceRight(upsertRun, frame.runs);
+      const pendingRuns = { ...state.pendingRuns };
+      delete pendingRuns[frame.agent];
+      return { ...state, runs: { ...state.runs, [frame.agent]: merged }, pendingRuns };
+    }
     case "snapshot":
-      return { ...state, agents: frame.agents, workspaces: frame.workspaces, clients: frame.clients, outbox: frame.outbox, at: frame.at };
+      return { ...state, agents: frame.agents, workspaces: frame.workspaces, clients: frame.clients, outbox: frame.outbox, runs: {}, at: frame.at };
     case "agent":
       return { ...state, agents: upsert(state.agents, frame.agent, (a) => a.id === frame.agent.id) };
     case "run": {
       const runs = state.runs[frame.agent];
-      // Runs are only kept for agents whose Runs tab has loaded; otherwise the
-      // next load fetches them fresh.
-      if (!runs) return state;
-      return { ...state, runs: { ...state.runs, [frame.agent]: upsert(runs, frame.run, (r) => r.op === frame.run.op) } };
+      if (runs) return { ...state, runs: { ...state.runs, [frame.agent]: upsertRun(runs, frame.run) } };
+      const pending = upsertRun(state.pendingRuns[frame.agent] ?? [], frame.run).slice(0, PENDING_RUNS_CAP);
+      return { ...state, pendingRuns: { ...state.pendingRuns, [frame.agent]: pending } };
     }
     case "workspace":
       return { ...state, workspaces: upsert(state.workspaces, frame.workspace, (w) => w.id === frame.workspace.id) };

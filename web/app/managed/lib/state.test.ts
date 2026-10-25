@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Agent, Client, Run } from "./api";
 import { fixtures } from "./fixtures";
-import { EMPTY_LIVE, agentSubline, applyFrame, connectedDaemon, formatAgo, formatDuration, formatUsd, runStatus, shortId, sortAgents, stateCounts, visibleAgents } from "./state";
+import { EMPTY_LIVE, agentSubline, applyFrame, connectedDaemon, formatAgo, formatDuration, formatUsd, mergeRun, runStatus, shortId, sortAgents, stateCounts, visibleAgents } from "./state";
 
 const NOW = Date.parse("2026-10-25T14:05:00Z");
 const f = fixtures(NOW);
@@ -70,15 +70,38 @@ describe("applyFrame", () => {
     expect(created.agents[0].id).toBe("new-one");
   });
 
-  it("keeps run frames only for agents whose runs are loaded", () => {
+  it("upserts run deltas into loaded runs", () => {
     const run: Run = { ...f.runs[0], status: "done", settled_at: "x" };
-    expect(applyFrame(snapshot, { type: "run", agent: "helper", run })).toBe(snapshot);
     const loaded = applyFrame(snapshot, { type: "runs", agent: "helper", runs: f.runs });
     const next = applyFrame(loaded, { type: "run", agent: "helper", run });
     expect(next.runs.helper).toHaveLength(f.runs.length);
     expect(next.runs.helper[0].status).toBe("done");
     const fresh = applyFrame(loaded, { type: "run", agent: "helper", run: { ...run, op: "web-new" } });
     expect(fresh.runs.helper[0].op).toBe("web-new");
+  });
+
+  it("merges a settle that arrives while the runs fetch is in flight", () => {
+    // The fetch started while the run was working; the settle frame beat its response.
+    const settled: Run = { ...f.runs[0], status: "done", settled_at: "x" };
+    const during = applyFrame(snapshot, { type: "run", agent: "helper", run: settled });
+    expect(during.runs.helper).toBeUndefined();
+    const loaded = applyFrame(during, { type: "runs", agent: "helper", runs: f.runs });
+    expect(loaded.runs.helper.find((r) => r.op === settled.op)?.status).toBe("done");
+    expect(loaded.pendingRuns.helper).toBeUndefined();
+  });
+
+  it("never moves a settled run back to working", () => {
+    const loaded = applyFrame(snapshot, { type: "runs", agent: "helper", runs: [{ ...f.runs[0], status: "done", settled_at: "x" }] });
+    const late = applyFrame(loaded, { type: "run", agent: "helper", run: f.runs[0] });
+    expect(late.runs.helper[0].status).toBe("done");
+    expect(mergeRun({ ...f.runs[0], status: "unanswered" }, f.runs[0]).status).toBe("unanswered");
+  });
+
+  it("invalidates loaded runs on a snapshot so a settled run is refetched, not left working", () => {
+    // Runs tab open with a working run; the stream drops while it settles; recovery brings an idle snapshot.
+    const loaded = applyFrame(snapshot, { type: "runs", agent: "helper", runs: f.runs });
+    const recovered = applyFrame(loaded, { type: "snapshot", agents: [{ ...byId("helper"), state: "idle" }], workspaces: [], clients: [], outbox: 0, at: "t3" });
+    expect(recovered.runs.helper).toBeUndefined();
   });
 
   it("tracks outbox depth and daemon connection", () => {

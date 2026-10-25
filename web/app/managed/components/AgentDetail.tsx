@@ -234,7 +234,11 @@ function runDuration(run: Run, now: number) {
 function RunsTab({ runs, now, onLoad, onCopied }: { runs: Run[] | undefined; now: number; onLoad: () => Promise<void>; onCopied: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const load = () => onLoad().then(() => setError(null), (err: Error) => setError(err.message));
-  useEffect(() => void load(), []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Fetch whenever the list is missing: on open, and after a snapshot invalidates it.
+  const missing = runs === undefined;
+  useEffect(() => {
+    if (missing) void load();
+  }, [missing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (error) return <InlineError className="m-4" error={error} onRetry={load} />;
   if (!runs) return <SkeletonRows />;
