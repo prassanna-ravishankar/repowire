@@ -66,6 +66,23 @@ The daemon-owned human peer and its [inbox](../concepts/human-inbox.md).
 
 Environment overrides: `REPOWIRE_HUMAN__NAME`, `REPOWIRE_HUMAN__BROADCAST`.
 
+## `hosted`
+
+Prototype. Points the daemon at a hosted runtime for [managed agents](../concepts/agent-backends.md#hosted-agents) (the `hosted/` package in the repository).
+
+```yaml
+hosted:
+  url: "https://repowire-hosted.example.workers.dev"
+  token: "..."
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `url` | empty | Base URL of the hosted runtime. |
+| `token` | empty | Bearer token the runtime expects. Keep it out of shared files. |
+
+Both are required; with either empty, `spawn_peer(backend="hosted")` returns 503 and no hosted peers are restored. With both set, the daemon also holds a WebSocket to the runtime's `/gateway`, which carries hosted agents' mesh tool calls and their run results, reconnecting with backoff after a drop. Changes apply on daemon restart. Environment overrides: `REPOWIRE_HOSTED__URL`, `REPOWIRE_HOSTED__TOKEN`.
+
 ## Environment variables
 
 Documented scalar daemon, relay, and experiment fields can be overridden

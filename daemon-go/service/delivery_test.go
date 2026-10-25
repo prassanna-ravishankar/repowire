@@ -471,7 +471,7 @@ func TestOpenScheduledAskRollsBackOnSendFailure(t *testing.T) {
 	asks := NewAskTracker(0)
 	d := NewPeerDelivery(reg, newRouterWithFake(f), f, asks, nil)
 
-	_, err := d.OpenScheduledAsk(context.Background(), "alpha", "beta", "scheduled", nil, "pull")
+	_, err := d.OpenScheduledAsk(context.Background(), "", "alpha", "beta", "scheduled", nil, "pull")
 	if err == nil {
 		t.Fatalf("expected send failure to propagate")
 	}
@@ -485,7 +485,7 @@ func TestOpenScheduledAskRequiresTracker(t *testing.T) {
 	reg := &fakeRegistry{}
 	f := &fakeTransport{}
 	d := NewPeerDelivery(reg, newRouterWithFake(f), f, nil, nil)
-	if _, err := d.OpenScheduledAsk(context.Background(), "a", "b", "x", nil, "push"); err == nil {
+	if _, err := d.OpenScheduledAsk(context.Background(), "", "a", "b", "x", nil, "push"); err == nil {
 		t.Fatalf("expected error when AskTracker is nil")
 	}
 }

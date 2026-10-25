@@ -75,3 +75,130 @@ func TestJobCompletionFailsWorkWhenExecutorDies(t *testing.T) {
 		t.Fatalf("terminal reason not preserved: %#v", failed.Error)
 	}
 }
+
+// A hosted run reports its prompt and answer as the turns a hook runtime
+// posts; a run that ends unanswered fails the job it carried.
+func TestJobCompletionFromHostedRuns(t *testing.T) {
+	ctx := context.Background()
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	completion := NewJobCompletion(store, nil, nil, nil, nil)
+	deliver := func(title, attemptID, cid string) string {
+		work, err := store.CreateWork(ctx, state.WorkCreate{Title: title})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.AcquireForDispatch(ctx, work.WorkID, state.AcquireOptions{RunnerOwnerID: "test", AttemptID: attemptID, IgnoreDueAt: true}); err != nil {
+			t.Fatal(err)
+		}
+		status, assigned := "delivered", "repow-default-h0st"
+		if _, err := store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{Status: &status, Phase: &status, AssignedPeerID: &assigned, CorrelationID: &cid}); err != nil {
+			t.Fatal(err)
+		}
+		return work.WorkID
+	}
+	run := func(workID, attemptID, cid string) HostedDelivery {
+		return HostedDelivery{Kind: "ask", CorrelationID: cid, ToPeerID: "repow-default-h0st", Text: "job_id: " + workID + "\nattempt_id: " + attemptID}
+	}
+
+	done := deliver("answered", "attempt-000000000001", "ask-done")
+	completion.OnHostedRun(ctx, run(done, "attempt-000000000001", "ask-done"), HostedResult{Status: "done", Text: "all green"})
+	if work, _ := store.GetWork(ctx, done); work.State != "completed" || work.ResultSummary == nil || *work.ResultSummary != "all green" {
+		t.Fatalf("answered run did not complete the job: %#v", work)
+	}
+
+	lost := deliver("unanswered", "attempt-000000000002", "ask-lost")
+	completion.OnHostedRun(ctx, run(lost, "attempt-000000000002", "ask-lost"), HostedResult{Status: "unanswered", Reason: "run_failed"})
+	if work, _ := store.GetWork(ctx, lost); work.State != "failed" || work.Phase == nil || *work.Phase != "hosted_unanswered" || work.Error["detail"] != "run_failed" {
+		t.Fatalf("unanswered run did not fail the job: %#v", work)
+	}
+}
+
+// A replayed hosted run finishes the job wherever the last try stopped: after
+// the attempt was written but not the work, and after the work was written
+// but not what follows it.
+func TestJobCompletionHostedRunIsReplaySafe(t *testing.T) {
+	ctx := context.Background()
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	completion := NewJobCompletion(store, nil, nil, nil, nil)
+	const attemptID, peerID = "attempt-000000000003", "repow-default-h0st"
+	work, err := store.CreateWork(ctx, state.WorkCreate{Title: "replayed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcquireForDispatch(ctx, work.WorkID, state.AcquireOptions{RunnerOwnerID: "test", AttemptID: attemptID, IgnoreDueAt: true}); err != nil {
+		t.Fatal(err)
+	}
+	delivered, assigned := "delivered", peerID
+	if _, err := store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{Status: &delivered, Phase: &delivered, AssignedPeerID: &assigned}); err != nil {
+		t.Fatal(err)
+	}
+	// The last try armed the work and wrote the attempt, then stopped.
+	running, started := "running", "turn_started"
+	if _, err := store.UpdateWorkState(ctx, work.WorkID, state.WorkUpdate{State: running, Phase: &started, AttemptID: strPtr(attemptID)}); err != nil {
+		t.Fatal(err)
+	}
+	completed := "completed"
+	if _, err := store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{Status: &completed, Phase: &completed}); err != nil {
+		t.Fatal(err)
+	}
+	run := HostedDelivery{Kind: "ask", ToPeerID: peerID, Text: "job_id: " + work.WorkID + "\nattempt_id: " + attemptID}
+	for try := 1; try <= 2; try++ {
+		if err := completion.OnHostedRun(ctx, run, HostedResult{Status: "done", Text: "all green"}); err != nil {
+			t.Fatalf("try %d: %v", try, err)
+		}
+		if got, _ := store.GetWork(ctx, work.WorkID); got.State != "completed" || got.ResultSummary == nil || *got.ResultSummary != "all green" {
+			t.Fatalf("try %d did not leave the job completed: %#v", try, got)
+		}
+	}
+}
+
+// A run the runtime accepted before the daemon stopped, recovered as
+// runner_interrupted, still completes its attempt; one a newer attempt
+// replaced does not.
+func TestJobCompletionHostedRunSettlesARecoveredAttempt(t *testing.T) {
+	ctx := context.Background()
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	completion := NewJobCompletion(store, nil, nil, nil, nil)
+	const attemptID, peerID = "attempt-000000000004", "repow-default-h0st"
+	work, err := store.CreateWork(ctx, state.WorkCreate{Title: "interrupted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcquireForDispatch(ctx, work.WorkID, state.AcquireOptions{RunnerOwnerID: "test", AttemptID: attemptID, LeaseUntil: "2026-01-01T00:00:00+00:00", IgnoreDueAt: true}); err != nil {
+		t.Fatal(err)
+	}
+	delivered, pending, assigned := "delivered", "pending", peerID
+	if _, err := store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{Status: &delivered, Phase: &delivered, DeliveryState: &pending, AssignedPeerID: &assigned}); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := store.RecoverStaleDispatching(ctx, "2026-06-01T00:00:00+00:00"); err != nil || len(recovered) != 1 {
+		t.Fatalf("expected the unconfirmed send recovered: %v %v", recovered, err)
+	}
+	run := HostedDelivery{Kind: "ask", ToPeerID: peerID, Text: "job_id: " + work.WorkID + "\nattempt_id: " + attemptID}
+	if err := completion.OnHostedRun(ctx, run, HostedResult{Status: "done", Text: "made it"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.GetWork(ctx, work.WorkID); got.State != "completed" || got.ResultSummary == nil || *got.ResultSummary != "made it" {
+		t.Fatalf("a recovered attempt must take its run's result: %#v", got)
+	}
+
+	stale := HostedDelivery{Kind: "ask", ToPeerID: peerID, Text: "job_id: " + work.WorkID + "\nattempt_id: attempt-00000000dead"}
+	if err := completion.OnHostedRun(ctx, stale, HostedResult{Status: "unanswered", Reason: "late"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.GetWork(ctx, work.WorkID); got.State != "completed" {
+		t.Fatalf("a run for a replaced attempt must change nothing, got %q", got.State)
+	}
+}

@@ -31,7 +31,7 @@ const (
 // satisfies it. Kept as a seam so the runner test can supply a fake that records
 // the (from,to,text) without a live transport.
 type scheduledAskOpener interface {
-	OpenScheduledAsk(ctx context.Context, fromPeer, toPeer, text string, circle *string, replyDelivery string) (string, error)
+	OpenScheduledAsk(ctx context.Context, cid, fromPeer, toPeer, text string, circle *string, replyDelivery string) (string, error)
 }
 
 // JobRunner acquires queued jobs and dispatches each exactly once per attempt.
@@ -291,11 +291,17 @@ func (r *JobRunner) dispatch(ctx context.Context, work *state.TrackedWork, attem
 	}
 
 	text := buildJobPrompt(current, attemptID)
+	// The ask id and the delivered state are written before the send: a
+	// runtime that answers on the daemon's side (hosted) can report the run
+	// before the send returns, and completion finds the work by both.
+	cid := NewAskID()
 	if _, err := r.store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{
-		Phase:          strPtr("delivery"),
+		Status:         strPtr("delivered"),
+		Phase:          strPtr("delivered"),
 		AssignedPeerID: strPtr(string(peer.PeerID)),
 		Tmux:           map[string]any{"tmux_session": strPtrOrNil(peer.TmuxSession), "pane_id": strPtrOrNil(peer.PaneID)},
 		DeliveryState:  strPtr("pending"),
+		CorrelationID:  &cid,
 	}); err != nil {
 		return nil, err
 	}
@@ -305,8 +311,7 @@ func (r *JobRunner) dispatch(ctx context.Context, work *state.TrackedWork, attem
 		from = jobRunnerOwnerID
 	}
 	circle := peer.Circle
-	cid, err := r.delivery.OpenScheduledAsk(ctx, from, string(peer.PeerID), text, &circle, "pull")
-	if err != nil {
+	if _, err := r.delivery.OpenScheduledAsk(ctx, cid, from, string(peer.PeerID), text, &circle, "pull"); err != nil {
 		return r.store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{
 			Status:        strPtr("failed"),
 			Phase:         strPtr("delivery"),
@@ -314,11 +319,10 @@ func (r *JobRunner) dispatch(ctx context.Context, work *state.TrackedWork, attem
 			Error:         map[string]any{"reason": "ask_delivery_failed", "message": err.Error()},
 		})
 	}
+	// Only the delivery state changes now: the run may already have moved the
+	// work on.
 	return r.store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{
-		Status:        strPtr("delivered"),
-		Phase:         strPtr("delivered"),
 		DeliveryState: strPtr("delivered"),
-		CorrelationID: &cid,
 	})
 }
 

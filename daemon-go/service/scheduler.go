@@ -38,7 +38,7 @@ type schedulerStore interface {
 // satisfies it.
 type schedulerDelivery interface {
 	Notify(ctx context.Context, params NotifyParams) (NotifyResult, error)
-	OpenScheduledAsk(ctx context.Context, fromPeer, toPeer, text string, circle *string, replyDelivery string) (string, error)
+	OpenScheduledAsk(ctx context.Context, cid, fromPeer, toPeer, text string, circle *string, replyDelivery string) (string, error)
 }
 
 // Scheduler drives scheduled check-ins off a deadline-driven sleep + wake
@@ -162,7 +162,7 @@ func (s *Scheduler) run(ctx context.Context) {
 // equivalent below. Mirrors Scheduler._fire.
 func (s *Scheduler) fire(ctx context.Context, sched *state.Schedule) {
 	if sched.Kind == "ask" {
-		if _, err := s.delivery.OpenScheduledAsk(ctx, sched.FromPeer, sched.ToPeer, sched.Text, sched.Circle, "push"); err != nil {
+		if _, err := s.delivery.OpenScheduledAsk(ctx, "", sched.FromPeer, sched.ToPeer, sched.Text, sched.Circle, "push"); err != nil {
 			log.Printf("scheduler: scheduled ask %s failed to deliver: %v", sched.ScheduleID, err)
 		}
 	} else {
