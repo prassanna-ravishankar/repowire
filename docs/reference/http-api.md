@@ -104,7 +104,9 @@ The dashboard is a surface without a socket of its own. `GET /events/stream?surf
 
 `POST /ask` accepts optional `reply_delivery: "pull"` (default `"push"`). Pull
 mode is set before delivery so an immediate recipient reply is retained for
-`POST /asks/{correlation_id}/wait`. Callers without a registered peer may list
+`POST /asks/{correlation_id}/wait`, whether the recipient acks or an ACP
+runtime answers on the daemon's side (a runtime failure closes the ask as
+`send_failed` with the error as its reply). Callers without a registered peer may list
 their outstanding asks with `GET /asks/pending?peer_id=<sender>&direction=outbound`.
 The wait endpoint still requires the original sender identity.
 `GET /health` advertises `capabilities.ask_pull_delivery` when ask handling is wired.

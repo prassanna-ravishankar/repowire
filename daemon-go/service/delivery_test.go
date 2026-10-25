@@ -396,6 +396,53 @@ func TestCompleteACPAskQueuedReplyClosesWithoutPendingDuplicate(t *testing.T) {
 	}
 }
 
+// TestCompleteACPAskPullKeepsReplyOnTheAsk: a pull asker (relay MCP, jobs) has
+// no socket, so an ACP answer or failure stays on the ask instead of being pushed.
+func TestCompleteACPAskPullKeepsReplyOnTheAsk(t *testing.T) {
+	for _, tc := range []struct {
+		name, reply, errText, wantReason, wantText string
+	}{
+		{name: "answer", reply: "done", wantReason: "ack_with_msg", wantText: "done"},
+		{name: "error", errText: "prompt crashed", wantReason: "send_failed", wantText: "ACP error: prompt crashed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			asker := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+			responder := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+			reg := &fakeRegistry{peers: []*proto.Peer{asker, responder}}
+			f := &fakeTransport{}
+			asks := NewAskTracker(0)
+			cid, err := asks.Register(context.Background(), RegisterAskParams{
+				FromPeerID: asker.PeerID, FromPeerName: asker.DisplayName,
+				ToPeerID: responder.PeerID, ToPeerName: responder.DisplayName,
+				ReplyDelivery: "pull",
+			})
+			if err != nil {
+				t.Fatalf("register ask: %v", err)
+			}
+			d := NewPeerDelivery(reg, newRouterWithFake(f), f, asks, nil)
+
+			var reply, errText *string
+			if tc.errText != "" {
+				errText = &tc.errText
+			} else {
+				reply = &tc.reply
+			}
+			d.completeACPAsk(context.Background(), cid, reply, errText)
+
+			ask, ok := asks.Get(cid)
+			if !ok || !ask.Closed || ask.CloseReason != tc.wantReason {
+				t.Fatalf("expected closed %s ask, got %+v", tc.wantReason, ask)
+			}
+			if ask.ReplyText == nil || *ask.ReplyText != tc.wantText {
+				t.Fatalf("expected reply %q on the ask, got %+v", tc.wantText, ask.ReplyText)
+			}
+			if f.lastTarget != "" {
+				t.Fatalf("a pull reply must not be pushed, sent to %q", f.lastTarget)
+			}
+		})
+	}
+}
+
 // TestMarkOfflineSkipsCliFallback: a repowire_cli_fallback peer is never retired
 // on a failed push.
 func TestMarkOfflineSkipsCliFallback(t *testing.T) {
