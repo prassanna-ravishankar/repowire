@@ -94,10 +94,15 @@ correlation id as the operation id and closes the ask with the answer. The
 daemon reaches the agents through the `Gateway` Durable Object: it dials
 `GET /gateway` and holds a hibernating WebSocket.
 
-Results are reported, not waited on. An agent records each operation id
-before admitting it, and when the run settles it reports the result to the
-gateway. Each wake of the agent re-arms reports still outstanding, so an
-eviction mid-run still reports. The gateway keeps each report in a durable
+Results are reported, not waited on. An agent records each operation id and
+its pending run row before admitting it, and when the run settles it reports
+the result to the gateway; a report that arrives before its run row creates
+it. The run's model usage is allocated once, when it settles, and a retry
+resends that same allocation. While any report is outstanding a durable job
+retries it, every minute while runs are in flight and backing off to ten
+minutes while the gateway fails, so neither an eviction nor a failed report
+loses a result. Retirement is checked as the agent admits each submission,
+so a retire cannot race a submission into a new run. The gateway keeps each report in a durable
 outbox, sends it to the daemon, and resends everything unacknowledged on
 every connect. The daemon settles a report once and acknowledges it, so a run
 that finishes while the daemon is down is delivered when it reconnects.

@@ -2,12 +2,14 @@ import { DurableObject } from 'cloudflare:workers';
 import { Type, type Static, type TSchema } from '@earendil-works/pi-ai';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { createRegistry, GenerationTask, Harness, hook } from '@earendil-works/pi-durable';
-import { PiHarness } from 'agents/harness/pi';
-import { Lifecycle } from 'agents/lifecycle';
+import { PiHarness, type PiOperationResult } from 'agents/harness/pi';
+import { Lifecycle, type LifecycleJobContext, type LifecycleJobOutcome } from 'agents/lifecycle';
 import { createAI } from 'agents/models/pi-ai';
 import { authorize, body, HttpError, identifier, scopedName, source, type Caller } from './http';
 import { Gateway, Registry } from './gateway';
+import { addResponse, reportDelay, usageSince, zeroUsage, type Cumulative } from './ledger';
 import { LIMITS, type TokenUsage } from './prices';
+import { serial } from './serial';
 import { Workspace, type ExecOutcome } from './workspace';
 export { Gateway, Registry, Workspace };
 
@@ -23,9 +25,11 @@ interface Env {
   MODEL: string;
 }
 interface AgentConfig { owner: string; id: string; workspace: string | null; retired?: boolean }
-interface Cumulative { input: number; cacheRead: number; output: number; cost: number }
+// An admitted operation whose report the gateway has not accepted yet, under
+// `report:<op>`. `usage` is allocated once, when it settles, and resent as is.
+interface Unreported { source: string | null; startedAt?: string; usage?: TokenUsage }
 
-const zero = (): Cumulative => ({ input: 0, cacheRead: 0, output: 0, cost: 0 });
+const REPORT_JOB = 'report';
 
 export class HostedAgent extends DurableObject<Env> {
   private runtimeId = crypto.randomUUID();
@@ -43,6 +47,10 @@ export class HostedAgent extends DurableObject<Env> {
     defaults: { model: this.ai(this.env.MODEL) },
   });
   private lifecycle = Lifecycle.install(this).use(this.harness);
+  private kv = this.ctx.storage.kv;
+  // Admission and retirement take turns, so a retire cannot slip between the
+  // retired check and the submit.
+  private admission = serial();
   // Model requests per generation task, for the step limit. In memory: an
   // eviction mid-run resets the count, so the limit is a bound per wake.
   private steps = new Map<unknown, number>();
@@ -132,19 +140,46 @@ export class HostedAgent extends DurableObject<Env> {
     });
   }
 
-  // Admission (budget, retirement) is checked by the Worker before this runs.
+  // The Worker checks the budget first; retirement is checked here, in turn
+  // with retire(). A new operation records its report and its run row before
+  // pi admits it, so a crash in between still reports.
   async submit(text: string, operationId: string, source?: Record<string, string>) {
-    const config = await this.config();
-    if (!config) throw new Error('Agent does not exist');
-    await this.lifecycle.start();
-    // Recorded before admission, so a crash in between still reports.
-    await this.ctx.storage.put(`report:${operationId}`, true);
-    // A label for transcripts, not a permission: the model still reads the text.
-    const entry = source && { kind: 'repowire.message', data: source };
-    const receipt = await this.harness.submit(text, { operationId, entry });
-    if (receipt.accepted) await this.owner(config).runStarted(config.id, operationId, source?.from ?? (operationId.startsWith('web-') ? 'web' : null));
-    this.report(operationId);
-    return receipt;
+    return this.admission(async () => {
+      const config = await this.config();
+      if (!config) throw new Error('Agent does not exist');
+      if (config.retired) return { retired: true as const };
+      await this.lifecycle.start();
+      const key = `report:${operationId}`;
+      const fresh = !this.kv.get(key) && !this.kv.get(`reported:${operationId}`);
+      const owner = this.owner(config);
+      const from = source?.from ?? (operationId.startsWith('web-') ? 'web' : null);
+      const record = async () => {
+        const startedAt = new Date().toISOString();
+        this.kv.put<Unreported>(key, { source: from, startedAt });
+        this.kv.delete(`reported:${operationId}`);
+        await this.armReports();
+        await owner.runStarted(config.id, operationId, from, startedAt);
+      };
+      try {
+        if (fresh) await record();
+        // A label for transcripts, not a permission: the model still reads the text.
+        const entry = source && { kind: 'repowire.message', data: source };
+        const receipt = await this.harness.submit(text, { operationId, entry });
+        // pi took an operation the report job settled as not_found before it
+        // ever ran: it is new work and reports again.
+        if (receipt.accepted && !this.kv.get(key)) await record();
+        this.watch(operationId);
+        return receipt;
+      } catch (error) {
+        // Withdraw the pending run only when pi does not have the operation.
+        const known = await this.harness.pending().then((ops) => ops.some((op) => op.operationId === operationId), () => true);
+        if (fresh && !known) {
+          this.kv.delete(key);
+          try { await owner.runWithdrawn(config.id, operationId); } catch (cause) { console.error('Hosted run withdrawal failed', operationId, cause); }
+        }
+        throw error;
+      }
+    });
   }
 
   async abort(operationId?: string) {
@@ -153,53 +188,103 @@ export class HostedAgent extends DurableObject<Env> {
 
   // Retired agents refuse new input; the transcript stays readable.
   async retire() {
-    const config = await this.config();
-    if (!config) throw new Error('Agent does not exist');
-    await this.ctx.storage.put('config', { ...config, retired: true });
-    await this.harness.abort({});
-    return this.owner(config).retire(config.id);
+    return this.admission(async () => {
+      const config = await this.config();
+      if (!config) throw new Error('Agent does not exist');
+      await this.ctx.storage.put('config', { ...config, retired: true });
+      await this.harness.abort({});
+      return this.owner(config).retire(config.id);
+    });
   }
 
-  // Every submission is reported to the owner's gateway when it settles. The
-  // unreported ids are durable and each start re-arms their waits, so an
-  // eviction mid-run still reports once the run settles.
-  private reporting = new Set<string>();
+  // Every admitted operation is reported to the owner's gateway once it
+  // settles: by an in-memory wait while this object lives, and by one durable
+  // job that runs while any report is outstanding, so a failed report or an
+  // eviction is retried until the gateway accepts it.
+  private watching = new Set<string>();
 
   async onStart() {
-    const unreported = await this.ctx.storage.list({ prefix: 'report:' });
-    for (const key of unreported.keys()) this.report(key.slice('report:'.length));
+    const unreported = [...this.kv.list({ prefix: 'report:' })];
+    for (const [key] of unreported) this.watch(key.slice('report:'.length));
+    if (unreported.length) await this.armReports();
   }
 
-  private report(operationId: string) {
-    if (this.reporting.has(operationId)) return;
-    this.reporting.add(operationId);
+  async onJob({ job }: LifecycleJobContext): Promise<LifecycleJobOutcome | void> {
+    if (job.fn !== REPORT_JOB) return;
+    const { remaining, failed } = await this.sweepReports();
+    const failures = failed ? (this.kv.get<number>('reportFailures') ?? 0) + 1 : 0;
+    this.kv.put('reportFailures', failures);
+    if (remaining) return { rescheduleAt: Date.now() + reportDelay(failures) };
+  }
+
+  // Keeps the report job due while reports are outstanding; an earlier due
+  // time is kept.
+  private async armReports() {
+    const time = Date.now() + reportDelay(0);
+    const job = this.lifecycle.jobs.get(REPORT_JOB);
+    if (job && job.time <= time) return;
+    await this.lifecycle.jobs.push({ id: REPORT_JOB, fn: REPORT_JOB, time });
+  }
+
+  private watch(operationId: string) {
+    if (this.watching.has(operationId)) return;
+    this.watching.add(operationId);
     this.harness.wait(operationId)
-      .then(async (result) => {
-        const config = await this.config();
-        if (!config) return;
-        // Usage since the last report. Runs overlapping in time share it
-        // approximately; the totals stay exact.
-        const total = (await this.ctx.storage.get<Cumulative>('usage:total')) ?? zero();
-        const reported = (await this.ctx.storage.get<Cumulative>('usage:reported')) ?? zero();
-        const usage: TokenUsage = {
-          input: total.input - reported.input, cacheRead: total.cacheRead - reported.cacheRead,
-          output: total.output - reported.output, cost: { total: total.cost - reported.cost },
-        };
-        await this.owner(config).report({ agent: config.id, ...result, usage });
-        await this.ctx.storage.put('usage:reported', total);
-        await this.ctx.storage.delete(`report:${operationId}`);
-      })
-      .catch((error) => console.error('Hosted report failed; retried at next start', operationId, error))
-      .finally(() => this.reporting.delete(operationId));
+      .then((result) => this.deliver(operationId, result))
+      .catch((error) => console.error('Hosted report failed; the report job retries it', operationId, error))
+      .finally(() => this.watching.delete(operationId));
   }
 
-  private async meterResponse(usage?: { input: number; output: number; cacheRead: number; cost?: { total?: number } }) {
-    if (!usage) return;
-    const total = (await this.ctx.storage.get<Cumulative>('usage:total')) ?? zero();
-    await this.ctx.storage.put('usage:total', {
-      input: total.input + usage.input, cacheRead: total.cacheRead + usage.cacheRead,
-      output: total.output + usage.output, cost: total.cost + (usage.cost?.total ?? 0),
+  // Reports what has settled and is not already being reported.
+  private async sweepReports() {
+    const running = new Set((await this.harness.pending()).map((op) => op.operationId));
+    let remaining = 0;
+    let failed = false;
+    for (const [key] of [...this.kv.list({ prefix: 'report:' })]) {
+      const operationId = key.slice('report:'.length);
+      remaining++;
+      if (running.has(operationId) || this.watching.has(operationId)) continue;
+      try {
+        await this.deliver(operationId, await this.harness.wait(operationId));
+        remaining--;
+      } catch (error) {
+        failed = true;
+        console.error('Hosted report failed; retrying later', operationId, error);
+      }
+    }
+    return { remaining, failed };
+  }
+
+  // Usage since the last allocation goes to the run that settles. It is
+  // allocated in one synchronous step and stored with the report, so a retry
+  // or a concurrent report sends the same delta. Runs overlapping in time
+  // share it approximately; the totals stay exact.
+  private async deliver(operationId: string, result: PiOperationResult) {
+    const key = `report:${operationId}`;
+    const stored = this.kv.get<Unreported | true>(key);
+    if (!stored) return;
+    let pending: Unreported = stored === true ? { source: null } : stored;
+    if (!pending.usage) {
+      const total = this.kv.get<Cumulative>('usage:total') ?? zeroUsage();
+      pending = { ...pending, usage: usageSince(total, this.kv.get<Cumulative>('usage:reported') ?? zeroUsage()) };
+      const allocated = pending;
+      this.ctx.storage.transactionSync(() => {
+        this.kv.put(key, allocated);
+        this.kv.put('usage:reported', total);
+      });
+    }
+    const config = await this.config();
+    if (!config) return;
+    await this.owner(config).report({ agent: config.id, ...result, usage: pending.usage, source: pending.source, startedAt: pending.startedAt });
+    this.ctx.storage.transactionSync(() => {
+      this.kv.delete(key);
+      this.kv.put(`reported:${operationId}`, true);
     });
+  }
+
+  private meterResponse(usage?: { input: number; output: number; cacheRead: number; cost?: { total?: number } }) {
+    if (!usage) return;
+    this.kv.put('usage:total', addResponse(this.kv.get<Cumulative>('usage:total') ?? zeroUsage(), usage));
   }
 
   async status() {
@@ -256,10 +341,13 @@ async function agentRoute(env: Env, caller: Caller, request: Request, id: string
     if (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 16000) {
       throw new HttpError(400, 'text must contain 1–16000 characters');
     }
+    // A fast path: the agent checks retirement again as it admits.
     if (config.retired) throw new HttpError(410, 'Agent is retired');
     const refusal = await directory.admit(id);
     if (refusal) throw new HttpError(402, refusal);
-    return json(await agent.submit(input.text, operationId, source(input.source)), 202);
+    const receipt = await agent.submit(input.text, operationId, source(input.source));
+    if ('retired' in receipt) throw new HttpError(410, 'Agent is retired');
+    return json(receipt, 202);
   }
   if (rest === 'runs' && request.method === 'GET') return json({ items: await directory.runs(id) });
   if (rest === 'abort' && request.method === 'POST') {

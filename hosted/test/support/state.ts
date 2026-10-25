@@ -26,16 +26,24 @@ export function fakeState() {
       return cursor([], Number(statement.run(...args).changes));
     },
   };
+  // SQLite-backed objects share one store between the async and sync KV APIs.
+  const list = (prefix = '') => [...kv].filter(([key]) => key.startsWith(prefix)).sort(([a], [b]) => a.localeCompare(b));
   const storage = {
     sql,
+    kv: {
+      get: (key: string) => kv.get(key),
+      put: (key: string, value: unknown) => void kv.set(key, value),
+      delete: (key: string) => kv.delete(key),
+      list: ({ prefix }: { prefix?: string } = {}) => list(prefix),
+    },
+    transactionSync: <T>(closure: () => T) => closure(),
     get: async (key: string) => kv.get(key),
     put: async (key: string | Record<string, unknown>, value?: unknown) => {
       if (typeof key === 'string') kv.set(key, value);
       else for (const [k, v] of Object.entries(key)) kv.set(k, v);
     },
     delete: async (key: string) => kv.delete(key),
-    list: async ({ prefix = '' }: { prefix?: string } = {}) =>
-      new Map([...kv].filter(([key]) => key.startsWith(prefix)).sort(([a], [b]) => a.localeCompare(b))),
+    list: async ({ prefix }: { prefix?: string } = {}) => new Map(list(prefix)),
   };
   return { storage, getWebSockets: () => [], acceptWebSocket: () => {}, getTags: () => [] };
 }

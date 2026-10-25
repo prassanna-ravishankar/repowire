@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
+import { serial } from './serial';
 
 export interface ExecResult { stdout: string; stderr: string; exitCode: number }
 
@@ -14,13 +15,7 @@ export interface ExecOutcome {
 // Workspace lifetime is independent of any agent. Commands sharing a workspace
 // serialize with checkpointing so a snapshot never races another command.
 export class Workspace extends DurableObject {
-  private queue: Promise<unknown> = Promise.resolve();
-
-  private exclusive<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.queue.then(operation);
-    this.queue = result.catch(() => {});
-    return result;
-  }
+  private exclusive = serial();
 
   exec(command: string): Promise<ExecOutcome> {
     return this.exclusive(async () => {
