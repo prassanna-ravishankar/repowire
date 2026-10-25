@@ -485,3 +485,89 @@ func TestHostedReplyHeldOnlyInMemoryIsResent(t *testing.T) {
 		t.Fatal("the delivery must stay open for the resend")
 	}
 }
+
+func (f *fakeHostedRuntime) submittedOp(op string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.submitted[op]
+	return ok
+}
+
+func (h *Hosted) inflightFor(id proto.PeerID) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.inflight[id]
+}
+
+// Restore submits each unsettled delivery again: one the runtime never saw
+// (the daemon stopped between recording and submitting) reaches it and
+// settles on its report, and one the runtime already holds is not counted
+// twice.
+func TestHostedRestoreResubmitsUnsettledDeliveries(t *testing.T) {
+	f := newHostedFixture(t)
+	held := f.ask(t)
+	lost, _, err := f.hosted.record(context.Background(), map[string]any{
+		"agent_id": string(f.target.PeerID), "operation_id": "notify-lost", "kind": "notify",
+		"from_peer_id": string(f.asker.PeerID), "from_peer_name": "alpha",
+		"to_peer_id": string(f.target.PeerID), "to_peer_name": "helper-hosted", "text": "never submitted",
+	})
+	if err != nil || lost == "" {
+		t.Fatalf("record: %q %v", lost, err)
+	}
+	f.hosted.Close()
+
+	runtime := newFakeHostedRuntime()
+	runtime.submitted[held] = "already held"
+	reg := &fakeHostedRegistry{}
+	next := NewHosted(reg, runtime, f.store, "test")
+	t.Cleanup(next.Close)
+	next.Restore(context.Background())
+	deadline := time.Now().Add(2 * time.Second)
+	for !runtime.submittedOp("notify-lost") {
+		if time.Now().After(deadline) {
+			t.Fatal("restore did not resubmit the delivery the runtime never saw")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := next.inflightFor(f.target.PeerID); got != 2 {
+		t.Fatalf("each unsettled delivery counts once, got %d", got)
+	}
+	for _, op := range []string{held, "notify-lost"} {
+		if err := next.Report(context.Background(), string(f.target.PeerID), op, HostedResult{Status: "done", Text: "ok"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if reg.lastStatus() != proto.StatusOnline || f.openDeliveries(t) != 0 {
+		t.Fatalf("both deliveries must settle: status=%q open=%d", reg.lastStatus(), f.openDeliveries(t))
+	}
+}
+
+// A resubmission the runtime refuses settles unanswered, so its asker or job
+// hears instead of waiting on a report that will not come.
+func TestHostedRestoreSettlesARefusedResubmission(t *testing.T) {
+	f := newHostedFixture(t)
+	cid := f.ask(t)
+	f.hosted.Close()
+
+	runtime := newFakeHostedRuntime()
+	runtime.submitErr = &HostedError{Status: 410, Message: "Agent retired"}
+	reg := &fakeHostedRegistry{}
+	next := NewHosted(reg, runtime, f.store, "test")
+	t.Cleanup(next.Close)
+	settled := make(chan HostedResult, 1)
+	next.OnSettled("record", func(_ context.Context, d HostedDelivery, result HostedResult) error {
+		if d.CorrelationID == cid {
+			settled <- result
+		}
+		return nil
+	})
+	next.Restore(context.Background())
+	select {
+	case result := <-settled:
+		if result.Status != "unanswered" || result.Reason != "submit_failed" {
+			t.Fatalf("a refused resubmission must settle unanswered, got %+v", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a refused resubmission was not settled")
+	}
+}

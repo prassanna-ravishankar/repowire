@@ -307,7 +307,10 @@ func (h *Hosted) Retire(ctx context.Context, id proto.PeerID) error {
 
 // Restore re-registers every hosted peer from its durable mapping and marks
 // it busy for submissions a previous daemon left unsettled; their reports
-// arrive once the gateway connects. Retired peers stay retired.
+// arrive once the gateway connects. Retired peers stay retired. Each
+// unsettled submission is submitted again under its operation id, in the
+// background: the previous daemon may have stopped before the runtime had
+// it, and the runtime ignores one it already holds.
 func (h *Hosted) Restore(ctx context.Context) {
 	if h.store == nil {
 		return
@@ -328,15 +331,46 @@ func (h *Hosted) Restore(ctx context.Context) {
 			log.Printf("hosted: restore %s: %v", m.SessionID, err)
 		}
 	}
+	var open []*state.Operation
 	for _, status := range []string{"queued", "running"} {
 		ops, err := h.store.ListOperations(ctx, hostedDeliveryKind, status)
 		if err != nil {
+			log.Printf("hosted: restore %s deliveries: %v", status, err)
 			continue
 		}
 		for _, op := range ops {
 			to, _ := op.Target["to_peer_id"].(string)
 			h.busy(proto.PeerID(to), +1)
+			open = append(open, op)
 		}
+	}
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		for _, op := range open {
+			h.resubmit(op)
+		}
+	}()
+}
+
+// resubmit sends an unsettled submission again. A refusal settles it
+// unanswered, so its asker or job hears; a transport error leaves it open
+// for the runtime's report or the next start.
+func (h *Hosted) resubmit(op *state.Operation) {
+	str := func(key string) string { value, _ := op.Target[key].(string); return value }
+	agent, operationID := str("agent_id"), str("operation_id")
+	_, err := h.runtime.Submit(h.ctx, agent, operationID, str("text"), HostedSource{
+		From: str("from_peer_name"), FromPeerID: str("from_peer_id"), Type: str("kind"), CorrelationID: str("correlation_id")})
+	var refused *HostedError
+	switch {
+	case err == nil:
+	case errors.As(err, &refused):
+		log.Printf("hosted: resubmit %s/%s refused: %v", agent, operationID, err)
+		if err := h.Report(h.ctx, agent, operationID, HostedResult{Status: "unanswered", Reason: "submit_failed"}); err != nil {
+			log.Printf("hosted: settle refused resubmit %s/%s: %v", agent, operationID, err)
+		}
+	default:
+		log.Printf("hosted: resubmit %s/%s: %v; left for the runtime's report or the next start", agent, operationID, err)
 	}
 }
 
