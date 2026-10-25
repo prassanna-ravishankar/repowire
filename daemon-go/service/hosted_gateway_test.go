@@ -26,7 +26,8 @@ func (echoTools) RunHostedTool(_ context.Context, peerID proto.PeerID, tool stri
 func TestHostedGatewayRunsCallsAndReconnects(t *testing.T) {
 	conns := make(chan *websocket.Conn)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/gateway" || r.Header.Get("Authorization") != "Bearer secret" {
+		if r.URL.Path != "/gateway" || r.Header.Get("Authorization") != "Bearer secret" ||
+			r.Header.Get("X-Repowire-Machine") != "test" || r.Header.Get("X-Repowire-Version") != "9.9.9" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -40,7 +41,7 @@ func TestHostedGatewayRunsCallsAndReconnects(t *testing.T) {
 
 	hosted := NewHosted(&fakeHostedRegistry{}, newFakeHostedRuntime(), nil, "test")
 	defer hosted.Close()
-	hosted.Connect(srv.URL+"/", "secret", echoTools{})
+	hosted.Connect(srv.URL+"/", "secret", "9.9.9", echoTools{})
 
 	call := func(conn *websocket.Conn, tool string) gatewayFrame {
 		t.Helper()

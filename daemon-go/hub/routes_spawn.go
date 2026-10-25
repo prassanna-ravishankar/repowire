@@ -528,6 +528,15 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 		return KillResponse{}, err
 	}
 
+	// A hosted peer has no pane; its proof is that this daemon owns it as a
+	// hosted peer. Retire runs remote first, then local.
+	if h.hosted.Owns(resolved) {
+		if err := h.hosted.Retire(ctx, resolved.PeerID); err != nil {
+			return KillResponse{}, &service.SpawnError{Status: http.StatusBadGateway, Detail: err.Error()}
+		}
+		return KillResponse{OK: true, TmuxKilled: nil}, nil
+	}
+
 	peerCopy := h.peerWithAdoptedOwnership(resolved)
 	proof := h.destructivePaneProof(peerCopy)
 	if !proof.ok || proof.paneID == "" {

@@ -20,19 +20,28 @@ type fakeHostedRuntime struct {
 	created   []string
 	submitted map[string]string
 	sources   map[string]HostedSource
+	retired   []string
 	submitErr error
 	createErr error
+	retireErr error
 }
 
 func newFakeHostedRuntime() *fakeHostedRuntime {
 	return &fakeHostedRuntime{submitted: map[string]string{}, sources: map[string]HostedSource{}}
 }
 
-func (f *fakeHostedRuntime) CreateAgent(_ context.Context, id string, _ *string) error {
+func (f *fakeHostedRuntime) CreateAgent(_ context.Context, id, _ string, _ *string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.created = append(f.created, id)
 	return f.createErr
+}
+
+func (f *fakeHostedRuntime) RetireAgent(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retired = append(f.retired, id)
+	return f.retireErr
 }
 
 func (f *fakeHostedRuntime) Submit(_ context.Context, _, op, text string, source HostedSource) (bool, error) {
@@ -296,5 +305,19 @@ func TestHostedReplyAfterRestartQueuesForAbsentAsker(t *testing.T) {
 		HostedResult{Status: "done", Text: "late answer"})
 	if len(queue.enqueued) != 1 || queue.enqueued[0].PeerID != "repow-default-gone" || !strings.Contains(queue.enqueued[0].Text, "[ack #ask-gone from @helper-hosted] late answer") {
 		t.Fatalf("expected the reply queued for the asker, got %+v", queue.enqueued)
+	}
+}
+
+// Retire refuses the runtime first and keeps the peer when that fails; an
+// agent the runtime no longer knows is still retired locally.
+func TestHostedRetireIsRemoteFirst(t *testing.T) {
+	f := newHostedFixture(t)
+	f.runtime.retireErr = &HostedError{Status: 502, Message: "upstream down"}
+	if err := f.hosted.Retire(context.Background(), f.target.PeerID); err == nil || len(f.hostReg.offline) != 0 {
+		t.Fatalf("a failed remote retire must keep the peer: err=%v offline=%v", err, f.hostReg.offline)
+	}
+	f.runtime.retireErr = &HostedError{Status: 404, Message: "Agent not found"}
+	if err := f.hosted.Retire(context.Background(), f.target.PeerID); err != nil || len(f.hostReg.offline) != 1 {
+		t.Fatalf("an unknown remote agent must still retire locally: err=%v offline=%v", err, f.hostReg.offline)
 	}
 }

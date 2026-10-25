@@ -379,7 +379,7 @@ func runDaemon() {
 	// after the job services in (9), which observe their runs.
 	var hosted *service.Hosted
 	if cfg.Hosted.URL != "" && cfg.Hosted.Token != "" {
-		hosted = service.NewHosted(reg, service.NewHostedClient(cfg.Hosted.URL, cfg.Hosted.Token), store, selfMachine)
+		hosted = service.NewHosted(reg, service.NewHostedClient(cfg.Hosted.URL, cfg.Hosted.Token, selfMachine), store, selfMachine)
 		delivery.WithHosted(hosted)
 		h.WithHosted(hosted)
 	}
@@ -485,7 +485,7 @@ func runDaemon() {
 			}
 		})
 		hosted.Restore(ctx)
-		hosted.Connect(cfg.Hosted.URL, cfg.Hosted.Token, h)
+		hosted.Connect(cfg.Hosted.URL, cfg.Hosted.Token, cli.Version, h)
 	}
 
 	// (10) Relay/shares config. A nil-or-keyless RelayConfig leaves /shares as
