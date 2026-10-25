@@ -107,19 +107,23 @@ test('a submit that never reached the agent settles as not delivered, and a late
   assert.equal(pi.submitted.size, 0);
 });
 
-test('a request on its way is pending, not undelivered', async () => {
+test('a read while the submission holds admission returns pending within its wait', async () => {
   const { call, agent } = relay();
   let release!: () => void;
   const start = agent.lifecycle.start;
   agent.lifecycle.start = () => new Promise<void>((resolve) => { release = resolve; });
   const sending = call('POST', '/requests', ask(11));
   await flush();
-  const reading = call('GET', `/requests/${id(11)}?requester=relay-mcp-g1`);
-  await flush();
+  for (const wait of [0, 1]) {
+    const began = Date.now();
+    assert.deepEqual(await (await call('GET', `/requests/${id(11)}?requester=relay-mcp-g1&wait=${wait}`)).json(),
+      { correlation_id: id(11), status: 'pending' });
+    assert.ok(Date.now() - began < 1500, `wait=${wait} took ${Date.now() - began}ms`);
+  }
   release();
   agent.lifecycle.start = start;
   assert.equal((await sending).status, 202);
-  assert.deepEqual(await (await reading).json(), { correlation_id: id(11), status: 'pending' });
+  assert.deepEqual(await (await call('GET', `/requests/${id(11)}?requester=relay-mcp-g1`)).json(), { correlation_id: id(11), status: 'pending' });
 });
 
 test('a step-limited run reads the same before and after its report lands', async () => {

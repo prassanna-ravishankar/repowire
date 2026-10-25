@@ -490,6 +490,15 @@ async function submitRequest(env: Env, owner: string, input: Record<string, unkn
   return json({ request_id: id, state: 'accepted', created: true }, 202);
 }
 
+const RECONCILE_MS = 1000;
+
+// value, or null once ms have passed; the work itself carries on.
+async function within<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([work, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), Math.max(ms, 0)); })])
+    .finally(() => clearTimeout(timer));
+}
+
 // pending, or resolved with how the run ended. A request whose run the
 // runtime never admitted resolves as not_delivered.
 async function waitRequest(env: Env, owner: string, id: string, requester: string, wait: number) {
@@ -506,16 +515,17 @@ async function waitRequest(env: Env, owner: string, id: string, requester: strin
   const run = await directory.run(known.agent, id, true);
   if (run?.settled_at) return resolved(String(run.status), run.reason as string | null, run.answer as string | null);
   const agent = env.AGENTS.getByName(scopedName(owner, known.agent));
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const result = await Promise.race([
-    agent.outcome(id),
-    new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), wait * 1000); }),
-  ]).finally(() => clearTimeout(timer));
+  // One deadline for the whole read. Reconciliation gets at least a moment,
+  // so even wait=0 can settle a request that never arrived.
+  const deadline = Date.now() + wait * 1000;
+  const result = await within(agent.outcome(id), deadline - Date.now());
   if (!result) return pending;
   // pi does not have it: still on its way, or never delivered. The agent
-  // decides in turn with admission and refuses it afterwards.
+  // decides in turn with admission and refuses it afterwards; while a
+  // submission holds admission the read stays pending.
   if (result.reason === 'not_found') {
-    if (known.state !== 'submitting' || !await agent.forget(id)) return pending;
+    if (known.state !== 'submitting') return pending;
+    if (!await within(agent.forget(id), Math.max(deadline - Date.now(), RECONCILE_MS))) return pending;
     await directory.requestUndelivered(id);
     return resolved('unanswered', 'not_delivered', null);
   }
