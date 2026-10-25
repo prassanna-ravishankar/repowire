@@ -162,3 +162,30 @@ test('a retire that wins the race refuses the submission behind it', async () =>
   assert.deepEqual(receipt, { retired: true });
   assert.equal(pi.submitted.size, 0);
 });
+
+test('a run past the step limit is aborted and fails as step_limit', async () => {
+  const { agent, directory, pi } = hostedAgent();
+  await agent.submit('loop', 'op-a');
+  for (let request = 0; request < 24; request++) await agent.countStep();
+  assert.deepEqual(pi.aborted, []);
+  // The count is durable: an eviction mid-run does not reset it.
+  agent.watching = new Set();
+  await agent.countStep();
+  assert.deepEqual(pi.aborted, ['op-a']);
+  pi.settle('op-a', { status: 'unanswered', reason: 'aborted' });
+  await agent.onStart();
+  await flush();
+  const [run] = directory.runs('a');
+  assert.match(String(run.reason), /^step_limit/);
+  assert.equal(directory.agent('a')?.state, 'failed');
+});
+
+test('an abort the user asked for stays an abort', async () => {
+  const { agent, directory, pi } = hostedAgent();
+  await agent.submit('one', 'op-a');
+  await agent.countStep();
+  pi.settle('op-a', { status: 'unanswered', reason: 'aborted' });
+  await flush();
+  assert.equal(directory.runs('a')[0].reason, 'aborted');
+  assert.equal(directory.agent('a')?.state, 'idle');
+});
