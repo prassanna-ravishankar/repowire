@@ -375,6 +375,14 @@ func runDaemon() {
 		delivery.WithInbox(inbox)
 		h.WithInbox(inbox)
 	}
+	// (6c) Hosted agents: managed peers on the hosted runtime. They start
+	// after the services in (9), which observe their runs.
+	var hosted *service.Hosted
+	if cfg.Hosted.URL != "" && cfg.Hosted.Token != "" {
+		hosted = service.NewHosted(reg, service.NewHostedClient(cfg.Hosted.URL, cfg.Hosted.Token), store, selfMachine)
+		delivery.WithHosted(hosted)
+		h.WithHosted(hosted)
+	}
 	transport.SetACPPermissionHandler(service.NewACPPermissionHandler(asks, func(kind string, data map[string]any) {
 		reg.AddEvent(ctx, kind, data)
 	}))
@@ -460,6 +468,22 @@ func runDaemon() {
 	jobCompletion := service.NewJobCompletion(store, asks, sessionControl, reg, delivery)
 	reg.OnTerminalOffline = jobCompletion.OnPeerTerminalOffline
 	scheduler := service.NewScheduler(store, delivery)
+	// Hosted runs report like hook turns: to the chat feed. Restore
+	// re-registers hosted peers and marks the ones with unsettled work busy;
+	// the gateway carries their reports.
+	if hosted != nil {
+		hosted.OnSettled(func(ctx context.Context, run service.HostedDelivery, result service.HostedResult) {
+			turn := func(role, text string) {
+				reg.AddEvent(ctx, "chat_turn", map[string]any{"peer": run.ToPeerName, "peer_id": run.ToPeerID, "role": role, "text": text})
+			}
+			turn("user", run.Text)
+			if result.Status == "done" {
+				turn("assistant", result.Text)
+			}
+		})
+		hosted.Restore(ctx)
+		hosted.Connect(cfg.Hosted.URL, cfg.Hosted.Token)
+	}
 
 	// (10) Relay/shares config. A nil-or-keyless RelayConfig leaves /shares as
 	// the documented degrade (503 POST/DELETE, empty-list GET) — i.e. the 503
@@ -599,7 +623,8 @@ func runDaemon() {
 	// accepting new connections but does not close already-hijacked sockets. A
 	// live WS read loop can still be running when store.Close() returns; closing
 	// it requires a hub-level socket sweep, which is out of scope for this fix.
-	inbox.Close() // joins in-flight surface pushes before the store closes
+	inbox.Close()  // joins in-flight surface pushes before the store closes
+	hosted.Close() // drops the gateway; unsettled submissions report after the next connect
 	delivery.Close()
 	transport.CloseACP()
 	reg.Close()

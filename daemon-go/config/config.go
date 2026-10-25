@@ -21,6 +21,7 @@ const (
 type Config struct {
 	Daemon      DaemonConfig      `yaml:"daemon"`
 	Relay       RelayConfig       `yaml:"relay"`
+	Hosted      HostedConfig      `yaml:"hosted"`
 	Telegram    TelegramConfig    `yaml:"telegram"`
 	Slack       SlackConfig       `yaml:"slack"`
 	Human       HumanConfig       `yaml:"human"`
@@ -87,6 +88,13 @@ type RelayConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	URL     string `yaml:"url"`
 	APIKey  string `yaml:"api_key"`
+}
+
+// HostedConfig points the daemon at a hosted runtime for managed agents.
+// Both fields are required; either empty leaves hosted spawn disabled.
+type HostedConfig struct {
+	URL   string `yaml:"url"`
+	Token string `yaml:"token"`
 }
 
 type TelegramConfig struct {
@@ -274,6 +282,12 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("REPOWIRE_SPAWN_ALLOWED_PATHS"); v != "" {
 		cfg.Daemon.Spawn.AllowedPaths = SplitCSV(v)
+	}
+	if v := os.Getenv("REPOWIRE_HOSTED__URL"); v != "" {
+		cfg.Hosted.URL = v
+	}
+	if v := os.Getenv("REPOWIRE_HOSTED__TOKEN"); v != "" {
+		cfg.Hosted.Token = v
 	}
 	if v := firstEnv("REPOWIRE_RELAY_URL", "REPOWIRE_RELAY__URL"); v != "" {
 		cfg.Relay.URL = v

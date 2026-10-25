@@ -366,7 +366,8 @@ Request cancellation for a tracked work job. Returns status JSON. Queued jobs mo
 ### `spawn_peer`
 
 ```text
-spawn_peer(path: str, backend: str, profile: str | None = None, circle: str | None = None, message: str | None = None) -> str
+spawn_peer(path: str, backend: str, profile: str | None = None, circle: str | None = None, message: str | None = None,
+           workspace: str | None = None) -> str
 ```
 
 Spawn a new agent session in a project directory. `backend` must have a launch profile in `daemon.spawn.commands` in `~/.repowire/config.yaml`; spawn is off by default until you configure at least one backend and one allowed path. Pass `profile` to append args from `daemon.spawn.profiles.<backend>.<profile>` for model/profile selection. If `circle` is omitted, the MCP tool uses the registered caller's current circle; anonymous HTTP MCP callers must provide one. In window-boundary mode it also inherits the caller's tmux window. Agents cannot override that scope, while orchestrators may target another circle. With the default session boundary, pass `circle="default"` explicitly to target the `default` tmux session. `command` remains accepted as a deprecated compatibility selector for one release and bypasses profile resolution.
@@ -378,6 +379,8 @@ Its stdio MCP shim validates the bridge's daemon-minted runtime certificate for
 Codex's per-call `_meta.threadId`, so tool calls from a shared App Server MCP
 process resolve to that same native-thread `peer_id`.
 The optional `message` is an opening prompt for every backend. The daemon launches the process, waits for the new peer to register on its pane (up to 90 seconds), then delivers the message as a normal notify from the spawner, bypassing the first-turn gate that holds other traffic until the seed lands. The result reports `opening_message=awaiting_registration`; delivery or failure is journaled as `spawn_seed_delivered` / `spawn_seed_failed` events so a lost opening prompt is visible in the dashboard timeline.
+
+`backend="hosted"` (prototype) spawns a managed agent on the hosted runtime configured under [`hosted`](configuration.md#hosted) instead of a tmux process. `path` only names the peer and is not checked against `daemon.spawn.allowed_paths`; `profile` and `command` do not apply. `workspace` attaches a sandbox shared with other hosted agents that name it, and cannot change after the first spawn. The daemon registers the peer, so its `peer_id` is also the hosted agent's id; the opening `message` is delivered at once (`opening_message=delivered`). See [agent backends](../concepts/agent-backends.md#hosted-agents).
 
 ### `kill_peer`
 

@@ -113,6 +113,10 @@ type Hub struct {
 	// routing is the optional ask router and research ledger, wired via
 	// WithRouting. nil behaves as mode off with recording off.
 	routing *routingDeps
+
+	// hosted spawns managed agents on the hosted runtime, wired via
+	// WithHosted. nil → spawn with backend=hosted is a 503.
+	hosted *service.Hosted
 }
 
 func (h *Hub) WithJobCompletion(completion *service.JobCompletion) *Hub {
@@ -161,6 +165,12 @@ func (h *Hub) WithLifecycle(lh *LifecycleHandler) *Hub {
 func (h *Hub) WithMessaging(delivery *service.PeerDelivery, traces deliveryTracer) *Hub {
 	h.deliveryTraces = traces
 	h.messaging = NewMessagingRoutes(delivery, h.reg, traces)
+	return h
+}
+
+// WithHosted enables spawning managed agents on the hosted runtime.
+func (h *Hub) WithHosted(hosted *service.Hosted) *Hub {
+	h.hosted = hosted
 	return h
 }
 
