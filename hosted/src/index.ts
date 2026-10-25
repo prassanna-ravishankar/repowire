@@ -310,19 +310,19 @@ export default {
       if (admin) {
         if (caller.role !== 'control' || caller.owner) throw new HttpError(403, 'Admin routes need the control token without an owner');
         if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed');
-        return adminRoute(env, admin[1], url);
+        return await adminRoute(env, admin[1], url);
       }
       if (url.pathname === '/gateway' && request.method === 'GET') {
         if (caller.role !== 'daemon') throw new HttpError(403, 'The gateway is for the daemon token');
-        return env.GATEWAYS.getByName(ownerOf(caller)).fetch(request);
+        return await env.GATEWAYS.getByName(ownerOf(caller)).fetch(request);
       }
       if (url.pathname === '/events' && request.method === 'GET') {
-        return env.GATEWAYS.getByName(ownerOf(caller)).fetch(new Request('https://gateway/events', request));
+        return await env.GATEWAYS.getByName(ownerOf(caller)).fetch(new Request('https://gateway/events', request));
       }
       const directory = () => env.GATEWAYS.getByName(ownerOf(caller));
       if (url.pathname === '/agents') {
         if (request.method === 'GET') return json({ items: await directory().agents() });
-        if (request.method === 'POST') return createAgent(env, caller, request, await body(request));
+        if (request.method === 'POST') return await createAgent(env, caller, request, await body(request));
       }
       if (url.pathname === '/workspaces' && request.method === 'GET') return json({ items: await directory().workspaces() });
       if (url.pathname === '/clients' && request.method === 'GET') return json(await directory().clients());
