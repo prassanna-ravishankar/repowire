@@ -407,3 +407,20 @@ func TestHostedFastReportAndDuplicateLeavePeerIdle(t *testing.T) {
 		t.Fatalf("a duplicate submission must settle at once: status=%q open=%d", got, f.openDeliveries(t))
 	}
 }
+
+// A resend of a delivery still open reuses its record, so the runtime's one
+// report settles the only record and the peer goes idle.
+func TestHostedResendOfAnOpenDeliveryReusesItsRecord(t *testing.T) {
+	f := newHostedFixture(t)
+	cid := f.ask(t)
+	if _, err := f.delivery.DeliverAsk(context.Background(), DeliverAskParams{FromPeer: "alpha", ToPeer: "helper-hosted", Text: "again", CorrelationID: cid}); err != nil {
+		t.Fatal(err)
+	}
+	if open := f.openDeliveries(t); open != 1 {
+		t.Fatalf("a resend must reuse the open record, got %d open", open)
+	}
+	f.report(cid, HostedResult{Status: "done", Text: "42"})
+	if got := f.hostReg.lastStatus(); got != proto.StatusOnline || f.openDeliveries(t) != 0 {
+		t.Fatalf("the report must settle the only record: status=%q open=%d", got, f.openDeliveries(t))
+	}
+}

@@ -197,9 +197,13 @@ type Hosted struct {
 	inflight map[proto.PeerID]int
 	// settling serializes reports, so a resent report settles at most once.
 	settling sync.Mutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	// recording serializes finding or creating a delivery's record. It is not
+	// settling: an observer may deliver (a reply to a hosted asker) while a
+	// report holds settling.
+	recording sync.Mutex
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 func NewHosted(reg hostedRegistry, runtime HostedRuntime, store *state.Store, machine string) *Hosted {
@@ -345,42 +349,59 @@ func (h *Hosted) Deliver(ctx context.Context, kind, correlationID string, from *
 	}
 	framed := hooks.FormatInboundMessage(fromName, fromRole, string(target.DisplayName), kind, correlationID, text)
 	record["text"] = framed
-	opID, err := h.record(ctx, record)
+	opID, reused, err := h.record(ctx, record)
 	if err != nil {
 		return nil, err
 	}
 	// The peer turns busy before the runtime can report, so a report that
-	// lands while Submit is still returning brings it back to idle.
-	h.busy(target.PeerID, +1)
+	// lands while Submit is still returning brings it back to idle. A resend
+	// of an open delivery is already counted.
+	if !reused {
+		h.busy(target.PeerID, +1)
+	}
 	accepted, err := h.runtime.Submit(ctx, string(target.PeerID), operationID, framed,
 		HostedSource{From: fromName, FromPeerID: fromID, Type: kind, CorrelationID: correlationID})
 	if err != nil {
-		h.fail(opID, "submit_failed", err.Error())
-		h.busy(target.PeerID, -1)
+		if !reused {
+			h.fail(opID, "submit_failed", err.Error())
+			h.busy(target.PeerID, -1)
+		}
 		return nil, fmt.Errorf("hosted submit to %s: %w", target.DisplayName, err)
 	}
-	if !accepted && h.store != nil && opID != "" {
-		// The runtime already holds this operation and reports it once, against
-		// the first record; this one settles now.
+	if !accepted && !reused && h.store != nil && opID != "" {
+		// The runtime already settled this operation, against an earlier
+		// record; this one settles now.
 		_, _ = h.store.CompleteOperation(ctx, opID, nil, map[string]any{"outcome": "duplicate"})
 		h.busy(target.PeerID, -1)
 	}
 	return map[string]any{"status": "accepted", "operation_id": operationID, "duplicate": !accepted}, nil
 }
 
-func (h *Hosted) record(ctx context.Context, target map[string]any) (string, error) {
+// record returns the open record for the delivery's agent and operation id,
+// reused, or creates one, so a resend never adds a second record for the
+// runtime's one report.
+func (h *Hosted) record(ctx context.Context, target map[string]any) (string, bool, error) {
 	if h.store == nil {
-		return "", nil
+		return "", false, nil
+	}
+	h.recording.Lock()
+	defer h.recording.Unlock()
+	open, err := h.unsettled(ctx, target["agent_id"].(string), target["operation_id"].(string))
+	if err != nil {
+		return "", false, err
+	}
+	if open != nil {
+		return open.OperationID, true, nil
 	}
 	op, err := h.store.CreateOperation(ctx, hostedDeliveryKind, target, nil)
 	if err != nil {
-		return "", fmt.Errorf("persist hosted delivery: %w", err)
+		return "", false, fmt.Errorf("persist hosted delivery: %w", err)
 	}
 	strategy := "hosted_submit"
 	if _, err := h.store.StartAttempt(ctx, op.OperationID, &strategy, nil); err != nil {
-		return "", fmt.Errorf("start hosted delivery: %w", err)
+		return "", false, fmt.Errorf("start hosted delivery: %w", err)
 	}
-	return op.OperationID, nil
+	return op.OperationID, false, nil
 }
 
 func (h *Hosted) fail(opID, reason, detail string) {
