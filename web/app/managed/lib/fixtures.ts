@@ -89,10 +89,21 @@ export function fixtures(now = Date.now()) {
     relay: { daemons_connected: 4, users_with_daemons: 3, oauth_grants_active: 5 },
   };
 
+  const owner = (id: string, byState: AdminOwner["agents_by_state"], workspaces: number, running: number, daemons: number, minutesAgo: number, today: number, month: number): AdminOwner => ({
+    owner: id,
+    agents: Object.values(byState).reduce((a, b) => a + b, 0),
+    agents_by_state: byState,
+    workspaces,
+    running_containers: running,
+    connected_daemons: daemons,
+    last_active_at: iso(now, minutesAgo),
+    today: usage(today),
+    month: usage(month),
+  });
   const owners: AdminOwner[] = [
-    { owner: "token-3f9a2c", agents: 6, workspaces: 3, last_active_at: iso(now, 1), month: usage(9.2) },
-    { owner: "token-81bd07", agents: 3, workspaces: 1, last_active_at: iso(now, 60 * 5), month: usage(2.1) },
-    { owner: "token-c0ffee", agents: 2, workspaces: 1, last_active_at: iso(now, 60 * 24 * 9), month: usage(0.54) },
+    owner("token-3f9a2c", { idle: 2, working: 1, parked: 1, failed: 1, retired: 1 }, 3, 1, 1, 1, 0.48, 9.2),
+    owner("token-81bd07", { idle: 1, working: 1, parked: 0, failed: 0, retired: 1 }, 1, 0, 1, 60 * 5, 0.14, 2.1),
+    owner("token-c0ffee", { idle: 1, working: 0, parked: 0, failed: 0, retired: 1 }, 1, 0, 0, 60 * 24 * 9, 0, 0.54),
   ];
 
   const sandboxes: AdminSandbox[] = [
@@ -100,9 +111,26 @@ export function fixtures(now = Date.now()) {
     { id: "docs", agents: ["writer"], exec_count: 12, container_ms: 41_000, last_exec_at: iso(now, 60 * 26), snapshot_at: iso(now, 60 * 24 * 27), state: "idle", owner: "token-81bd07" },
   ];
 
-  const costs: Costs = { estimate: costSeries(now, 30, 1), actual: costSeries(now, 30, 1.08), alerts: [15, 30], as_of: iso(now, 3) };
+  const estimate = costSeries(now, 30, 1);
+  const billed = costSeries(now, 30, 1.08);
+  const base = 5;
+  const actual = {
+    month: { base_usd: base, ai_usd: +(billed.month_usd * 0.7).toFixed(2), containers_usd: +(billed.month_usd * 0.22).toFixed(2), do_usd: +(billed.month_usd * 0.06).toFixed(2), workers_usd: +(billed.month_usd * 0.02).toFixed(2), total_usd: +(base + billed.month_usd).toFixed(2) },
+    projected_usd: +(base + project(billed.month_usd, now)).toFixed(2),
+    days: billed.days.map((d) => ({ day: d.day, ai_usd: d.model_usd, containers_usd: d.container_usd, do_usd: d.do_usd, workers_usd: 0, total_usd: d.total_usd, units: { neurons: Math.round(d.model_usd * 90_000) } })),
+    unavailable: { workersAiInferenceAdaptiveGroups: "dataset not enabled for this account" },
+    as_of: iso(now, 40),
+  };
+  const costs: Costs = { estimate: { ...estimate, projected_usd: +project(estimate.month_usd, now).toFixed(2) }, actual, alerts: [15, 30], as_of: iso(now, 3) };
 
   return { me, agents, workspaces, clients, runs, messages, summary, owners, sandboxes, costs };
+}
+
+/** Month-end total at the month-to-date daily rate. */
+function project(monthToDate: number, now: number) {
+  const d = new Date(now);
+  const daysInMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+  return (monthToDate / d.getUTCDate()) * daysInMonth;
 }
 
 /** A deterministic month of daily costs ending today, crossing a month boundary. */

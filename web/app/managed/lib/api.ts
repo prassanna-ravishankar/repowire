@@ -125,11 +125,16 @@ export interface AdminSummary {
   relay?: { daemons_connected: number; users_with_daemons: number; oauth_grants_active: number };
 }
 
+/** A per-owner summary: the same counts as AdminSummary, scoped to one owner. */
 export interface AdminOwner {
   owner: string;
   agents: number;
+  agents_by_state: Record<AgentState, number>;
   workspaces: number;
+  running_containers: number;
+  connected_daemons: number;
   last_active_at: string | null;
+  today: Usage;
   month: Usage;
 }
 
@@ -143,14 +148,36 @@ export interface CostDay {
   total_usd: number;
 }
 
-export interface CostSeries {
+export interface CostEstimate {
   days: CostDay[];
   month_usd: number;
+  /** Month-end total at the current daily rate. */
+  projected_usd?: number;
+}
+
+export interface ActualDay {
+  day: string;
+  ai_usd: number;
+  containers_usd: number;
+  do_usd: number;
+  workers_usd: number;
+  total_usd: number;
+  units?: Record<string, number>;
+}
+
+/** Cloudflare billing truth from the Analytics API, when configured. */
+export interface CostActual {
+  month: { base_usd: number; ai_usd: number; containers_usd: number; do_usd: number; workers_usd: number; total_usd: number };
+  projected_usd: number;
+  days: ActualDay[];
+  /** Datasets the Analytics API could not return, with the error text. */
+  unavailable?: Record<string, string>;
+  as_of: string;
 }
 
 export interface Costs {
-  estimate: CostSeries;
-  actual: CostSeries | null;
+  estimate: CostEstimate;
+  actual: CostActual | null;
   alerts: number[];
   as_of: string;
 }

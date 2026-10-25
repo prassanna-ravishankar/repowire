@@ -181,7 +181,11 @@ function Tiles({ summary, sandboxes, costs }: { summary: AdminSummary; sandboxes
   const nextAlert = alerts.find((a) => a > month) ?? alerts[alerts.length - 1];
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-      <Tile label="Month to date" value={formatUsd(month)} sub={`est. · next alert $${nextAlert}`}>
+      <Tile
+        label="Month to date"
+        value={formatUsd(month)}
+        sub={[`est. · next alert $${nextAlert}`, costs?.estimate.projected_usd !== undefined && `proj. ${formatUsd(costs.estimate.projected_usd)}`, costs?.actual && `actual ${formatUsd(costs.actual.month.total_usd)}`].filter(Boolean).join(" · ")}
+      >
         <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-outline-variant/30" role="meter" aria-valuenow={month} aria-valuemin={0} aria-valuemax={nextAlert} aria-label="Month to date against the next alert">
           <div
             className={cn("h-full rounded-full", level === "danger" ? "bg-error" : level === "warning" ? "bg-tertiary-fixed-dim" : "bg-primary")}
@@ -282,20 +286,29 @@ function SandboxTable({ rows, now }: { rows: AdminSandbox[]; now: number }) {
 function OwnerTable({ rows, now }: { rows: AdminOwner[]; now: number }) {
   if (rows.length === 0) return <Card className="p-4 font-mono text-[11px] text-outline">No owners yet.</Card>;
   const sorted = [...rows].sort((a, b) => b.month.cost_usd - a.month.cost_usd);
+  const live = (row: AdminOwner) => row.agents - row.agents_by_state.retired;
+  const daemons = (row: AdminOwner) => (
+    <span className={cn("inline-flex items-center gap-1.5", row.connected_daemons ? "text-on-surface-variant" : "text-outline")}>
+      <span className={cn("h-1.5 w-1.5 rounded-full", row.connected_daemons ? "bg-secondary" : "bg-outline")} />
+      {row.connected_daemons ? row.connected_daemons : "none"}
+    </span>
+  );
   return (
     <Card>
       <DataTable
-        head={["Owner", "Agents", "Workspaces", "Runs (MTD)", "Tokens (MTD)", "Model (MTD)", "Total est. (MTD)", "Last active"]}
-        numeric={[1, 2, 3, 4, 5, 6]}
+        head={["Owner", "Agents", "Working", "Failed", "Workspaces", "Running", "Gateway", "Today est.", "MTD est.", "Last active"]}
+        numeric={[1, 2, 3, 4, 5, 7, 8]}
         rows={sorted.map((row) => ({
           key: row.owner,
           cells: [
             <span key="o" className="font-semibold text-on-surface">{row.owner}</span>,
-            row.agents,
+            live(row),
+            row.agents_by_state.working,
+            <span key="f" className={cn(row.agents_by_state.failed > 0 && "text-error")}>{row.agents_by_state.failed}</span>,
             row.workspaces,
-            row.month.runs,
-            (row.month.tokens_in + row.month.tokens_out).toLocaleString("en-US"),
-            formatUsd(row.month.model_usd),
+            row.running_containers,
+            daemons(row),
+            formatUsd(row.today.cost_usd),
             <span key="c" className="text-on-surface">{formatUsd(row.month.cost_usd)}</span>,
             formatAgo(row.last_active_at, now),
           ],
@@ -306,7 +319,11 @@ function OwnerTable({ rows, now }: { rows: AdminOwner[]; now: number }) {
           key: row.owner,
           title: row.owner,
           state: <span className="tabular-nums text-on-surface">{formatUsd(row.month.cost_usd)}</span>,
-          sub: `${row.agents} agents · ${row.month.runs} runs · active ${formatAgo(row.last_active_at, now)}`,
+          sub: (
+            <>
+              {live(row)} agents{row.agents_by_state.failed ? <span className="text-error"> · {row.agents_by_state.failed} failed</span> : null} · gateway {daemons(row)} · active {formatAgo(row.last_active_at, now)}
+            </>
+          ),
         }))}
       />
     </Card>

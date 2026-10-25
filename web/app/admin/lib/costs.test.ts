@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { alertLevel, barPath, cumulativeMonth, linePath, niceCeil, stackSegments, ticks } from "./costs";
+import { alertLevel, barPath, datasetLabel, cumulativeMonth, linePath, niceCeil, stackSegments, ticks } from "./costs";
 
 const day = (d: string, model: number, container = 0, durable = 0) => ({
   day: d,
@@ -76,5 +76,16 @@ describe("paths", () => {
     expect(barPath(0, 0, 10, 20, 0)).toBe("M0,0h10v20h-10Z");
     // Radius never exceeds half the width or the height.
     expect(barPath(0, 0, 4, 1, 4)).toBe("M0,1V1Q0,0 1,0H3Q4,0 4,1V1Z");
+  });
+});
+
+describe("datasetLabel", () => {
+  it("names the product behind a Cloudflare dataset", () => {
+    expect(datasetLabel("workersAiInferenceAdaptiveGroups")).toBe("Workers AI");
+    expect(datasetLabel("containersMetricsAdaptiveGroups")).toBe("Containers");
+    expect(datasetLabel("durableObjectsInvocationsAdaptiveGroups")).toBe("Durable Objects");
+    expect(datasetLabel("workersInvocationsAdaptive")).toBe("Workers");
+    expect(datasetLabel("ai")).toBe("Workers AI");
+    expect(datasetLabel("somethingElse")).toBe("somethingElse");
   });
 });

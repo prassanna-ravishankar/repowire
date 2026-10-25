@@ -44,6 +44,19 @@ describe("Admin page", () => {
     expect(screen.getByText("$30 alert")).toBeInTheDocument();
   });
 
+  it("shows actual spend, projection, unavailable datasets and per-owner gateways", async () => {
+    vi.stubGlobal("ResizeObserver", NoopObserver);
+    stub(all);
+    render(<AdminPage />);
+    expect(await screen.findByText(`Actual MTD $${f.costs.actual!.month.total_usd.toFixed(2)} (Cloudflare)`, { exact: false })).toBeInTheDocument();
+    expect(screen.getByText(/Projected month end/)).toBeInTheDocument();
+    expect(screen.getByText(/^proj\. \$/)).toBeInTheDocument();
+    expect(screen.getByText("Workers AI analytics unavailable: dataset not enabled for this account")).toBeInTheDocument();
+    const table = screen.getAllByRole("table").find((t) => t.textContent?.includes("Gateway"))!;
+    const row = Array.from(table.querySelectorAll("tr")).find((tr) => tr.textContent?.includes("token-c0ffee"))!;
+    expect(row).toHaveTextContent("none");
+  });
+
   it("shows not authorised for non-admins", async () => {
     stub({ ...all, "/api/v1/managed/me": () => json({ ...f.me, admin: false }) });
     render(<AdminPage />);

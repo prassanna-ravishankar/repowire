@@ -101,3 +101,13 @@ export function barPath(x: number, y: number, w: number, h: number, r: number): 
   if (k === 0) return `M${n(x)},${n(y)}h${n(w)}v${n(h)}h${n(-w)}Z`;
   return `M${n(x)},${n(y + h)}V${n(y + k)}Q${n(x)},${n(y)} ${n(x + k)},${n(y)}H${n(x + w - k)}Q${n(x + w)},${n(y)} ${n(x + w)},${n(y + k)}V${n(y + h)}Z`;
 }
+
+/** Cloudflare GraphQL dataset names, shortened to the product they meter. */
+export function datasetLabel(dataset: string): string {
+  const d = dataset.toLowerCase();
+  if (d.includes("container")) return "Containers";
+  if (d.includes("durable")) return "Durable Objects";
+  if (/workersai|workers_ai|\bai\b/.test(d)) return "Workers AI";
+  if (d.includes("worker")) return "Workers";
+  return dataset;
+}

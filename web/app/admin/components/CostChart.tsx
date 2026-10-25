@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { cn } from "../../dashboard/lib/utils";
 import type { Costs } from "../../managed/lib/api";
 import { formatUsd } from "../../managed/lib/state";
-import { SERVICES, alertLevel, barPath, cumulativeMonth, linePath, round2, stackSegments, ticks } from "../lib/costs";
+import { SERVICES, alertLevel, datasetLabel, type AlertLevel, barPath, cumulativeMonth, linePath, round2, stackSegments, ticks } from "../lib/costs";
 
 // Categorical slots 1-3 of the dataviz reference palette (validated all-pairs
 // in both modes), plus slot 7 for actual spend. Text never wears these.
@@ -12,7 +12,7 @@ const VIZ_STYLE = `
 `;
 const COLOR: Record<string, string> = { model_usd: "var(--s-model)", container_usd: "var(--s-container_usd)", do_usd: "var(--s-do_usd)" };
 
-const PAD = { left: 44, right: 64, top: 8 };
+const PAD = { left: 44, right: 92, top: 8 };
 const BARS_H = 150;
 const CUM_H = 120;
 const GAP_BETWEEN = 36;
@@ -40,9 +40,11 @@ export function CostChart({ costs }: { costs: Costs }) {
   const days = costs.estimate.days;
   const alerts = [...costs.alerts].sort((a, b) => a - b);
   const cum = cumulativeMonth(days);
-  const actualByDay = new Map((costs.actual?.days ?? []).map((d) => [d.day, d]));
+  const actual = costs.actual;
+  const actualByDay = new Map((actual?.days ?? []).map((d) => [d.day, d.total_usd]));
   const actualDays = days.map((d) => actualByDay.get(d.day) ?? null);
-  const actualCum = costs.actual ? cumulativeMonth(actualDays.map((d, i) => ({ day: days[i].day, total_usd: d?.total_usd ?? 0 }))) : null;
+  const actualCum = actual ? cumulativeMonth(actualDays.map((total, i) => ({ day: days[i].day, total_usd: total ?? 0 }))) : null;
+  const projected = costs.estimate.projected_usd ?? null;
 
   const plotW = width - PAD.left - PAD.right;
   const band = days.length ? plotW / days.length : plotW;
@@ -50,13 +52,17 @@ export function CostChart({ costs }: { costs: Costs }) {
   const barTicks = ticks(Math.max(0, ...days.map((d) => d.total_usd)), 4);
   const barMax = barTicks[barTicks.length - 1];
 
-  const cumTop = Math.max(...cum, ...(actualCum ?? []), alerts[alerts.length - 1] ?? 0) * 1.1 || 1;
+  const cumTop = Math.max(...cum, ...(actualCum ?? []), projected ?? 0, alerts[alerts.length - 1] ?? 0) * 1.1 || 1;
   const cumY0 = PAD.top + BARS_H + AXIS_H + GAP_BETWEEN;
   const cumY = (v: number) => cumY0 + CUM_H - (v / cumTop) * CUM_H;
   const totalH = cumY0 + CUM_H + AXIS_H;
   const x = (i: number) => PAD.left + i * band + band / 2;
   const mtd = cum[cum.length - 1] ?? 0;
-  const level = alertLevel(mtd, alerts);
+  // Cloudflare's billing alerts fire on actual spend, so that wins when known.
+  const billed = actual ? actual.month.total_usd : mtd;
+  const level = alertLevel(billed, alerts);
+  const billedProjection = actual ? actual.projected_usd : projected;
+  const projectedLevel = billedProjection === null ? null : alertLevel(billedProjection, alerts);
   const labelDays = days.length > 2 ? [0, Math.floor(days.length / 2), days.length - 1] : days.map((_, i) => i);
   const hovered = hover !== null ? days[hover] : null;
 
@@ -118,6 +124,14 @@ export function CostChart({ costs }: { costs: Costs }) {
             <text x={PAD.left - 6} y={cumY(0) + 3} textAnchor="end" className="fill-[var(--fg-subtle)] font-mono text-[10px]">$0</text>
             {actualCum && <path d={linePath(actualCum, cumTop, plotW - band, CUM_H)} transform={`translate(${x(0)},${cumY0})`} fill="none" stroke="var(--s-actual)" strokeWidth={2} strokeLinejoin="round" />}
             <path d={linePath(cum, cumTop, plotW - band, CUM_H)} transform={`translate(${x(0)},${cumY0})`} fill="none" stroke="var(--fg)" strokeWidth={2} strokeLinejoin="round" />
+            {projected !== null && cum.length > 0 && (
+              <g>
+                <line x1={x(cum.length - 1)} y1={cumY(mtd)} x2={width - PAD.right} y2={cumY(projected)} stroke="var(--fg-muted)" strokeWidth={1.5} strokeDasharray="2 4" strokeLinecap="round" />
+                <text x={width - PAD.right + 6} y={clearOf(cumY(projected), alerts.map(cumY)) + 3} className="fill-[var(--fg-muted)] font-mono text-[10px]">
+                  proj. {formatUsd(projected)}
+                </text>
+              </g>
+            )}
             {cum.length > 0 && (
               <g>
                 <circle cx={x(cum.length - 1)} cy={cumY(mtd)} r={4} fill="var(--fg)" stroke="var(--surface)" strokeWidth={2} />
@@ -160,7 +174,7 @@ export function CostChart({ costs }: { costs: Costs }) {
               ))}
               <Line label="Day total" value={formatUsd(hovered.total_usd)} strong />
               <Line swatch="var(--fg)" label="Month to date" value={formatUsd(cum[hover])} />
-              {actualCum && <Line swatch="var(--s-actual)" label="Actual MTD" value={actualDays[hover] ? formatUsd(actualCum[hover]) : "-"} />}
+              {actualCum && <Line swatch="var(--s-actual)" label="Actual (Cloudflare)" value={actualDays[hover] !== null ? formatUsd(actualDays[hover]!) : "-"} />}
             </div>
           )}
         </div>
@@ -170,17 +184,47 @@ export function CostChart({ costs }: { costs: Costs }) {
         <span className="inline-flex items-center gap-1.5">
           <span className="h-0.5 w-4 bg-[var(--fg)]" /> Estimate MTD
         </span>
-        {costs.actual && (
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-0.5 w-4" style={{ background: "var(--s-actual)" }} /> Actual MTD (Cloudflare)
+        {actual && (
+          <span className="inline-flex items-center gap-1.5" title={`Includes the ${formatUsd(actual.month.base_usd)} plan base; the line sums daily usage only`}>
+            <span className="h-0.5 w-4" style={{ background: "var(--s-actual)" }} /> Actual MTD {formatUsd(actual.month.total_usd)} (Cloudflare)
           </span>
         )}
-        <span className={cn("ml-auto", level === "danger" ? "text-error" : level === "warning" ? "text-tertiary-fixed-dim" : "text-outline")}>
-          {level === "ok" ? `under the $${alerts[0]} alert` : level === "warning" ? `past the $${alerts[0]} alert` : `past the $${alerts[1]} alert`}
+        {projected !== null && (
+          <span className="inline-flex items-center gap-1.5">
+            <span className="w-4 border-t-[1.5px] border-dotted border-[var(--fg-muted)]" /> Projected month end {formatUsd(projected)} est.
+          </span>
+        )}
+        <span className={cn("ml-auto", tone(projectedLevel && projectedLevel !== "ok" ? projectedLevel : level))}>
+          {actual ? "actual " : "estimate "}
+          {alertText(level, alerts)}
+          {projectedLevel && projectedLevel !== level && `; projected ${alertText(projectedLevel, alerts).replace("under", "to stay under").replace("past", "to pass")}`}
         </span>
       </div>
+      {actual?.unavailable && Object.keys(actual.unavailable).length > 0 && (
+        <ul className="mt-2 space-y-0.5 font-mono text-[11px] text-outline">
+          {Object.entries(actual.unavailable).map(([dataset, error]) => (
+            <li key={dataset}>
+              {datasetLabel(dataset)} analytics unavailable: {error}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
+}
+
+/** Nudges a right-gutter label off any alert label it would overlap. */
+function clearOf(y: number, taken: number[], gap = 12): number {
+  const hit = taken.find((t) => Math.abs(t - y) < gap);
+  if (hit === undefined) return y;
+  return y >= hit ? hit + gap : hit - gap;
+}
+
+const tone = (level: AlertLevel) => (level === "danger" ? "text-error" : level === "warning" ? "text-tertiary-fixed-dim" : "text-outline");
+
+function alertText(level: AlertLevel, alerts: number[]) {
+  if (level === "ok") return `under the $${alerts[0]} alert`;
+  return `past the $${level === "warning" ? alerts[0] : alerts[1]} alert`;
 }
 
 function AxisDays({ days, indices, x, y }: { days: { day: string }[]; indices: number[]; x: (i: number) => number; y: number }) {
@@ -205,7 +249,7 @@ function Line({ swatch, label, value, strong }: { swatch?: string; label: string
   );
 }
 
-function CostTable({ days, cum, actualDays }: { days: Costs["estimate"]["days"]; cum: number[]; actualDays: (Costs["estimate"]["days"][number] | null)[] }) {
+function CostTable({ days, cum, actualDays }: { days: Costs["estimate"]["days"]; cum: number[]; actualDays: (number | null)[] }) {
   const head = ["Day", ...SERVICES.map((s) => s.label), "Total", "MTD", "Actual"];
   return (
     <div className="max-h-80 overflow-auto">
@@ -228,7 +272,7 @@ function CostTable({ days, cum, actualDays }: { days: Costs["estimate"]["days"];
                 ))}
                 <td className="border-b border-border-faint px-2 py-1 text-right text-on-surface">{formatUsd(round2(d.total_usd))}</td>
                 <td className="border-b border-border-faint px-2 py-1 text-right">{formatUsd(cum[i])}</td>
-                <td className="border-b border-border-faint px-2 py-1 text-right">{actualDays[i] ? formatUsd(actualDays[i]!.total_usd) : "-"}</td>
+                <td className="border-b border-border-faint px-2 py-1 text-right">{actualDays[i] !== null ? formatUsd(actualDays[i]!) : "-"}</td>
               </tr>
             );
           })}
