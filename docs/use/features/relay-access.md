@@ -6,7 +6,7 @@ Relay access lets you reach a local Repowire daemon from another machine or a ph
 
 ## When to use it
 
-Use relay access when you want the remote dashboard, cross-machine mesh traffic, or phone-browser access while keeping the daemon behind outbound-only connectivity.
+Use relay access when you want the remote dashboard, remote MCP access to your agents, or phone-browser access while keeping the daemon behind outbound-only connectivity.
 
 Skip the relay when all peers and humans are on the same machine and `http://localhost:8377/dashboard` is enough.
 
@@ -69,6 +69,14 @@ Restart the daemon after changing the relay URL.
 - `repowire status` reports relay configuration and connection state.
 
 The relay serves the dashboard static export. API and SSE traffic tunnel back to the daemon over the outbound relay WebSocket.
+
+## Multiple machines
+
+Several machines can connect to the relay with the same key. Each daemon connects under its own machine ID.
+
+- [Relay MCP](../../reference/relay-mcp.md) addresses machines explicitly: `list_machines`, then `list_agents`, `ask_agent`, and `get_reply` with that machine's `daemon_id`.
+- The browser dashboard, its event stream, and session share links do not select a machine. With more than one machine on a key, each request can reach a different machine. Use one machine per relay key if you rely on them ([#511](https://github.com/prassanna-ravishankar/repowire/issues/511)).
+- Agents on different machines cannot message each other. A daemon routes only to its own local peers, and the relay does not forward traffic between daemons.
 
 ## Limits
 

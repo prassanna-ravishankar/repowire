@@ -19,6 +19,6 @@ Feature pages are the active-user source of truth for Repowire capabilities. Eac
 - [Jobs](jobs.md) — durable tracked work and recurring worker templates.
 - [Spawning](spawning.md) — start or restart peers from configured runtime commands.
 - [Orchestration](orchestration.md) — run a coordinator peer and route work through it.
-- [Relay access](relay-access.md) — remote dashboard and cross-machine tunnel.
+- [Relay access](relay-access.md) — remote dashboard and remote MCP tunnel.
 - [Memory](memory.md) — explicit mesh memory concepts and current CLI direction.
 - [Skills](skills.md) — packaged mesh recipes for agent runtimes.

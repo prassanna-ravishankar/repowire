@@ -25,7 +25,7 @@ Use it when:
 - You want to monitor or nudge agent work from your phone or browser.
 - A session should wake itself or another peer later with a scheduled check-in.
 
-Repowire runs locally by default through a daemon on your machine. The hosted relay is optional and uses outbound connections for remote dashboard access and cross-machine mesh traffic.
+Repowire runs locally by default through a daemon on your machine. The hosted relay is optional and uses outbound connections for remote dashboard and remote MCP access.
 
 ## Quickstart
 
@@ -134,7 +134,7 @@ Full docs: [docs.repowire.io](https://docs.repowire.io).
 - **Orchestrator pattern**: A dedicated peer can dispatch work, check status, coordinate reviews, and keep a queue moving.
 - **Scheduled wake-ups**: Send a future notification or ask to yourself, another peer, or an orchestrator.
 - **Git trailers**: Agent commits carry `Repowire-Thread` and `Repowire-Session` trailers; `repowire why` replays the conversations behind a commit.
-- **Optional relay**: Reach the dashboard remotely and bridge machines without opening inbound ports. The [remote MCP plugin](docs/reference/relay-mcp.md) adds OAuth-authenticated agent conversations, delegation, and replies from compatible clients.
+- **Optional relay**: Reach the dashboard and your agents remotely without opening inbound ports. The [remote MCP plugin](docs/reference/relay-mcp.md) adds OAuth-authenticated agent conversations, delegation, and replies from compatible clients.
 
 ## How It Works
 
@@ -171,7 +171,7 @@ Transport notes:
 | Telegram | Phone control surface and notification target |
 | Slack | Team chat control surface |
 | Orchestrator peer | Long-running coordinator that dispatches and reviews work |
-| Relay dashboard | Optional remote dashboard and cross-machine bridge |
+| Relay dashboard | Optional remote dashboard and remote MCP access |
 
 `repowire setup` auto-detects installed runtimes and wires the supported transports it finds.
 
@@ -218,9 +218,9 @@ repowire why            # HEAD
 repowire why abc1234    # any commit
 ```
 
-### Bridge machines
+### Remote access
 
-Enable the hosted relay when you want remote dashboard access or cross-machine mesh traffic:
+Enable the hosted relay when you want remote dashboard or remote MCP access to a machine's agents. Agents on different machines do not message each other:
 
 ```bash
 repowire setup --relay

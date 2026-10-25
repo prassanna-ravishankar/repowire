@@ -219,54 +219,6 @@ func TestClient_HTTPRequestTunnelBlocksMCP(t *testing.T) {
 	}
 }
 
-func TestClient_RelayQueryForwarded(t *testing.T) {
-	local := fakeLocal(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/query" || r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"answer":42}`))
-	})
-
-	got := make(chan map[string]any, 1)
-	relay, _ := startRelay(t, func(ctx context.Context, c *websocket.Conn) {
-		_ = wsjson.Write(ctx, c, map[string]any{
-			"type": "relay_query", "correlation_id": "cid-9", "source_daemon_id": "other",
-			"payload": map[string]any{"q": "hi"},
-		})
-		var resp map[string]any
-		if err := wsjson.Read(ctx, c, &resp); err != nil {
-			return
-		}
-		got <- resp
-	})
-
-	c := NewClient(wsURL(relay.URL), "rw_test", "d1", local.URL)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.Start(ctx)
-	defer c.Stop()
-
-	select {
-	case resp := <-got:
-		if resp["type"] != "relay_response" || resp["correlation_id"] != "cid-9" ||
-			resp["source_daemon_id"] != "other" || resp["target_daemon_id"] != "other" {
-			t.Fatalf("bad relay_response: %v", resp)
-		}
-		if int(resp["status"].(float64)) != 200 {
-			t.Fatalf("status = %v, want 200", resp["status"])
-		}
-		body, _ := resp["body"].(map[string]any)
-		if body["answer"].(float64) != 42 {
-			t.Fatalf("body = %v, want answer=42", resp["body"])
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for relay_response")
-	}
-}
-
 func TestClient_PingPong(t *testing.T) {
 	local := fakeLocal(t, func(w http.ResponseWriter, r *http.Request) {})
 	got := make(chan map[string]any, 1)
