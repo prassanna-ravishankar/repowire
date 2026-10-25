@@ -167,10 +167,12 @@ type hostedRegistry interface {
 	MarkOffline(ctx context.Context, id proto.PeerID, terminal bool) (int, error)
 }
 
-// HostedDelivery is one settled submission, handed to the delivery layer so
-// an ask closes with the runtime's answer.
+// HostedDelivery is one settled submission, handed to observers: the
+// delivery layer closes an ask with the runtime's answer, and job completion
+// and the chat feed record the run.
 type HostedDelivery struct {
 	Kind          string // "ask" | "notify" | "broadcast"
+	Text          string // the framed text the runtime received
 	CorrelationID string
 	FromPeerID    string
 	FromPeerName  string
@@ -185,9 +187,8 @@ type Hosted struct {
 	store   *state.Store
 	machine string
 
-	// settled is called once per submission the runtime settles. PeerDelivery
-	// installs it in WithHosted.
-	settled func(ctx context.Context, delivery HostedDelivery, result HostedResult, err error)
+	// settled observers run in order once per submission the runtime settles.
+	settled []HostedObserver
 
 	// retry is the first reconnect delay after a failed wait.
 	retry time.Duration
@@ -203,6 +204,15 @@ func NewHosted(reg hostedRegistry, runtime HostedRuntime, store *state.Store, ma
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Hosted{reg: reg, runtime: runtime, store: store, machine: machine,
 		retry: time.Second, inflight: map[proto.PeerID]int{}, ctx: ctx, cancel: cancel}
+}
+
+// HostedObserver sees one settled submission: done with the final text,
+// unanswered, or refused with err.
+type HostedObserver func(ctx context.Context, delivery HostedDelivery, result HostedResult, err error)
+
+// OnSettled adds an observer. Wire observers before Restore and Deliver.
+func (h *Hosted) OnSettled(observer HostedObserver) {
+	h.settled = append(h.settled, observer)
 }
 
 // Close stops waiting. Unsettled operations stay running and resume on the
@@ -266,6 +276,13 @@ func (h *Hosted) Spawn(ctx context.Context, params HostedSpawnParams) (proto.Pee
 	return id, name, nil
 }
 
+// Retire takes a hosted peer off the mesh for good. Its runtime agent and
+// transcript remain on the hosted service.
+func (h *Hosted) Retire(ctx context.Context, id proto.PeerID) error {
+	_, err := h.reg.MarkOffline(ctx, id, true)
+	return err
+}
+
 // Restore re-registers every hosted peer from its durable mapping and resumes
 // waiting on submissions a previous daemon left unsettled. Retired peers stay
 // retired.
@@ -316,11 +333,12 @@ func (h *Hosted) Deliver(ctx context.Context, kind, correlationID string, from *
 		"correlation_id": correlationID, "from_peer_id": fromID, "from_peer_name": fromName,
 		"to_peer_id": string(target.PeerID), "to_peer_name": string(target.DisplayName),
 	}
+	framed := hooks.FormatInboundMessage(fromName, fromRole, string(target.DisplayName), kind, correlationID, text)
+	record["text"] = framed
 	opID, err := h.record(ctx, record)
 	if err != nil {
 		return nil, err
 	}
-	framed := hooks.FormatInboundMessage(fromName, fromRole, string(target.DisplayName), kind, correlationID, text)
 	accepted, err := h.runtime.Submit(ctx, string(target.PeerID), operationID, framed,
 		HostedSource{From: fromName, FromPeerID: fromID, Type: kind, CorrelationID: correlationID})
 	if err != nil {
@@ -357,7 +375,7 @@ func (h *Hosted) fail(opID, reason, detail string) {
 // the daemon closes so the next start resumes it.
 func (h *Hosted) await(opID string, target map[string]any) {
 	str := func(key string) string { value, _ := target[key].(string); return value }
-	delivery := HostedDelivery{Kind: str("kind"), CorrelationID: str("correlation_id"),
+	delivery := HostedDelivery{Kind: str("kind"), Text: str("text"), CorrelationID: str("correlation_id"),
 		FromPeerID: str("from_peer_id"), FromPeerName: str("from_peer_name"),
 		ToPeerID: str("to_peer_id"), ToPeerName: str("to_peer_name")}
 	agentID, operationID := str("agent_id"), str("operation_id")
@@ -401,8 +419,8 @@ func (h *Hosted) settle(opID string, delivery HostedDelivery, result HostedResul
 	case h.store != nil && opID != "":
 		_, _ = h.store.CompleteOperation(ctx, opID, nil, map[string]any{"outcome": "done"})
 	}
-	if h.settled != nil {
-		h.settled(ctx, delivery, result, err)
+	for _, observer := range h.settled {
+		observer(ctx, delivery, result, err)
 	}
 }
 

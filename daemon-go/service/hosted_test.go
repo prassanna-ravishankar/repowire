@@ -257,11 +257,11 @@ func TestHostedRestoreResumesUnsettledDelivery(t *testing.T) {
 	next := NewHosted(f.hostReg, runtime, f.store, "test")
 	t.Cleanup(next.Close)
 	settled := make(chan HostedDelivery, 1)
-	next.settled = func(_ context.Context, d HostedDelivery, result HostedResult, _ error) {
+	next.OnSettled(func(_ context.Context, d HostedDelivery, result HostedResult, _ error) {
 		if result.Text == "42" {
 			settled <- d
 		}
-	}
+	})
 	next.Restore(context.Background())
 	runtime.outcome(cid) <- HostedResult{Status: "done", Text: "42"}
 	select {

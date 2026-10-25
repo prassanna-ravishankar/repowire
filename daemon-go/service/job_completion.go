@@ -109,15 +109,45 @@ func (c *JobCompletion) OnPeerTerminalOffline(peerID proto.PeerID, detail string
 	if c == nil || c.store == nil || peerID == "" {
 		return
 	}
-	ctx := context.Background()
+	c.failActive(context.Background(), peerID, "", "executor_died", detail)
+}
+
+// OnHostedRun records a settled hosted run as the turns a hook runtime would
+// post: the prompt arms a delivered job and the answer completes it. A run
+// that ended without an answer fails the job it carried.
+func (c *JobCompletion) OnHostedRun(ctx context.Context, delivery HostedDelivery, result HostedResult, err error) {
+	if c == nil || c.store == nil || delivery.ToPeerID == "" {
+		return
+	}
+	peerID := proto.PeerID(delivery.ToPeerID)
+	c.OnChatTurn(ctx, peerID, "user", delivery.Text)
+	if err == nil && result.Status == "done" {
+		c.OnChatTurn(ctx, peerID, "assistant", result.Text)
+		return
+	}
+	detail := result.Reason
+	if err != nil {
+		detail = err.Error()
+	}
+	if delivery.CorrelationID != "" {
+		c.failActive(ctx, peerID, delivery.CorrelationID, "hosted_unanswered", detail)
+	}
+}
+
+// failActive fails the peer's delivered or running work, only the work
+// carried by correlationID when one is given.
+func (c *JobCompletion) failActive(ctx context.Context, peerID proto.PeerID, correlationID, reason, detail string) {
 	for _, activeState := range []string{"delivered", "running"} {
 		works, err := c.store.ListWork(ctx, state.WorkFilter{State: &activeState})
 		if err != nil {
-			log.Printf("job completion: list %s after terminal offline: %v", activeState, err)
+			log.Printf("job completion: list %s to fail (%s): %v", activeState, reason, err)
 			continue
 		}
 		for _, work := range works {
 			if work.AssignedPeerID == nil || *work.AssignedPeerID != string(peerID) {
+				continue
+			}
+			if correlationID != "" && (work.CorrelationID == nil || *work.CorrelationID != correlationID) {
 				continue
 			}
 			attemptID := currentWorkAttempt(work)
@@ -125,11 +155,11 @@ func (c *JobCompletion) OnPeerTerminalOffline(peerID proto.PeerID, detail string
 				continue
 			}
 			errorData := map[string]any{
-				"reason":  "executor_died",
+				"reason":  reason,
 				"detail":  detail,
 				"peer_id": peerID,
 			}
-			status, phase := "failed", "executor_died"
+			status, phase := "failed", reason
 			if _, err := c.store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{
 				Status: &status,
 				Phase:  &phase,
@@ -138,24 +168,24 @@ func (c *JobCompletion) OnPeerTerminalOffline(peerID proto.PeerID, detail string
 				log.Printf("job completion: fail attempt %s/%s: %v", work.WorkID, attemptID, err)
 				continue
 			}
-			reason := "executor_died"
+			stateReason := reason
 			updated, err := c.store.UpdateWorkState(ctx, work.WorkID, state.WorkUpdate{
 				State:       "failed",
-				StateReason: &reason,
+				StateReason: &stateReason,
 				Phase:       &phase,
 				Error:       errorData,
 				AttemptID:   &attemptID,
 			})
 			if err != nil || updated == nil {
-				log.Printf("job completion: fail work %s after terminal offline: %v", work.WorkID, err)
+				log.Printf("job completion: fail work %s (%s): %v", work.WorkID, reason, err)
 				continue
 			}
 			if c.asks != nil && updated.CorrelationID != nil {
-				_, _ = c.asks.Close(ctx, *updated.CorrelationID, "executor_died")
+				_, _ = c.asks.Close(ctx, *updated.CorrelationID, reason)
 			}
 			c.emit(updated, activeState)
 			if c.control != nil {
-				if _, err := c.control.ReleaseExecutorForWork(ctx, updated, "executor_died"); err != nil {
+				if _, err := c.control.ReleaseExecutorForWork(ctx, updated, reason); err != nil {
 					log.Printf("job completion: release failed work %s: %v", updated.WorkID, err)
 				}
 			}

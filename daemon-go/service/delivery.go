@@ -114,7 +114,7 @@ func (d *PeerDelivery) WithInbox(inbox *Inbox) *PeerDelivery {
 func (d *PeerDelivery) WithHosted(hosted *Hosted) *PeerDelivery {
 	d.hosted = hosted
 	if hosted != nil {
-		hosted.settled = d.completeHosted
+		hosted.OnSettled(d.completeHosted)
 	}
 	return d
 }
@@ -634,7 +634,9 @@ func (d *PeerDelivery) completeHosted(ctx context.Context, delivery HostedDelive
 	if d.asks == nil {
 		return
 	}
-	if ask, ok := d.asks.Get(delivery.CorrelationID); ok && !ask.Closed {
+	// An ask still tracked closes here; one already closed (a job's completion
+	// closed it first) needs nothing more.
+	if _, ok := d.asks.Get(delivery.CorrelationID); ok {
 		d.completeRuntimeAsk(ctx, delivery.CorrelationID, reply, errText, "Hosted error: ")
 		return
 	}

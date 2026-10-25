@@ -375,17 +375,13 @@ func runDaemon() {
 		delivery.WithInbox(inbox)
 		h.WithInbox(inbox)
 	}
-	// (6c) Hosted agents: managed peers on the hosted runtime. Restore
-	// re-registers them from their durable mappings and resumes waiting on
-	// submissions the last daemon left unsettled.
+	// (6c) Hosted agents: managed peers on the hosted runtime. They start
+	// after the job services in (9), which observe their runs.
 	var hosted *service.Hosted
 	if cfg.Hosted.URL != "" && cfg.Hosted.Token != "" {
 		hosted = service.NewHosted(reg, service.NewHostedClient(cfg.Hosted.URL, cfg.Hosted.Token), store, selfMachine)
 		delivery.WithHosted(hosted)
 		h.WithHosted(hosted)
-		hosted.Restore(ctx)
-		// Tool calls the agents make run through the hub's MCP handlers.
-		hosted.Connect(cfg.Hosted.URL, cfg.Hosted.Token, h)
 	}
 	transport.SetACPPermissionHandler(service.NewACPPermissionHandler(asks, func(kind string, data map[string]any) {
 		reg.AddEvent(ctx, kind, data)
@@ -472,6 +468,25 @@ func runDaemon() {
 	jobCompletion := service.NewJobCompletion(store, asks, sessionControl, reg, delivery)
 	reg.OnTerminalOffline = jobCompletion.OnPeerTerminalOffline
 	scheduler := service.NewScheduler(store, delivery)
+	// Hosted runs report like hook turns: to job completion and the chat
+	// feed. Restore re-registers hosted peers and resumes the waits the last
+	// daemon left unsettled; tool calls the agents make run through the hub's
+	// MCP handlers.
+	if hosted != nil {
+		sessionControl.WithHosted(hosted)
+		hosted.OnSettled(jobCompletion.OnHostedRun)
+		hosted.OnSettled(func(ctx context.Context, run service.HostedDelivery, result service.HostedResult, err error) {
+			turn := func(role, text string) {
+				reg.AddEvent(ctx, "chat_turn", map[string]any{"peer": run.ToPeerName, "peer_id": run.ToPeerID, "role": role, "text": text})
+			}
+			turn("user", run.Text)
+			if err == nil && result.Status == "done" {
+				turn("assistant", result.Text)
+			}
+		})
+		hosted.Restore(ctx)
+		hosted.Connect(cfg.Hosted.URL, cfg.Hosted.Token, h)
+	}
 
 	// (10) Relay/shares config. A nil-or-keyless RelayConfig leaves /shares as
 	// the documented degrade (503 POST/DELETE, empty-list GET) — i.e. the 503
