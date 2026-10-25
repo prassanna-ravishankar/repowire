@@ -111,3 +111,63 @@ export function datasetLabel(dataset: string): string {
   if (d.includes("worker")) return "Workers";
   return dataset;
 }
+
+const DAY_MS = 86_400_000;
+const isoDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+export interface CostTimeline {
+  /** Every calendar day in the window, zero-filled where the estimate has no row. */
+  days: CostDay[];
+  /** Actual daily totals on the same calendar; null where Cloudflare reported nothing. */
+  actualDays: (number | null)[] | null;
+  cum: number[];
+  actualCum: number[] | null;
+  /** Authoritative month-to-date totals for the month of `as_of`. */
+  mtd: number;
+  actualMtd: number | null;
+  month: string;
+}
+
+/**
+ * Lays estimate and actual rows on one calendar. Both series are sparse (a
+ * day appears only when something was metered), so the window is the union
+ * of the last `span` days up to `as_of`, the whole current month, and any
+ * day either series reports. Each series is summed on its own; headline
+ * totals come from the server's month fields, anchored to `as_of`.
+ */
+export function costTimeline(
+  costs: {
+    estimate: { days: CostDay[]; month_usd: number };
+    actual: { days: { day: string; total_usd: number }[]; month: { total_usd: number } } | null;
+    as_of: string;
+  },
+  span = 30,
+): CostTimeline {
+  const asOf = Date.parse(costs.as_of);
+  const today = isoDay(asOf);
+  const month = today.slice(0, 7);
+  const set = new Set<string>();
+  for (let i = span - 1; i >= 0; i--) set.add(isoDay(asOf - i * DAY_MS));
+  for (let d = Date.parse(`${month}-01T00:00:00Z`); isoDay(d) <= today; d += DAY_MS) set.add(isoDay(d));
+  for (const row of costs.estimate.days) if (row.day <= today) set.add(row.day);
+  for (const row of costs.actual?.days ?? []) if (row.day <= today) set.add(row.day);
+  const calendar = [...set].sort();
+  const first = calendar[0];
+  // Fill gaps so x spacing is one slot per calendar day.
+  const all: string[] = [];
+  for (let d = Date.parse(`${first}T00:00:00Z`); isoDay(d) <= today; d += DAY_MS) all.push(isoDay(d));
+
+  const estimateByDay = new Map(costs.estimate.days.map((row) => [row.day, row]));
+  const days = all.map((day) => estimateByDay.get(day) ?? { day, model_usd: 0, container_usd: 0, do_usd: 0, total_usd: 0 });
+  const actualByDay = costs.actual ? new Map(costs.actual.days.map((row) => [row.day, row.total_usd])) : null;
+  const actualDays = actualByDay ? all.map((day) => actualByDay.get(day) ?? null) : null;
+  return {
+    days,
+    actualDays,
+    cum: cumulativeMonth(days),
+    actualCum: actualDays ? cumulativeMonth(actualDays.map((total, i) => ({ day: all[i], total_usd: total ?? 0 }))) : null,
+    mtd: costs.estimate.month_usd,
+    actualMtd: costs.actual ? costs.actual.month.total_usd : null,
+    month,
+  };
+}

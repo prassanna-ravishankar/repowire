@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { cn } from "../../dashboard/lib/utils";
 import type { Costs } from "../../managed/lib/api";
 import { formatUsd } from "../../managed/lib/state";
-import { SERVICES, alertLevel, datasetLabel, type AlertLevel, barPath, cumulativeMonth, linePath, round2, stackSegments, ticks } from "../lib/costs";
+import { SERVICES, alertLevel, datasetLabel, type AlertLevel, barPath, costTimeline, linePath, round2, stackSegments, ticks } from "../lib/costs";
 
 // Categorical slots 1-3 of the dataviz reference palette (validated all-pairs
 // in both modes), plus slot 7 for actual spend. Text never wears these.
@@ -37,13 +37,9 @@ export function CostChart({ costs }: { costs: Costs }) {
   const [ref, width] = useWidth();
   const [hover, setHover] = useState<number | null>(null);
   const [table, setTable] = useState(false);
-  const days = costs.estimate.days;
   const alerts = [...costs.alerts].sort((a, b) => a - b);
-  const cum = cumulativeMonth(days);
   const actual = costs.actual;
-  const actualByDay = new Map((actual?.days ?? []).map((d) => [d.day, d.total_usd]));
-  const actualDays = days.map((d) => actualByDay.get(d.day) ?? null);
-  const actualCum = actual ? cumulativeMonth(actualDays.map((total, i) => ({ day: days[i].day, total_usd: total ?? 0 }))) : null;
+  const { days, cum, actualDays, actualCum, mtd, actualMtd } = costTimeline(costs);
   const projected = costs.estimate.projected_usd ?? null;
 
   const plotW = width - PAD.left - PAD.right;
@@ -57,9 +53,8 @@ export function CostChart({ costs }: { costs: Costs }) {
   const cumY = (v: number) => cumY0 + CUM_H - (v / cumTop) * CUM_H;
   const totalH = cumY0 + CUM_H + AXIS_H;
   const x = (i: number) => PAD.left + i * band + band / 2;
-  const mtd = cum[cum.length - 1] ?? 0;
   // Cloudflare's billing alerts fire on actual spend, so that wins when known.
-  const billed = actual ? actual.month.total_usd : mtd;
+  const billed = actualMtd ?? mtd;
   const level = alertLevel(billed, alerts);
   const billedProjection = actual ? actual.projected_usd : projected;
   const projectedLevel = billedProjection === null ? null : alertLevel(billedProjection, alerts);
@@ -174,7 +169,7 @@ export function CostChart({ costs }: { costs: Costs }) {
               ))}
               <Line label="Day total" value={formatUsd(hovered.total_usd)} strong />
               <Line swatch="var(--fg)" label="Month to date" value={formatUsd(cum[hover])} />
-              {actualCum && <Line swatch="var(--s-actual)" label="Actual (Cloudflare)" value={actualDays[hover] !== null ? formatUsd(actualDays[hover]!) : "-"} />}
+              {actualDays && <Line swatch="var(--s-actual)" label="Actual (Cloudflare)" value={actualDays[hover] !== null ? formatUsd(actualDays[hover]!) : "-"} />}
             </div>
           )}
         </div>
@@ -249,7 +244,7 @@ function Line({ swatch, label, value, strong }: { swatch?: string; label: string
   );
 }
 
-function CostTable({ days, cum, actualDays }: { days: Costs["estimate"]["days"]; cum: number[]; actualDays: (number | null)[] }) {
+function CostTable({ days, cum, actualDays }: { days: Costs["estimate"]["days"]; cum: number[]; actualDays: (number | null)[] | null }) {
   const head = ["Day", ...SERVICES.map((s) => s.label), "Total", "MTD", "Actual"];
   return (
     <div className="max-h-80 overflow-auto">
@@ -272,7 +267,7 @@ function CostTable({ days, cum, actualDays }: { days: Costs["estimate"]["days"];
                 ))}
                 <td className="border-b border-border-faint px-2 py-1 text-right text-on-surface">{formatUsd(round2(d.total_usd))}</td>
                 <td className="border-b border-border-faint px-2 py-1 text-right">{formatUsd(cum[i])}</td>
-                <td className="border-b border-border-faint px-2 py-1 text-right">{actualDays[i] !== null ? formatUsd(actualDays[i]!) : "-"}</td>
+                <td className="border-b border-border-faint px-2 py-1 text-right">{actualDays?.[i] != null ? formatUsd(actualDays[i]!) : "-"}</td>
               </tr>
             );
           })}

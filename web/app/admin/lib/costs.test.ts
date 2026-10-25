@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { alertLevel, barPath, datasetLabel, cumulativeMonth, linePath, niceCeil, stackSegments, ticks } from "./costs";
+import { alertLevel, barPath, costTimeline, datasetLabel, cumulativeMonth, linePath, niceCeil, stackSegments, ticks } from "./costs";
 
 const day = (d: string, model: number, container = 0, durable = 0) => ({
   day: d,
@@ -87,5 +87,43 @@ describe("datasetLabel", () => {
     expect(datasetLabel("workersInvocationsAdaptive")).toBe("Workers");
     expect(datasetLabel("ai")).toBe("Workers AI");
     expect(datasetLabel("somethingElse")).toBe("somethingElse");
+  });
+});
+
+describe("costTimeline", () => {
+  const est = (d: string, total: number) => ({ day: d, model_usd: total, container_usd: 0, do_usd: 0, total_usd: total });
+
+  it("sums sparse actual days that have no estimate row", () => {
+    const t = costTimeline({
+      estimate: { days: [est("2026-10-25", 1)], month_usd: 1 },
+      actual: { days: [{ day: "2026-10-24", total_usd: 12 }, { day: "2026-10-25", total_usd: 2 }], month: { total_usd: 19 } },
+      as_of: "2026-10-25T13:00:00Z",
+    });
+    expect(t.days.at(-1)?.day).toBe("2026-10-25");
+    expect(t.days.at(-2)).toEqual(est("2026-10-24", 0));
+    expect(t.actualCum?.at(-1)).toBe(14);
+    expect(t.actualMtd).toBe(19);
+    expect(t.cum.at(-1)).toBe(1);
+  });
+
+  it("covers the whole calendar: 30 days, whole current month, no gaps", () => {
+    const t = costTimeline({ estimate: { days: [], month_usd: 0 }, actual: null, as_of: "2026-10-31T09:00:00Z" });
+    expect(t.days[0].day).toBe("2026-10-01");
+    expect(t.days).toHaveLength(31);
+    expect(t.actualDays).toBeNull();
+  });
+
+  it("does not carry last month's spend into this month's MTD", () => {
+    const t = costTimeline({ estimate: { days: [est("2026-09-30", 20)], month_usd: 0 }, actual: null, as_of: "2026-10-01T00:30:00Z" });
+    expect(t.month).toBe("2026-10");
+    expect(t.days.at(-1)?.day).toBe("2026-10-01");
+    expect(t.cum.at(-1)).toBe(0);
+    expect(t.mtd).toBe(0);
+    expect(alertLevel(t.mtd, [15, 30])).toBe("ok");
+  });
+
+  it("ignores rows dated after as_of", () => {
+    const t = costTimeline({ estimate: { days: [est("2026-10-26", 5)], month_usd: 0 }, actual: null, as_of: "2026-10-25T23:59:00Z" });
+    expect(t.days.at(-1)?.day).toBe("2026-10-25");
   });
 });
