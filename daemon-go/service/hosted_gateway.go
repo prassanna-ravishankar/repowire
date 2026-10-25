@@ -141,7 +141,12 @@ func (h *Hosted) serveGateway(url, token, version string, tools HostedToolRunner
 		go func() {
 			defer h.wg.Done()
 			if frame.Type == "settled" {
-				h.Report(h.ctx, frame.Agent, frame.OperationID, HostedResult{Status: frame.Status, Reason: frame.Reason, Text: frame.Text})
+				// Only a handled report is acknowledged; the runtime keeps the
+				// rest and resends them on the next connect.
+				if err := h.Report(h.ctx, frame.Agent, frame.OperationID, HostedResult{Status: frame.Status, Reason: frame.Reason, Text: frame.Text}); err != nil {
+					log.Printf("hosted: report %s/%s not acknowledged: %v", frame.Agent, frame.OperationID, err)
+					return
+				}
 				reply(gatewayFrame{Type: "ack", ID: frame.ID})
 				return
 			}

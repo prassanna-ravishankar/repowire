@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -37,6 +38,10 @@ import (
 // ============================================================================
 
 const hostedDeliveryKind = "hosted_delivery"
+
+// hostedRequestTimeout bounds one HTTP call to the runtime, so a runtime that
+// accepts a connection and never answers cannot hold settlement or shutdown.
+const hostedRequestTimeout = 30 * time.Second
 
 // HostedError is a non-2xx answer from the hosted runtime.
 type HostedError struct {
@@ -82,7 +87,7 @@ type HostedClient struct {
 }
 
 func NewHostedClient(base, token, machine string) *HostedClient {
-	return &HostedClient{base: strings.TrimRight(base, "/"), token: token, machine: machine, http: &http.Client{}}
+	return &HostedClient{base: strings.TrimRight(base, "/"), token: token, machine: machine, http: &http.Client{Timeout: hostedRequestTimeout}}
 }
 
 func (c *HostedClient) do(ctx context.Context, method, path string, body, out any) error {
@@ -340,13 +345,22 @@ func (h *Hosted) Deliver(ctx context.Context, kind, correlationID string, from *
 	if err != nil {
 		return nil, err
 	}
+	// The peer turns busy before the runtime can report, so a report that
+	// lands while Submit is still returning brings it back to idle.
+	h.busy(target.PeerID, +1)
 	accepted, err := h.runtime.Submit(ctx, string(target.PeerID), operationID, framed,
 		HostedSource{From: fromName, FromPeerID: fromID, Type: kind, CorrelationID: correlationID})
 	if err != nil {
 		h.fail(opID, "submit_failed", err.Error())
+		h.busy(target.PeerID, -1)
 		return nil, fmt.Errorf("hosted submit to %s: %w", target.DisplayName, err)
 	}
-	h.busy(target.PeerID, +1)
+	if !accepted && h.store != nil && opID != "" {
+		// The runtime already holds this operation and reports it once, against
+		// the first record; this one settles now.
+		_, _ = h.store.CompleteOperation(ctx, opID, nil, map[string]any{"outcome": "duplicate"})
+		h.busy(target.PeerID, -1)
+	}
 	return map[string]any{"status": "accepted", "operation_id": operationID, "duplicate": !accepted}, nil
 }
 
@@ -372,54 +386,69 @@ func (h *Hosted) fail(opID, reason, detail string) {
 }
 
 // Report settles the submission the runtime reports for agent and operation
-// id. A report for an operation already settled, or unknown here, changes
-// nothing; the caller acknowledges it either way.
-func (h *Hosted) Report(ctx context.Context, agentID, operationID string, result HostedResult) {
+// id. Observers run before the operation turns terminal, so a daemon that
+// stops between the two settles the report again when the runtime resends
+// it; observers tolerate that replay (a closed ask or finished job ignores
+// it). A nil error means the report is handled, or was already settled or is
+// unknown here, and the runtime may drop it; an error means it must resend.
+func (h *Hosted) Report(ctx context.Context, agentID, operationID string, result HostedResult) error {
 	if h.store == nil {
-		return
+		return nil
 	}
 	h.settling.Lock()
 	defer h.settling.Unlock()
-	for _, status := range []string{"queued", "running"} {
-		ops, err := h.store.ListOperations(ctx, hostedDeliveryKind, status)
-		if err != nil {
-			log.Printf("hosted: report %s/%s: %v", agentID, operationID, err)
-			return
-		}
-		for _, op := range ops {
-			str := func(key string) string { value, _ := op.Target[key].(string); return value }
-			if str("agent_id") != agentID || str("operation_id") != operationID {
-				continue
-			}
-			delivery := HostedDelivery{Kind: str("kind"), Text: str("text"), CorrelationID: str("correlation_id"),
-				FromPeerID: str("from_peer_id"), FromPeerName: str("from_peer_name"),
-				ToPeerID: str("to_peer_id"), ToPeerName: str("to_peer_name")}
-			h.settle(op.OperationID, delivery, result)
-			h.busy(proto.PeerID(delivery.ToPeerID), -1)
-			return
-		}
+	op, err := h.unsettled(ctx, agentID, operationID)
+	if err != nil || op == nil {
+		return err
 	}
-}
-
-func (h *Hosted) settle(opID string, delivery HostedDelivery, result HostedResult) {
-	ctx := context.Background()
-	if result.Status != "done" {
-		h.fail(opID, "unanswered", result.Reason)
-	} else if h.store != nil && opID != "" {
-		_, _ = h.store.CompleteOperation(ctx, opID, nil, map[string]any{"outcome": "done"})
-	}
+	str := func(key string) string { value, _ := op.Target[key].(string); return value }
+	delivery := HostedDelivery{Kind: str("kind"), Text: str("text"), CorrelationID: str("correlation_id"),
+		FromPeerID: str("from_peer_id"), FromPeerName: str("from_peer_name"),
+		ToPeerID: str("to_peer_id"), ToPeerName: str("to_peer_name")}
 	for _, observer := range h.settled {
 		observer(ctx, delivery, result)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	report := map[string]any{"outcome": result.Status, "reason": result.Reason, "text": result.Text}
+	if result.Status != "done" {
+		_, err = h.store.FailOperation(ctx, op.OperationID, "", nil, report)
+	} else {
+		_, err = h.store.CompleteOperation(ctx, op.OperationID, nil, report)
+	}
+	if err != nil {
+		return fmt.Errorf("settle hosted delivery %s: %w", op.OperationID, err)
+	}
+	h.busy(proto.PeerID(delivery.ToPeerID), -1)
+	return nil
 }
 
-// busy keeps the peer busy while any submission is in flight.
+// unsettled finds the open operation for agent and operation id, or nil.
+func (h *Hosted) unsettled(ctx context.Context, agentID, operationID string) (*state.Operation, error) {
+	for _, status := range []string{"queued", "running"} {
+		ops, err := h.store.ListOperations(ctx, hostedDeliveryKind, status)
+		if err != nil {
+			return nil, fmt.Errorf("find hosted delivery %s/%s: %w", agentID, operationID, err)
+		}
+		for _, op := range ops {
+			if op.Target["agent_id"] == agentID && op.Target["operation_id"] == operationID {
+				return op, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+// busy keeps the peer busy while any submission is in flight. The status
+// change happens under the count's lock, so concurrent deliveries and reports
+// apply their transitions in the order they counted.
 func (h *Hosted) busy(id proto.PeerID, delta int) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	before := h.inflight[id]
 	after := max(before+delta, 0)
 	h.inflight[id] = after
-	h.mu.Unlock()
 	ctx := context.Background()
 	switch {
 	case before == 0 && after > 0:
