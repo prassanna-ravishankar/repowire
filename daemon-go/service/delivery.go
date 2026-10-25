@@ -114,7 +114,7 @@ func (d *PeerDelivery) WithInbox(inbox *Inbox) *PeerDelivery {
 func (d *PeerDelivery) WithHosted(hosted *Hosted) *PeerDelivery {
 	d.hosted = hosted
 	if hosted != nil {
-		hosted.OnSettled(d.completeHosted)
+		hosted.OnSettled("reply", d.completeHosted)
 	}
 	return d
 }
@@ -607,13 +607,15 @@ func stringValuePeer(value *proto.Peer) string {
 }
 
 func (d *PeerDelivery) completeACPAsk(ctx context.Context, cid string, reply, errText *string) {
-	d.completeRuntimeAsk(ctx, cid, reply, errText, "ACP error: ")
+	_ = d.completeRuntimeAsk(ctx, cid, reply, errText, "ACP error: ")
 }
 
 // completeHosted closes an ask with the hosted runtime's answer, or with its
 // failure. An ask the tracker no longer holds (the daemon restarted while the
-// runtime worked) still reaches its asker as a framed reply.
-func (d *PeerDelivery) completeHosted(ctx context.Context, delivery HostedDelivery, result HostedResult) {
+// runtime worked) still reaches its asker as a framed reply. It fails when
+// the reply was neither delivered nor durably queued, so the report is
+// resent.
+func (d *PeerDelivery) completeHosted(ctx context.Context, delivery HostedDelivery, result HostedResult) error {
 	var reply, errText *string
 	if result.Status != "done" {
 		text := "no answer (" + result.Reason + ")"
@@ -625,16 +627,15 @@ func (d *PeerDelivery) completeHosted(ctx context.Context, delivery HostedDelive
 		if errText != nil {
 			log.Printf("delivery: hosted %s to %s failed: %s", delivery.Kind, delivery.ToPeerID, *errText)
 		}
-		return
+		return nil
 	}
 	if d.asks == nil {
-		return
+		return nil
 	}
 	// An ask still tracked closes here; one already closed (a job's completion
 	// closed it first) needs nothing more.
 	if _, ok := d.asks.Get(delivery.CorrelationID); ok {
-		d.completeRuntimeAsk(ctx, delivery.CorrelationID, reply, errText, "Hosted error: ")
-		return
+		return d.completeRuntimeAsk(ctx, delivery.CorrelationID, reply, errText, "Hosted error: ")
 	}
 	body := ""
 	if reply != nil {
@@ -645,33 +646,38 @@ func (d *PeerDelivery) completeHosted(ctx context.Context, delivery HostedDelive
 	framed := fmt.Sprintf("[ack #%s from @%s] %s", delivery.CorrelationID, delivery.ToPeerName, body)
 	if _, err := d.Notify(ctx, NotifyParams{FromPeer: delivery.ToPeerID, ToPeer: delivery.FromPeerID, Text: framed,
 		BypassCircle: true, CorrelationID: delivery.CorrelationID, ThreadText: body}); err == nil {
-		return
+		return nil
 	}
 	// The asker has not re-registered since the restart: hold the reply in its
 	// durable queue, which drains when it reconnects.
 	if d.store == nil || delivery.FromPeerID == "" {
 		log.Printf("delivery: hosted reply %s to %s undeliverable: no durable queue", delivery.CorrelationID, delivery.FromPeerName)
-		return
+		return nil
 	}
 	queued, err := d.store.EnqueueDelivery(ctx, state.QueuedDelivery{
 		PeerID: delivery.FromPeerID, Kind: state.DeliveryNotify, FromPeerID: stringPtr(delivery.ToPeerID),
 		FromPeerName: delivery.ToPeerName, ToPeerName: delivery.FromPeerName, Text: framed,
 	}, d.queueTTLSeconds, d.queueMax, time.Time{})
-	if err != nil || queued == nil {
-		log.Printf("delivery: hosted reply %s to %s undeliverable: %v", delivery.CorrelationID, delivery.FromPeerID, err)
+	if err != nil {
+		return fmt.Errorf("queue hosted reply %s for %s: %w", delivery.CorrelationID, delivery.FromPeerID, err)
 	}
+	if queued == nil {
+		log.Printf("delivery: hosted reply %s to %s undeliverable: the durable queue is disabled", delivery.CorrelationID, delivery.FromPeerID)
+	}
+	return nil
 }
 
 // completeRuntimeAsk closes an ask a runtime answered on the daemon's side
 // (ACP, hosted): it notifies the asker with the framed reply, or stashes it
-// when the asker cannot take it now.
-func (d *PeerDelivery) completeRuntimeAsk(ctx context.Context, cid string, reply, errText *string, errPrefix string) {
+// when the asker cannot take it now. The stash lives only in memory, so that
+// case returns an error; a caller that can retry (hosted) does.
+func (d *PeerDelivery) completeRuntimeAsk(ctx context.Context, cid string, reply, errText *string, errPrefix string) error {
 	if d.asks == nil {
-		return
+		return nil
 	}
 	ask, ok := d.asks.Get(cid)
 	if !ok || ask.Closed {
-		return
+		return nil
 	}
 	isError := errText != nil
 	body := ""
@@ -690,7 +696,7 @@ func (d *PeerDelivery) completeRuntimeAsk(ctx context.Context, cid string, reply
 		}
 		d.asks.CaptureReply(ctx, cid, body, nil)
 		_, _ = d.asks.Close(ctx, cid, reason)
-		return
+		return nil
 	}
 	framed := fmt.Sprintf("[ack #%s from @%s] %s", cid, ask.ToPeerName, body)
 	result, err := d.Notify(ctx, NotifyParams{FromPeer: string(ask.ToPeerID), ToPeer: string(ask.FromPeerID), Text: framed, BypassCircle: true, CorrelationID: cid, ThreadText: body})
@@ -699,19 +705,19 @@ func (d *PeerDelivery) completeRuntimeAsk(ctx context.Context, cid string, reply
 			d.asks.CaptureReply(ctx, cid, *reply, nil)
 		}
 		_, _ = d.asks.Close(ctx, cid, "ack_with_msg")
-		return
+		return nil
 	}
 	if err != nil || !result.Delivered() {
 		if isError {
 			_, _ = d.asks.Close(ctx, cid, "send_failed")
-			return
+			return nil
 		}
 		var identity *AskerIdentity
 		if asker, found := d.reg.GetPeer(ask.FromPeerID); found && asker.Machine != "" && asker.Machine != "unknown" && asker.Path != "" {
 			identity = &AskerIdentity{DisplayName: asker.DisplayName, Circle: asker.Circle, Backend: asker.Backend, Path: asker.Path, Machine: asker.Machine}
 		}
 		d.asks.SetPendingReply(ctx, cid, framed, identity, false)
-		return
+		return fmt.Errorf("reply %s held only in memory for %s", cid, ask.FromPeerName)
 	}
 	if !isError && reply != nil {
 		d.asks.CaptureReply(ctx, cid, *reply, nil)
@@ -721,6 +727,7 @@ func (d *PeerDelivery) completeRuntimeAsk(ctx context.Context, cid string, reply
 		reason = "send_failed"
 	}
 	_, _ = d.asks.Close(ctx, cid, reason)
+	return nil
 }
 
 // OpenScheduledAsk registers and delivers a scheduled ask under cid (minted

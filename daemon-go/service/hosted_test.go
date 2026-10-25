@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -239,7 +240,7 @@ func TestHostedRepeatedReportSettlesOnce(t *testing.T) {
 	f := newHostedFixture(t)
 	cid := f.ask(t)
 	settled := 0
-	f.hosted.OnSettled(func(context.Context, HostedDelivery, HostedResult) { settled++ })
+	f.hosted.OnSettled("count", func(context.Context, HostedDelivery, HostedResult) error { settled++; return nil })
 	f.report(cid, HostedResult{Status: "done", Text: "ok"})
 	f.report(cid, HostedResult{Status: "done", Text: "ok"})
 	if settled != 1 || f.hostReg.lastStatus() != proto.StatusOnline {
@@ -268,7 +269,10 @@ func TestHostedRestoreSettlesAReportAfterRestart(t *testing.T) {
 	next := NewHosted(reg, newFakeHostedRuntime(), f.store, "test")
 	t.Cleanup(next.Close)
 	var settled []HostedDelivery
-	next.OnSettled(func(_ context.Context, d HostedDelivery, _ HostedResult) { settled = append(settled, d) })
+	next.OnSettled("record", func(_ context.Context, d HostedDelivery, _ HostedResult) error {
+		settled = append(settled, d)
+		return nil
+	})
 	next.Restore(context.Background())
 	if reg.lastStatus() != proto.StatusBusy {
 		t.Fatalf("a peer with unsettled work must restore busy, got %q", reg.lastStatus())
@@ -353,12 +357,13 @@ func TestHostedReportReplaysWhenSettlementIsInterrupted(t *testing.T) {
 	f := newHostedFixture(t)
 	stopped, stop := context.WithCancel(context.Background())
 	seen := 0
-	f.hosted.OnSettled(func(context.Context, HostedDelivery, HostedResult) {
+	f.hosted.OnSettled("probe", func(context.Context, HostedDelivery, HostedResult) error {
 		seen++
 		if f.openDeliveries(t) != 1 {
 			t.Error("an observer must run while the delivery is still open")
 		}
 		stop() // the daemon stops mid-settlement
+		return nil
 	})
 	cid := f.ask(t)
 	if err := f.hosted.Report(stopped, string(f.target.PeerID), cid, HostedResult{Status: "done", Text: "42"}); err == nil {
@@ -405,5 +410,161 @@ func TestHostedFastReportAndDuplicateLeavePeerIdle(t *testing.T) {
 	}
 	if got := f.hostReg.lastStatus(); got != proto.StatusOnline || f.openDeliveries(t) != 0 {
 		t.Fatalf("a duplicate submission must settle at once: status=%q open=%d", got, f.openDeliveries(t))
+	}
+}
+
+// A resend of a delivery still open reuses its record, so the runtime's one
+// report settles the only record and the peer goes idle.
+func TestHostedResendOfAnOpenDeliveryReusesItsRecord(t *testing.T) {
+	f := newHostedFixture(t)
+	cid := f.ask(t)
+	if _, err := f.delivery.DeliverAsk(context.Background(), DeliverAskParams{FromPeer: "alpha", ToPeer: "helper-hosted", Text: "again", CorrelationID: cid}); err != nil {
+		t.Fatal(err)
+	}
+	if open := f.openDeliveries(t); open != 1 {
+		t.Fatalf("a resend must reuse the open record, got %d open", open)
+	}
+	f.report(cid, HostedResult{Status: "done", Text: "42"})
+	if got := f.hostReg.lastStatus(); got != proto.StatusOnline || f.openDeliveries(t) != 0 {
+		t.Fatalf("the report must settle the only record: status=%q open=%d", got, f.openDeliveries(t))
+	}
+}
+
+// A failing observer leaves the report unacknowledged; the resent report
+// runs only the observers that had not succeeded, so a reply already sent is
+// not sent again.
+func TestHostedReportResumesAtTheFailedObserver(t *testing.T) {
+	f := newHostedFixture(t)
+	first, flaky := 0, 0
+	f.hosted.OnSettled("first", func(context.Context, HostedDelivery, HostedResult) error { first++; return nil })
+	f.hosted.OnSettled("flaky", func(context.Context, HostedDelivery, HostedResult) error {
+		if flaky++; flaky == 1 {
+			return errors.New("store unavailable")
+		}
+		return nil
+	})
+	cid := f.ask(t)
+	if err := f.hosted.Report(context.Background(), string(f.target.PeerID), cid, HostedResult{Status: "done", Text: "42"}); err == nil {
+		t.Fatal("a failed observer must leave the report unacknowledged")
+	}
+	if f.openDeliveries(t) != 1 {
+		t.Fatal("a failed observer must leave the delivery open")
+	}
+	f.report(cid, HostedResult{Status: "done", Text: "42"})
+	if first != 1 || flaky != 2 || f.openDeliveries(t) != 0 {
+		t.Fatalf("the resend must resume at the failed observer: first=%d flaky=%d open=%d", first, flaky, f.openDeliveries(t))
+	}
+}
+
+// A reply that cannot be held for an absent asker fails its observer, so the
+// report is resent rather than dropped.
+func TestHostedReplyQueueFailureIsResent(t *testing.T) {
+	f := newHostedFixture(t)
+	f.delivery.store = &fakeQueue{enqueueErr: errors.New("disk full")}
+	err := f.delivery.completeHosted(context.Background(), HostedDelivery{Kind: "ask", CorrelationID: "ask-gone",
+		FromPeerID: "repow-default-gone", FromPeerName: "gone", ToPeerID: string(f.target.PeerID), ToPeerName: string(f.target.DisplayName)},
+		HostedResult{Status: "done", Text: "late answer"})
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("a reply the queue refused must fail the observer, got %v", err)
+	}
+}
+
+// A reply the asker could not take, held only in memory, fails the reply
+// step so the report is resent; it stays on the ask meanwhile.
+func TestHostedReplyHeldOnlyInMemoryIsResent(t *testing.T) {
+	f := newHostedFixture(t)
+	cid := f.ask(t)
+	f.wire.ackErr, f.wire.sendErr = ErrNotConnected, ErrNotConnected
+	if err := f.hosted.Report(context.Background(), string(f.target.PeerID), cid, HostedResult{Status: "done", Text: "42"}); err == nil {
+		t.Fatal("a reply held only in memory must leave the report unacknowledged")
+	}
+	if ask, ok := f.asks.Get(cid); !ok || ask.Closed || ask.PendingReply == nil {
+		t.Fatalf("the reply must wait on the open ask, got %+v", ask)
+	}
+	if f.openDeliveries(t) != 1 {
+		t.Fatal("the delivery must stay open for the resend")
+	}
+}
+
+func (f *fakeHostedRuntime) submittedOp(op string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.submitted[op]
+	return ok
+}
+
+func (h *Hosted) inflightFor(id proto.PeerID) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.inflight[id]
+}
+
+// Restore submits each unsettled delivery again: one the runtime never saw
+// (the daemon stopped between recording and submitting) reaches it and
+// settles on its report, and one the runtime already holds is not counted
+// twice.
+func TestHostedRestoreResubmitsUnsettledDeliveries(t *testing.T) {
+	f := newHostedFixture(t)
+	held := f.ask(t)
+	lost, _, err := f.hosted.record(context.Background(), map[string]any{
+		"agent_id": string(f.target.PeerID), "operation_id": "notify-lost", "kind": "notify",
+		"from_peer_id": string(f.asker.PeerID), "from_peer_name": "alpha",
+		"to_peer_id": string(f.target.PeerID), "to_peer_name": "helper-hosted", "text": "never submitted",
+	})
+	if err != nil || lost == "" {
+		t.Fatalf("record: %q %v", lost, err)
+	}
+	f.hosted.Close()
+
+	runtime := newFakeHostedRuntime()
+	runtime.submitted[held] = "already held"
+	reg := &fakeHostedRegistry{}
+	next := NewHosted(reg, runtime, f.store, "test")
+	t.Cleanup(next.Close)
+	next.Restore(context.Background())
+	deadline := time.Now().Add(2 * time.Second)
+	for !runtime.submittedOp("notify-lost") {
+		if time.Now().After(deadline) {
+			t.Fatal("restore did not resubmit the delivery the runtime never saw")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := next.inflightFor(f.target.PeerID); got != 2 {
+		t.Fatalf("each unsettled delivery counts once, got %d", got)
+	}
+	for _, op := range []string{held, "notify-lost"} {
+		if err := next.Report(context.Background(), string(f.target.PeerID), op, HostedResult{Status: "done", Text: "ok"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if reg.lastStatus() != proto.StatusOnline || f.openDeliveries(t) != 0 {
+		t.Fatalf("both deliveries must settle: status=%q open=%d", reg.lastStatus(), f.openDeliveries(t))
+	}
+}
+
+// A resubmission that fails does not settle the delivery: the runtime may
+// hold the original, and its genuine report closes the ask with the real
+// reply.
+func TestHostedRestoreLeavesAFailedResubmissionForItsReport(t *testing.T) {
+	f := newHostedFixture(t)
+	cid := f.ask(t)
+	f.hosted.Close()
+
+	runtime := newFakeHostedRuntime()
+	runtime.submitErr = &HostedError{Status: 503, Message: "Service Unavailable"}
+	reg := &fakeHostedRegistry{}
+	next := NewHosted(reg, runtime, f.store, "test")
+	t.Cleanup(next.Close)
+	next.OnSettled("reply", f.delivery.completeHosted)
+	next.Restore(context.Background())
+	next.wg.Wait() // the resubmission has run and failed
+	if f.openDeliveries(t) != 1 || reg.lastStatus() != proto.StatusBusy {
+		t.Fatalf("a failed resubmission must leave the delivery open and its peer busy: open=%d status=%q", f.openDeliveries(t), reg.lastStatus())
+	}
+	if err := next.Report(context.Background(), string(f.target.PeerID), cid, HostedResult{Status: "done", Text: "the real answer"}); err != nil {
+		t.Fatal(err)
+	}
+	if ask := waitClosed(t, f.asks, cid); ask.CloseReason != "ack_with_msg" || ask.ReplyText == nil || *ask.ReplyText != "the real answer" {
+		t.Fatalf("the genuine report must close the ask with its reply, got %+v", ask)
 	}
 }

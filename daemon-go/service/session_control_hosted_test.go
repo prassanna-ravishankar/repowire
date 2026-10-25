@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/repowire/repowire/daemon-go/proto"
@@ -11,9 +13,10 @@ import (
 // scHosted registers each spawned hosted agent in the fake registry, as the
 // real Hosted.Spawn does.
 type scHosted struct {
-	reg     *scRegistry
-	spawns  []HostedSpawnParams
-	retired []proto.PeerID
+	reg       *scRegistry
+	spawns    []HostedSpawnParams
+	retired   []proto.PeerID
+	retireErr error
 }
 
 func (h *scHosted) Spawn(_ context.Context, params HostedSpawnParams) (proto.PeerID, proto.DisplayName, error) {
@@ -26,7 +29,7 @@ func (h *scHosted) Spawn(_ context.Context, params HostedSpawnParams) (proto.Pee
 
 func (h *scHosted) Retire(_ context.Context, id proto.PeerID) error {
 	h.retired = append(h.retired, id)
-	return nil
+	return h.retireErr
 }
 
 func TestSessionControlRunsJobsOnHostedAgents(t *testing.T) {
@@ -78,10 +81,14 @@ func TestSessionControlRunsJobsOnHostedAgents(t *testing.T) {
 type fastHostedOpener struct {
 	completion *JobCompletion
 	result     HostedResult
+	// err is what the run's settlement returned; lastText the prompt it carried.
+	err      error
+	lastText string
 }
 
 func (o *fastHostedOpener) OpenScheduledAsk(ctx context.Context, cid, _, toPeer, text string, _ *string, _ string) (string, error) {
-	o.completion.OnHostedRun(ctx, HostedDelivery{Kind: "ask", CorrelationID: cid, ToPeerID: toPeer, Text: text}, o.result)
+	o.lastText = text
+	o.err = o.completion.OnHostedRun(ctx, HostedDelivery{Kind: "ask", CorrelationID: cid, ToPeerID: toPeer, Text: text}, o.result)
 	return cid, nil
 }
 
@@ -114,10 +121,44 @@ func TestJobDispatchSurvivesAHostedReportBeforeTheSendReturns(t *testing.T) {
 			if _, err := runner.RunJob(ctx, work.WorkID, true, false); err != nil {
 				t.Fatal(err)
 			}
+			if opener.err != nil {
+				t.Fatalf("settlement: %v", opener.err)
+			}
 			got, err := store.GetWork(ctx, work.WorkID)
 			if err != nil || got.State != tc.wantState {
 				t.Fatalf("job state = %q, want %q (%v): %#v", got.State, tc.wantState, err, got)
 			}
 		})
+	}
+}
+
+// A fresh agent the runtime would not retire fails the jobs step, so the
+// report is resent and the release retried.
+func TestHostedJobReleaseFailureFailsTheSettlement(t *testing.T) {
+	ctx := context.Background()
+	store := scStore(t)
+	reg := &scRegistry{}
+	hosted := &scHosted{reg: reg, retireErr: errors.New("runtime unreachable")}
+	control := NewSessionControl(reg, nil, store)
+	control.hosted = hosted
+	opener := &fastHostedOpener{completion: NewJobCompletion(store, nil, control, nil, nil), result: HostedResult{Status: "done", Text: "ok"}}
+	runner := NewJobRunner(store, opener, control)
+	circle := "default"
+	work, err := store.CreateWork(ctx, state.WorkCreate{Title: "digest", Circle: &circle, Request: map[string]any{"execution": map[string]any{
+		"target": map[string]any{"path": "/jobs/digest", "backend": string(proto.AgentHosted)}, "process_scope": "per_fire", "continuity": "fresh",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.RunJob(ctx, work.WorkID, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if opener.err == nil || !strings.Contains(opener.err.Error(), "retire_failed") || len(hosted.retired) != 1 {
+		t.Fatalf("a failed retire must fail the jobs step: err=%v retired=%v", opener.err, hosted.retired)
+	}
+	hosted.retireErr = nil
+	delivery := HostedDelivery{Kind: "ask", ToPeerID: string(hosted.reg.peers[0].PeerID), Text: opener.lastText}
+	if err := opener.completion.OnHostedRun(ctx, delivery, opener.result); err != nil || len(hosted.retired) != 2 {
+		t.Fatalf("the replay must retry the release: err=%v retired=%v", err, hosted.retired)
 	}
 }

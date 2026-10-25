@@ -443,7 +443,12 @@ func (s *Store) UpdateWorkState(ctx context.Context, workID string, u WorkUpdate
 			return nil, ErrStaleAttempt
 		}
 	}
-	if existing.Terminal() && u.State != existing.State {
+	// An attempt recovered as runner_interrupted (the daemon stopped before its
+	// send confirmed) may still be settled by its own run: the attempt check
+	// above keeps that to the current attempt.
+	interrupted := existing.State == "unavailable" && existing.StateReason != nil && *existing.StateReason == "runner_interrupted" &&
+		(u.State == "completed" || u.State == "failed")
+	if existing.Terminal() && u.State != existing.State && !interrupted {
 		return nil, fmt.Errorf("terminal work %s is already %s; terminal state cannot be changed", workID, existing.State)
 	}
 	if existing.CancelRequested && u.State == "queued" {
@@ -686,6 +691,20 @@ func runnerCurrentAttempt(w *TrackedWork) string {
 	}
 	if cur, ok := runner["current_attempt_id"].(string); ok {
 		return cur
+	}
+	return ""
+}
+
+// currentAttemptField returns a string field of the current runner attempt,
+// or "".
+func currentAttemptField(w *TrackedWork, key string) string {
+	current := runnerCurrentAttempt(w)
+	runner, _ := w.Provenance["runner"].(map[string]any)
+	for _, raw := range toAnySlice(runner["attempts"]) {
+		if attempt, ok := raw.(map[string]any); ok && attempt["attempt_id"] == current {
+			value, _ := attempt[key].(string)
+			return value
+		}
 	}
 	return ""
 }

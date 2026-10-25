@@ -191,15 +191,19 @@ type Hosted struct {
 	machine string
 
 	// settled observers run in order once per submission the runtime settles.
-	settled []HostedObserver
+	settled []namedObserver
 
 	mu       sync.Mutex
 	inflight map[proto.PeerID]int
 	// settling serializes reports, so a resent report settles at most once.
 	settling sync.Mutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	// recording serializes finding or creating a delivery's record. It is not
+	// settling: an observer may deliver (a reply to a hosted asker) while a
+	// report holds settling.
+	recording sync.Mutex
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 func NewHosted(reg hostedRegistry, runtime HostedRuntime, store *state.Store, machine string) *Hosted {
@@ -209,12 +213,21 @@ func NewHosted(reg hostedRegistry, runtime HostedRuntime, store *state.Store, ma
 }
 
 // HostedObserver sees one settled submission: done with the final text, or
-// unanswered with the runtime's reason.
-type HostedObserver func(ctx context.Context, delivery HostedDelivery, result HostedResult)
+// unanswered with the runtime's reason. An error leaves the report
+// unacknowledged, so the runtime resends it and the observer runs again.
+type HostedObserver func(ctx context.Context, delivery HostedDelivery, result HostedResult) error
 
-// OnSettled adds an observer. Wire observers before Restore and Deliver.
-func (h *Hosted) OnSettled(observer HostedObserver) {
-	h.settled = append(h.settled, observer)
+type namedObserver struct {
+	name string
+	run  HostedObserver
+}
+
+// OnSettled adds an observer under a name unique among the observers; a
+// delivery records each name as its observer succeeds, so a replayed report
+// runs only the observers that had not. Wire observers before Restore and
+// Deliver.
+func (h *Hosted) OnSettled(name string, observer HostedObserver) {
+	h.settled = append(h.settled, namedObserver{name: name, run: observer})
 }
 
 // Close drops the gateway. Unsettled operations stay running; their reports
@@ -294,7 +307,10 @@ func (h *Hosted) Retire(ctx context.Context, id proto.PeerID) error {
 
 // Restore re-registers every hosted peer from its durable mapping and marks
 // it busy for submissions a previous daemon left unsettled; their reports
-// arrive once the gateway connects. Retired peers stay retired.
+// arrive once the gateway connects. Retired peers stay retired. Each
+// unsettled submission is submitted again under its operation id, in the
+// background: the previous daemon may have stopped before the runtime had
+// it, and the runtime ignores one it already holds.
 func (h *Hosted) Restore(ctx context.Context) {
 	if h.store == nil {
 		return
@@ -315,15 +331,38 @@ func (h *Hosted) Restore(ctx context.Context) {
 			log.Printf("hosted: restore %s: %v", m.SessionID, err)
 		}
 	}
+	var open []*state.Operation
 	for _, status := range []string{"queued", "running"} {
 		ops, err := h.store.ListOperations(ctx, hostedDeliveryKind, status)
 		if err != nil {
+			log.Printf("hosted: restore %s deliveries: %v", status, err)
 			continue
 		}
 		for _, op := range ops {
 			to, _ := op.Target["to_peer_id"].(string)
 			h.busy(proto.PeerID(to), +1)
+			open = append(open, op)
 		}
+	}
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		for _, op := range open {
+			h.resubmit(op)
+		}
+	}()
+}
+
+// resubmit sends an unsettled submission again. It never decides an
+// outcome: a failed resubmission does not prove the original failed, since
+// its report may still be on its way, so the submission stays open and its
+// peer busy until a genuine report settles it.
+func (h *Hosted) resubmit(op *state.Operation) {
+	str := func(key string) string { value, _ := op.Target[key].(string); return value }
+	agent, operationID := str("agent_id"), str("operation_id")
+	if _, err := h.runtime.Submit(h.ctx, agent, operationID, str("text"), HostedSource{
+		From: str("from_peer_name"), FromPeerID: str("from_peer_id"), Type: str("kind"), CorrelationID: str("correlation_id")}); err != nil {
+		log.Printf("hosted: WARNING resubmit %s/%s failed (%v); left open for its report", agent, operationID, err)
 	}
 }
 
@@ -345,42 +384,59 @@ func (h *Hosted) Deliver(ctx context.Context, kind, correlationID string, from *
 	}
 	framed := hooks.FormatInboundMessage(fromName, fromRole, string(target.DisplayName), kind, correlationID, text)
 	record["text"] = framed
-	opID, err := h.record(ctx, record)
+	opID, reused, err := h.record(ctx, record)
 	if err != nil {
 		return nil, err
 	}
 	// The peer turns busy before the runtime can report, so a report that
-	// lands while Submit is still returning brings it back to idle.
-	h.busy(target.PeerID, +1)
+	// lands while Submit is still returning brings it back to idle. A resend
+	// of an open delivery is already counted.
+	if !reused {
+		h.busy(target.PeerID, +1)
+	}
 	accepted, err := h.runtime.Submit(ctx, string(target.PeerID), operationID, framed,
 		HostedSource{From: fromName, FromPeerID: fromID, Type: kind, CorrelationID: correlationID})
 	if err != nil {
-		h.fail(opID, "submit_failed", err.Error())
-		h.busy(target.PeerID, -1)
+		if !reused {
+			h.fail(opID, "submit_failed", err.Error())
+			h.busy(target.PeerID, -1)
+		}
 		return nil, fmt.Errorf("hosted submit to %s: %w", target.DisplayName, err)
 	}
-	if !accepted && h.store != nil && opID != "" {
-		// The runtime already holds this operation and reports it once, against
-		// the first record; this one settles now.
+	if !accepted && !reused && h.store != nil && opID != "" {
+		// The runtime already settled this operation, against an earlier
+		// record; this one settles now.
 		_, _ = h.store.CompleteOperation(ctx, opID, nil, map[string]any{"outcome": "duplicate"})
 		h.busy(target.PeerID, -1)
 	}
 	return map[string]any{"status": "accepted", "operation_id": operationID, "duplicate": !accepted}, nil
 }
 
-func (h *Hosted) record(ctx context.Context, target map[string]any) (string, error) {
+// record returns the open record for the delivery's agent and operation id,
+// reused, or creates one, so a resend never adds a second record for the
+// runtime's one report.
+func (h *Hosted) record(ctx context.Context, target map[string]any) (string, bool, error) {
 	if h.store == nil {
-		return "", nil
+		return "", false, nil
+	}
+	h.recording.Lock()
+	defer h.recording.Unlock()
+	open, err := h.unsettled(ctx, target["agent_id"].(string), target["operation_id"].(string))
+	if err != nil {
+		return "", false, err
+	}
+	if open != nil {
+		return open.OperationID, true, nil
 	}
 	op, err := h.store.CreateOperation(ctx, hostedDeliveryKind, target, nil)
 	if err != nil {
-		return "", fmt.Errorf("persist hosted delivery: %w", err)
+		return "", false, fmt.Errorf("persist hosted delivery: %w", err)
 	}
 	strategy := "hosted_submit"
 	if _, err := h.store.StartAttempt(ctx, op.OperationID, &strategy, nil); err != nil {
-		return "", fmt.Errorf("start hosted delivery: %w", err)
+		return "", false, fmt.Errorf("start hosted delivery: %w", err)
 	}
-	return op.OperationID, nil
+	return op.OperationID, false, nil
 }
 
 func (h *Hosted) fail(opID, reason, detail string) {
@@ -390,10 +446,11 @@ func (h *Hosted) fail(opID, reason, detail string) {
 }
 
 // Report settles the submission the runtime reports for agent and operation
-// id. Observers run before the operation turns terminal, so a daemon that
-// stops between the two settles the report again when the runtime resends
-// it; observers tolerate that replay (a closed ask or finished job ignores
-// it). A nil error means the report is handled, or was already settled or is
+// id. Each observer's success is recorded on the open operation, and the
+// operation turns terminal only after all of them, so a report cut short
+// (an observer failed, or the daemon stopped) is resent and resumes at the
+// first observer that had not succeeded. An observer stopped partway runs
+// again from its start. A nil error means the report is handled, or was already settled or is
 // unknown here, and the runtime may drop it; an error means it must resend.
 func (h *Hosted) Report(ctx context.Context, agentID, operationID string, result HostedResult) error {
 	if h.store == nil {
@@ -411,13 +468,25 @@ func (h *Hosted) Report(ctx context.Context, agentID, operationID string, result
 	delivery := HostedDelivery{Kind: str("kind"), Text: str("text"), CorrelationID: str("correlation_id"),
 		FromPeerID: str("from_peer_id"), FromPeerName: str("from_peer_name"),
 		ToPeerID: str("to_peer_id"), ToPeerName: str("to_peer_name")}
+	steps, _ := op.Result["steps"].(map[string]any)
 	for _, observer := range h.settled {
-		observer(ctx, delivery, result)
+		if _, done := steps[observer.name]; done {
+			continue
+		}
+		if err := observer.run(ctx, delivery, result); err != nil {
+			return fmt.Errorf("settle hosted delivery %s: %s: %w", op.OperationID, observer.name, err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		marked, err := h.store.MarkOperationStep(ctx, op.OperationID, observer.name)
+		if err != nil || marked == nil {
+			return fmt.Errorf("settle hosted delivery %s: record %s: %w", op.OperationID, observer.name, err)
+		}
+		op = marked
+		steps, _ = op.Result["steps"].(map[string]any)
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	report := map[string]any{"outcome": result.Status, "reason": result.Reason, "text": result.Text}
+	report := map[string]any{"outcome": result.Status, "reason": result.Reason, "text": result.Text, "steps": steps}
 	if result.Status != "done" {
 		_, err = h.store.FailOperation(ctx, op.OperationID, "", nil, report)
 	} else {
