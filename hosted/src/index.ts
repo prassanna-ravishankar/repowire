@@ -101,9 +101,38 @@ export class HostedAgent extends DurableObject<Env> {
 
   async submit(text: string, operationId: string, source?: Record<string, string>) {
     if (!await this.config()) throw new Error('Agent does not exist');
+    await this.lifecycle.start();
+    // Recorded before admission, so a crash in between still reports.
+    await this.ctx.storage.put(`report:${operationId}`, true);
     // A label for transcripts, not a permission: the model still reads the text.
     const entry = source && { kind: 'repowire.message', data: source };
-    return this.harness.submit(text, { operationId, entry });
+    const receipt = await this.harness.submit(text, { operationId, entry });
+    this.report(operationId);
+    return receipt;
+  }
+
+  // Every submission is reported to the owner's gateway when it settles. The
+  // unreported ids are durable and each start re-arms their waits, so an
+  // eviction mid-run still reports once the run settles.
+  private reporting = new Set<string>();
+
+  async onStart() {
+    const unreported = await this.ctx.storage.list({ prefix: 'report:' });
+    for (const key of unreported.keys()) this.report(key.slice('report:'.length));
+  }
+
+  private report(operationId: string) {
+    if (this.reporting.has(operationId)) return;
+    this.reporting.add(operationId);
+    this.harness.wait(operationId)
+      .then(async (result) => {
+        const config = await this.config();
+        if (!config) return;
+        await this.env.GATEWAYS.getByName(config.owner).report({ agent: config.id, ...result });
+        await this.ctx.storage.delete(`report:${operationId}`);
+      })
+      .catch((error) => console.error('Hosted report failed; retried at next start', operationId, error))
+      .finally(() => this.reporting.delete(operationId));
   }
   async status() {
     return { runtimeId: this.runtimeId, agent: await this.config(), busy: await this.harness.session().busy(), pending: await this.harness.pending() };

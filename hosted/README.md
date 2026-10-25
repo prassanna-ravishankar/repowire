@@ -67,10 +67,20 @@ per-user quota, connector runtime, or AI Gateway configuration yet. Composio pro
 credentials belong in a sandbox. Budget alerts are notifications, not hard caps.
 
 The daemon is the only mesh hub. It submits each delivery with the ask's
-correlation id as the operation id, holds a wait per in-flight operation, and
-closes the ask with the answer. Agents reach the mesh through the `Gateway`
-Durable Object: the daemon dials `GET /gateway` and holds a hibernating
-WebSocket, the agent's mesh tools (`list_peers`, `whoami`, `notify_peer`,
+correlation id as the operation id and closes the ask with the answer. The
+daemon reaches the agents through the `Gateway` Durable Object: it dials
+`GET /gateway` and holds a hibernating WebSocket.
+
+Results are reported, not waited on. An agent records each operation id
+before admitting it, and when the run settles it reports the result to the
+gateway. Each wake of the agent re-arms reports still outstanding, so an
+eviction mid-run still reports. The gateway keeps each report in a durable
+outbox, sends it to the daemon, and resends everything unacknowledged on
+every connect. The daemon settles a report once and acknowledges it, so a run
+that finishes while the daemon is down is delivered when it reconnects.
+`GET /agents/:id/operations/:op` remains for scripts.
+
+The agent's mesh tools (`list_peers`, `whoami`, `notify_peer`,
 `ask_peer`, `set_description`) send a call frame over it, and the daemon runs
 the call as that agent's peer and answers with a result frame. Protocol pings
 do not wake the object. With no daemon connected the tools fail at once; a call

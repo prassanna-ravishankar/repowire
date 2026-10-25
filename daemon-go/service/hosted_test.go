@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,30 +13,19 @@ import (
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
-// fakeHostedRuntime records submissions and settles each operation when the
-// test sends its outcome. waitErrs are returned, in order, before an outcome.
+// fakeHostedRuntime records agents and submissions; tests settle a
+// submission by reporting it, as the gateway does.
 type fakeHostedRuntime struct {
 	mu        sync.Mutex
 	created   []string
 	submitted map[string]string
 	sources   map[string]HostedSource
-	outcomes  map[string]chan HostedResult
-	waitErrs  []error
 	submitErr error
 	createErr error
 }
 
 func newFakeHostedRuntime() *fakeHostedRuntime {
-	return &fakeHostedRuntime{submitted: map[string]string{}, sources: map[string]HostedSource{}, outcomes: map[string]chan HostedResult{}}
-}
-
-func (f *fakeHostedRuntime) outcome(op string) chan HostedResult {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.outcomes[op] == nil {
-		f.outcomes[op] = make(chan HostedResult, 1)
-	}
-	return f.outcomes[op]
+	return &fakeHostedRuntime{submitted: map[string]string{}, sources: map[string]HostedSource{}}
 }
 
 func (f *fakeHostedRuntime) CreateAgent(_ context.Context, id string, _ *string) error {
@@ -56,23 +44,6 @@ func (f *fakeHostedRuntime) Submit(_ context.Context, _, op, text string, source
 	_, seen := f.submitted[op]
 	f.submitted[op], f.sources[op] = text, source
 	return !seen, nil
-}
-
-func (f *fakeHostedRuntime) Wait(ctx context.Context, _, op string) (HostedResult, error) {
-	f.mu.Lock()
-	if len(f.waitErrs) > 0 {
-		err := f.waitErrs[0]
-		f.waitErrs = f.waitErrs[1:]
-		f.mu.Unlock()
-		return HostedResult{}, err
-	}
-	f.mu.Unlock()
-	select {
-	case result := <-f.outcome(op):
-		return result, nil
-	case <-ctx.Done():
-		return HostedResult{}, ctx.Err()
-	}
 }
 
 // fakeHostedRegistry records the status changes the hosted service makes.
@@ -145,7 +116,6 @@ func newHostedFixture(t *testing.T) *hostedFixture {
 	f := &hostedFixture{asks: NewAskTracker(0), runtime: newFakeHostedRuntime(), hostReg: &fakeHostedRegistry{},
 		wire: &fakeTransport{ackFrame: map[string]any{"status": "injected"}}, store: newHostedStore(t), asker: asker, target: target}
 	f.hosted = NewHosted(f.hostReg, f.runtime, f.store, "test")
-	f.hosted.retry = time.Millisecond
 	t.Cleanup(f.hosted.Close)
 	reg := &fakeRegistry{peers: []*proto.Peer{asker, target}}
 	f.delivery = NewPeerDelivery(reg, newRouterWithFake(f.wire), f.wire, f.asks, nil).WithHosted(f.hosted)
@@ -168,6 +138,11 @@ func (f *hostedFixture) ask(t *testing.T) string {
 		t.Fatalf("unexpected ask result: %+v", res)
 	}
 	return cid
+}
+
+// report settles a submission the way a gateway report does.
+func (f *hostedFixture) report(op string, result HostedResult) {
+	f.hosted.Report(context.Background(), string(f.target.PeerID), op, result)
 }
 
 func waitClosed(t *testing.T, asks *AskTracker, cid string) *Ask {
@@ -198,7 +173,7 @@ func TestHostedAskClosesWithRuntimeAnswer(t *testing.T) {
 		t.Fatalf("peer must be busy while the runtime works, got %q", f.hostReg.lastStatus())
 	}
 
-	f.runtime.outcome(cid) <- HostedResult{Status: "done", Text: "42"}
+	f.report(cid, HostedResult{Status: "done", Text: "42"})
 	ask := waitClosed(t, f.asks, cid)
 	if ask.CloseReason != "ack_with_msg" || ask.ReplyText == nil || *ask.ReplyText != "42" {
 		t.Fatalf("expected ack_with_msg with reply 42, got %+v", ask)
@@ -206,7 +181,6 @@ func TestHostedAskClosesWithRuntimeAnswer(t *testing.T) {
 	if f.wire.lastTarget != f.asker.PeerID {
 		t.Fatalf("reply must reach the asker, went to %q", f.wire.lastTarget)
 	}
-	f.hosted.wg.Wait()
 	if f.hostReg.lastStatus() != proto.StatusOnline {
 		t.Fatalf("peer must return online once idle, got %q", f.hostReg.lastStatus())
 	}
@@ -219,20 +193,24 @@ func TestHostedAskClosesWithRuntimeAnswer(t *testing.T) {
 func TestHostedUnansweredFailsTheAskLoudly(t *testing.T) {
 	f := newHostedFixture(t)
 	cid := f.ask(t)
-	f.runtime.outcome(cid) <- HostedResult{Status: "unanswered", Reason: "run_failed"}
+	f.report(cid, HostedResult{Status: "unanswered", Reason: "run_failed"})
 	ask := waitClosed(t, f.asks, cid)
 	if ask.CloseReason != "send_failed" {
 		t.Fatalf("an unanswered run must close send_failed, got %q", ask.CloseReason)
 	}
 }
 
-func TestHostedWaitReconnectsAfterNetworkFailure(t *testing.T) {
+// The runtime resends a report until it is acknowledged, so a report for a
+// settled operation must change nothing.
+func TestHostedRepeatedReportSettlesOnce(t *testing.T) {
 	f := newHostedFixture(t)
-	f.runtime.waitErrs = []error{errors.New("connection reset"), context.DeadlineExceeded}
 	cid := f.ask(t)
-	f.runtime.outcome(cid) <- HostedResult{Status: "done", Text: "ok"}
-	if ask := waitClosed(t, f.asks, cid); ask.CloseReason != "ack_with_msg" {
-		t.Fatalf("expected the reconnected wait to settle the ask, got %+v", ask)
+	settled := 0
+	f.hosted.OnSettled(func(context.Context, HostedDelivery, HostedResult) { settled++ })
+	f.report(cid, HostedResult{Status: "done", Text: "ok"})
+	f.report(cid, HostedResult{Status: "done", Text: "ok"})
+	if settled != 1 || f.hostReg.lastStatus() != proto.StatusOnline {
+		t.Fatalf("settled %d times, status %q", settled, f.hostReg.lastStatus())
 	}
 }
 
@@ -248,29 +226,26 @@ func TestHostedSubmitFailureFailsLoud(t *testing.T) {
 	}
 }
 
-func TestHostedRestoreResumesUnsettledDelivery(t *testing.T) {
+func TestHostedRestoreSettlesAReportAfterRestart(t *testing.T) {
 	f := newHostedFixture(t)
 	cid := f.ask(t)
 	f.hosted.Close() // the daemon stops while the runtime is still working
 
-	runtime := newFakeHostedRuntime()
-	next := NewHosted(f.hostReg, runtime, f.store, "test")
+	reg := &fakeHostedRegistry{}
+	next := NewHosted(reg, newFakeHostedRuntime(), f.store, "test")
 	t.Cleanup(next.Close)
-	settled := make(chan HostedDelivery, 1)
-	next.OnSettled(func(_ context.Context, d HostedDelivery, result HostedResult, _ error) {
-		if result.Text == "42" {
-			settled <- d
-		}
-	})
+	var settled []HostedDelivery
+	next.OnSettled(func(_ context.Context, d HostedDelivery, _ HostedResult) { settled = append(settled, d) })
 	next.Restore(context.Background())
-	runtime.outcome(cid) <- HostedResult{Status: "done", Text: "42"}
-	select {
-	case d := <-settled:
-		if d.CorrelationID != cid || d.FromPeerID != string(f.asker.PeerID) {
-			t.Fatalf("resumed delivery lost its thread: %+v", d)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("restored daemon never settled the unsettled delivery")
+	if reg.lastStatus() != proto.StatusBusy {
+		t.Fatalf("a peer with unsettled work must restore busy, got %q", reg.lastStatus())
+	}
+	next.Report(context.Background(), string(f.target.PeerID), cid, HostedResult{Status: "done", Text: "42"})
+	if len(settled) != 1 || settled[0].CorrelationID != cid || settled[0].FromPeerID != string(f.asker.PeerID) || !strings.Contains(settled[0].Text, "what is 6*7?") {
+		t.Fatalf("restored delivery lost its thread: %+v", settled)
+	}
+	if reg.lastStatus() != proto.StatusOnline {
+		t.Fatalf("peer must return online once settled, got %q", reg.lastStatus())
 	}
 }
 
@@ -301,7 +276,7 @@ func TestHostedPullAskKeepsReplyOnTheAsk(t *testing.T) {
 	if _, err := f.delivery.DeliverAsk(context.Background(), DeliverAskParams{FromPeer: "relay-client", ToPeer: "helper-hosted", Text: "hi", CorrelationID: cid}); err != nil {
 		t.Fatal(err)
 	}
-	f.runtime.outcome(cid) <- HostedResult{Status: "done", Text: "hello"}
+	f.report(cid, HostedResult{Status: "done", Text: "hello"})
 	ask := waitClosed(t, f.asks, cid)
 	if ask.CloseReason != "ack_with_msg" || ask.ReplyText == nil || *ask.ReplyText != "hello" {
 		t.Fatalf("pull reply must stay on the ask, got %+v", ask)
@@ -318,7 +293,7 @@ func TestHostedReplyAfterRestartQueuesForAbsentAsker(t *testing.T) {
 	// The tracker lost the ask and the asker has not re-registered.
 	f.delivery.completeHosted(context.Background(), HostedDelivery{Kind: "ask", CorrelationID: "ask-gone",
 		FromPeerID: "repow-default-gone", FromPeerName: "gone", ToPeerID: string(f.target.PeerID), ToPeerName: string(f.target.DisplayName)},
-		HostedResult{Status: "done", Text: "late answer"}, nil)
+		HostedResult{Status: "done", Text: "late answer"})
 	if len(queue.enqueued) != 1 || queue.enqueued[0].PeerID != "repow-default-gone" || !strings.Contains(queue.enqueued[0].Text, "[ack #ask-gone from @helper-hosted] late answer") {
 		t.Fatalf("expected the reply queued for the asker, got %+v", queue.enqueued)
 	}

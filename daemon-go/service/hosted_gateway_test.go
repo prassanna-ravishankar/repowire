@@ -21,7 +21,8 @@ func (echoTools) RunHostedTool(_ context.Context, peerID proto.PeerID, tool stri
 }
 
 // The gateway carries a call from the runtime to the tool runner and its
-// result back, and reconnects after the runtime drops the socket.
+// result back, acknowledges settled reports, and reconnects after the runtime
+// drops the socket.
 func TestHostedGatewayRunsCallsAndReconnects(t *testing.T) {
 	conns := make(chan *websocket.Conn)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +59,16 @@ func TestHostedGatewayRunsCallsAndReconnects(t *testing.T) {
 	first := <-conns
 	if got := call(first, "whoami"); got.Type != "result" || got.ID != "c-whoami" || got.Text != `repow-x whoami {"a":1}` || got.Error {
 		t.Fatalf("result = %+v", got)
+	}
+	// A settled report is acknowledged by id once handled, known or not.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := wsjson.Write(ctx, first, gatewayFrame{Type: "settled", ID: "outbox:repow-x:op-1", Agent: "repow-x", OperationID: "op-1", Status: "done", Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	var ack gatewayFrame
+	if err := wsjson.Read(ctx, first, &ack); err != nil || ack.Type != "ack" || ack.ID != "outbox:repow-x:op-1" {
+		t.Fatalf("ack = %+v, %v", ack, err)
 	}
 	first.Close(websocket.StatusGoingAway, "redeploy")
 

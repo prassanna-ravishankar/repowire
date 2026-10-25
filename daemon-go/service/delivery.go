@@ -613,16 +613,12 @@ func (d *PeerDelivery) completeACPAsk(ctx context.Context, cid string, reply, er
 // completeHosted closes an ask with the hosted runtime's answer, or with its
 // failure. An ask the tracker no longer holds (the daemon restarted while the
 // runtime worked) still reaches its asker as a framed reply.
-func (d *PeerDelivery) completeHosted(ctx context.Context, delivery HostedDelivery, result HostedResult, err error) {
+func (d *PeerDelivery) completeHosted(ctx context.Context, delivery HostedDelivery, result HostedResult) {
 	var reply, errText *string
-	switch {
-	case err != nil:
-		text := err.Error()
-		errText = &text
-	case result.Status != "done":
+	if result.Status != "done" {
 		text := "no answer (" + result.Reason + ")"
 		errText = &text
-	default:
+	} else {
 		reply = &result.Text
 	}
 	if delivery.Kind != "ask" {

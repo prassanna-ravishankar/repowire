@@ -475,12 +475,12 @@ func runDaemon() {
 	if hosted != nil {
 		sessionControl.WithHosted(hosted)
 		hosted.OnSettled(jobCompletion.OnHostedRun)
-		hosted.OnSettled(func(ctx context.Context, run service.HostedDelivery, result service.HostedResult, err error) {
+		hosted.OnSettled(func(ctx context.Context, run service.HostedDelivery, result service.HostedResult) {
 			turn := func(role, text string) {
 				reg.AddEvent(ctx, "chat_turn", map[string]any{"peer": run.ToPeerName, "peer_id": run.ToPeerID, "role": role, "text": text})
 			}
 			turn("user", run.Text)
-			if err == nil && result.Status == "done" {
+			if result.Status == "done" {
 				turn("assistant", result.Text)
 			}
 		})
@@ -627,7 +627,7 @@ func runDaemon() {
 	// live WS read loop can still be running when store.Close() returns; closing
 	// it requires a hub-level socket sweep, which is out of scope for this fix.
 	inbox.Close()  // joins in-flight surface pushes before the store closes
-	hosted.Close() // stops waits and the gateway; unsettled submissions resume on next start
+	hosted.Close() // drops the gateway; unsettled submissions report after the next connect
 	delivery.Close()
 	transport.CloseACP()
 	reg.Close()

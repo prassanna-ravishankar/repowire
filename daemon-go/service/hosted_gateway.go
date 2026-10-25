@@ -16,10 +16,11 @@ import (
 )
 
 // ============================================================================
-// Hosted gateway: the outbound half of a hosted agent. The daemon holds one
-// WebSocket to the runtime's gateway; a tool call the agent makes (notify a
-// peer, open an ask, list peers) arrives as a call frame and runs as that
-// hosted peer. The runtime side hibernates the socket, so an idle mesh costs
+// Hosted gateway: the daemon's one WebSocket to the runtime. Two frames
+// arrive on it: a call (a mesh tool the agent invoked, run as that hosted
+// peer and answered with a result), and settled (a run finished; the daemon
+// settles it and acknowledges, and the runtime resends it on every connect
+// until then). The runtime side hibernates the socket, so an idle mesh costs
 // nothing and a sleeping agent stays asleep.
 // ============================================================================
 
@@ -39,16 +40,19 @@ type HostedToolRunner interface {
 	RunHostedTool(ctx context.Context, peerID proto.PeerID, tool string, args json.RawMessage) (text string, isError bool)
 }
 
-// gatewayFrame is both directions of the gateway protocol: a call from the
-// runtime, or the daemon's result for it.
+// gatewayFrame is every frame of the gateway protocol: call and settled from
+// the runtime, result and ack from the daemon.
 type gatewayFrame struct {
-	Type  string          `json:"type"`
-	ID    string          `json:"id"`
-	Agent string          `json:"agent,omitempty"`
-	Tool  string          `json:"tool,omitempty"`
-	Args  json.RawMessage `json:"args,omitempty"`
-	Text  string          `json:"text,omitempty"`
-	Error bool            `json:"error,omitempty"`
+	Type        string          `json:"type"`
+	ID          string          `json:"id"`
+	Agent       string          `json:"agent,omitempty"`
+	Tool        string          `json:"tool,omitempty"`
+	Args        json.RawMessage `json:"args,omitempty"`
+	OperationID string          `json:"operationId,omitempty"`
+	Status      string          `json:"status,omitempty"`
+	Reason      string          `json:"reason,omitempty"`
+	Text        string          `json:"text,omitempty"`
+	Error       bool            `json:"error,omitempty"`
 }
 
 // Connect holds the gateway socket at base/gateway until Close, reconnecting
@@ -114,21 +118,29 @@ func (h *Hosted) serveGateway(url, token string, tools HostedToolRunner) (bool, 
 	}()
 
 	var write sync.Mutex
+	reply := func(frame gatewayFrame) {
+		write.Lock()
+		defer write.Unlock()
+		_ = wsjson.Write(ctx, conn, frame)
+	}
 	for {
 		var frame gatewayFrame
 		if err := wsjson.Read(ctx, conn, &frame); err != nil {
 			return true, err
 		}
-		if frame.Type != "call" {
+		if frame.Type != "call" && frame.Type != "settled" {
 			continue
 		}
 		h.wg.Add(1)
 		go func() {
 			defer h.wg.Done()
+			if frame.Type == "settled" {
+				h.Report(h.ctx, frame.Agent, frame.OperationID, HostedResult{Status: frame.Status, Reason: frame.Reason, Text: frame.Text})
+				reply(gatewayFrame{Type: "ack", ID: frame.ID})
+				return
+			}
 			text, isError := tools.RunHostedTool(h.ctx, proto.PeerID(frame.Agent), frame.Tool, frame.Args)
-			write.Lock()
-			defer write.Unlock()
-			_ = wsjson.Write(ctx, conn, gatewayFrame{Type: "result", ID: frame.ID, Text: text, Error: isError})
+			reply(gatewayFrame{Type: "result", ID: frame.ID, Text: text, Error: isError})
 		}()
 	}
 }

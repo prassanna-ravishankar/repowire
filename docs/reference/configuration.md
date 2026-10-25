@@ -81,7 +81,7 @@ hosted:
 | `url` | empty | Base URL of the hosted runtime. |
 | `token` | empty | Bearer token the runtime expects. Keep it out of shared files. |
 
-Both are required; with either empty, `spawn_peer(backend="hosted")` returns 503 and no hosted peers are restored. With both set, the daemon also holds a WebSocket to the runtime's `/gateway` so hosted agents can call mesh tools, reconnecting with backoff after a drop. Changes apply on daemon restart. Environment overrides: `REPOWIRE_HOSTED__URL`, `REPOWIRE_HOSTED__TOKEN`.
+Both are required; with either empty, `spawn_peer(backend="hosted")` returns 503 and no hosted peers are restored. With both set, the daemon also holds a WebSocket to the runtime's `/gateway`, which carries hosted agents' mesh tool calls and their run results, reconnecting with backoff after a drop. Changes apply on daemon restart. Environment overrides: `REPOWIRE_HOSTED__URL`, `REPOWIRE_HOSTED__TOKEN`.
 
 ## Environment variables
 

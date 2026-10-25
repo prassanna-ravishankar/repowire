@@ -105,13 +105,13 @@ func TestJobCompletionFromHostedRuns(t *testing.T) {
 	}
 
 	done := deliver("answered", "attempt-000000000001", "ask-done")
-	completion.OnHostedRun(ctx, run(done, "attempt-000000000001", "ask-done"), HostedResult{Status: "done", Text: "all green"}, nil)
+	completion.OnHostedRun(ctx, run(done, "attempt-000000000001", "ask-done"), HostedResult{Status: "done", Text: "all green"})
 	if work, _ := store.GetWork(ctx, done); work.State != "completed" || work.ResultSummary == nil || *work.ResultSummary != "all green" {
 		t.Fatalf("answered run did not complete the job: %#v", work)
 	}
 
 	lost := deliver("unanswered", "attempt-000000000002", "ask-lost")
-	completion.OnHostedRun(ctx, run(lost, "attempt-000000000002", "ask-lost"), HostedResult{Status: "unanswered", Reason: "run_failed"}, nil)
+	completion.OnHostedRun(ctx, run(lost, "attempt-000000000002", "ask-lost"), HostedResult{Status: "unanswered", Reason: "run_failed"})
 	if work, _ := store.GetWork(ctx, lost); work.State != "failed" || work.Phase == nil || *work.Phase != "hosted_unanswered" || work.Error["detail"] != "run_failed" {
 		t.Fatalf("unanswered run did not fail the job: %#v", work)
 	}

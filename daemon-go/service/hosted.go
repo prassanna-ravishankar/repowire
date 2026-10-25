@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -30,21 +29,14 @@ import (
 // durable submissions keyed by an operation id. The hosted agent id is the
 // peer_id, so there is one identity end to end.
 //
-// Every submission is a hosted_delivery operation until the runtime settles
-// it. The runtime keeps the work across its own restarts; the operation lets
-// the daemon resume waiting across a daemon restart instead of losing the
-// reply.
+// Every submission is a hosted_delivery operation until the runtime reports
+// it settled over the gateway (hosted_gateway.go). The runtime keeps the work
+// and its report across its own restarts and resends an unacknowledged
+// report on every connect, so a reply survives a daemon restart, or a run
+// that finishes while the daemon is down.
 // ============================================================================
 
 const hostedDeliveryKind = "hosted_delivery"
-
-// hostedWaitAttempt bounds one held wait request; a slow answer reconnects
-// with the same operation id. hostedWaitBackoffMax caps the reconnect delay
-// after a network failure. Both run only while a submission is in flight.
-const (
-	hostedWaitAttempt    = 10 * time.Minute
-	hostedWaitBackoffMax = 30 * time.Second
-)
 
 // HostedError is a non-2xx answer from the hosted runtime.
 type HostedError struct {
@@ -77,7 +69,6 @@ type HostedResult struct {
 type HostedRuntime interface {
 	CreateAgent(ctx context.Context, id string, workspace *string) error
 	Submit(ctx context.Context, id, operationID, text string, source HostedSource) (accepted bool, err error)
-	Wait(ctx context.Context, id, operationID string) (HostedResult, error)
 }
 
 // HostedClient speaks the hosted runtime's HTTP API with its bearer token.
@@ -153,12 +144,6 @@ func (c *HostedClient) Submit(ctx context.Context, id, operationID, text string,
 	return receipt.Accepted, err
 }
 
-func (c *HostedClient) Wait(ctx context.Context, id, operationID string) (HostedResult, error) {
-	var result HostedResult
-	err := c.do(ctx, http.MethodGet, agentPath(id, "operations", url.PathEscape(operationID)), nil, &result)
-	return result, err
-}
-
 // hostedRegistry is the subset of *peer.Registry the hosted service calls.
 type hostedRegistry interface {
 	AllocateAndRegister(ctx context.Context, params peer.AllocateParams) (proto.PeerID, proto.DisplayName, error)
@@ -190,11 +175,10 @@ type Hosted struct {
 	// settled observers run in order once per submission the runtime settles.
 	settled []HostedObserver
 
-	// retry is the first reconnect delay after a failed wait.
-	retry time.Duration
-
 	mu       sync.Mutex
 	inflight map[proto.PeerID]int
+	// settling serializes reports, so a resent report settles at most once.
+	settling sync.Mutex
 	ctx      context.Context
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
@@ -203,20 +187,20 @@ type Hosted struct {
 func NewHosted(reg hostedRegistry, runtime HostedRuntime, store *state.Store, machine string) *Hosted {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Hosted{reg: reg, runtime: runtime, store: store, machine: machine,
-		retry: time.Second, inflight: map[proto.PeerID]int{}, ctx: ctx, cancel: cancel}
+		inflight: map[proto.PeerID]int{}, ctx: ctx, cancel: cancel}
 }
 
-// HostedObserver sees one settled submission: done with the final text,
-// unanswered, or refused with err.
-type HostedObserver func(ctx context.Context, delivery HostedDelivery, result HostedResult, err error)
+// HostedObserver sees one settled submission: done with the final text, or
+// unanswered with the runtime's reason.
+type HostedObserver func(ctx context.Context, delivery HostedDelivery, result HostedResult)
 
 // OnSettled adds an observer. Wire observers before Restore and Deliver.
 func (h *Hosted) OnSettled(observer HostedObserver) {
 	h.settled = append(h.settled, observer)
 }
 
-// Close stops waiting. Unsettled operations stay running and resume on the
-// next start.
+// Close drops the gateway. Unsettled operations stay running; their reports
+// arrive after the next connect.
 func (h *Hosted) Close() {
 	if h == nil {
 		return
@@ -283,9 +267,9 @@ func (h *Hosted) Retire(ctx context.Context, id proto.PeerID) error {
 	return err
 }
 
-// Restore re-registers every hosted peer from its durable mapping and resumes
-// waiting on submissions a previous daemon left unsettled. Retired peers stay
-// retired.
+// Restore re-registers every hosted peer from its durable mapping and marks
+// it busy for submissions a previous daemon left unsettled; their reports
+// arrive once the gateway connects. Retired peers stay retired.
 func (h *Hosted) Restore(ctx context.Context) {
 	if h.store == nil {
 		return
@@ -312,13 +296,14 @@ func (h *Hosted) Restore(ctx context.Context) {
 			continue
 		}
 		for _, op := range ops {
-			h.await(op.OperationID, op.Target)
+			to, _ := op.Target["to_peer_id"].(string)
+			h.busy(proto.PeerID(to), +1)
 		}
 	}
 }
 
 // Deliver submits text to the target's runtime and returns once the runtime
-// has durably accepted it. The answer arrives later through settled.
+// has durably accepted it. The answer arrives later as a report.
 func (h *Hosted) Deliver(ctx context.Context, kind, correlationID string, from *proto.Peer, fromName string, target *proto.Peer, text string) (map[string]any, error) {
 	operationID := correlationID
 	if operationID == "" {
@@ -345,7 +330,7 @@ func (h *Hosted) Deliver(ctx context.Context, kind, correlationID string, from *
 		h.fail(opID, "submit_failed", err.Error())
 		return nil, fmt.Errorf("hosted submit to %s: %w", target.DisplayName, err)
 	}
-	h.await(opID, record)
+	h.busy(target.PeerID, +1)
 	return map[string]any{"status": "accepted", "operation_id": operationID, "duplicate": !accepted}, nil
 }
 
@@ -370,57 +355,45 @@ func (h *Hosted) fail(opID, reason, detail string) {
 	}
 }
 
-// await waits for one submission to settle. It reconnects a dropped or
-// expired wait with the same operation id, and stops without settling when
-// the daemon closes so the next start resumes it.
-func (h *Hosted) await(opID string, target map[string]any) {
-	str := func(key string) string { value, _ := target[key].(string); return value }
-	delivery := HostedDelivery{Kind: str("kind"), Text: str("text"), CorrelationID: str("correlation_id"),
-		FromPeerID: str("from_peer_id"), FromPeerName: str("from_peer_name"),
-		ToPeerID: str("to_peer_id"), ToPeerName: str("to_peer_name")}
-	agentID, operationID := str("agent_id"), str("operation_id")
-	peerID := proto.PeerID(delivery.ToPeerID)
-	h.busy(peerID, +1)
-	h.wg.Add(1)
-	go func() {
-		defer h.wg.Done()
-		backoff := h.retry
-		for {
-			attempt, cancel := context.WithTimeout(h.ctx, hostedWaitAttempt)
-			result, err := h.runtime.Wait(attempt, agentID, operationID)
-			cancel()
-			if h.ctx.Err() != nil {
-				return
-			}
-			var refused *HostedError
-			if err != nil && !errors.As(err, &refused) {
-				select {
-				case <-h.ctx.Done():
-					return
-				case <-time.After(backoff):
-				}
-				backoff = min(backoff*2, hostedWaitBackoffMax)
-				continue
-			}
-			h.settle(opID, delivery, result, err)
-			h.busy(peerID, -1)
+// Report settles the submission the runtime reports for agent and operation
+// id. A report for an operation already settled, or unknown here, changes
+// nothing; the caller acknowledges it either way.
+func (h *Hosted) Report(ctx context.Context, agentID, operationID string, result HostedResult) {
+	if h.store == nil {
+		return
+	}
+	h.settling.Lock()
+	defer h.settling.Unlock()
+	for _, status := range []string{"queued", "running"} {
+		ops, err := h.store.ListOperations(ctx, hostedDeliveryKind, status)
+		if err != nil {
+			log.Printf("hosted: report %s/%s: %v", agentID, operationID, err)
 			return
 		}
-	}()
+		for _, op := range ops {
+			str := func(key string) string { value, _ := op.Target[key].(string); return value }
+			if str("agent_id") != agentID || str("operation_id") != operationID {
+				continue
+			}
+			delivery := HostedDelivery{Kind: str("kind"), Text: str("text"), CorrelationID: str("correlation_id"),
+				FromPeerID: str("from_peer_id"), FromPeerName: str("from_peer_name"),
+				ToPeerID: str("to_peer_id"), ToPeerName: str("to_peer_name")}
+			h.settle(op.OperationID, delivery, result)
+			h.busy(proto.PeerID(delivery.ToPeerID), -1)
+			return
+		}
+	}
 }
 
-func (h *Hosted) settle(opID string, delivery HostedDelivery, result HostedResult, err error) {
+func (h *Hosted) settle(opID string, delivery HostedDelivery, result HostedResult) {
 	ctx := context.Background()
-	switch {
-	case err != nil:
-		h.fail(opID, "runtime_refused", err.Error())
-	case result.Status != "done":
+	if result.Status != "done" {
 		h.fail(opID, "unanswered", result.Reason)
-	case h.store != nil && opID != "":
+	} else if h.store != nil && opID != "" {
 		_, _ = h.store.CompleteOperation(ctx, opID, nil, map[string]any{"outcome": "done"})
 	}
 	for _, observer := range h.settled {
-		observer(ctx, delivery, result, err)
+		observer(ctx, delivery, result)
 	}
 }
 

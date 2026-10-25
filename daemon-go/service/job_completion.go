@@ -115,22 +115,18 @@ func (c *JobCompletion) OnPeerTerminalOffline(peerID proto.PeerID, detail string
 // OnHostedRun records a settled hosted run as the turns a hook runtime would
 // post: the prompt arms a delivered job and the answer completes it. A run
 // that ended without an answer fails the job it carried.
-func (c *JobCompletion) OnHostedRun(ctx context.Context, delivery HostedDelivery, result HostedResult, err error) {
+func (c *JobCompletion) OnHostedRun(ctx context.Context, delivery HostedDelivery, result HostedResult) {
 	if c == nil || c.store == nil || delivery.ToPeerID == "" {
 		return
 	}
 	peerID := proto.PeerID(delivery.ToPeerID)
 	c.OnChatTurn(ctx, peerID, "user", delivery.Text)
-	if err == nil && result.Status == "done" {
+	if result.Status == "done" {
 		c.OnChatTurn(ctx, peerID, "assistant", result.Text)
 		return
 	}
-	detail := result.Reason
-	if err != nil {
-		detail = err.Error()
-	}
 	if delivery.CorrelationID != "" {
-		c.failActive(ctx, peerID, delivery.CorrelationID, "hosted_unanswered", detail)
+		c.failActive(ctx, peerID, delivery.CorrelationID, "hosted_unanswered", result.Reason)
 	}
 }
 

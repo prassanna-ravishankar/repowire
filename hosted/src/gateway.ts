@@ -4,13 +4,20 @@ import { DurableObject } from 'cloudflare:workers';
 const CALL_TIMEOUT_MS = 60_000;
 
 export interface GatewayCall { id: string; agent: string; tool: string; args: Record<string, unknown> }
+export interface GatewayReport { agent: string; operationId: string; status: string; reason?: string; text?: string }
+
+// Keep an outbox entry well inside the storage value limit.
+const REPORT_TEXT_LIMIT = 64_000;
 interface Pending { socket: WebSocket; resolve(text: string): void; reject(error: Error): void }
 
 /**
  * One owner's link to their Repowire daemon. The daemon dials in and holds a
  * hibernating WebSocket; agents' mesh tool calls go out over it and the
- * daemon runs them as the calling hosted peer. Protocol pings are answered by
- * the runtime, so an idle link never wakes this object.
+ * daemon runs them as the calling hosted peer. Settled runs are reported
+ * through a durable outbox: sent at once when the daemon is connected, kept
+ * otherwise, and resent on every connect until the daemon acknowledges them.
+ * Protocol pings are answered by the runtime, so an idle link never wakes
+ * this object.
  */
 export class Gateway extends DurableObject {
   private pending = new Map<string, Pending>();
@@ -24,7 +31,17 @@ export class Gateway extends DurableObject {
     }
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server);
+    for (const [id, report] of await this.ctx.storage.list<GatewayReport>({ prefix: 'outbox:' })) {
+      server.send(JSON.stringify({ type: 'settled', id, ...report }));
+    }
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async report(report: GatewayReport) {
+    const id = `outbox:${report.agent}:${report.operationId}`;
+    const stored = { ...report, text: report.text?.slice(0, REPORT_TEXT_LIMIT) };
+    await this.ctx.storage.put(id, stored);
+    this.ctx.getWebSockets().at(-1)?.send(JSON.stringify({ type: 'settled', id, ...stored }));
   }
 
   call(call: GatewayCall): Promise<string> {
@@ -42,10 +59,15 @@ export class Gateway extends DurableObject {
     });
   }
 
-  webSocketMessage(_socket: WebSocket, message: string | ArrayBuffer) {
+  async webSocketMessage(_socket: WebSocket, message: string | ArrayBuffer) {
     if (typeof message !== 'string') return;
     const frame = JSON.parse(message) as { type?: string; id?: string; text?: string; error?: boolean };
-    if (frame.type !== 'result' || typeof frame.id !== 'string') return;
+    if (typeof frame.id !== 'string') return;
+    if (frame.type === 'ack' && frame.id.startsWith('outbox:')) {
+      await this.ctx.storage.delete(frame.id);
+      return;
+    }
+    if (frame.type !== 'result') return;
     this.settle(frame.id, frame.error ? new Error(frame.text || 'Mesh tool failed') : frame.text ?? '');
   }
 
