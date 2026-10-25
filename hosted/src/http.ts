@@ -9,8 +9,8 @@ export function identifier(value: unknown, name: string): string {
   return value;
 }
 
-export async function authenticate(request: Request, token?: string): Promise<void> {
-  if (!token) throw new HttpError(503, 'Hosted authentication is not configured');
+// Constant-time comparison of the request's bearer token with token.
+async function bearerIs(request: Request, token: string): Promise<boolean> {
   const supplied = request.headers.get('Authorization') ?? '';
   const encode = new TextEncoder();
   const [actual, expected] = await Promise.all([
@@ -20,7 +20,31 @@ export async function authenticate(request: Request, token?: string): Promise<vo
   const a = new Uint8Array(actual), b = new Uint8Array(expected);
   let difference = 0;
   for (let i = 0; i < a.length; i++) difference |= a[i] ^ b[i];
-  if (difference !== 0) throw new HttpError(401, 'Unauthorized');
+  return difference === 0;
+}
+
+export async function authenticate(request: Request, token?: string): Promise<void> {
+  if (!token) throw new HttpError(503, 'Hosted authentication is not configured');
+  if (!await bearerIs(request, token)) throw new HttpError(401, 'Unauthorized');
+}
+
+// Who is calling. The daemon's token is bound to one owner on the server.
+// The relay's control token may name an owner per request; without one it
+// reaches only the admin routes. End users never choose the tenant: they
+// reach this service through the relay, which names them.
+export interface Caller { role: 'daemon' | 'control'; owner: string | null }
+
+export async function authorize(request: Request, env: { HOSTED_TOKEN?: string; HOSTED_OWNER?: string; CONTROL_TOKEN?: string }): Promise<Caller> {
+  if (!env.HOSTED_TOKEN && !env.CONTROL_TOKEN) throw new HttpError(503, 'Hosted authentication is not configured');
+  if (env.HOSTED_TOKEN && await bearerIs(request, env.HOSTED_TOKEN)) {
+    if (!env.HOSTED_OWNER) throw new HttpError(503, 'Hosted owner is not configured');
+    return { role: 'daemon', owner: env.HOSTED_OWNER };
+  }
+  if (env.CONTROL_TOKEN && await bearerIs(request, env.CONTROL_TOKEN)) {
+    const owner = request.headers.get('X-Repowire-Owner');
+    return { role: 'control', owner: owner ? identifier(owner, 'owner') : null };
+  }
+  throw new HttpError(401, 'Unauthorized');
 }
 
 export async function body(request: Request): Promise<Record<string, unknown>> {
