@@ -163,27 +163,23 @@ test('a retire that wins the race refuses the submission behind it', async () =>
   assert.equal(pi.submitted.size, 0);
 });
 
-test('a run past the step limit is aborted and fails as step_limit', async () => {
-  const { agent, directory, pi } = hostedAgent();
+test('a run aborted at the step limit reports step_limit', async () => {
+  const { agent, state, directory, pi } = hostedAgent();
   await agent.submit('loop', 'op-a');
-  for (let request = 0; request < 24; request++) await agent.countStep();
-  assert.deepEqual(pi.aborted, []);
-  // The count is durable: an eviction mid-run does not reset it.
-  agent.watching = new Set();
-  await agent.countStep();
-  assert.deepEqual(pi.aborted, ['op-a']);
+  // What the step-limit hook leaves behind (test/steps.test.ts runs it on real pi).
+  state.storage.kv.put('steps:op-a', 25);
   pi.settle('op-a', { status: 'unanswered', reason: 'aborted' });
-  await agent.onStart();
   await flush();
   const [run] = directory.runs('a');
   assert.match(String(run.reason), /^step_limit/);
   assert.equal(directory.agent('a')?.state, 'failed');
+  assert.equal(state.storage.kv.get('steps:op-a'), undefined);
 });
 
 test('an abort the user asked for stays an abort', async () => {
-  const { agent, directory, pi } = hostedAgent();
+  const { agent, state, directory, pi } = hostedAgent();
   await agent.submit('one', 'op-a');
-  await agent.countStep();
+  state.storage.kv.put('steps:op-a', 3);
   pi.settle('op-a', { status: 'unanswered', reason: 'aborted' });
   await flush();
   assert.equal(directory.runs('a')[0].reason, 'aborted');
