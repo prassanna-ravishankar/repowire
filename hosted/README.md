@@ -69,7 +69,7 @@ measured, so waiting behind another agent's command is not charged. Costs are
 estimates (`prices.ts` names the source and date). Guardrails refuse rather
 than notify: a submission over the owner's daily ($2) or monthly ($20) budget,
 or the agent's daily budget ($1), returns 402 `budget_exceeded`; a run that
-makes more than 24 model requests fails with `step_limit`; more than 30
+makes more than 24 model requests is aborted and fails with `step_limit`; more than 30
 agent-originated mesh messages per owner in 10 minutes fail with
 `mesh_rate_limited`. Runs started from the web use `web-` operation ids and are
 not sent to the daemon's outbox.
@@ -85,9 +85,13 @@ loudly instead of silently restoring stale files. Snapshotting each command is
 intentionally simple; it costs latency and will need tuning for real workloads.
 Shell tools are not declared replay-safe.
 
-Authentication is one operator token, not SaaS login. There is no billing,
-per-user quota, connector runtime, or AI Gateway configuration yet. Composio project context is local and ignored. No connector
-credentials belong in a sandbox. Budget alerts are notifications, not hard caps.
+Authentication is one operator token for the daemon and one control token for
+the relay, not SaaS login. The guardrails above are the only spending caps:
+fixed per-owner and per-agent budgets on estimated cost, with no billing,
+per-plan quotas, connector runtime, or AI Gateway configuration yet. A run in
+flight can overshoot a budget by its remaining requests. Cloudflare budget
+alerts only notify. Composio project context is local and ignored. No
+connector credentials belong in a sandbox.
 
 The daemon is the only mesh hub. It submits each delivery with the ask's
 correlation id as the operation id and closes the ask with the answer. The
