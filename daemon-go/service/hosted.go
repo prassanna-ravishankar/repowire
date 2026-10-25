@@ -43,6 +43,10 @@ const hostedDeliveryKind = "hosted_delivery"
 // accepts a connection and never answers cannot hold settlement or shutdown.
 const hostedRequestTimeout = 30 * time.Second
 
+// hostedSettleTimeout bounds one report's settlement. A settlement cut short
+// is not acknowledged, so the runtime resends the report.
+const hostedSettleTimeout = 2 * time.Minute
+
 // HostedError is a non-2xx answer from the hosted runtime.
 type HostedError struct {
 	Status  int
@@ -397,6 +401,8 @@ func (h *Hosted) Report(ctx context.Context, agentID, operationID string, result
 	}
 	h.settling.Lock()
 	defer h.settling.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, hostedSettleTimeout)
+	defer cancel()
 	op, err := h.unsettled(ctx, agentID, operationID)
 	if err != nil || op == nil {
 		return err
