@@ -67,7 +67,7 @@ Proxied routes keep the Worker path below `/api/v1/managed`, forward the query s
   - `{"type":"daemons","daemons":[...]}` first, listing relay tunnel connections.
   - `{"type":"daemon","daemon":{daemon_id, connected_at, connected}}` when a relay tunnel connects or disconnects.
   - `{"type":"gateway","connected":true|false,"error"?}` when the stream's Worker socket opens or drops. The relay reconnects with backoff up to 30 s, and the Worker sends a fresh `snapshot` on each connect.
-- `: keepalive` comments every 15 s.
+- `: keepalive` comments every 15 s. Each write has a 30 s deadline; a client that stops reading is disconnected and its Worker socket closed.
 - `event: error` followed by end of stream when the client is more than 64 frames behind as a relay frame arrives. `EventSource` reconnects on its own and starts from a new snapshot.
 
 Each SSE stream has its own Worker `/events` WebSocket, opened when the stream starts and closed when it ends, so every stream (a second tab, a reconnect) begins with its own `snapshot`. A slow reader slows only its own upstream. Nothing polls.
@@ -115,11 +115,11 @@ Each day carries the cost of the usage that crossed a monthly allowance that day
 | --- | --- | --- |
 | Workers AI | `aiInferenceAdaptiveGroups` | `sum.totalNeurons` |
 | Containers | `containersUsageAdaptiveGroups` | `sum.cpuTimeSec`, `allocatedMemory`, `allocatedDisk`, `txBytes` |
-| DO requests | `durableObjectsInvocationsAdaptiveGroups` | `sum.requests` |
+| DO requests | `durableObjectsInvocationsAdaptiveGroups` | `sum.requests` by `type`; WebSocket message rows count 1/20, as billed |
 | DO duration | `durableObjectsPeriodicGroups` | `sum.activeTime` (µs, billed at 128 MB) |
 | DO storage | `durableObjectsStorageGroups` | `max.storedBytes` |
 | Workers | `workersInvocationsAdaptive` | `sum.requests`, `sum.cpuTimeUs` |
 
-Each dataset is queried separately. One that fails (missing permission, unknown field) is listed in `unavailable` and contributes nothing, and the rest are still priced. The `totalNeurons`, `activeTime`, and `cpuTimeUs` field names have not been confirmed against a live account. DO rows written are not priced.
+Each dataset is queried separately. One that fails (missing permission, unknown field) is listed in `unavailable` and contributes nothing, the rest are still priced, and `complete` is false. The `totalNeurons`, `activeTime`, and `cpuTimeUs` fields and the invocations `type` dimension have not been confirmed against a live account. DO rows written are not priced.
 
-The result is cached in memory for one hour and refetched on the first request after that, or on `refresh=1`.
+Only a complete result is cached, in memory for one hour, and refetched on the first request after that or on `refresh=1`. When a refresh comes back incomplete, the response keeps the last complete figures for the month and lists the failures in `refresh_failed`. With no complete figures yet, the incomplete result is returned uncached, so the next request tries again. The fetch is not tied to the requesting browser, so closing the admin page mid-fetch does not cut it short.

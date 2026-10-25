@@ -127,8 +127,10 @@ func (s *Server) registerConn(c *daemonConn) *daemonConn {
 		s.users[c.userID] = map[string]*daemonConn{}
 	}
 	s.users[c.userID][key] = c
-	s.mu.Unlock()
+	// Publish under s.mu so subscribers see connects and disconnects in the
+	// order they happened. publishDaemon never blocks or takes s.mu.
 	s.events.publishDaemon(c.userID, c.view(true))
+	s.mu.Unlock()
 	return old
 }
 
@@ -153,8 +155,8 @@ func (s *Server) unregisterConn(c *daemonConn) {
 			}
 		}
 	}
-	s.mu.Unlock()
 	s.events.publishDaemon(c.userID, c.view(false))
+	s.mu.Unlock()
 }
 
 func (s *Server) daemon(userID, daemonID string) *daemonConn {

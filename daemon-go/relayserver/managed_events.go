@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -24,6 +23,10 @@ const (
 	managedPingInterval     = 30 * time.Second
 	managedMaxBackoff       = 30 * time.Second
 )
+
+// managedWriteTimeout bounds each SSE write so a client that holds the socket
+// open without reading releases its upstream. A var so tests can shorten it.
+var managedWriteTimeout = 30 * time.Second
 
 type eventDialer func(ctx context.Context, owner string) (*websocket.Conn, error)
 
@@ -178,19 +181,27 @@ func forwardFrames(ctx context.Context, conn *websocket.Conn, sub *eventSubscrib
 // frame listing this user's relay daemons; the Worker sends its own snapshot
 // once the upstream connects.
 func (s *Server) managedEventsStream(w http.ResponseWriter, r *http.Request, user string) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		managedError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
 	sub, release := s.events.subscribe(user)
 	defer release()
+	rc := http.NewResponseController(w)
+	write := func(chunk []byte) error {
+		_ = rc.SetWriteDeadline(time.Now().Add(managedWriteTimeout))
+		if _, err := w.Write(chunk); err != nil {
+			return err
+		}
+		return rc.Flush()
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(relayFrame(map[string]any{"type": "daemons", "daemons": s.relayDaemons(user)}))
-	flusher.Flush()
+	if write(relayFrame(map[string]any{"type": "daemons", "daemons": s.relayDaemons(user)})) != nil {
+		return
+	}
 
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
@@ -200,16 +211,14 @@ func (s *Server) managedEventsStream(w http.ResponseWriter, r *http.Request, use
 		case <-r.Context().Done():
 			return
 		case <-sub.overflow:
-			_, _ = io.WriteString(w, "event: error\ndata: {\"error\":\"subscriber fell behind; reconnect\"}\n\n")
-			flusher.Flush()
+			_ = write([]byte("event: error\ndata: {\"error\":\"subscriber fell behind; reconnect\"}\n\n"))
 			return
 		case <-heartbeat.C:
 			chunk = []byte(": keepalive\n\n")
 		case chunk = <-sub.frames:
 		}
-		if _, err := w.Write(chunk); err != nil {
+		if write(chunk) != nil {
 			return
 		}
-		flusher.Flush()
 	}
 }

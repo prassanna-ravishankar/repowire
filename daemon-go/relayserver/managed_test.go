@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -407,6 +408,64 @@ func TestManagedEventsReportUpstreamFailure(t *testing.T) {
 	}
 }
 
+func TestManagedEventsStalledReaderReleasesUpstream(t *testing.T) {
+	previous := managedWriteTimeout
+	managedWriteTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { managedWriteTimeout = previous })
+	f := newManagedFixture(t, true)
+
+	// A client that sends the request and then never reads.
+	conn, err := net.Dial("tcp", strings.TrimPrefix(f.http.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_, _ = io.WriteString(conn, "GET /api/v1/managed/events HTTP/1.1\r\nHost: relay\r\nCookie: rw_token="+managedKey+"\r\n\r\n")
+
+	var upstream *websocket.Conn
+	select {
+	case upstream = <-f.worker.sockets:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker events socket not opened")
+	}
+	frame := []byte(`{"type":"agent","pad":"` + strings.Repeat("x", 1<<20) + `"}`)
+	go func() {
+		for upstream.Write(context.Background(), websocket.MessageText, frame) == nil {
+		}
+	}()
+	select {
+	case <-f.worker.closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("stalled reader kept its Worker socket open")
+	}
+}
+
+func TestDaemonEventsFollowConnectionOrder(t *testing.T) {
+	s := New("")
+	s.events.dial = func(ctx context.Context, _ string) (*websocket.Conn, error) { <-ctx.Done(); return nil, ctx.Err() }
+	sub, release := s.events.subscribe("u")
+	defer release()
+	for range 200 {
+		old := &daemonConn{userID: "u", daemonID: "laptop", connectedAt: time.Now()}
+		s.registerConn(old)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); s.unregisterConn(old) }()
+		go func() {
+			defer wg.Done()
+			s.registerConn(&daemonConn{userID: "u", daemonID: "laptop", connectedAt: time.Now()})
+		}()
+		wg.Wait()
+		var last string
+		for len(sub.frames) > 0 {
+			last = string(<-sub.frames)
+		}
+		if !strings.Contains(last, `"connected":true`) {
+			t.Fatalf("last event %q contradicts the connected daemon", last)
+		}
+	}
+}
+
 func TestRelayFrameOverflowAsksSubscriberToReconnect(t *testing.T) {
 	e := newManagedEvents()
 	e.dial = func(ctx context.Context, _ string) (*websocket.Conn, error) { <-ctx.Done(); return nil, ctx.Err() }
@@ -453,9 +512,9 @@ func TestManagedPages(t *testing.T) {
 	}
 }
 
-// fakeAnalytics answers each dataset query; datasets in broken fail with a
-// GraphQL error like an unknown field would.
-func fakeAnalytics(t *testing.T, rows map[string]string, broken map[string]bool) (*httptest.Server, *atomic.Int32) {
+// fakeAnalytics answers each dataset query. While broken is set, that dataset
+// fails with a GraphQL error like an unknown field would.
+func fakeAnalytics(t *testing.T, rows map[string]string, broken *atomic.Value) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -466,15 +525,14 @@ func fakeAnalytics(t *testing.T, rows map[string]string, broken map[string]bool)
 			return
 		}
 		var req struct {
-			Query     string         `json:"query"`
-			Variables map[string]any `json:"variables"`
+			Query string `json:"query"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		for _, meter := range costMeters {
 			if !strings.Contains(req.Query, " "+meter.dataset+"(") {
 				continue
 			}
-			if broken[meter.dataset] {
+			if broken.Load() == meter.dataset {
 				_, _ = io.WriteString(w, `{"data":null,"errors":[{"message":"unknown field"}]}`)
 				return
 			}
@@ -490,37 +548,75 @@ func fakeAnalytics(t *testing.T, rows map[string]string, broken map[string]bool)
 func TestAdminCostsActualFromAnalytics(t *testing.T) {
 	f := newManagedFixture(t, true)
 	today := time.Now().UTC().Format(time.DateOnly)
+	var broken atomic.Value
+	broken.Store("durableObjectsPeriodicGroups")
 	analytics, calls := fakeAnalytics(t, map[string]string{
 		"aiInferenceAdaptiveGroups":     `{"dimensions":{"date":"` + today + `"},"sum":{"totalNeurons":110000}}`,
 		"containersUsageAdaptiveGroups": `{"dimensions":{"date":"` + today + `"},"sum":{"cpuTimeSec":32500,"allocatedMemory":0,"allocatedDisk":0,"txBytes":0}}`,
-	}, map[string]bool{"durableObjectsPeriodicGroups": true})
+		"durableObjectsInvocationsAdaptiveGroups": `{"dimensions":{"date":"` + today + `","type":"fetch"},"sum":{"requests":900000}},` +
+			`{"dimensions":{"date":"` + today + `","type":"websocketMessage"},"sum":{"requests":2000000}}`,
+	}, &broken)
 	f.relay.costs.configure("acct", "cf-token")
 	f.relay.costs.endpoint = analytics.URL
-
-	res, costs := f.do(t, "GET", "/api/v1/admin/costs", managedKey, "", nil)
-	actual, _ := costs["actual"].(map[string]any)
-	if res.StatusCode != 200 || actual == nil {
-		t.Fatalf("costs = %d %v", res.StatusCode, costs)
+	costs := func(query string) map[string]any {
+		t.Helper()
+		res, body := f.do(t, "GET", "/api/v1/admin/costs"+query, managedKey, "", nil)
+		actual, _ := body["actual"].(map[string]any)
+		if res.StatusCode != 200 || actual == nil {
+			t.Fatalf("costs = %d %v", res.StatusCode, body)
+		}
+		return actual
 	}
+
+	// Incomplete: reported, not cached.
+	actual := costs("")
+	if actual["complete"] != false || actual["unavailable"].(map[string]any)["durableObjectsPeriodicGroups"] == nil {
+		t.Fatalf("incomplete actual = %v", actual)
+	}
+	queried := int32(len(costMeters))
+	costs("")
+	if calls.Load() != 2*queried {
+		t.Fatal("incomplete actual was cached")
+	}
+
+	broken.Store("")
+	actual = costs("")
 	month := actual["month"].(map[string]any)
 	// 100k neurons over the daily 10k at $0.011/1k = $1.10; 10k vCPU-s over 22.5k at $2e-5 = $0.20.
-	if math.Abs(month["ai_usd"].(float64)-1.10) > 1e-9 || math.Abs(month["containers_usd"].(float64)-0.20) > 1e-9 || month["base_usd"] != 5.0 {
+	// DO: 900k + 2M/20 WebSocket messages = 1M billable requests, inside the allowance.
+	if actual["complete"] != true || math.Abs(month["ai_usd"].(float64)-1.10) > 1e-9 || math.Abs(month["containers_usd"].(float64)-0.20) > 1e-9 || month["do_usd"] != 0.0 || month["base_usd"] != 5.0 {
 		t.Fatalf("month = %v", month)
 	}
-	if unavailable := actual["unavailable"].(map[string]any); len(unavailable) != 1 || unavailable["durableObjectsPeriodicGroups"] == nil {
-		t.Fatalf("unavailable = %v", unavailable)
+	if units := actual["days"].([]any)[0].(map[string]any)["units"].(map[string]any); units["do_requests"] != 1e6 || units["do_ws_messages"] != 2e6 {
+		t.Fatalf("units = %v", units)
 	}
-	queried := calls.Load()
-	if queried != int32(len(costMeters)) {
-		t.Fatalf("queries = %d", queried)
+	costs("")
+	if calls.Load() != 3*queried {
+		t.Fatal("complete actual refetched within the hour")
 	}
-	f.do(t, "GET", "/api/v1/admin/costs", managedKey, "", nil)
-	if calls.Load() != queried {
-		t.Fatal("cached actual refetched within the hour")
+
+	// A failed forced refresh keeps the last complete figures.
+	broken.Store("containersUsageAdaptiveGroups")
+	actual = costs("?refresh=1")
+	if calls.Load() != 4*queried || actual["complete"] != true || actual["refresh_failed"].(map[string]any)["containersUsageAdaptiveGroups"] == nil {
+		t.Fatalf("failed refresh = %v", actual)
 	}
-	f.do(t, "GET", "/api/v1/admin/costs?refresh=1", managedKey, "", nil)
-	if calls.Load() != 2*queried {
-		t.Fatal("refresh=1 did not refetch")
+	if math.Abs(actual["month"].(map[string]any)["containers_usd"].(float64)-0.20) > 1e-9 {
+		t.Fatalf("failed refresh replaced figures: %v", actual["month"])
+	}
+}
+
+func TestCostFetchSurvivesCallerCancellation(t *testing.T) {
+	var broken atomic.Value
+	broken.Store("")
+	analytics, _ := fakeAnalytics(t, map[string]string{}, &broken)
+	c := newCostCache()
+	c.configure("acct", "cf-token")
+	c.endpoint = analytics.URL
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := c.get(ctx, false, time.Now().UTC()); got == nil || !got.Complete {
+		t.Fatalf("cancelled caller got %+v", got)
 	}
 }
 

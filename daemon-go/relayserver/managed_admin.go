@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -138,9 +139,10 @@ type tier struct {
 
 // datasetMeter turns one GraphQL dataset's daily rows into billed units.
 type datasetMeter struct {
-	dataset   string
-	selection string
-	units     func(row map[string]any, monthDays int) map[string]float64
+	dataset    string
+	dimensions string // grouped beside date
+	selection  string
+	units      func(row map[string]any, monthDays int) map[string]float64
 }
 
 var (
@@ -158,10 +160,10 @@ const (
 // Field names marked unconfirmed come from the metering note, not Cloudflare's
 // docs; a wrong one fails only that dataset, which then reports unavailable.
 var costMeters = []datasetMeter{
-	{"aiInferenceAdaptiveGroups", "sum { totalNeurons }", func(row map[string]any, _ int) map[string]float64 { // unconfirmed
+	{"aiInferenceAdaptiveGroups", "", "sum { totalNeurons }", func(row map[string]any, _ int) map[string]float64 { // unconfirmed
 		return map[string]float64{"neurons": num(row, "sum", "totalNeurons")}
 	}},
-	{"containersUsageAdaptiveGroups", "sum { cpuTimeSec allocatedMemory allocatedDisk txBytes }", func(row map[string]any, _ int) map[string]float64 {
+	{"containersUsageAdaptiveGroups", "", "sum { cpuTimeSec allocatedMemory allocatedDisk txBytes }", func(row map[string]any, _ int) map[string]float64 {
 		return map[string]float64{
 			"vcpu_s":    num(row, "sum", "cpuTimeSec"),
 			"gib_s":     num(row, "sum", "allocatedMemory") / (1 << 30),
@@ -169,16 +171,23 @@ var costMeters = []datasetMeter{
 			"egress_gb": num(row, "sum", "txBytes") / 1e9,
 		}
 	}},
-	{"durableObjectsInvocationsAdaptiveGroups", "sum { requests }", func(row map[string]any, _ int) map[string]float64 {
-		return map[string]float64{"do_requests": num(row, "sum", "requests")}
+	// Hibernated WebSocket messages land here but bill at 20:1; the `type`
+	// dimension and its websocket value are unconfirmed.
+	{"durableObjectsInvocationsAdaptiveGroups", "type", "sum { requests }", func(row map[string]any, _ int) map[string]float64 {
+		requests := num(row, "sum", "requests")
+		dims, _ := row["dimensions"].(map[string]any)
+		if kind, _ := dims["type"].(string); strings.Contains(strings.ToLower(kind), "websocket") {
+			return map[string]float64{"do_requests": requests / 20, "do_ws_messages": requests}
+		}
+		return map[string]float64{"do_requests": requests}
 	}},
-	{"durableObjectsPeriodicGroups", "sum { activeTime }", func(row map[string]any, _ int) map[string]float64 { // unconfirmed, microseconds
+	{"durableObjectsPeriodicGroups", "", "sum { activeTime }", func(row map[string]any, _ int) map[string]float64 { // unconfirmed, microseconds
 		return map[string]float64{"do_gb_s": num(row, "sum", "activeTime") / 1e6 * 0.125}
 	}},
-	{"durableObjectsStorageGroups", "max { storedBytes }", func(row map[string]any, monthDays int) map[string]float64 {
+	{"durableObjectsStorageGroups", "", "max { storedBytes }", func(row map[string]any, monthDays int) map[string]float64 {
 		return map[string]float64{"do_gb_month": num(row, "max", "storedBytes") / 1e9 / float64(monthDays)}
 	}},
-	{"workersInvocationsAdaptive", "sum { requests cpuTimeUs }", func(row map[string]any, _ int) map[string]float64 { // cpuTimeUs unconfirmed
+	{"workersInvocationsAdaptive", "", "sum { requests cpuTimeUs }", func(row map[string]any, _ int) map[string]float64 { // cpuTimeUs unconfirmed
 		return map[string]float64{"workers_requests": num(row, "sum", "requests"), "workers_cpu_ms": num(row, "sum", "cpuTimeUs") / 1000}
 	}},
 }
@@ -211,11 +220,13 @@ type actualMonth struct {
 // actualCosts is billable spend month to date. Each day carries the overage
 // that day pushed past the monthly allowance, so the days sum to the month.
 type actualCosts struct {
-	Month        actualMonth       `json:"month"`
-	ProjectedUSD float64           `json:"projected_usd"`
-	Days         []actualDay       `json:"days"`
-	Unavailable  map[string]string `json:"unavailable"`
-	AsOf         string            `json:"as_of"`
+	Month         actualMonth       `json:"month"`
+	ProjectedUSD  float64           `json:"projected_usd"`
+	Days          []actualDay       `json:"days"`
+	Complete      bool              `json:"complete"`
+	Unavailable   map[string]string `json:"unavailable"`
+	RefreshFailed map[string]string `json:"refresh_failed,omitempty"`
+	AsOf          string            `json:"as_of"`
 }
 
 type costCache struct {
@@ -237,19 +248,34 @@ func (c *costCache) configure(accountID, token string) {
 }
 
 // get returns nil when unconfigured. The hour-long cache is filled on demand
-// by an admin request, never on a timer; a new month invalidates it.
+// by an admin request, never on a timer; a new month invalidates it. Only a
+// complete result is cached. An incomplete refresh returns the last complete
+// figures of this month with refresh_failed, or the incomplete result itself,
+// and the next request tries again.
 func (c *costCache) get(ctx context.Context, refresh bool, now time.Time) *actualCosts {
 	if c.accountID == "" || c.token == "" {
 		return nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	fresh := c.cached != nil && now.Sub(c.fetchedAt) < actualCostTTL && c.fetchedAt.Month() == now.Month()
-	if !fresh || refresh {
-		c.cached = c.fetch(ctx, now)
-		c.fetchedAt = now
+	thisMonth := c.cached != nil && c.fetchedAt.Year() == now.Year() && c.fetchedAt.Month() == now.Month()
+	if thisMonth && !refresh && now.Sub(c.fetchedAt) < actualCostTTL {
+		return c.cached
 	}
-	return c.cached
+	// A closed admin tab must not cut the shared fetch short.
+	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
+	result := c.fetch(fetchCtx, now)
+	if result.Complete {
+		c.cached, c.fetchedAt = result, now
+		return result
+	}
+	if thisMonth {
+		previous := *c.cached
+		previous.RefreshFailed = result.Unavailable
+		return &previous
+	}
+	return result
 }
 
 func (c *costCache) fetch(ctx context.Context, now time.Time) *actualCosts {
@@ -291,7 +317,7 @@ func priceActual(units map[string]map[string]float64, unavailable map[string]str
 		cumulative[t.unit] = before + add
 		return (max(0, before+add-t.included) - max(0, before-t.included)) * t.usd
 	}
-	out := &actualCosts{Days: []actualDay{}, Unavailable: unavailable, AsOf: now.Format(time.RFC3339)}
+	out := &actualCosts{Days: []actualDay{}, Complete: len(unavailable) == 0, Unavailable: unavailable, AsOf: now.Format(time.RFC3339)}
 	out.Month.BaseUSD = workersBaseUSD
 	for _, date := range order {
 		u := units[date]
@@ -319,7 +345,7 @@ func priceActual(units map[string]map[string]float64, unavailable map[string]str
 // query runs one dataset per request so a missing dataset or field degrades
 // only its own figures.
 func (c *costCache) query(ctx context.Context, meter datasetMeter, now time.Time) ([]map[string]any, error) {
-	query := fmt.Sprintf(`query($accountTag: string!, $start: Date!, $end: Date!) { viewer { accounts(filter: {accountTag: $accountTag}) { rows: %s(limit: 100, filter: {date_geq: $start, date_leq: $end}) { dimensions { date } %s } } } }`, meter.dataset, meter.selection)
+	query := fmt.Sprintf(`query($accountTag: string!, $start: Date!, $end: Date!) { viewer { accounts(filter: {accountTag: $accountTag}) { rows: %s(limit: 100, filter: {date_geq: $start, date_leq: $end}) { dimensions { date %s } %s } } } }`, meter.dataset, meter.dimensions, meter.selection)
 	body, _ := json.Marshal(map[string]any{"query": query, "variables": map[string]any{
 		"accountTag": c.accountID, "start": monthStart(now), "end": now.Format(time.DateOnly),
 	}})
