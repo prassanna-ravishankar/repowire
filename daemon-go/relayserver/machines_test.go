@@ -36,11 +36,14 @@ func newManagedService(t *testing.T) *managedService {
 		switch {
 		case r.URL.Path == "/agents":
 			write(200, `{"items":[
-				{"id":"scout","display_name":"Scout","state":"working","home_machine":null,"retired_at":null},
-				{"id":"old","state":"retired","home_machine":null,"retired_at":"2026-10-25T00:00:00Z"},
-				{"id":"laptop-agent","state":"idle","home_machine":"laptop","retired_at":null}]}`)
+				{"id":"scout","display_name":"Scout","state":"working","home_machine":null,"created_by":"web","retired_at":null},
+				{"id":"old","state":"retired","home_machine":null,"created_by":"web","retired_at":"2026-10-25T00:00:00Z"},
+				{"id":"laptop-agent","state":"idle","home_machine":"laptop","created_by":"daemon","retired_at":null},
+				{"id":"legacy","state":"idle","home_machine":null,"created_by":"daemon","retired_at":null}]}`)
 		case r.URL.Path == "/agents/scout":
-			write(200, `{"id":"scout","state":"idle","home_machine":null,"retired_at":null}`)
+			write(200, `{"id":"scout","state":"idle","home_machine":null,"created_by":"web","retired_at":null}`)
+		case r.URL.Path == "/agents/legacy":
+			write(200, `{"id":"legacy","state":"idle","home_machine":null,"created_by":"daemon","retired_at":null}`)
 		case r.URL.Path == "/agents/laptop-agent":
 			write(200, `{"id":"laptop-agent","state":"idle","home_machine":"laptop","retired_at":null}`)
 		case strings.HasPrefix(r.URL.Path, "/agents/"):
@@ -101,8 +104,10 @@ func TestRelayMCPManagedMachine(t *testing.T) {
 		t.Fatalf("owner %q, want the caller's relay user", service.owner)
 	}
 
-	if _, failed := call("ask_agent", map[string]any{"daemon_id": "managed", "peer_id": "laptop-agent", "message": "hi"}); !failed {
-		t.Fatal("a daemon-owned agent was addressable on the managed machine")
+	for _, daemonOwned := range []string{"laptop-agent", "legacy"} {
+		if _, failed := call("ask_agent", map[string]any{"daemon_id": "managed", "peer_id": daemonOwned, "message": "hi"}); !failed {
+			t.Fatalf("daemon-owned agent %s was addressable on the managed machine", daemonOwned)
+		}
 	}
 
 	sent, failed := call("ask_agent", map[string]any{"daemon_id": "managed", "peer_id": "scout", "message": "what is 6*7?"})
@@ -134,6 +139,24 @@ func TestRelayMCPManagedMachine(t *testing.T) {
 	uncertain, failed := call("ask_agent", map[string]any{"daemon_id": "managed", "peer_id": "scout", "message": "again"})
 	if failed || uncertain["status"] != "uncertain" || !strings.HasPrefix(uncertain["request_id"].(string), "rq-") {
 		t.Fatalf("uncertain %v", uncertain)
+	}
+	service.failPost = 1
+	uncertain, failed = call("send_message", map[string]any{"daemon_id": "managed", "peer_id": "scout", "message": "again"})
+	if failed || uncertain["delivery_state"] != "uncertain" || !strings.HasPrefix(uncertain["delivery_id"].(string), "rq-") {
+		t.Fatalf("uncertain notify %v", uncertain)
+	}
+}
+
+// With managed configured, no daemon may take the managed machine's id.
+func TestManagedMachineIDIsReserved(t *testing.T) {
+	f := newManagedFixture(t, true)
+	res, err := http.Get(f.http.URL + "/ws/relay?api_key=" + managedKey + "&daemon_id=managed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("status %d", res.StatusCode)
 	}
 }
 

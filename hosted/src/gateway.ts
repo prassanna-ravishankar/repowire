@@ -6,7 +6,7 @@ import type { ExecOutcome } from './workspace';
 // How long an agent's tool call waits for the daemon before failing.
 const CALL_TIMEOUT_MS = 60_000;
 // Keep an outbox entry well inside the storage value limit.
-const REPORT_TEXT_LIMIT = 64_000;
+export const REPORT_TEXT_LIMIT = 64_000;
 const RECENT_CLIENTS = 20;
 const MESH_TOOLS = new Set(['notify_peer', 'ask']);
 
@@ -205,6 +205,9 @@ export class Gateway extends DurableObject {
 
   acceptRequest(id: string) { this.sql.exec("UPDATE requests SET state = 'accepted' WHERE id = ? AND state = 'submitting'", id); }
 
+  // The agent confirmed it never took the request and will refuse it.
+  requestUndelivered(id: string) { this.sql.exec("UPDATE requests SET state = 'not_delivered' WHERE id = ? AND state = 'submitting'", id); }
+
   // A request the agent refused as retired before recording it: forgotten.
   dropRequest(id: string) { this.sql.exec("DELETE FROM requests WHERE id = ? AND state = 'submitting'", id); }
 
@@ -212,7 +215,8 @@ export class Gateway extends DurableObject {
   openRequests(requester: string) {
     return this.sql.exec(
       `SELECT q.id, q.agent, q.text, q.created_at FROM requests q LEFT JOIN runs r ON r.agent = q.agent AND r.op = q.id
-       WHERE q.requester = ? AND q.kind = 'ask' AND r.settled_at IS NULL ORDER BY q.created_at LIMIT 100`, requester).toArray();
+       WHERE q.requester = ? AND q.kind = 'ask' AND q.state != 'not_delivered' AND r.settled_at IS NULL
+       ORDER BY q.created_at LIMIT 100`, requester).toArray();
   }
 
   workspaces() {

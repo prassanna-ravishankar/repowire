@@ -188,10 +188,15 @@ type managedAgent struct {
 	State       string  `json:"state"`
 	Workspace   *string `json:"workspace"`
 	HomeMachine *string `json:"home_machine"`
+	CreatedBy   string  `json:"created_by"`
 	RetiredAt   *string `json:"retired_at"`
 }
 
-func (a managedAgent) onMachine() bool { return a.HomeMachine == nil && a.RetiredAt == nil }
+// Agents a daemon created stay with it, including ones recorded without a
+// home; only agents created through the relay are on the managed machine.
+func (a managedAgent) onMachine() bool {
+	return a.CreatedBy != "daemon" && a.HomeMachine == nil && a.RetiredAt == nil
+}
 
 func (m managedMachine) agents(ctx context.Context, circle string) ([]map[string]any, error) {
 	if circle != "" && circle != managedMachineID {
@@ -255,6 +260,9 @@ func (m managedMachine) ask(ctx context.Context, sender, peerID, text string) (s
 
 func (m managedMachine) notify(ctx context.Context, sender, peerID, text string) (map[string]any, error) {
 	id, err := m.submit(ctx, "notify", sender, peerID, text)
+	if errors.Is(err, errUncertain) {
+		return map[string]any{"delivery_id": id, "delivery_state": "uncertain", "delivered": false, "queued": false}, err
+	}
 	if err != nil {
 		return nil, err
 	}

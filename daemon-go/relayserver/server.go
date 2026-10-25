@@ -674,6 +674,11 @@ func (s *Server) relayWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid api_key or daemon_id", http.StatusUnauthorized)
 		return
 	}
+	// The managed machine owns this id; two machines must never share one.
+	if daemonID == managedMachineID && s.worker != nil {
+		http.Error(w, `daemon_id "managed" (this machine's hostname) is reserved for managed agents on this relay; rename the host to connect it`, http.StatusConflict)
+		return
+	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		return

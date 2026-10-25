@@ -79,8 +79,10 @@ them.
 
 When the relay is configured for managed agents, `list_machines` also returns
 `{"daemon_id": "managed", "kind": "managed"}`. It is always online. Its agents
-are the managed agents no daemon owns (created from `/managed` or the managed
-API); an agent a daemon spawned stays on that daemon's machine. They are listed
+are the managed agents created from `/managed` or the managed API; an agent a
+daemon spawned stays on that daemon's machine. The id is reserved: a daemon
+whose hostname is `managed` cannot connect to such a relay until the host is
+renamed. They are listed
 in circle `managed`, with `backend: "hosted"`; retired agents are not listed.
 
 Requests to the managed machine are durable: the managed service records each
@@ -91,8 +93,10 @@ sent a request can read it. A resolved request's `close_reason` is `answered`
 unanswered (`aborted`, `step_limit: …`, or an error). A refusal (unknown or
 retired agent, budget exceeded) fails the call and nothing is sent. If the
 service fails after the request left the relay, `ask_agent` returns
-`status: "uncertain"` with the `request_id`: use `get_reply` to learn the
-outcome, and do not resend. OAuth refresh preserves the connection's
+`status: "uncertain"` with the `request_id`, and `send_message` returns
+`delivery_state: "uncertain"` with the `delivery_id`. Use `get_reply` with that
+id to learn the outcome, and do not resend. A request that never reached the
+agent resolves as `not_delivered` and is refused if it arrives later. OAuth refresh preserves the connection's
 asker identity; a newly authorized grant receives a different identity and cannot
 retrieve the old grant's replies. This version does not push unsolicited agent
 messages into an idle ChatGPT conversation.

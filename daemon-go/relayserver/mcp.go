@@ -116,7 +116,9 @@ func (s *Server) registerRelayMCP() {
 			return nil, nil, err
 		}
 		data, err := m.notify(ctx, relaySender(g), a.PeerID, a.Message)
-		if err != nil {
+		if errors.Is(err, errUncertain) {
+			data["message"] = "Delivery is uncertain. Use get_reply with delivery_id as the request_id to learn the outcome; do not resend."
+		} else if err != nil {
 			return nil, nil, err
 		}
 		data["daemon_id"] = a.DaemonID

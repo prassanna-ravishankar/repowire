@@ -6,7 +6,7 @@ import { PiHarness, type PiOperationResult } from 'agents/harness/pi';
 import { Lifecycle, type LifecycleJobContext, type LifecycleJobOutcome } from 'agents/lifecycle';
 import { createAI } from 'agents/models/pi-ai';
 import { authorize, body, HttpError, identifier, scopedName, source, type Caller } from './http';
-import { Gateway, Registry, type RelayRequest, type Via } from './gateway';
+import { Gateway, Registry, REPORT_TEXT_LIMIT, type RelayRequest, type Via } from './gateway';
 import { addResponse, reportDelay, usageSince, zeroUsage, type Cumulative } from './ledger';
 import { LIMITS, type TokenUsage } from './prices';
 import { serial } from './serial';
@@ -150,6 +150,7 @@ export class HostedAgent extends DurableObject<Env> {
       const config = await this.config();
       if (!config) throw new Error('Agent does not exist');
       if (config.retired) return { retired: true as const };
+      if (this.kv.get(`undelivered:${operationId}`)) return { undelivered: true as const };
       await this.lifecycle.start();
       const key = `report:${operationId}`;
       const fresh = !this.kv.get(key) && !this.kv.get(`reported:${operationId}`);
@@ -177,6 +178,29 @@ export class HostedAgent extends DurableObject<Env> {
         throw error;
       }
     });
+  }
+
+  // Settles a request the relay recorded but this agent may never have been
+  // given. In turn with admission: with no record of the operation it is
+  // tombstoned, so a submit still on its way is refused, and true is returned.
+  async forget(operationId: string) {
+    return this.admission(async () => {
+      if (this.kv.get(`report:${operationId}`) || this.kv.get(`reported:${operationId}`)) return false;
+      this.kv.put(`undelivered:${operationId}`, true);
+      return true;
+    });
+  }
+
+  // An operation's outcome as its report states it, for a reader that cannot
+  // wait for the report to land.
+  async outcome(operationId: string) {
+    const result = await this.harness.wait(operationId);
+    return { ...result, reason: this.reason(operationId, result), text: result.text?.slice(0, REPORT_TEXT_LIMIT) };
+  }
+
+  private reason(operationId: string, result: PiOperationResult) {
+    const limited = result.status === 'unanswered' && (this.kv.get<number>(`steps:${operationId}`) ?? 0) > LIMITS.stepsPerRun;
+    return limited ? stepLimitReason(LIMITS.stepsPerRun) : result.reason;
   }
 
   async abort(operationId?: string) {
@@ -278,8 +302,7 @@ export class HostedAgent extends DurableObject<Env> {
     }
     const config = await this.config();
     if (!config) return;
-    const limited = result.status === 'unanswered' && (this.kv.get<number>(`steps:${operationId}`) ?? 0) > LIMITS.stepsPerRun;
-    const reason = limited ? stepLimitReason(LIMITS.stepsPerRun) : result.reason;
+    const reason = this.reason(operationId, result);
     await this.owner(config).report({
       agent: config.id, ...result, reason, usage: pending.usage, source: pending.source, startedAt: pending.startedAt, via,
     });
@@ -393,6 +416,11 @@ async function agentRoute(env: Env, caller: Caller, request: Request, id: string
 // as a daemon's ask wait. The relay names the requester; only it reads back.
 
 const REQUEST_ID = /^rq-[0-9a-f]{32}$/;
+
+// An agent on the managed machine: created through the relay and claimed by no
+// daemon. Rows the daemon created, including lazily repaired ones without a
+// home, stay with the daemon.
+const onManaged = (row: { created_by: unknown; home_machine: unknown }) => row.created_by !== 'daemon' && !row.home_machine;
 const escape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 function requesterOf(value: unknown): string {
@@ -437,7 +465,7 @@ async function submitRequest(env: Env, owner: string, input: Record<string, unkn
   const agent = env.AGENTS.getByName(scopedName(owner, agentId));
   const config = await agent.config();
   const row = config && await directory.agent(agentId);
-  if (!config || !row || row.home_machine) throw new HttpError(404, 'Agent not found on the managed machine');
+  if (!config || !row || !onManaged(row)) throw new HttpError(404, 'Agent not found on the managed machine');
   if (config.retired) throw new HttpError(410, 'Agent is retired');
   const refusal = await directory.admit(agentId);
   if (refusal) throw new HttpError(402, refusal);
@@ -457,6 +485,7 @@ async function submitRequest(env: Env, owner: string, input: Record<string, unkn
     await directory.dropRequest(id);
     throw new HttpError(410, 'Agent is retired');
   }
+  if ('undelivered' in accepted) throw new HttpError(409, `Request ${id} was settled as not delivered before the agent received it`);
   await directory.acceptRequest(id);
   return json({ request_id: id, state: 'accepted', created: true }, 202);
 }
@@ -479,15 +508,20 @@ async function waitRequest(env: Env, owner: string, id: string, requester: strin
   const agent = env.AGENTS.getByName(scopedName(owner, known.agent));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const result = await Promise.race([
-    agent.wait(id),
+    agent.outcome(id),
     new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), wait * 1000); }),
   ]).finally(() => clearTimeout(timer));
   if (!result) return pending;
-  // pi does not have it: still being submitted, or withdrawn as never admitted.
+  // pi does not have it: still on its way, or never delivered. The agent
+  // decides in turn with admission and refuses it afterwards.
   if (result.reason === 'not_found') {
-    const now = await directory.request(id);
-    return now?.state === 'not_delivered' ? resolved('unanswered', 'not_delivered', null) : pending;
+    if (known.state !== 'submitting' || !await agent.forget(id)) return pending;
+    await directory.requestUndelivered(id);
+    return resolved('unanswered', 'not_delivered', null);
   }
+  // The run log is authoritative once the report lands.
+  const reported = await directory.run(known.agent, id, true);
+  if (reported?.settled_at) return resolved(String(reported.status), reported.reason as string | null, reported.answer as string | null);
   return resolved(result.status, result.reason ?? null, result.text ?? null);
 }
 

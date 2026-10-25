@@ -36,7 +36,7 @@ export function fakePi() {
 
 // The real agent code over fake storage, pi, Lifecycle jobs, and a real
 // Gateway. The constructor wires Workers AI and Lifecycle, so it is skipped.
-export function hostedAgent(directory = new Gateway(fakeState() as never, {})) {
+export function hostedAgent(directory = new Gateway(fakeState() as never, {}), createdBy = 'daemon') {
   const state = fakeState();
   const gateway = { failReports: 0, calls: 0, directory };
   const owner = new Proxy(directory, {
@@ -63,7 +63,7 @@ export function hostedAgent(directory = new Gateway(fakeState() as never, {})) {
     },
   });
   state.storage.kv.put('config', { owner: 'alice', id: 'a', workspace: null });
-  directory.addAgent({ id: 'a', workspace: null, created_by: 'daemon' });
+  directory.addAgent({ id: 'a', workspace: null, created_by: createdBy });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return { agent: agent as any, state, gateway, directory, pi, jobs };
 }
