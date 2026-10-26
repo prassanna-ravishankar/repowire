@@ -433,3 +433,44 @@ func TestRemoteCreateIsIdempotentAndEpochBound(t *testing.T) {
 		t.Fatalf("direct call %d", w.Code)
 	}
 }
+
+// A notify caught mid-dispatch by a restart is never dispatched again.
+func TestRemoteRestartSettlesADispatchingNotifyUncertain(t *testing.T) {
+	mesh, _, beta := twoMachines(t)
+	id := newRemoteID("notif")
+	_, _, err := beta.store.CreateInbound(context.Background(), state.RemoteInbound{ID: id, Kind: "notify", FromMachine: "alpha", From: state.RemotePrincipal{PeerID: "p", DisplayName: "asker", Circle: "proj"}, ToPeerID: "t", Text: "x", CreatedAt: time.Now().Unix()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbPath := beta.db
+	beta.close()
+	beta = newRemoteDaemon(t, mesh, "beta", dbPath)
+	got, _ := beta.store.GetInbound(context.Background(), id)
+	if got.State != state.RemoteSettled || got.CloseReason != "uncertain" {
+		t.Fatalf("after restart %+v", got)
+	}
+}
+
+// A replaced target database, or a result past retention, reads as lost,
+// never as not delivered.
+func TestRemoteLostResultsAreNotNonDelivery(t *testing.T) {
+	_, alpha, beta := twoMachines(t)
+	asker := alpha.agent(t, "asker", "proj", nil)
+	bob := beta.agent(t, "bob", "proj", nil)
+	from := state.RemotePrincipal{PeerID: string(asker.id), DisplayName: asker.name, Circle: "proj"}
+	ctx := context.Background()
+	for name, row := range map[string]state.RemoteOutbound{
+		"replaced": {ID: newRemoteID("ask"), StoreEpoch: "an-older-database"},
+		"expired":  {ID: fmt.Sprintf("ask-%d-%032x", time.Now().Add(-6*24*time.Hour-time.Hour).Unix(), 7), StoreEpoch: beta.h.remote.epoch},
+	} {
+		row.Machine, row.ToPeerID, row.ToName, row.From, row.Text, row.CreatedAt = "beta", string(bob.id), bob.name+"@beta", from, "q", time.Now().Unix()
+		if err := alpha.store.InsertOutbound(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+		alpha.h.readOutbound(ctx, row, 0, false)
+		got, _ := alpha.store.GetOutbound(ctx, row.ID)
+		if got.CloseReason != "result_lost" {
+			t.Fatalf("%s: %+v", name, got)
+		}
+	}
+}
