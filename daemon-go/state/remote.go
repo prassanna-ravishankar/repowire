@@ -227,16 +227,19 @@ type RemoteOutbound struct {
 	State       string
 	CloseReason string
 	Reply       *string
-	Delivered   bool
-	CheckedAt   int64
+	// Delivered means no push is owed: the reply reached the asker, or the
+	// asker reads it itself (ReplyDelivery pull, or a wait that returned it).
+	Delivered     bool
+	CheckedAt     int64
+	ReplyDelivery string // push | pull
 }
 
-const outboundColumns = `id, machine, store_epoch, to_peer_id, to_name, from_peer_id, from_name, from_circle, text, created_at, state, close_reason, reply, delivered, checked_at`
+const outboundColumns = `id, machine, store_epoch, to_peer_id, to_name, from_peer_id, from_name, from_circle, text, created_at, state, close_reason, reply, delivered, checked_at, reply_delivery`
 
 func scanOutbound(row rowScanner) (RemoteOutbound, error) {
 	var r RemoteOutbound
 	var reply sql.NullString
-	err := row.Scan(&r.ID, &r.Machine, &r.StoreEpoch, &r.ToPeerID, &r.ToName, &r.From.PeerID, &r.From.DisplayName, &r.From.Circle, &r.Text, &r.CreatedAt, &r.State, &r.CloseReason, &reply, &r.Delivered, &r.CheckedAt)
+	err := row.Scan(&r.ID, &r.Machine, &r.StoreEpoch, &r.ToPeerID, &r.ToName, &r.From.PeerID, &r.From.DisplayName, &r.From.Circle, &r.Text, &r.CreatedAt, &r.State, &r.CloseReason, &reply, &r.Delivered, &r.CheckedAt, &r.ReplyDelivery)
 	if reply.Valid {
 		r.Reply = &reply.String
 	}
@@ -245,8 +248,12 @@ func scanOutbound(row rowScanner) (RemoteOutbound, error) {
 
 // InsertOutbound commits a request's immutable envelope before it is sent.
 func (s *Store) InsertOutbound(ctx context.Context, r RemoteOutbound) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO remote_outbound(`+outboundColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, 0, 0)`,
-		r.ID, r.Machine, r.StoreEpoch, r.ToPeerID, r.ToName, r.From.PeerID, r.From.DisplayName, r.From.Circle, r.Text, r.CreatedAt, RemoteSent)
+	delivery := r.ReplyDelivery
+	if delivery == "" {
+		delivery = "push"
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO remote_outbound(`+outboundColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, 0, 0, ?)`,
+		r.ID, r.Machine, r.StoreEpoch, r.ToPeerID, r.ToName, r.From.PeerID, r.From.DisplayName, r.From.Circle, r.Text, r.CreatedAt, RemoteSent, delivery)
 	return err
 }
 
@@ -281,13 +288,13 @@ func (s *Store) MarkOutboundDelivered(ctx context.Context, id string) error {
 
 // ClaimOutboundChecks picks up to limit of an asker's unsettled records not
 // checked since checkedBefore, oldest check first, and stamps them now.
-func (s *Store) ClaimOutboundChecks(ctx context.Context, asker string, checkedBefore, now int64, limit int) ([]RemoteOutbound, error) {
+func (s *Store) ClaimOutboundChecks(ctx context.Context, asker string, checkedBefore, createdAfter, now int64, limit int) ([]RemoteOutbound, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `SELECT `+outboundColumns+` FROM remote_outbound WHERE from_peer_id = ? AND state IN ('sent', 'uncertain') AND checked_at < ? ORDER BY checked_at, created_at LIMIT ?`, asker, checkedBefore, limit)
+	rows, err := tx.QueryContext(ctx, `SELECT `+outboundColumns+` FROM remote_outbound WHERE from_peer_id = ? AND state IN ('sent', 'uncertain') AND checked_at < ? AND created_at >= ? ORDER BY checked_at, created_at LIMIT ?`, asker, checkedBefore, createdAfter, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -303,10 +310,11 @@ func (s *Store) ClaimOutboundChecks(ctx context.Context, asker string, checkedBe
 	return out, tx.Commit()
 }
 
-// UndeliveredOutbound lists settled records whose reply has not reached the
-// asker; asker "" means every asker.
-func (s *Store) UndeliveredOutbound(ctx context.Context, asker string, limit int) ([]RemoteOutbound, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+outboundColumns+` FROM remote_outbound WHERE state = 'settled' AND delivered = 0 AND (? = '' OR from_peer_id = ?) ORDER BY created_at LIMIT ?`, asker, asker, limit)
+// UndeliveredOutbound lists settled records created at or after
+// createdAfter whose reply is still owed to the asker; asker "" means every
+// asker.
+func (s *Store) UndeliveredOutbound(ctx context.Context, asker string, createdAfter int64, limit int) ([]RemoteOutbound, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+outboundColumns+` FROM remote_outbound WHERE state = 'settled' AND delivered = 0 AND created_at >= ? AND (? = '' OR from_peer_id = ?) ORDER BY created_at LIMIT ?`, createdAfter, asker, asker, limit)
 	if err != nil {
 		return nil, err
 	}

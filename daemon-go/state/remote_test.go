@@ -139,12 +139,12 @@ func TestSettlementsAreFirstWins(t *testing.T) {
 	if ok, _ := s.SettleOutbound(ctx, "ask-6", "not_delivered", nil); ok {
 		t.Fatal("second outbound settle won")
 	}
-	undelivered, _ := s.UndeliveredOutbound(ctx, "p1", 8)
+	undelivered, _ := s.UndeliveredOutbound(ctx, "p1", 0, 8)
 	if len(undelivered) != 1 || undelivered[0].State != RemoteSettled {
 		t.Fatalf("undelivered %+v", undelivered)
 	}
 	_ = s.MarkOutboundDelivered(ctx, "ask-6")
-	if undelivered, _ := s.UndeliveredOutbound(ctx, "", 8); len(undelivered) != 0 {
+	if undelivered, _ := s.UndeliveredOutbound(ctx, "", 0, 8); len(undelivered) != 0 {
 		t.Fatalf("still undelivered %+v", undelivered)
 	}
 }
@@ -154,13 +154,16 @@ func TestOutboundChecksRotateAndRespectTheCutoff(t *testing.T) {
 	for i := range 3 {
 		_ = s.InsertOutbound(ctx, RemoteOutbound{ID: fmt.Sprintf("ask-c%d", i), Machine: "m", From: RemotePrincipal{PeerID: "p1"}, CreatedAt: int64(1000 + i)})
 	}
-	first, _ := s.ClaimOutboundChecks(ctx, "p1", 100, 100, 2)
-	second, _ := s.ClaimOutboundChecks(ctx, "p1", 100, 101, 2)
+	first, _ := s.ClaimOutboundChecks(ctx, "p1", 100, 0, 100, 2)
+	second, _ := s.ClaimOutboundChecks(ctx, "p1", 100, 0, 101, 2)
 	if len(first) != 2 || len(second) != 1 || second[0].ID != "ask-c2" {
 		t.Fatalf("first %v second %v", first, second)
 	}
-	if again, _ := s.ClaimOutboundChecks(ctx, "p1", 100, 102, 2); len(again) != 0 {
+	if again, _ := s.ClaimOutboundChecks(ctx, "p1", 100, 0, 102, 2); len(again) != 0 {
 		t.Fatalf("rechecked inside the cutoff: %v", again)
+	}
+	if old, _ := s.ClaimOutboundChecks(ctx, "p1", 1000, 5000, 103, 2); len(old) != 0 {
+		t.Fatalf("checked past retention: %v", old)
 	}
 }
 

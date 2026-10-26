@@ -605,8 +605,7 @@ func (d *PeerDelivery) completeRuntimeAsk(ctx context.Context, cid string, reply
 		if isError {
 			reason = "send_failed"
 		}
-		d.asks.CaptureReply(ctx, cid, body, nil)
-		_, _ = d.asks.Close(ctx, cid, reason)
+		_, _ = d.asks.Resolve(ctx, cid, reason, &body, nil)
 		return
 	}
 	framed := fmt.Sprintf("[ack #%s from @%s] %s", cid, ask.ToPeerName, body)

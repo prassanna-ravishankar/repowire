@@ -303,6 +303,43 @@ func (t *AskTracker) Close(ctx context.Context, cid, reason string) (*Ask, bool)
 	return ask.clone(), true
 }
 
+// Resolve closes an ask with its reply in one step: the guard sees the
+// reason and reply together, and nothing changes unless it passes. Of two
+// racing resolutions exactly one wins, whole; the loser reports false and
+// leaves no trace on the ask.
+func (t *AskTracker) Resolve(ctx context.Context, cid, reason string, reply *string, attachments []map[string]any) (*Ask, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	ask, ok := t.asks[cid]
+	if !ok || ask.Closed {
+		return nil, false
+	}
+	if t.closeGuard != nil {
+		snapshot := ask.clone()
+		snapshot.CloseReason = reason
+		if reply != nil {
+			snapshot.ReplyText = reply
+		}
+		if err := t.closeGuard(snapshot, reason); err != nil {
+			log.Printf("ask %s: resolve %s held open: %v", cid, reason, err)
+			return nil, false
+		}
+	}
+	if reply != nil && ask.ReplyText == nil {
+		text := *reply
+		now := time.Now().UTC()
+		ask.ReplyText, ask.RepliedAt = &text, &now
+		if len(attachments) > 0 {
+			ask.ReplyAttachments = attachments
+		}
+	}
+	ask.Closed = true
+	ask.CloseReason = reason
+	r := reason
+	t.cancelWaiter(cid, &r)
+	return ask.clone(), true
+}
+
 // validateAnswer ports Question.validate_answer against the raw question map.
 // Returns an error if the answer is invalid for this question, else nil. A nil
 // question (plain ask) is always valid.

@@ -139,7 +139,7 @@ func (h *Hub) openRemoteAsk(ctx context.Context, req AskRequest, name, machine s
 	toName := remoteName(machine, target)
 	row := state.RemoteOutbound{
 		ID: newRemoteID("ask"), Machine: machine, StoreEpoch: epoch, ToPeerID: target.PeerID, ToName: toName,
-		From: from, Text: req.Text, CreatedAt: time.Now().Unix(),
+		From: from, Text: req.Text, CreatedAt: time.Now().Unix(), ReplyDelivery: req.ReplyDelivery,
 	}
 	if err := h.store.InsertOutbound(ctx, row); err != nil {
 		return AskResponse{}, routeErr(http.StatusInternalServerError, err.Error())
@@ -186,6 +186,7 @@ func (h *Hub) registerOutboundAsk(ctx context.Context, row state.RemoteOutbound)
 		ToPeerID:      proto.RemotePeerID(row.Machine, row.ToPeerID),
 		ToPeerName:    proto.DisplayName(row.ToName),
 		Text:          row.Text,
+		ReplyDelivery: row.ReplyDelivery,
 		CreatedAt:     time.Unix(row.CreatedAt, 0),
 	}); err != nil {
 		log.Printf("remote %s: register projection: %v", row.ID, err)
@@ -228,8 +229,10 @@ func (h *Hub) settleOutboundPush(ctx context.Context, row state.RemoteOutbound, 
 // them repeats the reply (at least once, keyed by correlation id).
 func (h *Hub) deliverOutbound(ctx context.Context, row state.RemoteOutbound) {
 	reason := row.CloseReason
-	if reason == "ack" && row.Reply == nil {
-		_, _ = h.ask.asks.Close(ctx, row.ID, "ack")
+	// Nothing to push: a bare ack, or a pull asker that reads the reply
+	// itself (wait_on_ack answers from the row until retention).
+	if row.ReplyDelivery == "pull" || (reason == "ack" && row.Reply == nil) {
+		_, _ = h.ask.asks.Resolve(ctx, row.ID, reason, row.Reply, nil)
 		_ = h.store.MarkOutboundDelivered(ctx, row.ID)
 		return
 	}
@@ -250,10 +253,7 @@ func (h *Hub) deliverOutbound(ctx context.Context, row state.RemoteOutbound) {
 	if err != nil || (!res.Delivered() && !res.Queued()) {
 		return // stays undelivered; the asker's next hook request retries
 	}
-	if row.Reply != nil {
-		h.ask.asks.CaptureReply(ctx, row.ID, *row.Reply, nil)
-	}
-	_, _ = h.ask.asks.Close(ctx, row.ID, reason)
+	_, _ = h.ask.asks.Resolve(ctx, row.ID, reason, row.Reply, nil)
 	_ = h.store.MarkOutboundDelivered(ctx, row.ID)
 }
 
@@ -308,10 +308,12 @@ func (h *Hub) reconcileRemote(ctx context.Context, asker proto.PeerID) {
 	if h.remote == nil {
 		return
 	}
+	h.remote.pruneLazily(ctx)
 	ctx, cancel := context.WithTimeout(ctx, remoteCheckBudget)
 	defer cancel()
 	now := time.Now()
-	rows, err := h.store.ClaimOutboundChecks(ctx, string(asker), now.Add(-remoteCheckEvery).Unix(), now.Unix(), remoteCheckBatch)
+	retained := now.Add(-remoteRetention).Unix()
+	rows, err := h.store.ClaimOutboundChecks(ctx, string(asker), now.Add(-remoteCheckEvery).Unix(), retained, now.Unix(), remoteCheckBatch)
 	if err != nil {
 		log.Printf("remote: claim checks: %v", err)
 	}
@@ -324,7 +326,7 @@ func (h *Hub) reconcileRemote(ctx context.Context, asker proto.PeerID) {
 		}()
 	}
 	wg.Wait()
-	undelivered, _ := h.store.UndeliveredOutbound(ctx, string(asker), remoteDeliverBatch)
+	undelivered, _ := h.store.UndeliveredOutbound(ctx, string(asker), retained, remoteDeliverBatch)
 	for _, row := range undelivered {
 		h.deliverOutbound(ctx, row)
 	}
@@ -333,6 +335,9 @@ func (h *Hub) reconcileRemote(ctx context.Context, asker proto.PeerID) {
 // waitRemote is wait_on_ack for an outbound row: answer from the row when it
 // is settled, otherwise long-poll the target until the caller's timeout.
 func (h *Hub) waitRemote(ctx context.Context, row state.RemoteOutbound, caller string, timeout time.Duration) (AskWaitResponse, error) {
+	if time.Unix(row.CreatedAt, 0).Before(time.Now().Add(-remoteRetention)) {
+		return AskWaitResponse{}, routeErr(http.StatusNotFound, "No ask with correlation_id: "+row.ID)
+	}
 	if caller != row.From.PeerID && caller != row.From.DisplayName {
 		return AskWaitResponse{}, routeErr(http.StatusForbidden, map[string]any{"error": "not_the_asker", "correlation_id": row.ID, "asker": row.From.DisplayName})
 	}
@@ -358,13 +363,11 @@ func (h *Hub) waitRemote(ctx context.Context, row state.RemoteOutbound, caller s
 		}
 		row = next
 	}
-	// The waiter is the asker taking the reply: like a local pull, nothing is
-	// pushed afterwards.
+	// Waiting flips the ask to pull, as a local wait does: no push is owed
+	// afterwards. If this response is lost, the reply is not: wait_on_ack
+	// answers from the durable row again until retention.
 	_ = h.store.MarkOutboundDelivered(ctx, row.ID)
-	if row.Reply != nil {
-		h.ask.asks.CaptureReply(ctx, row.ID, *row.Reply, nil)
-	}
-	_, _ = h.ask.asks.Close(ctx, row.ID, row.CloseReason)
+	_, _ = h.ask.asks.Resolve(ctx, row.ID, row.CloseReason, row.Reply, nil)
 	return AskWaitResponse{CorrelationID: row.ID, Status: "resolved", Reply: row.Reply, CloseReason: strPtr(row.CloseReason), Responder: strPtr(row.ToName)}, nil
 }
 

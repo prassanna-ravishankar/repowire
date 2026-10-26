@@ -241,13 +241,12 @@ func TestRemoteAskRoundTrip(t *testing.T) {
 	if !strings.Contains(fmt.Sprint(reply["text"]), "[ack #"+cid+" from @"+bob.name+"@beta]") {
 		t.Fatalf("reply %v", reply)
 	}
-	row, _ := alpha.store.GetOutbound(context.Background(), cid)
-	if row.State != state.RemoteSettled || !row.Delivered || *row.Reply != "42" {
-		t.Fatalf("row %+v", row)
-	}
-	if ask, _ := alpha.asks.Get(cid); ask == nil || !ask.Closed {
-		t.Fatalf("projection %+v", ask)
-	}
+	// The frame arrives before the delivery ack completes the bookkeeping.
+	eventually(t, func() bool {
+		row, _ := alpha.store.GetOutbound(context.Background(), cid)
+		ask, _ := alpha.asks.Get(cid)
+		return row.State == state.RemoteSettled && row.Delivered && row.Reply != nil && *row.Reply == "42" && ask != nil && ask.Closed
+	})
 }
 
 func TestRemoteCircleRules(t *testing.T) {
@@ -294,6 +293,43 @@ func TestRemoteWaitRecoversALostPush(t *testing.T) {
 		t.Fatalf("wait %v", wait)
 	}
 	asker.quiet(t, 200*time.Millisecond) // the waiter took the reply; nothing is pushed
+	// A lost wait response loses nothing: waiting again answers from the row.
+	if _, again := alpha.post(t, "/asks/"+cid+"/wait", map[string]any{"peer_id": string(asker.id), "timeout_seconds": 0}); again["reply"] != "late" {
+		t.Fatalf("second wait %v", again)
+	}
+}
+
+func eventually(t *testing.T, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not reached")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// The MCP ask result carries an uncertain send's warning, not just its id.
+func TestAskToolResultReportsUncertainDelivery(t *testing.T) {
+	detail := "delivery to bob@beta is uncertain"
+	if got := askToolResult(AskResponse{CorrelationID: "ask-1", Error: &detail}); !strings.Contains(got, "ask-1 delivery_state=uncertain") || !strings.Contains(got, detail) {
+		t.Fatalf("result %q", got)
+	}
+}
+
+func TestAmbiguousSendIsOnlyATimeoutOrCancel(t *testing.T) {
+	for err, want := range map[error]bool{
+		context.DeadlineExceeded:                            true,
+		fmt.Errorf("ack: %w", context.Canceled):             true,
+		service.ErrNotConnected:                             false,
+		errors.New("Unknown peer: x"):                       false,
+		&service.DeliveryInjectionError{Status: "rejected"}: false,
+	} {
+		if ambiguousSend(err) != want {
+			t.Errorf("ambiguousSend(%v) = %v", err, !want)
+		}
+	}
 }
 
 // A create whose outcome is unknown stays uncertain; the next check fences
@@ -323,10 +359,10 @@ func TestRemoteUncertainCreateIsFencedNotReplayed(t *testing.T) {
 		res.Body.Close()
 	}
 	asker.next(t, "not_delivered")
-	row, _ = alpha.store.GetOutbound(context.Background(), cid)
-	if row.CloseReason != "not_delivered" || !row.Delivered {
-		t.Fatalf("row %+v", row)
-	}
+	eventually(t, func() bool {
+		row, _ = alpha.store.GetOutbound(context.Background(), cid)
+		return row.CloseReason == "not_delivered" && row.Delivered
+	})
 
 	// The lost create arrives late: it finds the fence.
 	req := httptest.NewRequestWithContext(relay.WithRemoteMachine(context.Background(), "alpha"), http.MethodPost, "/remote/ask", bytes.NewReader(lost))

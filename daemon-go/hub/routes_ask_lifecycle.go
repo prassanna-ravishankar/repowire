@@ -837,8 +837,7 @@ func (h *Hub) heldOpen(cid string) error {
 
 func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameKind, closeReason, message string, attachments []map[string]any) error {
 	if ask.ReplyDelivery == "pull" {
-		h.ask.asks.CaptureReply(ctx, ask.CorrelationID, message, attachments)
-		if _, closed := h.ask.asks.Close(ctx, ask.CorrelationID, closeReason); !closed {
+		if _, closed := h.ask.asks.Resolve(ctx, ask.CorrelationID, closeReason, &message, attachments); !closed {
 			if err := h.heldOpen(ask.CorrelationID); err != nil {
 				return err
 			}

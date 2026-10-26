@@ -62,6 +62,7 @@ func (h *Hub) WithRemote(ctx context.Context, link machineLink, self string) err
 	}
 	h.remote = &remoteMesh{link: link, store: h.store, self: self, epoch: epoch}
 	h.ask.asks.SetCloseGuard(h.guardRemoteClose)
+	h.remote.pruneLazily(ctx)
 	return h.recoverRemote(ctx)
 }
 
@@ -247,7 +248,12 @@ func (h *Hub) remoteCreate(kind string) http.HandlerFunc {
 			return
 		}
 		if fresh {
-			record = h.dispatchRemote(ctx, record, target)
+			// Dispatch is not cut short by the caller going away: a send
+			// abandoned halfway is exactly the ambiguity to avoid.
+			if record, err = h.dispatchRemote(context.WithoutCancel(ctx), record, target); err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "outcome not recorded: "+err.Error())
+				return
+			}
 		}
 		writeJSON(w, http.StatusOK, h.remote.receipt(record, string(target.DisplayName)))
 	}
@@ -259,44 +265,63 @@ func remoteSender(from state.RemotePrincipal, machine string) string {
 }
 
 // dispatchRemote hands a freshly recorded request to the local transport,
-// once, and records the outcome. Its returned record is what the source sees.
-func (h *Hub) dispatchRemote(ctx context.Context, record state.RemoteInbound, target *proto.Peer) state.RemoteInbound {
+// once, and returns the record as committed afterwards. A definite refusal
+// settles it not_delivered; a send that may have landed never does: an ask
+// stays open for its recipient (the TTL ends it if nothing came through) and
+// a notify settles uncertain. A failed write is an error, so the source
+// treats the outcome as unknown rather than trusting a receipt nobody kept.
+func (h *Hub) dispatchRemote(ctx context.Context, record state.RemoteInbound, target *proto.Peer) (state.RemoteInbound, error) {
+	// Inside the relay's own deadline, so the source hears the outcome.
+	ctx, cancel := context.WithTimeout(ctx, remoteWaitCap)
+	defer cancel()
 	sender := remoteSender(record.From, record.FromMachine)
-	settle := func(reason string) state.RemoteInbound {
-		if _, err := h.store.SettleInbound(ctx, record.ID, reason, nil, time.Now().Unix()); err != nil {
-			log.Printf("remote %s: settle %s: %v", record.ID, reason, err)
-		}
-		record.State, record.CloseReason = state.RemoteSettled, reason
-		return record
-	}
 	if record.Kind == "notify" {
 		res, err := h.ask.delivery.Notify(ctx, service.NotifyParams{FromPeer: sender, ToPeer: string(target.PeerID), Text: record.Text, BypassCircle: true, DeliveryID: record.ID})
-		if err != nil || (!res.Delivered() && !res.Queued()) {
-			return settle("not_delivered")
+		switch {
+		case err == nil && (res.Delivered() || res.Queued()):
+			if _, err := h.store.AdvanceInbound(ctx, record.ID, state.RemoteDispatching, state.RemoteDelivered); err != nil {
+				return record, err
+			}
+		case err != nil && ambiguousSend(err):
+			if _, err := h.store.SettleInbound(ctx, record.ID, "uncertain", nil, time.Now().Unix()); err != nil {
+				return record, err
+			}
+		default:
+			if _, err := h.store.SettleInbound(ctx, record.ID, "not_delivered", nil, time.Now().Unix()); err != nil {
+				return record, err
+			}
 		}
-		if _, err := h.store.AdvanceInbound(ctx, record.ID, state.RemoteDispatching, state.RemoteDelivered); err != nil {
-			log.Printf("remote %s: record delivery: %v", record.ID, err)
-		}
-		record.State = state.RemoteDelivered
-		return record
+		return h.store.GetInbound(ctx, record.ID)
 	}
 	if _, err := h.registerRemoteAsk(ctx, record, target.DisplayName); err != nil {
-		return settle("not_delivered")
+		if _, serr := h.store.SettleInbound(ctx, record.ID, "not_delivered", nil, time.Now().Unix()); serr != nil {
+			return record, serr
+		}
+		return h.store.GetInbound(ctx, record.ID)
 	}
-	if _, err := h.ask.delivery.DeliverAsk(ctx, service.DeliverAskParams{
+	_, err := h.ask.delivery.DeliverAsk(ctx, service.DeliverAskParams{
 		FromPeer: sender, ToPeer: string(target.PeerID), Text: record.Text,
 		CorrelationID: record.ID, BypassCircle: true,
-	}); err != nil {
-		// The guard settles the record not_delivered as the ask closes.
-		_, _ = h.ask.asks.Close(ctx, record.ID, "not_delivered")
-		got, _ := h.store.GetInbound(ctx, record.ID)
-		return got
+	})
+	if err != nil && !ambiguousSend(err) {
+		// The guard commits not_delivered as the ask closes.
+		if _, closed := h.ask.asks.Close(ctx, record.ID, "not_delivered"); !closed {
+			return record, errors.New("could not record not_delivered")
+		}
+		return h.store.GetInbound(ctx, record.ID)
 	}
 	if _, err := h.store.AdvanceInbound(ctx, record.ID, state.RemoteDispatching, state.RemoteOpen); err != nil {
-		log.Printf("remote %s: record open: %v", record.ID, err)
+		return record, err
 	}
-	record.State = state.RemoteOpen
-	return record
+	return h.store.GetInbound(ctx, record.ID)
+}
+
+// ambiguousSend is a transport error after the frame may have left: a
+// timeout or cancellation waiting for the delivery ack. Everything else
+// (unknown or unreachable target, no socket, an injection the pane refused)
+// is a definite refusal.
+func ambiguousSend(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // registerRemoteAsk puts a remote-origin ask in the tracker as a pull ask:

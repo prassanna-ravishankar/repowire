@@ -76,11 +76,15 @@ type relaySession struct {
 
 	machinesMu sync.Mutex
 	machines   map[string]chan machineResponse
+	httpWork   chan map[string]any
 	remoteWork chan map[string]any
 }
 
 func newRelaySession(conn *websocket.Conn) *relaySession {
-	return &relaySession{conn: conn, streams: map[string]context.CancelFunc{}, machines: map[string]chan machineResponse{}, remoteWork: make(chan map[string]any, remoteQueue)}
+	return &relaySession{
+		conn: conn, streams: map[string]context.CancelFunc{}, machines: map[string]chan machineResponse{},
+		httpWork: make(chan map[string]any, remoteQueue), remoteWork: make(chan map[string]any, remoteQueue),
+	}
 }
 
 func (s *relaySession) write(ctx context.Context, value any) error {
@@ -313,7 +317,11 @@ func (c *Client) connectAndServe(ctx context.Context) (bool, error) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	session := newRelaySession(conn)
 	defer session.cancelAll()
-	c.startRemoteWorkers(ctx, session)
+	// Workers live exactly as long as this connection: work queued on it
+	// never runs after a reconnect.
+	sessionCtx, endSession := context.WithCancel(ctx)
+	defer endSession()
+	c.startWorkers(sessionCtx, session)
 
 	now := time.Now().UTC()
 	c.mu.Lock()
@@ -366,7 +374,7 @@ func (c *Client) connectAndServe(ctx context.Context) (bool, error) {
 			}
 			return true, err
 		}
-		c.handleMessage(ctx, session, msg)
+		c.handleMessage(sessionCtx, session, msg)
 	}
 }
 
@@ -375,7 +383,9 @@ func (c *Client) handleMessage(ctx context.Context, session *relaySession, msg m
 	case "ping":
 		_ = session.write(ctx, map[string]any{"type": "pong"})
 	case "http_request":
-		c.handleHTTPRequest(ctx, session, msg)
+		// Off the reader, so a tunneled request that itself waits on the
+		// relay (a cross-machine ask) can still receive its answer.
+		c.admit(ctx, session, session.httpWork, msg)
 	case "http_stream_request":
 		c.startHTTPStream(ctx, session, msg)
 	case "http_stream_cancel":
@@ -383,7 +393,7 @@ func (c *Client) handleMessage(ctx context.Context, session *relaySession, msg m
 	case "machine_response":
 		session.deliverMachine(msg)
 	case "remote_request":
-		c.admitRemote(ctx, session, msg)
+		c.admit(ctx, session, session.remoteWork, msg)
 	default:
 		// Unknown/opaque — ignore (Python logs at debug).
 	}

@@ -316,7 +316,8 @@ var migrationStatements = []string{
 		close_reason TEXT NOT NULL DEFAULT '',
 		reply TEXT,
 		delivered INTEGER NOT NULL DEFAULT 0,
-		checked_at INTEGER NOT NULL DEFAULT 0
+		checked_at INTEGER NOT NULL DEFAULT 0,
+		reply_delivery TEXT NOT NULL DEFAULT 'push'
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_remote_outbound_asker ON remote_outbound(from_peer_id, state)`,
 }

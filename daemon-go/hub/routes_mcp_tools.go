@@ -668,6 +668,11 @@ func firstNonempty(values ...string) string {
 // routed ask went and why when the router chose.
 func askToolResult(result AskResponse) string {
 	rt := result.Routing
+	if result.Error != nil {
+		// A cross-machine send whose outcome is unknown: the id is live and
+		// must not be resent.
+		return fmt.Sprintf("%s delivery_state=uncertain: %s", result.CorrelationID, *result.Error)
+	}
 	if rt == nil {
 		if result.Inbox != nil {
 			return fmt.Sprintf("%s inbox_item=%s surfaces=%s", result.CorrelationID, result.Inbox.ItemID, surfaceList(result.Inbox.Surfaces))

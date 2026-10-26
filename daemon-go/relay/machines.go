@@ -130,25 +130,35 @@ func (s *relaySession) failMachines() {
 	}
 }
 
-func (c *Client) startRemoteWorkers(ctx context.Context, session *relaySession) {
-	for range remoteWorkers {
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case msg := <-session.remoteWork:
-					c.serveRemote(ctx, session, msg)
+// startWorkers runs one bounded pool for tunneled HTTP requests and one for
+// remote_requests, both ending with the connection's ctx.
+func (c *Client) startWorkers(ctx context.Context, session *relaySession) {
+	for _, pool := range []struct {
+		queue chan map[string]any
+		serve func(context.Context, *relaySession, map[string]any)
+	}{{session.httpWork, c.handleHTTPRequest}, {session.remoteWork, c.serveRemote}} {
+		for range remoteWorkers {
+			go func() {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case msg := <-pool.queue:
+						if ctx.Err() == nil {
+							pool.serve(ctx, session, msg)
+						}
+					}
 				}
-			}
-		}()
+			}()
+		}
 	}
 }
 
-// admitRemote queues a remote_request without blocking the read loop.
-func (c *Client) admitRemote(ctx context.Context, session *relaySession, msg map[string]any) {
+// admit queues a request without blocking the read loop; a full queue is
+// refused at once.
+func (c *Client) admit(ctx context.Context, session *relaySession, queue chan map[string]any, msg map[string]any) {
 	select {
-	case session.remoteWork <- msg:
+	case queue <- msg:
 	default:
 		c.sendHTTPResponse(ctx, session, stringField(msg, "request_id"), http.StatusTooManyRequests, nil, []byte(`{"detail":"overloaded, not processed"}`))
 	}
