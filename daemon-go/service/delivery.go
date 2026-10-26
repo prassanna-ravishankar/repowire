@@ -208,6 +208,10 @@ type NotifyParams struct {
 	// ThreadText is the reply body without the "[ack #cid from @x]" frame, for
 	// a recipient that threads natively. Empty means use Text.
 	ThreadText string
+	// NoFallbackQueue makes a failed send an error instead of a queued
+	// retry, for callers that promise at most one dispatch (cross-machine
+	// notifies). A busy recipient is still queued, and reported Queued.
+	NoFallbackQueue bool
 }
 
 // DeliverAskParams are the inputs to DeliverAsk (the ask is ALREADY registered
@@ -298,7 +302,7 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 		proto.DisplayName(params.ToPeer), params.Text, params.Attachments, params.DeliveryID,
 	)
 	if err != nil {
-		if errors.Is(err, ErrNotConnected) || errors.Is(err, ErrTransportUnavailable) {
+		if !params.NoFallbackQueue && (errors.Is(err, ErrNotConnected) || errors.Is(err, ErrTransportUnavailable)) {
 			return d.queueNotify(ctx, params, fromID, fromName, target, err, false)
 		}
 		return NotifyResult{}, err

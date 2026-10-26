@@ -32,7 +32,7 @@ When several daemons connect to the relay with the same key, a named circle span
 - Circle-bypassing roles do not bypass across machines: an orchestrator or human surface is neither a remote sender nor a remote target.
 - A machine that is offline is a definite failure; nothing is queued for it.
 
-Delivery to the remote agent is at most once. Each side keeps a durable record, so a recorded result survives restarts on either machine for 7 days. A send whose outcome is unknown is reported as uncertain and never resent: `wait_on_ack`, or the asker's next turn, reads the result back from the other machine. Same-machine traffic never touches the relay. Design: `rfcs/cross-machine-circles.md`.
+`wait_on_ack` on a remote ask takes the reply itself, so it is not also pushed; waiting again returns it until retention. A notify to a busy remote peer reports `delivery_state=queued` and lands on its next turn. Delivery to the remote agent is at most once. Each side keeps a durable record, so a recorded result survives restarts on either machine for 7 days. A send whose outcome is unknown is reported as uncertain and never resent: `wait_on_ack`, or the asker's next turn, reads the result back from the other machine. Same-machine traffic never touches the relay. Design: `rfcs/cross-machine-circles.md`.
 
 ## Roles
 

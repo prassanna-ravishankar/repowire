@@ -27,6 +27,14 @@ is used for discovery, ask, notify and broadcast.
   return, or delivery does not succeed, within the source's 7-day retention,
   the reply is never pushed. Until that deadline it stays readable through
   `wait_on_ack`; after it, the thread is gone on both sides.
+- **A waited ask is pull.** Calling `wait_on_ack` switches the ask to pull
+  before waiting, as a local wait does: the reply is returned to the waiter
+  and not pushed. A lost wait response loses nothing, since `wait_on_ack`
+  answers again from the durable row until retention. An ask sent with
+  `reply_delivery: pull` behaves the same from the start.
+- **A notify to a busy recipient is queued, and reported `queued`.** It is
+  held for the recipient's next turn on its own machine. A failed send is
+  never queued or retried; a send that may have left settles `uncertain`.
 - **A pending ask is not a failure.** Uncertain stays uncertain until the
   target answers for it.
 

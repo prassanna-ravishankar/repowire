@@ -276,9 +276,14 @@ func (h *Hub) dispatchRemote(ctx context.Context, record state.RemoteInbound, ta
 	defer cancel()
 	sender := remoteSender(record.From, record.FromMachine)
 	if record.Kind == "notify" {
-		res, err := h.ask.delivery.Notify(ctx, service.NotifyParams{FromPeer: sender, ToPeer: string(target.PeerID), Text: record.Text, BypassCircle: true, DeliveryID: record.ID})
+		res, err := h.ask.delivery.Notify(ctx, service.NotifyParams{FromPeer: sender, ToPeer: string(target.PeerID), Text: record.Text, BypassCircle: true, DeliveryID: record.ID, NoFallbackQueue: true})
 		switch {
-		case err == nil && (res.Delivered() || res.Queued()):
+		case err == nil && res.Queued():
+			// Held for a busy recipient's next turn: accepted here, not yet seen.
+			if _, err := h.store.SettleInbound(ctx, record.ID, "queued", nil, time.Now().Unix()); err != nil {
+				return record, err
+			}
+		case err == nil && res.Delivered():
 			if _, err := h.store.AdvanceInbound(ctx, record.ID, state.RemoteDispatching, state.RemoteDelivered); err != nil {
 				return record, err
 			}
@@ -317,11 +322,14 @@ func (h *Hub) dispatchRemote(ctx context.Context, record state.RemoteInbound, ta
 }
 
 // ambiguousSend is a transport error after the frame may have left: a
-// timeout or cancellation waiting for the delivery ack. Everything else
-// (unknown or unreachable target, no socket, an injection the pane refused)
-// is a definite refusal.
+// failed or timed-out socket write, or a timeout or cancellation waiting for
+// the delivery ack. Everything else (unknown or unreachable target, no
+// socket at all, an injection the pane refused) is a definite refusal.
 func ambiguousSend(err error) bool {
-	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+	if errors.Is(err, service.ErrNotConnected) {
+		return false
+	}
+	return errors.Is(err, service.ErrTransportUnavailable) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // registerRemoteAsk puts a remote-origin ask in the tracker as a pull ask:

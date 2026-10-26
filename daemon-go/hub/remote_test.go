@@ -91,7 +91,8 @@ func newRemoteDaemon(t *testing.T, mesh *meshLink, id, dbPath string) *remoteDae
 	}
 	h := NewHubWithTransport(reg, transport, "")
 	asks := service.NewAskTracker(0)
-	delivery := service.NewPeerDelivery(reg, h.Router(), transport, asks, nil)
+	// The production queue store, so a fallback queue would show up.
+	delivery := service.NewPeerDelivery(reg, h.Router(), transport, asks, store)
 	h.WithReadDeps(asks, store).WithAskLifecycle(asks, delivery, reg).WithMessaging(delivery, store)
 	if err := h.WithRemote(ctx, mesh.from(id), id); err != nil {
 		t.Fatal(err)
@@ -320,11 +321,13 @@ func TestAskToolResultReportsUncertainDelivery(t *testing.T) {
 
 func TestAmbiguousSendIsOnlyATimeoutOrCancel(t *testing.T) {
 	for err, want := range map[error]bool{
-		context.DeadlineExceeded:                            true,
-		fmt.Errorf("ack: %w", context.Canceled):             true,
-		service.ErrNotConnected:                             false,
-		errors.New("Unknown peer: x"):                       false,
-		&service.DeliveryInjectionError{Status: "rejected"}: false,
+		context.DeadlineExceeded:                                              true,
+		fmt.Errorf("ack: %w", context.Canceled):                               true,
+		service.ErrNotConnected:                                               false,
+		fmt.Errorf("%w: write: broken pipe", service.ErrTransportUnavailable): true,
+		fmt.Errorf("%w: repow-x", service.ErrNotConnected):                    false,
+		errors.New("Unknown peer: x"):                                         false,
+		&service.DeliveryInjectionError{Status: "rejected"}:                   false,
 	} {
 		if ambiguousSend(err) != want {
 			t.Errorf("ambiguousSend(%v) = %v", err, !want)
@@ -508,5 +511,54 @@ func TestRemoteLostResultsAreNotNonDelivery(t *testing.T) {
 		if got.CloseReason != "result_lost" {
 			t.Fatalf("%s: %+v", name, got)
 		}
+	}
+}
+
+// A settlement pushed while the asker waits goes to the waiter only.
+func TestRemoteWaitTakesTheReplyWithoutAPush(t *testing.T) {
+	_, alpha, beta := twoMachines(t)
+	asker := alpha.agent(t, "asker", "proj", nil)
+	bob := beta.agent(t, "bob", "proj", nil)
+	_, sent := alpha.post(t, "/ask", map[string]any{"from_peer": string(asker.id), "to_peer": bob.name + "@beta", "text": "q"})
+	cid := sent["correlation_id"].(string)
+	bob.next(t, "q")
+	waited := make(chan map[string]any, 1)
+	go func() {
+		_, wait := alpha.post(t, "/asks/"+cid+"/wait", map[string]any{"peer_id": string(asker.id), "timeout_seconds": 5})
+		waited <- wait
+	}()
+	time.Sleep(200 * time.Millisecond)
+	beta.post(t, "/ack", map[string]any{"correlation_id": cid, "message": "pushed", "from_peer": string(bob.id)})
+	if wait := <-waited; wait["reply"] != "pushed" {
+		t.Fatalf("wait %v", wait)
+	}
+	asker.quiet(t, 300*time.Millisecond)
+}
+
+// A remote notify is dispatched at most once: no fallback queue on a
+// failed send, and a busy recipient is reported queued, not delivered.
+func TestRemoteNotifyNeverFallsBackToTheQueue(t *testing.T) {
+	_, alpha, beta := twoMachines(t)
+	asker := alpha.agent(t, "asker", "proj", nil)
+	bob := beta.agent(t, "bob", "proj", nil)
+	ctx := context.Background()
+
+	_ = beta.h.reg.UpdateStatus(ctx, bob.id, proto.StatusBusy)
+	if _, outcome, err := alpha.h.remoteNotify(ctx, string(asker.id), bob.name, "beta", "later"); err != nil || outcome != "queued" {
+		t.Fatalf("busy notify %q %v", outcome, err)
+	}
+
+	target, _ := beta.h.reg.GetPeer(bob.id)
+	_ = bob.conn.CloseNow()
+	eventually(t, func() bool { return !beta.h.transport.IsConnected(bob.id) })
+	queuedBefore, _ := beta.store.ListDeliveries(ctx, string(bob.id), 100, time.Time{})
+	record, _, _ := beta.store.CreateInbound(ctx, state.RemoteInbound{ID: newRemoteID("notif"), Kind: "notify", FromMachine: "alpha", From: state.RemotePrincipal{PeerID: string(asker.id), DisplayName: asker.name, Circle: "proj"}, ToPeerID: string(bob.id), Text: "gone", CreatedAt: time.Now().Unix()})
+	target.Status = proto.StatusOnline // as it was when the create was admitted
+	got, err := beta.h.dispatchRemote(ctx, record, target)
+	if err != nil || got.CloseReason != "not_delivered" {
+		t.Fatalf("dispatch to a dropped socket %+v %v", got, err)
+	}
+	if queued, _ := beta.store.ListDeliveries(ctx, string(bob.id), 100, time.Time{}); len(queued) != len(queuedBefore) {
+		t.Fatalf("queued a fallback: %d -> %d", len(queuedBefore), len(queued))
 	}
 }

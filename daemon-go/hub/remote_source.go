@@ -219,8 +219,11 @@ func (h *Hub) settleOutboundPush(ctx context.Context, row state.RemoteOutbound, 
 		return
 	}
 	if won && push {
-		row.State, row.CloseReason, row.Reply = state.RemoteSettled, reason, reply
-		h.deliverOutbound(ctx, row)
+		// Read the row back: a waiter may have switched it to pull since the
+		// caller's snapshot was taken.
+		if fresh, err := h.store.GetOutbound(ctx, row.ID); err == nil {
+			h.deliverOutbound(ctx, fresh)
+		}
 	}
 }
 
@@ -341,6 +344,11 @@ func (h *Hub) waitRemote(ctx context.Context, row state.RemoteOutbound, caller s
 	if caller != row.From.PeerID && caller != row.From.DisplayName {
 		return AskWaitResponse{}, routeErr(http.StatusForbidden, map[string]any{"error": "not_the_asker", "correlation_id": row.ID, "asker": row.From.DisplayName})
 	}
+	// Waiting flips the ask to pull first, as a local wait does, so a
+	// settlement pushed during the wait is not also pushed to the waiter.
+	if err := h.store.SetOutboundPull(ctx, row.ID); err != nil {
+		return AskWaitResponse{}, routeErr(http.StatusInternalServerError, err.Error())
+	}
 	deadline := time.Now().Add(timeout)
 	for row.State != state.RemoteSettled {
 		remaining := time.Until(deadline)
@@ -391,6 +399,8 @@ func (h *Hub) sendRemoteNotify(ctx context.Context, from state.RemotePrincipal, 
 	switch {
 	case err == nil && receipt.State == state.RemoteDelivered:
 		return id, "delivered", nil
+	case err == nil && receipt.CloseReason == "queued":
+		return id, "queued", nil
 	case err == nil:
 		return id, receipt.CloseReason, nil
 	case errors.Is(err, relay.ErrRelayDown) || (status >= 400 && status < 500):

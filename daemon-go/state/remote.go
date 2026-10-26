@@ -280,6 +280,13 @@ func (s *Store) SettleOutbound(ctx context.Context, id, closeReason string, repl
 	return changed(res, err)
 }
 
+// SetOutboundPull records that the asker reads the reply itself (it is
+// waiting), so no push is owed for it.
+func (s *Store) SetOutboundPull(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE remote_outbound SET reply_delivery = 'pull' WHERE id = ?`, id)
+	return err
+}
+
 // MarkOutboundDelivered records that the reply reached the asker.
 func (s *Store) MarkOutboundDelivered(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE remote_outbound SET delivered = 1 WHERE id = ?`, id)
