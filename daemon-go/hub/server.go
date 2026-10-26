@@ -86,6 +86,11 @@ type Hub struct {
 	// (matches Python when relay is not configured).
 	relay *RelayConfig
 
+	// remote joins this daemon to its owner's other machines through the
+	// relay (rfcs/cross-machine-circles.md), wired via WithRemote. nil →
+	// every address is local.
+	remote *remoteMesh
+
 	// relayStatus, when set (WithRelayStatus), returns the relay-client health
 	// sub-object for /health. It also drives lazy self-heal: main's closure calls
 	// the relay client's EnsureRunning before returning the snapshot. A plain func

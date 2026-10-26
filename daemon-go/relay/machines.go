@@ -42,6 +42,12 @@ func RemoteMachine(ctx context.Context) string {
 	return machine
 }
 
+// WithRemoteMachine marks ctx as a request from machine. The relay client
+// sets it for remote_request frames; in-process callers and tests may too.
+func WithRemoteMachine(ctx context.Context, machine string) context.Context {
+	return context.WithValue(ctx, remoteMachineKey{}, machine)
+}
+
 // MachineRequest sends one request to another machine and waits for its
 // answer. A transport error after the frame left means the outcome is
 // unknown; ErrRelayDown means it was never sent.
@@ -161,7 +167,7 @@ func (c *Client) serveRemote(ctx context.Context, session *relaySession, msg map
 		return
 	}
 	body, _ := base64.StdEncoding.DecodeString(stringField(msg, "body"))
-	reqCtx, cancel := context.WithDeadline(context.WithValue(ctx, remoteMachineKey{}, stringField(msg, "from_machine")), deadline)
+	reqCtx, cancel := context.WithDeadline(WithRemoteMachine(ctx, stringField(msg, "from_machine")), deadline)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, stringField(msg, "method"), "http://remote"+requestPath(msg), bytes.NewReader(body))
 	if err != nil {

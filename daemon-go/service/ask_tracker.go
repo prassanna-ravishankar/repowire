@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"sort"
 	"sync"
@@ -112,6 +113,33 @@ type AskTracker struct {
 	quiescing     map[proto.PeerID]struct{}
 	answerWaiters map[string]chan Answer
 	onRegister    func(cid string, from, to proto.PeerID)
+	closeGuard    func(ask *Ask, reason string) error
+}
+
+// SetCloseGuard installs a check every terminal transition runs before the
+// ask is marked closed: Close, CloseInboundForPeer, ForgetPeer and
+// EvictExpired. A guard error keeps the ask open (Close reports false; the
+// bulk paths skip it), so a result that must be made durable first is never
+// lost by closing ahead of the write. It runs under the tracker's lock and
+// must not call back into the tracker.
+func (t *AskTracker) SetCloseGuard(fn func(ask *Ask, reason string) error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.closeGuard = fn
+}
+
+// guardLocked reports whether ask may close with reason. Caller holds t.mu.
+func (t *AskTracker) guardLocked(ask *Ask, reason string) bool {
+	if ask.Closed || t.closeGuard == nil {
+		return true
+	}
+	snapshot := ask.clone()
+	snapshot.CloseReason = reason
+	if err := t.closeGuard(snapshot, reason); err != nil {
+		log.Printf("ask %s: close %s held open: %v", ask.CorrelationID, reason, err)
+		return false
+	}
+	return true
 }
 
 // SetOnRegister installs a callback run once for each newly registered ask
@@ -161,6 +189,9 @@ type RegisterAskParams struct {
 	ParentID              *string
 	Question              map[string]any
 	ReplyDelivery         string // "" defaults to "push"
+	// CreatedAt keeps a rehydrated ask's original age (zero means now), so a
+	// restart does not reset its TTL.
+	CreatedAt time.Time
 	// SkipHistory keeps the ask out of the OnRegister callback (the durable
 	// prior-ask counts): ask_many children, /query and blocking questions write
 	// no ledger "created" stage, so counting them live would make the counts
@@ -192,6 +223,10 @@ func (t *AskTracker) Register(ctx context.Context, p RegisterAskParams) (string,
 	if delivery == "" {
 		delivery = "push"
 	}
+	created := p.CreatedAt.UTC()
+	if p.CreatedAt.IsZero() {
+		created = time.Now().UTC()
+	}
 	t.asks[cid] = &Ask{
 		CorrelationID:         cid,
 		FromPeerID:            p.FromPeerID,
@@ -205,7 +240,7 @@ func (t *AskTracker) Register(ctx context.Context, p RegisterAskParams) (string,
 		ParentID:              p.ParentID,
 		Question:              p.Question,
 		ReplyDelivery:         delivery,
-		CreatedAt:             time.Now().UTC(),
+		CreatedAt:             created,
 	}
 	if t.onRegister != nil && !p.SkipHistory {
 		t.onRegister(cid, p.FromPeerID, p.ToPeerID)
@@ -258,7 +293,7 @@ func (t *AskTracker) Close(ctx context.Context, cid, reason string) (*Ask, bool)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	ask, ok := t.asks[cid]
-	if !ok || ask.Closed {
+	if !ok || ask.Closed || !t.guardLocked(ask, reason) {
 		return nil, false
 	}
 	ask.Closed = true
@@ -697,7 +732,7 @@ func (t *AskTracker) CloseInboundForPeer(id proto.PeerID, reason string) []Close
 	defer t.mu.Unlock()
 	var closed []ClosedInboundAsk
 	for cid, ask := range t.asks {
-		if ask.ToPeerID != id || ask.Closed {
+		if ask.ToPeerID != id || ask.Closed || !t.guardLocked(ask, reason) {
 			continue
 		}
 		ask.Closed = true
@@ -720,7 +755,7 @@ func (t *AskTracker) ForgetPeer(ctx context.Context, id proto.PeerID) int {
 	defer t.mu.Unlock()
 	var doomed []string
 	for cid, ask := range t.asks {
-		if ask.ToPeerID == id || ask.FromPeerID == id {
+		if (ask.ToPeerID == id || ask.FromPeerID == id) && t.guardLocked(ask, "evicted") {
 			doomed = append(doomed, cid)
 		}
 	}
@@ -746,7 +781,7 @@ func (t *AskTracker) EvictExpired(ctx context.Context, includeStashed bool) int 
 	defer t.mu.Unlock()
 	var expired []string
 	for cid, ask := range t.asks {
-		if ask.CreatedAt.Before(cutoff) && (includeStashed || ask.PendingReply == nil) {
+		if ask.CreatedAt.Before(cutoff) && (includeStashed || ask.PendingReply == nil) && t.guardLocked(ask, "evicted") {
 			expired = append(expired, cid)
 		}
 	}

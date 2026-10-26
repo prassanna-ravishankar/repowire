@@ -77,7 +77,6 @@ func (s *Store) StoreEpoch(ctx context.Context) (string, error) {
 
 const inboundColumns = `id, kind, from_machine, from_peer_id, from_name, from_circle, to_peer_id, text, created_at, state, close_reason, reply, settled_at`
 
-
 func scanInbound(row rowScanner) (RemoteInbound, error) {
 	var r RemoteInbound
 	var reply sql.NullString

@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -276,7 +277,7 @@ func registerMCPTools(srv *mcp.Server, h *Hub, delivery *service.PeerDelivery, c
 		Name:        "broadcast",
 		Description: "Broadcast only an announcement that materially affects every eligible peer in the caller's circle.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args mcpBroadcastArgs) (*mcp.CallToolResult, any, error) {
-		res, err := mcpBroadcast(ctx, delivery, args, callerIdentity(req))
+		res, err := h.mcpBroadcast(ctx, delivery, args, callerIdentity(req))
 		return res, nil, err
 	})
 }
@@ -331,7 +332,30 @@ func (h *Hub) mcpListPeers(ctx context.Context, args mcpListPeersArgs, caller st
 			return string(p.Provenance.Normalized().Source) == args.Source
 		})
 	}
-	return textResult(h.mcpPeerTSV(peers))
+	text := h.mcpPeerTSV(peers)
+	// Peers on the owner's other machines share only the caller's own shared
+	// circle; "*" and other circles stay local.
+	if h.remote != nil && me != nil && effectiveCircle == me.Circle && proto.SharedCircle(me.Circle) && !me.Role.BypassesCircles() && args.Source == "" {
+		_, from, _ := h.remoteCaller(caller)
+		text += remotePeerTSV(h.discoverRemote(ctx, from))
+	}
+	return textResult(text)
+}
+
+// remotePeerTSV renders remote peers in mcpPeerTSV's columns, addressed as
+// name@machine and peer_id@machine, then a partial line when discovery could
+// not include every machine.
+func remotePeerTSV(listing remoteListing) string {
+	var b strings.Builder
+	for _, row := range listing.rows {
+		p := row.peer
+		fmt.Fprintf(&b, "\n%s@%s\t%s@%s\t%s\t%s\tagent\t%s\t\t%s\t%s\t%s\t\t\t\tremote\t\ttrue\t\t",
+			p.PeerID, row.machine, p.DisplayName, row.machine, p.Project, p.Circle, p.Status, row.machine, p.Description, p.Backend)
+	}
+	if len(listing.partial) > 0 {
+		b.WriteString("\n# partial: " + strings.Join(listing.partial, ", "))
+	}
+	return b.String()
 }
 
 // mcpPeerTSV appends the provenance columns after the historical thirteen so
@@ -368,6 +392,18 @@ func (h *Hub) mcpNotifyPeer(ctx context.Context, delivery *service.PeerDelivery,
 	}
 	if delivery == nil {
 		return nil, fmt.Errorf("notify_peer is not wired (no delivery service configured)")
+	}
+	if name, machine, err := h.remoteAddress(ctx, args.PeerName); err == nil {
+		if len(args.Attachments) > 0 {
+			return nil, fmt.Errorf("cross-machine notifies carry text only")
+		}
+		id, state, err := h.remoteNotify(ctx, fromPeer, name, machine, args.Message)
+		if err != nil {
+			return nil, fmt.Errorf("notify failed: %w", err)
+		}
+		return textResult(fmt.Sprintf("%s delivery_state=%s", id, state)), nil
+	} else if !errors.Is(err, errNotRemote) {
+		return nil, err
 	}
 	params := service.NotifyParams{
 		FromPeer:    fromPeer,
@@ -420,8 +456,9 @@ func (h *Hub) mcpSendCircle(caller, requested string) *string {
 	return nil
 }
 
-// mcpBroadcast dispatches to service.PeerDelivery.Broadcast.
-func mcpBroadcast(ctx context.Context, delivery *service.PeerDelivery, args mcpBroadcastArgs, fromPeer string) (*mcp.CallToolResult, error) {
+// mcpBroadcast dispatches to service.PeerDelivery.Broadcast, then to peers
+// in the caller's shared circle on the owner's other machines.
+func (h *Hub) mcpBroadcast(ctx context.Context, delivery *service.PeerDelivery, args mcpBroadcastArgs, fromPeer string) (*mcp.CallToolResult, error) {
 	if args.Message == "" {
 		return nil, fmt.Errorf("message is required")
 	}
@@ -429,5 +466,11 @@ func mcpBroadcast(ctx context.Context, delivery *service.PeerDelivery, args mcpB
 		return nil, fmt.Errorf("broadcast is not wired (no delivery service configured)")
 	}
 	sent, failed := delivery.Broadcast(ctx, fromPeer, args.Message, nil, false)
-	return textResult(fmt.Sprintf("sent=%d failed=%d", len(sent), len(failed))), nil
+	text := fmt.Sprintf("sent=%d failed=%d", len(sent), len(failed))
+	if h.remote != nil {
+		if _, from, err := h.remoteCaller(fromPeer); err == nil {
+			text += h.broadcastRemote(ctx, from, args.Message)
+		}
+	}
+	return textResult(text), nil
 }
