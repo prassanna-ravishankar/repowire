@@ -691,23 +691,12 @@ func (s *Server) relayWebSocket(w http.ResponseWriter, r *http.Request) {
 		if err := wsjson.Read(ctx, conn, &msg); err != nil {
 			return
 		}
+		// Daemons never talk to each other through the relay. Retired
+		// relay_query/notify/broadcast/response frames are dropped here.
 		switch stringValue(msg["type"]) {
 		case "pong":
 		case "http_response", "http_stream_start", "http_stream_chunk", "http_stream_end":
 			s.deliverPending(msg)
-		case "relay_broadcast":
-			msg["source_daemon_id"] = daemonID
-			for _, target := range s.allDaemons(key.UserID) {
-				if target != daemon {
-					_ = target.write(ctx, msg)
-				}
-			}
-		case "relay_query", "relay_notify", "relay_response":
-			target := s.daemon(key.UserID, stringValue(msg["target_daemon_id"]))
-			if target != nil {
-				msg["source_daemon_id"] = daemonID
-				_ = target.write(ctx, msg)
-			}
 		}
 	}
 }

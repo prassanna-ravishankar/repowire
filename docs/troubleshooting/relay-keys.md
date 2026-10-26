@@ -17,7 +17,7 @@ The dashboard cookie tied to the old key is invalidated. Anyone with a stale das
 
 If you have reason to believe the key was exposed (committed to a public repo, pasted in a screenshot), rotate immediately. Until you do, anyone with the key can reach your local daemon over the relay tunnel.
 
-The relay only ever sees the encrypted tunnel; agent traffic between daemons rides through it. But the dashboard tunnel exposes your local HTTP API to anyone authenticated with the key.
+The relay terminates TLS and reads the tunneled HTTP requests and responses it routes. It does not carry traffic between daemons. The dashboard tunnel exposes your local HTTP API to anyone authenticated with the key, on every machine connected with it.
 
 ## Self-hosted relay
 

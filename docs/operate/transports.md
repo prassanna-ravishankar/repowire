@@ -61,7 +61,7 @@ same blocking-question path as the dashboard/human surfaces.
 
 ## Relay transport
 
-Relay is not required for local routing. It tunnels traffic between a local daemon and the hosted or self-hosted relay for remote dashboard and cross-machine access.
+Relay is not required for local routing. It tunnels traffic between a local daemon and the hosted or self-hosted relay for remote dashboard and relay MCP access. It does not route messages between daemons on different machines.
 
 ## Related
 

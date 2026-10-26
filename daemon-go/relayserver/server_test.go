@@ -35,7 +35,7 @@ func connectDaemonAs(t *testing.T, serverURL, key, daemonID string) *websocket.C
 	return conn
 }
 
-func TestCrossDaemonRoundTrip(t *testing.T) {
+func TestDaemonFramesAreNotForwardedBetweenDaemons(t *testing.T) {
 	server := httptest.NewServer(New("").Handler())
 	t.Cleanup(server.Close)
 	key := "rw_test-cross-daemon-key"
@@ -44,29 +44,18 @@ func TestCrossDaemonRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := wsjson.Write(ctx, first, map[string]any{
-		"type": "relay_query", "target_daemon_id": "second", "correlation_id": "cid-1",
-	}); err != nil {
-		t.Fatal(err)
+	for _, frameType := range []string{"relay_query", "relay_notify", "relay_broadcast", "relay_response"} {
+		if err := wsjson.Write(ctx, first, map[string]any{
+			"type": frameType, "target_daemon_id": "second", "correlation_id": "cid-1",
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	var query map[string]any
-	if err := wsjson.Read(ctx, second, &query); err != nil {
-		t.Fatal(err)
-	}
-	if query["source_daemon_id"] != "first" {
-		t.Fatalf("forwarded query = %v", query)
-	}
-	if err := wsjson.Write(ctx, second, map[string]any{
-		"type": "relay_response", "target_daemon_id": "first", "correlation_id": "cid-1", "status": 200,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var response map[string]any
-	if err := wsjson.Read(ctx, first, &response); err != nil {
-		t.Fatal(err)
-	}
-	if response["source_daemon_id"] != "second" || response["correlation_id"] != "cid-1" {
-		t.Fatalf("forwarded response = %v", response)
+	readCtx, readCancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer readCancel()
+	var frame map[string]any
+	if err := wsjson.Read(readCtx, second, &frame); err == nil {
+		t.Fatalf("relay forwarded a daemon frame to another daemon: %v", frame)
 	}
 }
 

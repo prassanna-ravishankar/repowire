@@ -13,7 +13,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -362,8 +361,6 @@ func (c *Client) handleMessage(ctx context.Context, session *relaySession, msg m
 		c.startHTTPStream(ctx, session, msg)
 	case "http_stream_cancel":
 		session.cancelStream(stringField(msg, "request_id"))
-	case "relay_query", "relay_notify", "relay_broadcast":
-		c.handleRelayMessage(ctx, session, msg)
 	default:
 		// Unknown/opaque — ignore (Python logs at debug).
 	}
@@ -528,54 +525,4 @@ func copyRequestHeaders(dst http.Header, raw any) {
 func stringField(msg map[string]any, key string) string {
 	value, _ := msg[key].(string)
 	return value
-}
-
-// handleRelayMessage forwards a cross-daemon relay_query/notify/broadcast to the
-// matching local endpoint and returns a relay_response frame.
-func (c *Client) handleRelayMessage(ctx context.Context, session *relaySession, msg map[string]any) {
-	t, _ := msg["type"].(string)
-	corr, _ := msg["correlation_id"].(string)
-	src, _ := msg["source_daemon_id"].(string)
-	endpoint := map[string]string{
-		"relay_query":     "/query",
-		"relay_notify":    "/notify",
-		"relay_broadcast": "/broadcast",
-	}[t]
-
-	payload, _ := msg["payload"].(map[string]any)
-	pb, _ := json.Marshal(payload)
-
-	status := http.StatusBadGateway
-	var respBody any = map[string]any{}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.localBaseURL+endpoint, bytes.NewReader(pb))
-	if err == nil {
-		req.Header.Set("Content-Type", "application/json")
-		c.authorize(req)
-		resp, derr := c.httpc.Do(req)
-		if derr != nil {
-			c.recordErr(derr)
-		} else {
-			defer resp.Body.Close()
-			status = resp.StatusCode
-			raw, _ := io.ReadAll(resp.Body)
-			if strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
-				var j any
-				if json.Unmarshal(raw, &j) == nil {
-					respBody = j
-				} else {
-					respBody = map[string]any{"text": string(raw)}
-				}
-			} else {
-				respBody = map[string]any{"text": string(raw)}
-			}
-		}
-	}
-	_ = session.write(ctx, map[string]any{
-		"type":             "relay_response",
-		"correlation_id":   corr,
-		"source_daemon_id": src,
-		"target_daemon_id": src,
-		"status":           status,
-		"body":             respBody,
-	})
 }

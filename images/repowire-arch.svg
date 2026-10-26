@@ -71,7 +71,7 @@
   <text x="862" y="444" class="label eyebrow orange">OPTIONAL REMOTE PATH</text>
   <text x="862" y="492" class="label title">Hosted relay</text>
   <text x="862" y="532" class="label body">remote dashboard</text>
-  <text x="862" y="568" class="label body">cross-machine bridge</text>
+  <text x="862" y="568" class="label body">remote MCP</text>
 
   <path d="M370 360 H425" class="connector"/>
   <text x="380" y="341" class="mono small">WS</text>
