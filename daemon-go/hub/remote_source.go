@@ -473,7 +473,7 @@ func (h *Hub) discoverRemote(ctx context.Context, from state.RemotePrincipal) re
 func (h *Hub) broadcastRemote(ctx context.Context, from state.RemotePrincipal, text string) string {
 	listing := h.discoverRemote(ctx, from)
 	var mu sync.Mutex
-	var sent, failed, uncertain []string
+	var sent, queued, failed, uncertain []string
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, remoteCheckBatch)
 	for _, row := range listing.rows {
@@ -493,6 +493,8 @@ func (h *Hub) broadcastRemote(ctx context.Context, from state.RemotePrincipal, t
 				failed = append(failed, name)
 			case outcome == "delivered":
 				sent = append(sent, name)
+			case outcome == "queued":
+				queued = append(queued, name)
 			case outcome == "uncertain":
 				uncertain = append(uncertain, name)
 			default:
@@ -501,11 +503,11 @@ func (h *Hub) broadcastRemote(ctx context.Context, from state.RemotePrincipal, t
 		}()
 	}
 	wg.Wait()
-	out := fmt.Sprintf(" remote_sent=%d remote_failed=%d remote_uncertain=%d", len(sent), len(failed), len(uncertain))
+	out := fmt.Sprintf(" remote_sent=%d remote_queued=%d remote_failed=%d remote_uncertain=%d", len(sent), len(queued), len(failed), len(uncertain))
 	for _, group := range []struct {
 		label string
 		names []string
-	}{{"failed", failed}, {"uncertain", uncertain}} {
+	}{{"queued", queued}, {"failed", failed}, {"uncertain", uncertain}} {
 		if len(group.names) > 0 {
 			sort.Strings(group.names)
 			out += fmt.Sprintf(" %s_targets=%s", group.label, strings.Join(group.names, ","))

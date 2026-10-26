@@ -429,6 +429,13 @@ func TestRemoteDiscoveryNotifyAndBroadcast(t *testing.T) {
 		t.Fatalf("broadcast %v %v", mcpText(t, result), err)
 	}
 	bob.next(t, "all hands")
+
+	// A busy peer is held for its next turn: queued, not failed.
+	_ = beta.h.reg.UpdateStatus(context.Background(), bob.id, proto.StatusBusy)
+	result, err = alpha.h.mcpBroadcast(context.Background(), alpha.h.ask.delivery, mcpBroadcastArgs{Message: "busy hands"}, string(asker.id))
+	if text := mcpText(t, result); err != nil || !strings.Contains(text, "remote_queued=1 remote_failed=0") || !strings.Contains(text, "queued_targets="+bob.name+"@beta") {
+		t.Fatalf("busy broadcast %q %v", text, err)
+	}
 }
 
 func TestRemoteCreateIsIdempotentAndEpochBound(t *testing.T) {
