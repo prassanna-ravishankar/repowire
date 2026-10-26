@@ -53,6 +53,7 @@ type Client struct {
 	localBaseURL string // http://127.0.0.1:<port>
 	authToken    string
 	httpc        *http.Client
+	remote       http.Handler // the daemon's /remote API, called in-process
 
 	mu            sync.Mutex
 	running       bool
@@ -63,6 +64,7 @@ type Client struct {
 	lastErrorAt   *time.Time
 	cancel        context.CancelFunc
 	done          chan struct{}
+	session       *relaySession // the live connection, for outbound machine requests
 }
 
 type relaySession struct {
@@ -71,10 +73,14 @@ type relaySession struct {
 	writeMu   sync.Mutex
 	streamsMu sync.Mutex
 	streams   map[string]context.CancelFunc
+
+	machinesMu sync.Mutex
+	machines   map[string]chan machineResponse
+	remoteWork chan map[string]any
 }
 
 func newRelaySession(conn *websocket.Conn) *relaySession {
-	return &relaySession{conn: conn, streams: map[string]context.CancelFunc{}}
+	return &relaySession{conn: conn, streams: map[string]context.CancelFunc{}, machines: map[string]chan machineResponse{}, remoteWork: make(chan map[string]any, remoteQueue)}
 }
 
 func (s *relaySession) write(ctx context.Context, value any) error {
@@ -163,6 +169,13 @@ func NewClient(relayURL, apiKey, daemonID, localBaseURL string) *Client {
 		localBaseURL: strings.TrimRight(localBaseURL, "/"),
 		httpc:        &http.Client{Timeout: tunnelTimeout},
 	}
+}
+
+// WithRemoteHandler gives the client the daemon's /remote API. It is called
+// in-process for remote_request frames only, so no HTTP caller can reach it.
+func (c *Client) WithRemoteHandler(h http.Handler) *Client {
+	c.remote = h
+	return c
 }
 
 // WithAuthToken authenticates tunneled requests to a protected local daemon.
@@ -300,17 +313,23 @@ func (c *Client) connectAndServe(ctx context.Context) (bool, error) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	session := newRelaySession(conn)
 	defer session.cancelAll()
+	c.startRemoteWorkers(ctx, session)
 
 	now := time.Now().UTC()
 	c.mu.Lock()
 	c.connected = true
 	c.lastConnected = &now
+	c.session = session
 	c.mu.Unlock()
 	log.Printf("relay: connected to %s", c.relayURL)
 	defer func() {
 		c.mu.Lock()
 		c.connected = false
+		if c.session == session {
+			c.session = nil
+		}
 		c.mu.Unlock()
+		session.failMachines()
 	}()
 
 	// WS-level keepalive: the relay does not ping the daemon, so we ping it. A
@@ -361,6 +380,10 @@ func (c *Client) handleMessage(ctx context.Context, session *relaySession, msg m
 		c.startHTTPStream(ctx, session, msg)
 	case "http_stream_cancel":
 		session.cancelStream(stringField(msg, "request_id"))
+	case "machine_response":
+		session.deliverMachine(msg)
+	case "remote_request":
+		c.admitRemote(ctx, session, msg)
 	default:
 		// Unknown/opaque — ignore (Python logs at debug).
 	}
