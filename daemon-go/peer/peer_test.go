@@ -2,6 +2,7 @@ package peer
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -617,3 +618,16 @@ func TestSoftRetirementAllowsVerifiedRuntimeIdentityReclaim(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// remote: ids name peers on other machines; no local registrant may take one.
+func TestAllocate_RemotePeerIDIsReserved(t *testing.T) {
+	r, _ := newRegistry(t)
+	claim := proto.RemotePeerID("desktop", "repow-1-abc")
+	_, _, err := r.AllocateAndRegister(context.Background(), AllocateParams{
+		Circle: "alpha", Backend: proto.AgentClaudeCode, Path: ptr("/work/x"),
+		Machine: "m", Role: proto.RoleAgent, ClaimedPeerID: &claim,
+	})
+	if !errors.Is(err, ErrReservedPeerID) {
+		t.Fatalf("err = %v", err)
+	}
+}

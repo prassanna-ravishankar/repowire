@@ -187,12 +187,15 @@ func (s *Server) removePending(id string) {
 	s.mu.Unlock()
 }
 
-func (s *Server) deliverPending(msg map[string]any) {
+// deliverPending hands a response frame to the request waiting for it, but
+// only when it arrives on the connection the request was sent to: another
+// daemon must not be able to complete or overwrite someone else's request.
+func (s *Server) deliverPending(from *daemonConn, msg map[string]any) {
 	id, _ := msg["request_id"].(string)
 	s.mu.Lock()
 	pending := s.pending[id]
 	s.mu.Unlock()
-	if pending != nil {
+	if pending != nil && pending.conn == from {
 		select {
 		case pending.ch <- msg:
 		default:
@@ -675,6 +678,8 @@ func (s *Server) relayWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	conn.SetReadLimit(16 << 20)
 	daemon := &daemonConn{userID: key.UserID, daemonID: daemonID, connectedAt: time.Now().UTC(), ws: conn}
+	ctx := r.Context()
+	work := s.startMachineWorkers(ctx, daemon)
 	if old := s.registerConn(daemon); old != nil {
 		_ = old.ws.Close(websocket.StatusCode(4000), "Replaced by new connection")
 	}
@@ -685,18 +690,22 @@ func (s *Server) relayWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.Printf("relay server: daemon disconnected %s/%s", key.UserID, daemonID)
 	}()
 
-	ctx := r.Context()
 	for {
 		var msg map[string]any
 		if err := wsjson.Read(ctx, conn, &msg); err != nil {
 			return
 		}
-		// Daemons never talk to each other through the relay. Retired
-		// relay_query/notify/broadcast/response frames are dropped here.
+		// Daemons reach each other only through machine_request, which the
+		// relay re-issues under its own id (machines.go). Anything else a
+		// daemon sends is a response to the relay or is dropped.
 		switch stringValue(msg["type"]) {
 		case "pong":
 		case "http_response", "http_stream_start", "http_stream_chunk", "http_stream_end":
-			s.deliverPending(msg)
+			s.deliverPending(daemon, msg)
+		case "machine_list":
+			s.answerMachineList(ctx, daemon, msg)
+		case "machine_request":
+			work.admit(ctx, msg)
 		}
 	}
 }

@@ -14,6 +14,8 @@ The daemon persists operational state in SQLite. It uses lazy repair and debounc
 
 Schema version 16 adds the [human inbox](../concepts/human-inbox.md): `inbox_items` (one row per item, with read and replied state) and `inbox_pushes` (one outcome per item and surface), and `inbox_refs` (every surface message an item was rendered as, so a reply to any of them finds it). The inbox stages it writes to `delivery_traces` carry ids and error classes, never message text. A daemon refuses to open a database stamped with a newer schema, so once v16 has run, rolling back needs a v16-aware binary.
 
+Schema version 17 adds [cross-machine circles](../concepts/peers-and-circles.md#circles-across-machines): `daemon_meta` (the database's `store_epoch`, so another machine can tell a replaced database from one that lost nothing), `remote_inbound` and `remote_fences` (requests other machines sent here, and ids read before they arrived), and `remote_outbound` (requests sent from here, with their immutable text and sender). Rows are deleted 7 days after creation.
+
 ## Attachments
 
 Uploaded files are stored locally with retention cleanup. Dashboard uploads can be tunneled through relay, but the final readable path is local to the daemon machine.

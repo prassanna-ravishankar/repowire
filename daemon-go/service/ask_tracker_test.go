@@ -534,3 +534,22 @@ func TestOnRegisterSkipsRetriesAndSkipHistory(t *testing.T) {
 		t.Fatalf("callback saw %v, want ask-1 and ask-2 only", got)
 	}
 }
+
+// A close guard that fails keeps the ask open on every terminal path.
+func TestCloseGuardHoldsTheAskOpen(t *testing.T) {
+	ctx := context.Background()
+	tr := NewAskTracker(time.Millisecond)
+	tr.SetCloseGuard(func(a *Ask, reason string) error { return errors.New("disk full") })
+	for _, close := range []func(cid string){
+		func(cid string) { tr.Close(ctx, cid, "ack") },
+		func(string) { tr.CloseInboundForPeer("to", "evicted") },
+		func(string) { tr.ForgetPeer(ctx, "to") },
+		func(string) { time.Sleep(2 * time.Millisecond); tr.EvictExpired(ctx, true) },
+	} {
+		cid, _ := tr.Register(ctx, RegisterAskParams{FromPeerID: "from", ToPeerID: "to", Text: "q"})
+		close(cid)
+		if ask, ok := tr.Get(cid); !ok || ask.Closed {
+			t.Fatalf("ask %s closed past a failing guard: %+v", cid, ask)
+		}
+	}
+}
