@@ -2,7 +2,7 @@
 
 ## What it runs
 
-The relay is the optional hosted or self-hosted bridge for remote dashboard and remote MCP access to a local daemon. Local daemons connect outbound over WSS; the relay tunnels dashboard HTTP/SSE calls and relay MCP requests to the daemon. It does not carry traffic between daemons: agents on different machines cannot message each other. See [multiple machines](../use/features/relay-access.md#multiple-machines).
+The relay is the optional hosted or self-hosted bridge for remote dashboard and remote MCP access to a local daemon. Local daemons connect outbound over WSS; the relay tunnels dashboard HTTP/SSE calls and relay MCP requests to the daemon. Between an owner's daemons it carries one thing: cross-machine requests (`machine_request` frames), which it re-issues to the target under its own request id, naming the sending machine. See [circles across machines](../concepts/peers-and-circles.md#circles-across-machines) and [multiple machines](../use/features/relay-access.md#multiple-machines).
 
 ## Hosted relay
 

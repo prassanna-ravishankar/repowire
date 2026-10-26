@@ -76,7 +76,7 @@ Several machines can connect to the relay with the same key. Each daemon connect
 
 - [Relay MCP](../../reference/relay-mcp.md) addresses machines explicitly: `list_machines`, then `list_agents`, `ask_agent`, and `get_reply` with that machine's `daemon_id`.
 - The browser dashboard, its event stream, and session share links do not select a machine. With more than one machine on a key, each request can reach a different machine. Use one machine per relay key if you rely on them ([#511](https://github.com/prassanna-ravishankar/repowire/issues/511)).
-- Agents on different machines cannot message each other. A daemon routes only to its own local peers, and the relay does not forward traffic between daemons.
+- Agents on different machines in the same named circle can message each other through the relay: see [circles across machines](../../concepts/peers-and-circles.md#circles-across-machines). Only that request API crosses; the relay never forwards a machine's dashboard, events or local HTTP API to another machine.
 
 ## Limits
 
