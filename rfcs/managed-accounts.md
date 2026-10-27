@@ -1,7 +1,8 @@
 # Managed accounts
 
-Status: draft for Prass, 2026-10-27. Follows [managed-machine](managed-machine.md)
-and [managed in the mesh](managed-in-the-mesh.md). Nothing here is built
+Status: draft for Prass, 2026-10-27, revision 2 after Codex review. It follows
+[managed-machine](managed-machine.md) and
+[managed in the mesh](managed-in-the-mesh.md). Nothing here is built
 beyond the interim gate below.
 
 ## Problem
@@ -31,111 +32,182 @@ the Worker:
 - the Worker's callbacks to daemons.
 
 Only user ids in `REPOWIRE_MANAGED_USERS` or `REPOWIRE_ADMIN_USERS` pass it.
-Any other key gets 403 and never sees `managed`. This RFC replaces the list
-with accounts, but the check stays the only place where the answer is decided.
+Any other key gets 403 and never sees `managed`. This gates use of the
+feature, not knowledge of it: the `/managed` page shell is static and public.
+This RFC replaces the list with accounts, but the check stays the only place
+where the answer is decided.
 
 ## Decision
 
-### Accounts are separate from keys
+### Accounts, one linked namespace each
 
 - **Account.** `acct_<random>`, created by signing in with an identity
   provider. It holds a verified email, its status (`active`, `suspended`) and
   a Stripe customer id.
-- **Identity.** A row of `(provider, subject)` linked to one account. Several
-  providers may sign in to one account.
-- **Linked namespace.** A relay key namespace (`token-...`) that the account
-  has proven it holds, by pasting the key while signed in. Linking is how an
-  account's daemons and its managed agents meet in the mesh. A namespace links
-  to at most one account.
+- **Identity.** A row of `(provider, subject)` linked to one account. A second
+  provider is added only from a signed-in session. Two identities are never
+  merged because their verified emails match.
+- **Linked namespace.** At most one relay key namespace (`token-...`) per
+  account, and at most one account per namespace. The account proves it holds
+  the namespace by pasting the key while signed in, which is adequate proof
+  for a bearer capability. Linking is how an account's daemons and its managed
+  agents meet in the mesh.
 - **Session.** A random server-side session id in an `HttpOnly`, `Secure`,
-  `SameSite=Lax` cookie. Today's `rw_token` cookie carries the relay key
-  itself; account sessions never do.
+  `SameSite=Lax` cookie. It is rotated on every sign-in. Today's `rw_token`
+  cookie carries the relay key itself; account sessions never do.
 
-The owner on the Worker becomes the account id, not the namespace. That way:
-- **Rotation.** A leaked key can be revoked by unlinking it and linking a
-  fresh one, and the account's agents, runs and balance stay put. With
-  owner = namespace, rotating a key would orphan everything.
-- **Several keys.** An account may link several namespaces, for example one
-  per machine group. Its agents see the daemons of all of them.
+One namespace per account is a deliberate limit. Daemon ids are unique only
+within a namespace: the relay keys connections by `userID/daemonID`. If two
+namespaces linked to one account each had a `laptop`, the Worker could not
+tell them apart. Both directions identify a machine by bare id, and the
+Gateway authorizes remote asks by `from_machine` and `from_peer`. Allowing
+several namespaces needs account-scoped machine ids carried in both
+directions; that waits until someone needs it.
 
-The Worker treats the owner as an opaque string, so nothing changes there.
-The relay maps between the two:
+**The Worker owner stays the namespace.** The Worker addresses agents,
+workspaces and the Gateway by owner (`scopedName(owner, id)` and
+`GATEWAYS.getByName(owner)`), and each agent persists its owner. Changing the
+owner therefore means moving storage. With one namespace per account, the
+account does not need to be the owner: it is the authorization and billing
+record above it. The mesh paths stay as built, with no mapping table, and
+`managedFor` becomes:
 
-| Path | Today | With accounts |
-| --- | --- | --- |
-| Browser and API to Worker | owner = caller's namespace | owner = session's account |
-| Daemon `machine_request` to `managed` | owner = daemon's namespace | owner = account linked to the daemon's namespace |
-| Worker callback `/machines`, `/machine-request` | daemons of the owner namespace | daemons of every namespace linked to the account |
+```
+namespace -> link -> account; require account.status == active
+```
 
-`managedFor` becomes: resolve the caller (a session, or a namespace through
-its link) to an account, then require `active`. Money is not checked here.
-The Worker checks it at admission, below.
+The caller is either a session, whose account resolves to its linked
+namespace and then to the owner, or a namespace directly (a daemon, an
+OAuth grant, a Worker callback), which resolves to an account through its
+link. Money is not checked here; the Worker checks it at admission.
+
+**Changing the link (key rotation)** is allowed only when the owner is
+quiet. The Worker must report that the owner has no unsettled runs, no
+`remote_inbound` or `remote_outbound` rows still open, and no pending
+deliveries; otherwise the relay answers 409. Even so, a rotation moves the
+account to a new namespace, which is a new owner with empty storage. Until
+storage identity is separate from the owner, rotation means starting over:
+the portal says so before it acts. Unlinking:
+- removes managed access for that namespace;
+- closes the account's open SSE streams;
+- makes the namespace's OAuth grants lose `managed` on their next call.
+
+Unlinking does not revoke the key itself. Anonymous relay features (daemon
+tunnel, dashboard, shares) still accept it, and the portal says this.
 
 ### Sign-in
 
-The relay acts as an OAuth/OIDC client for GitHub and Google, using
-`golang.org/x/oauth2`, already in go.mod. It needs no new vendor. Email
-comes only from the provider's verified address. Recommendation: GitHub
-first, since the users are developers, then Google.
+The relay acts as an OAuth/OIDC client for GitHub, and later Google, using
+`golang.org/x/oauth2`, already in go.mod. It needs no new vendor. Each
+authorization request carries:
+- single-use `state`, stored server-side, bound to a pre-auth browser cookie
+  and to its purpose (sign in, or add an identity to the signed-in account);
+- PKCE;
+- for OIDC providers, `nonce`, issuer and audience validation.
 
-Magic-link email is left out: it needs an email sender and its
-deliverability. It can be added later as one more identity provider.
+The callback refuses state that is missing, reused, from another browser or
+for another purpose. This stops login CSRF, where an attacker's finished
+callback signs a victim into the attacker's account and the victim then links
+their key there. Mutations (link, unlink, top-up) need the session plus the
+existing same-origin check.
 
-### Billing: prepaid credits, Worker-side ledger
+Email comes only from the provider's verified address. Magic-link email is
+left out for now; it can be added later as one more provider.
 
-Money comes in at the relay and is spent on the Worker.
+### Billing: prepaid credits, reserved at admission
 
-- **Top-up.** The portal opens a Stripe Checkout session in `payment` mode for
-  a fixed or custom amount, with the account id in `client_reference_id` and
-  metadata. Stripe sends the webhook to `POST /api/v1/billing/stripe`, where
-  the relay verifies the `Stripe-Signature` header with the endpoint secret.
-- **Grant.** Credit is granted only for a paid session:
+Money comes in at the relay and is spent on the Worker. The Worker's owner
+`Gateway` holds the authoritative balance.
+
+**Purchase.**
+1. The relay creates a purchase row in SQLite: `pur_<random>`, the account,
+   the amount and currency the server chose, and state `created`.
+2. It opens a Stripe Checkout session in `payment` mode with
+   `client_reference_id = pur_...` and stores the session id on the row.
+
+The browser never chooses the account or the credit amount.
+
+**Grant.**
+- Stripe calls `POST /api/v1/billing/stripe`. The relay verifies
+  `Stripe-Signature` and acts on a paid session only:
   - `checkout.session.completed` with `payment_status` `paid`;
   - or `checkout.session.async_payment_succeeded`.
+- It loads the purchase by session id and checks the paid `amount_total` and
+  `currency` against the row.
+- The monetary key is the purchase id, not the Stripe event id. Stripe can
+  send duplicates as distinct Event objects, so the event id only goes in the
+  audit log.
+- The relay calls the Worker
+  `POST /admin/owners/{namespace}/credits {id: pur_..., usd}`.
+- The Gateway inserts the credit row and updates the balance in one
+  `transactionSync`. The same id with the same amount answers its earlier
+  receipt; with a different amount it answers 409.
+- The relay returns 2xx to Stripe only after the Worker answers. Any failure
+  is non-2xx, so Stripe retries and the same purchase id keeps the retry safe.
+  The relay's `created`/`granted` state is bookkeeping for the portal, not
+  the dedupe.
 
-  Stripe documents that `completed` can arrive before an asynchronous payment
-  succeeds. The relay forwards the grant to the Worker as
-  `POST /admin/owners/{account}/credits {id: <stripe event id>, usd}`.
-  The grant is idempotent on the event id, because Stripe retries webhooks.
-- **Spend.** The owner `Gateway` already records every op's cost in its
-  ledger. Admission adds one rule: refuse a new submission when
-  `granted - spent <= 0`, with the reason `credits_exhausted`. Runs already
-  in flight finish, so a balance can dip below zero by at most one run's
-  remaining steps (`stepsPerRun`). The next top-up covers it.
-- **Price.** The amount charged is cost × a markup, set in `prices.ts` next
-  to the cost tables, so the ledger shows both. The portal shows charged
-  amounts.
+**Spend: reserve, then settle.** Admission checks the reported spend today
+(`Gateway.admit`), and model cost lands only when a run settles. With a small
+balance, many concurrent submissions across agents would all pass. Credits
+therefore move to reservations:
+- **Exposure cap.** Every operation has a maximum exposure E: a dollar
+  ceiling derived from `stepsPerRun` × the most expensive step, plus the
+  exec-time cap. The runtime also enforces E directly: an operation whose
+  running cost reaches E is aborted, the same way the step limit aborts
+  today. So E is a bound, not an estimate.
+- **Reserve.** Admission reserves E, atomically in the Gateway's
+  `transactionSync`, only if `granted - settled - reserved >= E`. Otherwise
+  the submission is refused with `credits_exhausted`. The reservation is
+  keyed by operation id, so a retried submit reserves once.
+- **Release.** Settlement replaces the reservation with the actual cost. A
+  withdrawn or fenced operation releases its reservation, and recovery
+  settles uncertain dispatch through the paths built in phase 2, before any
+  reservation is released.
+- **Concurrency.** A cap on concurrent operations per owner bounds how much
+  can be reserved at once.
+
+Spend can never exceed the credits granted. The worst case is an account
+whose remaining balance sits idle in reservations until their runs settle.
+
+**Price.** The amount charged is cost × a markup, set in `prices.ts` next to
+the cost tables, so the ledger shows both. The portal shows charged amounts.
 
 Why prepaid rather than a subscription with metered usage:
-- No debt to collect. The Worker already refuses before a run, so this adds
-  one comparison and no invoicing logic.
-- A stolen session can spend only the balance.
-- A subscription or monthly plan can be added later as a recurring grant
-  through the same credits endpoint.
+- No debt to collect, and no invoicing logic.
+- A stolen session can spend at most the balance.
+- A monthly plan can be added later as a recurring grant through the same
+  credits endpoint.
 
-Stripe's own credit products (billing credits, Metronome commits) would move
-the balance off the Worker, which then could not refuse synchronously. Not
-recommended.
+Stripe's own credit products would move the balance off the Worker, which
+then could not reserve synchronously.
 
 ### Limits
 
 - **Per account.** The daily, monthly and per-agent caps stay as abuse
-  guards, read from the account's plan rather than hard-coded.
-- **Global ceiling.** A Worker-wide daily spend total, kept in the existing
-  `registry` Durable Object and checked once per admission. Over the ceiling,
-  new runs are refused with `service_capacity` and the admin is alerted. This
-  covers a pricing bug or a compromised account.
-- **Optional free credit.** A small first grant for new accounts (for
-  example $1), gated on a provider account older than N days. Off by default.
+  guards, read from the account's plan, and are checked against settled plus
+  reserved spend.
+- **Global ceiling.** A Worker-wide daily total of settled plus reserved
+  spend, kept in the `registry` Durable Object. Admission reserves E there as
+  well as in the Gateway; settlement and release update both, keyed by
+  operation id. Over the ceiling, new runs are refused with
+  `service_capacity` and the admin is alerted. The ceiling ships with
+  billing, not after it.
+- **Comps.** A free account gets an admin credit grant (`id: comp_...`), not a
+  bypass. Once credits are enforced, `REPOWIRE_MANAGED_USERS` is removed;
+  until then it remains the beta gate.
 
 ### Storage and deployment
 
-The accounts tables live in the relay's SQLite on the existing PVC, in the
-same database as OAuth: `accounts`, `identities`, `namespace_links`,
-`sessions` and `billing_events` (the webhook dedupe log). The chart already
-pins `replicaCount: 1` with `Recreate` for OAuth, and the same constraint
-covers this. New secrets go in the `managed.secretName` Secret:
-- the GitHub and Google client id and secret;
+The accounts tables live in the relay's SQLite on a PVC: `accounts`,
+`identities`, `namespace_links`, `sessions`, `auth_states`, `purchases` and
+`billing_events` (an audit log only). The chart's single-replica, `Recreate`
+and PVC requirements currently hang off `oauth.enabled`. They move to a
+shared `persistence` setting, which both OAuth and accounts require, and the
+chart fails if accounts are on without it.
+
+New secrets go in the `managed.secretName` Secret:
+- the GitHub (and later Google) client id and secret;
 - the Stripe secret key and webhook secret.
 
 The relay stays on Kubernetes and the agents on Cloudflare. The Worker keeps
@@ -144,38 +216,37 @@ trusting only the relay's control token.
 ### Portal
 
 The pages are served by the relay from the existing web export:
-- `/account`: sign in, email, linked keys (link, unlink, rotate) and status.
-- `/account/billing`: balance, top-up and a history view of the ledger
-  (per agent, per day).
+- `/account`: sign in, email, the linked key (link, unlink) and status.
+- `/account/billing`: balance, reserved amount, top-up, purchase history and
+  usage per agent per day.
 
 `/managed` requires an account session. `/dashboard` and the relay's daemon,
 MCP and share features keep working with anonymous keys, unchanged.
 
 ## Migration
 
-- `REPOWIRE_MANAGED_USERS` stays as the operator override: listed namespaces
-  pass `managedFor` without an account, for comps and testing. It can be
-  removed once you have an account.
-- Existing Worker owners (`token-...`) are moved to accounts by an admin route
-  that re-keys the owner, `POST /admin/owners/{from}/move {to}`. Today that is
-  only Prass's test owner, so recreating the agents instead is acceptable.
+None. Today's only Worker owner is Prass's test namespace. When accounts
+ship, Prass signs in and links that same key, and the owner is unchanged.
+There is no owner-move route: owner is part of Durable Object addressing, so
+moving one would need a coordinated export and import of agents, workspaces
+and the Gateway.
 
 ## Phases
 
-1. Accounts, GitHub sign-in, sessions, namespace linking, owner = account.
-   `managedFor` checks for an active account. While in beta, only accounts on
-   an invite list are active.
-2. Stripe top-ups, the credits endpoint, `credits_exhausted` admission and
-   the billing page.
-3. Global ceiling and per-plan caps.
-4. Google sign-in, optional free credit, recurring plans.
-
-Phase 1 alone closes the "who is this" gap. Phase 2 is the first point where
-users are charged.
+1. **Accounts.** GitHub sign-in with state, PKCE and session rotation; the
+   namespace link; the quiet-owner check for relinking; `managedFor` through
+   the link. While in beta, only accounts on an invite list are active.
+2. **Billing.** Purchases, the Stripe webhook, credits, reservation-based
+   admission with the exposure cap, the concurrency cap, the global ceiling,
+   comps, and the billing page. This is the first point where users are
+   charged, and every money guard ships in it.
+3. **Later.** Per-plan caps, Google sign-in, recurring plans, and several
+   namespaces per account with account-scoped machine ids.
 
 ## Out of scope, to decide before charging anyone
 
-- The merchant entity, terms of service, privacy policy and refund policy.
+- The merchant entity, terms of service, privacy policy and refund policy
+  (a refund removes unspent credit by a negative grant).
 - Tax (Stripe Tax can collect it, but registration is yours).
 - Data retention and deletion of an account's agents and transcripts.
 
