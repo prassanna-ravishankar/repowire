@@ -41,12 +41,20 @@ type daemonConn struct {
 	daemonID    string
 	connectedAt time.Time
 	ws          *websocket.Conn
-	writeMu     sync.Mutex
+	writeOnce   sync.Once
+	writeSlot   chan struct{}
 }
 
+// write serializes frames on the socket. Waiting for the slot honours ctx, so
+// a stuck writer cannot hold a caller past its deadline.
 func (c *daemonConn) write(ctx context.Context, value any) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	c.writeOnce.Do(func() { c.writeSlot = make(chan struct{}, 1) })
+	select {
+	case c.writeSlot <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-c.writeSlot }()
 	return wsjson.Write(ctx, c.ws, value)
 }
 
@@ -125,6 +133,10 @@ func (s *Server) registerConn(c *daemonConn) *daemonConn {
 	s.mu.Lock()
 	old := s.connections[key]
 	s.connections[key] = c
+	// Work sent to a replaced connection fails now, not at its deadline.
+	if old != nil && old != c {
+		s.failPendingLocked(old)
+	}
 	if s.users[c.userID] == nil {
 		s.users[c.userID] = map[string]*daemonConn{}
 	}
@@ -148,15 +160,7 @@ func (s *Server) unregisterConn(c *daemonConn) {
 	if len(s.users[c.userID]) == 0 {
 		delete(s.users, c.userID)
 	}
-	for id, pending := range s.pending {
-		if pending.conn == c {
-			delete(s.pending, id)
-			select {
-			case pending.ch <- map[string]any{"type": "daemon_disconnected"}:
-			default:
-			}
-		}
-	}
+	s.failPendingLocked(c)
 	s.events.publishDaemon(c.userID, c.view(false))
 	s.mu.Unlock()
 }
@@ -186,10 +190,29 @@ func (s *Server) allDaemons(userID string) []*daemonConn {
 	return out
 }
 
+// failPendingLocked ends every request waiting on c. Callers hold s.mu.
+func (s *Server) failPendingLocked(c *daemonConn) {
+	for id, pending := range s.pending {
+		if pending.conn == c {
+			delete(s.pending, id)
+			select {
+			case pending.ch <- map[string]any{"type": "daemon_disconnected"}:
+			default:
+			}
+		}
+	}
+}
+
+// addPending registers a request on conn. A conn that is no longer current
+// (replaced or gone between lookup and here) fails the request at once.
 func (s *Server) addPending(id string, conn *daemonConn) chan map[string]any {
 	ch := make(chan map[string]any, 16)
 	s.mu.Lock()
-	s.pending[id] = &pendingRequest{conn: conn, ch: ch}
+	if s.connections[connKey(conn.userID, conn.daemonID)] != conn {
+		ch <- map[string]any{"type": "daemon_disconnected"}
+	} else {
+		s.pending[id] = &pendingRequest{conn: conn, ch: ch}
+	}
 	s.mu.Unlock()
 	return ch
 }

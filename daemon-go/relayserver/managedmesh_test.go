@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -130,5 +131,69 @@ func TestMeshSlotsBoundEachOwnerAndTheRelay(t *testing.T) {
 	}
 	if q.take("fresh") {
 		t.Fatal("global cap not enforced")
+	}
+}
+
+// A target whose socket is held by another writer cannot keep a Worker
+// request, or its slot, past the deadline.
+func TestWorkerRequestDeadlineBoundsABlockedWrite(t *testing.T) {
+	f, _ := managedMesh(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	connectMachine(t, ctx, f, "beta", http.NotFoundHandler())
+	owner, _ := f.s.tokens.validate(f.key)
+	conn := f.s.daemon(owner.UserID, "beta")
+	conn.writeOnce.Do(func() { conn.writeSlot = make(chan struct{}, 1) })
+	conn.writeSlot <- struct{}{}
+	defer func() { <-conn.writeSlot }()
+
+	started := time.Now()
+	deadline := started.Add(300 * time.Millisecond).UnixMilli()
+	res, out := workerPost(t, f, "/machine-request", controlToken, owner.UserID, `{"machine":"beta","method":"POST","path":"/remote/ask","body":{},"deadline":`+strconv.FormatInt(deadline, 10)+`}`)
+	if res.StatusCode != http.StatusGatewayTimeout || time.Since(started) > 2*time.Second || res.Header.Get("X-Repowire-Relay") != "1" {
+		t.Fatalf("blocked write %d %s after %v", res.StatusCode, out, time.Since(started))
+	}
+	f.s.meshSlots.mu.Lock()
+	f.s.mu.Lock()
+	slots, pending := f.s.meshSlots.total, len(f.s.pending)
+	f.s.mu.Unlock()
+	f.s.meshSlots.mu.Unlock()
+	if slots != 0 || pending != 0 {
+		t.Fatalf("slot %d pending %d left behind", slots, pending)
+	}
+}
+
+// Replacing the target connection fails its in-flight requests at once.
+func TestWorkerRequestFailsWhenTheTargetIsReplaced(t *testing.T) {
+	f, _ := managedMesh(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	arrived := make(chan struct{}, 1)
+	connectMachine(t, ctx, f, "beta", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrived <- struct{}{}
+		<-r.Context().Done()
+	}))
+	owner, _ := f.s.tokens.validate(f.key)
+	done := make(chan *http.Response, 1)
+	go func() {
+		res, _ := workerPost(t, f, "/machine-request", controlToken, owner.UserID, `{"machine":"beta","method":"POST","path":"/remote/ask","body":{}}`)
+		done <- res
+	}()
+	<-arrived
+	started := time.Now()
+	connectMachine(t, ctx, f, "beta", http.NotFoundHandler())
+	select {
+	case res := <-done:
+		if res.StatusCode != http.StatusBadGateway || time.Since(started) > 3*time.Second {
+			t.Fatalf("replaced target %d after %v", res.StatusCode, time.Since(started))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("request outlived its replaced target")
+	}
+	f.s.meshSlots.mu.Lock()
+	total := f.s.meshSlots.total
+	f.s.meshSlots.mu.Unlock()
+	if total != 0 {
+		t.Fatalf("slot left behind: %d", total)
 	}
 }
