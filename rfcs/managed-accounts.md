@@ -1,6 +1,6 @@
 # Managed accounts
 
-Status: draft for Prass, 2026-10-27, revision 5 after four Codex reviews. It follows
+Status: design approved by Codex review (revision 5), 2026-10-27; awaiting Prass on the open questions. It follows
 [managed-machine](managed-machine.md) and
 [managed in the mesh](managed-in-the-mesh.md). Nothing here is built
 beyond the interim gate below.
