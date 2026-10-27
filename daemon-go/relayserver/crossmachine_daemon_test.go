@@ -55,10 +55,7 @@ func startRelayDaemon(t *testing.T, ctx context.Context, f *authFixture, id stri
 	client.WithRemoteHandler(h.RemoteHandler())
 	client.Start(ctx)
 	t.Cleanup(client.Stop)
-	deadline := time.Now().Add(3 * time.Second)
-	for !client.Status().Connected && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitForDaemon(t, f.http.URL, f.key, id)
 	return &relayDaemon{local: local, hub: h}
 }
 
