@@ -140,12 +140,26 @@ test('a step-limited run reads the same before and after its report lands', asyn
 test('requests are for the relay, and only reach agents on the managed machine', async () => {
   const { call, directory } = relay();
   assert.equal((await call('POST', '/requests', ask(9), 'daemon')).status, 403);
-  directory.addAgent({ id: 'a', workspace: null, created_by: 'daemon', home_machine: 'laptop' });
-  // home_machine is kept once set, so this agent now belongs to the laptop.
-  assert.equal((await call('POST', '/requests', ask(9))).status, 404);
+  // A daemon cannot claim a managed agent: ownership never changes, so the
+  // agent stays on managed and keeps answering the relay.
+  assert.ok('conflict' in (directory.addAgent({ id: 'a', workspace: null, created_by: 'daemon', home_machine: 'laptop' }) ?? {}));
+  assert.equal((await call('POST', '/requests', ask(9))).status, 202);
 });
 
 test('a daemon-created agent without a home is not on the managed machine', async () => {
   const { call } = relay('daemon');
   assert.equal((await call('POST', '/requests', ask(13))).status, 404);
+});
+
+test('a managed agent has a shared circle, editable here; a daemon agent has none to edit', async () => {
+  const { call } = relay();
+  const patch = (circle: unknown) => call('PATCH', '/agents/a', { circle });
+  assert.equal((await patch('default')).status, 422);
+  assert.equal((await patch('7')).status, 422);
+  const changed = await patch('research');
+  assert.equal(changed.status, 200);
+  assert.equal((await changed.json()).agent.circle, 'research');
+
+  const daemonOwned = relay('daemon');
+  assert.equal((await daemonOwned.call('PATCH', '/agents/a', { circle: 'research' })).status, 409);
 });

@@ -35,6 +35,7 @@ Errors are `{"error": "..."}`. Until `REPOWIRE_MANAGED_URL` and `REPOWIRE_MANAGE
 | `GET /api/v1/managed/me` | `{user_id, admin, managed}`. Works without the Worker. |
 | `GET /api/v1/managed/agents`, `POST /api/v1/managed/agents` | Proxied to the Worker. |
 | `GET /api/v1/managed/agents/{id}`, `DELETE /api/v1/managed/agents/{id}` | Proxied. `DELETE` retires the agent. |
+| `PATCH /api/v1/managed/agents/{id}` | Proxied. `{circle}` moves an agent on managed to another shared circle (**422** for a machine-local name such as `default`, `*`, a number or `window-N`). A daemon-owned agent answers **409**: its circle is its daemon peer's. `POST .../agents` also takes `circle`, which defaults to `managed`. An agent never changes owner: a create that would move it between managed and a daemon, or between daemons, answers **409**. |
 | `GET /api/v1/managed/agents/{id}/messages`, `POST .../messages` | Proxied. A retired agent answers **410**. |
 | `GET /api/v1/managed/agents/{id}/runs` | Proxied. |
 | `POST /api/v1/managed/agents/{id}/abort` | Proxied. |

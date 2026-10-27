@@ -12,6 +12,7 @@ import { LIMITS, type TokenUsage } from './prices';
 import { serial } from './serial';
 import { stepLimit, stepLimitReason } from './steps';
 import { Workspace, type ExecOutcome } from './workspace';
+import { DEFAULT_CIRCLE, sharedCircle } from './circles';
 export { Gateway, Registry, Workspace };
 
 interface Env {
@@ -357,15 +358,19 @@ async function createAgent(env: Env, caller: Caller, request: Request, input: Re
   const id = identifier(input.id, 'id');
   const workspace = input.workspace == null ? null : identifier(input.workspace, 'workspace');
   const displayName = typeof input.display_name === 'string' ? input.display_name.slice(0, 80) : null;
-  const result = await env.AGENTS.getByName(scopedName(owner, id)).spawn({ owner, id, workspace });
-  if (result.agent.workspace !== workspace) throw new HttpError(409, 'Agent already exists with a different workspace');
+  const circle = input.circle == null ? DEFAULT_CIRCLE : circleOf(input.circle);
   const directory = env.GATEWAYS.getByName(owner);
-  await directory.owner(owner);
-  await env.REGISTRY.getByName('registry').touch(owner);
   // A daemon-created agent is a peer on that daemon's mesh: its home.
   const daemon = caller.role === 'daemon';
   const homeMachine = daemon ? request.headers.get('X-Repowire-Machine')?.slice(0, 200) || null : null;
-  const agent = await directory.addAgent({ id, workspace, display_name: displayName, created_by: daemon ? 'daemon' : 'web', home_machine: homeMachine });
+  const known = await directory.agent(id);
+  if (known && (known.created_by === 'daemon') !== daemon) throw new HttpError(409, `Agent ${id} belongs to ${daemon ? 'managed' : 'a daemon'}`);
+  const result = await env.AGENTS.getByName(scopedName(owner, id)).spawn({ owner, id, workspace });
+  if (result.agent.workspace !== workspace) throw new HttpError(409, 'Agent already exists with a different workspace');
+  await directory.owner(owner);
+  await env.REGISTRY.getByName('registry').touch(owner);
+  const agent = await directory.addAgent({ id, workspace, display_name: displayName, created_by: daemon ? 'daemon' : 'web', home_machine: homeMachine, circle });
+  if (agent && 'conflict' in agent) throw new HttpError(409, String(agent.conflict));
   return json({ created: result.created, agent }, result.created ? 201 : 200);
 }
 
@@ -384,6 +389,13 @@ async function agentRoute(env: Env, caller: Caller, request: Request, id: string
       return json({ ...(await directory.agent(id)), busy: status.busy, pending: status.pending });
     }
     if (request.method === 'DELETE') return json({ agent: await agent.retire() });
+    if (request.method === 'PATCH') {
+      const input = await body(request);
+      const row = await directory.agent(id);
+      // A daemon-owned agent's circle is its daemon peer's.
+      if (!row || !onManaged(row)) throw new HttpError(409, 'Only an agent on managed has a circle here; a daemon agent takes its daemon peer\'s');
+      return json({ agent: await directory.setCircle(id, circleOf(input.circle)) });
+    }
   }
   if (rest === 'messages' && request.method === 'GET') return new Response(await agent.messages(), { headers: { 'Content-Type': 'application/json' } });
   if (rest === 'messages' && request.method === 'POST') {
@@ -421,6 +433,13 @@ const REQUEST_ID = /^rq-[0-9a-f]{32}$/;
 // daemon. Rows the daemon created, including lazily repaired ones without a
 // home, stay with the daemon.
 const onManaged = (row: { created_by: unknown; home_machine: unknown }) => row.created_by !== 'daemon' && !row.home_machine;
+function circleOf(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > 80) throw new HttpError(422, 'circle must be a name of 1-80 characters');
+  const circle = value.trim();
+  if (!sharedCircle(circle)) throw new HttpError(422, `circle ${circle} is machine-local (default, *, a number or window-N); name a shared circle`);
+  return circle;
+}
+
 const escape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 function requesterOf(value: unknown): string {

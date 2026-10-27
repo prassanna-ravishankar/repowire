@@ -132,7 +132,7 @@ func (s *Server) managedRoutes() {
 	s.mux.HandleFunc("DELETE "+managedPrefix+"/apps/{grant_id}", user(s.managedRevokeApp))
 	s.mux.HandleFunc("GET "+managedPrefix+"/events", owner(s.managedEventsStream))
 	for _, route := range []string{
-		"GET /agents", "POST /agents", "GET /agents/{id}", "DELETE /agents/{id}",
+		"GET /agents", "POST /agents", "GET /agents/{id}", "PATCH /agents/{id}", "DELETE /agents/{id}",
 		"GET /agents/{id}/messages", "POST /agents/{id}/messages", "GET /agents/{id}/runs",
 		"POST /agents/{id}/abort", "GET /workspaces",
 	} {

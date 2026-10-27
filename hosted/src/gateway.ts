@@ -27,7 +27,7 @@ export interface RelayRequest {
 // A finished command as the agent reports it: the workspace's own outcome, or
 // when the workspace could not answer, the agent's elapsed time and no state.
 export type ExecReport = Pick<ExecOutcome, 'wall_ms' | 'snapshot_at'> & { dirty: boolean | null };
-export interface AgentInit { id: string; workspace: string | null; display_name?: string | null; created_by: string; home_machine?: string | null }
+export interface AgentInit { id: string; workspace: string | null; display_name?: string | null; created_by: string; home_machine?: string | null; circle?: string }
 interface Pending { socket: WebSocket; resolve(text: string): void; reject(error: Error): void }
 export interface Client {
   kind: 'daemon'; machine: string | null; daemon_id: string | null; version: string | null;
@@ -38,7 +38,7 @@ const now = () => new Date().toISOString();
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents (
-  id TEXT PRIMARY KEY, workspace TEXT, display_name TEXT, description TEXT, home_machine TEXT,
+  id TEXT PRIMARY KEY, workspace TEXT, display_name TEXT, description TEXT, home_machine TEXT, circle TEXT NOT NULL DEFAULT 'managed',
   created_at TEXT NOT NULL, created_by TEXT NOT NULL, retired_at TEXT,
   state TEXT NOT NULL DEFAULT 'idle', state_at TEXT NOT NULL, last_op TEXT, last_reason TEXT);
 CREATE TABLE IF NOT EXISTS runs (
@@ -66,6 +66,7 @@ const ADDED_COLUMNS = [
   'ALTER TABLE workspaces ADD COLUMN snapshot_at TEXT',
   'ALTER TABLE workspaces ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE runs ADD COLUMN answer TEXT',
+  "ALTER TABLE agents ADD COLUMN circle TEXT NOT NULL DEFAULT 'managed'",
 ];
 
 // A run as listed and pushed; its answer is fetched one run at a time.
@@ -148,14 +149,29 @@ export class Gateway extends DurableObject {
     return this.ctx.storage.get<string>('owner');
   }
 
+  // Ownership never changes until phase 4 (rfcs/managed-in-the-mesh.md): a
+  // create that would move an agent between managed and a daemon, or
+  // between daemons, is refused, so each runtime keeps one ask authority. A
+  // daemon may fill the home of its own row created before homes existed.
   addAgent(init: AgentInit) {
+    const existing = this.sql.exec('SELECT created_by, home_machine FROM agents WHERE id = ?', init.id).toArray()[0];
+    const home = init.home_machine ?? null;
+    if (existing) {
+      const daemonOwned = (by: unknown) => by === 'daemon';
+      if (daemonOwned(existing.created_by) !== daemonOwned(init.created_by)) {
+        return { conflict: `Agent ${init.id} belongs to ${daemonOwned(existing.created_by) ? 'a daemon' : 'managed'}` };
+      }
+      if (existing.home_machine && home && existing.home_machine !== home) {
+        return { conflict: `Agent ${init.id} belongs to machine ${existing.home_machine}` };
+      }
+    }
     const at = now();
     this.sql.exec(
-      `INSERT INTO agents (id, workspace, display_name, home_machine, created_at, created_by, state, state_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'idle', ?)
+      `INSERT INTO agents (id, workspace, display_name, home_machine, circle, created_at, created_by, state, state_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'idle', ?)
        ON CONFLICT (id) DO UPDATE SET display_name = COALESCE(excluded.display_name, agents.display_name),
          home_machine = COALESCE(agents.home_machine, excluded.home_machine)`,
-      init.id, init.workspace, init.display_name ?? null, init.home_machine ?? null, at, init.created_by, at);
+      init.id, init.workspace, init.display_name ?? null, home, init.circle ?? 'managed', at, init.created_by, at);
     if (init.workspace) this.sql.exec('INSERT OR IGNORE INTO workspaces (id) VALUES (?)', init.workspace);
     return this.publish(init.id);
   }
@@ -165,6 +181,11 @@ export class Gateway extends DurableObject {
   agent(id: string) {
     const row = this.sql.exec('SELECT * FROM agents WHERE id = ?', id).toArray()[0];
     return row ? this.agentRow(row) : null;
+  }
+
+  setCircle(id: string, circle: string) {
+    this.sql.exec('UPDATE agents SET circle = ? WHERE id = ?', circle, id);
+    return this.publish(id);
   }
 
   describe(id: string, description: string) {
@@ -474,7 +495,7 @@ export class Gateway extends DurableObject {
     const totals = this.usageTotal('agent = ?', row.id as string);
     return {
       id: row.id as string, workspace: row.workspace, display_name: row.display_name, state: row.state, state_at: row.state_at,
-      last_op: row.last_op, last_reason: row.last_reason, description: row.description, home_machine: row.home_machine,
+      last_op: row.last_op, last_reason: row.last_reason, description: row.description, home_machine: row.home_machine, circle: row.circle,
       created_at: row.created_at, created_by: row.created_by, retired_at: row.retired_at,
       runs: Number(this.sql.exec('SELECT COUNT(*) AS n FROM runs WHERE agent = ?', row.id as string).one().n),
       tokens_in: totals.tokens_in, tokens_out: totals.tokens_out, cost_usd: totals.cost_usd,
