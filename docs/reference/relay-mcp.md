@@ -77,12 +77,14 @@ them.
 
 ## Managed machine
 
-When the relay is configured for managed agents, `list_machines` also returns
-`{"daemon_id": "managed", "kind": "managed"}`. It is always online. Its agents
-are the managed agents created from `/managed` or the managed API; an agent a
-daemon spawned stays on that daemon's machine. The id is reserved: a daemon
-whose hostname is `managed` cannot connect to such a relay until the host is
-renamed. Each is listed in its own circle (`managed` unless it was created
+When the relay is configured for managed agents and the caller is enabled for
+them (`REPOWIRE_MANAGED_USERS` or `REPOWIRE_ADMIN_USERS`), `list_machines` also
+returns `{"daemon_id": "managed", "kind": "managed"}`. For anyone else it is not
+listed, and tools naming it fail with `managed agents are not enabled for this
+account`. It is always online. Its agents are the managed agents created from
+`/managed` or the managed API; an agent a daemon spawned stays on that daemon's
+machine. The id is reserved on every relay: a daemon whose hostname is
+`managed` cannot connect until the host is renamed. Each is listed in its own circle (`managed` unless it was created
 or moved into another shared circle), with `backend: "hosted"`; retired agents
 are not listed.
 
