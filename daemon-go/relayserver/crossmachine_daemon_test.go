@@ -55,10 +55,7 @@ func startMeshDaemon(t *testing.T, ctx context.Context, f *authFixture, id strin
 	client.WithRemoteHandler(h.RemoteHandler())
 	client.Start(ctx)
 	t.Cleanup(client.Stop)
-	deadline := time.Now().Add(3 * time.Second)
-	for !client.Status().Connected && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitForDaemon(t, f.http.URL, f.key, id)
 	return &meshDaemon{local: local, hub: h}
 }
 

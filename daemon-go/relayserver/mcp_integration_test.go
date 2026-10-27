@@ -52,13 +52,7 @@ func TestRelayMCPAgentRoundTrip(t *testing.T) {
 	connector := relay.NewClient("ws"+strings.TrimPrefix(f.http.URL, "http"), f.key, "real-machine", local.URL).WithAuthToken("local-secret")
 	connector.Start(ctx)
 	defer connector.Stop()
-	deadline := time.Now().Add(3 * time.Second)
-	for !connector.Status().Connected && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !connector.Status().Connected {
-		t.Fatal("relay did not connect")
-	}
+	waitForDaemon(t, f.http.URL, f.key, "real-machine")
 	agent, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(local.URL, "http")+"/ws?token=local-secret", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +69,7 @@ func TestRelayMCPAgentRoundTrip(t *testing.T) {
 	if connected.Type != proto.FrameConnected {
 		t.Fatalf("connect rejected: %#v", connected)
 	}
-	deadline = time.Now().Add(time.Second)
+	deadline := time.Now().Add(time.Second)
 	for !transport.IsConnected(connected.SessionID) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
