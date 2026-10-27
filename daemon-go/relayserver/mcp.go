@@ -67,7 +67,7 @@ func (s *Server) registerRelayMCP() {
 			rows = append(rows, map[string]any{"daemon_id": d.daemonID, "kind": "daemon", "connected_at": d.connectedAt.Format(time.RFC3339)})
 		}
 		sort.Slice(rows, func(i, j int) bool { return rows[i]["daemon_id"].(string) < rows[j]["daemon_id"].(string) })
-		if s.worker != nil {
+		if _, err := s.managedFor(g.UserID); err == nil {
 			rows = append(rows, map[string]any{"daemon_id": managedMachineID, "kind": "managed"})
 		}
 		return toolResult(map[string]any{"machines": rows})

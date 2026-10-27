@@ -109,6 +109,11 @@ func (s *Server) workerOnly(h func(http.ResponseWriter, *http.Request, string)) 
 			writeError(w, http.StatusBadRequest, "X-Repowire-Owner is required")
 			return
 		}
+		// An owner taken off the list keeps no path to its daemons.
+		if _, err := s.managedFor(owner); err != nil {
+			writeError(w, managedStatus(err), err.Error())
+			return
+		}
 		h(w, r, owner)
 	}
 }

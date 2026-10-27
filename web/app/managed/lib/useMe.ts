@@ -11,7 +11,7 @@ export type Gate =
 /** Who is signed in, and whether Repowire Managed is configured on this relay. */
 export function gateFor(result: { me: Me } | { error: unknown }): Gate {
   if ("me" in result) {
-    return result.me.managed ? { kind: "ready", me: result.me } : { kind: "unconfigured", message: "Repowire Managed is not enabled on this relay." };
+    return result.me.managed ? { kind: "ready", me: result.me } : { kind: "unconfigured", message: "Repowire Managed is not enabled for this account." };
   }
   const error = result.error;
   if (error instanceof ApiError && error.status === 401) return { kind: "signed-out" };

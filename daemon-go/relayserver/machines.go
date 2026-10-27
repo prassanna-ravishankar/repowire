@@ -38,8 +38,12 @@ func (s *Server) machine(userID, id string) (machine, error) {
 	if id == "" {
 		return nil, fmt.Errorf("daemon_id is required; use list_machines")
 	}
-	if id == managedMachineID && s.worker != nil {
-		return managedMachine{worker: s.worker, owner: userID}, nil
+	if id == managedMachineID {
+		worker, err := s.managedFor(userID)
+		if err != nil {
+			return nil, err
+		}
+		return managedMachine{worker: worker, owner: userID}, nil
 	}
 	conn := s.daemon(userID, id)
 	if conn == nil {

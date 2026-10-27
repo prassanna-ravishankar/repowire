@@ -66,20 +66,21 @@ type pendingRequest struct {
 // Server keeps live tunnel connections and share links in memory. Relay identity
 // is derived from the full secret; optional OAuth grants live in SQLite.
 type Server struct {
-	mu          sync.Mutex
-	connections map[string]*daemonConn
-	users       map[string]map[string]*daemonConn
-	pending     map[string]*pendingRequest
-	oauth       *relayOAuth
-	tokens      *tokenStore
-	worker      *managedWorker
-	meshSlots   meshSlots
-	admins      []string
-	events      *managedEvents
-	costs       *costCache
-	webOut      string
-	timeout     time.Duration
-	mux         *http.ServeMux
+	mu           sync.Mutex
+	connections  map[string]*daemonConn
+	users        map[string]map[string]*daemonConn
+	pending      map[string]*pendingRequest
+	oauth        *relayOAuth
+	tokens       *tokenStore
+	worker       *managedWorker
+	meshSlots    meshSlots
+	admins       []string
+	managedUsers []string
+	events       *managedEvents
+	costs        *costCache
+	webOut       string
+	timeout      time.Duration
+	mux          *http.ServeMux
 }
 
 func New(webOut string) *Server {
@@ -274,10 +275,10 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The dashboard needs a daemon to tunnel to; managed agents do not, so
-	// with managed configured a key alone signs in, to /managed.
+	// a key enabled for managed signs in without one, to /managed.
 	landing := "/dashboard"
 	if s.anyDaemon(key.UserID) == nil {
-		if s.worker == nil {
+		if _, err := s.managedFor(key.UserID); err != nil {
 			http.Redirect(w, r, "/?error=no_daemon", http.StatusSeeOther)
 			return
 		}
@@ -709,8 +710,8 @@ func (s *Server) relayWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The managed machine owns this id; two machines must never share one.
-	if daemonID == managedMachineID && s.worker != nil {
-		http.Error(w, `daemon_id "managed" (this machine's hostname) is reserved for managed agents on this relay; rename the host to connect it`, http.StatusConflict)
+	if daemonID == managedMachineID {
+		http.Error(w, `daemon_id "managed" (this machine's hostname) is reserved for managed agents; rename the host to connect it`, http.StatusConflict)
 		return
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})

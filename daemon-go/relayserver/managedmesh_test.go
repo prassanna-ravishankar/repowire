@@ -15,12 +15,47 @@ import (
 
 func managedMesh(t *testing.T) (*authFixture, *fakeWorker) {
 	t.Helper()
+	return managedMeshFor(t, true)
+}
+
+// managedMeshFor configures managed with the fixture's user enabled or not.
+func managedMeshFor(t *testing.T, enabled bool) (*authFixture, *fakeWorker) {
+	t.Helper()
 	f := newAuthFixture(t)
 	worker := newFakeWorker(t)
-	if err := f.s.ConfigureManaged(ManagedConfig{URL: worker.URL, ControlToken: controlToken}); err != nil {
+	cfg := ManagedConfig{URL: worker.URL, ControlToken: controlToken}
+	if enabled {
+		cfg.ManagedUsers = []string{userID(f.key)}
+	}
+	if err := f.s.ConfigureManaged(cfg); err != nil {
 		t.Fatal(err)
 	}
 	return f, worker
+}
+
+// An owner not enabled for managed has no managed machine, from either side.
+func TestManagedMeshRefusesAnOwnerNotEnabled(t *testing.T) {
+	f, worker := managedMeshFor(t, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	alpha := connectMachine(t, ctx, f, "alpha", http.NotFoundHandler())
+
+	machines, err := alpha.Machines(ctx)
+	if err != nil || strings.Join(machines, ",") != "laptop" {
+		t.Fatalf("machines %v %v", machines, err)
+	}
+	status, body, err := alpha.MachineRequest(ctx, "managed", http.MethodPost, "/remote/peers", []byte(`{"from":{}}`))
+	if err != nil || status != http.StatusForbidden || !strings.Contains(string(body), "not enabled") {
+		t.Fatalf("forward %d %s %v", status, body, err)
+	}
+	if res, out := workerPost(t, f, "/machines", controlToken, userID(f.key), ""); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("worker machines %d %s", res.StatusCode, out)
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if len(worker.requests) != 0 {
+		t.Fatalf("the Worker was reached: %d requests", len(worker.requests))
+	}
 }
 
 func workerPost(t *testing.T, f *authFixture, path, token, owner, body string) (*http.Response, string) {
@@ -99,7 +134,7 @@ func TestWorkerReachesDaemonsAsManaged(t *testing.T) {
 		{"no token", "", owner.UserID, `{"machine":"beta","method":"POST","path":"/remote/ask"}`, http.StatusUnauthorized},
 		{"relay key", f.key, owner.UserID, `{"machine":"beta","method":"POST","path":"/remote/ask"}`, http.StatusUnauthorized},
 		{"no owner", controlToken, "", `{"machine":"beta","method":"POST","path":"/remote/ask"}`, http.StatusBadRequest},
-		{"other owner", controlToken, "token-someone-else", `{"machine":"beta","method":"POST","path":"/remote/ask"}`, http.StatusNotFound},
+		{"owner not enabled", controlToken, "token-someone-else", `{"machine":"beta","method":"POST","path":"/remote/ask"}`, http.StatusForbidden},
 		{"itself", controlToken, owner.UserID, `{"machine":"managed","method":"POST","path":"/remote/ask"}`, http.StatusNotFound},
 		{"offline", controlToken, owner.UserID, `{"machine":"gamma","method":"POST","path":"/remote/ask"}`, http.StatusNotFound},
 		{"not remote", controlToken, owner.UserID, `{"machine":"beta","method":"POST","path":"/ask"}`, http.StatusForbidden},

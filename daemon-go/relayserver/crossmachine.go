@@ -99,12 +99,16 @@ func (w *machineWork) forward(ctx context.Context, msg map[string]any) (int, []b
 		return http.StatusForbidden, errorBody("only /remote/ paths cross machines")
 	}
 	deadline := time.Now().Add(w.s.timeout)
-	if machine == managedMachineID && w.s.worker != nil {
+	if machine == managedMachineID {
+		worker, err := w.s.managedFor(w.src.userID)
+		if err != nil {
+			return managedStatus(err), errorBody(err.Error())
+		}
 		body, err := base64.StdEncoding.DecodeString(stringValue(msg["body"]))
 		if err != nil {
 			return http.StatusBadRequest, errorBody("body must be base64")
 		}
-		return w.s.worker.remote(ctx, w.src.userID, w.src.daemonID, stringValue(msg["method"]), route, body, deadline)
+		return worker.remote(ctx, w.src.userID, w.src.daemonID, stringValue(msg["method"]), route, body, deadline)
 	}
 	target := w.s.daemon(w.src.userID, machine)
 	if target == nil {
@@ -156,10 +160,10 @@ func (s *Server) remoteRequest(ctx context.Context, target *daemonConn, fromMach
 }
 
 // answerMachineList names the owner's other online machines.
-// With the managed service configured, managed is always one of them.
+// For an owner enabled for managed, managed is always one of them.
 func (s *Server) answerMachineList(ctx context.Context, src *daemonConn, msg map[string]any) {
 	machines := s.onlineDaemons(src.userID, src.daemonID)
-	if s.worker != nil {
+	if _, err := s.managedFor(src.userID); err == nil {
 		machines = append(machines, managedMachineID)
 		sort.Strings(machines)
 	}

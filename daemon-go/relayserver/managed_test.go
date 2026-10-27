@@ -25,6 +25,7 @@ import (
 const (
 	managedKey   = "rw_managed-user-secret"
 	otherKey     = "rw_other-user-secret"
+	strangerKey  = "rw_minted-but-not-enabled"
 	controlToken = "control-secret"
 )
 
@@ -103,7 +104,7 @@ func newManagedFixture(t *testing.T, configured bool) *managedFixture {
 	t.Helper()
 	s := New(t.TempDir())
 	f := &managedFixture{relay: s}
-	cfg := ManagedConfig{AdminUsers: []string{userID(managedKey)}}
+	cfg := ManagedConfig{AdminUsers: []string{userID(managedKey)}, ManagedUsers: []string{userID(otherKey)}}
 	if configured {
 		f.worker = newFakeWorker(t)
 		cfg.URL, cfg.ControlToken = f.worker.URL, controlToken
@@ -141,8 +142,10 @@ func TestManagedConfigValidation(t *testing.T) {
 		t.Fatal("non-http URL accepted")
 	}
 	t.Setenv("REPOWIRE_ADMIN_USERS", " token-a, ,token-b ")
-	if got := ManagedConfigFromEnv().AdminUsers; len(got) != 2 || got[1] != "token-b" {
-		t.Fatalf("admin users = %v", got)
+	t.Setenv("REPOWIRE_MANAGED_USERS", "token-c")
+	cfg := ManagedConfigFromEnv()
+	if len(cfg.AdminUsers) != 2 || cfg.AdminUsers[1] != "token-b" || len(cfg.ManagedUsers) != 1 || cfg.ManagedUsers[0] != "token-c" {
+		t.Fatalf("users = %v %v", cfg.AdminUsers, cfg.ManagedUsers)
 	}
 }
 
@@ -642,24 +645,52 @@ func TestPriceActualSpreadsMonthlyAllowance(t *testing.T) {
 	}
 }
 
-// A managed-only user has no daemon: with managed configured the key alone
-// signs in and lands on /managed; without it, sign-in still needs a daemon.
+// A managed-only user has no daemon: a key enabled for managed signs in alone
+// and lands on /managed; any other key still needs a daemon.
 func TestSignInWithoutADaemon(t *testing.T) {
-	signIn := func(f *managedFixture) *http.Response {
+	signIn := func(f *managedFixture, key string) *http.Response {
 		client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-		res, err := client.PostForm(f.http.URL+"/auth", url.Values{"token": {managedKey}})
+		res, err := client.PostForm(f.http.URL+"/auth", url.Values{"token": {key}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		res.Body.Close()
 		return res
 	}
-	res := signIn(newManagedFixture(t, true))
+	res := signIn(newManagedFixture(t, true), otherKey)
 	if res.Header.Get("Location") != "/managed" || len(res.Cookies()) != 1 || res.Cookies()[0].Name != "rw_token" {
 		t.Fatalf("managed sign-in = %d %q %v", res.StatusCode, res.Header.Get("Location"), res.Cookies())
 	}
-	res = signIn(newManagedFixture(t, false))
-	if res.Header.Get("Location") != "/?error=no_daemon" || len(res.Cookies()) != 0 {
-		t.Fatalf("unmanaged sign-in = %d %q", res.StatusCode, res.Header.Get("Location"))
+	for name, f := range map[string]*managedFixture{"not enabled": newManagedFixture(t, true), "unconfigured": newManagedFixture(t, false)} {
+		key := map[string]string{"not enabled": strangerKey, "unconfigured": managedKey}[name]
+		if res := signIn(f, key); res.Header.Get("Location") != "/?error=no_daemon" || len(res.Cookies()) != 0 {
+			t.Fatalf("%s sign-in = %d %q", name, res.StatusCode, res.Header.Get("Location"))
+		}
+	}
+}
+
+// Anyone can mint a key, so a key authenticates but does not authorize:
+// one not enabled for managed reaches nothing on the Worker.
+func TestManagedRefusesAKeyNotEnabled(t *testing.T) {
+	f := newManagedFixture(t, true)
+	res, me := f.do(t, "GET", "/api/v1/managed/me", strangerKey, "", nil)
+	if res.StatusCode != 200 || me["managed"] != false || me["admin"] != false {
+		t.Fatalf("me = %d %v", res.StatusCode, me)
+	}
+	for _, route := range []string{"GET /api/v1/managed/agents", "POST /api/v1/managed/agents", "GET /api/v1/managed/events", "GET /api/v1/managed/agents/a1/runs"} {
+		method, path, _ := strings.Cut(route, " ")
+		res, body := f.do(t, method, path, strangerKey, `{}`, nil)
+		if res.StatusCode != http.StatusForbidden || body["error"] != errManagedNotEnabled.Error() {
+			t.Fatalf("%s = %d %v", route, res.StatusCode, body)
+		}
+	}
+	res, clients := f.do(t, "GET", "/api/v1/managed/clients", strangerKey, "", nil)
+	if res.StatusCode != 200 || clients["gateway_error"] != errManagedNotEnabled.Error() {
+		t.Fatalf("clients = %d %v", res.StatusCode, clients)
+	}
+	f.worker.mu.Lock()
+	defer f.worker.mu.Unlock()
+	if len(f.worker.requests) != 0 || f.worker.dials.Load() != 0 {
+		t.Fatalf("the Worker was reached: %d requests, %d dials", len(f.worker.requests), f.worker.dials.Load())
 	}
 }

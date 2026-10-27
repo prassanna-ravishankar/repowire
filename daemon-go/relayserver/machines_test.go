@@ -74,8 +74,11 @@ func newManagedService(t *testing.T) *managedService {
 func TestRelayMCPManagedMachine(t *testing.T) {
 	f := newAuthFixture(t)
 	service := newManagedService(t)
-	if err := f.s.ConfigureManaged(ManagedConfig{URL: service.URL, ControlToken: controlToken}); err != nil {
-		t.Fatal(err)
+	configure := func(users ...string) {
+		t.Helper()
+		if err := f.s.ConfigureManaged(ManagedConfig{URL: service.URL, ControlToken: controlToken, ManagedUsers: users}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	access := f.tokens(t, oauthRead+" "+oauthWrite)["access_token"].(string)
 	call := func(name string, args any) (map[string]any, bool) {
@@ -88,6 +91,16 @@ func TestRelayMCPManagedMachine(t *testing.T) {
 		data, _ := out["structuredContent"].(map[string]any)
 		return data, out["isError"] == true
 	}
+
+	// Not enabled: managed is neither listed nor addressable.
+	configure()
+	if rows, _ := call("list_machines", struct{}{}); len(rows["machines"].([]any)) != 1 {
+		t.Fatalf("machines while not enabled %v", rows)
+	}
+	if _, failed := call("list_agents", map[string]any{"daemon_id": "managed"}); !failed {
+		t.Fatal("managed was addressable while not enabled")
+	}
+	configure(userID(f.key))
 	owner, _ := f.s.tokens.validate(f.key)
 
 	machines, _ := call("list_machines", struct{}{})

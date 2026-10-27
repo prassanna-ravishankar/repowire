@@ -54,7 +54,8 @@ oauth:
 # Repowire Managed control plane. Name an existing Secret to enable it; every
 # key is optional and the managed/admin APIs answer 503 until managed-url and
 # managed-control-token are set. Keys: managed-url, managed-control-token,
-# admin-users (comma-separated relay user ids), cf-account-id,
+# managed-users and admin-users (comma-separated relay user ids allowed to use
+# managed; admins also see /admin), cf-account-id,
 # cf-analytics-token (Account Analytics Read, for actual spend).
 managed:
   secretName: ""

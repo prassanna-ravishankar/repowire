@@ -6,6 +6,8 @@ Routes served by the relay server (`repowire relay start`). Daemon routes reache
 
 Browser routes use the `rw_token` cookie set by the landing page. API callers may send `Authorization: Bearer <relay key>` instead. The relay key identifies the user as `token-<sha256 of the key>`; that id is the owner of managed agents.
 
+Anyone can mint a relay key (`POST /api/v1/register`), so a key authenticates but does not authorize managed agents. Only user ids in `REPOWIRE_MANAGED_USERS` or `REPOWIRE_ADMIN_USERS` reach the Worker; any other key gets **403** on managed routes, and `managed` is absent from its machine lists.
+
 Cookie-authenticated writes (`POST`, `DELETE`) are refused with **403** when an `Origin` header names a different host.
 
 ## Relay routes
@@ -13,7 +15,7 @@ Cookie-authenticated writes (`POST`, `DELETE`) are refused with **403** when an 
 | Route | Auth | Purpose |
 | --- | --- | --- |
 | `GET /` | none | Landing page; redirects to `/dashboard` when the cookie is valid. |
-| `POST /auth` | form `token` | Sets the cookie when a daemon is connected for the key. |
+| `POST /auth` | form `token` | Sets the cookie when a daemon is connected for the key, or, with no daemon, when the key is enabled for managed (landing on `/managed`). |
 | `GET /dashboard` | cookie | Dashboard static export. |
 | `GET /managed` | cookie | Managed agents page (`web/out/managed.html`). Signed-out visitors are redirected to `/`. |
 | `GET /admin` | cookie, admin | Admin page (`web/out/admin.html`). Non-admins get **403**. |
@@ -28,11 +30,11 @@ Cookie-authenticated writes (`POST`, `DELETE`) are refused with **403** when an 
 
 Managed agents run on a Cloudflare Worker. The relay authenticates the caller and calls the Worker control API with its control token, naming the caller as owner. The Worker never accepts an owner from a browser.
 
-Errors are `{"error": "..."}`. Until `REPOWIRE_MANAGED_URL` and `REPOWIRE_MANAGED_CONTROL_TOKEN` are set, routes that need the Worker return **503** with a message naming those variables. A Worker that cannot be reached gives **502**.
+Errors are `{"error": "..."}`. Until `REPOWIRE_MANAGED_URL` and `REPOWIRE_MANAGED_CONTROL_TOKEN` are set, routes that need the Worker return **503** with a message naming those variables. A user not enabled for managed gets **403** `managed agents are not enabled for this account`. A Worker that cannot be reached gives **502**.
 
 | Route | Behavior |
 | --- | --- |
-| `GET /api/v1/managed/me` | `{user_id, admin, managed}`. Works without the Worker. |
+| `GET /api/v1/managed/me` | `{user_id, admin, managed}`. `managed` is true when the Worker is configured and the caller is enabled for it. Works without the Worker. |
 | `GET /api/v1/managed/agents`, `POST /api/v1/managed/agents` | Proxied to the Worker. |
 | `GET /api/v1/managed/agents/{id}`, `DELETE /api/v1/managed/agents/{id}` | Proxied. `DELETE` retires the agent. |
 | `PATCH /api/v1/managed/agents/{id}` | Proxied. `{circle}` moves an agent on managed to another shared circle (**422** for a machine-local name such as `default`, `*`, a number or `window-N`). A daemon-owned agent answers **409**: its circle is its daemon peer's. `POST .../agents` also takes `circle`, which defaults to `managed`. An agent never changes owner: a create that would move it between managed and a daemon, or between daemons, answers **409**. |
@@ -50,15 +52,15 @@ Proxied routes keep the Worker path below `/api/v1/managed`, forward the query s
 
 The managed machine takes part in [cross-machine circles](../concepts/peers-and-circles.md#circles-across-machines) ([design](https://github.com/prassanna-ravishankar/repowire/blob/main/rfcs/managed-in-the-mesh.md)).
 
-- **From a daemon.** With the Worker configured, `machine_list` includes `managed`. A `machine_request` to `managed` is forwarded to the Worker as `POST {worker}{path}`, carrying the control token, `X-Repowire-Owner`, `X-Repowire-From-Machine` and `X-Repowire-Deadline`. A transport failure or timeout is 502 or 504: the outcome is unknown and the request is never retried.
-- **From the Worker.** Two routes accept only the control token (`Authorization: Bearer`), never a cookie or relay key, with the owner in `X-Repowire-Owner`:
+- **From a daemon.** For an owner enabled for managed, `machine_list` includes `managed`; for any other owner a `machine_request` to `managed` is **403**. A `machine_request` to `managed` is forwarded to the Worker as `POST {worker}{path}`, carrying the control token, `X-Repowire-Owner`, `X-Repowire-From-Machine` and `X-Repowire-Deadline`. A transport failure or timeout is 502 or 504: the outcome is unknown and the request is never retried.
+- **From the Worker.** Two routes accept only the control token (`Authorization: Bearer`), never a cookie or relay key, with the owner in `X-Repowire-Owner`. An owner not enabled for managed gets **403**:
 
 | Route | Behaviour |
 | --- | --- |
 | `POST /api/v1/managed/machines` | `{machines}`: the owner's online daemon ids. |
 | `POST /api/v1/managed/machine-request` | Body `{machine, method: "POST", path, body, deadline}`. `path` must be a clean `/remote/` path (**403**), and `machine` an online daemon of the owner, not `managed` (**404**). The request is re-issued as `remote_request` with `from_machine` `managed`, and the daemon's status and body are returned. The deadline is capped at 25 s. Each owner may have 16 requests in flight, within 256 relay-wide, and a request over either limit is refused at once with **429**. Refusals the relay makes itself, and 502 or 504, carry `X-Repowire-Relay: 1`. |
 
-A daemon cannot connect with `daemon_id` `managed` while the Worker is configured (**409**).
+A daemon cannot connect with `daemon_id` `managed` (**409**): the name is reserved for the managed machine.
 
 ### Clients
 

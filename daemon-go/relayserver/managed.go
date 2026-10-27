@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,28 +25,37 @@ const managedPrefix = "/api/v1/managed"
 
 // ManagedConfig is optional. Without URL and ControlToken the managed and
 // admin APIs answer 503; without the Cloudflare pair, costs report no actual.
+// Managed agents cost money, so a relay key alone does not reach them: only
+// ManagedUsers and AdminUsers do. Anyone can mint a key.
 type ManagedConfig struct {
 	URL              string
 	ControlToken     string
+	ManagedUsers     []string
 	AdminUsers       []string
 	CFAccountID      string
 	CFAnalyticsToken string
 }
 
 func ManagedConfigFromEnv() ManagedConfig {
-	var admins []string
-	for _, id := range strings.Split(os.Getenv("REPOWIRE_ADMIN_USERS"), ",") {
-		if id = strings.TrimSpace(id); id != "" {
-			admins = append(admins, id)
-		}
-	}
 	return ManagedConfig{
 		URL:              strings.TrimSpace(os.Getenv("REPOWIRE_MANAGED_URL")),
 		ControlToken:     strings.TrimSpace(os.Getenv("REPOWIRE_MANAGED_CONTROL_TOKEN")),
-		AdminUsers:       admins,
+		ManagedUsers:     userList(os.Getenv("REPOWIRE_MANAGED_USERS")),
+		AdminUsers:       userList(os.Getenv("REPOWIRE_ADMIN_USERS")),
 		CFAccountID:      strings.TrimSpace(os.Getenv("REPOWIRE_CF_ACCOUNT_ID")),
 		CFAnalyticsToken: strings.TrimSpace(os.Getenv("REPOWIRE_CF_ANALYTICS_TOKEN")),
 	}
+}
+
+// userList reads a comma-separated list of relay user ids.
+func userList(value string) []string {
+	var ids []string
+	for _, id := range strings.Split(value, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // managedWorker calls the Worker control API with the relay's credential.
@@ -59,6 +69,7 @@ type managedWorker struct {
 // config: the routes stay registered and report themselves unconfigured.
 func (s *Server) ConfigureManaged(cfg ManagedConfig) error {
 	s.admins = cfg.AdminUsers
+	s.managedUsers = cfg.ManagedUsers
 	s.costs.configure(cfg.CFAccountID, cfg.CFAnalyticsToken)
 	if cfg.URL == "" && cfg.ControlToken == "" {
 		return nil
@@ -168,9 +179,11 @@ func (s *Server) managedRoute(admin, needsWorker bool, h managedHandler) http.Ha
 			managedError(w, http.StatusForbidden, "cross-origin request refused")
 			return
 		}
-		if needsWorker && s.worker == nil {
-			managedError(w, http.StatusServiceUnavailable, "managed agents are not configured on this relay (set REPOWIRE_MANAGED_URL and REPOWIRE_MANAGED_CONTROL_TOKEN)")
-			return
+		if needsWorker {
+			if _, err := s.managedFor(key.UserID); err != nil {
+				managedError(w, managedStatus(err), err.Error())
+				return
+			}
 		}
 		h(w, r, key.UserID)
 	}
@@ -188,6 +201,31 @@ func (s *Server) callerKey(r *http.Request) (APIKey, bool, bool) {
 
 func (s *Server) isAdmin(userID string) bool { return slices.Contains(s.admins, userID) }
 
+var (
+	errManagedUnconfigured = errors.New("managed agents are not configured on this relay (set REPOWIRE_MANAGED_URL and REPOWIRE_MANAGED_CONTROL_TOKEN)")
+	errManagedNotEnabled   = errors.New("managed agents are not enabled for this account")
+)
+
+// managedFor is the one entitlement check: every path to the Worker on a
+// user's behalf (pages, API, MCP, cross-machine, the Worker's own calls
+// back) goes through it.
+func (s *Server) managedFor(userID string) (*managedWorker, error) {
+	switch {
+	case s.worker == nil:
+		return nil, errManagedUnconfigured
+	case !s.isAdmin(userID) && !slices.Contains(s.managedUsers, userID):
+		return nil, errManagedNotEnabled
+	}
+	return s.worker, nil
+}
+
+func managedStatus(err error) int {
+	if errors.Is(err, errManagedNotEnabled) {
+		return http.StatusForbidden
+	}
+	return http.StatusServiceUnavailable
+}
+
 // SameSite=Lax already withholds the cookie from cross-site writes; this also
 // refuses same-site but cross-origin pages.
 func sameHostOrigin(r *http.Request) bool {
@@ -204,7 +242,8 @@ func managedError(w http.ResponseWriter, status int, message string) {
 }
 
 func (s *Server) managedMe(w http.ResponseWriter, _ *http.Request, user string) {
-	writeJSON(w, http.StatusOK, map[string]any{"user_id": user, "admin": s.isAdmin(user), "managed": s.worker != nil})
+	_, err := s.managedFor(user)
+	writeJSON(w, http.StatusOK, map[string]any{"user_id": user, "admin": s.isAdmin(user), "managed": err == nil})
 }
 
 // managedProxy forwards an owner route to the Worker path of the same shape
@@ -295,14 +334,14 @@ func (s *Server) managedClients(w http.ResponseWriter, r *http.Request, user str
 		return
 	}
 	out["apps"] = apps
-	if s.worker == nil {
-		out["gateway_error"] = "managed agents are not configured on this relay"
+	if worker, err := s.managedFor(user); err != nil {
+		out["gateway_error"] = err.Error()
 	} else {
 		var gateway struct {
 			Items  []any `json:"items"`
 			Outbox int   `json:"outbox"`
 		}
-		if err := s.worker.getJSON(r.Context(), "/clients", "", user, &gateway); err != nil {
+		if err := worker.getJSON(r.Context(), "/clients", "", user, &gateway); err != nil {
 			out["gateway_error"] = err.Error()
 		} else {
 			if gateway.Items != nil {

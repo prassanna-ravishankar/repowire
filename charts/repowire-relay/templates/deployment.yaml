@@ -50,7 +50,7 @@ spec:
         {{- end }}
         {{- with .Values.managed.secretName }}
         {{- $secret := . }}
-        {{- range $name, $key := dict "REPOWIRE_MANAGED_URL" "managed-url" "REPOWIRE_MANAGED_CONTROL_TOKEN" "managed-control-token" "REPOWIRE_ADMIN_USERS" "admin-users" "REPOWIRE_CF_ACCOUNT_ID" "cf-account-id" "REPOWIRE_CF_ANALYTICS_TOKEN" "cf-analytics-token" }}
+        {{- range $name, $key := dict "REPOWIRE_MANAGED_URL" "managed-url" "REPOWIRE_MANAGED_CONTROL_TOKEN" "managed-control-token" "REPOWIRE_MANAGED_USERS" "managed-users" "REPOWIRE_ADMIN_USERS" "admin-users" "REPOWIRE_CF_ACCOUNT_ID" "cf-account-id" "REPOWIRE_CF_ANALYTICS_TOKEN" "cf-analytics-token" }}
         - name: {{ $name }}
           valueFrom:
             secretKeyRef:
