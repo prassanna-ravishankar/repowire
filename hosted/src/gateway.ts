@@ -100,6 +100,7 @@ const ADDED_COLUMNS = [
   'ALTER TABLE workspaces ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE runs ADD COLUMN answer TEXT',
   "ALTER TABLE agents ADD COLUMN circle TEXT NOT NULL DEFAULT 'managed'",
+  'ALTER TABLE remote_outbound ADD COLUMN delivery_at INTEGER NOT NULL DEFAULT 0',
 ];
 
 // A run as listed and pushed; its answer is fetched one run at a time.

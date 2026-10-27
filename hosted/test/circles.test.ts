@@ -36,3 +36,15 @@ test('a directory created before agent circles gives every agent the managed cir
   assert.equal(owner.agent('a')?.circle, 'managed');
   assert.equal(owner.setCircle('a', 'research')?.circle, 'research');
 });
+
+test('a directory created before reply rotation gains delivery_at and still delivers', () => {
+  const state = fakeState();
+  state.storage.sql.exec(`CREATE TABLE remote_outbound (
+    id TEXT PRIMARY KEY, machine TEXT NOT NULL, store_epoch TEXT NOT NULL, to_peer TEXT NOT NULL, to_name TEXT NOT NULL,
+    from_agent TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL, state TEXT NOT NULL,
+    close_reason TEXT, reply TEXT, delivered INTEGER NOT NULL DEFAULT 0, disposition TEXT, checked_at INTEGER NOT NULL DEFAULT 0)`);
+  state.storage.sql.exec(`INSERT INTO remote_outbound (id, machine, store_epoch, to_peer, to_name, from_agent, text, created_at, state, close_reason, reply)
+    VALUES ('ask-1', 'laptop', 'e', 'bob', 'bob', 'a', 'q', 1, 'settled', 'ack_with_msg', 'yes')`);
+  const owner = new Gateway(state as never, {});
+  assert.deepEqual(owner.claimDeliveries(100, 100, 8).map((row) => row.id), ['ask-1']);
+});
