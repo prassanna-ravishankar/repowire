@@ -1,6 +1,8 @@
 # Managed accounts
 
-Status: design approved by Codex review (revision 5), 2026-10-27; awaiting Prass on the open questions. It follows
+Status: revision 6, 2026-10-27. Revision 5 was approved by Codex review. Revision 6 follows Prass's feedback:
+Clerk for identity, Stripe for every money operation, an operator portal,
+and a design track. It is under re-review. It follows
 [managed-machine](managed-machine.md) and
 [managed in the mesh](managed-in-the-mesh.md). Nothing here is built
 beyond the interim gate below.
@@ -41,20 +43,18 @@ where the answer is decided.
 
 ### Accounts, one linked namespace each
 
-- **Account.** `acct_<random>`, created by signing in with an identity
-  provider. It holds a verified email, its status (`active`, `suspended`) and
-  a Stripe customer id.
-- **Identity.** A row of `(provider, subject)` linked to one account. A second
-  provider is added only from a signed-in session. Two identities are never
-  merged because their verified emails match.
+- **Account.** A Clerk user (`user_...`). Clerk owns sign-in, identities,
+  verified email, MFA and banning. The relay keeps a small row per account:
+  status (`active`, `suspended`), its Stripe customer id and its link.
 - **Linked namespace.** At most one relay key namespace (`token-...`) per
   account, and at most one account per namespace. The account proves it holds
   the namespace by pasting the key while signed in, which is adequate proof
   for a bearer capability. Linking is how an account's daemons and its managed
   agents meet in the mesh.
-- **Session.** A random server-side session id in an `HttpOnly`, `Secure`,
-  `SameSite=Lax` cookie. It is rotated on every sign-in. Today's `rw_token`
-  cookie carries the relay key itself; account sessions never do.
+- **Session.** Clerk's short-lived session JWT (the `__session` cookie, or a
+  bearer token). The relay verifies it without a network call against the
+  instance's public key, using `clerk-sdk-go`. Today's `rw_token` cookie
+  carries the relay key itself; account sessions never do.
 
 One namespace per account is a deliberate limit. Daemon ids are unique only
 within a namespace: the relay keys connections by `userID/daemonID`. If two
@@ -102,39 +102,65 @@ generation checked at the Worker, is phase 3 work.
 Unlinking does not revoke the key itself. Anonymous relay features (daemon
 tunnel, dashboard, shares) still accept it, and the portal says this.
 
-### Sign-in
+### Sign-in: Clerk
 
-The relay acts as an OAuth/OIDC client for GitHub, and later Google, using
-`golang.org/x/oauth2`, already in go.mod. It needs no new vendor. Each
-authorization request carries:
-- single-use `state`, stored server-side, bound to a pre-auth browser cookie
-  and to its purpose (sign in, or add an identity to the signed-in account);
-- PKCE;
-- for OIDC providers, `nonce`, issuer and audience validation.
+Identity is a solved problem, and the product should not carry its own
+OAuth client, session store or MFA. Clerk provides:
+- hosted sign-in and sign-up (GitHub, Google, email codes, passkeys) and MFA;
+- session management, bot protection, banning, and a user dashboard;
+- a Go SDK for verifying sessions on the relay.
 
-The callback refuses state that is missing, reused, from another browser or
-for another purpose. This stops login CSRF, where an attacker's finished
-callback signs a victim into the attacker's account and the victim then links
-their key there. Mutations (link, unlink, top-up) need the session plus the
-existing same-origin check.
+Its React components work in the static web export through
+`@clerk/clerk-react`.
 
-Email comes only from the provider's verified address. Magic-link email is
-left out for now; it can be added later as one more provider.
+The relay's part:
+- **Verify sessions.** Every account route verifies the session JWT with the
+  instance's PEM public key (networkless, no Clerk call on the hot path). It
+  checks `exp`, `nbf`, the issuer and `azp` (authorized parties: the portal's
+  own origin only).
+- **Act on Clerk webhooks.** `user.created` creates the relay row (suspended
+  until invited during beta). `user.deleted` suspends the account. Banning a
+  user in Clerk ends their sessions there; the relay also refuses a banned
+  user's next request, through the account row.
+- **Admins** are Clerk users whose `public_metadata.role` is `admin`. Only
+  Clerk's backend API or dashboard can set it, never the browser. This
+  replaces `REPOWIRE_ADMIN_USERS`.
+- **Mutations** (link, top-up, every admin action) also pass the existing
+  same-origin check.
+
+**What it costs.** A vendor in the sign-in path, and a CNAME for Clerk's
+frontend API under `repowire.io` in production. When Clerk is down, people
+cannot sign in. Running agents, the mesh and anonymous relay features don't
+depend on Clerk.
+
+**Why not Clerk Billing.** It sells recurring subscriptions only, and its
+plans are not Stripe Billing objects. Prepaid credits need Stripe directly.
+If plans arrive later, they become recurring credit grants, either through
+Clerk Billing or Stripe Billing.
 
 ### Billing: prepaid credits, reserved at admission
 
 Money comes in at the relay and is spent on the Worker. The Worker's owner
 `Gateway` holds the authoritative balance.
 
+Stripe handles every money operation: checkout, receipts and invoices, tax,
+refunds, disputes and the customer's payment history. The relay never
+moves money. It only turns Stripe's webhooks into credit grants and debits
+on the Worker.
+
 **Purchase.**
 1. The relay creates a purchase row in SQLite: `pur_<random>`, the account,
    the destination owner (the account's linked namespace, fixed at creation),
    the amount and currency the server chose, and state `created`. An account
    without a link cannot buy.
-2. It opens a Stripe Checkout session in `payment` mode with
-   `client_reference_id = pur_...` and stores the session id on the row.
+2. It opens a Stripe Checkout session in `payment` mode for the account's
+   Stripe customer, with `client_reference_id = pur_...` and invoice creation
+   on, so every top-up gets a Stripe invoice and receipt. Stripe Tax computes
+   tax. The session id is stored on the row.
 
-The browser never chooses the account or the credit amount.
+The browser never chooses the account or the credit amount. Stripe's
+customer portal, linked from the billing page, shows invoices, receipts and
+payment methods. We build none of that.
 
 **Grant.**
 - Stripe calls `POST /api/v1/billing/stripe`. The relay verifies
@@ -157,6 +183,20 @@ The browser never chooses the account or the credit amount.
   is non-2xx, so Stripe retries and the same purchase id keeps the retry safe.
   The relay's `created`/`granted` state is bookkeeping for the portal, not
   the dedupe.
+
+**Refunds and disputes are Stripe operations.**
+- **Refund.** An operator refunds in the Stripe dashboard, or from the admin
+  portal, which calls Stripe's refund API and changes no balance itself. The
+  balance changes in one place: Stripe's refund webhook. Each refund becomes
+  a negative credit row keyed by the Stripe refund id (`ref_...`), against the
+  purchase's owner, through the same idempotent credits endpoint.
+- **Policy.** The default refund is the unspent part of a purchase. A refund
+  larger than the remaining balance takes it below zero, which blocks new
+  admissions until the account tops up. Reservations already held settle as
+  normal.
+- **Dispute.** A dispute (`charge.dispute.created`) suspends the account and
+  alerts the admin. A lost dispute is debited like a refund. A won dispute
+  needs no ledger change, and the admin lifts the suspension.
 
 **Units.** The owner ledger is kept in credits, where one credit is one
 dollar charged to the customer, not dollars of provider cost. Each operation
@@ -255,35 +295,86 @@ then could not reserve synchronously.
   - **Why not a second reservation protocol.** Reserving across two Durable
     Objects would need a cross-object failure and day-rollover design, and
     it still would not bound overhead.
-- **Comps.** A free account gets an admin credit grant (`id: comp_...`), not a
-  bypass. Once credits are enforced, `REPOWIRE_MANAGED_USERS` is removed;
+- **Comps.** A free account gets an admin credit grant (`id: comp_...`,
+  minted by the relay, with a reason and the admin's id in the audit log), not
+  a bypass. Once credits are enforced, `REPOWIRE_MANAGED_USERS` is removed;
   until then it remains the beta gate.
 
 ### Storage and deployment
 
-The accounts tables live in the relay's SQLite on a PVC: `accounts`,
-`identities`, `namespace_links`, `sessions`, `auth_states`, `purchases` and
-`billing_events` (an audit log only). The chart's single-replica, `Recreate`
+The relay's tables live in its SQLite on a PVC:
+- `accounts`: Clerk user id, status, Stripe customer and link;
+- `purchases`;
+- `admin_actions`: an append-only audit log of credits, refunds and
+  suspensions;
+- `billing_events`: an audit log of Stripe and Clerk webhooks.
+
+Clerk holds identities and sessions. The chart's single-replica, `Recreate`
 and PVC requirements currently hang off `oauth.enabled`. They move to a
 shared `persistence` setting, which both OAuth and accounts require, and the
 chart fails if accounts are on without it.
 
 New secrets go in the `managed.secretName` Secret:
-- the GitHub (and later Google) client id and secret;
-- the Stripe secret key and webhook secret.
+- the Clerk secret key, the session PEM public key and the webhook signing
+  secret;
+- the Stripe restricted key and webhook secret.
 
 The relay stays on Kubernetes and the agents on Cloudflare. The Worker keeps
 trusting only the relay's control token.
 
-### Portal
+### Customer portal
 
-The pages are served by the relay from the existing web export:
-- `/account`: sign in, email, the linked key (link, unlink) and status.
-- `/account/billing`: balance, reserved amount, top-up, purchase history and
-  usage per agent per day.
+The relay serves these pages from the existing web export, with Clerk's
+components for sign-in and the user menu:
+- `/account`: profile (Clerk's `UserProfile`), the linked key and status.
+- `/account/billing`: balance, the amount reserved by running work, top-up,
+  usage per agent per day, and a link to Stripe's customer portal for
+  invoices and payment methods.
+- `/managed`: the agents. It requires a signed-in, active account.
 
-`/managed` requires an account session. `/dashboard` and the relay's daemon,
-MCP and share features keep working with anonymous keys, unchanged.
+`/dashboard` and the relay's daemon, MCP and share features keep working with
+anonymous keys, unchanged.
+
+### Operator portal
+
+`/admin` already exists, with the Worker summary, owners, sandboxes, usage
+and a costs view that sets the estimate against Cloudflare's actual spend
+(`/api/v1/admin/costs`). It grows into the place where the business is run:
+- **Accounts.** Search by email or user id. Each row shows Clerk user,
+  linked namespace, status, balance, reserved, lifetime purchased and spent,
+  and recent runs. Actions: suspend or reactivate, and open the account in
+  Clerk or Stripe.
+- **Credits.** Issue a comp or goodwill grant with an amount, reason and
+  optional expiry. Each grant is a `comp_...` row with the admin's id in
+  `admin_actions`. Credits can't be edited; a correction is another grant.
+- **Refunds.** Refund a purchase. This calls Stripe; the ledger follows from
+  the webhook, as above.
+- **Finance.** Per day and per month:
+  - revenue: Stripe gross, fees, refunds and net, from balance transactions;
+  - infra spend: Cloudflare actual, model cost from the ledger, and operator
+    overhead;
+  - margin, credits outstanding (sold but not yet spent, a liability), and
+    the global breaker's state.
+- **Breaker and limits.** See the ceiling, open or close the breaker, and
+  change plan caps.
+
+Every admin action needs an admin session plus the same-origin check, and
+writes to `admin_actions` before it takes effect.
+
+### Design language
+
+Managed is a product, and the landing page, docs, dashboard, `/managed`,
+`/account` and `/admin` should read as one. That is a separate workstream,
+with its own design doc, that this RFC depends on. Its scope:
+- brand: name usage, logo and mark, voice;
+- tokens: colour, type, spacing, radius, elevation and motion, for light and
+  dark;
+- components: shared across every surface;
+- theming of third-party surfaces: Clerk's `appearance` API, and Stripe
+  Checkout and the customer portal's branding settings.
+
+The web app already has a token layer (`globals.css`, the dashboard's
+surface and on-surface tokens), which is the starting point.
 
 ## Migration
 
@@ -295,31 +386,42 @@ and the Gateway.
 
 ## Phases
 
-1. **Accounts.** GitHub sign-in with state, PKCE and session rotation; the
-   namespace link, immutable after first use; suspension; `managedFor` through
-   the link. While in beta, only accounts on an invite list are active.
-2. **Billing.** Purchases, the Stripe webhook, credits, reservation-based
-   admission with per-step pre-checks, one active operation per agent, the
-   concurrency cap, the whole-lifecycle exec deadline, the global breaker,
-   comps, and the billing page. This is the first point where users are
-   charged, and every money guard ships in it.
-3. **Later.** Per-plan caps, Google sign-in, recurring plans, key rotation
-   with drain-and-fence, and several namespaces per account with
-   account-scoped machine ids.
+0. **Design system**, in parallel with phase 1: brand, tokens and core
+   components, then applied to the existing pages.
+1. **Accounts.** Clerk sign-in and session verification on the relay, Clerk
+   webhooks, the namespace link (immutable after first use), suspension,
+   `managedFor` through the link, admins by Clerk role, and the accounts view
+   of the operator portal. While in beta, only invited accounts are active.
+2. **Billing.**
+   - Purchases through Stripe Checkout (invoices and Stripe Tax), the Stripe
+     webhook, credits, and refunds and disputes through webhooks.
+   - Reservation-based admission with per-step pre-checks, one active
+     operation per agent, and the concurrency cap.
+   - The whole-lifecycle exec deadline and the global breaker.
+   - Comps, the billing page and the operator portal's credits, refunds and
+     finance views.
+
+   This is the first point where users are charged, and every money guard
+   ships in it.
+3. **Later.** Per-plan caps, recurring plans, key rotation with
+   drain-and-fence, and several namespaces per account with account-scoped
+   machine ids.
 
 ## Out of scope, to decide before charging anyone
 
-- The merchant entity, terms of service, privacy policy and refund policy
-  (a refund removes unspent credit by a negative grant).
-- Tax (Stripe Tax can collect it, but registration is yours).
+- The merchant entity, terms of service, privacy policy, and the refund
+  policy's wording (the mechanics are above).
+- Tax registration (Stripe Tax calculates and collects once you are
+  registered).
 - Data retention and deletion of an account's agents and transcripts.
 
 ## Open questions for Prass
 
-1. Providers: GitHub only for launch, or GitHub and Google?
-2. Prepaid credits as recommended, or a subscription from day one?
-3. Markup over cost, and a minimum top-up (Stripe fees make small top-ups
+1. Prepaid credits as recommended, or a subscription from day one?
+2. Markup over cost, and a minimum top-up (Stripe fees make small top-ups
    lossy; $10 is a reasonable floor).
-4. Free first credit: yes or no, and how much?
-5. Portal host: `relay.repowire.io/account`, or a separate
-   `app.repowire.io` in front of the same relay?
+3. Free first credit: yes or no, and how much?
+4. Portal host: `relay.repowire.io`, or `app.repowire.io` in front of the
+   same relay? This also places Clerk's frontend API CNAME.
+5. Sign-in methods to enable in Clerk at launch: GitHub only, or GitHub,
+   Google and email?
