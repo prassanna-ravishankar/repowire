@@ -65,6 +65,7 @@ type Server struct {
 	oauth       *relayOAuth
 	tokens      *tokenStore
 	worker      *managedWorker
+	meshSlots   meshSlots
 	admins      []string
 	events      *managedEvents
 	costs       *costCache
@@ -107,6 +108,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/ws/relay", s.relayWebSocket)
 	s.mux.HandleFunc("/d/{token}/{path...}", s.legacyTunnel)
 	s.managedRoutes()
+	s.managedMeshRoutes()
 	if s.webOut != "" {
 		next := filepath.Join(s.webOut, "_next")
 		if stat, err := os.Stat(next); err == nil && stat.IsDir() {

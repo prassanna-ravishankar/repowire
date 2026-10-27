@@ -45,6 +45,20 @@ Errors are `{"error": "..."}`. Until `REPOWIRE_MANAGED_URL` and `REPOWIRE_MANAGE
 
 Proxied routes keep the Worker path below `/api/v1/managed`, forward the query string and a JSON body of up to 1 MiB, and return the Worker's status and body unchanged.
 
+### Managed in the mesh
+
+The managed machine takes part in [cross-machine circles](../concepts/peers-and-circles.md#circles-across-machines) ([design](https://github.com/prassanna-ravishankar/repowire/blob/main/rfcs/managed-in-the-mesh.md)).
+
+- **From a daemon.** With the Worker configured, `machine_list` includes `managed`. A `machine_request` to `managed` is forwarded to the Worker as `POST {worker}{path}`, carrying the control token, `X-Repowire-Owner`, `X-Repowire-From-Machine` and `X-Repowire-Deadline`. A transport failure or timeout is 502 or 504: the outcome is unknown and the request is never retried.
+- **From the Worker.** Two routes accept only the control token (`Authorization: Bearer`), never a cookie or relay key, with the owner in `X-Repowire-Owner`:
+
+| Route | Behaviour |
+| --- | --- |
+| `POST /api/v1/managed/machines` | `{machines}`: the owner's online daemon ids. |
+| `POST /api/v1/managed/machine-request` | Body `{machine, method: "POST", path, body, deadline}`. `path` must be a clean `/remote/` path (**403**), and `machine` an online daemon of the owner, not `managed` (**404**). The request is re-issued as `remote_request` with `from_machine` `managed`, and the daemon's status and body are returned. The deadline is capped at 25 s. Each owner may have 16 requests in flight, within 256 relay-wide, and a request over either limit is refused at once with **429**. Refusals the relay makes itself, and 502 or 504, carry `X-Repowire-Relay: 1`. |
+
+A daemon cannot connect with `daemon_id` `managed` while the Worker is configured (**409**).
+
 ### Clients
 
 ```json
