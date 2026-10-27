@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -638,5 +639,27 @@ func TestPriceActualSpreadsMonthlyAllowance(t *testing.T) {
 	}
 	if math.Abs(got.ProjectedUSD-(5+0.9*31/10)) > 1e-9 {
 		t.Fatalf("projected = %v", got.ProjectedUSD)
+	}
+}
+
+// A managed-only user has no daemon: with managed configured the key alone
+// signs in and lands on /managed; without it, sign-in still needs a daemon.
+func TestSignInWithoutADaemon(t *testing.T) {
+	signIn := func(f *managedFixture) *http.Response {
+		client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		res, err := client.PostForm(f.http.URL+"/auth", url.Values{"token": {managedKey}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res
+	}
+	res := signIn(newManagedFixture(t, true))
+	if res.Header.Get("Location") != "/managed" || len(res.Cookies()) != 1 || res.Cookies()[0].Name != "rw_token" {
+		t.Fatalf("managed sign-in = %d %q %v", res.StatusCode, res.Header.Get("Location"), res.Cookies())
+	}
+	res = signIn(newManagedFixture(t, false))
+	if res.Header.Get("Location") != "/?error=no_daemon" || len(res.Cookies()) != 0 {
+		t.Fatalf("unmanaged sign-in = %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 }

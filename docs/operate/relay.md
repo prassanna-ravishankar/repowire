@@ -24,7 +24,7 @@ Self-hosting runs the same relay server under your own deployment and points the
 
 ## Diagnosing a disconnected relay
 
-If the dashboard login bounces back to the landing page with `no_daemon`, or peers do not appear in the remote dashboard, the daemon's relay client is not connected — the relay has no daemon to bind the session to. Check live relay state on the local daemon:
+Signing in with a relay key needs a connected daemon, except on a relay with managed agents configured: there a key with no daemon signs in to `/managed`. If the login bounces back to the landing page with `no_daemon`, or peers do not appear in the remote dashboard, the daemon's relay client is not connected, so the relay has no daemon to bind the session to. Check live relay state on the local daemon:
 
 ```bash
 curl -s http://127.0.0.1:8377/health | jq .relay

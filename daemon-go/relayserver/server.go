@@ -248,12 +248,18 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/?error=invalid_key", http.StatusSeeOther)
 		return
 	}
+	// The dashboard needs a daemon to tunnel to; managed agents do not, so
+	// with managed configured a key alone signs in, to /managed.
+	landing := "/dashboard"
 	if s.anyDaemon(key.UserID) == nil {
-		http.Redirect(w, r, "/?error=no_daemon", http.StatusSeeOther)
-		return
+		if s.worker == nil {
+			http.Redirect(w, r, "/?error=no_daemon", http.StatusSeeOther)
+			return
+		}
+		landing = "/managed"
 	}
 	http.SetCookie(w, &http.Cookie{Name: "rw_token", Value: token, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode, MaxAge: 30 * 24 * 3600})
-	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+	http.Redirect(w, r, landing, http.StatusSeeOther)
 }
 
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
