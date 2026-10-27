@@ -550,7 +550,10 @@ func (h *Hub) notifyAddress(ctx context.Context, caller, address, text string, a
 		return true, "", "", routeErr(http.StatusUnprocessableEntity, "cross-machine notifies carry text only")
 	}
 	id, outcome, err = h.remoteNotify(ctx, caller, name, machine, text)
-	return true, id, outcome, err
+	if err != nil {
+		return true, id, outcome, fmt.Errorf("notify failed: %w", err)
+	}
+	return true, id, outcome, nil
 }
 
 // broadcastAcross extends a local broadcast to the caller's shared circle on

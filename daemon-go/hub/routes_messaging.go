@@ -151,6 +151,15 @@ func (mr *MessagingRoutes) handleNotify(w http.ResponseWriter, r *http.Request) 
 
 	if mr.remote != nil {
 		if handled, id, outcome, err := mr.remote.notifyAddress(ctx, req.FromPeer, req.ToPeer, req.Text, req.Attachments); handled {
+			// The id is the cross-machine notify id; both machines trace under it.
+			if id != "" {
+				mr.trace(ctx, id, "notify", "created", "", id, "", req.FromPeer, map[string]any{"to_peer": req.ToPeer})
+				status := "ok"
+				if err != nil || outcome == "not_delivered" {
+					status = "fail"
+				}
+				mr.trace(ctx, id, "notify", "remote_"+outcome, status, id, "", req.FromPeer, nil)
+			}
 			if err != nil {
 				writeRouteError(w, err)
 				return
