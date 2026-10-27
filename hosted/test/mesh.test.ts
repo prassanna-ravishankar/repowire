@@ -243,10 +243,13 @@ test('an asks change with no run still publishes the agent, so an open page relo
   (state as unknown as { getWebSockets: () => { send: (m: string) => void }[] }).getWebSockets = () => [{ send: (m: string) => sent.push(m) }];
   const id = `ask-1-${'8'.repeat(32)}`;
   directory.insertOutbound({ id, machine: 'laptop', store_epoch: 'e1', to_peer: 'bob', to_name: 'bob', from_agent: 'a', text: 'q', created_at: 1 });
-  const before = directory.agent('a')?.asks_at;
-  assert.ok(before);
+  const revisions = [directory.agent('a')?.asks_rev];
   sent.length = 0;
+  // Within one millisecond, as the clock may well be.
   directory.settleOutbound(id, 'ack', null);
+  revisions.push(directory.agent('a')?.asks_rev);
   directory.markOutboundDelivered(id, 'bare_ack');
-  assert.equal(sent.filter((frame) => JSON.parse(frame).type === 'agent').length, 2);
+  revisions.push(directory.agent('a')?.asks_rev);
+  assert.deepEqual(revisions, [1, 2, 3]);
+  assert.deepEqual(sent.map((frame) => JSON.parse(frame)).filter((frame) => frame.type === 'agent').map((frame) => frame.agent.asks_rev), [2, 3]);
 });

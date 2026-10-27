@@ -444,8 +444,8 @@ function AsksTab({ agent, now, onCopied }: { agent: Agent; now: number; onCopied
       (err: Error) => !cancelled && setError(err.message),
     );
     return () => { cancelled = true; };
-    // asks_at moves on every change to these asks, including ones no run follows.
-  }, [agent.id, agent.state, agent.state_at, agent.asks_at, reload]);
+    // asks_rev moves on every change to these asks, including ones no run follows.
+  }, [agent.id, agent.state, agent.state_at, agent.asks_rev, reload]);
   if (error) return <InlineError className="m-4" error={error} onRetry={() => setReload((n) => n + 1)} />;
   if (!asks) return <SkeletonRows />;
   if (asks.length === 0) {

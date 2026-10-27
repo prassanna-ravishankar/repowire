@@ -277,9 +277,9 @@ describe("Managed page live state", () => {
     render(<ManagedPage />);
     expect(await screen.findByText("@bob@laptop")).toBeInTheDocument();
     expect(screen.getByText("outcome unknown")).toBeInTheDocument();
-    // A settlement no run follows still moves asks_at; the tab reloads from that frame.
+    // A settlement no run follows still bumps asks_rev; the tab reloads from that frame.
     asksBody = { items: [] };
-    FakeEventSource.latest.emit({ type: "agent", agent: { ...fixtures().agents[2], asks_at: new Date().toISOString() } });
+    FakeEventSource.latest.emit({ type: "agent", agent: { ...fixtures().agents[2], asks_rev: 1 } });
     expect(await screen.findByText("No open asks")).toBeInTheDocument();
     window.location.hash = "";
   });

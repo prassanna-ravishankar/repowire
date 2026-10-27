@@ -58,7 +58,7 @@ const now = () => new Date().toISOString();
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents (
-  id TEXT PRIMARY KEY, workspace TEXT, display_name TEXT, description TEXT, home_machine TEXT, circle TEXT NOT NULL DEFAULT 'managed', asks_at TEXT,
+  id TEXT PRIMARY KEY, workspace TEXT, display_name TEXT, description TEXT, home_machine TEXT, circle TEXT NOT NULL DEFAULT 'managed', asks_rev INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL, created_by TEXT NOT NULL, retired_at TEXT,
   state TEXT NOT NULL DEFAULT 'idle', state_at TEXT NOT NULL, last_op TEXT, last_reason TEXT);
 CREATE TABLE IF NOT EXISTS runs (
@@ -101,7 +101,7 @@ const ADDED_COLUMNS = [
   'ALTER TABLE runs ADD COLUMN answer TEXT',
   "ALTER TABLE agents ADD COLUMN circle TEXT NOT NULL DEFAULT 'managed'",
   'ALTER TABLE remote_outbound ADD COLUMN delivery_at INTEGER NOT NULL DEFAULT 0',
-  'ALTER TABLE agents ADD COLUMN asks_at TEXT',
+  'ALTER TABLE agents ADD COLUMN asks_rev INTEGER NOT NULL DEFAULT 0',
 ];
 
 // A run as listed and pushed; its answer is fetched one run at a time.
@@ -454,11 +454,12 @@ export class Gateway extends DurableObject {
     this.asksChanged(row.from_agent);
   }
 
-  // An agent's open asks changed, whether or not a run followed: stamp the
-  // agent and publish it, so a page showing its asks reloads.
+  // An agent's open asks changed, whether or not a run followed: bump its
+  // revision (strictly, unlike a clock) and publish it, so a page showing its
+  // asks reloads.
   private asksChanged(agent: string | undefined) {
     if (!agent) return;
-    this.sql.exec('UPDATE agents SET asks_at = ? WHERE id = ?', now(), agent);
+    this.sql.exec('UPDATE agents SET asks_rev = asks_rev + 1 WHERE id = ?', agent);
     this.publish(agent);
   }
 
@@ -757,7 +758,7 @@ export class Gateway extends DurableObject {
     const totals = this.usageTotal('agent = ?', row.id as string);
     return {
       id: row.id as string, workspace: row.workspace, display_name: row.display_name, state: row.state, state_at: row.state_at,
-      last_op: row.last_op, last_reason: row.last_reason, description: row.description, home_machine: row.home_machine, circle: row.circle, asks_at: row.asks_at,
+      last_op: row.last_op, last_reason: row.last_reason, description: row.description, home_machine: row.home_machine, circle: row.circle, asks_rev: Number(row.asks_rev ?? 0),
       created_at: row.created_at, created_by: row.created_by, retired_at: row.retired_at,
       runs: Number(this.sql.exec('SELECT COUNT(*) AS n FROM runs WHERE agent = ?', row.id as string).one().n),
       tokens_in: totals.tokens_in, tokens_out: totals.tokens_out, cost_usd: totals.cost_usd,
