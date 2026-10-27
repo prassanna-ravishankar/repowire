@@ -569,3 +569,33 @@ func TestRemoteNotifyNeverFallsBackToTheQueue(t *testing.T) {
 		t.Fatalf("queued a fallback: %d -> %d", len(queuedBefore), len(queued))
 	}
 }
+
+// HTTP /notify and /broadcast, which OpenCode and Pi agents use, cross
+// machines exactly as the MCP tools do.
+func TestRemoteHTTPNotifyAndBroadcast(t *testing.T) {
+	_, alpha, beta := twoMachines(t)
+	asker := alpha.agent(t, "asker", "proj", nil)
+	bob := beta.agent(t, "bob", "proj", nil)
+
+	status, out := alpha.post(t, "/notify", map[string]any{"from_peer": string(asker.id), "to_peer": bob.name + "@beta", "text": "over http"})
+	if status != http.StatusOK || out["delivery_state"] != "delivered" || out["delivered"] != true {
+		t.Fatalf("notify %d %v", status, out)
+	}
+	bob.next(t, "over http")
+
+	status, out = alpha.post(t, "/notify", map[string]any{"from_peer": string(asker.id), "to_peer": "nobody@beta", "text": "lost"})
+	if status != http.StatusNotFound {
+		t.Fatalf("unknown remote peer %d %v", status, out)
+	}
+
+	status, out = alpha.post(t, "/notify", map[string]any{"from_peer": string(asker.id), "to_peer": bob.name + "@beta", "text": "file", "attachments": []map[string]any{{"name": "a.txt"}}})
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("attachment across machines %d %v", status, out)
+	}
+
+	status, out = alpha.post(t, "/broadcast", map[string]any{"from_peer": string(asker.id), "text": "http hands"})
+	if sent, _ := out["remote_sent"].([]any); status != http.StatusOK || len(sent) != 1 || sent[0] != bob.name+"@beta" {
+		t.Fatalf("broadcast %d %v", status, out)
+	}
+	bob.next(t, "http hands")
+}

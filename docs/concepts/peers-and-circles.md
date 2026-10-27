@@ -27,7 +27,7 @@ Use circles to keep work-domain peers from talking to home-project peers when yo
 When several daemons connect to the relay with the same key, a named circle spans all of them: peers on different machines in the same circle can list and message each other. A circle the machine named for itself stays local: `default`, an all-digit name (an unnamed tmux session such as `1`), and `window-<n>`. The rule is on the name alone, so a circle deliberately named `7` is local too. Name the tmux session (`tmux new -s repowire`) to share it.
 
 - `list_peers` adds remote peers in the caller's own circle as `name@machine` and `peer_id@machine`, with source `remote`. A final `# partial: ...` line names machines that did not answer in time.
-- `ask`, `notify_peer` and `wait_on_ack` accept those addresses, and replies arrive the way local replies do. `broadcast` also reaches remote peers in the circle and reports them separately.
+- `ask`, `notify_peer` and `wait_on_ack` accept those addresses, and replies arrive the way local replies do. `broadcast` also reaches remote peers in the circle and reports them separately. The HTTP routes OpenCode and Pi use (`POST /ask`, `/notify`, `/broadcast`) behave the same.
 - Cross-machine messages carry text only: no attachments, structured questions or `reply_to`.
 - Circle-bypassing roles do not bypass across machines: an orchestrator or human surface is neither a remote sender nor a remote target.
 - A machine that is offline is a definite failure; nothing is queued for it.
