@@ -4,7 +4,7 @@
 // reached through the relay as "managed"; other managed agents through the
 // same /remote handlers, in-process.
 import type { Gateway, RemoteOutbound } from './gateway';
-import { scopedName, within } from './http';
+import { escape, scopedName, within } from './http';
 import type { HostedAgent, OperationState } from './index';
 import { framedReply, MANAGED, newRemoteID } from './protocol';
 import { remoteRoute } from './remote';
@@ -158,18 +158,28 @@ async function listPeers(env: MeshEnv, owner: string, from: Principal): Promise<
 // awaited by its trigger. The durable rows are the work list, so a pass lost
 // to an eviction is picked up by the next trigger.
 
-const passes = new Map<string, Promise<void>>();
+// A trigger that lands while a pass runs is not absorbed: the pass runs once
+// more, so work the trigger was for (a row that just became due) is not left
+// for some later trigger.
+const passes = new Map<string, { done: Promise<void>; again: boolean }>();
 
 export function followUp(env: MeshEnv, owner: string): Promise<void> {
   const running = passes.get(owner);
-  if (running) return running;
-  const pass = (async () => {
-    await within(reconcile(env, owner), PASS_MS);
-    await within(deliverReplies(env, owner), PASS_MS);
+  if (running) {
+    running.again = true;
+    return running.done;
+  }
+  const entry = { done: Promise.resolve(), again: false };
+  entry.done = (async () => {
+    do {
+      entry.again = false;
+      await within(reconcile(env, owner), PASS_MS);
+      await within(deliverReplies(env, owner), PASS_MS);
+    } while (entry.again);
   })().catch((error) => console.warn('Managed follow-up failed; the next trigger retries', owner, error))
     .finally(() => passes.delete(owner));
-  passes.set(owner, pass);
-  return pass;
+  passes.set(owner, entry);
+  return entry.done;
 }
 
 async function reconcile(env: MeshEnv, owner: string) {
@@ -190,7 +200,8 @@ async function reconcile(env: MeshEnv, owner: string) {
 
 async function deliverReplies(env: MeshEnv, owner: string) {
   const directory = env.GATEWAYS.getByName(owner);
-  const rows = await directory.undeliveredOutbound(BATCH) as RemoteOutbound[];
+  const now = Math.floor(Date.now() / 1000);
+  const rows = await directory.claimDeliveries(now - CHECK_CUTOFF_S, now, BATCH) as RemoteOutbound[];
   for (const row of rows) {
     try {
       await deliverReply(env, owner, row);
@@ -228,7 +239,8 @@ async function deliverReply(env: MeshEnv, owner: string, row: RemoteOutbound) {
   }
   if (await directory.admit(row.from_agent)) return;
   const from = label(row.to_name, row.machine);
-  const text = framedReply(row.id, from, row.close_reason ?? 'unanswered', row.reply);
+  // Peer content, wrapped like any peer message: never mistaken for the human.
+  const text = `<peer-message from="@${escape(from)}" type="reply" correlation-id="${row.id}">\n${escape(framedReply(row.id, from, row.close_reason ?? 'unanswered', row.reply))}\n</peer-message>`;
   const accepted = await agent.submit(text, op, { from, type: 'reply', correlationId: row.id }, 'control');
   await directory.markOutboundDelivered(row.id, 'retired' in accepted ? 'asker_retired' : null);
 }

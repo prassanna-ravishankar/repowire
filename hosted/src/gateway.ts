@@ -46,7 +46,7 @@ export interface RemoteOutboundInit {
   id: string; machine: string; store_epoch: string; to_peer: string; to_name: string; from_agent: string; text: string; created_at: number;
 }
 export interface RemoteOutbound extends RemoteOutboundInit {
-  state: string; close_reason: string | null; reply: string | null; delivered: number; disposition: string | null; checked_at: number;
+  state: string; close_reason: string | null; reply: string | null; delivered: number; disposition: string | null; checked_at: number; delivery_at: number;
 }
 
 export interface Client {
@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS remote_fences (
 CREATE TABLE IF NOT EXISTS remote_outbound (
   id TEXT PRIMARY KEY, machine TEXT NOT NULL, store_epoch TEXT NOT NULL, to_peer TEXT NOT NULL, to_name TEXT NOT NULL,
   from_agent TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL, state TEXT NOT NULL,
-  close_reason TEXT, reply TEXT, delivered INTEGER NOT NULL DEFAULT 0, disposition TEXT, checked_at INTEGER NOT NULL DEFAULT 0);
+  close_reason TEXT, reply TEXT, delivered INTEGER NOT NULL DEFAULT 0, disposition TEXT, checked_at INTEGER NOT NULL DEFAULT 0,
+  delivery_at INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS remote_outbound_open ON remote_outbound (state, delivered, checked_at);
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY, exec_count INTEGER NOT NULL DEFAULT 0, container_ms INTEGER NOT NULL DEFAULT 0,
@@ -440,11 +441,14 @@ export class Gateway extends DurableObject {
   // ---- outbound: managed agents as askers. The row is authoritative; its
   // envelope is immutable and every transition a compare-and-set.
 
+  // A fresh row counts as just checked: its own send (at most 20 s) is still
+  // creating it on the target, and a read inside the 30 s cutoff would fence
+  // it there.
   insertOutbound(row: RemoteOutboundInit) {
     this.sql.exec(
-      `INSERT INTO remote_outbound (id, machine, store_epoch, to_peer, to_name, from_agent, text, created_at, state)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sent')`,
-      row.id, row.machine, row.store_epoch, row.to_peer, row.to_name, row.from_agent, row.text, row.created_at);
+      `INSERT INTO remote_outbound (id, machine, store_epoch, to_peer, to_name, from_agent, text, created_at, state, checked_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?)`,
+      row.id, row.machine, row.store_epoch, row.to_peer, row.to_name, row.from_agent, row.text, row.created_at, row.created_at);
   }
 
   outboundRecord(id: string) {
@@ -476,9 +480,16 @@ export class Gateway extends DurableObject {
     });
   }
 
-  undeliveredOutbound(limit: number) {
-    return this.sql.exec("SELECT * FROM remote_outbound WHERE state = 'settled' AND delivered = 0 ORDER BY created_at LIMIT ?", limit)
-      .toArray() as unknown as RemoteOutbound[];
+  // Settled replies to deliver, claimed like checks: never-tried first, and
+  // each stamped, so a reply blocked on its asker (over budget, unavailable)
+  // waits out the cutoff instead of holding the batch.
+  claimDeliveries(triedBefore: number, now: number, limit: number) {
+    return this.ctx.storage.transactionSync(() => {
+      const rows = this.sql.exec("SELECT * FROM remote_outbound WHERE state = 'settled' AND delivered = 0 AND delivery_at < ? ORDER BY delivery_at, created_at LIMIT ?",
+        triedBefore, limit).toArray() as unknown as RemoteOutbound[];
+      for (const row of rows) this.sql.exec('UPDATE remote_outbound SET delivery_at = ? WHERE id = ?', now, row.id);
+      return rows;
+    });
   }
 
   // An agent's open cross-machine asks, for /managed.

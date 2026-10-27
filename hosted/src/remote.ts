@@ -5,7 +5,7 @@
 import { sharedCircle } from './circles';
 import type { Gateway, RemoteInbound } from './gateway';
 import { followUp } from './mesh';
-import { idTime, remoteResult } from './protocol';
+import { idTime, MANAGED, remoteResult } from './protocol';
 import { escape, HttpError, scopedName, within } from './http';
 import type { HostedAgent, OperationState } from './index';
 
@@ -58,7 +58,9 @@ export async function remoteRoute(env: RemoteEnv, owner: string, fromMachine: st
   // recovery of other stuck requests runs in the background.
   await directory.pruneRemote(now - RETENTION_S);
   background(recoverDispatching(env, owner));
-  background(followUp(env, owner));
+  // A managed agent's own in-process request is not a trigger: its send must
+  // record the target row before any reconcile could read the id.
+  if (fromMachine !== MANAGED) background(followUp(env, owner));
   const epoch = await directory.storeEpoch();
   const receipt = (record: RemoteInbound, responder: string) => json({
     id: record.id, state: record.state, ...(record.close_reason ? { close_reason: record.close_reason } : {}),
