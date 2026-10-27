@@ -468,12 +468,38 @@ func (h *Hub) discoverRemote(ctx context.Context, from state.RemotePrincipal) re
 	return out
 }
 
+// remoteBroadcast is the per-target outcome of a broadcast to other machines.
+type remoteBroadcast struct {
+	Sent      []string `json:"remote_sent"`
+	Queued    []string `json:"remote_queued"`
+	Failed    []string `json:"remote_failed"`
+	Uncertain []string `json:"remote_uncertain"`
+	Partial   []string `json:"partial,omitempty"`
+}
+
+// String is the MCP rendering: counts, then the targets that need attention.
+func (b remoteBroadcast) String() string {
+	out := fmt.Sprintf(" remote_sent=%d remote_queued=%d remote_failed=%d remote_uncertain=%d", len(b.Sent), len(b.Queued), len(b.Failed), len(b.Uncertain))
+	for _, group := range []struct {
+		label string
+		names []string
+	}{{"queued", b.Queued}, {"failed", b.Failed}, {"uncertain", b.Uncertain}} {
+		if len(group.names) > 0 {
+			out += fmt.Sprintf(" %s_targets=%s", group.label, strings.Join(group.names, ","))
+		}
+	}
+	if len(b.Partial) > 0 {
+		out += " partial=" + strings.Join(b.Partial, ",")
+	}
+	return out
+}
+
 // broadcastRemote notifies every discovered peer in the caller's shared
 // circle on other machines and reports the outcome per target.
-func (h *Hub) broadcastRemote(ctx context.Context, from state.RemotePrincipal, text string) string {
+func (h *Hub) broadcastRemote(ctx context.Context, from state.RemotePrincipal, text string) remoteBroadcast {
 	listing := h.discoverRemote(ctx, from)
 	var mu sync.Mutex
-	var sent, queued, failed, uncertain []string
+	out := remoteBroadcast{Sent: []string{}, Queued: []string{}, Failed: []string{}, Uncertain: []string{}, Partial: listing.partial}
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, remoteCheckBatch)
 	for _, row := range listing.rows {
@@ -490,33 +516,56 @@ func (h *Hub) broadcastRemote(ctx context.Context, from state.RemotePrincipal, t
 			defer mu.Unlock()
 			switch {
 			case err != nil:
-				failed = append(failed, name)
+				out.Failed = append(out.Failed, name)
 			case outcome == "delivered":
-				sent = append(sent, name)
+				out.Sent = append(out.Sent, name)
 			case outcome == "queued":
-				queued = append(queued, name)
+				out.Queued = append(out.Queued, name)
 			case outcome == "uncertain":
-				uncertain = append(uncertain, name)
+				out.Uncertain = append(out.Uncertain, name)
 			default:
-				failed = append(failed, name)
+				out.Failed = append(out.Failed, name)
 			}
 		}()
 	}
 	wg.Wait()
-	out := fmt.Sprintf(" remote_sent=%d remote_queued=%d remote_failed=%d remote_uncertain=%d", len(sent), len(queued), len(failed), len(uncertain))
-	for _, group := range []struct {
-		label string
-		names []string
-	}{{"queued", queued}, {"failed", failed}, {"uncertain", uncertain}} {
-		if len(group.names) > 0 {
-			sort.Strings(group.names)
-			out += fmt.Sprintf(" %s_targets=%s", group.label, strings.Join(group.names, ","))
-		}
-	}
-	if len(listing.partial) > 0 {
-		out += " partial=" + strings.Join(listing.partial, ",")
+	for _, names := range [][]string{out.Sent, out.Queued, out.Failed, out.Uncertain} {
+		sort.Strings(names)
 	}
 	return out
+}
+
+// notifyAddress sends a notify addressed name@machine to another machine.
+// handled is false when the address is not remote, so the caller routes it
+// locally.
+func (h *Hub) notifyAddress(ctx context.Context, caller, address, text string, attachments []map[string]any) (handled bool, id, outcome string, err error) {
+	name, machine, err := h.remoteAddress(ctx, address)
+	if errors.Is(err, errNotRemote) {
+		return false, "", "", nil
+	}
+	if err != nil {
+		return true, "", "", err
+	}
+	if len(attachments) > 0 {
+		return true, "", "", routeErr(http.StatusUnprocessableEntity, "cross-machine notifies carry text only")
+	}
+	id, outcome, err = h.remoteNotify(ctx, caller, name, machine, text)
+	return true, id, outcome, err
+}
+
+// broadcastAcross extends a local broadcast to the caller's shared circle on
+// other machines; nil when cross-machine circles are off or the caller has no
+// shared circle.
+func (h *Hub) broadcastAcross(ctx context.Context, caller, text string) *remoteBroadcast {
+	if h.remote == nil {
+		return nil
+	}
+	_, from, err := h.remoteCaller(caller)
+	if err != nil {
+		return nil
+	}
+	out := h.broadcastRemote(ctx, from, text)
+	return &out
 }
 
 func contains(values []string, want string) bool {
