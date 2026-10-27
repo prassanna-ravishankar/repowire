@@ -32,7 +32,34 @@ func connectDaemonAs(t *testing.T, serverURL, key, daemonID string) *websocket.C
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.CloseNow() })
+	waitForDaemon(t, serverURL, key, daemonID)
 	return conn
+}
+
+// waitForDaemon blocks until the relay lists daemonID. The WebSocket handshake
+// (and so relay.Client's Connected status) completes before relayWebSocket
+// registers the connection, so a request sent right away can find it offline.
+func waitForDaemon(t *testing.T, serverURL, key, daemonID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		req, _ := http.NewRequest(http.MethodGet, serverURL+"/api/v1/daemons", nil)
+		req.Header.Set("X-API-Key", key)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			var daemons []struct {
+				DaemonID string `json:"daemon_id"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&daemons)
+			resp.Body.Close()
+			for _, d := range daemons {
+				if d.DaemonID == daemonID {
+					return
+				}
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("daemon %s never registered", daemonID)
 }
 
 func TestDaemonFramesAreNotForwardedBetweenDaemons(t *testing.T) {

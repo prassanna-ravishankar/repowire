@@ -22,13 +22,7 @@ func connectMachine(t *testing.T, ctx context.Context, f *authFixture, id string
 	c := relay.NewClient("ws"+strings.TrimPrefix(f.http.URL, "http"), f.key, id, unused.URL).WithRemoteHandler(handler)
 	c.Start(ctx)
 	t.Cleanup(c.Stop)
-	deadline := time.Now().Add(3 * time.Second)
-	for !c.Status().Connected && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !c.Status().Connected {
-		t.Fatalf("%s did not connect", id)
-	}
+	waitForDaemon(t, f.http.URL, f.key, id)
 	return c
 }
 
