@@ -37,6 +37,7 @@ func newManagedService(t *testing.T) *managedService {
 		case r.URL.Path == "/agents":
 			write(200, `{"items":[
 				{"id":"scout","display_name":"Scout","state":"working","home_machine":null,"created_by":"web","retired_at":null},
+				{"id":"reader","state":"idle","home_machine":null,"created_by":"web","retired_at":null,"circle":"research"},
 				{"id":"old","state":"retired","home_machine":null,"created_by":"web","retired_at":"2026-10-25T00:00:00Z"},
 				{"id":"laptop-agent","state":"idle","home_machine":"laptop","created_by":"daemon","retired_at":null},
 				{"id":"legacy","state":"idle","home_machine":null,"created_by":"daemon","retired_at":null}]}`)
@@ -97,8 +98,16 @@ func TestRelayMCPManagedMachine(t *testing.T) {
 
 	listing, _ := call("list_agents", map[string]any{"daemon_id": "managed"})
 	agents := listing["agents"].([]any)
-	if len(agents) != 1 || agents[0].(map[string]any)["peer_id"] != "scout" || agents[0].(map[string]any)["status"] != "busy" {
+	if len(agents) != 2 || agents[0].(map[string]any)["peer_id"] != "scout" || agents[0].(map[string]any)["status"] != "busy" {
 		t.Fatalf("only live agents no daemon owns are on the managed machine: %v", agents)
+	}
+	// Each agent reports its own circle; a Worker row without one is managed.
+	for circle, want := range map[string]string{"managed": "scout", "research": "reader"} {
+		listing, _ := call("list_agents", map[string]any{"daemon_id": "managed", "circle": circle})
+		rows := listing["agents"].([]any)
+		if len(rows) != 1 || rows[0].(map[string]any)["peer_id"] != want || rows[0].(map[string]any)["circle"] != circle {
+			t.Fatalf("circle %s: %v", circle, rows)
+		}
 	}
 	if service.owner != owner.UserID {
 		t.Fatalf("owner %q, want the caller's relay user", service.owner)

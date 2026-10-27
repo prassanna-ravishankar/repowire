@@ -190,6 +190,16 @@ type managedAgent struct {
 	HomeMachine *string `json:"home_machine"`
 	CreatedBy   string  `json:"created_by"`
 	RetiredAt   *string `json:"retired_at"`
+	Circle      string  `json:"circle"`
+}
+
+// circle is the agent's own circle; a Worker from before agent circles
+// reports none, and then every agent is in managed.
+func (a managedAgent) circle() string {
+	if a.Circle == "" {
+		return managedMachineID
+	}
+	return a.Circle
 }
 
 // Agents a daemon created stay with it, including ones recorded without a
@@ -199,9 +209,6 @@ func (a managedAgent) onMachine() bool {
 }
 
 func (m managedMachine) agents(ctx context.Context, circle string) ([]map[string]any, error) {
-	if circle != "" && circle != managedMachineID {
-		return []map[string]any{}, nil
-	}
 	var list struct {
 		Items []managedAgent `json:"items"`
 	}
@@ -210,7 +217,7 @@ func (m managedMachine) agents(ctx context.Context, circle string) ([]map[string
 	}
 	rows := []map[string]any{}
 	for _, a := range list.Items {
-		if !a.onMachine() {
+		if !a.onMachine() || (circle != "" && a.circle() != circle) {
 			continue
 		}
 		status := "online"
@@ -222,7 +229,7 @@ func (m managedMachine) agents(ctx context.Context, circle string) ([]map[string
 			name = *a.DisplayName
 		}
 		rows = append(rows, map[string]any{
-			"peer_id": a.ID, "display_name": name, "circle": managedMachineID, "backend": "hosted", "status": status,
+			"peer_id": a.ID, "display_name": name, "circle": a.circle(), "backend": "hosted", "status": status,
 			"state": a.State, "description": a.Description, "workspace": a.Workspace, "addressable": true,
 		})
 	}
