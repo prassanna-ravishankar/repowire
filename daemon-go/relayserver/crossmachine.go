@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path"
 	"sort"
@@ -101,20 +102,35 @@ func (w *machineWork) forward(ctx context.Context, msg map[string]any) (int, []b
 	if target == nil {
 		return http.StatusNotFound, errorBody("machine offline")
 	}
+	// One deadline bounds the write, its wait for the socket, and the answer.
+	deadline := time.Now().Add(w.s.timeout)
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	ended := func() (int, []byte) {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return http.StatusGatewayTimeout, errorBody("machine did not respond in time")
+		}
+		return http.StatusBadGateway, errorBody("source disconnected")
+	}
 	id := randomID("mreq_", 16)
 	ch := w.s.addPending(id, target)
 	defer w.s.removePending(id)
-	deadline := time.Now().Add(w.s.timeout)
 	out := map[string]any{
 		"type": "remote_request", "request_id": id, "from_machine": w.src.daemonID,
 		"method": stringValue(msg["method"]), "path": route, "body": stringValue(msg["body"]),
 		"deadline": deadline.UnixMilli(),
 	}
+	select {
+	case <-ch: // replaced before the send: never reaches a stale socket
+		return http.StatusBadGateway, errorBody("machine disconnected")
+	default:
+	}
 	if err := target.write(ctx, out); err != nil {
+		if ctx.Err() != nil {
+			return ended()
+		}
 		return http.StatusBadGateway, errorBody("failed to reach machine")
 	}
-	timer := time.NewTimer(time.Until(deadline))
-	defer timer.Stop()
 	select {
 	case response := <-ch:
 		if stringValue(response["type"]) != "http_response" {
@@ -122,10 +138,8 @@ func (w *machineWork) forward(ctx context.Context, msg map[string]any) (int, []b
 		}
 		body, _ := base64.StdEncoding.DecodeString(stringValue(response["body"]))
 		return intValue(response["status"], http.StatusOK), body
-	case <-timer.C:
-		return http.StatusGatewayTimeout, errorBody("machine did not respond in time")
 	case <-ctx.Done():
-		return http.StatusBadGateway, errorBody("source disconnected")
+		return ended()
 	}
 }
 
