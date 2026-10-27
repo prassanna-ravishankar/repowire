@@ -164,6 +164,19 @@ describe("Managed page", () => {
 describe("Managed page live state", () => {
   const listed = (name: string) => within(screen.getByRole("complementary")).getByText(name).closest("button")!;
 
+  it("does not warn about the daemon when every agent is on managed", async () => {
+    const f = fixtures();
+    stubApi((url) => {
+      if (url.endsWith("/clients")) return json({ ...f.clients, gateway: [], outbox: 0 });
+      if (url.endsWith("/agents")) return json({ items: f.agents.filter((a) => a.created_by !== "daemon") });
+      return undefined;
+    });
+    render(<ManagedPage />);
+    await screen.findByRole("complementary");
+    await waitFor(() => expect(screen.getAllByText(/nightly-digest/).length).toBeGreaterThan(0));
+    expect(screen.queryByText(/daemon is not connected/)).toBeNull();
+  });
+
   it("does not let a slow HTTP bootstrap overwrite a newer stream frame", async () => {
     const f = fixtures();
     const agents = deferred<Response>();

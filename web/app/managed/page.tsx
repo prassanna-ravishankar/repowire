@@ -50,6 +50,8 @@ function ManagedApp({ me }: { me: Me }) {
   const shown = useMemo(() => visibleAgents(live.agents, showRetired || selected?.state === "retired"), [live.agents, showRetired, selected?.state]);
   const retiredCount = live.agents.filter((a) => a.state === "retired").length;
   const daemon = connectedDaemon(live.clients);
+  // Agents on managed run their mesh tools in the cloud; only a daemon's own agents need it connected.
+  const needsDaemon = live.agents.some((a) => a.created_by === "daemon" && a.state !== "retired");
   const degraded = connection.status === "live" && !upstream.connected;
   const stale = connection.status === "offline" || degraded;
 
@@ -139,9 +141,9 @@ function ManagedApp({ me }: { me: Me }) {
         </div>
       </header>
 
-      {loaded && !daemon && (
+      {loaded && !daemon && (needsDaemon || live.outbox > 0) && (
         <Banner tone="warning">
-          Your Repowire daemon is not connected. Agents still answer you here, but mesh tools fail
+          Your Repowire daemon is not connected. Agents it created still answer you here, but their mesh tools fail
           {live.outbox > 0 ? ` and ${live.outbox} result${live.outbox === 1 ? "" : "s"} wait in the outbox` : ""}.{" "}
           <a href="#/clients" className="font-semibold underline underline-offset-2">Clients</a>
         </Banner>

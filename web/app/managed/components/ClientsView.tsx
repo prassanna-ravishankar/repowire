@@ -29,7 +29,7 @@ export function ClientsView({
         <Card>
           {gateway.length === 0 ? (
             <Row dot="bg-outline" title="No daemon has connected">
-              Run <code>repowire setup</code> with the hosted backend enabled on a machine. Agents still answer you here; mesh tools fail until one connects.
+              Run <code>repowire setup</code> with the hosted backend enabled on a machine. Agents still answer you here. Agents a daemon created need it connected for their mesh tools; agents on managed do not.
             </Row>
           ) : (
             gateway.map((client) => (
