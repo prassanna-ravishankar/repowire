@@ -98,8 +98,16 @@ Requirements surfaced in review, to settle before building:
   the source daemon binds peer, circle and role; the relay binds owner and
   machine from the authenticated connection; the receiver rejects a missing
   identity and never resolves it as a local peer. A managed agent's principal
-  comes from its DO config, never from model arguments. Circle scope (global
-  or per machine) must be chosen.
+  comes from its DO config, never from model arguments.
+- **Circles are logical, per owner (decided 2026-10-26).** A circle spans
+  machines: peers on different machines in the same circle reach each other
+  as if local. The receiving machine enforces circle access against the
+  verified remote principal. Consequences to design: same-named circles on
+  different machines merge (`default` included, unless default stays
+  machine-local); a managed agent's circle becomes per-agent config instead
+  of the fixed `managed`; broadcast and discovery span machines within a
+  circle; any daemon of the owner can vouch for its peers' circles, which is
+  acceptable inside one owner.
 - **Replay and duplicates.** Wide, namespaced request ids; the receiver
   persists a receipt before delivery and binds sender, target, kind and
   payload to the id, rejecting conflicting reuse. Notifies get delivery ids.
