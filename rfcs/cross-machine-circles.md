@@ -75,7 +75,7 @@ Relay rules:
   type)`. `deliverPending` accepts a response only from the bound target
   connection; existing tunnel requests get the same sender check. Late
   responses, responses on a replaced connection, and duplicate active source
-  ids are dropped. Either connection closing fails the operation with 502.
+  ids are dropped. Either connection closing or being replaced fails the operation with 502 at once, and the request deadline bounds the write to the target as well as the wait for its answer.
 - **Admission.** Admission never blocks the read loop. A pool of 16 workers
   with a queue of 64 per connection takes requests; a full queue answers 429
   (`overloaded, not processed`) immediately.

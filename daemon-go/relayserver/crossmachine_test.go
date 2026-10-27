@@ -113,3 +113,61 @@ func TestRelayResponsesBindToTheirTargetConnection(t *testing.T) {
 		t.Fatalf("response %s", body)
 	}
 }
+
+// A target whose socket another writer holds cannot keep a request, or its
+// pending entry, past the deadline.
+func TestMachineRequestDeadlineBoundsABlockedWrite(t *testing.T) {
+	f := newAuthFixture(t)
+	f.s.timeout = 300 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	a := connectMachine(t, ctx, f, "alpha", http.NotFoundHandler())
+	connectMachine(t, ctx, f, "beta", http.NotFoundHandler())
+	owner, _ := f.s.tokens.validate(f.key)
+	beta := f.s.daemon(owner.UserID, "beta")
+	beta.writeOnce.Do(func() { beta.writeSlot = make(chan struct{}, 1) })
+	beta.writeSlot <- struct{}{}
+	defer func() { <-beta.writeSlot }()
+
+	started := time.Now()
+	status, _, err := a.MachineRequest(ctx, "beta", http.MethodPost, "/remote/ask", nil)
+	if err != nil || status != http.StatusGatewayTimeout || time.Since(started) > 2*time.Second {
+		t.Fatalf("blocked write: %d %v after %v", status, err, time.Since(started))
+	}
+	f.s.mu.Lock()
+	pending := len(f.s.pending)
+	f.s.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("%d pending entries left behind", pending)
+	}
+}
+
+// Replacing the target connection fails its in-flight requests at once
+// instead of leaving them to the deadline.
+func TestMachineRequestFailsWhenTheTargetIsReplaced(t *testing.T) {
+	f := newAuthFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	a := connectMachine(t, ctx, f, "alpha", http.NotFoundHandler())
+	arrived := make(chan struct{}, 1)
+	connectMachine(t, ctx, f, "beta", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrived <- struct{}{}
+		<-r.Context().Done()
+	}))
+	done := make(chan int, 1)
+	go func() {
+		status, _, _ := a.MachineRequest(ctx, "beta", http.MethodPost, "/remote/ask", nil)
+		done <- status
+	}()
+	<-arrived
+	started := time.Now()
+	connectMachine(t, ctx, f, "beta", http.NotFoundHandler())
+	select {
+	case status := <-done:
+		if status != http.StatusBadGateway || time.Since(started) > 3*time.Second {
+			t.Fatalf("replaced target answered %d after %v", status, time.Since(started))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request outlived its replaced target")
+	}
+}
