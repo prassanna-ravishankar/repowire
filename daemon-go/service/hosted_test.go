@@ -323,6 +323,40 @@ func TestHostedPullAskKeepsReplyOnTheAsk(t *testing.T) {
 	}
 }
 
+// A remote ask's close guard can refuse the settlement (a durable write
+// failed). The report must then stay unacknowledged so the runtime resends it.
+func TestHostedPullReplyRefusedByTheCloseGuardIsRetried(t *testing.T) {
+	f := newHostedFixture(t)
+	cid, err := f.asks.Register(context.Background(), RegisterAskParams{
+		FromPeerID: "relay-client", FromPeerName: "relay-client", ToPeerID: f.target.PeerID, ToPeerName: f.target.DisplayName,
+		ReplyDelivery: "pull",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.delivery.DeliverAsk(context.Background(), DeliverAskParams{FromPeer: "relay-client", ToPeer: "helper-hosted", Text: "hi", CorrelationID: cid}); err != nil {
+		t.Fatal(err)
+	}
+	refuse := true
+	f.asks.SetCloseGuard(func(*Ask, string) error {
+		if refuse {
+			return errors.New("disk full")
+		}
+		return nil
+	})
+	if err := f.hosted.Report(context.Background(), string(f.target.PeerID), cid, HostedResult{Status: "done", Text: "hello"}); err == nil {
+		t.Fatal("a refused settlement must fail the report")
+	}
+	if ask, _ := f.asks.Get(cid); ask.Closed {
+		t.Fatalf("the ask closed without its reply: %+v", ask)
+	}
+	refuse = false
+	f.report(cid, HostedResult{Status: "done", Text: "hello"})
+	if ask := waitClosed(t, f.asks, cid); ask.ReplyText == nil || *ask.ReplyText != "hello" {
+		t.Fatalf("the resent report must settle the reply, got %+v", ask)
+	}
+}
+
 func TestHostedReplyAfterRestartQueuesForAbsentAsker(t *testing.T) {
 	f := newHostedFixture(t)
 	queue := &fakeQueue{}

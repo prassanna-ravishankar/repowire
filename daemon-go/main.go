@@ -538,11 +538,9 @@ func runDaemon() {
 	// Reviews defaults its JSON store at Routes() time if unset; leave it.
 
 	// Restore re-registers hosted peers and keeps the ones with unsettled work
-	// busy; their reports arrive after the gateway connects. Connect waits for
-	// the fully wired hub: a running agent can call a mesh tool at once.
+	// busy; their reports arrive after the gateway connects.
 	if hosted != nil {
 		hosted.Restore(ctx)
-		hosted.Connect(cfg.Hosted.URL, cfg.Hosted.Token, cli.Version, h)
 	}
 
 	// Cross-machine circles: the relay client serves the /remote API in-process
@@ -553,6 +551,12 @@ func runDaemon() {
 		} else {
 			relayClient.WithRemoteHandler(h.RemoteHandler())
 		}
+	}
+
+	// Connect waits for the fully wired hub, remote asks rehydrated included: a
+	// report can arrive at once, and a running agent can call a mesh tool.
+	if hosted != nil {
+		hosted.Connect(cfg.Hosted.URL, cfg.Hosted.Token, cli.Version, h)
 	}
 
 	// Surface relay-client status on /health and drive its lazy self-heal there

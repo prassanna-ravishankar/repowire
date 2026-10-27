@@ -698,7 +698,14 @@ func (d *PeerDelivery) completeRuntimeAsk(ctx context.Context, cid string, reply
 		if isError {
 			reason = "send_failed"
 		}
-		_, _ = d.asks.Resolve(ctx, cid, reason, &body, nil)
+		if _, resolved := d.asks.Resolve(ctx, cid, reason, &body, nil); !resolved {
+			// A concurrent close won, or the close guard (a remote ask's
+			// durable settlement) refused it. Only the latter keeps the reply
+			// unrecorded, so the caller must retry.
+			if still, ok := d.asks.Get(cid); ok && !still.Closed {
+				return fmt.Errorf("reply %s not recorded: the ask is still open", cid)
+			}
+		}
 		return nil
 	}
 	framed := fmt.Sprintf("[ack #%s from @%s] %s", cid, ask.ToPeerName, body)

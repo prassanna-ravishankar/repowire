@@ -1,6 +1,7 @@
 # Managed is another machine
 
-Status: phase 1 in progress (2026-10-25); phases 2 to 4 need their own design.
+Status: phase 1 built (2026-10-25); daemon-to-daemon messaging shipped in #516;
+phase 2 (managed in the mesh), 3 and 4 need their own design.
 Builds on the managed control plane (`feat/managed-relay`, `feat/managed-web`)
 and the hosted runtime (`feat/hosted-runtime`, `feat/hosted-backend`).
 
@@ -15,11 +16,9 @@ Managed agents exist in two shapes today:
 - **Web-created.** `/managed` creates the agent directly on the Worker. It has
   no mesh identity at all (`home_machine: null`, "not on mesh").
 
-Two kinds of agent, and a UI that explains the difference. Separately, the
-relay knows every machine an account has connected, but machines cannot reach
-each other's agents: the relay drops inter-daemon frames on purpose
-(`relayserver/server.go`, covered by a regression test), and the daemon
-handles only HTTP tunnel frames.
+Two kinds of agent, and a UI that explains the difference. Daemons now reach
+each other's agents through the relay (cross-machine circles, #516), but
+managed agents take no part in it.
 
 ## Idea
 
@@ -87,38 +86,31 @@ Runs record who submitted them (`via: daemon | control`). Only the daemon's
 runs go to its outbox; the `web-` operation prefix rule goes away, kept only
 for records written before `via` existed.
 
-## Phase 2: one mesh across machines (needs design)
+## Phase 2: managed joins the mesh across machines (needs design)
 
-Requirements surfaced in review, to settle before building:
+Daemon-to-daemon messaging shipped in #516 ([cross-machine circles](cross-machine-circles.md)):
+the relay re-issues `machine_request` as `remote_request` naming the sending
+machine, each daemon serves `/remote/*` in-process, and named circles span an
+owner's machines while generated ones (`default`, all-digit tmux sessions,
+`window-N`) stay local. Its verified remote principal, durable receipts,
+fences, uncertain outcomes and `name@machine` addressing settle the
+requirements this phase originally listed.
 
-- **A new protocol, deliberately.** Prefer forwarding the canonical request
-  API over the existing authenticated HTTP tunnel to resurrecting the
-  dropped `relay_*` frames; either way the drop test is replaced on purpose.
-- **Verified remote principal.** `(owner, machine, peer_id, circle, role)`:
-  the source daemon binds peer, circle and role; the relay binds owner and
-  machine from the authenticated connection; the receiver rejects a missing
-  identity and never resolves it as a local peer. A managed agent's principal
-  comes from its DO config, never from model arguments.
-- **Circles are logical, per owner (decided 2026-10-26).** A circle spans
-  machines: peers on different machines in the same circle reach each other
-  as if local. The receiving machine enforces circle access against the
-  verified remote principal. Consequences to design: same-named circles on
-  different machines merge (`default` included, unless default stays
-  machine-local); a managed agent's circle becomes per-agent config instead
-  of the fixed `managed`; broadcast and discovery span machines within a
-  circle; any daemon of the owner can vouch for its peers' circles, which is
-  acceptable inside one owner.
-- **Replay and duplicates.** Wide, namespaced request ids; the receiver
-  persists a receipt before delivery and binds sender, target, kind and
-  payload to the id, rejecting conflicting reuse. Notifies get delivery ids.
-  A lost accept or reply is "uncertain", never rerun on reconnect.
-- **Reply ownership.** The target machine owns the request and its result
-  (as in phase 1); the source holds a remote-request handle and reads or
-  receives the settlement. Managed agents' `ask_peer` replies need an
-  admission route that does not depend on a laptop.
-- **Directory.** Remote entries are kept separate from locally executable
-  peers and addressed internally by `machine + peer_id`; `name@machine` is
-  presentation only.
+What remains is the `managed` machine as a source and target of that
+protocol:
+
+- **Per-agent circle.** A managed agent's circle becomes per-agent config
+  instead of the fixed `managed`, so it can share a named circle with daemon
+  peers.
+- **Principal from config.** A managed agent's principal comes from its DO
+  config, never from model arguments.
+- **Serving `/remote/*`.** The Worker answers the same remote API (peers, ask,
+  notify, asks, settled) with the same receipt and fence semantics, reached
+  through the relay's managed client rather than a daemon connection.
+- **Reply admission without a laptop.** A managed agent's `ask_peer` to a
+  daemon peer needs its outbound record and settlement held on the Worker.
+- **One ask authority.** Daemon-owned hosted agents stay with their home
+  daemon (they already appear in its `/remote/peers`) until phase 4.
 
 ## Phase 3: mailbox (needs design)
 
