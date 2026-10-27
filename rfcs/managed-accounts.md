@@ -1,6 +1,6 @@
 # Managed accounts
 
-Status: draft for Prass, 2026-10-27, revision 4 after three Codex reviews. It follows
+Status: draft for Prass, 2026-10-27, revision 5 after four Codex reviews. It follows
 [managed-machine](managed-machine.md) and
 [managed in the mesh](managed-in-the-mesh.md). Nothing here is built
 beyond the interim gate below.
@@ -234,20 +234,27 @@ then could not reserve synchronously.
 - **Per account.** The daily, monthly and per-agent caps stay as abuse
   guards, read from the account's plan, and are checked against settled plus
   reserved spend.
-- **Global breaker.** Charged provider cost is covered by credits bought at
-  a markup of at least 1, or granted by an admin. What is not covered is
-  operator overhead: container lifecycle time beyond each call's allowance,
-  and failure cleanup. That overhead is bounded per call by the Workspace's
-  own timeouts, not by credits, so the breaker is a guard against bugs and
-  overhead, not the money guard. It does not
-  reserve. The `registry` Durable Object sums settled provider cost,
-  overhead included, per UTC day. Over the ceiling it opens a breaker: Gateways refuse new admissions with
-  `service_capacity`, and the admin is alerted. Work admitted before the
-  breaker opened finishes, so the overshoot is bounded by reservations
-  already held, each of them covered by credits. The breaker closes at the
-  next UTC day or by an admin. A second reservation protocol across two
-  Durable Objects would need a cross-object failure and rollover design for
-  no added safety.
+- **Global breaker (best effort).** Charged provider cost is covered by
+  credits bought at a markup of at least 1, or granted by an admin. Operator
+  overhead is not covered: container lifecycle time beyond each call's
+  allowance, and failure cleanup.
+  - **How it works.** The `registry` Durable Object sums settled provider
+    cost per UTC day, overhead included. Over the ceiling it opens a breaker:
+    Gateways refuse new admissions with `service_capacity`, and the admin is
+    alerted. The breaker does not reserve, and it closes at the next UTC day
+    or by an admin.
+  - **What it bounds.** Overshoot past the ceiling is the charged cost of
+    work already admitted, which reservations cap, plus that work's overhead.
+    Today nothing bounds the overhead: `workspace.ts` has a 45 s shell timeout
+    and an inactivity timeout, but no deadline over the whole container
+    lifecycle (start, snapshot, teardown).
+  - **Phase 2 work.** A whole-lifecycle deadline per exec call that
+    terminates the container when it passes, and records a failed snapshot
+    as a failed call. Overhead per call is then finite, and the breaker's
+    overshoot is bounded by reservations plus admitted calls × that deadline.
+  - **Why not a second reservation protocol.** Reserving across two Durable
+    Objects would need a cross-object failure and day-rollover design, and
+    it still would not bound overhead.
 - **Comps.** A free account gets an admin credit grant (`id: comp_...`), not a
   bypass. Once credits are enforced, `REPOWIRE_MANAGED_USERS` is removed;
   until then it remains the beta gate.
@@ -292,8 +299,9 @@ and the Gateway.
    namespace link, immutable after first use; suspension; `managedFor` through
    the link. While in beta, only accounts on an invite list are active.
 2. **Billing.** Purchases, the Stripe webhook, credits, reservation-based
-   admission with per-step pre-checks, the concurrency cap, the global
-   breaker, comps, and the billing page. This is the first point where users are
+   admission with per-step pre-checks, one active operation per agent, the
+   concurrency cap, the whole-lifecycle exec deadline, the global breaker,
+   comps, and the billing page. This is the first point where users are
    charged, and every money guard ships in it.
 3. **Later.** Per-plan caps, Google sign-in, recurring plans, key rotation
    with drain-and-fence, and several namespaces per account with
