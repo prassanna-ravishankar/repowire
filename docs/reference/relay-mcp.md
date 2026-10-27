@@ -82,8 +82,9 @@ When the relay is configured for managed agents, `list_machines` also returns
 are the managed agents created from `/managed` or the managed API; an agent a
 daemon spawned stays on that daemon's machine. The id is reserved: a daemon
 whose hostname is `managed` cannot connect to such a relay until the host is
-renamed. They are listed
-in circle `managed`, with `backend: "hosted"`; retired agents are not listed.
+renamed. Each is listed in its own circle (`managed` unless it was created
+or moved into another shared circle), with `backend: "hosted"`; retired agents
+are not listed.
 
 Requests to the managed machine are durable: the managed service records each
 one before submitting it and keeps its result in the agent's run log, so

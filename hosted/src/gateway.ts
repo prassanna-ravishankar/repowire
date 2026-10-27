@@ -29,6 +29,19 @@ export interface RelayRequest {
 export type ExecReport = Pick<ExecOutcome, 'wall_ms' | 'snapshot_at'> & { dirty: boolean | null };
 export interface AgentInit { id: string; workspace: string | null; display_name?: string | null; created_by: string; home_machine?: string | null; circle?: string }
 interface Pending { socket: WebSocket; resolve(text: string): void; reject(error: Error): void }
+// A cross-machine request as the source sent it; immutable once recorded.
+export interface RemoteEnvelope {
+  id: string; kind: 'ask' | 'notify'; from_machine: string; from_peer: string; from_name: string; from_circle: string;
+  to_agent: string; text: string; created_at: number;
+}
+export interface RemoteInbound extends RemoteEnvelope { state: string; close_reason: string | null; reply: string | null }
+
+// A run's result in the daemon's close vocabulary: an answer is an ack with
+// its text, anything else closes with the run's reason.
+export function remoteResult(status: string, reason: string | null, text: string | null): [string, string | null] {
+  if (status === 'done') return text ? ['ack_with_msg', text] : ['ack', null];
+  return [reason ?? 'unanswered', null];
+}
 export interface Client {
   kind: 'daemon'; machine: string | null; daemon_id: string | null; version: string | null;
   connected_at: string; connected: boolean; disconnected_at?: string;
@@ -57,6 +70,13 @@ CREATE TABLE IF NOT EXISTS requests (
   id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, requester TEXT NOT NULL, text TEXT NOT NULL,
   created_at TEXT NOT NULL, state TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS requests_requester ON requests (requester, created_at);
+CREATE TABLE IF NOT EXISTS remote_inbound (
+  id TEXT PRIMARY KEY, kind TEXT NOT NULL, from_machine TEXT NOT NULL, from_peer TEXT NOT NULL, from_name TEXT NOT NULL,
+  from_circle TEXT NOT NULL, to_agent TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL, state TEXT NOT NULL,
+  close_reason TEXT, reply TEXT, settled_at INTEGER);
+CREATE INDEX IF NOT EXISTS remote_inbound_state ON remote_inbound (state, created_at);
+CREATE TABLE IF NOT EXISTS remote_fences (
+  id TEXT NOT NULL, from_machine TEXT NOT NULL, from_peer TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (id, from_machine));
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY, exec_count INTEGER NOT NULL DEFAULT 0, container_ms INTEGER NOT NULL DEFAULT 0,
   last_exec_at TEXT, running INTEGER NOT NULL DEFAULT 0, snapshot_at TEXT, dirty INTEGER NOT NULL DEFAULT 0);
@@ -302,16 +322,23 @@ export class Gateway extends DurableObject {
     const cost = usage ? modelCost(usage) : 0;
     const tokensIn = usage ? usage.input + usage.cacheRead : 0;
     const at = now();
-    this.sql.exec(
-      `INSERT INTO runs (agent, op, source, started_at, settled_at, status, reason, tokens_in, tokens_out, cost_usd, answer)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (agent, op) DO UPDATE SET settled_at = excluded.settled_at, status = excluded.status,
-         reason = excluded.reason, tokens_in = excluded.tokens_in, tokens_out = excluded.tokens_out,
-         cost_usd = excluded.cost_usd, answer = excluded.answer
-       WHERE runs.settled_at IS NULL`,
-      report.agent, report.operationId, source ?? null, startedAt ?? at, at, report.status, report.reason ?? null,
-      tokensIn, usage?.output ?? 0, cost, stored.text ?? null);
-    if (usage) this.meter(`run:${report.agent}:${report.operationId}`, report.agent, 'model', { tokensIn, tokensOut: usage.output, cost });
+    // The run, its metering and a remote ask's settlement commit together,
+    // before the report is acknowledged; a replayed report repairs a part
+    // that did not.
+    const remote = this.ctx.storage.transactionSync(() => {
+      this.sql.exec(
+        `INSERT INTO runs (agent, op, source, started_at, settled_at, status, reason, tokens_in, tokens_out, cost_usd, answer)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (agent, op) DO UPDATE SET settled_at = excluded.settled_at, status = excluded.status,
+           reason = excluded.reason, tokens_in = excluded.tokens_in, tokens_out = excluded.tokens_out,
+           cost_usd = excluded.cost_usd, answer = excluded.answer
+         WHERE runs.settled_at IS NULL`,
+        report.agent, report.operationId, source ?? null, startedAt ?? at, at, report.status, report.reason ?? null,
+        tokensIn, usage?.output ?? 0, cost, stored.text ?? null);
+      if (usage) this.meter(`run:${report.agent}:${report.operationId}`, report.agent, 'model', { tokensIn, tokensOut: usage.output, cost });
+      return this.settleRemoteRun(report.agent, report.operationId, report.status, report.reason ?? null, stored.text ?? null);
+    });
+    if (remote) this.pushSettled(remote);
     // The relay's runs were never queued by the daemon; their answer is in the
     // run log, so the outbox does not carry them.
     if ((via ?? 'daemon') === 'daemon') {
@@ -322,6 +349,120 @@ export class Gateway extends DurableObject {
     if (run) this.ui({ type: 'run', agent: report.agent, run });
     this.refresh(report.agent, report.operationId, report.reason ?? null);
     await this.publishOutbox();
+  }
+
+  // ---- remote (rfcs/managed-in-the-mesh.md) ---------------------------------
+  // This owner's side of the cross-machine protocol when managed is the
+  // target. Every multi-statement change is one synchronous transaction, and
+  // every terminal write is a compare-and-set, so a racing settle, read or
+  // replayed report changes nothing once a result is recorded.
+
+  storeEpoch(): string {
+    let epoch = this.ctx.storage.kv.get<string>('store_epoch');
+    if (!epoch) {
+      epoch = crypto.randomUUID();
+      this.ctx.storage.kv.put('store_epoch', epoch);
+    }
+    return epoch;
+  }
+
+  // Records an inbound request before dispatch. A fence for the id answers
+  // not_delivered; a known id answers its record; a different envelope is a
+  // conflict.
+  createInbound(record: RemoteEnvelope): { conflict: true } | { record: RemoteInbound; created: boolean } {
+    return this.ctx.storage.transactionSync(() => {
+      const fence = this.sql.exec('SELECT 1 FROM remote_fences WHERE id = ? AND from_machine = ?', record.id, record.from_machine).toArray()[0];
+      if (fence) return { record: { ...record, state: 'settled', close_reason: 'not_delivered', reply: null }, created: false };
+      const known = this.inbound(record.id);
+      if (known) {
+        const same = known.kind === record.kind && known.from_machine === record.from_machine && known.from_peer === record.from_peer
+          && known.from_name === record.from_name && known.from_circle === record.from_circle && known.to_agent === record.to_agent && known.text === record.text;
+        return same ? { record: known, created: false } : { conflict: true as const };
+      }
+      this.sql.exec(
+        `INSERT INTO remote_inbound (id, kind, from_machine, from_peer, from_name, from_circle, to_agent, text, created_at, state)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'dispatching')`,
+        record.id, record.kind, record.from_machine, record.from_peer, record.from_name, record.from_circle, record.to_agent, record.text, record.created_at);
+      return { record: this.inbound(record.id)!, created: true };
+    });
+  }
+
+  // The recorded origin reading its request. An unknown id inside the create
+  // horizon is fenced, so a late create can no longer dispatch it; one past
+  // the horizon may have existed and been pruned, so it is expired.
+  readInbound(id: string, fromMachine: string, fromPeer: string, createdAt: number, horizon: number): RemoteInbound | 'not_found' | 'expired' {
+    return this.ctx.storage.transactionSync(() => {
+      const known = this.inbound(id);
+      if (known) return known.from_machine === fromMachine && known.from_peer === fromPeer ? known : 'not_found';
+      const fence = this.sql.exec('SELECT from_peer FROM remote_fences WHERE id = ? AND from_machine = ?', id, fromMachine).toArray()[0];
+      if (!fence) {
+        if (createdAt < horizon) return 'expired';
+        this.sql.exec('INSERT INTO remote_fences (id, from_machine, from_peer, created_at) VALUES (?, ?, ?, ?)', id, fromMachine, fromPeer, createdAt);
+      } else if (fence.from_peer !== fromPeer) return 'not_found';
+      return { id, kind: id.startsWith('notif-') ? 'notify' : 'ask', from_machine: fromMachine, from_peer: fromPeer, from_name: '', from_circle: '',
+        to_agent: '', text: '', created_at: createdAt, state: 'settled', close_reason: 'not_delivered', reply: null };
+    });
+  }
+
+  advanceInbound(id: string, from: string, to: string) {
+    return this.sql.exec('UPDATE remote_inbound SET state = ? WHERE id = ? AND state = ?', to, id, from).rowsWritten > 0;
+  }
+
+  // Settles a request once. The first terminal write wins.
+  settleInbound(id: string, reason: string, reply: string | null): RemoteInbound | null {
+    const won = this.ctx.storage.transactionSync(() => this.settleRow(id, reason, reply));
+    if (won) this.pushSettled(won);
+    return won;
+  }
+
+  // Requests caught mid-dispatch, for lazy recovery.
+  dispatchingInbound(limit: number) {
+    return this.sql.exec("SELECT * FROM remote_inbound WHERE state = 'dispatching' ORDER BY created_at LIMIT ?", limit).toArray() as unknown as RemoteInbound[];
+  }
+
+  pruneRemote(before: number) {
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec('DELETE FROM remote_inbound WHERE created_at < ?', before);
+      this.sql.exec('DELETE FROM remote_fences WHERE created_at < ?', before);
+    });
+  }
+
+  private inbound(id: string) {
+    return this.sql.exec('SELECT * FROM remote_inbound WHERE id = ?', id).toArray()[0] as unknown as RemoteInbound | undefined;
+  }
+
+  private settleRow(id: string, reason: string, reply: string | null) {
+    const changed = this.sql.exec("UPDATE remote_inbound SET state = 'settled', close_reason = ?, reply = ?, settled_at = ? WHERE id = ? AND state != 'settled'",
+      reason, reply, Math.floor(Date.now() / 1000), id).rowsWritten;
+    return changed ? this.inbound(id)! : null;
+  }
+
+  // A run that answers a remote ask settles it, keyed by agent and operation.
+  // Inside the report's transaction.
+  private settleRemoteRun(agent: string, op: string, status: string, reason: string | null, text: string | null) {
+    const row = this.sql.exec("SELECT kind FROM remote_inbound WHERE id = ? AND to_agent = ? AND state IN ('dispatching', 'open')", op, agent).toArray()[0];
+    if (!row || row.kind !== 'ask') return null;
+    const [closeReason, reply] = remoteResult(status, reason, text);
+    return this.settleRow(op, closeReason, reply);
+  }
+
+  // One settlement push to the source, after the commit and off the caller's
+  // path. A lost push is recovered by the source reading the record back.
+  private pushSettled(row: RemoteInbound) {
+    const env = this.env as { RELAY_URL?: string; CONTROL_TOKEN?: string };
+    if (!env.RELAY_URL || !env.CONTROL_TOKEN || row.kind !== 'ask') return;
+    const send = async () => {
+      const owner = await this.owner();
+      if (!owner) return;
+      const response = await fetch(`${env.RELAY_URL!.replace(/\/$/, '')}/api/v1/managed/machine-request`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${env.CONTROL_TOKEN}`, 'X-Repowire-Owner': owner, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ machine: row.from_machine, method: 'POST', path: '/remote/settled',
+          body: { id: row.id, close_reason: row.close_reason, ...(row.reply != null ? { reply: row.reply } : {}), store_epoch: this.storeEpoch() } }),
+      });
+      if (!response.ok) console.warn('Remote settlement push failed; the source reads it back', row.id, response.status);
+    };
+    this.ctx.waitUntil(send().catch((error) => console.warn('Remote settlement push failed; the source reads it back', row.id, error)));
   }
 
   execStarted(workspace: string) {
