@@ -256,6 +256,8 @@ describe("Managed page live state", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(screen.queryByLabelText("Circle")).toBeNull());
     expect(patches).toEqual(["default", "research"]);
+    // The saved agent is applied without any stream frame.
+    expect(screen.getByRole("button", { name: "circle research" })).toBeInTheDocument();
     window.location.hash = "";
   });
 
@@ -269,13 +271,16 @@ describe("Managed page live state", () => {
   });
 
   it("lists a managed agent's open cross-machine asks", async () => {
-    stubApi((url) => (url.endsWith("/agents/nightly-digest/asks")
-      ? json({ items: [{ id: "ask-1793000000-" + "a".repeat(32), to: "bob@laptop", state: "uncertain", close_reason: null, replied: false, created_at: new Date().toISOString() }] })
-      : undefined));
+    let asksBody: unknown = { items: [{ id: "ask-1793000000-" + "a".repeat(32), to: "bob@laptop", state: "uncertain", close_reason: null, replied: false, created_at: new Date().toISOString() }] };
+    stubApi((url) => (url.endsWith("/agents/nightly-digest/asks") ? json(asksBody) : undefined));
     window.location.hash = "#/agents/nightly-digest/asks";
     render(<ManagedPage />);
     expect(await screen.findByText("@bob@laptop")).toBeInTheDocument();
     expect(screen.getByText("outcome unknown")).toBeInTheDocument();
+    // A settlement no run follows still moves asks_at; the tab reloads from that frame.
+    asksBody = { items: [] };
+    FakeEventSource.latest.emit({ type: "agent", agent: { ...fixtures().agents[2], asks_at: new Date().toISOString() } });
+    expect(await screen.findByText("No open asks")).toBeInTheDocument();
     window.location.hash = "";
   });
 });

@@ -215,3 +215,38 @@ test('an agent lists its open cross-machine asks for the web', async () => {
   assert.deepEqual(items.map((item) => [item.id, item.to, item.state, item.replied]), [[id, 'bob@laptop', 'sent', false]]);
   assert.deepEqual((await get('/agents/b/asks')).items, []);
 });
+
+test('a hung reply submit is never started twice, however many passes run', async () => {
+  const { directory, a, settle, tool, state } = owner();
+  fakeRelay();
+  const now = Math.floor(Date.now() / 1000);
+  const id = `ask-${now}-${'7'.repeat(32)}`;
+  directory.insertOutbound({ id, machine: 'laptop', store_epoch: 'e1', to_peer: 'bob', to_name: 'bob', from_agent: 'a', text: 'q', created_at: now - 100 });
+  directory.settleOutbound(id, 'ack_with_msg', 'yes');
+  let submits = 0;
+  a.agent.operation = async () => ({ status: 'absent' });
+  a.agent.submit = () => { submits++; return new Promise(() => {}); };
+  for (let pass = 0; pass < 3; pass++) {
+    state.storage.sql.exec('UPDATE remote_outbound SET delivery_at = 0');
+    await tool('b', 'whoami');
+    await settle();
+  }
+  assert.equal(submits, 1);
+  assert.equal(directory.outboundRecord(id)?.delivered, 0);
+});
+
+test('an asks change with no run still publishes the agent, so an open page reloads', () => {
+  const state = fakeState();
+  const sent: string[] = [];
+  const directory = new Gateway(state as never, {});
+  directory.addAgent({ id: 'a', workspace: null, created_by: 'web' });
+  (state as unknown as { getWebSockets: () => { send: (m: string) => void }[] }).getWebSockets = () => [{ send: (m: string) => sent.push(m) }];
+  const id = `ask-1-${'8'.repeat(32)}`;
+  directory.insertOutbound({ id, machine: 'laptop', store_epoch: 'e1', to_peer: 'bob', to_name: 'bob', from_agent: 'a', text: 'q', created_at: 1 });
+  const before = directory.agent('a')?.asks_at;
+  assert.ok(before);
+  sent.length = 0;
+  directory.settleOutbound(id, 'ack', null);
+  directory.markOutboundDelivered(id, 'bare_ack');
+  assert.equal(sent.filter((frame) => JSON.parse(frame).type === 'agent').length, 2);
+});

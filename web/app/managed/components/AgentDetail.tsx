@@ -32,6 +32,8 @@ export function AgentDetail({
   onStop,
   onRetire,
   onCopied,
+  since,
+  onAgent,
 }: {
   agent: Agent;
   tab: AgentTab;
@@ -48,6 +50,9 @@ export function AgentDetail({
   onStop: () => Promise<void>;
   onRetire: () => void;
   onCopied: () => void;
+  /** The page's guarded update: take since() before a request, then apply its Agent. */
+  since: () => number;
+  onAgent: (agent: Agent, token: number) => void;
 }) {
   const [stopping, setStopping] = useState(false);
   const working = agent.state === "working";
@@ -83,7 +88,7 @@ export function AgentDetail({
               <span className="hidden sm:inline">{formatTokens(agent.tokens_in + agent.tokens_out)} tokens</span>
               <span className="hidden sm:inline">created {formatDate(agent.created_at)} by {agent.created_by}</span>
               <span>{`home ${agent.home_machine ?? "managed"}`}</span>
-              {onManaged(agent) && <CircleField agent={agent} />}
+              {onManaged(agent) && <CircleField agent={agent} since={since} onSaved={onAgent} />}
             </div>
             {agent.description && <p className="mt-1 truncate font-mono text-[11px] text-tertiary-fixed-dim">↳ {agent.description}</p>}
           </div>
@@ -371,7 +376,7 @@ function onManaged(agent: Agent) {
  * The Worker refuses a machine-local name (default, *, a number, window-N)
  * and the field shows its reason verbatim.
  */
-function CircleField({ agent }: { agent: Agent }) {
+function CircleField({ agent, since, onSaved }: { agent: Agent; since: () => number; onSaved: (agent: Agent, token: number) => void }) {
   const circle = agent.circle ?? "managed";
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(circle);
@@ -392,8 +397,10 @@ function CircleField({ agent }: { agent: Agent }) {
     const next = value.trim();
     if (!next || next === circle) return setEditing(false);
     setSaving(true);
+    const token = since();
     try {
-      await managedApi.setCircle(agent.id, next);
+      // Applied at once, so the page is right without the live stream.
+      onSaved(await managedApi.setCircle(agent.id, next), token);
       setEditing(false);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not change the circle");
@@ -437,7 +444,8 @@ function AsksTab({ agent, now, onCopied }: { agent: Agent; now: number; onCopied
       (err: Error) => !cancelled && setError(err.message),
     );
     return () => { cancelled = true; };
-  }, [agent.id, agent.state, agent.state_at, reload]);
+    // asks_at moves on every change to these asks, including ones no run follows.
+  }, [agent.id, agent.state, agent.state_at, agent.asks_at, reload]);
   if (error) return <InlineError className="m-4" error={error} onRetry={() => setReload((n) => n + 1)} />;
   if (!asks) return <SkeletonRows />;
   if (asks.length === 0) {

@@ -58,7 +58,7 @@ const now = () => new Date().toISOString();
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents (
-  id TEXT PRIMARY KEY, workspace TEXT, display_name TEXT, description TEXT, home_machine TEXT, circle TEXT NOT NULL DEFAULT 'managed',
+  id TEXT PRIMARY KEY, workspace TEXT, display_name TEXT, description TEXT, home_machine TEXT, circle TEXT NOT NULL DEFAULT 'managed', asks_at TEXT,
   created_at TEXT NOT NULL, created_by TEXT NOT NULL, retired_at TEXT,
   state TEXT NOT NULL DEFAULT 'idle', state_at TEXT NOT NULL, last_op TEXT, last_reason TEXT);
 CREATE TABLE IF NOT EXISTS runs (
@@ -101,6 +101,7 @@ const ADDED_COLUMNS = [
   'ALTER TABLE runs ADD COLUMN answer TEXT',
   "ALTER TABLE agents ADD COLUMN circle TEXT NOT NULL DEFAULT 'managed'",
   'ALTER TABLE remote_outbound ADD COLUMN delivery_at INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE agents ADD COLUMN asks_at TEXT',
 ];
 
 // A run as listed and pushed; its answer is fetched one run at a time.
@@ -450,6 +451,19 @@ export class Gateway extends DurableObject {
       `INSERT INTO remote_outbound (id, machine, store_epoch, to_peer, to_name, from_agent, text, created_at, state, checked_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?)`,
       row.id, row.machine, row.store_epoch, row.to_peer, row.to_name, row.from_agent, row.text, row.created_at, row.created_at);
+    this.asksChanged(row.from_agent);
+  }
+
+  // An agent's open asks changed, whether or not a run followed: stamp the
+  // agent and publish it, so a page showing its asks reloads.
+  private asksChanged(agent: string | undefined) {
+    if (!agent) return;
+    this.sql.exec('UPDATE agents SET asks_at = ? WHERE id = ?', now(), agent);
+    this.publish(agent);
+  }
+
+  private outboundAgent(id: string) {
+    return this.sql.exec('SELECT from_agent FROM remote_outbound WHERE id = ?', id).toArray()[0]?.from_agent as string | undefined;
   }
 
   outboundRecord(id: string) {
@@ -457,17 +471,23 @@ export class Gateway extends DurableObject {
   }
 
   markOutboundUncertain(id: string) {
-    return this.sql.exec("UPDATE remote_outbound SET state = 'uncertain' WHERE id = ? AND state = 'sent'", id).rowsWritten > 0;
+    const changed = this.sql.exec("UPDATE remote_outbound SET state = 'uncertain' WHERE id = ? AND state = 'sent'", id).rowsWritten > 0;
+    if (changed) this.asksChanged(this.outboundAgent(id));
+    return changed;
   }
 
   // One terminal transition for a push, a read and a create response alike.
   settleOutbound(id: string, reason: string, reply: string | null) {
-    return this.sql.exec("UPDATE remote_outbound SET state = 'settled', close_reason = ?, reply = ? WHERE id = ? AND state IN ('sent', 'uncertain')",
+    const changed = this.sql.exec("UPDATE remote_outbound SET state = 'settled', close_reason = ?, reply = ? WHERE id = ? AND state IN ('sent', 'uncertain')",
       reason, reply, id).rowsWritten > 0;
+    if (changed) this.asksChanged(this.outboundAgent(id));
+    return changed;
   }
 
   markOutboundDelivered(id: string, disposition: string | null = null) {
-    this.sql.exec('UPDATE remote_outbound SET delivered = 1, disposition = ? WHERE id = ? AND delivered = 0', disposition, id);
+    if (this.sql.exec('UPDATE remote_outbound SET delivered = 1, disposition = ? WHERE id = ? AND delivered = 0', disposition, id).rowsWritten > 0) {
+      this.asksChanged(this.outboundAgent(id));
+    }
   }
 
   // Unsettled rows not read in the last cutoff, oldest check first; each is
@@ -737,7 +757,7 @@ export class Gateway extends DurableObject {
     const totals = this.usageTotal('agent = ?', row.id as string);
     return {
       id: row.id as string, workspace: row.workspace, display_name: row.display_name, state: row.state, state_at: row.state_at,
-      last_op: row.last_op, last_reason: row.last_reason, description: row.description, home_machine: row.home_machine, circle: row.circle,
+      last_op: row.last_op, last_reason: row.last_reason, description: row.description, home_machine: row.home_machine, circle: row.circle, asks_at: row.asks_at,
       created_at: row.created_at, created_by: row.created_by, retired_at: row.retired_at,
       runs: Number(this.sql.exec('SELECT COUNT(*) AS n FROM runs WHERE agent = ?', row.id as string).one().n),
       tokens_in: totals.tokens_in, tokens_out: totals.tokens_out, cost_usd: totals.cost_usd,

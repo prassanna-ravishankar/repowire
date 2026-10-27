@@ -18,6 +18,8 @@ export interface Agent {
   home_machine: string | null;
   /** The circle of an agent on managed; a daemon's agent takes its daemon peer's. */
   circle?: string;
+  /** When the agent's open cross-machine asks last changed, run or not. */
+  asks_at?: string | null;
   created_at: string;
   created_by: string;
   retired_at: string | null;

@@ -186,6 +186,8 @@ function ManagedApp({ me }: { me: Me }) {
                   onStop={() => stop(selected)}
                   onRetire={() => setDialog("retire")}
                   onCopied={() => push("Copied")}
+                  since={since}
+                  onAgent={applyAgent}
                 />
               ) : (
                 <EmptyState icon={<Bot className="h-6 w-6" />} title={selectedId && loaded ? `No agent ${selectedId}` : "Select an agent"}>

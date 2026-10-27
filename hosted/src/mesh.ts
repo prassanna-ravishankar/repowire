@@ -182,11 +182,27 @@ export function followUp(env: MeshEnv, owner: string): Promise<void> {
   return entry.done;
 }
 
+// The RPC work of a pass, per owner and row. A pass's time bound only stops
+// it waiting; the work it started may still be running, so a row with work in
+// flight is never started again, and an owner has at most a batch in flight.
+const inflight = new Map<string, Set<string>>();
+
+function track(owner: string, key: string, work: () => Promise<void>): Promise<void> | null {
+  const running = inflight.get(owner) ?? new Set<string>();
+  if (running.has(key) || running.size >= BATCH) return null;
+  running.add(key);
+  inflight.set(owner, running);
+  return work().finally(() => {
+    running.delete(key);
+    if (!running.size) inflight.delete(owner);
+  });
+}
+
 async function reconcile(env: MeshEnv, owner: string) {
   const directory = env.GATEWAYS.getByName(owner);
   const now = Math.floor(Date.now() / 1000);
   const rows = await directory.claimOutboundChecks(now - CHECK_CUTOFF_S, now, BATCH) as RemoteOutbound[];
-  await Promise.allSettled(rows.map(async (row) => {
+  await Promise.allSettled(rows.map((row) => track(owner, `check:${row.id}`, async () => {
     const asker = await directory.agent(row.from_agent) as { display_name?: string | null; circle?: string } | null;
     const from = { peer_id: row.from_agent, display_name: asker?.display_name || row.from_agent, circle: asker?.circle ?? MANAGED };
     const answer = await machineCall(env, owner, row.machine, `/remote/asks/${row.id}`, { from, wait: 0 }, PASS_MS);
@@ -195,7 +211,7 @@ async function reconcile(env: MeshEnv, owner: string) {
     else if (answer.status === 200 && answer.body.state === 'settled') {
       await directory.settleOutbound(row.id, String(answer.body.close_reason ?? 'unanswered'), (answer.body.reply as string | undefined) ?? null);
     }
-  }));
+  })));
 }
 
 async function deliverReplies(env: MeshEnv, owner: string) {
@@ -203,11 +219,8 @@ async function deliverReplies(env: MeshEnv, owner: string) {
   const now = Math.floor(Date.now() / 1000);
   const rows = await directory.claimDeliveries(now - CHECK_CUTOFF_S, now, BATCH) as RemoteOutbound[];
   for (const row of rows) {
-    try {
-      await deliverReply(env, owner, row);
-    } catch (error) {
-      console.warn('Managed reply delivery failed; the next trigger retries', row.id, error);
-    }
+    await track(owner, `reply:${row.id}`, () => deliverReply(env, owner, row)
+      .catch((error) => console.warn('Managed reply delivery failed; the next trigger retries', row.id, error)));
   }
 }
 
