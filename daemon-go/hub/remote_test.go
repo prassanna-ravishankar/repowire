@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -582,6 +583,15 @@ func TestRemoteHTTPNotifyAndBroadcast(t *testing.T) {
 		t.Fatalf("notify %d %v", status, out)
 	}
 	bob.next(t, "over http")
+	res := httpGet(t, alpha.srv.URL+"/traces/"+out["delivery_id"].(string))
+	trace, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(trace), "remote_delivered") {
+		t.Fatalf("trace %d %s", res.StatusCode, trace)
+	}
+	if _, err := alpha.h.mcpNotifyPeer(context.Background(), alpha.h.ask.delivery, mcpNotifyPeerArgs{PeerName: bob.name + "@beta", Message: "f", Attachments: []map[string]any{{"name": "a"}}}, string(asker.id)); err == nil || err.Error() != "cross-machine notifies carry text only" {
+		t.Fatalf("MCP attachment error %v", err)
+	}
 
 	status, out = alpha.post(t, "/notify", map[string]any{"from_peer": string(asker.id), "to_peer": "nobody@beta", "text": "lost"})
 	if status != http.StatusNotFound {

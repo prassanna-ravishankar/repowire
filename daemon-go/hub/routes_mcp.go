@@ -394,7 +394,7 @@ func (h *Hub) mcpNotifyPeer(ctx context.Context, delivery *service.PeerDelivery,
 	}
 	if handled, id, state, err := h.notifyAddress(ctx, fromPeer, args.PeerName, args.Message, args.Attachments); handled {
 		if err != nil {
-			return nil, fmt.Errorf("notify failed: %w", err)
+			return nil, err
 		}
 		return textResult(fmt.Sprintf("%s delivery_state=%s", id, state)), nil
 	}
