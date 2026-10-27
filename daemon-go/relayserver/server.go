@@ -41,12 +41,20 @@ type daemonConn struct {
 	daemonID    string
 	connectedAt time.Time
 	ws          *websocket.Conn
-	writeMu     sync.Mutex
+	writeOnce   sync.Once
+	writeSlot   chan struct{}
 }
 
+// write serializes frames on the socket. Waiting for the slot honours ctx, so
+// a stuck writer cannot hold a caller past its deadline.
 func (c *daemonConn) write(ctx context.Context, value any) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	c.writeOnce.Do(func() { c.writeSlot = make(chan struct{}, 1) })
+	select {
+	case c.writeSlot <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-c.writeSlot }()
 	return wsjson.Write(ctx, c.ws, value)
 }
 
@@ -58,15 +66,21 @@ type pendingRequest struct {
 // Server keeps live tunnel connections and share links in memory. Relay identity
 // is derived from the full secret; optional OAuth grants live in SQLite.
 type Server struct {
-	mu          sync.Mutex
-	connections map[string]*daemonConn
-	users       map[string]map[string]*daemonConn
-	pending     map[string]*pendingRequest
-	oauth       *relayOAuth
-	tokens      *tokenStore
-	webOut      string
-	timeout     time.Duration
-	mux         *http.ServeMux
+	mu           sync.Mutex
+	connections  map[string]*daemonConn
+	users        map[string]map[string]*daemonConn
+	pending      map[string]*pendingRequest
+	oauth        *relayOAuth
+	tokens       *tokenStore
+	worker       *managedWorker
+	meshSlots    meshSlots
+	admins       []string
+	managedUsers []string
+	events       *managedEvents
+	costs        *costCache
+	webOut       string
+	timeout      time.Duration
+	mux          *http.ServeMux
 }
 
 func New(webOut string) *Server {
@@ -75,6 +89,8 @@ func New(webOut string) *Server {
 		users:       map[string]map[string]*daemonConn{},
 		pending:     map[string]*pendingRequest{},
 		tokens:      newTokenStore(),
+		events:      newManagedEvents(),
+		costs:       newCostCache(),
 		webOut:      webOut,
 		timeout:     defaultTunnelTimeout,
 		mux:         http.NewServeMux(),
@@ -100,6 +116,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /s/{share_id}/ask", s.shareAsk)
 	s.mux.HandleFunc("/ws/relay", s.relayWebSocket)
 	s.mux.HandleFunc("/d/{token}/{path...}", s.legacyTunnel)
+	s.managedRoutes()
+	s.managedMeshRoutes()
 	if s.webOut != "" {
 		next := filepath.Join(s.webOut, "_next")
 		if stat, err := os.Stat(next); err == nil && stat.IsDir() {
@@ -116,10 +134,17 @@ func (s *Server) registerConn(c *daemonConn) *daemonConn {
 	s.mu.Lock()
 	old := s.connections[key]
 	s.connections[key] = c
+	// Work sent to a replaced connection fails now, not at its deadline.
+	if old != nil && old != c {
+		s.failPendingLocked(old)
+	}
 	if s.users[c.userID] == nil {
 		s.users[c.userID] = map[string]*daemonConn{}
 	}
 	s.users[c.userID][key] = c
+	// Publish under s.mu so subscribers see connects and disconnects in the
+	// order they happened. publishDaemon never blocks or takes s.mu.
+	s.events.publishDaemon(c.userID, c.view(true))
 	s.mu.Unlock()
 	return old
 }
@@ -136,15 +161,8 @@ func (s *Server) unregisterConn(c *daemonConn) {
 	if len(s.users[c.userID]) == 0 {
 		delete(s.users, c.userID)
 	}
-	for id, pending := range s.pending {
-		if pending.conn == c {
-			delete(s.pending, id)
-			select {
-			case pending.ch <- map[string]any{"type": "daemon_disconnected"}:
-			default:
-			}
-		}
-	}
+	s.failPendingLocked(c)
+	s.events.publishDaemon(c.userID, c.view(false))
 	s.mu.Unlock()
 }
 
@@ -173,10 +191,29 @@ func (s *Server) allDaemons(userID string) []*daemonConn {
 	return out
 }
 
+// failPendingLocked ends every request waiting on c. Callers hold s.mu.
+func (s *Server) failPendingLocked(c *daemonConn) {
+	for id, pending := range s.pending {
+		if pending.conn == c {
+			delete(s.pending, id)
+			select {
+			case pending.ch <- map[string]any{"type": "daemon_disconnected"}:
+			default:
+			}
+		}
+	}
+}
+
+// addPending registers a request on conn. A conn that is no longer current
+// (replaced or gone between lookup and here) fails the request at once.
 func (s *Server) addPending(id string, conn *daemonConn) chan map[string]any {
 	ch := make(chan map[string]any, 16)
 	s.mu.Lock()
-	s.pending[id] = &pendingRequest{conn: conn, ch: ch}
+	if s.connections[connKey(conn.userID, conn.daemonID)] != conn {
+		ch <- map[string]any{"type": "daemon_disconnected"}
+	} else {
+		s.pending[id] = &pendingRequest{conn: conn, ch: ch}
+	}
 	s.mu.Unlock()
 	return ch
 }
@@ -237,12 +274,18 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/?error=invalid_key", http.StatusSeeOther)
 		return
 	}
+	// The dashboard needs a daemon to tunnel to; managed agents do not, so
+	// a key enabled for managed signs in without one, to /managed.
+	landing := "/dashboard"
 	if s.anyDaemon(key.UserID) == nil {
-		http.Redirect(w, r, "/?error=no_daemon", http.StatusSeeOther)
-		return
+		if _, err := s.managedFor(key.UserID); err != nil {
+			http.Redirect(w, r, "/?error=no_daemon", http.StatusSeeOther)
+			return
+		}
+		landing = "/managed"
 	}
 	http.SetCookie(w, &http.Cookie{Name: "rw_token", Value: token, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode, MaxAge: 30 * 24 * 3600})
-	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+	http.Redirect(w, r, landing, http.StatusSeeOther)
 }
 
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -250,13 +293,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	path := filepath.Join(s.webOut, "dashboard.html")
-	if stat, err := os.Stat(path); s.webOut == "" || err != nil || stat.IsDir() {
-		http.Error(w, "Dashboard not built. Rebuild relay image.", http.StatusServiceUnavailable)
-		return
-	}
-	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
-	http.ServeFile(w, r, path)
+	s.serveExport(w, r, "dashboard.html")
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -672,6 +709,11 @@ func (s *Server) relayWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid api_key or daemon_id", http.StatusUnauthorized)
 		return
 	}
+	// The managed machine owns this id; two machines must never share one.
+	if daemonID == managedMachineID {
+		http.Error(w, `daemon_id "managed" (this machine's hostname) is reserved for managed agents; rename the host to connect it`, http.StatusConflict)
+		return
+	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		return
@@ -798,6 +840,9 @@ func FindWebOutputDir() string {
 
 func ListenAndServe(ctx context.Context, addr, webOut string) error {
 	relay := New(webOut)
+	if err := relay.ConfigureManaged(ManagedConfigFromEnv()); err != nil {
+		return err
+	}
 	if issuer := os.Getenv("REPOWIRE_RELAY_OAUTH_ISSUER"); issuer != "" {
 		if err := relay.EnableMCP(issuer, os.Getenv("REPOWIRE_RELAY_OAUTH_DB")); err != nil {
 			return err

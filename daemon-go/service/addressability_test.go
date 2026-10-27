@@ -78,7 +78,7 @@ func TestOpenScheduledAskRollsBackOnNonAddressable(t *testing.T) {
 	f := &fakeTransport{}
 	asks := NewAskTracker(0)
 	d := NewPeerDelivery(reg, newRouterWithFake(f), f, asks, nil)
-	if _, err := d.OpenScheduledAsk(context.Background(), "alpha", "app-2-codex", "do it", nil, "pull"); err == nil {
+	if _, err := d.OpenScheduledAsk(context.Background(), "", "alpha", "app-2-codex", "do it", nil, "pull"); err == nil {
 		t.Fatal("scheduled ask to a non-addressable peer succeeded")
 	}
 	if asks.OpenCount() != 0 {

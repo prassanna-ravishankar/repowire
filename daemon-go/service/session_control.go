@@ -7,6 +7,7 @@ import (
 	"context"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
@@ -69,6 +70,13 @@ type SessionControl struct {
 	spawn  spawnExecutor
 	store  *state.Store
 	resume func(proto.AgentType, string, string, *string, map[string]any) (map[string]any, bool)
+	hosted hostedExecutors
+}
+
+// hostedExecutors is the *Hosted seam for jobs that run on hosted agents.
+type hostedExecutors interface {
+	Spawn(ctx context.Context, params HostedSpawnParams) (proto.PeerID, proto.DisplayName, error)
+	Retire(ctx context.Context, id proto.PeerID) error
 }
 
 // NewSessionControl wires the executor-acquisition service. spawn may be nil
@@ -81,6 +89,15 @@ func NewSessionControl(reg controlRegistry, spawn spawnExecutor, store *state.St
 // WithResume attaches the shared resume-safety resolver. Returns the receiver.
 func (c *SessionControl) WithResume(r func(proto.AgentType, string, string, *string, map[string]any) (map[string]any, bool)) *SessionControl {
 	c.resume = r
+	return c
+}
+
+// WithHosted lets jobs with backend hosted run on hosted agents. Returns the
+// receiver.
+func (c *SessionControl) WithHosted(hosted *Hosted) *SessionControl {
+	if hosted != nil {
+		c.hosted = hosted
+	}
 	return c
 }
 
@@ -128,6 +145,9 @@ func (c *SessionControl) AcquireExecutorForWork(ctx context.Context, work *state
 	if circle == "" {
 		c.failOp(ctx, op.OperationID, "", map[string]any{"reason": "missing_circle"})
 		return nil, &ExecutorAcquisitionUnavailableError{Reason: "missing_circle", OperationID: op.OperationID}
+	}
+	if backend == proto.AgentHosted {
+		return c.acquireHosted(ctx, work, op.OperationID, path, circle, policy)
 	}
 	if policy.ProcessScope != "per_fire" {
 		if reusable := c.findLivePeer(path, backend, circle); reusable != nil {
@@ -221,6 +241,55 @@ func (c *SessionControl) AcquireExecutorForWork(ctx context.Context, work *state
 	}, nil
 }
 
+// acquireHosted runs the job on the hosted agent its path names. The agent's
+// conversation is the continuity: resume reuses it across fires, fresh gives
+// each fire its own agent, retired when the attempt ends.
+func (c *SessionControl) acquireHosted(ctx context.Context, work *state.TrackedWork, operationID, path, circle string, policy execPolicy) (*ExecutorAcquisition, error) {
+	const strategy = "hosted_agent"
+	fail := func(reason string, detail map[string]any) (*ExecutorAcquisition, error) {
+		errObj := map[string]any{"reason": reason}
+		for k, v := range detail {
+			errObj[k] = v
+		}
+		c.failOp(ctx, operationID, strategy, errObj)
+		return nil, &ExecutorAcquisitionUnavailableError{Reason: reason, OperationID: operationID, Status: "failed", Phase: "spawn", Err: errObj}
+	}
+	if c.hosted == nil {
+		return fail("hosted_unavailable", nil)
+	}
+	fresh := policy.Continuity == "fresh"
+	if fresh {
+		attempt := strings.TrimPrefix(currentWorkAttempt(work), "attempt-")
+		if attempt == "" {
+			return fail("missing_attempt", nil)
+		}
+		path = strings.TrimRight(path, "/") + "-" + attempt[:min(6, len(attempt))]
+	}
+	_, _ = c.store.StartAttempt(ctx, operationID, strPtr(strategy), map[string]any{"path": path, "backend": string(proto.AgentHosted), "continuity": policy.Continuity})
+	peer := c.findLivePeer(path, proto.AgentHosted, circle)
+	if peer == nil {
+		id, _, err := c.hosted.Spawn(ctx, HostedSpawnParams{Path: path, Circle: circle, Role: proto.RoleAgent})
+		if err != nil {
+			return fail("spawn_failed", map[string]any{"message": err.Error()})
+		}
+		var ok bool
+		if peer, ok = c.reg.GetPeer(id); !ok {
+			return fail("spawned_peer_not_registered", nil)
+		}
+	}
+	id := peer.PeerID
+	binding := c.recordRuntimeBinding(ctx, work, peer, strategy, operationID, policy.ProcessScope, policy.Continuity)
+	var release map[string]any
+	if fresh {
+		release = map[string]any{"kind": "hosted_agent", "peer_id": string(id), "display_name": string(peer.DisplayName),
+			"operation_id": operationID, "strategy": strategy, "created_at": opReleaseNow()}
+	}
+	_, _ = c.store.CompleteOperation(ctx, operationID, strPtr(strategy), map[string]any{
+		"peer_id": string(id), "runtime_binding": binding, "release_handle": release,
+	})
+	return &ExecutorAcquisition{Peer: peer, Strategy: strategy, OperationID: operationID, RuntimeBinding: binding, ReleaseHandle: release}, nil
+}
+
 func (c *SessionControl) acquireAssignedPeer(ctx context.Context, work *state.TrackedWork, operationID, assigned string) (*ExecutorAcquisition, error) {
 	resolved := c.reg.ResolvePeerStrict(assigned, work.Circle)
 	if len(resolved) != 1 {
@@ -291,6 +360,9 @@ func (c *SessionControl) ReleaseExecutorForWork(ctx context.Context, work *state
 	if err != nil {
 		return nil, err
 	}
+	if kind, _ := release["kind"].(string); kind == "hosted_agent" {
+		return c.releaseHosted(ctx, op.OperationID, release, terminalReason)
+	}
 	_, _ = c.store.StartAttempt(ctx, op.OperationID, strPtr("kill_pane"), map[string]any{"release_handle": release})
 
 	paneID, _ := release["pane_id"].(string)
@@ -324,6 +396,27 @@ func (c *SessionControl) ReleaseExecutorForWork(ctx context.Context, work *state
 		"released_at":     opReleaseNow(),
 	}
 	_, _ = c.store.CompleteOperation(ctx, op.OperationID, strPtr("kill_pane"), result)
+	return result, nil
+}
+
+// releaseHosted retires a fresh job's hosted agent. Its runtime keeps the
+// transcript; the peer is gone from the mesh.
+func (c *SessionControl) releaseHosted(ctx context.Context, operationID string, release map[string]any, terminalReason string) (map[string]any, error) {
+	peerID, _ := release["peer_id"].(string)
+	_, _ = c.store.StartAttempt(ctx, operationID, strPtr("retire_hosted"), map[string]any{"release_handle": release})
+	if c.hosted == nil || peerID == "" {
+		errObj := map[string]any{"reason": "hosted_unavailable", "peer_id": peerID}
+		c.failOp(ctx, operationID, "retire_hosted", errObj)
+		return map[string]any{"status": "failed", "reason": "hosted_unavailable", "operation_id": operationID, "terminal_reason": terminalReason, "reap_error": errObj}, nil
+	}
+	if err := c.hosted.Retire(ctx, proto.PeerID(peerID)); err != nil {
+		errObj := map[string]any{"reason": "retire_failed", "peer_id": peerID, "message": err.Error()}
+		c.failOp(ctx, operationID, "retire_hosted", errObj)
+		return map[string]any{"status": "failed", "reason": "retire_failed", "operation_id": operationID, "terminal_reason": terminalReason, "reap_error": errObj}, nil
+	}
+	result := map[string]any{"status": "released", "reason": "hosted_retired", "operation_id": operationID,
+		"terminal_reason": terminalReason, "peer_id": peerID, "released_at": opReleaseNow()}
+	_, _ = c.store.CompleteOperation(ctx, operationID, strPtr("retire_hosted"), result)
 	return result, nil
 }
 

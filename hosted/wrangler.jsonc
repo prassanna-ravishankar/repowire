@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "repowire-hosted",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "ai": {"binding": "AI"},
+  "durable_objects": {"bindings": [
+    {"name": "AGENTS", "class_name": "HostedAgent"},
+    {"name": "WORKSPACES", "class_name": "Workspace"},
+    {"name": "GATEWAYS", "class_name": "Gateway"},
+    {"name": "REGISTRY", "class_name": "Registry"}
+  ]},
+  "migrations": [
+    {"tag": "v1", "new_sqlite_classes": ["HostedAgent", "Workspace"]},
+    {"tag": "v2", "new_sqlite_classes": ["Gateway"]},
+    {"tag": "v3", "new_sqlite_classes": ["Registry"]}
+  ],
+  "containers": [{"class_name": "Workspace", "scheduling_policy": "durable_object"}],
+  "vars": {"MODEL": "@cf/zai-org/glm-5.3-flash", "RELAY_URL": "https://relay.repowire.io"}
+}

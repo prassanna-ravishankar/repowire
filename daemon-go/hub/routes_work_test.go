@@ -196,21 +196,22 @@ func (f *fakeSpawner) Spawn(cfg service.SpawnConfig) (service.SpawnResult, error
 	return service.SpawnResult{DisplayName: f.display, TmuxSession: f.session, PaneID: f.pane}, nil
 }
 
-// fakeAskOpener records the dispatch ask and returns a fixed correlation id.
+// fakeAskOpener records the dispatch ask and the correlation id it was opened under.
 type fakeAskOpener struct {
 	from, to, text string
+	cid            string
 	circle         string
 	replyDelivery  string
 	calls          int
 }
 
-func (f *fakeAskOpener) OpenScheduledAsk(ctx context.Context, fromPeer, toPeer, text string, circle *string, replyDelivery string) (string, error) {
+func (f *fakeAskOpener) OpenScheduledAsk(ctx context.Context, cid, fromPeer, toPeer, text string, circle *string, replyDelivery string) (string, error) {
 	f.calls++
-	f.from, f.to, f.text, f.replyDelivery = fromPeer, toPeer, text, replyDelivery
+	f.from, f.to, f.text, f.replyDelivery, f.cid = fromPeer, toPeer, text, replyDelivery, cid
 	if circle != nil {
 		f.circle = *circle
 	}
-	return "ask-cid-123", nil
+	return cid, nil
 }
 
 // TestWorkRoutesCreateListStatus drives the primary HTTP path: POST /work
@@ -380,8 +381,8 @@ func TestJobRunnerDispatchSpawnsAndDelivers(t *testing.T) {
 	if !strings.Contains(opener.text, "do the thing") {
 		t.Fatalf("dispatch prompt missing job body: %q", opener.text)
 	}
-	if out.CorrelationID == nil || *out.CorrelationID != "ask-cid-123" {
-		t.Fatalf("correlation_id = %v, want ask-cid-123", out.CorrelationID)
+	if out.CorrelationID == nil || opener.cid == "" || *out.CorrelationID != opener.cid {
+		t.Fatalf("correlation_id = %v, want the dispatch ask's %q", out.CorrelationID, opener.cid)
 	}
 
 	// A durable acquire operation was recorded (audit trail).

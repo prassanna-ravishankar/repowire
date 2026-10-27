@@ -375,6 +375,14 @@ func runDaemon() {
 		delivery.WithInbox(inbox)
 		h.WithInbox(inbox)
 	}
+	// (6c) Hosted agents: managed peers on the hosted runtime. They start
+	// after the job services in (9), which observe their runs.
+	var hosted *service.Hosted
+	if cfg.Hosted.URL != "" && cfg.Hosted.Token != "" {
+		hosted = service.NewHosted(reg, service.NewHostedClient(cfg.Hosted.URL, cfg.Hosted.Token, selfMachine), store, selfMachine)
+		delivery.WithHosted(hosted)
+		h.WithHosted(hosted)
+	}
 	transport.SetACPPermissionHandler(service.NewACPPermissionHandler(asks, func(kind string, data map[string]any) {
 		reg.AddEvent(ctx, kind, data)
 	}))
@@ -460,6 +468,22 @@ func runDaemon() {
 	jobCompletion := service.NewJobCompletion(store, asks, sessionControl, reg, delivery)
 	reg.OnTerminalOffline = jobCompletion.OnPeerTerminalOffline
 	scheduler := service.NewScheduler(store, delivery)
+	// Hosted runs report like hook turns: to job completion and the chat
+	// feed. Restore and Connect run after the hub is wired, below.
+	if hosted != nil {
+		sessionControl.WithHosted(hosted)
+		hosted.OnSettled("jobs", jobCompletion.OnHostedRun)
+		hosted.OnSettled("chat", func(ctx context.Context, run service.HostedDelivery, result service.HostedResult) error {
+			turn := func(role, text string) {
+				reg.AddEvent(ctx, "chat_turn", map[string]any{"peer": run.ToPeerName, "peer_id": run.ToPeerID, "role": role, "text": text})
+			}
+			turn("user", run.Text)
+			if result.Status == "done" {
+				turn("assistant", result.Text)
+			}
+			return nil
+		})
+	}
 
 	// (10) Relay/shares config. A nil-or-keyless RelayConfig leaves /shares as
 	// the documented degrade (503 POST/DELETE, empty-list GET) — i.e. the 503
@@ -513,6 +537,12 @@ func runDaemon() {
 			WithPlacementUpdater(spawnService.Ownership().UpdatePlacement))
 	// Reviews defaults its JSON store at Routes() time if unset; leave it.
 
+	// Restore re-registers hosted peers and keeps the ones with unsettled work
+	// busy; their reports arrive after the gateway connects.
+	if hosted != nil {
+		hosted.Restore(ctx)
+	}
+
 	// Cross-machine circles: the relay client serves the /remote API in-process
 	// and carries this daemon's requests to the owner's other machines.
 	if relayClient != nil {
@@ -521,6 +551,12 @@ func runDaemon() {
 		} else {
 			relayClient.WithRemoteHandler(h.RemoteHandler())
 		}
+	}
+
+	// Connect waits for the fully wired hub, remote asks rehydrated included: a
+	// report can arrive at once, and a running agent can call a mesh tool.
+	if hosted != nil {
+		hosted.Connect(cfg.Hosted.URL, cfg.Hosted.Token, cli.Version, h)
 	}
 
 	// Surface relay-client status on /health and drive its lazy self-heal there
@@ -609,7 +645,8 @@ func runDaemon() {
 	// accepting new connections but does not close already-hijacked sockets. A
 	// live WS read loop can still be running when store.Close() returns; closing
 	// it requires a hub-level socket sweep, which is out of scope for this fix.
-	inbox.Close() // joins in-flight surface pushes before the store closes
+	inbox.Close()  // joins in-flight surface pushes before the store closes
+	hosted.Close() // drops the gateway; unsettled submissions report after the next connect
 	delivery.Close()
 	transport.CloseACP()
 	reg.Close()

@@ -208,6 +208,8 @@ type mcpSpawnArgs struct {
 	Command string `json:"command,omitempty"`
 	Circle  string `json:"circle,omitempty"`
 	Message string `json:"message,omitempty"`
+	// Workspace is a shared sandbox name for backend hosted.
+	Workspace string `json:"workspace,omitempty" jsonschema:"backend hosted only: a sandbox shared with other hosted agents that name it"`
 }
 type mcpCircleArgs struct {
 	Circle string `json:"circle,omitempty"`
@@ -404,7 +406,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		}
 		return "name updated: " + string(name), nil
 	})
-	addMCPTool(srv, "spawn_peer", "Spawn a local tmux-backed coding peer.", func(ctx context.Context, caller string, a mcpSpawnArgs) (string, error) {
+	addMCPTool(srv, "spawn_peer", "Spawn a coding peer: a local tmux-backed runtime, or backend hosted for a managed agent that sleeps when idle.", func(ctx context.Context, caller string, a mcpSpawnArgs) (string, error) {
 		if err := requireMCPAdmin(h, cfg, caller, "spawn_peer"); err != nil {
 			return "", err
 		}
@@ -420,7 +422,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 			value := proto.AgentType(a.Backend)
 			backend = &value
 		}
-		result, err := h.spawnPeer(ctx, SpawnRequest{Path: a.Path, Backend: backend, Profile: strPtr(a.Profile), Command: strPtr(a.Command), Circle: circle, Message: strPtr(a.Message), SourcePane: sourcePane, FromPeer: caller})
+		result, err := h.spawnPeer(ctx, SpawnRequest{Path: a.Path, Backend: backend, Profile: strPtr(a.Profile), Command: strPtr(a.Command), Circle: circle, Message: strPtr(a.Message), SourcePane: sourcePane, FromPeer: caller, Workspace: strPtr(a.Workspace)})
 		if err != nil {
 			return "", err
 		}

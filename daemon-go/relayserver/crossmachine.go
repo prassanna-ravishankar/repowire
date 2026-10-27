@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path"
 	"sort"
@@ -97,24 +98,55 @@ func (w *machineWork) forward(ctx context.Context, msg map[string]any) (int, []b
 	if !remotePath(route) {
 		return http.StatusForbidden, errorBody("only /remote/ paths cross machines")
 	}
+	deadline := time.Now().Add(w.s.timeout)
+	if machine == managedMachineID {
+		worker, err := w.s.managedFor(w.src.userID)
+		if err != nil {
+			return managedStatus(err), errorBody(err.Error())
+		}
+		body, err := base64.StdEncoding.DecodeString(stringValue(msg["body"]))
+		if err != nil {
+			return http.StatusBadRequest, errorBody("body must be base64")
+		}
+		return worker.remote(ctx, w.src.userID, w.src.daemonID, stringValue(msg["method"]), route, body, deadline)
+	}
 	target := w.s.daemon(w.src.userID, machine)
 	if target == nil {
 		return http.StatusNotFound, errorBody("machine offline")
 	}
+	return w.s.remoteRequest(ctx, target, w.src.daemonID, stringValue(msg["method"]), route, stringValue(msg["body"]), deadline)
+}
+
+// remoteRequest re-issues one /remote request to target under a relay-minted
+// id and waits for that connection's answer until deadline or ctx ends.
+func (s *Server) remoteRequest(ctx context.Context, target *daemonConn, fromMachine, method, route, body string, deadline time.Time) (int, []byte) {
+	// One deadline bounds the write, its wait for the socket, and the answer.
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	ended := func() (int, []byte) {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return http.StatusGatewayTimeout, errorBody("machine did not respond in time")
+		}
+		return http.StatusBadGateway, errorBody("source disconnected")
+	}
 	id := randomID("mreq_", 16)
-	ch := w.s.addPending(id, target)
-	defer w.s.removePending(id)
-	deadline := time.Now().Add(w.s.timeout)
+	ch := s.addPending(id, target)
+	defer s.removePending(id)
 	out := map[string]any{
-		"type": "remote_request", "request_id": id, "from_machine": w.src.daemonID,
-		"method": stringValue(msg["method"]), "path": route, "body": stringValue(msg["body"]),
-		"deadline": deadline.UnixMilli(),
+		"type": "remote_request", "request_id": id, "from_machine": fromMachine,
+		"method": method, "path": route, "body": body, "deadline": deadline.UnixMilli(),
+	}
+	select {
+	case <-ch: // replaced before the send: never reaches a stale socket
+		return http.StatusBadGateway, errorBody("machine disconnected")
+	default:
 	}
 	if err := target.write(ctx, out); err != nil {
+		if ctx.Err() != nil {
+			return ended()
+		}
 		return http.StatusBadGateway, errorBody("failed to reach machine")
 	}
-	timer := time.NewTimer(time.Until(deadline))
-	defer timer.Stop()
 	select {
 	case response := <-ch:
 		if stringValue(response["type"]) != "http_response" {
@@ -122,24 +154,33 @@ func (w *machineWork) forward(ctx context.Context, msg map[string]any) (int, []b
 		}
 		body, _ := base64.StdEncoding.DecodeString(stringValue(response["body"]))
 		return intValue(response["status"], http.StatusOK), body
-	case <-timer.C:
-		return http.StatusGatewayTimeout, errorBody("machine did not respond in time")
 	case <-ctx.Done():
-		return http.StatusBadGateway, errorBody("source disconnected")
+		return ended()
 	}
 }
 
 // answerMachineList names the owner's other online machines.
+// For an owner enabled for managed, managed is always one of them.
 func (s *Server) answerMachineList(ctx context.Context, src *daemonConn, msg map[string]any) {
+	machines := s.onlineDaemons(src.userID, src.daemonID)
+	if _, err := s.managedFor(src.userID); err == nil {
+		machines = append(machines, managedMachineID)
+		sort.Strings(machines)
+	}
+	body, _ := json.Marshal(map[string]any{"machines": machines})
+	_ = src.write(ctx, map[string]any{"type": "machine_response", "id": stringValue(msg["id"]), "status": http.StatusOK, "body": base64.StdEncoding.EncodeToString(body)})
+}
+
+// onlineDaemons names the owner's connected daemons, except one.
+func (s *Server) onlineDaemons(userID, except string) []string {
 	machines := []string{}
-	for _, conn := range s.allDaemons(src.userID) {
-		if conn.daemonID != src.daemonID {
+	for _, conn := range s.allDaemons(userID) {
+		if conn.daemonID != except {
 			machines = append(machines, conn.daemonID)
 		}
 	}
 	sort.Strings(machines)
-	body, _ := json.Marshal(map[string]any{"machines": machines})
-	_ = src.write(ctx, map[string]any{"type": "machine_response", "id": stringValue(msg["id"]), "status": http.StatusOK, "body": base64.StdEncoding.EncodeToString(body)})
+	return machines
 }
 
 // remotePath accepts only a clean, unescaped path under /remote/.

@@ -124,11 +124,14 @@ const (
 	// AgentHuman backs the daemon-owned human peer. Like mcp-http it is never
 	// a WebSocket runtime.
 	AgentHuman AgentType = "human"
+	// AgentHosted backs a managed agent that runs on the hosted runtime and
+	// is reached through the daemon, never over a WebSocket.
+	AgentHosted AgentType = "hosted"
 )
 
 func (a AgentType) Valid() bool {
 	switch a {
-	case AgentClaudeCode, AgentOpenCode, AgentCodex, AgentPi, AgentMCPHTTP, AgentHuman:
+	case AgentClaudeCode, AgentOpenCode, AgentCodex, AgentPi, AgentMCPHTTP, AgentHuman, AgentHosted:
 		return true
 	}
 	return false
