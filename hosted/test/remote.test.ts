@@ -12,10 +12,10 @@ function managed(createdBy = 'web') {
     CONTROL_TOKEN: 'control', HOSTED_TOKEN: 'daemon', HOSTED_OWNER: 'alice',
     GATEWAYS: { getByName: () => parts.directory }, AGENTS: { getByName: () => parts.agent },
   };
-  const call = async (path: string, body: unknown, { machine = 'laptop', token = 'control' } = {}) => {
+  const call = async (path: string, body: unknown, { machine = 'laptop', token = 'control', deadline = Date.now() + 25_000 } = {}) => {
     const res = await worker.fetch(new Request(`https://hosted${path}`, {
       method: 'POST', body: JSON.stringify(body),
-      headers: { Authorization: `Bearer ${token}`, 'X-Repowire-Owner': 'alice', 'X-Repowire-From-Machine': machine },
+      headers: { Authorization: `Bearer ${token}`, 'X-Repowire-Owner': 'alice', 'X-Repowire-From-Machine': machine, 'X-Repowire-Deadline': String(deadline) },
     }), env as never);
     return { status: res.status, body: await res.json() as Record<string, unknown> };
   };
@@ -135,10 +135,37 @@ test('recovery settles from what pi has: absent is fenced, admitted is open', as
   agent.kv.put(`report:${lost}`, { source: null, via: 'control' });
 
   await call('/remote/peers', { from });
+  // Recovery runs in the background, after the request.
+  for (let i = 0; i < 20 && directory.inboundRecord(admitted)?.state !== 'open'; i++) await flush();
   assert.deepEqual([directory.inboundRecord(lost)?.state, directory.inboundRecord(lost)?.close_reason], ['settled', 'not_delivered']);
   assert.equal(directory.inboundRecord(admitted)?.state, 'open');
   assert.equal(agent.kv.get(`report:${lost}`), undefined);
   // The tombstone refuses the submit if it was still on its way.
   assert.ok('undelivered' in await agent.submit('q', lost, undefined, 'control'));
   assert.equal(pi.submitted.has(lost), false);
+});
+
+test('work past the relay deadline is never started', async () => {
+  const { call, pi, directory } = managed();
+  const epoch = await epochOf(call);
+  const id = remoteID();
+  const late = await call('/remote/ask', { id, from, to_peer: 'a', text: 'q', expected_epoch: epoch }, { deadline: Date.now() - 60_000 });
+  assert.equal(late.status, 504);
+  assert.equal(pi.submitted.has(id), false);
+  assert.equal(directory.inboundRecord(id), null);
+});
+
+test('a stuck recovery never delays or fails other requests', async () => {
+  const { call, directory, agent } = managed();
+  const old = Math.floor(Date.now() / 1000) - 120;
+  const stuck = remoteID('ask', old);
+  directory.createInbound({ id: stuck, kind: 'ask', from_machine: 'laptop', from_peer: from.peer_id, from_name: 'asker', from_circle: 'managed', to_agent: 'a', text: 'q', created_at: old });
+  agent.fence = () => new Promise(() => {});
+  const started = Date.now();
+  const listed = await call('/remote/peers', { from });
+  assert.equal(listed.status, 200);
+  assert.ok(Date.now() - started < 500, `discovery waited ${Date.now() - started} ms`);
+  agent.fence = async () => { throw new Error('agent unavailable'); };
+  assert.equal((await call('/remote/peers', { from })).status, 200);
+  assert.equal(directory.inboundRecord(stuck)?.state, 'dispatching');
 });

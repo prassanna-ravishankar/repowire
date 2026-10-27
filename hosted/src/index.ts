@@ -615,7 +615,7 @@ async function adminRoute(env: Env, path: string, url: URL) {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     try {
       const url = new URL(request.url);
       if (url.pathname === '/health' && request.method === 'GET') return json({ ok: true });
@@ -644,7 +644,12 @@ export default {
         if (caller.role !== 'control' || !caller.owner) throw new HttpError(403, 'The remote API is for the relay');
         const fromMachine = request.headers.get('X-Repowire-From-Machine') ?? '';
         if (!fromMachine || fromMachine.length > 200 || fromMachine === 'managed') throw new HttpError(400, 'X-Repowire-From-Machine must name the sending machine');
-        return await remoteRoute(env, caller.owner, fromMachine, request, url.pathname, await body(request, true));
+        // The relay's absolute deadline (Unix ms); without one, the relay's cap.
+        const named = request.headers.get('X-Repowire-Deadline');
+        const deadline = named == null ? Date.now() + 25_000 : Number(named);
+        if (!Number.isFinite(deadline) || deadline <= 0) throw new HttpError(400, 'X-Repowire-Deadline must be Unix milliseconds');
+        const background = (work: Promise<unknown>) => { if (ctx) ctx.waitUntil(work); else void work; };
+        return await remoteRoute(env, caller.owner, fromMachine, request, url.pathname, await body(request, true), deadline, background);
       }
       if (url.pathname.startsWith('/requests')) {
         if (caller.role !== 'control') throw new HttpError(403, 'Requests are for the relay');

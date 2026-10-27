@@ -46,12 +46,20 @@ function principal(value: unknown): Principal | null {
 const onManaged = (row: Row) => row.created_by !== 'daemon' && !row.home_machine && !row.retired_at;
 const nameOf = (row: Row) => (typeof row.display_name === 'string' && row.display_name) || row.id;
 
-export async function remoteRoute(env: RemoteEnv, owner: string, fromMachine: string, request: Request, path: string, input: Record<string, unknown>) {
+// deadline is the relay's absolute Unix-ms deadline for this request. Work
+// that would start after it is not started: the source has given up, and its
+// later read fences the id.
+export async function remoteRoute(env: RemoteEnv, owner: string, fromMachine: string, request: Request, path: string, input: Record<string, unknown>,
+  deadline: number, background: (work: Promise<unknown>) => void) {
   if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed');
+  const late = () => Date.now() >= deadline;
+  if (late()) return refuse(504, 'the request deadline passed before it was handled; nothing was done');
   const directory = env.GATEWAYS.getByName(owner);
   const now = Math.floor(Date.now() / 1000);
+  // Housekeeping never holds this request: pruning is one statement, and
+  // recovery of other stuck requests runs in the background.
   await directory.pruneRemote(now - RETENTION_S);
-  await recoverDispatching(env, owner);
+  background(recoverDispatching(env, owner));
   const epoch = await directory.storeEpoch();
   const receipt = (record: RemoteInbound, responder: string) => json({
     id: record.id, state: record.state, ...(record.close_reason ? { close_reason: record.close_reason } : {}),
@@ -85,12 +93,13 @@ export async function remoteRoute(env: RemoteEnv, owner: string, fromMachine: st
     if (!target || !onManaged(target) || target.circle !== from.circle) {
       return refuse(404, `no reachable peer ${String(input.to_peer)} in circle ${from.circle}`);
     }
+    if (late()) return refuse(504, 'the request deadline passed before it was handled; nothing was done');
     const result = await directory.createInbound({
       id: input.id as string, kind, from_machine: fromMachine, from_peer: from.peer_id, from_name: from.display_name,
       from_circle: from.circle, to_agent: target.id, text: input.text, created_at: created,
     });
     if ('conflict' in result) return refuse(409, 'request id already used for a different request');
-    const record = result.created ? await dispatch(env, owner, result.record) : result.record;
+    const record = result.created ? await dispatch(env, owner, result.record, late) : result.record;
     return receipt(record, nameOf(target));
   }
 
@@ -106,8 +115,9 @@ export async function remoteRoute(env: RemoteEnv, owner: string, fromMachine: st
     if (first === 'not_found') return refuse(403, "not this origin's request");
     if (first === 'expired') return refuse(410, { error: 'expired', store_epoch: epoch });
     let record: RemoteInbound = first;
-    if (record.state === 'dispatching') record = await recover(env, owner, record);
-    const wait = Math.min(Math.max(Number(input.wait) || 0, 0), WAIT_CAP_S);
+    if (record.state === 'dispatching') record = await recover(env, owner, record, Math.min(RECOVER_MS, deadline - Date.now() - 500));
+    const remaining = Math.max(0, (deadline - Date.now()) / 1000 - 1);
+    const wait = Math.min(Math.max(Number(input.wait) || 0, 0), WAIT_CAP_S, remaining);
     if (record.kind === 'ask' && record.state === 'open' && wait > 0) {
       // Settle from pi's result when the report has not landed yet; the
       // report's later write is a no-op.
@@ -131,10 +141,14 @@ const agentOf = (env: RemoteEnv, owner: string, agent: string) => env.AGENTS.get
 // Hands a freshly recorded request to its agent once. A definite refusal
 // settles it; a submit that may have landed leaves it dispatching for
 // recovery, and the source hears that the outcome is unknown.
-async function dispatch(env: RemoteEnv, owner: string, record: RemoteInbound): Promise<RemoteInbound> {
+async function dispatch(env: RemoteEnv, owner: string, record: RemoteInbound, late: () => boolean): Promise<RemoteInbound> {
   const directory = env.GATEWAYS.getByName(owner);
+  // Recorded but never handed over: settling it now is exact, and the
+  // source's read finds the result.
+  if (late()) return (await directory.settleInbound(record.id, 'not_delivered', null)) ?? record;
   const refusal = await directory.admit(record.to_agent);
   if (refusal) return (await directory.settleInbound(record.id, 'over_budget', null)) ?? record;
+  if (late()) return (await directory.settleInbound(record.id, 'not_delivered', null)) ?? record;
   const sender = `${record.from_name}@${record.from_machine}`;
   const framed = `<peer-message from="@${escape(sender)}" type="${record.kind}" correlation-id="${record.id}">\n${escape(record.text)}\n</peer-message>`;
   let accepted;
@@ -151,9 +165,12 @@ async function dispatch(env: RemoteEnv, owner: string, record: RemoteInbound): P
 
 // Resolves a request caught mid-dispatch from what pi has, never from a
 // marker. A timeout leaves it dispatching for a later pass.
-async function recover(env: RemoteEnv, owner: string, record: RemoteInbound): Promise<RemoteInbound> {
+async function recover(env: RemoteEnv, owner: string, record: RemoteInbound, ms = RECOVER_MS): Promise<RemoteInbound> {
   const directory = env.GATEWAYS.getByName(owner);
-  const found = await within(agentOf(env, owner, record.to_agent).fence(record.id) as Promise<OperationState>, RECOVER_MS);
+  // A slow or failed answer is unknown, never proof either way: the row
+  // stays dispatching for a later pass.
+  const found = await within(agentOf(env, owner, record.to_agent).fence(record.id) as Promise<OperationState>, ms)
+    .catch((error) => { console.warn('Remote recovery failed; retried later', record.id, error); return null; });
   if (!found) return record;
   if (found.status === 'fenced') await directory.settleInbound(record.id, 'not_delivered', null);
   else if (found.status === 'durable' || record.kind === 'notify') {
@@ -165,8 +182,20 @@ async function recover(env: RemoteEnv, owner: string, record: RemoteInbound): Pr
   return (await directory.inboundRecord(record.id)) ?? record;
 }
 
-// At most a batch of stuck requests per /remote request, in one budget.
-async function recoverDispatching(env: RemoteEnv, owner: string) {
-  const rows = await env.GATEWAYS.getByName(owner).dispatchingInbound(RECOVER_BATCH, Math.floor(Date.now() / 1000) - RECOVER_AFTER_S);
-  if (rows.length) await within(Promise.all(rows.map((row) => recover(env, owner, row))), RECOVER_MS);
+// At most a batch of stuck requests, once at a time per owner in this
+// isolate, in the background. A failed row is logged and left for a later
+// pass; it never fails or delays another request.
+const recovering = new Map<string, Promise<void>>();
+function recoverDispatching(env: RemoteEnv, owner: string): Promise<void> {
+  const running = recovering.get(owner);
+  if (running) return running;
+  const work = (async () => {
+    const rows = await env.GATEWAYS.getByName(owner).dispatchingInbound(RECOVER_BATCH, Math.floor(Date.now() / 1000) - RECOVER_AFTER_S);
+    const results = await Promise.allSettled(rows.map((row) => recover(env, owner, row)));
+    for (const [i, result] of results.entries()) {
+      if (result.status === 'rejected') console.warn('Remote recovery failed; retried later', rows[i].id, result.reason);
+    }
+  })().catch((error) => console.warn('Remote recovery pass failed', error)).finally(() => recovering.delete(owner));
+  recovering.set(owner, work);
+  return work;
 }
