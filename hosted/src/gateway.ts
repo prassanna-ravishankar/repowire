@@ -404,6 +404,8 @@ export class Gateway extends DurableObject {
     });
   }
 
+  inboundRecord(id: string) { return this.inbound(id) ?? null; }
+
   advanceInbound(id: string, from: string, to: string) {
     return this.sql.exec('UPDATE remote_inbound SET state = ? WHERE id = ? AND state = ?', to, id, from).rowsWritten > 0;
   }
@@ -416,8 +418,8 @@ export class Gateway extends DurableObject {
   }
 
   // Requests caught mid-dispatch, for lazy recovery.
-  dispatchingInbound(limit: number) {
-    return this.sql.exec("SELECT * FROM remote_inbound WHERE state = 'dispatching' ORDER BY created_at LIMIT ?", limit).toArray() as unknown as RemoteInbound[];
+  dispatchingInbound(limit: number, before: number) {
+    return this.sql.exec("SELECT * FROM remote_inbound WHERE state = 'dispatching' AND created_at < ? ORDER BY created_at LIMIT ?", before, limit).toArray() as unknown as RemoteInbound[];
   }
 
   pruneRemote(before: number) {

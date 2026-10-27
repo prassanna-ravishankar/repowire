@@ -5,7 +5,7 @@ import { createRegistry, GenerationTask, Harness, hook } from '@earendil-works/p
 import { PiHarness, type PiOperationResult } from 'agents/harness/pi';
 import { Lifecycle, type LifecycleJobContext, type LifecycleJobOutcome } from 'agents/lifecycle';
 import { createAI } from 'agents/models/pi-ai';
-import { authorize, body, HttpError, identifier, scopedName, source, type Caller } from './http';
+import { authorize, body, escape, HttpError, identifier, scopedName, source, within, type Caller } from './http';
 import { Gateway, Registry, REPORT_TEXT_LIMIT, type RelayRequest, type Via } from './gateway';
 import { addResponse, reportDelay, usageSince, zeroUsage, type Cumulative } from './ledger';
 import { LIMITS, type TokenUsage } from './prices';
@@ -13,6 +13,7 @@ import { serial } from './serial';
 import { stepLimit, stepLimitReason } from './steps';
 import { Workspace, type ExecOutcome } from './workspace';
 import { DEFAULT_CIRCLE, sharedCircle } from './circles';
+import { remoteRoute } from './remote';
 export { Gateway, Registry, Workspace };
 
 interface Env {
@@ -25,8 +26,13 @@ interface Env {
   HOSTED_OWNER: string;
   CONTROL_TOKEN: string;
   MODEL: string;
+  // The relay, for settlement pushes to a source machine.
+  RELAY_URL?: string;
 }
 interface AgentConfig { owner: string; id: string; workspace: string | null; retired?: boolean }
+export type OperationState =
+  | { status: 'fenced' | 'durable' | 'absent' }
+  | { status: 'terminal'; result: { status: string; reason: string | null; text: string | null } };
 // An admitted operation whose report the gateway has not accepted yet, under
 // `report:<op>`. `usage` is allocated once, when it settles, and resent as is.
 interface Unreported { source: string | null; startedAt?: string; usage?: TokenUsage; via?: Via }
@@ -197,6 +203,34 @@ export class HostedAgent extends DurableObject<Env> {
   async outcome(operationId: string) {
     const result = await this.harness.wait(operationId);
     return { ...result, reason: this.reason(operationId, result), text: result.text?.slice(0, REPORT_TEXT_LIMIT) };
+  }
+
+  // An operation's state as pi records it (rfcs/managed-in-the-mesh.md), in
+  // turn with admission, so no submit of it is in flight while this decides.
+  // A report:<op> marker is not admission: it is written before pi takes the
+  // operation, and a crash in between leaves one behind.
+  async operation(operationId: string) { return this.admission(() => this.classify(operationId)); }
+
+  // As operation(), except that an operation pi does not have is tombstoned,
+  // withdrawing any leftover marker, so a submit still on its way is refused.
+  async fence(operationId: string): Promise<OperationState> {
+    return this.admission(async () => {
+      const found = await this.classify(operationId);
+      if (found.status !== 'absent') return found;
+      const config = await this.config();
+      if (config && this.kv.get(`report:${operationId}`)) await this.withdraw(config, operationId);
+      this.kv.put(`undelivered:${operationId}`, true);
+      return { status: 'fenced' };
+    });
+  }
+
+  private async classify(operationId: string): Promise<OperationState> {
+    if (this.kv.get(`undelivered:${operationId}`)) return { status: 'fenced' };
+    if ((await this.harness.pending()).some((op) => op.operationId === operationId)) return { status: 'durable' };
+    // Not pending: pi answers at once, with its stored result or not_found.
+    const result = await this.harness.wait(operationId);
+    if (result.reason === 'not_found') return { status: 'absent' };
+    return { status: 'terminal', result: { status: result.status, reason: this.reason(operationId, result) ?? null, text: result.text?.slice(0, REPORT_TEXT_LIMIT) ?? null } };
   }
 
   private reason(operationId: string, result: PiOperationResult) {
@@ -432,15 +466,14 @@ const REQUEST_ID = /^rq-[0-9a-f]{32}$/;
 // An agent on the managed machine: created through the relay and claimed by no
 // daemon. Rows the daemon created, including lazily repaired ones without a
 // home, stay with the daemon.
-const onManaged = (row: { created_by: unknown; home_machine: unknown }) => row.created_by !== 'daemon' && !row.home_machine;
-function circleOf(value: unknown): string {
+export const onManaged = (row: { created_by: unknown; home_machine: unknown }) => row.created_by !== 'daemon' && !row.home_machine;
+export function circleOf(value: unknown): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 80) throw new HttpError(422, 'circle must be a name of 1-80 characters');
   const circle = value.trim();
   if (!sharedCircle(circle)) throw new HttpError(422, `circle ${circle} is machine-local (default, *, a number or window-N); name a shared circle`);
   return circle;
 }
 
-const escape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 function requesterOf(value: unknown): string {
   if (typeof value !== 'string' || !/^[a-zA-Z0-9_.:-]{1,200}$/.test(value)) throw new HttpError(400, 'requester is required');
@@ -512,12 +545,6 @@ async function submitRequest(env: Env, owner: string, input: Record<string, unkn
 const RECONCILE_MS = 1000;
 
 // value, or null once ms have passed; the work itself carries on.
-async function within<T>(work: Promise<T>, ms: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([work, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), Math.max(ms, 0)); })])
-    .finally(() => clearTimeout(timer));
-}
-
 // pending, or resolved with how the run ended. A request whose run the
 // runtime never admitted resolves as not_delivered.
 async function waitRequest(env: Env, owner: string, id: string, requester: string, wait: number) {
@@ -612,6 +639,13 @@ export default {
         if (request.method === 'POST') return await createAgent(env, caller, request, await body(request));
       }
       if (url.pathname === '/workspaces' && request.method === 'GET') return json({ items: await directory().workspaces() });
+      // The cross-machine API, for the relay only, naming the sending machine.
+      if (url.pathname.startsWith('/remote/')) {
+        if (caller.role !== 'control' || !caller.owner) throw new HttpError(403, 'The remote API is for the relay');
+        const fromMachine = request.headers.get('X-Repowire-From-Machine') ?? '';
+        if (!fromMachine || fromMachine.length > 200 || fromMachine === 'managed') throw new HttpError(400, 'X-Repowire-From-Machine must name the sending machine');
+        return await remoteRoute(env, caller.owner, fromMachine, request, url.pathname, await body(request, true));
+      }
       if (url.pathname.startsWith('/requests')) {
         if (caller.role !== 'control') throw new HttpError(403, 'Requests are for the relay');
         return await requestRoute(env, ownerOf(caller), request, url);

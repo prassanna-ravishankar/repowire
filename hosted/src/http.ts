@@ -1,3 +1,12 @@
+export const escape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+// work's result, or null once ms pass; work itself is not cancelled.
+export async function within<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([work, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), Math.max(ms, 0)); })])
+    .finally(() => clearTimeout(timer));
+}
+
 export class HttpError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
