@@ -1,6 +1,8 @@
 import { DurableObject } from 'cloudflare:workers';
 import { admission, deriveState, meshWindow, utcDay, type AgentState } from './ledger';
 import { execCost, modelCost, type TokenUsage } from './prices';
+import { followUp, managedTool, type MeshEnv } from './mesh';
+import { MANAGED, remoteResult } from './protocol';
 import type { ExecOutcome } from './workspace';
 
 // How long an agent's tool call waits for the daemon before failing.
@@ -11,6 +13,11 @@ const RECENT_CLIENTS = 20;
 const MESH_TOOLS = new Set(['notify_peer', 'ask']);
 
 export interface GatewayCall { id: string; agent: string; tool: string; args: Record<string, unknown> }
+
+// An agent on the managed machine: created through the relay and claimed by
+// no daemon. Rows a daemon created, including lazily repaired ones without a
+// home, stay with the daemon.
+export const onManaged = (row: { created_by: unknown; home_machine: unknown }) => row.created_by !== 'daemon' && !row.home_machine;
 export interface GatewayReport {
   agent: string; operationId: string; status: string; reason?: string; text?: string; usage?: TokenUsage;
   // The run's admission, so a report that arrives first can create its row.
@@ -35,13 +42,13 @@ export interface RemoteEnvelope {
   to_agent: string; text: string; created_at: number;
 }
 export interface RemoteInbound extends RemoteEnvelope { state: string; close_reason: string | null; reply: string | null }
-
-// A run's result in the daemon's close vocabulary: an answer is an ack with
-// its text, anything else closes with the run's reason.
-export function remoteResult(status: string, reason: string | null, text: string | null): [string, string | null] {
-  if (status === 'done') return text ? ['ack_with_msg', text] : ['ack', null];
-  return [reason ?? 'unanswered', null];
+export interface RemoteOutboundInit {
+  id: string; machine: string; store_epoch: string; to_peer: string; to_name: string; from_agent: string; text: string; created_at: number;
 }
+export interface RemoteOutbound extends RemoteOutboundInit {
+  state: string; close_reason: string | null; reply: string | null; delivered: number; disposition: string | null; checked_at: number;
+}
+
 export interface Client {
   kind: 'daemon'; machine: string | null; daemon_id: string | null; version: string | null;
   connected_at: string; connected: boolean; disconnected_at?: string;
@@ -77,6 +84,11 @@ CREATE TABLE IF NOT EXISTS remote_inbound (
 CREATE INDEX IF NOT EXISTS remote_inbound_state ON remote_inbound (state, created_at);
 CREATE TABLE IF NOT EXISTS remote_fences (
   id TEXT NOT NULL, from_machine TEXT NOT NULL, from_peer TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (id, from_machine));
+CREATE TABLE IF NOT EXISTS remote_outbound (
+  id TEXT PRIMARY KEY, machine TEXT NOT NULL, store_epoch TEXT NOT NULL, to_peer TEXT NOT NULL, to_name TEXT NOT NULL,
+  from_agent TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL, state TEXT NOT NULL,
+  close_reason TEXT, reply TEXT, delivered INTEGER NOT NULL DEFAULT 0, disposition TEXT, checked_at INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS remote_outbound_open ON remote_outbound (state, delivered, checked_at);
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY, exec_count INTEGER NOT NULL DEFAULT 0, container_ms INTEGER NOT NULL DEFAULT 0,
   last_exec_at TEXT, running INTEGER NOT NULL DEFAULT 0, snapshot_at TEXT, dirty INTEGER NOT NULL DEFAULT 0);
@@ -339,6 +351,9 @@ export class Gateway extends DurableObject {
       return this.settleRemoteRun(report.agent, report.operationId, report.status, report.reason ?? null, stored.text ?? null);
     });
     if (remote) this.pushSettled(remote);
+    // The asker's run completed: a reply it is owed may be deliverable now.
+    const owner = await this.owner();
+    if (owner) this.ctx.waitUntil(followUp(this.env as MeshEnv, owner));
     // The relay's runs were never queued by the daemon; their answer is in the
     // run log, so the outbox does not carry them.
     if ((via ?? 'daemon') === 'daemon') {
@@ -422,8 +437,59 @@ export class Gateway extends DurableObject {
     return this.sql.exec("SELECT * FROM remote_inbound WHERE state = 'dispatching' AND created_at < ? ORDER BY created_at LIMIT ?", before, limit).toArray() as unknown as RemoteInbound[];
   }
 
+  // ---- outbound: managed agents as askers. The row is authoritative; its
+  // envelope is immutable and every transition a compare-and-set.
+
+  insertOutbound(row: RemoteOutboundInit) {
+    this.sql.exec(
+      `INSERT INTO remote_outbound (id, machine, store_epoch, to_peer, to_name, from_agent, text, created_at, state)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sent')`,
+      row.id, row.machine, row.store_epoch, row.to_peer, row.to_name, row.from_agent, row.text, row.created_at);
+  }
+
+  outboundRecord(id: string) {
+    return (this.sql.exec('SELECT * FROM remote_outbound WHERE id = ?', id).toArray()[0] as unknown as RemoteOutbound | undefined) ?? null;
+  }
+
+  markOutboundUncertain(id: string) {
+    return this.sql.exec("UPDATE remote_outbound SET state = 'uncertain' WHERE id = ? AND state = 'sent'", id).rowsWritten > 0;
+  }
+
+  // One terminal transition for a push, a read and a create response alike.
+  settleOutbound(id: string, reason: string, reply: string | null) {
+    return this.sql.exec("UPDATE remote_outbound SET state = 'settled', close_reason = ?, reply = ? WHERE id = ? AND state IN ('sent', 'uncertain')",
+      reason, reply, id).rowsWritten > 0;
+  }
+
+  markOutboundDelivered(id: string, disposition: string | null = null) {
+    this.sql.exec('UPDATE remote_outbound SET delivered = 1, disposition = ? WHERE id = ? AND delivered = 0', disposition, id);
+  }
+
+  // Unsettled rows not read in the last cutoff, oldest check first; each is
+  // stamped as it is claimed so every row gets its turn.
+  claimOutboundChecks(checkedBefore: number, now: number, limit: number) {
+    return this.ctx.storage.transactionSync(() => {
+      const rows = this.sql.exec("SELECT * FROM remote_outbound WHERE state != 'settled' AND checked_at < ? ORDER BY checked_at, created_at LIMIT ?",
+        checkedBefore, limit).toArray() as unknown as RemoteOutbound[];
+      for (const row of rows) this.sql.exec('UPDATE remote_outbound SET checked_at = ? WHERE id = ?', now, row.id);
+      return rows;
+    });
+  }
+
+  undeliveredOutbound(limit: number) {
+    return this.sql.exec("SELECT * FROM remote_outbound WHERE state = 'settled' AND delivered = 0 ORDER BY created_at LIMIT ?", limit)
+      .toArray() as unknown as RemoteOutbound[];
+  }
+
+  // An agent's open cross-machine asks, for /managed.
+  openOutbound(agent: string) {
+    return this.sql.exec("SELECT * FROM remote_outbound WHERE from_agent = ? AND (state != 'settled' OR delivered = 0) ORDER BY created_at", agent)
+      .toArray() as unknown as RemoteOutbound[];
+  }
+
   pruneRemote(before: number) {
     this.ctx.storage.transactionSync(() => {
+      this.sql.exec('DELETE FROM remote_outbound WHERE created_at < ?', before);
       this.sql.exec('DELETE FROM remote_inbound WHERE created_at < ?', before);
       this.sql.exec('DELETE FROM remote_fences WHERE created_at < ?', before);
     });
@@ -451,8 +517,15 @@ export class Gateway extends DurableObject {
   // One settlement push to the source, after the commit and off the caller's
   // path. A lost push is recovered by the source reading the record back.
   private pushSettled(row: RemoteInbound) {
+    if (row.kind !== 'ask') return;
+    // Managed to managed: the source's row is in this same Gateway.
+    if (row.from_machine === MANAGED) {
+      this.settleOutbound(row.id, row.close_reason ?? 'unanswered', row.reply);
+      void this.owner().then((owner) => { if (owner) this.ctx.waitUntil(followUp(this.env as MeshEnv, owner)); });
+      return;
+    }
     const env = this.env as { RELAY_URL?: string; CONTROL_TOKEN?: string };
-    if (!env.RELAY_URL || !env.CONTROL_TOKEN || row.kind !== 'ask') return;
+    if (!env.RELAY_URL || !env.CONTROL_TOKEN) return;
     const send = async () => {
       const owner = await this.owner();
       if (!owner) return;
@@ -533,14 +606,28 @@ export class Gateway extends DurableObject {
 
   // ---- mesh link ----------------------------------------------------------
 
+  // A mesh tool call. The owner's rate limit applies to every sent message;
+  // an agent on managed is served here, a daemon's agent by its daemon.
   async call(call: GatewayCall): Promise<string> {
-    const socket = this.daemon();
-    if (!socket) throw new Error('The Repowire daemon is not connected; mesh tools are unavailable right now');
     if (MESH_TOOLS.has(call.tool)) {
       const kept = meshWindow((await this.ctx.storage.get<number[]>('mesh:recent')) ?? [], Date.now());
       if (!kept) throw new Error('mesh_rate_limited: too many agent-originated messages from this account in 10 minutes');
       await this.ctx.storage.put('mesh:recent', kept);
     }
+    const row = this.agent(call.agent);
+    if (row && onManaged(row)) {
+      const owner = await this.owner();
+      if (!owner) throw new Error('This account is not set up for mesh tools');
+      const env = this.env as MeshEnv;
+      const principal = { peer_id: row.id, display_name: (row.display_name as string | null) || row.id, circle: String(row.circle ?? MANAGED) };
+      try {
+        return await managedTool(env, owner, principal, call.tool, call.args);
+      } finally {
+        this.ctx.waitUntil(followUp(env, owner));
+      }
+    }
+    const socket = this.daemon();
+    if (!socket) throw new Error('The Repowire daemon is not connected; mesh tools are unavailable right now');
     const key = `${call.agent}:${call.id}`;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => this.settle(key, new Error(`The daemon did not answer ${call.tool} within 60 seconds; it may still have run`)), CALL_TIMEOUT_MS);

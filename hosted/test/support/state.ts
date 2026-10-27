@@ -45,5 +45,7 @@ export function fakeState() {
     delete: async (key: string) => kv.delete(key),
     list: async ({ prefix }: { prefix?: string } = {}) => new Map(list(prefix)),
   };
-  return { storage, getWebSockets: () => [], acceptWebSocket: () => {}, getTags: () => [] };
+  // waitUntil keeps background work alive; here it runs and its failure is the test's to see.
+  const background: Promise<unknown>[] = [];
+  return { storage, getWebSockets: () => [], acceptWebSocket: () => {}, getTags: () => [], background, waitUntil: (work: Promise<unknown>) => void background.push(work) };
 }

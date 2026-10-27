@@ -4,7 +4,8 @@
 // The owner's Gateway keeps the records; agents on managed are the targets.
 import { sharedCircle } from './circles';
 import type { Gateway, RemoteInbound } from './gateway';
-import { remoteResult } from './gateway';
+import { followUp } from './mesh';
+import { idTime, remoteResult } from './protocol';
 import { escape, HttpError, scopedName, within } from './http';
 import type { HostedAgent, OperationState } from './index';
 
@@ -21,6 +22,8 @@ const RECOVER_AFTER_S = 30;
 export interface RemoteEnv {
   AGENTS: DurableObjectNamespace<HostedAgent>;
   GATEWAYS: DurableObjectNamespace<Gateway>;
+  RELAY_URL?: string;
+  CONTROL_TOKEN?: string;
 }
 
 interface Principal { peer_id: string; display_name: string; circle: string }
@@ -30,11 +33,6 @@ const json = (value: unknown, status = 200) => Response.json(value, { status });
 // The daemon's error shape: {detail}.
 const refuse = (status: number, detail: unknown) => json({ detail }, status);
 
-const ID = { ask: /^ask-(\d+)-[0-9a-f]{32}$/, notify: /^notif-(\d+)-[0-9a-f]{32}$/ };
-const idTime = (kind: 'ask' | 'notify', id: unknown) => {
-  const match = typeof id === 'string' ? ID[kind].exec(id) : null;
-  return match ? Number(match[1]) : null;
-};
 
 function principal(value: unknown): Principal | null {
   const from = value as Partial<Principal> | null;
@@ -60,6 +58,7 @@ export async function remoteRoute(env: RemoteEnv, owner: string, fromMachine: st
   // recovery of other stuck requests runs in the background.
   await directory.pruneRemote(now - RETENTION_S);
   background(recoverDispatching(env, owner));
+  background(followUp(env, owner));
   const epoch = await directory.storeEpoch();
   const receipt = (record: RemoteInbound, responder: string) => json({
     id: record.id, state: record.state, ...(record.close_reason ? { close_reason: record.close_reason } : {}),
@@ -131,6 +130,18 @@ export async function remoteRoute(env: RemoteEnv, owner: string, fromMachine: st
     }
     const target = await directory.agent(record.to_agent) as Row | null;
     return receipt(record, target ? nameOf(target) : record.to_agent);
+  }
+
+  // The source side: a target machine tells this owner one of its agents'
+  // asks settled. Only the machine recorded on the row may.
+  if (path === '/remote/settled') {
+    const row = typeof input.id === 'string' ? await directory.outboundRecord(input.id) : null;
+    if (!row || row.machine !== fromMachine) return refuse(404, 'no outbound request of this machine has that id');
+    if (typeof input.close_reason !== 'string' || !input.close_reason) return refuse(400, 'close_reason is required');
+    if (input.store_epoch !== row.store_epoch) await directory.settleOutbound(row.id, 'result_lost', null);
+    else await directory.settleOutbound(row.id, input.close_reason, typeof input.reply === 'string' ? input.reply : null);
+    background(followUp(env, owner));
+    return json({ ok: true });
   }
 
   throw new HttpError(404, 'Not found');

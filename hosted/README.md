@@ -65,6 +65,7 @@ service through the relay, which names them; they never choose the owner.
 | `GET /requests?requester=…` | That requester's unsettled asks |
 | `PATCH /agents/helper` with `{"circle":"research"}` | Move an agent no daemon owns to another shared circle (422 for `default`, `*`, a number or `window-N`; 409 for a daemon's agent). `POST /agents` also takes `circle`, defaulting to `managed`. An agent never changes owner: a create that would move it between managed and a daemon is 409 |
 | `POST /remote/peers`, `/remote/ask`, `/remote/notify`, `/remote/asks/{id}` | Control token only, with `X-Repowire-From-Machine` naming the daemon the relay received it from. Agents on managed as cross-machine targets, with the semantics of `rfcs/cross-machine-circles.md`: discovery in the caller's circle; asks and notifies recorded before they are submitted, at most once; reads by the recorded origin, fencing an unknown id. A run's report settles its ask in the same transaction, and the result is pushed once to the source through the relay (`RELAY_URL`) |
+| `POST /remote/settled` | Control token only. The source side: the machine recorded on a managed agent's outbound ask reports it settled; any other machine is 404, and a changed store epoch settles it `result_lost` |
 | `GET /admin/summary`, `/admin/owners`, `/admin/sandboxes`, `/admin/usage?days=30` | Control token without an owner: totals, agents by state, sandboxes, and daily usage across owners |
 
 The owner's `Gateway` Durable Object holds the directory, run log and usage
@@ -130,3 +131,23 @@ unanswered after 60 seconds fails and may still have run. Mesh tools are not
 replay-safe, so an interrupted run does not send a message twice. `source` is a transcript label, not an authorization; peer text arrives
 framed as an untrusted `<peer-message>`. SaaS identity should replace the fixed owner before multi-user
 access; Composio sessions must derive their user ID from that authenticated owner.
+
+## Mesh tools of agents on managed
+
+An agent no daemon owns runs its mesh tools in its owner's Gateway, as a peer
+of the managed machine (`rfcs/managed-in-the-mesh.md`):
+- `list_peers` shows managed agents in its circle, then each daemon's peers in
+  that circle as `name@machine`. Machines that miss the 2 s budget are named on
+  a `# partial:` line.
+- `ask_peer` and `notify_peer` take `name` (another managed agent) or
+  `name@machine`. An ask is recorded before it is sent and never resent: a send
+  whose outcome is unknown answers `delivery_state=uncertain`. The reply arrives
+  later as a new message (`[ack #id from @name@machine] ...`, or `[declined ...]`
+  or `[closed ... : reason]`). A bare ack starts no run, and a reply to a
+  retired agent is not submitted.
+- The owner's mesh rate limit (30 messages per 10 minutes) and budgets apply.
+
+Replies are reconciled and delivered on request-driven triggers (a settlement
+push, the agent's next tool call, its run completion, the next cross-machine
+request), never on a timer.
+

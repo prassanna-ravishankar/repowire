@@ -8,10 +8,12 @@ export function fakePi() {
   const settled = new Map<string, { status: string; reason?: string; text?: string }>();
   const waiters = new Map<string, ((value: unknown) => void)[]>();
   const submitted = new Set<string>();
+  const texts = new Map<string, string>();
   const pi = {
-    submitted, aborted: [] as (string | undefined)[], failSubmit: false,
-    async submit(_text: string, { operationId }: { operationId: string }) {
+    submitted, texts, aborted: [] as (string | undefined)[], failSubmit: false,
+    async submit(text: string, { operationId }: { operationId: string }) {
       if (pi.failSubmit) throw new Error('pi is unavailable');
+      if (!submitted.has(operationId)) texts.set(operationId, text);
       const accepted = !submitted.has(operationId);
       submitted.add(operationId);
       return { operationId, session: '1', accepted };

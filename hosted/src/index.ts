@@ -6,7 +6,7 @@ import { PiHarness, type PiOperationResult } from 'agents/harness/pi';
 import { Lifecycle, type LifecycleJobContext, type LifecycleJobOutcome } from 'agents/lifecycle';
 import { createAI } from 'agents/models/pi-ai';
 import { authorize, body, escape, HttpError, identifier, scopedName, source, within, type Caller } from './http';
-import { Gateway, Registry, REPORT_TEXT_LIMIT, type RelayRequest, type Via } from './gateway';
+import { Gateway, onManaged, Registry, REPORT_TEXT_LIMIT, type RelayRequest, type Via } from './gateway';
 import { addResponse, reportDelay, usageSince, zeroUsage, type Cumulative } from './ledger';
 import { LIMITS, type TokenUsage } from './prices';
 import { serial } from './serial';
@@ -463,10 +463,6 @@ async function agentRoute(env: Env, caller: Caller, request: Request, id: string
 
 const REQUEST_ID = /^rq-[0-9a-f]{32}$/;
 
-// An agent on the managed machine: created through the relay and claimed by no
-// daemon. Rows the daemon created, including lazily repaired ones without a
-// home, stay with the daemon.
-export const onManaged = (row: { created_by: unknown; home_machine: unknown }) => row.created_by !== 'daemon' && !row.home_machine;
 export function circleOf(value: unknown): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 80) throw new HttpError(422, 'circle must be a name of 1-80 characters');
   const circle = value.trim();
