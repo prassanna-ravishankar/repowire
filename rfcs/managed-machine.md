@@ -86,7 +86,9 @@ Runs record who submitted them (`via: daemon | control`). Only the daemon's
 runs go to its outbox; the `web-` operation prefix rule goes away, kept only
 for records written before `via` existed.
 
-## Phase 2: managed joins the mesh across machines (needs design)
+## Phase 2: managed joins the mesh across machines
+
+Design: [managed in the mesh](managed-in-the-mesh.md) (approved 2026-10-27).
 
 Daemon-to-daemon messaging shipped in #516 ([cross-machine circles](cross-machine-circles.md)):
 the relay re-issues `machine_request` as `remote_request` naming the sending
