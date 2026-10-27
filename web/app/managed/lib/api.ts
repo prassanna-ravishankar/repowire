@@ -16,6 +16,8 @@ export interface Agent {
   last_reason: string | null;
   description: string | null;
   home_machine: string | null;
+  /** The circle of an agent on managed; a daemon's agent takes its daemon peer's. */
+  circle?: string;
   created_at: string;
   created_by: string;
   retired_at: string | null;
@@ -99,6 +101,16 @@ export interface Clients {
   gateway: Client[];
   apps: OAuthApp[];
   outbox: number;
+}
+
+/** A cross-machine ask an agent sent that is still owed a result or a reply. */
+export interface OpenAsk {
+  id: string;
+  to: string;
+  state: "sent" | "uncertain" | "settled";
+  close_reason: string | null;
+  replied: boolean;
+  created_at: string;
 }
 
 export interface Receipt {
@@ -245,6 +257,9 @@ export const managedApi = {
   send: (id: string, operationId: string, text: string) =>
     request<Receipt>(`${M}/agents/${seg(id)}/messages`, json("POST", { operationId, text })),
   runs: (id: string) => request<{ items: Run[] }>(`${M}/agents/${seg(id)}/runs`).then((r) => r.items),
+  asks: (id: string) => request<{ items: OpenAsk[] }>(`${M}/agents/${seg(id)}/asks`).then((r) => r.items),
+  setCircle: (id: string, circle: string) =>
+    request<{ agent: Agent }>(`${M}/agents/${seg(id)}`, json("PATCH", { circle })).then((r) => r.agent),
   abort: (id: string, operationId?: string) =>
     request<{ aborted: boolean }>(`${M}/agents/${seg(id)}/abort`, json("POST", operationId ? { operationId } : {})),
   workspaces: () => request<{ items: Workspace[] }>(`${M}/workspaces`).then((r) => r.items),

@@ -1,18 +1,18 @@
 import { useCallback, useSyncExternalStore } from "react";
 
-export type AgentTab = "chat" | "runs" | "workspace";
+export type AgentTab = "chat" | "runs" | "asks" | "workspace";
 
 export type Route =
   | { view: "agents"; agent: null }
   | { view: "agents"; agent: string; tab: AgentTab }
   | { view: "clients" };
 
-/** `#/agents`, `#/agents/:id`, `#/agents/:id/runs|workspace`, `#/clients`. Anything else is the agent list. */
+/** `#/agents`, `#/agents/:id`, `#/agents/:id/runs|asks|workspace`, `#/clients`. Anything else is the agent list. */
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
   if (parts[0] === "clients") return { view: "clients" };
   if (parts[0] === "agents" && parts[1]) {
-    const tab = parts[2] === "runs" || parts[2] === "workspace" ? parts[2] : "chat";
+    const tab = parts[2] === "runs" || parts[2] === "asks" || parts[2] === "workspace" ? parts[2] : "chat";
     return { view: "agents", agent: parts[1], tab };
   }
   return { view: "agents", agent: null };

@@ -235,4 +235,47 @@ describe("Managed page live state", () => {
     await waitFor(() => expect(runReads).toBe(before + 1));
     await waitFor(() => expect(screen.getAllByText("ANSWERED").length).toBeGreaterThanOrEqual(2));
   });
+
+  it("edits a managed agent's circle and shows the Worker's refusal verbatim", async () => {
+    const patches: string[] = [];
+    stubApi((url, init) => {
+      if (init?.method !== "PATCH" || !url.endsWith("/agents/nightly-digest")) return undefined;
+      const circle = JSON.parse(String(init.body)).circle as string;
+      patches.push(circle);
+      if (circle === "default") return json({ error: "circle default is machine-local (default, *, a number or window-N); name a shared circle" }, 422);
+      return json({ agent: { ...fixtures().agents[2], circle } });
+    });
+    window.location.hash = "#/agents/nightly-digest";
+    render(<ManagedPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "circle managed" }));
+    const input = screen.getByLabelText("Circle");
+    fireEvent.change(input, { target: { value: "default" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByRole("alert")).toHaveTextContent("machine-local");
+    fireEvent.change(input, { target: { value: "research" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(screen.queryByLabelText("Circle")).toBeNull());
+    expect(patches).toEqual(["default", "research"]);
+    window.location.hash = "";
+  });
+
+  it("offers no circle for a daemon's agent", async () => {
+    stubApi();
+    window.location.hash = "#/agents/helper";
+    render(<ManagedPage />);
+    await screen.findAllByText(/home/);
+    expect(screen.queryByRole("button", { name: /^circle / })).toBeNull();
+    window.location.hash = "";
+  });
+
+  it("lists a managed agent's open cross-machine asks", async () => {
+    stubApi((url) => (url.endsWith("/agents/nightly-digest/asks")
+      ? json({ items: [{ id: "ask-1793000000-" + "a".repeat(32), to: "bob@laptop", state: "uncertain", close_reason: null, replied: false, created_at: new Date().toISOString() }] })
+      : undefined));
+    window.location.hash = "#/agents/nightly-digest/asks";
+    render(<ManagedPage />);
+    expect(await screen.findByText("@bob@laptop")).toBeInTheDocument();
+    expect(screen.getByText("outcome unknown")).toBeInTheDocument();
+    window.location.hash = "";
+  });
 });

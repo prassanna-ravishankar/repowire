@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Archive, ChevronLeft, HardDrive, Send, Square } from "lucide-react";
+import { Archive, ChevronLeft, HardDrive, MessagesSquare, Send, Square } from "lucide-react";
 import { cn } from "../../dashboard/lib/utils";
-import { managedApi, type Agent, type Run, type Workspace } from "../lib/api";
+import { ApiError, managedApi, type Agent, type OpenAsk, type Run, type Workspace } from "../lib/api";
 import type { Outgoing } from "../lib/composer";
 import type { AgentTab } from "../lib/hashRoute";
 import { agentLabel, agentSubline, runStatus, formatAgo, formatDate, formatDuration, formatTokens, formatUsd, formatWhen } from "../lib/state";
 import { parseTranscript, type TranscriptItem } from "../lib/transcript";
 import { TranscriptView } from "./Transcript";
-import { CopyId, EmptyState, InlineError, SkeletonRows, StateDot, StateLabel, buttonClass, labelClass } from "./ui";
+import { CopyId, EmptyState, InlineError, SkeletonRows, StateDot, StateLabel, buttonClass, inputClass, labelClass } from "./ui";
 
 const TABS: { id: AgentTab; label: string; phone: string }[] = [
   { id: "chat", label: "Chat", phone: "Chat" },
   { id: "runs", label: "Runs", phone: "Runs" },
+  { id: "asks", label: "Asks", phone: "Asks" },
   { id: "workspace", label: "Workspace", phone: "Files" },
 ];
 
@@ -82,6 +83,7 @@ export function AgentDetail({
               <span className="hidden sm:inline">{formatTokens(agent.tokens_in + agent.tokens_out)} tokens</span>
               <span className="hidden sm:inline">created {formatDate(agent.created_at)} by {agent.created_by}</span>
               <span>{`home ${agent.home_machine ?? "managed"}`}</span>
+              {onManaged(agent) && <CircleField agent={agent} />}
             </div>
             {agent.description && <p className="mt-1 truncate font-mono text-[11px] text-tertiary-fixed-dim">↳ {agent.description}</p>}
           </div>
@@ -118,6 +120,7 @@ export function AgentDetail({
       </header>
       {tab === "chat" && <ChatTab agent={agent} outgoing={outgoing} onSend={onSend} onRetry={onRetry} onTranscript={onTranscript} />}
       {tab === "runs" && <RunsTab runs={runs} now={now} onLoad={onLoadRuns} onCopied={onCopied} />}
+      {tab === "asks" && <AsksTab agent={agent} now={now} onCopied={onCopied} />}
       {tab === "workspace" && <WorkspaceTab agent={agent} workspace={workspace} now={now} />}
     </section>
   );
@@ -355,5 +358,107 @@ function WorkspaceTab({ agent, workspace, now }: { agent: Agent; workspace: Work
         {others.length > 0 && <p className="border-t border-border-faint px-4 py-2 font-mono text-[11px] text-outline">Files here are visible to {others.join(", ")}.</p>}
       </div>
     </div>
+  );
+}
+
+/** An agent on managed: created through the relay and claimed by no daemon. */
+function onManaged(agent: Agent) {
+  return agent.created_by !== "daemon" && !agent.home_machine && agent.state !== "retired";
+}
+
+/**
+ * The circle an agent on managed shares with daemon peers across machines.
+ * The Worker refuses a machine-local name (default, *, a number, window-N)
+ * and the field shows its reason verbatim.
+ */
+function CircleField({ agent }: { agent: Agent }) {
+  const circle = agent.circle ?? "managed";
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(circle);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!editing) {
+    return (
+      <button
+        onClick={() => { setValue(circle); setError(null); setEditing(true); }}
+        className="underline decoration-dotted underline-offset-2 hover:text-on-surface"
+        title="Peers in this circle on your other machines can reach this agent"
+      >
+        circle {circle}
+      </button>
+    );
+  }
+  const save = async () => {
+    const next = value.trim();
+    if (!next || next === circle) return setEditing(false);
+    setSaving(true);
+    try {
+      await managedApi.setCircle(agent.id, next);
+      setEditing(false);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not change the circle");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <span className="flex flex-wrap items-center gap-1.5">
+      <label className="sr-only" htmlFor={`circle-${agent.id}`}>Circle</label>
+      <input
+        id={`circle-${agent.id}`}
+        value={value}
+        autoFocus
+        maxLength={80}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") void save();
+          if (event.key === "Escape") setEditing(false);
+        }}
+        className={cn(inputClass, "h-6 w-36 px-1.5 py-0 text-[11px]")}
+      />
+      <button onClick={() => void save()} disabled={saving} className={cn(buttonClass, "h-6 px-2 py-0")}>{saving ? "Saving" : "Save"}</button>
+      <button onClick={() => setEditing(false)} className="hover:text-on-surface">Cancel</button>
+      {error && <span role="alert" className="text-error">{error}</span>}
+    </span>
+  );
+}
+
+const ASK_STATE: Record<OpenAsk["state"], string> = { sent: "waiting", uncertain: "outcome unknown", settled: "answered, reply pending" };
+
+/** Cross-machine asks this agent sent that are owed a result or a reply. Opening it nudges reconciliation. */
+function AsksTab({ agent, now, onCopied }: { agent: Agent; now: number; onCopied: () => void }) {
+  const [asks, setAsks] = useState<OpenAsk[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    managedApi.asks(agent.id).then(
+      (items) => { if (!cancelled) { setAsks(items); setError(null); } },
+      (err: Error) => !cancelled && setError(err.message),
+    );
+    return () => { cancelled = true; };
+  }, [agent.id, agent.state, agent.state_at, reload]);
+  if (error) return <InlineError className="m-4" error={error} onRetry={() => setReload((n) => n + 1)} />;
+  if (!asks) return <SkeletonRows />;
+  if (asks.length === 0) {
+    return (
+      <EmptyState icon={<MessagesSquare className="h-6 w-6" />} title="No open asks">
+        Asks this agent sends to other agents appear here until their reply is delivered.
+      </EmptyState>
+    );
+  }
+  return (
+    <ul className="min-h-0 flex-1 divide-y divide-border-faint overflow-y-auto">
+      {asks.map((ask) => (
+        <li key={ask.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3 font-mono text-[12px] md:px-6">
+          <span className="text-on-surface">@{ask.to}</span>
+          <span className={cn(ask.state === "uncertain" ? "text-error" : "text-outline")}>
+            {ask.state === "settled" && ask.close_reason ? `${ask.close_reason}, reply pending` : ASK_STATE[ask.state]}
+          </span>
+          <span className="text-outline">{formatAgo(ask.created_at, now)}</span>
+          <CopyId value={ask.id} onCopied={onCopied} className="ml-auto" />
+        </li>
+      ))}
+    </ul>
   );
 }

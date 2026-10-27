@@ -133,7 +133,7 @@ func (s *Server) managedRoutes() {
 	s.mux.HandleFunc("GET "+managedPrefix+"/events", owner(s.managedEventsStream))
 	for _, route := range []string{
 		"GET /agents", "POST /agents", "GET /agents/{id}", "PATCH /agents/{id}", "DELETE /agents/{id}",
-		"GET /agents/{id}/messages", "POST /agents/{id}/messages", "GET /agents/{id}/runs",
+		"GET /agents/{id}/messages", "POST /agents/{id}/messages", "GET /agents/{id}/runs", "GET /agents/{id}/asks",
 		"POST /agents/{id}/abort", "GET /workspaces",
 	} {
 		method, path, _ := strings.Cut(route, " ")

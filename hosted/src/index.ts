@@ -6,13 +6,14 @@ import { PiHarness, type PiOperationResult } from 'agents/harness/pi';
 import { Lifecycle, type LifecycleJobContext, type LifecycleJobOutcome } from 'agents/lifecycle';
 import { createAI } from 'agents/models/pi-ai';
 import { authorize, body, escape, HttpError, identifier, scopedName, source, within, type Caller } from './http';
-import { Gateway, onManaged, Registry, REPORT_TEXT_LIMIT, type RelayRequest, type Via } from './gateway';
+import { Gateway, onManaged, Registry, REPORT_TEXT_LIMIT, type RelayRequest, type RemoteOutbound, type Via } from './gateway';
 import { addResponse, reportDelay, usageSince, zeroUsage, type Cumulative } from './ledger';
 import { LIMITS, type TokenUsage } from './prices';
 import { serial } from './serial';
 import { stepLimit, stepLimitReason } from './steps';
 import { Workspace, type ExecOutcome } from './workspace';
 import { DEFAULT_CIRCLE, sharedCircle } from './circles';
+import { followUp } from './mesh';
 import { remoteRoute } from './remote';
 export { Gateway, Registry, Workspace };
 
@@ -408,7 +409,7 @@ async function createAgent(env: Env, caller: Caller, request: Request, input: Re
   return json({ created: result.created, agent }, result.created ? 201 : 200);
 }
 
-async function agentRoute(env: Env, caller: Caller, request: Request, id: string, rest?: string) {
+async function agentRoute(env: Env, caller: Caller, request: Request, id: string, rest?: string, ctx?: ExecutionContext) {
   const owner = ownerOf(caller);
   const agent = env.AGENTS.getByName(scopedName(owner, id));
   const config = await agent.config();
@@ -447,6 +448,16 @@ async function agentRoute(env: Env, caller: Caller, request: Request, id: string
     return json(receipt, 202);
   }
   if (rest === 'runs' && request.method === 'GET') return json({ items: await directory.runs(id) });
+  // An agent's cross-machine asks still owed a result or a reply. Reading
+  // them is a reconcile trigger, run after the response.
+  if (rest === 'asks' && request.method === 'GET') {
+    const rows = await directory.openOutbound(id) as RemoteOutbound[];
+    ctx?.waitUntil(followUp(env, owner));
+    return json({ items: rows.map((row) => ({
+      id: row.id, to: `${row.to_name}@${row.machine}`, state: row.state, close_reason: row.close_reason,
+      replied: row.delivered === 1, created_at: new Date(row.created_at * 1000).toISOString(),
+    })) });
+  }
   if (rest === 'abort' && request.method === 'POST') {
     const input = await body(request, true);
     const operationId = input.operationId == null ? undefined : identifier(input.operationId, 'operationId');
@@ -654,7 +665,7 @@ export default {
       if (url.pathname === '/clients' && request.method === 'GET') return json(await directory().clients());
       const match = /^\/agents\/([^/]+)(?:\/(.+))?$/.exec(url.pathname);
       if (!match) throw new HttpError(404, 'Not found');
-      return await agentRoute(env, caller, request, identifier(match[1], 'id'), match[2]);
+      return await agentRoute(env, caller, request, identifier(match[1], 'id'), match[2], ctx);
     } catch (error) {
       if (error instanceof HttpError) return json({ error: error.message }, error.status);
       console.error('Hosted request failed', error);
