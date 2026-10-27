@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -568,4 +569,43 @@ func TestRemoteNotifyNeverFallsBackToTheQueue(t *testing.T) {
 	if queued, _ := beta.store.ListDeliveries(ctx, string(bob.id), 100, time.Time{}); len(queued) != len(queuedBefore) {
 		t.Fatalf("queued a fallback: %d -> %d", len(queuedBefore), len(queued))
 	}
+}
+
+// HTTP /notify and /broadcast, which OpenCode and Pi agents use, cross
+// machines exactly as the MCP tools do.
+func TestRemoteHTTPNotifyAndBroadcast(t *testing.T) {
+	_, alpha, beta := twoMachines(t)
+	asker := alpha.agent(t, "asker", "proj", nil)
+	bob := beta.agent(t, "bob", "proj", nil)
+
+	status, out := alpha.post(t, "/notify", map[string]any{"from_peer": string(asker.id), "to_peer": bob.name + "@beta", "text": "over http"})
+	if status != http.StatusOK || out["delivery_state"] != "delivered" || out["delivered"] != true {
+		t.Fatalf("notify %d %v", status, out)
+	}
+	bob.next(t, "over http")
+	res := httpGet(t, alpha.srv.URL+"/traces/"+out["delivery_id"].(string))
+	trace, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(trace), "remote_delivered") {
+		t.Fatalf("trace %d %s", res.StatusCode, trace)
+	}
+	if _, err := alpha.h.mcpNotifyPeer(context.Background(), alpha.h.ask.delivery, mcpNotifyPeerArgs{PeerName: bob.name + "@beta", Message: "f", Attachments: []map[string]any{{"name": "a"}}}, string(asker.id)); err == nil || err.Error() != "cross-machine notifies carry text only" {
+		t.Fatalf("MCP attachment error %v", err)
+	}
+
+	status, out = alpha.post(t, "/notify", map[string]any{"from_peer": string(asker.id), "to_peer": "nobody@beta", "text": "lost"})
+	if status != http.StatusNotFound {
+		t.Fatalf("unknown remote peer %d %v", status, out)
+	}
+
+	status, out = alpha.post(t, "/notify", map[string]any{"from_peer": string(asker.id), "to_peer": bob.name + "@beta", "text": "file", "attachments": []map[string]any{{"name": "a.txt"}}})
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("attachment across machines %d %v", status, out)
+	}
+
+	status, out = alpha.post(t, "/broadcast", map[string]any{"from_peer": string(asker.id), "text": "http hands"})
+	if sent, _ := out["remote_sent"].([]any); status != http.StatusOK || len(sent) != 1 || sent[0] != bob.name+"@beta" {
+		t.Fatalf("broadcast %d %v", status, out)
+	}
+	bob.next(t, "http hands")
 }

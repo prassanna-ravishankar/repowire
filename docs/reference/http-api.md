@@ -84,6 +84,8 @@ clients use it to drop a registration before reconnecting the same session.
 
 ## Human inbox
 
+`POST /notify` and `POST /ask` accept a `name@machine` address for a peer on another machine in a shared circle ([circles across machines](../concepts/peers-and-circles.md#circles-across-machines)). A remote notify answers 200 with `delivery_state` `delivered`, `queued` (held for the peer's next turn), `uncertain` (outcome unknown, never resent) or `not_delivered` (the other machine refused it), and its `delivery_id`, which `/traces/{id}` shows; an unknown remote peer is 404 and attachments are 422. `POST /broadcast` adds `remote_sent`, `remote_queued`, `remote_failed` and `remote_uncertain` (`name@machine` lists), and `partial` (machines that did not answer, omitted when empty), when cross-machine circles are on and the sender is a registered peer in a shared circle; `exclude` and `bypass_circle` apply to local peers only.
+
 Messages to the human peer (its name, `telegram`, or `slack`) are stored in the [human inbox](../concepts/human-inbox.md). `POST /notify` to it adds `inbox_item_id` and `surfaces` to the response; `POST /ask` to it adds `inbox: {item_id, surfaces}`. `POST /ask` accepts an optional `origin: {surface, ref}` naming the surface message an ask from the human was typed in, so the reply threads under it.
 
 | Route | Purpose |

@@ -62,6 +62,15 @@ type MessagingRoutes struct {
 	delivery *service.PeerDelivery
 	reg      lazyRepairer
 	traces   deliveryTracer
+	remote   remoteMessenger
+}
+
+// remoteMessenger carries name@machine notifies and the cross-machine part of
+// a broadcast (cross-machine circles). The hub supplies it at registration;
+// nil keeps both routes local.
+type remoteMessenger interface {
+	notifyAddress(ctx context.Context, caller, address, text string, attachments []map[string]any) (handled bool, id, outcome string, err error)
+	broadcastAcross(ctx context.Context, caller, text string) *remoteBroadcast
 }
 
 // NewMessagingRoutes wires the messaging route group. traces may be nil (tracing
@@ -122,6 +131,7 @@ type broadcastResponse struct {
 	OK     bool                `json:"ok"`
 	SentTo []string            `json:"sent_to"`
 	Failed []map[string]string `json:"failed"`
+	*remoteBroadcast
 }
 
 // ----------------------------------------------------------------------------
@@ -138,6 +148,27 @@ func (mr *MessagingRoutes) handleNotify(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	// Maintenance piggy-backs on the request; never a timer.
 	mr.reg.LazyRepairAsync(context.Background())
+
+	if mr.remote != nil {
+		if handled, id, outcome, err := mr.remote.notifyAddress(ctx, req.FromPeer, req.ToPeer, req.Text, req.Attachments); handled {
+			// The source traces under the cross-machine notify id.
+			if id != "" {
+				mr.trace(ctx, id, "notify", "created", "", id, "", req.FromPeer, map[string]any{"to_peer": req.ToPeer})
+				status := "ok"
+				if err != nil || outcome == "not_delivered" {
+					status = "fail"
+				}
+				mr.trace(ctx, id, "notify", "remote_"+outcome, status, id, "", req.FromPeer, nil)
+			}
+			if err != nil {
+				writeRouteError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, notifyResponse{OK: true, Status: outcome, DeliveryState: outcome,
+				Delivered: outcome == "delivered", Queued: outcome == "queued", ToPeerName: strPtr(req.ToPeer), DeliveryID: strPtr(id)})
+			return
+		}
+	}
 
 	result, deliveryID, err := mr.notifyTraced(ctx, service.NotifyParams{
 		FromPeer:     req.FromPeer,
@@ -297,7 +328,11 @@ func (mr *MessagingRoutes) handleBroadcast(w http.ResponseWriter, r *http.Reques
 		failedOut = append(failedOut, map[string]string{"peer": string(f.PeerID), "error": f.Error})
 	}
 
-	writeJSON(w, http.StatusOK, broadcastResponse{OK: true, SentTo: sentTo, Failed: failedOut})
+	resp := broadcastResponse{OK: true, SentTo: sentTo, Failed: failedOut}
+	if mr.remote != nil {
+		resp.remoteBroadcast = mr.remote.broadcastAcross(ctx, req.FromPeer, req.Text)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ----------------------------------------------------------------------------
