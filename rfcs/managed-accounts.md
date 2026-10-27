@@ -1,6 +1,6 @@
 # Managed accounts
 
-Status: draft for Prass, 2026-10-27, revision 3 after two Codex reviews. It follows
+Status: draft for Prass, 2026-10-27, revision 4 after three Codex reviews. It follows
 [managed-machine](managed-machine.md) and
 [managed in the mesh](managed-in-the-mesh.md). Nothing here is built
 beyond the interim gate below.
@@ -183,7 +183,13 @@ different parameters are refused.
     is left of R. Worst case = input bounded by the request's UTF-8 byte
     length, which is at least its token count, priced as uncached input, plus
     the request's `max_tokens` priced as output.
-  - **Exec call.** It is sent only if its charge at the exec timeout fits.
+  - **Exec call.** It is sent only if its fixed worst-case charge fits: the
+    shell timeout (45 s) plus a fixed lifecycle allowance L for container
+    start, snapshot and teardown. The customer is charged
+    `min(metered, 45 s + L)` at the operation's price. Metered time beyond
+    that (slow snapshots, cleanup, a Workspace that cannot report) is
+    operator overhead, recorded apart from the credit ledger and shown on
+    the admin view, never charged.
 
   When the next step would not fit, the operation ends with
   `reservation_exhausted` and keeps its partial transcript. A billed request
@@ -194,8 +200,19 @@ different parameters are refused.
   keeps its reservation until recovery (built in phase 2) settles or fences
   it. A reservation is released only on proof that the operation settled or
   never ran.
-- **Concurrency.** A cap on concurrent operations per owner bounds how much
-  can be reserved at once.
+- **One active operation per agent.** Usage is reported per agent and
+  cumulatively today, and the report gives everything since the last report
+  to whichever operation settles first (`index.ts` says overlapping runs
+  share costs approximately). That cannot settle per-operation reservations
+  or price versions. Billing therefore serialises operations per agent:
+  - A later submission waits in the agent's queue and reserves only when it
+    becomes active. If credits are exhausted at that point, it settles
+    `credits_exhausted` without running.
+  - All usage between an operation's start and its settlement belongs to it,
+    at its price version.
+  - Concurrency across agents is bounded by a per-owner cap on active
+    operations.
+
 
 Invariant: settled + reserved never exceeds granted, so a customer can never
 spend more credits than they bought or were granted.
@@ -217,11 +234,14 @@ then could not reserve synchronously.
 - **Per account.** The daily, monthly and per-agent caps stay as abuse
   guards, read from the account's plan, and are checked against settled plus
   reserved spend.
-- **Global breaker.** Every dollar of provider cost is covered by credits
-  bought at a markup of at least 1, or granted by an admin, so the global
-  limit is a guard against bugs and not against money loss. It does not
-  reserve. The `registry` Durable Object sums settled provider cost per UTC
-  day. Over the ceiling it opens a breaker: Gateways refuse new admissions with
+- **Global breaker.** Charged provider cost is covered by credits bought at
+  a markup of at least 1, or granted by an admin. What is not covered is
+  operator overhead: container lifecycle time beyond each call's allowance,
+  and failure cleanup. That overhead is bounded per call by the Workspace's
+  own timeouts, not by credits, so the breaker is a guard against bugs and
+  overhead, not the money guard. It does not
+  reserve. The `registry` Durable Object sums settled provider cost,
+  overhead included, per UTC day. Over the ceiling it opens a breaker: Gateways refuse new admissions with
   `service_capacity`, and the admin is alerted. Work admitted before the
   breaker opened finishes, so the overshoot is bounded by reservations
   already held, each of them covered by credits. The breaker closes at the
