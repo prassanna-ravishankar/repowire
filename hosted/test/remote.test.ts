@@ -160,12 +160,21 @@ test('a stuck recovery never delays or fails other requests', async () => {
   const old = Math.floor(Date.now() / 1000) - 120;
   const stuck = remoteID('ask', old);
   directory.createInbound({ id: stuck, kind: 'ask', from_machine: 'laptop', from_peer: from.peer_id, from_name: 'asker', from_circle: 'managed', to_agent: 'a', text: 'q', created_at: old });
-  agent.fence = () => new Promise(() => {});
+  let fail: (error: Error) => void = () => {};
+  let fenced = 0;
+  agent.fence = () => { fenced++; return new Promise((_, reject) => { fail = reject; }); };
   const started = Date.now();
   const listed = await call('/remote/peers', { from });
   assert.equal(listed.status, 200);
   assert.ok(Date.now() - started < 500, `discovery waited ${Date.now() - started} ms`);
-  agent.fence = async () => { throw new Error('agent unavailable'); };
+  // The hung fence then fails: the pass ends, logging it, and the row waits.
+  fail(new Error('agent unavailable'));
+  for (let i = 0; i < 5; i++) await flush();
+  assert.equal(directory.inboundRecord(stuck)?.state, 'dispatching');
+  // A fresh pass runs, fails the same way, and the request still answers.
+  agent.fence = async () => { fenced++; throw new Error('agent unavailable'); };
   assert.equal((await call('/remote/peers', { from })).status, 200);
+  for (let i = 0; i < 5; i++) await flush();
+  assert.equal(fenced, 2);
   assert.equal(directory.inboundRecord(stuck)?.state, 'dispatching');
 });
