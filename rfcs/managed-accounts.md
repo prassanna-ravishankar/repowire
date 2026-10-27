@@ -1,6 +1,6 @@
 # Managed accounts
 
-Status: draft for Prass, 2026-10-27, revision 2 after Codex review. It follows
+Status: draft for Prass, 2026-10-27, revision 3 after two Codex reviews. It follows
 [managed-machine](managed-machine.md) and
 [managed in the mesh](managed-in-the-mesh.md). Nothing here is built
 beyond the interim gate below.
@@ -81,16 +81,23 @@ namespace and then to the owner, or a namespace directly (a daemon, an
 OAuth grant, a Worker callback), which resolves to an account through its
 link. Money is not checked here; the Worker checks it at admission.
 
-**Changing the link (key rotation)** is allowed only when the owner is
-quiet. The Worker must report that the owner has no unsettled runs, no
-`remote_inbound` or `remote_outbound` rows still open, and no pending
-deliveries; otherwise the relay answers 409. Even so, a rotation moves the
-account to a new namespace, which is a new owner with empty storage. Until
-storage identity is separate from the owner, rotation means starting over:
-the portal says so before it acts. Unlinking:
-- removes managed access for that namespace;
-- closes the account's open SSE streams;
-- makes the namespace's OAuth grants lose `managed` on their next call.
+**The link is immutable after first use.** An account may link, unlink and
+relink freely until it first uses managed: its first agent, its first
+purchase or its first credit grant. From then on the link is fixed, and the
+relay refuses to change it (409).
+
+This avoids a fencing protocol. Purchases, credits, reservations, open asks
+and pending deliveries all live in that one owner's Gateway. If the link could
+move while any of them existed:
+- a Stripe retry could grant the same purchase into a second owner;
+- work admitted just before the move could lose its settlement path;
+- a later relink could revive stale work.
+
+A leaked key is handled by suspending the account (`managedFor` refuses it at
+once, and the Worker refuses the owner). After that, starting fresh means a
+new account and a new key; credits move by an admin refund and a new
+purchase. Proper rotation, with a drain-and-fence barrier and a link
+generation checked at the Worker, is phase 3 work.
 
 Unlinking does not revoke the key itself. Anonymous relay features (daemon
 tunnel, dashboard, shares) still accept it, and the portal says this.
@@ -121,7 +128,9 @@ Money comes in at the relay and is spent on the Worker. The Worker's owner
 
 **Purchase.**
 1. The relay creates a purchase row in SQLite: `pur_<random>`, the account,
-   the amount and currency the server chose, and state `created`.
+   the destination owner (the account's linked namespace, fixed at creation),
+   the amount and currency the server chose, and state `created`. An account
+   without a link cannot buy.
 2. It opens a Stripe Checkout session in `payment` mode with
    `client_reference_id = pur_...` and stores the session id on the row.
 
@@ -138,7 +147,9 @@ The browser never chooses the account or the credit amount.
   send duplicates as distinct Event objects, so the event id only goes in the
   audit log.
 - The relay calls the Worker
-  `POST /admin/owners/{namespace}/credits {id: pur_..., usd}`.
+  `POST /admin/owners/{owner}/credits {id: pur_..., credits}`, always for the
+  owner stored on the purchase, never the account's current link. The link is
+  fixed from the first purchase on, so these are the same in practice.
 - The Gateway inserts the credit row and updates the balance in one
   `transactionSync`. The same id with the same amount answers its earlier
   receipt; with a different amount it answers 409.
@@ -147,31 +158,50 @@ The browser never chooses the account or the credit amount.
   The relay's `created`/`granted` state is bookkeeping for the portal, not
   the dedupe.
 
+**Units.** The owner ledger is kept in credits, where one credit is one
+dollar charged to the customer, not dollars of provider cost. Each operation
+fixes its price version (cost tables and markup) when it is admitted.
+Reservations, settlement and the balance all use credits. Provider cost is
+recorded beside them for the admin view.
+
 **Spend: reserve, then settle.** Admission checks the reported spend today
 (`Gateway.admit`), and model cost lands only when a run settles. With a small
 balance, many concurrent submissions across agents would all pass. Credits
-therefore move to reservations:
-- **Exposure cap.** Every operation has a maximum exposure E: a dollar
-  ceiling derived from `stepsPerRun` × the most expensive step, plus the
-  exec-time cap. The runtime also enforces E directly: an operation whose
-  running cost reaches E is aborted, the same way the step limit aborts
-  today. So E is a bound, not an estimate.
-- **Reserve.** Admission reserves E, atomically in the Gateway's
-  `transactionSync`, only if `granted - settled - reserved >= E`. Otherwise
-  the submission is refused with `credits_exhausted`. The reservation is
-  keyed by operation id, so a retried submit reserves once.
-- **Release.** Settlement replaces the reservation with the actual cost. A
-  withdrawn or fenced operation releases its reservation, and recovery
-  settles uncertain dispatch through the paths built in phase 2, before any
-  reservation is released.
+therefore move to reservations, keyed by the identity usage already uses,
+`run:<agent>:<operationId>` within the owner's Gateway. Operation ids are
+chosen per agent, so the agent is part of the key. A repeated submit with the
+same key must carry the same parameters and reuses its reservation;
+different parameters are refused.
+
+- **Reserve.** Admission reserves R credits, in one `transactionSync` with the
+  submission record, only if `granted - settled - reserved >= R`. R is a fixed
+  per-operation reservation from the plan. Otherwise the submission is
+  refused with `credits_exhausted`.
+- **Spend within R, checked before each step.** The runtime checks before each
+  step, not after it:
+  - **Model request.** It is sent only if its worst-case charge fits in what
+    is left of R. Worst case = input bounded by the request's UTF-8 byte
+    length, which is at least its token count, priced as uncached input, plus
+    the request's `max_tokens` priced as output.
+  - **Exec call.** It is sent only if its charge at the exec timeout fits.
+
+  When the next step would not fit, the operation ends with
+  `reservation_exhausted` and keeps its partial transcript. A billed request
+  can therefore never exceed R, since every charge was covered before it was
+  incurred.
+- **Release.** Settlement replaces the reservation with the actual charge. A
+  withdrawn or fenced operation releases its reservation. Uncertain dispatch
+  keeps its reservation until recovery (built in phase 2) settles or fences
+  it. A reservation is released only on proof that the operation settled or
+  never ran.
 - **Concurrency.** A cap on concurrent operations per owner bounds how much
   can be reserved at once.
 
-Spend can never exceed the credits granted. The worst case is an account
-whose remaining balance sits idle in reservations until their runs settle.
+Invariant: settled + reserved never exceeds granted, so a customer can never
+spend more credits than they bought or were granted.
 
-**Price.** The amount charged is cost × a markup, set in `prices.ts` next to
-the cost tables, so the ledger shows both. The portal shows charged amounts.
+**Price.** Credits charged are cost × a markup of at least 1, set in
+`prices.ts` next to the cost tables and versioned, so the ledger shows both. The portal shows charged amounts.
 
 Why prepaid rather than a subscription with metered usage:
 - No debt to collect, and no invoicing logic.
@@ -187,12 +217,17 @@ then could not reserve synchronously.
 - **Per account.** The daily, monthly and per-agent caps stay as abuse
   guards, read from the account's plan, and are checked against settled plus
   reserved spend.
-- **Global ceiling.** A Worker-wide daily total of settled plus reserved
-  spend, kept in the `registry` Durable Object. Admission reserves E there as
-  well as in the Gateway; settlement and release update both, keyed by
-  operation id. Over the ceiling, new runs are refused with
-  `service_capacity` and the admin is alerted. The ceiling ships with
-  billing, not after it.
+- **Global breaker.** Every dollar of provider cost is covered by credits
+  bought at a markup of at least 1, or granted by an admin, so the global
+  limit is a guard against bugs and not against money loss. It does not
+  reserve. The `registry` Durable Object sums settled provider cost per UTC
+  day. Over the ceiling it opens a breaker: Gateways refuse new admissions with
+  `service_capacity`, and the admin is alerted. Work admitted before the
+  breaker opened finishes, so the overshoot is bounded by reservations
+  already held, each of them covered by credits. The breaker closes at the
+  next UTC day or by an admin. A second reservation protocol across two
+  Durable Objects would need a cross-object failure and rollover design for
+  no added safety.
 - **Comps.** A free account gets an admin credit grant (`id: comp_...`), not a
   bypass. Once credits are enforced, `REPOWIRE_MANAGED_USERS` is removed;
   until then it remains the beta gate.
@@ -234,14 +269,15 @@ and the Gateway.
 ## Phases
 
 1. **Accounts.** GitHub sign-in with state, PKCE and session rotation; the
-   namespace link; the quiet-owner check for relinking; `managedFor` through
+   namespace link, immutable after first use; suspension; `managedFor` through
    the link. While in beta, only accounts on an invite list are active.
 2. **Billing.** Purchases, the Stripe webhook, credits, reservation-based
-   admission with the exposure cap, the concurrency cap, the global ceiling,
-   comps, and the billing page. This is the first point where users are
+   admission with per-step pre-checks, the concurrency cap, the global
+   breaker, comps, and the billing page. This is the first point where users are
    charged, and every money guard ships in it.
-3. **Later.** Per-plan caps, Google sign-in, recurring plans, and several
-   namespaces per account with account-scoped machine ids.
+3. **Later.** Per-plan caps, Google sign-in, recurring plans, key rotation
+   with drain-and-fence, and several namespaces per account with
+   account-scoped machine ids.
 
 ## Out of scope, to decide before charging anyone
 
