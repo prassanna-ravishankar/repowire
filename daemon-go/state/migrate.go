@@ -272,6 +272,54 @@ var migrationStatements = []string{
 		item_id TEXT NOT NULL,
 		PRIMARY KEY (surface, ref)
 	)`,
+	// Cross-machine asks and notifies (v17, rfcs/cross-machine-circles.md).
+	// Times are unix seconds. store_epoch in daemon_meta names this database.
+	`CREATE TABLE IF NOT EXISTS daemon_meta (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS remote_inbound (
+		id TEXT PRIMARY KEY,
+		kind TEXT NOT NULL,
+		from_machine TEXT NOT NULL,
+		from_peer_id TEXT NOT NULL,
+		from_name TEXT NOT NULL,
+		from_circle TEXT NOT NULL,
+		to_peer_id TEXT NOT NULL,
+		text TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		state TEXT NOT NULL,
+		close_reason TEXT NOT NULL DEFAULT '',
+		reply TEXT,
+		settled_at INTEGER
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_remote_inbound_state ON remote_inbound(state)`,
+	`CREATE TABLE IF NOT EXISTS remote_fences (
+		id TEXT NOT NULL,
+		from_machine TEXT NOT NULL,
+		from_peer_id TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY (id, from_machine)
+	)`,
+	`CREATE TABLE IF NOT EXISTS remote_outbound (
+		id TEXT PRIMARY KEY,
+		machine TEXT NOT NULL,
+		store_epoch TEXT NOT NULL,
+		to_peer_id TEXT NOT NULL,
+		to_name TEXT NOT NULL,
+		from_peer_id TEXT NOT NULL,
+		from_name TEXT NOT NULL,
+		from_circle TEXT NOT NULL,
+		text TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		state TEXT NOT NULL,
+		close_reason TEXT NOT NULL DEFAULT '',
+		reply TEXT,
+		delivered INTEGER NOT NULL DEFAULT 0,
+		checked_at INTEGER NOT NULL DEFAULT 0,
+		reply_delivery TEXT NOT NULL DEFAULT 'push'
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_remote_outbound_asker ON remote_outbound(from_peer_id, state)`,
 }
 
 // migrationLedger mirrors the schema_migrations rows database.py stamps, so a
@@ -297,6 +345,7 @@ var migrationLedger = []struct {
 	{14, "peer provenance: source, parent runtime id, ephemeral, addressability"},
 	{15, "description_set_at for claim staleness; route_decision trace index"},
 	{16, "human inbox items, per-surface push records and rendered refs"},
+	{17, "cross-machine asks: store epoch, inbound and outbound records, fences"},
 }
 
 // migrate applies the idempotent schema and stamps user_version. Safe to run on

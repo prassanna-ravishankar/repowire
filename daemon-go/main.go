@@ -545,6 +545,16 @@ func runDaemon() {
 		hosted.Connect(cfg.Hosted.URL, cfg.Hosted.Token, cli.Version, h)
 	}
 
+	// Cross-machine circles: the relay client serves the /remote API in-process
+	// and carries this daemon's requests to the owner's other machines.
+	if relayClient != nil {
+		if err := h.WithRemote(ctx, relayClient, selfMachine); err != nil {
+			log.Printf("WARNING cross-machine circles disabled: %v", err)
+		} else {
+			relayClient.WithRemoteHandler(h.RemoteHandler())
+		}
+	}
+
 	// Surface relay-client status on /health and drive its lazy self-heal there
 	// (mirrors the Python /health relay block + ensure_running).
 	if relayClient != nil {

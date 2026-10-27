@@ -488,6 +488,20 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	if req.ReplyDelivery != "" && req.ReplyDelivery != "push" && req.ReplyDelivery != "pull" {
 		return AskResponse{}, routeErr(http.StatusUnprocessableEntity, "reply_delivery must be push or pull")
 	}
+	if !req.ToPeerOmitted {
+		name, machine, err := h.remoteAddress(ctx, req.ToPeer)
+		if err == nil {
+			return h.openRemoteAsk(ctx, req, name, machine)
+		}
+		if !errors.Is(err, errNotRemote) {
+			return AskResponse{}, err
+		}
+	}
+	if req.ReplyTo != nil {
+		if prior, ok := h.ask.asks.Get(*req.ReplyTo); ok && (proto.IsRemotePeerID(prior.FromPeerID) || proto.IsRemotePeerID(prior.ToPeerID)) {
+			return AskResponse{}, routeErr(http.StatusUnprocessableEntity, "a cross-machine ask cannot be closed by reply_to; ack it instead")
+		}
+	}
 	res, err := h.resolveAsk(ctx, req)
 	if err != nil {
 		return AskResponse{}, err
@@ -706,6 +720,9 @@ func (h *Hub) ackDirect(ctx context.Context, req AckRequest) (AckResponse, error
 	if !ok {
 		return AckResponse{}, routeErr(http.StatusNotFound, "No open ask with correlation_id: "+req.CorrelationID)
 	}
+	if err := h.mayResolve(existing, req.FromPeer); err != nil {
+		return AckResponse{}, err
+	}
 
 	hasBody := (req.Message != nil && *req.Message != "") || len(req.Attachments) > 0
 
@@ -745,8 +762,12 @@ func (h *Hub) ackDirect(ctx context.Context, req AckRequest) (AckResponse, error
 	}
 
 	// Bare ack.
+	if _, closed := h.ask.asks.Close(ctx, req.CorrelationID, "ack"); !closed {
+		if err := h.heldOpen(req.CorrelationID); err != nil {
+			return AckResponse{}, err
+		}
+	}
 	h.emitAckEvent(ctx, existing, "ack", false, false, false)
-	_, _ = h.ask.asks.Close(ctx, req.CorrelationID, "ack")
 	h.traceAskClosed(ctx, existing, "ack", "")
 	return AckResponse{OK: true}, nil
 }
@@ -777,16 +798,50 @@ func (h *Hub) declineDirect(ctx context.Context, req DeclineRequest) error {
 	if !ok {
 		return routeErr(http.StatusNotFound, "No open ask with correlation_id: "+req.CorrelationID)
 	}
+	if err := h.mayResolve(existing, req.FromPeer); err != nil {
+		return err
+	}
 	if existing.Closed {
 		return routeErr(http.StatusGone, fmt.Sprintf("Ask %s is already closed", req.CorrelationID))
 	}
 	return h.deliverAskResolution(ctx, existing, "declined", "declined", req.Reason, nil)
 }
 
+// mayResolve lets only the ask's own recipient close a cross-machine ask:
+// the source machine trusts that result as the target's. The local
+// projection of an ask sent to another machine is settled only by that
+// machine.
+func (h *Hub) mayResolve(ask *service.Ask, fromPeer *string) error {
+	if proto.IsRemotePeerID(ask.ToPeerID) {
+		return routeErr(http.StatusForbidden, "this ask is answered on the other machine")
+	}
+	if !proto.IsRemotePeerID(ask.FromPeerID) {
+		return nil
+	}
+	if fromPeer != nil {
+		if p, _ := h.ask.reg.GetPeerByName(*fromPeer, nil); p != nil && p.PeerID == ask.ToPeerID {
+			return nil
+		}
+	}
+	return routeErr(http.StatusForbidden, "only the recipient may resolve a cross-machine ask")
+}
+
+// heldOpen explains a close the tracker refused: an ask still open was kept
+// open by its durable result failing to commit.
+func (h *Hub) heldOpen(cid string) error {
+	if ask, ok := h.ask.asks.Get(cid); ok && !ask.Closed {
+		return routeErr(http.StatusServiceUnavailable, "could not record the result; the ask stays open, retry")
+	}
+	return nil
+}
+
 func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameKind, closeReason, message string, attachments []map[string]any) error {
 	if ask.ReplyDelivery == "pull" {
-		h.ask.asks.CaptureReply(ctx, ask.CorrelationID, message, attachments)
-		_, _ = h.ask.asks.Close(ctx, ask.CorrelationID, closeReason)
+		if _, closed := h.ask.asks.Resolve(ctx, ask.CorrelationID, closeReason, &message, attachments); !closed {
+			if err := h.heldOpen(ask.CorrelationID); err != nil {
+				return err
+			}
+		}
 		h.emitAckEvent(ctx, ask, closeReason, true, true, len(attachments) > 0)
 		h.traceAskClosed(ctx, ask, closeReason, message)
 		return nil
@@ -1400,6 +1455,9 @@ func (h *Hub) handlePendingAsks(w http.ResponseWriter, r *http.Request) {
 			resolved = p.PeerID
 		}
 	}
+	// The asker's own hooks are the request that repairs its cross-machine
+	// asks, whichever direction this call lists.
+	h.reconcileRemote(r.Context(), resolved)
 
 	// maxResults<0 → uncapped, matching the Python default (no cap on the poll).
 	pending, err := h.ask.asks.PendingForPeer(r.Context(), resolved, -1, direction)
@@ -1478,6 +1536,20 @@ func (h *Hub) waitOnAck(ctx context.Context, cid string, req AskWaitRequest) (As
 	if err := h.askOperationReady(); err != nil {
 		return AskWaitResponse{}, err
 	}
+	timeout := askWaitDefaultSeconds
+	if req.TimeoutSeconds != nil {
+		timeout = time.Duration(*req.TimeoutSeconds * float64(time.Second))
+	}
+	if timeout < 0 {
+		timeout = 0
+	}
+	// A cross-machine ask is answered from its durable row, which outlives
+	// the tracker projection.
+	if h.remote != nil {
+		if row, err := h.store.GetOutbound(ctx, cid); err == nil {
+			return h.waitRemote(ctx, row, req.PeerID, timeout)
+		}
+	}
 	existing, ok := h.ask.asks.Get(cid)
 	if !ok {
 		return AskWaitResponse{}, routeErr(http.StatusNotFound, "No ask with correlation_id: "+cid)
@@ -1488,14 +1560,6 @@ func (h *Hub) waitOnAck(ctx context.Context, cid string, req AskWaitRequest) (As
 			"correlation_id": cid,
 			"asker":          string(existing.FromPeerName),
 		})
-	}
-
-	timeout := askWaitDefaultSeconds
-	if req.TimeoutSeconds != nil {
-		timeout = time.Duration(*req.TimeoutSeconds * float64(time.Second))
-	}
-	if timeout < 0 {
-		timeout = 0
 	}
 
 	ask, err := h.ask.asks.WaitForResolution(ctx, cid, timeout, true)

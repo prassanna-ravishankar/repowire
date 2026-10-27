@@ -117,6 +117,10 @@ type AllocateParams struct {
 // a terminally-offlined identity.
 var ErrPeerRetired = fmt.Errorf("peer: retired peer_id cannot be reclaimed without a live agent")
 
+// ErrReservedPeerID refuses a claim of an id reserved for peers on other
+// machines (proto.RemotePeerID).
+var ErrReservedPeerID = fmt.Errorf("peer: remote: peer ids name peers on other machines and cannot be claimed")
+
 // ErrPaneHijackRejected is returned when a fresh SessionStart claims a pane held
 // by a live peer whose agent is the claimant's parent process — a subprocess
 // inheriting TMUX_PANE trying to register on its parent's pane. A hard rejection
@@ -253,6 +257,9 @@ func (r *Registry) ConfigureDurations(heartbeatInterval, reapTTL time.Duration) 
 // AllocateAndRegister allocates (or reclaims) a peer identity and registers it
 // ONLINE. Returns the canonical PeerID and the assigned DisplayName.
 func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParams) (proto.PeerID, proto.DisplayName, error) {
+	if params.ClaimedPeerID != nil && proto.IsRemotePeerID(*params.ClaimedPeerID) {
+		return "", "", ErrReservedPeerID
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	recoveredRetirement := false

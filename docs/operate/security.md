@@ -34,6 +34,9 @@ For the hosted relay at `repowire.io`, this means the operators *could* see your
 | Relay ↔ daemon | TLS-over-WSS (you trust the relay's network and process) |
 | Daemon ↔ agent (MCP) | Per-agent stdio identity proof, then localhost-only HTTP with bearer auth |
 | Daemon ↔ agent (hooks) | Local HTTP on `127.0.0.1`; gated by `daemon.auth_token` if set |
+| Daemon ↔ daemon (same key) | The relay names the sending machine; the `/remote` API is reachable only in-process from the relay client, never over HTTP |
+
+Cross-machine trust: a machine id is the label a daemon connects with (its hostname), not a separately verified identity. Anyone holding the relay key can connect as any machine id. All daemons on one key trust each other's account of their own peers (id, name and circle) as much as you trust the key. The relay binds each cross-machine request to the connection that sent it and accepts its answer only from the connection it went to.
 
 ## Hardening recommendations
 

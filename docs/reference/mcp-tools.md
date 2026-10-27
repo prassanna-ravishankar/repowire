@@ -99,6 +99,8 @@ ask("project-b", "What API endpoints do you expose?")
 # returns "ask-c1a1c7dd"
 ```
 
+`peer_name` may name a peer on another machine of the same relay key as `name@machine` or `peer_id@machine`, when caller and target share a named circle ([circles across machines](../concepts/peers-and-circles.md#circles-across-machines)). The correlation id then reads `ask-<unix>-<hex>`. If the send's outcome is unknown, the result still carries the id with an `uncertain` error: do not resend; `wait_on_ack` or the asker's next turn settles it. `reply_to`, attachments and questions are refused across machines, and a cross-machine ask can only be closed by its recipient.
+
 An ask to the human peer (or `telegram`) is stored in the [human inbox](../concepts/human-inbox.md) as an `ask` item and stays open until the user replies from any surface. The result adds the inbox receipt: `ask-c1a1c7dd inbox_item=inb-5e6f7a8b surfaces=telegram`.
 
 ### `wait_on_ack`
@@ -256,6 +258,8 @@ list_peers(show_offline: bool = False, include_self: bool = False, circle: str =
 Returns a TSV with columns: `peer_id`, `name`, `project`, `circle`, `role`, `status`, `path`, `machine`, `description`, `backend`, `last_seen`, `turn_state`, `model`, `source`, `initiator`, `addressable`, `parent_peer_id`, `nickname`. The five provenance columns are appended after the historical thirteen, so positional consumers keep their indices.
 
 `source` is how the peer reached the mesh: `hook` (a runtime hook in a tmux pane), `codex-app-server` (a thread the codex bridge registered from the Codex App Server, whether ChatGPT desktop, VS Code, or codex CLI), or `unknown` (registered before provenance existed). `initiator` is who opened the session: `user`, `agent` (spawned by another agent, e.g. a Codex sub-agent), `system` (runtime machinery such as helper threads the desktop app spins up), or empty when the runtime did not say. `addressable` is the runtime's own verdict on whether the peer can receive direct input; Codex multi-agent v2 sub-agent threads report `false` (`addressable_reason=subagent_direct_input_denied` on the HTTP record). `parent_peer_id` is the registered parent of a sub-agent thread, empty when the parent is not on the mesh. `nickname` is the runtime's human-readable name for a sub-agent (for example `Pasteur`); it is the only handle such threads have beyond the generated display name.
+
+With the relay connected and the caller in a shared circle, remote peers in that circle follow the local rows, addressed as `name@machine` in `name` and `peer_id@machine` in `peer_id`, with `source=remote`. A final `# partial: m1, m2` line names machines that did not answer within 2s or past the 16-machine cap. `circle="*"` stays local. See [circles across machines](../concepts/peers-and-circles.md#circles-across-machines).
 
 `ask`, `ask_many`, and `notify_peer` refuse a peer with `addressable=false` with `peer_not_addressable` (the JSON carries `peer_id` and `parent_peer_id`); nothing is queued, so re-send to the parent or another listed peer. `broadcast` skips such peers.
 

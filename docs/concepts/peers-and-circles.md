@@ -22,6 +22,18 @@ A circle is a logical subnet. Ordinary agents communicate and spawn within their
 
 Use circles to keep work-domain peers from talking to home-project peers when you don't want them to. They are an agent-routing boundary, not a security boundary against local administrators or circle-bypassing roles.
 
+### Circles across machines
+
+When several daemons connect to the relay with the same key, a named circle spans all of them: peers on different machines in the same circle can list and message each other. A circle the machine named for itself stays local: `default`, an all-digit name (an unnamed tmux session such as `1`), and `window-<n>`. The rule is on the name alone, so a circle deliberately named `7` is local too. Name the tmux session (`tmux new -s repowire`) to share it.
+
+- `list_peers` adds remote peers in the caller's own circle as `name@machine` and `peer_id@machine`, with source `remote`. A final `# partial: ...` line names machines that did not answer in time.
+- `ask`, `notify_peer` and `wait_on_ack` accept those addresses, and replies arrive the way local replies do. `broadcast` also reaches remote peers in the circle and reports them separately.
+- Cross-machine messages carry text only: no attachments, structured questions or `reply_to`.
+- Circle-bypassing roles do not bypass across machines: an orchestrator or human surface is neither a remote sender nor a remote target.
+- A machine that is offline is a definite failure; nothing is queued for it.
+
+`wait_on_ack` on a remote ask takes the reply itself, so it is not also pushed; waiting again returns it until retention. A notify to a busy remote peer reports `delivery_state=queued` and lands on its next turn. Delivery to the remote agent is at most once. Each side keeps a durable record, so a recorded result survives restarts on either machine for 7 days. A send whose outcome is unknown is reported as uncertain and never resent: `wait_on_ack`, or the asker's next turn, reads the result back from the other machine. Same-machine traffic never touches the relay. Design: `rfcs/cross-machine-circles.md`.
+
 ## Roles
 
 Most peers run as `agent`. A peer can also register as `orchestrator` — same routing, different lifecycle expectations. The [orchestrator pattern](orchestrator.md) covers when to set one up.
