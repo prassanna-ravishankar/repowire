@@ -58,9 +58,10 @@ A reconnect may reclaim an existing `peer_id` only when the claim still describe
 
 - backend must match;
 - path must match when both the existing peer and the reconnect claim provide one;
+- the id must not be held by a live session in another pane: when the peer runs in a different pane and its recorded agent is still alive, the claim is refused before any reuse and a `peer_id_claim_rejected` event records both panes. A different pid in the same pane (a wrapper such as `caffeinate`) is still a reconnect. Two live sessions therefore cannot share one `peer_id`, and a pair that already does separates on the next reconnect;
 - pane ownership is updated only after that identity check passes.
 
-If the check fails, the stale `peer_id` claim is ignored and the daemon allocates or adopts a different identity. This prevents an old environment variable or stale pane metadata from binding a different session's WebSocket to the wrong peer.
+If the check fails, the stale `peer_id` claim is ignored and the daemon allocates or adopts a different identity. This prevents an old environment variable or stale pane metadata from binding a different session's WebSocket to the wrong peer. The ws-hook reconnects with the `peer_id` the daemon last assigned it, not the one it started with, so a refused claim settles on its new identity instead of minting another on every reconnect.
 
 A registration that names no usable `peer_id` but reports a runtime session id (the hook's `session_id`, a Codex thread id) is next matched against the durable session bindings: the peer that session is bound to, for the same backend and a compatible path, keeps it. This is how a by-hand `claude --resume`, a bridge reconnect, or a registration after a daemon restart lands on the original peer. A soft retirement of that peer is lifted, since the binding certifies the same backend, session, and path a birth certificate does; a hard operator retirement is not. A bound peer whose agent process is still running elsewhere (even while its record is offline) is a fork sharing its parent's session id, so the registrant gets its own peer and a suffixed address instead. For session-scoped backends a binding is used only while it is the peer's newest session; an older binding to a peer that has since run another thread is ignored.
 

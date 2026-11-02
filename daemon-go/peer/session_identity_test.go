@@ -340,3 +340,39 @@ func TestSessionIdentity_SameDirectoryClaudeTakeover(t *testing.T) {
 		t.Fatalf("takeover after restart got %s, want %s", again, old)
 	}
 }
+
+// #503: a claim for a peer_id held by a live session in another pane must not
+// merge the claimant into that peer. The same pane keeps the id even when the
+// pid differs (the ws-hook may report a wrapper such as caffeinate), and a dead
+// holder is a takeover, not a twin.
+func TestSessionIdentity_ClaimHeldByOtherLiveSessionMints(t *testing.T) {
+	h := newSessionHarness(t)
+	claim := func(cid *proto.PeerID, pid int, pane string) proto.PeerID {
+		t.Helper()
+		h.live.alive[pid] = true
+		id, _, err := h.r.AllocateAndRegister(context.Background(), AllocateParams{
+			Circle: "work", Backend: proto.AgentClaudeCode, Path: ptr("/p/app"), Machine: "m",
+			Role: proto.RoleAgent, ClaimedPeerID: cid, AgentPID: &pid, PaneID: ptr(pane),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	holder := claim(nil, 100, "%a")
+
+	if got := claim(&holder, 200, "%b"); got == holder {
+		t.Fatalf("claim from another live pane reused holder %s", holder)
+	}
+	if p, _ := h.r.GetPeer(holder); p.PaneID == nil || *p.PaneID != "%a" {
+		t.Fatalf("holder pane moved: %v", p.PaneID)
+	}
+	if got := claim(&holder, 150, "%a"); got != holder {
+		t.Fatalf("same-pane wrapper pid got %s, want %s", got, holder)
+	}
+
+	delete(h.live.alive, 150)
+	if got := claim(&holder, 300, "%c"); got != holder {
+		t.Fatalf("claim over dead holder got %s, want %s", got, holder)
+	}
+}
