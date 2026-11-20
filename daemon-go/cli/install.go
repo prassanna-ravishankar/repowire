@@ -209,13 +209,48 @@ func stableExecutable(path string) string {
 	if err != nil {
 		return path
 	}
+	// A launcher that the next install repoints keeps hooks and services on
+	// the current version: Homebrew's bin/repowire, or install.sh's
+	// $REPOWIRE_BIN_DIR/repowire (default ~/.local/bin) over the versioned
+	// ~/.local/share/repowire/<version>/repowire.
+	var launchers []string
 	if index := strings.Index(filepath.ToSlash(resolved), "/Cellar/repowire/"); index >= 0 {
-		linked := filepath.FromSlash(filepath.ToSlash(resolved)[:index] + "/bin/repowire")
-		if target, err := filepath.EvalSymlinks(linked); err == nil && target == resolved {
-			return linked
+		launchers = append(launchers, filepath.FromSlash(filepath.ToSlash(resolved)[:index]+"/bin/repowire"))
+	}
+	if dir := os.Getenv("REPOWIRE_BIN_DIR"); dir != "" {
+		launchers = append(launchers, filepath.Join(dir, "repowire"))
+	}
+	launchers = append(launchers, home(".local", "bin", "repowire"))
+	for _, launcher := range launchers {
+		if target, err := filepath.EvalSymlinks(launcher); err == nil && target == resolved {
+			if dir, err := filepath.EvalSymlinks(filepath.Dir(launcher)); err == nil {
+				return filepath.Join(dir, filepath.Base(launcher))
+			}
+			return launcher
 		}
 	}
 	return resolved
+}
+
+// hookBinary is the binary the installed Claude Code Stop hook runs ("" when
+// there is none), parsed from its leading quoted path.
+func hookBinary(settings map[string]any) string {
+	hooks, _ := settings["hooks"].(map[string]any)
+	entries, _ := hooks["Stop"].([]any)
+	for _, raw := range entries {
+		entry, _ := raw.(map[string]any)
+		items, _ := entry["hooks"].([]any)
+		for _, item := range items {
+			handler, _ := item.(map[string]any)
+			command, _ := handler["command"].(string)
+			if quoted, err := strconv.QuotedPrefix(command); err == nil && strings.HasSuffix(command, " hook stop") {
+				if path, err := strconv.Unquote(quoted); err == nil {
+					return path
+				}
+			}
+		}
+	}
+	return ""
 }
 func homebrewCellarPath(path string) bool {
 	return strings.Contains(filepath.ToSlash(path), "/Cellar/repowire/")
@@ -792,6 +827,12 @@ func runRuntimeInstall(name string, argv []string) int {
 		fmt.Printf("%s runtime: %s; integration: %s\n", name,
 			map[bool]string{true: "detected", false: "not detected"}[runtimeAvailable(name)],
 			map[bool]string{true: "installed", false: "not installed"}[runtimeIntegrated(name)])
+		if name == "claude-code" {
+			settings, _ := readJSON(home(".claude", "settings.json"), false)
+			if bin := hookBinary(settings); bin != "" && bin != executable() {
+				fmt.Printf("hooks run %s, not this binary (%s); run `repowire hooks install`\n", bin, executable())
+			}
+		}
 		return 0
 	default:
 		return usage(name + " <install|uninstall|status>")
