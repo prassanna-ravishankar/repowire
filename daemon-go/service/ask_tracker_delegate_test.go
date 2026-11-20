@@ -333,3 +333,78 @@ func TestStashedResultCannotBeDelegated(t *testing.T) {
 		t.Fatalf("delegating a stashed result: %v", err)
 	}
 }
+
+// Review #523: every waiter on an ask learns its terminal state, not just
+// the first; the shared one-value channel used to strand the rest.
+func TestEveryWaiterReturnsTheRecordedAnswer(t *testing.T) {
+	ctx := context.Background()
+	tr := NewAskTracker(0)
+	q, _ := tr.Register(ctx, RegisterAskParams{CorrelationID: "q-1", FromPeerID: "repow-a", ToPeerID: "repow-b", Question: map[string]any{"kind": "text"}})
+	type result struct {
+		ans Answer
+		err error
+	}
+	answers := make(chan result, 2)
+	for _, timeout := range []time.Duration{10 * time.Millisecond, 30 * time.Millisecond} {
+		go func(timeout time.Duration) {
+			ans, err := tr.WaitForAnswer(ctx, q, timeout, nil)
+			answers <- result{ans, err}
+		}(timeout)
+	}
+	resolved := make(chan *Ask, 1)
+	go func() {
+		ask, _ := tr.WaitForResolution(ctx, q, 2*time.Second, false)
+		resolved <- ask
+	}()
+	for i := 0; i < 2; i++ {
+		select {
+		case r := <-answers:
+			if r.err != nil || r.ans.Outcome != "timed_out" {
+				t.Fatalf("waiter %d: %+v %v", i, r.ans, r.err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("waiter %d never returned", i)
+		}
+	}
+	if ask := <-resolved; ask == nil || !ask.Closed || ask.Answer == nil || ask.Answer.Outcome != "timed_out" {
+		t.Fatalf("resolution waiter = %+v", ask)
+	}
+}
+
+// Review #523: work queued for an ask never runs against a new ask that
+// reuses its id after the first was evicted.
+func TestQueuedWorkIsBoundToItsAsk(t *testing.T) {
+	ctx := context.Background()
+	tr := NewAskTracker(0)
+	cid, _ := tr.Register(ctx, RegisterAskParams{CorrelationID: "ask-reused", FromPeerID: "repow-a", ToPeerID: "repow-b"})
+	if _, err := tr.Claim(cid); err != nil {
+		t.Fatal(err)
+	}
+	ran := make(chan struct{}, 1)
+	tr.RunClaimed(cid, func(*Ask) { ran <- struct{}{} })
+	tr.ForgetPeer(ctx, "repow-b")
+	if _, err := tr.Register(ctx, RegisterAskParams{CorrelationID: cid, FromPeerID: "repow-a", ToPeerID: "repow-b"}); err != nil {
+		t.Fatal(err)
+	}
+	tr.Release(cid)
+	select {
+	case <-ran:
+		t.Fatal("work queued for the evicted ask ran on its replacement")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Work Release already handed off is checked against the instance too.
+	other, _ := tr.Register(ctx, RegisterAskParams{CorrelationID: "ask-other", FromPeerID: "repow-a", ToPeerID: "repow-c"})
+	first, _ := tr.Get(other)
+	tr.mu.Lock()
+	instance := tr.asks[other]
+	tr.mu.Unlock()
+	tr.ForgetPeer(ctx, "repow-c")
+	_, _ = tr.Register(ctx, RegisterAskParams{CorrelationID: other, FromPeerID: "repow-a", ToPeerID: "repow-c"})
+	tr.runClaimedOn(other, instance, func(*Ask) { ran <- struct{}{} })
+	select {
+	case <-ran:
+		t.Fatalf("handed-off work for %s ran on its replacement", first.CorrelationID)
+	case <-time.After(50 * time.Millisecond):
+	}
+}

@@ -119,6 +119,10 @@ type Ask struct {
 	// Delegations is the chain of hand-offs, oldest first; ToPeerID is the
 	// last hop's recipient. Replaced, never mutated, so snapshots stay valid.
 	Delegations []Delegation
+
+	// done is closed once, when this ask instance reaches its terminal state,
+	// waking every waiter; they then read what was recorded.
+	done chan struct{}
 }
 
 // clone returns a snapshot copy safe to hand to a reader. Slices/maps/pointers
@@ -131,16 +135,15 @@ func (a *Ask) clone() *Ask {
 
 // AskTracker is the in-memory store of open ask threads.
 type AskTracker struct {
-	mu            sync.Mutex
-	asks          map[string]*Ask
-	resolving     map[string]struct{}
-	deferred      map[string][]func(*Ask) // RunClaimed work waiting on a claim
-	ttl           time.Duration
-	lastEviction  time.Time
-	quiescing     map[proto.PeerID]struct{}
-	answerWaiters map[string]chan Answer
-	onRegister    func(cid string, from, to proto.PeerID)
-	closeGuard    func(ask *Ask, reason string) error
+	mu           sync.Mutex
+	asks         map[string]*Ask
+	resolving    map[string]struct{}
+	deferred     map[string][]deferredWork // RunClaimed work waiting on a claim
+	ttl          time.Duration
+	lastEviction time.Time
+	quiescing    map[proto.PeerID]struct{}
+	onRegister   func(cid string, from, to proto.PeerID)
+	closeGuard   func(ask *Ask, reason string) error
 }
 
 // SetCloseGuard installs a check every terminal transition runs before the
@@ -184,12 +187,11 @@ func NewAskTracker(ttl time.Duration) *AskTracker {
 		ttl = defaultAskTTL
 	}
 	return &AskTracker{
-		asks:          make(map[string]*Ask),
-		resolving:     make(map[string]struct{}),
-		deferred:      make(map[string][]func(*Ask)),
-		ttl:           ttl,
-		quiescing:     make(map[proto.PeerID]struct{}),
-		answerWaiters: make(map[string]chan Answer),
+		asks:      make(map[string]*Ask),
+		resolving: make(map[string]struct{}),
+		deferred:  make(map[string][]deferredWork),
+		ttl:       ttl,
+		quiescing: make(map[proto.PeerID]struct{}),
 	}
 }
 
@@ -272,6 +274,7 @@ func (t *AskTracker) Register(ctx context.Context, p RegisterAskParams) (string,
 		Attachments:           p.Attachments,
 		ReplyDelivery:         delivery,
 		CreatedAt:             created,
+		done:                  make(chan struct{}),
 	}
 	if t.onRegister != nil && !p.SkipHistory {
 		t.onRegister(cid, p.FromPeerID, p.ToPeerID)
@@ -303,18 +306,29 @@ func (t *AskTracker) ListByParent(parentID string) []*Ask {
 	return out
 }
 
-// cancelWaiter resolves a dangling answer waiter with a cancelled Answer.
-// Caller MUST hold t.mu. Called when an ask reaches a terminal state while a
-// blocking transport is still awaiting it, so the waiter doesn't hang.
-func (t *AskTracker) cancelWaiter(cid string, message *string) {
-	w, ok := t.answerWaiters[cid]
-	if !ok {
+// closeLocked is every terminal transition: it marks ask closed with reason
+// and wakes all its waiters. Caller holds t.mu. Idempotent.
+func (t *AskTracker) closeLocked(ask *Ask, reason string) {
+	if ask.Closed {
 		return
 	}
-	delete(t.answerWaiters, cid)
-	// Buffered cap-1 channel; a single send never blocks and the value is
-	// readable even if the waiter already moved on.
-	w <- Answer{Outcome: "cancelled", Message: message}
+	ask.Closed = true
+	ask.CloseReason = reason
+	if ask.done != nil {
+		close(ask.done)
+	}
+}
+
+// recordedAnswer is what a waiter on a closed ask learns: its answer, or a
+// cancellation naming why it closed without one.
+func (t *AskTracker) recordedAnswer(ask *Ask) Answer {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if ask.Answer != nil {
+		return *ask.Answer
+	}
+	reason := ask.CloseReason
+	return Answer{Outcome: "cancelled", Message: &reason}
 }
 
 // Close terminally closes an ask with reason. Returns (ask,true) if it existed
@@ -327,10 +341,7 @@ func (t *AskTracker) Close(ctx context.Context, cid, reason string) (*Ask, bool)
 	if !ok || ask.Closed || !t.guardLocked(ask, reason) {
 		return nil, false
 	}
-	ask.Closed = true
-	ask.CloseReason = reason
-	r := reason
-	t.cancelWaiter(cid, &r)
+	t.closeLocked(ask, reason)
 	return ask.clone(), true
 }
 
@@ -364,10 +375,7 @@ func (t *AskTracker) Resolve(ctx context.Context, cid, reason string, reply *str
 			ask.ReplyAttachments = attachments
 		}
 	}
-	ask.Closed = true
-	ask.CloseReason = reason
-	r := reason
-	t.cancelWaiter(cid, &r)
+	t.closeLocked(ask, reason)
 	return ask.clone(), true
 }
 
@@ -405,9 +413,16 @@ func (t *AskTracker) Release(cid string) {
 	next := t.deferred[cid]
 	delete(t.deferred, cid)
 	t.mu.Unlock()
-	for _, fn := range next {
-		go t.RunClaimed(cid, fn)
+	for _, work := range next {
+		go t.runClaimedOn(cid, work.ask, work.fn)
 	}
+}
+
+// deferredWork is RunClaimed work queued behind a claim, bound to the ask
+// instance it was queued for.
+type deferredWork struct {
+	ask *Ask
+	fn  func(*Ask)
 }
 
 // RunClaimed runs fn with the claimed snapshot under cid's Claim: now when the
@@ -417,13 +432,24 @@ func (t *AskTracker) Release(cid string) {
 // question's timeout) waits here rather than polling or being dropped.
 func (t *AskTracker) RunClaimed(cid string, fn func(*Ask)) {
 	t.mu.Lock()
-	ask, ok := t.asks[cid]
-	if !ok || ask.Closed {
+	ask := t.asks[cid]
+	t.mu.Unlock()
+	if ask != nil {
+		t.runClaimedOn(cid, ask, fn)
+	}
+}
+
+// runClaimedOn is RunClaimed bound to one ask instance: work queued for an ask
+// that is later evicted never runs against a new ask registered under the
+// same id.
+func (t *AskTracker) runClaimedOn(cid string, ask *Ask, fn func(*Ask)) {
+	t.mu.Lock()
+	if t.asks[cid] != ask || ask.Closed {
 		t.mu.Unlock()
 		return
 	}
 	if t.claimedLocked(cid) {
-		t.deferred[cid] = append(t.deferred[cid], fn)
+		t.deferred[cid] = append(t.deferred[cid], deferredWork{ask: ask, fn: fn})
 		t.mu.Unlock()
 		return
 	}
@@ -620,12 +646,7 @@ func (t *AskTracker) answer(cid string, ans Answer, claimed bool) (*Ask, error) 
 		now := time.Now().UTC()
 		ask.RepliedAt = &now
 	}
-	ask.Closed = true
-	ask.CloseReason = "answered"
-	if w, ok := t.answerWaiters[cid]; ok {
-		delete(t.answerWaiters, cid)
-		w <- a
-	}
+	t.closeLocked(ask, "answered")
 	return ask.clone(), nil
 }
 
@@ -645,17 +666,6 @@ func (t *AskTracker) CaptureReply(ctx context.Context, cid, replyText string, at
 	}
 	now := time.Now().UTC()
 	ask.RepliedAt = &now
-}
-
-// waiterFor returns the existing waiter channel for cid or creates one. Caller
-// MUST hold t.mu.
-func (t *AskTracker) waiterFor(cid string) chan Answer {
-	if w, ok := t.answerWaiters[cid]; ok {
-		return w
-	}
-	w := make(chan Answer, 1)
-	t.answerWaiters[cid] = w
-	return w
 }
 
 // WaitForAnswer blocks until cid is answered or applies defaultAnswer on timeout
@@ -690,7 +700,6 @@ func (t *AskTracker) WaitForAnswer(ctx context.Context, cid string, timeout time
 		t.mu.Unlock()
 		return Answer{}, fmt.Errorf("invalid default_answer: %w", err)
 	}
-	w := t.waiterFor(cid)
 	t.mu.Unlock()
 
 	var timer <-chan time.Time
@@ -700,23 +709,22 @@ func (t *AskTracker) WaitForAnswer(ctx context.Context, cid string, timeout time
 		timer = tm.C
 	}
 	select {
-	case ans := <-w:
-		return ans, nil
+	case <-ask.done:
 	case <-ctx.Done():
 		return Answer{}, ctx.Err()
 	case <-timer:
-		// Commit the default under the claim, after any reply or hand-off
-		// holding the ask. Every terminal transition (this default, a real
-		// answer that won the race, a close or an eviction) signals w, so
-		// what is returned is what was recorded.
-		t.RunClaimed(cid, func(*Ask) { _, _ = t.AnswerClaimed(ctx, cid, resolvedDefault) })
+		// Commit the default under this ask's claim, after any reply or
+		// hand-off holding it. Whatever closes the ask first (this default,
+		// a real answer, another waiter's default, a close or an eviction)
+		// closes done, and every waiter returns what was recorded.
+		t.runClaimedOn(cid, ask, func(*Ask) { _, _ = t.AnswerClaimed(ctx, cid, resolvedDefault) })
 		select {
-		case ans := <-w:
-			return ans, nil
+		case <-ask.done:
 		case <-ctx.Done():
 			return Answer{}, ctx.Err()
 		}
 	}
+	return t.recordedAnswer(ask), nil
 }
 
 // WaitForResolution is a bounded wait that records NOTHING on timeout (ask stays
@@ -737,7 +745,6 @@ func (t *AskTracker) WaitForResolution(ctx context.Context, cid string, timeout 
 	if pull {
 		ask.ReplyDelivery = "pull"
 	}
-	w := t.waiterFor(cid)
 	t.mu.Unlock()
 
 	var timer <-chan time.Time
@@ -747,17 +754,17 @@ func (t *AskTracker) WaitForResolution(ctx context.Context, cid string, timeout 
 		timer = tm.C
 	}
 	select {
-	case <-w:
-		// Resolved; return the latest snapshot.
+	case <-ask.done:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-timer:
 		return nil, nil
 	}
-	if snap, ok := t.Get(cid); ok {
-		return snap, nil
-	}
-	return nil, nil
+	// Resolved: the snapshot of this instance, even if it has since been
+	// evicted from the map.
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return ask.clone(), nil
 }
 
 // SetPendingReply stashes a completed reply for later redelivery (ACP asker
@@ -803,12 +810,7 @@ func (t *AskTracker) MarkPendingReplyDelivered(ctx context.Context, cid string, 
 	if newFrom != nil {
 		ask.FromPeerID = *newFrom
 	}
-	if !ask.Closed {
-		ask.Closed = true
-		ask.CloseReason = reason
-		r := reason
-		t.cancelWaiter(cid, &r)
-	}
+	t.closeLocked(ask, reason)
 	ask.PendingReply = nil
 	return true
 }
@@ -824,11 +826,8 @@ func (t *AskTracker) RebindAndClose(ctx context.Context, cid string, newFrom pro
 		return false
 	}
 	ask.FromPeerID = newFrom
-	ask.Closed = true
-	ask.CloseReason = reason
+	t.closeLocked(ask, reason)
 	ask.PendingReply = nil
-	r := reason
-	t.cancelWaiter(cid, &r)
 	return true
 }
 
@@ -985,13 +984,18 @@ func (t *AskTracker) CloseInboundForPeer(id proto.PeerID, reason string) []Close
 		if ask.ToPeerID != id || ask.Closed || !t.guardLocked(ask, reason) {
 			continue
 		}
-		ask.Closed = true
-		ask.CloseReason = reason
-		r := reason
-		t.cancelWaiter(cid, &r)
+		t.closeLocked(ask, reason)
 		closed = append(closed, ClosedInboundAsk{CorrelationID: cid, FromPeerID: ask.FromPeerID})
 	}
 	return closed
+}
+
+// evictLocked closes cid as evicted and drops it, with any work queued for it.
+// Caller holds t.mu.
+func (t *AskTracker) evictLocked(cid string) {
+	t.closeLocked(t.asks[cid], "evicted")
+	delete(t.asks, cid)
+	delete(t.deferred, cid)
 }
 
 // ClosedInboundAsk is what CloseInboundForPeer reports per closed ask.
@@ -1010,13 +1014,7 @@ func (t *AskTracker) ForgetPeer(ctx context.Context, id proto.PeerID) int {
 		}
 	}
 	for _, cid := range doomed {
-		ask := t.asks[cid]
-		if !ask.Closed {
-			ask.Closed = true
-			ask.CloseReason = "evicted"
-		}
-		t.cancelWaiter(cid, nil)
-		delete(t.asks, cid)
+		t.evictLocked(cid)
 	}
 	return len(doomed)
 }
@@ -1036,13 +1034,7 @@ func (t *AskTracker) EvictExpired(ctx context.Context, includeStashed bool) int 
 		}
 	}
 	for _, cid := range expired {
-		ask := t.asks[cid]
-		if !ask.Closed {
-			ask.Closed = true
-			ask.CloseReason = "evicted"
-		}
-		t.cancelWaiter(cid, nil)
-		delete(t.asks, cid)
+		t.evictLocked(cid)
 	}
 	return len(expired)
 }
