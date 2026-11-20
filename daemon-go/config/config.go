@@ -270,15 +270,28 @@ func decodeFile(raw []byte, cfg *Config) error {
 			return w
 		},
 	}, "experiments"))
-	w, _ := decodeSection(&file.Relay, &cfg.Relay, "relay")
-	warn(w)
-	w, _ = decodeSection(&file.Telegram, &cfg.Telegram, "telegram")
-	warn(w)
-	w, _ = decodeSection(&file.Slack, &cfg.Slack, "slack")
-	warn(w)
-	w, _ = decodeSection(&file.Human, &cfg.Human, "human")
+	// Blocks that carry credentials are read whole or not at all: a relay
+	// whose url did not decode must not send its key to the default relay,
+	// and a bridge with a token but no readable channel stays off.
+	defaults := Defaults()
+	warn(allOrNothing(&file.Relay, &cfg.Relay, defaults.Relay, "relay"))
+	warn(allOrNothing(&file.Telegram, &cfg.Telegram, defaults.Telegram, "telegram"))
+	warn(allOrNothing(&file.Slack, &cfg.Slack, defaults.Slack, "slack"))
+	w, _ := decodeSection(&file.Human, &cfg.Human, "human")
 	warn(w)
 	return nil
+}
+
+// allOrNothing decodes a section like decodeSection, but when any key in it
+// fails the whole section reverts to def, so no credential is used with a
+// default substituted for a sibling setting.
+func allOrNothing[T any](node *yaml.Node, dst *T, def T, path string) []string {
+	warnings, failed := decodeSection(node, dst, path)
+	if len(failed) > 0 {
+		*dst = def
+		warnings = append(warnings, fmt.Sprintf("config: %s is disabled because part of it could not be read", path))
+	}
+	return warnings
 }
 
 // decodeSection decodes a section that may be absent into dst, whole when it
@@ -335,17 +348,38 @@ func nested(parent *yaml.Node, warnings, failed []string, blocks map[string]func
 	return out
 }
 
-// mappingValue returns the value node for key in a mapping node, or nil.
+// mappingValue returns the value node for key in a mapping node, or nil. It
+// sees through aliases and merge keys (an explicit key beats a merged one),
+// as decoding does.
 func mappingValue(node *yaml.Node, key string) *yaml.Node {
-	if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
-		node = node.Content[0]
+	for node != nil && (node.Kind == yaml.AliasNode || (node.Kind == yaml.DocumentNode && len(node.Content) == 1)) {
+		if node.Kind == yaml.AliasNode {
+			node = node.Alias
+		} else {
+			node = node.Content[0]
+		}
 	}
-	if node.Kind != yaml.MappingNode {
+	if node == nil || node.Kind != yaml.MappingNode {
 		return nil
 	}
+	var merges []*yaml.Node
 	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
+		switch k := node.Content[i]; {
+		case k.Value == key:
 			return node.Content[i+1]
+		case k.Tag == "!!merge" || k.Value == "<<":
+			merges = append(merges, node.Content[i+1])
+		}
+	}
+	for _, merge := range merges {
+		if merge.Kind == yaml.SequenceNode {
+			for _, item := range merge.Content {
+				if v := mappingValue(item, key); v != nil {
+					return v
+				}
+			}
+		} else if v := mappingValue(merge, key); v != nil {
+			return v
 		}
 	}
 	return nil

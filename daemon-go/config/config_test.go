@@ -202,8 +202,8 @@ experiments:
 		{cfg.Daemon.Port == 9100 && cfg.Daemon.HeartbeatInterval == 45, "daemon siblings kept"},
 		{len(cfg.Daemon.Spawn.Commands) == 0 && len(cfg.Daemon.Spawn.AllowedPaths) == 1, "spawn.commands dropped, allowed_paths kept"},
 		{cfg.Daemon.MCPHTTP.Enabled && cfg.Daemon.MCPHTTP.RequireAuth, "mcp_http.enabled kept, require_auth back to its default (true)"},
-		{!cfg.Relay.Enabled && cfg.Relay.URL == "wss://relay.example", "relay.enabled dropped, url kept"},
-		{cfg.Telegram.ChatID == "" && cfg.Telegram.BotToken == "tok", "telegram.chat_id dropped, bot_token kept"},
+		{cfg.Relay == Defaults().Relay, "relay is all or nothing: back to its defaults"},
+		{cfg.Telegram == (TelegramConfig{}), "telegram is all or nothing: unset"},
 		{cfg.Experiments.ChatTurnStreaming && cfg.Experiments.RemoteToolApproval.Enabled && cfg.Experiments.RemoteToolApproval.TimeoutSeconds == 45, "remote_tool_approval.timeout_seconds back to default, enabled kept"},
 	}
 	for _, c := range checks {
@@ -211,7 +211,7 @@ experiments:
 			t.Errorf("%s: %+v", c.what, cfg)
 		}
 	}
-	for _, key := range []string{"daemon.spawn.commands", "daemon.mcp_http.require_auth", "relay.enabled", "telegram.chat_id", "experiments.remote_tool_approval.timeout_seconds"} {
+	for _, key := range []string{"daemon.spawn.commands", "daemon.mcp_http.require_auth", "relay.enabled", "relay is disabled", "telegram.chat_id", "telegram is disabled", "experiments.remote_tool_approval.timeout_seconds"} {
 		if !hasWarning(cfg, key) {
 			t.Errorf("no warning names %s: %q", key, cfg.Warnings)
 		}
@@ -240,7 +240,7 @@ func TestLoadCoreKeyErrorsStayFatal(t *testing.T) {
 // A scalar that reads as a number in YAML keeps its exact text in a string
 // field (a leading zero, an octal-looking token).
 func TestLoadKeepsScalarTextExactly(t *testing.T) {
-	cfg, err := tryLoadYAML(t, "daemon:\n  auth_token: 012345\n  heartbeat_interval: soon\ntelegram:\n  chat_id: 00042\n  bot_token: [x]\n")
+	cfg, err := tryLoadYAML(t, "daemon:\n  auth_token: 012345\n  heartbeat_interval: soon\ntelegram:\n  chat_id: 00042\n  bot_token: tok\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,5 +275,50 @@ func TestLoadUnreadableExperimentsBlockDegrades(t *testing.T) {
 	cfg, err := tryLoadYAML(t, "experiments: []\ndaemon:\n  port: 9101\n")
 	if err != nil || cfg.Daemon.Port != 9101 || !hasWarning(cfg, "experiments") {
 		t.Fatalf("experiments: [] = %v, port %d, warnings %q", err, cfg.Daemon.Port, cfg.Warnings)
+	}
+}
+
+// Review #561 round 2: a block that carries credentials is read whole or not
+// at all. A relay whose url cannot be read must not send its key to the
+// default relay; a bridge whose settings are partly unreadable stays off.
+func TestLoadPartlyUnreadableCredentialBlockIsOff(t *testing.T) {
+	cfg, err := tryLoadYAML(t, `
+relay:
+  enabled: true
+  url: [wss://private.example]
+  api_key: private-secret
+telegram:
+  bot_token: tok
+  chat_id: [1]
+slack:
+  bot_token: b
+  app_token: a
+  channel_id: {c: 1}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Relay.Enabled || cfg.Relay.APIKey != "" || cfg.Relay.URL != defaultRelayURL {
+		t.Errorf("relay = %+v; want the defaults (off, no key)", cfg.Relay)
+	}
+	if cfg.Telegram != (TelegramConfig{}) || cfg.Slack != (SlackConfig{}) {
+		t.Errorf("telegram %+v slack %+v; want both unset", cfg.Telegram, cfg.Slack)
+	}
+	for _, section := range []string{"relay", "telegram", "slack"} {
+		if !hasWarning(cfg, section+" is disabled") {
+			t.Errorf("no warning that %s is disabled: %q", section, cfg.Warnings)
+		}
+	}
+}
+
+// Review #561 round 2: nested recovery, and so the approval fail-closed rule,
+// sees through YAML aliases.
+func TestLoadMistypedApprovalFailsClosedThroughAnAlias(t *testing.T) {
+	cfg, err := tryLoadYAML(t, "settings: &exp\n  remote_tool_approval:\n    enabled: [true]\nexperiments: *exp\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Experiments.RemoteToolApproval.Enabled {
+		t.Fatalf("approval through an alias = %+v; want enabled", cfg.Experiments.RemoteToolApproval)
 	}
 }
