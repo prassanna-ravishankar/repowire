@@ -212,6 +212,20 @@ func writeMetadata(paneID string, data map[string]any) error {
 	if paneID == "" {
 		return nil
 	}
+	// A pid alone is not an identity: record when the agent started, so a
+	// reader can tell a recycled pid apart (#536). The time is taken once, when
+	// a pid is first written; rewriting the same pid keeps it, so a reconnect
+	// that still names a since-recycled pid cannot re-stamp it as current.
+	if pid := intFromAny(data["agent_pid"]); pid > 0 {
+		prior := ReadPaneRuntimeMetadata(paneID)
+		if kept, _ := prior["agent_started"].(string); kept != "" && intFromAny(prior["agent_pid"]) == pid {
+			data["agent_started"] = kept
+		} else if started, ok := ProcessStartTime(pid); ok {
+			data["agent_started"] = started
+		} else {
+			delete(data, "agent_started") // an older pid's time must not stick to this one
+		}
+	}
 	raw, err := json.Marshal(data)
 	if err != nil {
 		return err
@@ -469,6 +483,20 @@ func commandIsShell(pid int) (bool, bool) {
 		return false, false
 	}
 	return shellCommands[strings.TrimPrefix(strings.ToLower(filepath.Base(strings.TrimSpace(string(out)))), "-")], true
+}
+
+// ProcessStartTime returns when pid started, as ps reports it. Together with the
+// pid it identifies one process; a recycled pid has a different start time.
+func ProcessStartTime(pid int) (string, bool) {
+	if pid <= 0 {
+		return "", false
+	}
+	// The hook and the daemon run with different environments; pin the format.
+	cmd := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid))
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "TZ=UTC")
+	out, err := cmd.Output()
+	started := strings.TrimSpace(string(out))
+	return started, err == nil && started != ""
 }
 
 func findAgentPID(paneID string) int {

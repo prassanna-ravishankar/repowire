@@ -76,7 +76,8 @@ type TmuxPaneEvidence struct {
 }
 
 // PeerAgentPIDs returns the agent pids known for p on paneID: its registered
-// agent_pid, and the one the pane's ws-hook metadata records for p's peer_id.
+// agent_pid, and the one the pane's ws-hook metadata records for p's peer_id
+// (rejected or not: a recycled pid is still evidence the pane's proof is stale).
 func PeerAgentPIDs(paneID string, p *proto.Peer) []int {
 	var pids []int
 	if p.AgentPID != nil && *p.AgentPID > 0 {
@@ -89,6 +90,21 @@ func PeerAgentPIDs(paneID string, p *proto.Peer) []int {
 		}
 	}
 	return pids
+}
+
+// sameProcess reports whether pid still names the process metadata recorded:
+// its start time matches the recorded one (#536). An unreadable start time is
+// not a match. Metadata without one predates the record and is taken as is.
+func sameProcess(pid int, meta map[string]any) bool {
+	if metaPID, _ := meta["agent_pid"].(float64); int(metaPID) != pid {
+		return true // not the metadata's pid; it recorded nothing for this one
+	}
+	recorded, _ := meta["agent_started"].(string)
+	if recorded == "" {
+		return true
+	}
+	started, ok := hooks.ProcessStartTime(pid)
+	return ok && started == recorded
 }
 
 // PaneRunsPeer reports whether the live pane runs p's agent now: one of
@@ -104,8 +120,9 @@ func PaneRunsPeer(proc ProcessControl, ev *TmuxPaneEvidence, p *proto.Peer) bool
 	if p.AgentPID != nil && *p.AgentPID > 0 && proc.Alive(*p.AgentPID) {
 		return proc.InTree(*p.AgentPID, root)
 	}
+	meta := hooks.ReadPaneRuntimeMetadata(ev.PaneID)
 	for _, pid := range PeerAgentPIDs(ev.PaneID, p) {
-		if proc.Alive(pid) && proc.InTree(pid, root) {
+		if proc.Alive(pid) && proc.InTree(pid, root) && sameProcess(pid, meta) {
 			return true
 		}
 	}
