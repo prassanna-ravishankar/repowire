@@ -8,8 +8,9 @@ import (
 	"testing"
 )
 
-// configOverrides are the environment variables config.applyEnv reads; the
-// check must see only the file under test.
+// configOverrides are the environment variables that can change what the check
+// reports (daemon address, MCP HTTP, relay, Telegram, Slack); the tests must
+// see only the file under test.
 var configOverrides = []string{
 	"REPOWIRE_API_KEY", "REPOWIRE_AUTH_TOKEN", "REPOWIRE_DAEMON__AUTH_TOKEN", "REPOWIRE_DAEMON__HOST", "REPOWIRE_DAEMON__PORT",
 	"REPOWIRE_DAEMON_HOST", "REPOWIRE_DAEMON_PORT", "REPOWIRE_DAEMON__CIRCLE_BOUNDARY", "REPOWIRE_DAEMON__MCP_HTTP__ENABLED",

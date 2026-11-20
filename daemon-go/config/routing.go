@@ -176,14 +176,14 @@ func loadRouting(cfg *Config, raw []byte) error {
 func decodeKeys[T any](node *yaml.Node, dst *T, path string) (warnings, failed []string) {
 	var generic any
 	if err := node.Decode(&generic); err != nil {
-		return []string{fmt.Sprintf("config: %s is ignored because it cannot be read: %v", path, err)}, []string{""}
+		return []string{rejected(path, node.Line)}, []string{""}
 	}
 	if generic == nil {
 		return nil, nil
 	}
 	resolved, err := plainNode(generic)
 	if err != nil {
-		return []string{fmt.Sprintf("config: %s is ignored because it cannot be read: %v", path, err)}, []string{""}
+		return []string{rejected(path, node.Line)}, []string{""}
 	}
 	if resolved.Kind != yaml.MappingNode {
 		return []string{fmt.Sprintf("config: %s must be a mapping; ignored", path)}, []string{""}
@@ -200,7 +200,7 @@ func decodeKeys[T any](node *yaml.Node, dst *T, path string) (warnings, failed [
 			err = one.Decode(&trial)
 		}
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("config: %s.%s is ignored: %v", path, key.Value, err))
+			warnings = append(warnings, rejected(path+"."+key.Value, value.Line))
 			failed = append(failed, key.Value)
 			continue
 		}

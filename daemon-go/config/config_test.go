@@ -364,9 +364,12 @@ func TestLoadRecursiveMergeDoesNotLoop(t *testing.T) {
 // credential (a token that YAML reads as a number).
 func TestLoadDiagnosticsNeverQuoteRejectedValues(t *testing.T) {
 	for name, body := range map[string]string{
-		"credential block": "telegram:\n  bot_token: !!int SECRET_BOT_TOKEN\n  chat_id: \"42\"\n",
-		"optional key":     "daemon:\n  heartbeat_interval: !!binary c2VjcmV0LXZhbHVl\n",
-		"core key":         "daemon:\n  auth_token: !!int SECRET_AUTH_TOKEN\n",
+		"credential block":  "telegram:\n  bot_token: !!int SECRET_BOT_TOKEN\n  chat_id: \"42\"\n",
+		"optional key":      "daemon:\n  heartbeat_interval: !!binary c2VjcmV0LXZhbHVl\n",
+		"core key":          "daemon:\n  auth_token: !!int SECRET_AUTH_TOKEN\n",
+		"backtick in value": "daemon:\n  auth_token: !!int \"prefix`SECRET_AUTH_TOKEN\"\n",
+		"custom tag":        "daemon:\n  auth_token: !SECRET_AUTH_TOKEN {}\n",
+		"routing key":       "routing:\n  clef:\n    api_key: !!int SECRET_CLEF_KEY\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yaml")
@@ -381,7 +384,7 @@ func TestLoadDiagnosticsNeverQuoteRejectedValues(t *testing.T) {
 			if text == "" {
 				t.Fatal("expected a diagnostic")
 			}
-			for _, secret := range []string{"SECRET_BOT_TOKEN", "c2VjcmV0LXZhbHVl", "SECRET_AUTH_TOKEN"} {
+			for _, secret := range []string{"SECRET_BOT_TOKEN", "c2VjcmV0LXZhbHVl", "SECRET_AUTH_TOKEN", "SECRET_CLEF_KEY"} {
 				if strings.Contains(text, secret) {
 					t.Fatalf("diagnostic quotes the rejected value %q:\n%s", secret, text)
 				}

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -222,13 +221,16 @@ func LoadFile(path string) (Config, error) {
 	return cfg, nil
 }
 
-// quotedValue is the rejected scalar yaml quotes in a decode error.
-var quotedValue = regexp.MustCompile("`[^`]*`")
-
-// redactValue drops the value yaml quotes in a decode error. Diagnostics are
-// logged at startup and printed by `repowire config check`, and the rejected
-// value may be a credential.
-func redactValue(err error) string { return quotedValue.ReplaceAllString(err.Error(), "<value>") }
+// rejected is the diagnostic for a setting whose value does not decode. It
+// says where, never what: yaml's own error quotes the value, which may be a
+// credential, and diagnostics are logged at startup and printed by
+// `repowire config check`. line is 0 when unknown.
+func rejected(path string, line int) string {
+	if line > 0 {
+		return fmt.Sprintf("config: %s is ignored: the value on line %d is not valid for this setting", path, line)
+	}
+	return fmt.Sprintf("config: %s is ignored: its value is not valid for this setting", path)
+}
 
 // coreDaemonKeys are the settings the daemon cannot run correctly without: a
 // mistyped one fails the load rather than starting on a silently different
@@ -336,7 +338,7 @@ func decodeSection[T any](node *yaml.Node, dst *T, path string) (warnings, faile
 			err = one.Decode(&trial)
 		}
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("config: %s.%s is ignored: %s", path, key.Value, redactValue(err)))
+			warnings = append(warnings, rejected(path+"."+key.Value, value.Line))
 			failed = append(failed, key.Value)
 			continue
 		}
