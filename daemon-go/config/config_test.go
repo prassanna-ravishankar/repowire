@@ -350,6 +350,7 @@ func TestLoadRecursiveMergeDoesNotLoop(t *testing.T) {
 	go func() {
 		defer close(done)
 		_, _ = tryLoadYAML(t, "daemon: &d\n  port: 9300\n  heartbeat_interval: soon\n  <<: *d\nexperiments: &e\n  <<: *e\n  remote_tool_approval: {enabled: [true]}\n")
+		_, _ = tryLoadYAML(t, "daemon:\n  heartbeat_interval: soon\n  <<: &s [*s]\nexperiments:\n  <<: &q [*q]\n  remote_tool_approval: {enabled: [true]}\n")
 	}()
 	select {
 	case <-done:

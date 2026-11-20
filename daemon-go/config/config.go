@@ -377,11 +377,13 @@ func flattenMergesOn(n *yaml.Node, path map[*yaml.Node]bool) []*yaml.Node {
 			m = m.Alias
 		}
 		switch {
-		case m == nil:
+		case m == nil || path[m]:
 		case m.Kind == yaml.SequenceNode:
+			path[m] = true
 			for _, item := range m.Content {
 				add(item)
 			}
+			delete(path, m)
 		case m.Kind == yaml.MappingNode && !path[m]:
 			pairs := flattenMergesOn(m, path)
 			for i := 0; i+1 < len(pairs); i += 2 {
@@ -407,6 +409,28 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 	return mappingValueOn(node, key, map[*yaml.Node]bool{})
 }
 
+// mergedValue looks key up in a merge value: a mapping, or a sequence of
+// them, through aliases, skipping anything already on path.
+func mergedValue(merge *yaml.Node, key string, path map[*yaml.Node]bool) *yaml.Node {
+	for merge != nil && merge.Kind == yaml.AliasNode {
+		merge = merge.Alias
+	}
+	if merge == nil || path[merge] {
+		return nil
+	}
+	if merge.Kind != yaml.SequenceNode {
+		return mappingValueOn(merge, key, path)
+	}
+	path[merge] = true
+	defer delete(path, merge)
+	for _, item := range merge.Content {
+		if v := mergedValue(item, key, path); v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
 func mappingValueOn(node *yaml.Node, key string, path map[*yaml.Node]bool) *yaml.Node {
 	for node != nil && (node.Kind == yaml.AliasNode || (node.Kind == yaml.DocumentNode && len(node.Content) == 1)) {
 		if node.Kind == yaml.AliasNode {
@@ -430,13 +454,7 @@ func mappingValueOn(node *yaml.Node, key string, path map[*yaml.Node]bool) *yaml
 		}
 	}
 	for _, merge := range merges {
-		if merge.Kind == yaml.SequenceNode {
-			for _, item := range merge.Content {
-				if v := mappingValueOn(item, key, path); v != nil {
-					return v
-				}
-			}
-		} else if v := mappingValueOn(merge, key, path); v != nil {
+		if v := mergedValue(merge, key, path); v != nil {
 			return v
 		}
 	}
