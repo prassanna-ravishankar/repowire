@@ -94,11 +94,15 @@ func PeerAgentPIDs(paneID string, p *proto.Peer) []int {
 // PaneRunsPeer reports whether the live pane runs p's agent now: one of
 // PeerAgentPIDs is alive inside the pane's process tree. Pane ids, ownership
 // records and pane metadata all outlive the agent that earned them; a running
-// process in the pane does not.
+// process in the pane does not. The peer's registered agent, when alive, is
+// decisive: a recycled metadata pid cannot outvote it.
 func PaneRunsPeer(proc ProcessControl, ev *TmuxPaneEvidence, p *proto.Peer) bool {
 	root, _ := strconv.Atoi(ev.PanePID)
 	if root <= 0 {
 		return false
+	}
+	if p.AgentPID != nil && *p.AgentPID > 0 && proc.Alive(*p.AgentPID) {
+		return proc.InTree(*p.AgentPID, root)
 	}
 	for _, pid := range PeerAgentPIDs(ev.PaneID, p) {
 		if proc.Alive(pid) && proc.InTree(pid, root) {

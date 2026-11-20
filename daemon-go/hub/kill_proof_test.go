@@ -2,9 +2,11 @@ package hub
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os/exec"
 	"strconv"
+	"syscall"
 	"testing"
 
 	"github.com/repowire/repowire/daemon-go/proto"
@@ -48,6 +50,7 @@ type killProofFixture struct {
 
 func newKillProofFixture(t *testing.T, agentPID *int) *killProofFixture {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir()) // pane metadata lives under ~/.cache
 	path := t.TempDir()
 	pane, occupant := "%109", startOccupant(t)
 	p := &proto.Peer{PeerID: "repow-1-e9cb2c1d", DisplayName: "repowire-4-claude-code",
@@ -138,5 +141,52 @@ func TestDestructivePaneProofVetoesPaneWithoutThePeersAgent(t *testing.T) {
 	h.WithSpawn(f.svc, f.reg, service.NewAskTracker(0), "test-host", proto.CircleBoundarySession)
 	if proof := h.destructivePaneProof(f.peer); proof.ok || proof.errCode != "agent_not_in_pane" {
 		t.Fatalf("proof = %+v, want agent_not_in_pane", proof)
+	}
+}
+
+// startShellWithChild runs a shell (the pane root) with an agent child under it.
+func startShellWithChild(t *testing.T) (shell, child int) {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", "sleep 60 & echo $!; wait")
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start shell: %v", err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	var pid int
+	if _, err := fmt.Fscan(out, &pid); err != nil {
+		t.Fatalf("read child pid: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	return cmd.Process.Pid, pid
+}
+
+// Real ancestry: an agent running under the pane's shell is in the pane; a
+// sibling process outside it is not, and a live registered agent elsewhere
+// outvotes a metadata pid that happens to sit in the pane.
+func TestPaneRunsPeerFollowsProcessAncestry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	shell, child := startShellWithChild(t)
+	sibling := startOccupant(t)
+	pane := "%210"
+	ev := &service.TmuxPaneEvidence{PaneID: pane, PanePID: strconv.Itoa(shell)}
+	proc := service.NewProcessControl()
+	peerWith := func(pid int) *proto.Peer { return &proto.Peer{PeerID: "repow-1-x", AgentPID: &pid} }
+
+	if !service.PaneRunsPeer(proc, ev, peerWith(child)) {
+		t.Fatal("an agent under the pane's shell must count as running in the pane")
+	}
+	if service.PaneRunsPeer(proc, ev, peerWith(sibling)) {
+		t.Fatal("a sibling process outside the pane's tree must not count")
+	}
+	writeSpawnTestPaneMeta(t, pane, map[string]any{"peer_id": "repow-1-x", "agent_pid": child})
+	if service.PaneRunsPeer(proc, ev, peerWith(sibling)) {
+		t.Fatal("a live registered agent elsewhere must outvote a metadata pid inside the pane")
+	}
+	if !service.PaneRunsPeer(proc, ev, &proto.Peer{PeerID: "repow-1-x"}) {
+		t.Fatal("with no registered agent, the metadata pid under the shell proves the pane")
 	}
 }
