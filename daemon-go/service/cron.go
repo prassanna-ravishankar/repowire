@@ -63,7 +63,13 @@ func ValidateCron(expr string) (string, error) {
 	return norm, nil
 }
 
-// NextFireAfter returns the next UTC minute matching expr strictly after the given time.
+// cronHorizonYears bounds the search. Every satisfiable expression matches
+// within it: February 29 is the sparsest date, and leap years can be eight
+// years apart (2096, then 2104).
+const cronHorizonYears = 8
+
+// NextFireAfter returns the next UTC minute matching expr strictly after the
+// given time, or an error for an expression no date satisfies (February 30).
 func NextFireAfter(expr string, after time.Time) (time.Time, error) {
 	norm, err := ValidateCron(expr)
 	if err != nil {
@@ -83,21 +89,29 @@ func NextFireAfter(expr string, after time.Time) (time.Time, error) {
 	dowAny := fields[4] == "*"
 
 	base := after.UTC()
-	// Truncate to the minute, then step forward at least one minute.
+	// Truncate to the minute, then step forward at least one minute. Each
+	// field that does not match skips to the start of the next month, day or
+	// hour, so the search costs a few hundred steps per year rather than one
+	// per minute. All arithmetic is UTC; time.Date normalizes overflow.
 	candidate := time.Date(base.Year(), base.Month(), base.Day(), base.Hour(), base.Minute(), 0, 0, time.UTC).Add(time.Minute)
-	deadline := candidate.Add(366 * 24 * time.Hour)
+	deadline := candidate.AddDate(cronHorizonYears, 0, 0)
 	for !candidate.After(deadline) {
+		y, mo, d := candidate.Date()
+		switch {
+		case !months[int(mo)]:
+			candidate = time.Date(y, mo+1, 1, 0, 0, 0, 0, time.UTC)
 		// Go: Sunday=0. cron: Sunday=0 too, so Weekday() maps directly.
-		cronWeekday := int(candidate.Weekday())
-		if minutes[candidate.Minute()] &&
-			hours[candidate.Hour()] &&
-			months[int(candidate.Month())] &&
-			cronDayMatches(candidate.Day(), cronWeekday, days, weekdays, domAny, dowAny) {
+		case !cronDayMatches(d, int(candidate.Weekday()), days, weekdays, domAny, dowAny):
+			candidate = time.Date(y, mo, d+1, 0, 0, 0, 0, time.UTC)
+		case !hours[candidate.Hour()]:
+			candidate = time.Date(y, mo, d, candidate.Hour()+1, 0, 0, 0, time.UTC)
+		case !minutes[candidate.Minute()]:
+			candidate = candidate.Add(time.Minute)
+		default:
 			return candidate, nil
 		}
-		candidate = candidate.Add(time.Minute)
 	}
-	return time.Time{}, cronErr("cron expression did not match within one year")
+	return time.Time{}, cronErr("cron expression never matches")
 }
 
 // cronDayMatches matches cron day fields. When both day-of-month and

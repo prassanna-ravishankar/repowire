@@ -238,7 +238,7 @@ func newStuckCalendarRunner(t *testing.T) (*JobRunner, *syncBuffer) {
 	if _, err := store.CreateCalendarEntry(context.Background(), &state.CalendarEntry{
 		Title:     "stuck",
 		Kind:      "general",
-		Cron:      "0 0 29 2 *",
+		Cron:      "0 0 30 2 *", // February 30: NextFireAfter can never advance it
 		NextDueAt: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano),
 	}); err != nil {
 		t.Fatal(err)
