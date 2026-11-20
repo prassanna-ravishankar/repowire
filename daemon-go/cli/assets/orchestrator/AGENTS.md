@@ -42,6 +42,8 @@ Use Repowire MCP tools to coordinate with peers:
 - `set_description(text)` — claim current focus so peers and dashboards can see the orchestrator's role.
 - `notify_peer(name, msg)` — fire-and-forget dispatch or update.
 - `ask(name, msg, reply_to=None)` — open a non-blocking thread when an answer is needed.
+- `ack(cid, msg=None)` / `decline(cid, reason)` / `delegate(cid, peer, note)` — close an ask you hold, return it, or hand it to a better-placed peer (the reply still reaches the original asker).
+- `list_messages()` / `read_message(id)` — re-read a delivered message by its `message-id`.
 - `broadcast(msg)` — announce to all online peers.
 - `list_peers(show_offline=False)` — inspect reachable peers, roles, projects, and descriptions. Hidden by default are peers nobody can send work to: `addressable=false` (Codex sub-agent threads that cannot take input), `initiator=system` runtime threads, and sub-agents whose parent is offline. Pass `include_hidden=True` only to inspect them, and never delegate to them. The `source` column tells a hook-registered pane agent from a `codex-app-server` thread; `nickname` names a sub-agent.
 - `kill_peer(name)` — deregister a peer; verify terminal/process state separately before destructive cleanup.

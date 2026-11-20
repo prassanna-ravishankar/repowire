@@ -10,7 +10,7 @@ Ghosts should now be rare: a clean quit deregisters through the `SessionEnd` hoo
 
 Remaining ghosts are evicted by **lazy repair**: the next MCP tool call from any peer triggers `lazy_repair()` (at most once per 30 seconds), which checks runtime evidence and `last_seen`, and demotes connected pane peers after three consecutive honest `pane_alive=false` ping verdicts. There is no polling thread that does this — see [lazy repair](../concepts/lazy-repair.md).
 
-Orphaned ws-hook *processes* (a hook outliving its agent, e.g. one installed before the agent-pid watcher existed) are swept once at daemon startup: the sweep kills hooks whose pane is gone, whose recorded agent pid is dead, or whose pane subtree contains only shells — and only on conclusive evidence. `repowire doctor` reports the current orphan count read-only; `repowire service restart` runs the sweep.
+A ws-hook *process* that outlives its agent exits on its own: it watches the recorded agent pid and, once the pane holds no agent, reports `agent_exited` and stops. It also stops when the daemon answers its reconnect with `peer_retired`, and a new SessionStart in the same pane replaces the previous hook through its pid file. There is no startup sweep of hook processes.
 
 The `session-closed` tmux signal is **evidence-gated**: it offlines peers only after confirming the named session is genuinely gone from `tmux list-panes`, and even then spares any peer whose own pane is still live. A spurious `session-closed` (tmux resolves `#{session_name}` to the surviving session when a transient session exits) is ignored, so a short-lived spawned job finishing cannot mass-offline a populated circle.
 
@@ -20,13 +20,11 @@ persisted ws-hook metadata still names an old peer identity. Run
 the pane metadata to the registry peer id/display name, drops the stale birth
 certificate, and starts a fresh ws-hook without killing the pane or agent.
 
-Startup also rehydrates live pane-backed peers whose daemon registry was lost
-during the restart, but only when persisted peer identity and live pane metadata
-prove the same `peer_id` or a valid daemon-minted birth certificate. Rehydrated
-peers stay `offline` until their WebSocket hook reconnects; if no hook connects,
-the daemon emits `startup_hydration_no_transport` instead of advertising the
-peer as deliverable. Panes without that proof remain visible through
-`/panes/orphans` and require explicit `repowire link`.
+A daemon restart does not recreate peers. Live agents return when their ws-hook
+reconnects (it retries without limit and claims its persisted `peer_id`). An
+agent whose hook also died stays off the mesh; find its pane with
+`GET /panes/orphans` and adopt it with `repowire link`. See
+[daemon restart](../concepts/peer-identity-lifecycle.md#daemon-restart).
 
 If you need an immediate eviction:
 
