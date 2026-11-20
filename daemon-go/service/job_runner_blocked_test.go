@@ -109,3 +109,28 @@ func TestJobRunnerWakesForAJobDeadline(t *testing.T) {
 	got, _ := store.GetWork(ctx, work.WorkID)
 	t.Fatalf("job past its deadline = %s; want expired", got.State)
 }
+
+// Review #563: a run or retry from outside the loop (the HTTP run/retry
+// routes) wakes it, so the dispatched attempt's deadline is waited for even
+// when the runner was idle with nothing to wait for.
+func TestRunJobWakesTheRunner(t *testing.T) {
+	ctx := context.Background()
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	work, err := store.CreateWork(ctx, state.WorkCreate{Title: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewJobRunner(store, nil, nil)
+	if _, err := r.RunJob(ctx, work.WorkID, true, false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-r.wake:
+	default:
+		t.Fatal("RunJob did not wake the runner")
+	}
+}

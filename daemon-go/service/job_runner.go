@@ -257,6 +257,10 @@ func (r *JobRunner) RunJob(ctx context.Context, workID string, ignoreDueAt, retr
 	if acquired == nil {
 		return nil, nil
 	}
+	// The run changed what the loop waits for (a lease now, an attempt whose
+	// deadline_at matters after): a run from outside the loop must not leave
+	// it asleep with nothing to wait for.
+	defer r.Wake()
 	runner := mapAtAny(acquired.Provenance, "runner")
 	attemptID, _ := runner["current_attempt_id"].(string)
 	if attemptID == "" {
