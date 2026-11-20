@@ -241,6 +241,21 @@ func TestRuntimeCompletionOnlyFromTheHolder(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("completion %q never ran", want)
 		}
+		// ran is signalled from inside the completion, which still holds the
+		// claim until it returns: wait for the release before the next step
+		// claims the ask.
+		cid := openCID(tr)
+		for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(time.Millisecond) {
+			tr.mu.Lock()
+			_, held := tr.resolving[cid]
+			tr.mu.Unlock()
+			if !held {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("completion %q never released its claim", want)
+			}
+		}
 	}
 	noneRan := func() {
 		t.Helper()
