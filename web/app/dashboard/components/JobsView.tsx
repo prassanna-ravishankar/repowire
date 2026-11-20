@@ -188,11 +188,14 @@ export function JobsView({
         return res.json();
       })
       .then((data: { status?: JobStatus | RecurringJobStatus }) => {
+        // A response can still arrive after the selection moved on and this
+        // request was aborted; it no longer describes what is shown.
+        if (controller.signal.aborted) return;
         if (!data.status) throw new Error("Missing job status");
         setDetailById((current) => ({ ...current, [id]: data.status! }));
       })
       .catch((err) => {
-        if (err instanceof Error && err.name === "AbortError") return;
+        if (controller.signal.aborted || (err instanceof Error && err.name === "AbortError")) return;
         setDetailError(err instanceof Error ? err.message : "Failed to load job detail");
       })
       .finally(() => {
