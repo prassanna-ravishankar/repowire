@@ -342,8 +342,11 @@ mkdir -p bin
 ```
 
 Hooks and the MCP identity shim run the binary recorded by setup, not an
-arbitrary binary elsewhere in your checkout. Rebuild that binary after native
-changes, then restart the daemon service:
+arbitrary binary elsewhere in your checkout. For a Homebrew or `install.sh`
+install, setup records the stable launcher (`bin/repowire`, or
+`~/.local/bin/repowire`), so an upgrade carries hooks along;
+`repowire hooks status` says when the hooks run a different binary. Rebuild a
+checkout binary after native changes, then restart the daemon service:
 
 ```bash
 (cd daemon-go && go build -o ../bin/repowire .)
