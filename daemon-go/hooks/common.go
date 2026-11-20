@@ -513,12 +513,22 @@ func capturePaneBaseline(paneID string) (string, int) {
 	if err != nil {
 		return "", 0
 	}
+	return paneTreeFind(root, children, commands, func(cmd string) bool { return cmd != "" && !shellCommands[cmd] })
+}
+
+// paneTreeFind returns the first process in the pane's tree, root first, whose
+// command satisfies match. A gone pane has no root (tmux reports no pid) and so
+// no tree: searching from pid 0 would walk every process on the machine, and an
+// orphaned ws-hook would adopt launchd or another session's agent as its own.
+func paneTreeFind(root int, children map[int][]int, commands map[int]string, match func(string) bool) (string, int) {
+	if root <= 0 {
+		return "", 0
+	}
 	queue := []int{root}
 	for len(queue) > 0 {
 		pid := queue[0]
 		queue = queue[1:]
-		cmd := strings.TrimPrefix(commands[pid], "-")
-		if cmd != "" && !shellCommands[cmd] {
+		if cmd := strings.TrimPrefix(commands[pid], "-"); match(cmd) {
 			return cmd, pid
 		}
 		queue = append(queue, children[pid]...)
@@ -549,18 +559,8 @@ func paneSafe(paneID, expectedCommand string) *bool {
 		v := command != "" && !shellCommands[command]
 		return &v
 	}
-	queue := []int{root}
-	for len(queue) > 0 {
-		pid := queue[0]
-		queue = queue[1:]
-		cmd := strings.TrimPrefix(commands[pid], "-")
-		if cmd == expectedCommand {
-			v := true
-			return &v
-		}
-		queue = append(queue, children[pid]...)
-	}
-	v := false
+	_, pid := paneTreeFind(root, children, commands, func(cmd string) bool { return cmd == expectedCommand })
+	v := pid > 0
 	return &v
 }
 
@@ -576,16 +576,8 @@ func findExpectedAgentPID(paneID, expectedCommand string) int {
 	if err != nil {
 		return 0
 	}
-	queue := []int{root}
-	for len(queue) > 0 {
-		pid := queue[0]
-		queue = queue[1:]
-		if strings.TrimPrefix(commands[pid], "-") == expectedCommand {
-			return pid
-		}
-		queue = append(queue, children[pid]...)
-	}
-	return 0
+	_, pid := paneTreeFind(root, children, commands, func(cmd string) bool { return cmd == expectedCommand })
+	return pid
 }
 
 // ConsumeSpawnHint claims the next queued spawn identity for a runtime path.
