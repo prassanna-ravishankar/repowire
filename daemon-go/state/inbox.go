@@ -75,11 +75,10 @@ type InboxFilter struct {
 	// with every message in a chat, so a message from the human bounds what
 	// they can have seen.
 	ThroughRef int64
-	// MissedBy keeps only items that surface has no push record for and that
-	// are no older than the newest item it has a record for written before
-	// LiveSince: what it missed while it was offline. A push recorded after
-	// the surface went live again never moves that boundary, whenever its
-	// item was stored.
+	// MissedBy keeps only items that surface has no push record for, stored
+	// after the newest item it has a record for written before LiveSince:
+	// what it missed while it was offline, newest stored first. A push
+	// recorded after the surface went live again never moves that boundary.
 	MissedBy  string
 	LiveSince time.Time
 	// MaxSeq, with MissedBy, keeps only items stored up to that sequence (see
@@ -191,6 +190,26 @@ func (s *Store) ListInbox(ctx context.Context, filter InboxFilter) ([]InboxItem,
 	if filter.UnreadOnly {
 		where += ` AND read_at IS NULL`
 	}
+	if filter.ExcludeKind != "" {
+		where += ` AND kind <> ?`
+		args = append(args, filter.ExcludeKind)
+	}
+	if filter.MissedBy != "" {
+		// rowid is the insertion order: a total order, unlike created_at's
+		// milliseconds, so the boundary and the selection agree on ties.
+		where += ` AND NOT EXISTS (SELECT 1 FROM inbox_pushes p WHERE p.item_id = inbox_items.id AND p.surface = ?)
+			AND rowid > COALESCE((SELECT MAX(i.rowid) FROM inbox_items i
+				JOIN inbox_pushes p ON p.item_id = i.id WHERE p.surface = ? AND p.ts < ?), 0)
+			AND rowid <= ?`
+		args = append(args, filter.MissedBy, filter.MissedBy, filter.LiveSince.UTC().Format(tsLayout), filter.MaxSeq)
+		order = `rowid DESC`
+	}
+	if len(filter.ExcludeIDs) > 0 {
+		where += ` AND id NOT IN (` + placeholders(len(filter.ExcludeIDs)) + `)`
+		for _, id := range filter.ExcludeIDs {
+			args = append(args, id)
+		}
+	}
 	if filter.Surface != "" {
 		pushed := `SELECT 1 FROM inbox_pushes p WHERE p.item_id = inbox_items.id AND p.surface = ? AND p.status = 'pushed'`
 		args = append(args, filter.Surface)
@@ -203,23 +222,6 @@ func (s *Store) ListInbox(ctx context.Context, filter InboxFilter) ([]InboxItem,
 			THEN CAST(p.surface_ref AS INTEGER) END FROM inbox_pushes p
 			WHERE p.item_id = inbox_items.id AND p.surface = ?) DESC NULLS LAST, ` + order
 		args = append(args, filter.Surface)
-	}
-	if filter.ExcludeKind != "" {
-		where += ` AND kind <> ?`
-		args = append(args, filter.ExcludeKind)
-	}
-	if filter.MissedBy != "" {
-		where += ` AND NOT EXISTS (SELECT 1 FROM inbox_pushes p WHERE p.item_id = inbox_items.id AND p.surface = ?)
-			AND created_at >= COALESCE((SELECT MAX(i.created_at) FROM inbox_items i
-				JOIN inbox_pushes p ON p.item_id = i.id WHERE p.surface = ? AND p.ts < ?), '')
-			AND rowid <= ?`
-		args = append(args, filter.MissedBy, filter.MissedBy, filter.LiveSince.UTC().Format(tsLayout), filter.MaxSeq)
-	}
-	if len(filter.ExcludeIDs) > 0 {
-		where += ` AND id NOT IN (` + placeholders(len(filter.ExcludeIDs)) + `)`
-		for _, id := range filter.ExcludeIDs {
-			args = append(args, id)
-		}
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+inboxColumns+` FROM inbox_items WHERE `+where+
 		` ORDER BY `+order+` LIMIT ?`, append(args, limit)...)

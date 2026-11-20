@@ -724,3 +724,27 @@ func TestInboxCatchUpBoundIgnoresLiveItems(t *testing.T) {
 		t.Fatalf("telegram saw %q, want missed", got)
 	}
 }
+
+// TestInboxCatchUpBoundHoldsOnTimestampTies: items stored in the same
+// millisecond are still ordered, so one left out by the bound stays out.
+func TestInboxCatchUpBoundHoldsOnTimestampTies(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	ctx := context.Background()
+	f.inbox.catchUpLimit = 2
+	stamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	for _, text := range []string{"1", "2", "3"} {
+		if err := f.store.InsertInboxItem(ctx, &state.InboxItem{ID: state.NewInboxItemID(), Kind: InboxNotify, TraceID: "notif-delivery-tie" + text,
+			TraceKind: "notify", FromName: "alpha", ToPeerID: string(f.human.PeerID), ToName: "prass", Text: text, CreatedAt: stamp}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(2 * time.Millisecond)
+	f.inbox.CatchUp(f.telegram, time.Now())
+	f.settle()
+	time.Sleep(2 * time.Millisecond)
+	f.inbox.CatchUp(f.telegram, time.Now())
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "2,3" {
+		t.Fatalf("telegram saw %s, want 2,3 (1 stays out)", got)
+	}
+}
