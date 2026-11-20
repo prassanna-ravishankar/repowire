@@ -188,9 +188,13 @@ func legacySpawnCommands(commands []string) map[string]string {
 	return out
 }
 
-func Load() (Config, error) {
+func Load() (Config, error) { return LoadFile(Path()) }
+
+// LoadFile loads the config at path with the daemon's rules (warnings,
+// credential blocks all or nothing, environment overrides). A missing file
+// yields the defaults.
+func LoadFile(path string) (Config, error) {
 	cfg := Defaults()
-	path := Path()
 	var raw []byte
 	if b, err := os.ReadFile(path); err == nil {
 		if err := decodeFile(b, &cfg); err != nil {
