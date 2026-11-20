@@ -408,3 +408,44 @@ func TestQueuedWorkIsBoundToItsAsk(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 }
+
+// Review #523: an ask evicted while claimed keeps its id until the claimant
+// releases, so the claimant's last write cannot land on a replacement.
+func TestEvictionUnderAClaimCannotLeakIntoAReplacement(t *testing.T) {
+	ctx := context.Background()
+	tr := NewAskTracker(0)
+	q, _ := tr.Register(ctx, RegisterAskParams{CorrelationID: "q-reuse", FromPeerID: "repow-a", ToPeerID: "repow-b", Question: map[string]any{"kind": "text"}})
+	entered, proceed, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	released := make(chan struct{})
+	go func() {
+		tr.RunClaimed(q, func(*Ask) {
+			close(entered)
+			<-proceed
+			old := "old default"
+			_, err := tr.AnswerClaimed(ctx, q, Answer{Outcome: "answered", Text: &old})
+			finished <- err
+		})
+		close(released)
+	}()
+	<-entered
+	tr.ForgetPeer(ctx, "repow-b")
+	// Same-id registration under the claim finds the closed instance.
+	if _, err := tr.Register(ctx, RegisterAskParams{CorrelationID: q, FromPeerID: "repow-a", ToPeerID: "repow-b", Question: map[string]any{"kind": "text"}}); err != nil {
+		t.Fatal(err)
+	}
+	close(proceed)
+	if err := <-finished; !errors.Is(err, ErrAlreadyAnswered) {
+		t.Fatalf("the claimant's write after eviction: %v", err)
+	}
+	<-released
+	if got, ok := tr.Get(q); ok {
+		t.Fatalf("the evicted ask outlived its claim: %+v", got)
+	}
+	// After release the id is free, and a new ask under it is untouched.
+	if _, err := tr.Register(ctx, RegisterAskParams{CorrelationID: q, FromPeerID: "repow-a", ToPeerID: "repow-b", Question: map[string]any{"kind": "text"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := tr.Get(q); got.Closed || got.Answer != nil {
+		t.Fatalf("replacement = %+v", got)
+	}
+}

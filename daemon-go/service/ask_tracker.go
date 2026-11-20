@@ -123,6 +123,9 @@ type Ask struct {
 	// done is closed once, when this ask instance reaches its terminal state,
 	// waking every waiter; they then read what was recorded.
 	done chan struct{}
+	// evicted marks an instance evicted while claimed: it stays in the map,
+	// closed, until Release, so its id cannot be reused under the claimant.
+	evicted bool
 }
 
 // clone returns a snapshot copy safe to hand to a reader. Slices/maps/pointers
@@ -412,6 +415,10 @@ func (t *AskTracker) Release(cid string) {
 	delete(t.resolving, cid)
 	next := t.deferred[cid]
 	delete(t.deferred, cid)
+	if ask := t.asks[cid]; ask != nil && ask.evicted {
+		delete(t.asks, cid)
+		next = nil
+	}
 	t.mu.Unlock()
 	for _, work := range next {
 		go t.runClaimedOn(cid, work.ask, work.fn)
@@ -991,11 +998,19 @@ func (t *AskTracker) CloseInboundForPeer(id proto.PeerID, reason string) []Close
 }
 
 // evictLocked closes cid as evicted and drops it, with any work queued for it.
-// Caller holds t.mu.
+// A claimed ask is closed now but dropped at Release: until then its id stays
+// taken, so a claimant's last write (a close after a send, a timeout's
+// default) can never land on a new ask registered under the same id. Caller
+// holds t.mu.
 func (t *AskTracker) evictLocked(cid string) {
-	t.closeLocked(t.asks[cid], "evicted")
-	delete(t.asks, cid)
+	ask := t.asks[cid]
+	t.closeLocked(ask, "evicted")
 	delete(t.deferred, cid)
+	if t.claimedLocked(cid) {
+		ask.evicted = true
+		return
+	}
+	delete(t.asks, cid)
 }
 
 // ClosedInboundAsk is what CloseInboundForPeer reports per closed ask.
