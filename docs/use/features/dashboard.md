@@ -2,7 +2,7 @@
 
 ## What it is
 
-The dashboard is a browser control surface served by the daemon at `http://localhost:8377/dashboard` or remotely through `https://repowire.io/dashboard`. It registers as the `dashboard` peer and uses the same mesh routes as agents and bots.
+The dashboard is a browser control surface served by the daemon at `http://localhost:8377/dashboard` or remotely through `https://repowire.io/dashboard`. It is an HTTP and server-sent-events client of the daemon, not a mesh peer: it reads and acts through the same routes agents and bots use, and renders the human inbox as a surface over its event stream (`/events/stream?surface=dashboard`).
 
 ## When to use it
 
