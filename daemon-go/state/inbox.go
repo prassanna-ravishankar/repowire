@@ -82,6 +82,9 @@ type InboxFilter struct {
 	// item was stored.
 	MissedBy  string
 	LiveSince time.Time
+	// ExcludeKind drops items of that kind (broadcasts a surface did not opt
+	// into), before the limit applies.
+	ExcludeKind string
 }
 
 const inboxColumns = `id, direction, kind, trace_id, trace_kind, from_peer_id, from_name,
@@ -186,6 +189,10 @@ func (s *Store) ListInbox(ctx context.Context, filter InboxFilter) ([]InboxItem,
 			THEN CAST(p.surface_ref AS INTEGER) END FROM inbox_pushes p
 			WHERE p.item_id = inbox_items.id AND p.surface = ?) DESC NULLS LAST, ` + order
 		args = append(args, filter.Surface)
+	}
+	if filter.ExcludeKind != "" {
+		where += ` AND kind <> ?`
+		args = append(args, filter.ExcludeKind)
 	}
 	if filter.MissedBy != "" {
 		where += ` AND NOT EXISTS (SELECT 1 FROM inbox_pushes p WHERE p.item_id = inbox_items.id AND p.surface = ?)

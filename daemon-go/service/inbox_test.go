@@ -672,3 +672,22 @@ func TestInboxCatchUpSurvivesAStoreRacingTheConnect(t *testing.T) {
 		t.Fatalf("telegram saw %s, want seen,racer,missed", got)
 	}
 }
+
+// TestInboxCatchUpBoundCountsOnlyWhatTheSurfaceTakes: broadcasts a surface
+// did not opt into do not use up the catch-up bound.
+func TestInboxCatchUpBoundCountsOnlyWhatTheSurfaceTakes(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{Broadcast: true})
+	f.inbox.catchUpLimit = 1
+	f.transport.connected[f.telegram.PeerID] = false
+	f.notifyHuman(t, "missed")
+	if _, err := f.delivery.Broadcast(context.Background(), "alpha", "deploy at noon", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	f.settle()
+	f.transport.connected[f.telegram.PeerID] = true
+	f.inbox.CatchUp(f.telegram, time.Now())
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "missed" {
+		t.Fatalf("telegram saw %q, want missed", got)
+	}
+}

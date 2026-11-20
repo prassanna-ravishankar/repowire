@@ -321,16 +321,18 @@ func (i *Inbox) CatchUp(p *proto.Peer, liveSince time.Time) {
 		return
 	}
 	target := surfaceTarget{name: string(p.DisplayName), peer: p}
+	filter := state.InboxFilter{UnreadOnly: true, MissedBy: target.name, LiveSince: liveSince, Limit: i.catchUpLimit}
+	if !i.cfg.PushesBroadcast(target.name) {
+		filter.ExcludeKind = InboxBroadcast
+	}
 	i.spawn(func() {
-		items, err := i.store.ListInbox(i.baseCtx, state.InboxFilter{UnreadOnly: true, MissedBy: target.name, LiveSince: liveSince, Limit: i.catchUpLimit})
+		items, err := i.store.ListInbox(i.baseCtx, filter)
 		if err != nil {
 			log.Printf("inbox: catch-up for %s: %v", target.name, err)
 			return
 		}
 		for n := len(items) - 1; n >= 0 && i.baseCtx.Err() == nil; n-- {
-			if items[n].Kind != InboxBroadcast || i.cfg.PushesBroadcast(target.name) {
-				i.push(&items[n], target)
-			}
+			i.push(&items[n], target)
 		}
 	})
 }
