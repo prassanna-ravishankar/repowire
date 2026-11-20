@@ -646,3 +646,29 @@ func TestInboxCatchUpSurvivesALivePushFirst(t *testing.T) {
 		t.Fatalf("telegram saw %s, want seen,live,missed", got)
 	}
 }
+
+// TestInboxCatchUpSurvivesAStoreRacingTheConnect: an item stored just before
+// the surface went live whose push lands after it must not hide what the
+// surface missed either.
+func TestInboxCatchUpSurvivesAStoreRacingTheConnect(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	ctx := context.Background()
+	f.notifyHuman(t, "seen")
+	f.transport.connected[f.telegram.PeerID] = false
+	f.notifyHuman(t, "missed")
+	racer := &state.InboxItem{ID: state.NewInboxItemID(), Kind: InboxNotify, TraceID: "notif-delivery-racer", TraceKind: "notify",
+		FromPeerID: string(f.alpha.PeerID), FromName: "alpha", ToPeerID: string(f.human.PeerID), ToName: "prass", Text: "racer"}
+	if err := f.store.InsertInboxItem(ctx, racer); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	liveSince := time.Now()
+	time.Sleep(2 * time.Millisecond)
+	f.transport.connected[f.telegram.PeerID] = true
+	f.inbox.push(racer, surfaceTarget{name: "telegram", peer: f.telegram}) // its push lands after the connect
+	f.inbox.CatchUp(f.telegram, liveSince)
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "seen,racer,missed" {
+		t.Fatalf("telegram saw %s, want seen,racer,missed", got)
+	}
+}

@@ -76,9 +76,10 @@ type InboxFilter struct {
 	// they can have seen.
 	ThroughRef int64
 	// MissedBy keeps only items that surface has no push record for and that
-	// are no older than the newest item stored before LiveSince that it does
-	// have one for: what it missed while it was offline. Items stored after
-	// LiveSince were pushed live and do not move that boundary.
+	// are no older than the newest item it has a record for written before
+	// LiveSince: what it missed while it was offline. A push recorded after
+	// the surface went live again never moves that boundary, whenever its
+	// item was stored.
 	MissedBy  string
 	LiveSince time.Time
 }
@@ -189,7 +190,7 @@ func (s *Store) ListInbox(ctx context.Context, filter InboxFilter) ([]InboxItem,
 	if filter.MissedBy != "" {
 		where += ` AND NOT EXISTS (SELECT 1 FROM inbox_pushes p WHERE p.item_id = inbox_items.id AND p.surface = ?)
 			AND created_at >= COALESCE((SELECT MAX(i.created_at) FROM inbox_items i
-				JOIN inbox_pushes p ON p.item_id = i.id WHERE p.surface = ? AND i.created_at < ?), '')`
+				JOIN inbox_pushes p ON p.item_id = i.id WHERE p.surface = ? AND p.ts < ?), '')`
 		args = append(args, filter.MissedBy, filter.MissedBy, filter.LiveSince.UTC().Format(tsLayout))
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+inboxColumns+` FROM inbox_items WHERE `+where+

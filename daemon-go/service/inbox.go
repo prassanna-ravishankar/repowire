@@ -310,9 +310,9 @@ func (i *Inbox) SyncPresence(ctx context.Context) {
 
 // CatchUp pushes a surface that just connected the unread items it missed
 // while it was offline: those with no push record for it that are no older
-// than the newest item it has one for among those stored before liveSince,
-// when it became live again. Items stored after that were pushed live; they
-// must not move the boundary past what it missed. Only the newest catchUpLimit go, oldest
+// than the newest item it has a record for written before liveSince, when it
+// became live again. A live push recorded after that must not move the
+// boundary past what it missed. Only the newest catchUpLimit go, oldest
 // first, so a long outage neither floods the surface nor trickles stale items
 // in on later connects. Called on connect; never on a timer.
 func (i *Inbox) CatchUp(p *proto.Peer, liveSince time.Time) {
