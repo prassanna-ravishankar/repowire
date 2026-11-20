@@ -44,15 +44,17 @@ type rpcReply struct {
 }
 
 type Bridge struct {
-	ctx        context.Context
-	version    string
-	app        *websocket.Conn
-	appWrite   sync.Mutex
-	nextID     atomic.Int64
-	rpcMu      sync.Mutex
-	pending    map[int64]chan rpcReply
-	threadsMu  sync.Mutex
-	threads    map[string]*threadPeer
+	ctx       context.Context
+	version   string
+	app       *websocket.Conn
+	appWrite  sync.Mutex
+	nextID    atomic.Int64
+	rpcMu     sync.Mutex
+	pending   map[int64]chan rpcReply
+	threadsMu sync.Mutex
+	threads   map[string]*threadPeer
+	// closed holds threads whose peer an operator closed (#530); guarded by threadsMu.
+	closed     map[string]bool
 	hintMu     sync.Mutex
 	daemonHTTP string
 	daemonWS   string
@@ -317,14 +319,14 @@ func (b *Bridge) loadExistingThreads(ctx context.Context) error {
 		return err
 	}
 	for _, id := range list.Data {
-		if err := b.loadThread(ctx, id); err != nil {
+		if err := b.loadThread(ctx, id, false); err != nil {
 			log.Printf("codex bridge: read loaded thread %s: %v", id, err)
 		}
 	}
 	return nil
 }
 
-func (b *Bridge) loadThread(ctx context.Context, id string) error {
+func (b *Bridge) loadThread(ctx context.Context, id string, fresh bool) error {
 	if id == "" || b.thread(id) != nil {
 		return nil
 	}
@@ -340,7 +342,7 @@ func (b *Bridge) loadThread(ctx context.Context, id string) error {
 	if !ok {
 		return errors.New("thread/read returned no thread")
 	}
-	b.ensureThread(thread)
+	b.addThread(thread, fresh)
 	return nil
 }
 
@@ -358,11 +360,11 @@ func (b *Bridge) handleNotification(method string, params map[string]any) {
 			if !active {
 				go b.captureCompletedTurn(p.id)
 			}
-		} else if id != "" {
+		} else if fresh, ok := b.reopenClosed(id, statusType(params["status"]) == "active"); id != "" && ok {
 			go func() {
 				ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
 				defer cancel()
-				if err := b.loadThread(ctx, id); err != nil {
+				if err := b.loadThread(ctx, id, fresh); err != nil {
 					log.Printf("codex bridge: discover resumed thread %s: %v", id, err)
 				}
 			}()
@@ -438,20 +440,30 @@ func (b *Bridge) finishTurn(p *threadPeer, turn map[string]any) {
 	}()
 }
 
-func (b *Bridge) ensureThread(thread map[string]any) {
+func (b *Bridge) ensureThread(thread map[string]any) { b.addThread(thread, false) }
+
+// addThread puts a thread on the mesh. fresh skips the cached birth certificate:
+// a resumed killed thread rejoins under a new identity, its old one is closed.
+func (b *Bridge) addThread(thread map[string]any, fresh bool) {
 	id, cwd := stringValue(thread, "id"), stringValue(thread, "cwd")
 	if id == "" || cwd == "" {
 		return
 	}
 	b.threadsMu.Lock()
+	if b.closed[id] {
+		b.threadsMu.Unlock()
+		return
+	}
 	if existing := b.threads[id]; existing != nil {
 		b.threadsMu.Unlock()
 		existing.reclassify(thread)
 		return
 	}
-	cert := cachedBirthCertificate("codex", id)
-	var hint map[string]any
-	if cert == nil {
+	var cert, hint map[string]any
+	if !fresh {
+		cert = cachedBirthCertificate("codex", id)
+	}
+	if cert == nil && !fresh {
 		b.hintMu.Lock()
 		hint = hooks.ConsumeSpawnHint(cwd, "codex")
 		b.hintMu.Unlock()
@@ -509,6 +521,53 @@ func (b *Bridge) thread(id string) *threadPeer {
 	return b.threads[id]
 }
 
+// reopenClosed reports whether a status change may rediscover thread id. A
+// killed thread stays off the mesh until it goes active again, i.e. someone
+// resumed it; it then rejoins fresh, since its old peer_id is closed for good.
+func (b *Bridge) reopenClosed(id string, active bool) (fresh, ok bool) {
+	b.threadsMu.Lock()
+	defer b.threadsMu.Unlock()
+	if !b.closed[id] {
+		return false, true
+	}
+	if !active {
+		return false, false
+	}
+	delete(b.closed, id)
+	return true, true
+}
+
+// endThread stops a thread whose peer an operator closed (kill_peer): the daemon
+// refuses its identity with peer_closed. The bridge interrupts its turn,
+// unsubscribes, and tombstones it so a reconnect or rediscovery cannot put it
+// back on the mesh under a new peer_id (#530).
+func (b *Bridge) endThread(p *threadPeer) {
+	b.threadsMu.Lock()
+	if b.threads[p.id] == p {
+		delete(b.threads, p.id)
+	}
+	if b.closed == nil {
+		b.closed = map[string]bool{}
+	}
+	b.closed[p.id] = true
+	b.threadsMu.Unlock()
+	p.cancel()
+	p.mu.Lock()
+	turn := p.activeTurn
+	p.mu.Unlock()
+	ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
+	defer cancel()
+	if turn != "" {
+		if _, err := b.call(ctx, "turn/interrupt", map[string]any{"threadId": p.id, "turnId": turn}); err != nil {
+			log.Printf("codex bridge: interrupt closed thread %s: %v", p.id, err)
+		}
+	}
+	if _, err := b.call(ctx, "thread/unsubscribe", map[string]any{"threadId": p.id}); err != nil {
+		log.Printf("codex bridge: unsubscribe closed thread %s: %v", p.id, err)
+	}
+	log.Printf("codex bridge: thread %s was closed on the mesh; ended it and will not re-register it", p.id)
+}
+
 func (b *Bridge) closeThread(id string) {
 	b.threadsMu.Lock()
 	p := b.threads[id]
@@ -523,6 +582,10 @@ func (p *threadPeer) runMesh(ctx context.Context) {
 	failures := 0
 	for ctx.Err() == nil {
 		conn, err := p.connectMesh(ctx)
+		if err != nil && strings.Contains(err.Error(), "peer_closed") {
+			p.bridge.endThread(p)
+			return
+		}
 		if err != nil {
 			failures++
 			log.Printf("codex bridge: connect thread %s: %v", p.id, err)

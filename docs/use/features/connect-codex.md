@@ -70,6 +70,10 @@ restarts do not leave its MCP calls under the fallback `mcp-http` identity.
 A thread that stays connected past half its birth certificate's 24 h lifetime
 has the certificate renewed at its next turn start, so long-lived threads keep
 their MCP identity too.
+`kill_peer` on a thread's peer closes that `peer_id` for good. The bridge then
+interrupts the thread's active turn, unsubscribes from the thread, and keeps it
+off the mesh. It does not register the thread again under a new id. If someone
+resumes the thread in Codex, it rejoins under a fresh `peer_id`.
 Because completed-item
 notifications are scoped to the App Server client that started the turn, the
 bridge reads the completed turn once when the thread becomes idle; it does not

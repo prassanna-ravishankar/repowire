@@ -567,14 +567,14 @@ func TestClosePeer_HardRetirementRejectsLiveAgentReclaim(t *testing.T) {
 	if _, _, err := r.AllocateAndRegister(ctx, AllocateParams{
 		Circle: "alpha", Backend: proto.AgentCodex, Path: ptr("/work/x"), Machine: "m",
 		Role: proto.RoleAgent, ClaimedPeerID: &claimed, AgentPID: &pid,
-	}); err != ErrPeerRetired {
-		t.Fatalf("hard-retired live reclaim err = %v, want ErrPeerRetired", err)
+	}); err != ErrPeerClosed {
+		t.Fatalf("hard-retired live reclaim err = %v, want ErrPeerClosed", err)
 	}
 	if _, _, err := r.AllocateAndRegister(ctx, AllocateParams{
 		Circle: "alpha", Backend: proto.AgentCodex, Path: ptr("/work/x"), Machine: "m",
 		Role: proto.RoleAgent, ClaimedPeerID: &claimed, RuntimeIdentityVerified: true,
-	}); err != ErrPeerRetired {
-		t.Fatalf("hard-retired certified reclaim err = %v, want ErrPeerRetired", err)
+	}); err != ErrPeerClosed {
+		t.Fatalf("hard-retired certified reclaim err = %v, want ErrPeerClosed", err)
 	}
 }
 

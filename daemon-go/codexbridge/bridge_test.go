@@ -812,3 +812,127 @@ func TestRenewalRetriesWhenCacheWriteFails(t *testing.T) {
 		t.Fatalf("retry: renewals=%d nonce=%v", renewals.Load(), p.birthCert["nonce"])
 	}
 }
+
+// #530: a thread whose peer was killed stays off the mesh. The daemon refuses
+// its claim with peer_closed; the bridge interrupts the thread's turn,
+// unsubscribes, and ignores rediscovery until the thread is resumed (goes active
+// again), when it rejoins under a fresh identity instead of the closed one.
+func TestKilledThreadIsEndedAndNotReRegistered(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stubTmuxPlacement(t, tmuxPlacement{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	threadID, cwd := "thread-killed", t.TempDir()
+	cert := map[string]any{
+		"nonce": "proof", "peer_id": "repow-closed", "display_name": "repo-codex",
+		"backend": "codex", "project_path": cwd, "runtime_session_id": threadID,
+		"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+	}
+	if err := hooks.WriteRuntimeIdentity("codex", threadID, map[string]any{"birth_certificate": cert, "mesh_context_injected": true}); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var appCalls []string
+	var registrations []map[string]any
+	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := websocket.Accept(w, r, nil)
+		defer conn.CloseNow()
+		for {
+			var request map[string]any
+			if wsjson.Read(ctx, conn, &request) != nil {
+				return
+			}
+			method, _ := request["method"].(string)
+			params, _ := request["params"].(map[string]any)
+			mu.Lock()
+			appCalls = append(appCalls, method+" "+stringValue(params, "turnId"))
+			mu.Unlock()
+			result := map[string]any{}
+			if method == "thread/read" {
+				result["thread"] = map[string]any{"id": threadID, "cwd": cwd, "status": map[string]any{"type": "active"}}
+			}
+			_ = wsjson.Write(ctx, conn, map[string]any{"id": request["id"], "result": result})
+		}
+	}))
+	defer appServer.Close()
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/peers/identity/validate":
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{"detail": "Runtime identity certificate could not rehydrate peer: peer: peer_closed: an operator closed this peer_id"})
+		case "/peers":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			registrations = append(registrations, body)
+			mu.Unlock()
+			if body["peer_id"] != nil {
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{"detail": "peer: peer_closed: an operator closed this peer_id"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "repow-fresh", "display_name": "repo-codex", "circle": "0", "role": "agent"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer daemon.Close()
+
+	appConn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(appServer.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &Bridge{ctx: ctx, app: appConn, pending: map[int64]chan rpcReply{}, threads: map[string]*threadPeer{}, daemonHTTP: daemon.URL}
+	go b.readApp(appConn)
+	b.ensureThread(map[string]any{"id": threadID, "cwd": cwd, "status": map[string]any{"type": "active"},
+		"turns": []any{map[string]any{"id": "turn-1", "status": "inProgress"}}})
+
+	waitFor := func(what string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for !cond() {
+			if time.Now().After(deadline) {
+				mu.Lock()
+				defer mu.Unlock()
+				t.Fatalf("%s; app calls %v, registrations %v", what, appCalls, registrations)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	called := func(call string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slicesContains(appCalls, call)
+	}
+	waitFor("killed thread was not interrupted and unsubscribed", func() bool {
+		return called("turn/interrupt turn-1") && called("thread/unsubscribe ") && b.thread(threadID) == nil
+	})
+
+	b.handleNotification("thread/status/changed", map[string]any{"threadId": threadID, "status": map[string]any{"type": "idle"}})
+	time.Sleep(100 * time.Millisecond)
+	if called("thread/read ") || b.thread(threadID) != nil {
+		t.Fatal("an idle status change rediscovered the killed thread")
+	}
+
+	b.handleNotification("thread/status/changed", map[string]any{"threadId": threadID, "status": map[string]any{"type": "active"}})
+	waitFor("a resumed thread did not rejoin under a fresh identity", func() bool {
+		p := b.thread(threadID)
+		if p == nil {
+			return false
+		}
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.peerID == "repow-fresh"
+	})
+}
+
+func slicesContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}

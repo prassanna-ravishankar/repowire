@@ -117,6 +117,11 @@ type AllocateParams struct {
 // a terminally-offlined identity.
 var ErrPeerRetired = fmt.Errorf("peer: retired peer_id cannot be reclaimed without a live agent")
 
+// ErrPeerClosed is returned when a claim names a peer_id an operator closed
+// (kill_peer, DELETE /peers/{name}). No proof reclaims it; the peer_closed token
+// tells a runtime bridge to stop re-registering the runtime behind it.
+var ErrPeerClosed = fmt.Errorf("peer: peer_closed: an operator closed this peer_id; its runtime must not re-register it")
+
 // ErrReservedPeerID refuses a claim of an id reserved for peers on other
 // machines (proto.RemotePeerID).
 var ErrReservedPeerID = fmt.Errorf("peer: remote: peer ids name peers on other machines and cannot be claimed")
@@ -277,7 +282,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	if params.ClaimedPeerID != nil && (holder == nil || holder.peer.PeerID == *params.ClaimedPeerID) {
 		if retirement, isRetired := r.retired[*params.ClaimedPeerID]; isRetired {
 			if retirement.Hard {
-				return "", "", ErrPeerRetired
+				return "", "", ErrPeerClosed
 			}
 			livePID := params.AgentPID != nil && r.live.PIDAlive(*params.AgentPID)
 			if !livePID && !params.RuntimeIdentityVerified {

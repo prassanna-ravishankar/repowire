@@ -44,6 +44,7 @@ type spawnRegistry interface {
 	GetPeer(id proto.PeerID) (*proto.Peer, bool)
 	GetPeerByPane(paneID string) (*proto.Peer, bool)
 	UnregisterPeer(ctx context.Context, identifier string, circle *string) (bool, error)
+	ClosePeer(ctx context.Context, id proto.PeerID, reason string) (int, error)
 	MarkOffline(ctx context.Context, id proto.PeerID, terminal bool) (int, error)
 }
 
@@ -485,9 +486,8 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 	peerCopy := h.peerWithAdoptedOwnership(resolved)
 	proof := h.destructivePaneProof(peerCopy)
 	if !proof.ok || proof.paneID == "" {
-		// No proof: unregister identity but DO NOT touch any pane. tmux_killed=null.
-		// id is already resolved (resolveStrict), so the ambiguity error can't fire.
-		_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
+		// No proof: close the identity but DO NOT touch any pane. tmux_killed=null.
+		h.closeKilledPeer(ctx, peerCopy.PeerID)
 		return KillResponse{OK: true, TmuxKilled: nil}, nil
 	}
 
@@ -502,10 +502,19 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 	}
 	h.spawn.svc.Ownership().Forget(proof.paneID)
 	clienthooks.ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove a reused pane
-	// id is already resolved (resolveStrict), so the ambiguity error can't fire.
-	_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
+	h.closeKilledPeer(ctx, peerCopy.PeerID)
 	t := true
 	return KillResponse{OK: true, TmuxKilled: &t}, nil
+}
+
+// closeKilledPeer is the operator close kill shares with DELETE /peers/{name}:
+// hard-retire the identity, then remove it. Without the retirement a runtime
+// that outlives its pane (a Codex App Server thread) reconnects within a second
+// and registers again under a new peer_id (#530). The id is already resolved, so
+// UnregisterPeer's ambiguity error can't fire.
+func (h *Hub) closeKilledPeer(ctx context.Context, id proto.PeerID) {
+	_, _ = h.spawn.reg.ClosePeer(ctx, id, "operator_close")
+	_, _ = h.spawn.reg.UnregisterPeer(ctx, string(id), nil)
 }
 
 // ---------------------------------------------------------------------------
