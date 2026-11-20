@@ -59,7 +59,7 @@ repowire jobs cancel job-...
 
 Unassigned path/backend jobs run with per-fire executors by default: Repowire spawns or backend-resumes an executor for the run, delivers the job ask, and releases that executor when the fire completes. Reused persistent executors and explicitly assigned peers stay live. Recurring jobs can use `continuity=resume` to keep the backend-native runtime session id as the continuity handle for the next fire. Use `--continuity fresh` when a run should start without prior runtime context.
 
-Fire completion is automatic: the executor's turn ending ends the run, and its final message is recorded as the result. `jobs update` is optional progress/result enrichment, not a reporting requirement. Terminal results emit a `job_state_changed` event and best-effort notify the job's owner (falling back to the creator, then the circle's orchestrator).
+Fire completion is automatic: the executor's turn ending ends the run, and its final message is recorded as the result. A job created with `deadline_at` that is still going when that time passes ends as `expired` (`state_reason: deadline_exceeded`): its attempt is marked expired, its dispatch ask closes, a per-fire executor is released, and the owner is told, as for any terminal result. Work still being dispatched expires once dispatch settles. `jobs update` is optional progress/result enrichment, not a reporting requirement. Terminal results emit a `job_state_changed` event and best-effort notify the job's owner (falling back to the creator, then the circle's orchestrator).
 
 ## Commands and API
 

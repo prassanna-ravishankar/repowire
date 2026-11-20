@@ -41,6 +41,8 @@ type JobRunner struct {
 	control      *SessionControl
 	senderPeerID proto.PeerID
 	clock        wallClock
+	// expire ends jobs whose deadline_at has passed (JobCompletion.ExpireOverdue).
+	expire func(ctx context.Context, now time.Time)
 
 	wake    chan struct{}
 	stop    chan struct{}
@@ -141,9 +143,19 @@ func (r *JobRunner) loop(ctx context.Context) {
 	}
 }
 
+// OnDeadline installs what ends a job past its deadline_at (#457). Each tick
+// runs it, and job deadlines are among the instants the loop wakes for.
+func (r *JobRunner) OnDeadline(expire func(ctx context.Context, now time.Time)) {
+	r.expire = expire
+}
+
 func (r *JobRunner) tick(ctx context.Context) {
 	if _, err := r.store.RecoverStaleDispatching(ctx, workNowISORunner()); err != nil {
 		log.Printf("job_runner: recover_stale tick failed: %v", err)
+	}
+	// Before dispatch, so a queued job past its deadline is never sent out.
+	if r.expire != nil {
+		r.expire(ctx, r.clock.now())
 	}
 	if materialized, err := r.store.MaterializeDue(ctx, time.Now().UTC(), NextFireAfter); err != nil {
 		log.Printf("job_runner: materialize_due failed: %v", err)
@@ -213,6 +225,17 @@ func (r *JobRunner) nextDeadline(ctx context.Context) *time.Time {
 	if due, err := r.store.NextCalendarDue(ctx); err == nil && due != nil {
 		consider(*due)
 	}
+	if r.expire != nil {
+		// Job deadlines (#457). Dispatching work is left to its lease, which
+		// is already a deadline above, and expires on the tick after it.
+		if deadlines, err := r.store.WorkDeadlines(ctx); err == nil {
+			for _, d := range deadlines {
+				if d.State != "dispatching" {
+					consider(d.At)
+				}
+			}
+		}
+	}
 	return soonest
 }
 
@@ -234,6 +257,10 @@ func (r *JobRunner) RunJob(ctx context.Context, workID string, ignoreDueAt, retr
 	if acquired == nil {
 		return nil, nil
 	}
+	// The run changed what the loop waits for (a lease now, an attempt whose
+	// deadline_at matters after): a run from outside the loop must not leave
+	// it asleep with nothing to wait for.
+	defer r.Wake()
 	runner := mapAtAny(acquired.Provenance, "runner")
 	attemptID, _ := runner["current_attempt_id"].(string)
 	if attemptID == "" {

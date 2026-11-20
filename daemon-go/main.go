@@ -459,6 +459,7 @@ func runDaemon() {
 	sessionControl := service.NewSessionControl(reg, spawnService, store).WithResume(service.ResolveLocalResume)
 	jobRunner := service.NewJobRunner(store, delivery, sessionControl)
 	jobCompletion := service.NewJobCompletion(store, asks, sessionControl, reg, delivery)
+	jobRunner.OnDeadline(jobCompletion.ExpireOverdue)
 	reg.OnTerminalOffline = jobCompletion.OnPeerTerminalOffline
 	scheduler := service.NewScheduler(store, delivery)
 
