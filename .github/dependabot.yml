@@ -2,24 +2,34 @@
 # daemon/relay/bridges. Python was removed in #382.
 version: 2
 updates:
+  # Monthly, in two grouped PRs: one for minor/patch, one for majors, so
+  # majors arrive together instead of one PR each through the month. One
+  # schedule covers a directory; security updates do not wait for it.
   - package-ecosystem: npm
     directory: /web
     schedule:
-      interval: weekly
+      interval: monthly
     open-pull-requests-limit: 5
     groups:
       web-minor-and-patch:
         update-types: [minor, patch]
+      web-major:
+        update-types: [major]
     ignore:
       # typescript-eslint (via eslint-config-next) supports TypeScript < 6.1;
       # on 7.x ESLint stops with "typescript-eslint does not support TS 7.0"
       # (#499). Drop this once typescript-eslint supports it.
       - dependency-name: typescript
-        update-types: [version-update:semver-major]
+        update-types: ["version-update:semver-major"]
       # Node types follow the runtime floor (engines >=22, node:22 images),
       # not the newest Node; bump with the runtime.
       - dependency-name: "@types/node"
-        update-types: [version-update:semver-major]
+        update-types: ["version-update:semver-major"]
+      # eslint-config-next 16.4 bundles eslint-plugin-import, -jsx-a11y and
+      # -react, whose peer ranges stop at ESLint 9 (#548). Drop this once they
+      # declare 10.
+      - dependency-name: eslint
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: gomod
     directory: /daemon-go
     schedule:
