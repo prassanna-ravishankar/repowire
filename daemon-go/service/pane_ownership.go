@@ -76,7 +76,8 @@ type TmuxPaneEvidence struct {
 }
 
 // PeerAgentPIDs returns the agent pids known for p on paneID: its registered
-// agent_pid, and the one the pane's ws-hook metadata records for p's peer_id.
+// agent_pid, and the one the pane's ws-hook metadata records for p's peer_id
+// unless that pid has since been recycled.
 func PeerAgentPIDs(paneID string, p *proto.Peer) []int {
 	var pids []int
 	if p.AgentPID != nil && *p.AgentPID > 0 {
@@ -84,11 +85,23 @@ func PeerAgentPIDs(paneID string, p *proto.Peer) []int {
 	}
 	meta := hooks.ReadPaneRuntimeMetadata(paneID)
 	if id, _ := meta["peer_id"].(string); id != "" && id == string(p.PeerID) {
-		if pid, _ := meta["agent_pid"].(float64); pid > 0 {
+		if pid, _ := meta["agent_pid"].(float64); pid > 0 && !recycled(int(pid), meta) {
 			pids = append(pids, int(pid))
 		}
 	}
 	return pids
+}
+
+// recycled reports whether the metadata's agent pid now names another process:
+// the start time it recorded no longer matches (#536). Metadata without one
+// predates the record and is taken as is.
+func recycled(pid int, meta map[string]any) bool {
+	recorded, _ := meta["agent_started"].(string)
+	if recorded == "" {
+		return false
+	}
+	started, ok := hooks.ProcessStartTime(pid)
+	return ok && started != recorded
 }
 
 // PaneRunsPeer reports whether the live pane runs p's agent now: one of

@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"testing"
 
+	clienthooks "github.com/repowire/repowire/daemon-go/hooks"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/service"
 )
@@ -188,5 +189,33 @@ func TestPaneRunsPeerFollowsProcessAncestry(t *testing.T) {
 	}
 	if !service.PaneRunsPeer(proc, ev, &proto.Peer{PeerID: "repow-1-x"}) {
 		t.Fatal("with no registered agent, the metadata pid under the shell proves the pane")
+	}
+}
+
+// #536: a pid is not an identity on its own. Metadata records the agent's start
+// time, and a pid whose process started at another time was recycled.
+func TestPaneRunsPeerRejectsARecycledMetadataPID(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	shell, child := startShellWithChild(t)
+	pane := "%211"
+	ev := &service.TmuxPaneEvidence{PaneID: pane, PanePID: strconv.Itoa(shell)}
+	proc := service.NewProcessControl()
+	p := &proto.Peer{PeerID: "repow-1-y"}
+
+	started, ok := clienthooks.ProcessStartTime(child)
+	if !ok || started == "" {
+		t.Fatalf("start time of a live process: %q, %v", started, ok)
+	}
+	writeSpawnTestPaneMeta(t, pane, map[string]any{"peer_id": "repow-1-y", "agent_pid": child, "agent_started": "Mon Jan  1 00:00:00 2001"})
+	if service.PaneRunsPeer(proc, ev, p) {
+		t.Fatal("a metadata pid whose process started at another time must not prove the pane")
+	}
+	writeSpawnTestPaneMeta(t, pane, map[string]any{"peer_id": "repow-1-y", "agent_pid": child, "agent_started": started})
+	if !service.PaneRunsPeer(proc, ev, p) {
+		t.Fatal("the metadata pid with its own start time proves the pane")
+	}
+	writeSpawnTestPaneMeta(t, pane, map[string]any{"peer_id": "repow-1-y", "agent_pid": child})
+	if !service.PaneRunsPeer(proc, ev, p) {
+		t.Fatal("metadata written before start times were recorded keeps today's check")
 	}
 }
