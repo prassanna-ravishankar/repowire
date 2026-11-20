@@ -310,17 +310,19 @@ func (i *Inbox) SyncPresence(ctx context.Context) {
 
 // CatchUp pushes a surface that just connected the unread items it missed
 // while it was offline: those with no push record for it that are no older
-// than the newest item it has one for. Only the newest catchUpLimit go, oldest
+// than the newest item it has one for among those stored before liveSince,
+// when it became live again. Items stored after that were pushed live; they
+// must not move the boundary past what it missed. Only the newest catchUpLimit go, oldest
 // first, so a long outage neither floods the surface nor trickles stale items
 // in on later connects. Called on connect; never on a timer.
-func (i *Inbox) CatchUp(p *proto.Peer) {
+func (i *Inbox) CatchUp(p *proto.Peer, liveSince time.Time) {
 	human, _ := i.Human()
 	if human == "" || p == nil || p.PeerID == human || !proto.IsInboxSurface(p) {
 		return
 	}
 	target := surfaceTarget{name: string(p.DisplayName), peer: p}
 	i.spawn(func() {
-		items, err := i.store.ListInbox(i.baseCtx, state.InboxFilter{UnreadOnly: true, MissedBy: target.name, Limit: i.catchUpLimit})
+		items, err := i.store.ListInbox(i.baseCtx, state.InboxFilter{UnreadOnly: true, MissedBy: target.name, LiveSince: liveSince, Limit: i.catchUpLimit})
 		if err != nil {
 			log.Printf("inbox: catch-up for %s: %v", target.name, err)
 			return

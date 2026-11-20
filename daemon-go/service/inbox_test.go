@@ -555,7 +555,7 @@ func TestInboxCatchUpPushesWhatASurfaceMissed(t *testing.T) {
 	}
 
 	f.transport.connected[f.telegram.PeerID] = true
-	f.inbox.CatchUp(f.telegram)
+	f.inbox.CatchUp(f.telegram, time.Now())
 	f.settle()
 	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "before,a,c" {
 		t.Fatalf("telegram saw %s, want before,a,c (read items skipped, oldest first)", got)
@@ -564,7 +564,7 @@ func TestInboxCatchUpPushesWhatASurfaceMissed(t *testing.T) {
 		t.Fatalf("catch-up push not traced: %v", stageNames(rows))
 	}
 
-	f.inbox.CatchUp(f.telegram) // a second connect pushes nothing again
+	f.inbox.CatchUp(f.telegram, time.Now()) // a second connect pushes nothing again
 	f.settle()
 	if n := len(f.transport.framesFor(f.telegram.PeerID)); n != 3 {
 		t.Fatalf("repeat catch-up re-pushed: %d frames", n)
@@ -584,7 +584,7 @@ func TestInboxCatchUpIsBoundedToTheNewest(t *testing.T) {
 		f.notifyHuman(t, text)
 	}
 	f.transport.connected[f.telegram.PeerID] = true
-	f.inbox.CatchUp(f.telegram)
+	f.inbox.CatchUp(f.telegram, time.Now())
 	f.settle()
 	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "3,4" {
 		t.Fatalf("telegram saw %s, want 3,4", got)
@@ -593,7 +593,7 @@ func TestInboxCatchUpIsBoundedToTheNewest(t *testing.T) {
 	f.transport.connected[f.telegram.PeerID] = false
 	f.notifyHuman(t, "5")
 	f.transport.connected[f.telegram.PeerID] = true
-	f.inbox.CatchUp(f.telegram)
+	f.inbox.CatchUp(f.telegram, time.Now())
 	f.settle()
 	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "3,4,5" {
 		t.Fatalf("telegram saw %s, want 3,4,5 (1 and 2 predate what it already has)", got)
@@ -610,7 +610,7 @@ func TestInboxCatchUpKeepsBroadcastOptIn(t *testing.T) {
 	}
 	f.settle()
 	f.transport.connected[f.telegram.PeerID] = true
-	f.inbox.CatchUp(f.telegram)
+	f.inbox.CatchUp(f.telegram, time.Now())
 	f.settle()
 	if frames := f.transport.framesFor(f.telegram.PeerID); len(frames) != 0 {
 		t.Fatalf("telegram did not opt into broadcasts, got %+v", frames)
@@ -626,5 +626,23 @@ func TestInboxPushIsOncePerSurface(t *testing.T) {
 	f.inbox.push(item, surfaceTarget{name: "telegram", peer: f.telegram})
 	if n := len(f.transport.framesFor(f.telegram.PeerID)); n != 1 {
 		t.Fatalf("item pushed %d times to one surface", n)
+	}
+}
+
+// TestInboxCatchUpSurvivesALivePushFirst: an item pushed live after the
+// surface reconnected, and recorded before the catch-up runs, must not hide
+// the items it missed while it was down.
+func TestInboxCatchUpSurvivesALivePushFirst(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	f.notifyHuman(t, "seen")
+	f.transport.connected[f.telegram.PeerID] = false
+	f.notifyHuman(t, "missed")
+	liveSince := time.Now()
+	f.transport.connected[f.telegram.PeerID] = true
+	f.notifyHuman(t, "live") // pushed and recorded before the catch-up starts
+	f.inbox.CatchUp(f.telegram, liveSince)
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "seen,live,missed" {
+		t.Fatalf("telegram saw %s, want seen,live,missed", got)
 	}
 }
