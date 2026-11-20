@@ -80,11 +80,12 @@ type InboxFilter struct {
 	// LiveSince: what it missed while it was offline. A push recorded after
 	// the surface went live again never moves that boundary, whenever its
 	// item was stored.
-	// StoredBy, with MissedBy, drops items stored after it: those found the
-	// surface live and were pushed to it, even if a receipt is still due.
 	MissedBy  string
 	LiveSince time.Time
-	StoredBy  time.Time
+	// MaxSeq, with MissedBy, keeps only items stored up to that sequence (see
+	// InboxSeq). ExcludeIDs drops the listed items. Both apply before Limit.
+	MaxSeq     int64
+	ExcludeIDs []string
 	// ExcludeKind drops items of that kind (broadcasts a surface did not opt
 	// into), before the limit applies.
 	ExcludeKind string
@@ -151,6 +152,16 @@ func (item *InboxItem) PushedTo(surface string) bool {
 	return false
 }
 
+// InboxSeq is the insertion sequence of the newest item (0 when empty); an
+// item stored later has a higher one.
+func (s *Store) InboxSeq(ctx context.Context) (int64, error) {
+	var seq int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(rowid), 0) FROM inbox_items`).Scan(&seq); err != nil {
+		return 0, fmt.Errorf("inbox seq: %w", err)
+	}
+	return seq, nil
+}
+
 // InboxItem loads one item with its push records; (nil, nil) when unknown.
 func (s *Store) InboxItem(ctx context.Context, id string) (*InboxItem, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+inboxColumns+` FROM inbox_items WHERE id = ?`, id)
@@ -201,8 +212,14 @@ func (s *Store) ListInbox(ctx context.Context, filter InboxFilter) ([]InboxItem,
 		where += ` AND NOT EXISTS (SELECT 1 FROM inbox_pushes p WHERE p.item_id = inbox_items.id AND p.surface = ?)
 			AND created_at >= COALESCE((SELECT MAX(i.created_at) FROM inbox_items i
 				JOIN inbox_pushes p ON p.item_id = i.id WHERE p.surface = ? AND p.ts < ?), '')
-			AND created_at <= ?`
-		args = append(args, filter.MissedBy, filter.MissedBy, filter.LiveSince.UTC().Format(tsLayout), filter.StoredBy.UTC().Format(tsLayout))
+			AND rowid <= ?`
+		args = append(args, filter.MissedBy, filter.MissedBy, filter.LiveSince.UTC().Format(tsLayout), filter.MaxSeq)
+	}
+	if len(filter.ExcludeIDs) > 0 {
+		where += ` AND id NOT IN (` + placeholders(len(filter.ExcludeIDs)) + `)`
+		for _, id := range filter.ExcludeIDs {
+			args = append(args, id)
+		}
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+inboxColumns+` FROM inbox_items WHERE `+where+
 		` ORDER BY `+order+` LIMIT ?`, append(args, limit)...)
