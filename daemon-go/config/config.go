@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -192,7 +193,7 @@ func Load() (Config, error) {
 	path := Path()
 	var raw []byte
 	if b, err := os.ReadFile(path); err == nil {
-		if err := yaml.Unmarshal(b, &cfg); err != nil {
+		if err := decodeFile(b, &cfg); err != nil {
 			return cfg, fmt.Errorf("parse %s: %w", path, err)
 		}
 		raw = b
@@ -214,6 +215,105 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// coreDaemonKeys are the settings the daemon cannot run correctly without: a
+// mistyped one fails the load rather than starting on a silently different
+// address, without its auth token, or with another circle boundary.
+var coreDaemonKeys = []string{"host", "port", "auth_token", "circle_boundary"}
+
+// decodeFile reads the file into cfg one section and one key at a time (#427).
+// A syntax error, an unreadable daemon block, or a mistyped core daemon key is
+// an error. Any other key that does not decode keeps its default and adds a
+// warning, so a typo in an optional feature never stops the daemon (under
+// launchd KeepAlive, a failed load is a crash loop). A nested block drops only
+// its mistyped keys. routing: and experiments.router are decoded separately
+// by loadRouting.
+func decodeFile(raw []byte, cfg *Config) error {
+	var file struct {
+		Daemon      yaml.Node `yaml:"daemon"`
+		Relay       yaml.Node `yaml:"relay"`
+		Telegram    yaml.Node `yaml:"telegram"`
+		Slack       yaml.Node `yaml:"slack"`
+		Human       yaml.Node `yaml:"human"`
+		Experiments yaml.Node `yaml:"experiments"`
+	}
+	if err := yaml.Unmarshal(raw, &file); err != nil {
+		return err
+	}
+	warn := func(warnings []string) { cfg.Warnings = append(cfg.Warnings, warnings...) }
+
+	warnings, failed := decodeSection(&file.Daemon, &cfg.Daemon, "daemon")
+	for i, key := range failed {
+		if key == "" || slices.Contains(coreDaemonKeys, key) {
+			return fmt.Errorf("%s", strings.TrimPrefix(warnings[i], "config: "))
+		}
+	}
+	warn(nested(&file.Daemon, warnings, failed, map[string]func(*yaml.Node, string) []string{
+		"spawn":    func(n *yaml.Node, p string) []string { w, _ := decodeSection(n, &cfg.Daemon.Spawn, p); return w },
+		"mcp_http": func(n *yaml.Node, p string) []string { w, _ := decodeSection(n, &cfg.Daemon.MCPHTTP, p); return w },
+		"orchestrator_recall": func(n *yaml.Node, p string) []string {
+			w, _ := decodeSection(n, &cfg.Daemon.OrchestratorRecall, p)
+			return w
+		},
+	}, "daemon"))
+	warnings, failed = decodeSection(&file.Experiments, &cfg.Experiments, "experiments")
+	warn(nested(&file.Experiments, warnings, failed, map[string]func(*yaml.Node, string) []string{
+		"remote_tool_approval": func(n *yaml.Node, p string) []string {
+			w, _ := decodeSection(n, &cfg.Experiments.RemoteToolApproval, p)
+			return w
+		},
+	}, "experiments"))
+	w, _ := decodeSection(&file.Relay, &cfg.Relay, "relay")
+	warn(w)
+	w, _ = decodeSection(&file.Telegram, &cfg.Telegram, "telegram")
+	warn(w)
+	w, _ = decodeSection(&file.Slack, &cfg.Slack, "slack")
+	warn(w)
+	w, _ = decodeSection(&file.Human, &cfg.Human, "human")
+	warn(w)
+	return nil
+}
+
+// decodeSection is decodeKeys for a section that may be absent.
+func decodeSection[T any](node *yaml.Node, dst *T, path string) (warnings, failed []string) {
+	if node.Kind == 0 {
+		return nil, nil
+	}
+	return decodeKeys(node, dst, path)
+}
+
+// nested replaces the warning for a failed key that is itself a block with
+// that block decoded key by key, so only its mistyped keys are dropped.
+// warnings and failed are decodeKeys' aligned results for parent.
+func nested(parent *yaml.Node, warnings, failed []string, blocks map[string]func(*yaml.Node, string) []string, path string) []string {
+	var out []string
+	for i, key := range failed {
+		decode, ok := blocks[key]
+		child := mappingValue(parent, key)
+		if !ok || child == nil {
+			out = append(out, warnings[i])
+			continue
+		}
+		out = append(out, decode(child, path+"."+key)...)
+	}
+	return out
+}
+
+// mappingValue returns the value node for key in a mapping node, or nil.
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
+		node = node.Content[0]
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
 }
 
 func Path() string {

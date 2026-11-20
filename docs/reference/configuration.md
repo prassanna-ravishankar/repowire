@@ -2,6 +2,8 @@
 
 Config lives at `~/.repowire/config.yaml`. `repowire setup` creates the file with `0600` permissions.
 
+**A mistyped setting does not stop the daemon.** The daemon runs as a KeepAlive service, so a refused config is a crash loop. A key whose value has the wrong type (`relay.enabled: definitely`, `daemon.spawn.commands: [codex]`) keeps its default, and the daemon logs a startup warning naming it. Inside a nested block (`daemon.spawn`, `daemon.mcp_http`, `daemon.orchestrator_recall`, `experiments.remote_tool_approval`) only the mistyped keys are dropped. The load still fails for a file that is not valid YAML, a `daemon:` that is not a mapping, and a mistyped `daemon.host`, `daemon.port`, `daemon.auth_token` or `daemon.circle_boundary`, since starting on another address, without the auth token, or with another circle boundary would be worse than not starting. `routing:` has its own recovery rules, [below](#routing).
+
 ```yaml
 daemon:
   host: "127.0.0.1"
@@ -281,7 +283,7 @@ Recovery is decided at the end of configuration resolution, against the final va
 - `REPOWIRE_ROUTING__SHADOW_ARMS` cannot bring back shadows that an unusable strategy dropped.
 - Environment precedence holds even for a bad value: an unusable `REPOWIRE_ROUTING__STRATEGY` over a valid YAML strategy runs static with no shadows. It does not fall back to the YAML value.
 
-The same rules apply to a legacy `experiments.router` block. `repowire route show` prints the effective config, which is what the daemon runs, followed by every ignored setting and the warnings. A file that is not valid YAML still stops the daemon, as does a mistyped key outside `routing:`.
+The same rules apply to a legacy `experiments.router` block. `repowire route show` prints the effective config, which is what the daemon runs, followed by every ignored setting and the warnings. A file that is not valid YAML still stops the daemon; for keys outside `routing:`, see the rule at the top of this page.
 
 ### Migrating from `experiments.router`
 

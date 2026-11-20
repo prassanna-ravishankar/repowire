@@ -186,12 +186,12 @@ func TestShadowsWithoutRecordAreDroppedNotRefused(t *testing.T) {
 	}
 }
 
-// Real load failures stay fatal: a file that is not YAML, and (until the
-// general decode boundary is reworked) a mistyped key outside routing:.
+// Real load failures stay fatal: a file that is not YAML. A mistyped key
+// outside routing: degrades too (#427); see
+// TestLoadMistypedOptionalKeyWarnsAndKeepsTheRest and TestLoadCoreKeyErrorsStayFatal.
 func TestNonRoutingLoadFailuresStillRefuse(t *testing.T) {
 	for name, body := range map[string]string{
-		"not yaml":            "routing: [unclosed\n",
-		"mistyped relay flag": "relay:\n  enabled: definitely\n",
+		"not yaml": "routing: [unclosed\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			clearRouterEnv(t)

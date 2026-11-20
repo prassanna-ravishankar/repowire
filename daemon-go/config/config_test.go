@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -153,5 +154,84 @@ func TestLoadRejectsInvalidCircleBoundary(t *testing.T) {
 	}
 	if _, err := Load(); err == nil {
 		t.Fatal("invalid circle boundary was accepted")
+	}
+}
+
+func hasWarning(cfg Config, part string) bool {
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, part) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestLoadMistypedOptionalKeyWarnsAndKeepsTheRest (#427): a type error in an
+// optional key is a warning and that key's default, never a failed load, which
+// under launchd KeepAlive is a crash loop. Its siblings still load.
+func TestLoadMistypedOptionalKeyWarnsAndKeepsTheRest(t *testing.T) {
+	cfg, err := tryLoadYAML(t, `
+daemon:
+  port: 9100
+  heartbeat_interval: 45
+  spawn:
+    commands: [codex]
+    allowed_paths: [/work]
+  mcp_http:
+    enabled: true
+    require_auth: maybe
+relay:
+  enabled: definitely
+  url: wss://relay.example
+telegram:
+  chat_id: [1, 2]
+  bot_token: tok
+experiments:
+  chat_turn_streaming: true
+  remote_tool_approval:
+    enabled: true
+    timeout_seconds: soon
+`)
+	if err != nil {
+		t.Fatalf("a mistyped optional key failed the load: %v", err)
+	}
+	checks := []struct {
+		ok   bool
+		what string
+	}{
+		{cfg.Daemon.Port == 9100 && cfg.Daemon.HeartbeatInterval == 45, "daemon siblings kept"},
+		{len(cfg.Daemon.Spawn.Commands) == 0 && len(cfg.Daemon.Spawn.AllowedPaths) == 1, "spawn.commands dropped, allowed_paths kept"},
+		{cfg.Daemon.MCPHTTP.Enabled && cfg.Daemon.MCPHTTP.RequireAuth, "mcp_http.enabled kept, require_auth back to its default (true)"},
+		{!cfg.Relay.Enabled && cfg.Relay.URL == "wss://relay.example", "relay.enabled dropped, url kept"},
+		{cfg.Telegram.ChatID == "" && cfg.Telegram.BotToken == "tok", "telegram.chat_id dropped, bot_token kept"},
+		{cfg.Experiments.ChatTurnStreaming && cfg.Experiments.RemoteToolApproval.Enabled && cfg.Experiments.RemoteToolApproval.TimeoutSeconds == 45, "remote_tool_approval.timeout_seconds back to default, enabled kept"},
+	}
+	for _, c := range checks {
+		if !c.ok {
+			t.Errorf("%s: %+v", c.what, cfg)
+		}
+	}
+	for _, key := range []string{"daemon.spawn.commands", "daemon.mcp_http.require_auth", "relay.enabled", "telegram.chat_id", "experiments.remote_tool_approval.timeout_seconds"} {
+		if !hasWarning(cfg, key) {
+			t.Errorf("no warning names %s: %q", key, cfg.Warnings)
+		}
+	}
+}
+
+// TestLoadCoreKeyErrorsStayFatal: a key the daemon cannot run correctly
+// without, a syntax error, or an unreadable daemon block still fails the load
+// rather than starting on a silently different address or without its token.
+func TestLoadCoreKeyErrorsStayFatal(t *testing.T) {
+	for name, body := range map[string]string{
+		"port":            "daemon:\n  port: eighty\n",
+		"host":            "daemon:\n  host: [a, b]\n",
+		"auth_token":      "daemon:\n  auth_token: {a: b}\n",
+		"circle_boundary": "daemon:\n  circle_boundary: [session]\n",
+		"daemon block":    "daemon: [1, 2]\n",
+		"syntax":          "daemon:\n  port: 1\n bad indent: [\n",
+	} {
+		if _, err := tryLoadYAML(t, body); err == nil {
+			t.Errorf("%s: load succeeded", name)
+		}
 	}
 }
