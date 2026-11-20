@@ -835,6 +835,7 @@ func TestKilledThreadIsEndedAndNotReRegistered(t *testing.T) {
 	var mu sync.Mutex
 	var appCalls []string
 	var registrations []map[string]any
+	var failNextRead atomic.Bool
 	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _ := websocket.Accept(w, r, nil)
 		defer conn.CloseNow()
@@ -849,6 +850,10 @@ func TestKilledThreadIsEndedAndNotReRegistered(t *testing.T) {
 			appCalls = append(appCalls, method+" "+stringValue(params, "turnId"))
 			mu.Unlock()
 			result := map[string]any{}
+			if method == "thread/read" && failNextRead.CompareAndSwap(true, false) {
+				_ = wsjson.Write(ctx, conn, map[string]any{"id": request["id"], "error": map[string]any{"code": -32603, "message": "transient"}})
+				continue
+			}
 			if method == "thread/read" {
 				result["thread"] = map[string]any{"id": threadID, "cwd": cwd, "status": map[string]any{"type": "active"}}
 			}
@@ -916,7 +921,12 @@ func TestKilledThreadIsEndedAndNotReRegistered(t *testing.T) {
 		t.Fatal("an idle status change rediscovered the killed thread")
 	}
 
+	// The resumed thread's first read fails; the idle notification that follows
+	// must still register it fresh, not through the closed identity.
+	failNextRead.Store(true)
 	b.handleNotification("thread/status/changed", map[string]any{"threadId": threadID, "status": map[string]any{"type": "active"}})
+	waitFor("the failed read was not attempted", func() bool { return !failNextRead.Load() })
+	b.handleNotification("thread/status/changed", map[string]any{"threadId": threadID, "status": map[string]any{"type": "idle"}})
 	waitFor("a resumed thread did not rejoin under a fresh identity", func() bool {
 		p := b.thread(threadID)
 		if p == nil {
@@ -926,6 +936,20 @@ func TestKilledThreadIsEndedAndNotReRegistered(t *testing.T) {
 		defer p.mu.Unlock()
 		return p.peerID == "repow-fresh"
 	})
+	mu.Lock()
+	unsubscribes := 0
+	for _, call := range appCalls {
+		if call == "thread/unsubscribe " {
+			unsubscribes++
+		}
+	}
+	mu.Unlock()
+	if unsubscribes != 1 {
+		t.Fatalf("thread ended %d times; the resumed runtime must not be ended again", unsubscribes)
+	}
+	if closed, _ := hooks.ReadRuntimeIdentity("codex", threadID)["mesh_closed"].(bool); closed {
+		t.Fatal("the closed marker survived the thread's fresh registration")
+	}
 }
 
 func slicesContains(values []string, want string) bool {
@@ -935,4 +959,30 @@ func slicesContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// #530: the closed marker is durable, so a restarted bridge keeps a killed
+// thread off the mesh even once its birth certificate has expired.
+func TestRestartedBridgeKeepsKilledThreadOffTheMesh(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stubTmuxPlacement(t, tmuxPlacement{})
+	threadID, cwd := "thread-killed-earlier", t.TempDir()
+	if err := hooks.WriteRuntimeIdentity("codex", threadID, map[string]any{"mesh_closed": true}); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "repow-resurrected", "display_name": "repo-codex", "circle": "0", "role": "agent"})
+	}))
+	defer daemon.Close()
+	b := &Bridge{ctx: context.Background(), pending: map[int64]chan rpcReply{}, threads: map[string]*threadPeer{}, daemonHTTP: daemon.URL}
+	b.ensureThread(map[string]any{"id": threadID, "cwd": cwd, "status": map[string]any{"type": "idle"}})
+	time.Sleep(100 * time.Millisecond)
+	if b.thread(threadID) != nil || calls.Load() != 0 {
+		t.Fatalf("killed thread came back after a bridge restart (daemon calls %d)", calls.Load())
+	}
+	if fresh, ok := b.reopenClosed(threadID, false); ok || fresh {
+		t.Fatal("an idle status change reopened a killed thread")
+	}
 }

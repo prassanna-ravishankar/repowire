@@ -53,14 +53,24 @@ type Bridge struct {
 	pending   map[int64]chan rpcReply
 	threadsMu sync.Mutex
 	threads   map[string]*threadPeer
-	// closed holds threads whose peer an operator closed (#530); guarded by threadsMu.
-	closed     map[string]bool
+	// closed tracks threads whose peer an operator closed (#530); guarded by threadsMu.
+	closed     map[string]tombstone
 	hintMu     sync.Mutex
 	daemonHTTP string
 	daemonWS   string
 	token      string
 	boundary   proto.CircleBoundary
 }
+
+// tombstone is a closed thread's state. Killed threads stay off the mesh; a
+// killed thread seen going active again was resumed, and every discovery path
+// registers it fresh until one succeeds.
+type tombstone int
+
+const (
+	threadKilled tombstone = iota + 1
+	threadReopening
+)
 
 type threadPeer struct {
 	bridge        *Bridge
@@ -450,9 +460,12 @@ func (b *Bridge) addThread(thread map[string]any, fresh bool) {
 		return
 	}
 	b.threadsMu.Lock()
-	if b.closed[id] {
+	switch b.tombstoneLocked(id) {
+	case threadKilled:
 		b.threadsMu.Unlock()
 		return
+	case threadReopening:
+		fresh = true
 	}
 	if existing := b.threads[id]; existing != nil {
 		b.threadsMu.Unlock()
@@ -500,6 +513,13 @@ func (b *Bridge) addThread(thread map[string]any, fresh bool) {
 	p.busy = statusType(thread["status"]) == "active"
 	p.activeTurn = activeTurn(thread)
 	b.threads[id] = p
+	if fresh {
+		// The closed identity's certificate would lead straight back to it.
+		delete(b.closed, id)
+		if err := hooks.WriteRuntimeIdentity("codex", id, map[string]any{"mesh_closed": false, "birth_certificate": nil}); err != nil {
+			log.Printf("codex bridge: clear closed marker for %s: %v", id, err)
+		}
+	}
 	b.threadsMu.Unlock()
 	go p.runMesh(peerCtx)
 }
@@ -527,14 +547,38 @@ func (b *Bridge) thread(id string) *threadPeer {
 func (b *Bridge) reopenClosed(id string, active bool) (fresh, ok bool) {
 	b.threadsMu.Lock()
 	defer b.threadsMu.Unlock()
-	if !b.closed[id] {
-		return false, true
+	switch b.tombstoneLocked(id) {
+	case threadKilled:
+		if !active {
+			return false, false
+		}
+		b.closed[id] = threadReopening
+		return true, true
+	case threadReopening:
+		return true, true
 	}
-	if !active {
-		return false, false
+	return false, true
+}
+
+// tombstoneLocked returns id's tombstone, loading the durable marker endThread
+// leaves so a restarted bridge keeps a killed thread off the mesh whatever its
+// certificate's expiry. Must hold threadsMu.
+func (b *Bridge) tombstoneLocked(id string) tombstone {
+	if state, ok := b.closed[id]; ok {
+		return state
 	}
-	delete(b.closed, id)
-	return true, true
+	if closed, _ := hooks.ReadRuntimeIdentity("codex", id)["mesh_closed"].(bool); closed {
+		b.markClosedLocked(id, threadKilled)
+		return threadKilled
+	}
+	return 0
+}
+
+func (b *Bridge) markClosedLocked(id string, state tombstone) {
+	if b.closed == nil {
+		b.closed = map[string]tombstone{}
+	}
+	b.closed[id] = state
 }
 
 // endThread stops a thread whose peer an operator closed (kill_peer): the daemon
@@ -543,14 +587,18 @@ func (b *Bridge) reopenClosed(id string, active bool) (fresh, ok bool) {
 // back on the mesh under a new peer_id (#530).
 func (b *Bridge) endThread(p *threadPeer) {
 	b.threadsMu.Lock()
-	if b.threads[p.id] == p {
-		delete(b.threads, p.id)
+	if current := b.threads[p.id]; current != nil && current != p {
+		// A resumed registration already owns the thread; only this peer ends.
+		b.threadsMu.Unlock()
+		p.cancel()
+		return
 	}
-	if b.closed == nil {
-		b.closed = map[string]bool{}
-	}
-	b.closed[p.id] = true
+	delete(b.threads, p.id)
+	b.markClosedLocked(p.id, threadKilled)
 	b.threadsMu.Unlock()
+	if err := hooks.WriteRuntimeIdentity("codex", p.id, map[string]any{"mesh_closed": true}); err != nil {
+		log.Printf("codex bridge: persist closed marker for %s: %v", p.id, err)
+	}
 	p.cancel()
 	p.mu.Lock()
 	turn := p.activeTurn
