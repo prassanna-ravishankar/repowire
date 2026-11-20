@@ -127,7 +127,8 @@ Full docs: [docs.repowire.io](https://docs.repowire.io).
 
 ## What You Get
 
-- **Agent-to-agent asks**: Non-blocking questions with explicit `ack` replies and reminder injection until a thread is closed.
+- **Agent-to-agent asks**: Non-blocking questions with explicit `ack` replies and reminder injection until a thread is closed. A recipient can `delegate` an ask to a better-placed peer; the reply still reaches the asker, once.
+- **Addressable messages**: Every message a peer receives has an id it can list, peek at, or fetch. A peer can choose pull delivery and receive one-line nudges instead of full bodies.
 - **Human control surfaces**: Browser dashboard, Telegram, and Slack can route messages as service peers.
 - **Human inbox**: you are a peer too. Notifies, asks, and replies sent to you are stored in a durable inbox, pushed to Telegram with receipts, and readable with `repowire inbox`.
 - **Durable jobs**: Track one-off and recurring work through CLI/MCP, with dashboard visibility and controls for run, retry, and cancel.
@@ -144,7 +145,7 @@ All peers connect to a local daemon. The daemon keeps the registry, routes asks/
   <img src="images/repowire-arch.webp" alt="Repowire architecture" width="700" />
 </p>
 
-The stable public surface is peers, circles, asks, notifications, broadcasts, schedules, and the `/jobs` tracked-work API exposed through CLI and MCP JSON tools. The v0.14 direction is session-native: sessions become the durable unit of work, while peers remain the live runtime executors. The current dashboard shows the selected peer/session view, merges Claude transcript history where available with realtime events, and is moving toward broader session commands for controls like resume, scheduling, approvals, and future backend/model changes.
+The stable public surface is peers, circles, asks (with delegation), notifications, broadcasts, addressable messages, schedules, and the `/jobs` tracked-work API exposed through CLI and MCP JSON tools. The v0.14 direction is session-native: sessions become the durable unit of work, while peers remain the live runtime executors. The current dashboard shows the selected peer/session view, merges Claude transcript history where available with realtime events, and is moving toward broader session commands for controls like resume, scheduling, approvals, and future backend/model changes.
 
 Transport notes:
 

@@ -111,11 +111,17 @@ repowire peer asks [--peer-id ID | --pane-id PANE | --peer NAME] [--direction in
 repowire peer deliveries [--peer-id ID | --pane-id PANE | --peer NAME] [--json]
 repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 repowire peer decline CORR_ID --reason REASON [--from-peer NAME]
+repowire peer delegate CORR_ID PEER [--note TEXT] [--from-peer NAME]
+repowire peer messages [--peer NAME_OR_ID] [--unread] [--limit N] [--json]
+repowire peer read MESSAGE_ID [--peek] [--json]
+repowire peer delivery push|pull [--peer NAME_OR_ID]
 ```
 
 `peer whoami`, `peer asks`, `peer deliveries`, `peer ack`, and `peer decline` are shellable mesh diagnostics. They wrap daemon HTTP endpoints and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`.
 
 Commands that need a sender identity resolve `$TMUX_PANE` to its registered canonical `peer_id`; they fail with a registration hint instead of lazily creating another runtime identity. Outside tmux they use the explicit `repowire-cli` admin identity.
+
+`peer delegate` hands an open ask to another peer; the reply still reaches the original asker (see [delegation](../concepts/message-types.md#delegation)). `peer messages` lists the messages a peer received (default: this pane's peer), `peer read` prints one (marking it read unless `--peek`), and `peer delivery` switches a peer between full messages (`push`) and one-line nudges (`pull`). See [Messages](mcp-tools.md#messages).
 
 `peer deliveries` drains one-shot queued deliveries for a peer. Draining deletes the queued rows to avoid duplicate paste/replay. For queued asks, `peer deliveries` shows the original ask text once, while `peer asks` continues to show the open ask until the agent closes it with `peer ack` or the MCP `ack` tool.
 

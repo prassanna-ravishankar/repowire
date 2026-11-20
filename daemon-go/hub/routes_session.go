@@ -206,6 +206,7 @@ type PendingDelivery struct {
 	Attachments   []map[string]any `json:"attachments"`
 	CreatedAt     string           `json:"created_at"`
 	ExpiresAt     string           `json:"expires_at"`
+	MessageID     string           `json:"message_id,omitempty"`
 }
 
 // PendingDeliveriesResponse mirrors asks.py PendingDeliveriesResponse.
@@ -312,7 +313,14 @@ func (h *Hub) handleDeliveriesPending(w http.ResponseWriter, r *http.Request) {
 			Attachments:   attachments,
 			CreatedAt:     d.CreatedAt,
 			ExpiresAt:     d.ExpiresAt,
+			MessageID:     queuedMessageID(d),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// queuedMessageID is the message record a queued delivery replays, if any.
+func queuedMessageID(d state.QueuedDelivery) string {
+	id, _ := d.Metadata["message_id"].(string)
+	return id
 }

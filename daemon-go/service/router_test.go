@@ -90,7 +90,7 @@ func TestSendAskReturnsHookReceiptWithinAckWindow(t *testing.T) {
 	m := newRouterWithFake(f)
 
 	hook, err := m.SendAsk(context.Background(), Sender{Name: "alpha"}, "repow-default-bbbb2222", "beta", "beta",
-		"cid-1", "need a hand", nil, nil, nil)
+		"cid-1", "need a hand", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestSendAskNoAckIsNotAnError(t *testing.T) {
 	m := newRouterWithFake(f)
 
 	hook, err := m.SendAsk(context.Background(), Sender{Name: "alpha"}, "repow-default-cccc3333", "gamma", "gamma",
-		"cid-2", "ping", nil, nil, nil)
+		"cid-2", "ping", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("a missing ack must not be an error, got %v", err)
 	}
@@ -136,7 +136,7 @@ func TestSendAskLoudFailureOnReject(t *testing.T) {
 			m := newRouterWithFake(f)
 
 			hook, err := m.SendAsk(context.Background(), Sender{Name: "alpha"}, "repow-default-dddd4444", "delta", "delta",
-				"cid-3", "do the thing", nil, nil, nil)
+				"cid-3", "do the thing", nil, nil, nil, "")
 			if err == nil {
 				t.Fatalf("expected a loud DeliveryInjectionError for status=%s, got hook=%+v", status, hook)
 			}
@@ -165,7 +165,7 @@ func TestSendAskLoudFailureOnReject(t *testing.T) {
 func TestSendAskRejectDetailFallsBackToStatus(t *testing.T) {
 	f := &fakeTransport{ackFrame: map[string]any{"status": "rejected"}, ackDelay: 0}
 	m := newRouterWithFake(f)
-	_, err := m.SendAsk(context.Background(), Sender{Name: "a"}, "repow-default-eeee5555", "e", "e", "cid", "t", nil, nil, nil)
+	_, err := m.SendAsk(context.Background(), Sender{Name: "a"}, "repow-default-eeee5555", "e", "e", "cid", "t", nil, nil, nil, "")
 	di, ok := AsDeliveryInjection(err)
 	if !ok {
 		t.Fatalf("expected DeliveryInjectionError, got %v", err)
@@ -184,7 +184,7 @@ func TestSendAskMintsDeliveryIDAndCloseHint(t *testing.T) {
 
 	replyTo := "parent-cid"
 	_, err := m.SendAsk(context.Background(), Sender{Name: "alpha"}, "repow-default-ffff6666", "zeta", "zeta",
-		"cid-9", "review please", &replyTo, map[string]any{"prompt": "ok?"}, nil)
+		"cid-9", "review please", &replyTo, map[string]any{"prompt": "ok?"}, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestSendNotificationMintsDeliveryID(t *testing.T) {
 	m := newRouterWithFake(f)
 
 	hook, err := m.SendNotification(context.Background(), Sender{Name: "alpha"}, "repow-default-aaaa1111", "beta", "beta",
-		"fyi", nil, "")
+		"fyi", nil, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestSendNotificationMintsDeliveryID(t *testing.T) {
 func TestSendNotificationHonorsSuppliedDeliveryID(t *testing.T) {
 	f := &fakeTransport{ackFrame: nil, ackDelay: 0}
 	m := newRouterWithFake(f)
-	_, _ = m.SendNotification(context.Background(), Sender{Name: "a"}, "repow-default-aaaa1111", "b", "b", "hi", nil, "fixed-id")
+	_, _ = m.SendNotification(context.Background(), Sender{Name: "a"}, "repow-default-aaaa1111", "b", "b", "hi", nil, "fixed-id", "")
 	frame := f.lastFrame.(map[string]any)
 	if frame["delivery_id"] != "fixed-id" {
 		t.Fatalf("supplied delivery_id must be preserved, got %v", frame["delivery_id"])

@@ -84,6 +84,8 @@ export interface InboundMessage {
   fromRole?: string;
   correlationId?: string;
   replyTo?: string;
+  /** The recipient's message record id; fetch it again with read_message. */
+  messageId?: string;
 }
 
 export type MessageHandler = (msg: InboundMessage) => void | Promise<void>;
@@ -188,6 +190,7 @@ export class DaemonSession {
           fromRole: msg.from_role,
           correlationId: msg.correlation_id,
           replyTo: msg.reply_to,
+          messageId: msg.message_id,
         });
       }
     });

@@ -503,7 +503,9 @@ func installCodex() error {
 	content = ensureTomlFeature(content, "hooks", "true")
 	content = replaceTomlSection(content, "mcp_servers.repowire", []string{"command = " + strconv.Quote(executable()), "args = [\"mcp\"]"})
 	content = replaceTomlSection(content, "mcp_servers.repowire.env", []string{"REPOWIRE_BACKEND = \"codex\""})
-	for _, tool := range []string{"ack", "answer", "decline"} {
+	// Closing, handing on and reading one's own asks and messages are the
+	// mesh's housekeeping; an approval prompt on each would stall a peer.
+	for _, tool := range []string{"ack", "answer", "decline", "delegate", "list_messages", "read_message"} {
 		content = replaceTomlSection(content, "mcp_servers.repowire.tools."+tool, []string{"approval_mode = \"approve\""})
 	}
 	for event, spec := range specs {

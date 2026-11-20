@@ -30,10 +30,21 @@ approval_mode = "approve"
 
 [mcp_servers.repowire.tools.decline]
 approval_mode = "approve"
+
+[mcp_servers.repowire.tools.delegate]
+approval_mode = "approve"
+
+[mcp_servers.repowire.tools.list_messages]
+approval_mode = "approve"
+
+[mcp_servers.repowire.tools.read_message]
+approval_mode = "approve"
 ```
 
 Setup pre-approves the ask-resolution tools so a non-interactive approval
-policy cannot leave the Stop hook permanently blocked on an ask it cannot close.
+policy cannot leave the Stop hook permanently blocked on an ask it cannot close,
+and the tools that read the peer's own messages, so pull delivery never waits on
+an approval prompt.
 
 Codex releases without `daemon_auto_start` (before 0.158, or with the feature
 disabled) retain the hooks transport.

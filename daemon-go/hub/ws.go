@@ -390,6 +390,9 @@ func (h *Hub) flushQueuedDeliveries(ctx context.Context, conn *websocket.Conn, i
 		if len(d.Attachments) > 0 {
 			frame["attachments"] = d.Attachments
 		}
+		if id := queuedMessageID(d); id != "" {
+			frame["message_id"] = id
+		}
 		// The batch is a snapshot; the verdict can change while it is being
 		// written. Re-check before every frame and stop on denial (the rest of
 		// the batch is dropped by the gate). A frame already in flight stands.

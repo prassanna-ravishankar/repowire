@@ -217,6 +217,7 @@ export interface Event {
     | "chat_turn_delta"
     | "ask"
     | "ack"
+    | "ask_delegated"
     | "peer_online"
     | "peer_offline"
     | "peer_status"
@@ -273,6 +274,10 @@ export interface Event {
   question?: AskQuestion | null;
   // inbox_item / inbox_updated: the item they announce (never its text)
   item_id?: string;
+  // ask_delegated: who asked, why it moved, and how many hops it has taken
+  asker?: string;
+  note?: string;
+  hops?: number;
 }
 
 /** An inbox event announces a change; the item itself is read from /inbox. */

@@ -904,7 +904,7 @@ func TestInstallCodexUsesNativeThreadsWhenCodexAutoStartsAppServer(t *testing.T)
 	if err != nil || !strings.Contains(config, "[mcp_servers.repowire]") || !strings.Contains(config, "hooks.state.") {
 		t.Fatalf("Codex MCP config missing: %v %s", err, configRaw)
 	}
-	for _, tool := range []string{"ack", "answer", "decline"} {
+	for _, tool := range []string{"ack", "answer", "decline", "delegate", "list_messages", "read_message"} {
 		if !strings.Contains(config, "[mcp_servers.repowire.tools."+tool+"]\napproval_mode = \"approve\"") {
 			t.Fatalf("Codex %s tool is not pre-approved:\n%s", tool, config)
 		}

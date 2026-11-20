@@ -8,8 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/repowire/repowire/daemon-go/config"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/state"
@@ -87,6 +85,9 @@ type PeerDelivery struct {
 	// inbox, when wired, owns delivery to the human peer: a message to the
 	// human is stored there instead of written to a socket.
 	inbox *Inbox
+	// messages, when wired, records every message to an agent peer so its
+	// frame can carry a message_id (nil: nothing is recorded).
+	messages *Messages
 
 	// closeMu/closed/wg/closeCh track the deferBroadcastUntilSeedSettled
 	// goroutines so Close can join them without waiting out a 25s seed-gate
@@ -103,6 +104,12 @@ func (d *PeerDelivery) WithInbox(inbox *Inbox) *PeerDelivery {
 	if d.router != nil && inbox != nil {
 		d.router.human = inbox
 	}
+	return d
+}
+
+// WithMessages records messages to agent peers in messages.
+func (d *PeerDelivery) WithMessages(messages *Messages) *PeerDelivery {
+	d.messages = messages
 	return d
 }
 
@@ -163,7 +170,10 @@ type NotifyResult struct {
 	ToPeerName    proto.DisplayName
 	HookDelivery  map[string]any
 	DeliveryID    string
-	Transport     string // "ws" | "acp" | "inbox"
+	// MessageID names the recipient's message record ("" for the human, or
+	// when no store is wired).
+	MessageID string
+	Transport string // "ws" | "acp" | "inbox"
 	// Inbox is set when the recipient is the human peer: the stored item and
 	// the surfaces a push was started on.
 	Inbox                 *InboxReceipt
@@ -185,6 +195,7 @@ type AskResult struct {
 	Transport    string // "ws" | "acp" | "deferred" | "inbox"
 	HookDelivery map[string]any
 	Inbox        *InboxReceipt
+	MessageID    string
 }
 
 // NotifyParams are the inputs to Notify. FromPeer/ToPeer are peer_id or
@@ -236,11 +247,12 @@ type DeliverAskParams struct {
 // ----------------------------------------------------------------------------
 
 // Notify resolves+authorizes the target via reg.CheckAccess, seed-gates a
-// pending_first_turn WS target, then sends via the chosen transport. On a
-// no-live-transport TransportError it marks the peer offline and enqueues to the
-// durable queue; if the queue is disabled it returns the error (fail loud →
-// 503). deliveryID "" lets the transport mint one.
-func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyResult, error) {
+// pending_first_turn WS target, records the message for an agent recipient,
+// then sends the body (or, to a pull recipient, a nudge) via the chosen
+// transport. On a no-live-transport TransportError it marks the peer offline
+// and enqueues to the durable queue; if the queue is disabled it returns the
+// error (fail loud → 503). deliveryID "" is minted here.
+func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (_ NotifyResult, err error) {
 	from, target, err := d.reg.CheckAccess(ctx, params.FromPeer, params.ToPeer, params.BypassCircle, params.Circle)
 	if err != nil {
 		return NotifyResult{}, err
@@ -249,6 +261,9 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 	// and any future registry seam cannot route inbound work past the verdict.
 	if err := proto.RequireAddressable(from, target); err != nil {
 		return NotifyResult{}, err
+	}
+	if params.DeliveryID == "" {
+		params.DeliveryID = NewNotifyDeliveryID()
 	}
 
 	fromName := proto.DisplayName(params.FromPeer)
@@ -266,6 +281,25 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 		d.gateOnSeedSettled(ctx, target)
 	}
 	params.Text = addOrchestratorRecall(params.Text, string(fromName), peerIDString(fromID), target, d.recall)
+	kind := state.MessageNotify
+	if params.CorrelationID != "" {
+		kind = state.MessageReply
+	}
+	msg := d.messages.Record(ctx, state.PeerMessage{
+		Kind: kind, PeerID: string(target.PeerID), PeerName: string(target.DisplayName),
+		FromPeerID: peerIDString(fromID), FromName: string(fromName), CorrelationID: params.CorrelationID,
+		TraceID: params.DeliveryID, Text: params.Text, Attachments: params.Attachments,
+	})
+	defer func() {
+		if err != nil {
+			d.messages.Discard(ctx, msg)
+		}
+	}()
+	var pull bool
+	params.Text, pull = d.messages.wireText(ctx, msg, params.Text)
+	if pull {
+		params.Attachments = nil
+	}
 	fromSessionID := d.sessionIDForPeer(ctx, fromID)
 	toSessionID := d.sessionIDForPeer(ctx, &target.PeerID)
 
@@ -277,6 +311,7 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 		}); err != nil {
 			return NotifyResult{}, err
 		}
+		d.markPushed(ctx, msg, pull)
 		return NotifyResult{
 			Status:                "sent",
 			DeliveryState:         "delivered",
@@ -286,6 +321,7 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 			ToPeerID:              target.PeerID,
 			ToPeerName:            target.DisplayName,
 			DeliveryID:            params.DeliveryID,
+			MessageID:             messageID(msg),
 			Transport:             "acp",
 			RepowireSessionID:     toSessionID,
 			FromRepowireSessionID: fromSessionID,
@@ -293,20 +329,21 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 		}, nil
 	}
 	if wsRecipientBusy(target) {
-		return d.queueNotify(ctx, params, fromID, fromName, target,
+		return d.queueNotify(ctx, params, fromID, fromName, target, msg,
 			fmt.Errorf("peer %s is busy and durable queue is unavailable", target.DisplayName), true)
 	}
 
 	hookDelivery, err := d.router.SendNotification(
 		ctx, SenderOf(from, params.FromPeer), target.PeerID, target.DisplayName,
-		proto.DisplayName(params.ToPeer), params.Text, params.Attachments, params.DeliveryID,
+		proto.DisplayName(params.ToPeer), params.Text, params.Attachments, params.DeliveryID, messageID(msg),
 	)
 	if err != nil {
 		if !params.NoFallbackQueue && (errors.Is(err, ErrNotConnected) || errors.Is(err, ErrTransportUnavailable)) {
-			return d.queueNotify(ctx, params, fromID, fromName, target, err, false)
+			return d.queueNotify(ctx, params, fromID, fromName, target, msg, err, false)
 		}
 		return NotifyResult{}, err
 	}
+	d.markPushed(ctx, msg, pull)
 
 	return NotifyResult{
 		Status:                "sent",
@@ -318,6 +355,7 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 		ToPeerName:            target.DisplayName,
 		HookDelivery:          hookDelivery,
 		DeliveryID:            params.DeliveryID,
+		MessageID:             messageID(msg),
 		Transport:             "ws",
 		RepowireSessionID:     toSessionID,
 		FromRepowireSessionID: fromSessionID,
@@ -330,9 +368,6 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 // surface is live; pushes to surfaces continue in the background.
 func (d *PeerDelivery) notifyInbox(ctx context.Context, params NotifyParams, fromID *proto.PeerID, fromName proto.DisplayName, target *proto.Peer) (NotifyResult, error) {
 	deliveryID := params.DeliveryID
-	if deliveryID == "" {
-		deliveryID = "notif-delivery-" + uuid.NewString()[:8]
-	}
 	kind, traceID, traceKind, text := InboxNotify, deliveryID, "notify", params.Text
 	if params.CorrelationID != "" {
 		// A reply on an ask thread joins that ask's trace.
@@ -384,6 +419,7 @@ func (d *PeerDelivery) queueNotify(
 	fromID *proto.PeerID,
 	fromName proto.DisplayName,
 	target *proto.Peer,
+	msg *state.PeerMessage,
 	transportErr error,
 	recipientBusy bool,
 ) (NotifyResult, error) {
@@ -412,6 +448,7 @@ func (d *PeerDelivery) queueNotify(
 		ToPeerName:        string(target.DisplayName),
 		Text:              params.Text,
 		Attachments:       attachments,
+		Metadata:          messageMetadata(msg),
 	}, d.queueTTLSeconds, d.queueMax, time.Time{})
 	if err != nil {
 		return NotifyResult{}, err
@@ -446,6 +483,7 @@ func (d *PeerDelivery) queueNotify(
 		ToPeerID:              target.PeerID,
 		ToPeerName:            target.DisplayName,
 		DeliveryID:            params.DeliveryID,
+		MessageID:             messageID(msg),
 		RepowireSessionID:     d.sessionIDForPeer(ctx, &target.PeerID),
 		FromRepowireSessionID: d.sessionIDForPeer(ctx, fromID),
 		ToRepowireSessionID:   d.sessionIDForPeer(ctx, &target.PeerID),
@@ -464,6 +502,30 @@ func (d *PeerDelivery) sessionIDForPeer(ctx context.Context, peerID *proto.PeerI
 	return &id
 }
 
+// markPushed records that msg's body reached its recipient: a full push the
+// transport accepted. A nudge leaves it unread until fetched.
+func (d *PeerDelivery) markPushed(ctx context.Context, msg *state.PeerMessage, pull bool) {
+	if !pull {
+		d.messages.MarkRead(ctx, msg)
+	}
+}
+
+func messageID(msg *state.PeerMessage) string {
+	if msg == nil {
+		return ""
+	}
+	return msg.ID
+}
+
+// messageMetadata carries msg's id on a queued delivery, so the replayed frame
+// names it too.
+func messageMetadata(msg *state.PeerMessage) map[string]any {
+	if msg == nil {
+		return nil
+	}
+	return map[string]any{"message_id": msg.ID}
+}
+
 // ----------------------------------------------------------------------------
 // DeliverAsk
 // ----------------------------------------------------------------------------
@@ -474,7 +536,7 @@ func (d *PeerDelivery) sessionIDForPeer(ctx context.Context, peerID *proto.PeerI
 // injection_failed + 503; the peer is NOT marked unreachable — the socket is
 // alive). A genuine TransportError (no live socket) marks the peer offline and
 // propagates.
-func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) (AskResult, error) {
+func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) (_ AskResult, err error) {
 	from, target, err := d.reg.CheckAccess(ctx, params.FromPeer, params.ToPeer, params.BypassCircle, params.Circle)
 	if err != nil {
 		return AskResult{}, err
@@ -502,6 +564,21 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 
 	d.gateOnSeedSettled(ctx, target)
 	params.Text = addOrchestratorRecall(params.Text, string(fromName), stringValuePeer(from), target, d.recall)
+	msg := d.messages.Record(ctx, state.PeerMessage{
+		Kind: state.MessageAsk, PeerID: string(target.PeerID), PeerName: string(target.DisplayName),
+		FromPeerID: stringValuePeer(from), FromName: string(fromName), CorrelationID: params.CorrelationID,
+		TraceID: params.CorrelationID, Text: params.Text, Attachments: params.Attachments, Question: params.Question,
+	})
+	defer func() {
+		if err != nil {
+			d.messages.Discard(ctx, msg)
+		}
+	}()
+	var pull bool
+	params.Text, pull = d.messages.wireText(ctx, msg, params.Text)
+	if pull {
+		params.Attachments = nil
+	}
 
 	if decision, ok := d.transport.ACPRoute(target); ok && decision != nil {
 		opID, err := d.recordACPAsk(ctx, params.CorrelationID, params.FromPeer, from, target)
@@ -524,7 +601,9 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 				}
 				reply = &text
 			}
-			callback(context.Background(), params.CorrelationID, reply, errText)
+			d.completeAsHolder(params.CorrelationID, target.PeerID, func() {
+				callback(context.Background(), params.CorrelationID, reply, errText)
+			})
 			d.settleACPAsk(context.Background(), opID, errText)
 		})
 		if err != nil {
@@ -532,17 +611,18 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 			d.settleACPAsk(ctx, opID, &detail)
 			return AskResult{}, err
 		}
-		return AskResult{Transport: "acp"}, nil
+		d.markPushed(ctx, msg, pull)
+		return AskResult{Transport: "acp", MessageID: messageID(msg)}, nil
 	}
 	// The open AskTracker row is the queue: Stop surfaces it after the active
 	// turn, avoiding tmux input that interrupts Codex and similar runtimes.
 	if wsRecipientBusy(target) {
-		return AskResult{Transport: "deferred"}, nil
+		return AskResult{Transport: "deferred", MessageID: messageID(msg)}, nil
 	}
 
 	hookDelivery, err := d.router.SendAsk(
 		ctx, SenderOf(from, params.FromPeer), target.PeerID, target.DisplayName, proto.DisplayName(params.ToPeer),
-		params.CorrelationID, params.Text, params.ReplyTo, params.Question, params.Attachments,
+		params.CorrelationID, params.Text, params.ReplyTo, params.Question, params.Attachments, messageID(msg),
 	)
 	if err != nil {
 		// Injection failure at a live pane: do NOT mark unreachable (fail loud,
@@ -556,7 +636,8 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 		return AskResult{}, err
 	}
 
-	return AskResult{Transport: "ws", HookDelivery: hookDelivery}, nil
+	d.markPushed(ctx, msg, pull)
+	return AskResult{Transport: "ws", HookDelivery: hookDelivery, MessageID: messageID(msg)}, nil
 }
 
 func wsRecipientBusy(peer *proto.Peer) bool {
@@ -577,6 +658,25 @@ func stringValuePeer(value *proto.Peer) string {
 		return ""
 	}
 	return string(value.PeerID)
+}
+
+// completeAsHolder runs a runtime's completion of ask cid under the ask's
+// Claim, once any reply or hand-off holding it is done, and only if holder
+// still holds it then. A completion from a peer the ask was delegated away
+// from is dropped: the new holder answers. One from a peer a failed hand-off
+// returned the ask to lands.
+func (d *PeerDelivery) completeAsHolder(cid string, holder proto.PeerID, complete func()) {
+	if d.asks == nil {
+		complete()
+		return
+	}
+	d.asks.RunClaimed(cid, func(ask *Ask) {
+		if ask.ToPeerID != holder {
+			log.Printf("delivery: completion of ask %s from %s dropped: delegated to %s", cid, holder, ask.ToPeerID)
+			return
+		}
+		complete()
+	})
 }
 
 func (d *PeerDelivery) completeACPAsk(ctx context.Context, cid string, reply, errText *string) {
@@ -612,7 +712,7 @@ func (d *PeerDelivery) completeRuntimeAsk(ctx context.Context, cid string, reply
 		_, _ = d.asks.Resolve(ctx, cid, reason, &body, nil)
 		return
 	}
-	framed := fmt.Sprintf("[ack #%s from @%s] %s", cid, ask.ToPeerName, body)
+	framed := ask.ReplyFrame("ack") + " " + body
 	result, err := d.Notify(ctx, NotifyParams{FromPeer: string(ask.ToPeerID), ToPeer: string(ask.FromPeerID), Text: framed, BypassCircle: true, CorrelationID: cid, ThreadText: body})
 	if err == nil && result.Queued() && !isError {
 		if reply != nil {

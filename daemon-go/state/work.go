@@ -140,6 +140,7 @@ type WorkFilter struct {
 	CreatedByPeerID   *string
 	RepowireSessionID *string
 	Circle            *string
+	CorrelationID     *string
 }
 
 // --- JSON column helpers, matching work_store.json_dumps/json_loads semantics. ---
@@ -377,6 +378,10 @@ func (s *Store) ListWork(ctx context.Context, f WorkFilter) ([]*TrackedWork, err
 	if f.RepowireSessionID != nil {
 		clauses = append(clauses, "repowire_session_id = ?")
 		params = append(params, *f.RepowireSessionID)
+	}
+	if f.CorrelationID != nil {
+		clauses = append(clauses, "correlation_id = ?")
+		params = append(params, *f.CorrelationID)
 	}
 	if f.Circle != nil {
 		clauses = append(clauses, "circle = ?")

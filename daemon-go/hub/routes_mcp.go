@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/repowire/repowire/daemon-go/config"
@@ -420,7 +418,7 @@ func (h *Hub) mcpNotifyPeer(ctx context.Context, delivery *service.PeerDelivery,
 		// trail (it used to leave none).
 		result, deliveryID, err = h.messaging.notifyTraced(ctx, params)
 	} else {
-		deliveryID = "notif-delivery-" + uuid.NewString()[:8]
+		deliveryID = service.NewNotifyDeliveryID()
 		params.DeliveryID = deliveryID
 		result, err = delivery.Notify(ctx, params)
 	}
