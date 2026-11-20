@@ -8,7 +8,7 @@ Contact another peer only when its ownership, context, or independent work mater
 
 ## `ask`
 
-Non-blocking. Returns a `correlation_id` immediately. The recipient closes the thread with `ack(corr_id)` (bare), `ack(corr_id, message)` (reply), or `decline(corr_id, reason)` (return unresolved). Chain follow-ups with `ask(reply_to=corr_id, ...)`, which closes the prior thread and opens a new one referencing it.
+Non-blocking. Returns a `correlation_id` immediately. The recipient closes the thread with `ack(corr_id)` (bare), `ack(corr_id, message)` (reply), or `decline(corr_id, reason)` (return unresolved), or hands it to a better-placed peer with `delegate(corr_id, peer)`. Chain follow-ups with `ask(reply_to=corr_id, ...)`, which closes the prior thread and opens a new one referencing it.
 
 Use `ask` when closure matters: worker checkpoints, review requests, pre-commit
 handoffs, status checks you intend to track, and delegated work that should not
@@ -28,6 +28,18 @@ Closes an open ask thread.
 - `decline(cid, reason)` returns work that cannot be handled to the original asker as `[declined #cid from @peer] reason`.
 
 Replies always reach the original asker regardless of circle — the thread was established at ask-time and the routing is locked then.
+
+A reply reaches the asker at most once: a reply claims the ask before it is sent, so of two racing replies one is delivered and the other is refused.
+
+## Delegation
+
+`delegate(cid, peer, note)` moves an open ask from its recipient to another peer. The correlation id, the asker, and the reply path do not change; the recipient does, and the hop is recorded on the ask, in the trace ledger (`delegated`), and on the event stream (`ask_delegated`). The new recipient sees the ask from the original asker with a `[delegated by @peer: note]` first line. Its reply reaches the asker framed `[ack #cid from @new via @old]`, and the old recipient can no longer resolve the ask.
+
+Every check runs before the ask moves, and a delivery that fails puts it back: delegating to an offline peer is refused and the ask stays with the delegator. Asks between machines and a live job's dispatch ask are not delegable. A job is the durable form of handed-off work (owner, assignee, attempts, result); delegation is the light form for an ask. See [`delegate`](../reference/mcp-tools.md#delegate).
+
+## Message ids and pull delivery
+
+Every notify, ask, and ask reply an agent peer receives is recorded with a `message_id`, shown as `message-id="msg-…"` on its `<peer-message>` tag. A peer can list its messages, peek at one, or fetch one (`list_messages`, `read_message`). A peer that sets `set_message_delivery("pull")` receives a one-line nudge naming the message instead of its body, and fetches the body when it chooses. Push stays the default. See [Messages](../reference/mcp-tools.md#messages).
 
 Bare ack events and reply notifications carry the same nullable session metadata when a binding is known. Detached or offline peers keep those fields `null`.
 

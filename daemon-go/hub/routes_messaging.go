@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/google/uuid"
-
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/service"
 )
@@ -106,6 +104,8 @@ type notifyResponse struct {
 	ToRepowireSessionID   *string        `json:"to_repowire_session_id"`
 	HookDelivery          map[string]any `json:"hook_delivery"`
 	DeliveryID            *string        `json:"delivery_id"`
+	// MessageID names the agent recipient's message record.
+	MessageID *string `json:"message_id,omitempty"`
 	// InboxItemID and Surfaces are set when the recipient is the human peer.
 	InboxItemID *string  `json:"inbox_item_id,omitempty"`
 	Surfaces    []string `json:"surfaces,omitempty"`
@@ -173,6 +173,7 @@ func (mr *MessagingRoutes) handleNotify(w http.ResponseWriter, r *http.Request) 
 		ToRepowireSessionID:   result.ToRepowireSessionID,
 		HookDelivery:          result.HookDelivery,
 		DeliveryID:            strPtr(deliveryIfEmpty(result.DeliveryID, deliveryID)),
+		MessageID:             strPtr(result.MessageID),
 		InboxItemID:           inboxItemID,
 		Surfaces:              surfaces,
 	})
@@ -186,7 +187,7 @@ func (mr *MessagingRoutes) handleNotify(w http.ResponseWriter, r *http.Request) 
 // error records no_connection; other errors are access rejections the caller
 // maps. params.DeliveryID is overwritten.
 func (mr *MessagingRoutes) notifyTraced(ctx context.Context, params service.NotifyParams) (service.NotifyResult, string, error) {
-	deliveryID := "notif-delivery-" + uuid.NewString()[:8]
+	deliveryID := service.NewNotifyDeliveryID()
 	params.DeliveryID = deliveryID
 	mr.trace(ctx, deliveryID, "notify", "created", "", deliveryID, "", "", map[string]any{"to_peer": params.ToPeer})
 

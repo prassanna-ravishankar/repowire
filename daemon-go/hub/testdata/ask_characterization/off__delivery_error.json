@@ -86,10 +86,12 @@
     {
       "Answer": null,
       "AskerIdentity": null,
+      "Attachments": null,
       "CloseReason": "send_failed",
       "Closed": true,
       "CorrelationID": "\u003ccid1\u003e",
       "CreatedAt": "\u003cclock\u003e",
+      "Delegations": null,
       "FromPeerID": "repow-a",
       "FromPeerName": "alpha",
       "FromRepowireSessionID": null,

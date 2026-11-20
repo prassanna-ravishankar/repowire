@@ -65,7 +65,10 @@ func newRootCommand() *cobra.Command {
 		{"register [flags]", "Register a peer"}, {"unregister NAME_OR_ID", "Retire a peer"}, {"restart NAME_OR_ID [flags]", "Restart and resume a peer"},
 		{"doctor NAME_OR_ID [flags]", "Diagnose a peer"}, {"rehook NAME_OR_ID [flags]", "Repair inbound delivery"}, {"ask NAME QUERY [flags]", "Send a blocking compatibility ask"},
 		{"prune [flags]", "Remove offline peers"}, {"whoami [flags]", "Show the current peer identity"}, {"asks [flags]", "List pending asks"},
-		{"deliveries [flags]", "Drain queued deliveries"}, {"ack CORRELATION_ID [flags]", "Acknowledge an ask"}, {"decline CORRELATION_ID [flags]", "Return an ask to its asker"}, {"claim-role orchestrator [flags]", "Claim the orchestrator role"},
+		{"deliveries [flags]", "Drain queued deliveries"}, {"ack CORRELATION_ID [flags]", "Acknowledge an ask"}, {"decline CORRELATION_ID [flags]", "Return an ask to its asker"},
+		{"delegate CORRELATION_ID PEER [flags]", "Hand an ask to another peer; the reply still reaches the asker"}, {"messages [flags]", "List messages this peer received"},
+		{"read MESSAGE_ID [flags]", "Show one message (marks it read unless --peek)"}, {"delivery push|pull [flags]", "Choose full messages or one-line nudges"},
+		{"claim-role orchestrator [flags]", "Claim the orchestrator role"},
 	}))
 	root.AddCommand(group("jobs", "Create and control durable jobs", runJobs, []leaf{
 		{"create TITLE [flags]", "Create a job"}, {"list [flags]", "List jobs"}, {"show JOB_ID [--json]", "Show a job"}, {"update JOB_ID [flags]", "Update a job"},
@@ -220,6 +223,10 @@ var documentedFlags = map[string][]documentedFlag{
 	"peer deliveries":     {{name: "peer-id", usage: "Peer id"}, {name: "pane-id", usage: "tmux pane id"}, {name: "peer", usage: "Display name"}, {name: "json", usage: "Emit JSON", boolean: true}},
 	"peer ack":            {{name: "message", shorthand: "m", usage: "Reply message"}, {name: "from-peer", usage: "Sender identity"}},
 	"peer decline":        {{name: "reason", shorthand: "r", usage: "Reason the ask cannot be handled"}, {name: "from-peer", usage: "Sender identity"}},
+	"peer delegate":       {{name: "note", usage: "Why you are handing it over, shown to the new recipient"}, {name: "from-peer", usage: "Sender identity"}},
+	"peer messages":       {{name: "peer", usage: "Peer id or display name (default: this pane's peer)"}, {name: "unread", usage: "Only unread messages", boolean: true}, {name: "limit", usage: "Maximum messages"}, {name: "json", usage: "Emit JSON", boolean: true}},
+	"peer read":           {{name: "peek", usage: "Leave the message unread", boolean: true}, {name: "json", usage: "Emit JSON", boolean: true}},
+	"peer delivery":       {{name: "peer", usage: "Peer id or display name (default: this pane's peer)"}},
 	"peer claim-role":     {{name: "peer", usage: "Peer id or display name"}, {name: "circle", usage: "Circle"}, {name: "force", usage: "Replace a stale holder", boolean: true}},
 	"jobs create":         {{name: "kind", usage: "Job kind"}, {name: "prompt", usage: "Prompt text"}, {name: "prompt-file", usage: "Prompt file"}, {name: "assigned-peer", usage: "Assigned peer"}, {name: "owner", usage: "Owner peer id"}, {name: "path", usage: "Worker path"}, {name: "backend", usage: "Worker backend"}, {name: "profile", usage: "Spawn profile"}, {name: "due-at", usage: "One-shot due time"}, {name: "cron", usage: "Cron expression"}, {name: "process-scope", usage: "per-fire or persistent"}, {name: "continuity", usage: "fresh or resume"}, {name: "result-surface", usage: "Result destination"}, {name: "circle", usage: "Circle"}, {name: "visibility", usage: "Visibility scope"}, {name: "json", usage: "Emit JSON", boolean: true}},
 	"jobs list":           {{name: "state", usage: "Filter by state"}, {name: "owner", usage: "Filter by owner"}, {name: "created-by", usage: "Filter by creator"}, {name: "session", usage: "Filter by session"}, {name: "circle", usage: "Filter by circle"}, {name: "json", usage: "Emit JSON", boolean: true}},

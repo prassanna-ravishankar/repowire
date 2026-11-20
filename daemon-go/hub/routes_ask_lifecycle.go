@@ -12,6 +12,7 @@ package hub
 //	POST /query                        legacy blocking RPC (ask-based shim)
 //	GET  /asks/pending                 the Stop-hook reminder source
 //	POST /asks/{cid}/wait              bounded wait for resolution (wait_on_ack)
+//	POST /asks/{cid}/delegate          hand an open ask to another peer
 //
 // Identity discipline: routing-sensitive lookups resolve to proto.PeerID via the
 // registry / service.AskTracker; reply routing in /ack and /answer uses the STORED ask
@@ -158,6 +159,7 @@ func (h *Hub) registerAskLifecycleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /asks/pending", h.requireAuth(h.handlePendingAsks))
 	mux.HandleFunc("GET /asks/history", h.requireAuth(h.handleAskHistory))
 	mux.HandleFunc("POST /asks/{correlation_id}/wait", h.requireAuth(h.handleAskWait))
+	mux.HandleFunc("POST /asks/{correlation_id}/delegate", h.requireAuth(h.handleDelegate))
 }
 
 type askBlockingOption struct {
@@ -430,6 +432,8 @@ type AskResponse struct {
 	Routing       *AskRouting `json:"routing,omitempty"`
 	// Inbox is set when the recipient is the human peer.
 	Inbox *InboxReceipt `json:"inbox,omitempty"`
+	// MessageID names the agent recipient's message record.
+	MessageID string `json:"message_id,omitempty"`
 }
 
 // InboxReceipt is the human inbox's synchronous receipt: the stored item and
@@ -529,6 +533,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		FromRepowireSessionID: h.sessionIDForPeer(ctx, string(fromID)),
 		ToRepowireSessionID:   h.sessionIDForPeer(ctx, string(target.PeerID)),
 		Question:              req.Question,
+		Attachments:           req.Attachments,
 		ReplyDelivery:         req.ReplyDelivery,
 	})
 	if err != nil {
@@ -612,7 +617,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	if req.ReplyTo != nil {
 		_, _ = h.ask.asks.Close(ctx, *req.ReplyTo, "reply_to")
 	}
-	return AskResponse{CorrelationID: cid, Routing: routedSummary(res.selection, target), Inbox: inboxReceipt(deliveryResult.Inbox)}, nil
+	return AskResponse{CorrelationID: cid, Routing: routedSummary(res.selection, target), Inbox: inboxReceipt(deliveryResult.Inbox), MessageID: deliveryResult.MessageID}, nil
 }
 
 // resolveAskTarget resolves and authorizes an ask's target exactly as the
@@ -734,6 +739,7 @@ func (h *Hub) ackDirect(ctx context.Context, req AckRequest) (AckResponse, error
 		}
 		if _, err := h.answerDirect(ctx, AnswerRequest{
 			CorrelationID: req.CorrelationID,
+			FromPeer:      req.FromPeer,
 			Text:          req.Message,
 			Outcome:       outcome,
 			Attachments:   req.Attachments,
@@ -755,7 +761,7 @@ func (h *Hub) ackDirect(ctx context.Context, req AckRequest) (AckResponse, error
 	}
 
 	if hasBody {
-		if err := h.deliverAskResolution(ctx, existing, "ack", "ack_with_msg", derefOr(req.Message, ""), req.Attachments); err != nil {
+		if err := h.deliverAskResolution(ctx, existing, req.FromPeer, "ack", "ack_with_msg", derefOr(req.Message, ""), req.Attachments); err != nil {
 			return AckResponse{}, err
 		}
 		return AckResponse{OK: true}, nil
@@ -804,16 +810,26 @@ func (h *Hub) declineDirect(ctx context.Context, req DeclineRequest) error {
 	if existing.Closed {
 		return routeErr(http.StatusGone, fmt.Sprintf("Ask %s is already closed", req.CorrelationID))
 	}
-	return h.deliverAskResolution(ctx, existing, "declined", "declined", req.Reason, nil)
+	return h.deliverAskResolution(ctx, existing, req.FromPeer, "declined", "declined", req.Reason, nil)
 }
 
 // mayResolve lets only the ask's own recipient close a cross-machine ask:
 // the source machine trusts that result as the target's. The local
 // projection of an ask sent to another machine is settled only by that
-// machine.
+// machine. A peer that delegated an ask on may no longer resolve it.
 func (h *Hub) mayResolve(ask *service.Ask, fromPeer *string) error {
 	if proto.IsRemotePeerID(ask.ToPeerID) {
 		return routeErr(http.StatusForbidden, "this ask is answered on the other machine")
+	}
+	if len(ask.Delegations) > 0 && fromPeer != nil {
+		if p, _ := h.ask.reg.GetPeerByName(*fromPeer, nil); p != nil && p.PeerID != ask.ToPeerID && ask.HeldBefore(p.PeerID) {
+			return routeErr(http.StatusConflict, map[string]any{
+				"error":          "ask_delegated",
+				"correlation_id": ask.CorrelationID,
+				"holder":         string(ask.ToPeerName),
+				"hint":           fmt.Sprintf("You delegated ask %s to @%s; it answers now.", ask.CorrelationID, ask.ToPeerName),
+			})
+		}
 	}
 	if !proto.IsRemotePeerID(ask.FromPeerID) {
 		return nil
@@ -835,7 +851,34 @@ func (h *Hub) heldOpen(cid string) error {
 	return nil
 }
 
-func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameKind, closeReason, message string, attachments []map[string]any) error {
+// resolveClaimErr maps a refused BeginResolve onto the route error.
+func resolveClaimErr(cid string, err error) error {
+	switch {
+	case errors.Is(err, service.ErrAskResolving):
+		return routeErr(http.StatusConflict, fmt.Sprintf("Ask %s is being resolved by another reply; this one was not delivered.", cid))
+	case errors.Is(err, service.ErrAlreadyAnswered):
+		return routeErr(http.StatusGone, fmt.Sprintf("Ask %s is already closed; reply message was not delivered. Send a new notify/ask instead.", cid))
+	default:
+		return routeErr(http.StatusNotFound, "No open ask with correlation_id: "+cid)
+	}
+}
+
+// deliverAskResolution sends a reply (ack with a body, or a decline) to the
+// asker and closes the ask. It claims the ask first, so of two racing
+// resolutions, or a resolution racing a delegation, exactly one proceeds;
+// then it re-reads the ask, which a delegation may have moved since the
+// caller looked.
+func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, fromPeer *string, frameKind, closeReason, message string, attachments []map[string]any) error {
+	if err := h.ask.asks.BeginResolve(ask.CorrelationID); err != nil {
+		return resolveClaimErr(ask.CorrelationID, err)
+	}
+	defer h.ask.asks.EndResolve(ask.CorrelationID)
+	if current, ok := h.ask.asks.Get(ask.CorrelationID); ok {
+		ask = current
+	}
+	if err := h.mayResolve(ask, fromPeer); err != nil {
+		return err
+	}
 	if ask.ReplyDelivery == "pull" {
 		if _, closed := h.ask.asks.Resolve(ctx, ask.CorrelationID, closeReason, &message, attachments); !closed {
 			if err := h.heldOpen(ask.CorrelationID); err != nil {
@@ -847,7 +890,7 @@ func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameK
 		return nil
 	}
 
-	framed := fmt.Sprintf("[%s #%s from @%s] %s", frameKind, ask.CorrelationID, ask.ToPeerName, message)
+	framed := ask.ReplyFrame(frameKind) + " " + message
 	threadText := message
 	if frameKind == "declined" {
 		threadText = "Declined: " + message
@@ -885,6 +928,7 @@ func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameK
 // AnswerRequest mirrors asks.py AnswerRequest.
 type AnswerRequest struct {
 	CorrelationID string           `json:"correlation_id"`
+	FromPeer      *string          `json:"from_peer,omitempty"`
 	OptionID      *string          `json:"option_id,omitempty"`
 	Text          *string          `json:"text,omitempty"`
 	Outcome       string           `json:"outcome,omitempty"`
@@ -929,6 +973,9 @@ func (h *Hub) answerDirect(ctx context.Context, req AnswerRequest) (AnswerRespon
 		return AnswerResponse{}, routeErr(http.StatusUnprocessableEntity, fmt.Sprintf(
 			"Ask %s is not a structured question; use /ack.", req.CorrelationID))
 	}
+	if err := h.mayResolve(existing, req.FromPeer); err != nil {
+		return AnswerResponse{}, err
+	}
 	outcome := req.Outcome
 	if outcome == "" {
 		outcome = "answered"
@@ -949,6 +996,9 @@ func (h *Hub) answerDirect(ctx context.Context, req AnswerRequest) (AnswerRespon
 			return AnswerResponse{}, routeErr(http.StatusNotFound,
 				"No open ask with correlation_id: "+req.CorrelationID)
 		}
+		if errors.Is(err, service.ErrAskResolving) {
+			return AnswerResponse{}, resolveClaimErr(req.CorrelationID, err)
+		}
 		// Validation error (e.g. unknown option_id, choice w/o option).
 		return AnswerResponse{}, routeErr(http.StatusUnprocessableEntity, err.Error())
 	}
@@ -967,8 +1017,7 @@ func (h *Hub) answerDirect(ctx context.Context, req AnswerRequest) (AnswerRespon
 	} else if existing.ReplyDelivery == "pull" {
 		delivered = true // the resolved waiter returns the recorded answer
 	} else {
-		framed := fmt.Sprintf("[ack #%s from @%s] %s",
-			req.CorrelationID, existing.ToPeerName, body)
+		framed := recorded.ReplyFrame("ack") + " " + body
 		res, derr := h.ask.delivery.Notify(ctx, service.NotifyParams{
 			FromPeer:      string(existing.ToPeerID),
 			ToPeer:        string(existing.FromPeerID),
@@ -1390,12 +1439,32 @@ func (h *Hub) askManyResult(parentID string) (map[string]any, error) {
 
 // PendingAsk mirrors asks.py PendingAsk.
 type PendingAsk struct {
-	CorrelationID string `json:"correlation_id"`
-	FromPeer      string `json:"from_peer"`
-	ToPeer        string `json:"to_peer"`
-	Text          string `json:"text"`
-	CreatedAt     string `json:"created_at"`
-	Direction     string `json:"direction"`
+	CorrelationID string           `json:"correlation_id"`
+	FromPeer      string           `json:"from_peer"`
+	ToPeer        string           `json:"to_peer"`
+	Text          string           `json:"text"`
+	CreatedAt     string           `json:"created_at"`
+	Direction     string           `json:"direction"`
+	Delegations   []DelegationView `json:"delegations,omitempty"`
+}
+
+// DelegationView is one hop of an ask's delegation chain on the wire.
+type DelegationView struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	Note string `json:"note,omitempty"`
+	At   string `json:"at"`
+}
+
+func delegationViews(hops []service.Delegation) []DelegationView {
+	if len(hops) == 0 {
+		return nil
+	}
+	out := make([]DelegationView, 0, len(hops))
+	for _, hop := range hops {
+		out = append(out, DelegationView{From: string(hop.FromName), To: string(hop.ToName), Note: hop.Note, At: hop.At.Format(time.RFC3339Nano)})
+	}
+	return out
 }
 
 // PendingAsksResponse mirrors asks.py PendingAsksResponse.
@@ -1478,6 +1547,7 @@ func (h *Hub) handlePendingAsks(w http.ResponseWriter, r *http.Request) {
 			Text:          ask.Text,
 			CreatedAt:     ask.CreatedAt.Format(time.RFC3339Nano),
 			Direction:     dir,
+			Delegations:   delegationViews(ask.Delegations),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -1504,6 +1574,7 @@ type AskWaitResponse struct {
 	CloseReason   *string          `json:"close_reason,omitempty"`
 	Responder     *string          `json:"responder,omitempty"`
 	Attachments   []map[string]any `json:"attachments,omitempty"`
+	Delegations   []DelegationView `json:"delegations,omitempty"`
 }
 
 // handleAskWait blocks (bounded) until the ask resolves; pending on timeout. Only
@@ -1570,7 +1641,11 @@ func (h *Hub) waitOnAck(ctx context.Context, cid string, req AskWaitRequest) (As
 		return AskWaitResponse{}, routeErr(http.StatusInternalServerError, err.Error())
 	}
 	if ask == nil {
-		return AskWaitResponse{CorrelationID: cid, Status: "pending"}, nil
+		resp := AskWaitResponse{CorrelationID: cid, Status: "pending"}
+		if current, ok := h.ask.asks.Get(cid); ok {
+			resp.Delegations = delegationViews(current.Delegations)
+		}
+		return resp, nil
 	}
 
 	resp := AskWaitResponse{
@@ -1579,6 +1654,7 @@ func (h *Hub) waitOnAck(ctx context.Context, cid string, req AskWaitRequest) (As
 		CloseReason:   strPtr(ask.CloseReason),
 		Responder:     strPtr(string(ask.ToPeerName)),
 		Attachments:   ask.ReplyAttachments,
+		Delegations:   delegationViews(ask.Delegations),
 	}
 	// reply: prefer the captured reply_text, else the answer text.
 	if ask.ReplyText != nil {

@@ -159,9 +159,11 @@ func runLink(argv []string) int {
 	return 0
 }
 
+const peerUsage = "peer <list|describe|new|register|unregister|restart|doctor|rehook|ask|prune|whoami|asks|deliveries|ack|decline|delegate|messages|read|delivery|claim-role>"
+
 func runPeer(argv []string) int {
 	if len(argv) == 0 {
-		return usage("peer <list|describe|new|register|unregister|restart|doctor|rehook|ask|prune|whoami|asks|deliveries|ack|claim-role>")
+		return usage(peerUsage)
 	}
 	a := parse(argv[1:], peerBoolFlags...)
 	c, err := newClient()
@@ -467,6 +469,14 @@ func runPeer(argv []string) int {
 		}
 		fmt.Println("declined #" + a.pos[0])
 		return 0
+	case "delegate":
+		return runPeerDelegate(c, a)
+	case "messages":
+		return runPeerMessages(c, a)
+	case "read":
+		return runPeerRead(c, a)
+	case "delivery":
+		return runPeerDelivery(c, a)
 	case "claim-role":
 		if len(a.pos) < 1 || a.pos[0] != "orchestrator" {
 			return usage("peer claim-role orchestrator")
@@ -489,7 +499,7 @@ func runPeer(argv []string) int {
 		printJSON(result)
 		return 0
 	default:
-		return usage("peer <list|describe|new|register|unregister|restart|doctor|rehook|ask|prune|whoami|asks|deliveries|ack|claim-role>")
+		return usage(peerUsage)
 	}
 }
 
@@ -832,7 +842,7 @@ func runShare(argv []string) int {
 }
 
 // peerBoolFlags are the `repowire peer` flags that take no value.
-var peerBoolFlags = []string{"show-offline", "dry-run", "json", "fix", "apply", "register", "force", "fresh", "wait", "status", "cancel"}
+var peerBoolFlags = []string{"show-offline", "dry-run", "json", "fix", "apply", "register", "force", "fresh", "wait", "status", "cancel", "unread", "peek"}
 
 // printRestartOutcome summarizes a restart result for a human on stderr (stdout
 // stays the JSON result) and returns the exit code: 1 when it failed.

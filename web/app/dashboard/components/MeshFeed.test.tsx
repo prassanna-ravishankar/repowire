@@ -122,6 +122,25 @@ describe("MeshFeed", () => {
     expect(screen.getByText("ack")).toBeInTheDocument();
   });
 
+  it("renders a delegated ask as a hand-off on its thread", () => {
+    const event: Event = {
+      id: "event-delegated",
+      type: "ask_delegated",
+      timestamp: "2025-01-01T00:00:00Z",
+      from: "beta",
+      to: "gamma",
+      correlation_id: "ask-9",
+      asker: "alpha",
+      note: "owns the parser",
+      hops: 1,
+    };
+
+    render(<MeshFeed events={[event]} peers={[PEER]} apiBase="" onPickPeer={vi.fn()} />);
+
+    expect(screen.getByText("delegated #ask-9 · asked by @alpha · owns the parser")).toBeInTheDocument();
+    expect(screen.getByText("⇢")).toBeInTheDocument();
+  });
+
   it("renders ack reply event text when present", () => {
     const event: Event = {
       id: "event-ack-reply",

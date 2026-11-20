@@ -44,7 +44,26 @@ var (
 	ErrAlreadyAnswered = errors.New("ask: question already answered/closed")
 	ErrQuiesced        = errors.New("ask: peer mid-switch; ask refused")
 	ErrQuiesceHasOpen  = errors.New("ask: peer has open asks; cannot quiesce")
+	ErrAskResolving    = errors.New("ask: another resolution is in progress")
+	ErrNotHolder       = errors.New("ask: only its current recipient may hand it on")
+	ErrDelegateTarget  = errors.New("ask: cannot delegate to its asker or current recipient")
+	ErrDelegationLimit = errors.New("ask: delegation chain is full")
 )
+
+// MaxDelegations bounds an ask's delegation chain.
+const MaxDelegations = 8
+
+// Delegation is one hop of an ask from one recipient to the next.
+type Delegation struct {
+	FromPeerID proto.PeerID
+	FromName   proto.DisplayName
+	ToPeerID   proto.PeerID
+	ToName     proto.DisplayName
+	Note       string
+	At         time.Time
+
+	fromSessionID *string // restored if the hop is undone
+}
 
 // AskerIdentity is the asker's stable identity tuple at stash time; captured only
 // when the asker peer has every field present and non-default (machine !=
@@ -94,6 +113,10 @@ type Ask struct {
 	ReplyAttachments      []map[string]any
 	Question              map[string]any // structured-question envelope; nil for a plain ask
 	Answer                *Answer
+	Attachments           []map[string]any // the ask's own, re-sent on delegation
+	// Delegations is the chain of hand-offs, oldest first; ToPeerID is the
+	// last hop's recipient. Replaced, never mutated, so snapshots stay valid.
+	Delegations []Delegation
 }
 
 // clone returns a snapshot copy safe to hand to a reader. Slices/maps/pointers
@@ -108,6 +131,7 @@ func (a *Ask) clone() *Ask {
 type AskTracker struct {
 	mu            sync.Mutex
 	asks          map[string]*Ask
+	resolving     map[string]struct{}
 	ttl           time.Duration
 	lastEviction  time.Time
 	quiescing     map[proto.PeerID]struct{}
@@ -158,6 +182,7 @@ func NewAskTracker(ttl time.Duration) *AskTracker {
 	}
 	return &AskTracker{
 		asks:          make(map[string]*Ask),
+		resolving:     make(map[string]struct{}),
 		ttl:           ttl,
 		quiescing:     make(map[proto.PeerID]struct{}),
 		answerWaiters: make(map[string]chan Answer),
@@ -188,6 +213,7 @@ type RegisterAskParams struct {
 	ToRepowireSessionID   *string
 	ParentID              *string
 	Question              map[string]any
+	Attachments           []map[string]any
 	ReplyDelivery         string // "" defaults to "push"
 	// CreatedAt keeps a rehydrated ask's original age (zero means now), so a
 	// restart does not reset its TTL.
@@ -239,6 +265,7 @@ func (t *AskTracker) Register(ctx context.Context, p RegisterAskParams) (string,
 		ReplyTo:               p.ReplyTo,
 		ParentID:              p.ParentID,
 		Question:              p.Question,
+		Attachments:           p.Attachments,
 		ReplyDelivery:         delivery,
 		CreatedAt:             created,
 	}
@@ -340,6 +367,123 @@ func (t *AskTracker) Resolve(ctx context.Context, cid, reason string, reply *str
 	return ask.clone(), true
 }
 
+// BeginResolve claims an open ask for one resolution (a reply, a decline):
+// a second claim, or a delegation, is refused with ErrAskResolving until
+// EndResolve. ErrAlreadyAnswered when the ask is closed, ErrAskNotFound when
+// unknown. The claim is what makes a reply reach the asker at most once.
+func (t *AskTracker) BeginResolve(cid string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	ask, ok := t.asks[cid]
+	switch {
+	case !ok:
+		return ErrAskNotFound
+	case ask.Closed:
+		return ErrAlreadyAnswered
+	}
+	if _, busy := t.resolving[cid]; busy {
+		return ErrAskResolving
+	}
+	t.resolving[cid] = struct{}{}
+	return nil
+}
+
+// EndResolve releases a BeginResolve claim. Idempotent.
+func (t *AskTracker) EndResolve(cid string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.resolving, cid)
+}
+
+// DelegateParams hands an open ask to a new recipient.
+type DelegateParams struct {
+	// By is who asks for the hand-off; "" is an unidentified admin caller.
+	// When set it must be the current recipient.
+	By          proto.PeerID
+	To          proto.PeerID
+	ToName      proto.DisplayName
+	ToSessionID *string
+	Note        string
+}
+
+// Delegate retargets an open ask to p.To, keeping its correlation id, and
+// appends the hop. The asker, the reply path and the reply mode are
+// unchanged. It returns the hop so a failed delivery can UndoDelegation it.
+func (t *AskTracker) Delegate(ctx context.Context, cid string, p DelegateParams) (*Ask, Delegation, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	ask, ok := t.asks[cid]
+	switch {
+	case !ok:
+		return nil, Delegation{}, ErrAskNotFound
+	case ask.Closed:
+		return nil, Delegation{}, ErrAlreadyAnswered
+	case p.By != "" && p.By != ask.ToPeerID:
+		return nil, Delegation{}, ErrNotHolder
+	case p.To == ask.ToPeerID || p.To == ask.FromPeerID:
+		return nil, Delegation{}, ErrDelegateTarget
+	case len(ask.Delegations) >= MaxDelegations:
+		return nil, Delegation{}, ErrDelegationLimit
+	}
+	if _, busy := t.resolving[cid]; busy {
+		return nil, Delegation{}, ErrAskResolving
+	}
+	if _, q := t.quiescing[p.To]; q {
+		return nil, Delegation{}, ErrQuiesced
+	}
+	hop := Delegation{
+		FromPeerID: ask.ToPeerID, FromName: ask.ToPeerName,
+		ToPeerID: p.To, ToName: p.ToName, Note: p.Note, At: time.Now().UTC(),
+		fromSessionID: ask.ToRepowireSessionID,
+	}
+	ask.Delegations = append(append([]Delegation(nil), ask.Delegations...), hop)
+	ask.ToPeerID, ask.ToPeerName, ask.ToRepowireSessionID = p.To, p.ToName, p.ToSessionID
+	return ask.clone(), hop, nil
+}
+
+// UndoDelegation reverts hop when it is still the ask's last one and the ask
+// is open, returning the ask to the delegator. Reports whether it did.
+func (t *AskTracker) UndoDelegation(ctx context.Context, cid string, hop Delegation) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	ask, ok := t.asks[cid]
+	if !ok || ask.Closed || len(ask.Delegations) == 0 {
+		return false
+	}
+	last := ask.Delegations[len(ask.Delegations)-1]
+	if last.ToPeerID != hop.ToPeerID || !last.At.Equal(hop.At) || ask.ToPeerID != hop.ToPeerID {
+		return false
+	}
+	ask.Delegations = append([]Delegation(nil), ask.Delegations[:len(ask.Delegations)-1]...)
+	ask.ToPeerID, ask.ToPeerName, ask.ToRepowireSessionID = hop.FromPeerID, hop.FromName, hop.fromSessionID
+	return true
+}
+
+// ReplyFrame is the head of a reply on this ask's thread, as the asker sees
+// it: "[ack #cid from @C]", or "[ack #cid from @C via @A, @B]" after
+// delegation.
+func (a *Ask) ReplyFrame(kind string) string {
+	frame := fmt.Sprintf("[%s #%s from @%s", kind, a.CorrelationID, a.ToPeerName)
+	for i, hop := range a.Delegations {
+		sep := ", @"
+		if i == 0 {
+			sep = " via @"
+		}
+		frame += sep + string(hop.FromName)
+	}
+	return frame + "]"
+}
+
+// HeldBefore reports whether id held the ask before a delegation moved it on.
+func (a *Ask) HeldBefore(id proto.PeerID) bool {
+	for _, hop := range a.Delegations {
+		if hop.FromPeerID == id {
+			return true
+		}
+	}
+	return false
+}
+
 // validateAnswer ports Question.validate_answer against the raw question map.
 // Returns an error if the answer is invalid for this question, else nil. A nil
 // question (plain ask) is always valid.
@@ -397,6 +541,9 @@ func (t *AskTracker) Answer(ctx context.Context, cid string, ans Answer) (*Ask, 
 	// terminal path with no answer recorded. First terminal state wins.
 	if ask.Closed || ask.Answer != nil {
 		return nil, ErrAlreadyAnswered
+	}
+	if _, busy := t.resolving[cid]; busy {
+		return nil, ErrAskResolving
 	}
 	if err := validateAnswer(ask.Question, ans); err != nil {
 		return nil, err

@@ -159,6 +159,31 @@ clears. Unlike a bare `ack`, this tells the asker that the work remains undone.
 decline("ask-c1a1c7dd", "Repowire rejected both acknowledgement attempts")
 ```
 
+### `delegate`
+
+```text
+delegate(correlation_id: str, peer_name: str, note: str | None = None, circle: str | None = None) -> str
+```
+
+Hand an ask you received to a better-placed peer. The ask keeps its
+correlation id and its asker; only the recipient changes, and the hop is
+recorded. The new recipient receives the ask as from the original asker, with a
+first line `[delegated by @you: note]`, the original attachments and question.
+Your Stop-hook reminder clears and theirs starts. Their reply reaches the
+original asker exactly once, framed `[ack #cid from @them via @you]`.
+
+Delegation is refused, and the ask stays with you, when the target is unknown,
+not addressable, outside your circle rules, the asker (decline instead), or
+offline (no live connection). A busy target receives the ask through its next
+Stop reminder, as a fresh ask would. Cross-machine asks, the dispatch ask of a
+live job, and chains of 8 hops are not delegable. Once you delegate, your own
+`ack`, `decline`, or `answer` on that ask is refused with `ask_delegated`.
+
+```text
+delegate("ask-c1a1c7dd", "parser-owner", note="owns the tokenizer")
+# delegated #ask-c1a1c7dd to @parser-owner (1 hop(s)); the reply goes to the original asker
+```
+
 ### `answer`
 
 ```text
@@ -246,6 +271,52 @@ parent = ask_many(["reviewer-a", "reviewer-b"], "ready to merge #42?")
 # ... later ...
 ask_many_result(parent)  # shows who replied, who's still pending
 ```
+
+## Messages
+
+Every notify, ask, and ask reply delivered to an agent peer has a durable
+`message_id` (`msg-<hex8>`), carried on its `<peer-message message-id="...">`
+tag. Messages are kept for 7 days. The human's messages are its
+[inbox](../concepts/human-inbox.md) instead.
+
+### `list_messages`
+
+```text
+list_messages(unread_only: bool = False, limit: int = 20) -> str
+```
+
+List the messages you received, newest first, as JSON: each with its
+`message_id`, `kind` (`notify`, `ask`, `reply`), sender, `correlation_id`, a
+one-line `preview`, its size in `chars`, and `read_at`. Bodies are not included.
+The result also reports your `delivery` mode.
+
+### `read_message`
+
+```text
+read_message(message_id: str, peek: bool = False) -> str
+```
+
+Return one of your messages with its body, framed exactly as its push would
+have been (`<peer-message ...>`, or the plain human form). It is marked read
+unless `peek`. Another peer's message id reads as not found.
+
+### `set_message_delivery`
+
+```text
+set_message_delivery(mode: "push" | "pull") -> str
+```
+
+Choose how messages reach you. `push` (the default) puts each body in your
+session. `pull` sends a one-line nudge instead, and you fetch the body with
+`read_message`:
+
+```text
+[message msg-1a2b3c4d: notify from @reviewer, 1840 chars] First line of the body…
+↳ read_message("msg-1a2b3c4d")
+```
+
+An ask nudge keeps its correlation id and ack hint. The mode is kept per
+`peer_id` across daemon restarts.
 
 ## Inspection
 

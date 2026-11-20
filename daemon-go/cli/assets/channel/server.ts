@@ -65,6 +65,9 @@ session.connect(async (msg) => {
   if (msg.type === "ask" && msg.replyTo) {
     meta.reply_to = msg.replyTo;
   }
+  if (msg.messageId) {
+    meta.message_id = msg.messageId;
+  }
 
   await mcp.notification({
     method: "notifications/claude/channel",
@@ -75,12 +78,13 @@ session.connect(async (msg) => {
   });
 });
 
-function formatInboundContent(msg: { fromPeer: string; fromRole?: string; type: string; correlationId?: string; content: string }): string {
+function formatInboundContent(msg: { fromPeer: string; fromRole?: string; type: string; correlationId?: string; messageId?: string; content: string }): string {
   const from = msg.fromPeer.replace(/^@/, "");
   if (msg.fromRole === "human" || ["dashboard", "telegram", "slack", "human"].includes(from.toLowerCase())) return msg.content;
   const escape = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
   const correlation = msg.correlationId ? ` correlation-id="${escape(msg.correlationId)}"` : "";
-  return `<peer-message from="@${escape(from)}" type="${escape(msg.type)}"${correlation}>\n${escape(msg.content)}\n</peer-message>`;
+  const message = msg.messageId ? ` message-id="${escape(msg.messageId)}"` : "";
+  return `<peer-message from="@${escape(from)}" type="${escape(msg.type)}"${correlation}${message}>\n${escape(msg.content)}\n</peer-message>`;
 }
 
 // -- Reply tool --

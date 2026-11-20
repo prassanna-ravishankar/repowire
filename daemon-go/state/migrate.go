@@ -320,6 +320,29 @@ var migrationStatements = []string{
 		reply_delivery TEXT NOT NULL DEFAULT 'push'
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_remote_outbound_asker ON remote_outbound(from_peer_id, state)`,
+	// Agent peer messages (v18, rfcs/message-ids-pull-delegate.md): one row
+	// per message per recipient, so a frame's message_id can be fetched.
+	`CREATE TABLE IF NOT EXISTS peer_messages (
+		id TEXT PRIMARY KEY,
+		kind TEXT NOT NULL,
+		peer_id TEXT NOT NULL,
+		peer_name TEXT NOT NULL DEFAULT '',
+		from_peer_id TEXT,
+		from_name TEXT NOT NULL DEFAULT '',
+		correlation_id TEXT,
+		trace_id TEXT NOT NULL DEFAULT '',
+		text TEXT NOT NULL DEFAULT '',
+		attachments_json TEXT NOT NULL DEFAULT '[]',
+		question_json TEXT,
+		created_at TEXT NOT NULL,
+		read_at TEXT
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_peer_messages_peer ON peer_messages(peer_id, created_at)`,
+	`CREATE TABLE IF NOT EXISTS peer_message_delivery (
+		peer_id TEXT PRIMARY KEY,
+		mode TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`,
 }
 
 // migrationLedger mirrors the schema_migrations rows database.py stamps, so a
@@ -346,6 +369,7 @@ var migrationLedger = []struct {
 	{15, "description_set_at for claim staleness; route_decision trace index"},
 	{16, "human inbox items, per-surface push records and rendered refs"},
 	{17, "cross-machine asks: store epoch, inbound and outbound records, fences"},
+	{18, "agent peer messages addressable by id, per-peer delivery mode"},
 }
 
 // migrate applies the idempotent schema and stamps user_version. Safe to run on

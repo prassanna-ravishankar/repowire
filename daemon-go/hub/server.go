@@ -49,6 +49,9 @@ type Hub struct {
 	// inbox is the human peer's inbox, wired via WithInbox. nil → no human
 	// peer: /inbox routes 503 and phone bridges are ordinary service peers.
 	inbox *service.Inbox
+	// messages is the agent peers' message record behind /messages, wired
+	// via WithMessages. nil → those routes 503.
+	messages *service.Messages
 	// dashboard is the inbox surface rendered over the dashboard's event
 	// stream; nil without an inbox.
 	dashboard *dashboardSurface
@@ -252,6 +255,7 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 	h.EventsStreamRoutes(mux)
 	h.registerAskLifecycleRoutes(mux)
 	h.registerInboxRoutes(mux)
+	h.registerMessageRoutes(mux)
 	if h.session != nil {
 		h.registerSessionRoutes(mux)
 	}
