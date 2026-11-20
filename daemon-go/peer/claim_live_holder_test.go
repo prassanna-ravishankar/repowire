@@ -15,6 +15,7 @@ func TestClaimHeldByAnotherLiveProcessMintsFreshID(t *testing.T) {
 	r, store := newRegistry(t)
 	p1, p2 := 1001, 1002
 	r.live = fakeLive{alive: map[int]bool{p1: true, p2: true}}
+	r.WithProcessProbe(unrelated(p1, p2, 1003))
 	params := func(pid int, pane string, claim *proto.PeerID) AllocateParams {
 		return AllocateParams{ClaimedPeerID: claim, Circle: "1", Backend: proto.AgentClaudeCode, Path: ptr("/work/repo"),
 			Machine: "m", Role: proto.RoleAgent, AgentPID: &pid, PaneID: ptr(pane)}
@@ -67,6 +68,7 @@ func TestStickyOrchestratorIsNotSharedWithALiveTwin(t *testing.T) {
 	r, _ := newRegistry(t)
 	p1, p2 := 2001, 2002
 	r.live = fakeLive{alive: map[int]bool{p1: true, p2: true}}
+	r.WithProcessProbe(unrelated(p1, p2))
 	params := func(pid int, claim *proto.PeerID) AllocateParams {
 		return AllocateParams{ClaimedPeerID: claim, Circle: "1", Backend: proto.AgentClaudeCode, Path: ptr("/orch"),
 			Machine: "m", Role: proto.RoleOrchestrator, AgentPID: &pid, PaneID: ptr("%o")}
@@ -98,6 +100,7 @@ func TestTwinsSeparateAfterDaemonRestart(t *testing.T) {
 	p1, p2 := 3001, 3002
 	alive := fakeLive{alive: map[int]bool{p1: true, p2: true}}
 	r.live = alive
+	r.WithProcessProbe(unrelated(p1, p2))
 	params := func(pid int, pane string, claim *proto.PeerID) AllocateParams {
 		return AllocateParams{ClaimedPeerID: claim, Circle: "1", Backend: proto.AgentClaudeCode, Path: ptr("/work/repo"),
 			Machine: "m", Role: proto.RoleAgent, AgentPID: &pid, PaneID: ptr(pane)}
@@ -112,6 +115,7 @@ func TestTwinsSeparateAfterDaemonRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	restarted.WithProcessProbe(unrelated(p1, p2))
 	first, _, err := restarted.AllocateAndRegister(ctx, params(p2, "%b", &x))
 	if err != nil {
 		t.Fatal(err)
@@ -125,5 +129,50 @@ func TestTwinsSeparateAfterDaemonRestart(t *testing.T) {
 	}
 	if second == x {
 		t.Fatalf("both twins share %s after a daemon restart", x)
+	}
+}
+
+// unrelated is a process probe where each pid descends only from init.
+func unrelated(pids ...int) fakeProc {
+	ancestors := map[int]map[int]struct{}{}
+	for _, pid := range pids {
+		ancestors[pid] = map[int]struct{}{1: {}}
+	}
+	return fakeProc{ancestors: ancestors}
+}
+
+// A wrapper (caffeinate, op run) and the agent it runs are one runtime: the
+// ws-hook may report the wrapper's pid while SessionStart registered the
+// agent's. Neither direction is a twin (#503 follow-up, raised on #504).
+func TestClaimFromTheSameProcessChainIsAReconnect(t *testing.T) {
+	ctx := context.Background()
+	wrapper, agent := 4001, 4002
+	chain := fakeProc{ancestors: map[int]map[int]struct{}{
+		wrapper: {1: {}},
+		agent:   {wrapper: {}, 1: {}},
+	}}
+	for _, tc := range []struct {
+		name                  string
+		registered, reconnect int
+	}{
+		{"hook reports the wrapper", agent, wrapper},
+		{"hook reports the agent", wrapper, agent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := newRegistry(t)
+			r.live = fakeLive{alive: map[int]bool{wrapper: true, agent: true}}
+			r.WithProcessProbe(chain)
+			params := func(pid int, claim *proto.PeerID) AllocateParams {
+				return AllocateParams{ClaimedPeerID: claim, Circle: "1", Backend: proto.AgentClaudeCode, Path: ptr("/work/repo"),
+					Machine: "m", Role: proto.RoleAgent, AgentPID: &pid, PaneID: ptr("%a")}
+			}
+			x, _, err := r.AllocateAndRegister(ctx, params(tc.registered, nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if again, _, err := r.AllocateAndRegister(ctx, params(tc.reconnect, &x)); err != nil || again != x {
+				t.Fatalf("reconnect from the same process chain = %s, %v; want %s", again, err, x)
+			}
+		})
 	}
 }

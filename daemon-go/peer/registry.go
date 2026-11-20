@@ -328,7 +328,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 			if !claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, params.Backend, claimPath) {
 				log.Printf("repowire: ignoring stale peer_id claim %s (existing=%s backend=%s/%s path=%q/%q)",
 					cid, ps.peer.DisplayName, ps.peer.Backend, params.Backend, ps.peer.Path, claimPath)
-			} else if params.AgentPID != nil && r.liveElsewhereLocked(ps, params) {
+			} else if r.liveTwinLocked(ps, params) {
 				// A different live process holds the id: a twin (#503), not a
 				// reconnect. Reusing it would flip the peer between the two panes on
 				// every reconnect; the twin gets its own id and rewrites its pane
@@ -524,7 +524,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		// identity; otherwise do not displace and register pane-less.
 		if h := r.isFreshOrchestratorPaneLocked(pane, now); h != nil {
 			// A twin run by another live process is not the orchestrator (#503).
-			twin := params.AgentPID != nil && r.liveElsewhereLocked(h, params)
+			twin := r.liveTwinLocked(h, params)
 			if h.peer.Backend == params.Backend && h.peer.Circle == params.Circle && !twin {
 				h.peer.LastSeen = &now
 				if params.Model != nil {
@@ -1024,6 +1024,28 @@ func (r *Registry) liveElsewhereLocked(ps *peerState, params AllocateParams) boo
 		return false
 	}
 	return r.live.PIDAlive(*ps.peer.AgentPID)
+}
+
+// liveTwinLocked reports whether the registrant is a different live agent than
+// ps's (#503): both carry an agent_pid, ps's is alive, and neither process
+// descends from the other. A wrapper (caffeinate, op run) and the agent it runs
+// are one runtime, and the ws-hook may report either one. When ancestry cannot
+// be probed the registrant is not called a twin. Must hold r.mu.
+func (r *Registry) liveTwinLocked(ps *peerState, params AllocateParams) bool {
+	if params.AgentPID == nil || !r.liveElsewhereLocked(ps, params) || r.proc == nil {
+		return false
+	}
+	holder, claimant := *ps.peer.AgentPID, *params.AgentPID
+	for _, pair := range [][2]int{{claimant, holder}, {holder, claimant}} {
+		ancestors, ok := r.proc.Ancestors(pair[0])
+		if !ok {
+			return false
+		}
+		if _, related := ancestors[pair[1]]; related {
+			return false
+		}
+	}
+	return true
 }
 
 // sessionBoundPeerLocked returns the peer the registrant's runtime session is
