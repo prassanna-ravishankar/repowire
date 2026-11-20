@@ -127,6 +127,7 @@ func TestClefFailuresAreClassifiedWithoutTheirText(t *testing.T) {
 		"aborted":            {408, echo("3008"), FallbackTimeout, "3008"},
 		"daily allocation":   {429, echo("3036"), FallbackBilling, "3036"},
 		"paid plan required": {403, echo("5035"), FallbackBilling, "5035"},
+		"neurons used up":    {429, echo("4006"), FallbackBilling, "4006"}, // observed live (#460), undocumented
 		"out of capacity":    {429, echo("3040"), FallbackRateLimited, "3040"},
 		"account blocked":    {403, echo("3023"), FallbackUnauthorized, "3023"},
 		"unauthorized":       {401, `{}`, FallbackUnauthorized, "other"},
