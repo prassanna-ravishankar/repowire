@@ -501,9 +501,23 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 			return AskResponse{}, err
 		}
 	}
+	closePrior := false
 	if req.ReplyTo != nil {
 		if prior, ok := h.ask.asks.Get(*req.ReplyTo); ok && (proto.IsRemotePeerID(prior.FromPeerID) || proto.IsRemotePeerID(prior.ToPeerID)) {
 			return AskResponse{}, routeErr(http.StatusUnprocessableEntity, "a cross-machine ask cannot be closed by reply_to; ack it instead")
+		}
+		// A follow-up closes the thread it answers as a holder would: under
+		// that ask's claim, held until the close, with ack's former-holder
+		// check. An unknown or closed prior, or one whose result already
+		// waits for its asker, is left as it is.
+		_, err := h.claimAsk(*req.ReplyTo, &req.FromPeer)
+		switch {
+		case err == nil:
+			closePrior = true
+			defer h.ask.asks.Release(*req.ReplyTo)
+		case errors.Is(err, service.ErrAskNotFound), errors.Is(err, service.ErrAlreadyAnswered), errors.Is(err, service.ErrResultWaiting):
+		default:
+			return AskResponse{}, resolveClaimErr(*req.ReplyTo, err)
 		}
 	}
 	res, err := h.resolveAsk(ctx, req)
@@ -614,7 +628,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 	// TODO(trace-coverage): this close writes no closed trace row, so the
 	// ledger cannot tell a reply_to close from an unanswered ask. Predates
 	// the router; tracked in the routing schema notes.
-	if req.ReplyTo != nil {
+	if closePrior {
 		_, _ = h.ask.asks.Close(ctx, *req.ReplyTo, "reply_to")
 	}
 	return AskResponse{CorrelationID: cid, Routing: routedSummary(res.selection, target), Inbox: inboxReceipt(deliveryResult.Inbox), MessageID: deliveryResult.MessageID}, nil
@@ -839,6 +853,12 @@ func (h *Hub) claimAsk(cid string, fromPeer *string) (*service.Ask, error) {
 		h.ask.asks.Release(cid)
 		return nil, err
 	}
+	if ask.PendingReply != nil {
+		// The holder's result already exists and waits for the asker; a
+		// second resolution would send a second reply.
+		h.ask.asks.Release(cid)
+		return nil, service.ErrResultWaiting
+	}
 	return ask, nil
 }
 
@@ -890,6 +910,8 @@ func resolveClaimErr(cid string, err error) error {
 		return routeErr(http.StatusGone, fmt.Sprintf("Ask %s is already closed; reply message was not delivered. Send a new notify/ask instead.", cid))
 	case errors.Is(err, service.ErrAskNotFound):
 		return routeErr(http.StatusNotFound, "No open ask with correlation_id: "+cid)
+	case errors.Is(err, service.ErrResultWaiting):
+		return routeErr(http.StatusConflict, fmt.Sprintf("Ask %s already has a result waiting for its asker; it is delivered when the asker reconnects.", cid))
 	default:
 		return err
 	}

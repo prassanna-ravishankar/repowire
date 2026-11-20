@@ -43,14 +43,6 @@ const (
 	seedSettlePoll = 500 * time.Millisecond
 )
 
-// holderClaimWait / holderClaimPoll bound how long a runtime's completion
-// waits for an ask another resolution or a delegation has claimed. A
-// delegation that fails hands the ask back, and the completion must then land.
-const (
-	holderClaimWait = 5 * time.Second
-	holderClaimPoll = 50 * time.Millisecond
-)
-
 // accessRegistry is the subset of *peer.Registry that PeerDelivery calls.
 //
 // CheckAccess resolves+authorizes a (from,to) pair (the Python ValueError →
@@ -668,33 +660,23 @@ func stringValuePeer(value *proto.Peer) string {
 	return string(value.PeerID)
 }
 
-// completeAsHolder runs a runtime's completion of ask cid only while holder
-// still holds it, under the ask's Claim, so it cannot race a reply or a
-// delegation. A completion from a peer the ask was delegated away from is
-// dropped: the new holder answers.
+// completeAsHolder runs a runtime's completion of ask cid under the ask's
+// Claim, once any reply or hand-off holding it is done, and only if holder
+// still holds it then. A completion from a peer the ask was delegated away
+// from is dropped: the new holder answers. One from a peer a failed hand-off
+// returned the ask to lands.
 func (d *PeerDelivery) completeAsHolder(cid string, holder proto.PeerID, complete func()) {
 	if d.asks == nil {
 		complete()
 		return
 	}
-	deadline := time.Now().Add(holderClaimWait)
-	ask, err := d.asks.Claim(cid)
-	for errors.Is(err, ErrAskResolving) && time.Now().Before(deadline) {
-		time.Sleep(holderClaimPoll)
-		ask, err = d.asks.Claim(cid)
-	}
-	if err != nil {
-		if !errors.Is(err, ErrAlreadyAnswered) {
-			log.Printf("delivery: completion of ask %s from %s dropped: %v", cid, holder, err)
+	d.asks.RunClaimed(cid, func(ask *Ask) {
+		if ask.ToPeerID != holder {
+			log.Printf("delivery: completion of ask %s from %s dropped: delegated to %s", cid, holder, ask.ToPeerID)
+			return
 		}
-		return
-	}
-	defer d.asks.Release(cid)
-	if ask.ToPeerID != holder {
-		log.Printf("delivery: completion of ask %s from %s dropped: delegated to %s", cid, holder, ask.ToPeerID)
-		return
-	}
-	complete()
+		complete()
+	})
 }
 
 func (d *PeerDelivery) completeACPAsk(ctx context.Context, cid string, reply, errText *string) {

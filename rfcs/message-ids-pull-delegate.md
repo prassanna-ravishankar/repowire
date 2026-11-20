@@ -148,10 +148,16 @@ Effects:
 
 **One claim per ask.** The recipient changes, and the holder resolves the
 ask, only under the tracker's per-ask claim: bare ack, ack with a body,
-decline, answer, delegation (checks, retarget, delivery and rollback
-together), and a runtime's completion (an ACP reply, dropped when its peer no
-longer holds the ask). Checks run on the claimed snapshot, so they stay true
-until release. A second claimant is refused with 409 instead of acting.
+decline, answer, a follow-up's `reply_to` close, delegation (checks,
+retarget, delivery and rollback together), a runtime's completion, and a
+question's timeout default. Checks run on the claimed snapshot, so they stay
+true until release. A request that meets a claim is refused with 409 instead
+of acting. Work that must not be lost (a runtime's completion, a timeout
+default) waits instead: `RunClaimed` queues it and the release starts it, with
+no polling. A completion then lands only if its peer still holds the ask, so
+one from a peer the ask was delegated away from is dropped, and one that met
+a hand-off that failed is not. A holder's result already stashed for an
+offline asker pins the ask: it cannot be delegated or resolved again.
 
 **Exactly once.** So a second concurrent resolution, or a delegation racing
 it, is refused instead of sending a second reply. A former holder's

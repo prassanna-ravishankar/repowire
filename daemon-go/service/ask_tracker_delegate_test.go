@@ -215,53 +215,121 @@ func TestAnswerRespectsTheClaim(t *testing.T) {
 	tr.Release(q)
 }
 
-// Review #523: a runtime's completion (an ACP prompt's reply) must land only
-// while its peer still holds the ask, and never alongside another resolution.
+// Review #523: a runtime's completion (an ACP prompt's reply) lands only
+// while its peer holds the ask, under the claim, and is never lost to a reply
+// or a hand-off holding the ask meanwhile.
 func TestRuntimeCompletionOnlyFromTheHolder(t *testing.T) {
+	ctx := context.Background()
 	tr := NewAskTracker(0)
 	d := &PeerDelivery{asks: tr}
+	ran := make(chan string, 4)
+	complete := func(who string) func() {
+		return func() {
+			if _, err := tr.Claim(openCID(tr)); !errors.Is(err, ErrAskResolving) {
+				t.Errorf("%s's completion ran without the claim: %v", who, err)
+			}
+			ran <- who
+		}
+	}
+	waitRan := func(want string) {
+		t.Helper()
+		select {
+		case got := <-ran:
+			if got != want {
+				t.Fatalf("completion %q ran, want %q", got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("completion %q never ran", want)
+		}
+	}
+	noneRan := func() {
+		t.Helper()
+		select {
+		case got := <-ran:
+			t.Fatalf("completion %q ran", got)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 
 	cid := openAsk(t, tr)
-	ran := 0
-	d.completeAsHolder(cid, "repow-b", func() { ran++ })
-	if ran != 1 {
-		t.Fatal("the holder's completion did not run")
-	}
+	d.completeAsHolder(cid, "repow-b", complete("beta"))
+	waitRan("beta")
+
+	// A completion arriving during a hand-off that fails lands once the ask
+	// is back with its holder.
 	if _, err := tr.Claim(cid); err != nil {
-		t.Fatal("the completion kept the claim")
+		t.Fatal(err)
+	}
+	_, hop, err := tr.Delegate(ctx, cid, DelegateParams{By: "repow-b", To: "repow-c", ToName: "gamma"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.completeAsHolder(cid, "repow-b", complete("beta"))
+	noneRan()
+	if !tr.UndoDelegation(ctx, cid, hop) {
+		t.Fatal("undo refused")
 	}
 	tr.Release(cid)
+	waitRan("beta")
 
+	// After a hand-off that succeeds, the former holder's completion is dropped.
 	if _, _, err := delegateClaimed(t, tr, cid, DelegateParams{By: "repow-b", To: "repow-c", ToName: "gamma"}); err != nil {
 		t.Fatal(err)
 	}
-	d.completeAsHolder(cid, "repow-b", func() { ran++ })
-	if ran != 1 {
-		t.Fatal("a completion from the peer the ask was delegated away from ran")
-	}
+	d.completeAsHolder(cid, "repow-b", complete("beta"))
+	noneRan()
+	d.completeAsHolder(cid, "repow-c", complete("gamma"))
+	waitRan("gamma")
 
-	// A completion that meets another resolution waits it out, then runs
-	// under its own claim.
+	// Nothing runs on a closed ask, even work that was waiting for it.
 	if _, err := tr.Claim(cid); err != nil {
 		t.Fatal(err)
 	}
-	go func() {
-		time.Sleep(3 * holderClaimPoll)
-		tr.Release(cid)
-	}()
-	d.completeAsHolder(cid, "repow-c", func() {
-		if _, err := tr.Claim(cid); !errors.Is(err, ErrAskResolving) {
-			t.Errorf("completion ran without the claim: %v", err)
-		}
-		ran++
-	})
-	if ran != 2 {
-		t.Fatal("the new holder's completion did not run after the claim was released")
-	}
+	d.completeAsHolder(cid, "repow-c", complete("gamma"))
+	tr.Close(ctx, cid, "ack")
+	tr.Release(cid)
+	noneRan()
+}
 
-	tr.Close(context.Background(), cid, "ack")
-	d.completeAsHolder(cid, "repow-c", func() { ran++ })
-	if ran != 2 {
-		t.Fatal("a completion ran on a closed ask")
+// openCID returns the tracker's one ask id.
+func openCID(tr *AskTracker) string {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	for cid := range tr.asks {
+		return cid
+	}
+	return ""
+}
+
+// Review #523: a question's timeout commits its default under the claim, so
+// what WaitForAnswer returns is what was recorded, even when the timeout
+// meets a hand-off holding the ask.
+func TestQuestionTimeoutCommitsTheDefaultAfterAClaim(t *testing.T) {
+	ctx := context.Background()
+	tr := NewAskTracker(0)
+	q, _ := tr.Register(ctx, RegisterAskParams{FromPeerID: "repow-a", ToPeerID: "repow-b", Question: map[string]any{"kind": "text"}})
+	if _, err := tr.Claim(q); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		tr.Release(q)
+	}()
+	ans, err := tr.WaitForAnswer(ctx, q, 20*time.Millisecond, nil)
+	if err != nil || ans.Outcome != "timed_out" {
+		t.Fatalf("timeout answer = %+v %v", ans, err)
+	}
+	if got, _ := tr.Get(q); !got.Closed || got.Answer == nil || got.Answer.Outcome != "timed_out" {
+		t.Fatalf("the returned default was not recorded: %+v", got)
+	}
+}
+
+// Review #523: a holder's result waiting for an offline asker pins the ask.
+func TestStashedResultCannotBeDelegated(t *testing.T) {
+	tr := NewAskTracker(0)
+	cid := openAsk(t, tr)
+	tr.SetPendingReply(context.Background(), cid, "[ack #x from @beta] done", nil, false)
+	if _, _, err := delegateClaimed(t, tr, cid, DelegateParams{By: "repow-b", To: "repow-c", ToName: "gamma"}); !errors.Is(err, ErrResultWaiting) {
+		t.Fatalf("delegating a stashed result: %v", err)
 	}
 }

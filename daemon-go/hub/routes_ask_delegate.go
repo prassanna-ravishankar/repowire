@@ -228,6 +228,8 @@ func delegateErr(cid string, ask *service.Ask, err error) error {
 		return routeErr(http.StatusConflict, fmt.Sprintf("Ask %s is being resolved; it was not delegated", cid))
 	case errors.Is(err, service.ErrQuiesced):
 		return routeErr(http.StatusConflict, map[string]any{"error": "peer_switching", "hint": "The target is mid-switch; retry shortly."})
+	case errors.Is(err, service.ErrResultWaiting):
+		return resolveClaimErr(cid, err)
 	case errors.Is(err, service.ErrDelegationLimit):
 		return routeErr(http.StatusUnprocessableEntity, fmt.Sprintf("Ask %s has been delegated %d times; answer or decline it", cid, service.MaxDelegations))
 	default:

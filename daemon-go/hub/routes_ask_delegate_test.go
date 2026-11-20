@@ -449,3 +449,42 @@ func TestNothingInterleavesWithAnInFlightDelegation(t *testing.T) {
 		t.Fatalf("alpha received %q", got)
 	}
 }
+
+// Review #523: a follow-up's reply_to closes the prior ask as a holder would,
+// so a former holder cannot close an ask it delegated away.
+func TestReplyToRespectsDelegation(t *testing.T) {
+	alpha, beta, gamma := alphaPeer(), betaPeer(), gammaPeer()
+	r := newDelegateRig(t, alpha, beta, gamma)
+	cid := r.ask(t, alpha, beta, "review?")
+	if status, _ := r.delegate(t, cid, beta, gamma, ""); status != http.StatusOK {
+		t.Fatal("delegate failed")
+	}
+	status, out := r.post(t, "/ask", AskRequest{FromPeer: string(beta.PeerID), ToPeer: "alpha", Text: "follow-up", ReplyTo: &cid})
+	if status != http.StatusConflict || out["detail"].(map[string]any)["error"] != "ask_delegated" {
+		t.Fatalf("former holder's reply_to: %d %v", status, out)
+	}
+	if ask, _ := r.asks.Get(cid); ask.Closed || ask.ToPeerID != gamma.PeerID {
+		t.Fatalf("the former holder's reply_to touched the ask: %+v", ask)
+	}
+	if status, _ := r.post(t, "/ask", AskRequest{FromPeer: string(gamma.PeerID), ToPeer: "alpha", Text: "follow-up", ReplyTo: &cid}); status != http.StatusOK {
+		t.Fatalf("holder's reply_to: %d", status)
+	}
+	if ask, _ := r.asks.Get(cid); !ask.Closed || ask.CloseReason != "reply_to" {
+		t.Fatalf("the holder's reply_to did not close the ask: %+v", ask)
+	}
+}
+
+// Review #523: a result already waiting for the asker is the reply; a second
+// resolution is refused rather than sent too.
+func TestStashedResultRefusesASecondReply(t *testing.T) {
+	alpha, beta := alphaPeer(), betaPeer()
+	r := newDelegateRig(t, alpha, beta)
+	cid := r.ask(t, alpha, beta, "review?")
+	r.asks.SetPendingReply(context.Background(), cid, "[ack #"+cid+" from @beta] from the runtime", nil, false)
+	if status, _ := r.ack(t, cid, beta, "again"); status != http.StatusConflict {
+		t.Fatalf("second reply over a stashed result: %d", status)
+	}
+	if got := r.wire.received(alpha.PeerID); len(got) != 0 {
+		t.Fatalf("alpha received %v", got)
+	}
+}

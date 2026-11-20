@@ -46,6 +46,7 @@ var (
 	ErrQuiesceHasOpen  = errors.New("ask: peer has open asks; cannot quiesce")
 	ErrAskResolving    = errors.New("ask: another resolution is in progress")
 	ErrNotClaimed      = errors.New("ask: operation requires the ask's claim")
+	ErrResultWaiting   = errors.New("ask: a result is already waiting for the asker")
 	ErrNotHolder       = errors.New("ask: only its current recipient may hand it on")
 	ErrDelegateTarget  = errors.New("ask: cannot delegate to its asker or current recipient")
 	ErrDelegationLimit = errors.New("ask: delegation chain is full")
@@ -133,6 +134,7 @@ type AskTracker struct {
 	mu            sync.Mutex
 	asks          map[string]*Ask
 	resolving     map[string]struct{}
+	deferred      map[string][]func(*Ask) // RunClaimed work waiting on a claim
 	ttl           time.Duration
 	lastEviction  time.Time
 	quiescing     map[proto.PeerID]struct{}
@@ -184,6 +186,7 @@ func NewAskTracker(ttl time.Duration) *AskTracker {
 	return &AskTracker{
 		asks:          make(map[string]*Ask),
 		resolving:     make(map[string]struct{}),
+		deferred:      make(map[string][]func(*Ask)),
 		ttl:           ttl,
 		quiescing:     make(map[proto.PeerID]struct{}),
 		answerWaiters: make(map[string]chan Answer),
@@ -394,11 +397,41 @@ func (t *AskTracker) Claim(cid string) (*Ask, error) {
 	return ask.clone(), nil
 }
 
-// Release ends a Claim. Idempotent.
+// Release ends a Claim and starts any RunClaimed work that waited on it.
+// Idempotent.
 func (t *AskTracker) Release(cid string) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	delete(t.resolving, cid)
+	next := t.deferred[cid]
+	delete(t.deferred, cid)
+	t.mu.Unlock()
+	for _, fn := range next {
+		go t.RunClaimed(cid, fn)
+	}
+}
+
+// RunClaimed runs fn with the claimed snapshot under cid's Claim: now when the
+// ask is free, otherwise once the claim holding it is released. It never runs
+// on an ask that is closed or gone by then. Holder work that must not be lost
+// while a reply or a hand-off holds the ask (a runtime's completion, a
+// question's timeout) waits here rather than polling or being dropped.
+func (t *AskTracker) RunClaimed(cid string, fn func(*Ask)) {
+	t.mu.Lock()
+	ask, ok := t.asks[cid]
+	if !ok || ask.Closed {
+		t.mu.Unlock()
+		return
+	}
+	if t.claimedLocked(cid) {
+		t.deferred[cid] = append(t.deferred[cid], fn)
+		t.mu.Unlock()
+		return
+	}
+	t.resolving[cid] = struct{}{}
+	snapshot := ask.clone()
+	t.mu.Unlock()
+	defer t.Release(cid)
+	fn(snapshot)
 }
 
 // claimedLocked reports whether cid is claimed. Caller holds t.mu.
@@ -439,6 +472,10 @@ func (t *AskTracker) Delegate(ctx context.Context, cid string, p DelegateParams)
 		return nil, Delegation{}, ErrDelegateTarget
 	case len(ask.Delegations) >= MaxDelegations:
 		return nil, Delegation{}, ErrDelegationLimit
+	case ask.PendingReply != nil:
+		// The holder's result exists and waits for the asker; moving the ask
+		// would send it under the new holder's name.
+		return nil, Delegation{}, ErrResultWaiting
 	}
 	if _, q := t.quiescing[p.To]; q {
 		return nil, Delegation{}, ErrQuiesced
@@ -668,15 +705,17 @@ func (t *AskTracker) WaitForAnswer(ctx context.Context, cid string, timeout time
 	case <-ctx.Done():
 		return Answer{}, ctx.Err()
 	case <-timer:
-		if _, err := t.Answer(ctx, cid, resolvedDefault); err != nil {
-			// A real answer landed in the race window, or the ask was evicted
-			// (which already cancelled this waiter). Return the recorded answer
-			// if there is one.
-			if existing, ok := t.Get(cid); ok && existing.Answer != nil {
-				return *existing.Answer, nil
-			}
+		// Commit the default under the claim, after any reply or hand-off
+		// holding the ask. Every terminal transition (this default, a real
+		// answer that won the race, a close or an eviction) signals w, so
+		// what is returned is what was recorded.
+		t.RunClaimed(cid, func(*Ask) { _, _ = t.AnswerClaimed(ctx, cid, resolvedDefault) })
+		select {
+		case ans := <-w:
+			return ans, nil
+		case <-ctx.Done():
+			return Answer{}, ctx.Err()
 		}
-		return resolvedDefault, nil
 	}
 }
 
