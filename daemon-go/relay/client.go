@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -265,6 +266,18 @@ func (c *Client) buildURL() string {
 	return c.relayURL + "/ws/relay?" + q.Encode()
 }
 
+// redact removes the relay key from err: a failed dial quotes its URL, whose
+// query carries the key, and the error is logged and kept in Status.
+func (c *Client) redact(err error) error {
+	text := err.Error()
+	for _, form := range []string{url.QueryEscape(c.apiKey), c.apiKey} {
+		if form != "" {
+			text = strings.ReplaceAll(text, form, "REDACTED")
+		}
+	}
+	return errors.New(text)
+}
+
 func (c *Client) runLoop(ctx context.Context) {
 	defer func() {
 		c.mu.Lock()
@@ -311,7 +324,7 @@ func (c *Client) connectAndServe(ctx context.Context) (bool, error) {
 	conn, _, err := websocket.Dial(dialCtx, c.buildURL(), nil)
 	cancel()
 	if err != nil {
-		return false, err
+		return false, c.redact(err)
 	}
 	conn.SetReadLimit(readLimit)
 	defer conn.Close(websocket.StatusNormalClosure, "")

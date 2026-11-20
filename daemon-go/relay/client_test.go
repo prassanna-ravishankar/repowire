@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -281,4 +282,30 @@ func TestClient_StatusAndDisabledNoop(t *testing.T) {
 		t.Fatalf("disabled client should not run: %+v", st)
 	}
 	c.Stop() // must not hang
+}
+
+// TestClient_DialErrorCarriesNoKey (#467): the dial URL holds the relay key
+// as a query parameter, and a failed dial's error quotes the URL. That error
+// is logged and kept as the status's last error, so it must not contain the
+// key, raw or URL-encoded.
+func TestClient_DialErrorCarriesNoKey(t *testing.T) {
+	gone := httptest.NewServer(http.NotFoundHandler())
+	gone.Close() // nothing listens: the dial fails with the URL in its error
+	const key = "rw_sec/ret+key=1"
+	c := NewClient(wsURL(gone.URL), key, "d1", "http://127.0.0.1:1")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := c.connectAndServe(ctx)
+	if err == nil {
+		t.Fatal("dial to a closed server succeeded")
+	}
+	c.recordErr(err)
+	for _, text := range []string{err.Error(), c.Status().LastError} {
+		if strings.Contains(text, key) || strings.Contains(text, url.QueryEscape(key)) || strings.Contains(text, "rw_sec") {
+			t.Fatalf("error carries the relay key: %s", text)
+		}
+	}
+	if !strings.Contains(err.Error(), "daemon_id=d1") {
+		t.Fatalf("redaction dropped the rest of the error: %s", err)
+	}
 }
