@@ -468,12 +468,21 @@ func tmuxValue(paneID, format string) (string, bool) {
 	return value, value != ""
 }
 
+// panePID returns the pane's root pid; (0, true) when the pane is gone. The
+// pane echoes its own id: tmux 3.5 answers a missing target with empty formats
+// and exit 0 from inside a client, which must read as gone, not inconclusive,
+// or the pane's ws-hook never exits.
 func panePID(paneID string) (int, bool) {
-	value, conclusive := tmuxValue(paneID, "#{pane_pid}")
-	if !conclusive || value == "" {
-		return 0, conclusive
+	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{pane_id} #{pane_pid}").Output()
+	if err != nil {
+		var exit *exec.ExitError
+		return 0, errors.As(err, &exit) // tmux answered: no server, or no such pane
 	}
-	pid, err := strconv.Atoi(value)
+	fields := strings.Fields(string(out))
+	if len(fields) != 2 || fields[0] != paneID {
+		return 0, true
+	}
+	pid, err := strconv.Atoi(fields[1])
 	return pid, err == nil
 }
 

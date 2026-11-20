@@ -17,7 +17,7 @@ func TestGonePaneHasNoAgent(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
 	}
-	t.Setenv("TMUX_TMPDIR", t.TempDir()) // no server: every pane is gone
+	t.Setenv("TMUX_TMPDIR", shortTempDir(t)) // no server: every pane is gone
 	t.Setenv("TMUX", "")
 	out, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(os.Getpid())).Output()
 	if err != nil {
@@ -47,4 +47,51 @@ func TestPaneTreeFindStaysInTheTree(t *testing.T) {
 	if _, pid := paneTreeFind(0, children, commands, isClaude); pid != 0 {
 		t.Fatalf("an unknown root searched the whole process table: %d", pid)
 	}
+}
+
+// tmux 3.5 answers display-message for a missing pane with empty formats and
+// exit 0, as if the probe were inconclusive. With a server running, a pane that
+// tmux does not echo back is gone, and its hook must see that and exit.
+func TestMissingPaneOnALiveServerIsGone(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	t.Setenv("TMUX_TMPDIR", shortTempDir(t))
+	t.Setenv("TMUX", "")
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", "probe", "sleep", "30").CombinedOutput(); err != nil {
+		t.Skipf("cannot start a tmux server: %v %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-server").Run() })
+	// Hooks run inside a pane, with TMUX naming the server; that is when tmux
+	// answers a missing target with empty formats instead of an error.
+	server, err := exec.Command("tmux", "display-message", "-p", "-t", "probe:", "#{socket_path},#{pid},0").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMUX", strings.TrimSpace(string(server)))
+	live, err := exec.Command("tmux", "display-message", "-p", "-t", "probe:", "#{pane_id}").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pid, ok := panePID(strings.TrimSpace(string(live))); !ok || pid <= 0 {
+		t.Fatalf("live pane: pid=%d ok=%v", pid, ok)
+	}
+	if pid, ok := panePID("%9999"); !ok || pid != 0 {
+		t.Fatalf("missing pane on a live server: pid=%d conclusive=%v, want 0, conclusive", pid, ok)
+	}
+	if safe := paneSafe("%9999", "sleep"); safe == nil || *safe {
+		t.Fatalf("paneSafe on a missing pane = %v, want false so the hook exits", safe)
+	}
+}
+
+// shortTempDir is a temp dir short enough for a tmux socket path (macOS caps
+// unix socket paths at 104 bytes; t.TempDir is longer).
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "rwtmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }
