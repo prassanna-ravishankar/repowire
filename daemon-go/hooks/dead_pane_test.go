@@ -3,6 +3,7 @@ package hooks
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,7 +23,8 @@ func TestGonePaneHasNoAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	self := strings.TrimSpace(string(out)) // a command certainly running on this machine
+	// A command certainly running on this machine, normalized as processSnapshot does.
+	self := strings.ToLower(filepath.Base(strings.TrimSpace(string(out))))
 
 	if pid := findExpectedAgentPID("%9999", self); pid != 0 {
 		t.Fatalf("findExpectedAgentPID on a gone pane = %d; it adopted a process outside the pane", pid)
