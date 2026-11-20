@@ -493,6 +493,13 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
     }
   } else if (msgType === "error") {
     console.error("[repowire] Daemon rejected " + conn.peerName + ": " + String(data.error || "unknown error"));
+    if (data.code === "peer_retired" && data.final === true) {
+      // An operator closed this peer (kill_peer): stay off the mesh, don't retry.
+      conn.closed = true;
+      if (conn.reconnectTimeout) clearTimeout(conn.reconnectTimeout);
+      conn.reconnectTimeout = null;
+      return;
+    }
     if (data.code === "peer_retired" && !tmuxPane) {
       try {
         await recoverPaneLessIdentity(conn);

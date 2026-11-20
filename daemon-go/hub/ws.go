@@ -246,7 +246,10 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	peerID, assignedName, err := h.reg.AllocateAndRegister(ctx, params)
 	if err != nil {
 		if errors.Is(err, peer.ErrPeerRetired) || errors.Is(err, peer.ErrPeerClosed) {
-			_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Code: "peer_retired", Error: err.Error()})
+			// One code for every client (running ws-hooks stop on it); final marks
+			// an operator close, which no live agent or certificate can recover.
+			_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Code: "peer_retired",
+				Error: err.Error(), Final: errors.Is(err, peer.ErrPeerClosed)})
 			_ = conn.Close(4004, "Peer retired")
 			log.Printf("ws: connect rejected (retired peer_id)")
 			return
