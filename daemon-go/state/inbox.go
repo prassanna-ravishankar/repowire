@@ -80,8 +80,11 @@ type InboxFilter struct {
 	// LiveSince: what it missed while it was offline. A push recorded after
 	// the surface went live again never moves that boundary, whenever its
 	// item was stored.
+	// StoredBy, with MissedBy, drops items stored after it: those found the
+	// surface live and were pushed to it, even if a receipt is still due.
 	MissedBy  string
 	LiveSince time.Time
+	StoredBy  time.Time
 	// ExcludeKind drops items of that kind (broadcasts a surface did not opt
 	// into), before the limit applies.
 	ExcludeKind string
@@ -197,8 +200,9 @@ func (s *Store) ListInbox(ctx context.Context, filter InboxFilter) ([]InboxItem,
 	if filter.MissedBy != "" {
 		where += ` AND NOT EXISTS (SELECT 1 FROM inbox_pushes p WHERE p.item_id = inbox_items.id AND p.surface = ?)
 			AND created_at >= COALESCE((SELECT MAX(i.created_at) FROM inbox_items i
-				JOIN inbox_pushes p ON p.item_id = i.id WHERE p.surface = ? AND p.ts < ?), '')`
-		args = append(args, filter.MissedBy, filter.MissedBy, filter.LiveSince.UTC().Format(tsLayout))
+				JOIN inbox_pushes p ON p.item_id = i.id WHERE p.surface = ? AND p.ts < ?), '')
+			AND created_at <= ?`
+		args = append(args, filter.MissedBy, filter.MissedBy, filter.LiveSince.UTC().Format(tsLayout), filter.StoredBy.UTC().Format(tsLayout))
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+inboxColumns+` FROM inbox_items WHERE `+where+
 		` ORDER BY `+order+` LIMIT ?`, append(args, limit)...)

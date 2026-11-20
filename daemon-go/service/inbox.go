@@ -321,7 +321,9 @@ func (i *Inbox) CatchUp(p *proto.Peer, liveSince time.Time) {
 		return
 	}
 	target := surfaceTarget{name: string(p.DisplayName), peer: p}
-	filter := state.InboxFilter{UnreadOnly: true, MissedBy: target.name, LiveSince: liveSince, Limit: i.catchUpLimit}
+	// Now is after the surface's Connect: anything stored from here on finds
+	// it live and is pushed to it, so it is not the catch-up's to send.
+	filter := state.InboxFilter{UnreadOnly: true, MissedBy: target.name, LiveSince: liveSince, StoredBy: time.Now(), Limit: i.catchUpLimit}
 	if !i.cfg.PushesBroadcast(target.name) {
 		filter.ExcludeKind = InboxBroadcast
 	}

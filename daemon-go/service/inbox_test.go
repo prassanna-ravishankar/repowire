@@ -691,3 +691,27 @@ func TestInboxCatchUpBoundCountsOnlyWhatTheSurfaceTakes(t *testing.T) {
 		t.Fatalf("telegram saw %q, want missed", got)
 	}
 }
+
+// TestInboxCatchUpBoundIgnoresLiveItems: items stored after the catch-up
+// started were pushed live; even with receipts outstanding they must not use
+// up the bound meant for what the surface missed.
+func TestInboxCatchUpBoundIgnoresLiveItems(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	ctx := context.Background()
+	f.inbox.catchUpLimit = 1
+	f.transport.connected[f.telegram.PeerID] = false
+	f.notifyHuman(t, "missed")
+	liveSince := time.Now()
+	f.transport.connected[f.telegram.PeerID] = true
+	live := &state.InboxItem{ID: state.NewInboxItemID(), Kind: InboxNotify, TraceID: "notif-delivery-live", TraceKind: "notify",
+		FromPeerID: string(f.alpha.PeerID), FromName: "alpha", ToPeerID: string(f.human.PeerID), ToName: "prass", Text: "live",
+		CreatedAt: time.Now().Add(time.Second).UTC().Format("2006-01-02T15:04:05.000Z")} // its live push is still awaiting a receipt
+	if err := f.store.InsertInboxItem(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+	f.inbox.CatchUp(f.telegram, liveSince)
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "missed" {
+		t.Fatalf("telegram saw %q, want missed", got)
+	}
+}
