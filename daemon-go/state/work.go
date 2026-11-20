@@ -712,6 +712,43 @@ func requestDueAt(w *TrackedWork) string {
 }
 
 // parseISO parses the ISO timestamps work.py writes (_parse_iso), normalizing to UTC.
+// WorkDeadline is a non-terminal job's deadline_at.
+type WorkDeadline struct {
+	WorkID string
+	State  string
+	At     time.Time
+}
+
+// WorkDeadlines lists the deadline of every non-terminal job that has one.
+// A deadline_at that does not parse as an ISO timestamp is skipped.
+func (s *Store) WorkDeadlines(ctx context.Context) ([]WorkDeadline, error) {
+	terminal := make([]string, 0, len(terminalWorkStates))
+	params := make([]any, 0, len(terminalWorkStates))
+	for state := range terminalWorkStates {
+		terminal = append(terminal, "?")
+		params = append(params, state)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT work_id, state, deadline_at FROM tracked_work
+		WHERE deadline_at IS NOT NULL AND deadline_at <> '' AND state NOT IN (`+strings.Join(terminal, ",")+`)`, params...)
+	if err != nil {
+		return nil, fmt.Errorf("work deadlines: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkDeadline
+	for rows.Next() {
+		var d WorkDeadline
+		var raw string
+		if err := rows.Scan(&d.WorkID, &d.State, &raw); err != nil {
+			return nil, err
+		}
+		if at, err := workParseISO(raw); err == nil {
+			d.At = at
+			out = append(out, d)
+		}
+	}
+	return out, rows.Err()
+}
+
 func workParseISO(value string) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
 		return t.UTC(), nil

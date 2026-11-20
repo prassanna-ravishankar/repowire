@@ -75,3 +75,37 @@ func TestJobRunnerDeadlineIsTheStoredInstant(t *testing.T) {
 		t.Fatalf("deadline = %v, want the stored %v", got, calendarDue)
 	}
 }
+
+// TestJobRunnerWakesForAJobDeadline (#457): a job's deadline_at is one of the
+// instants the runner waits for, so a running job that passes it is expired
+// on time, without a poll or a timer of its own.
+func TestJobRunnerWakesForAJobDeadline(t *testing.T) {
+	ctx := context.Background()
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	deadline := time.Now().UTC().Add(300 * time.Millisecond).Format(time.RFC3339Nano)
+	work, err := store.CreateWork(ctx, state.WorkCreate{Title: "slow", DeadlineAt: &deadline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateWorkState(ctx, work.WorkID, state.WorkUpdate{State: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewJobRunner(store, nil, nil)
+	r.OnDeadline(NewJobCompletion(store, nil, nil, nil, nil).ExpireOverdue)
+	if got := r.nextDeadline(ctx); got == nil || got.Format(time.RFC3339Nano) != deadline {
+		t.Fatalf("next deadline = %v, want the job's %s", got, deadline)
+	}
+	r.Start(ctx)
+	defer r.Stop()
+	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if got, _ := store.GetWork(ctx, work.WorkID); got.State == "expired" {
+			return
+		}
+	}
+	got, _ := store.GetWork(ctx, work.WorkID)
+	t.Fatalf("job past its deadline = %s; want expired", got.State)
+}
