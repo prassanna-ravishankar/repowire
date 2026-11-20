@@ -27,6 +27,7 @@ import (
 type fakeSpawnRegistry struct {
 	peers        []*proto.Peer
 	unregistered []string
+	closed       []proto.PeerID
 	allocID      proto.PeerID
 	allocName    proto.DisplayName
 	turnStates   map[proto.PeerID]proto.TurnState
@@ -72,6 +73,11 @@ func (r *fakeSpawnRegistry) GetPeerByPane(paneID string) (*proto.Peer, bool) {
 func (r *fakeSpawnRegistry) UnregisterPeer(_ context.Context, identifier string, _ *string) (bool, error) {
 	r.unregistered = append(r.unregistered, identifier)
 	return true, nil
+}
+
+func (r *fakeSpawnRegistry) ClosePeer(_ context.Context, id proto.PeerID, _ string) (int, error) {
+	r.closed = append(r.closed, id)
+	return 0, nil
 }
 
 func (r *fakeSpawnRegistry) MarkOffline(context.Context, proto.PeerID, bool) (int, error) {
@@ -238,6 +244,9 @@ func TestKillPeerSpawnedPaneKillsAndUnregisters(t *testing.T) {
 	if len(reg.unregistered) != 1 {
 		t.Fatalf("unregistered = %v, want one peer", reg.unregistered)
 	}
+	if len(reg.closed) != 1 || reg.closed[0] != p.PeerID {
+		t.Fatalf("closed = %v, want %s hard-retired so its runtime cannot re-register it (#530)", reg.closed, p.PeerID)
+	}
 }
 
 // TestKillPeerNoProofUnregistersButSkipsKill enforces the fail-loud rule: a peer
@@ -273,6 +282,9 @@ func TestKillPeerNoProofUnregistersButSkipsKill(t *testing.T) {
 	}
 	if len(reg.unregistered) != 1 {
 		t.Fatalf("unregistered = %v, want the peer still unregistered", reg.unregistered)
+	}
+	if len(reg.closed) != 1 || reg.closed[0] != p.PeerID {
+		t.Fatalf("closed = %v, want %s hard-retired even when its pane is left alone (#530)", reg.closed, p.PeerID)
 	}
 }
 

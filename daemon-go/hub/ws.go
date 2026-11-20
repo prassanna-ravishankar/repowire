@@ -245,7 +245,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	peerID, assignedName, err := h.reg.AllocateAndRegister(ctx, params)
 	if err != nil {
-		if errors.Is(err, peer.ErrPeerRetired) {
+		if errors.Is(err, peer.ErrPeerRetired) || errors.Is(err, peer.ErrPeerClosed) {
 			_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Code: "peer_retired", Error: err.Error()})
 			_ = conn.Close(4004, "Peer retired")
 			log.Printf("ws: connect rejected (retired peer_id)")
