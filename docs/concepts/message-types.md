@@ -15,7 +15,16 @@ handoffs, status checks you intend to track, and delegated work that should not
 quietly disappear. For durable implementation work with lifecycle/result state,
 prefer a job instead of overloading a long ask thread.
 
-If the recipient never acks, repowire injects a reminder block at the start of every subsequent prompt on the recipient side until the ask is acked. Tool-call detection is the source of truth — prose `[ack #cid]` mentions in agent output do not close anything, only a real `ack()` MCP call does.
+If the recipient never acks, repowire reminds it at the end of each turn until the ask is closed. For Claude Code and Codex the Stop hook fetches the recipient's open asks and returns a `decision: block` reminder listing them (Claude Code needs a tmux pane for this). The OpenCode plugin reminds when the session goes idle, and the Pi extension at the turn boundary. The prompt-start hook injects only the description reminder, not open asks. Tool-call detection is the source of truth: prose `[ack #cid]` mentions in agent output do not close anything, only a real `ack()` MCP call does.
+
+### Daemon-side closure
+
+The daemon also closes asks on its own:
+
+- **Age.** Asks older than `daemon.prune_max_age_hours` (default 24) are closed as `evicted`. This runs lazily, at most once every 5 minutes when any peer's pending asks are read, and during lazy repair. An ask holding a stashed reply for an offline asker is left to [lazy repair](lazy-repair.md), which emits `pending_reply_lost` before evicting it.
+- **Peer reap or eviction.** When a peer is reaped or evicted, every open ask to or from it is closed as `evicted`.
+- **Non-addressable demotion.** Open asks to a peer demoted to non-addressable are closed with `peer_not_addressable` (see [addressability](peers-and-circles.md)).
+- **Job completion.** A job's dispatch ask closes with `fire_completed` when the job finishes, or `executor_died` when its executor goes away.
 
 When the daemon can resolve a durable session binding for either side, ask events include nullable `repowire_session_id`, `from_repowire_session_id`, and `to_repowire_session_id` metadata. Peer IDs remain the routing authority.
 
