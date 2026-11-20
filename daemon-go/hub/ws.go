@@ -270,12 +270,13 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		connPane = p.PaneID
 	}
 
+	liveSince := time.Now().UTC() // before Connect: items stored from here on are pushed live
 	h.transport.Connect(ctx, &service.ConnectionInfo{
 		SessionID:   peerID,
 		WS:          conn,
 		PaneID:      connPane,
 		DisplayName: assignedName,
-		ConnectedAt: time.Now().UTC(),
+		ConnectedAt: liveSince,
 		HookVersion: derefInt(cf.HookVersion),
 	})
 
@@ -288,6 +289,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("ws: connected %s@%s (%s, %s)", assignedName, circle, peerID, backend)
 	h.syncInboxPresence(peerID)
+	h.catchUpInbox(peerID, liveSince)
 
 	// Flush-on-connect: the moment a polling peer (re)connects, drain its durable
 	// queued-delivery queue and replay each row directly onto this connection.
@@ -328,6 +330,17 @@ func (h *Hub) syncInboxPresence(id proto.PeerID) {
 	}
 	if p, ok := h.reg.GetPeer(id); ok && proto.IsInboxSurface(p) {
 		h.inbox.SyncPresence(context.Background())
+	}
+}
+
+// catchUpInbox sends a reconnecting inbox surface what it missed. The pushes
+// run in the background and need this connection's read loop for receipts.
+func (h *Hub) catchUpInbox(id proto.PeerID, liveSince time.Time) {
+	if h.inbox == nil {
+		return
+	}
+	if p, ok := h.reg.GetPeer(id); ok {
+		h.inbox.CatchUp(p, liveSince)
 	}
 }
 

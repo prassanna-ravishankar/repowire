@@ -75,6 +75,19 @@ type InboxFilter struct {
 	// with every message in a chat, so a message from the human bounds what
 	// they can have seen.
 	ThroughRef int64
+	// MissedBy keeps only items that surface has no push record for, stored
+	// after the newest item it has a record for written before LiveSince:
+	// what it missed while it was offline, newest stored first. A push
+	// recorded after the surface went live again never moves that boundary.
+	MissedBy  string
+	LiveSince time.Time
+	// MaxSeq, with MissedBy, keeps only items stored up to that sequence (see
+	// InboxSeq). ExcludeIDs drops the listed items. Both apply before Limit.
+	MaxSeq     int64
+	ExcludeIDs []string
+	// ExcludeKind drops items of that kind (broadcasts a surface did not opt
+	// into), before the limit applies.
+	ExcludeKind string
 }
 
 const inboxColumns = `id, direction, kind, trace_id, trace_kind, from_peer_id, from_name,
@@ -127,6 +140,27 @@ func (s *Store) InsertInboxItem(ctx context.Context, item *InboxItem) error {
 	return nil
 }
 
+// PushedTo reports whether item has a push record for surface, whatever its
+// outcome.
+func (item *InboxItem) PushedTo(surface string) bool {
+	for _, p := range item.Pushes {
+		if p.Surface == surface {
+			return true
+		}
+	}
+	return false
+}
+
+// InboxSeq is the insertion sequence of the newest item (0 when empty); an
+// item stored later has a higher one.
+func (s *Store) InboxSeq(ctx context.Context) (int64, error) {
+	var seq int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(rowid), 0) FROM inbox_items`).Scan(&seq); err != nil {
+		return 0, fmt.Errorf("inbox seq: %w", err)
+	}
+	return seq, nil
+}
+
 // InboxItem loads one item with its push records; (nil, nil) when unknown.
 func (s *Store) InboxItem(ctx context.Context, id string) (*InboxItem, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+inboxColumns+` FROM inbox_items WHERE id = ?`, id)
@@ -155,6 +189,26 @@ func (s *Store) ListInbox(ctx context.Context, filter InboxFilter) ([]InboxItem,
 	var args []any
 	if filter.UnreadOnly {
 		where += ` AND read_at IS NULL`
+	}
+	if filter.ExcludeKind != "" {
+		where += ` AND kind <> ?`
+		args = append(args, filter.ExcludeKind)
+	}
+	if filter.MissedBy != "" {
+		// rowid is the insertion order: a total order, unlike created_at's
+		// milliseconds, so the boundary and the selection agree on ties.
+		where += ` AND NOT EXISTS (SELECT 1 FROM inbox_pushes p WHERE p.item_id = inbox_items.id AND p.surface = ?)
+			AND rowid > COALESCE((SELECT MAX(i.rowid) FROM inbox_items i
+				JOIN inbox_pushes p ON p.item_id = i.id WHERE p.surface = ? AND p.ts < ?), 0)
+			AND rowid <= ?`
+		args = append(args, filter.MissedBy, filter.MissedBy, filter.LiveSince.UTC().Format(tsLayout), filter.MaxSeq)
+		order = `rowid DESC`
+	}
+	if len(filter.ExcludeIDs) > 0 {
+		where += ` AND id NOT IN (` + placeholders(len(filter.ExcludeIDs)) + `)`
+		for _, id := range filter.ExcludeIDs {
+			args = append(args, id)
+		}
 	}
 	if filter.Surface != "" {
 		pushed := `SELECT 1 FROM inbox_pushes p WHERE p.item_id = inbox_items.id AND p.surface = ? AND p.status = 'pushed'`
