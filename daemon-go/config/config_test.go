@@ -358,3 +358,34 @@ func TestLoadRecursiveMergeDoesNotLoop(t *testing.T) {
 		t.Fatal("a recursive merge did not finish loading")
 	}
 }
+
+// A rejected value never appears in a warning or error: they are logged at
+// startup and printed by `repowire config check`, and the value may be a
+// credential (a token that YAML reads as a number).
+func TestLoadDiagnosticsNeverQuoteRejectedValues(t *testing.T) {
+	for name, body := range map[string]string{
+		"credential block": "telegram:\n  bot_token: !!int SECRET_BOT_TOKEN\n  chat_id: \"42\"\n",
+		"optional key":     "daemon:\n  heartbeat_interval: !!binary c2VjcmV0LXZhbHVl\n",
+		"core key":         "daemon:\n  auth_token: !!int SECRET_AUTH_TOKEN\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadFile(path)
+			text := strings.Join(cfg.Warnings, "\n")
+			if err != nil {
+				text += "\n" + err.Error()
+			}
+			if text == "" {
+				t.Fatal("expected a diagnostic")
+			}
+			for _, secret := range []string{"SECRET_BOT_TOKEN", "c2VjcmV0LXZhbHVl", "SECRET_AUTH_TOKEN"} {
+				if strings.Contains(text, secret) {
+					t.Fatalf("diagnostic quotes the rejected value %q:\n%s", secret, text)
+				}
+			}
+		})
+	}
+}

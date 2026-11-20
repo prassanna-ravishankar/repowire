@@ -1002,6 +1002,10 @@ var _ = time.Now
 // the file. Exit 2: a subsystem named in require would be off.
 func configCheck(path string, require []string, w io.Writer) int {
 	fmt.Fprintln(w, "config:", path)
+	if _, err := os.Stat(path); err != nil {
+		fmt.Fprintln(w, "fatal:", err)
+		return 1
+	}
 	cfg, err := config.LoadFile(path)
 	if err != nil {
 		fmt.Fprintln(w, "fatal:", err)
@@ -1028,7 +1032,7 @@ func configCheck(path string, require []string, w io.Writer) int {
 		return "off"
 	}
 	fmt.Fprintf(w, "daemon: %s:%d\n", cfg.Daemon.Host, cfg.Daemon.Port)
-	fmt.Fprintf(w, "relay: %s (enabled=%v, url %s, api_key %s)\n", state("relay"), cfg.Relay.Enabled, cfg.Relay.URL, set(cfg.Relay.APIKey))
+	fmt.Fprintf(w, "relay: %s (enabled=%v, url %s, api_key %s)\n", state("relay"), cfg.Relay.Enabled, relayEndpoint(cfg.Relay.URL), set(cfg.Relay.APIKey))
 	fmt.Fprintf(w, "telegram: %s (bot_token %s, chat_id %s)\n", state("telegram"), set(cfg.Telegram.BotToken), set(cfg.Telegram.ChatID))
 	fmt.Fprintf(w, "slack: %s\n", state("slack"))
 	mcp := cfg.Daemon.MCPHTTP
@@ -1044,4 +1048,17 @@ func configCheck(path string, require []string, w io.Writer) int {
 		}
 	}
 	return code
+}
+
+// relayEndpoint shows only the scheme and host of the relay URL: userinfo,
+// path and query can carry credentials.
+func relayEndpoint(raw string) string {
+	if raw == "" {
+		return "unset"
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "set (not a URL)"
+	}
+	return u.Scheme + "://" + u.Host
 }
