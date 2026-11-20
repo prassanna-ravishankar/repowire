@@ -125,7 +125,7 @@ func TestMachineRequestDeadlineBoundsABlockedWrite(t *testing.T) {
 	connectMachine(t, ctx, f, "beta", http.NotFoundHandler())
 	owner, _ := f.s.tokens.validate(f.key)
 	beta := f.s.daemon(owner.UserID, "beta")
-	beta.writeOnce.Do(func() { beta.writeSlot = make(chan struct{}, 1) })
+	beta.init()
 	beta.writeSlot <- struct{}{}
 	defer func() { <-beta.writeSlot }()
 
@@ -169,5 +169,38 @@ func TestMachineRequestFailsWhenTheTargetIsReplaced(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the request outlived its replaced target")
+	}
+}
+
+// Replacing the target fails a request still waiting for the target's write
+// slot at once, as a disconnect, not at its deadline.
+func TestMachineRequestBlockedInWriteFailsWhenTheTargetIsReplaced(t *testing.T) {
+	f := newAuthFixture(t)
+	f.s.timeout = 10 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	a := connectMachine(t, ctx, f, "alpha", http.NotFoundHandler())
+	connectMachine(t, ctx, f, "beta", http.NotFoundHandler())
+	owner, _ := f.s.tokens.validate(f.key)
+	beta := f.s.daemon(owner.UserID, "beta")
+	beta.init()
+	beta.writeSlot <- struct{}{} // a backpressured socket: the write cannot start
+	defer func() { <-beta.writeSlot }()
+
+	done := make(chan int, 1)
+	go func() {
+		status, _, _ := a.MachineRequest(ctx, "beta", http.MethodPost, "/remote/ask", nil)
+		done <- status
+	}()
+	time.Sleep(100 * time.Millisecond) // the request is now waiting for beta's slot
+	started := time.Now()
+	connectMachine(t, ctx, f, "beta", http.NotFoundHandler())
+	select {
+	case status := <-done:
+		if status != http.StatusBadGateway || time.Since(started) > 3*time.Second {
+			t.Fatalf("replaced target answered %d after %v", status, time.Since(started))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a request blocked in write outlived its replaced target")
 	}
 }

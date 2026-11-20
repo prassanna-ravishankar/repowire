@@ -129,6 +129,9 @@ func (w *machineWork) forward(ctx context.Context, msg map[string]any) (int, []b
 		if ctx.Err() != nil {
 			return ended()
 		}
+		if errors.Is(err, errConnEnded) {
+			return http.StatusBadGateway, errorBody("machine disconnected")
+		}
 		return http.StatusBadGateway, errorBody("failed to reach machine")
 	}
 	select {

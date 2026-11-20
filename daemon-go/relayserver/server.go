@@ -41,21 +41,50 @@ type daemonConn struct {
 	daemonID    string
 	connectedAt time.Time
 	ws          *websocket.Conn
-	writeOnce   sync.Once
-	writeSlot   chan struct{}
+
+	once      sync.Once
+	writeSlot chan struct{}
+	life      context.Context // cancelled once the connection is replaced or gone
+	end       context.CancelFunc
 }
 
-// write serializes frames on the socket. Waiting for the slot honours ctx, so
-// a stuck writer cannot hold a caller past its deadline.
+// errConnEnded is a write to a connection that was replaced or went away.
+var errConnEnded = errors.New("daemon connection ended")
+
+func (c *daemonConn) init() {
+	c.once.Do(func() {
+		c.writeSlot = make(chan struct{}, 1)
+		c.life, c.end = context.WithCancel(context.Background())
+	})
+}
+
+// retire ends the connection's life: writes waiting on it fail at once.
+func (c *daemonConn) retire() {
+	c.init()
+	c.end()
+}
+
+// write serializes frames on the socket. Waiting for the slot honours ctx and
+// the connection's life, so neither a stuck writer nor a replaced socket can
+// hold a caller past its deadline.
 func (c *daemonConn) write(ctx context.Context, value any) error {
-	c.writeOnce.Do(func() { c.writeSlot = make(chan struct{}, 1) })
+	c.init()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	defer context.AfterFunc(c.life, func() { cancel(errConnEnded) })()
 	select {
 	case c.writeSlot <- struct{}{}:
 	case <-ctx.Done():
-		return ctx.Err()
+		return context.Cause(ctx)
 	}
 	defer func() { <-c.writeSlot }()
-	return wsjson.Write(ctx, c.ws, value)
+	if err := wsjson.Write(ctx, c.ws, value); err != nil {
+		if c.life.Err() != nil {
+			return errConnEnded
+		}
+		return err
+	}
+	return nil
 }
 
 type pendingRequest struct {
@@ -127,6 +156,7 @@ func (s *Server) registerConn(c *daemonConn) *daemonConn {
 	// Work sent to a replaced connection fails now, not at its deadline.
 	if old != nil && old != c {
 		s.failPendingLocked(old)
+		old.retire()
 	}
 	if s.users[c.userID] == nil {
 		s.users[c.userID] = map[string]*daemonConn{}
@@ -150,6 +180,7 @@ func (s *Server) unregisterConn(c *daemonConn) {
 	}
 	s.failPendingLocked(c)
 	s.mu.Unlock()
+	c.retire()
 }
 
 func (s *Server) daemon(userID, daemonID string) *daemonConn {
