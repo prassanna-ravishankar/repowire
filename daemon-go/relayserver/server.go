@@ -41,13 +41,50 @@ type daemonConn struct {
 	daemonID    string
 	connectedAt time.Time
 	ws          *websocket.Conn
-	writeMu     sync.Mutex
+
+	once      sync.Once
+	writeSlot chan struct{}
+	life      context.Context // cancelled once the connection is replaced or gone
+	end       context.CancelFunc
 }
 
+// errConnEnded is a write to a connection that was replaced or went away.
+var errConnEnded = errors.New("daemon connection ended")
+
+func (c *daemonConn) init() {
+	c.once.Do(func() {
+		c.writeSlot = make(chan struct{}, 1)
+		c.life, c.end = context.WithCancel(context.Background())
+	})
+}
+
+// retire ends the connection's life: writes waiting on it fail at once.
+func (c *daemonConn) retire() {
+	c.init()
+	c.end()
+}
+
+// write serializes frames on the socket. Waiting for the slot honours ctx and
+// the connection's life, so neither a stuck writer nor a replaced socket can
+// hold a caller past its deadline.
 func (c *daemonConn) write(ctx context.Context, value any) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	return wsjson.Write(ctx, c.ws, value)
+	c.init()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	defer context.AfterFunc(c.life, func() { cancel(errConnEnded) })()
+	select {
+	case c.writeSlot <- struct{}{}:
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	}
+	defer func() { <-c.writeSlot }()
+	if err := wsjson.Write(ctx, c.ws, value); err != nil {
+		if c.life.Err() != nil {
+			return errConnEnded
+		}
+		return err
+	}
+	return nil
 }
 
 type pendingRequest struct {
@@ -116,6 +153,11 @@ func (s *Server) registerConn(c *daemonConn) *daemonConn {
 	s.mu.Lock()
 	old := s.connections[key]
 	s.connections[key] = c
+	// Work sent to a replaced connection fails now, not at its deadline.
+	if old != nil && old != c {
+		s.failPendingLocked(old)
+		old.retire()
+	}
 	if s.users[c.userID] == nil {
 		s.users[c.userID] = map[string]*daemonConn{}
 	}
@@ -136,16 +178,9 @@ func (s *Server) unregisterConn(c *daemonConn) {
 	if len(s.users[c.userID]) == 0 {
 		delete(s.users, c.userID)
 	}
-	for id, pending := range s.pending {
-		if pending.conn == c {
-			delete(s.pending, id)
-			select {
-			case pending.ch <- map[string]any{"type": "daemon_disconnected"}:
-			default:
-			}
-		}
-	}
+	s.failPendingLocked(c)
 	s.mu.Unlock()
+	c.retire()
 }
 
 func (s *Server) daemon(userID, daemonID string) *daemonConn {
@@ -173,10 +208,29 @@ func (s *Server) allDaemons(userID string) []*daemonConn {
 	return out
 }
 
+// failPendingLocked ends every request waiting on c. Callers hold s.mu.
+func (s *Server) failPendingLocked(c *daemonConn) {
+	for id, pending := range s.pending {
+		if pending.conn == c {
+			delete(s.pending, id)
+			select {
+			case pending.ch <- map[string]any{"type": "daemon_disconnected"}:
+			default:
+			}
+		}
+	}
+}
+
+// addPending registers a request on conn. A conn that is no longer current
+// (replaced or gone between lookup and here) fails the request at once.
 func (s *Server) addPending(id string, conn *daemonConn) chan map[string]any {
 	ch := make(chan map[string]any, 16)
 	s.mu.Lock()
-	s.pending[id] = &pendingRequest{conn: conn, ch: ch}
+	if s.connections[connKey(conn.userID, conn.daemonID)] != conn {
+		ch <- map[string]any{"type": "daemon_disconnected"}
+	} else {
+		s.pending[id] = &pendingRequest{conn: conn, ch: ch}
+	}
 	s.mu.Unlock()
 	return ch
 }
