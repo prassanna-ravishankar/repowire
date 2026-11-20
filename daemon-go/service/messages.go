@@ -56,7 +56,7 @@ type Messages struct {
 
 	mu        sync.Mutex
 	lastSweep time.Time
-	modes     map[proto.PeerID]string // loaded on first use
+	modes     map[proto.PeerID]string // loaded on first use; guarded by mu
 }
 
 // NewMessages wires the message record over store.
@@ -74,16 +74,9 @@ func (m *Messages) Mode(ctx context.Context, id proto.PeerID) string {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.modes == nil {
-		loaded, err := m.store.PeerMessageDeliveries(ctx)
-		if err != nil {
-			log.Printf("messages: load delivery modes: %v", err)
-			return MessageDeliveryPush
-		}
-		m.modes = make(map[proto.PeerID]string, len(loaded))
-		for peerID, mode := range loaded {
-			m.modes[proto.PeerID(peerID)] = mode
-		}
+	if err := m.loadModesLocked(ctx); err != nil {
+		log.Printf("messages: load delivery modes: %v", err)
+		return MessageDeliveryPush
 	}
 	if m.modes[id] == MessageDeliveryPull {
 		return MessageDeliveryPull
@@ -91,19 +84,37 @@ func (m *Messages) Mode(ctx context.Context, id proto.PeerID) string {
 	return MessageDeliveryPush
 }
 
-// SetMode records id's delivery mode, push or pull.
+// SetMode records id's delivery mode, push or pull. The write and the cache
+// change together under the lock, so concurrent calls cannot leave the cache
+// disagreeing with the store.
 func (m *Messages) SetMode(ctx context.Context, id proto.PeerID, mode string) error {
 	if mode != MessageDeliveryPush && mode != MessageDeliveryPull {
 		return fmt.Errorf("message delivery must be %s or %s", MessageDeliveryPush, MessageDeliveryPull)
 	}
-	m.Mode(ctx, id) // load before writing, so the cache cannot be stale
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.loadModesLocked(ctx); err != nil {
+		return err
+	}
 	if err := m.store.SetPeerMessageDelivery(ctx, string(id), mode); err != nil {
 		return err
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.modes[id] = mode
+	return nil
+}
+
+// loadModesLocked fills the mode cache from the store once. Caller holds m.mu.
+func (m *Messages) loadModesLocked(ctx context.Context) error {
 	if m.modes != nil {
-		m.modes[id] = mode
+		return nil
+	}
+	loaded, err := m.store.PeerMessageDeliveries(ctx)
+	if err != nil {
+		return err
+	}
+	m.modes = make(map[proto.PeerID]string, len(loaded))
+	for peerID, mode := range loaded {
+		m.modes[proto.PeerID(peerID)] = mode
 	}
 	return nil
 }

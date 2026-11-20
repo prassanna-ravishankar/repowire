@@ -3,9 +3,14 @@ package hub
 // POST /asks/{correlation_id}/delegate: hand an open ask to another peer
 // (rfcs/message-ids-pull-delegate.md). The correlation id, the asker and the
 // reply path are unchanged; only the recipient moves, and the hop is recorded.
-// Every check runs before the tracker changes, and a delivery that fails
-// returns the ask to the delegator: the irreversible step is proven safe
-// first.
+// The whole hand-off (checks, retarget, delivery, rollback) runs under the
+// ask's Claim, so no reply, answer, completion or other delegation can
+// interleave with it, and a delivery that fails returns the ask to the
+// delegator.
+//
+// The new recipient receives the ask from the delegator, not the asker: the
+// delegator wrote the note and chose to pass the body on, so a peer can never
+// present its words with the asker's (possibly the human's) authority.
 
 import (
 	"context"
@@ -87,6 +92,19 @@ func (h *Hub) delegateAsk(ctx context.Context, cid string, req DelegateRequest) 
 		}
 	}
 
+	ask, err := h.ask.asks.Claim(cid)
+	if err != nil {
+		return DelegateResponse{}, resolveClaimErr(cid, err)
+	}
+	defer h.ask.asks.Release(cid)
+	if by != "" && by != ask.ToPeerID {
+		if ask.HeldBefore(by) {
+			return DelegateResponse{}, routeErr(http.StatusConflict, map[string]any{
+				"error": "ask_delegated", "correlation_id": cid, "holder": string(ask.ToPeerName),
+			})
+		}
+		return DelegateResponse{}, delegateErr(cid, ask, service.ErrNotHolder)
+	}
 	target, err := h.delegateTarget(ctx, ask, req)
 	if err != nil {
 		return DelegateResponse{}, err
@@ -105,17 +123,22 @@ func (h *Hub) delegateAsk(ctx context.Context, cid string, req DelegateRequest) 
 	})
 
 	delivered, err := h.ask.delivery.DeliverAsk(ctx, service.DeliverAskParams{
-		FromPeer:      string(moved.FromPeerID),
+		FromPeer:      string(hop.FromPeerID),
 		ToPeer:        string(target.PeerID),
-		Text:          delegatedText(hop, moved.Text),
+		Text:          delegatedText(hop, moved),
 		CorrelationID: cid,
 		BypassCircle:  true, // the delegator was authorized against the target above
 		Attachments:   moved.Attachments,
 		Question:      moved.Question,
 	})
 	if err != nil {
-		h.ask.asks.UndoDelegation(ctx, cid, hop)
 		h.traceAsk(ctx, cid, "delegate_failed", "fail", ask, map[string]any{"to_peer_id": string(target.PeerID), "error": err.Error()})
+		if !h.ask.asks.UndoDelegation(ctx, cid, hop) {
+			// Only a path that does not claim (eviction, a demotion closing
+			// the target's asks) can get here: the ask is no longer open.
+			return DelegateResponse{}, routeErr(http.StatusGone, fmt.Sprintf(
+				"Delivery to %s failed (%s) and ask %s was closed meanwhile.", hop.ToName, err, cid))
+		}
 		return DelegateResponse{}, delegateDeliveryErr(cid, hop, err)
 	}
 	recordDeliveryOutcome(ctx, h.deliveryTraces, cid, "ask", string(target.PeerID), string(moved.FromPeerID), delivered.Transport, delivered.HookDelivery)
@@ -181,13 +204,14 @@ func (h *Hub) jobForAsk(ctx context.Context, cid string) string {
 	return ""
 }
 
-// delegatedText is the ask as the new recipient sees it.
-func delegatedText(hop service.Delegation, text string) string {
-	head := "[delegated by @" + string(hop.FromName)
+// delegatedText is the ask as the new recipient sees it, sent by the
+// delegator: who handed it on, whose question it is, why, and the question.
+func delegatedText(hop service.Delegation, ask *service.Ask) string {
+	head := "[delegated by @" + string(hop.FromName) + " for @" + string(ask.FromPeerName)
 	if hop.Note != "" {
 		head += ": " + hop.Note
 	}
-	return head + "]\n" + text
+	return head + "]\n" + ask.Text
 }
 
 func delegateErr(cid string, ask *service.Ask, err error) error {

@@ -204,8 +204,9 @@ func TestDelegatedAskReplyReachesAskerExactlyOnce(t *testing.T) {
 		t.Fatalf("delegations = %v", out["delegations"])
 	}
 	got := r.wire.received(gamma.PeerID)
-	if len(got) != 1 || got[0]["type"] != "ask" || got[0]["correlation_id"] != cid || got[0]["from_peer"] != "alpha" ||
-		!strings.HasPrefix(got[0]["text"].(string), "[delegated by @beta: owns the parser]\nreview the parser?") {
+	// Sent by the delegator, never as the asker: the note is beta's words.
+	if len(got) != 1 || got[0]["type"] != "ask" || got[0]["correlation_id"] != cid || got[0]["from_peer"] != "beta" ||
+		!strings.HasPrefix(got[0]["text"].(string), "[delegated by @beta for @alpha: owns the parser]\nreview the parser?") {
 		t.Fatalf("gamma received %v", got)
 	}
 	if !r.traces.has("delegated") {
@@ -250,7 +251,7 @@ func TestDelegationChainNamesEveryHop(t *testing.T) {
 	if status, out := r.delegate(t, cid, gamma, delta, "release manager"); status != http.StatusOK {
 		t.Fatalf("second hop: %d %v", status, out)
 	}
-	if text := frameTexts(r.wire.received(delta.PeerID)); len(text) != 1 || !strings.HasPrefix(text[0], "[delegated by @gamma: release manager]\n") {
+	if text := frameTexts(r.wire.received(delta.PeerID)); len(text) != 1 || !strings.HasPrefix(text[0], "[delegated by @gamma for @alpha: release manager]\n") {
 		t.Fatalf("delta received %q", text)
 	}
 	if mine := r.pending(t, alpha, "outbound"); len(mine) != 1 || mine[0].ToPeer != "delta" || len(mine[0].Delegations) != 2 {
@@ -397,5 +398,54 @@ func TestDelegateRefusals(t *testing.T) {
 	}
 	if status, _ := r.delegate(t, cid, beta, gamma, ""); status != http.StatusGone {
 		t.Fatalf("closed ask: %d", status)
+	}
+}
+
+// Review #523: nothing that acts as the holder may interleave with a
+// hand-off in flight. Without the claim, beta's bare ack could close the ask
+// gamma was being handed, and gamma could hand on an ask whose delivery to it
+// then failed.
+func TestNothingInterleavesWithAnInFlightDelegation(t *testing.T) {
+	alpha, beta, gamma, delta := alphaPeer(), betaPeer(), gammaPeer(), deltaPeer()
+	r := newDelegateRig(t, alpha, beta, gamma, delta)
+	cid := r.ask(t, alpha, beta, "review?")
+	r.wire.mu.Lock()
+	r.wire.slow = 300 * time.Millisecond
+	r.wire.mu.Unlock()
+
+	done := make(chan int, 1)
+	go func() {
+		status, _ := r.delegate(t, cid, beta, gamma, "")
+		done <- status
+	}()
+	time.Sleep(60 * time.Millisecond) // the hand-off now holds the claim
+
+	bare := string(beta.PeerID)
+	if status, _ := r.post(t, "/ack", AckRequest{CorrelationID: cid, FromPeer: &bare}); status != http.StatusConflict {
+		t.Fatalf("beta's bare ack during the hand-off: %d", status)
+	}
+	if status, _ := r.ack(t, cid, gamma, "early"); status != http.StatusConflict {
+		t.Fatalf("gamma's ack during the hand-off: %d", status)
+	}
+	if status, _ := r.delegate(t, cid, gamma, delta, ""); status != http.StatusConflict {
+		t.Fatalf("gamma's delegation during the hand-off: %d", status)
+	}
+	if status := <-done; status != http.StatusOK {
+		t.Fatalf("the hand-off: %d", status)
+	}
+	if ask, _ := r.asks.Get(cid); ask.Closed || ask.ToPeerID != gamma.PeerID {
+		t.Fatalf("ask after the hand-off = %+v", ask)
+	}
+	if got := r.wire.received(alpha.PeerID); len(got) != 0 {
+		t.Fatalf("alpha received %v before anyone answered", got)
+	}
+	r.wire.mu.Lock()
+	r.wire.slow = 0
+	r.wire.mu.Unlock()
+	if status, _ := r.ack(t, cid, gamma, "done"); status != http.StatusOK {
+		t.Fatalf("gamma's ack: %d", status)
+	}
+	if got := frameTexts(r.wire.received(alpha.PeerID)); !slices.Equal(got, []string{"[ack #" + cid + " from @gamma via @beta] done"}) {
+		t.Fatalf("alpha received %q", got)
 	}
 }

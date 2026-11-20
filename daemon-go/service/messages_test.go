@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -202,5 +203,31 @@ func TestReplyNotifyIsRecordedAsReply(t *testing.T) {
 	}
 	if msg, _ := messages.Get(ctx, res.MessageID); msg == nil || msg.Kind != state.MessageReply || msg.CorrelationID != "ask-3" {
 		t.Fatalf("reply record = %+v", msg)
+	}
+}
+
+// Review #523: concurrent mode changes must leave the cache agreeing with the
+// store, so a restart never flips a peer's delivery.
+func TestConcurrentModeChangesKeepCacheAndStoreAgreed(t *testing.T) {
+	ctx := context.Background()
+	store := newMessageStore(t)
+	m := NewMessages(store)
+	var wg sync.WaitGroup
+	for i := 0; i < 40; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			mode := MessageDeliveryPush
+			if i%2 == 0 {
+				mode = MessageDeliveryPull
+			}
+			if err := m.SetMode(ctx, "repow-b", mode); err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if live, restarted := m.Mode(ctx, "repow-b"), NewMessages(store).Mode(ctx, "repow-b"); live != restarted {
+		t.Fatalf("cache says %s, store says %s", live, restarted)
 	}
 }

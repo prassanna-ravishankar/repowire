@@ -760,8 +760,17 @@ func (h *Hub) ackDirect(ctx context.Context, req AckRequest) (AckResponse, error
 		return AckResponse{OK: true}, nil
 	}
 
+	ask, err := h.claimAsk(req.CorrelationID, req.FromPeer)
+	if errors.Is(err, service.ErrAlreadyAnswered) && !hasBody {
+		return AckResponse{OK: true}, nil // closed meanwhile: idempotent bare re-ack
+	}
+	if err != nil {
+		return AckResponse{}, resolveClaimErr(req.CorrelationID, err)
+	}
+	defer h.ask.asks.Release(req.CorrelationID)
+
 	if hasBody {
-		if err := h.deliverAskResolution(ctx, existing, req.FromPeer, "ack", "ack_with_msg", derefOr(req.Message, ""), req.Attachments); err != nil {
+		if err := h.deliverAskResolution(ctx, ask, "ack", "ack_with_msg", derefOr(req.Message, ""), req.Attachments); err != nil {
 			return AckResponse{}, err
 		}
 		return AckResponse{OK: true}, nil
@@ -773,8 +782,8 @@ func (h *Hub) ackDirect(ctx context.Context, req AckRequest) (AckResponse, error
 			return AckResponse{}, err
 		}
 	}
-	h.emitAckEvent(ctx, existing, "ack", false, false, false)
-	h.traceAskClosed(ctx, existing, "ack", "")
+	h.emitAckEvent(ctx, ask, "ack", false, false, false)
+	h.traceAskClosed(ctx, ask, "ack", "")
 	return AckResponse{OK: true}, nil
 }
 
@@ -810,7 +819,27 @@ func (h *Hub) declineDirect(ctx context.Context, req DeclineRequest) error {
 	if existing.Closed {
 		return routeErr(http.StatusGone, fmt.Sprintf("Ask %s is already closed", req.CorrelationID))
 	}
-	return h.deliverAskResolution(ctx, existing, req.FromPeer, "declined", "declined", req.Reason, nil)
+	ask, err := h.claimAsk(req.CorrelationID, req.FromPeer)
+	if err != nil {
+		return resolveClaimErr(req.CorrelationID, err)
+	}
+	defer h.ask.asks.Release(req.CorrelationID)
+	return h.deliverAskResolution(ctx, ask, "declined", "declined", req.Reason, nil)
+}
+
+// claimAsk takes cid's Claim and checks, on the claimed snapshot, that the
+// caller may resolve it. Nothing can move or close the ask through a holder
+// path until the caller's deferred Release.
+func (h *Hub) claimAsk(cid string, fromPeer *string) (*service.Ask, error) {
+	ask, err := h.ask.asks.Claim(cid)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.mayResolve(ask, fromPeer); err != nil {
+		h.ask.asks.Release(cid)
+		return nil, err
+	}
+	return ask, nil
 }
 
 // mayResolve lets only the ask's own recipient close a cross-machine ask:
@@ -851,34 +880,26 @@ func (h *Hub) heldOpen(cid string) error {
 	return nil
 }
 
-// resolveClaimErr maps a refused BeginResolve onto the route error.
+// resolveClaimErr maps a refused Claim onto the route error; any other error
+// (a mayResolve refusal) passes through.
 func resolveClaimErr(cid string, err error) error {
 	switch {
 	case errors.Is(err, service.ErrAskResolving):
-		return routeErr(http.StatusConflict, fmt.Sprintf("Ask %s is being resolved by another reply; this one was not delivered.", cid))
+		return routeErr(http.StatusConflict, fmt.Sprintf("Ask %s is being resolved or handed on by another request; this one changed nothing.", cid))
 	case errors.Is(err, service.ErrAlreadyAnswered):
 		return routeErr(http.StatusGone, fmt.Sprintf("Ask %s is already closed; reply message was not delivered. Send a new notify/ask instead.", cid))
-	default:
+	case errors.Is(err, service.ErrAskNotFound):
 		return routeErr(http.StatusNotFound, "No open ask with correlation_id: "+cid)
+	default:
+		return err
 	}
 }
 
 // deliverAskResolution sends a reply (ack with a body, or a decline) to the
-// asker and closes the ask. It claims the ask first, so of two racing
-// resolutions, or a resolution racing a delegation, exactly one proceeds;
-// then it re-reads the ask, which a delegation may have moved since the
-// caller looked.
-func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, fromPeer *string, frameKind, closeReason, message string, attachments []map[string]any) error {
-	if err := h.ask.asks.BeginResolve(ask.CorrelationID); err != nil {
-		return resolveClaimErr(ask.CorrelationID, err)
-	}
-	defer h.ask.asks.EndResolve(ask.CorrelationID)
-	if current, ok := h.ask.asks.Get(ask.CorrelationID); ok {
-		ask = current
-	}
-	if err := h.mayResolve(ask, fromPeer); err != nil {
-		return err
-	}
+// asker and closes the ask. The caller holds the ask's Claim (claimAsk), so of
+// two racing resolutions, or a resolution racing a delegation, exactly one
+// gets here.
+func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameKind, closeReason, message string, attachments []map[string]any) error {
 	if ask.ReplyDelivery == "pull" {
 		if _, closed := h.ask.asks.Resolve(ctx, ask.CorrelationID, closeReason, &message, attachments); !closed {
 			if err := h.heldOpen(ask.CorrelationID); err != nil {
@@ -973,9 +994,14 @@ func (h *Hub) answerDirect(ctx context.Context, req AnswerRequest) (AnswerRespon
 		return AnswerResponse{}, routeErr(http.StatusUnprocessableEntity, fmt.Sprintf(
 			"Ask %s is not a structured question; use /ack.", req.CorrelationID))
 	}
-	if err := h.mayResolve(existing, req.FromPeer); err != nil {
-		return AnswerResponse{}, err
+	if _, err := h.claimAsk(req.CorrelationID, req.FromPeer); err != nil {
+		if errors.Is(err, service.ErrAlreadyAnswered) {
+			return AnswerResponse{}, routeErr(http.StatusGone, fmt.Sprintf(
+				"Ask %s is already answered/closed.", req.CorrelationID))
+		}
+		return AnswerResponse{}, resolveClaimErr(req.CorrelationID, err)
 	}
+	defer h.ask.asks.Release(req.CorrelationID)
 	outcome := req.Outcome
 	if outcome == "" {
 		outcome = "answered"
@@ -986,7 +1012,7 @@ func (h *Hub) answerDirect(ctx context.Context, req AnswerRequest) (AnswerRespon
 		Text:     req.Text,
 		Message:  req.Message,
 	}
-	recorded, err := h.ask.asks.Answer(ctx, req.CorrelationID, ans)
+	recorded, err := h.ask.asks.AnswerClaimed(ctx, req.CorrelationID, ans)
 	if err != nil {
 		if errors.Is(err, service.ErrAlreadyAnswered) {
 			return AnswerResponse{}, routeErr(http.StatusGone, fmt.Sprintf(
@@ -995,9 +1021,6 @@ func (h *Hub) answerDirect(ctx context.Context, req AnswerRequest) (AnswerRespon
 		if errors.Is(err, service.ErrAskNotFound) {
 			return AnswerResponse{}, routeErr(http.StatusNotFound,
 				"No open ask with correlation_id: "+req.CorrelationID)
-		}
-		if errors.Is(err, service.ErrAskResolving) {
-			return AnswerResponse{}, resolveClaimErr(req.CorrelationID, err)
 		}
 		// Validation error (e.g. unknown option_id, choice w/o option).
 		return AnswerResponse{}, routeErr(http.StatusUnprocessableEntity, err.Error())
@@ -1008,19 +1031,19 @@ func (h *Hub) answerDirect(ctx context.Context, req AnswerRequest) (AnswerRespon
 	// not pasted to the asker). pull delivery is already satisfied by the waiter.
 	body := answerReplyText(recorded, ans)
 	isToolPermission := false
-	if scope, _ := existing.Question["scope"].(string); scope == "tool_permission" {
+	if scope, _ := recorded.Question["scope"].(string); scope == "tool_permission" {
 		isToolPermission = true
 	}
 	delivered := false
 	if isToolPermission || body == "" {
 		delivered = true // nothing to push
-	} else if existing.ReplyDelivery == "pull" {
+	} else if recorded.ReplyDelivery == "pull" {
 		delivered = true // the resolved waiter returns the recorded answer
 	} else {
 		framed := recorded.ReplyFrame("ack") + " " + body
 		res, derr := h.ask.delivery.Notify(ctx, service.NotifyParams{
-			FromPeer:      string(existing.ToPeerID),
-			ToPeer:        string(existing.FromPeerID),
+			FromPeer:      string(recorded.ToPeerID),
+			ToPeer:        string(recorded.FromPeerID),
 			Text:          framed,
 			BypassCircle:  true,
 			Attachments:   req.Attachments,
@@ -1031,8 +1054,8 @@ func (h *Hub) answerDirect(ctx context.Context, req AnswerRequest) (AnswerRespon
 		// is logged via the ack event, not surfaced as an error (the answer stands).
 		delivered = derr == nil && res.Delivered()
 	}
-	h.emitAckEvent(ctx, existing, "answered", delivered, body != "", len(req.Attachments) > 0)
-	h.traceAskClosed(ctx, existing, "answered", body)
+	h.emitAckEvent(ctx, recorded, "answered", delivered, body != "", len(req.Attachments) > 0)
+	h.traceAskClosed(ctx, recorded, "answered", body)
 	return AnswerResponse{OK: true}, nil
 }
 

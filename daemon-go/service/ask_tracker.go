@@ -45,6 +45,7 @@ var (
 	ErrQuiesced        = errors.New("ask: peer mid-switch; ask refused")
 	ErrQuiesceHasOpen  = errors.New("ask: peer has open asks; cannot quiesce")
 	ErrAskResolving    = errors.New("ask: another resolution is in progress")
+	ErrNotClaimed      = errors.New("ask: operation requires the ask's claim")
 	ErrNotHolder       = errors.New("ask: only its current recipient may hand it on")
 	ErrDelegateTarget  = errors.New("ask: cannot delegate to its asker or current recipient")
 	ErrDelegationLimit = errors.New("ask: delegation chain is full")
@@ -367,32 +368,43 @@ func (t *AskTracker) Resolve(ctx context.Context, cid, reason string, reply *str
 	return ask.clone(), true
 }
 
-// BeginResolve claims an open ask for one resolution (a reply, a decline):
-// a second claim, or a delegation, is refused with ErrAskResolving until
-// EndResolve. ErrAlreadyAnswered when the ask is closed, ErrAskNotFound when
-// unknown. The claim is what makes a reply reach the asker at most once.
-func (t *AskTracker) BeginResolve(cid string) error {
+// Claim takes an open ask for one holder operation (a reply, a decline, an
+// answer, a delegation, a runtime's completion) and returns its snapshot. A
+// second claim is refused with ErrAskResolving until Release;
+// ErrAlreadyAnswered when the ask is closed, ErrAskNotFound when unknown.
+//
+// The invariant: an ask's recipient changes, and its holder resolves it, only
+// under the claim. So checks made on the claimed snapshot (who holds it, is it
+// a question) stay true until Release, and a reply reaches the asker at most
+// once.
+func (t *AskTracker) Claim(cid string) (*Ask, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	ask, ok := t.asks[cid]
 	switch {
 	case !ok:
-		return ErrAskNotFound
+		return nil, ErrAskNotFound
 	case ask.Closed:
-		return ErrAlreadyAnswered
+		return nil, ErrAlreadyAnswered
 	}
 	if _, busy := t.resolving[cid]; busy {
-		return ErrAskResolving
+		return nil, ErrAskResolving
 	}
 	t.resolving[cid] = struct{}{}
-	return nil
+	return ask.clone(), nil
 }
 
-// EndResolve releases a BeginResolve claim. Idempotent.
-func (t *AskTracker) EndResolve(cid string) {
+// Release ends a Claim. Idempotent.
+func (t *AskTracker) Release(cid string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.resolving, cid)
+}
+
+// claimedLocked reports whether cid is claimed. Caller holds t.mu.
+func (t *AskTracker) claimedLocked(cid string) bool {
+	_, held := t.resolving[cid]
+	return held
 }
 
 // DelegateParams hands an open ask to a new recipient.
@@ -408,7 +420,8 @@ type DelegateParams struct {
 
 // Delegate retargets an open ask to p.To, keeping its correlation id, and
 // appends the hop. The asker, the reply path and the reply mode are
-// unchanged. It returns the hop so a failed delivery can UndoDelegation it.
+// unchanged. The caller holds the ask's Claim through delivery, so it can
+// UndoDelegation the returned hop if delivery fails.
 func (t *AskTracker) Delegate(ctx context.Context, cid string, p DelegateParams) (*Ask, Delegation, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -418,15 +431,14 @@ func (t *AskTracker) Delegate(ctx context.Context, cid string, p DelegateParams)
 		return nil, Delegation{}, ErrAskNotFound
 	case ask.Closed:
 		return nil, Delegation{}, ErrAlreadyAnswered
+	case !t.claimedLocked(cid):
+		return nil, Delegation{}, ErrNotClaimed
 	case p.By != "" && p.By != ask.ToPeerID:
 		return nil, Delegation{}, ErrNotHolder
 	case p.To == ask.ToPeerID || p.To == ask.FromPeerID:
 		return nil, Delegation{}, ErrDelegateTarget
 	case len(ask.Delegations) >= MaxDelegations:
 		return nil, Delegation{}, ErrDelegationLimit
-	}
-	if _, busy := t.resolving[cid]; busy {
-		return nil, Delegation{}, ErrAskResolving
 	}
 	if _, q := t.quiescing[p.To]; q {
 		return nil, Delegation{}, ErrQuiesced
@@ -441,13 +453,15 @@ func (t *AskTracker) Delegate(ctx context.Context, cid string, p DelegateParams)
 	return ask.clone(), hop, nil
 }
 
-// UndoDelegation reverts hop when it is still the ask's last one and the ask
-// is open, returning the ask to the delegator. Reports whether it did.
+// UndoDelegation reverts hop, under the Claim that made it, returning the ask
+// to the delegator. It reports false, changing nothing, when the ask was
+// closed or evicted meanwhile (by a path that does not claim) or hop is not
+// its last one.
 func (t *AskTracker) UndoDelegation(ctx context.Context, cid string, hop Delegation) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	ask, ok := t.asks[cid]
-	if !ok || ask.Closed || len(ask.Delegations) == 0 {
+	if !ok || ask.Closed || len(ask.Delegations) == 0 || !t.claimedLocked(cid) {
 		return false
 	}
 	last := ask.Delegations[len(ask.Delegations)-1]
@@ -529,8 +543,18 @@ func questionHasOption(question map[string]any, id string) bool {
 
 // Answer records the typed answer to a question ask (first valid wins), closes
 // it as "answered", and resolves any waiter. Returns ErrAskNotFound,
-// ErrAlreadyAnswered, or a validation error.
+// ErrAlreadyAnswered, ErrAskResolving while the ask is claimed, or a
+// validation error.
 func (t *AskTracker) Answer(ctx context.Context, cid string, ans Answer) (*Ask, error) {
+	return t.answer(cid, ans, false)
+}
+
+// AnswerClaimed is Answer for a caller holding the ask's Claim.
+func (t *AskTracker) AnswerClaimed(ctx context.Context, cid string, ans Answer) (*Ask, error) {
+	return t.answer(cid, ans, true)
+}
+
+func (t *AskTracker) answer(cid string, ans Answer, claimed bool) (*Ask, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	ask, ok := t.asks[cid]
@@ -542,7 +566,10 @@ func (t *AskTracker) Answer(ctx context.Context, cid string, ans Answer) (*Ask, 
 	if ask.Closed || ask.Answer != nil {
 		return nil, ErrAlreadyAnswered
 	}
-	if _, busy := t.resolving[cid]; busy {
+	if t.claimedLocked(cid) != claimed {
+		if claimed {
+			return nil, ErrNotClaimed
+		}
 		return nil, ErrAskResolving
 	}
 	if err := validateAnswer(ask.Question, ans); err != nil {

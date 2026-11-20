@@ -147,7 +147,7 @@ func TestMessagesAndDelegationEndToEnd(t *testing.T) {
 	toGamma := gamma.waitFrame(t, "ask", func(f map[string]any) bool { return f["correlation_id"] == cid })
 	gammaMsg, _ := toGamma["message_id"].(string)
 	nudge, _ := toGamma["text"].(string)
-	if !strings.HasPrefix(nudge, "[message "+gammaMsg+": ask from @"+alpha.name) || strings.Contains(nudge, "tokenizer.") || !strings.Contains(nudge, `ack("`+cid+`")`) {
+	if !strings.HasPrefix(nudge, "[message "+gammaMsg+": ask from @"+beta.name) || strings.Contains(nudge, "tokenizer.") || !strings.Contains(nudge, `ack("`+cid+`")`) {
 		t.Fatalf("gamma's pull frame = %v", toGamma)
 	}
 
@@ -156,14 +156,14 @@ func TestMessagesAndDelegationEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if listed.Delivery != "pull" || len(listed.Messages) != 1 || listed.Messages[0].MessageID != gammaMsg || listed.Messages[0].Text != nil ||
-		listed.Messages[0].Preview != "[delegated by @"+beta.name+": owns the tokenizer]" {
+		listed.Messages[0].Preview != "[delegated by @"+beta.name+" for @"+alpha.name+": owns the tokenizer]" {
 		t.Fatalf("gamma's list = %+v", listed)
 	}
 	if body, _ := call(alpha, "read_message", map[string]any{"message_id": gammaMsg}); !strings.Contains(body, "No message with id") {
 		t.Fatalf("alpha read gamma's message: %q", body)
 	}
 	body := mustCall(gamma, "read_message", map[string]any{"message_id": gammaMsg, "peek": true})
-	if !strings.HasPrefix(body, `<peer-message from="@`+alpha.name+`" to="@`+gamma.name+`" type="ask" correlation-id="`+cid+`" message-id="`+gammaMsg+`">`) ||
+	if !strings.HasPrefix(body, `<peer-message from="@`+beta.name+`" to="@`+gamma.name+`" type="ask" correlation-id="`+cid+`" message-id="`+gammaMsg+`">`) ||
 		!strings.Contains(body, "The diff touches the tokenizer.") {
 		t.Fatalf("gamma's fetched body = %q", body)
 	}

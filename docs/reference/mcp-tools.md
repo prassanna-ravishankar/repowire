@@ -167,8 +167,9 @@ delegate(correlation_id: str, peer_name: str, note: str | None = None, circle: s
 
 Hand an ask you received to a better-placed peer. The ask keeps its
 correlation id and its asker; only the recipient changes, and the hop is
-recorded. The new recipient receives the ask as from the original asker, with a
-first line `[delegated by @you: note]`, the original attachments and question.
+recorded. The new recipient receives the ask from you, with a first line
+`[delegated by @you for @asker: note]`, the original attachments and question
+(never as the asker, so your note cannot carry the asker's authority).
 Your Stop-hook reminder clears and theirs starts. Their reply reaches the
 original asker exactly once, framed `[ack #cid from @them via @you]`.
 

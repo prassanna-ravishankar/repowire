@@ -33,9 +33,9 @@ A reply reaches the asker at most once: a reply claims the ask before it is sent
 
 ## Delegation
 
-`delegate(cid, peer, note)` moves an open ask from its recipient to another peer. The correlation id, the asker, and the reply path do not change; the recipient does, and the hop is recorded on the ask, in the trace ledger (`delegated`), and on the event stream (`ask_delegated`). The new recipient sees the ask from the original asker with a `[delegated by @peer: note]` first line. Its reply reaches the asker framed `[ack #cid from @new via @old]`, and the old recipient can no longer resolve the ask.
+`delegate(cid, peer, note)` moves an open ask from its recipient to another peer. The correlation id, the asker, and the reply path do not change; the recipient does, and the hop is recorded on the ask, in the trace ledger (`delegated`), and on the event stream (`ask_delegated`). The new recipient receives the ask from the delegator, never as the asker, with a `[delegated by @old for @asker: note]` first line, so a peer's note can never arrive with the asker's (possibly the human's) authority. Its reply reaches the asker framed `[ack #cid from @new via @old]`, and the old recipient can no longer resolve the ask.
 
-Every check runs before the ask moves, and a delivery that fails puts it back: delegating to an offline peer is refused and the ask stays with the delegator. Asks between machines and a live job's dispatch ask are not delegable. A job is the durable form of handed-off work (owner, assignee, attempts, result); delegation is the light form for an ask. See [`delegate`](../reference/mcp-tools.md#delegate).
+The whole hand-off runs under the ask's claim, the same one replies take, so no reply, answer or second hand-off can interleave with it; every check runs before the ask moves, and a delivery that fails puts it back: delegating to an offline peer is refused and the ask stays with the delegator. Asks between machines and a live job's dispatch ask are not delegable. A job is the durable form of handed-off work (owner, assignee, attempts, result); delegation is the light form for an ask. See [`delegate`](../reference/mcp-tools.md#delegate).
 
 ## Message ids and pull delivery
 

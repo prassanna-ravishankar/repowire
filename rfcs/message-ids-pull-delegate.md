@@ -132,10 +132,12 @@ Effects:
 
 1. The tracker retargets the ask atomically (`ToPeerID`, `ToPeerName`) and
    appends a hop `{from, to, note, at}`. The correlation id is unchanged.
-2. The ask is delivered to the new recipient as from the original asker,
-   with a first line `[delegated by @B: note]`, the original attachments and
-   question. Reminders follow `ToPeerID`, so they move to the new holder and
-   stop for the old one.
+2. The ask is delivered to the new recipient from the delegator, with a first
+   line `[delegated by @B for @A: note]`, the original attachments and
+   question. It is never sent as the asker: B wrote the note and chose to pass
+   the body on, so B's words must not carry A's authority (if A is the human,
+   that would frame B's note as a human instruction). Reminders follow
+   `ToPeerID`, so they move to the new holder and stop for the old one.
 3. If delivery fails (no connection, injection refused, unknown target) the
    hop is undone and the error is returned: the ask stays with the delegator.
    A busy target is not a failure; the ask waits for its Stop reminder, as a
@@ -144,9 +146,15 @@ Effects:
    `ask_delegated` event. `/asks/pending` and `wait_on_ack` include the chain.
 5. The reply reaches the original asker framed `[ack #cid from @C via @B]`.
 
-**Exactly once.** A resolution (ack with a body, decline, answer) first claims
-the ask in the tracker; a second concurrent resolution, or a delegation racing
-it, is refused with 409 instead of sending a second reply. A former holder's
+**One claim per ask.** The recipient changes, and the holder resolves the
+ask, only under the tracker's per-ask claim: bare ack, ack with a body,
+decline, answer, delegation (checks, retarget, delivery and rollback
+together), and a runtime's completion (an ACP reply, dropped when its peer no
+longer holds the ask). Checks run on the claimed snapshot, so they stay true
+until release. A second claimant is refused with 409 instead of acting.
+
+**Exactly once.** So a second concurrent resolution, or a delegation racing
+it, is refused instead of sending a second reply. A former holder's
 ack, decline or answer is refused with 409 naming the current holder. Before
 this change two concurrent acks with a body could both deliver: with sends
 held open, 16 racing acks delivered 16 replies. The claim makes it one.
