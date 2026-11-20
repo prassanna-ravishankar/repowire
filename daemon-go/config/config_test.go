@@ -322,3 +322,22 @@ func TestLoadMistypedApprovalFailsClosedThroughAnAlias(t *testing.T) {
 		t.Fatalf("approval through an alias = %+v; want enabled", cfg.Experiments.RemoteToolApproval)
 	}
 }
+
+// Review #561 round 3: keys that arrive through a merge key follow the same
+// rules as keys written out: a core key still refuses, approval still fails
+// closed, and an explicit key beats a merged one.
+func TestLoadMergedKeysFollowTheSameRules(t *testing.T) {
+	if _, err := tryLoadYAML(t, "daemon:\n  host: 0.0.0.0\n  <<: {auth_token: [secret]}\n"); err == nil {
+		t.Error("a mistyped auth_token through a merge key loaded")
+	}
+	cfg, err := tryLoadYAML(t, "experiments:\n  <<: {remote_tool_approval: {enabled: [true]}}\ndaemon:\n  <<: {port: 9200, heartbeat_interval: soon}\n  port: 9201\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Experiments.RemoteToolApproval.Enabled {
+		t.Errorf("approval through a merge key = %+v; want enabled", cfg.Experiments.RemoteToolApproval)
+	}
+	if cfg.Daemon.Port != 9201 || !hasWarning(cfg, "daemon.heartbeat_interval") {
+		t.Errorf("port %d warnings %q; want the explicit 9201 and a warning naming the merged key", cfg.Daemon.Port, cfg.Warnings)
+	}
+}

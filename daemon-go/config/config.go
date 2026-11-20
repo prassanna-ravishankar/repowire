@@ -314,8 +314,9 @@ func decodeSection[T any](node *yaml.Node, dst *T, path string) (warnings, faile
 		*dst = whole
 		return nil, nil
 	}
-	for i := 0; i+1 < len(n.Content); i += 2 {
-		key, value := n.Content[i], n.Content[i+1]
+	pairs := flattenMerges(n)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		key, value := pairs[i], pairs[i+1]
 		one := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{key, value}}
 		trial, err := clone(*dst)
 		if err == nil {
@@ -346,6 +347,49 @@ func nested(parent *yaml.Node, warnings, failed []string, blocks map[string]func
 		out = append(out, decode(child, path+"."+key)...)
 	}
 	return out
+}
+
+// flattenMerges returns a mapping's key/value pairs with merge keys (<<)
+// expanded in place of the merge, as decoding would see them: an explicit key
+// beats a merged one, and an earlier merge beats a later one. Recovery then
+// judges each merged key like one written out.
+func flattenMerges(n *yaml.Node) []*yaml.Node {
+	seen := map[string]bool{}
+	var out, merged []*yaml.Node
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if k := n.Content[i]; k.Tag == "!!merge" || k.Value == "<<" {
+			continue
+		}
+		seen[n.Content[i].Value] = true
+		out = append(out, n.Content[i], n.Content[i+1])
+	}
+	var add func(*yaml.Node)
+	add = func(m *yaml.Node) {
+		for m != nil && m.Kind == yaml.AliasNode {
+			m = m.Alias
+		}
+		switch {
+		case m == nil:
+		case m.Kind == yaml.SequenceNode:
+			for _, item := range m.Content {
+				add(item)
+			}
+		case m.Kind == yaml.MappingNode:
+			pairs := flattenMerges(m)
+			for i := 0; i+1 < len(pairs); i += 2 {
+				if !seen[pairs[i].Value] {
+					seen[pairs[i].Value] = true
+					merged = append(merged, pairs[i], pairs[i+1])
+				}
+			}
+		}
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if k := n.Content[i]; k.Tag == "!!merge" || k.Value == "<<" {
+			add(n.Content[i+1])
+		}
+	}
+	return append(out, merged...)
 }
 
 // mappingValue returns the value node for key in a mapping node, or nil. It
