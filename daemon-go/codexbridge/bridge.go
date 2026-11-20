@@ -62,13 +62,17 @@ type Bridge struct {
 	boundary   proto.CircleBoundary
 }
 
-// tombstone is a closed thread's state. Killed threads stay off the mesh; a
-// killed thread seen going active again was resumed, and every discovery path
-// registers it fresh until one succeeds.
+// tombstone is a closed thread's state. A closing thread is being torn down
+// (marker, interrupt, unsubscribe); a resume seen meanwhile is held until the
+// teardown ends. Killed threads stay off the mesh; a killed thread seen going
+// active again was resumed, and every discovery path registers it fresh until
+// one succeeds.
 type tombstone int
 
 const (
-	threadKilled tombstone = iota + 1
+	threadClosing tombstone = iota + 1
+	threadClosingResumed
+	threadKilled
 	threadReopening
 )
 
@@ -461,7 +465,7 @@ func (b *Bridge) addThread(thread map[string]any, fresh bool) {
 	}
 	b.threadsMu.Lock()
 	switch b.tombstoneLocked(id) {
-	case threadKilled:
+	case threadClosing, threadClosingResumed, threadKilled:
 		b.threadsMu.Unlock()
 		return
 	case threadReopening:
@@ -548,6 +552,13 @@ func (b *Bridge) reopenClosed(id string, active bool) (fresh, ok bool) {
 	b.threadsMu.Lock()
 	defer b.threadsMu.Unlock()
 	switch b.tombstoneLocked(id) {
+	case threadClosing:
+		if active {
+			b.closed[id] = threadClosingResumed // endThread reopens it when done
+		}
+		return false, false
+	case threadClosingResumed:
+		return false, false
 	case threadKilled:
 		if !active {
 			return false, false
@@ -594,8 +605,11 @@ func (b *Bridge) endThread(p *threadPeer) {
 		return
 	}
 	delete(b.threads, p.id)
-	b.markClosedLocked(p.id, threadKilled)
+	b.markClosedLocked(p.id, threadClosing)
 	b.threadsMu.Unlock()
+	// Nothing reopens the thread until this teardown is done, so the marker and
+	// the unsubscribe cannot land on a resumed registration.
+	defer b.finishClosing(p.id)
 	if err := hooks.WriteRuntimeIdentity("codex", p.id, map[string]any{"mesh_closed": true}); err != nil {
 		log.Printf("codex bridge: persist closed marker for %s: %v", p.id, err)
 	}
@@ -614,6 +628,29 @@ func (b *Bridge) endThread(p *threadPeer) {
 		log.Printf("codex bridge: unsubscribe closed thread %s: %v", p.id, err)
 	}
 	log.Printf("codex bridge: thread %s was closed on the mesh; ended it and will not re-register it", p.id)
+}
+
+// finishClosing ends id's teardown: it stays killed, or, when it was resumed
+// meanwhile, it is rediscovered fresh now.
+func (b *Bridge) finishClosing(id string) {
+	b.threadsMu.Lock()
+	resumed := b.closed[id] == threadClosingResumed
+	if resumed {
+		b.closed[id] = threadReopening
+	} else {
+		b.closed[id] = threadKilled
+	}
+	b.threadsMu.Unlock()
+	if !resumed {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
+		defer cancel()
+		if err := b.loadThread(ctx, id, true); err != nil {
+			log.Printf("codex bridge: rediscover resumed thread %s: %v", id, err)
+		}
+	}()
 }
 
 func (b *Bridge) closeThread(id string) {

@@ -986,3 +986,98 @@ func TestRestartedBridgeKeepsKilledThreadOffTheMesh(t *testing.T) {
 		t.Fatal("an idle status change reopened a killed thread")
 	}
 }
+
+// #530: a resume seen while a killed thread is still being torn down waits for
+// the teardown, so the old teardown's marker and unsubscribe cannot land on the
+// resumed registration.
+func TestResumeDuringTeardownWaitsForIt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stubTmuxPlacement(t, tmuxPlacement{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	threadID, cwd := "thread-resumed-mid-kill", t.TempDir()
+	// The cached certificate names the closed peer, so its claim is refused.
+	if err := hooks.WriteRuntimeIdentity("codex", threadID, map[string]any{"mesh_context_injected": true, "birth_certificate": map[string]any{
+		"nonce": "proof", "peer_id": "repow-closed", "runtime_session_id": threadID,
+		"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	unsubscribing, release := make(chan struct{}), make(chan struct{})
+	var reads atomic.Int32
+	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := websocket.Accept(w, r, nil)
+		defer conn.CloseNow()
+		var writeMu sync.Mutex
+		for {
+			var request map[string]any
+			if wsjson.Read(ctx, conn, &request) != nil {
+				return
+			}
+			go func(request map[string]any) {
+				result := map[string]any{}
+				switch request["method"] {
+				case "thread/unsubscribe":
+					close(unsubscribing)
+					<-release
+				case "thread/read":
+					reads.Add(1)
+					result["thread"] = map[string]any{"id": threadID, "cwd": cwd, "status": map[string]any{"type": "active"}}
+				}
+				writeMu.Lock()
+				defer writeMu.Unlock()
+				_ = wsjson.Write(ctx, conn, map[string]any{"id": request["id"], "result": result})
+			}(request)
+		}
+	}))
+	defer appServer.Close()
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["peer_id"] != nil || r.URL.Path == "/peers/identity/validate" {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{"detail": "peer: peer_closed: an operator closed this peer_id"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "repow-fresh", "display_name": "repo-codex", "circle": "0", "role": "agent"})
+	}))
+	defer daemon.Close()
+	appConn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(appServer.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &Bridge{ctx: ctx, app: appConn, pending: map[int64]chan rpcReply{}, threads: map[string]*threadPeer{}, daemonHTTP: daemon.URL}
+	go b.readApp(appConn)
+	b.ensureThread(map[string]any{"id": threadID, "cwd": cwd, "status": map[string]any{"type": "idle"}})
+
+	select {
+	case <-unsubscribing:
+	case <-time.After(2 * time.Second):
+		t.Fatal("teardown never unsubscribed")
+	}
+	b.handleNotification("thread/status/changed", map[string]any{"threadId": threadID, "status": map[string]any{"type": "active"}})
+	time.Sleep(100 * time.Millisecond)
+	if reads.Load() != 0 || b.thread(threadID) != nil {
+		t.Fatal("the resume was acted on before the teardown finished")
+	}
+	close(release)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if p := b.thread(threadID); p != nil {
+			p.mu.Lock()
+			id := p.peerID
+			p.mu.Unlock()
+			if id == "repow-fresh" {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the resumed thread did not rejoin after the teardown")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if closed, _ := hooks.ReadRuntimeIdentity("codex", threadID)["mesh_closed"].(bool); closed {
+		t.Fatal("the old teardown's closed marker outlived the resumed registration")
+	}
+}
