@@ -468,12 +468,21 @@ func tmuxValue(paneID, format string) (string, bool) {
 	return value, value != ""
 }
 
+// panePID returns the pane's root pid; (0, true) when the pane is gone. The
+// pane echoes its own id: tmux 3.5 answers a missing target with empty formats
+// and exit 0 from inside a client, which must read as gone, not inconclusive,
+// or the pane's ws-hook never exits.
 func panePID(paneID string) (int, bool) {
-	value, conclusive := tmuxValue(paneID, "#{pane_pid}")
-	if !conclusive || value == "" {
-		return 0, conclusive
+	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{pane_id} #{pane_pid}").Output()
+	if err != nil {
+		var exit *exec.ExitError
+		return 0, errors.As(err, &exit) // tmux answered: no server, or no such pane
 	}
-	pid, err := strconv.Atoi(value)
+	fields := strings.Fields(string(out))
+	if len(fields) != 2 || fields[0] != paneID {
+		return 0, true
+	}
+	pid, err := strconv.Atoi(fields[1])
 	return pid, err == nil
 }
 
@@ -513,12 +522,22 @@ func capturePaneBaseline(paneID string) (string, int) {
 	if err != nil {
 		return "", 0
 	}
+	return paneTreeFind(root, children, commands, func(cmd string) bool { return cmd != "" && !shellCommands[cmd] })
+}
+
+// paneTreeFind returns the first process in the pane's tree, root first, whose
+// command satisfies match. A gone pane has no root (tmux reports no pid) and so
+// no tree: searching from pid 0 would walk every process on the machine, and an
+// orphaned ws-hook would adopt launchd or another session's agent as its own.
+func paneTreeFind(root int, children map[int][]int, commands map[int]string, match func(string) bool) (string, int) {
+	if root <= 0 {
+		return "", 0
+	}
 	queue := []int{root}
 	for len(queue) > 0 {
 		pid := queue[0]
 		queue = queue[1:]
-		cmd := strings.TrimPrefix(commands[pid], "-")
-		if cmd != "" && !shellCommands[cmd] {
+		if cmd := strings.TrimPrefix(commands[pid], "-"); match(cmd) {
 			return cmd, pid
 		}
 		queue = append(queue, children[pid]...)
@@ -549,18 +568,8 @@ func paneSafe(paneID, expectedCommand string) *bool {
 		v := command != "" && !shellCommands[command]
 		return &v
 	}
-	queue := []int{root}
-	for len(queue) > 0 {
-		pid := queue[0]
-		queue = queue[1:]
-		cmd := strings.TrimPrefix(commands[pid], "-")
-		if cmd == expectedCommand {
-			v := true
-			return &v
-		}
-		queue = append(queue, children[pid]...)
-	}
-	v := false
+	_, pid := paneTreeFind(root, children, commands, func(cmd string) bool { return cmd == expectedCommand })
+	v := pid > 0
 	return &v
 }
 
@@ -576,16 +585,8 @@ func findExpectedAgentPID(paneID, expectedCommand string) int {
 	if err != nil {
 		return 0
 	}
-	queue := []int{root}
-	for len(queue) > 0 {
-		pid := queue[0]
-		queue = queue[1:]
-		if strings.TrimPrefix(commands[pid], "-") == expectedCommand {
-			return pid
-		}
-		queue = append(queue, children[pid]...)
-	}
-	return 0
+	_, pid := paneTreeFind(root, children, commands, func(cmd string) bool { return cmd == expectedCommand })
+	return pid
 }
 
 // ConsumeSpawnHint claims the next queued spawn identity for a runtime path.
