@@ -235,3 +235,45 @@ func TestLoadCoreKeyErrorsStayFatal(t *testing.T) {
 		}
 	}
 }
+
+// Review #561: decoding key by key must not change a value that loaded before.
+// A scalar that reads as a number in YAML keeps its exact text in a string
+// field (a leading zero, an octal-looking token).
+func TestLoadKeepsScalarTextExactly(t *testing.T) {
+	cfg, err := tryLoadYAML(t, "daemon:\n  auth_token: 012345\n  heartbeat_interval: soon\ntelegram:\n  chat_id: 00042\n  bot_token: [x]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Daemon.AuthToken != "012345" || cfg.Telegram.ChatID != "00042" {
+		t.Fatalf("auth_token %q chat_id %q; want the text as written", cfg.Daemon.AuthToken, cfg.Telegram.ChatID)
+	}
+}
+
+// Review #561: a security control that does not decode fails closed. A
+// mistyped remote_tool_approval.enabled turns approval on rather than off.
+func TestLoadMistypedApprovalFailsClosed(t *testing.T) {
+	for name, body := range map[string]string{
+		"enabled mistyped": "experiments:\n  remote_tool_approval:\n    enabled: [true]\n",
+		"block unreadable": "experiments:\n  remote_tool_approval: [enabled]\n",
+	} {
+		cfg, err := tryLoadYAML(t, body)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !cfg.Experiments.RemoteToolApproval.Enabled || len(cfg.Experiments.RemoteToolApproval.GatedTools) == 0 {
+			t.Errorf("%s: approval %+v; want enabled with the default gated tools", name, cfg.Experiments.RemoteToolApproval)
+		}
+		if !hasWarning(cfg, "remote_tool_approval") {
+			t.Errorf("%s: no warning: %q", name, cfg.Warnings)
+		}
+	}
+}
+
+// Review #561: an experiments block that is not a mapping is an optional
+// section like any other, for routing's probe too.
+func TestLoadUnreadableExperimentsBlockDegrades(t *testing.T) {
+	cfg, err := tryLoadYAML(t, "experiments: []\ndaemon:\n  port: 9101\n")
+	if err != nil || cfg.Daemon.Port != 9101 || !hasWarning(cfg, "experiments") {
+		t.Fatalf("experiments: [] = %v, port %d, warnings %q", err, cfg.Daemon.Port, cfg.Warnings)
+	}
+}

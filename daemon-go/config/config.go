@@ -260,7 +260,13 @@ func decodeFile(raw []byte, cfg *Config) error {
 	warnings, failed = decodeSection(&file.Experiments, &cfg.Experiments, "experiments")
 	warn(nested(&file.Experiments, warnings, failed, map[string]func(*yaml.Node, string) []string{
 		"remote_tool_approval": func(n *yaml.Node, p string) []string {
-			w, _ := decodeSection(n, &cfg.Experiments.RemoteToolApproval, p)
+			w, f := decodeSection(n, &cfg.Experiments.RemoteToolApproval, p)
+			// A security control fails closed: when whether approval is on
+			// cannot be read, it is on (with the default gated tools).
+			if slices.Contains(f, "") || slices.Contains(f, "enabled") {
+				cfg.Experiments.RemoteToolApproval.Enabled = true
+				w = append(w, "config: experiments.remote_tool_approval is enabled because its setting could not be read")
+			}
 			return w
 		},
 	}, "experiments"))
@@ -275,12 +281,41 @@ func decodeFile(raw []byte, cfg *Config) error {
 	return nil
 }
 
-// decodeSection is decodeKeys for a section that may be absent.
+// decodeSection decodes a section that may be absent into dst, whole when it
+// can and otherwise key by key, keeping each key that decodes. It works on
+// the file's own nodes, so a value keeps exactly what it decoded to before
+// (a string field holding 012345 stays "012345"). failed names each dropped
+// key, aligned with warnings; "" means the section was not a mapping.
 func decodeSection[T any](node *yaml.Node, dst *T, path string) (warnings, failed []string) {
-	if node.Kind == 0 {
+	n := node
+	if n.Kind == yaml.AliasNode {
+		n = n.Alias
+	}
+	if n.Kind == 0 || (n.Kind == yaml.ScalarNode && n.Tag == "!!null") {
 		return nil, nil
 	}
-	return decodeKeys(node, dst, path)
+	if n.Kind != yaml.MappingNode {
+		return []string{fmt.Sprintf("config: %s must be a mapping; ignored", path)}, []string{""}
+	}
+	if whole, err := clone(*dst); err == nil && n.Decode(&whole) == nil {
+		*dst = whole
+		return nil, nil
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key, value := n.Content[i], n.Content[i+1]
+		one := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{key, value}}
+		trial, err := clone(*dst)
+		if err == nil {
+			err = one.Decode(&trial)
+		}
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("config: %s.%s is ignored: %v", path, key.Value, err))
+			failed = append(failed, key.Value)
+			continue
+		}
+		*dst = trial
+	}
+	return warnings, failed
 }
 
 // nested replaces the warning for a failed key that is itself a block with
@@ -291,7 +326,7 @@ func nested(parent *yaml.Node, warnings, failed []string, blocks map[string]func
 	for i, key := range failed {
 		decode, ok := blocks[key]
 		child := mappingValue(parent, key)
-		if !ok || child == nil {
+		if !ok || child == nil || key == "" {
 			out = append(out, warnings[i])
 			continue
 		}
