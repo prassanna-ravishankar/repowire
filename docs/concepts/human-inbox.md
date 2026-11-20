@@ -78,7 +78,7 @@ A routing strategy never picks the human unless `routing.allow_human_targets: tr
 
 - A surface that is offline, slow, or failing never blocks the sender, daemon startup, or shutdown. The item is already stored, and the push records `surface_failed`.
 - Shutdown cancels in-flight pushes and records them as failed before the store closes.
-- A surface gets only the items stored while it is live. An item stored while the Telegram bridge is down stays in the inbox (the CLI and dashboard show it) but is not sent to Telegram when the bridge reconnects ([#480](https://github.com/prassanna-ravishankar/repowire/issues/480)).
+- A surface that reconnects is sent what it missed. When the Telegram bridge (or another surface peer) connects, the daemon pushes the unread items that have no push record for it and are no older than the newest item it does have one for: the items stored while it was down. Only the newest 20 go, oldest first; older ones stay in the inbox (the CLI and dashboard show them) and are not sent on later connects. Items already read, and broadcasts the surface did not opt into, are skipped. Each item reaches a surface at most once, even when a catch-up races its own push. Failed pushes are not retried.
 - The Telegram bridge retries network failures and rate limits a bounded number of times before it reports a failure. A network retry can duplicate a message whose response was lost.
 
 ## Related

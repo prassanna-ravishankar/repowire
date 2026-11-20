@@ -516,3 +516,115 @@ func TestInboxLocalSurfaceReceiptsPresenceAndBroadcastOptIn(t *testing.T) {
 		t.Fatalf("dashboard took a broadcast it did not opt in to: %v", dash.items)
 	}
 }
+
+// itemTexts lists the texts of the inbox_item frames a surface was handed.
+func itemTexts(frames []map[string]any) []string {
+	var out []string
+	for _, f := range frames {
+		if item, _ := f["item"].(map[string]any); item != nil {
+			out = append(out, item["text"].(string))
+		}
+	}
+	return out
+}
+
+func (f *inboxFixture) notifyHuman(t *testing.T, text string) string {
+	t.Helper()
+	res, err := f.delivery.Notify(context.Background(), NotifyParams{FromPeer: "alpha", ToPeer: "prass", Text: text, DeliveryID: "notif-delivery-" + text})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.settle()
+	time.Sleep(2 * time.Millisecond) // distinct created_at (millisecond precision)
+	return res.Inbox.ItemID
+}
+
+// TestInboxCatchUpPushesWhatASurfaceMissed (#480): items stored while a
+// surface was offline reach it when it reconnects, oldest first, once.
+func TestInboxCatchUpPushesWhatASurfaceMissed(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	ctx := context.Background()
+	f.notifyHuman(t, "before")
+	f.transport.connected[f.telegram.PeerID] = false
+	f.notifyHuman(t, "a")
+	read := f.notifyHuman(t, "b")
+	f.notifyHuman(t, "c")
+	item, _ := f.store.InboxItem(ctx, read)
+	if err := f.inbox.MarkRead(ctx, item, "cli"); err != nil {
+		t.Fatal(err)
+	}
+
+	f.transport.connected[f.telegram.PeerID] = true
+	f.inbox.CatchUp(f.telegram)
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "before,a,c" {
+		t.Fatalf("telegram saw %s, want before,a,c (read items skipped, oldest first)", got)
+	}
+	if rows := f.stages(t, "notif-delivery-a"); stageNames(rows)[len(rows)-1] != "surface_pushed" {
+		t.Fatalf("catch-up push not traced: %v", stageNames(rows))
+	}
+
+	f.inbox.CatchUp(f.telegram) // a second connect pushes nothing again
+	f.settle()
+	if n := len(f.transport.framesFor(f.telegram.PeerID)); n != 3 {
+		t.Fatalf("repeat catch-up re-pushed: %d frames", n)
+	}
+	if n := len(f.transport.framesFor(f.slack.PeerID)); n != 4 {
+		t.Fatalf("slack was live throughout and must not be caught up: %d frames", n)
+	}
+}
+
+// TestInboxCatchUpIsBoundedToTheNewest: a long outage pushes only the newest
+// items, in order, and the older ones do not trickle in on later connects.
+func TestInboxCatchUpIsBoundedToTheNewest(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	f.inbox.catchUpLimit = 2
+	f.transport.connected[f.telegram.PeerID] = false
+	for _, text := range []string{"1", "2", "3", "4"} {
+		f.notifyHuman(t, text)
+	}
+	f.transport.connected[f.telegram.PeerID] = true
+	f.inbox.CatchUp(f.telegram)
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "3,4" {
+		t.Fatalf("telegram saw %s, want 3,4", got)
+	}
+
+	f.transport.connected[f.telegram.PeerID] = false
+	f.notifyHuman(t, "5")
+	f.transport.connected[f.telegram.PeerID] = true
+	f.inbox.CatchUp(f.telegram)
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "3,4,5" {
+		t.Fatalf("telegram saw %s, want 3,4,5 (1 and 2 predate what it already has)", got)
+	}
+}
+
+// TestInboxCatchUpKeepsBroadcastOptIn: a broadcast the surface did not opt
+// into is not pushed by catch-up either.
+func TestInboxCatchUpKeepsBroadcastOptIn(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{Broadcast: true})
+	f.transport.connected[f.telegram.PeerID] = false
+	if _, err := f.delivery.Broadcast(context.Background(), "alpha", "deploy at noon", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	f.settle()
+	f.transport.connected[f.telegram.PeerID] = true
+	f.inbox.CatchUp(f.telegram)
+	f.settle()
+	if frames := f.transport.framesFor(f.telegram.PeerID); len(frames) != 0 {
+		t.Fatalf("telegram did not opt into broadcasts, got %+v", frames)
+	}
+}
+
+// TestInboxPushIsOncePerSurface: a catch-up racing the item's own push
+// renders it once.
+func TestInboxPushIsOncePerSurface(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	id := f.notifyHuman(t, "x")
+	item, _ := f.store.InboxItem(context.Background(), id)
+	f.inbox.push(item, surfaceTarget{name: "telegram", peer: f.telegram})
+	if n := len(f.transport.framesFor(f.telegram.PeerID)); n != 1 {
+		t.Fatalf("item pushed %d times to one surface", n)
+	}
+}

@@ -300,6 +300,24 @@ func TestHumanInboxEndToEnd(t *testing.T) {
 	s.waitStage(t, notified["delivery_id"].(string), "inbox_read")
 }
 
+// TestHumanInboxCatchUpOnReconnect (#480): an item stored while the Telegram
+// bridge was down is pushed to it when it connects.
+func TestHumanInboxCatchUpOnReconnect(t *testing.T) {
+	s := newInboxStack(t)
+	agent := s.connect(t, map[string]any{"display_name": "alpha", "circle": "1", "backend": "claude-code", "role": "agent", "path": "/work/alpha"}, nil)
+	notified := decodeBody(t, postJSON(t, s.srv.URL+"/notify", map[string]any{"from_peer": string(agent.id), "to_peer": "prass", "text": "while you were away"}))
+	if hook, _ := notified["hook_delivery"].(map[string]any); fmt.Sprint(hook["surfaces"]) != "[]" {
+		t.Fatalf("no surface was connected, receipt = %+v", notified)
+	}
+	bridge := s.connect(t, map[string]any{"display_name": "telegram", "circle": "default", "backend": "claude-code",
+		"role": "service", "path": "/telegram", "capabilities": []string{proto.CapInboxSurface}}, telegramSurface)
+	pushed := bridge.waitFrame(ofType("inbox_item"))
+	if item, _ := pushed["item"].(map[string]any); item["text"] != "while you were away" {
+		t.Fatalf("catch-up pushed %+v", pushed)
+	}
+	s.waitStage(t, notified["delivery_id"].(string), "surface_pushed")
+}
+
 // TestHumanInboxSurfaceFailureIsRecordedNotFatal: a surface that reports a
 // failed push leaves the item stored and a surface_failed trace with only the
 // error class; the sender still got its receipt.

@@ -75,6 +75,10 @@ type InboxFilter struct {
 	// with every message in a chat, so a message from the human bounds what
 	// they can have seen.
 	ThroughRef int64
+	// MissedBy keeps only items that surface has no push record for and that
+	// are no older than the newest item it does have one for: what it missed
+	// while it was offline.
+	MissedBy string
 }
 
 const inboxColumns = `id, direction, kind, trace_id, trace_kind, from_peer_id, from_name,
@@ -127,6 +131,17 @@ func (s *Store) InsertInboxItem(ctx context.Context, item *InboxItem) error {
 	return nil
 }
 
+// PushedTo reports whether item has a push record for surface, whatever its
+// outcome.
+func (item *InboxItem) PushedTo(surface string) bool {
+	for _, p := range item.Pushes {
+		if p.Surface == surface {
+			return true
+		}
+	}
+	return false
+}
+
 // InboxItem loads one item with its push records; (nil, nil) when unknown.
 func (s *Store) InboxItem(ctx context.Context, id string) (*InboxItem, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+inboxColumns+` FROM inbox_items WHERE id = ?`, id)
@@ -168,6 +183,12 @@ func (s *Store) ListInbox(ctx context.Context, filter InboxFilter) ([]InboxItem,
 			THEN CAST(p.surface_ref AS INTEGER) END FROM inbox_pushes p
 			WHERE p.item_id = inbox_items.id AND p.surface = ?) DESC NULLS LAST, ` + order
 		args = append(args, filter.Surface)
+	}
+	if filter.MissedBy != "" {
+		where += ` AND NOT EXISTS (SELECT 1 FROM inbox_pushes p WHERE p.item_id = inbox_items.id AND p.surface = ?)
+			AND created_at >= COALESCE((SELECT MAX(i.created_at) FROM inbox_items i
+				JOIN inbox_pushes p ON p.item_id = i.id WHERE p.surface = ?), '')`
+		args = append(args, filter.MissedBy, filter.MissedBy)
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+inboxColumns+` FROM inbox_items WHERE `+where+
 		` ORDER BY `+order+` LIMIT ?`, append(args, limit)...)
