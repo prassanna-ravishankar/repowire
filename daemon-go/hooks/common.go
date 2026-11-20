@@ -213,12 +213,17 @@ func writeMetadata(paneID string, data map[string]any) error {
 		return nil
 	}
 	// A pid alone is not an identity: record when the agent started, so a
-	// reader can tell a recycled pid apart (#536).
+	// reader can tell a recycled pid apart (#536). The time is taken once, when
+	// a pid is first written; rewriting the same pid keeps it, so a reconnect
+	// that still names a since-recycled pid cannot re-stamp it as current.
 	if pid := intFromAny(data["agent_pid"]); pid > 0 {
-		if started, ok := ProcessStartTime(pid); ok {
+		prior := ReadPaneRuntimeMetadata(paneID)
+		if kept, _ := prior["agent_started"].(string); kept != "" && intFromAny(prior["agent_pid"]) == pid {
+			data["agent_started"] = kept
+		} else if started, ok := ProcessStartTime(pid); ok {
 			data["agent_started"] = started
 		} else {
-			delete(data, "agent_started")
+			delete(data, "agent_started") // an older pid's time must not stick to this one
 		}
 	}
 	raw, err := json.Marshal(data)

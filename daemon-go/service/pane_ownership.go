@@ -77,7 +77,7 @@ type TmuxPaneEvidence struct {
 
 // PeerAgentPIDs returns the agent pids known for p on paneID: its registered
 // agent_pid, and the one the pane's ws-hook metadata records for p's peer_id
-// unless that pid has since been recycled.
+// (rejected or not: a recycled pid is still evidence the pane's proof is stale).
 func PeerAgentPIDs(paneID string, p *proto.Peer) []int {
 	var pids []int
 	if p.AgentPID != nil && *p.AgentPID > 0 {
@@ -85,23 +85,26 @@ func PeerAgentPIDs(paneID string, p *proto.Peer) []int {
 	}
 	meta := hooks.ReadPaneRuntimeMetadata(paneID)
 	if id, _ := meta["peer_id"].(string); id != "" && id == string(p.PeerID) {
-		if pid, _ := meta["agent_pid"].(float64); pid > 0 && !recycled(int(pid), meta) {
+		if pid, _ := meta["agent_pid"].(float64); pid > 0 {
 			pids = append(pids, int(pid))
 		}
 	}
 	return pids
 }
 
-// recycled reports whether the metadata's agent pid now names another process:
-// the start time it recorded no longer matches (#536). Metadata without one
-// predates the record and is taken as is.
-func recycled(pid int, meta map[string]any) bool {
+// sameProcess reports whether pid still names the process metadata recorded:
+// its start time matches the recorded one (#536). An unreadable start time is
+// not a match. Metadata without one predates the record and is taken as is.
+func sameProcess(pid int, meta map[string]any) bool {
+	if metaPID, _ := meta["agent_pid"].(float64); int(metaPID) != pid {
+		return true // not the metadata's pid; it recorded nothing for this one
+	}
 	recorded, _ := meta["agent_started"].(string)
 	if recorded == "" {
-		return false
+		return true
 	}
 	started, ok := hooks.ProcessStartTime(pid)
-	return ok && started != recorded
+	return ok && started == recorded
 }
 
 // PaneRunsPeer reports whether the live pane runs p's agent now: one of
@@ -117,8 +120,9 @@ func PaneRunsPeer(proc ProcessControl, ev *TmuxPaneEvidence, p *proto.Peer) bool
 	if p.AgentPID != nil && *p.AgentPID > 0 && proc.Alive(*p.AgentPID) {
 		return proc.InTree(*p.AgentPID, root)
 	}
+	meta := hooks.ReadPaneRuntimeMetadata(ev.PaneID)
 	for _, pid := range PeerAgentPIDs(ev.PaneID, p) {
-		if proc.Alive(pid) && proc.InTree(pid, root) {
+		if proc.Alive(pid) && proc.InTree(pid, root) && sameProcess(pid, meta) {
 			return true
 		}
 	}
