@@ -58,9 +58,10 @@ A reconnect may reclaim an existing `peer_id` only when the claim still describe
 
 - backend must match;
 - path must match when both the existing peer and the reconnect claim provide one;
+- the peer must not be held by a different live process: when both sides carry an `agent_pid` and the holder's is alive, the claim is refused and a `peer_id_claim_rejected` event records both pids;
 - pane ownership is updated only after that identity check passes.
 
-If the check fails, the stale `peer_id` claim is ignored and the daemon allocates or adopts a different identity. This prevents an old environment variable or stale pane metadata from binding a different session's WebSocket to the wrong peer.
+If the check fails, the stale `peer_id` claim is ignored and the daemon allocates or adopts a different identity. This prevents an old environment variable or stale pane metadata from binding a different session's WebSocket to the wrong peer. Twin sessions that share one claimed id (two sessions resumed in one directory, or registrations from before the tuple-adoption fixes) therefore separate on their next reconnect: the twin gets its own peer, its later reconnects converge on it by pid, and its hook rewrites the pane metadata. Before this check they swapped one peer between their panes on every reconnect.
 
 A registration that names no usable `peer_id` but reports a runtime session id (the hook's `session_id`, a Codex thread id) is next matched against the durable session bindings: the peer that session is bound to, for the same backend and a compatible path, keeps it. This is how a by-hand `claude --resume`, a bridge reconnect, or a registration after a daemon restart lands on the original peer. A soft retirement of that peer is lifted, since the binding certifies the same backend, session, and path a birth certificate does; a hard operator retirement is not. A bound peer whose agent process is still running elsewhere (even while its record is offline) is a fork sharing its parent's session id, so the registrant gets its own peer and a suffixed address instead. For session-scoped backends a binding is used only while it is the peer's newest session; an older binding to a peer that has since run another thread is ignored.
 

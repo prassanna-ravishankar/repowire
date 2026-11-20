@@ -320,11 +320,20 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		// guards (live peer + persisted mapping). On mismatch, fall through to
 		// reclaim/mint.
 		if ps, ok := r.peers[cid]; ok {
-			if claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, params.Backend, claimPath) {
-				id = cid
-			} else {
+			if !claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, params.Backend, claimPath) {
 				log.Printf("repowire: ignoring stale peer_id claim %s (existing=%s backend=%s/%s path=%q/%q)",
 					cid, ps.peer.DisplayName, ps.peer.Backend, params.Backend, ps.peer.Path, claimPath)
+			} else if params.AgentPID != nil && r.liveElsewhereLocked(ps, params) {
+				// A different live process holds the id: a twin (#503), not a
+				// reconnect. Reusing it would flip the peer between the two panes on
+				// every reconnect; the twin gets its own id and rewrites its pane
+				// metadata, which separates the pair for good.
+				log.Printf("repowire: peer_id claim %s from pid %d refused; held by live pid %d",
+					cid, *params.AgentPID, *ps.peer.AgentPID)
+				r.appendEvent(ctx, Event{Type: "peer_id_claim_rejected", Timestamp: now, PeerID: cid, PeerName: ps.peer.DisplayName, SessionID: cid,
+					Payload: map[string]any{"holder_pid": *ps.peer.AgentPID, "claimant_pid": *params.AgentPID, "claimant_pane": params.PaneID}})
+			} else {
+				id = cid
 			}
 		} else if m, ok := r.mappings[cid]; ok {
 			mPath := ""
