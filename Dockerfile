@@ -8,7 +8,7 @@ ENV NEXT_PUBLIC_API_BASE=""
 RUN npm run build
 
 # Stage 2: Build the native relay.
-FROM golang:1.25-bookworm AS go-builder
+FROM golang:1.26-bookworm AS go-builder
 WORKDIR /src/daemon-go
 COPY daemon-go/go.mod daemon-go/go.sum ./
 RUN go mod download
