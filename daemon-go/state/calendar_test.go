@@ -378,46 +378,35 @@ func TestMaterializeDueClaimsOccurrenceAtomically(t *testing.T) {
 	}
 }
 
-func TestSecondsUntilNextDue(t *testing.T) {
+func TestNextCalendarDue(t *testing.T) {
 	s := newCalendarStore(t)
 	ctx := context.Background()
 
-	now := time.Date(2026, 6, 30, 8, 0, 0, 0, time.UTC)
-
 	// No entries -> nil.
-	secs, err := s.SecondsUntilNextDue(ctx, now)
-	if err != nil {
-		t.Fatalf("seconds (empty): %v", err)
-	}
-	if secs != nil {
-		t.Errorf("empty store should return nil, got %v", *secs)
+	due, err := s.NextCalendarDue(ctx)
+	if err != nil || due != nil {
+		t.Fatalf("empty store = %v, %v; want nil", due, err)
 	}
 
-	// Two active entries; the soonest (in 1h) wins.
+	// Two active entries; the soonest wins, as the stored instant.
 	if _, err := s.CreateCalendarEntry(ctx, &CalendarEntry{Title: "far", Kind: "job", Cron: "* * * * *", NextDueAt: "2026-06-30T12:00:00+00:00"}); err != nil {
 		t.Fatalf("create far: %v", err)
 	}
 	if _, err := s.CreateCalendarEntry(ctx, &CalendarEntry{Title: "soon", Kind: "job", Cron: "* * * * *", NextDueAt: "2026-06-30T09:00:00+00:00"}); err != nil {
 		t.Fatalf("create soon: %v", err)
 	}
-	secs, err = s.SecondsUntilNextDue(ctx, now)
-	if err != nil {
-		t.Fatalf("seconds: %v", err)
-	}
-	if secs == nil || *secs != 3600 {
-		t.Errorf("seconds = %v, want 3600", secs)
+	due, err = s.NextCalendarDue(ctx)
+	if want := time.Date(2026, 6, 30, 9, 0, 0, 0, time.UTC); err != nil || due == nil || !due.Equal(want) {
+		t.Fatalf("next due = %v, %v; want %v", due, err, want)
 	}
 
-	// A past due active entry floors at 0.
+	// A past due entry is returned as is; the caller decides what overdue means.
 	if _, err := s.CreateCalendarEntry(ctx, &CalendarEntry{Title: "overdue", Kind: "job", Cron: "* * * * *", NextDueAt: "2026-06-30T07:00:00+00:00"}); err != nil {
 		t.Fatalf("create overdue: %v", err)
 	}
-	secs, err = s.SecondsUntilNextDue(ctx, now)
-	if err != nil {
-		t.Fatalf("seconds overdue: %v", err)
-	}
-	if secs == nil || *secs != 0 {
-		t.Errorf("overdue seconds = %v, want 0", secs)
+	due, err = s.NextCalendarDue(ctx)
+	if want := time.Date(2026, 6, 30, 7, 0, 0, 0, time.UTC); err != nil || due == nil || !due.Equal(want) {
+		t.Fatalf("overdue next due = %v, %v; want %v", due, err, want)
 	}
 
 	// Cancelled entries are ignored (Z suffix exercises _parse_iso replace).
@@ -426,11 +415,7 @@ func TestSecondsUntilNextDue(t *testing.T) {
 	if _, err := s2.CancelCalendarEntry(ctx, c.CalendarID, ""); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
-	secs, err = s2.SecondsUntilNextDue(ctx, now)
-	if err != nil {
-		t.Fatalf("seconds after cancel: %v", err)
-	}
-	if secs != nil {
-		t.Errorf("only entry cancelled -> nil, got %v", *secs)
+	if due, err = s2.NextCalendarDue(ctx); err != nil || due != nil {
+		t.Fatalf("only entry cancelled = %v, %v; want nil", due, err)
 	}
 }

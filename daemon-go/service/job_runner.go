@@ -112,8 +112,8 @@ func (r *JobRunner) loop(ctx context.Context) {
 
 		r.tick(ctx)
 
-		delay := r.secondsUntilNextDeadline(ctx)
-		if delay == nil {
+		deadline := r.nextDeadline(ctx)
+		if deadline == nil {
 			select {
 			case <-r.stop:
 				return
@@ -124,17 +124,18 @@ func (r *JobRunner) loop(ctx context.Context) {
 			continue
 		}
 		// Wall-clock wait (wall_clock.go): due jobs, recurring-job occurrences
-		// and lease expiry all ride this one deadline (repowire-2ph).
-		wait := time.Duration(*delay * float64(time.Second))
-		if wait <= 0 {
+		// and lease expiry all ride this one deadline (repowire-2ph). It is
+		// the stored instant, carried as is: rebuilding it as now + delay
+		// from a second clock reading would add the time in between (#429).
+		if now := r.clock.now(); !deadline.After(now) {
 			// Still due after a full tick means the tick could not advance it
 			// (e.g. a calendar entry whose cron no longer parses). Retry at
 			// most once per stuckDeadlineRetry instead of spinning; Wake still
 			// cuts the wait short.
-			wait = stuckDeadlineRetry
+			retry := now.Add(stuckDeadlineRetry)
+			deadline = &retry
 		}
-		deadline := r.clock.now().Add(wait)
-		if _, stopped := r.clock.waitUntil(ctx, deadline, r.wake, r.stop); stopped {
+		if _, stopped := r.clock.waitUntil(ctx, *deadline, r.wake, r.stop); stopped {
 			return
 		}
 	}
@@ -175,11 +176,10 @@ func (r *JobRunner) runDueOnce(ctx context.Context) error {
 	return nil
 }
 
-// secondsUntilNextDeadline returns seconds until the soonest concrete due/lease/
-// calendar deadline, or nil for "sleep until woken". Mirrors
-// _seconds_until_next_deadline.
-func (r *JobRunner) secondsUntilNextDeadline(ctx context.Context) *float64 {
-	now := time.Now().UTC()
+// nextDeadline returns the soonest concrete due/lease/calendar instant, as
+// stored (it may be past), or nil for "sleep until woken". A queued job with no
+// due_at is due now.
+func (r *JobRunner) nextDeadline(ctx context.Context) *time.Time {
 	var soonest *time.Time
 	consider := func(t time.Time) {
 		if soonest == nil || t.Before(*soonest) {
@@ -190,7 +190,7 @@ func (r *JobRunner) secondsUntilNextDeadline(ctx context.Context) *float64 {
 	queued := "queued"
 	if rows, err := r.store.ListWork(ctx, state.WorkFilter{State: &queued}); err == nil {
 		for _, work := range rows {
-			due := now
+			due := r.clock.now()
 			if d := scheduleDueAt(work); d != "" {
 				if parsed, perr := parseRunnerISO(d); perr == nil {
 					due = parsed
@@ -210,17 +210,10 @@ func (r *JobRunner) secondsUntilNextDeadline(ctx context.Context) *float64 {
 			}
 		}
 	}
-	if secs, err := r.store.SecondsUntilNextDue(ctx, now); err == nil && secs != nil {
-		consider(now.Add(time.Duration(*secs * float64(time.Second))))
+	if due, err := r.store.NextCalendarDue(ctx); err == nil && due != nil {
+		consider(*due)
 	}
-	if soonest == nil {
-		return nil
-	}
-	d := soonest.Sub(now).Seconds()
-	if d < 0 {
-		d = 0
-	}
-	return &d
+	return soonest
 }
 
 // RunJob acquires the work for dispatch and runs the attempt. ignoreDueAt skips
