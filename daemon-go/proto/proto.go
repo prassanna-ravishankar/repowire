@@ -320,7 +320,8 @@ type UpdateDisplayNameFrame struct {
 	DisplayName DisplayName `json:"display_name"`
 }
 
-// ErrorFrame is bidirectional. Code is set for typed rejections (peer_retired).
+// ErrorFrame is bidirectional. Code is set for typed rejections (peer_retired,
+// peer_closed).
 type ErrorFrame struct {
 	Type          FrameType `json:"type"` // "error"
 	Code          string    `json:"code,omitempty"`

@@ -1162,6 +1162,11 @@ func (r *Registry) markOffline(ctx context.Context, id proto.PeerID, terminal bo
 	next, err := Apply(ps.state, event)
 	if err != nil {
 		r.emitContradiction(ctx, id, ps.peer.DisplayName, ps.state, event)
+		if terminal {
+			// Already retired: the FSM has nowhere to go, but an operator close
+			// must still harden the retirement it finds.
+			r.retireLocked(ctx, id, hardRetire)
+		}
 		r.mu.Unlock()
 		return 0, nil // fail loud (event emitted), leave state unchanged
 	}
@@ -1668,6 +1673,7 @@ func (r *Registry) pruneRetired(ctx context.Context) {
 // --- retirement helpers (must hold lock) ---
 
 func (r *Registry) retireLocked(ctx context.Context, id proto.PeerID, hard bool) {
+	hard = hard || r.retired[id].Hard // an operator close is never softened
 	at := time.Now().UTC()
 	r.retired[id] = Retirement{At: at, Hard: hard}
 	if err := r.store.Retire(ctx, id, at, hard); err != nil {
