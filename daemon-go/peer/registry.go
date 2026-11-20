@@ -518,7 +518,9 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		// (2) Sticky orchestrator: reuse the configured orchestrator workspace
 		// identity; otherwise do not displace and register pane-less.
 		if h := r.isFreshOrchestratorPaneLocked(pane, now); h != nil {
-			if h.peer.Backend == params.Backend && h.peer.Circle == params.Circle {
+			// A twin run by another live process is not the orchestrator (#503).
+			twin := params.AgentPID != nil && r.liveElsewhereLocked(h, params)
+			if h.peer.Backend == params.Backend && h.peer.Circle == params.Circle && !twin {
 				h.peer.LastSeen = &now
 				if params.Model != nil {
 					h.peer.Model = params.Model
