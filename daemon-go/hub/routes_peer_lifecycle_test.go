@@ -528,10 +528,10 @@ func TestRegisterCodexThreadsKeyIdentityOnSessionBinding(t *testing.T) {
 	}
 }
 
-// A reconnect claiming a peer_id an operator closed is refused with its own
-// ws error code, peer_closed, so runtimes stop instead of retrying (#535). A
-// soft retirement keeps peer_retired.
-func TestWSReconnectToClosedPeerIsRefusedAsPeerClosed(t *testing.T) {
+// A reconnect claiming a peer_id an operator closed is refused as final, so
+// runtimes stop instead of retrying (#535). The code stays peer_retired, which
+// running ws-hooks already stop on; a soft retirement is not final.
+func TestWSReconnectToClosedPeerIsRefusedAsFinal(t *testing.T) {
 	h := newTestHub(t)
 	mux := http.NewServeMux()
 	h.Routes(mux)
@@ -566,13 +566,13 @@ func TestWSReconnectToClosedPeerIsRefusedAsPeerClosed(t *testing.T) {
 	if _, err := h.reg.MarkOffline(ctx, id, true); err != nil {
 		t.Fatal(err)
 	}
-	if frame := connect(); frame.Code != "peer_retired" {
-		t.Fatalf("soft-retired reconnect frame = %+v, want peer_retired", frame)
+	if frame := connect(); frame.Code != "peer_retired" || frame.Final {
+		t.Fatalf("soft-retired reconnect frame = %+v, want peer_retired, not final", frame)
 	}
 	if _, err := h.reg.ClosePeer(ctx, id, "operator_close"); err != nil {
 		t.Fatal(err)
 	}
-	if frame := connect(); frame.Code != "peer_closed" {
-		t.Fatalf("closed reconnect frame = %+v, want peer_closed", frame)
+	if frame := connect(); frame.Code != "peer_retired" || !frame.Final {
+		t.Fatalf("closed reconnect frame = %+v, want final peer_retired", frame)
 	}
 }

@@ -32,6 +32,16 @@ func TestClosePeerHardensAnExistingSoftRetirement(t *testing.T) {
 	if !hard || !r.retired[id].Hard {
 		t.Fatal("ClosePeer on a soft-retired peer left the retirement soft")
 	}
+	// A later ordinary terminal offline must not soften the close.
+	if _, err := r.MarkOffline(ctx, id, true); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	hard = store.retired[id].Hard
+	store.mu.Unlock()
+	if !hard || !r.retired[id].Hard {
+		t.Fatal("a terminal offline after the close softened the retirement")
+	}
 	claimed := id
 	if _, _, err := r.AllocateAndRegister(ctx, AllocateParams{Circle: "alpha", Backend: proto.AgentCodex, Path: ptr("/work/x"),
 		Machine: "m", Role: proto.RoleAgent, ClaimedPeerID: &claimed, RuntimeIdentityVerified: true}); err != ErrPeerClosed {
