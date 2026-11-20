@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadMissingConfigUsesDefaults(t *testing.T) {
@@ -339,5 +340,20 @@ func TestLoadMergedKeysFollowTheSameRules(t *testing.T) {
 	}
 	if cfg.Daemon.Port != 9201 || !hasWarning(cfg, "daemon.heartbeat_interval") {
 		t.Errorf("port %d warnings %q; want the explicit 9201 and a warning naming the merged key", cfg.Daemon.Port, cfg.Warnings)
+	}
+}
+
+// Review #561 round 4: a merge that refers back to its own mapping is not
+// followed forever.
+func TestLoadRecursiveMergeDoesNotLoop(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = tryLoadYAML(t, "daemon: &d\n  port: 9300\n  heartbeat_interval: soon\n  <<: *d\nexperiments: &e\n  <<: *e\n  remote_tool_approval: {enabled: [true]}\n")
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a recursive merge did not finish loading")
 	}
 }

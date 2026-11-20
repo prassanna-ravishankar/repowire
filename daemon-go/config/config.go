@@ -354,6 +354,14 @@ func nested(parent *yaml.Node, warnings, failed []string, blocks map[string]func
 // beats a merged one, and an earlier merge beats a later one. Recovery then
 // judges each merged key like one written out.
 func flattenMerges(n *yaml.Node) []*yaml.Node {
+	return flattenMergesOn(n, map[*yaml.Node]bool{})
+}
+
+// flattenMergesOn is flattenMerges with the mappings already on the path, so
+// a merge that refers back into itself is skipped instead of followed forever.
+func flattenMergesOn(n *yaml.Node, path map[*yaml.Node]bool) []*yaml.Node {
+	path[n] = true
+	defer delete(path, n)
 	seen := map[string]bool{}
 	var out, merged []*yaml.Node
 	for i := 0; i+1 < len(n.Content); i += 2 {
@@ -374,8 +382,8 @@ func flattenMerges(n *yaml.Node) []*yaml.Node {
 			for _, item := range m.Content {
 				add(item)
 			}
-		case m.Kind == yaml.MappingNode:
-			pairs := flattenMerges(m)
+		case m.Kind == yaml.MappingNode && !path[m]:
+			pairs := flattenMergesOn(m, path)
 			for i := 0; i+1 < len(pairs); i += 2 {
 				if !seen[pairs[i].Value] {
 					seen[pairs[i].Value] = true
@@ -396,6 +404,10 @@ func flattenMerges(n *yaml.Node) []*yaml.Node {
 // sees through aliases and merge keys (an explicit key beats a merged one),
 // as decoding does.
 func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	return mappingValueOn(node, key, map[*yaml.Node]bool{})
+}
+
+func mappingValueOn(node *yaml.Node, key string, path map[*yaml.Node]bool) *yaml.Node {
 	for node != nil && (node.Kind == yaml.AliasNode || (node.Kind == yaml.DocumentNode && len(node.Content) == 1)) {
 		if node.Kind == yaml.AliasNode {
 			node = node.Alias
@@ -403,9 +415,11 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 			node = node.Content[0]
 		}
 	}
-	if node == nil || node.Kind != yaml.MappingNode {
+	if node == nil || node.Kind != yaml.MappingNode || path[node] {
 		return nil
 	}
+	path[node] = true
+	defer delete(path, node)
 	var merges []*yaml.Node
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		switch k := node.Content[i]; {
@@ -418,11 +432,11 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 	for _, merge := range merges {
 		if merge.Kind == yaml.SequenceNode {
 			for _, item := range merge.Content {
-				if v := mappingValue(item, key); v != nil {
+				if v := mappingValueOn(item, key, path); v != nil {
 					return v
 				}
 			}
-		} else if v := mappingValue(merge, key); v != nil {
+		} else if v := mappingValueOn(merge, key, path); v != nil {
 			return v
 		}
 	}
