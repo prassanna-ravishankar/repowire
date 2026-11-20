@@ -302,7 +302,7 @@ A failed arm is recorded by structure only: the fallback reason, the provider, t
 |---|---|---|
 | `timeout` | No usable answer before `timeout_seconds`, or Workers AI returned 408 | yes |
 | `rate_limited` | Provider returned 429 | yes |
-| `billing` | Provider returned 402, or Anthropic's documented spend-limit refusals (400 "You have reached your specified … API usage limits", 429 `enforced_spend_limit_reached`), or Workers AI's daily allocation (`3036`) or paid-plan (`5035`) refusals | yes |
+| `billing` | Provider returned 402, or Anthropic's documented spend-limit refusals (400 "You have reached your specified … API usage limits", 429 `enforced_spend_limit_reached`), or Workers AI's daily allocation (`3036`, and the undocumented `4006` observed live) or paid-plan (`5035`) refusals | yes |
 | `unauthorized` | Provider returned 401 or 403 | yes |
 | `server_error` | Provider returned 5xx | yes |
 | `request_error` | Provider returned another 4xx (413 from Workers AI is `state_too_large`); usually our request body or template | no |
