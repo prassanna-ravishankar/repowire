@@ -88,6 +88,9 @@ type PeerDelivery struct {
 	// messages, when wired, records every message to an agent peer so its
 	// frame can carry a message_id (nil: nothing is recorded).
 	messages *Messages
+	// askClosed, when set, is told about every ask this delivery closes on a
+	// runtime's behalf, so those closes are journaled like an ack's.
+	askClosed AskClosedFunc
 
 	// closeMu/closed/wg/closeCh track the deferBroadcastUntilSeedSettled
 	// goroutines so Close can join them without waiting out a 25s seed-gate
@@ -108,6 +111,17 @@ func (d *PeerDelivery) WithInbox(inbox *Inbox) *PeerDelivery {
 }
 
 // WithMessages records messages to agent peers in messages.
+// AskClosedFunc records a closed ask: reason is its close reason, reply the
+// text the asker gets (or the error), delivered whether the asker has it now.
+type AskClosedFunc func(ctx context.Context, ask *Ask, reason, reply string, delivered bool)
+
+// OnAskClosed installs the recorder for asks closed on the daemon's side (a
+// runtime's answer), the same one the hub's ack paths use.
+func (d *PeerDelivery) OnAskClosed(f AskClosedFunc) *PeerDelivery {
+	d.askClosed = f
+	return d
+}
+
 func (d *PeerDelivery) WithMessages(messages *Messages) *PeerDelivery {
 	d.messages = messages
 	return d
@@ -702,30 +716,21 @@ func (d *PeerDelivery) completeRuntimeAsk(ctx context.Context, cid string, reply
 	if isError {
 		body = errPrefix + *errText
 	}
+	reason := "ack_with_msg"
+	if isError {
+		reason = "send_failed"
+	}
 	// A pull asker (relay MCP, jobs) retrieves the reply from the ask itself,
 	// exactly as an ack would leave it; it has no socket to push to.
 	if ask.ReplyDelivery == "pull" {
-		reason := "ack_with_msg"
-		if isError {
-			reason = "send_failed"
-		}
-		_, _ = d.asks.Resolve(ctx, cid, reason, &body, nil)
+		closed, ok := d.asks.Resolve(ctx, cid, reason, &body, nil)
+		d.reportClosed(ctx, closed, ok, reason, body, !isError)
 		return
 	}
 	framed := ask.ReplyFrame("ack") + " " + body
 	result, err := d.Notify(ctx, NotifyParams{FromPeer: string(ask.ToPeerID), ToPeer: string(ask.FromPeerID), Text: framed, BypassCircle: true, CorrelationID: cid, ThreadText: body})
-	if err == nil && result.Queued() && !isError {
-		if reply != nil {
-			d.asks.CaptureReply(ctx, cid, *reply, nil)
-		}
-		_, _ = d.asks.Close(ctx, cid, "ack_with_msg")
-		return
-	}
-	if err != nil || !result.Delivered() {
-		if isError {
-			_, _ = d.asks.Close(ctx, cid, "send_failed")
-			return
-		}
+	delivered := err == nil && result.Delivered()
+	if !delivered && !isError && !(err == nil && result.Queued()) {
 		var identity *AskerIdentity
 		if asker, found := d.reg.GetPeer(ask.FromPeerID); found && asker.Machine != "" && asker.Machine != "unknown" && asker.Path != "" {
 			identity = &AskerIdentity{DisplayName: asker.DisplayName, Circle: asker.Circle, Backend: asker.Backend, Path: asker.Path, Machine: asker.Machine}
@@ -736,11 +741,15 @@ func (d *PeerDelivery) completeRuntimeAsk(ctx context.Context, cid string, reply
 	if !isError && reply != nil {
 		d.asks.CaptureReply(ctx, cid, *reply, nil)
 	}
-	reason := "ack_with_msg"
-	if isError {
-		reason = "send_failed"
+	closed, ok := d.asks.Close(ctx, cid, reason)
+	d.reportClosed(ctx, closed, ok, reason, body, delivered)
+}
+
+// reportClosed hands a close this delivery made to the installed recorder.
+func (d *PeerDelivery) reportClosed(ctx context.Context, ask *Ask, closed bool, reason, reply string, delivered bool) {
+	if closed && d.askClosed != nil {
+		d.askClosed(ctx, ask, reason, reply, delivered)
 	}
-	_, _ = d.asks.Close(ctx, cid, reason)
 }
 
 // OpenScheduledAsk registers and delivers a scheduled ask, rolling back the
