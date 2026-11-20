@@ -86,6 +86,11 @@ type askLifecycleDeps struct {
 // lands; until then a test/fake registry is passed. Returns the receiver.
 func (h *Hub) WithAskLifecycle(asks *service.AskTracker, delivery *service.PeerDelivery, reg askRoutesRegistry) *Hub {
 	h.ask = &askLifecycleDeps{asks: asks, askMany: service.NewAskManyTracker(asks), delivery: delivery, reg: reg}
+	if delivery != nil {
+		delivery.OnAskClosed(func(ctx context.Context, ask *service.Ask, reason, reply string, delivered bool) {
+			h.recordAskClosed(ctx, ask, reason, reply, delivered, false)
+		})
+	}
 	return h
 }
 
@@ -117,13 +122,28 @@ func (h *Hub) traceAskClosed(ctx context.Context, ask *service.Ask, reason, repl
 	h.traceAsk(ctx, ask.CorrelationID, "closed", "", ask, detail)
 }
 
+// recordAskClosed is what every close of an ask with a result records: the ack
+// event and the terminal trace stages. The hub's ack, decline and answer paths
+// and the service's runtime completions all come through here.
+func (h *Hub) recordAskClosed(ctx context.Context, ask *service.Ask, reason, reply string, delivered, hasAttachments bool) {
+	h.emitAckEvent(ctx, ask, reason, delivered, reply != "", hasAttachments)
+	if reason == "send_failed" {
+		h.traceSendFailed(ctx, ask, reply)
+		return
+	}
+	h.traceAskClosed(ctx, ask, reason, reply)
+}
+
 // traceSendFailed records the terminal stage of an ask whose delivery failed,
-// with the same outcome fields as any other close.
-func (h *Hub) traceSendFailed(ctx context.Context, ask *service.Ask) {
+// with the same outcome fields as any other close, and the error when known.
+func (h *Hub) traceSendFailed(ctx context.Context, ask *service.Ask, errText string) {
 	if ask == nil {
 		return
 	}
 	detail := map[string]any{"close_reason": "send_failed"}
+	if errText != "" {
+		detail["reply"] = clipTraceText(errText)
+	}
 	h.closeOutcome(ctx, ask, detail)
 	h.traceAsk(ctx, ask.CorrelationID, "closed", "fail", ask, detail)
 }
@@ -602,7 +622,7 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 			})
 			_, _ = h.ask.asks.Close(ctx, cid, "send_failed")
 			recordDeliveryOutcome(ctx, h.deliveryTraces, cid, "ask", string(target.PeerID), string(fromID), "ws", di.HookDelivery)
-			h.traceSendFailed(ctx, tracked)
+			h.traceSendFailed(ctx, tracked, "")
 			return AskResponse{}, routeErr(http.StatusServiceUnavailable, map[string]any{
 				"error":          "injection_failed",
 				"hint":           fmt.Sprintf("Ask injection failed for %s: %s", addressed, di.Error()),
@@ -614,12 +634,12 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		_, _ = h.ask.asks.Close(ctx, cid, "send_failed")
 		if errors.Is(err, service.ErrNotConnected) {
 			h.traceAsk(ctx, cid, "no_connection", "fail", tracked, map[string]any{"error": err.Error()})
-			h.traceSendFailed(ctx, tracked)
+			h.traceSendFailed(ctx, tracked, "")
 			return AskResponse{}, routeErr(http.StatusServiceUnavailable,
 				fmt.Sprintf("Peer %s has no live connection: %s", addressed, err))
 		}
 		h.traceAsk(ctx, cid, "route_failed", "fail", tracked, map[string]any{"error": err.Error()})
-		h.traceSendFailed(ctx, tracked)
+		h.traceSendFailed(ctx, tracked, "")
 		return AskResponse{}, routeErr(http.StatusNotFound, err.Error())
 	}
 	recordDeliveryOutcome(ctx, h.deliveryTraces, cid, "ask", string(target.PeerID), string(fromID), deliveryResult.Transport, deliveryResult.HookDelivery)
@@ -796,8 +816,7 @@ func (h *Hub) ackDirect(ctx context.Context, req AckRequest) (AckResponse, error
 			return AckResponse{}, err
 		}
 	}
-	h.emitAckEvent(ctx, ask, "ack", false, false, false)
-	h.traceAskClosed(ctx, ask, "ack", "")
+	h.recordAskClosed(ctx, ask, "ack", "", false, false)
 	return AckResponse{OK: true}, nil
 }
 
@@ -928,8 +947,7 @@ func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameK
 				return err
 			}
 		}
-		h.emitAckEvent(ctx, ask, closeReason, true, true, len(attachments) > 0)
-		h.traceAskClosed(ctx, ask, closeReason, message)
+		h.recordAskClosed(ctx, ask, closeReason, message, true, len(attachments) > 0)
 		return nil
 	}
 
@@ -949,8 +967,7 @@ func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameK
 				"Reply delivery failed for %s: %s. Ask remains open; retry when the asker reconnects.", ask.FromPeerName, err))
 		}
 		_, _ = h.ask.asks.Close(ctx, ask.CorrelationID, closeReason)
-		h.emitAckEvent(ctx, ask, closeReason, false, true, len(attachments) > 0)
-		h.traceAskClosed(ctx, ask, closeReason, message)
+		h.recordAskClosed(ctx, ask, closeReason, message, false, len(attachments) > 0)
 		return nil
 	}
 	if !res.Delivered() && !res.Queued() {
@@ -959,8 +976,7 @@ func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameK
 	}
 	h.ask.asks.CaptureReply(ctx, ask.CorrelationID, message, attachments)
 	_, _ = h.ask.asks.Close(ctx, ask.CorrelationID, closeReason)
-	h.emitAckEvent(ctx, ask, closeReason, res.Delivered(), true, len(attachments) > 0)
-	h.traceAskClosed(ctx, ask, closeReason, message)
+	h.recordAskClosed(ctx, ask, closeReason, message, res.Delivered(), len(attachments) > 0)
 	return nil
 }
 
@@ -1076,8 +1092,7 @@ func (h *Hub) answerDirect(ctx context.Context, req AnswerRequest) (AnswerRespon
 		// is logged via the ack event, not surfaced as an error (the answer stands).
 		delivered = derr == nil && res.Delivered()
 	}
-	h.emitAckEvent(ctx, recorded, "answered", delivered, body != "", len(req.Attachments) > 0)
-	h.traceAskClosed(ctx, recorded, "answered", body)
+	h.recordAskClosed(ctx, recorded, "answered", body, delivered, len(req.Attachments) > 0)
 	return AnswerResponse{OK: true}, nil
 }
 
