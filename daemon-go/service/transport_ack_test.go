@@ -19,9 +19,16 @@ import (
 type ackPeer struct {
 	frames chan map[string]any
 	client *websocket.Conn
+	server *websocket.Conn
 }
 
 func connectAckPeer(t *testing.T, tr *WebSocketTransport, id proto.PeerID, ack bool) *ackPeer {
+	return connectAckPeerReady(t, tr, id, ack, false)
+}
+
+// connectAckPeerReady connects like the hub does when awaitReady is set: the
+// socket takes frames only after tr.Ready.
+func connectAckPeerReady(t *testing.T, tr *WebSocketTransport, id proto.PeerID, ack, awaitReady bool) *ackPeer {
 	t.Helper()
 	p := &ackPeer{frames: make(chan map[string]any, 4)}
 	connected := make(chan struct{})
@@ -31,7 +38,8 @@ func connectAckPeer(t *testing.T, tr *WebSocketTransport, id proto.PeerID, ack b
 			return
 		}
 		defer c.CloseNow()
-		tr.Connect(context.Background(), &ConnectionInfo{SessionID: id, WS: c})
+		p.server = c
+		tr.Connect(context.Background(), &ConnectionInfo{SessionID: id, WS: c, AwaitReady: awaitReady})
 		close(connected)
 		for {
 			var data map[string]any
@@ -142,5 +150,28 @@ func TestAckWaitTimeoutOnAnOpenSocketIsStillBestEffort(t *testing.T) {
 	r := <-sendAwaitingAck(tr, id, 150*time.Millisecond)
 	if r.err != nil || r.receipt != nil {
 		t.Fatalf("timeout on an open socket = %v, %v; want nil, nil", r.receipt, r.err)
+	}
+}
+
+// Review #562: a frame re-sent to a replacement waits for the replacement's
+// handshake (Ready), so it never arrives ahead of the connected frame.
+func TestAckWaitResendWaitsForTheReplacementHandshake(t *testing.T) {
+	tr := NewWebSocketTransport()
+	id := proto.PeerID("peer-a")
+	old := connectAckPeer(t, tr, id, false)
+	result := sendAwaitingAck(tr, id, 3*time.Second)
+	old.next(t)
+	fresh := connectAckPeerReady(t, tr, id, true, true)
+	select {
+	case f := <-fresh.frames:
+		t.Fatalf("frame %v reached the replacement before its handshake", f)
+	case <-time.After(150 * time.Millisecond):
+	}
+	tr.Ready(id, fresh.server)
+	if f := fresh.next(t); f["delivery_id"] != "d-1" {
+		t.Fatalf("replacement got %v", f)
+	}
+	if r := <-result; r.err != nil || r.receipt == nil {
+		t.Fatalf("after the handshake = %v, %v; want the replacement's receipt", r.receipt, r.err)
 	}
 }

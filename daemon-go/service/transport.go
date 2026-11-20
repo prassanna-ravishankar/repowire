@@ -49,11 +49,24 @@ type ConnectionInfo struct {
 	// (0 when it declared none).
 	HookVersion int
 
+	// AwaitReady marks a socket that is not ready for frames until its
+	// owner calls Ready (the hub writes the connected frame first). A frame
+	// re-sent to it after a replacement waits for that. Without it the socket
+	// is ready on Connect.
+	AwaitReady bool
+
 	// ended closes when this socket stops being the peer's connection
 	// (replaced, disconnected, or closed), so a frame waiting on it for a
-	// delivery_ack learns that it never will. Set by Connect.
-	ended   chan struct{}
-	endOnce sync.Once
+	// delivery_ack learns that it never will. ready closes once the socket
+	// may take frames. Both are set by Connect.
+	ended     chan struct{}
+	endOnce   sync.Once
+	ready     chan struct{}
+	readyOnce sync.Once
+}
+
+func (c *ConnectionInfo) markReady() {
+	c.readyOnce.Do(func() { close(c.ready) })
 }
 
 func (c *ConnectionInfo) end() {
@@ -114,6 +127,12 @@ func (t *WebSocketTransport) Connect(ctx context.Context, info *ConnectionInfo) 
 	if info.ended == nil {
 		info.ended = make(chan struct{})
 	}
+	if info.ready == nil {
+		info.ready = make(chan struct{})
+		if !info.AwaitReady {
+			info.markReady()
+		}
+	}
 	t.mu.Lock()
 	old := t.conns[info.SessionID]
 	t.conns[info.SessionID] = info
@@ -124,6 +143,17 @@ func (t *WebSocketTransport) Connect(ctx context.Context, info *ConnectionInfo) 
 
 	if old != nil && old.WS != nil {
 		_ = old.WS.Close(websocket.StatusNormalClosure, "superseded by reconnect")
+	}
+}
+
+// Ready marks ws, id's current socket, ready for frames (the connect
+// handshake is done). A no-op for any other socket.
+func (t *WebSocketTransport) Ready(id proto.PeerID, ws *websocket.Conn) {
+	t.mu.RLock()
+	info, ok := t.conns[id]
+	t.mu.RUnlock()
+	if ok && info.WS == ws {
+		info.markReady()
 	}
 }
 
@@ -161,12 +191,16 @@ func (t *WebSocketTransport) send(ctx context.Context, id proto.PeerID, v any) (
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotConnected, id)
 	}
+	return info, write(ctx, info, v)
+}
+
+func write(ctx context.Context, info *ConnectionInfo, v any) error {
 	writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
 	defer cancel()
 	if err := wsjson.Write(writeCtx, info.WS, v); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrTransportUnavailable, err)
+		return fmt.Errorf("%w: %v", ErrTransportUnavailable, err)
 	}
-	return info, nil
+	return nil
 }
 
 func (t *WebSocketTransport) current(id proto.PeerID) *ConnectionInfo {
@@ -226,8 +260,19 @@ func (t *WebSocketTransport) SendAndWaitDeliveryAck(ctx context.Context, id prot
 			default:
 			}
 			if next := t.current(id); next != nil && next != info && !resent {
-				resent = true
-				if info, err = t.send(ctx, id, v); err != nil {
+				// The replacement takes frames only once its handshake is
+				// done; a frame ahead of its connected frame would break it.
+				select {
+				case <-next.ready:
+				case <-next.ended:
+					return nil, fmt.Errorf("%w: %s: socket closed before delivery_ack", ErrNotConnected, id)
+				case <-timer.C:
+					return nil, fmt.Errorf("%w: %s: socket closed before delivery_ack and its replacement was not ready", ErrNotConnected, id)
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				resent, info = true, next
+				if err := write(ctx, info, v); err != nil {
 					return nil, err
 				}
 				continue

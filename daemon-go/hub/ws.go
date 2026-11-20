@@ -278,6 +278,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		DisplayName: assignedName,
 		ConnectedAt: liveSince,
 		HookVersion: derefInt(cf.HookVersion),
+		AwaitReady:  true,
 	})
 
 	if err := wsjson.Write(ctx, conn, proto.ConnectedFrame{
@@ -287,6 +288,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		return
 	}
+	h.transport.Ready(peerID, conn)
 	log.Printf("ws: connected %s@%s (%s, %s)", assignedName, circle, peerID, backend)
 	h.syncInboxPresence(peerID)
 	h.catchUpInbox(peerID, liveSince)
