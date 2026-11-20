@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -935,13 +936,20 @@ func runDaemonCommand(argv []string) int {
 
 func runConfig(argv []string) int {
 	if len(argv) == 0 {
-		return usage("config <show|path|get KEY>")
+		return usage("config <show|path|get KEY|check [--file PATH] [--require relay,telegram,slack]>")
 	}
 	path := config.Path()
 	switch argv[0] {
 	case "path":
 		fmt.Println(path)
 		return 0
+	case "check":
+		a := parse(argv[1:])
+		var require []string
+		if r := a.string("require", ""); r != "" {
+			require = strings.Split(r, ",")
+		}
+		return configCheck(a.string("file", path), require, os.Stdout)
 	case "show":
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -988,3 +996,69 @@ func mustGetwd() string         { cwd, _ := os.Getwd(); return cwd }
 func jsonText(value any) string { return fmt.Sprint(value) }
 
 var _ = time.Now
+
+// configCheck loads a config file the way the daemon will and reports every
+// load warning and which subsystems come up. Exit 1: the daemon would refuse
+// the file. Exit 2: a subsystem named in require would be off.
+func configCheck(path string, require []string, w io.Writer) int {
+	fmt.Fprintln(w, "config:", path)
+	if _, err := os.Stat(path); err != nil {
+		fmt.Fprintln(w, "fatal:", err)
+		return 1
+	}
+	cfg, err := config.LoadFile(path)
+	if err != nil {
+		fmt.Fprintln(w, "fatal:", err)
+		return 1
+	}
+	for _, warning := range cfg.Warnings {
+		fmt.Fprintln(w, "warning:", warning)
+	}
+	set := func(v string) string {
+		if v == "" {
+			return "unset"
+		}
+		return "set"
+	}
+	on := map[string]bool{
+		"relay":    cfg.Relay.Enabled && cfg.Relay.APIKey != "",
+		"telegram": cfg.Telegram.BotToken != "" && cfg.Telegram.ChatID != "",
+		"slack":    cfg.Slack.BotToken != "" && cfg.Slack.AppToken != "" && cfg.Slack.ChannelID != "",
+	}
+	state := func(name string) string {
+		if on[name] {
+			return "enabled"
+		}
+		return "off"
+	}
+	fmt.Fprintf(w, "daemon: %s:%d\n", cfg.Daemon.Host, cfg.Daemon.Port)
+	fmt.Fprintf(w, "relay: %s (enabled=%v, url %s, api_key %s)\n", state("relay"), cfg.Relay.Enabled, relayEndpoint(cfg.Relay.URL), set(cfg.Relay.APIKey))
+	fmt.Fprintf(w, "telegram: %s (bot_token %s, chat_id %s)\n", state("telegram"), set(cfg.Telegram.BotToken), set(cfg.Telegram.ChatID))
+	fmt.Fprintf(w, "slack: %s\n", state("slack"))
+	mcp := cfg.Daemon.MCPHTTP
+	fmt.Fprintf(w, "mcp_http: enabled=%v bind=%s require_auth=%v\n", mcp.Enabled, mcp.Bind, mcp.RequireAuth)
+	approval := cfg.Experiments.RemoteToolApproval
+	fmt.Fprintf(w, "remote_tool_approval: enabled=%v gated=%s\n", approval.Enabled, strings.Join(approval.GatedTools, ","))
+	code := 0
+	for _, name := range require {
+		name = strings.TrimSpace(name)
+		if enabled, known := on[name]; !known || !enabled {
+			fmt.Fprintf(w, "REQUIRED %s IS NOT ENABLED\n", name)
+			code = 2
+		}
+	}
+	return code
+}
+
+// relayEndpoint shows only the scheme and host of the relay URL: userinfo,
+// path and query can carry credentials.
+func relayEndpoint(raw string) string {
+	if raw == "" {
+		return "unset"
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "set (not a URL)"
+	}
+	return u.Scheme + "://" + u.Host
+}

@@ -99,6 +99,7 @@ func newRootCommand() *cobra.Command {
 	}))
 	root.AddCommand(group("config", "Inspect Repowire configuration", runConfig, []leaf{
 		{"path", "Print the config path"}, {"show", "Print the config file"}, {"get KEY", "Read one config value"},
+		{"check [--file PATH] [--require relay,telegram,slack]", "Load a config the way the daemon will; report warnings and subsystems"},
 	}))
 	root.AddCommand(group("relay", "Run the hosted relay server", runRelay, []leaf{
 		{"start [flags]", "Start the relay server"}, {"generate-key [--user-id ID]", "Generate a relay API key"},

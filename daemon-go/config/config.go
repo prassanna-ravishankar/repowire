@@ -188,9 +188,13 @@ func legacySpawnCommands(commands []string) map[string]string {
 	return out
 }
 
-func Load() (Config, error) {
+func Load() (Config, error) { return LoadFile(Path()) }
+
+// LoadFile loads the config at path with the daemon's rules (warnings,
+// credential blocks all or nothing, environment overrides). A missing file
+// yields the defaults.
+func LoadFile(path string) (Config, error) {
 	cfg := Defaults()
-	path := Path()
 	var raw []byte
 	if b, err := os.ReadFile(path); err == nil {
 		if err := decodeFile(b, &cfg); err != nil {
@@ -215,6 +219,17 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// rejected is the diagnostic for a setting whose value does not decode. It
+// says where, never what: yaml's own error quotes the value, which may be a
+// credential, and diagnostics are logged at startup and printed by
+// `repowire config check`. line is 0 when unknown.
+func rejected(path string, line int) string {
+	if line > 0 {
+		return fmt.Sprintf("config: %s is ignored: the value on line %d is not valid for this setting", path, line)
+	}
+	return fmt.Sprintf("config: %s is ignored: its value is not valid for this setting", path)
 }
 
 // coreDaemonKeys are the settings the daemon cannot run correctly without: a
@@ -323,7 +338,7 @@ func decodeSection[T any](node *yaml.Node, dst *T, path string) (warnings, faile
 			err = one.Decode(&trial)
 		}
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("config: %s.%s is ignored: %v", path, key.Value, err))
+			warnings = append(warnings, rejected(path+"."+key.Value, value.Line))
 			failed = append(failed, key.Value)
 			continue
 		}

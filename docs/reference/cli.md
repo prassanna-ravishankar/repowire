@@ -92,6 +92,22 @@ Runs the same daemon/runtime/integration report as `status`, then checks the
 host prerequisites used by the core (`tmux` and `git`). It exits non-zero when
 the daemon is unavailable; missing optional host tools are reported as warnings.
 
+## `repowire config`
+
+```bash
+repowire config path
+repowire config show
+repowire config get daemon.port
+repowire config check [--file PATH] [--require relay,telegram,slack]
+```
+
+`check` loads a config file (by default the live one) with the daemon's own rules, the same ones `serve` applies at startup ([configuration](configuration.md)). It prints every load warning, then whether relay, Telegram and Slack come up enabled, plus the MCP HTTP and remote tool approval settings. Credentials are reported only as set or unset, and the relay URL as its scheme and host. A warning names the setting and its line, never the rejected value.
+
+A mistyped key in a credential block (`relay`, `telegram`, `slack`) turns that whole block off, so run `check` before upgrading to confirm the new binary reads the config the way the old one did. Exit codes:
+- `0`: the config loads.
+- `1`: the file is missing or unreadable, or the daemon would refuse it.
+- `2`: a subsystem named in `--require` would be off.
+
 ## `repowire peer`
 
 ```bash
