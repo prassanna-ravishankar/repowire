@@ -30,7 +30,7 @@ order is:
 | 2 | Daemon-minted runtime identity envelope | Authoritative handoff proof | Birth certificate minted during SessionStart registration so MCP can adopt a peer identity without path search. |
 | 3 | Local pane runtime metadata plus process proof | Local adoption proof | Valid only when backend, daemon peer id, and owning agent process match the current MCP process. |
 | 4 | Durable `SessionMapping` / session binding records | Compatibility and provenance | Useful for restoring circle, role, description, runtime session pointers, and history relationships; not pane ownership proof. |
-| 5 | Durable spawn ownership, or live pane metadata with matching `peer_id` | Destructive-action proof | Authorizes kill/restart of a verified pane. Path/cwd alone is not destructive proof. |
+| 5 | Durable spawn ownership, or live pane metadata with matching `peer_id` | Destructive-action proof | Authorizes kill/restart of a verified pane. A record that names no peer, and pane metadata, also need the peer's agent process running in the pane; a known agent pid outside the pane vetoes any proof. Path/cwd alone is not destructive proof. |
 | 6 | Display name, path, backend, machine, `last_seen` | Hints and filters only | Never sufficient by themselves to impersonate a peer or choose among ambiguous candidates. |
 
 This hierarchy keeps three concerns separate:

@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/repowire/repowire/daemon-go/hooks"
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
@@ -74,6 +75,39 @@ type TmuxPaneEvidence struct {
 	ServerStart float64
 }
 
+// PeerAgentPIDs returns the agent pids known for p on paneID: its registered
+// agent_pid, and the one the pane's ws-hook metadata records for p's peer_id.
+func PeerAgentPIDs(paneID string, p *proto.Peer) []int {
+	var pids []int
+	if p.AgentPID != nil && *p.AgentPID > 0 {
+		pids = append(pids, *p.AgentPID)
+	}
+	meta := hooks.ReadPaneRuntimeMetadata(paneID)
+	if id, _ := meta["peer_id"].(string); id != "" && id == string(p.PeerID) {
+		if pid, _ := meta["agent_pid"].(float64); pid > 0 {
+			pids = append(pids, int(pid))
+		}
+	}
+	return pids
+}
+
+// PaneRunsPeer reports whether the live pane runs p's agent now: one of
+// PeerAgentPIDs is alive inside the pane's process tree. Pane ids, ownership
+// records and pane metadata all outlive the agent that earned them; a running
+// process in the pane does not.
+func PaneRunsPeer(proc ProcessControl, ev *TmuxPaneEvidence, p *proto.Peer) bool {
+	root, _ := strconv.Atoi(ev.PanePID)
+	if root <= 0 {
+		return false
+	}
+	for _, pid := range PeerAgentPIDs(ev.PaneID, p) {
+		if proc.Alive(pid) && proc.InTree(pid, root) {
+			return true
+		}
+	}
+	return false
+}
+
 // recordPredatesServer reports whether an ownership record was written before
 // the live tmux server started, i.e. it belongs to a pane id recycled by a new
 // server and is stale by construction.
@@ -84,7 +118,7 @@ func recordPredatesServer(rec OwnershipRecord, ev *TmuxPaneEvidence) bool {
 // OwnershipValidation is the result of validating a durable ownership record.
 // Error ∈ {missing_ownership, ambiguous_ownership, ownership_machine_mismatch,
 // ownership_peer_mismatch, ownership_identity_mismatch, pane_not_live,
-// pane_identity_mismatch}.
+// pane_identity_mismatch, ownership_unbound}.
 type OwnershipValidation struct {
 	OK       bool
 	Record   *OwnershipRecord
@@ -117,6 +151,7 @@ type fileOwnership struct {
 	path        string
 	selfMachine string
 	probe       func(paneID string) *TmuxPaneEvidence
+	proc        ProcessControl
 	spawned     map[string]struct{}
 }
 
@@ -132,6 +167,7 @@ func NewFileOwnership(selfMachine string, probe func(paneID string) *TmuxPaneEvi
 		path:        ownershipPath(),
 		selfMachine: selfMachine,
 		probe:       probe,
+		proc:        NewProcessControl(),
 		spawned:     make(map[string]struct{}),
 	}
 }
@@ -321,8 +357,13 @@ func (o *fileOwnership) validateDirect(p *proto.Peer) OwnershipValidation {
 		return OwnershipValidation{Record: &rec, Evidence: ev, Error: "pane_identity_mismatch",
 			Hint: "Live tmux pane evidence does not match the ownership proof."}
 	}
+	if rec.PeerID == nil && !PaneRunsPeer(o.proc, ev, p) {
+		return OwnershipValidation{Record: &rec, Evidence: ev, Error: "ownership_unbound", Hint: unboundHint}
+	}
 	return OwnershipValidation{OK: true, Record: &rec, Evidence: ev}
 }
+
+const unboundHint = "The ownership proof names no peer and the pane does not run this peer's agent; refusing to kill whatever runs there now."
 
 // findForPeer ports find_spawn_ownership_for_peer: after a daemon restart the
 // rehydrated peer may have no/stale pane fields, so correlate by identity tuple
@@ -333,7 +374,7 @@ func (o *fileOwnership) findForPeer(p *proto.Peer) OwnershipValidation {
 	o.mu.Unlock()
 
 	var matches []OwnershipValidation
-	sawIdentity, sawDead, sawMismatch := false, false, false
+	sawIdentity, sawDead, sawMismatch, sawUnbound := false, false, false, false
 	for _, rec := range records {
 		if rec.Machine != "" && rec.Machine != o.selfMachine {
 			continue
@@ -354,6 +395,12 @@ func (o *fileOwnership) findForPeer(p *proto.Peer) OwnershipValidation {
 			sawMismatch = true
 			continue
 		}
+		// The tuple is shared by every peer in the project; a record that names
+		// no peer only adopts one whose agent the pane provably runs.
+		if rec.PeerID == nil && !PaneRunsPeer(o.proc, ev, p) {
+			sawUnbound = true
+			continue
+		}
 		r := rec
 		e := ev
 		matches = append(matches, OwnershipValidation{OK: true, Record: &r, Evidence: e})
@@ -371,6 +418,8 @@ func (o *fileOwnership) findForPeer(p *proto.Peer) OwnershipValidation {
 	case sawMismatch:
 		return OwnershipValidation{Error: "pane_identity_mismatch",
 			Hint: "Live tmux pane evidence does not match the ownership proof."}
+	case sawUnbound:
+		return OwnershipValidation{Error: "ownership_unbound", Hint: unboundHint}
 	case sawIdentity:
 		return OwnershipValidation{Error: "missing_ownership",
 			Hint: "No live durable Repowire spawn ownership proof matches this peer."}

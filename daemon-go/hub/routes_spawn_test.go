@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	clienthooks "github.com/repowire/repowire/daemon-go/hooks"
@@ -509,14 +510,14 @@ func writeSpawnTestPaneMeta(t *testing.T, paneID string, meta map[string]any) {
 }
 
 // TestDestructivePaneProof_VerifiedByPaneMetadata proves the third proof mode:
-// a live pane whose ws-hook meta.json names THIS peer_id authorizes destructive
-// control; a mismatching/absent file does not (path match alone is never proof).
+// a live pane whose ws-hook meta.json names THIS peer_id, with that agent still
+// running in the pane, authorizes destructive control; a mismatching/absent file does not (path match alone is never proof).
 func TestDestructivePaneProof_VerifiedByPaneMetadata(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
 
-	pane := "%77"
-	tmux := &fakeTmux{killOK: true, evidence: map[string]*service.TmuxPaneEvidence{pane: {TmuxSession: "sess"}}}
+	pane, occupant := "%77", startOccupant(t)
+	tmux := &fakeTmux{killOK: true, evidence: map[string]*service.TmuxPaneEvidence{pane: {PaneID: pane, TmuxSession: "sess", PanePID: strconv.Itoa(occupant)}}}
 	own := service.NewFileOwnership("test-host", tmux.ProbePane)
 	svc := newHermeticSpawnService(t, tmux, own,
 		map[proto.AgentType]string{proto.AgentClaudeCode: "claude"}, []string{t.TempDir()})
@@ -526,7 +527,7 @@ func TestDestructivePaneProof_VerifiedByPaneMetadata(t *testing.T) {
 	id := proto.PeerID("repow-ops-abc123")
 	p := &proto.Peer{PeerID: id, PaneID: &pane}
 
-	writeSpawnTestPaneMeta(t, pane, map[string]any{"peer_id": string(id)})
+	writeSpawnTestPaneMeta(t, pane, map[string]any{"peer_id": string(id), "agent_pid": occupant})
 	if proof := h.destructivePaneProof(p); !proof.ok || proof.mode != "verified_pane_metadata" {
 		t.Fatalf("matching pane metadata must prove ownership: ok=%v mode=%q err=%q",
 			proof.ok, proof.mode, proof.errCode)

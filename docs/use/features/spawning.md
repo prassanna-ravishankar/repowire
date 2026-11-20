@@ -87,7 +87,7 @@ Dashboard spawn and backend controls use the same spawn configuration as CLI and
 - Spawning is disabled until `daemon.spawn.allowed_paths` and backend commands are configured.
 - The configured command must resolve to an executable on the daemon's configured `PATH` before a pane is opened.
 - A path outside the allowed roots is rejected.
-- Killing a tmux pane is allowed only when the daemon can prove the pane belongs to the target peer: Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target.
+- Killing a tmux pane is allowed only when the daemon can prove the pane belongs to the target peer: Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target. Ownership records and pane metadata outlive the agent that earned them, so the daemon also checks that the peer's known agent process is running in the pane. A stale peer cannot take down whatever runs in its old pane now.
 - Externally attached peers without matching metadata cannot have their pane killed by Repowire.
 - Restart falls back to a fresh launch when the resume id is missing or its session file is absent after exit, and says so (`resume_mode=fresh`, `resume_reason`).
 - Restart sends SIGTERM and waits up to 20s; a runtime that has not exited by then is reported and nothing is relaunched. Restart does not send SIGKILL.
