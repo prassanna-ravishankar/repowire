@@ -265,7 +265,7 @@ func RunWS() int {
 			time.Sleep(backoff(failures))
 			continue
 		}
-		if code := stringValue(response, "code"); stringValue(response, "type") == "error" && (code == "peer_retired" || code == "peer_closed") {
+		if stringValue(response, "type") == "error" && stringValue(response, "code") == "peer_retired" {
 			_ = conn.Close(websocket.StatusNormalClosure, "retired")
 			cancel()
 			ClearPaneRuntimeState(paneID)
