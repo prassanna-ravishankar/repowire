@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -25,13 +26,9 @@ func TestRetentionVerbsCallTheDaemon(t *testing.T) {
 	defer server.Close()
 	c := &client{base: server.URL, http: server.Client()}
 
-	for name, argv := range map[string][]string{
-		"default": nil,
-		"show":    {"show", "--json"},
-		"dry":     {"sweep", "--dry-run"},
-	} {
+	for _, argv := range [][]string{nil, {"show", "--json"}, {"sweep", "--dry-run"}} {
 		if code := retentionCommand(c, argv); code != 0 {
-			t.Fatalf("%s exited %d", name, code)
+			t.Fatalf("%v exited %d", argv, code)
 		}
 	}
 	if b := bodies["POST /retention/sweep"]; b["dry_run"] != true || b["vacuum"] != false {
@@ -48,5 +45,16 @@ func TestRetentionVerbsCallTheDaemon(t *testing.T) {
 	}
 	if code := retentionCommand(c, []string{"purge"}); code == 0 {
 		t.Fatal("an unknown verb succeeded")
+	}
+}
+
+func TestWhyMarksExpiredText(t *testing.T) {
+	var out strings.Builder
+	printWhyStage(&out, map[string]any{"stage": "created", "ts": "t1", "detail": map[string]any{"from_peer": "a", "to_peer": "b", "content_expired": true}})
+	printWhyStage(&out, map[string]any{"stage": "closed", "ts": "t2", "detail": map[string]any{"close_reason": "acked"}})
+	printWhyStage(&out, map[string]any{"stage": "closed", "ts": "t3", "detail": map[string]any{"close_reason": "acked", "reply": "done"}})
+	want := "  t1  @a → @b\n    (text expired under retention)\n  t2  acked\n  t3  acked\n    done\n"
+	if out.String() != want {
+		t.Fatalf("output:\n%s\nwant:\n%s", out.String(), want)
 	}
 }

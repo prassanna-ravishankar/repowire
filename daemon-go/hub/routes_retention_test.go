@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
 	"github.com/repowire/repowire/daemon-go/peer"
+	"github.com/repowire/repowire/daemon-go/relay"
 	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
@@ -127,5 +129,65 @@ func TestLazyRepairStartsADueSweep(t *testing.T) {
 	reg.Close() // joins the tracked sweep
 	if n := transcriptCount(t, store); n != 0 {
 		t.Fatalf("transcripts after lazy repair = %d", n)
+	}
+}
+
+type countingRetentionStore struct{ sweeps atomic.Int32 }
+
+func (c *countingRetentionStore) Sweep(context.Context, state.RetentionPolicy, time.Time, bool) (state.SweepReport, error) {
+	c.sweeps.Add(1)
+	return state.SweepReport{}, nil
+}
+func (c *countingRetentionStore) Vacuum(context.Context) error { return nil }
+
+// A daemon whose only traffic is other machines' remote requests still runs
+// a due sweep (cross-machine rows expire through it).
+func TestRemoteRequestStartsADueSweep(t *testing.T) {
+	_, _, beta := twoMachines(t)
+	store := &countingRetentionStore{}
+	beta.h.WithRetention(service.NewRetention(store, config.Defaults().Retention, "").WithSpawn(func(f func()) { f() }))
+	req := httptest.NewRequestWithContext(relay.WithRemoteMachine(context.Background(), "alpha"), http.MethodPost, "/remote/peers", strings.NewReader(`{}`))
+	beta.h.RemoteHandler().ServeHTTP(httptest.NewRecorder(), req)
+	if got := store.sweeps.Load(); got != 1 {
+		t.Fatalf("sweeps after a remote request = %d, want 1", got)
+	}
+}
+
+type blockingRetentionStore struct {
+	started, release chan struct{}
+}
+
+func (b *blockingRetentionStore) Sweep(context.Context, state.RetentionPolicy, time.Time, bool) (state.SweepReport, error) {
+	close(b.started)
+	<-b.release
+	return state.SweepReport{}, nil
+}
+func (b *blockingRetentionStore) Vacuum(context.Context) error { return nil }
+
+// While a sweep runs, the status route says so instead of reporting that the
+// next sweep has nothing to do.
+func TestRetentionStatusDuringASweepIsAConflict(t *testing.T) {
+	store := &blockingRetentionStore{started: make(chan struct{}), release: make(chan struct{})}
+	transport := service.NewWebSocketTransport()
+	reg, err := peer.NewRegistry(context.Background(), memStore{}, deadLive{}, transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHubWithTransport(reg, transport, "tok")
+	r := service.NewRetention(store, config.Defaults().Retention, "")
+	h.WithRetention(r)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = r.Sweep(context.Background(), false, false) }()
+	<-store.started
+	code, body := retentionCall(t, srv, http.MethodGet, "/retention", "")
+	close(store.release)
+	<-done
+	if code != http.StatusConflict {
+		t.Fatalf("status during a sweep = %d %v", code, body)
 	}
 }

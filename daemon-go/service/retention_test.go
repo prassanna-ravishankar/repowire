@@ -20,6 +20,9 @@ type fakeRetentionStore struct {
 	counts  map[string]int
 	block   chan struct{} // when set, Sweep waits on it
 	vacuums int
+	// vacuumStarted and vacuumBlock, when set, hold Vacuum open.
+	vacuumStarted chan struct{}
+	vacuumBlock   chan struct{}
 }
 
 func (f *fakeRetentionStore) Sweep(_ context.Context, p state.RetentionPolicy, _ time.Time, dry bool) (state.SweepReport, error) {
@@ -38,6 +41,10 @@ func (f *fakeRetentionStore) Sweep(_ context.Context, p state.RetentionPolicy, _
 }
 
 func (f *fakeRetentionStore) Vacuum(context.Context) error {
+	if f.vacuumBlock != nil {
+		close(f.vacuumStarted)
+		<-f.vacuumBlock
+	}
 	f.mu.Lock()
 	f.vacuums++
 	f.mu.Unlock()
@@ -195,5 +202,26 @@ func TestSweepRemovesExpiredAttachmentsOnly(t *testing.T) {
 	short := syncRetention(&fakeRetentionStore{}, config.RetentionConfig{ContentDays: 7, RecordsDays: 2}, dir, &now)
 	if got := short.FileCutoff(now); !got.Equal(now.Add(-2 * 24 * time.Hour)) {
 		t.Fatalf("records shorter than content: cutoff %v", got)
+	}
+}
+
+func TestVacuumHoldsTheSweepGuard(t *testing.T) {
+	store := &fakeRetentionStore{vacuumStarted: make(chan struct{}), vacuumBlock: make(chan struct{})}
+	r := NewRetention(store, config.RetentionConfig{ContentDays: 7}, "")
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.Sweep(context.Background(), false, true)
+		done <- err
+	}()
+	<-store.vacuumStarted
+	if _, err := r.Sweep(context.Background(), true, false); !errors.Is(err, ErrSweepRunning) {
+		t.Fatalf("dry run during vacuum: %v", err)
+	}
+	close(store.vacuumBlock)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Sweep(context.Background(), true, false); err != nil {
+		t.Fatalf("after vacuum: %v", err)
 	}
 }

@@ -75,10 +75,7 @@ func TestSweepStripsContentAndKeepsRecords(t *testing.T) {
 	s.mustExec(t, `INSERT INTO inbox_items(id, direction, kind, trace_id, trace_kind, text, attachments_json, question_json, created_at)
 		VALUES ('inb-old', 'in', 'ask', 'ask-1', 'ask', 'secret', '[{"id":"x"}]', '{"kind":"text"}', ?)`, old)
 
-	report, err := s.Sweep(ctx, defaultPolicy, sweepNow, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	report := sweepMatchingDryRun(t, s, defaultPolicy)
 
 	for id, wantGone := range map[string]bool{"msg-old": true, "msg-new": false} {
 		if gone := s.count(t, `SELECT COUNT(*) FROM peer_messages WHERE id = ?`, id) == 0; gone != wantGone {
@@ -138,7 +135,6 @@ func TestSweepStripsContentAndKeepsRecords(t *testing.T) {
 }
 
 func TestSweepDeletesRecordsAndSparesLiveState(t *testing.T) {
-	ctx := context.Background()
 	s := newSweepStore(t)
 	old, fresh := ago(181*day), ago(179*day)
 
@@ -166,9 +162,7 @@ func TestSweepDeletesRecordsAndSparesLiveState(t *testing.T) {
 	s.mustExec(t, `INSERT INTO runtime_identity_certificates(nonce, peer_id, display_name, backend, project_path, issued_at, expires_at) VALUES
 		('c-old', 'p', 'n', 'claude-code', '/x', ?, ?), ('c-new', 'p', 'n', 'claude-code', '/x', ?, ?)`, old, old, fresh, fresh)
 
-	if _, err := s.Sweep(ctx, defaultPolicy, sweepNow, false); err != nil {
-		t.Fatal(err)
-	}
+	sweepMatchingDryRun(t, s, defaultPolicy)
 	remaining := func(table, key string) map[string]bool {
 		rows, err := s.db.Query(`SELECT ` + key + ` FROM ` + table)
 		if err != nil {
@@ -317,8 +311,9 @@ func TestSweepRemoteRecordsFollowTheProtocolWindow(t *testing.T) {
 func TestSweepDryRunMatchesTheSweepWhenRulesOverlap(t *testing.T) {
 	ctx := context.Background()
 	s := newSweepStore(t)
-	// Past both cutoffs: the transcript rule deletes it, so the records rule
-	// must not count it again.
+	// Past both cutoffs: the records rule deletes them, so no content rule
+	// may count them too (a strip or transcript count would be work wasted
+	// on rows about to go, and a dry run would overcount).
 	seedEvent(t, s, "e-chat", "chat_turn", ago(200*day), `{"text":"x"}`)
 	seedEvent(t, s, "e-status", "peer_status", ago(200*day), `{}`)
 	seedEvent(t, s, "e-note", "notification", ago(200*day), `{"text":"x"}`)
@@ -342,7 +337,32 @@ func TestSweepDryRunMatchesTheSweepWhenRulesOverlap(t *testing.T) {
 			t.Fatalf("dry %v != real %v", dry.Counts, real.Counts)
 		}
 	}
-	if real.Counts["events.delete"] != 2 || real.Counts["events.delete_transcripts"] != 1 {
+	if real.Counts["events.delete"] != 3 || len(real.Counts) != 1 {
 		t.Fatalf("real = %v", real.Counts)
 	}
+}
+
+// sweepMatchingDryRun sweeps after a dry run and fails unless the dry run
+// predicted every count, including rows a cascade (inbox pushes and refs)
+// removes only once their item is gone.
+func sweepMatchingDryRun(t *testing.T, s *Store, p RetentionPolicy) SweepReport {
+	t.Helper()
+	ctx := context.Background()
+	dry, err := s.Sweep(ctx, p, sweepNow, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	real, err := s.Sweep(ctx, p, sweepNow, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dry.Counts) != len(real.Counts) {
+		t.Fatalf("dry %v != real %v", dry.Counts, real.Counts)
+	}
+	for k, v := range real.Counts {
+		if dry.Counts[k] != v {
+			t.Fatalf("dry %v != real %v", dry.Counts, real.Counts)
+		}
+	}
+	return real
 }

@@ -84,15 +84,12 @@ func (r *Retention) MaybeSweep(ctx context.Context) {
 	if r == nil {
 		return
 	}
-	r.mu.Lock()
-	if r.running || r.now().Before(r.due) {
-		r.mu.Unlock()
+	if !r.acquire(true) {
 		return
 	}
-	r.running = true
-	r.mu.Unlock()
 	ctx = context.WithoutCancel(ctx)
 	r.spawn(func() {
+		defer r.release()
 		if _, err := r.run(ctx, false); err != nil {
 			log.Printf("retention: %v", err)
 		}
@@ -100,15 +97,12 @@ func (r *Retention) MaybeSweep(ctx context.Context) {
 }
 
 // Sweep runs one sweep now (dry only counts). vacuum then rebuilds the
-// database file. Refused while another sweep runs.
+// database file. Refused while another sweep, or its vacuum, runs.
 func (r *Retention) Sweep(ctx context.Context, dry, vacuum bool) (state.SweepReport, error) {
-	r.mu.Lock()
-	if r.running {
-		r.mu.Unlock()
+	if !r.acquire(false) {
 		return state.SweepReport{}, ErrSweepRunning
 	}
-	r.running = true
-	r.mu.Unlock()
+	defer r.release()
 	report, err := r.run(ctx, dry)
 	if err == nil && vacuum && !dry {
 		err = r.store.Vacuum(ctx)
@@ -116,7 +110,26 @@ func (r *Retention) Sweep(ctx context.Context, dry, vacuum bool) (state.SweepRep
 	return report, err
 }
 
-// run sweeps and releases the running flag. Callers set it.
+// acquire takes the single-flight guard; onlyWhenDue also requires the
+// hourly interval to have passed.
+func (r *Retention) acquire(onlyWhenDue bool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.running || (onlyWhenDue && r.now().Before(r.due)) {
+		return false
+	}
+	r.running = true
+	return true
+}
+
+func (r *Retention) release() {
+	r.mu.Lock()
+	r.running = false
+	r.mu.Unlock()
+}
+
+// run sweeps under the guard the caller holds, records the result, and
+// journals a sweep that changed something.
 func (r *Retention) run(ctx context.Context, dry bool) (state.SweepReport, error) {
 	now := r.now()
 	report, err := r.store.Sweep(ctx, r.Policy(), now, dry)
@@ -126,15 +139,15 @@ func (r *Retention) run(ctx context.Context, dry bool) (state.SweepReport, error
 	if n := r.sweepFiles(now, dry); n > 0 {
 		report.Counts["attachments.delete"] = n
 	}
-	r.mu.Lock()
-	r.running = false
-	if !dry {
-		r.due = now.Add(retentionInterval)
-		at := now
-		r.lastAt, r.last = &at, &report
+	if dry {
+		return report, err
 	}
+	r.mu.Lock()
+	r.due = now.Add(retentionInterval)
+	at := now
+	r.lastAt, r.last = &at, &report
 	r.mu.Unlock()
-	if !dry && report.Total() > 0 {
+	if report.Total() > 0 {
 		log.Printf("retention: swept %d rows %v", report.Total(), report.Counts)
 		if r.journal != nil {
 			r.journal(ctx, "retention_swept", map[string]any{"counts": report.Counts, "errors": report.Errors})

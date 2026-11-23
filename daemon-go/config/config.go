@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -39,6 +40,10 @@ type Config struct {
 	// repair it and REPOWIRE_ROUTING__SHADOW_ARMS can add shadows back.
 	strategyUnusable bool
 }
+
+// maxRetentionDays bounds a retention setting to what a time.Duration holds
+// with room to spare (100 years; a Duration tops out near 292).
+const maxRetentionDays = 36500
 
 // RetentionConfig is how long the daemon keeps what it stores
 // (rfcs/retention.md). Content is text a peer or the human wrote; records are
@@ -622,9 +627,9 @@ func normalize(cfg *Config) {
 		fallback float64
 		key      string
 	}{{&cfg.Retention.ContentDays, defaults.ContentDays, "content_days"}, {&cfg.Retention.RecordsDays, defaults.RecordsDays, "records_days"}} {
-		if *days.value < 0 {
+		if v := *days.value; v < 0 || v > maxRetentionDays || math.IsNaN(v) {
 			*days.value = days.fallback
-			cfg.Warnings = append(cfg.Warnings, "config: retention."+days.key+" is ignored: it must be 0 (keep forever) or a number of days")
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config: retention.%s is ignored: it must be 0 (keep forever) or a number of days up to %d", days.key, maxRetentionDays))
 		}
 	}
 	if len(cfg.Experiments.RemoteToolApproval.GatedTools) == 0 {

@@ -53,7 +53,9 @@ retention:
 ```
 
 `0` means keep forever. Both are read like every other config key: a
-mistyped value warns and keeps its default (`config check` names it).
+mistyped value warns and keeps its default (`config check` names it). So
+does a negative value, NaN, or more than 36500 days (a `time.Duration`
+holds about 292 years).
 Environment overrides: `REPOWIRE_RETENTION__CONTENT_DAYS`,
 `REPOWIRE_RETENTION__RECORDS_DAYS`.
 
@@ -151,9 +153,21 @@ sweep time, and a single-flight guard.
 triggered by requests, at most every 30 seconds) calls
 `Retention.MaybeSweep`, which returns at once unless an hour has passed
 since the last sweep, and otherwise starts the sweep on a tracked goroutine
-so the request never waits. A daemon start counts as a request. The three
+so the request never waits. A daemon start counts as a request, and so does
+a cross-machine request arriving through the relay (it bypasses the HTTP
+routes that run lazy repair, and the old remote prune ran there). One
+guard covers a whole sweep, including its journal entry and any vacuum, so
+a second sweep or a dry run is refused (409) until it ends. The three
 existing sweeps (`Messages.maybeSweep`, `remoteMesh.pruneLazily`,
 `cleanupExpiredAttachments`) and their constants are removed.
+
+**Order and dry runs.** Record deletions run first, and every content
+rule covers only rows newer than the records cutoff, so no row matches two
+rules: nothing is stripped just before it is deleted, and a dry run is one
+`COUNT(*)` per rule that equals what the sweep would change (inbox pushes
+and refs are counted against the items that survive the records rule). A
+dry run holds the single database connection only for one short statement
+at a time.
 
 **How it writes.** In batches of 500 rows per statement
 (`... WHERE rowid IN (SELECT rowid ... LIMIT 500)`), looping until a batch

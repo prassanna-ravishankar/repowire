@@ -420,3 +420,24 @@ func TestRetentionDefaultsOverridesAndBadValues(t *testing.T) {
 		t.Fatalf("warnings = %q", cfg.Warnings)
 	}
 }
+
+func TestRetentionRejectsUnrepresentableDays(t *testing.T) {
+	t.Setenv("REPOWIRE_RETENTION__RECORDS_DAYS", "")
+	for _, value := range []string{".nan", ".inf", "1e12"} {
+		t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
+		cfg, err := tryLoadYAML(t, "retention:\n  content_days: "+value+"\n")
+		if err != nil {
+			t.Fatalf("%s failed the load: %v", value, err)
+		}
+		if cfg.Retention.ContentDays != 7 || !strings.Contains(strings.Join(cfg.Warnings, "\n"), "retention.content_days") {
+			t.Fatalf("yaml %s: retention %+v, warnings %q", value, cfg.Retention, cfg.Warnings)
+		}
+	}
+	for _, value := range []string{"NaN", "+Inf", "1e12"} {
+		t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", value)
+		cfg := loadYAML(t, "daemon:\n  port: 9100\n")
+		if cfg.Retention.ContentDays != 7 {
+			t.Fatalf("env %s: retention %+v", value, cfg.Retention)
+		}
+	}
+}

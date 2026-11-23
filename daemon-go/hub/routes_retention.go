@@ -10,7 +10,8 @@ import (
 // routes_retention.go owns the operator surface of the retention policy
 // (rfcs/retention.md):
 //
-//	GET  /retention        policy, last sweep, and a dry run of the next
+//	GET  /retention        policy, last sweep, and a dry run of the next (409
+//	                       while a sweep runs)
 //	POST /retention/sweep  run a sweep now ({"dry_run": bool, "vacuum": bool})
 
 func (h *Hub) registerRetentionRoutes(mux *http.ServeMux) {
@@ -29,7 +30,12 @@ func (h *Hub) handleRetention(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next, err := h.retention.Sweep(r.Context(), true, false)
-	if err != nil && !errors.Is(err, service.ErrSweepRunning) {
+	if errors.Is(err, service.ErrSweepRunning) {
+		// Not "nothing to sweep": the next sweep's counts are unknown now.
+		writeJSONError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

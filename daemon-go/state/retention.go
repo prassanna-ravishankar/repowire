@@ -104,28 +104,17 @@ func inList(values []string) string {
 	return "('" + strings.Join(values, "', '") + "')"
 }
 
+// retentionRules lists the rules in the order a sweep runs them. Records go
+// first, and every content rule is bounded below by the records cutoff, so
+// no row matches two rules: a dry run's per-rule counts are then exactly what
+// a sweep changes.
 func retentionRules(p RetentionPolicy, now time.Time) []sweepRule {
 	var rules []sweepRule
 	content, records := p.Cutoffs(now)
-	if !content.IsZero() {
-		c := sweepStamp(content)
-		rules = append(rules,
-			sweepRule{name: "peer_messages.delete", table: "peer_messages", where: "created_at < ?", args: []any{c}},
-			sweepRule{name: "delivery_traces.strip", table: "delivery_traces",
-				where: "ts < ? AND " + jsonPresent("detail_json", traceContentKeys),
-				set:   jsonStrip("detail_json", traceContentKeys), args: []any{c}},
-			sweepRule{name: "events.delete_transcripts", table: "events",
-				where: "type IN " + inList(transcriptTypes) + " AND timestamp < ?", args: []any{c}},
-			sweepRule{name: "events.strip", table: "events",
-				where: "type IN " + inList(contentEventTypes) + " AND timestamp < ? AND " + jsonPresent("payload_json", eventContentKeys),
-				set:   jsonStrip("payload_json", eventContentKeys), args: []any{c}},
-			sweepRule{name: "inbox_items.strip", table: "inbox_items",
-				where: "created_at < ? AND (text != '' OR attachments_json != '[]' OR question_json IS NOT NULL)",
-				set:   "text = '', attachments_json = '[]', question_json = NULL", args: []any{c}},
-		)
-	}
+	liveItems := "SELECT id FROM inbox_items"
 	if !records.IsZero() {
 		r := sweepStamp(records)
+		liveItems += " WHERE created_at >= '" + r + "'"
 		rules = append(rules,
 			sweepRule{name: "delivery_traces.delete", table: "delivery_traces", where: "ts < ?", args: []any{r}},
 			sweepRule{name: "events.delete", table: "events", where: "timestamp < ?", args: []any{r}},
@@ -138,11 +127,41 @@ func retentionRules(p RetentionPolicy, now time.Time) []sweepRule {
 				where: "expires_at < ?", args: []any{r}},
 		)
 	}
+	// An item's push outcomes and surface refs go with it.
 	rules = append(rules,
-		// An item's push outcomes and surface refs go with it.
-		sweepRule{name: "inbox_pushes.delete", table: "inbox_pushes", where: "item_id NOT IN (SELECT id FROM inbox_items)"},
-		sweepRule{name: "inbox_refs.delete", table: "inbox_refs", where: "item_id NOT IN (SELECT id FROM inbox_items)"},
+		sweepRule{name: "inbox_pushes.delete", table: "inbox_pushes", where: "item_id NOT IN (" + liveItems + ")"},
+		sweepRule{name: "inbox_refs.delete", table: "inbox_refs", where: "item_id NOT IN (" + liveItems + ")"},
 	)
+	if !content.IsZero() && (records.IsZero() || content.After(records)) {
+		// [records, content): older rows were deleted as records above.
+		window := func(column string) (string, []any) {
+			if records.IsZero() {
+				return column + " < ?", []any{sweepStamp(content)}
+			}
+			return column + " < ? AND " + column + " >= ?", []any{sweepStamp(content), sweepStamp(records)}
+		}
+		created, createdArgs := window("created_at")
+		ts, tsArgs := window("ts")
+		at, atArgs := window("timestamp")
+		rules = append(rules,
+			sweepRule{name: "peer_messages.delete", table: "peer_messages", where: created, args: createdArgs},
+			sweepRule{name: "delivery_traces.strip", table: "delivery_traces",
+				where: ts + " AND " + jsonPresent("detail_json", traceContentKeys),
+				set:   jsonStrip("detail_json", traceContentKeys), args: tsArgs},
+			sweepRule{name: "events.delete_transcripts", table: "events",
+				where: "type IN " + inList(transcriptTypes) + " AND " + at, args: atArgs},
+			sweepRule{name: "events.strip", table: "events",
+				where: "type IN " + inList(contentEventTypes) + " AND " + at + " AND " + jsonPresent("payload_json", eventContentKeys),
+				set:   jsonStrip("payload_json", eventContentKeys), args: atArgs},
+			sweepRule{name: "inbox_items.strip", table: "inbox_items",
+				where: created + " AND (text != '' OR attachments_json != '[]' OR question_json IS NOT NULL)",
+				set:   "text = '', attachments_json = '[]', question_json = NULL", args: createdArgs},
+		)
+	} else if !content.IsZero() {
+		// Records are kept for less time than content: peer messages are
+		// pure content with no record rule, so they go at the records age.
+		rules = append(rules, sweepRule{name: "peer_messages.delete", table: "peer_messages", where: "created_at < ?", args: []any{sweepStamp(content)}})
+	}
 	remote := now.Add(-RemoteWindow).Unix()
 	for _, table := range []string{"remote_inbound", "remote_fences", "remote_outbound"} {
 		rules = append(rules, sweepRule{name: table + ".delete", table: table, where: "created_at < ?", args: []any{remote}})
@@ -159,25 +178,21 @@ func terminalStateList() []string {
 	return out
 }
 
-// Sweep applies policy as of now. A dry run applies every rule inside a
-// transaction and rolls it back, so its counts are exactly what a sweep
-// would change (rules overlap: a transcript past both cutoffs is deleted
-// once). A failing rule is named in the report and does not stop the
-// others; the error returned is the first one.
+// Sweep applies policy as of now. A dry run counts each rule's rows with one
+// short statement per rule; the rules are disjoint, so the counts are exactly
+// what a sweep would change. A failing rule is named in the report and does
+// not stop the others; the error returned is the first one.
 func (s *Store) Sweep(ctx context.Context, p RetentionPolicy, now time.Time, dry bool) (SweepReport, error) {
-	var db execer = s.db
-	if dry {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return SweepReport{}, err
-		}
-		defer func() { _ = tx.Rollback() }()
-		db = tx
-	}
 	report := SweepReport{Counts: map[string]int{}}
 	var first error
 	for _, rule := range retentionRules(p, now) {
-		n, err := applyRule(ctx, db, rule)
+		var n int
+		var err error
+		if dry {
+			err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+rule.table+` WHERE `+rule.where, rule.args...).Scan(&n)
+		} else {
+			n, err = applyRule(ctx, s.db, rule)
+		}
 		if err != nil {
 			report.Errors = append(report.Errors, rule.name)
 			if first == nil {

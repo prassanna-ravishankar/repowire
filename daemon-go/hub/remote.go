@@ -75,6 +75,9 @@ func (h *Hub) RemoteHandler() http.Handler {
 			writeJSONError(w, http.StatusForbidden, "remote requests come only through the relay")
 			return
 		}
+		// Relay traffic bypasses the HTTP routes that run lazy repair, so a
+		// due sweep (which expires cross-machine rows) starts here too.
+		h.retention.MaybeSweep(r.Context())
 		mux.ServeHTTP(w, r)
 	})
 }
