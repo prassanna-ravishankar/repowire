@@ -1,8 +1,8 @@
 # Wire observability: let an orchestrator see and steer threads
 
-Status: draft, revision 3 (2026-11-23). Design only. Builds on
+Status: draft, revision 4 (2026-11-23). Design only. Builds on
 `message-ids-pull-delegate.md` (message ids, pull, delegation) and the human
-inbox. Revisions 2 and 3 fold in two Codex critique rounds and Prass's
+inbox. Revisions 2 to 4 fold in three Codex critique rounds and Prass's
 decisions: orchestrators observe every circle, and `retention.md` lands
 first.
 
@@ -178,11 +178,13 @@ event and trace stage (section 4). Both show in the dashboard feed.
 
 **MCP (orchestrator):**
 
-- `wire_query(circle?, peer?, kind?, state?, stuck_only?, since?, limit?)`
-  returns one compact line per thread, newest first, in the same TSV style
+- `wire_query(circle?, peer?, kind?, state?, stuck_only?, since?, limit?, cursor?)`
+  returns one compact line per thread, newest first (ordered by last
+  activity, then thread id), in the same TSV style
   as `list_peers`, with every cell escaped:
   `ask-1a2b3c4d  ask  @alpha -> @beta (via @gamma)  delivered  42m  holder_turns=5  stuck=ignored`
-- `wire_show(thread_id, bodies=false)` returns the timeline: stages, hops,
+- `wire_show(thread_id, bodies=false, cursor?)` returns the timeline,
+  oldest stage first: stages, hops,
   message ids, read state, and the reply status. With `bodies=true`, and
   only when section 2 allows it, it includes quoted bodies (section 6).
 
@@ -235,9 +237,12 @@ machinery the tracker does not have yet. Common rules:
   refused for both operations (remote asks settle asymmetrically, and the
   remote daemon owns the holder side).
 - A job's dispatch ask is refused (use the job tools).
-- Protected threads (section 2) are refused for agents; only the operator
-  may act on them.
-- The actor must be a proven orchestrator, and the intervention is confined
+- Two authorization branches. **Operator** (the token, over HTTP and the
+  CLI): may act on any local thread, protected or not, because it can
+  already read everything; the event records `actor: operator`, since the
+  token is not an identity. **Agent** (everything below): refused on
+  protected threads (section 2).
+- An agent actor must be a proven orchestrator, and the intervention is confined
   to the circle it holds the role for: the asker, every party the thread
   ever had (from its recorded provenance), and the destination must all be
   in that circle. This is its own predicate, not `CheckAccess`: the
@@ -302,9 +307,11 @@ read time is enough at current volume (6k trace rows on the author's
 daemon); add a denormalised column only if `wire_query` shows up in
 profiles.
 
-**New tables, when bodies ship:** `peer_wire_visibility (peer_id PRIMARY KEY,
-mode, updated_at)`, and provenance fields in the `created` and `delegated`
-trace details. v1 adds neither.
+**New storage, before interventions (step 2 after v1):**
+`peer_wire_visibility (peer_id PRIMARY KEY, mode, updated_at)`, and
+provenance fields in the `created` and `delegated` trace details. Both are
+needed before any agent intervention, since without provenance every
+thread is protected; bodies come after. v1 adds neither.
 
 **Retention first.** `delivery_traces` and `events` are never pruned and
 both keep bodies. Prass's decision: retention is one policy for every
@@ -351,8 +358,10 @@ authority: it spawns, kills, reassigns and cancels.
 - **Size budgets.** Each body is truncated (default 2,000 characters,
   with a marker and its full length), and each response has a total
   budget (default 8,000 characters for `wire_show`, 100 lines for
-  `wire_query`). A response that hits its budget ends with a continuation
-  token (`cursor`), so a long timeline is paged, never silently cut.
+  `wire_query`). A response that hits its budget ends with a `cursor`
+  naming the last item returned (thread id for `wire_query`, stage sequence
+  for `wire_show`); passing it back resumes after that item in the same
+  order. A long timeline is paged, never silently cut.
 - **Bounded actions.** The wire view grants no new destructive power.
   Reassign and cancel act on one ask, are audited, and need the thread's
   id; `kill_peer` keeps its own pane proof.
