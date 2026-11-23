@@ -88,26 +88,3 @@ func TestListPeerMessagesScopesToRecipient(t *testing.T) {
 		t.Fatalf("other peer = %q", got)
 	}
 }
-
-func TestDeletePeerMessagesBefore(t *testing.T) {
-	ctx := context.Background()
-	store := newInboxStore(t)
-	now := time.Now().UTC()
-	old := &PeerMessage{Kind: MessageNotify, PeerID: "repow-b", Text: "old", CreatedAt: now.Add(-8 * 24 * time.Hour).Format(tsLayout)}
-	fresh := &PeerMessage{Kind: MessageNotify, PeerID: "repow-b", Text: "fresh"}
-	for _, m := range []*PeerMessage{old, fresh} {
-		if err := store.InsertPeerMessage(ctx, m); err != nil {
-			t.Fatal(err)
-		}
-	}
-	n, err := store.DeletePeerMessagesBefore(ctx, now.Add(-7*24*time.Hour))
-	if err != nil || n != 1 {
-		t.Fatalf("deleted %d, err %v", n, err)
-	}
-	if got, _ := store.PeerMessage(ctx, old.ID); got != nil {
-		t.Fatal("old message survived")
-	}
-	if got, _ := store.PeerMessage(ctx, fresh.ID); got == nil {
-		t.Fatal("fresh message deleted")
-	}
-}

@@ -1039,6 +1039,7 @@ func configCheck(path string, require []string, w io.Writer) int {
 	fmt.Fprintf(w, "mcp_http: enabled=%v bind=%s require_auth=%v\n", mcp.Enabled, mcp.Bind, mcp.RequireAuth)
 	approval := cfg.Experiments.RemoteToolApproval
 	fmt.Fprintf(w, "remote_tool_approval: enabled=%v gated=%s\n", approval.Enabled, strings.Join(approval.GatedTools, ","))
+	fmt.Fprintf(w, "retention: content %s, records %s\n", retentionDays(cfg.Retention.ContentDays), retentionDays(cfg.Retention.RecordsDays))
 	code := 0
 	for _, name := range require {
 		name = strings.TrimSpace(name)

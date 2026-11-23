@@ -392,3 +392,31 @@ func TestLoadDiagnosticsNeverQuoteRejectedValues(t *testing.T) {
 		})
 	}
 }
+
+func TestRetentionDefaultsOverridesAndBadValues(t *testing.T) {
+	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
+	t.Setenv("REPOWIRE_RETENTION__RECORDS_DAYS", "")
+	if cfg := loadYAML(t, "daemon:\n  port: 9100\n"); cfg.Retention != (RetentionConfig{ContentDays: 7, RecordsDays: 180}) {
+		t.Fatalf("defaults = %+v", cfg.Retention)
+	}
+	if cfg := loadYAML(t, "retention:\n  content_days: 30\n  records_days: 0\n"); cfg.Retention != (RetentionConfig{ContentDays: 30, RecordsDays: 0}) {
+		t.Fatalf("file values = %+v", cfg.Retention)
+	}
+	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "2")
+	if cfg := loadYAML(t, "retention:\n  content_days: 30\n"); cfg.Retention.ContentDays != 2 {
+		t.Fatalf("env override = %+v", cfg.Retention)
+	}
+	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
+
+	cfg, err := tryLoadYAML(t, "retention:\n  content_days: soon\n  records_days: -1\n")
+	if err != nil {
+		t.Fatalf("a bad retention value failed the load: %v", err)
+	}
+	if cfg.Retention != (RetentionConfig{ContentDays: 7, RecordsDays: 180}) {
+		t.Fatalf("bad values not reset to defaults: %+v", cfg.Retention)
+	}
+	joined := strings.Join(cfg.Warnings, "\n")
+	if !strings.Contains(joined, "retention.content_days") || !strings.Contains(joined, "retention.records_days") || strings.Contains(joined, "soon") {
+		t.Fatalf("warnings = %q", cfg.Warnings)
+	}
+}

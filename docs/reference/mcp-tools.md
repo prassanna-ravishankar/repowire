@@ -277,7 +277,7 @@ ask_many_result(parent)  # shows who replied, who's still pending
 
 Every notify, ask, and ask reply delivered to an agent peer has a durable
 `message_id` (`msg-<hex8>`), carried on its `<peer-message message-id="...">`
-tag. Messages are kept for 7 days. The human's messages are its
+tag. Messages are kept for `retention.content_days` (7 by default). The human's messages are its
 [inbox](../concepts/human-inbox.md) instead.
 
 ### `list_messages`

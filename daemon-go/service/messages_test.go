@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/state"
@@ -59,23 +58,6 @@ func TestMessageDeliveryModeIsDurable(t *testing.T) {
 	var nilMessages *Messages
 	if got := nilMessages.Mode(ctx, "repow-b"); got != MessageDeliveryPush {
 		t.Fatalf("nil Messages mode = %q", got)
-	}
-}
-
-func TestMessagesSweepRetentionLazily(t *testing.T) {
-	ctx := context.Background()
-	store := newMessageStore(t)
-	old := &state.PeerMessage{Kind: state.MessageNotify, PeerID: "repow-b", Text: "old",
-		CreatedAt: time.Now().UTC().Add(-messageRetention - time.Hour).Format("2006-01-02T15:04:05.000Z")}
-	if err := store.InsertPeerMessage(ctx, old); err != nil {
-		t.Fatal(err)
-	}
-	m := NewMessages(store)
-	if fresh := m.Record(ctx, state.PeerMessage{Kind: state.MessageNotify, PeerID: "repow-b", Text: "new"}); fresh == nil {
-		t.Fatal("record failed")
-	}
-	if got, _ := store.PeerMessage(ctx, old.ID); got != nil {
-		t.Fatal("expired message survived the sweep")
 	}
 }
 

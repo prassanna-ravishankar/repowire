@@ -26,6 +26,7 @@ type Config struct {
 	Slack       SlackConfig       `yaml:"slack"`
 	Human       HumanConfig       `yaml:"human"`
 	Experiments ExperimentsConfig `yaml:"experiments"`
+	Retention   RetentionConfig   `yaml:"retention"`
 	// Routing is how asks find their target; see RouterConfig. It is decoded
 	// on its own (loadRouting), so a mistyped routing key can never fail
 	// the load.
@@ -37,6 +38,14 @@ type Config struct {
 	// settled after env vars apply, since REPOWIRE_ROUTING__STRATEGY can
 	// repair it and REPOWIRE_ROUTING__SHADOW_ARMS can add shadows back.
 	strategyUnusable bool
+}
+
+// RetentionConfig is how long the daemon keeps what it stores
+// (rfcs/retention.md). Content is text a peer or the human wrote; records are
+// the rows saying who did what and when. 0 keeps forever.
+type RetentionConfig struct {
+	ContentDays float64 `yaml:"content_days"`
+	RecordsDays float64 `yaml:"records_days"`
 }
 
 type DaemonConfig struct {
@@ -157,8 +166,9 @@ func Defaults() Config {
 				RequireAuth: true,
 			},
 		},
-		Relay: RelayConfig{URL: defaultRelayURL},
-		Human: HumanConfig{Name: "human"},
+		Relay:     RelayConfig{URL: defaultRelayURL},
+		Retention: RetentionConfig{ContentDays: 7, RecordsDays: 180},
+		Human:     HumanConfig{Name: "human"},
 		Experiments: ExperimentsConfig{RemoteToolApproval: RemoteToolApprovalConfig{
 			GatedTools:     []string{"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"},
 			TimeoutSeconds: 45,
@@ -252,6 +262,7 @@ func decodeFile(raw []byte, cfg *Config) error {
 		Slack       yaml.Node `yaml:"slack"`
 		Human       yaml.Node `yaml:"human"`
 		Experiments yaml.Node `yaml:"experiments"`
+		Retention   yaml.Node `yaml:"retention"`
 	}
 	if err := yaml.Unmarshal(raw, &file); err != nil {
 		return err
@@ -293,6 +304,8 @@ func decodeFile(raw []byte, cfg *Config) error {
 	warn(allOrNothing(&file.Telegram, &cfg.Telegram, defaults.Telegram, "telegram"))
 	warn(allOrNothing(&file.Slack, &cfg.Slack, defaults.Slack, "slack"))
 	w, _ := decodeSection(&file.Human, &cfg.Human, "human")
+	warn(w)
+	w, _ = decodeSection(&file.Retention, &cfg.Retention, "retention")
 	warn(w)
 	return nil
 }
@@ -512,6 +525,8 @@ func applyEnv(cfg *Config) {
 	setFloatEnv(&cfg.Daemon.StaleBusyTimeoutSeconds, "REPOWIRE_DAEMON__STALE_BUSY_TIMEOUT_SECONDS")
 	setFloatEnv(&cfg.Daemon.DeliveryQueueTTLSeconds, "REPOWIRE_DAEMON__DELIVERY_QUEUE_TTL_SECONDS")
 	setIntEnv(&cfg.Daemon.DeliveryQueueMaxPerPeer, "REPOWIRE_DAEMON__DELIVERY_QUEUE_MAX_PER_PEER")
+	setFloatEnv(&cfg.Retention.ContentDays, "REPOWIRE_RETENTION__CONTENT_DAYS")
+	setFloatEnv(&cfg.Retention.RecordsDays, "REPOWIRE_RETENTION__RECORDS_DAYS")
 	if value := os.Getenv("REPOWIRE_DAEMON__CIRCLE_BOUNDARY"); value != "" {
 		cfg.Daemon.CircleBoundary = proto.CircleBoundary(value)
 	}
@@ -600,6 +615,17 @@ func normalize(cfg *Config) {
 	}
 	if cfg.Relay.URL == "" {
 		cfg.Relay.URL = defaultRelayURL
+	}
+	defaults := Defaults().Retention
+	for _, days := range []struct {
+		value    *float64
+		fallback float64
+		key      string
+	}{{&cfg.Retention.ContentDays, defaults.ContentDays, "content_days"}, {&cfg.Retention.RecordsDays, defaults.RecordsDays, "records_days"}} {
+		if *days.value < 0 {
+			*days.value = days.fallback
+			cfg.Warnings = append(cfg.Warnings, "config: retention."+days.key+" is ignored: it must be 0 (keep forever) or a number of days")
+		}
 	}
 	if len(cfg.Experiments.RemoteToolApproval.GatedTools) == 0 {
 		cfg.Experiments.RemoteToolApproval.GatedTools = []string{"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"}

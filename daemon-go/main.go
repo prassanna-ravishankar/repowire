@@ -351,6 +351,12 @@ func runDaemon() {
 	// without the registry learning the tracker's shape. It also builds the
 	// QueryTracker + MessageRouter the delivery/session groups need.
 	h := hub.NewHubWithTransport(reg, transport, *authToken)
+	// Retention (rfcs/retention.md): one policy over every store, swept from
+	// lazy repair at most hourly; starting the daemon counts as a request.
+	retention := service.NewRetention(store, cfg.Retention, hub.AttachmentsDir()).WithJournal(reg.AddEvent).WithSpawn(reg.Track)
+	h.WithRetention(retention)
+	reg.AddRepairPass(retention.MaybeSweep)
+	retention.MaybeSweep(ctx)
 	selfMachine, _ := os.Hostname()
 
 	// (6) Application services. AskTracker is the in-memory open-ask store;

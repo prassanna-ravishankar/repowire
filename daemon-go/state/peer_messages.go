@@ -145,17 +145,6 @@ func (s *Store) DeletePeerMessage(ctx context.Context, id string) error {
 	return nil
 }
 
-// DeletePeerMessagesBefore drops messages created before cutoff and returns
-// how many went.
-func (s *Store) DeletePeerMessagesBefore(ctx context.Context, cutoff time.Time) (int, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM peer_messages WHERE created_at < ?`, cutoff.UTC().Format(tsLayout))
-	if err != nil {
-		return 0, fmt.Errorf("delete peer messages: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
-}
-
 func scanPeerMessage(row rowScanner) (*PeerMessage, error) {
 	var msg PeerMessage
 	var fromID, cid, question, readAt sql.NullString

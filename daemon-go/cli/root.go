@@ -84,6 +84,12 @@ func newRootCommand() *cobra.Command {
 	})
 	inbox.RunE = func(*cobra.Command, []string) error { return codeError(runInbox(nil)) }
 	root.AddCommand(inbox)
+	retention := group("retention", "Show or apply the data retention policy", runRetention, []leaf{
+		{"show [--json]", "Show the policy, the last sweep, and what the next would change"},
+		{"sweep [--dry-run] [--vacuum] [--json]", "Run a retention sweep now"},
+	})
+	retention.RunE = func(*cobra.Command, []string) error { return codeError(runRetention(nil)) }
+	root.AddCommand(retention)
 	root.AddCommand(group("session", "Control durable sessions", runSession, []leaf{{"resume SESSION_ID [flags]", "Resume a durable session"}}))
 	root.AddCommand(group("route", "Ask routing: config and research tools", runRoute, []leaf{
 		{"show", "Show the routing strategy, recording and shadow arms"},
@@ -208,6 +214,8 @@ var documentedFlags = map[string][]documentedFlag{
 	"link":                {{name: "pane", usage: "tmux pane id"}, {name: "backend", usage: "Agent backend"}, {name: "name", usage: "Display name"}, {name: "circle", usage: "Circle"}, {name: "cwd", usage: "Working directory"}},
 	"trace":               {{name: "json", usage: "Emit JSON", boolean: true}},
 	"why":                 {{name: "json", usage: "Emit JSON", boolean: true}},
+	"retention show":      {{name: "json", usage: "Emit JSON", boolean: true}},
+	"retention sweep":     {{name: "dry-run", usage: "Count what would change without changing it", boolean: true}, {name: "vacuum", usage: "Rebuild the database file afterwards to return space to disk", boolean: true}, {name: "json", usage: "Emit JSON", boolean: true}},
 	"share":               {{name: "rw", usage: "Create a read-write share", boolean: true}, {name: "list", usage: "List active shares", boolean: true}, {name: "ttl", usage: "Lifetime in seconds"}, {name: "revoke", usage: "Revoke a share id"}},
 	"uninstall":           {{name: "yes", usage: "Also remove Repowire state", boolean: true}},
 	"peer list":           {{name: "show-offline", usage: "Include offline peers", boolean: true}, {name: "include-hidden", usage: "Include peers hidden from the default view (no direct input, runtime-internal threads, sub-agents with an offline parent)", boolean: true}, {name: "source", usage: "Only peers from this source: hook, codex-app-server, unknown"}},

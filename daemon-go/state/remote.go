@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"fmt"
 )
 
 // Durable records for cross-machine asks and notifies
@@ -335,16 +334,6 @@ func (s *Store) UnsettledOutbound(ctx context.Context) ([]RemoteOutbound, error)
 		return nil, err
 	}
 	return collectOutbound(rows)
-}
-
-// PruneRemote deletes every cross-machine record created before cutoff.
-func (s *Store) PruneRemote(ctx context.Context, cutoff int64) error {
-	for _, table := range []string{"remote_inbound", "remote_fences", "remote_outbound"} {
-		if _, err := s.db.ExecContext(ctx, `DELETE FROM `+table+` WHERE created_at < ?`, cutoff); err != nil {
-			return fmt.Errorf("prune %s: %w", table, err)
-		}
-	}
-	return nil
 }
 
 func collectOutbound(rows *sql.Rows) ([]RemoteOutbound, error) {

@@ -311,11 +311,10 @@ func (h *Hub) reconcileRemote(ctx context.Context, asker proto.PeerID) {
 	if h.remote == nil {
 		return
 	}
-	h.remote.pruneLazily(ctx)
 	ctx, cancel := context.WithTimeout(ctx, remoteCheckBudget)
 	defer cancel()
 	now := time.Now()
-	retained := now.Add(-remoteRetention).Unix()
+	retained := now.Add(-state.RemoteWindow).Unix()
 	rows, err := h.store.ClaimOutboundChecks(ctx, string(asker), now.Add(-remoteCheckEvery).Unix(), retained, now.Unix(), remoteCheckBatch)
 	if err != nil {
 		log.Printf("remote: claim checks: %v", err)
@@ -338,7 +337,7 @@ func (h *Hub) reconcileRemote(ctx context.Context, asker proto.PeerID) {
 // waitRemote is wait_on_ack for an outbound row: answer from the row when it
 // is settled, otherwise long-poll the target until the caller's timeout.
 func (h *Hub) waitRemote(ctx context.Context, row state.RemoteOutbound, caller string, timeout time.Duration) (AskWaitResponse, error) {
-	if time.Unix(row.CreatedAt, 0).Before(time.Now().Add(-remoteRetention)) {
+	if time.Unix(row.CreatedAt, 0).Before(time.Now().Add(-state.RemoteWindow)) {
 		return AskWaitResponse{}, routeErr(http.StatusNotFound, "No ask with correlation_id: "+row.ID)
 	}
 	if caller != row.From.PeerID && caller != row.From.DisplayName {
