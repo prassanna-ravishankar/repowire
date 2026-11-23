@@ -132,6 +132,11 @@ func retentionRules(p RetentionPolicy, now time.Time) []sweepRule {
 		sweepRule{name: "inbox_pushes.delete", table: "inbox_pushes", where: "item_id NOT IN (" + liveItems + ")"},
 		sweepRule{name: "inbox_refs.delete", table: "inbox_refs", where: "item_id NOT IN (" + liveItems + ")"},
 	)
+	if !content.IsZero() {
+		// Peer messages are pure content and have no records rule, so their
+		// rule has no lower bound: a message older than both cutoffs goes too.
+		rules = append(rules, sweepRule{name: "peer_messages.delete", table: "peer_messages", where: "created_at < ?", args: []any{sweepStamp(content)}})
+	}
 	if !content.IsZero() && (records.IsZero() || content.After(records)) {
 		// [records, content): older rows were deleted as records above.
 		window := func(column string) (string, []any) {
@@ -144,7 +149,6 @@ func retentionRules(p RetentionPolicy, now time.Time) []sweepRule {
 		ts, tsArgs := window("ts")
 		at, atArgs := window("timestamp")
 		rules = append(rules,
-			sweepRule{name: "peer_messages.delete", table: "peer_messages", where: created, args: createdArgs},
 			sweepRule{name: "delivery_traces.strip", table: "delivery_traces",
 				where: ts + " AND " + jsonPresent("detail_json", traceContentKeys),
 				set:   jsonStrip("detail_json", traceContentKeys), args: tsArgs},
@@ -157,10 +161,6 @@ func retentionRules(p RetentionPolicy, now time.Time) []sweepRule {
 				where: created + " AND (text != '' OR attachments_json != '[]' OR question_json IS NOT NULL)",
 				set:   "text = '', attachments_json = '[]', question_json = NULL", args: createdArgs},
 		)
-	} else if !content.IsZero() {
-		// Records are kept for less time than content: peer messages are
-		// pure content with no record rule, so they go at the records age.
-		rules = append(rules, sweepRule{name: "peer_messages.delete", table: "peer_messages", where: "created_at < ?", args: []any{sweepStamp(content)}})
 	}
 	remote := now.Add(-RemoteWindow).Unix()
 	for _, table := range []string{"remote_inbound", "remote_fences", "remote_outbound"} {

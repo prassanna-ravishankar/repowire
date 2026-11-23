@@ -366,3 +366,21 @@ func sweepMatchingDryRun(t *testing.T, s *Store, p RetentionPolicy) SweepReport 
 	}
 	return real
 }
+
+// Peer messages are pure content with no record rule, so one older than both
+// cutoffs must still go (it is not left to a records rule that does not exist).
+func TestSweepDeletesPeerMessagesOlderThanBothCutoffs(t *testing.T) {
+	for _, p := range []RetentionPolicy{defaultPolicy, {Content: 7 * day}, {Content: 7 * day, Records: 2 * day}} {
+		s := newSweepStore(t)
+		s.mustExec(t, `INSERT INTO peer_messages(id, kind, peer_id, text, created_at) VALUES
+			('msg-ancient', 'notify', 'repow-b', 'x', ?), ('msg-mid', 'notify', 'repow-b', 'x', ?), ('msg-new', 'notify', 'repow-b', 'x', ?)`,
+			ago(400*day), ago(30*day), ago(1*day))
+		sweepMatchingDryRun(t, s, p)
+		if n := s.count(t, `SELECT COUNT(*) FROM peer_messages WHERE id = 'msg-new'`); n != 1 {
+			t.Fatalf("%+v: a recent message was deleted", p)
+		}
+		if n := s.count(t, `SELECT COUNT(*) FROM peer_messages`); n != 1 {
+			t.Fatalf("%+v: peer messages left = %d, want only msg-new", p, n)
+		}
+	}
+}
