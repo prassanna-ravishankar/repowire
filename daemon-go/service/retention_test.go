@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,50 +13,35 @@ import (
 )
 
 type fakeRetentionStore struct {
-	mu      sync.Mutex
-	sweeps  []bool // dry flag per call
-	policy  state.RetentionPolicy
-	counts  map[string]int
-	block   chan struct{} // when set, Sweep waits on it
-	vacuums int
-	// vacuumStarted and vacuumBlock, when set, hold Vacuum open.
-	vacuumStarted chan struct{}
-	vacuumBlock   chan struct{}
+	mu     sync.Mutex
+	calls  int
+	policy state.RetentionPolicy
+	counts map[string]int
+	block  chan struct{} // when set, Sweep waits on it
 }
 
-func (f *fakeRetentionStore) Sweep(_ context.Context, p state.RetentionPolicy, _ time.Time, dry bool) (state.SweepReport, error) {
+func (f *fakeRetentionStore) Sweep(_ context.Context, p state.RetentionPolicy, _ time.Time) (map[string]int, error) {
 	if f.block != nil {
 		<-f.block
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.sweeps = append(f.sweeps, dry)
+	f.calls++
 	f.policy = p
 	counts := map[string]int{}
 	for k, v := range f.counts {
 		counts[k] = v
 	}
-	return state.SweepReport{Counts: counts}, nil
+	return counts, nil
 }
 
-func (f *fakeRetentionStore) Vacuum(context.Context) error {
-	if f.vacuumBlock != nil {
-		close(f.vacuumStarted)
-		<-f.vacuumBlock
-	}
-	f.mu.Lock()
-	f.vacuums++
-	f.mu.Unlock()
-	return nil
-}
-
-func (f *fakeRetentionStore) calls() int {
+func (f *fakeRetentionStore) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return len(f.sweeps)
+	return f.calls
 }
 
-// syncRetention runs lazy sweeps inline and on a controllable clock.
+// syncRetention runs sweeps inline and on a controllable clock.
 func syncRetention(store RetentionStore, cfg config.RetentionConfig, dir string, now *time.Time) *Retention {
 	r := NewRetention(store, cfg, dir).WithSpawn(func(f func()) { f() })
 	r.now = func() time.Time { return *now }
@@ -71,17 +55,17 @@ func TestMaybeSweepRunsAtMostHourly(t *testing.T) {
 
 	r.MaybeSweep(context.Background())
 	r.MaybeSweep(context.Background())
-	if got := store.calls(); got != 1 {
+	if got := store.callCount(); got != 1 {
 		t.Fatalf("sweeps within the hour = %d, want 1", got)
 	}
 	now = now.Add(59 * time.Minute)
 	r.MaybeSweep(context.Background())
-	if got := store.calls(); got != 1 {
+	if got := store.callCount(); got != 1 {
 		t.Fatalf("sweeps at 59m = %d, want 1", got)
 	}
 	now = now.Add(2 * time.Minute)
 	r.MaybeSweep(context.Background())
-	if got := store.calls(); got != 2 {
+	if got := store.callCount(); got != 2 {
 		t.Fatalf("sweeps after an hour = %d, want 2", got)
 	}
 	if store.policy != (state.RetentionPolicy{Content: 7 * 24 * time.Hour, Records: 180 * 24 * time.Hour}) {
@@ -91,7 +75,10 @@ func TestMaybeSweepRunsAtMostHourly(t *testing.T) {
 
 func TestMaybeSweepIsSingleFlightAndOffThePath(t *testing.T) {
 	store := &fakeRetentionStore{block: make(chan struct{})}
+	now := time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC)
 	r := NewRetention(store, config.RetentionConfig{ContentDays: 7}, "")
+	var mu sync.Mutex
+	r.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
 	var wg sync.WaitGroup
 	r.WithSpawn(func(f func()) {
 		wg.Add(1)
@@ -101,6 +88,9 @@ func TestMaybeSweepIsSingleFlightAndOffThePath(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		r.MaybeSweep(context.Background()) // must return while the sweep blocks
+		mu.Lock()
+		now = now.Add(2 * time.Hour) // due again, but one is still running
+		mu.Unlock()
 		r.MaybeSweep(context.Background())
 		close(done)
 	}()
@@ -109,17 +99,14 @@ func TestMaybeSweepIsSingleFlightAndOffThePath(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("MaybeSweep waited for the sweep")
 	}
-	if _, err := r.Sweep(context.Background(), false, false); !errors.Is(err, ErrSweepRunning) {
-		t.Fatalf("sweep during a sweep: %v", err)
-	}
 	close(store.block)
 	wg.Wait()
-	if got := store.calls(); got != 1 {
+	if got := store.callCount(); got != 1 {
 		t.Fatalf("sweeps = %d, want 1", got)
 	}
 }
 
-func TestSweepJournalsOnlyChangesAndDryRunKeepsSchedule(t *testing.T) {
+func TestSweepJournalsOnlyChanges(t *testing.T) {
 	store := &fakeRetentionStore{}
 	now := time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC)
 	r := syncRetention(store, config.RetentionConfig{ContentDays: 7}, "", &now)
@@ -132,28 +119,15 @@ func TestSweepJournalsOnlyChangesAndDryRunKeepsSchedule(t *testing.T) {
 		return ""
 	})
 
-	if _, err := r.Sweep(context.Background(), false, false); err != nil {
-		t.Fatal(err)
-	}
+	r.MaybeSweep(context.Background())
 	if len(events) != 0 {
 		t.Fatal("a sweep that changed nothing was journaled")
 	}
 	store.counts = map[string]int{"events.strip": 3}
-	if _, err := r.Sweep(context.Background(), true, false); err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 0 || r.Status().LastSweep.Total() != 0 {
-		t.Fatal("a dry run was journaled or recorded as the last sweep")
-	}
 	now = now.Add(2 * time.Hour)
-	if _, err := r.Sweep(context.Background(), false, true); err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 1 || store.vacuums != 1 {
-		t.Fatalf("events=%v vacuums=%d", events, store.vacuums)
-	}
-	if st := r.Status(); st.LastSweepAt == nil || !st.LastSweepAt.Equal(now) || st.LastSweep.Counts["events.strip"] != 3 {
-		t.Fatalf("status = %+v", st)
+	r.MaybeSweep(context.Background())
+	if len(events) != 1 || events[0]["counts"].(map[string]int)["events.strip"] != 3 {
+		t.Fatalf("events = %v", events)
 	}
 }
 
@@ -176,17 +150,21 @@ func TestSweepRemovesExpiredAttachmentsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := syncRetention(&fakeRetentionStore{}, config.RetentionConfig{ContentDays: 7, RecordsDays: 180}, dir, &now)
-	dry, _ := r.Sweep(context.Background(), true, false)
-	if dry.Counts["attachments.delete"] != 1 {
-		t.Fatalf("dry counts = %v", dry.Counts)
-	}
+	forever := syncRetention(&fakeRetentionStore{}, config.RetentionConfig{}, dir, &now)
+	forever.MaybeSweep(context.Background())
 	if _, err := os.Stat(filepath.Join(dir, "old.png")); err != nil {
-		t.Fatal("dry run removed a file")
+		t.Fatal("keep-forever policy removed a file")
 	}
-	report, _ := r.Sweep(context.Background(), false, false)
-	if report.Counts["attachments.delete"] != 1 {
-		t.Fatalf("counts = %v", report.Counts)
+
+	var journaled map[string]int
+	r := syncRetention(&fakeRetentionStore{}, config.RetentionConfig{ContentDays: 7, RecordsDays: 180}, dir, &now)
+	r.WithJournal(func(_ context.Context, _ string, payload map[string]any) string {
+		journaled = payload["counts"].(map[string]int)
+		return ""
+	})
+	r.MaybeSweep(context.Background())
+	if journaled["attachments.delete"] != 1 {
+		t.Fatalf("counts = %v", journaled)
 	}
 	for name, want := range map[string]bool{"old.png": false, "new.png": true, "sub": true} {
 		_, err := os.Stat(filepath.Join(dir, name))
@@ -195,33 +173,7 @@ func TestSweepRemovesExpiredAttachmentsOnly(t *testing.T) {
 		}
 	}
 
-	forever := syncRetention(&fakeRetentionStore{}, config.RetentionConfig{}, dir, &now)
-	if !forever.FileCutoff(now).IsZero() {
-		t.Fatal("keep-forever policy has a file cutoff")
-	}
-	short := syncRetention(&fakeRetentionStore{}, config.RetentionConfig{ContentDays: 7, RecordsDays: 2}, dir, &now)
-	if got := short.FileCutoff(now); !got.Equal(now.Add(-2 * 24 * time.Hour)) {
+	if got := (state.RetentionPolicy{Content: 7 * 24 * time.Hour, Records: 2 * 24 * time.Hour}).ContentCutoff(now); !got.Equal(now.Add(-2 * 24 * time.Hour)) {
 		t.Fatalf("records shorter than content: cutoff %v", got)
-	}
-}
-
-func TestVacuumHoldsTheSweepGuard(t *testing.T) {
-	store := &fakeRetentionStore{vacuumStarted: make(chan struct{}), vacuumBlock: make(chan struct{})}
-	r := NewRetention(store, config.RetentionConfig{ContentDays: 7}, "")
-	done := make(chan error, 1)
-	go func() {
-		_, err := r.Sweep(context.Background(), false, true)
-		done <- err
-	}()
-	<-store.vacuumStarted
-	if _, err := r.Sweep(context.Background(), true, false); !errors.Is(err, ErrSweepRunning) {
-		t.Fatalf("dry run during vacuum: %v", err)
-	}
-	close(store.vacuumBlock)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.Sweep(context.Background(), true, false); err != nil {
-		t.Fatalf("after vacuum: %v", err)
 	}
 }

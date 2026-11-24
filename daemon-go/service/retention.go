@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -19,26 +18,14 @@ import (
 
 const retentionInterval = time.Hour
 
-// ErrSweepRunning refuses a sweep requested while another is in flight.
-var ErrSweepRunning = errors.New("a retention sweep is already running")
-
 // RetentionStore is the persistence seam; *state.Store satisfies it.
 type RetentionStore interface {
-	Sweep(ctx context.Context, p state.RetentionPolicy, now time.Time, dry bool) (state.SweepReport, error)
-	Vacuum(ctx context.Context) error
-}
-
-// RetentionStatus is what GET /retention reports.
-type RetentionStatus struct {
-	ContentDays float64            `json:"content_days"`
-	RecordsDays float64            `json:"records_days"`
-	LastSweepAt *time.Time         `json:"last_sweep_at"`
-	LastSweep   *state.SweepReport `json:"last_sweep"`
+	Sweep(ctx context.Context, p state.RetentionPolicy, now time.Time) (map[string]int, error)
 }
 
 type Retention struct {
 	store   RetentionStore
-	cfg     config.RetentionConfig
+	policy  state.RetentionPolicy
 	files   string // attachments directory; empty skips files
 	journal func(ctx context.Context, typ string, payload map[string]any) string
 	spawn   func(func())
@@ -46,16 +33,22 @@ type Retention struct {
 
 	mu      sync.Mutex
 	running bool
-	due     time.Time // no lazy sweep before this
-	lastAt  *time.Time
-	last    *state.SweepReport
+	due     time.Time // no sweep before this
 }
 
 // NewRetention returns the sweeper for cfg. files is the attachments
 // directory.
 func NewRetention(store RetentionStore, cfg config.RetentionConfig, files string) *Retention {
-	return &Retention{store: store, cfg: cfg, files: files, now: time.Now, spawn: func(f func()) { go f() }}
+	return &Retention{
+		store:  store,
+		policy: state.RetentionPolicy{Content: days(cfg.ContentDays), Records: days(cfg.RecordsDays)},
+		files:  files,
+		now:    time.Now,
+		spawn:  func(f func()) { go f() },
+	}
 }
+
+func days(n float64) time.Duration { return time.Duration(n * float64(24*time.Hour)) }
 
 // WithJournal records a retention_swept event for every sweep that changed
 // something.
@@ -64,119 +57,53 @@ func (r *Retention) WithJournal(fn func(ctx context.Context, typ string, payload
 	return r
 }
 
-// WithSpawn runs lazy sweeps on a tracked goroutine, so shutdown waits for
-// one in flight.
+// WithSpawn runs sweeps on a tracked goroutine, so shutdown waits for one in
+// flight.
 func (r *Retention) WithSpawn(fn func(func())) *Retention {
 	r.spawn = fn
 	return r
 }
 
-// Policy is the configured policy as durations.
-func (r *Retention) Policy() state.RetentionPolicy {
-	return state.RetentionPolicy{Content: days(r.cfg.ContentDays), Records: days(r.cfg.RecordsDays)}
-}
-
-func days(n float64) time.Duration { return time.Duration(n * float64(24*time.Hour)) }
-
-// MaybeSweep starts a sweep off the caller's path when one is due. Cheap
-// otherwise: lazy repair calls it on every pass.
+// MaybeSweep starts a sweep off the caller's path when one is due and none
+// is running. Cheap otherwise: lazy repair calls it on every pass.
 func (r *Retention) MaybeSweep(ctx context.Context) {
-	if r == nil {
+	r.mu.Lock()
+	now := r.now()
+	if r.running || now.Before(r.due) {
+		r.mu.Unlock()
 		return
 	}
-	if !r.acquire(true) {
-		return
-	}
+	r.running, r.due = true, now.Add(retentionInterval)
+	r.mu.Unlock()
+
 	ctx = context.WithoutCancel(ctx)
 	r.spawn(func() {
-		defer r.release()
-		if _, err := r.run(ctx, false); err != nil {
+		defer func() {
+			r.mu.Lock()
+			r.running = false
+			r.mu.Unlock()
+		}()
+		counts, err := r.store.Sweep(ctx, r.policy, now)
+		if err != nil {
 			log.Printf("retention: %v", err)
+		}
+		if n := sweepFiles(r.files, r.policy.ContentCutoff(now)); n > 0 {
+			counts["attachments.delete"] = n
+		}
+		if len(counts) == 0 {
+			return
+		}
+		log.Printf("retention: swept %v", counts)
+		if r.journal != nil {
+			r.journal(ctx, "retention_swept", map[string]any{"counts": counts})
 		}
 	})
 }
 
-// Sweep runs one sweep now (dry only counts). vacuum then rebuilds the
-// database file. Refused while another sweep, or its vacuum, runs.
-func (r *Retention) Sweep(ctx context.Context, dry, vacuum bool) (state.SweepReport, error) {
-	if !r.acquire(false) {
-		return state.SweepReport{}, ErrSweepRunning
-	}
-	defer r.release()
-	report, err := r.run(ctx, dry)
-	if err == nil && vacuum && !dry {
-		err = r.store.Vacuum(ctx)
-	}
-	return report, err
-}
-
-// acquire takes the single-flight guard; onlyWhenDue also requires the
-// hourly interval to have passed.
-func (r *Retention) acquire(onlyWhenDue bool) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.running || (onlyWhenDue && r.now().Before(r.due)) {
-		return false
-	}
-	r.running = true
-	return true
-}
-
-func (r *Retention) release() {
-	r.mu.Lock()
-	r.running = false
-	r.mu.Unlock()
-}
-
-// run sweeps under the guard the caller holds, records the result, and
-// journals a sweep that changed something.
-func (r *Retention) run(ctx context.Context, dry bool) (state.SweepReport, error) {
-	now := r.now()
-	report, err := r.store.Sweep(ctx, r.Policy(), now, dry)
-	if report.Counts == nil {
-		report.Counts = map[string]int{}
-	}
-	if n := r.sweepFiles(now, dry); n > 0 {
-		report.Counts["attachments.delete"] = n
-	}
-	if dry {
-		return report, err
-	}
-	r.mu.Lock()
-	r.due = now.Add(retentionInterval)
-	at := now
-	r.lastAt, r.last = &at, &report
-	r.mu.Unlock()
-	if report.Total() > 0 {
-		log.Printf("retention: swept %d rows %v", report.Total(), report.Counts)
-		if r.journal != nil {
-			r.journal(ctx, "retention_swept", map[string]any{"counts": report.Counts, "errors": report.Errors})
-		}
-	}
-	return report, err
-}
-
-// FileCutoff is the oldest modification time an attachment may have; zero
-// when content is kept forever.
-func (r *Retention) FileCutoff(now time.Time) time.Time {
-	if r == nil {
-		return time.Time{}
-	}
-	content, _ := r.Policy().Cutoffs(now)
-	return content
-}
-
-func (r *Retention) sweepFiles(now time.Time, dry bool) int {
-	if r.files == "" {
-		return 0
-	}
-	return SweepFiles(r.files, r.FileCutoff(now), dry)
-}
-
-// SweepFiles removes (or, dry, counts) regular files in dir modified before
-// cutoff. A zero cutoff keeps everything. Best-effort.
-func SweepFiles(dir string, cutoff time.Time, dry bool) int {
-	if cutoff.IsZero() {
+// sweepFiles removes regular files in dir modified before cutoff. A zero
+// cutoff or an empty dir keeps everything. Best-effort.
+func sweepFiles(dir string, cutoff time.Time) int {
+	if dir == "" || cutoff.IsZero() {
 		return 0
 	}
 	entries, err := os.ReadDir(dir)
@@ -189,16 +116,9 @@ func SweepFiles(dir string, cutoff time.Time, dry bool) int {
 		if err != nil || !info.Mode().IsRegular() || !info.ModTime().Before(cutoff) {
 			continue
 		}
-		if dry || os.Remove(filepath.Join(dir, e.Name())) == nil {
+		if os.Remove(filepath.Join(dir, e.Name())) == nil {
 			n++
 		}
 	}
 	return n
-}
-
-// Status reports the policy and the last sweep.
-func (r *Retention) Status() RetentionStatus {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return RetentionStatus{ContentDays: r.cfg.ContentDays, RecordsDays: r.cfg.RecordsDays, LastSweepAt: r.lastAt, LastSweep: r.last}
 }

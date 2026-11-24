@@ -108,16 +108,6 @@ A mistyped key in a credential block (`relay`, `telegram`, `slack`) turns that w
 - `1`: the file is missing or unreadable, or the daemon would refuse it.
 - `2`: a subsystem named in `--require` would be off.
 
-## `repowire retention`
-
-```bash
-repowire retention                 # policy, last sweep, and what the next sweep would change
-repowire retention show [--json]
-repowire retention sweep [--dry-run] [--vacuum] [--json]
-```
-
-Shows or applies the [retention policy](configuration.md#retention). `show` is a dry run: it changes nothing. `sweep` runs one now and prints per-store counts (`events.strip`, `delivery_traces.delete`, `attachments.delete`, ...); the daemon also sweeps on its own at most hourly. `--vacuum` then rebuilds the database file so the space returns to disk. `config check` prints the policy too.
-
 ## `repowire peer`
 
 ```bash

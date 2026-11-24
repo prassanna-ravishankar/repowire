@@ -18,12 +18,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/repowire/repowire/daemon-go/config"
-	"github.com/repowire/repowire/daemon-go/service"
 )
 
 const (
@@ -87,10 +83,6 @@ func (h *Hub) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create attachments dir: "+err.Error())
 		return
 	}
-
-	// Sweep expired files first so a full dir of expired files doesn't deny
-	// a legit upload.
-	service.SweepFiles(dir, h.attachmentCutoff(time.Now()), false)
 
 	used := attachmentDirSize(dir)
 	if used >= maxAttachmentDirSize {
@@ -194,13 +186,4 @@ func (h *Hub) getAttachment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeError(w, http.StatusNotFound, "Attachment not found")
-}
-
-// attachmentCutoff is the oldest an attachment may be under the retention
-// policy, or under the default policy when no sweeper is attached.
-func (h *Hub) attachmentCutoff(now time.Time) time.Time {
-	if h.retention != nil {
-		return h.retention.FileCutoff(now)
-	}
-	return service.NewRetention(nil, config.Defaults().Retention, "").FileCutoff(now)
 }

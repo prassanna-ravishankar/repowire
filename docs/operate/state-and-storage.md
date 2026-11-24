@@ -31,13 +31,14 @@ One policy, `retention` in [configuration](../reference/configuration.md#retenti
 
 Not covered, because they bound live state rather than history: open jobs, schedules and calendar entries, peer mappings, session bindings, retirement records (72 hours), queued deliveries (`daemon.delivery_queue_ttl_seconds`), the in-memory ask tracker (`daemon.prune_max_age_hours`), the 500-event dashboard window, and cross-machine records (7 days, above). Log files are written by the service manager and rotate separately.
 
-One sweeper applies the policy from lazy repair, at most once an hour, and when the daemon starts; it writes in batches of 500 rows and records a `retention_swept` event with per-store counts. Ask history (routing's per-peer ask counts) reads peer ids, not text, so stripping leaves it intact; deleting records makes it cover the last `records_days`. SQLite does not shrink the file by itself: `repowire retention sweep --vacuum` does.
+One sweeper applies the policy from lazy repair, at most once an hour, and when the daemon starts; it writes in batches of 500 rows and records a `retention_swept` event with per-store counts. Ask history (routing's per-peer ask counts) reads peer ids, not text, so stripping leaves it intact; deleting records makes it cover the last `records_days`. SQLite reuses the freed pages but does not shrink the file; to shrink it, stop the daemon and run `sqlite3 ~/.repowire/state.db VACUUM`.
 
 **Upgrading to a release with retention.** The first daemon start on it sweeps at once, and a sweep cannot be undone: message text older than 7 days and records older than 180 days are gone, including the old ask text `repowire route reconstruct` reads and the oldest asks behind routing's per-peer ask counts. Before restarting on the new binary:
 
 1. Back up the database with SQLite's online backup, which is consistent while the daemon runs: `sqlite3 ~/.repowire/state.db ".backup '$HOME/.repowire/state.db.pre-retention'"`.
 2. Set `retention` in `config.yaml` if the defaults are not what you want (`0` keeps a class forever), and confirm with `repowire config check`.
-3. After the restart, `repowire retention` shows what is left to sweep, and `repowire retention sweep --vacuum` returns the freed space to disk.
+
+After the restart, the `retention_swept` event in the journal records what the sweep removed.
 
 ## Related
 

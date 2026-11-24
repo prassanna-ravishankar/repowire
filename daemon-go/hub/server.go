@@ -52,9 +52,6 @@ type Hub struct {
 	// inbox is the human peer's inbox, wired via WithInbox. nil → no human
 	// peer: /inbox routes 503 and phone bridges are ordinary service peers.
 	inbox *service.Inbox
-	// retention sweeps the store and attachments (nil: files keep the
-	// default content age and the /retention routes answer 503).
-	retention *service.Retention
 	// messages is the agent peers' message record behind /messages, wired
 	// via WithMessages. nil → those routes 503.
 	messages *service.Messages
@@ -180,12 +177,6 @@ func (h *Hub) WithMessaging(delivery *service.PeerDelivery, traces deliveryTrace
 
 // WithInbox wires the human inbox (routes, presence on surface connect/drop)
 // and registers the dashboard as one of its surfaces.
-// WithRetention attaches the retention sweeper.
-func (h *Hub) WithRetention(r *service.Retention) *Hub {
-	h.retention = r
-	return h
-}
-
 func (h *Hub) WithInbox(inbox *service.Inbox) *Hub {
 	h.inbox = inbox
 	h.dashboard = newDashboardSurface(func() { inbox.SyncPresence(context.Background()) })
@@ -298,7 +289,6 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 	h.registerShareRoutes(mux)
 	h.registerAttachmentRoutes(mux)
 	h.registerTraceRoutes(mux)
-	h.registerRetentionRoutes(mux)
 	h.registerSessionControlRoutes(mux)
 }
 

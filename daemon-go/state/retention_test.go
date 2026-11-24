@@ -75,7 +75,7 @@ func TestSweepStripsContentAndKeepsRecords(t *testing.T) {
 	s.mustExec(t, `INSERT INTO inbox_items(id, direction, kind, trace_id, trace_kind, text, attachments_json, question_json, created_at)
 		VALUES ('inb-old', 'in', 'ask', 'ask-1', 'ask', 'secret', '[{"id":"x"}]', '{"kind":"text"}', ?)`, old)
 
-	report := sweepMatchingDryRun(t, s, defaultPolicy)
+	counts := sweep(t, s, defaultPolicy)
 
 	for id, wantGone := range map[string]bool{"msg-old": true, "msg-new": false} {
 		if gone := s.count(t, `SELECT COUNT(*) FROM peer_messages WHERE id = ?`, id) == 0; gone != wantGone {
@@ -123,14 +123,13 @@ func TestSweepStripsContentAndKeepsRecords(t *testing.T) {
 		t.Fatalf("ask refs after strip = %+v", refs)
 	}
 
-	if report.Counts["peer_messages.delete"] != 1 || report.Counts["events.delete_transcripts"] != 1 || report.Counts["delivery_traces.strip"] != 3 {
-		t.Fatalf("report = %+v", report.Counts)
+	if counts["peer_messages.delete"] != 1 || counts["events.delete_transcripts"] != 1 || counts["delivery_traces.strip"] != 3 {
+		t.Fatalf("counts = %v", counts)
 	}
 
 	// A second sweep finds nothing left to do.
-	again, err := s.Sweep(ctx, defaultPolicy, sweepNow, false)
-	if err != nil || again.Total() != 0 {
-		t.Fatalf("second sweep = %+v, %v", again.Counts, err)
+	if again := sweep(t, s, defaultPolicy); len(again) != 0 {
+		t.Fatalf("second sweep = %v", again)
 	}
 }
 
@@ -162,7 +161,7 @@ func TestSweepDeletesRecordsAndSparesLiveState(t *testing.T) {
 	s.mustExec(t, `INSERT INTO runtime_identity_certificates(nonce, peer_id, display_name, backend, project_path, issued_at, expires_at) VALUES
 		('c-old', 'p', 'n', 'claude-code', '/x', ?, ?), ('c-new', 'p', 'n', 'claude-code', '/x', ?, ?)`, old, old, fresh, fresh)
 
-	sweepMatchingDryRun(t, s, defaultPolicy)
+	sweep(t, s, defaultPolicy)
 	remaining := func(table, key string) map[string]bool {
 		rows, err := s.db.Query(`SELECT ` + key + ` FROM ` + table)
 		if err != nil {
@@ -206,30 +205,25 @@ func TestSweepDeletesRecordsAndSparesLiveState(t *testing.T) {
 }
 
 func TestSweepZeroKeepsForeverAndRecordsBoundContent(t *testing.T) {
-	ctx := context.Background()
 	s := newSweepStore(t)
 	ancient := ago(1000 * day)
 	seedEvent(t, s, "e-chat", "chat_turn", ancient, `{"text":"x"}`)
 	seedTrace(t, s, "t-old", "created", ancient, `{"text":"x"}`)
 
-	report, err := s.Sweep(ctx, RetentionPolicy{}, sweepNow, false)
-	if err != nil || report.Total() != 0 {
-		t.Fatalf("keep-forever sweep changed %+v (%v)", report.Counts, err)
+	if counts := sweep(t, s, RetentionPolicy{}); len(counts) != 0 {
+		t.Fatalf("keep-forever sweep changed %v", counts)
 	}
 
 	// Content kept forever, records 30 days: content goes with its record.
 	recent := ago(40 * day)
 	seedEvent(t, s, "e-chat-40", "chat_turn", recent, `{"text":"x"}`)
-	if _, err := s.Sweep(ctx, RetentionPolicy{Records: 30 * day}, sweepNow, false); err != nil {
-		t.Fatal(err)
-	}
+	sweep(t, s, RetentionPolicy{Records: 30 * day})
 	if n := s.count(t, `SELECT COUNT(*) FROM events`); n != 0 {
 		t.Fatalf("events left = %d", n)
 	}
 }
 
 func TestSweepCutoffBoundaryAndTimestampFormats(t *testing.T) {
-	ctx := context.Background()
 	s := newSweepStore(t)
 	cutoff := sweepNow.Add(-7 * day)
 	for id, ts := range map[string]string{
@@ -240,9 +234,7 @@ func TestSweepCutoffBoundaryAndTimestampFormats(t *testing.T) {
 	} {
 		seedEvent(t, s, id, "chat_turn", ts, `{}`)
 	}
-	if _, err := s.Sweep(ctx, defaultPolicy, sweepNow, false); err != nil {
-		t.Fatal(err)
-	}
+	sweep(t, s, defaultPolicy)
 	for id, want := range map[string]int{"older-z": 0, "older-offset": 0, "newer-z": 1, "newer-offset": 1} {
 		if got := s.count(t, `SELECT COUNT(*) FROM events WHERE event_id = ?`, id); got != want {
 			t.Errorf("%s count = %d, want %d", id, got, want)
@@ -250,8 +242,7 @@ func TestSweepCutoffBoundaryAndTimestampFormats(t *testing.T) {
 	}
 }
 
-func TestSweepBatchesAndDryRunChangesNothing(t *testing.T) {
-	ctx := context.Background()
+func TestSweepBatches(t *testing.T) {
 	s := newSweepStore(t)
 	old := ago(8 * day)
 	const n = sweepBatch*2 + 7
@@ -268,17 +259,8 @@ func TestSweepBatchesAndDryRunChangesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dry, err := s.Sweep(ctx, defaultPolicy, sweepNow, true)
-	if err != nil || dry.Counts["events.strip"] != n {
-		t.Fatalf("dry run = %+v, %v", dry.Counts, err)
-	}
-	if left := s.count(t, `SELECT COUNT(*) FROM events WHERE json_type(payload_json, '$.text') IS NOT NULL`); left != n {
-		t.Fatalf("dry run changed rows: %d left with text", left)
-	}
-
-	report, err := s.Sweep(ctx, defaultPolicy, sweepNow, false)
-	if err != nil || report.Counts["events.strip"] != n {
-		t.Fatalf("sweep = %+v, %v", report.Counts, err)
+	if counts := sweep(t, s, defaultPolicy); counts["events.strip"] != n {
+		t.Fatalf("counts = %v", counts)
 	}
 	if left := s.count(t, `SELECT COUNT(*) FROM events WHERE json_type(payload_json, '$.text') IS NOT NULL`); left != 0 {
 		t.Fatalf("%d rows kept their text", left)
@@ -286,7 +268,6 @@ func TestSweepBatchesAndDryRunChangesNothing(t *testing.T) {
 }
 
 func TestSweepRemoteRecordsFollowTheProtocolWindow(t *testing.T) {
-	ctx := context.Background()
 	s := newSweepStore(t)
 	old, live := sweepNow.Add(-RemoteWindow-time.Hour).Unix(), sweepNow.Add(-RemoteWindow+time.Hour).Unix()
 	for _, id := range []struct {
@@ -297,9 +278,7 @@ func TestSweepRemoteRecordsFollowTheProtocolWindow(t *testing.T) {
 	}
 	// Even with content kept for a day, a live remote record keeps its text:
 	// it is protocol state until its window ends.
-	if _, err := s.Sweep(ctx, RetentionPolicy{Content: day, Records: day}, sweepNow, false); err != nil {
-		t.Fatal(err)
-	}
+	sweep(t, s, RetentionPolicy{Content: day, Records: day})
 	if n := s.count(t, `SELECT COUNT(*) FROM remote_fences WHERE id = 'live'`); n != 1 {
 		t.Fatal("live fence deleted")
 	}
@@ -308,63 +287,26 @@ func TestSweepRemoteRecordsFollowTheProtocolWindow(t *testing.T) {
 	}
 }
 
-func TestSweepDryRunMatchesTheSweepWhenRulesOverlap(t *testing.T) {
-	ctx := context.Background()
+func TestSweepDeletesRowsPastBothCutoffsWithoutStrippingThem(t *testing.T) {
 	s := newSweepStore(t)
-	// Past both cutoffs: the records rule deletes them, so no content rule
-	// may count them too (a strip or transcript count would be work wasted
-	// on rows about to go, and a dry run would overcount).
+	// Records run first, so a row past both cutoffs is deleted, not stripped
+	// and then deleted.
 	seedEvent(t, s, "e-chat", "chat_turn", ago(200*day), `{"text":"x"}`)
 	seedEvent(t, s, "e-status", "peer_status", ago(200*day), `{}`)
 	seedEvent(t, s, "e-note", "notification", ago(200*day), `{"text":"x"}`)
-
-	dry, err := s.Sweep(ctx, defaultPolicy, sweepNow, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := s.count(t, `SELECT COUNT(*) FROM events`); n != 3 {
-		t.Fatalf("dry run left %d events, want 3", n)
-	}
-	real, err := s.Sweep(ctx, defaultPolicy, sweepNow, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(dry.Counts) != len(real.Counts) {
-		t.Fatalf("dry %v != real %v", dry.Counts, real.Counts)
-	}
-	for k, v := range real.Counts {
-		if dry.Counts[k] != v {
-			t.Fatalf("dry %v != real %v", dry.Counts, real.Counts)
-		}
-	}
-	if real.Counts["events.delete"] != 3 || len(real.Counts) != 1 {
-		t.Fatalf("real = %v", real.Counts)
+	if counts := sweep(t, s, defaultPolicy); counts["events.delete"] != 3 || len(counts) != 1 {
+		t.Fatalf("counts = %v", counts)
 	}
 }
 
-// sweepMatchingDryRun sweeps after a dry run and fails unless the dry run
-// predicted every count, including rows a cascade (inbox pushes and refs)
-// removes only once their item is gone.
-func sweepMatchingDryRun(t *testing.T, s *Store, p RetentionPolicy) SweepReport {
+// sweep runs one sweep at sweepNow and fails the test on error.
+func sweep(t *testing.T, s *Store, p RetentionPolicy) map[string]int {
 	t.Helper()
-	ctx := context.Background()
-	dry, err := s.Sweep(ctx, p, sweepNow, true)
+	counts, err := s.Sweep(context.Background(), p, sweepNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	real, err := s.Sweep(ctx, p, sweepNow, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(dry.Counts) != len(real.Counts) {
-		t.Fatalf("dry %v != real %v", dry.Counts, real.Counts)
-	}
-	for k, v := range real.Counts {
-		if dry.Counts[k] != v {
-			t.Fatalf("dry %v != real %v", dry.Counts, real.Counts)
-		}
-	}
-	return real
+	return counts
 }
 
 // Peer messages are pure content with no record rule, so one older than both
@@ -375,7 +317,7 @@ func TestSweepDeletesPeerMessagesOlderThanBothCutoffs(t *testing.T) {
 		s.mustExec(t, `INSERT INTO peer_messages(id, kind, peer_id, text, created_at) VALUES
 			('msg-ancient', 'notify', 'repow-b', 'x', ?), ('msg-mid', 'notify', 'repow-b', 'x', ?), ('msg-new', 'notify', 'repow-b', 'x', ?)`,
 			ago(400*day), ago(30*day), ago(1*day))
-		sweepMatchingDryRun(t, s, p)
+		sweep(t, s, p)
 		if n := s.count(t, `SELECT COUNT(*) FROM peer_messages WHERE id = 'msg-new'`); n != 1 {
 			t.Fatalf("%+v: a recent message was deleted", p)
 		}

@@ -354,7 +354,6 @@ func runDaemon() {
 	// Retention (rfcs/retention.md): one policy over every store, swept from
 	// lazy repair at most hourly; starting the daemon counts as a request.
 	retention := service.NewRetention(store, cfg.Retention, hub.AttachmentsDir()).WithJournal(reg.AddEvent).WithSpawn(reg.Track)
-	h.WithRetention(retention)
 	reg.AddRepairPass(retention.MaybeSweep)
 	retention.MaybeSweep(ctx)
 	selfMachine, _ := os.Hostname()
