@@ -108,6 +108,17 @@ A mistyped key in a credential block (`relay`, `telegram`, `slack`) turns that w
 - `1`: the file is missing or unreadable, or the daemon would refuse it.
 - `2`: a subsystem named in `--require` would be off.
 
+## `repowire wire`
+
+```bash
+repowire wire                                   # same as `wire ls`
+repowire wire ls [--stuck] [--circle C] [--peer P] [--kind ask|notify] [--state S]
+                 [--since 24h] [--limit N] [--cursor C] [--json]
+repowire wire show THREAD_ID [--json]
+```
+
+The operator's view of ask and notify threads across every circle, from `GET /wire/threads`: who asked whom, who holds each ask now, its state and stuck signals. Metadata only, like the orchestrator's [`wire_query`](mcp-tools.md#wire_query) and `wire_show`, which print the same text. `--since` takes a duration (`90m`, `24h`) or days (`7d`). For a thread's message text, the operator still has `repowire trace`.
+
 ## `repowire peer`
 
 ```bash

@@ -2,7 +2,6 @@ package state
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -52,7 +51,7 @@ func TestDeleteDeliveriesForPeerDropsOnlyThatPeer(t *testing.T) {
 	defer s.Close()
 	now := time.Now().UTC()
 	for _, peerID := range []string{"repow-1-child", "repow-1-child", "repow-1-other"} {
-		if _, err := s.EnqueueDelivery(ctx, QueuedDelivery{DeliveryID: "d-" + peerID + "-" + fmt.Sprint(len(peerID)+int(now.UnixNano()%1000)), PeerID: peerID, Kind: DeliveryNotify, FromPeerName: "a", ToPeerName: "b", Text: "x"}, 3600, 10, now); err != nil {
+		if _, err := s.EnqueueDelivery(ctx, QueuedDelivery{PeerID: peerID, Kind: DeliveryNotify, FromPeerName: "a", ToPeerName: "b", Text: "x"}, 3600, 10, now); err != nil {
 			t.Fatal(err)
 		}
 		now = now.Add(time.Millisecond)

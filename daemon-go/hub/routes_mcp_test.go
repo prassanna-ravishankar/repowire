@@ -162,7 +162,7 @@ func TestMCPToolsList(t *testing.T) {
 		"list_messages", "list_peers", "mark_reviewed", "notify_peer", "orchestrator_status",
 		"read_message", "restart_peer", "review_queue", "revoke_share", "schedule_create", "schedule_cron",
 		"schedule_delete", "schedule_list", "schedule_self", "set_description", "set_message_delivery", "set_name",
-		"share_session", "spawn_peer", "wait_on_ack", "whoami",
+		"share_session", "spawn_peer", "wait_on_ack", "whoami", "wire_query", "wire_show",
 	} {
 		want[name] = false
 	}

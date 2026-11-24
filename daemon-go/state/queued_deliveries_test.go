@@ -267,3 +267,27 @@ func TestDrainNullableFieldsRoundTrip(t *testing.T) {
 		t.Fatalf("kind mismatch: %q", r.Kind)
 	}
 }
+
+// A traced notify keeps its delivery id in the queue, so the queue can say
+// whether that delivery still waits (the wire view asks).
+func TestQueueKeepsATracedDeliveryIDAndAnswersForIt(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC()
+	queued, err := s.EnqueueDelivery(ctx, QueuedDelivery{DeliveryID: "notif-delivery-abc", PeerID: "repow-b", Kind: DeliveryNotify, FromPeerName: "a", ToPeerName: "b", Text: "x"}, 60, 10, now)
+	if err != nil || queued == nil || queued.DeliveryID != "notif-delivery-abc" {
+		t.Fatalf("enqueue = %+v, %v", queued, err)
+	}
+	for at, want := range map[time.Time]bool{now: true, now.Add(2 * time.Minute): false} {
+		if got, err := s.DeliveryQueued(ctx, "notif-delivery-abc", at); err != nil || got != want {
+			t.Errorf("queued at %v = %v, %v; want %v", at.Sub(now), got, err, want)
+		}
+	}
+	if got, _ := s.DeliveryQueued(ctx, "notif-delivery-other", now); got {
+		t.Error("an unknown delivery reads queued")
+	}
+}

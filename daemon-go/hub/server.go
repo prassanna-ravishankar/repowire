@@ -58,6 +58,9 @@ type Hub struct {
 	// messages is the agent peers' message record behind /messages, wired
 	// via WithMessages. nil → those routes 503.
 	messages *service.Messages
+	// wire is the orchestrator's read-only thread view (WithWire). nil →
+	// its MCP tools answer an error and /wire routes are not registered.
+	wire *service.Wire
 	// dashboard is the inbox surface rendered over the dashboard's event
 	// stream; nil without an inbox.
 	dashboard *dashboardSurface
@@ -292,6 +295,7 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 	h.registerShareRoutes(mux)
 	h.registerAttachmentRoutes(mux)
 	h.registerTraceRoutes(mux)
+	h.registerWireRoutes(mux)
 	h.registerSessionControlRoutes(mux)
 }
 

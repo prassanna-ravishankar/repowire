@@ -56,6 +56,19 @@ human:
       broadcast: false
 ```
 
+## `wire`
+
+```yaml
+wire:
+  stuck:
+    ignored_turns: 3          # holder turns since assignment with the ask still open
+    slow_minutes: 30          # assignment age with no holder turn
+    asker_gone_minutes: 60    # reply stashed for an offline asker
+    undelivered_minutes: 10   # notify still queued
+```
+
+Thresholds for the stuck signals of the orchestrator's wire view ([`wire_query`](mcp-tools.md#wire_query), `repowire wire ls`). They are checked when a thread is read, never on a timer. A missing or non-positive value keeps its default.
+
 ## `retention`
 
 ```yaml

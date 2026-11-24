@@ -269,6 +269,7 @@ func registerMCPTools(srv *mcp.Server, h *Hub, delivery *service.PeerDelivery, c
 	})
 
 	registerMCPParityTools(srv, h, cfg)
+	registerWireTools(srv, h)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "broadcast",

@@ -67,9 +67,14 @@ func (s *Store) EnqueueDelivery(
 	}
 	now = now.UTC()
 
-	id, err := newDeliveryID()
-	if err != nil {
-		return nil, fmt.Errorf("mint delivery id: %w", err)
+	// A caller that already traces the delivery keeps its id, so the queue
+	// and the trace ledger name the same delivery.
+	id := d.DeliveryID
+	if id == "" {
+		var err error
+		if id, err = newDeliveryID(); err != nil {
+			return nil, fmt.Errorf("mint delivery id: %w", err)
+		}
 	}
 
 	out := d
@@ -372,3 +377,15 @@ func (s *Store) DeleteDeliveriesForPeer(ctx context.Context, peerID string) (int
 }
 
 var queuedDeliveryRetention = tableRetention{tables: []string{"queued_deliveries"}, exempt: "live queue with its own TTL (daemon.delivery_queue_ttl_seconds)"}
+
+// DeliveryQueued reports whether delivery id is still waiting in the queue
+// (present and not expired).
+func (s *Store) DeliveryQueued(ctx context.Context, id string, now time.Time) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM queued_deliveries WHERE delivery_id = ? AND expires_at > ?`,
+		id, formatISO(now.UTC())).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("queued delivery %s: %w", id, err)
+	}
+	return n > 0, nil
+}

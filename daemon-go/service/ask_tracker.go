@@ -299,6 +299,19 @@ func (t *AskTracker) Get(cid string) (*Ask, bool) {
 	return ask.clone(), true
 }
 
+// OpenAsks returns snapshot copies of every open ask.
+func (t *AskTracker) OpenAsks() []*Ask {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]*Ask, 0, len(t.asks))
+	for _, ask := range t.asks {
+		if !ask.Closed {
+			out = append(out, ask.clone())
+		}
+	}
+	return out
+}
+
 // ListByParent returns snapshot copies of all child asks of an ask-many parent.
 func (t *AskTracker) ListByParent(parentID string) []*Ask {
 	t.mu.Lock()

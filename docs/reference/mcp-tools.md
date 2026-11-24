@@ -386,6 +386,32 @@ Check whether a live orchestrator is present in a circle. An online/busy orchest
 
 This is a *presence check*, not a snapshot of mesh state.
 
+### `wire_query`
+
+```text
+wire_query(circle: str | None = None, peer: str | None = None, kind: str | None = None,
+           state: str | None = None, stuck_only: bool = False, since: str = "24h",
+           limit: int = 50, cursor: str | None = None) -> str
+```
+
+Orchestrator only. Lists ask and notify threads across every circle, newest activity first: who asked whom, who holds the ask now (and who held it before, after a delegation), its state, its age, the holder's assistant turns since it was assigned, and stuck signals. Returns TSV with columns `thread`, `kind`, `from`, `holder`, `via`, `state`, `age`, `holder_turns`, `stuck`, `protected`, and a final `cursor` row when there is another page (pass it back as `cursor`). Pages follow latest activity, so a thread that gets new activity while you page can move ahead of the cursor (skipped) or show twice.
+
+The output is metadata only: no message text, delegation notes or reasons. Display names are agent-chosen and printed with control characters removed; a thread id that is not plainly printable is shown as an `h-` alias, which `wire_show` accepts.
+
+The caller must be a registered peer with a proven identity and `role=orchestrator`, checked on every call. Anonymous HTTP MCP and ordinary agents are refused. The operator's `GET /wire/threads` route is not an agent surface: like `/traces`, it answers whoever holds the daemon token (or a local request when the token is not required).
+
+- **States** of an ask: `sent`, `queued`, `deferred`, `delivered` (to the current holder), `delegated`, `reply_stashed` (the asker went offline before the reply), a close reason when closed (`acked`, `declined`, `answered`, `cancelled`, `expired`, `send_failed`, ...), or `unknown` when the daemon lost the open ask without recording its close. A notify is `sent`, `queued` (waiting in the delivery queue for an offline recipient), `delivered`, `failed`, `remote_<outcome>` across machines, or `unverified` (sent on a transport that returns no receipt, or no longer in the queue, which keeps no record of whether it was drained or expired); read state is not tracked yet.
+- **Stuck signals**, computed when read, never on a timer, with thresholds under [`wire.stuck`](configuration.md#wire): `ignored` (the holder is online and took `ignored_turns` turns since the ask was assigned to it), `slow` (no holder turn `slow_minutes` after assignment), `holder_offline`, `asker_gone` (a reply stashed `asker_gone_minutes` ago), and `undelivered` (a notify queued `undelivered_minutes` ago).
+- **`protected`** marks a thread with the human, a surface service, or a peer the daemon no longer knows as a party. Future body reads and interventions will refuse such threads.
+
+### `wire_show`
+
+```text
+wire_show(thread_id: str, cursor: int | None = None) -> str
+```
+
+Orchestrator only. One thread's envelope and its stage timeline (`seq`, `at`, `stage`, `status`, `peer`, `close_reason`), oldest first, within 8,000 characters; a longer timeline ends with a `cursor` row naming the last `seq` shown. Same authorization and the same metadata-only rule as `wire_query`.
+
 ## Lifecycle
 
 ### `job_create`
