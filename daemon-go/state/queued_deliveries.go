@@ -444,3 +444,15 @@ func (s *Store) DeliveryQueued(ctx context.Context, id string, now time.Time) (b
 	}
 	return n > 0, nil
 }
+
+// DropQueuedForAsk drops what the queue still holds for peerID about ask
+// correlationID, when the ask moved away from peerID or was cancelled
+// (reason), so the old holder does not receive it later. Returns the number
+// dropped.
+func (s *Store) DropQueuedForAsk(ctx context.Context, correlationID, peerID, reason string) (int, error) {
+	n, err := s.removeQueued(ctx, QueueDropped, reason, "correlation_id = ? AND peer_id = ?", correlationID, peerID)
+	if err != nil {
+		return 0, fmt.Errorf("drop queued copies of %s for %s: %w", correlationID, peerID, err)
+	}
+	return n, nil
+}

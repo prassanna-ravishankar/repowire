@@ -87,6 +87,9 @@ func newRootCommand() *cobra.Command {
 	wire := group("wire", "Show ask and notify threads across every circle (metadata only)", runWire, []leaf{
 		{"ls [--stuck] [--circle C] [--peer P] [--kind ask|notify] [--state S] [--since 24h] [--limit N] [--cursor C] [--json]", "List threads, newest activity first"},
 		{"show THREAD_ID [--json]", "Show one thread's envelope and stage timeline"},
+		{"reassign THREAD_ID PEER --reason R", "Move an open ask to another peer (operator; needs the daemon token)"},
+		{"nudge THREAD_ID [--note N]", "Remind an open ask's holder, at most every 10 minutes (operator)"},
+		{"cancel THREAD_ID --reason R", "Cancel an open ask; the asker gets the reason (operator)"},
 	})
 	wire.RunE = func(*cobra.Command, []string) error { return codeError(runWire(nil)) }
 	root.AddCommand(wire)
@@ -218,6 +221,9 @@ var documentedFlags = map[string][]documentedFlag{
 		{name: "kind", usage: "ask or notify"}, {name: "state", usage: "Only this state"}, {name: "since", usage: "Activity window (90m, 24h, 7d)"}, {name: "limit", usage: "At most this many threads"},
 		{name: "cursor", usage: "Resume after the previous page"}, {name: "json", usage: "Emit JSON", boolean: true}},
 	"wire show":           {{name: "json", usage: "Emit JSON", boolean: true}},
+	"wire reassign":       {{name: "reason", usage: "Why the ask moves (required, at most 200 characters)"}},
+	"wire nudge":          {{name: "note", usage: "A note for the holder (at most 200 characters)"}},
+	"wire cancel":         {{name: "reason", usage: "Why the ask is cancelled (required; the asker receives it)"}},
 	"share":               {{name: "rw", usage: "Create a read-write share", boolean: true}, {name: "list", usage: "List active shares", boolean: true}, {name: "ttl", usage: "Lifetime in seconds"}, {name: "revoke", usage: "Revoke a share id"}},
 	"uninstall":           {{name: "yes", usage: "Also remove Repowire state", boolean: true}},
 	"peer list":           {{name: "show-offline", usage: "Include offline peers", boolean: true}, {name: "include-hidden", usage: "Include peers hidden from the default view (no direct input, runtime-internal threads, sub-agents with an offline parent)", boolean: true}, {name: "source", usage: "Only peers from this source: hook, codex-app-server, unknown"}},

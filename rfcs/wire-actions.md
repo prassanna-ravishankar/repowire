@@ -1,6 +1,6 @@
 # Wire actions: reassign, nudge, cancel
 
-Status: design, not built (2026-11-24). The intervention slice of
+Status: step 1 (no way back, generations) and step 2 (operator actions over HTTP and the CLI) are implemented (2026-11-24). Steps 3 and 4 are design. The intervention slice of
 `wire-observability.md` (section 4), made concrete. It builds on the
 read-only wire view (`service.Wire`) and on `delegate`
 (`hub/routes_ask_delegate.go`, `AskTracker.Delegate`).

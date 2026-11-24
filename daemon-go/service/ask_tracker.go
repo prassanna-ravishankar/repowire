@@ -69,6 +69,11 @@ type Delegation struct {
 	Note       string
 	At         time.Time
 	Generation int // the assignment this hop began
+	// By and Reason are set when someone other than the holder moved the
+	// ask (a reassign): who acted and why. Empty for a delegation, where
+	// the holder (FromPeerID) acted and Note is its own.
+	By     string
+	Reason string
 
 	fromSessionID *string // restored if the hop is undone
 }
@@ -519,6 +524,28 @@ type DelegateParams struct {
 // unchanged. The caller holds the ask's Claim through delivery, so it can
 // UndoDelegation the returned hop if delivery fails.
 func (t *AskTracker) Delegate(ctx context.Context, cid string, p DelegateParams) (*Ask, Delegation, error) {
+	return t.handOff(cid, p, "", "")
+}
+
+// ReassignParams moves an open ask on someone else's authority.
+type ReassignParams struct {
+	By          string // who acted, for example "operator"
+	To          proto.PeerID
+	ToName      proto.DisplayName
+	ToSessionID *string
+	Reason      string
+}
+
+// Reassign moves an open ask from its holder to p.To on p.By's authority
+// (rfcs/wire-actions.md). It is a delegation the holder did not make: the
+// same refusals, the hop limit, generations and UndoDelegation rollback, with
+// the hop recording who acted and why. The caller holds the Claim.
+func (t *AskTracker) Reassign(ctx context.Context, cid string, p ReassignParams) (*Ask, Delegation, error) {
+	return t.handOff(cid, DelegateParams{To: p.To, ToName: p.ToName, ToSessionID: p.ToSessionID}, p.By, p.Reason)
+}
+
+// handOff is the one mutation behind Delegate and Reassign.
+func (t *AskTracker) handOff(cid string, p DelegateParams, by, reason string) (*Ask, Delegation, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	ask, ok := t.asks[cid]
@@ -548,6 +575,7 @@ func (t *AskTracker) Delegate(ctx context.Context, cid string, p DelegateParams)
 	hop := Delegation{
 		FromPeerID: ask.ToPeerID, FromName: ask.ToPeerName,
 		ToPeerID: p.To, ToName: p.ToName, Note: p.Note, At: time.Now().UTC(),
+		By: by, Reason: reason,
 		Generation:    ask.issued + 1,
 		fromSessionID: ask.ToRepowireSessionID,
 	}

@@ -105,6 +105,7 @@ type delegateRig struct {
 	store    *state.Store
 	traces   *stageTracer
 	reg      *askFakeRegistry
+	h        *Hub
 }
 
 var (
@@ -133,7 +134,7 @@ func newDelegateRig(t *testing.T, peers ...*proto.Peer) *delegateRig {
 	h.registerAskLifecycleRoutes(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &delegateRig{srv: srv, asks: asks, wire: wire, messages: messages, store: store, traces: traces, reg: reg}
+	return &delegateRig{srv: srv, asks: asks, wire: wire, messages: messages, store: store, traces: traces, reg: reg, h: h}
 }
 
 // post sends body to path and decodes the JSON reply into a map.

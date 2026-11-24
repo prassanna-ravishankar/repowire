@@ -111,6 +111,13 @@ func TestWireReducesAskHistoryFromTheLedger(t *testing.T) {
 	if lost, _, _ := w.Thread(ctx, "ask-lost"); lost.State != "unknown" || lost.Open {
 		t.Fatalf("lost thread = %+v", lost)
 	}
+	// An operator's reassign is a hop like a delegation.
+	ledger.add("ask-moved", "ask", "created", "ok", "repow-b", "repow-a", at, nil)
+	ledger.add("ask-moved", "ask", "reassigned", "ok", "repow-c", "repow-a", at.Add(time.Minute), map[string]any{"by": "operator"})
+	ledger.add("ask-moved", "ask", "closed", "ok", "repow-c", "repow-a", at.Add(2*time.Minute), map[string]any{"close_reason": "cancelled"})
+	if moved, _, _ := w.Thread(ctx, "ask-moved"); moved.Holder.Name != "gamma" || len(moved.Via) != 1 || moved.State != "cancelled" {
+		t.Fatalf("reassigned thread = %+v", moved)
+	}
 
 	// No text, note, error or reply reaches the envelope, as text or JSON.
 	raw, _ := json.Marshal(closed)

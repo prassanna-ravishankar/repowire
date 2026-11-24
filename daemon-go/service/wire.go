@@ -349,7 +349,7 @@ func (w *Wire) reduceAsk(t *WireThread, rows []state.TraceRow, ask *Ask, tracked
 			asker = proto.PeerID(r.FromPeerID)
 		}
 		switch {
-		case r.Stage == "delegated":
+		case r.Stage == "delegated" || r.Stage == "reassigned":
 			assigns = append(assigns, wireAssignment{holder: proto.PeerID(r.PeerID), at: at})
 		case r.Stage == "delegate_failed":
 			if len(assigns) > 1 {

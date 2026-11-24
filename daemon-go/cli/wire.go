@@ -66,8 +66,32 @@ func wireCommand(c *client, argv []string) int {
 		}
 		fmt.Println(thread.Text(0))
 		return 0
+	case "reassign", "nudge", "cancel":
+		return wireAction(c, argv[0], a)
 	}
-	return usage("wire ls|show")
+	return usage("wire ls|show|reassign|nudge|cancel")
+}
+
+// wireAction runs an operator action on a thread (rfcs/wire-actions.md).
+// The daemon requires its token for these, with no local exception.
+func wireAction(c *client, action string, a args) int {
+	body := map[string]any{}
+	switch {
+	case action == "reassign" && len(a.pos) == 2:
+		body["to"], body["reason"] = a.pos[1], a.string("reason", "")
+	case action == "cancel" && len(a.pos) == 1:
+		body["reason"] = a.string("reason", "")
+	case action == "nudge" && len(a.pos) == 1:
+		body["note"] = a.string("note", "")
+	default:
+		return usage("wire reassign THREAD_ID PEER --reason R | wire cancel THREAD_ID --reason R | wire nudge THREAD_ID [--note N]")
+	}
+	result, err := c.request(http.MethodPost, "/wire/threads/"+url.PathEscape(a.pos[0])+"/"+action, body)
+	if err != nil {
+		return fatal(err)
+	}
+	printJSON(result)
+	return 0
 }
 
 // remarshal decodes a generic JSON result into a typed value.
