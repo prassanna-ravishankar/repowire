@@ -184,6 +184,9 @@ func (h *Hub) delegateTarget(ctx context.Context, ask *service.Ask, req Delegate
 	case ask.ToPeerID:
 		return nil, routeErr(http.StatusUnprocessableEntity, "the ask is already with "+string(ask.ToPeerName))
 	}
+	if ask.HeldBefore(authorized.PeerID) {
+		return nil, delegateErr(ask.CorrelationID, ask, service.ErrFormerHolder)
+	}
 	return authorized, nil
 }
 
@@ -230,6 +233,11 @@ func delegateErr(cid string, ask *service.Ask, err error) error {
 		return routeErr(http.StatusConflict, map[string]any{"error": "peer_switching", "hint": "The target is mid-switch; retry shortly."})
 	case errors.Is(err, service.ErrResultWaiting):
 		return resolveClaimErr(cid, err)
+	case errors.Is(err, service.ErrFormerHolder):
+		return routeErr(http.StatusUnprocessableEntity, map[string]any{
+			"error": "former_holder", "correlation_id": cid,
+			"hint": "That peer held this ask before; an ask never returns to a former holder. Pick another peer, or answer it yourself.",
+		})
 	case errors.Is(err, service.ErrDelegationLimit):
 		return routeErr(http.StatusUnprocessableEntity, fmt.Sprintf("Ask %s has been delegated %d times; answer or decline it", cid, service.MaxDelegations))
 	default:

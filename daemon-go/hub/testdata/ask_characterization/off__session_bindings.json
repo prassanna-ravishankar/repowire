@@ -84,6 +84,7 @@
       "FromPeerID": "repow-a",
       "FromPeerName": "alpha",
       "FromRepowireSessionID": "\u003csession-repow-a\u003e",
+      "Generation": 0,
       "ParentID": null,
       "PendingReply": null,
       "PendingReplyAt": null,

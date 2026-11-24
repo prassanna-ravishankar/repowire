@@ -596,6 +596,12 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 	}
 
 	if decision, ok := d.transport.ACPRoute(target); ok && decision != nil {
+		generation := 0 // this assignment's; a delegation hop has already moved the ask
+		if d.asks != nil {
+			if ask, ok := d.asks.Get(params.CorrelationID); ok {
+				generation = ask.Generation
+			}
+		}
 		opID, err := d.recordACPAsk(ctx, params.CorrelationID, params.FromPeer, from, target)
 		if err != nil {
 			return AskResult{}, err
@@ -616,7 +622,7 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 				}
 				reply = &text
 			}
-			d.completeAsHolder(params.CorrelationID, target.PeerID, func() {
+			d.completeAsHolder(params.CorrelationID, target.PeerID, generation, func() {
 				callback(context.Background(), params.CorrelationID, reply, errText)
 			})
 			d.settleACPAsk(context.Background(), opID, errText)
@@ -680,14 +686,14 @@ func stringValuePeer(value *proto.Peer) string {
 // still holds it then. A completion from a peer the ask was delegated away
 // from is dropped: the new holder answers. One from a peer a failed hand-off
 // returned the ask to lands.
-func (d *PeerDelivery) completeAsHolder(cid string, holder proto.PeerID, complete func()) {
+func (d *PeerDelivery) completeAsHolder(cid string, holder proto.PeerID, generation int, complete func()) {
 	if d.asks == nil {
 		complete()
 		return
 	}
 	d.asks.RunClaimed(cid, func(ask *Ask) {
-		if ask.ToPeerID != holder {
-			log.Printf("delivery: completion of ask %s from %s dropped: delegated to %s", cid, holder, ask.ToPeerID)
+		if ask.ToPeerID != holder || ask.Generation != generation {
+			log.Printf("delivery: completion of ask %s from %s (assignment %d) dropped: the ask is with %s (assignment %d)", cid, holder, generation, ask.ToPeerID, ask.Generation)
 			return
 		}
 		complete()
